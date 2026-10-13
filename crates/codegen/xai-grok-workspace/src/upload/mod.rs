@@ -95,15 +95,28 @@ pub(crate) fn init_metrics() {
         .with_label_values(&["workspace_environment", "enqueue_failed"])
         .inc_by(0);
 }
-/// Spawn a detached sampler that mirrors the queue's pending/pending-bytes stats into the Prometheus gauges every `interval`.
+pub(crate) struct QueueStatsSamplerGuard {
+    task: tokio::task::JoinHandle<()>,
+}
+impl QueueStatsSamplerGuard {
+    pub(crate) fn abort(&self) {
+        self.task.abort();
+    }
+}
+impl Drop for QueueStatsSamplerGuard {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+/// Spawn a sampler that mirrors the queue's pending/pending-bytes stats into the Prometheus gauges every `interval`.
 /// It also emits a matching queue-aggregate telemetry snapshot so queue pressure is visible in the same log stream as upload outcomes.
 pub(crate) fn spawn_queue_stats_sampler(
     queue: Arc<UploadQueue>,
     interval: std::time::Duration,
-) -> tokio::task::JoinHandle<()> {
+) -> QueueStatsSamplerGuard {
     let stats = queue.stats_arc();
     let sample_period_secs = interval.as_secs();
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -122,7 +135,8 @@ pub(crate) fn spawn_queue_stats_sampler(
                 "workspace: upload queue pending stats"
             );
         }
-    })
+    });
+    QueueStatsSamplerGuard { task }
 }
 /// Wraps the server [`AuthProvider`] as an [`AuthCredentialProvider`] and [`HttpAuth`] so the `StorageClient` can authenticate requests.
 struct HubAuthCredentialProvider {
@@ -592,9 +606,12 @@ mod tests {
                 .iter()
                 .all(|e| e.target == crate::telemetry::TELEMETRY_TARGET)
         );
-        assert_eq!(events[0].level, tracing::Level::INFO);
-        assert_eq!(events[0].message, "constant info message");
-        assert_eq!(events[1].level, tracing::Level::WARN);
+        let [e0, e1] = events.as_slice() else {
+            panic!("expected two events, got {}", events.len());
+        };
+        assert_eq!(e0.level, tracing::Level::INFO);
+        assert_eq!(e0.message, "constant info message");
+        assert_eq!(e1.level, tracing::Level::WARN);
         for e in &events {
             for f in &e.fields {
                 assert!(
@@ -602,6 +619,37 @@ mod tests {
                     "field {f:?} is not in the approved field vocabulary"
                 );
             }
+        }
+    }
+    #[tokio::test]
+    async fn sampler_guard_aborts_on_drop() {
+        let home = TempDir::new().unwrap();
+        let queue = test_queue(home.path());
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            use tracing_subscriber::layer::SubscriberExt;
+            let layer = CaptureLayer {
+                events: events.clone(),
+            };
+            let subscriber = tracing_subscriber::registry().with(layer);
+            let _guard = tracing::subscriber::set_default(subscriber);
+            let sampler = spawn_queue_stats_sampler(queue, std::time::Duration::from_millis(20));
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            drop(sampler);
+            let count_after_drop = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.message.contains("upload queue pending stats"))
+                .count();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let count_after_wait = events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.message.contains("upload queue pending stats"))
+                .count();
+            assert_eq!(count_after_drop, count_after_wait);
         }
     }
     /// The queue-stats snapshot is INFO, queue-aggregate (no `session_id`), and carries exactly the queue counters.
@@ -635,7 +683,9 @@ mod tests {
             !snaps.is_empty(),
             "the sampler must emit at least one snapshot"
         );
-        let e = &snaps[0];
+        let Some(e) = snaps.first() else {
+            panic!("expected queue-stats snapshot");
+        };
         assert_eq!(e.level, tracing::Level::INFO);
         let mut fields = e.fields.clone();
         fields.sort();

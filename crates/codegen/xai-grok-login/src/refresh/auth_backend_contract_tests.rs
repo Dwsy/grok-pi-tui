@@ -318,18 +318,22 @@ async fn auth_backend_contract_transient_failures_escalate_to_non_sticky_permane
         outcomes.push(refresher.refresh(RefreshReason::ServerRejected).await);
     }
 
+    let Some(first) = outcomes.first() else {
+        panic!("expected 5 refresh outcomes, got {outcomes:?}");
+    };
     assert!(
-        matches!(outcomes[0], RefreshOutcome::TransientFailure { .. }),
-        "first blip is transient, not a lockout: {:?}",
-        outcomes[0],
+        matches!(first, RefreshOutcome::TransientFailure { .. }),
+        "first blip is transient, not a lockout: {first:?}",
     );
+    let Some(fourth) = outcomes.get(3) else {
+        panic!("expected 5 refresh outcomes, got {outcomes:?}");
+    };
     assert!(
-        matches!(outcomes[3], RefreshOutcome::TransientFailure { .. }),
-        "4th blip still under escalation budget: {:?}",
-        outcomes[3],
+        matches!(fourth, RefreshOutcome::TransientFailure { .. }),
+        "4th blip still under escalation budget: {fourth:?}",
     );
-    match &outcomes[4] {
-        RefreshOutcome::PermanentFailure { error, .. } => {
+    match outcomes.get(4) {
+        Some(RefreshOutcome::PermanentFailure { error, .. }) => {
             assert_eq!(
                 error.reason,
                 RefreshTokenFailedReason::Other,

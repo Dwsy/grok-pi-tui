@@ -197,6 +197,7 @@ impl TaskOutputTool {
         timeout_ms: Option<u64>,
         ctx: &xai_tool_runtime::ToolCallContext,
         resources: SharedResources,
+        output_byte_limit: Option<usize>,
     ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
         let contract_version = ctx
             .extensions
@@ -240,17 +241,10 @@ impl TaskOutputTool {
                     .render("${{ tools.by_kind.read }}")
                     .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
             }
-            let max_output_bytes = resources
-                .lock()
-                .await
-                .get::<TruncationCfg>()
-                .map(|cfg| {
-                    cfg.0.max_output_bytes_for(
-                        "get_command_or_subagent_output",
-                        DEFAULT_TOOL_OUTPUT_BYTES,
-                    )
-                })
-                .unwrap_or(DEFAULT_TOOL_OUTPUT_BYTES);
+            let max_output_bytes = {
+                let res = resources.lock().await;
+                resolved_max_output_bytes(&res, "get_command_or_subagent_output", output_byte_limit)
+            };
             return Ok(TaskOutputOutput::Result(apply_running_wait_hint(
                 snapshot_to_result(snapshot, &read_file_name, max_output_bytes),
                 wait_hint,
@@ -316,6 +310,23 @@ impl TaskOutputTool {
         resources: SharedResources,
         tool_name_for_truncation: &str,
     ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
+        Self::run_multi_tasks_limited(
+            task_ids,
+            timeout_ms,
+            resources,
+            tool_name_for_truncation,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn run_multi_tasks_limited(
+        task_ids: &[String],
+        timeout_ms: Option<u64>,
+        resources: SharedResources,
+        tool_name_for_truncation: &str,
+        output_byte_limit: Option<usize>,
+    ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
         let waits = xai_tool_types::task_output_waits(timeout_ms);
         let requested = requested_wait_timeout(timeout_ms);
         let timeout = capped_wait_timeout(timeout_ms, max_wait_block());
@@ -328,13 +339,7 @@ impl TaskOutputTool {
             let rfn = renderer
                 .render("${{ tools.by_kind.read }}")
                 .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
-            let mob = res
-                .get::<TruncationCfg>()
-                .map(|cfg| {
-                    cfg.0
-                        .max_output_bytes_for(tool_name_for_truncation, DEFAULT_TOOL_OUTPUT_BYTES)
-                })
-                .unwrap_or(DEFAULT_TOOL_OUTPUT_BYTES);
+            let mob = resolved_max_output_bytes(&res, tool_name_for_truncation, output_byte_limit);
             (terminal, backend, rfn, mob)
         };
 
@@ -375,10 +380,7 @@ impl TaskOutputTool {
             initial.results
         };
 
-        let completed_count = results
-            .iter()
-            .filter(|r| is_terminal_status(&r.status))
-            .count();
+        let completed_count = results.iter().filter(|r| r.is_terminal()).count();
         let total = results.len();
         let mode_str = if waits { "wait_all" } else { "poll" };
         let summary = format!("{completed_count}/{total} tasks completed ({mode_str})");
@@ -392,12 +394,6 @@ impl TaskOutputTool {
 }
 
 pub(crate) use xai_tool_types::MAX_MULTI_WAIT_IDS;
-
-/// Terminal task statuses as produced by `snapshot_to_result` /
-/// `format_subagent_snapshot`; multi-wait summaries count these as finished.
-pub(crate) fn is_terminal_status(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "cancelled" | "timed_out")
-}
 
 pub(crate) fn not_found_result(task_id: &str) -> TaskOutputResult {
     TaskOutputResult {
@@ -731,9 +727,9 @@ pub(crate) fn terminal_subagent_result(snap: &SubagentSnapshot) -> TaskOutputRes
             worktree_path,
         } => {
             let mut output = format!(
-                "{output}\n\n<subagent_meta>id={}, type={}, tool_calls={tool_calls}, \
+                "{output}\n\n<subagent_meta>id={}, tool_calls={tool_calls}, \
                  turns={turns}, duration_ms={}</subagent_meta>",
-                snap.subagent_id, snap.subagent_type, snap.duration_ms,
+                snap.subagent_id, snap.duration_ms,
             );
             if let Some(wt) = &worktree_path {
                 output.push_str(&format!("\n<worktree_path>{wt}</worktree_path>"));
@@ -741,7 +737,6 @@ pub(crate) fn terminal_subagent_result(snap: &SubagentSnapshot) -> TaskOutputRes
             output.push_str("\n\n");
             output.push_str(&xai_tool_types::format_resume_footer(
                 &snap.subagent_id,
-                &snap.subagent_type,
                 snap.persona.as_deref(),
             ));
             ("completed", Some(0), output)
@@ -802,7 +797,9 @@ impl crate::types::tool_metadata::ToolMetadata for TaskOutputTool {
             xai_tool_types::build_task_output_description(&xai_tool_types::TaskOutputToolNaming {
                 monitor_tool: Some("monitor"),
                 read_tool: Some("read_file"),
-                bash_background_param: Some("is_background"),
+                // The current bash tool has no `is_background` param
+                bash_background_param: None,
+                bash_block_param: Some("block_until_ms"),
                 subagent_background_param: Some("run_in_background"),
                 task_ids_param: "task_ids",
                 timeout_ms_param: "timeout_ms",
@@ -844,9 +841,8 @@ impl crate::types::tool_metadata::ToolMetadata for TaskOutputTool {
     }
 }
 
-/// Resolve the model-facing `get_task_output` description from the finalized toolset, honoring an explicit config override. Wording lives in
-/// the shared [`xai_tool_types::build_task_output_description`] builder so the CLI and prod-chat can't drift; presence-gated clauses (monitor
-/// note, subagent source, read-file hint) follow the tools actually registered this turn.
+/// Resolves the `get_task_output` description from the finalized toolset. An explicit config override wins.
+/// The CLI and prod-chat share the wording in [`xai_tool_types::build_task_output_description`].
 fn task_output_description(
     renderer: &TemplateRenderer,
     description_override: Option<&str>,
@@ -857,10 +853,17 @@ fn task_output_description(
             ovr.to_string()
         });
     }
-    xai_tool_types::build_task_output_description(&xai_tool_types::TaskOutputToolNaming {
+    xai_tool_types::build_task_output_description(&task_output_naming(renderer))
+}
+
+/// The tool and param names the finalized toolset advertises for this description.
+/// The builder drops the clause for any tool not registered this turn.
+fn task_output_naming(renderer: &TemplateRenderer) -> xai_tool_types::TaskOutputToolNaming<'_> {
+    xai_tool_types::TaskOutputToolNaming {
         monitor_tool: renderer.tool_for_kind(ToolKind::Monitor),
         read_tool: renderer.tool_for_kind(ToolKind::Read),
         bash_background_param: renderer.param_for_kind(ToolKind::Execute, "is_background"),
+        bash_block_param: renderer.param_for_kind(ToolKind::Execute, "block_until_ms"),
         subagent_background_param: renderer.param_for_kind(ToolKind::Task, "run_in_background"),
         task_ids_param: renderer
             .param_for_kind(ToolKind::BackgroundTaskAction, "task_ids")
@@ -872,7 +875,7 @@ fn task_output_description(
         task_id_param: renderer
             .param_for_kind(ToolKind::KillTaskAction, "task_id")
             .unwrap_or("task_id"),
-    })
+    }
 }
 
 impl xai_tool_runtime::Tool for TaskOutputTool {
@@ -911,6 +914,19 @@ impl xai_tool_runtime::Tool for TaskOutputTool {
         ctx: xai_tool_runtime::ToolCallContext,
         input: TaskOutputToolInput,
     ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
+        self.run_with_output_byte_limit(ctx, input, None).await
+    }
+}
+
+impl TaskOutputTool {
+    /// `output_byte_limit` is set only by `get_terminal_command_output`. `None`
+    /// is `get_task_output`: the shared truncation lookup.
+    pub(crate) async fn run_with_output_byte_limit(
+        &self,
+        ctx: xai_tool_runtime::ToolCallContext,
+        input: TaskOutputToolInput,
+        output_byte_limit: Option<usize>,
+    ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -927,19 +943,42 @@ impl xai_tool_runtime::Tool for TaskOutputTool {
         }
 
         if ids.len() == 1 {
+            let Some(id) = ids.first() else {
+                return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                    "Provide a non-empty task_ids list.".to_string(),
+                ));
+            };
             return self
-                .run_single_task(&ids[0], input.timeout_ms, &ctx, resources)
+                .run_single_task(id, input.timeout_ms, &ctx, resources, output_byte_limit)
                 .await;
         }
 
-        Self::run_multi_tasks(
+        Self::run_multi_tasks_limited(
             &ids,
             input.timeout_ms,
             resources,
             "get_command_or_subagent_output",
+            output_byte_limit,
         )
         .await
     }
+}
+
+/// `output_byte_limit` is `get_terminal_command_output`'s session param. `Some`
+/// is that tool's builtin cap, and `TruncationConfig` may override it under
+/// `get_terminal_command_output`. `None` keeps `lookup_name`.
+fn resolved_max_output_bytes(
+    res: &crate::types::resources::Resources,
+    lookup_name: &str,
+    output_byte_limit: Option<usize>,
+) -> usize {
+    let (name, builtin) = match output_byte_limit {
+        Some(limit) => ("get_terminal_command_output", limit),
+        None => (lookup_name, DEFAULT_TOOL_OUTPUT_BYTES),
+    };
+    res.get::<TruncationCfg>()
+        .map(|cfg| cfg.0.max_output_bytes_for(name, builtin))
+        .unwrap_or(builtin)
 }
 
 #[cfg(test)]
@@ -1232,37 +1271,22 @@ mod tests {
         for (label, kinds) in cases {
             let tools: HashMap<ToolKind, String> =
                 kinds.iter().map(|(k, n)| (*k, n.to_string())).collect();
-            // Seed the param map for present tools the way `finalize` does, so
-            // the background sources / subagent header resolve via
-            // `param_for_kind` (which reads the param map, not the tool map).
-            let mut params: HashMap<ToolKind, HashMap<String, String>> = HashMap::new();
-            for (k, _) in kinds.iter() {
-                match k {
-                    ToolKind::Execute => {
-                        params
-                            .entry(ToolKind::Execute)
-                            .or_default()
-                            .insert("is_background".to_string(), "is_background".to_string());
-                    }
-                    ToolKind::Task => {
-                        params.entry(ToolKind::Task).or_default().insert(
-                            "run_in_background".to_string(),
-                            "run_in_background".to_string(),
-                        );
-                    }
-                    _ => {}
-                }
-            }
-            let renderer = TemplateRenderer::new(tools, params);
+            let renderer = TemplateRenderer::new(tools, params_finalize_would_seed(kinds));
             let rendered = task_output_description(&renderer, None);
 
             let has_monitor = kinds.iter().any(|(k, _)| *k == ToolKind::Monitor);
             let has_task = kinds.iter().any(|(k, _)| *k == ToolKind::Task);
             let has_read = kinds.iter().any(|(k, _)| *k == ToolKind::Read);
+            let has_bash = kinds.iter().any(|(k, _)| *k == ToolKind::Execute);
 
             assert!(
                 !rendered.contains("${"),
                 "[{label}] left an unrendered template marker:\n{rendered}"
+            );
+            assert_eq!(
+                rendered.contains("block_until_ms=0 commands"),
+                has_bash,
+                "[{label}] bash source mention must match execute-tool presence:\n{rendered}"
             );
             assert_eq!(
                 rendered.contains("monitor"),
@@ -1287,6 +1311,34 @@ mod tests {
         }
     }
 
+    /// Builds the param map for `kinds` the way `finalize` does.
+    /// `param_for_kind` reads this map, not the tool map.
+    fn params_finalize_would_seed(
+        kinds: &[(ToolKind, &str)],
+    ) -> std::collections::HashMap<ToolKind, std::collections::HashMap<String, String>> {
+        use std::collections::HashMap;
+
+        let mut params: HashMap<ToolKind, HashMap<String, String>> = HashMap::new();
+        for (k, _) in kinds.iter() {
+            match k {
+                ToolKind::Execute => {
+                    params
+                        .entry(ToolKind::Execute)
+                        .or_default()
+                        .insert("block_until_ms".to_string(), "block_until_ms".to_string());
+                }
+                ToolKind::Task => {
+                    params.entry(ToolKind::Task).or_default().insert(
+                        "run_in_background".to_string(),
+                        "run_in_background".to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        params
+    }
+
     #[test]
     fn description_tracks_renamed_task_ids_and_timeout_ms() {
         use crate::types::template_renderer::TemplateRenderer;
@@ -1304,7 +1356,7 @@ mod tests {
         let params = HashMap::from([
             (
                 ToolKind::Execute,
-                HashMap::from([("is_background".to_string(), "is_background".to_string())]),
+                HashMap::from([("block_until_ms".to_string(), "wait_ms".to_string())]),
             ),
             (
                 ToolKind::BackgroundTaskAction,
@@ -1326,6 +1378,10 @@ mod tests {
         assert!(
             rendered.contains("max_wait"),
             "renamed timeout_ms must appear:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("from wait_ms=0 commands"),
+            "renamed bash block param must appear:\n{rendered}"
         );
         assert!(
             rendered.contains("monitor"),
@@ -1911,8 +1967,10 @@ mod tests {
         );
         match result {
             TaskOutputOutput::MultiResult(m) => {
-                assert_eq!(m.results.len(), 1);
-                assert_eq!(m.results[0].status, "completed");
+                let [first] = m.results.as_slice() else {
+                    panic!("expected exactly one result, got {}", m.results.len());
+                };
+                assert_eq!(first.status, "completed");
             }
             other => panic!("Expected MultiResult, got {other:?}"),
         }
@@ -1942,7 +2000,10 @@ mod tests {
         );
         match result {
             TaskOutputOutput::MultiResult(m) => {
-                assert_eq!(m.results[0].status, "running");
+                let Some(first) = m.results.first() else {
+                    panic!("expected one result: {:?}", m.results);
+                };
+                assert_eq!(first.status, "running");
             }
             other => panic!("Expected MultiResult, got {other:?}"),
         }
@@ -2780,8 +2841,10 @@ mod tests {
         handle.await.unwrap();
         match result {
             TaskOutputOutput::MultiResult(m) => {
-                assert_eq!(m.results.len(), 1);
-                assert_eq!(m.results[0].status, "completed");
+                let [first] = m.results.as_slice() else {
+                    panic!("expected exactly one result, got {}", m.results.len());
+                };
+                assert_eq!(first.status, "completed");
             }
             other => panic!("Expected MultiResult, got {other:?}"),
         }

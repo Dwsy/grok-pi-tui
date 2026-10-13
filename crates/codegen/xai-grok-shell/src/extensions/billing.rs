@@ -371,7 +371,9 @@ mod tests {
             Some("2025-04-01T00:00:00Z")
         );
         assert_eq!(config.history.len(), 1);
-        let period = &config.history[0];
+        let Some(period) = config.history.first() else {
+            panic!("expected one billing period");
+        };
         let cycle = period.billing_cycle.as_ref().unwrap();
         assert_eq!(cycle.year, 2025);
         assert_eq!(cycle.month, 3);
@@ -422,20 +424,43 @@ mod tests {
             subscription_tier: Some("SuperGrok".into()),
         };
         let ctx = billing_unified_log_ctx(&resp);
-        assert_eq!(ctx["onDemandEnabled"], true);
-        assert_eq!(ctx["subscriptionTier"], "SuperGrok");
-        let config = ctx["config"].as_object().expect("config object");
+        assert_eq!(
+            ctx.get("onDemandEnabled").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            ctx.get("subscriptionTier").and_then(|v| v.as_str()),
+            Some("SuperGrok")
+        );
+        let config = ctx
+            .get("config")
+            .and_then(|v| v.as_object())
+            .expect("config object");
         assert!(
             config.get("history").is_none(),
             "full history must be collapsed"
         );
-        assert_eq!(config["historyLen"], 2);
+        assert_eq!(config.get("historyLen").and_then(|v| v.as_u64()), Some(2));
         assert_eq!(
-            config["latestHistory"]["billingCycle"]["month"], 3,
+            config
+                .get("latestHistory")
+                .and_then(|h| h.get("billingCycle"))
+                .and_then(|c| c.get("month"))
+                .and_then(|v| v.as_u64()),
+            Some(3),
             "latest history period retained"
         );
-        assert_eq!(config["creditUsagePercent"], 42.5);
-        assert_eq!(config["prepaidBalance"]["val"], 100);
+        assert_eq!(
+            config.get("creditUsagePercent").and_then(|v| v.as_f64()),
+            Some(42.5)
+        );
+        assert_eq!(
+            config
+                .get("prepaidBalance")
+                .and_then(|b| b.get("val"))
+                .and_then(|v| v.as_u64()),
+            Some(100)
+        );
     }
 
     #[test]
@@ -573,7 +598,10 @@ mod tests {
         assert_eq!(config.is_unified_billing_user, Some(true));
         // The CLI billing code does not read `productUsage` yet
         assert_eq!(config.history.len(), 1);
-        assert_eq!(config.history[0].on_demand_used.as_ref().unwrap().val, 120);
+        let Some(history) = config.history.first() else {
+            panic!("expected one history period");
+        };
+        assert_eq!(history.on_demand_used.as_ref().unwrap().val, 120);
     }
 
     #[test]

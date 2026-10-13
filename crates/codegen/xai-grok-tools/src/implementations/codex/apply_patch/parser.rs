@@ -130,13 +130,13 @@ fn parse_patch_text(patch: &str, mode: ParseMode) -> Result<ParsedPatch, ParseEr
     let mut hunks: Vec<Hunk> = Vec::new();
     // The boundary checks guarantee lines.len() >= 2.
     let last_line_index = lines.len().saturating_sub(1);
-    let mut remaining_lines = &lines[1..last_line_index];
+    let mut remaining_lines = lines.get(1..last_line_index).unwrap_or(&[]);
     let mut line_number = 2;
     while !remaining_lines.is_empty() {
         let (hunk, hunk_lines) = parse_one_hunk(remaining_lines, line_number)?;
         hunks.push(hunk);
         line_number += hunk_lines;
-        remaining_lines = &remaining_lines[hunk_lines..];
+        remaining_lines = remaining_lines.get(hunk_lines..).unwrap_or(&[]);
     }
     let patch = lines.join("\n");
     Ok(ParsedPatch { hunks, patch })
@@ -156,14 +156,13 @@ fn check_patch_boundaries_lenient<'a>(
     original_parse_error: ParseError,
 ) -> Result<&'a [&'a str], ParseError> {
     match original_lines {
-        [first, .., last] => {
+        [first, inner @ .., last] => {
             if (first == &"<<EOF" || first == &"<<'EOF'" || first == &"<<\"EOF\"")
                 && last.ends_with("EOF")
                 && original_lines.len() >= 4
             {
-                let inner_lines = &original_lines[1..original_lines.len() - 1];
-                match check_patch_boundaries_strict(inner_lines) {
-                    Ok(()) => Ok(inner_lines),
+                match check_patch_boundaries_strict(inner) {
+                    Ok(()) => Ok(inner),
                     Err(e) => Err(e),
                 }
             } else {
@@ -197,12 +196,18 @@ fn check_start_and_end_lines_strict(
 /// Parse a single hunk from the start of `lines`.
 /// Returns the parsed hunk and the number of lines consumed.
 fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), ParseError> {
-    let first_line = lines[0].trim();
+    let Some((first, rest)) = lines.split_first() else {
+        return Err(InvalidHunkError {
+            message: "hunk is empty".to_string(),
+            line_number,
+        });
+    };
+    let first_line = first.trim();
     if let Some(path) = first_line.strip_prefix(ADD_FILE_MARKER) {
         // ── Add File ─────────────────────────────────────────────
         let mut contents = String::new();
         let mut parsed_lines = 1;
-        for add_line in &lines[1..] {
+        for add_line in rest {
             if let Some(line_to_add) = add_line.strip_prefix('+') {
                 contents.push_str(line_to_add);
                 contents.push('\n');
@@ -228,7 +233,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
         ));
     } else if let Some(path) = first_line.strip_prefix(UPDATE_FILE_MARKER) {
         // ── Update File ──────────────────────────────────────────
-        let mut remaining_lines = &lines[1..];
+        let mut remaining_lines = rest;
         let mut parsed_lines = 1;
 
         // Optional: move-to line.
@@ -237,20 +242,23 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
             .and_then(|x| x.strip_prefix(MOVE_TO_MARKER));
 
         if move_path.is_some() {
-            remaining_lines = &remaining_lines[1..];
+            remaining_lines = remaining_lines.get(1..).unwrap_or(&[]);
             parsed_lines += 1;
         }
 
         let mut chunks = Vec::new();
         while !remaining_lines.is_empty() {
             // Skip blank lines between chunks.
-            if remaining_lines[0].trim().is_empty() {
+            if remaining_lines.first().is_some_and(|l| l.trim().is_empty()) {
                 parsed_lines += 1;
-                remaining_lines = &remaining_lines[1..];
+                remaining_lines = remaining_lines.get(1..).unwrap_or(&[]);
                 continue;
             }
             // Stop at the next hunk header.
-            if remaining_lines[0].starts_with("***") {
+            if remaining_lines
+                .first()
+                .is_some_and(|l| l.starts_with("***"))
+            {
                 break;
             }
 
@@ -261,7 +269,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
             )?;
             chunks.push(chunk);
             parsed_lines += chunk_lines;
-            remaining_lines = &remaining_lines[chunk_lines..];
+            remaining_lines = remaining_lines.get(chunk_lines..).unwrap_or(&[]);
         }
 
         if chunks.is_empty() {
@@ -303,16 +311,21 @@ fn parse_update_file_chunk(
     }
 
     // Check for explicit @@ context marker.
-    let (change_context, start_index) = if lines[0] == EMPTY_CHANGE_CONTEXT_MARKER {
+    let Some(first) = lines.first() else {
+        return Err(InvalidHunkError {
+            message: "Update hunk does not contain any lines".to_string(),
+            line_number,
+        });
+    };
+    let (change_context, start_index) = if *first == EMPTY_CHANGE_CONTEXT_MARKER {
         (None, 1)
-    } else if let Some(context) = lines[0].strip_prefix(CHANGE_CONTEXT_MARKER) {
+    } else if let Some(context) = first.strip_prefix(CHANGE_CONTEXT_MARKER) {
         (Some(context.to_string()), 1)
     } else {
         if !allow_missing_context {
             return Err(InvalidHunkError {
                 message: format!(
-                    "Expected update hunk to start with a @@ context marker, got: '{}'",
-                    lines[0]
+                    "Expected update hunk to start with a @@ context marker, got: '{first}'"
                 ),
                 line_number,
             });
@@ -334,7 +347,7 @@ fn parse_update_file_chunk(
         is_end_of_file: false,
     };
     let mut parsed_lines = 0;
-    for line in &lines[start_index..] {
+    for line in lines.get(start_index..).unwrap_or(&[]) {
         match *line {
             EOF_MARKER => {
                 if parsed_lines == 0 {
@@ -354,14 +367,22 @@ fn parse_update_file_chunk(
                     chunk.new_lines.push(String::new());
                 }
                 Some(' ') => {
-                    chunk.old_lines.push(line_contents[1..].to_string());
-                    chunk.new_lines.push(line_contents[1..].to_string());
+                    chunk
+                        .old_lines
+                        .push(line_contents.get(1..).unwrap_or("").to_string());
+                    chunk
+                        .new_lines
+                        .push(line_contents.get(1..).unwrap_or("").to_string());
                 }
                 Some('+') => {
-                    chunk.new_lines.push(line_contents[1..].to_string());
+                    chunk
+                        .new_lines
+                        .push(line_contents.get(1..).unwrap_or("").to_string());
                 }
                 Some('-') => {
-                    chunk.old_lines.push(line_contents[1..].to_string());
+                    chunk
+                        .old_lines
+                        .push(line_contents.get(1..).unwrap_or("").to_string());
                 }
                 _ => {
                     if parsed_lines == 0 {

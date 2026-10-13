@@ -1,8 +1,9 @@
 //! Individual setting setters with persistence effects and toasts.
 
 use super::ui::{refresh_open_settings_modals, save_success_toast};
-use crate::app::actions::{Effect, PiBuiltinTool};
+use crate::app::actions::{Effect, ModelChoice, PiBuiltinTool};
 use crate::app::app_view::{ActiveView, AppView};
+use crate::settings::PendingWrite;
 use agent_client_protocol as acp;
 
 /// Set multiline input mode: swap Enter and Shift+Enter behavior.
@@ -381,6 +382,128 @@ pub(in crate::app::dispatch) fn set_ask_user_question_timeout_enabled(
     }]
 }
 
+const SUBAGENT_MODEL_INHERITANCE_LABEL: &str = "Subagent model inheritance";
+
+/// Mirror the saved `[features]` key (`None` means deleted) optimistically and return the write to issue.
+/// One write is on disk at a time: while one is pending the new intent only waits in `queued`, and the completion issues it.
+fn set_subagent_model_inheritance_inner(app: &mut AppView, saved: Option<bool>) -> Vec<Effect> {
+    let state = &mut app.subagent_model_inheritance;
+    let effects = match &mut state.writes {
+        Some(write) => {
+            write.queued = Some(saved);
+            vec![]
+        }
+        None => {
+            state.writes = Some(PendingWrite {
+                persisted: state.config.user,
+                queued: None,
+            });
+            vec![Effect::PersistFeatureOverride {
+                feature: state.feature,
+                saved,
+            }]
+        }
+    };
+    state.config.user = saved;
+    effects
+}
+
+/// The pending write finished: `persisted` is what it left on disk, `None` for a failed write.
+/// A queued intent that differs from the disk is issued next; otherwise the record closes and the mirror settles on the disk.
+pub(super) fn settle_subagent_model_inheritance_write(
+    app: &mut AppView,
+    persisted: Option<Option<bool>>,
+) -> Vec<Effect> {
+    let state = &mut app.subagent_model_inheritance;
+    let Some(write) = &mut state.writes else {
+        return vec![];
+    };
+    if let Some(saved) = persisted {
+        write.persisted = saved;
+    }
+    match write.queued.take() {
+        Some(queued) if queued != write.persisted => vec![Effect::PersistFeatureOverride {
+            feature: state.feature,
+            saved: queued,
+        }],
+        Some(_) | None => {
+            state.config.user = write.persisted;
+            state.writes = None;
+            vec![]
+        }
+    }
+}
+
+/// A pin, the environment, or a config layer above the user file decides the key, so neither a toggle nor a reset can change what applies.
+fn refuse_fixed_subagent_model_inheritance(app: &mut AppView) -> bool {
+    let Some(by) = app.subagent_model_inheritance.forced_by() else {
+        return false;
+    };
+    app.show_toast(&format!(
+        "\u{2717} {SUBAGENT_MODEL_INHERITANCE_LABEL} is fixed by {by}"
+    ));
+    true
+}
+
+/// SHELL-owned setter for `[features].subagent_model_inheritance`; persists via `Effect::PersistFeatureOverride`.
+/// An explicit `false` is a real override of a remote `true`, so both values are written. Applies to new agents (restart-required).
+pub(in crate::app::dispatch) fn set_subagent_model_inheritance(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    if refuse_fixed_subagent_model_inheritance(app)
+        || app.subagent_model_inheritance.config.user == Some(new)
+    {
+        return vec![];
+    }
+    let effects = set_subagent_model_inheritance_inner(app, Some(new));
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "subagent_model_inheritance",
+        value = new,
+        "setting changed",
+    );
+    app.show_toast(&format!(
+        "{} (restart to apply)",
+        save_success_toast(SUBAGENT_MODEL_INHERITANCE_LABEL, new),
+    ));
+    effects
+}
+
+/// Outer dispatcher for `Action::ClearSubagentModelInheritance`: deletes the saved key rather than writing the compiled default.
+/// A saved `false` still counts as an override to remove, so the reset path bypasses the "already at default" value check for this key.
+pub(in crate::app::dispatch) fn clear_subagent_model_inheritance(app: &mut AppView) -> Vec<Effect> {
+    if refuse_fixed_subagent_model_inheritance(app) {
+        return vec![];
+    }
+    let state = app.subagent_model_inheritance;
+    if state.config.user.is_none() {
+        // A managed layer shows through here; naming it explains why the row is not at the default
+        let toast = match state.config.below_user {
+            Some(layer) => format!(
+                "{SUBAGENT_MODEL_INHERITANCE_LABEL}: nothing to reset; {} sets it",
+                layer.layer.label()
+            ),
+            None => format!("{SUBAGENT_MODEL_INHERITANCE_LABEL}: nothing to reset"),
+        };
+        app.show_toast(&toast);
+        return vec![];
+    }
+    let effects = set_subagent_model_inheritance_inner(app, None);
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "subagent_model_inheritance",
+        value = "<cleared>",
+        "setting changed",
+    );
+    app.show_toast(&format!(
+        "\u{2713} {SUBAGENT_MODEL_INHERITANCE_LABEL}: reset (restart to apply)"
+    ));
+    effects
+}
+
 pub(super) fn set_show_thinking_blocks_inner(app: &mut AppView, new: bool) {
     crate::appearance::cache::set_show_thinking_blocks(new);
     // Thinking visibility reshapes verb-group runs (shown thoughts claim into folds) AND dense N-more runs (hidden thoughts stop counting toward truncation)
@@ -510,7 +633,7 @@ pub(super) fn set_collapsed_edit_blocks_inner(app: &mut AppView, new: bool) {
 
 /// Set whether Edit blocks default to the collapsed one-line `+N/-M` diffstat summary (expand for the diff).
 /// SHELL-OWNED: cache mirror and `[ui].collapsed_edit_blocks` via `Effect::PersistSetting`.
-/// Explicit pager.toml `[scrollback.blocks.edit]` shape keys override the flag.
+/// Fold shape is [`crate::appearance::EditBlockConfig::effective_expanded`].
 pub(in crate::app::dispatch) fn set_collapsed_edit_blocks(
     app: &mut AppView,
     new: bool,
@@ -1492,8 +1615,6 @@ fn auto_theme_setting_is_live(key: &str) -> bool {
     crate::theme::cache::is_auto_mode() && system_is_in_matching_mode(key)
 }
 
-// ── theme (commit path) ─────────────────────────────────────────────
-
 /// State, cache, and visual mutation for `theme`; the commit path.
 /// Updates `app.current_ui.theme`, toggles `AUTO_MODE` based on whether the value is `"auto"`, and applies the live theme.
 /// Unknown / unrecognised names log at `warn` and no-op (a malformed `rollback_value` is a softer failure mode than an unknown commit-time value).
@@ -1598,8 +1719,6 @@ pub(in crate::app::dispatch) fn set_theme(app: &mut AppView, new: String) -> Vec
     }]
 }
 
-// ── theme (preview path) ────────────────────────────────────────────
-
 /// Preview-only mutation for `theme`.
 /// Applies the live visual without modifying state, toggling `AUTO_MODE`, persisting, or toasting.
 /// For `"auto"`, resolves and applies the theme but does NOT toggle `AUTO_MODE` (commit-only side effect).
@@ -1641,8 +1760,6 @@ pub(in crate::app::dispatch) fn preview_theme(_app: &mut AppView, new: String) -
     preview_theme_inner(&new);
     vec![]
 }
-
-// ── auto_dark_theme (commit path) ───────────────────────────────────
 
 /// State, cache, and visual mutation for `auto_dark_theme`; the commit path.
 /// Applies visually only when the setting is live (auto mode and the system dark).
@@ -1713,8 +1830,6 @@ pub(in crate::app::dispatch) fn set_auto_dark_theme(app: &mut AppView, new: Stri
     }]
 }
 
-// ── auto_dark_theme (preview path) ──────────────────────────────────
-
 /// Preview-only mutation for `auto_dark_theme`; applies visually only when the setting is live.
 fn preview_auto_dark_theme_inner(value: &str) {
     let Some(kind) = crate::theme::ThemeKind::from_name(value) else {
@@ -1753,8 +1868,6 @@ pub(in crate::app::dispatch) fn preview_auto_dark_theme(
     preview_auto_dark_theme_inner(&new);
     vec![]
 }
-
-// ── auto_light_theme (commit path) ──────────────────────────────────
 
 /// State, cache, and visual mutation for `auto_light_theme`; the commit path.
 /// Mirror of `set_auto_dark_theme_inner` for the light bucket.
@@ -1825,8 +1938,6 @@ pub(in crate::app::dispatch) fn set_auto_light_theme(
         rollback_value: crate::settings::SettingValue::Enum(prev_canonical),
     }]
 }
-
-// ── auto_light_theme (preview path) ─────────────────────────────────
 
 /// Preview-only mutation for `auto_light_theme`.
 /// Mirror of `preview_auto_dark_theme_inner` for the light bucket.
@@ -1997,8 +2108,7 @@ pub(in crate::app::dispatch) fn set_default_model(
         effects.push(Effect::SwitchModel {
             agent_id: aid,
             session_id: sid,
-            model_id: new_id,
-            effort: None,
+            choice: ModelChoice::new(new_id),
             prev_model_id: prev_id.clone(),
         });
     } else if let Some(agent) = app.agents.get_mut(&aid) {
@@ -3021,9 +3131,7 @@ pub(in crate::app::dispatch) fn set_auto_update(app: &mut AppView, new: bool) ->
     }]
 }
 
-// ---------------------------------------------------------------------------
 // display_refresh_auto_cadence is a SHELL-OWNED nested Option on `[ui.display_refresh].auto_cadence_enabled`. Restart-required.
-// ---------------------------------------------------------------------------
 
 /// State-only mutation for `display_refresh_auto_cadence`.
 pub(super) fn set_display_refresh_auto_cadence_inner(app: &mut AppView, value: bool) {

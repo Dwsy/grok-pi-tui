@@ -300,9 +300,11 @@ fn test_responses_api_response_to_conversation_item() {
     let ConversationItem::Assistant(a) = &item else {
         panic!("Expected Assistant item");
     };
-    assert_eq!(a.tool_calls.len(), 1);
-    assert_eq!(a.tool_calls[0].id.as_ref(), "call_789");
-    assert_eq!(a.tool_calls[0].name, "read_file");
+    let [tc] = a.tool_calls.as_slice() else {
+        panic!("expected one tool call: {:?}", a.tool_calls);
+    };
+    assert_eq!(tc.id.as_ref(), "call_789");
+    assert_eq!(tc.name, "read_file");
 }
 
 #[test]
@@ -386,8 +388,8 @@ fn test_tool_calls_to_responses_api() {
 
     assert_eq!(fc_items.len(), 1, "Expected exactly one FunctionCall item");
 
-    let rs::InputItem::Item(rs::Item::FunctionCall(fc)) = fc_items[0] else {
-        panic!("Expected FunctionCall item");
+    let Some(rs::InputItem::Item(rs::Item::FunctionCall(fc))) = fc_items.first() else {
+        panic!("Expected FunctionCall item: {fc_items:?}");
     };
     assert_eq!(fc.call_id, "call_1");
     assert_eq!(fc.name, "bash");
@@ -423,8 +425,8 @@ fn test_tool_result_to_responses_api() {
         "Expected exactly one FunctionCallOutput item"
     );
 
-    let rs::InputItem::Item(rs::Item::FunctionCallOutput(fco)) = fco_items[0] else {
-        panic!("Expected FunctionCallOutput item");
+    let Some(rs::InputItem::Item(rs::Item::FunctionCallOutput(fco))) = fco_items.first() else {
+        panic!("Expected FunctionCallOutput item: {fco_items:?}");
     };
     assert_eq!(fco.call_id, "call_1");
     let rs::FunctionCallOutput::Text(text) = &fco.output else {
@@ -469,9 +471,11 @@ fn test_multiple_tool_results_to_responses_api() {
         })
         .collect();
 
-    assert_eq!(fco_items.len(), 2);
-    assert_eq!(fco_items[0].call_id, "call_1");
-    assert_eq!(fco_items[1].call_id, "call_2");
+    let [f0, f1] = fco_items.as_slice() else {
+        panic!("expected two function call outputs: {fco_items:?}");
+    };
+    assert_eq!(f0.call_id, "call_1");
+    assert_eq!(f1.call_id, "call_2");
 }
 
 #[test]
@@ -538,8 +542,8 @@ fn test_responses_api_with_encrypted_reasoning() {
         .iter()
         .position(|i| matches!(i, ConversationItem::Assistant(_)))
         .expect("assistant present");
-    let ConversationItem::Assistant(a) = &items[assistant_idx] else {
-        unreachable!()
+    let Some(ConversationItem::Assistant(a)) = items.get(assistant_idx) else {
+        panic!("expected assistant at {assistant_idx}: {items:?}");
     };
     assert_eq!(a.content.as_ref(), "My response based on reasoning.");
 
@@ -683,15 +687,18 @@ fn test_encrypted_reasoning_included_in_responses_api_request() {
         "Should have exactly one reasoning item"
     );
 
-    let reasoning = reasoning_items[0];
+    let [reasoning] = reasoning_items.as_slice() else {
+        panic!("expected one reasoning item: {reasoning_items:?}");
+    };
     assert_eq!(
         reasoning.encrypted_content,
         Some("enc_secret_reasoning_chain".to_string())
     );
 
     // Verify summary text is included
-    assert_eq!(reasoning.summary.len(), 1);
-    let rs::SummaryPart::SummaryText(summary) = &reasoning.summary[0];
+    let [rs::SummaryPart::SummaryText(summary)] = reasoning.summary.as_slice() else {
+        panic!("expected one summary: {:?}", reasoning.summary);
+    };
     assert_eq!(summary.text, "Let me calculate 2+2...");
 }
 
@@ -731,8 +738,9 @@ fn test_only_encrypted_reasoning_included_in_request() {
         })
         .collect();
 
-    assert_eq!(reasoning_items.len(), 1);
-    let reasoning = reasoning_items[0];
+    let [reasoning] = reasoning_items.as_slice() else {
+        panic!("expected one reasoning item: {reasoning_items:?}");
+    };
 
     assert_eq!(
         reasoning.encrypted_content,
@@ -783,8 +791,8 @@ fn test_conversation_request_with_tools_to_responses_api() {
     let tools = responses_req.tools.unwrap();
     assert_eq!(tools.len(), 1);
 
-    let rs::Tool::Function(ft) = &tools[0] else {
-        panic!("Expected Function tool");
+    let Some(rs::Tool::Function(ft)) = tools.first() else {
+        panic!("Expected Function tool: {tools:?}");
     };
     assert_eq!(ft.name, "search");
     assert_eq!(ft.description, Some("Search the codebase".to_string()));
@@ -983,13 +991,15 @@ fn test_transform_cwd_rewrites_reasoning_sibling() {
     transform_conversation_cwd(&mut items, worktree, root);
 
     assert_eq!(
-        items[1].text_content(),
-        format!("I edited {root}/src/main.rs")
+        items.get(1).map(|i| i.text_content()),
+        Some(format!("I edited {root}/src/main.rs"))
     );
-    let ConversationItem::Reasoning(r) = &items[0] else {
-        panic!("expected Reasoning sibling");
+    let Some(ConversationItem::Reasoning(r)) = items.first() else {
+        panic!("expected Reasoning sibling: {items:?}");
     };
-    let rs::SummaryPart::SummaryText(t) = &r.summary[0];
+    let Some(rs::SummaryPart::SummaryText(t)) = r.summary.first() else {
+        panic!("expected summary text: {:?}", r.summary)
+    };
     assert!(
         !t.text.contains(worktree),
         "reasoning sibling text should be rewritten"
@@ -1034,19 +1044,21 @@ fn test_tool_result_with_images_to_responses_api() {
         })
         .collect();
 
-    assert_eq!(fco_items.len(), 1);
-    assert_eq!(fco_items[0].call_id, "call_1");
+    let [fco] = fco_items.as_slice() else {
+        panic!("expected one function call output: {fco_items:?}");
+    };
+    assert_eq!(fco.call_id, "call_1");
 
     // Should be Content variant, not Text
-    let rs::FunctionCallOutput::Content(parts) = &fco_items[0].output else {
+    let rs::FunctionCallOutput::Content(parts) = &fco.output else {
         panic!("Expected Content output with images, got Text");
     };
-    assert_eq!(parts.len(), 2, "Expected text + 1 image");
+    let [p0, p1] = parts.as_slice() else {
+        panic!("Expected text + 1 image: {parts:?}");
+    };
+    assert!(matches!(p0, rs::InputContent::InputText(t) if t.text == "Read image file: photo.png"));
     assert!(
-        matches!(&parts[0], rs::InputContent::InputText(t) if t.text == "Read image file: photo.png")
-    );
-    assert!(
-        matches!(&parts[1], rs::InputContent::InputImage(img) if img.image_url.as_deref() == Some("data:image/png;base64,iVBOR"))
+        matches!(p1, rs::InputContent::InputImage(img) if img.image_url.as_deref() == Some("data:image/png;base64,iVBOR"))
     );
 }
 
@@ -1257,12 +1269,14 @@ fn upgrade_legacy_reasoning_singular_chat_completions_text_only() {
     let mut seen = std::collections::HashSet::new();
     let siblings = upgrade_legacy_reasoning(&raw, &mut seen);
     assert_eq!(siblings.len(), 1);
-    let ConversationItem::Reasoning(r) = &siblings[0] else {
-        panic!("expected Reasoning sibling");
+    let Some(ConversationItem::Reasoning(r)) = siblings.first() else {
+        panic!("expected Reasoning sibling: {siblings:?}");
     };
     assert_eq!(r.id, "");
     assert!(r.encrypted_content.is_none());
-    let rs::SummaryPart::SummaryText(s) = &r.summary[0];
+    let Some(rs::SummaryPart::SummaryText(s)) = r.summary.first() else {
+        panic!("expected summary text: {:?}", r.summary)
+    };
     assert_eq!(s.text, "step-by-step plain reasoning");
 }
 
@@ -1277,10 +1291,12 @@ fn upgrade_legacy_reasoning_v0_chat_request_message_shape() {
     let mut seen = std::collections::HashSet::new();
     let siblings = upgrade_legacy_reasoning(&raw, &mut seen);
     assert_eq!(siblings.len(), 1);
-    let ConversationItem::Reasoning(r) = &siblings[0] else {
-        panic!("expected Reasoning sibling");
+    let Some(ConversationItem::Reasoning(r)) = siblings.first() else {
+        panic!("expected Reasoning sibling: {siblings:?}");
     };
-    let rs::SummaryPart::SummaryText(s) = &r.summary[0];
+    let Some(rs::SummaryPart::SummaryText(s)) = r.summary.first() else {
+        panic!("expected summary text: {:?}", r.summary)
+    };
     assert_eq!(s.text, "v0-style plain text reasoning");
 }
 
@@ -1349,17 +1365,26 @@ fn patch_reasoning_text_types_preserves_existing_type() {
 
     // Existing discriminators preserved verbatim (no clobber).
     assert_eq!(
-        content[0].get("type").and_then(|t| t.as_str()),
+        content
+            .first()
+            .and_then(|c| c.get("type"))
+            .and_then(|t| t.as_str()),
         Some("reasoning_text"),
     );
     assert_eq!(
-        content[1].get("type").and_then(|t| t.as_str()),
+        content
+            .get(1)
+            .and_then(|c| c.get("type"))
+            .and_then(|t| t.as_str()),
         Some("some_future_variant"),
         "a non-default upstream discriminator must be left untouched",
     );
     // Only the type-less item is filled in.
     assert_eq!(
-        content[2].get("type").and_then(|t| t.as_str()),
+        content
+            .get(2)
+            .and_then(|c| c.get("type"))
+            .and_then(|t| t.as_str()),
         Some("reasoning_text"),
     );
 
@@ -1383,11 +1408,13 @@ fn build_responses_input_single_reasoning_sibling_lands_inline() {
     let summary = summarise_input(&input);
 
     // Expected: [system, user, reasoning, assistant]
-    assert_eq!(summary.len(), 4, "got: {summary:?}");
-    assert_eq!(summary[0], "system:sys");
-    assert_eq!(summary[1], "user:u1");
-    assert_eq!(summary[2], "reasoning:r_abc");
-    assert_eq!(summary[3], "assistant:hi");
+    let [s0, s1, s2, s3] = summary.as_slice() else {
+        panic!("expected four summary items, got: {summary:?}");
+    };
+    assert_eq!(s0, "system:sys");
+    assert_eq!(s1, "user:u1");
+    assert_eq!(s2, "reasoning:r_abc");
+    assert_eq!(s3, "assistant:hi");
 
     // No placeholder strings must appear
     let body_str = serde_json::to_string(&input).unwrap();
@@ -1397,7 +1424,10 @@ fn build_responses_input_single_reasoning_sibling_lands_inline() {
     );
 
     assert_eq!(
-        input[2].get("encrypted_content").and_then(|v| v.as_str()),
+        input
+            .get(2)
+            .and_then(|v| v.get("encrypted_content"))
+            .and_then(|v| v.as_str()),
         Some("enc1"),
     );
 }
@@ -1452,19 +1482,20 @@ fn build_responses_input_multi_turn_reasoning_ordering() {
     assert_eq!(reasoning_positions.len(), 3);
 
     for (i, rp) in reasoning_positions.iter().enumerate() {
+        let Some(user_pos) = user_positions.get(i).copied() else {
+            panic!("missing user position {i}: {user_positions:?}");
+        };
         assert!(
-            *rp > user_positions[i],
-            "reasoning {i} at position {rp} must be after user {i} at position {}. \
+            *rp > user_pos,
+            "reasoning {i} at position {rp} must be after user {i} at position {user_pos}. \
                  Items: {summary:?}",
-            user_positions[i]
         );
-        if i + 1 < user_positions.len() {
+        if let Some(next_user) = user_positions.get(i + 1).copied() {
             assert!(
-                *rp < user_positions[i + 1],
-                "reasoning {i} at position {rp} must be before user {} at position {}. \
+                *rp < next_user,
+                "reasoning {i} at position {rp} must be before user {} at position {next_user}. \
                      Items: {summary:?}",
                 i + 1,
-                user_positions[i + 1]
             );
         }
     }
@@ -1605,7 +1636,9 @@ fn serialized_body_contains_no_placeholder_strings() {
     );
 
     // Both reasoning items must appear inline in the input array.
-    let input = body["input"].as_array().unwrap();
+    let Some(input) = body.get("input").and_then(|v| v.as_array()) else {
+        panic!("expected input array: {body:?}");
+    };
     let reasoning_items: Vec<&serde_json::Value> = input
         .iter()
         .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("reasoning"))

@@ -801,9 +801,7 @@ fn block_viewer_enter_from_fullscreen_child_quotes_into_parent() {
     let mut parent = make_agent();
     parent.prompt.set_text("parent-draft");
     parent.prompt.set_cursor(parent.prompt.text().len());
-    parent
-        .subagent_views
-        .insert("child-sid".into(), Box::new(child));
+    parent.insert_test_child("child-sid".into(), Box::new(child));
     parent.open_subagent_fullscreen("child-sid".into());
     let registry = ActionRegistry::defaults();
     let outcome = parent.handle_input(&Event::Key(enter_key()), &registry);
@@ -1037,4 +1035,167 @@ fn show_bg_task_viewer_restores_resume() {
     viewer.prepare_for_test(Rect::new(0, 0, 80, 24));
     assert_eq!(viewer.list_state.selected_id(), selected_id);
     assert_eq!(viewer.selected_plain_text(), "two");
+}
+
+#[test]
+fn hovering_a_comment_row_reveals_its_close_button() {
+    let mut agent = agent_with_casual_commented_plan();
+    let registry = ActionRegistry::defaults();
+
+    assert!(
+        close_button_areas(&agent).is_empty(),
+        "no `[✗]` while the comment is neither hovered nor selected"
+    );
+
+    hover_comment_row(&mut agent, &registry);
+
+    let buf = render_plan_viewer(&mut agent);
+    let [(id, rect)] = close_button_areas(&agent)[..] else {
+        panic!("hover must cache exactly one `[✗]` rect");
+    };
+    assert_eq!((id, rect.y), (0, comment_screen_row(&agent)));
+
+    let drawn: String = (rect.x..rect.x + rect.width)
+        .map(|x| {
+            buf.cell((x, rect.y))
+                .map(|c| c.symbol().to_owned())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(drawn, crate::glyphs::ballot_x_button());
+}
+
+#[test]
+fn clicking_the_close_button_deletes_without_starting_an_edit() {
+    let mut agent = agent_with_casual_commented_plan();
+    let registry = ActionRegistry::defaults();
+
+    hover_comment_row(&mut agent, &registry);
+    render_plan_viewer(&mut agent);
+    let (_, rect) = *close_button_areas(&agent)
+        .first()
+        .expect("cached `[✗]` rect");
+
+    let _ = agent.handle_input(
+        &mouse(MouseEventKind::Down(MouseButton::Left), rect.x + 1, rect.y),
+        &registry,
+    );
+
+    assert!(
+        agent.plan_comments.is_empty(),
+        "clicking `[✗]` must delete the comment"
+    );
+    assert!(
+        agent.casual_commenting_range.is_none(),
+        "the `[✗]` click must not fall through to click-to-edit"
+    );
+}
+
+#[test]
+fn deleting_the_comment_being_edited_cancels_the_edit() {
+    let mut agent = agent_with_casual_commented_plan();
+    agent.casual_editing_comment_id = Some(0);
+    agent.casual_commenting_range = Some(2..3);
+
+    let _ = agent.delete_plan_comment_by_id(0);
+
+    assert_eq!(agent.casual_editing_comment_id, None);
+    assert!(agent.casual_commenting_range.is_none());
+}
+
+#[test]
+fn deleting_the_approval_comment_being_edited_cancels_the_edit_and_restores_the_prompt() {
+    let mut agent = agent_with_scrollable_plan();
+    {
+        let pav = agent.plan_approval_view.as_mut().expect("approval mounted");
+        pav.comments
+            .push(crate::views::plan_approval_view::PlanComment {
+                id: 7,
+                line_range: 2..3,
+                text: "tighten this".into(),
+            });
+        pav.editing_comment_id = Some(7);
+        pav.commenting_range = Some(2..3);
+        pav.focus = PlanApprovalFocus::Commenting;
+        pav.stashed_feedback_prompt = Some(agent.prompt.stash());
+    }
+    agent.prompt.set_text("edited draft");
+
+    let _ = agent.delete_plan_comment_by_id(7);
+
+    let pav = agent.plan_approval_view.as_ref().expect("approval stays");
+    assert!(pav.comments.is_empty(), "the comment must be deleted");
+    assert_eq!(pav.focus, PlanApprovalFocus::Preview);
+    assert_eq!(
+        agent.prompt.text(),
+        "",
+        "the pre-edit prompt must be restored, not the abandoned draft"
+    );
+}
+
+/// A casual plan preview with one comment.
+/// The final render caches the mouse hit-test rects.
+fn agent_with_casual_commented_plan() -> AgentView {
+    let mut agent = make_agent();
+    let mut viewer =
+        crate::views::file_search::line_viewer::LineViewerState::open_markdown_content(
+            "plan.md",
+            "alpha\nbravo\ncharlie\ndelta\n".to_owned(),
+            None,
+        )
+        .expect("plan content opens the viewer");
+    viewer.kind = crate::views::file_search::line_viewer::LineViewerKind::PlanPreview;
+    viewer.fullscreen = true;
+
+    agent
+        .plan_comments
+        .push(crate::views::plan_approval_view::PlanComment {
+            id: 0,
+            line_range: 2..3,
+            text: "tighten this".into(),
+        });
+    viewer.prepare_layout(POPUP.width, POPUP.height);
+    viewer.rebuild_with_comments(&agent.plan_comments);
+    agent.line_viewer = Some(viewer);
+
+    render_plan_viewer(&mut agent);
+    agent
+}
+
+fn render_plan_viewer(agent: &mut AgentView) -> ratatui::buffer::Buffer {
+    let area = Rect::new(0, 0, 80, 16);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    let comment_count = agent.plan_comments.len();
+
+    crate::views::file_search::line_viewer::render_line_viewer(
+        &mut buf,
+        area,
+        agent.line_viewer.as_mut().expect("viewer open"),
+        std::path::Path::new("/tmp"),
+        &crate::theme::Theme::current(),
+        comment_count,
+    );
+    buf
+}
+
+fn close_button_areas(agent: &AgentView) -> Vec<(u64, Rect)> {
+    agent
+        .line_viewer
+        .as_ref()
+        .and_then(|v| v.plan_ref())
+        .map(|p| p.comment_close_areas.clone())
+        .unwrap_or_default()
+}
+
+fn hover_comment_row(agent: &mut AgentView, registry: &ActionRegistry) {
+    let row = comment_screen_row(agent);
+    let _ = agent.handle_input(&mouse(MouseEventKind::Moved, 10, row), registry);
+}
+
+fn comment_screen_row(agent: &AgentView) -> u16 {
+    let viewer = agent.line_viewer.as_ref().expect("viewer open");
+    let area = viewer.last_popup_area.expect("render caches popup area");
+    (area.y..area.y + area.height)
+        .find(|&row| viewer.comment_id_at_screen_row(row, area) == Some(0))
+        .expect("comment row is visible")
 }

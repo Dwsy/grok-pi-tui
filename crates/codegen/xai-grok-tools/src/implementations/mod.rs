@@ -25,6 +25,12 @@ pub use opencode::{
     OpenCodeBashTool, OpenCodeEditTool, OpenCodeGlobTool, OpenCodeGrepTool, OpenCodeReadTool,
     OpenCodeSkillTool, OpenCodeTodoWriteTool, OpenCodeWriteTool,
 };
+#[cfg(test)]
+#[path = "tool_feature_names_tests.rs"]
+mod tool_feature_names_tests;
+pub fn extra_write_qualified_ids() -> Vec<String> {
+    Vec::new()
+}
 pub use search_tool::{SEARCH_TOOL_NAME, SearchTool};
 pub use use_tool::{USE_TOOL_NAME, UseTool, UseToolInput};
 pub use web_search::WebSearchConfig;

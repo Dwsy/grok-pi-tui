@@ -1818,9 +1818,9 @@ mod tests {
             panic!("resumed run should complete");
         };
         assert_eq!(first, second);
-        assert_eq!(second["spent"], serde_json::json!(123));
-        assert_eq!(second["reserved"], serde_json::json!(100));
-        assert_eq!(second["remaining"], serde_json::json!(777));
+        assert_eq!(second.get("spent"), Some(&serde_json::json!(123)));
+        assert_eq!(second.get("reserved"), Some(&serde_json::json!(100)));
+        assert_eq!(second.get("remaining"), Some(&serde_json::json!(777)));
     }
 
     #[test]

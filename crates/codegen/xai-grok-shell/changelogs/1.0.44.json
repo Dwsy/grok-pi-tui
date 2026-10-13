@@ -1,0 +1,42 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Plan comments** can now be deleted by clicking the [✗] button that appears on hover.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Sandbox enforcement** on macOS now uses the system Seatbelt (`sandbox-exec`) backend.",
+    "breaking_change": false
+  },
+  {
+    "category": "performance",
+    "description": "**Parallel tool calls** that edit the same file now run safely in sequence; unrelated tools stay concurrent.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Models can now advertise multiple context window sizes**; the first listed value is the default.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New `/context-window` slash command** lets you pick a context window size for the current session when the model offers choices.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**`/model` selection now offers context window choices** (when the model supports them) before the effort level.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Shortcuts panel search** now finds entries when you type any of the words in the label, keys, description or help text.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed crashes** when pasting on Windows caused by overlapping clipboard operations.",
+    "breaking_change": false
+  }
+]

@@ -3,6 +3,22 @@ use super::*;
 use xai_grok_tools::implementations::grok_build::task::types::{
     SubagentCompletionSummary, SubagentSnapshot, SubagentSnapshotStatus,
 };
+pub(crate) fn at<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
+pub(crate) fn dq_at<T>(xs: &std::collections::VecDeque<T>, i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
+const JSON_NULL: serde_json::Value = serde_json::Value::Null;
+pub(crate) fn j<'a>(v: &'a serde_json::Value, k: &str) -> &'a serde_json::Value {
+    v.get(k).unwrap_or(&JSON_NULL)
+}
 pub(crate) fn completion_identity(actor: &SessionActor) -> std::rc::Rc<()> {
     actor
         .state
@@ -15,6 +31,19 @@ pub(crate) fn completion_identity(actor: &SessionActor) -> std::rc::Rc<()> {
 }
 pub(crate) fn test_auth_method_id(id: &str) -> crate::agent::auth_method::SharedAuthMethodId {
     crate::agent::auth_method::new_shared_auth_method_id(Some(acp::AuthMethodId::new(id)))
+}
+/// True when `events.jsonl` text `log` has a line of `type == ty` whose parsed JSON satisfies `predicate`.
+pub(crate) fn has_event_with(
+    log: &str,
+    ty: &str,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+) -> bool {
+    log.lines().any(|line| {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        v.get("type").and_then(|t| t.as_str()) == Some(ty) && predicate(&v)
+    })
 }
 #[cfg(test)]
 pub(crate) fn noop_observability_bridge() -> xai_computer_hub_sdk::ObservabilityBridge {
@@ -117,7 +146,7 @@ async fn test_agent_from_config(
     use xai_grok_tools::computer::types::AsyncFileSystem;
     use xai_grok_tools::notification::ToolNotificationHandle;
     use xai_grok_tools::registry::types::SessionContext;
-    let builder = crate::tools::bridge::ToolBridge::get_builder();
+    let builder = crate::tools::bridge::ToolBridge::get_builder().with_mcp_file_input_preparation();
     let fs: std::sync::Arc<dyn AsyncFileSystem> = std::sync::Arc::new(LocalFs);
     let ctx = SessionContext {
         backend,
@@ -292,22 +321,10 @@ async fn create_test_actor_inner(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
-            mtls_cert_dir: None,
             model: "test".to_string(),
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            max_retries: None,
-            rate_limit_retry_threshold: None,
-            api_backend: Default::default(),
-            extra_headers: Default::default(),
-            conversation_group_id: None,
-            query_params: Default::default(),
-            env_http_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(context_window)
                 .expect("test context_window must be non-zero"),
-            reasoning_effort: None,
-            stream_tool_calls: None,
+            ..Default::default()
         },
         chat_persistence,
         chat_event_tx,
@@ -315,8 +332,7 @@ async fn create_test_actor_inner(
     );
     chat_state_handle.record_token_usage(total_tokens);
     let actor = SessionActor {
-        repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::default(
-        ),
+        vcs_root: None,
         transient_retry_enabled: true,
         transient_retries_prompt_total: std::cell::Cell::new(0),
         transient_episode_start: std::cell::Cell::new(None),
@@ -361,25 +377,26 @@ async fn create_test_actor_inner(
         rewind_pending_prompt: std::sync::Mutex::new(None),
         startup_hints: StartupHints::default(),
         forked_tool_override: None,
-        compaction: crate::session::compaction_config::CompactionConfig {
-            threshold_percent: std::cell::Cell::new(threshold_percent),
-            force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_window_override: None,
-            count: std::sync::atomic::AtomicU64::new(0),
-            auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
-            previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
-            verbatim_input: true,
-            tool_choice: crate::util::config::CompactionToolChoice::Auto,
-            prefire: crate::session::compaction_config::PrefireState::default(),
-            prefix_released: std::sync::atomic::AtomicBool::new(false),
-            cancel: Default::default(),
+        compaction: test_compaction_config(threshold_percent),
+        long_reasoning_reminder: crate::session::long_reasoning_reminder::LongReasoningReminder {
+            enabled: false,
+            tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
+            delay: crate::session::long_reasoning_reminder::DEFAULT_DELAY,
         },
+        long_reasoning_turn_state: Default::default(),
         memory: crate::session::memory_state::SessionMemory {
             configured_mode: None,
+            v2_config: Default::default(),
             configured_storage: None,
+            process_disabled: false,
+            config_opt_out: false,
+            v2_legacy_carryover: false,
+            prompt_sync_pending: std::sync::atomic::AtomicBool::new(false),
             flush_config: crate::config::MemoryFlushConfig::default(),
-            is_flushing: std::sync::atomic::AtomicBool::new(false),
+            is_flushing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            capture_worker: std::cell::RefCell::new(None),
+            dream_workers: crate::session::memory_state::V2DreamWorkers::default(),
+            last_capture_failure: std::cell::RefCell::new(None),
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
             storage: std::cell::RefCell::new(None),
             save_on_end: true,
@@ -399,6 +416,7 @@ async fn create_test_actor_inner(
             dream_count: std::sync::atomic::AtomicU64::new(0),
             dream_success_count: std::sync::atomic::AtomicU64::new(0),
             dream_error_count: std::sync::atomic::AtomicU64::new(0),
+            token_totals: Default::default(),
         },
         session_start: std::time::Instant::now(),
         inference_idle_timeout: Duration::from_secs(300),
@@ -466,7 +484,7 @@ async fn create_test_actor_inner(
         pending_classifier_completions: parking_lot::Mutex::new(std::collections::VecDeque::new()),
         goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
         managed_mcp_handle: Default::default(),
-        initial_client_mcp_servers: vec![],
+        initial_client_mcp_servers: Default::default(),
         tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
         mcp_announcements: Default::default(),
         mcp_reminder_mode: McpReminderMode::Delta,
@@ -493,7 +511,6 @@ async fn create_test_actor_inner(
         turn_end_tx: Default::default(),
         client_hooks: Default::default(),
         hook_resolved_workspace_root: String::new(),
-        vcs_kind: xai_grok_workspace::session::git::VcsKind::Git,
         hook_load_errors: std::cell::RefCell::new(Vec::new()),
         plugin_registry: std::cell::RefCell::new(None),
         plugin_registry_handle: None,
@@ -715,7 +732,7 @@ pub(crate) async fn prepare_call(
     let mut deferred = Vec::new();
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        actor.prepare_tool_call(call, &mut deferred),
+        actor.prepare_tool_call(call, &mut deferred, None),
     )
     .await
     .expect("prepare_tool_call must not hang")
@@ -925,12 +942,19 @@ pub(crate) fn spawn_gateway_loop_counting_prompt_hooks(
                         serde_json::from_str(args.request.params.get()).unwrap_or_default();
                     match args.request.method.as_ref() {
                         "x.ai/hooks/event" => {
-                            if params["notificationType"] == "permission_prompt" {
+                            if params.get("notificationType")
+                                == Some(&serde_json::json!("permission_prompt"))
+                            {
                                 permission_prompt_hooks.fetch_add(1, Ordering::SeqCst);
                             }
                         }
                         "x.ai/session_notification" => {
-                            captured.lock().unwrap().push(params["update"].clone());
+                            captured.lock().unwrap().push(
+                                params
+                                    .get("update")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null),
+                            );
                         }
                         _ => {}
                     }
@@ -1095,7 +1119,12 @@ pub(crate) fn spawn_capturing_gateway_loop(
                     if args.request.method.as_ref() == "x.ai/session_notification" {
                         let params: serde_json::Value =
                             serde_json::from_str(args.request.params.get()).unwrap_or_default();
-                        xai_captured.lock().unwrap().push(params["update"].clone());
+                        xai_captured.lock().unwrap().push(
+                            params
+                                .get("update")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                        );
                     }
                 }
                 _ => {}
@@ -1106,6 +1135,12 @@ pub(crate) fn spawn_capturing_gateway_loop(
 }
 #[cfg(test)]
 pub(crate) async fn actor_with_persistence_drain() -> std::sync::Arc<SessionActor> {
+    actor_with_persistence_drain_and_sampler(xai_grok_sampler::SamplerHandle::noop()).await
+}
+#[cfg(test)]
+pub(crate) async fn actor_with_persistence_drain_and_sampler(
+    sampler: xai_grok_sampler::SamplerHandle,
+) -> std::sync::Arc<SessionActor> {
     let (gateway_tx, mut gateway_rx) =
         tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
     tokio::task::spawn_local(async move { while gateway_rx.recv().await.is_some() {} });
@@ -1118,7 +1153,7 @@ pub(crate) async fn actor_with_persistence_drain() -> std::sync::Arc<SessionActo
             }
         }
     });
-    let (actor, _) = create_test_actor_with_terminal(
+    let (mut actor, _) = create_test_actor_with_terminal(
         0,
         256_000,
         85,
@@ -1127,6 +1162,7 @@ pub(crate) async fn actor_with_persistence_drain() -> std::sync::Arc<SessionActo
         Arc::new(DummyTerminal),
     )
     .await;
+    actor.sampler_handle = sampler;
     std::sync::Arc::new(actor)
 }
 /// Fresh per-step transient-retry state for direct `handle_sampling_failure` calls: `step_attempts` used, full turn budget, no open episode.
@@ -1238,4 +1274,24 @@ pub(crate) fn with_run_loop(mut actor: SessionActor) -> (Arc<SessionActor>, Star
         actor
     });
     (actor, startup_tasks)
+}
+/// Default compaction config for test actors; only the trigger threshold varies per test.
+pub(crate) fn test_compaction_config(
+    threshold_percent: u8,
+) -> crate::session::compaction_config::CompactionConfig {
+    crate::session::compaction_config::CompactionConfig {
+        threshold_percent: std::cell::Cell::new(threshold_percent),
+        force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        context_window_override: None,
+        context_window_selection: Default::default(),
+        count: std::sync::atomic::AtomicU64::new(0),
+        auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
+        previous_model: std::cell::Cell::new(None),
+        compaction_mode: xai_chat_state::CompactionMode::Transcript,
+        verbatim_input: true,
+        tool_choice: crate::util::config::CompactionToolChoice::Auto,
+        prefire: crate::session::compaction_config::PrefireState::default(),
+        prefix_released: std::sync::atomic::AtomicBool::new(false),
+        cancel: Default::default(),
+    }
 }

@@ -17,7 +17,8 @@ mod persistence {
 const MAX_FILE_TOKENS: usize = 5_000;
 /// 8-char content hash for dedup and collision avoidance.
 fn content_hash(content: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(content))[..8].to_string()
+    let hex = format!("{:x}", Sha256::digest(content));
+    hex.get(..8).unwrap_or(&hex).to_string()
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileReference {
@@ -60,7 +61,7 @@ pub async fn render_file_reference(file_ref: FileReference, is_cursor: bool) -> 
             let line_offset = start_line.unwrap_or(1);
             let start_idx = (line_offset.saturating_sub(1)).min(lines.len());
             let end_idx = end_line.unwrap_or(lines.len()).min(lines.len());
-            let sliced_lines = &lines[start_idx..end_idx];
+            let sliced_lines = lines.get(start_idx..end_idx).unwrap_or(&[]);
             let file_content = sliced_lines
                 .iter()
                 .enumerate()

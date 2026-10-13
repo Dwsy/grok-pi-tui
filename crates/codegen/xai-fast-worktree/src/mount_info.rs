@@ -221,10 +221,10 @@ fn parse_line(line: &str) -> Option<MountEntry> {
         return None;
     }
 
-    let mount_id = parts[0].parse::<u32>().ok()?;
-    let parent_id = parts[1].parse::<u32>().ok()?;
-    let root = parts[3].to_string();
-    let mount_point = PathBuf::from(unescape_mountinfo(parts[4]));
+    let mount_id = parts.first()?.parse::<u32>().ok()?;
+    let parent_id = parts.get(1)?.parse::<u32>().ok()?;
+    let root = parts.get(3)?.to_string();
+    let mount_point = PathBuf::from(unescape_mountinfo(parts.get(4).copied()?));
 
     // Find the `-` separator.
     let sep_idx = parts.iter().position(|&p| p == "-")?;
@@ -261,18 +261,20 @@ fn unescape_mountinfo(s: &str) -> String {
     let mut i = 0;
 
     while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 3 < bytes.len() {
-            let o1 = bytes[i + 1];
-            let o2 = bytes[i + 2];
-            let o3 = bytes[i + 3];
-            if o1.is_ascii_digit() && o2.is_ascii_digit() && o3.is_ascii_digit() {
-                let val = (o1 - b'0') * 64 + (o2 - b'0') * 8 + (o3 - b'0');
-                result.push(val as char);
-                i += 4;
-                continue;
-            }
+        if bytes.get(i).copied() == Some(b'\\')
+            && let Some(&[o1, o2, o3]) = bytes.get(i + 1..i + 4)
+            && o1.is_ascii_digit()
+            && o2.is_ascii_digit()
+            && o3.is_ascii_digit()
+        {
+            let val = (o1 - b'0') * 64 + (o2 - b'0') * 8 + (o3 - b'0');
+            result.push(val as char);
+            i += 4;
+            continue;
         }
-        result.push(bytes[i] as char);
+        if let Some(&b) = bytes.get(i) {
+            result.push(b as char);
+        }
         i += 1;
     }
 

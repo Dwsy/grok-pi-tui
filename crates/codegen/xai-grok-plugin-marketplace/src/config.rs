@@ -267,6 +267,13 @@ pub fn load_extra_sources_from_settings_in(
 mod tests {
     use super::*;
 
+    fn nth<T>(xs: &[T], i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected item {i}, got {} items", xs.len());
+        };
+        x
+    }
+
     /// Serializes every test that touches the process-global `GROK_MARKETPLACE_REQUIRE_SHA`, so they cannot race each other.
     static REQUIRE_SHA_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -282,9 +289,9 @@ mod tests {
         .unwrap();
         let sources = load_sources(&config);
         assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].name, "Local Dev");
+        assert_eq!(nth(&sources, 0).name, "Local Dev");
         assert!(
-            matches!(&sources[0].kind, SourceKind::Local { path } if path == &PathBuf::from("/home/user/plugins"))
+            matches!(&nth(&sources, 0).kind, SourceKind::Local { path } if path == &PathBuf::from("/home/user/plugins"))
         );
     }
 
@@ -301,9 +308,9 @@ mod tests {
         .unwrap();
         let sources = load_sources(&config);
         assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].name, "xAI Official");
+        assert_eq!(nth(&sources, 0).name, "xAI Official");
         assert!(
-            matches!(&sources[0].kind, SourceKind::Git { url, branch } if url.contains("xai-org") && branch.as_deref() == Some("main"))
+            matches!(&nth(&sources, 0).kind, SourceKind::Git { url, branch } if url.contains("xai-org") && branch.as_deref() == Some("main"))
         );
     }
 
@@ -415,9 +422,9 @@ mod tests {
         let mut sources = Vec::new();
         extract_marketplace_entries(marketplaces, &mut seen, &mut sources);
         assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].name, "my-marketplace");
+        assert_eq!(nth(&sources, 0).name, "my-marketplace");
         assert!(
-            matches!(&sources[0].kind, SourceKind::Git { url, .. } if url == "https://github.com/anthropics/claude-plugins-official.git")
+            matches!(&nth(&sources, 0).kind, SourceKind::Git { url, .. } if url == "https://github.com/anthropics/claude-plugins-official.git")
         );
     }
 
@@ -440,7 +447,7 @@ mod tests {
         extract_marketplace_entries(marketplaces, &mut seen, &mut sources);
         assert_eq!(sources.len(), 1);
         assert!(
-            matches!(&sources[0].kind, SourceKind::Git { url, .. } if url == "git@github.com:org/repo.git")
+            matches!(&nth(&sources, 0).kind, SourceKind::Git { url, .. } if url == "git@github.com:org/repo.git")
         );
     }
 

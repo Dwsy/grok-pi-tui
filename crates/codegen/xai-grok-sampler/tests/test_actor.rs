@@ -13,7 +13,6 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
 use futures_util::stream::{self, StreamExt};
-use indexmap::IndexMap;
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -24,7 +23,7 @@ use xai_grok_sampler::{
 };
 use xai_grok_sampling_types::{
     ConversationItem, ConversationRequest, DoomLoopRecoveryPolicy, INVALID_IMAGE_ERROR_CODE,
-    UserItem,
+    SyntheticReason, UserItem,
 };
 use xai_grok_test_support::{SseEvent, sse};
 
@@ -71,38 +70,13 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
     SamplerConfig {
         api_key: Some("test-key".into()),
         base_url,
-        mtls_cert_dir: None,
         model: model.into(),
         max_completion_tokens: Some(1024),
-        temperature: None,
-        top_p: None,
-        api_backend: ApiBackend::ChatCompletions,
-        auth_scheme: Default::default(),
-        extra_headers: IndexMap::new(),
-        extra_response_includes: Vec::new(),
-        query_params: IndexMap::new(),
-        env_http_headers: IndexMap::new(),
         context_window: 128_000,
-        force_http1: false,
         // Keep retries minimal so tests don't take forever.
         max_retries: Some(2),
-        rate_limit_retry_threshold: None,
-        stream_tool_calls: false,
         idle_timeout_secs: Some(30),
-        reasoning_effort: None,
-        origin_client: None,
-        client_identifier: None,
-        deployment_id: None,
-        user_id: None,
-        conversation_group_id: None,
-        client_version: None,
-        attribution_callback: None,
-        bearer_resolver: None,
-        supports_backend_search: false,
-        compactions_remaining: None,
-        compaction_at_tokens: None,
-        doom_loop_recovery: None,
-        header_injector: None,
+        ..Default::default()
     }
 }
 
@@ -112,7 +86,7 @@ fn user_request(text: &str) -> ConversationRequest {
             content: vec![xai_grok_sampling_types::ContentPart::Text {
                 text: std::sync::Arc::<str>::from(text),
             }],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         })],
         ..Default::default()
@@ -309,9 +283,52 @@ async fn cancel_in_flight_request_terminates_task() {
     if let SamplingEvent::Failed { error, .. } = failed {
         assert!(error.message.contains("cancelled"));
     }
+    assert_eq!(handle.active_count().await, 0);
+    server.shutdown();
+}
 
-    // Wait briefly for the task to clean up.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_submit_and_collect_fails_the_request_without_calling_cancel() {
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            let stream = stream::iter(vec![Ok::<_, std::convert::Infallible>(text_chunk_event(
+                "starting", false,
+            ))])
+            .chain(stream::pending());
+            Sse::new(stream)
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let cfg = test_config(server.base_url(), "test-model");
+    let handle = SamplerActor::spawn(cfg, RetryPolicy::default(), event_tx);
+    let rid = RequestId::from("req-drop");
+    let collect = {
+        let handle = handle.clone();
+        let rid = rid.clone();
+        tokio::spawn(async move {
+            let _ = handle.submit_and_collect(rid, user_request("hi")).await;
+        })
+    };
+    let _ = await_event_matching(
+        &mut event_rx,
+        |e| matches!(e, SamplingEvent::FirstToken { .. }),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("first token");
+    collect.abort();
+    let failed = await_event_matching(
+        &mut event_rx,
+        |e| matches!(e, SamplingEvent::Failed { .. }),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Failed event after the collect future is dropped");
+    if let SamplingEvent::Failed { error, .. } = failed {
+        assert!(error.message.contains("cancelled"));
+    }
     assert_eq!(handle.active_count().await, 0);
     server.shutdown();
 }

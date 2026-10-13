@@ -1,8 +1,17 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    unreachable_code,
+    dead_code
+)]
+#![deny(clippy::indexing_slicing)]
 pub mod auto_update;
 pub mod pi_update;
+mod cleanup_downloads;
 pub mod version;
 mod version_policy;
-
+mod winget;
 pub use auto_update::UpdateStatus;
 pub use pi_update::{
     PiUpdateChannel, PiUpdateOptions, check_pi_update_background, fetch_pi_latest_version,

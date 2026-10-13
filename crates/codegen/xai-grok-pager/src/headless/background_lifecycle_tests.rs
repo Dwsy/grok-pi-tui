@@ -90,6 +90,13 @@ fn duplicate_backgrounded_after_completion_stays_dead() {
     );
 }
 
+fn s1(state: &super::BackgroundLifecycleState) -> &crate::app::subagent::SubagentLifecycleState {
+    let Some(s) = state.subagents.get("s1") else {
+        panic!("missing subagent s1: {:?}", state.subagents.keys());
+    };
+    s
+}
+
 fn spawn_event(attempt_id: &str, event_seq: u64) -> super::ExtEvent {
     super::ExtEvent::SubagentSpawned {
         subagent_id: "s1".into(),
@@ -138,10 +145,7 @@ fn newer_subagent_spawn_after_finish_rearms_pending() {
 
     super::track_background_lifecycle(spawn_event("at1.two", 3), &mut pending, &mut completed);
     assert!(pending.contains(&work));
-    assert_eq!(
-        completed.subagents["s1"].current_attempt_id(),
-        Some("at1.two")
-    );
+    assert_eq!(s1(&completed).current_attempt_id(), Some("at1.two"));
     super::track_background_lifecycle(
         super::ExtEvent::SubagentFinished {
             subagent_id: "s1".into(),
@@ -173,7 +177,7 @@ fn newer_subagent_spawn_after_finish_rearms_pending() {
     );
     super::track_background_lifecycle(spawn_event("at1.two", 3), &mut pending, &mut completed);
     assert!(pending.is_empty());
-    assert_eq!(completed.subagents["s1"].last_event_seq(), Some(4));
+    assert_eq!(s1(&completed).last_event_seq(), Some(4));
 }
 
 #[test]
@@ -194,9 +198,9 @@ fn retained_prior_finish_records_without_clearing_current_pending() {
         &mut state,
     );
 
-    assert!(state.subagents["s1"].is_attempt_finished("at1.one"));
-    assert_eq!(state.subagents["s1"].current_attempt_id(), Some("at1.two"));
-    assert!(!state.subagents["s1"].is_finished());
+    assert!(s1(&state).is_attempt_finished("at1.one"));
+    assert_eq!(s1(&state).current_attempt_id(), Some("at1.two"));
+    assert!(!s1(&state).is_finished());
     assert!(pending.contains(&work));
 }
 
@@ -217,13 +221,11 @@ fn exact_pending_finish_discards_legacy_before_next_spawn() {
     );
     super::track_background_lifecycle(spawn_event("at1.one", 1), &mut pending, &mut state);
 
-    assert!(state.subagents["s1"].is_attempt_finished("at1.one"));
-    assert!(
-        !state.subagents["s1"].retains_attempt(&crate::app::subagent::SubagentAttemptKey::Legacy)
-    );
+    assert!(s1(&state).is_attempt_finished("at1.one"));
+    assert!(!s1(&state).retains_attempt(&crate::app::subagent::SubagentAttemptKey::Legacy));
     super::track_background_lifecycle(spawn_event("at1.two", 4), &mut pending, &mut state);
-    assert_eq!(state.subagents["s1"].current_attempt_id(), Some("at1.two"));
-    assert!(!state.subagents["s1"].is_finished());
+    assert_eq!(s1(&state).current_attempt_id(), Some("at1.two"));
+    assert!(!s1(&state).is_finished());
     assert!(pending.contains(&work));
 }
 
@@ -235,8 +237,8 @@ fn legacy_finish_before_typed_spawn_does_not_leave_pending_work() {
 
     super::track_background_lifecycle(spawn_event("at1.one", 1), &mut pending, &mut state);
 
-    assert_eq!(state.subagents["s1"].current_attempt_id(), Some("at1.one"));
-    assert!(state.subagents["s1"].is_finished());
+    assert_eq!(s1(&state).current_attempt_id(), Some("at1.one"));
+    assert!(s1(&state).is_finished());
     assert!(pending.is_empty());
 }
 
@@ -250,9 +252,9 @@ fn legacy_finish_before_two_typed_spawns_rearms_only_the_second() {
 
     super::track_background_lifecycle(spawn_event("at1.two", 3), &mut pending, &mut state);
 
-    assert!(state.subagents["s1"].is_attempt_finished("at1.one"));
-    assert_eq!(state.subagents["s1"].current_attempt_id(), Some("at1.two"));
-    assert!(!state.subagents["s1"].is_finished());
+    assert!(s1(&state).is_attempt_finished("at1.one"));
+    assert_eq!(s1(&state).current_attempt_id(), Some("at1.two"));
+    assert!(!s1(&state).is_finished());
     assert!(pending.contains(&work));
 }
 
@@ -266,7 +268,7 @@ fn legacy_finish_closes_the_only_typed_running_attempt() {
 
     super::track_background_lifecycle(legacy_finish_event(Some(2)), &mut pending, &mut state);
 
-    assert!(state.subagents["s1"].is_finished());
+    assert!(s1(&state).is_finished());
     assert!(pending.is_empty());
 }
 
@@ -290,8 +292,8 @@ fn legacy_finish_closes_current_typed_attempt_after_wake() {
 
     super::track_background_lifecycle(legacy_finish_event(Some(4)), &mut pending, &mut state);
 
-    assert_eq!(state.subagents["s1"].current_attempt_id(), Some("at1.two"));
-    assert!(state.subagents["s1"].is_finished());
+    assert_eq!(s1(&state).current_attempt_id(), Some("at1.two"));
+    assert!(s1(&state).is_finished());
     assert!(pending.is_empty());
 }
 
@@ -312,12 +314,10 @@ fn legacy_finish_after_typed_completion_is_dropped() {
 
     super::track_background_lifecycle(legacy_finish_event(Some(3)), &mut pending, &mut state);
 
-    assert_eq!(state.subagents["s1"].current_attempt_id(), Some("at1.one"));
-    assert!(state.subagents["s1"].is_finished());
-    assert_eq!(state.subagents["s1"].last_event_seq(), Some(2));
-    assert!(
-        !state.subagents["s1"].retains_attempt(&crate::app::subagent::SubagentAttemptKey::Legacy)
-    );
+    assert_eq!(s1(&state).current_attempt_id(), Some("at1.one"));
+    assert!(s1(&state).is_finished());
+    assert_eq!(s1(&state).last_event_seq(), Some(2));
+    assert!(!s1(&state).retains_attempt(&crate::app::subagent::SubagentAttemptKey::Legacy));
     assert!(pending.is_empty());
 }
 
@@ -329,7 +329,7 @@ fn finished_legacy_duplicate_spawn_does_not_rearm_pending() {
     super::track_background_lifecycle(legacy_finish_event(None), &mut pending, &mut state);
     super::track_background_lifecycle(legacy_spawn_event(None), &mut pending, &mut state);
 
-    assert_eq!(state.subagents["s1"].current_attempt_id(), None);
-    assert!(state.subagents["s1"].is_finished());
+    assert_eq!(s1(&state).current_attempt_id(), None);
+    assert!(s1(&state).is_finished());
     assert!(pending.is_empty());
 }

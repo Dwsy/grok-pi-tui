@@ -229,7 +229,12 @@ mod tests {
             loaded.announced_failed_servers.get("sentry"),
             Some(&AnnouncedFailure::AuthRequired)
         );
-        let fp = &loaded.mcp_server_fingerprints["github"];
+        let Some(fp) = loaded.mcp_server_fingerprints.get("github") else {
+            panic!(
+                "expected github fingerprint: {:?}",
+                loaded.mcp_server_fingerprints
+            );
+        };
         assert_eq!(fp.tool_count, 5);
         assert_eq!(fp.description_hash, 12345678);
         assert_eq!(fp.tool_names_hash, 87654321);

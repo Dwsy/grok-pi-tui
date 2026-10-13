@@ -78,7 +78,7 @@ fn mark_dead_and_list_filter() {
     // Default filter excludes dead
     let alive = db.list(&ListFilter::default()).unwrap();
     assert_eq!(alive.len(), 1);
-    assert_eq!(alive[0].id, "live");
+    assert_eq!(alive.first().map(|r| r.id.as_str()), Some("live"));
 
     // include_dead shows both
     let all = db
@@ -110,7 +110,7 @@ fn list_filter_by_kind() {
         })
         .unwrap();
     assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].id, "s1");
+    assert_eq!(sessions.first().map(|r| r.id.as_str()), Some("s1"));
 
     let pools = db
         .list(&ListFilter {
@@ -119,7 +119,7 @@ fn list_filter_by_kind() {
         })
         .unwrap();
     assert_eq!(pools.len(), 1);
-    assert_eq!(pools[0].id, "p1");
+    assert_eq!(pools.first().map(|r| r.id.as_str()), Some("p1"));
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn list_filter_by_repo() {
         })
         .unwrap();
     assert_eq!(matched.len(), 1);
-    assert_eq!(matched[0].id, "a");
+    assert_eq!(matched.first().map(|r| r.id.as_str()), Some("a"));
 }
 
 #[test]
@@ -300,9 +300,12 @@ fn list_ordered_by_created_at_desc() {
 
     let all = db.list(&ListFilter::default()).unwrap();
     assert_eq!(all.len(), 3);
-    assert_eq!(all[0].id, "new");
-    assert_eq!(all[1].id, "mid");
-    assert_eq!(all[2].id, "old");
+    let [new, mid, old] = all.as_slice() else {
+        panic!("expected three records: {all:?}");
+    };
+    assert_eq!(new.id, "new");
+    assert_eq!(mid.id, "mid");
+    assert_eq!(old.id, "old");
 }
 
 /// The derived id keeps the basename (minus any `worktree-` prefix) and appends
@@ -440,7 +443,7 @@ fn list_filter_by_source_repo() {
     };
     let results = db.list(&filter).unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].id, "wt-3");
+    assert_eq!(results.first().map(|r| r.id.as_str()), Some("wt-3"));
 
     // Filter by nonexistent source_repo: should get 0
     let filter = ListFilter {
@@ -708,7 +711,7 @@ fn open_read_only_never_creates_and_reads_existing() {
     };
     let recs = ro.list(&ListFilter::default()).unwrap();
     assert_eq!(recs.len(), 1);
-    assert_eq!(recs[0].label(), Some("lbl"));
+    assert_eq!(recs.first().and_then(|r| r.label()), Some("lbl"));
 }
 
 #[test]

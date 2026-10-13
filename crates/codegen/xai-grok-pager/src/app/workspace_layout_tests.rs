@@ -55,10 +55,13 @@ fn view_applies_layout_without_mutating_committed_snapshot() {
 
     assert_eq!(committed, original);
     assert_eq!(view.grouping, WorkspaceGrouping::Directory);
-    assert_eq!(view.members[0].pin_rank, Some(RANK_GAP));
-    assert_eq!(view.members[0].order_rank, Some(2 * RANK_GAP));
-    assert_eq!(view.members[1].order_rank, Some(RANK_GAP));
-    assert_eq!(view.members[2].order_rank, None);
+    let [a, b, c] = view.members.as_slice() else {
+        panic!("expected 3 members: {:?}", view.members);
+    };
+    assert_eq!(a.pin_rank, Some(RANK_GAP));
+    assert_eq!(a.order_rank, Some(2 * RANK_GAP));
+    assert_eq!(b.order_rank, Some(RANK_GAP));
+    assert_eq!(c.order_rank, None);
 }
 
 #[test]
@@ -84,10 +87,22 @@ fn committed_values_reconcile_to_an_empty_idempotent_patch() {
     overlay.set_grouping(LayoutGrouping::Directory);
     let dispatched = overlay.plan(&committed, &HashSet::new());
 
-    committed.members[0].pin_rank = Some(RANK_GAP);
-    committed.members[0].order_rank = Some(2 * RANK_GAP);
-    committed.members[1].order_rank = Some(RANK_GAP);
-    committed.members[2].order_rank = None;
+    if let Some(m) = committed.members.get_mut(0) {
+        m.pin_rank = Some(RANK_GAP);
+        m.order_rank = Some(2 * RANK_GAP);
+    } else {
+        panic!("expected member 0: {:?}", committed.members);
+    }
+    if let Some(m) = committed.members.get_mut(1) {
+        m.order_rank = Some(RANK_GAP);
+    } else {
+        panic!("expected member 1: {:?}", committed.members);
+    }
+    if let Some(m) = committed.members.get_mut(2) {
+        m.order_rank = None;
+    } else {
+        panic!("expected member 2: {:?}", committed.members);
+    }
     committed.grouping = Grouping::Directory;
     overlay.acknowledge(&dispatched);
     overlay.reconcile_committed(&committed);
@@ -106,10 +121,11 @@ fn exact_acknowledgement_preserves_newer_same_field_gesture() {
 
     overlay.acknowledge(&dispatched);
 
-    assert_eq!(
-        overlay.view(&committed, &HashSet::new()).members[0].pin_rank,
-        None
-    );
+    let view = overlay.view(&committed, &HashSet::new());
+    let Some(m) = view.members.first() else {
+        panic!("expected member: {:?}", view.members);
+    };
+    assert_eq!(m.pin_rank, None);
     assert!(!overlay.is_empty());
 }
 
@@ -160,7 +176,10 @@ fn missing_member_rebase_prunes_only_affected_intent() {
 
     let patch = overlay.plan(&committed, &HashSet::new());
     assert_eq!(patch.pin_assignments.len(), 1);
-    assert_eq!(patch.pin_assignments[0].key, key("a"));
+    assert_eq!(
+        patch.pin_assignments.first().map(|a| &a.key),
+        Some(&key("a"))
+    );
     assert_eq!(patch.manual_order, Some(vec![key("b")]));
 }
 

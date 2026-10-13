@@ -93,13 +93,13 @@ fn bar_key_segments(hint: &HintItem) -> Vec<BarKeySeg> {
         }];
     }
 
-    let shared = hint
-        .keys
-        .iter()
-        .all(|k| k.modifiers == hint.keys[0].modifiers);
+    let Some(first) = hint.keys.first() else {
+        return Vec::new();
+    };
+    let shared = hint.keys.iter().all(|k| k.modifiers == first.modifiers);
     let mut segs = Vec::new();
     if shared {
-        let prefix = hint.keys[0].modifiers_prefix();
+        let prefix = first.modifiers_prefix();
         if !prefix.is_empty() {
             segs.push(BarKeySeg {
                 text: prefix,
@@ -391,9 +391,12 @@ mod tests {
         };
         let out = compute_effective_hints(&hints, Some(&cfg));
         assert_eq!(out.len(), 3); // two visible hints plus the help hint
-        assert_eq!(out[0].label, "a");
-        assert_eq!(out[1].label, "b");
-        assert_eq!(out[2].label, "shortcuts");
+        let [a, b, help_row] = out.as_slice() else {
+            panic!("expected two visible hints plus help: {out:?}");
+        };
+        assert_eq!(a.label, "a");
+        assert_eq!(b.label, "b");
+        assert_eq!(help_row.label, "shortcuts");
     }
 
     #[test]
@@ -406,7 +409,7 @@ mod tests {
         };
         let out = compute_effective_hints(&hints, Some(&cfg));
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].label, "shortcuts");
+        assert_eq!(out.first().map(|h| h.label.as_ref()), Some("shortcuts"));
     }
 
     #[test]

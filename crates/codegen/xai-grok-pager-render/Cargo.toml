@@ -77,6 +77,9 @@ xai-grok-gboom = { path = "../xai-grok-gboom" }
 # Base64 encoding for image data
 base64 = { workspace = true }
 
+# Content fingerprint of pasted rasters for the clipboard_image_paste event
+blake3 = { workspace = true }
+
 # Image decoding/resizing for clipboard image validation before send
 image = { workspace = true, features = ["png", "jpeg", "tiff", "gif", "webp"] }
 
@@ -110,6 +113,8 @@ windows-sys = { version = "0.59", features = [
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+# `cfg(test)` does not enable features on dependencies; `EnvVarGuard` needs the feature on explicitly.
+xai-grok-env = { workspace = true, features = ["test-support"] }
 
 [features]
 # Exposes `#[cfg(test)]` test-only helpers (mock setters, test guards,

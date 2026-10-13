@@ -660,7 +660,10 @@ fn render_wrapped_text(
             } else {
                 let cut =
                     crate::render::line_utils::byte_offset_at_width(line, w.saturating_sub(1));
-                (&line[..cut], x + line[..cut].width() as u16)
+                let Some(head) = line.get(..cut) else {
+                    continue;
+                };
+                (head, x + head.width() as u16)
             };
             buf.set_span(x, row, &Span::styled(head, style), width);
             buf.set_span(ell_x, row, &Span::styled("…", ell_style), 1);

@@ -60,18 +60,19 @@ pub(crate) fn validate_contract_output(
     }
     let text = final_text.trim();
     let mut candidates: Vec<&str> = Vec::new();
-    if let Some(start) = text.rfind("```json") {
-        let body = &text[start + "```json".len()..];
-        if let Some(end) = body.find("```") {
-            candidates.push(body[..end].trim());
-        }
+    if let Some(start) = text.rfind("```json")
+        && let Some(body) = text.get(start + "```json".len()..)
+        && let Some(end) = body.find("```")
+    {
+        candidates.push(body.get(..end).unwrap_or("").trim());
     }
     candidates.push(text);
     for (open, close) in [('{', '}'), ('[', ']')] {
         if let (Some(s), Some(e)) = (text.find(open), text.rfind(close))
             && s < e
+            && let Some(slice) = text.get(s..=e)
         {
-            candidates.push(text[s..=e].trim());
+            candidates.push(slice.trim());
         }
     }
     let mut parse_err = String::new();

@@ -26,6 +26,9 @@ async fn plan_revise_empty_enter_does_not_approve() {
     harness
         .wait_for_text(MOCK_RESPONSE_SENTINEL, Duration::from_secs(40))
         .expect("first turn streams");
+    harness
+        .wait_for_turn_idle(Duration::from_secs(20))
+        .expect("first turn idle");
 
     let dir = session_dir(&content, &mut harness);
     std::fs::write(dir.join("plan.md"), plan_body("REV", 8)).expect("seed plan.md");
@@ -35,29 +38,50 @@ async fn plan_revise_empty_enter_does_not_approve() {
         .inject_keys(b"present the plan\r")
         .expect("submit plan prompt");
     harness
-        .wait_for_text("request changes", Duration::from_secs(60))
+        .wait_for_text("Waiting on plan approval", Duration::from_secs(60))
         .unwrap_or_else(|e| {
             panic!(
                 "plan approval never parked: {e}\nscreen:\n{}",
                 harness.screen_contents()
             )
         });
+    // Preview `s` is a no-op until the line-viewer key path is live. A fixed
+    // sleep after first paint raced suite load: Enter on Preview opens comment
+    // mode instead of toasting, so wait until the preview chrome is stable.
+    harness
+        .wait_until_stable(
+            "plan approval preview interactive",
+            Duration::from_secs(20),
+            Duration::from_millis(250),
+            |h| h.contains_text("request changes") && h.contains_text("Waiting on plan approval"),
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "plan approval preview never settled: {e}\nscreen:\n{}",
+                harness.screen_contents()
+            )
+        });
 
     harness.inject_keys(b"s").expect("focus revise prompt");
-    for _ in 0..5 {
-        harness.update(Duration::from_millis(100));
-    }
+    harness
+        .wait_for_text("a:approve", Duration::from_secs(10))
+        .unwrap_or_else(|e| {
+            panic!(
+                "revise prompt never focused after s: {e}\nscreen:\n{}",
+                harness.screen_contents()
+            )
+        });
 
     harness.inject_keys(b"\r").expect("empty Enter");
-    for _ in 0..10 {
-        harness.update(Duration::from_millis(100));
-    }
+    harness
+        .wait_for_text("Type revision notes", Duration::from_secs(10))
+        .unwrap_or_else(|e| {
+            panic!(
+                "empty Enter must toast a nudge, not approve: {e}\nscreen:\n{}",
+                harness.screen_contents()
+            )
+        });
     let screen = harness.screen_contents();
-
-    assert!(
-        screen.contains("Type revision notes, or press a to approve."),
-        "empty Enter must toast a nudge, not approve; screen:\n{screen}"
-    );
     assert!(
         screen.contains("request changes") && screen.contains("Waiting on plan approval"),
         "empty Enter must leave plan approval open; screen:\n{screen}"

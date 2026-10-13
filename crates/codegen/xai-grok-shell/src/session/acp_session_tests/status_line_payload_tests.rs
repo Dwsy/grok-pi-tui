@@ -38,7 +38,7 @@ async fn the_payload_carries_real_values_or_no_field_at_all() {
 
             let value = serde_json::to_value(ctx).unwrap();
             assert_no_placeholders(&value, "payload");
-            assert_eq!(value["schema_version"], 1);
+            assert_eq!(value.get("schema_version"), Some(&serde_json::json!(1)));
         })
         .await;
 }

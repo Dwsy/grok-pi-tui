@@ -172,7 +172,7 @@ pub(crate) fn prefix_within_encoded_len(text: &str, max: usize) -> &str {
     for (index, character) in text.char_indices() {
         used += encoded_char_len(character);
         if used > max {
-            return &text[..index];
+            return text.get(..index).unwrap_or("");
         }
     }
     text
@@ -231,11 +231,15 @@ fn shrink_record(record: &mut Value, budget: usize) -> Option<FittedFrame> {
         .unwrap_or_default()
         .to_owned();
 
-    snapshot["output"] = Value::String(String::new());
+    if let Some(obj) = snapshot.as_object_mut() {
+        obj.insert("output".to_string(), Value::String(String::new()));
+    }
     for field in COMPACTED_FIELDS {
         if let Some(text) = snapshot.get(field).and_then(Value::as_str) {
             let capped = prefix_within_encoded_len(text, FIELD_MAX_BYTES).to_owned();
-            snapshot[field] = Value::String(capped);
+            if let Some(obj) = snapshot.as_object_mut() {
+                obj.insert(field.to_string(), Value::String(capped));
+            }
         }
     }
 
@@ -243,9 +247,11 @@ fn shrink_record(record: &mut Value, budget: usize) -> Option<FittedFrame> {
     let (fitted, cut) = fit_output(&output, std::path::Path::new(&output_file), room);
 
     let snapshot = record.get_mut("update")?.get_mut("task_snapshot")?;
-    snapshot["output"] = Value::String(fitted);
-    if cut {
-        snapshot["truncated"] = Value::Bool(true);
+    if let Some(obj) = snapshot.as_object_mut() {
+        obj.insert("output".to_string(), Value::String(fitted));
+        if cut {
+            obj.insert("truncated".to_string(), Value::Bool(true));
+        }
     }
 
     if let Some(refit) = within(serde_json::value::to_raw_value(&record).ok()?, budget) {
@@ -254,11 +260,15 @@ fn shrink_record(record: &mut Value, budget: usize) -> Option<FittedFrame> {
 
     // The same last resort as `encode`: no output, and the path capped too.
     let snapshot = record.get_mut("update")?.get_mut("task_snapshot")?;
-    snapshot["output"] = Value::String(String::new());
-    snapshot["truncated"] = Value::Bool(true);
+    if let Some(obj) = snapshot.as_object_mut() {
+        obj.insert("output".to_string(), Value::String(String::new()));
+        obj.insert("truncated".to_string(), Value::Bool(true));
+    }
     if let Some(path) = snapshot.get("output_file").and_then(Value::as_str) {
         let capped = prefix_within_encoded_len(path, FIELD_MAX_BYTES).to_owned();
-        snapshot["output_file"] = Value::String(capped);
+        if let Some(obj) = snapshot.as_object_mut() {
+            obj.insert("output_file".to_string(), Value::String(capped));
+        }
     }
     within(serde_json::value::to_raw_value(&record).ok()?, budget)
 }

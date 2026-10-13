@@ -16,7 +16,7 @@ pub struct AutoCommand;
 impl SlashCommand for AutoCommand {
     slash_meta! {
         name: "auto",
-        description: "Toggle auto mode (classifier approves safe tools)",
+        description: "Toggle Auto-review (classifier approves safe tools)",
         usage: "/auto",
     }
 

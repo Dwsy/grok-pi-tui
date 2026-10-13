@@ -27,6 +27,8 @@
 //! code-graph stats /path/to/repo
 //! ```
 
+#![deny(clippy::indexing_slicing)]
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 

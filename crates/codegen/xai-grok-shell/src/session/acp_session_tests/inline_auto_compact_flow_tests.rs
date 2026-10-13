@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use crate::agent::config::{EndpointsConfig, ModelEntry};
 use crate::terminal::AsyncTerminalRunner;
 use crate::terminal::runner::{TerminalError, TerminalRunRequest, TerminalRunResult};
 use tokio::sync::mpsc;
@@ -52,22 +53,10 @@ async fn create_test_actor(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
-            mtls_cert_dir: None,
             model: "test".to_string(),
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            max_retries: None,
-            rate_limit_retry_threshold: None,
-            api_backend: Default::default(),
-            extra_headers: Default::default(),
-            conversation_group_id: None,
-            query_params: Default::default(),
-            env_http_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(context_window)
                 .expect("test context_window must be non-zero"),
-            reasoning_effort: None,
-            stream_tool_calls: None,
+            ..Default::default()
         },
         Box::new(xai_chat_state::NullChatPersistence),
         event_tx,
@@ -75,8 +64,7 @@ async fn create_test_actor(
     );
     chat_state_handle.record_token_usage(total_tokens);
     SessionActor {
-        repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::default(
-        ),
+        vcs_root: None,
         transient_retry_enabled: true,
         transient_retries_prompt_total: std::cell::Cell::new(0),
         transient_episode_start: std::cell::Cell::new(None),
@@ -125,25 +113,26 @@ async fn create_test_actor(
         rewind_pending_prompt: std::sync::Mutex::new(None),
         startup_hints: StartupHints::default(),
         forked_tool_override: None,
-        compaction: crate::session::compaction_config::CompactionConfig {
-            threshold_percent: std::cell::Cell::new(threshold_percent),
-            force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_window_override: None,
-            count: std::sync::atomic::AtomicU64::new(0),
-            auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
-            previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
-            verbatim_input: true,
-            tool_choice: crate::util::config::CompactionToolChoice::Auto,
-            prefire: crate::session::compaction_config::PrefireState::default(),
-            prefix_released: std::sync::atomic::AtomicBool::new(false),
-            cancel: Default::default(),
+        compaction: test_compaction_config(threshold_percent),
+        long_reasoning_reminder: crate::session::long_reasoning_reminder::LongReasoningReminder {
+            enabled: false,
+            tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
+            delay: crate::session::long_reasoning_reminder::DEFAULT_DELAY,
         },
+        long_reasoning_turn_state: Default::default(),
         memory: crate::session::memory_state::SessionMemory {
             configured_mode: None,
+            v2_config: Default::default(),
             configured_storage: None,
+            process_disabled: false,
+            config_opt_out: false,
+            v2_legacy_carryover: false,
+            prompt_sync_pending: std::sync::atomic::AtomicBool::new(false),
             flush_config: crate::config::MemoryFlushConfig::default(),
-            is_flushing: std::sync::atomic::AtomicBool::new(false),
+            is_flushing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            capture_worker: std::cell::RefCell::new(None),
+            dream_workers: crate::session::memory_state::V2DreamWorkers::default(),
+            last_capture_failure: std::cell::RefCell::new(None),
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
             storage: std::cell::RefCell::new(None),
             save_on_end: true,
@@ -163,6 +152,7 @@ async fn create_test_actor(
             dream_count: std::sync::atomic::AtomicU64::new(0),
             dream_success_count: std::sync::atomic::AtomicU64::new(0),
             dream_error_count: std::sync::atomic::AtomicU64::new(0),
+            token_totals: Default::default(),
         },
         session_start: std::time::Instant::now(),
         inference_idle_timeout: Duration::from_secs(300),
@@ -230,7 +220,7 @@ async fn create_test_actor(
         pending_classifier_completions: parking_lot::Mutex::new(std::collections::VecDeque::new()),
         goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
         managed_mcp_handle: Default::default(),
-        initial_client_mcp_servers: vec![],
+        initial_client_mcp_servers: Default::default(),
         tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
         mcp_announcements: Default::default(),
         mcp_reminder_mode: McpReminderMode::Delta,
@@ -257,7 +247,6 @@ async fn create_test_actor(
         turn_end_tx: Default::default(),
         client_hooks: Default::default(),
         hook_resolved_workspace_root: String::new(),
-        vcs_kind: xai_grok_workspace::session::git::VcsKind::Git,
         hook_load_errors: std::cell::RefCell::new(Vec::new()),
         plugin_registry: std::cell::RefCell::new(None),
         plugin_registry_handle: None,
@@ -433,6 +422,42 @@ async fn test_response_header_context_window_downgrade_rejected() {
         })
         .await;
 }
+/// A kept selection the catalog did not list at resume applies at the next turn once it does.
+#[tokio::test(flavor = "current_thread")]
+async fn a_kept_context_window_selection_applies_once_the_catalog_lists_it() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) =
+                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor
+                .compaction
+                .context_window_selection
+                .store(500_000, std::sync::atomic::Ordering::Relaxed);
+            let model = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .unwrap()
+                .model;
+            actor.apply_supported_context_window_selection().await;
+            let cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            assert_eq!(256_000, cfg.context_window.get(), "not listed yet");
+            let mut entry = ModelEntry::fallback(&model, &EndpointsConfig::default());
+            entry.info.context_window = std::num::NonZeroU64::new(256_000).unwrap();
+            entry.info.context_windows = vec![
+                std::num::NonZeroU64::new(256_000).unwrap(),
+                std::num::NonZeroU64::new(500_000).unwrap(),
+            ];
+            actor.models_manager.insert_test_entry(model.clone(), entry);
+            actor.apply_supported_context_window_selection().await;
+            let cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            assert_eq!(500_000, cfg.context_window.get());
+        })
+        .await;
+}
 #[allow(clippy::field_reassign_with_default)]
 async fn create_test_actor_with_memory(
     total_tokens: u64,
@@ -478,22 +503,10 @@ async fn create_test_actor_with_memory(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
-            mtls_cert_dir: None,
             model: "test".to_string(),
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            max_retries: None,
-            rate_limit_retry_threshold: None,
-            api_backend: Default::default(),
-            extra_headers: Default::default(),
-            conversation_group_id: None,
-            query_params: Default::default(),
-            env_http_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(context_window)
                 .expect("test context_window must be non-zero"),
-            reasoning_effort: None,
-            stream_tool_calls: None,
+            ..Default::default()
         },
         Box::new(xai_chat_state::NullChatPersistence),
         event_tx,
@@ -505,8 +518,7 @@ async fn create_test_actor_with_memory(
         .as_ref()
         .map_or_else(Default::default, |mc| mc.initial_injection.clone());
     SessionActor {
-        repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::default(
-        ),
+        vcs_root: None,
         transient_retry_enabled: true,
         transient_retries_prompt_total: std::cell::Cell::new(0),
         transient_episode_start: std::cell::Cell::new(None),
@@ -552,27 +564,30 @@ async fn create_test_actor_with_memory(
         rewind_pending_prompt: std::sync::Mutex::new(None),
         startup_hints: StartupHints::default(),
         forked_tool_override: None,
-        compaction: crate::session::compaction_config::CompactionConfig {
-            threshold_percent: std::cell::Cell::new(threshold_percent),
-            force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_window_override: None,
-            count: std::sync::atomic::AtomicU64::new(0),
-            auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
-            previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
-            verbatim_input: true,
-            tool_choice: crate::util::config::CompactionToolChoice::Auto,
-            prefire: crate::session::compaction_config::PrefireState::default(),
-            prefix_released: std::sync::atomic::AtomicBool::new(false),
-            cancel: Default::default(),
+        compaction: test_compaction_config(threshold_percent),
+        long_reasoning_reminder: crate::session::long_reasoning_reminder::LongReasoningReminder {
+            enabled: false,
+            tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
+            delay: crate::session::long_reasoning_reminder::DEFAULT_DELAY,
         },
+        long_reasoning_turn_state: Default::default(),
         memory: crate::session::memory_state::SessionMemory {
             configured_mode: memory_config.as_ref().map(|mc| mc.mode),
+            v2_config: memory_config
+                .as_ref()
+                .map_or_else(Default::default, |mc| mc.v2),
             configured_storage: None,
+            process_disabled: false,
+            config_opt_out: false,
+            v2_legacy_carryover: false,
+            prompt_sync_pending: std::sync::atomic::AtomicBool::new(false),
             flush_config: memory_config
                 .as_ref()
                 .map_or_else(Default::default, |mc| mc.flush.clone()),
-            is_flushing: std::sync::atomic::AtomicBool::new(false),
+            is_flushing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            capture_worker: std::cell::RefCell::new(None),
+            dream_workers: crate::session::memory_state::V2DreamWorkers::default(),
+            last_capture_failure: std::cell::RefCell::new(None),
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
             storage: std::cell::RefCell::new(memory_storage),
             save_on_end: true,
@@ -592,6 +607,7 @@ async fn create_test_actor_with_memory(
             dream_count: std::sync::atomic::AtomicU64::new(0),
             dream_success_count: std::sync::atomic::AtomicU64::new(0),
             dream_error_count: std::sync::atomic::AtomicU64::new(0),
+            token_totals: Default::default(),
         },
         session_start: std::time::Instant::now(),
         inference_idle_timeout: Duration::from_secs(300),
@@ -670,7 +686,7 @@ async fn create_test_actor_with_memory(
         pending_classifier_completions: parking_lot::Mutex::new(std::collections::VecDeque::new()),
         goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
         managed_mcp_handle: Default::default(),
-        initial_client_mcp_servers: vec![],
+        initial_client_mcp_servers: Default::default(),
         tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
         mcp_announcements: Default::default(),
         mcp_reminder_mode: McpReminderMode::Delta,
@@ -697,7 +713,6 @@ async fn create_test_actor_with_memory(
         turn_end_tx: Default::default(),
         client_hooks: Default::default(),
         hook_resolved_workspace_root: String::new(),
-        vcs_kind: xai_grok_workspace::session::git::VcsKind::Git,
         hook_load_errors: std::cell::RefCell::new(Vec::new()),
         plugin_registry: std::cell::RefCell::new(None),
         plugin_registry_handle: None,

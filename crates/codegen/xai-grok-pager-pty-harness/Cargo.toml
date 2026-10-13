@@ -56,6 +56,7 @@ xai-tty-utils = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
+xai-interjection-core = { workspace = true }
 reqwest = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
@@ -115,7 +116,6 @@ path = "tests/scripted_scenarios.rs"
 [[test]]
 name = "pty_auto_mode"
 path = "tests/pty_auto_mode.rs"
-
 [[bin]]
 name = "pty-scenario"
 path = "src/bin/pty_scenario.rs"

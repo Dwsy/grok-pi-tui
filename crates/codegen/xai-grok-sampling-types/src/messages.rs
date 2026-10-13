@@ -489,8 +489,11 @@ mod tests {
         // Round-trips to Claude's wire shape.
         let json =
             serde_json::to_value(ContentBlock::RedactedThinking { data: "abc".into() }).unwrap();
-        assert_eq!(json["type"], "redacted_thinking");
-        assert_eq!(json["data"], "abc");
+        assert_eq!(
+            json.get("type"),
+            Some(&serde_json::json!("redacted_thinking"))
+        );
+        assert_eq!(json.get("data"), Some(&serde_json::json!("abc")));
     }
 
     #[test]
@@ -499,8 +502,11 @@ mod tests {
             schema: serde_json::json!({"type": "object", "properties": {"x": {"type": "string"}}}),
         };
         let json = serde_json::to_value(&fmt).unwrap();
-        assert_eq!(json["type"], "json_schema");
-        assert_eq!(json["schema"]["type"], "object");
+        assert_eq!(json.get("type"), Some(&serde_json::json!("json_schema")));
+        assert_eq!(
+            json.get("schema").and_then(|s| s.get("type")),
+            Some(&serde_json::json!("object"))
+        );
         assert!(json.get("name").is_none());
 
         let config = OutputConfig {
@@ -509,6 +515,9 @@ mod tests {
         };
         let json = serde_json::to_value(&config).unwrap();
         assert!(json.get("effort").is_none(), "effort omitted when None");
-        assert_eq!(json["format"]["type"], "json_schema");
+        assert_eq!(
+            json.get("format").and_then(|f| f.get("type")),
+            Some(&serde_json::json!("json_schema"))
+        );
     }
 }

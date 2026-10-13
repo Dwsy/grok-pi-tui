@@ -215,7 +215,10 @@ fn ensure_trust_boundary_rejects_preexisting_symlink_persist_file() {
     std::fs::create_dir_all(&dir).unwrap();
     let target = tmp.path().join("evil-persist");
     std::fs::write(&target, b"attacker\n").unwrap();
-    let persist = dir.join(TRUST_BOUNDARY_FILENAMES[0]);
+    let Some(persist_name) = TRUST_BOUNDARY_FILENAMES.first() else {
+        panic!("TRUST_BOUNDARY_FILENAMES is non-empty");
+    };
+    let persist = dir.join(persist_name);
     std::os::unix::fs::symlink(&target, &persist).unwrap();
     let err = ensure_grok_trust_boundary_slots(&dir).unwrap_err();
     // create_new hits EEXIST on the symlink and require_real_file rejects it, or O_NOFOLLOW stops the open; nothing writes through the symlink
@@ -261,7 +264,7 @@ fn existing_ancestor_chain_lists_parents() {
     let leaf = tmp.path().join("a").join("b").join("c");
     std::fs::create_dir_all(&leaf).unwrap();
     let chain = existing_ancestor_chain(&leaf);
-    assert_eq!(chain[0], tmp.path().join("a").join("b"));
+    assert_eq!(chain.first(), Some(&tmp.path().join("a").join("b")));
     assert!(chain.iter().any(|p| p == &tmp.path().join("a")));
 }
 
@@ -275,7 +278,10 @@ fn list_direct_hook_json_files_matches_discovery_filter() {
     std::fs::write(dir.join("notes.txt"), b"x").unwrap();
     let files = list_direct_hook_json_files(dir).unwrap();
     assert_eq!(files.len(), 1);
-    assert!(files[0].ends_with("active.json"));
+    let Some(first) = files.first() else {
+        panic!("expected one hook json file: {files:?}");
+    };
+    assert!(first.ends_with("active.json"));
 }
 
 #[test]
@@ -330,8 +336,11 @@ fn ancestors_to_pin_skips_mountpoints_but_continues_above() {
     // With the real mountpoint detector nothing under a temp dir is a mount, so the full chain comes back
     let rootward = unique_ancestors_rootward(&sources);
     for w in rootward.windows(2) {
+        let [a, b] = w else {
+            continue;
+        };
         assert!(
-            w[0].components().count() <= w[1].components().count(),
+            a.components().count() <= b.components().count(),
             "rootward order broken: {rootward:?}"
         );
     }

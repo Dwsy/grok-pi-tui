@@ -278,13 +278,16 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
     // There is no full-list EntryLayout vec; y advances from content_y0 using cached heights/gaps
     let mut y = content_y0;
     for (i, entry) in entries.iter().enumerate() {
-        let height = entry_layouts_cache[i].height;
+        let Some(entry_layout_info) = entry_layouts_cache.get(i) else {
+            break;
+        };
+        let height = entry_layout_info.height;
         let entry_start = y;
         let entry_end = entry_start + height as usize;
 
         // Skip if completely above viewport
         if entry_end <= viewport_start {
-            y = entry_end + entry_layouts_cache[i].gap_after as usize;
+            y = entry_end + entry_layout_info.gap_after as usize;
             continue;
         }
         // Stop if completely below viewport
@@ -321,7 +324,7 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
         let render_height = visible_height.min(viewport.height);
 
         if render_height == 0 {
-            y = entry_end + entry_layouts_cache[i].gap_after as usize;
+            y = entry_end + entry_layout_info.gap_after as usize;
             continue;
         }
 
@@ -331,7 +334,6 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
 
         // Render the entry; skip_rows handles partial visibility directly
         let is_selected = selected_idx == Some(logical_idx);
-        let entry_layout_info = &entry_layouts_cache[i];
         // Both fold families feed the one label channel; a header row belongs to exactly one fold, so the branches are
         // exclusive by construction. Without spans the walk stops at its own run-breaker classification.
         let header_label = if entry_layout_info.verb_group_header {
@@ -445,9 +447,9 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
         let verb_expanded_slot = entry_layout_info.is_expanded_verb_header();
 
         let mapped_lines = if is_group_header && !verb_expanded_slot {
-            &[][..]
+            &[]
         } else {
-            &cached_output.lines[..]
+            cached_output.lines.as_slice()
         };
 
         // Expanded verb-group slot: the header consumes the slot's first screen row, so member 0's content maps one row below
@@ -814,7 +816,7 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
             });
         }
 
-        y = entry_end + entry_layouts_cache[i].gap_after as usize;
+        y = entry_end + entry_layout_info.gap_after as usize;
     }
 
     ScrollRenderResultWithBoundaries {
@@ -899,7 +901,9 @@ pub(crate) fn map_hyperlinks_to_overlay(
         if adjusted_line >= pre_wrap_segments.len() {
             continue;
         }
-        let segments = &pre_wrap_segments[adjusted_line];
+        let Some(segments) = pre_wrap_segments.get(adjusted_line) else {
+            continue;
+        };
         for &(wrapped_idx, seg_col_start, seg_col_end, indent_width) in segments {
             // Check if hyperlink's column range overlaps this wrapped segment.
             let overlap_start = h.column_range.start.max(seg_col_start);
@@ -925,13 +929,16 @@ pub(crate) fn map_hyperlinks_to_overlay(
             // For the first wrap row of a pre-wrap line, the prefix is already included in the pre-wrap hyperlink columns, so
             // don't add indent_width as a visual offset. Only continuation rows (with joiners) need the offset to skip the
             // prepended subsequent_indent.
-            let is_continuation = block_output.lines[wrapped_idx].joiner.is_some();
+            let Some(wrapped_line) = block_output.lines.get(wrapped_idx) else {
+                continue;
+            };
+            let is_continuation = wrapped_line.joiner.is_some();
             let visual_indent = if is_continuation { indent_width } else { 0 };
 
             // Link columns are logical; map to visual only when paint reorders.
             let visual_ranges = if crate::render::bidi::is_enabled() {
                 row_plain_buf.clear();
-                line_plain_text_into(&block_output.lines[wrapped_idx].content, &mut row_plain_buf);
+                line_plain_text_into(&wrapped_line.content, &mut row_plain_buf);
                 if crate::render::bidi::needs_bidi(&row_plain_buf) {
                     crate::render::bidi::logical_cols_to_visual(
                         &row_plain_buf,

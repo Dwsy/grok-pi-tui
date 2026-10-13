@@ -188,7 +188,10 @@ mod tests {
                 "toolCallId",
             ]
         );
-        assert_eq!(serde_json::to_value(&form).unwrap()["mode"], "form");
+        assert_eq!(
+            serde_json::to_value(&form).unwrap().get("mode"),
+            Some(&json!("form"))
+        );
 
         // A schema-less form omits `requestedSchema` entirely.
         let bare_form = McpElicitExtRequest {
@@ -224,7 +227,10 @@ mod tests {
                 "url",
             ]
         );
-        assert_eq!(serde_json::to_value(&url).unwrap()["mode"], "url");
+        assert_eq!(
+            serde_json::to_value(&url).unwrap().get("mode"),
+            Some(&json!("url"))
+        );
     }
 
     #[test]
@@ -233,8 +239,8 @@ mod tests {
             content: Some(json!({"email": "a@b.com"})),
         };
         let v = serde_json::to_value(&resp).unwrap();
-        assert_eq!(v["outcome"], "accept");
-        assert_eq!(v["content"]["email"], "a@b.com");
+        assert_eq!(v.get("outcome"), Some(&json!("accept")));
+        assert_eq!(v.pointer("/content/email"), Some(&json!("a@b.com")));
         let back: McpElicitExtResponse = serde_json::from_value(v).unwrap();
         assert!(matches!(back, McpElicitExtResponse::Accept { .. }));
     }

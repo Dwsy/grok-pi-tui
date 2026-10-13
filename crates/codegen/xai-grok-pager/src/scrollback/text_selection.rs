@@ -14,10 +14,6 @@ use crate::scrollback::types::SelectionBoundary;
 use crate::theme::Theme;
 use xai_grok_markdown::{CellJoin, TableCopyMeta};
 
-// ---------------------------------------------------------------------------
-// Auto-scroll types
-// ---------------------------------------------------------------------------
-
 /// Direction for drag auto-scroll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoScrollDirection {
@@ -1148,9 +1144,7 @@ fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
         && row < rect.y.saturating_add(rect.height)
 }
 
-// ---------------------------------------------------------------------------
 // Word / URL boundary detection (for double-click selection)
-// ---------------------------------------------------------------------------
 
 /// All printable ASCII punctuation except underscore, matching tmux's `word-separators` default from `options-table.c`.
 pub const DEFAULT_WORD_SEPARATORS: &str = "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~";
@@ -1217,19 +1211,33 @@ pub fn word_boundaries_at_col(text: &str, col: u16, separators: &str) -> Range<u
         .position(|(start, end, _)| col >= *start && col < *end)
         .unwrap_or(segments.len() - 1);
 
-    let target_class = segments[target_idx].2;
+    let Some(&(_, _, target_class)) = segments.get(target_idx) else {
+        return 0..0;
+    };
 
     let mut left = target_idx;
-    while left > 0 && segments[left - 1].2 == target_class {
+    while left > 0
+        && left
+            .checked_sub(1)
+            .and_then(|j| segments.get(j))
+            .is_some_and(|seg| seg.2 == target_class)
+    {
         left -= 1;
     }
 
     let mut right = target_idx;
-    while right + 1 < segments.len() && segments[right + 1].2 == target_class {
+    while right + 1 < segments.len()
+        && segments
+            .get(right + 1)
+            .is_some_and(|seg| seg.2 == target_class)
+    {
         right += 1;
     }
 
-    segments[left].0..segments[right].1
+    match (segments.get(left), segments.get(right)) {
+        (Some(&(start, _, _)), Some(&(_, end, _))) => start..end,
+        _ => 0..0,
+    }
 }
 
 /// Pre-compiled regex for URL detection, cached for the process lifetime.
@@ -1247,7 +1255,10 @@ fn strip_trailing_url_punctuation(url: &str) -> &str {
     let mut end = url.len();
 
     loop {
-        let last = match url[..end].chars().next_back() {
+        let Some(prefix) = url.get(..end) else {
+            break;
+        };
+        let last = match prefix.chars().next_back() {
             Some(c) if TRAILING_URL_PUNCT.contains(&c) => c,
             _ => break,
         };
@@ -1259,8 +1270,8 @@ fn strip_trailing_url_punctuation(url: &str) -> &str {
             '>' => Some('<'),
             _ => None,
         } {
-            let opens = url[..end].chars().filter(|&c| c == open).count();
-            let closes = url[..end].chars().filter(|&c| c == last).count();
+            let opens = prefix.chars().filter(|&c| c == open).count();
+            let closes = prefix.chars().filter(|&c| c == last).count();
             if opens >= closes {
                 break;
             }
@@ -1269,7 +1280,7 @@ fn strip_trailing_url_punctuation(url: &str) -> &str {
         end -= last.len_utf8();
     }
 
-    &url[..end]
+    url.get(..end).unwrap_or("")
 }
 
 /// Compute the display-column width of a string via grapheme clusters.
@@ -1284,11 +1295,18 @@ fn display_width(text: &str) -> u16 {
 /// handling prose contexts like `"see https://example.com."`.
 pub fn url_range_at_col(text: &str, col: u16) -> Option<Range<u16>> {
     for m in URL_RE.find_iter(text) {
-        let col_start = display_width(&text[..m.start()]);
+        let Some(prefix) = text.get(..m.start()) else {
+            continue;
+        };
+        let col_start = display_width(prefix);
         let url = strip_trailing_url_punctuation(m.as_str());
 
         // Skip degenerate URLs reduced to just the scheme (e.g. "https://").
-        if url.find("://").is_some_and(|i| url[i + 3..].is_empty()) {
+        if url
+            .find("://")
+            .and_then(|i| url.get(i + 3..))
+            .is_some_and(str::is_empty)
+        {
             continue;
         }
 
@@ -1341,18 +1359,27 @@ pub fn semantic_selection_at(
         .position(|line| line.block_line_idx == hit.block_line_idx)?;
 
     let mut lo = hit_pos;
-    while lo > 0 && lines[lo].joiner_to_previous.is_some() {
+    while lo > 0
+        && lines
+            .get(lo)
+            .is_some_and(|line| line.joiner_to_previous.is_some())
+    {
         lo -= 1;
     }
     let mut hi = hit_pos;
-    while hi + 1 < lines.len() && lines[hi + 1].joiner_to_previous.is_some() {
+    while hi + 1 < lines.len()
+        && lines
+            .get(hi + 1)
+            .is_some_and(|line| line.joiner_to_previous.is_some())
+    {
         hi += 1;
     }
 
     // Single-row case (and, under reordering, the wrap-group case too; see below)
     // The hit column is a visual cell of the painted row and `word_or_url_slice` maps it against that same row
     if lo == hi || (crate::render::bidi::is_enabled() && wrap_group_needs_bidi(lines, lo, hi)) {
-        let line = &lines[if lo == hi { lo } else { hit_pos }];
+        let line_idx = if lo == hi { lo } else { hit_pos };
+        let line = lines.get(line_idx)?;
         // The hit column is a visual cell of the painted row, so resolve the word against the painted region (identity/`text` when reordering off)
         let src = if crate::render::bidi::is_enabled() {
             line.painted_region.as_deref().unwrap_or(line.text.as_str())
@@ -1375,7 +1402,8 @@ pub fn semantic_selection_at(
 
     let mut concat = String::new();
     let mut text_byte_ranges = Vec::with_capacity(hi - lo + 1);
-    for (offset, line) in lines[lo..=hi].iter().enumerate() {
+    let group = lines.get(lo..=hi)?;
+    for (offset, line) in group.iter().enumerate() {
         if offset > 0
             && let Some(joiner) = line.joiner_to_previous.as_deref()
         {
@@ -1390,16 +1418,25 @@ pub fn semantic_selection_at(
     let mut fragments = Vec::with_capacity(text_byte_ranges.len());
     let mut hit_concat_col = None;
     for (block_line_idx, text_byte_start, text_byte_end) in text_byte_ranges {
-        let text_start = display_width(&concat[..text_byte_start]);
-        let text_end = display_width(&concat[..text_byte_end]);
+        let Some(start_prefix) = concat.get(..text_byte_start) else {
+            continue;
+        };
+        let Some(end_prefix) = concat.get(..text_byte_end) else {
+            continue;
+        };
+        let text_start = display_width(start_prefix);
+        let text_end = display_width(end_prefix);
         fragments.push(ConcatFragment {
             block_line_idx,
             text_start,
             text_end,
         });
         if block_line_idx == hit.block_line_idx {
+            let Some(local_text) = concat.get(text_byte_start..text_byte_end) else {
+                continue;
+            };
             hit_concat_col = Some(map_local_hit_to_concat_col(
-                &concat[text_byte_start..text_byte_end],
+                local_text,
                 text_start,
                 text_end,
                 hit.col_within_range,
@@ -1443,8 +1480,10 @@ fn map_local_hit_to_concat_col(
 /// Rows are painted per row, so a whole-group concat would reorder differently than the screen.
 /// When reordering applies we resolve the word on the hit row alone.
 fn wrap_group_needs_bidi(lines: &[ResolvedSelectableLine], lo: usize, hi: usize) -> bool {
-    lines[lo..=hi]
-        .iter()
+    lines
+        .get(lo..=hi)
+        .into_iter()
+        .flatten()
         .any(|l| crate::render::bidi::needs_bidi(&l.text))
 }
 
@@ -1971,10 +2010,6 @@ mod tests {
         assert_eq!(right.col_within_range, 3);
     }
 
-    // -----------------------------------------------------------------------
-    // hit_test_nearest_in_range tests
-    // -----------------------------------------------------------------------
-
     /// One selectable line for the nearest-in-range fixtures.
     fn nearest_line(
         range_id: u16,
@@ -2343,10 +2378,6 @@ mod tests {
         assert!(!text.contains("line nine"), "off-screen line not in model");
     }
 
-    // -----------------------------------------------------------------------
-    // word_boundaries_at_col tests
-    // -----------------------------------------------------------------------
-
     /// Shorthand for tests using the default tmux separator set.
     fn wb(text: &str, col: u16) -> Range<u16> {
         word_boundaries_at_col(text, col, DEFAULT_WORD_SEPARATORS)
@@ -2552,10 +2583,6 @@ mod tests {
         assert_eq!(word_boundaries_at_col("user@host", 0, seps), 0..9);
     }
 
-    // -----------------------------------------------------------------------
-    // strip_trailing_url_punctuation tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn strip_trailing_no_punctuation() {
         assert_eq!(
@@ -2639,10 +2666,6 @@ mod tests {
             "https://example.com"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // url_range_at_col tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn url_range_simple_https() {
@@ -3231,21 +3254,24 @@ mod tests {
         let expected = SemanticSelection {
             anchor: ep(0, 0),
             head: ep(
-                model.ranges[0].lines.len() - 1,
+                model
+                    .ranges
+                    .first()
+                    .map(|r| r.lines.len() - 1)
+                    .unwrap_or_else(|| panic!("expected a selection range")),
                 last_width.saturating_sub(1),
             ),
             text: "hello_world_identifier".to_string(),
         };
-        for line in &model.ranges[0].lines {
+        let Some(range) = model.ranges.first() else {
+            panic!("expected a selection range: {model:?}");
+        };
+        for line in &range.lines {
             if !line.text.is_empty() {
                 assert_eq!(semantic(&model, line.block_line_idx, 0), expected);
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // selected_cols_for_endpoints tests
-    // -----------------------------------------------------------------------
 
     fn make_test_line(
         block_line_idx: usize,
@@ -3414,10 +3440,6 @@ mod tests {
         assert_eq!(via_wrapper, via_direct);
         assert_eq!(via_wrapper, Some(0..20));
     }
-
-    // -----------------------------------------------------------------------
-    // render_persistent_selection_overlay tests
-    // -----------------------------------------------------------------------
 
     /// Marker foreground: test themes quantize to no color, so the highlight takes its reverse-video path (a modifier change).
     fn paint_marker(buf: &mut Buffer) {
@@ -3756,8 +3778,6 @@ mod tests {
         assert_eq!(hit.entry_idx, 1);
         assert_eq!(hit.col_within_range, 2);
     }
-
-    // ── Table-aware selection ────────────────────────────────────────────
 
     const TABLE_LINES: &[&str] = &[
         "┌─────────┬────────┐",

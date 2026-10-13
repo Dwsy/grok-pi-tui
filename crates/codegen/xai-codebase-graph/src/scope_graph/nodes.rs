@@ -86,7 +86,8 @@ impl LocalDef {
 
     /// Get the name of this definition from source bytes.
     pub fn name<'a>(&self, src: &'a [u8]) -> &'a [u8] {
-        &src[self.range.start_byte()..self.range.end_byte()]
+        src.get(self.range.start_byte()..self.range.end_byte())
+            .unwrap_or(&[])
     }
 
     /// Get the scope range.
@@ -110,7 +111,8 @@ impl LocalImport {
 
     /// Get the name of this import from source bytes.
     pub fn name<'a>(&self, src: &'a [u8]) -> &'a [u8] {
-        &src[self.range.start_byte()..self.range.end_byte()]
+        src.get(self.range.start_byte()..self.range.end_byte())
+            .unwrap_or(&[])
     }
 }
 
@@ -131,7 +133,8 @@ impl Reference {
 
     /// Get the name of this reference from source bytes.
     pub fn name<'a>(&self, src: &'a [u8]) -> &'a [u8] {
-        &src[self.range.start_byte()..self.range.end_byte()]
+        src.get(self.range.start_byte()..self.range.end_byte())
+            .unwrap_or(&[])
     }
 }
 

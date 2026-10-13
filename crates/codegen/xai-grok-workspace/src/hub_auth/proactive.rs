@@ -5,6 +5,7 @@
 //! `min_refresh_interval` floors the gap after a successful refresh so a short TTL cannot hammer the IdP.
 //! It does not delay a cold-start refresh that is already due.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -15,6 +16,7 @@ use prometheus::{
     Histogram, IntCounterVec, exponential_buckets, register_histogram, register_int_counter_vec,
 };
 use rand::Rng;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 use xai_computer_hub_sdk::{
@@ -137,6 +139,8 @@ struct Inner {
     cfg: ProactiveRefreshConfig,
     on_refresh: Option<OnRefreshCallback>,
     persist: Arc<PersistGate>,
+    /// Set once, to the cause, when the loop stops for the process life; `None` while it runs.
+    terminal: watch::Sender<Option<String>>,
 }
 
 struct RefreshOutcome {
@@ -147,7 +151,8 @@ struct RefreshOutcome {
 struct RefreshError {
     error: anyhow::Error,
     new_refresh_token: Option<String>,
-    /// `400`, `invalid_grant`, `401`, or `403`: stop the loop for the process life.
+    /// The token endpoint answered `400` (`invalid_grant`), `401`, or `403`: the refresh token is
+    /// refused for good, so stop the loop for the process life.
     terminal: bool,
     /// Honored on retryable errors (`429` `Retry-After`, etc.).
     retry_after: Option<Duration>,
@@ -221,6 +226,7 @@ impl ProactiveOidcAuthProvider {
                 seq: AtomicU64::new(0),
                 lock: parking_lot::Mutex::new(()),
             }),
+            terminal: watch::Sender::new(None),
         });
         if !enabled {
             REFRESH_TOTAL
@@ -241,6 +247,24 @@ impl ProactiveOidcAuthProvider {
             inner,
             cancel,
             _task_guard: Some(AbortOnDropHandle::new(task)),
+        }
+    }
+
+    /// Resolves, with the IdP's answer as the cause, once a refresh has been rejected for good
+    /// (`invalid_grant`, `401`, `403`): from then on `current()` serves a token that will expire
+    /// and never be replaced, so a long-lived host should end rather than retry the hub forever.
+    /// Pending for the process life otherwise, and forever when refresh is disabled.
+    pub fn refresh_ended(&self) -> impl Future<Output = String> + Send + 'static {
+        let mut ended = self.inner.terminal.subscribe();
+        async move {
+            loop {
+                if let Some(cause) = ended.borrow_and_update().clone() {
+                    return cause;
+                }
+                if ended.changed().await.is_err() {
+                    return std::future::pending().await;
+                }
+            }
         }
     }
 
@@ -350,11 +374,12 @@ async fn refresh_loop(inner: Arc<Inner>, mut refresh_token: String, cancel: Canc
                     REFRESH_TOTAL
                         .with_label_values(&[OUTCOME_FAILED_TERMINAL])
                         .inc();
-                    tracing::error!(
+                    tracing::warn!(
                         error = %error,
                         outcome = OUTCOME_FAILED_TERMINAL,
                         "OIDC refresh rejected; stopping proactive loop"
                     );
+                    inner.terminal.send_replace(Some(error.to_string()));
                     return;
                 }
                 fail_attempt = fail_attempt.saturating_add(1);
@@ -500,6 +525,7 @@ async fn do_refresh(inner: &Inner, refresh_token: &str) -> Result<RefreshOutcome
             .send()
             .await
             .map_err(refresh_err)?,
+        Exchange::Discovery,
     )
     .await?
     .json()
@@ -535,6 +561,7 @@ async fn do_refresh(inner: &Inner, refresh_token: &str) -> Result<RefreshOutcome
             .send()
             .await
             .map_err(refresh_err)?,
+        Exchange::Token,
     )
     .await?
     .json()
@@ -668,21 +695,58 @@ fn bound_retry_after(after: Duration, inner: &Inner) -> Duration {
     bounded.max(RETRY_BASE)
 }
 
-/// `400`/`401`/`403` are terminal.
+/// Which request of a refresh a status answered. Only the token endpoint judges the refresh token,
+/// so only its `400`/`401`/`403` are terminal; the same statuses from the unauthenticated discovery
+/// document are a proxy or an outage, and the loop retries them like any other failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Exchange {
+    Discovery,
+    Token,
+}
+
+impl std::fmt::Display for Exchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Discovery => "discovery",
+            Self::Token => "token endpoint",
+        })
+    }
+}
+
+/// `400`/`401`/`403` from the token endpoint are terminal (see [`Exchange`]).
 /// `429`/`408`/`425`/`5xx` stay on the retry backoff so a rate-limit cannot permanently stop `current()`.
-async fn require_success(resp: reqwest::Response) -> Result<reqwest::Response, RefreshError> {
+async fn require_success(
+    resp: reqwest::Response,
+    exchange: Exchange,
+) -> Result<reqwest::Response, RefreshError> {
     let status = resp.status();
     if status.is_success() {
         return Ok(resp);
     }
     let retry_after = parse_retry_after(&resp);
-    let body = resp.text().await.unwrap_or_default();
+    let body = body_excerpt(&resp.text().await.unwrap_or_default());
     Err(RefreshError {
-        error: anyhow::anyhow!("OIDC endpoint rejected request ({status}): {body}"),
+        error: anyhow::anyhow!("OIDC {exchange} rejected request ({status}): {body}"),
         new_refresh_token: None,
-        terminal: is_terminal_auth_status(status),
+        terminal: exchange == Exchange::Token && is_terminal_auth_status(status),
         retry_after,
     })
+}
+
+/// The IdP's body has one line of the error to itself and the error is a daemon's `cause` and its
+/// last log line; a proxy's HTML page is neither.
+const BODY_EXCERPT_CHARS: usize = 500;
+
+fn body_excerpt(body: &str) -> String {
+    let one_line = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= BODY_EXCERPT_CHARS {
+        return one_line;
+    }
+    one_line
+        .chars()
+        .take(BODY_EXCERPT_CHARS)
+        .chain(['…'])
+        .collect()
 }
 
 fn remaining_std(exp: DateTime<Utc>, now: DateTime<Utc>) -> Duration {

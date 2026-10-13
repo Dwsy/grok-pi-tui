@@ -5,6 +5,7 @@ impl From<ChatRequestMessage> for ConversationItem {
         match msg.role {
             Role::System => ConversationItem::System(SystemItem {
                 content: Arc::<str>::from(msg.text_content()),
+                synthetic_reason: SyntheticReason::Primary,
             }),
             Role::User => {
                 let parts = msg
@@ -22,8 +23,10 @@ impl From<ChatRequestMessage> for ConversationItem {
                     .collect();
                 ConversationItem::User(UserItem {
                     content: parts,
-                    synthetic_reason: None,
-                    ..Default::default()
+                    synthetic_reason: SyntheticReason::Human,
+                    cwd_generation: None,
+                    prior_turn_interrupt: None,
+                    prompt_index: None,
                 })
             }
             Role::Assistant => {
@@ -300,6 +303,7 @@ impl From<ConversationRequest> for ChatCompletionRequest {
             x_grok_deployment_id: req.x_grok_deployment_id,
             x_grok_user_id: req.x_grok_user_id,
             trace: None,
+            traceparent: req.traceparent,
         }
     }
 }

@@ -18,10 +18,6 @@ use unicode_width::UnicodeWidthStr;
 use crate::render::line_utils::byte_offset_at_width;
 use crate::theme::Theme;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 pub use crate::modal_window_state::{ModalWindowState, ShortcutHitArea};
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -235,10 +231,6 @@ pub enum ModalWindowOutcome {
     /// Event not consumed by the chrome; the caller should handle content interaction (row clicks, scroll, key navigation, etc.).
     Unhandled,
 }
-
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
 
 /// Render the modal window chrome and return the content area for the caller to render into.
 pub fn render_modal_window(
@@ -493,24 +485,32 @@ fn render_tab_bar(
         if y >= inner.y + inner.height {
             // Mark remaining tabs as not rendered.
             for &tab_idx in row_indices {
-                state.tab_rects[tab_idx] = None;
+                if let Some(slot) = state.tab_rects.get_mut(tab_idx) {
+                    *slot = None;
+                }
             }
             break;
         }
 
         let mut cur_x = inner.x + left_margin;
         for (local_idx, &tab_idx) in row_indices.iter().enumerate() {
-            let label = tabs[tab_idx];
+            let Some(&label) = tabs.get(tab_idx) else {
+                continue;
+            };
             let remaining = right_edge.saturating_sub(cur_x) as usize;
             if remaining == 0 {
-                state.tab_rects[tab_idx] = None;
+                if let Some(slot) = state.tab_rects.get_mut(tab_idx) {
+                    *slot = None;
+                }
                 continue;
             }
 
             let is_active = tab_idx == state.active_tab;
             // Minimal renders every element background-free, so the focused active tab uses accent text instead of a highlight band
             let is_embedded = embedded();
-            let display = &label[..byte_offset_at_width(label, remaining)];
+            let display = label
+                .get(..byte_offset_at_width(label, remaining))
+                .unwrap_or("");
             let label_w = display.width();
             // Inactive tab labels use `theme.gray` (secondary-text tier), not `theme.gray_dim`
             // At ANSI16 `gray_dim` collapses to the softer slot (silver on White), leaving text at ~1.2:1 contrast
@@ -530,17 +530,21 @@ fn render_tab_bar(
                 Style::default().fg(theme.gray)
             };
             buf.set_string(cur_x, y, display, style);
-            state.tab_rects[tab_idx] = Some(Rect {
-                x: cur_x,
-                y,
-                width: label_w as u16,
-                height: 1,
-            });
+            if let Some(slot) = state.tab_rects.get_mut(tab_idx) {
+                *slot = Some(Rect {
+                    x: cur_x,
+                    y,
+                    width: label_w as u16,
+                    height: 1,
+                });
+            }
             cur_x += label_w as u16;
             if local_idx + 1 < row_indices.len() {
                 let sep_remaining = right_edge.saturating_sub(cur_x) as usize;
                 if sep_remaining > 0 {
-                    let sep_display = &separator[..byte_offset_at_width(separator, sep_remaining)];
+                    let sep_display = separator
+                        .get(..byte_offset_at_width(separator, sep_remaining))
+                        .unwrap_or("");
                     buf.set_string(cur_x, y, sep_display, Style::default().fg(theme.gray));
                     cur_x += sep_display.width() as u16;
                 }
@@ -669,7 +673,7 @@ pub fn render_modal_shortcuts(
         // Compute this row's total width for centering.
         let row_total: usize = row_indices
             .iter()
-            .map(|&i| shortcuts[i].label.width())
+            .map(|&i| shortcuts.get(i).map(|s| s.label.width()).unwrap_or(0))
             .sum::<usize>()
             + sep_w * row_indices.len().saturating_sub(1);
         let start_x = if row_total > avail {
@@ -681,13 +685,18 @@ pub fn render_modal_shortcuts(
         let mut cur_x = start_x;
 
         for (local_idx, &shortcut_idx) in row_indices.iter().enumerate() {
-            let shortcut = &shortcuts[shortcut_idx];
+            let Some(shortcut) = shortcuts.get(shortcut_idx) else {
+                continue;
+            };
             let remaining = row_end.saturating_sub(cur_x) as usize;
             if remaining == 0 {
                 break;
             }
 
-            let display = &shortcut.label[..byte_offset_at_width(shortcut.label, remaining)];
+            let display = shortcut
+                .label
+                .get(..byte_offset_at_width(shortcut.label, remaining))
+                .unwrap_or("");
             let visible_w = display.width() as u16;
             let is_hovered = hovered == Some(shortcut_idx);
 
@@ -758,7 +767,9 @@ pub fn render_modal_shortcuts(
                 if sep_remaining == 0 {
                     break;
                 }
-                let sep_display = &separator[..byte_offset_at_width(separator, sep_remaining)];
+                let sep_display = separator
+                    .get(..byte_offset_at_width(separator, sep_remaining))
+                    .unwrap_or("");
                 buf.set_string(cur_x, y, sep_display, Style::default().fg(theme.gray_dim));
                 cur_x += sep_display.width() as u16;
             }
@@ -767,10 +778,6 @@ pub fn render_modal_shortcuts(
 
     hits
 }
-
-// ---------------------------------------------------------------------------
-// Centered tip footer (Settings / How-to Guides)
-// ---------------------------------------------------------------------------
 
 /// First candidate that fits `width`, else truncate the last.
 pub(crate) fn fit_tip_line<'a>(candidates: &[&'a str], width: usize) -> std::borrow::Cow<'a, str> {
@@ -842,10 +849,6 @@ pub(crate) fn footer_lines_with_tip_gap(
         .max(2)
 }
 
-// ---------------------------------------------------------------------------
-// Fold indicator
-// ---------------------------------------------------------------------------
-
 /// Render a fold indicator glyph at position `(x, y)`.
 pub fn fold_indicator_span(
     collapsed: bool,
@@ -892,10 +895,6 @@ pub fn render_fold_indicator(
     buf.set_span(x, y, &span, width);
     width
 }
-
-// ---------------------------------------------------------------------------
-// Input handling
-// ---------------------------------------------------------------------------
 
 /// Process a key event against the modal chrome. Otherwise `Unhandled` for Left/Right etc so the
 /// caller can handle.
@@ -1056,15 +1055,19 @@ pub(crate) fn word_wrap(text: &str, max_w: usize) -> Vec<&str> {
                 result.push(remaining);
                 break;
             };
-            let cut = remaining[..byte_limit]
-                .rfind(' ')
+            let cut = remaining
+                .get(..byte_limit)
+                .and_then(|s| s.rfind(' '))
                 .filter(|&i| i > 0)
                 .map(|i| i + 1)
                 .unwrap_or(byte_limit)
                 // A first char wider than max_w must still make progress.
                 .max(remaining.chars().next().map_or(0, char::len_utf8));
-            result.push(remaining[..cut].trim_end());
-            remaining = remaining[cut..].trim_start();
+            let Some((head, tail)) = remaining.split_at_checked(cut) else {
+                break;
+            };
+            result.push(head.trim_end());
+            remaining = tail.trim_start();
         }
     }
     result
@@ -1260,8 +1263,6 @@ mod tests {
         assert!(fit_tip_line(&["abcdef", "xy"], 1).as_ref().width() <= 1);
     }
 
-    // -- ModalSizing::with_compact tests --
-
     #[test]
     fn modal_sizing_with_compact_reduces_margins_aggressively() {
         let base = ModalSizing {
@@ -1302,8 +1303,6 @@ mod tests {
         assert_eq!(unchanged.h_pad, 3);
     }
 
-    // -- compute_modal_dims --
-
     #[test]
     fn modal_width_never_exceeds_narrow_terminal() {
         // Regression: the min_width floor used to re-inflate the modal past a narrow buffer.
@@ -1314,8 +1313,6 @@ mod tests {
             }
         }
     }
-
-    // -- ModalWindowState construction --
 
     #[test]
     fn new_defaults() {
@@ -1345,8 +1342,6 @@ mod tests {
         assert_eq!(a.tab_count, b.tab_count);
         assert_eq!(a.close_hovered, b.close_hovered);
     }
-
-    // -- handle_modal_key --
 
     #[test]
     fn key_esc_returns_close_requested() {
@@ -1413,8 +1408,6 @@ mod tests {
             ModalWindowOutcome::Unhandled
         );
     }
-
-    // -- handle_modal_key with FoldInfo --
 
     fn config_with_fold<'a>(fold_info: FoldInfo) -> ModalWindowConfig<'a> {
         ModalWindowConfig {
@@ -1596,8 +1589,6 @@ mod tests {
         );
     }
 
-    // -- FoldInfo precedence & edge cases --
-
     #[test]
     fn left_collapse_group_wins_over_collapse_details() {
         // When the entry is collapsible and expanded, and also has expanded details, CollapseGroup takes priority (group collapse first)
@@ -1704,8 +1695,6 @@ mod tests {
             ModalWindowOutcome::CloseRequested
         );
     }
-
-    // -- handle_modal_mouse --
 
     #[test]
     fn click_on_close_button_returns_close_requested() {
@@ -1870,8 +1859,6 @@ mod tests {
         assert_eq!(state.hovered_shortcut, Some(3));
     }
 
-    // -- ModalSizing presets --
-
     #[test]
     fn modal_sizing_medium_has_expected_values() {
         let m = ModalSizing::medium();
@@ -1888,8 +1875,6 @@ mod tests {
     fn modal_sizing_large_matches_default() {
         assert_eq!(ModalSizing::large(), ModalSizing::default());
     }
-
-    // -- split_shortcut_label --
 
     #[test]
     fn split_shortcut_label_basic_ascii() {

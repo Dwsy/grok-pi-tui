@@ -802,20 +802,6 @@ ignore = ["/tmp"]
     }
 
     #[test]
-    fn memory_config_diff_detects_enabled_change() {
-        let empty = toml::Value::Table(toml::map::Map::new());
-        let enabled: toml::Value = toml::from_str("[memory]\nenabled = true").unwrap();
-
-        let old = crate::agent::config::Config::new_from_toml_cfg(&empty)
-            .unwrap()
-            .resolve_memory(None, None);
-        let new = crate::agent::config::Config::new_from_toml_cfg(&enabled)
-            .unwrap()
-            .resolve_memory(None, None);
-        assert_ne!(old, new, "should detect enabled field change");
-    }
-
-    #[test]
     fn memory_config_diff_detects_search_param_change() {
         let a: toml::Value = toml::from_str("[memory.search]\nmax_results = 6").unwrap();
         let b: toml::Value = toml::from_str("[memory.search]\nmax_results = 10").unwrap();

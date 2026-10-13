@@ -281,7 +281,10 @@ mod tests {
         mock.persist_message(&item);
         let records = rx.drain();
         assert_eq!(records.len(), 1);
-        assert!(matches!(&records[0], PersistenceRecord::Message(_)));
+        assert!(matches!(
+            records.first(),
+            Some(PersistenceRecord::Message(_))
+        ));
     }
 
     #[test]
@@ -299,8 +302,8 @@ mod tests {
         mock.replace_history(&[ConversationItem::system("a"), ConversationItem::system("b")]);
         let records = rx.drain();
         assert_eq!(records.len(), 1);
-        match &records[0] {
-            PersistenceRecord::ReplaceHistory(items) => assert_eq!(items.len(), 2),
+        match records.first() {
+            Some(PersistenceRecord::ReplaceHistory(items)) => assert_eq!(items.len(), 2),
             other => panic!("expected ReplaceHistory, got {other:?}"),
         }
     }

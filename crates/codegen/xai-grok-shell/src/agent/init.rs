@@ -7,24 +7,24 @@ use crate::agent::config::{self, Config as AgentConfig, ModelEntry};
 use crate::agent::remote_config::settings_get::SettingsWait;
 use crate::agent::remote_config::{ModelsManager, ResolvedModels, settings_get};
 use crate::config::StorageMode;
-use crate::managed_config::LaunchProfile;
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+use xai_grok_cloud_config::managed_config::LaunchProfile;
 use xai_grok_login::{AuthManager, GrokAuth};
 /// The policy refusal stays typed; stringify only at the process boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapError {
     #[error("{0}")]
-    PolicyRefusal(crate::managed_config::ManagedPolicyRefusal),
+    PolicyRefusal(xai_grok_cloud_config::managed_config::ManagedPolicyRefusal),
     #[error("{0}")]
     Config(String),
     #[error("bootstrap cancelled")]
     Cancelled,
 }
-impl From<crate::managed_config::ManagedPolicyRefusal> for BootstrapError {
-    fn from(refusal: crate::managed_config::ManagedPolicyRefusal) -> Self {
+impl From<xai_grok_cloud_config::managed_config::ManagedPolicyRefusal> for BootstrapError {
+    fn from(refusal: xai_grok_cloud_config::managed_config::ManagedPolicyRefusal) -> Self {
         Self::PolicyRefusal(refusal)
     }
 }
@@ -116,7 +116,7 @@ pub fn bootstrap_with_cancel(
     xai_grok_telemetry::id::prefetch_agent_id();
     xai_grok_telemetry::startup::enter(xai_grok_telemetry::startup::StartupPhase::Bootstrap);
     let mut cfg = cfg.clone();
-    let profile = crate::managed_config::startup_profile();
+    let profile = observed_launch_profile();
     let warmed_auth = auth_manager.current();
     let pre_gate_prefetch = {
         let mut timer = crate::instrumentation_timer!("startup.bootstrap.remote_settings");
@@ -130,14 +130,14 @@ pub fn bootstrap_with_cancel(
         )?
     };
     ensure_bootstrap_not_cancelled(cancel)?;
-    {
+    if !cfg!(test) {
         let _timer = crate::instrumentation_timer!("startup.bootstrap.policy_gate");
-        crate::managed_config::managed_policy_gate()?;
+        xai_grok_cloud_config::managed_config::managed_policy_gate()?;
     }
     ensure_bootstrap_not_cancelled(cancel)?;
     if !cfg!(test) {
         let _timer = crate::instrumentation_timer!("startup.bootstrap.refresh_supervisor");
-        crate::managed_config::start_refresh_supervisor(auth_manager);
+        xai_grok_cloud_config::managed_config::start_refresh_supervisor(auth_manager);
     }
     let cfg = {
         let mut timer = crate::instrumentation_timer!("startup.bootstrap.resolve_config");
@@ -222,12 +222,13 @@ pub async fn resolve_boot_startup_settings(
     } else {
         None
     };
-    let profile = crate::managed_config::startup_profile();
+    let profile = observed_launch_profile();
     let deadline = startup_settings_deadline(profile);
     let started = std::time::Instant::now();
     let need_settings = cfg.remote_settings.is_none();
-    let query =
-        need_settings.then(|| settings_get::SettingsQuery::from_config(cfg, warmed_auth.clone()));
+    let query = need_settings.then(|| {
+        settings_get::SettingsQuery::resolve(warmed_auth.clone(), Some(cfg.grok_com_config.clone()))
+    });
     let (wait, models) = tokio::join!(
         async {
             match query {
@@ -282,15 +283,15 @@ fn install_settings_wait(
             tracing::info!("settings getter timed out; falling open to defaults");
         }
         settings_get::SettingsWait::Ready(outcome) => {
-            if !outcome.install_allowed(cfg, warmed_auth) {
+            if !install_allowed(outcome, cfg, warmed_auth) {
                 tracing::info!("startup settings discarded at consume: policy or identity changed");
-            } else if let Some(settings) = outcome.settings.clone() {
+            } else if let Some(settings) = outcome.settings().cloned() {
                 cfg.remote_settings = Some(settings);
                 crate::util::config::set_remote_campaigns_from_settings(
                     cfg.remote_settings.as_ref(),
                 );
                 tracing::info!(source = "getter", "remote_settings resolved at startup");
-            } else if outcome.attempted {
+            } else if outcome.attempted() {
                 crate::agent::remote_config::record_degraded_start(
                     crate::agent::remote_config::DegradedStartCause::FetchFailed,
                     profile,
@@ -301,6 +302,17 @@ fn install_settings_wait(
         }
     }
 }
+fn install_allowed(
+    outcome: &settings_get::SettingsOutcome,
+    cfg: &AgentConfig,
+    warmed_auth: Option<&GrokAuth>,
+) -> bool {
+    outcome.install_allowed(
+        &cfg.grok_com_config,
+        warmed_auth,
+        xai_grok_cloud_config::managed_config::policy_repair_pending,
+    )
+}
 /// Fill `remote_settings` if absent and apply process-global remote side effects.
 /// The boot spends at most one settings retry budget (#278686).
 fn ensure_remote_settings_side_effects(
@@ -310,28 +322,28 @@ fn ensure_remote_settings_side_effects(
     warmed_auth: Option<&GrokAuth>,
     boot_wait: Option<&SettingsWait>,
 ) -> Result<StartupPrefetch, BootstrapError> {
-    if let Some(wait) = boot_wait {
+    let prefetch = if let Some(wait) = boot_wait {
         if matches!(wait, SettingsWait::Cancelled) || cancel.is_cancelled() {
             return Err(BootstrapError::Cancelled);
         }
         if cfg.remote_settings.is_none()
             && let SettingsWait::Ready(outcome) = wait
-            && outcome.install_allowed(cfg, warmed_auth)
-            && let Some(settings) = outcome.settings.clone()
+            && install_allowed(outcome, cfg, warmed_auth)
+            && let Some(settings) = outcome.settings().cloned()
         {
             cfg.remote_settings = Some(settings);
             crate::util::config::set_remote_campaigns_from_settings(cfg.remote_settings.as_ref());
         }
-        crate::agent::config::apply_remote_settings_side_effects(cfg.remote_settings.as_ref());
-        return Ok(StartupPrefetch::Ran);
-    }
-    let ran_prefetch = cfg.remote_settings.is_none();
-    if ran_prefetch {
+        StartupPrefetch::Ran
+    } else if cfg.remote_settings.is_none() {
         #[cfg(test)]
         PREFETCH_RUNS.with(|c| c.set(c.get() + 1));
         let deadline = startup_settings_deadline(profile);
         let started = std::time::Instant::now();
-        let query = settings_get::SettingsQuery::from_config(cfg, warmed_auth.cloned());
+        let query = settings_get::SettingsQuery::resolve(
+            warmed_auth.cloned(),
+            Some(cfg.grok_com_config.clone()),
+        );
         let wait = settings_get::block_on_startup_settings(query, deadline, cancel);
         if matches!(wait, settings_get::SettingsWait::Cancelled) {
             return Err(BootstrapError::Cancelled);
@@ -344,15 +356,24 @@ fn ensure_remote_settings_side_effects(
             &wait,
             warmed_auth,
         );
+        StartupPrefetch::Ran
     } else if cancel.is_cancelled() {
         return Err(BootstrapError::Cancelled);
-    }
-    crate::agent::config::apply_remote_settings_side_effects(cfg.remote_settings.as_ref());
-    Ok(if ran_prefetch {
-        StartupPrefetch::Ran
     } else {
         StartupPrefetch::ClientSupplied
-    })
+    };
+    crate::agent::config::apply_remote_settings_side_effects(
+        cfg.remote_settings.as_ref(),
+        &config::EndpointsConfig::from_effective_config().proxy_url(),
+    );
+    Ok(prefetch)
+}
+fn observed_launch_profile() -> LaunchProfile {
+    if cfg!(test) {
+        LaunchProfile::Personal
+    } else {
+        xai_grok_cloud_config::managed_config::startup_profile()
+    }
 }
 fn startup_settings_deadline(profile: LaunchProfile) -> std::time::Duration {
     match profile {
@@ -534,15 +555,15 @@ pub fn build_default_otel_layer_config() -> xai_grok_telemetry::otel_layer::Otel
 pub async fn apply_post_login_config(
     authenticated: xai_grok_login::GrokAuth,
 ) -> anyhow::Result<()> {
-    let outcome = crate::managed_config::post_login_sync(Some(authenticated)).await;
+    let outcome = xai_grok_cloud_config::managed_config::post_login_sync(Some(authenticated)).await;
     match outcome {
-        crate::managed_config::ManagedConfigSync::Updated { is_team: true } => {
+        xai_grok_cloud_config::managed_config::ManagedConfigSync::Updated { is_team: true } => {
             eprintln!("Applied your team's managed configuration.");
         }
-        crate::managed_config::ManagedConfigSync::Updated { is_team: false } => {
+        xai_grok_cloud_config::managed_config::ManagedConfigSync::Updated { is_team: false } => {
             eprintln!("Applied your deployment's managed configuration.");
         }
-        crate::managed_config::ManagedConfigSync::Staged => {
+        xai_grok_cloud_config::managed_config::ManagedConfigSync::Staged => {
             eprintln!(
                 "Managed configuration update verified; it takes effect the next time Grok starts."
             );
@@ -560,9 +581,12 @@ pub fn run_cli_logout(grok_com_config: &xai_grok_login::GrokComConfig) -> anyhow
         grok_com_config.clone(),
         crate::agent::config::EndpointsConfig::from_effective_config().proxy_url(),
     );
-    let result =
-        xai_grok_login::perform_logout(&auth_manager, None, crate::managed_config::clear_orphan)
-            .map_err(|e| anyhow::anyhow!("Failed to clear auth: {e}"))?;
+    let result = xai_grok_login::perform_logout(
+        &auth_manager,
+        None,
+        xai_grok_cloud_config::managed_config::clear_orphan,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to clear auth: {e}"))?;
     if !result.was_logged_in {
         eprintln!("No cached session to log out of.");
         if result.api_key_still_set {

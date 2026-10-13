@@ -10,6 +10,7 @@ pub enum ActiveAgentMessageOutcome {
     NotFoundOrNotOwned,
     NotActiveOrFinalizing,
     Saturated,
+    QuotaExceeded,
     AdmissionUncertain,
     NotAcceptedBeforeDeadline,
     Unsupported,
@@ -25,6 +26,7 @@ pub enum ActiveAgentMessageOutcome {
 pub enum ActiveAgentMessageOperation {
     Queue,
     Steer,
+    Interject,
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
@@ -38,6 +40,19 @@ pub struct ActiveAgentMessageCompleted {
 pub struct ActiveAgentMessageLimitHit {
     pub max_bytes: u64,
     pub observed_bytes: u64,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActiveAgentMessageQuotaKind {
+    SenderTargetInFlight,
+    AttemptOutbound,
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct ActiveAgentMessageQuotaHit {
+    pub kind: ActiveAgentMessageQuotaKind,
+    pub limit: u64,
 }
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +82,16 @@ pub enum ActiveAgentMessageFallbackReason {
     Rewind,
 }
 
+/// How the safe point that delivered the message came about.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActiveAgentMessageSafePointTrigger {
+    /// The turn reached a safe point on its own.
+    Natural,
+    /// A pending interject aborted a blocking wait tool to reach the safe point early.
+    WaitAbort,
+}
+
 #[derive(Serialize, Debug, PartialEq, Eq)]
 pub struct ActiveAgentMessageSettled {
     pub disposition: ActiveAgentMessageSettlementDisposition,
@@ -77,6 +102,8 @@ pub struct ActiveAgentMessageSettled {
     pub fallback_reason: Option<ActiveAgentMessageFallbackReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safe_point_latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safe_point_trigger: Option<ActiveAgentMessageSafePointTrigger>,
     pub duration_ms: u64,
 }
 

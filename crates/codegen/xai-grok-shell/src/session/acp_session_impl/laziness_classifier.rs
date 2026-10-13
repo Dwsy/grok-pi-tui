@@ -19,7 +19,7 @@ pub(crate) const LAZINESS_DEFAULT_MIN_CONFIDENCE: f32 = 0.7;
 /// The window extends further back when the per-kind minimums below aren't yet satisfied.
 pub(crate) const LAZINESS_CONTEXT_ITEM_LIMIT: usize = 30;
 
-/// Minimum number of real user prompts (`User` items with `synthetic_reason == None`) in the classifier transcript.
+/// Minimum number of real user prompts (`User` items with `synthetic_reason == Human`) in the classifier transcript.
 /// A short final message like "yes" or "do it" carries no signal alone; the prior prompts give the classifier the context to interpret it.
 pub(crate) const LAZINESS_MIN_USER_TURNS: usize = 5;
 
@@ -257,7 +257,7 @@ pub(crate) fn flatten_transcript_for_classifier(
                         text.push_str(t);
                     }
                 }
-                if user.synthetic_reason == Some(SyntheticReason::AgentMessage) {
+                if user.synthetic_reason == SyntheticReason::AgentMessage {
                     let _ = writeln!(
                         out,
                         "[agent_message] {} {}",
@@ -324,20 +324,25 @@ pub(crate) fn neutralize_transcript_user_text(s: &str) -> String {
     // `i` only ever lands on a char boundary: needle jumps stop right after an ASCII colon, and char decoding advances by whole `char` widths
     let mut i = 0;
     while i < bytes.len() {
-        if let Some(needle) = ROLE_NEEDLES
-            .iter()
-            .find(|n| lower_bytes[i..].starts_with(n.as_bytes()))
-        {
+        if let Some(needle) = ROLE_NEEDLES.iter().find(|n| {
+            lower_bytes
+                .get(i..)
+                .is_some_and(|t| t.starts_with(n.as_bytes()))
+        }) {
             // Needles end in ':'; emit the (originally-cased) label, then " :".
             let colon = i + needle.len() - 1;
-            out.push_str(&s[i..colon]);
+            if let Some(label) = s.get(i..colon) {
+                out.push_str(label);
+            }
             out.push(' ');
             out.push(':');
             i = colon + 1;
             continue;
         }
         // Decode from the original to handle multibyte separators (NEL/LS/PS).
-        let ch = s[i..].chars().next().unwrap();
+        let Some(ch) = s.get(i..).and_then(|t| t.chars().next()) else {
+            break;
+        };
         let mapped = if matches!(
             ch,
             '\r' | '\n' | '\u{0085}' | '\u{000B}' | '\u{000C}' | '\u{2028}' | '\u{2029}'
@@ -372,7 +377,7 @@ pub(crate) fn build_classifier_turns(
                         .content
                         .iter()
                         .any(|part| matches!(part, ContentPart::Image { .. }));
-                let text = if user.synthetic_reason == Some(SyntheticReason::Interjection) {
+                let text = if user.synthetic_reason == SyntheticReason::Interjection {
                     item_text
                 } else if xai_chat_state::compaction_utils::is_real_user_turn(item)
                     && !is_project_instructions(item)
@@ -465,7 +470,7 @@ pub(crate) fn laziness_window_start(
     let mut nth_assistant_idx: Option<usize> = None;
     for (idx, item) in items.iter().enumerate().rev() {
         match item {
-            ConversationItem::User(u) if u.synthetic_reason.is_none() => {
+            ConversationItem::User(u) if u.synthetic_reason.is_human() => {
                 user_seen += 1;
                 if user_seen == min_user_turns.max(1) && nth_user_idx.is_none() {
                     nth_user_idx = Some(idx);
@@ -537,7 +542,7 @@ fn extract_first_balanced_object(raw: &str) -> Option<&str> {
     let mut depth: i32 = 0;
     let mut in_str = false;
     let mut escape = false;
-    for (offset, &b) in bytes[start..].iter().enumerate() {
+    for (offset, &b) in bytes.get(start..)?.iter().enumerate() {
         if in_str {
             if escape {
                 escape = false;

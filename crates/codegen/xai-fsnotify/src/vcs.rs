@@ -91,19 +91,15 @@ impl GitignoreCache {
     }
 
     fn get_or_load(&mut self, gitignore_path: &Path, root: &Path, mtime: SystemTime) -> &Gitignore {
-        let key = gitignore_path.to_path_buf();
-
-        if let Some((cached_mtime, _)) = self.cache.get(&key)
-            && *cached_mtime == mtime
-        {
-            return &self.cache[&key].1;
+        match self.cache.entry(gitignore_path.to_path_buf()) {
+            std::collections::hash_map::Entry::Occupied(o) if o.get().0 == mtime => &o.into_mut().1,
+            entry => {
+                let mut builder = GitignoreBuilder::new(root);
+                let _ = builder.add(gitignore_path);
+                let gitignore = builder.build().unwrap_or_else(|_| Gitignore::empty());
+                &entry.insert_entry((mtime, gitignore)).into_mut().1
+            }
         }
-
-        let mut builder = GitignoreBuilder::new(root);
-        let _ = builder.add(gitignore_path);
-        let gitignore = builder.build().unwrap_or_else(|_| Gitignore::empty());
-        self.cache.insert(key.clone(), (mtime, gitignore));
-        &self.cache[&key].1
     }
 }
 

@@ -156,8 +156,6 @@ pub fn set_last_used_permission(kind: DefaultSelectedPermission) {
     LAST_USED.with(|c| c.set(kind));
 }
 
-// ── Resolution ──────────────────────────────────────────────────────────────
-
 /// Sticky last-used, then configured default, then the YOLO row by identity, else index 0.
 /// A concrete target skips YOLO. A missing target kind degrades to one-shot allow, never to global always-approve.
 pub fn resolve_initial_cursor(options: &[acp::PermissionOption]) -> usize {
@@ -193,8 +191,6 @@ fn load_string_from_effective_config(key: &str) -> Option<String> {
         .as_str()
         .map(std::string::ToString::to_string)
 }
-
-// -- Tests -------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

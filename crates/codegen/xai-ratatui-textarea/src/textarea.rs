@@ -253,6 +253,13 @@ struct WrapCache {
     lines: Vec<Range<usize>>,
 }
 
+/// Whether a wrapped row's exclusive end is a cursor position on that row.
+#[derive(Debug, Clone, Copy)]
+enum RowEnd {
+    HardBreak,
+    SoftWrap,
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TextAreaState {
     /// Index into wrapped lines of the first visible line.
@@ -351,7 +358,10 @@ impl TextArea {
     /// Compute the drag-scroll interval for the given step count.
     fn drag_scroll_interval(step: u32) -> u128 {
         let ramp = Self::DRAG_SCROLL_RAMP_MS;
-        ramp[ramp.len().min(step as usize + 1) - 1]
+        match ramp.split_last() {
+            Some((last, rest)) => rest.get(step as usize).copied().unwrap_or(*last),
+            None => 80,
+        }
     }
 
     /// How many extra lines to scroll based on distance from area edge.
@@ -365,20 +375,15 @@ impl TextArea {
         }
     }
 
-    /// Clamp a buffer position so it stays within a wrapped line's range `[line_start, line_end)`. Uses `self.text` to find
-    /// the last valid char boundary inside the line so we never land in the middle of a multi-byte character.
+    /// Clamp `pos` to the start of the last grapheme in `[line_start, line_end)`. A result inside
+    /// an element is left to the caller: drag-scroll needs it so the selection expands over a chip.
     fn clamp_to_line(&self, pos: usize, line_start: usize, line_end: usize) -> usize {
-        if line_end > line_start {
-            // Find the start of the last character in the line.
-            let last_char_start = self.text[line_start..line_end]
-                .char_indices()
-                .next_back()
-                .map(|(i, _)| line_start + i)
-                .unwrap_or(line_start);
-            pos.min(last_char_start)
-        } else {
-            line_start
-        }
+        let last_grapheme_start = self
+            .text
+            .get(line_start..line_end)
+            .and_then(|line| line.grapheme_indices(true).next_back())
+            .map_or(line_start, |(i, _)| line_start + i);
+        pos.min(last_grapheme_start)
     }
 
     pub fn new() -> Self {
@@ -691,7 +696,7 @@ impl TextArea {
         let lines = self.wrapped_lines(tw);
         let effective_scroll = self.effective_scroll(area.height, &lines, state.scroll);
         let mut i = Self::wrapped_line_index_by_start(&lines, self.cursor())?;
-        let ls = &lines[i];
+        let ls = lines.get(i)?;
         let mut col = self.display_width_of_range(ls.start, self.cursor()) as u16;
 
         // If the cursor sits at the exact wrap boundary (col == content width), show it at the start of the next visual line
@@ -725,7 +730,7 @@ impl TextArea {
         let lines = self.wrapped_lines(tw);
         let effective_scroll = self.effective_scroll(area.height, &lines, state.scroll);
         let i = Self::wrapped_line_index_by_start(&lines, pos)?;
-        let ls = &lines[i];
+        let ls = lines.get(i)?;
         let col = self.display_width_of_range(ls.start, pos) as u16;
 
         let scroll = effective_scroll as usize;
@@ -821,12 +826,9 @@ impl TextArea {
 
         let visual_row = (row - area.y) as usize + scroll as usize;
 
-        // Below all text → end of text.
-        if visual_row >= lines.len() {
+        let Some(line) = lines.get(visual_row) else {
             return Some(self.text.len());
-        }
-
-        let line = &lines[visual_row];
+        };
         let target_col = (col - area.x) as usize;
         // Clamp line.end to text length (safety measure for edge cases).
         let line_end = line.end.min(self.text.len());
@@ -855,11 +857,9 @@ impl TextArea {
 
         let visual_row = (row - area.y) as usize + scroll as usize;
 
-        if visual_row >= lines.len() {
+        let Some(line) = lines.get(visual_row) else {
             return Some((self.text.len(), false));
-        }
-
-        let line = &lines[visual_row];
+        };
         let target_col = (col - area.x) as usize;
         let line_end = line.end.min(self.text.len());
         Some(self.display_col_to_buffer_pos(line.start, line_end, target_col))
@@ -921,7 +921,7 @@ impl TextArea {
     /// Text within the current selection (buffer text, not display text).
     pub fn selected_text(&self) -> Option<String> {
         let range = self.selection_range()?;
-        Some(self.text[range].to_string())
+        Some(self.text_slice(range).to_string())
     }
 
     /// Clear the selection without affecting the clipboard.
@@ -1166,7 +1166,8 @@ impl TextArea {
                         // Double-click: select word under cursor.
                         // Whitespace clicks just place the cursor (no selection).
                         let is_ws = pos < self.text.len()
-                            && self.text[pos..]
+                            && self
+                                .text_slice(pos..)
                                 .chars()
                                 .next()
                                 .is_none_or(|ch| ch.is_whitespace());
@@ -1179,7 +1180,8 @@ impl TextArea {
                             });
                             // Place cursor on the last character of the
                             // selection (neovim style), not one past the end.
-                            let cursor = self.text[start..end]
+                            let cursor = self
+                                .text_slice(start..end)
                                 .char_indices()
                                 .next_back()
                                 .map(|(i, _)| start + i)
@@ -1276,9 +1278,8 @@ impl TextArea {
                         let dist = area.y - event.row;
                         let n = Self::drag_scroll_lines_for_distance(dist);
                         let target_line = scroll.saturating_sub(n);
-                        let pos = if target_line < lines.len() {
+                        let pos = if let Some(line) = lines.get(target_line) {
                             let col = event.column.saturating_sub(area.x) as usize;
-                            let line = &lines[target_line];
                             let line_end = line.end.min(self.text.len());
                             let p = self.display_col_to_buffer_pos(line.start, line_end, col).0;
                             self.clamp_to_line(p, line.start, line_end)
@@ -1295,9 +1296,8 @@ impl TextArea {
                         let new_scroll = (target_line + 1)
                             .saturating_sub(area.height as usize)
                             .min(max_scroll);
-                        let pos = if target_line < lines.len() {
+                        let pos = if let Some(line) = lines.get(target_line) {
                             let col = event.column.saturating_sub(area.x) as usize;
-                            let line = &lines[target_line];
                             let line_end = line.end.min(self.text.len());
                             let pos = self.display_col_to_buffer_pos(line.start, line_end, col).0;
                             self.clamp_to_line(pos, line.start, line_end)
@@ -1387,9 +1387,11 @@ impl TextArea {
                 }
                 // If dragging, extend the selection head to follow the scroll.
                 let drag_new_pos = if self.drag_active {
-                    let target_line =
-                        (new_scroll as usize + area.height as usize - 1).min(lines.len() - 1);
-                    Some(lines[target_line].start)
+                    lines.len().checked_sub(1).and_then(|last| {
+                        let target_line =
+                            (new_scroll as usize + area.height as usize - 1).min(last);
+                        lines.get(target_line).map(|line| line.start)
+                    })
                 } else {
                     None
                 };
@@ -1421,11 +1423,7 @@ impl TextArea {
                 // If dragging, extend the selection head to follow the scroll.
                 let drag_new_pos = if self.drag_active {
                     let target_line = new_scroll as usize;
-                    Some(if target_line < lines.len() {
-                        lines[target_line].start
-                    } else {
-                        0
-                    })
+                    Some(lines.get(target_line).map(|line| line.start).unwrap_or(0))
                 } else {
                     None
                 };
@@ -1528,7 +1526,9 @@ impl TextArea {
         if row < area.y || row >= area.y + area.height {
             return false;
         }
-        scratch[(sb_x, row)].symbol() != " "
+        scratch
+            .cell((sb_x, row))
+            .is_some_and(|cell| cell.symbol() != " ")
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1566,15 +1566,15 @@ impl TextArea {
 
         // Determine the class of the character at `pos` (or just before if at end).
         let target_class = if pos < self.text.len() {
-            Self::char_class(self.text[pos..].chars().next().unwrap())
+            Self::char_class(self.text_slice(pos..).chars().next().unwrap_or('\0'))
         } else if pos > 0 {
-            let ch = self.text[..pos].chars().next_back().unwrap();
+            let ch = self.text_slice(..pos).chars().next_back().unwrap_or('\0');
             Self::char_class(ch)
         } else {
             return 0;
         };
 
-        let before = &self.text[..pos];
+        let before = self.text_slice(..pos);
         let word_start = before
             .char_indices()
             .rev()
@@ -1598,12 +1598,12 @@ impl TextArea {
 
         // Determine the class of the character at `pos`.
         let target_class = if pos < self.text.len() {
-            Self::char_class(self.text[pos..].chars().next().unwrap())
+            Self::char_class(self.text_slice(pos..).chars().next().unwrap_or('\0'))
         } else {
             return self.text.len();
         };
 
-        let after = &self.text[pos..];
+        let after = self.text_slice(pos..);
         let word_end = after
             .char_indices()
             .find(|&(_, ch)| Self::char_class(ch) != target_class)
@@ -1638,7 +1638,7 @@ impl TextArea {
             // Plain text before this element
             if pos < elem.range.start {
                 let plain_end = elem.range.start.min(to);
-                width += self.plain_display_width(&self.text[pos..plain_end]);
+                width += self.plain_display_width(self.text_slice(pos..plain_end));
                 pos = plain_end;
             }
             if pos >= to {
@@ -1661,12 +1661,13 @@ impl TextArea {
                         width += display_w;
                     } else {
                         width += self.plain_display_width(
-                            &self.text[elem_start_in_range..elem_end_in_range],
+                            self.text_slice(elem_start_in_range..elem_end_in_range),
                         );
                     }
                 } else {
-                    width += self
-                        .plain_display_width(&self.text[elem_start_in_range..elem_end_in_range]);
+                    width += self.plain_display_width(
+                        self.text_slice(elem_start_in_range..elem_end_in_range),
+                    );
                 }
                 pos = elem_end_in_range;
             }
@@ -1674,7 +1675,7 @@ impl TextArea {
 
         // Remaining plain text after all elements
         if pos < to {
-            width += self.plain_display_width(&self.text[pos..to]);
+            width += self.plain_display_width(self.text_slice(pos..to));
         }
 
         width
@@ -1685,6 +1686,30 @@ impl TextArea {
         // the predicate is false, i.e. the count of elements with start <= pos.
         let idx = lines.partition_point(|r| r.start <= pos);
         if idx == 0 { None } else { Some(idx - 1) }
+    }
+
+    /// Soft-wrapped rows are byte-adjacent because the wrap folds trailing spaces into the row;
+    /// a hard row leaves the newline or dropped whitespace between it and the next.
+    fn row_with_end(lines: &[Range<usize>], idx: usize) -> Option<(Range<usize>, RowEnd)> {
+        let row = lines.get(idx)?;
+        let end_kind = match lines.get(idx + 1) {
+            Some(next) if next.start == row.end => RowEnd::SoftWrap,
+            _ => RowEnd::HardBreak,
+        };
+        Some((row.clone(), end_kind))
+    }
+
+    fn clamp_to_row(&self, pos: usize, row: &Range<usize>, end_kind: RowEnd) -> usize {
+        match end_kind {
+            RowEnd::HardBreak => pos,
+            RowEnd::SoftWrap => {
+                let last_grapheme_start = self.clamp_to_line(pos, row.start, row.end);
+                // Elements wrap atomically: a soft row closed by one ends at the element's start.
+                self.find_element_containing(last_grapheme_start)
+                    .and_then(|idx| self.elements.get(idx))
+                    .map_or(last_grapheme_start, |element| element.range.start)
+            }
+        }
     }
 
     /// Map a display column to a buffer byte position on a given wrapped line. Pure query — does not mutate any state. If
@@ -1701,12 +1726,11 @@ impl TextArea {
 
         while pos < line_end {
             // Check if pos is at or inside an element
-            if let Some(elem_idx) = self
+            if let Some(elem) = self
                 .elements
                 .iter()
-                .position(|e| pos >= e.range.start && pos < e.range.end)
+                .find(|e| pos >= e.range.start && pos < e.range.end)
             {
-                let elem = &self.elements[elem_idx];
                 let elem_start = elem.range.start;
                 let elem_buf_end = elem.range.end;
                 // The visible portion of the element on this line
@@ -1721,7 +1745,7 @@ impl TextArea {
                             .map(|s| s.content.as_ref().width())
                             .sum()
                     } else {
-                        self.plain_display_width(&self.text[elem_start..elem_line_end])
+                        self.plain_display_width(self.text_slice(elem_start..elem_line_end))
                     };
 
                     if width_so_far + elem_display_w > target_col {
@@ -1741,7 +1765,7 @@ impl TextArea {
                 } else {
                     // We're in the middle of an element (e.g. a wrapped line starts
                     // mid-element). Skip past the rest of the element on this line.
-                    let partial_w = self.plain_display_width(&self.text[pos..elem_line_end]);
+                    let partial_w = self.plain_display_width(self.text_slice(pos..elem_line_end));
                     if width_so_far + partial_w > target_col {
                         // Snap to element's actual end boundary
                         return (elem_buf_end, true);
@@ -1753,7 +1777,7 @@ impl TextArea {
             }
 
             // Plain text grapheme
-            let slice = &self.text[pos..line_end];
+            let slice = self.text_slice(pos..line_end);
             if let Some(grapheme) = slice.graphemes(true).next() {
                 let grapheme_width = self.grapheme_display_width(grapheme);
                 width_so_far += grapheme_width;
@@ -1771,13 +1795,12 @@ impl TextArea {
 
     fn move_to_display_col_on_line(
         &mut self,
-        line_start: usize,
-        line_end: usize,
+        row: Range<usize>,
         target_col: usize,
+        end_kind: RowEnd,
     ) {
-        let cursor = self
-            .display_col_to_buffer_pos(line_start, line_end, target_col)
-            .0;
+        let (pos, _hit_element) = self.display_col_to_buffer_pos(row.start, row.end, target_col);
+        let cursor = self.clamp_to_row(pos, &row, end_kind);
         self.set_cursor_inner(cursor);
     }
 
@@ -1785,7 +1808,7 @@ impl TextArea {
         // Scan backward for '\n' that is NOT inside an element.
         // Newlines inside elements (e.g. multi-line paste) are not line boundaries.
         for i in (0..pos).rev() {
-            if self.text.as_bytes()[i] == b'\n' && !self.is_inside_element(i) {
+            if self.text.as_bytes().get(i).copied() == Some(b'\n') && !self.is_inside_element(i) {
                 return i + 1;
             }
         }
@@ -1798,7 +1821,7 @@ impl TextArea {
     fn end_of_line(&self, pos: usize) -> usize {
         // Scan forward for '\n' that is NOT inside an element.
         for i in pos..self.text.len() {
-            if self.text.as_bytes()[i] == b'\n' && !self.is_inside_element(i) {
+            if self.text.as_bytes().get(i).copied() == Some(b'\n') && !self.is_inside_element(i) {
                 return i;
             }
         }
@@ -2352,37 +2375,29 @@ impl TextArea {
     pub fn move_cursor_up(&mut self) {
         self.scroll_override = None;
         // If we have a wrapping cache, prefer navigating across wrapped (visual) lines.
-        if let Some((target_col, maybe_line)) = {
+        let wrapped_move = {
             let cache_ref = self.wrap_cache.borrow();
-            if let Some(cache) = cache_ref.as_ref() {
+            cache_ref.as_ref().and_then(|cache| {
                 let lines = &cache.lines;
-                if let Some(idx) = Self::wrapped_line_index_by_start(lines, self.cursor()) {
-                    let cur_range = &lines[idx];
-                    let target_col = self.preferred_col.unwrap_or_else(|| {
-                        self.display_width_of_range(cur_range.start, self.cursor())
-                    });
-                    if idx > 0 {
-                        let prev = &lines[idx - 1];
-                        let line_start = prev.start;
-                        let line_end = prev.end;
-                        Some((target_col, Some((line_start, line_end))))
-                    } else {
-                        Some((target_col, None))
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } {
+                let idx = Self::wrapped_line_index_by_start(lines, self.cursor())?;
+                let cur_range = lines.get(idx)?;
+                let target_col = self
+                    .preferred_col
+                    .unwrap_or_else(|| self.display_width_of_range(cur_range.start, self.cursor()));
+                let prev = idx
+                    .checked_sub(1)
+                    .and_then(|prev_idx| Self::row_with_end(lines, prev_idx));
+                Some((target_col, prev))
+            })
+        };
+        if let Some((target_col, maybe_line)) = wrapped_move {
             // We had wrapping info. Apply movement accordingly.
             match maybe_line {
-                Some((line_start, line_end)) => {
+                Some((prev, end_kind)) => {
                     if self.preferred_col.is_none() {
                         self.preferred_col = Some(target_col);
                     }
-                    self.move_to_display_col_on_line(line_start, line_end, target_col);
+                    self.move_to_display_col_on_line(prev, target_col, end_kind);
                     return;
                 }
                 None => {
@@ -2395,7 +2410,7 @@ impl TextArea {
         }
 
         // Fallback to logical line navigation if we don't have wrapping info yet.
-        if let Some(prev_nl) = self.text[..self.cursor()].rfind('\n') {
+        if let Some(prev_nl) = self.text_slice(..self.cursor()).rfind('\n') {
             let target_col = match self.preferred_col {
                 Some(c) => c,
                 None => {
@@ -2404,9 +2419,17 @@ impl TextArea {
                     c
                 }
             };
-            let prev_line_start = self.text[..prev_nl].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let prev_line_start = self
+                .text_slice(..prev_nl)
+                .rfind('\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
             let prev_line_end = prev_nl;
-            self.move_to_display_col_on_line(prev_line_start, prev_line_end, target_col);
+            self.move_to_display_col_on_line(
+                prev_line_start..prev_line_end,
+                target_col,
+                RowEnd::HardBreak,
+            );
         } else {
             self.set_cursor_inner(0);
             self.preferred_col = None;
@@ -2416,36 +2439,25 @@ impl TextArea {
     pub fn move_cursor_down(&mut self) {
         self.scroll_override = None;
         // If we have a wrapping cache, prefer navigating across wrapped (visual) lines.
-        if let Some((target_col, move_to_last)) = {
+        let wrapped_move = {
             let cache_ref = self.wrap_cache.borrow();
-            if let Some(cache) = cache_ref.as_ref() {
+            cache_ref.as_ref().and_then(|cache| {
                 let lines = &cache.lines;
-                if let Some(idx) = Self::wrapped_line_index_by_start(lines, self.cursor()) {
-                    let cur_range = &lines[idx];
-                    let target_col = self.preferred_col.unwrap_or_else(|| {
-                        self.display_width_of_range(cur_range.start, self.cursor())
-                    });
-                    if idx + 1 < lines.len() {
-                        let next = &lines[idx + 1];
-                        let line_start = next.start;
-                        let line_end = next.end;
-                        Some((target_col, Some((line_start, line_end))))
-                    } else {
-                        Some((target_col, None))
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } {
+                let idx = Self::wrapped_line_index_by_start(lines, self.cursor())?;
+                let cur_range = lines.get(idx)?;
+                let target_col = self
+                    .preferred_col
+                    .unwrap_or_else(|| self.display_width_of_range(cur_range.start, self.cursor()));
+                Some((target_col, Self::row_with_end(lines, idx + 1)))
+            })
+        };
+        if let Some((target_col, move_to_last)) = wrapped_move {
             match move_to_last {
-                Some((line_start, line_end)) => {
+                Some((next, end_kind)) => {
                     if self.preferred_col.is_none() {
                         self.preferred_col = Some(target_col);
                     }
-                    self.move_to_display_col_on_line(line_start, line_end, target_col);
+                    self.move_to_display_col_on_line(next, target_col, end_kind);
                     return;
                 }
                 None => {
@@ -2466,16 +2478,22 @@ impl TextArea {
                 c
             }
         };
-        if let Some(next_nl) = self.text[self.cursor()..]
+        if let Some(next_nl) = self
+            .text_slice(self.cursor()..)
             .find('\n')
             .map(|i| i + self.cursor())
         {
             let next_line_start = next_nl + 1;
-            let next_line_end = self.text[next_line_start..]
+            let next_line_end = self
+                .text_slice(next_line_start..)
                 .find('\n')
                 .map(|i| i + next_line_start)
                 .unwrap_or(self.text.len());
-            self.move_to_display_col_on_line(next_line_start, next_line_end, target_col);
+            self.move_to_display_col_on_line(
+                next_line_start..next_line_end,
+                target_col,
+                RowEnd::HardBreak,
+            );
         } else {
             self.set_cursor_inner(self.text.len());
             self.preferred_col = None;
@@ -2518,26 +2536,15 @@ impl TextArea {
         let cache = self.wrap_cache.borrow();
         let cache = cache.as_ref()?;
         let idx = Self::wrapped_line_index_by_start(&cache.lines, self.cursor())?;
-        Some(cache.lines[idx].start)
+        cache.lines.get(idx).map(|line| line.start)
     }
 
-    /// Soft-continued visual rows land on the last char (exclusive end is the
-    /// next row's start). Final segment of a logical line uses exclusive end.
     fn end_of_current_visual_line(&self) -> Option<usize> {
         let cache = self.wrap_cache.borrow();
         let cache = cache.as_ref()?;
         let idx = Self::wrapped_line_index_by_start(&cache.lines, self.cursor())?;
-        let line = &cache.lines[idx];
-        let end = line.end.min(self.text.len());
-        let soft_continued = cache
-            .lines
-            .get(idx + 1)
-            .is_some_and(|next| next.start == end);
-        if soft_continued && end > line.start {
-            Some(self.clamp_to_line(end, line.start, end))
-        } else {
-            Some(end)
-        }
+        let (line, end_kind) = Self::row_with_end(&cache.lines, idx)?;
+        Some(self.clamp_to_row(line.end, &line, end_kind))
     }
 
     // ===== Text elements support =====
@@ -2628,6 +2635,10 @@ impl TextArea {
         self.text().get(range)
     }
 
+    fn text_slice<R: std::slice::SliceIndex<str, Output = str>>(&self, range: R) -> &str {
+        self.text.get(range).unwrap_or("")
+    }
+
     /// Update the display for an existing element. Invalidates the wrap cache.
     pub fn set_element_display(&mut self, id: ElementId, display: Option<Line<'static>>) {
         if let Some(e) = self.elements.iter_mut().find(|e| e.id == id) {
@@ -2657,6 +2668,25 @@ impl TextArea {
         self.wrap_cache.replace(None);
     }
 
+    /// Register one element over existing buffer text without editing. `None` when `range` is not a valid slice or
+    /// strictly intersects an existing element (adjacent ranges are accepted). Not undoable, like [`Self::restore_elements`].
+    pub fn restore_element(
+        &mut self,
+        range: Range<usize>,
+        kind: ElementKind,
+        display: Option<Line<'static>>,
+    ) -> Option<ElementId> {
+        self.get_range(range.clone())?;
+        let intersects = self
+            .elements
+            .iter()
+            .any(|e| e.range.start < range.end && range.start < e.range.end);
+        if intersects {
+            return None;
+        }
+        Some(self.add_element(range, kind, display))
+    }
+
     /// Inline an element: remove it from the element list so its buffer text becomes plain editable characters. The text
     /// content is unchanged. The cursor is placed at the end of the inlined region. This operation is a single undoable step.
     /// Returns `true` if the element was found and inlined, `false` otherwise.
@@ -2664,7 +2694,9 @@ impl TextArea {
         let Some(idx) = self.elements.iter().position(|e| e.id == id) else {
             return false;
         };
-        let end = self.elements[idx].range.end;
+        let Some(end) = self.elements.get(idx).map(|e| e.range.end) else {
+            return false;
+        };
 
         // Snapshot for undo before removing the element.
         self.pre_mutate(MutationKind::Element);
@@ -2688,10 +2720,12 @@ impl TextArea {
         let pos = self.cursor().min(self.text.len());
 
         // Find word start: scan backward from cursor to find whitespace boundary
-        let start = self.text[..pos]
+        let start = self
+            .text_slice(..pos)
             .rfind(|c: char| c.is_whitespace())
             .map(|i| {
-                i + self.text[i..]
+                i + self
+                    .text_slice(i..)
                     .chars()
                     .next()
                     .map(|c| c.len_utf8())
@@ -2700,7 +2734,8 @@ impl TextArea {
             .unwrap_or(0);
 
         // Find word end: scan forward from cursor to find whitespace boundary
-        let end = self.text[pos..]
+        let end = self
+            .text_slice(pos..)
             .find(|c: char| c.is_whitespace())
             .map(|i| i + pos)
             .unwrap_or(self.text.len());
@@ -2714,7 +2749,7 @@ impl TextArea {
 
         // If cursor is beyond the word end (cursor at whitespace after word), return None
         // Unless cursor is exactly at start position of the word
-        let word = &self.text[start..end];
+        let word = self.text_slice(start..end);
         if word.chars().all(|c| c.is_whitespace()) {
             return None;
         }
@@ -2733,7 +2768,9 @@ impl TextArea {
             pos = self.text.len();
         }
         if let Some(idx) = self.find_element_containing(pos) {
-            let e = &self.elements[idx];
+            let Some(e) = self.elements.get(idx) else {
+                return pos;
+            };
             let dist_start = pos.saturating_sub(e.range.start);
             let dist_end = e.range.end.saturating_sub(pos);
             if dist_start <= dist_end {
@@ -2831,7 +2868,9 @@ impl TextArea {
 
     fn adjust_pos_out_of_elements(&self, pos: usize, prefer_start: bool) -> usize {
         if let Some(idx) = self.find_element_containing(pos) {
-            let e = &self.elements[idx];
+            let Some(e) = self.elements.get(idx) else {
+                return pos;
+            };
             if prefer_start {
                 e.range.start
             } else {
@@ -2917,7 +2956,7 @@ impl TextArea {
                 pos = elem.range.end;
                 continue;
             }
-            if self.text.as_bytes()[pos] == b'\n' {
+            if self.text.as_bytes().get(pos).copied() == Some(b'\n') {
                 return pos;
             }
             pos += 1;
@@ -2960,7 +2999,7 @@ impl TextArea {
                         .map(|s| s.content.as_ref().width())
                         .sum()
                 } else {
-                    self.plain_display_width(&self.text[elem.range.start..elem_end])
+                    self.plain_display_width(self.text_slice(elem.range.start..elem_end))
                 };
 
                 if display_w > 0 && display_w + elem_dw > width {
@@ -2989,7 +3028,7 @@ impl TextArea {
             }
 
             // Plain text grapheme cluster
-            let slice = &self.text[pos..end];
+            let slice = self.text_slice(pos..end);
             let Some(grapheme) = slice.graphemes(true).next() else {
                 break;
             };
@@ -3167,8 +3206,12 @@ impl TextArea {
         for row in 0..sb_area.height {
             let x = sb_area.x;
             let y = sb_area.y + row;
-            let src = &scratch[(x, y)];
-            let dst = &mut buf[(x, y)];
+            let Some(src) = scratch.cell((x, y)) else {
+                continue;
+            };
+            let Some(dst) = buf.cell_mut((x, y)) else {
+                continue;
+            };
             let symbol = src.symbol();
             dst.set_symbol(symbol);
             if symbol == " " {
@@ -3190,7 +3233,9 @@ impl TextArea {
         let sel_range = self.selection_range();
 
         for (row, idx) in range.enumerate() {
-            let r = &lines[idx];
+            let Some(r) = lines.get(idx) else {
+                continue;
+            };
             let y = area.y + row as u16;
             let line_range = r.start..r.end;
 
@@ -3217,7 +3262,7 @@ impl TextArea {
 
                 // 1. Render plain text before this element (buf_pos..overlap_start)
                 if buf_pos < overlap_start && display_x < area.width {
-                    let plain = &self.text[buf_pos..overlap_start];
+                    let plain = self.text_slice(buf_pos..overlap_start);
                     let avail = (area.width - display_x) as usize;
                     let (paint, paint_w) = paint_plain_for_display(plain, avail, self.tab_width);
                     buf.set_string(area.x + display_x, y, paint.as_ref(), Style::default());
@@ -3251,7 +3296,7 @@ impl TextArea {
                     // display_x doesn't advance (already blank in the buffer).
                 } else {
                     // No custom display: render buffer text with default element style.
-                    let styled = &self.text[overlap_start..overlap_end];
+                    let styled = self.text_slice(overlap_start..overlap_end);
                     let style = Style::default().fg(Color::Cyan);
                     let (paint, paint_w) = paint_plain_for_display(styled, avail, self.tab_width);
                     buf.set_string(area.x + display_x, y, paint.as_ref(), style);
@@ -3263,7 +3308,7 @@ impl TextArea {
 
             // 3. Render any remaining plain text after the last element
             if buf_pos < line_range.end && display_x < area.width {
-                let plain = &self.text[buf_pos..line_range.end];
+                let plain = self.text_slice(buf_pos..line_range.end);
                 let avail = (area.width - display_x) as usize;
                 let (paint, paint_w) = paint_plain_for_display(plain, avail, self.tab_width);
                 buf.set_string(area.x + display_x, y, paint.as_ref(), Style::default());
@@ -3287,8 +3332,9 @@ impl TextArea {
                     let col_start = col_start.min(area.width);
                     let col_end = col_end.min(area.width);
                     for cx in col_start..col_end {
-                        let cell = &mut buf[(area.x + cx, y)];
-                        cell.set_style(self.selection_style);
+                        if let Some(cell) = buf.cell_mut((area.x + cx, y)) {
+                            cell.set_style(self.selection_style);
+                        }
                     }
                 }
             }
@@ -3339,7 +3385,7 @@ fn clip_str_to_display_width_with_tab(s: &str, max_width: usize, tab_width: u8) 
     for (i, grapheme) in s.grapheme_indices(true) {
         let grapheme_width = grapheme_display_width_with_tab(grapheme, tab_width);
         if width + grapheme_width > max_width {
-            return &s[..i];
+            return s.get(..i).unwrap_or("");
         }
         width += grapheme_width;
     }

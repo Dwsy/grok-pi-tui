@@ -1,8 +1,7 @@
+use crate::implementations::grok_build::read_file::MAX_LINES_READ;
 use std::collections::HashMap;
 
-const MAX_LINES_READ_DEFAULT: usize = 1_000;
-
-/// Client-configurable truncation settings. All fields are optional — `None` means "use the tool's built-in default".
+/// Client-configurable truncation settings. Scalar fields are optional — `None` means "use the tool's built-in default".
 /// There is deliberately no per-line cap: clipping long lines silently corrupts single-line files (minified JSON, data
 /// dumps) with no way for the model to recover the clipped bytes.
 #[derive(Debug, Clone, Default)]
@@ -17,12 +16,29 @@ pub struct TruncationConfig {
     /// `default_max_output_bytes`. Deliberately separate from `default_max_output_bytes` so an MCP-specific override (e.g. a repo's `[mcp]
     /// max_output_bytes`) never changes non-MCP readers like the opencode bash cap.
     pub mcp_max_output_bytes: Option<usize>,
+    pub whole_read: WholeReadPolicy,
+}
+
+/// Which files `read_file` returns whole under the token cap; a bit that is off makes its class a regular file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct WholeReadPolicy {
+    pub skill_markdown: bool,
+    pub instruction_files: bool,
+}
+
+impl Default for WholeReadPolicy {
+    fn default() -> WholeReadPolicy {
+        WholeReadPolicy {
+            skill_markdown: true,
+            instruction_files: true,
+        }
+    }
 }
 
 impl TruncationConfig {
     /// Resolved max lines per `read_file` window.
     pub fn max_lines_read(&self) -> usize {
-        self.max_lines_read.unwrap_or(MAX_LINES_READ_DEFAULT)
+        self.max_lines_read.unwrap_or(MAX_LINES_READ)
     }
 
     /// Resolve the max output bytes for a specific tool.
@@ -113,10 +129,7 @@ mod tests {
 
     #[test]
     fn max_lines_read_default_and_override() {
-        assert_eq!(
-            TruncationConfig::default().max_lines_read(),
-            MAX_LINES_READ_DEFAULT
-        );
+        assert_eq!(TruncationConfig::default().max_lines_read(), MAX_LINES_READ);
         let cfg = TruncationConfig {
             max_lines_read: Some(50),
             ..Default::default()
@@ -157,12 +170,26 @@ mod tests {
         });
         cfg.apply_to_schema(&mut schema, "get_task_output", 40_000, cap);
 
-        let timeout = &schema["properties"]["timeout_ms"];
-        assert_eq!(timeout["description"], "Wait up to 300000 (~5 min).");
-        assert_eq!(timeout["maximum"], serde_json::json!(300_000u64));
+        let Some(timeout) = schema.pointer("/properties/timeout_ms") else {
+            panic!("expected timeout_ms: {schema}");
+        };
+        assert_eq!(
+            timeout.get("description").and_then(|v| v.as_str()),
+            Some("Wait up to 300000 (~5 min).")
+        );
+        assert_eq!(timeout.get("maximum"), Some(&serde_json::json!(300_000u64)));
         // Only the property documenting the wait gets a ceiling.
-        assert_eq!(schema["properties"]["task_ids"]["description"], "Task IDs.");
-        assert!(schema["properties"]["task_ids"].get("maximum").is_none());
+        assert_eq!(
+            schema
+                .pointer("/properties/task_ids/description")
+                .and_then(|v| v.as_str()),
+            Some("Task IDs.")
+        );
+        assert!(
+            schema
+                .pointer("/properties/task_ids")
+                .is_none_or(|p| p.get("maximum").is_none())
+        );
     }
 
     #[test]
@@ -179,12 +206,14 @@ mod tests {
         cfg.apply_to_schema(&mut schema, "get_task_output", 40_000, cap);
 
         assert_eq!(
-            schema["properties"]["max_wait"]["description"],
-            "Up to 900000 (~15 min)."
+            schema
+                .pointer("/properties/max_wait/description")
+                .and_then(|v| v.as_str()),
+            Some("Up to 900000 (~15 min).")
         );
         assert_eq!(
-            schema["properties"]["max_wait"]["maximum"],
-            serde_json::json!(900_000u64)
+            schema.pointer("/properties/max_wait/maximum"),
+            Some(&serde_json::json!(900_000u64))
         );
     }
 
@@ -196,23 +225,33 @@ mod tests {
         let generated =
             serde_json::to_value(schemars::schema_for!(xai_tool_types::TaskOutputToolInput))
                 .unwrap();
-        let timeout = &generated["properties"]["timeout_ms"];
+        let Some(timeout) = generated.pointer("/properties/timeout_ms") else {
+            panic!("expected timeout_ms: {generated}");
+        };
         assert!(
             timeout.get("anyOf").is_none(),
             "shape changed to anyOf — a root `maximum` no longer constrains the \
              integer arm, so apply_to_schema must walk the branches: {timeout}"
         );
-        assert_eq!(timeout["type"], serde_json::json!(["integer", "null"]));
+        assert_eq!(
+            timeout.get("type"),
+            Some(&serde_json::json!(["integer", "null"]))
+        );
 
         let cfg = TruncationConfig::default();
         let cap = 300_000;
         let mut schema = generated.clone();
         cfg.apply_to_schema(&mut schema, "get_task_output", 40_000, cap);
 
-        let bounded = &schema["properties"]["timeout_ms"];
-        assert_eq!(bounded["maximum"], serde_json::json!(300_000u64));
+        let Some(bounded) = schema.pointer("/properties/timeout_ms") else {
+            panic!("expected timeout_ms: {schema}");
+        };
+        assert_eq!(bounded.get("maximum"), Some(&serde_json::json!(300_000u64)));
         assert!(
-            !bounded["description"].as_str().unwrap().contains("{max_"),
+            bounded
+                .get("description")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.contains("{max_")),
             "placeholder survived: {bounded}"
         );
     }

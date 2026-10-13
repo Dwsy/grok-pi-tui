@@ -1,6 +1,6 @@
 use agent_client_protocol as acp;
 use serde::Serialize;
-use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
+use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption, effort_label};
 
 use crate::session::unified_list::SessionKind;
 
@@ -52,19 +52,6 @@ impl GrokSessionDetail {
             title,
         }
     }
-}
-
-fn effort_label(effort: ReasoningEffort) -> String {
-    match effort {
-        ReasoningEffort::None => "None",
-        ReasoningEffort::Minimal => "Minimal",
-        ReasoningEffort::Low => "Low",
-        ReasoningEffort::Medium => "Medium",
-        ReasoningEffort::High => "High",
-        ReasoningEffort::Xhigh => "X-High",
-        ReasoningEffort::Max => "Max",
-    }
-    .to_string()
 }
 
 /// The built-in session-picker modes used when the model has no server list.
@@ -156,12 +143,16 @@ pub(crate) fn build_acp_config_options(
                 .find(|option| option.value == effort)
                 .map(|option| option.id.clone())
                 .unwrap_or_else(|| effort.as_ref().to_string()),
-            None => effort_options
-                .iter()
-                .find(|option| option.default)
-                .unwrap_or(&effort_options[0])
-                .id
-                .clone(),
+            None => {
+                let Some(option) = effort_options
+                    .iter()
+                    .find(|option| option.default)
+                    .or(effort_options.first())
+                else {
+                    return options;
+                };
+                option.id.clone()
+            }
         };
         let values: Vec<acp::SessionConfigSelectOption> = effort_options
             .iter()
@@ -214,14 +205,20 @@ mod tests {
         assert_eq!(model_opts.len(), 2);
         let selected_models: Vec<_> = model_opts.iter().filter(|o| o.selected).collect();
         assert_eq!(selected_models.len(), 1);
-        assert_eq!(selected_models[0].id, "grok-build");
+        let Some(selected_model) = selected_models.first() else {
+            panic!("expected one selected model: {selected_models:?}");
+        };
+        assert_eq!(selected_model.id, "grok-build");
 
         let mode_opts: Vec<_> = opts.iter().filter(|o| o.category == "mode").collect();
         assert_eq!(mode_opts.len(), SELECTABLE_REASONING_EFFORTS.len());
         let selected_modes: Vec<_> = mode_opts.iter().filter(|o| o.selected).collect();
         assert_eq!(selected_modes.len(), 1);
-        assert_eq!(selected_modes[0].id, "high");
-        assert_eq!(selected_modes[0].label, "High");
+        let Some(selected_mode) = selected_modes.first() else {
+            panic!("expected one selected mode: {selected_modes:?}");
+        };
+        assert_eq!(selected_mode.id, "high");
+        assert_eq!(selected_mode.label, "High");
     }
 
     #[test]
@@ -254,7 +251,10 @@ mod tests {
         let models = [model("grok-build", "")];
         let current = acp::ModelId::from("grok-build");
         let opts = build_session_config_options(&models, &current, &[], None);
-        assert_eq!(opts[0].label, "grok-build");
+        let Some(first) = opts.first() else {
+            panic!("expected one option: {opts:?}");
+        };
+        assert_eq!(first.label, "grok-build");
     }
 
     #[test]
@@ -267,10 +267,10 @@ mod tests {
             selected: true,
         };
         let v = serde_json::to_value(&opt).expect("serialize");
-        assert_eq!(v["id"], "grok-build");
-        assert_eq!(v["category"], "model");
-        assert_eq!(v["label"], "Grok Build");
-        assert_eq!(v["selected"], true);
+        assert_eq!(v.get("id").and_then(|x| x.as_str()), Some("grok-build"));
+        assert_eq!(v.get("category").and_then(|x| x.as_str()), Some("model"));
+        assert_eq!(v.get("label").and_then(|x| x.as_str()), Some("Grok Build"));
+        assert_eq!(v.get("selected").and_then(|x| x.as_bool()), Some(true));
         assert!(v.get("description").is_none());
     }
 
@@ -283,10 +283,13 @@ mod tests {
             None,
         );
         let v = serde_json::to_value(&detail).expect("serialize");
-        assert_eq!(v["sessionId"], "sess-1");
-        assert_eq!(v["kind"], "build");
-        assert_eq!(v["cwd"], "/Users/me/xai");
-        assert_eq!(v["currentModelId"], "grok-build");
+        assert_eq!(v.get("sessionId").and_then(|x| x.as_str()), Some("sess-1"));
+        assert_eq!(v.get("kind").and_then(|x| x.as_str()), Some("build"));
+        assert_eq!(v.get("cwd").and_then(|x| x.as_str()), Some("/Users/me/xai"));
+        assert_eq!(
+            v.get("currentModelId").and_then(|x| x.as_str()),
+            Some("grok-build")
+        );
         assert!(v.get("title").is_none());
     }
 

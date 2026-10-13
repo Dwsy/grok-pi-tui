@@ -3,6 +3,8 @@
 //!
 //! Every client pins rustls: feature unification can otherwise select native-tls, whose untyped errors break the certificate classifier.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -17,14 +19,20 @@ pub const ENV_GROK_EXTRA_CA_BUNDLE: &str = "GROK_EXTRA_CA_BUNDLE";
 
 pub const ENV_SSL_CERT_FILE: &str = "SSL_CERT_FILE";
 
+/// ring on Windows ARM64: aws-lc-sys's jitterentropy is miscompiled for that target and overflows the stack on the first TLS handshake (xai-org/plugin-marketplace#426).
+const IS_RING_TARGET: bool = cfg!(all(windows, target_arch = "aarch64"));
+
+/// Installs aws-lc-rs, or ring where `IS_RING_TARGET`.
 /// First install wins; without a default, `ClientConfig::builder()` panics when `ring` and `aws-lc-rs` are both compiled in.
 pub fn ensure_default_crypto_provider() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        if rustls::crypto::aws_lc_rs::default_provider()
-            .install_default()
-            .is_err()
-        {
+        let provider = if IS_RING_TARGET {
+            rustls::crypto::ring::default_provider()
+        } else {
+            rustls::crypto::aws_lc_rs::default_provider()
+        };
+        if provider.install_default().is_err() {
             let supports_p521 = rustls::crypto::CryptoProvider::get_default().is_some_and(|p| {
                 p.signature_verification_algorithms
                     .supported_schemes()
@@ -85,8 +93,8 @@ fn shared_reqwest_roots() -> impl Iterator<Item = reqwest::Certificate> {
         .get_or_init(|| {
             cached_native_der()
                 .iter()
-                .map(|der| &der[..])
-                .chain(extra_root_ders().iter().map(|der| &der[..]))
+                .map(|der| der.as_ref())
+                .chain(extra_root_ders().iter().map(Vec::as_slice))
                 .filter_map(|der| {
                     reqwest::Certificate::from_der(der)
                         .inspect_err(|error| {
@@ -132,17 +140,13 @@ fn client_config_with_shared_roots() -> rustls::ClientConfig {
     roots.add_parsable_certificates(cached_native_der().iter().cloned());
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     roots.add_parsable_certificates(extra_root_ders().iter().cloned().map(CertificateDer::from));
-    #[expect(clippy::expect_used)]
-    rustls::ClientConfig::builder_with_provider(
-        rustls::crypto::aws_lc_rs::default_provider().into(),
-    )
-    .with_safe_default_protocol_versions()
-    .expect("aws-lc-rs supports the default protocol versions")
-    .with_root_certificates(roots)
-    .with_no_client_auth()
+    // Must stay on builder(): naming a provider here would bypass the per-target choice in ensure_default_crypto_provider.
+    rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth()
 }
 
-/// Shared rustls config for TLS outside reqwest (WebSocket, HTTP/1.1 upgrade), pinned to this crate's provider.
+/// Shared rustls config for TLS outside reqwest (WebSocket, HTTP/1.1 upgrade), using the process default provider.
 pub fn rustls_client_config() -> Arc<rustls::ClientConfig> {
     static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     CONFIG
@@ -177,7 +181,7 @@ fn der_to_pem(der: &[u8]) -> Vec<u8> {
     let mut offset = 0;
     while offset < body.len() {
         let end = (offset + 64).min(body.len());
-        pem.push_str(&body[offset..end]);
+        pem.push_str(body.get(offset..end).unwrap_or(""));
         pem.push('\n');
         offset = end;
     }

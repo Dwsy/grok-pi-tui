@@ -308,7 +308,7 @@ mod tests {
                 Err(e) => failures.push(format!("iteration {i}: build failed: {e:#}")),
                 Ok(archive) => {
                     use flate2::read::GzDecoder;
-                    let mut ar = tar::Archive::new(GzDecoder::new(&archive[..]));
+                    let mut ar = tar::Archive::new(GzDecoder::new(archive.as_slice()));
                     let mut sentinel = None;
                     for entry in ar.entries().unwrap() {
                         let Ok(mut entry) = entry else {

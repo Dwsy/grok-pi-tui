@@ -466,7 +466,11 @@ fn render_list(buf: &mut Buffer, area: Rect, st: &mut TutorialState, compact: bo
                 selected: i == st.picker.selected,
                 expanded: narrow,
                 fields: &[],
-                description_lines: if narrow { &blurb_slices[i][..] } else { &[] },
+                description_lines: if narrow {
+                    blurb_slices.get(i).map(|s| s.as_slice()).unwrap_or(&[])
+                } else {
+                    &[]
+                },
                 summary_lines: &[],
                 dimmed: false,
                 indent: 0,
@@ -548,7 +552,9 @@ mod tests {
         let mut st = TutorialState::new();
         st.open_topic(0);
         assert!(
-            tutorial_topics()[0].go_deeper.is_some(),
+            TUTORIAL_TOPICS
+                .first()
+                .is_some_and(|t| t.go_deeper.is_some()),
             "topic 0 has a guide"
         );
 
@@ -564,7 +570,9 @@ mod tests {
     fn d_is_a_noop_on_a_topic_without_a_guide() {
         let last = tutorial_topics().len() - 1;
         assert!(
-            tutorial_topics()[last].go_deeper.is_none(),
+            TUTORIAL_TOPICS
+                .last()
+                .is_some_and(|t| t.go_deeper.is_none()),
             "the closing topic intentionally has no single guide"
         );
         let mut st = TutorialState::new();

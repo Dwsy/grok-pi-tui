@@ -205,7 +205,10 @@ mod tests {
         .expect("valid meta");
         assert_eq!(meta.name, "demo");
         assert_eq!(meta.phases.len(), 2);
-        assert_eq!(meta.phases[1].detail.as_deref(), Some("apply"));
+        assert_eq!(
+            meta.phases.get(1).and_then(|p| p.detail.as_deref()),
+            Some("apply")
+        );
     }
 
     #[test]

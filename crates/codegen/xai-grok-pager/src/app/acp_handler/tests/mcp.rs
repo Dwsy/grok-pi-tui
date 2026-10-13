@@ -2,29 +2,15 @@
     use super::*;
 
     #[test]
-    fn mcp_init_progress_updates_seeded_progress_in_place() {
-        // When a session is seeded with mcp_init_progress{0,0}, a subsequent init_progress notification must update total and connected IN PLACE
-        // started_at is preserved so the timer stays accurate
+    fn mcp_init_progress_overwrites_the_counts() {
         let mut app = make_app_with_agent("sess-1");
-        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-        agent.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
-            total: 0,
-            connected: 0,
-            started_at: Instant::now(),
-        });
-        let started_at = agent.mcp_init_progress.as_ref().unwrap().started_at;
+        handle_ext_notification(&make_mcp_init_progress_notif(5, 0), &mut app);
 
-        let notif = make_mcp_init_progress_notif(5, 0);
-        let changed = handle_ext_notification(&notif, &mut app);
+        let changed = handle_ext_notification(&make_mcp_init_progress_notif(5, 2), &mut app);
         assert!(changed);
 
-        let progress = app.agents[&AgentId(0)].mcp_init_progress.as_ref().unwrap();
-        assert_eq!(progress.total, 5, "total must be updated from shell");
-        assert_eq!(progress.connected, 0);
-        assert_eq!(
-            progress.started_at, started_at,
-            "started_at must be preserved (timer anchoring)",
-        );
+        let progress = test_agent(&app, AgentId(0)).mcp_init_progress.as_ref().unwrap();
+        assert_eq!((progress.total, progress.connected), (5, 2));
     }
 
     #[test]
@@ -82,9 +68,12 @@
         let TabDataState::Loaded(ref owner_servers) = owner_modal.mcps_data else {
             panic!("owner modal must still be in Loaded state");
         };
-        assert_eq!(owner_servers[0].status, McpServerDisplayStatus::Ready);
-        assert_eq!(owner_servers[0].tool_count, 2);
-        assert_eq!(owner_servers[0].tools.len(), 2);
+        let Some(owner) = owner_servers.first() else {
+            panic!("expected an owner server");
+        };
+        assert_eq!(owner.status, McpServerDisplayStatus::Ready);
+        assert_eq!(owner.tool_count, 2);
+        assert_eq!(owner.tools.len(), 2);
 
         // Active agent's modal must be untouched.
         let active_modal = app
@@ -97,8 +86,11 @@
         let TabDataState::Loaded(ref active_servers) = active_modal.mcps_data else {
             panic!("active modal must still be in Loaded state");
         };
+        let Some(active) = active_servers.first() else {
+            panic!("expected an active server");
+        };
         assert_eq!(
-            active_servers[0].status,
+            active.status,
             McpServerDisplayStatus::Initializing,
             "active-view agent must not absorb the owning agent's push"
         );
@@ -106,15 +98,15 @@
 
     #[test]
     fn mcp_init_progress_creates_when_none() {
-        // When mcp_init_progress is None (no seed), init_progress creates a fresh McpInitProgress
+        // The first init_progress creates McpInitProgress
         let mut app = make_app_with_agent("sess-1");
-        assert!(app.agents[&AgentId(0)].mcp_init_progress.is_none());
+        assert!(test_agent(&app, AgentId(0)).mcp_init_progress.is_none());
 
         let notif = make_mcp_init_progress_notif(3, 1);
         let changed = handle_ext_notification(&notif, &mut app);
         assert!(changed);
 
-        let progress = app.agents[&AgentId(0)].mcp_init_progress.as_ref().unwrap();
+        let progress = test_agent(&app, AgentId(0)).mcp_init_progress.as_ref().unwrap();
         assert_eq!(progress.total, 3);
         assert_eq!(progress.connected, 1);
     }
@@ -127,50 +119,44 @@
         agent.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
             total: 3,
             connected: 3,
-            started_at: Instant::now(),
         });
 
         let notif = make_mcp_initialized_notif("sess-1");
         let changed = handle_ext_notification(&notif, &mut app);
         assert!(changed);
         assert!(
-            app.agents[&AgentId(0)].mcp_init_progress.is_none(),
+            test_agent(&app, AgentId(0)).mcp_init_progress.is_none(),
             "mcp_initialized must clear mcp_init_progress",
         );
     }
 
     #[test]
-    fn mcp_full_lifecycle_seed_to_clear() {
+    fn mcp_full_lifecycle_creates_then_clears() {
         // Full N-server lifecycle:
-        //   seed(0/0) → init_progress(0/3) → init_progress(2/3)
+        //   init_progress(0/3) → init_progress(2/3)
         //   → init_progress(3/3) → mcp_initialized → None
         let mut app = make_app_with_agent("sess-1");
-        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-        agent.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
-            total: 0,
-            connected: 0,
-            started_at: Instant::now(),
-        });
+        assert!(test_agent(&app, AgentId(0)).mcp_init_progress.is_none());
 
         // The shell reports the real count
         handle_ext_notification(&make_mcp_init_progress_notif(3, 0), &mut app);
-        let p = app.agents[&AgentId(0)].mcp_init_progress.as_ref().unwrap();
+        let p = test_agent(&app, AgentId(0)).mcp_init_progress.as_ref().unwrap();
         assert_eq!((p.total, p.connected), (3, 0));
 
         // Incremental progress.
         handle_ext_notification(&make_mcp_init_progress_notif(3, 2), &mut app);
-        let p = app.agents[&AgentId(0)].mcp_init_progress.as_ref().unwrap();
+        let p = test_agent(&app, AgentId(0)).mcp_init_progress.as_ref().unwrap();
         assert_eq!((p.total, p.connected), (3, 2));
 
         // All connected.
         handle_ext_notification(&make_mcp_init_progress_notif(3, 3), &mut app);
-        let p = app.agents[&AgentId(0)].mcp_init_progress.as_ref().unwrap();
+        let p = test_agent(&app, AgentId(0)).mcp_init_progress.as_ref().unwrap();
         assert_eq!((p.total, p.connected), (3, 3));
 
         // mcp_initialized clears everything.
         handle_ext_notification(&make_mcp_initialized_notif("sess-1"), &mut app);
         assert!(
-            app.agents[&AgentId(0)].mcp_init_progress.is_none(),
+            test_agent(&app, AgentId(0)).mcp_init_progress.is_none(),
             "mcp_initialized must clear progress after full lifecycle",
         );
     }
@@ -178,25 +164,20 @@
     #[test]
     fn mcp_zero_server_lifecycle() {
         // 0-server lifecycle (the bug scenario):
-        //   seed(0/0) → init_progress(0/0) → mcp_initialized → None
+        //   init_progress(0/0) → mcp_initialized → None
         // Previously mcp_initialized was never sent for 0 servers, leaving a stuck progress indicator
         let mut app = make_app_with_agent("sess-1");
-        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-        agent.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
-            total: 0,
-            connected: 0,
-            started_at: Instant::now(),
-        });
+        assert!(test_agent(&app, AgentId(0)).mcp_init_progress.is_none());
 
         // The shell sends 0/0 for the 0-server case
         handle_ext_notification(&make_mcp_init_progress_notif(0, 0), &mut app);
-        let p = app.agents[&AgentId(0)].mcp_init_progress.as_ref().unwrap();
+        let p = test_agent(&app, AgentId(0)).mcp_init_progress.as_ref().unwrap();
         assert_eq!((p.total, p.connected), (0, 0));
 
         // The shell now sends mcp_initialized even with 0 servers
         handle_ext_notification(&make_mcp_initialized_notif("sess-1"), &mut app);
         assert!(
-            app.agents[&AgentId(0)].mcp_init_progress.is_none(),
+            test_agent(&app, AgentId(0)).mcp_init_progress.is_none(),
             "0-server mcp_initialized must clear progress",
         );
     }
@@ -215,10 +196,10 @@
             "background-session progress must not force a redraw"
         );
 
-        let bg = app.agents[&AgentId(1)].mcp_init_progress.as_ref().unwrap();
+        let bg = test_agent(&app, AgentId(1)).mcp_init_progress.as_ref().unwrap();
         assert_eq!((bg.total, bg.connected), (4, 1));
         assert!(
-            app.agents[&AgentId(0)].mcp_init_progress.is_none(),
+            test_agent(&app, AgentId(0)).mcp_init_progress.is_none(),
             "foreground agent must be untouched by a background session's progress",
         );
     }
@@ -234,7 +215,6 @@
                 Some(crate::app::agent_view::McpInitProgress {
                     total: 2,
                     connected: 0,
-                    started_at: Instant::now(),
                 });
         }
 
@@ -245,11 +225,11 @@
             "clearing a background spinner must not force a redraw",
         );
         assert!(
-            app.agents[&AgentId(1)].mcp_init_progress.is_none(),
+            test_agent(&app, AgentId(1)).mcp_init_progress.is_none(),
             "background session's spinner must be cleared",
         );
         assert!(
-            app.agents[&AgentId(0)].mcp_init_progress.is_some(),
+            test_agent(&app, AgentId(0)).mcp_init_progress.is_some(),
             "foreground agent's spinner must NOT be cleared by another session",
         );
     }
@@ -262,14 +242,13 @@
             Some(crate::app::agent_view::McpInitProgress {
                 total: 1,
                 connected: 0,
-                started_at: Instant::now(),
             });
 
         let notif = make_mcp_initialized_notif_for("sess-unknown");
         let changed = handle_ext_notification(&notif, &mut app);
         assert!(!changed);
         assert!(
-            app.agents[&AgentId(0)].mcp_init_progress.is_some(),
+            test_agent(&app, AgentId(0)).mcp_init_progress.is_some(),
             "unknown-session mcp_initialized must not clear the active agent",
         );
     }
@@ -284,14 +263,12 @@
             Some(crate::app::agent_view::McpInitProgress {
                 total: 2,
                 connected: 1,
-                started_at: Instant::now(),
             });
         // Register a subagent child view keyed by the child session id.
         app.agents
             .get_mut(&AgentId(0))
             .unwrap()
-            .subagent_views
-            .insert(
+            .insert_test_child(
                 "child-sess".to_string(),
                 Box::new(make_agent(Some("child-sess"))),
             );
@@ -305,7 +282,7 @@
             !changed,
             "subagent init_progress must not redraw the parent"
         );
-        let p = app.agents[&AgentId(0)].mcp_init_progress.as_ref().unwrap();
+        let p = test_agent(&app, AgentId(0)).mcp_init_progress.as_ref().unwrap();
         assert_eq!(
             (p.total, p.connected),
             (2, 1),
@@ -317,7 +294,7 @@
             handle_ext_notification(&make_mcp_initialized_notif_for("child-sess"), &mut app);
         assert!(!changed);
         assert!(
-            app.agents[&AgentId(0)].mcp_init_progress.is_some(),
+            test_agent(&app, AgentId(0)).mcp_init_progress.is_some(),
             "subagent mcp_initialized must not clear the parent's spinner",
         );
     }
@@ -415,8 +392,11 @@
         let TabDataState::Loaded(ref servers) = modal.mcps_data else {
             panic!("modal still Loaded");
         };
+        let Some(server) = servers.first() else {
+            panic!("expected a server");
+        };
         assert_eq!(
-            servers[0].status,
+            server.status,
             McpServerDisplayStatus::Initializing,
             "malformed status must NOT silently map to Unavailable"
         );
@@ -449,14 +429,17 @@
         let TabDataState::Loaded(ref servers) = modal.mcps_data else {
             panic!("modal still Loaded");
         };
+        let Some(server) = servers.first() else {
+            panic!("expected a server");
+        };
         assert_eq!(
-            servers[0].status,
+            server.status,
             McpServerDisplayStatus::Ready,
             "malformed tools must not take down the status update"
         );
         // tool_count and tools were preserved (we dropped the tools update rather than overwriting with empty)
-        assert_eq!(servers[0].tool_count, 0);
-        assert!(servers[0].tools.is_empty());
+        assert_eq!(server.tool_count, 0);
+        assert!(server.tools.is_empty());
     }
 
     /// Pin that the pager deserializes against the *shell's* `McpServerStatus` enum, so a new variant needs no pager change to be recognized.
@@ -617,7 +600,6 @@
             owner.mcp_init_progress = Some(McpInitProgress {
                 total: 5,
                 connected: 3,
-                started_at: std::time::Instant::now(),
             });
         }
         {
@@ -625,7 +607,6 @@
             active.mcp_init_progress = Some(McpInitProgress {
                 total: 5,
                 connected: 3,
-                started_at: std::time::Instant::now(),
             });
         }
 

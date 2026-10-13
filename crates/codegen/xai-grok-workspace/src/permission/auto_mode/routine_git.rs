@@ -18,7 +18,9 @@ pub(super) fn git_words_are_routine(words: &[String]) -> bool {
     let Some(verb) = words.get(1).map(String::as_str) else {
         return false;
     };
-    let args = &words[2..];
+    let Some(args) = words.get(2..) else {
+        return false;
+    };
     match verb {
         "add" | "commit" | "pull" | "fetch" => true,
         "worktree" => args.first().map(String::as_str) == Some("list"),

@@ -346,8 +346,10 @@ mod tests {
                 "newCwd": "/dst",
                 "newSessionId": format!("child-{expected}-{}", wire.unwrap_or("omit")),
             });
-            if let Some(kind) = wire {
-                body["sessionKind"] = serde_json::Value::String(kind.into());
+            if let Some(kind) = wire
+                && let Some(obj) = body.as_object_mut()
+            {
+                obj.insert("sessionKind".into(), serde_json::Value::String(kind.into()));
             }
             let request: ForkSessionRequest = serde_json::from_value(body).unwrap();
             let target = Info {

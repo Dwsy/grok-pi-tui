@@ -1,0 +1,1 @@
+[0922/084500.123:ERROR:sandbox_mac.mm(42)] Sandbox init failed, launching /opt/ws-fixture/homedir/Applications/chrome-mac/Chromium.app/Contents/MacOS/Chromium without --no-sandbox

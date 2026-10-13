@@ -22,7 +22,7 @@ async fn prepare(a: &SessionActor, id: &str, tool: &str) -> Result<PreparedToolC
         function: crate::sampling::types::ToolCallFunction::new(tool, "{}".to_string()),
     };
     let mut deferred = Vec::new();
-    a.prepare_tool_call(call, &mut deferred)
+    a.prepare_tool_call(call, &mut deferred, None)
         .await
         .expect("prepare")
 }
@@ -227,11 +227,11 @@ async fn progressive_body() {
     assert!(!wedged.chat_state_handle.get_conversation().await.is_empty());
 
     // A zero-turn rebuild rebuilds the prefix through the same policy, so a delivery-tools session still holds the wait.
-    let (_, rebuild_wait) =
-        timed(wedged.handle_rebuild_agent_for_definition(
-            xai_grok_agent::AgentDefinition::default_grok_build(),
-        ))
-        .await;
+    let (_, rebuild_wait) = timed(wedged.handle_rebuild_agent_for_definition(
+        xai_grok_agent::AgentDefinition::default_grok_build(),
+        xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
+    ))
+    .await;
     assert!(
         rebuild_wait >= DELIVERY_TOOLS_DEFAULT_PREFIX_WAIT,
         "the rebuilt prefix runs the full delivery wait, got {rebuild_wait:?}"
@@ -397,7 +397,7 @@ async fn dispatch_body() {
                 .unwrap_or(serde_json::Value::Null);
             let result = match message.get("method").and_then(|m| m.as_str()) {
                 Some("initialize") => serde_json::json!({
-                    "protocolVersion": message["params"]["protocolVersion"],
+                    "protocolVersion": message.get("params").and_then(|p| p.get("protocolVersion")).cloned().unwrap_or(serde_json::Value::Null),
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "ready", "version": "0.0.0" },
                 }),
@@ -480,64 +480,6 @@ async fn dispatch_body() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn resolved_repo_status_prefetch_builds_first_prefix_with_zero_wait() {
-    use crate::session::repo_status_prefix::{
-        RepoStatusInputs, RepoStatusPlan, RepoStatusPrefetch, RepoStatusPrefetchState,
-        RepoStatusSnapshot,
-    };
-    use xai_grok_workspace::session::git::VcsKind;
-
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gw_tx, _gw_rx) = tokio::sync::mpsc::unbounded_channel();
-            let (persist_tx, _persist_rx) = tokio::sync::mpsc::unbounded_channel();
-            let mut actor = create_test_actor(100, 256_000, 80, gw_tx, persist_tx).await;
-
-            let (snapshot_tx, snapshot_rx) = tokio::sync::watch::channel(None);
-            snapshot_tx
-                .send(Some(RepoStatusSnapshot {
-                    root: None,
-                    raw_status: Some("## main\n M src/lib.rs\n".to_string()),
-                    vcs_kind: VcsKind::Git,
-                }))
-                .unwrap();
-            actor.repo_status_prefetch = RepoStatusPrefetchState::new(RepoStatusPlan::Gather {
-                inputs: RepoStatusInputs {
-                    cwd: std::path::PathBuf::from("."),
-                    vcs_kind: VcsKind::Git,
-                    root: None,
-                },
-                prefetch: std::cell::RefCell::new(Some(RepoStatusPrefetch::from_snapshot_rx(
-                    snapshot_rx,
-                ))),
-            });
-
-            let prefix = actor.build_user_message_prefix().await;
-
-            assert!(
-                prefix.contains("<git_status>") && prefix.contains(" M src/lib.rs"),
-                "prefix must render the prefetched status, got: {prefix}"
-            );
-            assert!(
-                actor
-                    .repo_status_prefetch
-                    .take_wait_ms()
-                    .is_some_and(|ms| ms < 100),
-                "resolved prefetch must not consume the wait budget"
-            );
-            assert!(
-                matches!(
-                    actor.repo_status_prefetch.plan(),
-                    RepoStatusPlan::Gather { prefetch, .. } if prefetch.borrow().is_none()
-                ),
-                "prefetch handle is consumed exactly once"
-            );
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn absent_inputs_omit_the_status_block() {
     let local = tokio::task::LocalSet::new();
     local
@@ -557,53 +499,8 @@ async fn absent_inputs_omit_the_status_block() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn resumed_session_gathers_status_inline_without_a_prefetch() {
-    use crate::session::repo_status_prefix::{
-        RepoStatusInputs, RepoStatusPlan, RepoStatusPrefetchState,
-    };
-    use xai_grok_workspace::session::git::VcsKind;
-
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            crate::test_support::ensure_hermetic_git_on_path();
-            let repo = tempfile::tempdir().unwrap();
-            let init = std::process::Command::new("git")
-                .args(["init", "--quiet"])
-                .current_dir(repo.path())
-                .status()
-                .expect("spawn git init");
-            assert!(init.success(), "git init failed");
-            std::fs::write(repo.path().join("untracked.txt"), b"x").unwrap();
-
-            let (gw_tx, _gw_rx) = tokio::sync::mpsc::unbounded_channel();
-            let (persist_tx, _persist_rx) = tokio::sync::mpsc::unbounded_channel();
-            let mut actor = create_test_actor(100, 256_000, 80, gw_tx, persist_tx).await;
-            actor.repo_status_prefetch = RepoStatusPrefetchState::new(RepoStatusPlan::Gather {
-                inputs: RepoStatusInputs {
-                    cwd: repo.path().to_path_buf(),
-                    vcs_kind: VcsKind::Git,
-                    root: Some(repo.path().to_path_buf()),
-                },
-                prefetch: std::cell::RefCell::new(None),
-            });
-
-            let prefix = actor.build_user_message_prefix().await;
-
-            assert!(
-                prefix.contains("<git_status>") && prefix.contains("untracked.txt"),
-                "inline gather (no prefetch) must render the status block, got: {prefix}"
-            );
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn suppressed_status_omits_the_body_but_keeps_the_repo_root() {
-    use crate::session::repo_status_prefix::{
-        RepoStatusPlan, RepoStatusPrefetchState, discover_vcs_root,
-    };
-    use xai_grok_workspace::session::git::VcsKind;
+async fn discovered_repo_root_omits_the_status_block() {
+    use crate::session::repo_status_prefix::discover_vcs_root;
 
     let local = tokio::task::LocalSet::new();
     local
@@ -620,23 +517,17 @@ async fn suppressed_status_omits_the_body_but_keeps_the_repo_root() {
             let (gw_tx, _gw_rx) = tokio::sync::mpsc::unbounded_channel();
             let (persist_tx, _persist_rx) = tokio::sync::mpsc::unbounded_channel();
             let mut actor = create_test_actor(100, 256_000, 80, gw_tx, persist_tx).await;
-            actor.repo_status_prefetch = RepoStatusPrefetchState::new(RepoStatusPlan::RootOnly {
-                root: discover_vcs_root(repo.path()),
-                vcs_kind: VcsKind::Git,
-            });
+            actor.vcs_root = discover_vcs_root(repo.path());
 
             let prefix = actor.build_user_message_prefix().await;
 
             assert!(
-                !prefix.contains("<git_status>"),
-                "suppressed status must omit the body, got: {prefix}"
+                !prefix.contains("<git_status>") && !prefix.contains("<jj_status>"),
+                "first-message prefix must not include a VCS status block, got: {prefix}"
             );
             assert!(
-                matches!(
-                    actor.repo_status_prefetch.plan(),
-                    RepoStatusPlan::RootOnly { root: Some(_), .. }
-                ),
-                "suppressed status must keep the discovered repo root"
+                actor.vcs_root.is_some(),
+                "discovered repo root must still be available to templated prefixes"
             );
         })
         .await;

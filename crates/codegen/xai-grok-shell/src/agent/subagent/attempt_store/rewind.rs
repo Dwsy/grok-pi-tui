@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 
 use super::codec::*;
 
-const FIRST_EVENT: u8 = 11;
 pub(super) const A2_EXACT_ALIGNED_ROW_BYTES: [(usize, usize); 5] =
     [(200, 224), (292, 320), (129, 160), (129, 160), (176, 192)];
 
@@ -109,15 +108,12 @@ pub(super) enum RewindRecordV1 {
 }
 impl RewindRecordV1 {
     pub(super) fn limits(&self) -> (usize, usize) {
-        A2_EXACT_ALIGNED_ROW_BYTES[usize::from(self.event() - FIRST_EVENT)]
-    }
-    fn event(&self) -> u8 {
         match self {
-            Self::Live(_) => 11,
-            Self::Superseded(_) => 12,
-            Self::ReleaseIntent(_) => 13,
-            Self::ReleaseReceipt(_) => 14,
-            Self::Checkpoint(_) => 15,
+            Self::Live(_) => A2_EXACT_ALIGNED_ROW_BYTES[0],
+            Self::Superseded(_) => A2_EXACT_ALIGNED_ROW_BYTES[1],
+            Self::ReleaseIntent(_) => A2_EXACT_ALIGNED_ROW_BYTES[2],
+            Self::ReleaseReceipt(_) => A2_EXACT_ALIGNED_ROW_BYTES[3],
+            Self::Checkpoint(_) => A2_EXACT_ALIGNED_ROW_BYTES[4],
         }
     }
 }
@@ -219,7 +215,10 @@ pub(super) fn decode_rewind_record(
 }
 
 pub(super) fn rewind_row_hash(row: &[u8]) -> Result<RewindRowHash> {
-    if !row.ends_with(b"\n") || row[..row.len() - 1].contains(&b'\n') || row.contains(&b'\r') {
+    let Some(body) = row.strip_suffix(b"\n") else {
+        return Err(CodecError::Invalid("rewind row line ending"));
+    };
+    if body.contains(&b'\n') || row.contains(&b'\r') {
         return Err(CodecError::Invalid("rewind row line ending"));
     }
     Ok(RewindRowHash::new(Sha256::digest(row).into()))

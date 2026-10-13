@@ -1,3 +1,5 @@
+#![deny(clippy::indexing_slicing)]
+
 mod sanitizer;
 
 pub use sanitizer::{

@@ -47,7 +47,10 @@ mod tests {
         let args = r#"{"target_file": "a.java"}{"target_file": "b.java"}{"target_file": "c.java"}"#;
         let objects = try_extract_concatenated_json_objects(args).unwrap();
         assert_eq!(objects.len(), 3);
-        assert_eq!(objects[0]["target_file"], "a.java");
+        assert_eq!(
+            objects.first().and_then(|o| o.get("target_file")),
+            Some(&serde_json::json!("a.java"))
+        );
     }
 
     #[test]
@@ -85,7 +88,13 @@ mod tests {
         let args = r#"{"file": "a.rs", "opts": {"line": 1}}{"file": "b.rs", "opts": {"line": 2}}"#;
         let objects = try_extract_concatenated_json_objects(args).unwrap();
         assert_eq!(objects.len(), 2);
-        assert_eq!(objects[0]["opts"]["line"], 1);
+        assert_eq!(
+            objects
+                .first()
+                .and_then(|o| o.get("opts"))
+                .and_then(|o| o.get("line")),
+            Some(&serde_json::json!(1))
+        );
     }
 
     #[test]
@@ -142,15 +151,15 @@ mod tests {
     #[test]
     fn invalid_json_falls_back_to_raw() {
         let result = normalize_and_parse("not json");
-        assert_eq!(result["raw"], "not json");
+        assert_eq!(result.get("raw"), Some(&serde_json::json!("not json")));
     }
 
     #[test]
     fn complex_args_with_arrays_unchanged() {
         let args = r#"{"pages": [{"title": "Test"}], "limit": 10}"#;
         let result = normalize_and_parse(args);
-        assert!(result["pages"].is_array());
-        assert_eq!(result["limit"], 10);
+        assert!(result.get("pages").is_some_and(|p| p.is_array()));
+        assert_eq!(result.get("limit"), Some(&serde_json::json!(10)));
     }
 
     #[test]

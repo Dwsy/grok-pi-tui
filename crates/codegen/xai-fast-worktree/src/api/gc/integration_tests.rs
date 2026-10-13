@@ -56,11 +56,14 @@ fn register_worktree_writes_correct_fields() {
         .filter(|r| r.path == wt_canon)
         .collect();
     assert_eq!(mine.len(), 1);
-    assert_eq!(mine[0].kind, WorktreeKind::Session);
-    assert_eq!(mine[0].session_id.as_deref(), Some("test-session"));
-    assert_eq!(mine[0].creation_mode, "linked");
-    assert_eq!(mine[0].head_commit.as_deref(), Some("abc123"));
-    assert!(mine[0].creator_pid.is_some());
+    let Some(rec) = mine.first() else {
+        panic!("expected one worktree: {mine:?}");
+    };
+    assert_eq!(rec.kind, WorktreeKind::Session);
+    assert_eq!(rec.session_id.as_deref(), Some("test-session"));
+    assert_eq!(rec.creation_mode, "linked");
+    assert_eq!(rec.head_commit.as_deref(), Some("abc123"));
+    assert!(rec.creator_pid.is_some());
 }
 
 #[test]
@@ -161,7 +164,10 @@ fn gc_dry_run_preserves_records() {
         })
         .unwrap();
     assert_eq!(all.len(), 1);
-    assert_eq!(all[0].status, crate::db::WorktreeStatus::Alive);
+    assert_eq!(
+        all.first().map(|r| r.status),
+        Some(crate::db::WorktreeStatus::Alive)
+    );
 }
 
 #[test]
@@ -345,7 +351,10 @@ fn gc_dry_run_with_max_age_does_not_remove_expired() {
     assert!(dir.exists(), "dry run must not remove the worktree dir");
     let all = db.list(&ListFilter::default()).unwrap();
     assert_eq!(all.len(), 1);
-    assert_eq!(all[0].status, crate::db::WorktreeStatus::Alive);
+    assert_eq!(
+        all.first().map(|r| r.status),
+        Some(crate::db::WorktreeStatus::Alive)
+    );
 }
 
 #[test]
@@ -767,7 +776,7 @@ fn gc_report_serde_round_trip() {
     assert_eq!(deser.skipped_alive, 2);
     assert_eq!(deser.kept_unsafe, 5);
     assert_eq!(deser.kept.first().map(|k| k.path.as_str()), Some("/wt"));
-    assert_eq!(deser.kept_reasons["dirty"], 5);
+    assert_eq!(deser.kept_reasons.get("dirty"), Some(&5));
     assert_eq!(deser.names_collected, 7);
     assert_eq!(deser.no_repo_paths, 6);
     assert_eq!(deser.remove_failed, 4);

@@ -19,9 +19,18 @@ account = "other@example.com"
 
     let consent = super::super::load_config_from_toml(&root).consent;
 
-    assert_eq!(consent.answers["enterprise-tos-2026-08"].version, 2);
     assert_eq!(
-        consent.answers["consumer-tos-2026-08"].account.as_deref(),
+        consent
+            .answers
+            .get("enterprise-tos-2026-08")
+            .map(|a| a.version),
+        Some(2)
+    );
+    assert_eq!(
+        consent
+            .answers
+            .get("consumer-tos-2026-08")
+            .and_then(|a| a.account.as_deref()),
         Some("other@example.com")
     );
 
@@ -37,8 +46,24 @@ async fn set_consent_answer_is_monotonic_per_account() {
     let _guard = xai_grok_test_support::env::EnvGuard::set("GROK_HOME", home.path());
 
     let answers = || {
-        let root = crate::config::load_from_disk().expect("read config");
-        super::super::load_config_from_toml(&root).consent.answers
+        // Persist writes live `$GROK_HOME`. Read that dest; `load_from_disk` must
+        // match it (a OnceLock miss used to look like a stale replay lowered the record).
+        let path = super::super::user_config_path();
+        let (dest, _) = super::super::read_follow_bound(&path).expect("bind persist dest");
+        let persist_root =
+            crate::config::load_config_file(dest.as_path()).expect("read persist dest");
+        let persist = super::super::load_config_from_toml(&persist_root)
+            .consent
+            .answers;
+        let disk_root = crate::config::load_from_disk().expect("read config");
+        let disk = super::super::load_config_from_toml(&disk_root)
+            .consent
+            .answers;
+        assert_eq!(
+            disk, persist,
+            "load_from_disk must see the consent persist wrote"
+        );
+        persist
     };
 
     set_consent_answer(Some("a@example.com".into()), "tos".into(), 3, false)
@@ -48,20 +73,25 @@ async fn set_consent_answer_is_monotonic_per_account() {
         .await
         .expect("replayed answer");
     assert_eq!(
-        answers()["tos"].version,
-        3,
+        answers().get("tos").map(|a| a.version),
+        Some(3),
         "a stale replay must not lower the record",
     );
 
     set_consent_answer(Some("a@example.com".into()), "tos".into(), 4, true)
         .await
         .expect("server ack");
-    assert!(answers()["tos"].acked, "the ack must reach the record");
+    assert!(
+        answers().get("tos").is_some_and(|a| a.acked),
+        "the ack must reach the record"
+    );
 
     set_consent_answer(Some("a@example.com".into()), "tos".into(), 1, false)
         .await
         .expect("replay after the ack");
-    let entry = answers()["tos"].clone();
+    let Some(entry) = answers().get("tos").cloned() else {
+        panic!("expected tos consent answer");
+    };
     assert_eq!(entry.version, 4);
     assert!(
         entry.acked,
@@ -73,14 +103,16 @@ async fn set_consent_answer_is_monotonic_per_account() {
         .await
         .expect("the slower local write");
     assert!(
-        answers()["tos"].acked,
+        answers().get("tos").is_some_and(|a| a.acked),
         "the slower writer must not retract the ack"
     );
 
     set_consent_answer(Some("b@example.com".into()), "tos".into(), 1, false)
         .await
         .expect("second account");
-    let entry = answers()["tos"].clone();
+    let Some(entry) = answers().get("tos").cloned() else {
+        panic!("expected tos consent answer");
+    };
     assert_eq!(entry.version, 1, "a different account starts over");
     assert_eq!(entry.account.as_deref(), Some("b@example.com"));
     assert!(
@@ -92,7 +124,7 @@ async fn set_consent_answer_is_monotonic_per_account() {
         .await
         .expect("signed-out answer");
     assert_eq!(
-        answers()["tos"].account,
+        answers().get("tos").and_then(|a| a.account.clone()),
         None,
         "a signed-out answer must not read back as the previous account",
     );

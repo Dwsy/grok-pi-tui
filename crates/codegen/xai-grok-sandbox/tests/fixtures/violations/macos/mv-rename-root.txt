@@ -1,0 +1,1 @@
+mv: rename /opt/ws-fixture/homedir/w1-scratch/ws to /opt/ws-fixture/homedir/w1-scratch/ws2: Operation not permitted

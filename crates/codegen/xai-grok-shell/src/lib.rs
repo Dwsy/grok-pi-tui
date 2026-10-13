@@ -6,6 +6,7 @@
     dead_code
 )]
 #![warn(unreachable_pub)]
+#![deny(clippy::indexing_slicing)]
 #[cfg(all(test, feature = "dhat-heap"))]
 #[global_allocator]
 static DHAT_ALLOC: dhat::Alloc = dhat::Alloc;
@@ -37,8 +38,9 @@ pub mod host_features;
 pub use xai_grok_http as http;
 pub mod inspect;
 pub mod instrumentation;
+pub use xai_grok_telemetry::instrumentation_timer;
 pub mod leader;
-pub mod managed_config;
+pub use xai_grok_cloud_config::managed_config;
 pub mod mcp_doctor;
 pub use xai_grok_models as models;
 pub mod plugin;

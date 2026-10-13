@@ -269,11 +269,11 @@ fn read_upstream_origin_branch(git_dir: &Path, branch: &str) -> Option<String> {
 
 fn config_key_value<'a>(trimmed: &'a str, key: &str) -> Option<&'a str> {
     let eq = trimmed.find('=')?;
-    let name = trimmed[..eq].trim();
+    let name = trimmed.get(..eq)?.trim();
     if !name.eq_ignore_ascii_case(key) {
         return None;
     }
-    Some(unquote(trimmed[eq + 1..].trim()))
+    Some(unquote(trimmed.get(eq + 1..)?.trim()))
 }
 
 fn unquote(value: &str) -> &str {

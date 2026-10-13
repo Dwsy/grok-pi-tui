@@ -10,26 +10,27 @@
 use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use rusqlite::{OptionalExtension as _, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use xai_sqlite_journal::{JournalMode, is_network_fs};
 
 use crate::storage::MemoryStorage;
 use crate::v2::{V2ManifestBudget, V2MemoryScope, persist_scope_manifest, render_scope_manifest};
+use crate::{SharedV2Clock, system_v2_clock};
 
-const STATE_SCHEMA_VERSION: &str = "3";
+const STATE_SCHEMA_VERSION: &str = "4";
 const MAX_SESSION_BYTES: usize = 256;
 const MAX_OWNER_BYTES: usize = 128;
 const MAX_MODEL_BYTES: usize = 128;
 const MAX_PROMPT_VERSION_BYTES: usize = 64;
-const MAX_TOPIC_BYTES: usize = 128;
-const MAX_STATEMENT_BYTES: usize = 1_024;
-const MAX_BODY_BYTES: usize = 8 * 1_024;
-const MAX_KEYWORDS: usize = 16;
-const MAX_ALIASES: usize = 16;
-const MAX_TERM_BYTES: usize = 64;
-const MAX_OBSERVATIONS: usize = 128;
+pub const MAX_TOPIC_BYTES: usize = 128;
+pub const MAX_STATEMENT_BYTES: usize = 1_024;
+pub const MAX_BODY_BYTES: usize = 8 * 1_024;
+pub const MAX_KEYWORDS: usize = 16;
+pub const MAX_ALIASES: usize = 16;
+pub const MAX_TERM_BYTES: usize = 64;
+pub const MAX_OBSERVATIONS: usize = 128;
 const MAX_FAILURE_BYTES: usize = 512;
 const MAX_OBSERVATION_FILE_BYTES: u64 = 16 * 1_024;
 const MAX_RECOVERY_JOBS: usize = 4_096;
@@ -69,6 +70,8 @@ pub enum V2CaptureError {
     },
     #[error("capture manifest convergence failed")]
     Manifest(#[source] crate::v2::V2StorageError),
+    #[error("capture hardening schema convergence failed")]
+    Maintenance(#[source] crate::v2_maintenance::V2MaintenanceError),
     #[error("capture recovery directory {path} exceeds the {limit}-entry safety limit")]
     RecoveryDirectoryLimit { path: PathBuf, limit: usize },
     #[error("capture recovery query for {rows} exceeds the {limit}-row safety limit")]
@@ -203,6 +206,8 @@ pub struct CaptureJob {
     pub job_id: String,
     pub session_id: String,
     pub range: CaptureRange,
+    /// Zero-based durable-conversation prompt index for this eligible turn.
+    pub source_prompt_index: u32,
     pub attempt: u32,
 }
 
@@ -227,6 +232,14 @@ pub struct CaptureCursors {
     pub indexed: u32,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CaptureWorkState {
+    pub pending: u32,
+    pub running: u32,
+    pub failed: u32,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitResult {
     pub outcome_hash: String,
@@ -234,21 +247,41 @@ pub struct CommitResult {
     pub was_already_committed: bool,
 }
 
+#[derive(Clone)]
 pub struct V2CaptureStore {
     scope_dir: PathBuf,
     scope: V2MemoryScope,
     state_path: PathBuf,
+    clock: SharedV2Clock,
 }
 
 impl V2CaptureStore {
     /// Open and additively migrate one initialized v2 scope.
     pub fn open(scope_dir: impl AsRef<Path>, scope: V2MemoryScope) -> Result<Self> {
-        Self::open_with_journal_mode(scope_dir, scope, None)
+        Self::open_with_clock(scope_dir, scope, system_v2_clock())
     }
 
+    pub fn open_with_clock(
+        scope_dir: impl AsRef<Path>,
+        scope: V2MemoryScope,
+        clock: SharedV2Clock,
+    ) -> Result<Self> {
+        Self::open_with_clock_and_journal_mode(scope_dir, scope, clock, None)
+    }
+
+    #[cfg(test)]
     fn open_with_journal_mode(
         scope_dir: impl AsRef<Path>,
         scope: V2MemoryScope,
+        journal_mode: Option<JournalMode>,
+    ) -> Result<Self> {
+        Self::open_with_clock_and_journal_mode(scope_dir, scope, system_v2_clock(), journal_mode)
+    }
+
+    fn open_with_clock_and_journal_mode(
+        scope_dir: impl AsRef<Path>,
+        scope: V2MemoryScope,
+        clock: SharedV2Clock,
         journal_mode: Option<JournalMode>,
     ) -> Result<Self> {
         let scope_dir = scope_dir.as_ref().to_path_buf();
@@ -273,6 +306,7 @@ impl V2CaptureStore {
             scope_dir,
             scope,
             state_path,
+            clock,
         };
         store.migrate()?;
         Ok(store)
@@ -290,9 +324,97 @@ impl V2CaptureStore {
         Ok(())
     }
 
+    /// Atomically expose observations captured by a non-active rollout.
+    ///
+    /// Shadow evaluation history is deliberately retained so promotion never
+    /// erases rollout evidence. The subsequent reconciliation makes the newly
+    /// exposed files claimable, indexed, and visible in the manifest.
+    pub fn promote_hidden_observations_now(&self) -> Result<u64> {
+        self.promote_hidden_observations(self.clock.now_unix_seconds())
+    }
+
+    pub fn promote_hidden_observations(&self, now: i64) -> Result<u64> {
+        validate_runtime_timestamp(now)?;
+        let mut connection = self.open_state()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let has_active_lease = transaction
+            .query_row(
+                "SELECT owner IS NOT NULL AND expires_at > ?1
+                 FROM consolidation_lock WHERE singleton = 1",
+                params![now],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if has_active_lease {
+            return Err(V2CaptureError::Conflict(
+                "cannot promote observations while a Dream lease is active".to_owned(),
+            ));
+        }
+        // Flip every already-enqueued hidden job, including pending and running
+        // work that has not produced observation files yet. Its pinned
+        // visibility is consulted when the eventual outcome is persisted.
+        transaction.execute(
+            "UPDATE capture_visibility SET is_exposed = 1 WHERE is_exposed = 0",
+            [],
+        )?;
+        let promoted = transaction.execute("DELETE FROM memory_v2_hidden_observations", [])? as u64;
+        transaction.commit()?;
+        if promoted > 0 {
+            self.reconcile()?;
+        }
+        Ok(promoted)
+    }
+
     /// Enqueue a deterministic range. Duplicate requests return the same job.
     pub fn enqueue(&self, session_id: &str, range: CaptureRange) -> Result<CaptureJob> {
+        self.enqueue_for_prompt_with_visibility(
+            session_id,
+            range,
+            range.through_turn.saturating_sub(1),
+            true,
+        )
+    }
+
+    /// Enqueue a logical capture range tied to one persisted user turn.
+    pub fn enqueue_for_prompt(
+        &self,
+        session_id: &str,
+        range: CaptureRange,
+        source_prompt_index: u32,
+    ) -> Result<CaptureJob> {
+        self.enqueue_for_prompt_with_visibility(session_id, range, source_prompt_index, true)
+    }
+
+    /// Enqueue capture while pinning whether resulting observations are user-visible.
+    pub fn enqueue_with_visibility(
+        &self,
+        session_id: &str,
+        range: CaptureRange,
+        is_exposed: bool,
+    ) -> Result<CaptureJob> {
+        self.enqueue_for_prompt_with_visibility(
+            session_id,
+            range,
+            range.through_turn.saturating_sub(1),
+            is_exposed,
+        )
+    }
+
+    /// Enqueue one persisted user turn while pinning result visibility.
+    pub fn enqueue_for_prompt_with_visibility(
+        &self,
+        session_id: &str,
+        range: CaptureRange,
+        source_prompt_index: u32,
+        is_exposed: bool,
+    ) -> Result<CaptureJob> {
         let safe_session = safe_session_name(session_id)?;
+        if source_prompt_index > 999_999 {
+            return Err(V2CaptureError::Invalid(
+                "capture source prompt exceeds the six-digit durable limit".to_owned(),
+            ));
+        }
         let job_id = deterministic_job_id(session_id, range);
         let mut connection = self.open_state()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -303,6 +425,10 @@ impl V2CaptureStore {
             params![session_id, safe_session],
         )?;
         transaction.execute(
+            "INSERT OR IGNORE INTO capture_visibility(job_id, is_exposed) VALUES (?1, ?2)",
+            params![job_id, is_exposed],
+        )?;
+        transaction.execute(
             "UPDATE capture_sessions
              SET requested_cursor = MAX(requested_cursor, ?2)
              WHERE session_id = ?1",
@@ -310,17 +436,51 @@ impl V2CaptureStore {
         )?;
         transaction.execute(
             "INSERT OR IGNORE INTO capture_jobs(
-                job_id, session_id, from_turn, through_turn, status, attempt
-             ) VALUES (?1, ?2, ?3, ?4, 'pending', 0)",
-            params![job_id, session_id, range.from_turn, range.through_turn],
+                job_id, session_id, from_turn, through_turn, source_prompt_index, status, attempt
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 0)",
+            params![
+                job_id,
+                session_id,
+                range.from_turn,
+                range.through_turn,
+                source_prompt_index
+            ],
         )?;
         let job = read_job(&transaction, &job_id)?;
+        if job.source_prompt_index != source_prompt_index {
+            return Err(V2CaptureError::Conflict(
+                "capture range is already tied to a different source prompt".to_owned(),
+            ));
+        }
         transaction.commit()?;
         Ok(job)
     }
 
     /// Claim pending/failed work, reclaiming an expired running lease.
     pub fn claim(&self, request: &ClaimRequest) -> Result<Option<CaptureLease>> {
+        self.claim_matching(request, None)
+    }
+
+    /// Claim pending/failed work for one session.
+    ///
+    /// Session lifecycle workers use this form because the durable transcript
+    /// and UI sink they own are session-specific. The same SQLite transaction
+    /// and lease rules as [`Self::claim`] remain the cross-process
+    /// serialization point.
+    pub fn claim_for_session(
+        &self,
+        session_id: &str,
+        request: &ClaimRequest,
+    ) -> Result<Option<CaptureLease>> {
+        validate_session_id(session_id)?;
+        self.claim_matching(request, Some(session_id))
+    }
+
+    fn claim_matching(
+        &self,
+        request: &ClaimRequest,
+        session_id: Option<&str>,
+    ) -> Result<Option<CaptureLease>> {
         validate_text("lease owner", &request.owner, 1, MAX_OWNER_BYTES)?;
         validate_runtime_timestamp(request.now)?;
         let lease_seconds = i64::try_from(request.duration.as_secs())
@@ -336,16 +496,44 @@ impl V2CaptureStore {
             .ok_or_else(|| V2CaptureError::Invalid("lease expiry overflows".to_owned()))?;
         let mut connection = self.open_state()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let job_id = transaction
-            .query_row(
-                "SELECT job_id FROM capture_jobs
-                 WHERE status IN ('pending', 'failed')
-                    OR (status = 'running' AND lease_expires_at <= ?1)
-                 ORDER BY rowid LIMIT 1",
-                params![request.now],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
+        let job_id = match session_id {
+            Some(session_id) => transaction
+                .query_row(
+                    "SELECT job_id FROM capture_jobs
+                     WHERE session_id = ?2 AND (
+                        status = 'pending'
+                        OR (status = 'failed' AND NOT EXISTS (
+                            SELECT 1 FROM memory_v2_terminal_capture_failures t
+                            WHERE t.job_id = capture_jobs.job_id
+                        ))
+                        OR (status = 'running' AND lease_expires_at <= ?1)
+                     )
+                     ORDER BY
+                        CASE status WHEN 'pending' THEN 0 ELSE 1 END,
+                        rowid
+                     LIMIT 1",
+                    params![request.now, session_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?,
+            None => transaction
+                .query_row(
+                    "SELECT job_id FROM capture_jobs
+                     WHERE status = 'pending'
+                        OR (status = 'failed' AND NOT EXISTS (
+                            SELECT 1 FROM memory_v2_terminal_capture_failures t
+                            WHERE t.job_id = capture_jobs.job_id
+                        ))
+                        OR (status = 'running' AND lease_expires_at <= ?1)
+                     ORDER BY
+                        CASE status WHEN 'pending' THEN 0 ELSE 1 END,
+                        rowid
+                     LIMIT 1",
+                    params![request.now],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?,
+        };
         let Some(job_id) = job_id else {
             transaction.commit()?;
             return Ok(None);
@@ -355,6 +543,10 @@ impl V2CaptureStore {
                 lease_expires_at = ?3, attempt = attempt + 1, last_error = NULL
              WHERE job_id = ?1",
             params![job_id, request.owner, expires_at],
+        )?;
+        transaction.execute(
+            "DELETE FROM v2_job_retention WHERE job_id = ?1",
+            params![job_id],
         )?;
         let job = read_job(&transaction, &job_id)?;
         transaction.commit()?;
@@ -376,8 +568,9 @@ impl V2CaptureStore {
         reject_symlink(&self.scope_dir)?;
         reject_symlink(&self.scope_dir.join("observations"))?;
         reject_symlink(&self.scope_dir.join("observations/_inbox"))?;
-        let prepared = self.prepare_outcome(&lease.job, outcome)?;
         let mut connection = self.open_state()?;
+        let safe_session = pinned_safe_session(&connection, &lease.job.session_id)?;
+        let prepared = self.prepare_outcome(&lease.job, outcome, &safe_session)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         if let Some(existing_hash) = transaction
@@ -406,7 +599,26 @@ impl V2CaptureStore {
             });
         }
         validate_lease(&transaction, lease, now)?;
-        self.remove_retry_orphans(&lease.job)?;
+        for file in &prepared.files {
+            let excluded = transaction.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM memory_v2_tombstones
+                    WHERE REPLACE(relative_path, char(92), '/') = ?1
+                    UNION ALL
+                    SELECT 1 FROM memory_v2_quarantined_paths
+                    WHERE REPLACE(relative_path, char(92), '/') = ?1
+                 )",
+                params![path_text(&file.path)?],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if excluded {
+                return Err(V2CaptureError::Conflict(format!(
+                    "capture destination {} is durably excluded",
+                    file.path.display()
+                )));
+            }
+        }
+        self.remove_retry_orphans(&lease.job, &safe_session)?;
         for file in &prepared.files {
             persist_create_only(&self.scope_dir.join(&file.path), &file.bytes)?;
         }
@@ -420,9 +632,14 @@ impl V2CaptureStore {
         })
     }
 
+    /// Return a valid running lease to retryable work.
+    ///
+    /// Failure text is diagnostic input, not state-machine input. It is
+    /// normalized and bounded here so an arbitrary upstream error cannot leave
+    /// an otherwise valid lease stuck in `running`.
     pub fn fail_retryable(&self, lease: &CaptureLease, now: i64, error: &str) -> Result<()> {
-        validate_text("capture failure", error, 1, MAX_FAILURE_BYTES)?;
         validate_runtime_timestamp(now)?;
+        let error = sanitize_failure(error);
         let mut connection = self.open_state()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         validate_lease(&transaction, lease, now)?;
@@ -431,25 +648,87 @@ impl V2CaptureStore {
                 lease_expires_at = NULL, last_error = ?2 WHERE job_id = ?1",
             params![lease.job.job_id, error],
         )?;
+        transaction.execute(
+            "DELETE FROM v2_job_retention WHERE job_id = ?1",
+            params![lease.job.job_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM memory_v2_terminal_capture_failures WHERE job_id = ?1",
+            params![lease.job.job_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn fail_terminal(&self, lease: &CaptureLease, now: i64, error: &str) -> Result<()> {
+        validate_runtime_timestamp(now)?;
+        let error = sanitize_failure(error);
+        let mut connection = self.open_state()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        validate_lease(&transaction, lease, now)?;
+        transaction.execute(
+            "UPDATE capture_jobs SET status = 'failed', lease_owner = NULL,
+                lease_expires_at = NULL, last_error = ?2 WHERE job_id = ?1",
+            params![lease.job.job_id, error],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO memory_v2_terminal_capture_failures(job_id) VALUES (?1)",
+            params![lease.job.job_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO v2_job_retention(job_id, terminal_at) VALUES (?1, ?2)
+             ON CONFLICT(job_id) DO UPDATE SET terminal_at = excluded.terminal_at",
+            params![lease.job.job_id, now],
+        )?;
+        advance_captured_cursor(&transaction, &lease.job.session_id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Relinquish an exact owner+attempt during cancellation without waiting
+    /// for the persisted lease deadline.
+    pub fn release_retryable(&self, lease: &CaptureLease, error: &str) -> Result<()> {
+        let error = sanitize_failure(error);
+        let mut connection = self.open_state()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = transaction.execute(
+            "UPDATE capture_jobs SET status = 'failed', lease_owner = NULL,
+                lease_expires_at = NULL, last_error = ?2
+             WHERE job_id = ?1 AND session_id = ?3 AND status = 'running'
+                AND lease_owner = ?4 AND attempt = ?5",
+            params![
+                lease.job.job_id,
+                error,
+                lease.job.session_id,
+                lease.owner,
+                lease.job.attempt
+            ],
+        )?;
+        if updated != 1 {
+            return Err(V2CaptureError::StaleLease);
+        }
         transaction.commit()?;
         Ok(())
     }
 
     /// Repair complete orphan file sets and replay indexing/manifest/cursors.
     pub fn reconcile(&self) -> Result<()> {
-        let now = i64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(V2CaptureError::Clock)?
-                .as_secs(),
-        )
-        .map_err(|_| V2CaptureError::Invalid("capture clock exceeds i64".to_owned()))?;
+        let now = self.clock.now_unix_seconds();
         self.reconcile_at_with(now, || Ok(()))
     }
 
     fn reconcile_at_with(
         &self,
         now: i64,
+        before_manifest_publish: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        self.reconcile_at_with_hooks(now, || Ok(()), before_manifest_publish)
+    }
+
+    fn reconcile_at_with_hooks(
+        &self,
+        now: i64,
+        before_index: impl FnOnce() -> Result<()>,
         before_manifest_publish: impl FnOnce() -> Result<()>,
     ) -> Result<()> {
         validate_runtime_timestamp(now)?;
@@ -466,6 +745,20 @@ impl V2CaptureStore {
             "SELECT f.job_id, f.ordinal, f.path, f.content_hash
              FROM capture_observation_files f
              JOIN capture_outcomes o ON o.job_id = f.job_id
+             LEFT JOIN consolidation_archives a
+               ON REPLACE(a.source_path, char(92), '/')
+                = REPLACE(f.path, char(92), '/')
+             LEFT JOIN memory_v2_tombstones t
+               ON REPLACE(t.relative_path, char(92), '/')
+                = REPLACE(f.path, char(92), '/')
+             LEFT JOIN memory_v2_hidden_observations h
+               ON REPLACE(h.relative_path, char(92), '/')
+                = REPLACE(f.path, char(92), '/')
+             LEFT JOIN memory_v2_quarantined_paths q
+               ON REPLACE(q.relative_path, char(92), '/')
+                = REPLACE(f.path, char(92), '/')
+             WHERE a.source_path IS NULL AND t.relative_path IS NULL
+               AND h.relative_path IS NULL AND q.relative_path IS NULL
              ORDER BY f.job_id, f.ordinal
              LIMIT ?1",
         )?;
@@ -483,6 +776,27 @@ impl V2CaptureStore {
                 rows: "committed observation files",
                 limit: MAX_COMMITTED_OBSERVATION_ROWS,
             });
+        }
+        for row in &rows {
+            let path = self.scope_dir.join(&row.path);
+            let Ok(bytes) = read_regular_bounded(&path) else {
+                continue;
+            };
+            let observed_hash = content_hash(&bytes);
+            if observed_hash != row.content_hash {
+                transaction.execute(
+                    "INSERT INTO memory_v2_quarantined_paths(
+                        relative_path, reason, expected_hash, observed_hash, quarantined_at
+                     ) VALUES (?1, 'committed_hash_mismatch', ?2, ?3, ?4)
+                     ON CONFLICT(relative_path) DO NOTHING",
+                    params![
+                        row.path.replace('\\', "/"),
+                        row.content_hash,
+                        observed_hash,
+                        now
+                    ],
+                )?;
+            }
         }
 
         let mut statement = transaction.prepare(
@@ -507,9 +821,10 @@ impl V2CaptureStore {
         let revision = read_capture_revision(&transaction)?;
         transaction.commit()?;
 
-        self.index_committed_rows(&rows)?;
+        before_index()?;
+        self.converge_committed_rows(&rows, now)?;
         let manifest =
-            render_scope_manifest(&self.scope_dir, self.scope, V2ManifestBudget::default())
+            render_scope_manifest(&self.scope_dir, self.scope, V2ManifestBudget::configured())
                 .map_err(V2CaptureError::Manifest)?;
         before_manifest_publish()?;
 
@@ -535,18 +850,15 @@ impl V2CaptureStore {
         Ok(())
     }
 
-    fn index_committed_rows(&self, rows: &[CommittedObservationFile]) -> Result<()> {
-        for row in rows {
-            let path = self.scope_dir.join(&row.path);
-            let bytes = read_regular_bounded(&path)?;
-            if content_hash(&bytes) != row.content_hash {
-                return Err(V2CaptureError::Conflict(format!(
-                    "observation file {} differs from its committed hash",
-                    path.display()
-                )));
-            }
-        }
-
+    /// Converge the lexical index and manifest onto the committed rows.
+    ///
+    /// The outcome and cursors are already durable when this runs, so one
+    /// damaged inbox file must not wedge the scope: a missing file is dropped
+    /// from the index and a file whose bytes no longer match its committed
+    /// hash is durably quarantined rather than indexed as if it were the
+    /// committed observation. Only infrastructure failures (index database,
+    /// manifest) are errors.
+    fn converge_committed_rows(&self, rows: &[CommittedObservationFile], now: i64) -> Result<()> {
         if !rows.is_empty() {
             let storage = MemoryStorage::new_flat(&self.scope_dir, &self.scope_dir);
             let index_path = self.scope_dir.join("index.sqlite");
@@ -566,14 +878,104 @@ impl V2CaptureStore {
             };
             for row in rows {
                 let path = self.scope_dir.join(&row.path);
-                reindex_with_race_retry(&mut index, &path, source).map_err(|source| {
-                    V2CaptureError::Index {
-                        path: path.clone(),
-                        source,
+                match read_regular_bounded(&path) {
+                    Ok(bytes) if content_hash(&bytes) == row.content_hash => {
+                        let content = match std::str::from_utf8(&bytes) {
+                            Ok(content) => content,
+                            Err(error) => {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    error = %error,
+                                    "committed observation is not UTF-8; \
+                                     dropping it from the lexical index"
+                                );
+                                index.delete_path(&path).map_err(|source| {
+                                    V2CaptureError::Index {
+                                        path: path.clone(),
+                                        source,
+                                    }
+                                })?;
+                                continue;
+                            }
+                        };
+                        reindex_content_with_retry(&mut index, &path, source, content).map_err(
+                            |source| V2CaptureError::Index {
+                                path: path.clone(),
+                                source,
+                            },
+                        )?;
                     }
-                })?;
+                    Ok(_) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            "committed observation no longer matches its recorded hash; \
+                             quarantining it from memory-v2 reads"
+                        );
+                        index
+                            .delete_path(&path)
+                            .map_err(|source| V2CaptureError::Index {
+                                path: path.clone(),
+                                source,
+                            })?;
+                    }
+                    Err(V2CaptureError::Io { source, .. })
+                        if source.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        tracing::warn!(
+                            path = %path.display(),
+                            "committed observation file is missing; dropping it from the index"
+                        );
+                        self.quarantine_unreadable_committed_row(row, now)?;
+                        index
+                            .delete_path(&path)
+                            .map_err(|source| V2CaptureError::Index {
+                                path: path.clone(),
+                                source,
+                            })?;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %error,
+                            "committed observation file is unreadable; \
+                             dropping it from the lexical index"
+                        );
+                        self.quarantine_unreadable_committed_row(row, now)?;
+                        index
+                            .delete_path(&path)
+                            .map_err(|source| V2CaptureError::Index {
+                                path: path.clone(),
+                                source,
+                            })?;
+                    }
+                }
             }
         }
+        Ok(())
+    }
+
+    fn quarantine_unreadable_committed_row(
+        &self,
+        row: &CommittedObservationFile,
+        now: i64,
+    ) -> Result<()> {
+        let mut connection = self.open_state()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO memory_v2_quarantined_paths(
+                relative_path, reason, expected_hash, observed_hash, quarantined_at
+             )
+             SELECT ?1, 'committed_hash_mismatch', ?2, NULL, ?3
+             WHERE NOT EXISTS (
+                SELECT 1 FROM consolidation_archives
+                WHERE REPLACE(source_path, char(92), '/')
+                    = REPLACE(?1, char(92), '/')
+                  AND content_hash = ?2
+             )
+             ON CONFLICT(relative_path) DO NOTHING",
+            params![row.path.replace('\\', "/"), row.content_hash, now],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -596,6 +998,43 @@ impl V2CaptureStore {
             .ok_or_else(|| V2CaptureError::Invalid("unknown capture session".to_owned()))
     }
 
+    /// Content-free job state through a frozen target cursor.
+    pub fn work_state(&self, session_id: &str, through_turn: u32) -> Result<CaptureWorkState> {
+        validate_session_id(session_id)?;
+        let connection = self.open_state()?;
+        let (pending, running, failed) = connection.query_row(
+            "SELECT
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)
+             FROM capture_jobs
+             WHERE session_id = ?1 AND from_turn <= ?2",
+            params![session_id, through_turn],
+            |row| {
+                Ok((
+                    row.get::<_, Option<u32>>(0)?.unwrap_or(0),
+                    row.get::<_, Option<u32>>(1)?.unwrap_or(0),
+                    row.get::<_, Option<u32>>(2)?.unwrap_or(0),
+                ))
+            },
+        )?;
+        let last_error = connection
+            .query_row(
+                "SELECT last_error FROM capture_jobs
+                 WHERE session_id = ?1 AND from_turn <= ?2 AND status = 'failed'
+                 ORDER BY rowid DESC LIMIT 1",
+                params![session_id, through_turn],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(CaptureWorkState {
+            pending,
+            running,
+            failed,
+            last_error,
+        })
+    }
+
     fn migrate(&self) -> Result<()> {
         let mut connection = self.open_state()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -616,6 +1055,7 @@ impl V2CaptureStore {
                 session_id TEXT NOT NULL REFERENCES capture_sessions(session_id),
                 from_turn INTEGER NOT NULL,
                 through_turn INTEGER NOT NULL,
+                source_prompt_index INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed')),
                 lease_owner TEXT,
                 lease_expires_at INTEGER,
@@ -635,8 +1075,38 @@ impl V2CaptureStore {
                 path TEXT NOT NULL UNIQUE,
                 content_hash TEXT NOT NULL,
                 PRIMARY KEY(job_id, ordinal)
+            );
+            CREATE TABLE IF NOT EXISTS consolidation_archives (
+                source_path TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL,
+                archive_path TEXT NOT NULL UNIQUE,
+                content_hash TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_v2_terminal_capture_failures (
+                job_id TEXT PRIMARY KEY
             );",
         )?;
+        let has_source_prompt_index = {
+            let mut statement = transaction.prepare("PRAGMA table_info(capture_jobs)")?;
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            columns.iter().any(|column| column == "source_prompt_index")
+        };
+        if !has_source_prompt_index {
+            transaction.execute(
+                "ALTER TABLE capture_jobs
+                 ADD COLUMN source_prompt_index INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            transaction.execute(
+                "UPDATE capture_jobs
+                 SET source_prompt_index = MAX(through_turn - 1, 0)",
+                [],
+            )?;
+        }
+        crate::v2_maintenance::migrate_v2_hardening(&transaction)
+            .map_err(V2CaptureError::Maintenance)?;
         transaction.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('capture_revision', '0')",
             [],
@@ -663,8 +1133,8 @@ impl V2CaptureStore {
         &self,
         job: &CaptureJob,
         outcome: &CaptureOutcomeDraft,
+        safe_session: &str,
     ) -> Result<PreparedOutcome> {
-        let safe_session = safe_session_name(&job.session_id)?;
         let files = match outcome {
             CaptureOutcomeDraft::Noop => Vec::new(),
             CaptureOutcomeDraft::Observations(observations) => {
@@ -721,7 +1191,8 @@ impl V2CaptureStore {
         now: i64,
     ) -> Result<()> {
         let mut jobs_statement = transaction.prepare(
-            "SELECT j.job_id, j.session_id, j.from_turn, j.through_turn, j.attempt, s.safe_session
+            "SELECT j.job_id, j.session_id, j.from_turn, j.through_turn,
+                    j.source_prompt_index, j.attempt, s.safe_session
              FROM capture_jobs j JOIN capture_sessions s USING(session_id)
              LEFT JOIN capture_outcomes o USING(job_id)
              WHERE o.job_id IS NULL
@@ -744,9 +1215,10 @@ impl V2CaptureStore {
                             from_turn: row.get(2)?,
                             through_turn: row.get(3)?,
                         },
-                        attempt: row.get(4)?,
+                        source_prompt_index: row.get(4)?,
+                        attempt: row.get(5)?,
                     },
-                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -765,9 +1237,45 @@ impl V2CaptureStore {
                 "{safe_session}__t{:06}-{:06}__n",
                 job.range.from_turn, job.range.through_turn
             );
+            let ledger_prefix = format!("observations/_inbox/{prefix}");
+            let has_tombstoned_member = transaction.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM memory_v2_tombstones
+                    WHERE substr(
+                        REPLACE(relative_path, char(92), '/'),
+                        1,
+                        length(?1)
+                    ) = ?1
+                 )",
+                params![ledger_prefix],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if has_tombstoned_member {
+                for entry in &entries {
+                    if entry.is_file
+                        && entry.name.starts_with(&prefix)
+                        && entry.name.ends_with(".md")
+                    {
+                        std::fs::remove_file(&entry.path)
+                            .map_err(|source| io_error(entry.path.clone(), source))?;
+                    }
+                }
+                let hash = content_hash(format!("v2:noop:{}", job.job_id).as_bytes());
+                persist_outcome(
+                    transaction,
+                    &job,
+                    &PreparedOutcome {
+                        kind: "noop",
+                        hash,
+                        files: Vec::new(),
+                    },
+                    now,
+                )?;
+                continue;
+            }
             let mut found = BTreeMap::new();
             let mut expected_count = None;
-            let mut consistent = true;
+            let mut valid_set = true;
             for entry in &entries {
                 if !entry.is_file
                     || !entry.name.starts_with(&prefix)
@@ -775,39 +1283,87 @@ impl V2CaptureStore {
                 {
                     continue;
                 }
-                let Ok(ordinal) = recovery_ordinal(&entry.name, &prefix) else {
-                    continue;
+                let ordinal = match recovery_ordinal(&entry.name, &prefix) {
+                    Ok(ordinal) => ordinal,
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %entry.path.display(),
+                            error = %error,
+                            "ignoring malformed orphan observation set"
+                        );
+                        valid_set = false;
+                        break;
+                    }
                 };
-                let Ok(bytes) = read_regular_bounded(&entry.path) else {
-                    continue;
+                let bytes = match read_regular_bounded(&entry.path) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %entry.path.display(),
+                            error = %error,
+                            "ignoring unreadable orphan observation set"
+                        );
+                        valid_set = false;
+                        break;
+                    }
                 };
-                let Ok(metadata) = recovery_metadata(&bytes) else {
+                let relative_path = PathBuf::from("observations/_inbox").join(&entry.name);
+                let is_tombstoned = transaction.query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM memory_v2_tombstones
+                        WHERE REPLACE(relative_path, char(92), '/') = ?1
+                     )",
+                    params![path_text(&relative_path)?],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if is_tombstoned {
                     continue;
+                }
+                let metadata = match recovery_metadata(&bytes) {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %entry.path.display(),
+                            error = %error,
+                            "ignoring malformed orphan observation set"
+                        );
+                        valid_set = false;
+                        break;
+                    }
                 };
                 if metadata.job_id != job.job_id
                     || metadata.session_id != job.session_id
                     || metadata.range != job.range
                     || metadata.ordinal != ordinal
                 {
-                    continue;
+                    tracing::warn!(
+                        path = %entry.path.display(),
+                        "ignoring orphan observation set with inconsistent provenance"
+                    );
+                    valid_set = false;
+                    break;
                 }
                 if expected_count.is_some_and(|old| old != metadata.count)
                     || found.contains_key(&ordinal)
                 {
-                    consistent = false;
+                    tracing::warn!(
+                        path = %entry.path.display(),
+                        "ignoring orphan observation set with inconsistent counts"
+                    );
+                    valid_set = false;
                     break;
                 }
                 expected_count = Some(metadata.count);
                 found.insert(
                     ordinal,
                     PreparedFile {
-                        path: PathBuf::from("observations/_inbox").join(&entry.name),
+                        path: relative_path,
                         hash: content_hash(&bytes),
                         bytes,
                     },
                 );
             }
-            if !consistent {
+            if !valid_set {
                 continue;
             }
             let Some(count) = expected_count else {
@@ -834,22 +1390,26 @@ impl V2CaptureStore {
                 hash: content_hash(hash_input.as_bytes()),
                 files,
             };
-            persist_outcome(transaction, &job, &prepared, 0)?;
+            persist_outcome(transaction, &job, &prepared, now)?;
         }
         Ok(())
     }
 
-    fn remove_retry_orphans(&self, job: &CaptureJob) -> Result<()> {
-        let safe_session = safe_session_name(&job.session_id)?;
+    fn remove_retry_orphans(&self, job: &CaptureJob, safe_session: &str) -> Result<()> {
         let prefix = format!(
             "{safe_session}__t{:06}-{:06}__n",
             job.range.from_turn, job.range.through_turn
         );
         let inbox = self.scope_dir.join("observations/_inbox");
+        let mut owned_paths = Vec::new();
         for entry in read_dir_bounded(&inbox, MAX_INBOX_ENTRIES)? {
-            if entry.is_file && entry.name.starts_with(&prefix) && entry.name.ends_with(".md") {
-                std::fs::remove_file(&entry.path).map_err(|source| io_error(entry.path, source))?;
+            if !entry.is_file || !entry.name.starts_with(&prefix) || !entry.name.ends_with(".md") {
+                continue;
             }
+            owned_paths.push(entry.path);
+        }
+        for path in owned_paths {
+            std::fs::remove_file(&path).map_err(|source| io_error(path, source))?;
         }
         Ok(())
     }
@@ -886,13 +1446,14 @@ struct RecoveryDirectoryEntry {
     is_file: bool,
 }
 
-fn reindex_with_race_retry(
+fn reindex_content_with_retry(
     index: &mut crate::MemoryIndex,
     path: &Path,
     source: &str,
+    content: &str,
 ) -> std::result::Result<(), rusqlite::Error> {
     for attempt in 1..=MAX_REINDEX_ATTEMPTS {
-        match index.reindex_file(path, source) {
+        match index.reindex_content(path, source, content) {
             Ok(_) => return Ok(()),
             Err(error)
                 if attempt < MAX_REINDEX_ATTEMPTS
@@ -925,6 +1486,19 @@ fn validate_session_id(session_id: &str) -> Result<()> {
     validate_text("session id", session_id, 1, MAX_SESSION_BYTES)
 }
 
+fn pinned_safe_session(connection: &Connection, session_id: &str) -> Result<String> {
+    connection
+        .query_row(
+            "SELECT safe_session FROM capture_sessions WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            V2CaptureError::Invalid(format!("capture session {session_id} is not registered"))
+        })
+}
+
 fn safe_session_name(session_id: &str) -> Result<String> {
     validate_session_id(session_id)?;
     let mut slug = String::with_capacity(48);
@@ -952,8 +1526,19 @@ fn safe_session_name(session_id: &str) -> Result<String> {
     }
     let slug = slug.trim_matches('-');
     let slug = if slug.is_empty() { "session" } else { slug };
+    if is_canonical_uuid(session_id) {
+        return Ok(slug.to_owned());
+    }
     let digest = blake3::hash(session_id.as_bytes()).to_hex();
-    Ok(format!("{slug}-{digest}"))
+    Ok(format!("{slug}-{}", &digest[..8]))
+}
+
+fn is_canonical_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
 }
 
 fn deterministic_job_id(session_id: &str, range: CaptureRange) -> String {
@@ -986,6 +1571,33 @@ fn validate_runtime_timestamp(value: i64) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+fn sanitize_failure(error: &str) -> String {
+    let normalized = error
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let normalized = normalized.trim();
+    let normalized = if normalized.is_empty() {
+        "capture operation failed"
+    } else {
+        normalized
+    };
+    if normalized.len() <= MAX_FAILURE_BYTES {
+        return normalized.to_owned();
+    }
+    let mut end = MAX_FAILURE_BYTES;
+    while !normalized.is_char_boundary(end) {
+        end -= 1;
+    }
+    normalized[..end].trim_end().to_owned()
 }
 
 fn validate_terms(name: &str, values: &[String], max_count: usize) -> Result<()> {
@@ -1050,7 +1662,7 @@ fn content_hash(bytes: &[u8]) -> String {
 fn read_job(connection: &rusqlite::Connection, job_id: &str) -> Result<CaptureJob> {
     connection
         .query_row(
-            "SELECT job_id, session_id, from_turn, through_turn, attempt
+            "SELECT job_id, session_id, from_turn, through_turn, source_prompt_index, attempt
              FROM capture_jobs WHERE job_id = ?1",
             params![job_id],
             |row| {
@@ -1061,7 +1673,8 @@ fn read_job(connection: &rusqlite::Connection, job_id: &str) -> Result<CaptureJo
                         from_turn: row.get(2)?,
                         through_turn: row.get(3)?,
                     },
-                    attempt: row.get(4)?,
+                    source_prompt_index: row.get(4)?,
+                    attempt: row.get(5)?,
                 })
             },
         )
@@ -1108,19 +1721,41 @@ fn persist_outcome(
         params![job.job_id, prepared.kind, prepared.hash, committed_at],
     )?;
     for (ordinal, file) in prepared.files.iter().enumerate() {
-        let path = file.path.to_str().ok_or_else(|| {
-            V2CaptureError::Invalid("observation path is not valid UTF-8".to_owned())
-        })?;
+        let path = path_text(&file.path)?;
         transaction.execute(
             "INSERT INTO capture_observation_files(job_id, ordinal, path, content_hash)
              VALUES (?1, ?2, ?3, ?4)",
             params![job.job_id, ordinal, path, file.hash],
         )?;
+        let is_exposed = transaction
+            .query_row(
+                "SELECT is_exposed FROM capture_visibility WHERE job_id = ?1",
+                params![job.job_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(true);
+        if !is_exposed {
+            transaction.execute(
+                "INSERT OR IGNORE INTO memory_v2_hidden_observations(relative_path)
+                 VALUES (?1)",
+                params![path],
+            )?;
+        }
     }
     transaction.execute(
         "UPDATE capture_jobs SET status = 'completed', lease_owner = NULL,
             lease_expires_at = NULL, last_error = NULL WHERE job_id = ?1",
         params![job.job_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM memory_v2_terminal_capture_failures WHERE job_id = ?1",
+        params![job.job_id],
+    )?;
+    transaction.execute(
+        "INSERT INTO v2_job_retention(job_id, terminal_at) VALUES (?1, ?2)
+         ON CONFLICT(job_id) DO UPDATE SET terminal_at = excluded.terminal_at",
+        params![job.job_id, committed_at],
     )?;
     advance_captured_cursor(transaction, &job.session_id)?;
     transaction.execute(
@@ -1130,6 +1765,12 @@ fn persist_outcome(
         [],
     )?;
     Ok(())
+}
+
+fn path_text(path: &Path) -> Result<String> {
+    path.to_str()
+        .map(|path| path.replace('\\', "/"))
+        .ok_or_else(|| V2CaptureError::Invalid("path is not valid UTF-8".to_owned()))
 }
 
 fn read_capture_revision(connection: &rusqlite::Connection) -> Result<i64> {
@@ -1159,7 +1800,13 @@ fn advance_captured_cursor(
         let next = transaction
             .query_row(
                 "SELECT MAX(through_turn) FROM capture_jobs
-                 WHERE session_id = ?1 AND status = 'completed' AND from_turn <= ?2",
+                 WHERE session_id = ?1 AND from_turn <= ?2 AND (
+                    status = 'completed'
+                    OR (status = 'failed' AND EXISTS (
+                        SELECT 1 FROM memory_v2_terminal_capture_failures t
+                        WHERE t.job_id = capture_jobs.job_id
+                    ))
+                 )",
                 params![session_id, cursor.saturating_add(1)],
                 |row| row.get::<_, Option<u32>>(0),
             )?

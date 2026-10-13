@@ -3,51 +3,132 @@
 //! These produce the exact wire format that the grok sampling client expects, validated against the real sampling client.
 
 use axum::response::sse::Event;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::scripted::SseEvent;
+use crate::tool_call_turn::{ToolCallTurn, chat_completion_tool_call_events};
 
-/// Generate Anthropic Messages SSE events: one text block streamed as a
-/// single delta, terminated by a `message_delta` carrying `stop_reason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageReport {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cost_usd_ticks: Option<i64>,
+}
+
+/// Without an override the mock keeps its fixed 10 input and one-per-delta output.
+fn chat_completion_usage_block(delta_count: usize, usage: Option<&UsageReport>) -> Value {
+    let Some(report) = usage else {
+        return json!({
+            "prompt_tokens": 10,
+            "completion_tokens": delta_count,
+            "total_tokens": 10 + delta_count,
+        });
+    };
+    with_cost(
+        json!({
+            "prompt_tokens": report.prompt_tokens,
+            "completion_tokens": report.completion_tokens,
+            "total_tokens": report.prompt_tokens + report.completion_tokens,
+        }),
+        report,
+    )
+}
+
+fn responses_usage_block(report: &UsageReport) -> Value {
+    with_cost(
+        json!({
+            "input_tokens": report.prompt_tokens,
+            "output_tokens": report.completion_tokens,
+            "total_tokens": report.prompt_tokens + report.completion_tokens,
+            "input_tokens_details": { "cached_tokens": 0 },
+            "output_tokens_details": { "reasoning_tokens": 0 },
+        }),
+        report,
+    )
+}
+
+fn with_cost(mut block: Value, report: &UsageReport) -> Value {
+    if let (Some(ticks), Some(fields)) = (report.cost_usd_ticks, block.as_object_mut()) {
+        fields.insert("cost_in_usd_ticks".to_owned(), json!(ticks));
+    }
+    block
+}
+
+// Sampler leaves Messages `cost_usd_ticks` unset, so these blocks carry tokens only.
+fn messages_start_usage(usage: Option<&UsageReport>) -> Value {
+    json!({
+        "input_tokens": usage.map_or(10, |report| report.prompt_tokens),
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+    })
+}
+
+fn messages_delta_usage(usage: Option<&UsageReport>) -> Value {
+    json!({
+        "output_tokens": usage.map_or(5, |report| report.completion_tokens),
+        "input_tokens": usage.map_or(10, |report| report.prompt_tokens)
+    })
+}
+
 pub fn messages_api_events(text: &str, model: &str, stop_reason: &str) -> Vec<Event> {
-    vec![
-        Event::default().data(
+    scripted_to_axum(messages_api_script(text, model, stop_reason))
+}
+
+pub fn messages_api_script(text: &str, model: &str, stop_reason: &str) -> Vec<SseEvent> {
+    messages_api_script_chunks(&[text], model, stop_reason, None)
+}
+
+pub fn messages_api_script_chunks<S: AsRef<str>>(
+    chunks: &[S],
+    model: &str,
+    stop_reason: &str,
+    usage: Option<&UsageReport>,
+) -> Vec<SseEvent> {
+    let mut events = vec![
+        SseEvent::data(
             json!({
                 "type": "message_start",
                 "message": {
                     "id": "msg_test", "type": "message", "role": "assistant",
                     "content": [], "model": model, "stop_reason": null,
-                    "usage": {
-                        "input_tokens": 10, "output_tokens": 0,
-                        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0
-                    }
+                    "usage": messages_start_usage(usage)
                 }
             })
             .to_string(),
         ),
-        Event::default().data(
+        SseEvent::data(
             json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})
                 .to_string(),
         ),
-        Event::default().data(
-            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}})
+    ];
+
+    for chunk in chunks {
+        events.push(SseEvent::data(
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":chunk.as_ref()}})
                 .to_string(),
-        ),
-        Event::default().data(json!({"type":"content_block_stop","index":0}).to_string()),
-        Event::default().data(
-            json!({"type":"message_delta","delta":{"stop_reason":stop_reason},"usage":{"output_tokens":5,"input_tokens":10}})
-                .to_string(),
-        ),
-        Event::default().data(json!({"type":"message_stop"}).to_string()),
-    ]
+        ));
+    }
+
+    events.push(SseEvent::data(
+        json!({"type":"content_block_stop","index":0}).to_string(),
+    ));
+    events.push(SseEvent::data(
+        json!({"type":"message_delta","delta":{"stop_reason":stop_reason},"usage": messages_delta_usage(usage)})
+            .to_string(),
+    ));
+    events.push(SseEvent::data(json!({"type":"message_stop"}).to_string()));
+    events
 }
 
-/// Messages API tool-use turn: one `input_json_delta`, then `stop_reason: "tool_use"`.
-pub fn messages_api_tool_use_events(
-    tool_id: &str,
-    name: &str,
-    partial_json: &str,
+/// Messages API turn that streams a `thinking` block before the visible text block, so the sampler
+/// yields a reasoning sibling ahead of the assistant answer.
+pub fn messages_api_script_with_reasoning(
+    reasoning: &str,
+    text: &str,
     model: &str,
+    stop_reason: &str,
+    usage: Option<&UsageReport>,
 ) -> Vec<SseEvent> {
     vec![
         SseEvent::data(
@@ -56,50 +137,48 @@ pub fn messages_api_tool_use_events(
                 "message": {
                     "id": "msg_test", "type": "message", "role": "assistant",
                     "content": [], "model": model, "stop_reason": null,
-                    "usage": {
-                        "input_tokens": 10, "output_tokens": 0,
-                        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0
-                    }
+                    "usage": messages_start_usage(usage)
                 }
             })
             .to_string(),
         ),
         SseEvent::data(
-            json!({
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "tool_use", "id": tool_id, "name": name, "input": {}}
-            })
-            .to_string(),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}})
+                .to_string(),
         ),
         SseEvent::data(
-            json!({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "input_json_delta", "partial_json": partial_json}
-            })
-            .to_string(),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":reasoning}})
+                .to_string(),
         ),
-        SseEvent::data(json!({"type": "content_block_stop", "index": 0}).to_string()),
+        SseEvent::data(json!({"type":"content_block_stop","index":0}).to_string()),
         SseEvent::data(
-            json!({
-                "type": "message_delta",
-                "delta": {"stop_reason": "tool_use"},
-                "usage": {"output_tokens": 5, "input_tokens": 10}
-            })
-            .to_string(),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}})
+                .to_string(),
         ),
-        SseEvent::data(json!({"type": "message_stop"}).to_string()),
+        SseEvent::data(
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":text}})
+                .to_string(),
+        ),
+        SseEvent::data(json!({"type":"content_block_stop","index":1}).to_string()),
+        SseEvent::data(
+            json!({"type":"message_delta","delta":{"stop_reason":stop_reason},"usage": messages_delta_usage(usage)})
+                .to_string(),
+        ),
+        SseEvent::data(json!({"type":"message_stop"}).to_string()),
     ]
 }
 
-/// Generate ChatCompletions SSE events that stream `text` word-by-word, collapsing whitespace.
-/// Use [`chat_completion_events_exact`] when the receiver must reconstruct `text` byte-for-byte.
+/// Collapses whitespace. Use [`chat_completion_events_exact`] when the receiver must reconstruct `text` byte-for-byte.
 pub fn chat_completion_events(text: &str, model: &str) -> Vec<Event> {
-    scripted_to_axum(chat_completion_script_from_deltas(
+    scripted_to_axum(chat_completion_script(text, model))
+}
+
+pub(crate) fn chat_completion_script(text: &str, model: &str) -> Vec<SseEvent> {
+    chat_completion_script_from_deltas(
         &space_prefixed_deltas(text.split_whitespace()),
         model,
-    ))
+        "stop",
+    )
 }
 
 /// Like [`chat_completion_events`] but byte-exact: concatenating the deltas reproduces `text` byte-for-byte.
@@ -108,14 +187,22 @@ pub fn chat_completion_events_exact(text: &str, model: &str) -> Vec<Event> {
     scripted_to_axum(chat_completion_script_exact(text, model))
 }
 
-/// Byte-exact Chat Completions events for a [`crate::ScriptedResponse`].
 pub fn chat_completion_script_exact(text: &str, model: &str) -> Vec<SseEvent> {
-    chat_completion_script_from_deltas(&chat_completion_deltas(text), model)
+    chat_completion_script_from_deltas(&chat_completion_deltas(text), model, "stop")
+}
+
+/// One Chat Completions `delta.content` per chunk, in order, reconstructing `chunks` byte-for-byte.
+pub fn chat_completion_script_chunks<S: AsRef<str>>(chunks: &[S], model: &str) -> Vec<SseEvent> {
+    let deltas: Vec<String> = chunks
+        .iter()
+        .map(|chunk| chunk.as_ref().to_owned())
+        .collect();
+    chat_completion_script_from_deltas(&deltas, model, "stop")
 }
 
 /// Split `text` into deltas that reconstruct it byte-for-byte: the first carries no leading space; each subsequent one is ` {word}`.
 /// Splitting on single spaces only keeps newlines and tabs inside the words.
-fn chat_completion_deltas(text: &str) -> Vec<String> {
+pub(crate) fn chat_completion_deltas(text: &str) -> Vec<String> {
     space_prefixed_deltas(text.split(' '))
 }
 
@@ -134,13 +221,27 @@ fn space_prefixed_deltas<'a>(words: impl Iterator<Item = &'a str>) -> Vec<String
         .collect()
 }
 
-fn chat_completion_script_from_deltas(deltas: &[String], model: &str) -> Vec<SseEvent> {
+/// The deltas as chunks, the last carrying `final_finish_reason`.
+pub(crate) fn chat_completion_script_from_deltas(
+    deltas: &[String],
+    model: &str,
+    final_finish_reason: &str,
+) -> Vec<SseEvent> {
+    chat_completion_script_from_deltas_with_usage(deltas, model, final_finish_reason, None)
+}
+
+pub(crate) fn chat_completion_script_from_deltas_with_usage(
+    deltas: &[String],
+    model: &str,
+    final_finish_reason: &str,
+    usage: Option<&UsageReport>,
+) -> Vec<SseEvent> {
     let n = deltas.len();
     let mut events = Vec::new();
 
     for (i, content) in deltas.iter().enumerate() {
         let finish_reason = if i + 1 == n {
-            json!("stop")
+            json!(final_finish_reason)
         } else {
             json!(null)
         };
@@ -180,11 +281,7 @@ fn chat_completion_script_from_deltas(deltas: &[String], model: &str) -> Vec<Sse
             "created": 1234567890,
             "model": model,
             "choices": [],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": n,
-                "total_tokens": 10 + n
-            }
+            "usage": chat_completion_usage_block(n, usage),
         })
         .to_string(),
     ));
@@ -192,14 +289,68 @@ fn chat_completion_script_from_deltas(deltas: &[String], model: &str) -> Vec<Sse
     events
 }
 
-/// Generate Responses API SSE events that stream `text` word-by-word, collapsing whitespace.
-/// Use [`responses_api_events_exact`] when the receiver must reconstruct `text` byte-for-byte.
+/// ChatCompletions turn that streams a `reasoning_content` delta before the visible content, so the sampler routes the reasoning to `SamplingChannel::Reasoning` ahead of the answer text.
+pub fn chat_completion_script_with_reasoning(
+    reasoning: &str,
+    text: &str,
+    model: &str,
+    usage: Option<&UsageReport>,
+) -> Vec<SseEvent> {
+    vec![
+        SseEvent::data(
+            json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion.chunk",
+                "created": 1234567890,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": { "role": "assistant", "reasoning_content": reasoning },
+                    "finish_reason": null
+                }]
+            })
+            .to_string(),
+        ),
+        SseEvent::data(
+            json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion.chunk",
+                "created": 1234567890,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": { "content": text },
+                    "finish_reason": "stop"
+                }]
+            })
+            .to_string(),
+        ),
+        SseEvent::data(
+            json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion.chunk",
+                "created": 1234567890,
+                "model": model,
+                "choices": [],
+                "usage": chat_completion_usage_block(2, usage),
+            })
+            .to_string(),
+        ),
+        SseEvent::data("[DONE]"),
+    ]
+}
+
+/// Collapses whitespace. Use [`responses_api_events_exact`] when the receiver must reconstruct `text` byte-for-byte.
 pub fn responses_api_events(text: &str, model: &str) -> Vec<Event> {
+    scripted_to_axum(responses_api_script(text, model))
+}
+
+pub(crate) fn responses_api_script(text: &str, model: &str) -> Vec<SseEvent> {
     let deltas: Vec<String> = text
         .split_whitespace()
         .map(|word| format!("{word} "))
         .collect();
-    scripted_to_axum(responses_api_script_from_deltas(&deltas, text, model))
+    responses_api_script_from_deltas(&deltas, text, model)
 }
 
 /// Like [`responses_api_events`] but byte-exact: concatenating the deltas reproduces `text` byte-for-byte (newlines and whitespace runs preserved).
@@ -207,19 +358,47 @@ pub fn responses_api_events_exact(text: &str, model: &str) -> Vec<Event> {
     scripted_to_axum(responses_api_script_exact(text, model))
 }
 
-/// Byte-exact Responses API events for a [`crate::ScriptedResponse`].
 pub fn responses_api_script_exact(text: &str, model: &str) -> Vec<SseEvent> {
     responses_api_script_from_deltas(&responses_api_deltas(text), text, model)
 }
 
+/// One Responses `output_text.delta` per chunk. The completed text is the chunks concatenated.
+pub fn responses_api_script_chunks<S: AsRef<str>>(chunks: &[S], model: &str) -> Vec<SseEvent> {
+    let deltas: Vec<String> = chunks
+        .iter()
+        .map(|chunk| chunk.as_ref().to_owned())
+        .collect();
+    let text = deltas.concat();
+    responses_api_script_from_deltas(&deltas, &text, model)
+}
+
 /// `split_inclusive(' ')` keeps each chunk's trailing space, so concatenating the chunks reconstructs `text` byte-for-byte (newlines included).
-fn responses_api_deltas(text: &str) -> Vec<String> {
+pub(crate) fn responses_api_deltas(text: &str) -> Vec<String> {
     text.split_inclusive(' ').map(str::to_owned).collect()
 }
 
-// `deltas` and `text` deliberately disagree in echo mode: collapsed deltas, uncollapsed `response.completed` text
-// The shell depends on that mismatch, so do not unify them
 fn responses_api_script_from_deltas(deltas: &[String], text: &str, model: &str) -> Vec<SseEvent> {
+    responses_api_script_from_deltas_with_usage(deltas, text, model, None)
+}
+
+pub(crate) fn responses_api_script_from_deltas_with_usage(
+    deltas: &[String],
+    text: &str,
+    model: &str,
+    usage: Option<&UsageReport>,
+) -> Vec<SseEvent> {
+    let usage = usage.map_or_else(
+        || {
+            json!({
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens_details": { "reasoning_tokens": 0 }
+            })
+        },
+        responses_usage_block,
+    );
     let mut events = Vec::new();
     let mut seq = 0;
 
@@ -276,13 +455,7 @@ fn responses_api_script_from_deltas(deltas: &[String], text: &str, model: &str) 
                         "annotations": []
                     }]
                 }],
-                "usage": {
-                    "input_tokens": 10,
-                    "output_tokens": 5,
-                    "total_tokens": 15,
-                    "input_tokens_details": { "cached_tokens": 0 },
-                    "output_tokens_details": { "reasoning_tokens": 0 }
-                }
+                "usage": usage
             }
         })
         .to_string(),
@@ -304,59 +477,6 @@ fn scripted_to_axum(events: Vec<SseEvent>) -> Vec<Event> {
         .collect()
 }
 
-/// Responses API zero-arg tool call: `function_call` on `output_item.added`, no arguments delta.
-pub fn responses_api_zero_arg_tool_call_events(
-    call_id: &str,
-    name: &str,
-    model: &str,
-) -> Vec<SseEvent> {
-    vec![
-        SseEvent::data(
-            json!({
-                "type": "response.created",
-                "sequence_number": 0,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "in_progress", "output": []
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "response.output_item.added",
-                "sequence_number": 1,
-                "output_index": 0,
-                "item": {
-                    "type": "function_call", "call_id": call_id, "name": name, "arguments": ""
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "response.completed",
-                "sequence_number": 2,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "completed",
-                    "output": [{
-                        "type": "function_call", "call_id": call_id, "name": name, "arguments": ""
-                    }],
-                    "usage": {
-                        "input_tokens": 10, "output_tokens": 1, "total_tokens": 11,
-                        "input_tokens_details": { "cached_tokens": 0 },
-                        "output_tokens_details": { "reasoning_tokens": 0 }
-                    }
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data("[DONE]"),
-    ]
-}
-
-/// Responses API completion with empty output: `response.created` then `response.completed`.
 pub fn responses_api_completed_only_events(model: &str) -> Vec<SseEvent> {
     vec![
         SseEvent::data(
@@ -390,41 +510,6 @@ pub fn responses_api_completed_only_events(model: &str) -> Vec<SseEvent> {
     ]
 }
 
-/// Responses API incomplete turn with no content: `response.created` then `response.incomplete`.
-pub fn responses_api_incomplete_only_events(model: &str) -> Vec<SseEvent> {
-    vec![
-        SseEvent::data(
-            json!({
-                "type": "response.created",
-                "sequence_number": 0,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "in_progress", "output": []
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "response.incomplete",
-                "sequence_number": 1,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "incomplete", "output": [],
-                    "usage": {
-                        "input_tokens": 10, "output_tokens": 0, "total_tokens": 10,
-                        "input_tokens_details": { "cached_tokens": 0 },
-                        "output_tokens_details": { "reasoning_tokens": 0 }
-                    }
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data("[DONE]"),
-    ]
-}
-
-/// Chat Completions turn with no content: role-only chunk, usage-only chunk, `[DONE]`.
 pub fn chat_completions_no_content_events(model: &str) -> Vec<SseEvent> {
     vec![
         SseEvent::data(
@@ -448,7 +533,6 @@ pub fn chat_completions_no_content_events(model: &str) -> Vec<SseEvent> {
     ]
 }
 
-/// Messages API turn with no content: `message_start`, stop delta, `message_stop`.
 pub fn messages_api_no_content_events(model: &str) -> Vec<SseEvent> {
     vec![
         SseEvent::data(
@@ -477,44 +561,12 @@ pub fn messages_api_no_content_events(model: &str) -> Vec<SseEvent> {
     ]
 }
 
-/// Responses API failure before content: `response.created` then `response.failed`.
-pub fn responses_api_failed_events(message: &str, model: &str) -> Vec<SseEvent> {
-    vec![
-        SseEvent::data(
-            json!({
-                "type": "response.created",
-                "sequence_number": 0,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "in_progress", "output": []
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data(
-            json!({
-                "type": "response.failed",
-                "sequence_number": 1,
-                "response": {
-                    "id": "resp_test", "object": "response", "created_at": 1234567890,
-                    "model": model, "status": "failed", "output": [],
-                    "error": { "code": "server_error", "message": message }
-                }
-            })
-            .to_string(),
-        ),
-        SseEvent::data("[DONE]"),
-    ]
-}
-
-/// Generate a reasoning-only Responses API completion: reasoning summary deltas, then a `reasoning` output item with no
-/// message and no tool call. Reasoning-only is a scripted scenario, not an echo/fixed response mode, so it is not wired
+/// Reasoning-only is a scripted scenario, not an echo/fixed response mode, so it is not wired
 /// into the `mock_server` mode handlers.
 pub fn responses_api_reasoning_only_events(reasoning: &str, model: &str) -> Vec<SseEvent> {
     let mut events = Vec::new();
     let mut seq = 0;
 
-    // response.created
     events.push(SseEvent::data(
         json!({
             "type": "response.created",
@@ -532,7 +584,6 @@ pub fn responses_api_reasoning_only_events(reasoning: &str, model: &str) -> Vec<
     ));
     seq += 1;
 
-    // Reasoning summary deltas, the only content the model streams
     for word in reasoning.split_whitespace() {
         events.push(SseEvent::data(
             json!({
@@ -548,8 +599,6 @@ pub fn responses_api_reasoning_only_events(reasoning: &str, model: &str) -> Vec<
         seq += 1;
     }
 
-    // response.completed: a single `reasoning` output item carrying the full summary and NO message item
-    // `response_to_conversation_items` appends an empty assistant, yielding `[Reasoning, Assistant("")]`, which classifies as reasoning_only
     events.push(SseEvent::data(
         json!({
             "type": "response.completed",
@@ -584,18 +633,36 @@ pub fn responses_api_reasoning_only_events(reasoning: &str, model: &str) -> Vec<
     events
 }
 
-/// `response.completed` carries both items (`reasoning` and `message`), so the collector yields `[Reasoning,
-/// Assistant(text)]`, a non-empty turn. Returns [`SseEvent`]s for use with [`crate::ScriptedResponse::sse`] or
-/// `enqueue_response`, mirroring [`responses_api_reasoning_only_events`].
+/// `response.completed` carries both items (`reasoning` and `message`), so the collector yields `[Reasoning, Assistant(text)]`, a non-empty turn.
 pub fn responses_api_reasoning_and_text_events(
     reasoning: &str,
     text: &str,
     model: &str,
 ) -> Vec<SseEvent> {
+    responses_api_reasoning_and_text_events_with_usage(reasoning, text, model, None)
+}
+
+pub(crate) fn responses_api_reasoning_and_text_events_with_usage(
+    reasoning: &str,
+    text: &str,
+    model: &str,
+    usage: Option<&UsageReport>,
+) -> Vec<SseEvent> {
+    let usage = usage.map_or_else(
+        || {
+            json!({
+                "input_tokens": 10,
+                "output_tokens": 10,
+                "total_tokens": 20,
+                "input_tokens_details": { "cached_tokens": 0 },
+                "output_tokens_details": { "reasoning_tokens": 5 }
+            })
+        },
+        responses_usage_block,
+    );
     let mut events = Vec::new();
     let mut seq = 0;
 
-    // response.created
     events.push(SseEvent::data(
         json!({
             "type": "response.created",
@@ -613,7 +680,6 @@ pub fn responses_api_reasoning_and_text_events(
     ));
     seq += 1;
 
-    // Reasoning summary deltas stream before any answer text.
     for word in reasoning.split_whitespace() {
         events.push(SseEvent::data(
             json!({
@@ -629,7 +695,6 @@ pub fn responses_api_reasoning_and_text_events(
         seq += 1;
     }
 
-    // Then the visible answer.
     for word in text.split_whitespace() {
         events.push(SseEvent::data(
             json!({
@@ -645,7 +710,6 @@ pub fn responses_api_reasoning_and_text_events(
         seq += 1;
     }
 
-    // response.completed with BOTH items: reasoning and the assistant message
     events.push(SseEvent::data(
         json!({
             "type": "response.completed",
@@ -678,13 +742,7 @@ pub fn responses_api_reasoning_and_text_events(
                         }]
                     }
                 ],
-                "usage": {
-                    "input_tokens": 10,
-                    "output_tokens": 10,
-                    "total_tokens": 20,
-                    "input_tokens_details": { "cached_tokens": 0 },
-                    "output_tokens_details": { "reasoning_tokens": 5 }
-                }
+                "usage": usage
             }
         })
         .to_string(),
@@ -699,7 +757,7 @@ pub fn responses_api_reasoning_and_text_events(
 const DOOM_LOOP_CHECK_EVENT: &str = "response.doom_loop_check";
 
 /// One named `response.doom_loop_check` frame carrying the (cumulative) trigger set, in the inference API's wire shape.
-fn doom_loop_check_frame(triggers: &[&str], seq: u64) -> SseEvent {
+pub(crate) fn doom_loop_check_frame(triggers: &[&str], seq: u64) -> SseEvent {
     SseEvent::with_event(
         DOOM_LOOP_CHECK_EVENT,
         json!({
@@ -722,10 +780,12 @@ fn with_terminal_doom_loop_field(mut events: Vec<SseEvent>, triggers: &[&str]) -
         let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&e.data) else {
             return false;
         };
-        if value["type"] != "response.completed" {
+        if value.get("type").and_then(|v| v.as_str()) != Some("response.completed") {
             return false;
         }
-        value["response"]["doom_loop_check"] = json!({ "triggers": triggers });
+        if let Some(resp) = value.get_mut("response").and_then(|r| r.as_object_mut()) {
+            resp.insert("doom_loop_check".into(), json!({ "triggers": triggers }));
+        }
         e.data = value.to_string();
         true
     });
@@ -736,28 +796,25 @@ fn with_terminal_doom_loop_field(mut events: Vec<SseEvent>, triggers: &[&str]) -
     events
 }
 
-/// Generate Responses API SSE events for a server-detected doom loop: a reasoning-only stream (the model loops in its
-/// thinking and never answers). Returns [`SseEvent`]s for use with [`crate::ScriptedResponse::sse`] or
-/// `enqueue_response`, mirroring [`responses_api_reasoning_only_events`].
+/// A reasoning-only stream: the model loops in its thinking and never answers.
 pub fn responses_api_doom_loop_check_events(
     triggers: &[&str],
     reasoning: &str,
     model: &str,
 ) -> Vec<SseEvent> {
     let mut events = responses_api_reasoning_only_events(reasoning, model);
-    // Cumulative frames land between the deltas and the terminal event; the frame seq roughly continues the stream (clients never validate it)
+    // Cumulative frames land between the deltas and the terminal event; the frame seq roughly continues the stream (clients...
     for prefix_len in 1..=triggers.len() {
         let at = events.len() - 2;
         events.insert(
             at,
-            doom_loop_check_frame(&triggers[..prefix_len], at as u64),
+            doom_loop_check_frame(triggers.get(..prefix_len).unwrap_or(triggers), at as u64),
         );
     }
     with_terminal_doom_loop_field(events, triggers)
 }
 
-/// Generate a reasoning-and-text turn whose terminal `response.completed` carries `doom_loop_check.triggers`, with no mid-stream check frame.
-/// This is the terminal-only copy of the signal; the turn itself mirrors [`responses_api_reasoning_and_text_events`].
+/// The terminal `response.completed` carries `doom_loop_check.triggers`, with no mid-stream check frame.
 pub fn responses_api_doom_loop_terminal_only_events(
     triggers: &[&str],
     reasoning: &str,
@@ -795,21 +852,27 @@ pub fn with_terminal_output_items(
     output: Vec<serde_json::Value>,
 ) -> Vec<SseEvent> {
     let at = completed_frame_index(&events);
+    let Some(event) = events.get_mut(at) else {
+        return events;
+    };
     let mut value: serde_json::Value =
-        serde_json::from_str(&events[at].data).expect("the completed frame is valid JSON");
-    value["response"]["output"] = json!(output);
-    events[at].data = value.to_string();
+        serde_json::from_str(&event.data).expect("the completed frame is valid JSON");
+    if let Some(resp) = value.get_mut("response").and_then(|r| r.as_object_mut()) {
+        resp.insert("output".into(), json!(output));
+    }
+    event.data = value.to_string();
     events
 }
 
-/// Index of a turn's terminal `response.completed` frame.
 fn completed_frame_index(events: &[SseEvent]) -> usize {
     events
         .iter()
         .position(|event| {
             serde_json::from_str::<serde_json::Value>(&event.data)
                 .ok()
-                .is_some_and(|value| value["type"] == "response.completed")
+                .is_some_and(|value| {
+                    value.get("type").and_then(|v| v.as_str()) == Some("response.completed")
+                })
         })
         .expect("turn builders always emit a response.completed frame")
 }
@@ -818,22 +881,54 @@ fn completed_frame_index(events: &[SseEvent]) -> usize {
 /// turn builder. An armed client observes the signal and aborts on that next frame, so the caller chooses which frame the
 /// abort lands on. Pass `response.function_call_arguments.delta` to abort on tool activity
 pub fn with_doom_loop_frame_before_type(
-    mut events: Vec<SseEvent>,
+    events: Vec<SseEvent>,
     check_frame_data: &str,
+    before_type: &str,
+) -> Vec<SseEvent> {
+    insert_before_type(
+        events,
+        SseEvent::with_event(DOOM_LOOP_CHECK_EVENT, check_frame_data),
+        before_type,
+    )
+}
+
+/// Splice `event` in just before the first frame of `before_type`. Panics when the turn emits none.
+pub(crate) fn insert_before_type(
+    mut events: Vec<SseEvent>,
+    event: SseEvent,
     before_type: &str,
 ) -> Vec<SseEvent> {
     let at = events
         .iter()
-        .position(|event| {
-            serde_json::from_str::<serde_json::Value>(&event.data)
+        .position(|frame| {
+            serde_json::from_str::<serde_json::Value>(&frame.data)
                 .ok()
-                .is_some_and(|value| value["type"] == before_type)
+                .is_some_and(|value| {
+                    value.get("type").and_then(|v| v.as_str()) == Some(before_type)
+                })
         })
         .unwrap_or_else(|| panic!("the turn emits no {before_type} frame"));
-    events.insert(
-        at,
-        SseEvent::with_event(DOOM_LOOP_CHECK_EVENT, check_frame_data),
-    );
+    events.insert(at, event);
+    events
+}
+
+/// Renumber each frame carrying a `sequence_number` to a contiguous running index, so a spliced frame keeps them unique.
+pub(crate) fn renumber_sequence_numbers(mut events: Vec<SseEvent>) -> Vec<SseEvent> {
+    let mut next: u64 = 0;
+    for event in &mut events {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&event.data) else {
+            continue;
+        };
+        let Some(sequence) = value
+            .as_object_mut()
+            .and_then(|frame| frame.get_mut("sequence_number"))
+        else {
+            continue;
+        };
+        *sequence = json!(next);
+        next += 1;
+        event.data = value.to_string();
+    }
     events
 }
 
@@ -879,9 +974,6 @@ pub fn responses_api_with_doom_loop_frame_after_text(
     events
 }
 
-/// Generate a Responses API turn that streams reasoning summary deltas first and then issues one `function_call`. This is
-/// the shape a reasoning-capable model produces when it thinks before its first tool call. Returns [`SseEvent`]s for use
-/// with [`crate::ScriptedResponse::sse`] or `enqueue_response`, mirroring [`responses_api_reasoning_only_events`].
 pub fn responses_api_reasoning_then_tool_call_events(
     reasoning: &str,
     call_id: &str,
@@ -892,7 +984,6 @@ pub fn responses_api_reasoning_then_tool_call_events(
     let mut events = Vec::new();
     let mut seq = 0;
 
-    // response.created
     events.push(SseEvent::data(
         json!({
             "type": "response.created",
@@ -910,7 +1001,6 @@ pub fn responses_api_reasoning_then_tool_call_events(
     ));
     seq += 1;
 
-    // Reasoning summary deltas stream before the tool call.
     for word in reasoning.split_whitespace() {
         events.push(SseEvent::data(
             json!({
@@ -926,7 +1016,6 @@ pub fn responses_api_reasoning_then_tool_call_events(
         seq += 1;
     }
 
-    // Then the tool invocation.
     events.push(SseEvent::data(
         json!({
             "type": "response.function_call_arguments.delta",
@@ -939,7 +1028,6 @@ pub fn responses_api_reasoning_then_tool_call_events(
     ));
     seq += 1;
 
-    // response.completed: the reasoning item plus the function_call item.
     events.push(SseEvent::data(
         json!({
             "type": "response.completed",
@@ -982,8 +1070,6 @@ pub fn responses_api_reasoning_then_tool_call_events(
     events
 }
 
-/// Chat Completions twin of [`responses_api_reasoning_then_tool_call_events`].
-/// Streams `reasoning_content` deltas, then one `tool_calls` delta, then a `finish_reason: "tool_calls"` chunk with usage.
 pub fn chat_completions_reasoning_then_tool_call_events(
     reasoning: &str,
     call_id: &str,
@@ -1008,49 +1094,12 @@ pub fn chat_completions_reasoning_then_tool_call_events(
             .to_string(),
         ));
     }
-    events.push(SseEvent::data(
-        json!({
-            "id": "chatcmpl-test",
-            "object": "chat.completion.chunk",
-            "created": 1234567890,
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": call_id,
-                        "type": "function",
-                        "function": { "name": name, "arguments": arguments }
-                    }]
-                },
-                "finish_reason": null
-            }]
-        })
-        .to_string(),
-    ));
-    events.push(SseEvent::data(
-        json!({
-            "id": "chatcmpl-test",
-            "object": "chat.completion.chunk",
-            "created": 1234567890,
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {},
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 20,
-                "total_tokens": 30
-            }
-        })
-        .to_string(),
-    ));
-    events.push(SseEvent::data("[DONE]"));
+    events.extend(chat_completion_tool_call_events(ToolCallTurn {
+        call_id,
+        name,
+        arguments,
+        model,
+    }));
     events
 }
 
@@ -1068,7 +1117,6 @@ mod tests {
         assert_eq!(chat_completion_deltas(text).concat(), text);
         assert_eq!(responses_api_deltas(text).concat(), text);
 
-        // The reconstruction preserves the fence as a real, newline-delimited code block (the property diagram detection depends on)
         assert!(
             chat_completion_deltas(text)
                 .concat()
@@ -1092,7 +1140,6 @@ mod tests {
         let events = responses_api_reasoning_only_events("alpha beta gamma", "m");
         assert_eq!(events.last().map(|e| e.data.as_str()), Some("[DONE]"));
 
-        // Parse every non-terminal event into JSON and key off the `type` tag.
         let parsed: Vec<serde_json::Value> = events
             .iter()
             .filter(|e| e.data != "[DONE]")
@@ -1100,16 +1147,24 @@ mod tests {
             .collect();
         let types: Vec<&str> = parsed
             .iter()
-            .map(|v| v["type"].as_str().expect("each event has a type tag"))
+            .map(|v| {
+                v.get("type")
+                    .and_then(|t| t.as_str())
+                    .expect("each event has a type tag")
+            })
             .collect();
 
         let reasoning_delta = parsed
             .iter()
-            .find(|v| v["type"] == "response.reasoning_summary_text.delta")
+            .find(|v| {
+                v.get("type").and_then(|t| t.as_str())
+                    == Some("response.reasoning_summary_text.delta")
+            })
             .expect("must stream a reasoning summary delta");
         assert!(
-            !reasoning_delta["delta"]
-                .as_str()
+            !reasoning_delta
+                .get("delta")
+                .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .is_empty(),
             "the reasoning delta must carry text"
@@ -1121,24 +1176,28 @@ mod tests {
 
         let completed = parsed
             .iter()
-            .find(|v| v["type"] == "response.completed")
+            .find(|v| v.get("type").and_then(|t| t.as_str()) == Some("response.completed"))
             .expect("must emit a completed event");
-        let output = completed["response"]["output"]
-            .as_array()
+        let output = completed
+            .pointer("/response/output")
+            .and_then(|v| v.as_array())
             .expect("completed carries an output array");
         let reasoning_item = output
             .iter()
-            .find(|o| o["type"] == "reasoning")
+            .find(|o| o.get("type").and_then(|t| t.as_str()) == Some("reasoning"))
             .expect("completed output must carry a reasoning item");
         assert!(
-            !reasoning_item["summary"][0]["text"]
-                .as_str()
+            !reasoning_item
+                .pointer("/summary/0/text")
+                .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .is_empty(),
             "the reasoning item must carry summary text"
         );
         assert!(
-            !output.iter().any(|o| o["type"] == "message"),
+            !output
+                .iter()
+                .any(|o| o.get("type").and_then(|t| t.as_str()) == Some("message")),
             "completed output must have no message item (no visible text)"
         );
     }
@@ -1156,10 +1215,13 @@ mod tests {
             .collect();
         let types: Vec<&str> = parsed
             .iter()
-            .map(|v| v["type"].as_str().expect("each event has a type tag"))
+            .map(|v| {
+                v.get("type")
+                    .and_then(|t| t.as_str())
+                    .expect("each event has a type tag")
+            })
             .collect();
 
-        // Reasoning streams strictly before the visible answer.
         let first_reasoning = types
             .iter()
             .position(|t| *t == "response.reasoning_summary_text.delta")
@@ -1175,18 +1237,25 @@ mod tests {
 
         let completed = parsed
             .iter()
-            .find(|v| v["type"] == "response.completed")
+            .find(|v| v.get("type").and_then(|t| t.as_str()) == Some("response.completed"))
             .expect("must emit a completed event");
-        let output = completed["response"]["output"]
-            .as_array()
+        let output = completed
+            .pointer("/response/output")
+            .and_then(|v| v.as_array())
             .expect("completed carries an output array");
         assert_eq!(
-            output[0]["summary"][0]["text"].as_str(),
+            output
+                .first()
+                .and_then(|o| o.pointer("/summary/0/text"))
+                .and_then(|v| v.as_str()),
             Some("alpha beta"),
             "completed output must carry the reasoning item first"
         );
         assert_eq!(
-            output[1]["content"][0]["text"].as_str(),
+            output
+                .get(1)
+                .and_then(|o| o.pointer("/content/0/text"))
+                .and_then(|v| v.as_str()),
             Some("the answer"),
             "completed output must carry the assistant message"
         );
@@ -1211,10 +1280,13 @@ mod tests {
             .collect();
         let types: Vec<&str> = parsed
             .iter()
-            .map(|v| v["type"].as_str().expect("each event has a type tag"))
+            .map(|v| {
+                v.get("type")
+                    .and_then(|t| t.as_str())
+                    .expect("each event has a type tag")
+            })
             .collect();
 
-        // Reasoning streams strictly before the tool invocation; no text.
         let first_reasoning = types
             .iter()
             .position(|t| *t == "response.reasoning_summary_text.delta")
@@ -1234,26 +1306,49 @@ mod tests {
 
         let completed = parsed
             .iter()
-            .find(|v| v["type"] == "response.completed")
+            .find(|v| v.get("type").and_then(|t| t.as_str()) == Some("response.completed"))
             .expect("must emit a completed event");
-        let output = completed["response"]["output"]
-            .as_array()
+        let output = completed
+            .pointer("/response/output")
+            .and_then(|v| v.as_array())
             .expect("completed carries an output array");
         assert_eq!(
-            output[0]["summary"][0]["text"].as_str(),
+            output
+                .first()
+                .and_then(|o| o.pointer("/summary/0/text"))
+                .and_then(|v| v.as_str()),
             Some("alpha beta"),
             "completed output must carry the reasoning item first"
         );
-        assert_eq!(output[1]["type"].as_str(), Some("function_call"));
-        assert_eq!(output[1]["call_id"].as_str(), Some("call_1"));
-        assert_eq!(output[1]["name"].as_str(), Some("read_file"));
+        assert_eq!(
+            output
+                .get(1)
+                .and_then(|o| o.get("type"))
+                .and_then(|v| v.as_str()),
+            Some("function_call")
+        );
+        assert_eq!(
+            output
+                .get(1)
+                .and_then(|o| o.get("call_id"))
+                .and_then(|v| v.as_str()),
+            Some("call_1")
+        );
+        assert_eq!(
+            output
+                .get(1)
+                .and_then(|o| o.get("name"))
+                .and_then(|v| v.as_str()),
+            Some("read_file")
+        );
         assert!(
-            !output.iter().any(|o| o["type"] == "message"),
+            !output
+                .iter()
+                .any(|o| o.get("type").and_then(|t| t.as_str()) == Some("message")),
             "completed output must have no message item (no visible text)"
         );
     }
 
-    /// Shape guard for the Chat Completions think-then-call twin.
     #[test]
     fn chat_reasoning_then_tool_call_events_carry_reasoning_then_tool_call() {
         let events = chat_completions_reasoning_then_tool_call_events(
@@ -1270,34 +1365,50 @@ mod tests {
             .filter(|e| e.data != "[DONE]")
             .map(|e| serde_json::from_str(&e.data).expect("each event is valid JSON"))
             .collect();
-        let delta_at = |v: &serde_json::Value| v["choices"][0]["delta"].clone();
-
         let first_reasoning = parsed
             .iter()
-            .position(|v| !delta_at(v)["reasoning_content"].is_null())
+            .position(|v| {
+                v.pointer("/choices/0/delta/reasoning_content")
+                    .is_some_and(|c| !c.is_null())
+            })
             .expect("must stream reasoning_content deltas");
         let tool_call = parsed
             .iter()
-            .position(|v| !delta_at(v)["tool_calls"].is_null())
+            .position(|v| {
+                v.pointer("/choices/0/delta/tool_calls")
+                    .is_some_and(|c| !c.is_null())
+            })
             .expect("must stream a tool_calls delta");
         assert!(
             first_reasoning < tool_call,
             "reasoning deltas must precede the tool call"
         );
-        let call = delta_at(&parsed[tool_call])["tool_calls"][0].clone();
-        assert_eq!(call["id"].as_str(), Some("call_1"));
-        assert_eq!(call["function"]["name"].as_str(), Some("read_file"));
+        let Some(item) = parsed.get(tool_call) else {
+            panic!("missing tool_call event");
+        };
+        let call = item
+            .pointer("/choices/0/delta/tool_calls/0")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        assert_eq!(call.get("id").and_then(|v| v.as_str()), Some("call_1"));
+        assert_eq!(
+            call.pointer("/function/name").and_then(|v| v.as_str()),
+            Some("read_file")
+        );
         assert!(
-            parsed.iter().all(|v| delta_at(v)["content"]
-                .as_str()
+            parsed.iter().all(|v| v
+                .pointer("/choices/0/delta/content")
+                .and_then(|c| c.as_str())
                 .unwrap_or_default()
                 .is_empty()),
             "a think-then-call turn must not stream visible content"
         );
         assert!(
-            parsed
-                .iter()
-                .any(|v| v["choices"][0]["finish_reason"] == "tool_calls"),
+            parsed.iter().any(|v| {
+                v.pointer("/choices/0/finish_reason")
+                    .and_then(|f| f.as_str())
+                    == Some("tool_calls")
+            }),
             "the stream must finish with finish_reason tool_calls"
         );
     }
@@ -1317,32 +1428,49 @@ mod tests {
             .filter(|e| e.event.as_deref() == Some(DOOM_LOOP_CHECK_EVENT))
             .collect();
         assert_eq!(frames.len(), 2, "one frame per cumulative prefix");
-        let first: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
-        assert_eq!(first["type"], DOOM_LOOP_CHECK_EVENT);
-        assert!(first["sequence_number"].is_u64());
+        let [first_frame, second_frame] = frames.as_slice() else {
+            panic!("expected two frames: {frames:?}");
+        };
+        let first: serde_json::Value = serde_json::from_str(&first_frame.data).unwrap();
         assert_eq!(
-            first["doom_loop_check"]["triggers"],
-            json!(["tail_repetition:4@response"])
+            first.get("type").and_then(|v| v.as_str()),
+            Some(DOOM_LOOP_CHECK_EVENT)
         );
-        let second: serde_json::Value = serde_json::from_str(&frames[1].data).unwrap();
+        assert!(first.get("sequence_number").is_some_and(|v| v.is_u64()));
         assert_eq!(
-            second["doom_loop_check"]["triggers"],
-            json!(["tail_repetition:4@response", "tail_repetition:2@response"])
+            first.pointer("/doom_loop_check/triggers"),
+            Some(&json!(["tail_repetition:4@response"]))
+        );
+        let second: serde_json::Value = serde_json::from_str(&second_frame.data).unwrap();
+        assert_eq!(
+            second.pointer("/doom_loop_check/triggers"),
+            Some(&json!([
+                "tail_repetition:4@response",
+                "tail_repetition:2@response"
+            ]))
         );
 
         let completed = events
             .iter()
             .filter(|e| e.data != "[DONE]")
             .map(|e| serde_json::from_str::<serde_json::Value>(&e.data).unwrap())
-            .find(|v| v["type"] == "response.completed")
+            .find(|v| v.get("type").and_then(|t| t.as_str()) == Some("response.completed"))
             .expect("must emit a completed event");
         assert_eq!(
-            completed["response"]["doom_loop_check"]["triggers"],
-            json!(["tail_repetition:4@response", "tail_repetition:2@response"])
+            completed.pointer("/response/doom_loop_check/triggers"),
+            Some(&json!([
+                "tail_repetition:4@response",
+                "tail_repetition:2@response"
+            ]))
         );
-        let output = completed["response"]["output"].as_array().unwrap();
+        let output = completed
+            .pointer("/response/output")
+            .and_then(|v| v.as_array())
+            .unwrap();
         assert!(
-            !output.iter().any(|o| o["type"] == "message"),
+            !output
+                .iter()
+                .any(|o| o.get("type").and_then(|t| t.as_str()) == Some("message")),
             "a doomed turn is reasoning-only (no message item)"
         );
     }
@@ -1365,15 +1493,26 @@ mod tests {
             .iter()
             .filter(|e| e.data != "[DONE]")
             .map(|e| serde_json::from_str::<serde_json::Value>(&e.data).unwrap())
-            .find(|v| v["type"] == "response.completed")
+            .find(|v| v.get("type").and_then(|t| t.as_str()) == Some("response.completed"))
             .expect("must emit a completed event");
         assert_eq!(
-            completed["response"]["doom_loop_check"]["triggers"],
-            json!(["low_logprob@thinking"])
+            completed.pointer("/response/doom_loop_check/triggers"),
+            Some(&json!(["low_logprob@thinking"]))
         );
-        let output = completed["response"]["output"].as_array().unwrap();
-        assert!(output.iter().any(|o| o["type"] == "message"));
-        assert!(output.iter().any(|o| o["type"] == "reasoning"));
+        let output = completed
+            .pointer("/response/output")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert!(
+            output
+                .iter()
+                .any(|o| o.get("type").and_then(|t| t.as_str()) == Some("message"))
+        );
+        assert!(
+            output
+                .iter()
+                .any(|o| o.get("type").and_then(|t| t.as_str()) == Some("reasoning"))
+        );
     }
 
     /// Shape guard for the splice helper: the named frame lands right after `response.created` with the caller's payload byte-for-byte.
@@ -1382,10 +1521,16 @@ mod tests {
     fn with_doom_loop_frame_splices_payload_verbatim() {
         let payload = r#"{"type":"response.doom_loop_check","doom_loop_check":{"triggers":42}}"#;
         let events = responses_api_with_doom_loop_frame(payload, "hm", "hi", "m");
-        assert_eq!(events[1].event.as_deref(), Some(DOOM_LOOP_CHECK_EVENT));
-        assert_eq!(events[1].data, payload);
-        let created: serde_json::Value = serde_json::from_str(&events[0].data).unwrap();
-        assert_eq!(created["type"], "response.created");
+        let [created_ev, check_ev] = events.get(..2).unwrap_or(&[]) else {
+            panic!("expected created then check frame: {events:?}");
+        };
+        assert_eq!(check_ev.event.as_deref(), Some(DOOM_LOOP_CHECK_EVENT));
+        assert_eq!(check_ev.data, payload);
+        let created: serde_json::Value = serde_json::from_str(&created_ev.data).unwrap();
+        assert_eq!(
+            created.get("type").and_then(|v| v.as_str()),
+            Some("response.created")
+        );
     }
 
     /// Shape guard for the positional composer: the named frame lands immediately before the first frame of the requested type.
@@ -1403,9 +1548,18 @@ mod tests {
             .iter()
             .position(|e| e.event.as_deref() == Some(DOOM_LOOP_CHECK_EVENT))
             .expect("the named frame is spliced in");
-        assert_eq!(events[at].data, payload);
-        let next: serde_json::Value = serde_json::from_str(&events[at + 1].data).unwrap();
-        assert_eq!(next["type"], "response.function_call_arguments.delta");
+        let Some(at_ev) = events.get(at) else {
+            panic!("missing spliced event {at}");
+        };
+        assert_eq!(at_ev.data, payload);
+        let Some(next_ev) = events.get(at + 1) else {
+            panic!("missing event after {at}");
+        };
+        let next: serde_json::Value = serde_json::from_str(&next_ev.data).unwrap();
+        assert_eq!(
+            next.get("type").and_then(|v| v.as_str()),
+            Some("response.function_call_arguments.delta")
+        );
     }
 
     /// Shape guard for the terminal-output composer: the completed frame carries exactly the caller's items.
@@ -1431,18 +1585,27 @@ mod tests {
         assert!(
             parsed
                 .iter()
-                .any(|v| v["type"] == "response.output_text.delta"),
+                .any(|v| v.get("type").and_then(|t| t.as_str())
+                    == Some("response.output_text.delta")),
             "the streamed deltas are left alone"
         );
         let completed = parsed
             .iter()
-            .find(|v| v["type"] == "response.completed")
+            .find(|v| v.get("type").and_then(|t| t.as_str()) == Some("response.completed"))
             .expect("must emit a completed event");
-        let output = completed["response"]["output"].as_array().unwrap();
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0]["type"], "mcp_call");
+        let output = completed
+            .pointer("/response/output")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        let [item] = output.as_slice() else {
+            panic!("expected one output item: {output:?}");
+        };
+        assert_eq!(item.get("type").and_then(|v| v.as_str()), Some("mcp_call"));
         assert_eq!(
-            completed["response"]["model"], "m",
+            completed
+                .pointer("/response/model")
+                .and_then(|v| v.as_str()),
+            Some("m"),
             "the rest of the frame survives"
         );
     }
@@ -1461,15 +1624,27 @@ mod tests {
             .iter()
             .position(|e| e.event.as_deref() == Some(DOOM_LOOP_CHECK_EVENT))
             .expect("the named frame is spliced in");
-        assert_eq!(events[at].data, payload);
-        let next: serde_json::Value = serde_json::from_str(&events[at + 1].data).unwrap();
+        let Some(at_ev) = events.get(at) else {
+            panic!("missing spliced event {at}");
+        };
+        assert_eq!(at_ev.data, payload);
+        let Some(next_ev) = events.get(at + 1) else {
+            panic!("missing event after {at}");
+        };
+        let next: serde_json::Value = serde_json::from_str(&next_ev.data).unwrap();
         assert_eq!(
-            next["type"], "response.completed",
+            next.get("type").and_then(|v| v.as_str()),
+            Some("response.completed"),
             "the frame is the last event before the terminal frame"
         );
-        let output = next["response"]["output"].as_array().unwrap();
+        let output = next
+            .pointer("/response/output")
+            .and_then(|v| v.as_array())
+            .unwrap();
         assert!(
-            output.iter().any(|o| o["type"] == "function_call"),
+            output
+                .iter()
+                .any(|o| o.get("type").and_then(|t| t.as_str()) == Some("function_call")),
             "the composed turn keeps its tool call"
         );
     }
@@ -1486,20 +1661,38 @@ mod tests {
             .iter()
             .position(|e| e.event.as_deref() == Some(DOOM_LOOP_CHECK_EVENT))
             .expect("the named frame is spliced in");
-        let text_delta_before = events[..at]
+        let text_delta_before = events
+            .get(..at)
+            .unwrap_or(&[])
             .iter()
             .filter(|e| e.data != "[DONE]")
             .filter_map(|e| serde_json::from_str::<serde_json::Value>(&e.data).ok())
-            .any(|v| v["type"] == "response.output_text.delta");
+            .any(|v| v.get("type").and_then(|t| t.as_str()) == Some("response.output_text.delta"));
         assert!(
             text_delta_before,
             "the frame arrives after the turn's visible text"
         );
 
-        let next: serde_json::Value = serde_json::from_str(&events[at + 1].data).unwrap();
-        assert_eq!(next["type"], "response.output_text.delta");
-        assert_eq!(next["delta"], "", "the abort rides an empty typed delta");
-        let terminal: serde_json::Value = serde_json::from_str(&events[at + 2].data).unwrap();
-        assert_eq!(terminal["type"], "response.completed");
+        let Some(next_ev) = events.get(at + 1) else {
+            panic!("missing event after {at}");
+        };
+        let next: serde_json::Value = serde_json::from_str(&next_ev.data).unwrap();
+        assert_eq!(
+            next.get("type").and_then(|v| v.as_str()),
+            Some("response.output_text.delta")
+        );
+        assert_eq!(
+            next.get("delta").and_then(|v| v.as_str()),
+            Some(""),
+            "the abort rides an empty typed delta"
+        );
+        let Some(term_ev) = events.get(at + 2) else {
+            panic!("missing terminal after {at}");
+        };
+        let terminal: serde_json::Value = serde_json::from_str(&term_ev.data).unwrap();
+        assert_eq!(
+            terminal.get("type").and_then(|v| v.as_str()),
+            Some("response.completed")
+        );
     }
 }

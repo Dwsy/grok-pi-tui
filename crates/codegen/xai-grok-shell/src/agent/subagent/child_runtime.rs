@@ -13,6 +13,9 @@ pub(crate) struct ShellChildRuntime {
     pub(crate) child_cmd_tx: mpsc::UnboundedSender<SessionCommand>,
     pub(crate) message_delivery: crate::session::message_delivery::MessageDeliveryHandle,
     pub(crate) active_message_target_session_id: String,
+    pub(crate) active_message_target_agent_id: xai_message_delivery_core::AgentId,
+    pub(crate) active_message_target_generation:
+        xai_grok_tools::implementations::grok_build::task::root_control::AgentMessageGeneration,
     pub(crate) child_signals: crate::session::signals::SessionSignalsHandle,
     /// Held by the worker until promotion succeeds.
     /// `None` means the caller still owns the join handle, so a cancel during promotion can wait for the actor to exit.
@@ -66,8 +69,10 @@ impl ChildControl for ShellChildRuntime {
             },
             message.text.clone(),
             crate::session::message_delivery::agent_delivery_identity(message.message_id.clone()),
-            crate::session::message_delivery::OwnedActiveDescendantGrant::new(
+            crate::session::message_delivery::CoordinatorAgentDeliveryGrant::new(
                 self.active_message_target_session_id.clone(),
+                self.active_message_target_agent_id.clone(),
+                self.active_message_target_generation,
                 delivery,
             ),
         );

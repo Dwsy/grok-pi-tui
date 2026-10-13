@@ -87,15 +87,21 @@ impl ScopeGraph {
     }
 
     pub fn is_definition(&self, node_idx: NodeIndex) -> bool {
-        matches!(self.graph[node_idx], NodeKind::Def(_))
+        self.graph
+            .node_weight(node_idx)
+            .is_some_and(|n| matches!(n, NodeKind::Def(_)))
     }
 
     pub fn is_reference(&self, node_idx: NodeIndex) -> bool {
-        matches!(self.graph[node_idx], NodeKind::Ref(_))
+        self.graph
+            .node_weight(node_idx)
+            .is_some_and(|n| matches!(n, NodeKind::Ref(_)))
     }
 
     pub fn is_import(&self, node_idx: NodeIndex) -> bool {
-        matches!(self.graph[node_idx], NodeKind::Import(_))
+        self.graph
+            .node_weight(node_idx)
+            .is_some_and(|n| matches!(n, NodeKind::Import(_)))
     }
 
     pub fn node_by_range(&self, start_byte: usize, end_byte: usize) -> Option<NodeIndex> {
@@ -103,7 +109,9 @@ impl ScopeGraph {
             .node_indices()
             .filter(|&idx| self.is_definition(idx) || self.is_reference(idx) || self.is_import(idx))
             .find(|&idx| {
-                let node = self.graph[idx].range();
+                let Some(node) = self.graph.node_weight(idx).map(|n| n.range()) else {
+                    return false;
+                };
                 start_byte >= node.start_byte() && end_byte <= node.end_byte()
             })
     }
@@ -114,13 +122,23 @@ impl ScopeGraph {
             .node_indices()
             .filter(|&idx| self.is_definition(idx))
             .filter(|&idx| {
-                let node = self.graph[idx].range();
+                let Some(node) = self.graph.node_weight(idx).map(|n| n.range()) else {
+                    return false;
+                };
                 node.start_byte() >= start_byte && node.end_byte() <= end_byte
             })
             .collect::<Vec<_>>();
         node_idxs.sort_by(|a, b| {
-            let first_node = self.graph[*a].range().byte_size();
-            let second_node = self.graph[*b].range().byte_size();
+            let first_node = self
+                .graph
+                .node_weight(*a)
+                .map(|n| n.range().byte_size())
+                .unwrap_or(0);
+            let second_node = self
+                .graph
+                .node_weight(*b)
+                .map(|n| n.range().byte_size())
+                .unwrap_or(0);
             first_node.cmp(&second_node)
         });
         node_idxs.first().copied()
@@ -128,7 +146,7 @@ impl ScopeGraph {
 
     // The smallest scope that encompasses `range`. Start at `start` and narrow down if possible.
     fn scope_by_range(&self, range: Range, start: NodeIndex) -> Option<NodeIndex> {
-        let target_range = self.graph[start].range();
+        let target_range = self.graph.node_weight(start).map(|n| n.range())?;
         if target_range.contains(&range) {
             let child_scopes = self
                 .graph
@@ -163,7 +181,9 @@ impl ScopeGraph {
             let mut found = false;
             for edge in self.graph.edges_directed(current_node, Direction::Incoming) {
                 if let EdgeKind::ScopeToScope = edge.weight() {
-                    let node = &self.graph[edge.source()];
+                    let Some(node) = self.graph.node_weight(edge.source()) else {
+                        continue;
+                    };
                     if let NodeKind::Scope(scope) = node
                         && scope.range.contains(range)
                     {
@@ -177,10 +197,10 @@ impl ScopeGraph {
                 break;
             }
         }
-        if let NodeKind::Scope(scope) = &self.graph[current_node] {
-            scope.clone()
-        } else {
-            unreachable!()
+        match self.graph.node_weight(current_node) {
+            Some(NodeKind::Scope(scope)) => scope.clone(),
+            // The walk starts at the root scope and only follows ScopeToScope edges.
+            _ => unreachable!("scope walk landed on a non-scope node"),
         }
     }
 
@@ -219,7 +239,11 @@ impl ScopeGraph {
 
     // Produce the parent scope of a given scope
     fn parent_scope(&self, start: NodeIndex) -> Option<NodeIndex> {
-        if matches!(self.graph[start], NodeKind::Scope(_)) {
+        if self
+            .graph
+            .node_weight(start)
+            .is_some_and(|n| matches!(n, NodeKind::Scope(_)))
+        {
             return self
                 .graph
                 .edges_directed(start, Direction::Outgoing)
@@ -261,7 +285,7 @@ impl ScopeGraph {
                     .filter(|edge| *edge.weight() == EdgeKind::DefToScope)
                     .map(|edge| edge.source())
                 {
-                    if let NodeKind::Def(def) = &self.graph[local_def]
+                    if let Some(NodeKind::Def(def)) = self.graph.node_weight(local_def)
                         && new.name(src) == def.name(src)
                     {
                         match (&def.symbol_id, &new.symbol_id) {
@@ -284,7 +308,7 @@ impl ScopeGraph {
                     .filter(|edge| *edge.weight() == EdgeKind::ImportToScope)
                     .map(|edge| edge.source())
                 {
-                    if let NodeKind::Import(import) = &self.graph[local_import]
+                    if let Some(NodeKind::Import(import)) = self.graph.node_weight(local_import)
                         && new.name(src) == import.name(src)
                     {
                         possible_imports.push(local_import);
@@ -317,7 +341,7 @@ impl ScopeGraph {
         self.graph
             .node_indices()
             .filter_map(|idx| {
-                if let NodeKind::Def(def) = &self.graph[idx] {
+                if let Some(NodeKind::Def(def)) = self.graph.node_weight(idx) {
                     let name = String::from_utf8_lossy(def.name(src)).to_string();
                     Some((name, def.range))
                 } else {
@@ -332,7 +356,7 @@ impl ScopeGraph {
         self.graph
             .node_indices()
             .filter_map(|idx| {
-                if let NodeKind::Ref(reference) = &self.graph[idx] {
+                if let Some(NodeKind::Ref(reference)) = self.graph.node_weight(idx) {
                     let name = String::from_utf8_lossy(reference.name(src)).to_string();
                     Some((name, reference.range))
                 } else {
@@ -347,7 +371,7 @@ impl ScopeGraph {
         self.graph
             .node_indices()
             .filter_map(|idx| {
-                if let NodeKind::Ref(reference) = &self.graph[idx] {
+                if let Some(NodeKind::Ref(reference)) = self.graph.node_weight(idx) {
                     let ref_name = String::from_utf8_lossy(reference.name(src)).to_string();
                     let ref_range = reference.range;
 
@@ -357,7 +381,8 @@ impl ScopeGraph {
                         .edges_directed(idx, Direction::Outgoing)
                         .find(|edge| *edge.weight() == EdgeKind::RefToDef)
                         .and_then(|edge| {
-                            if let NodeKind::Def(def) = &self.graph[edge.target()] {
+                            if let Some(NodeKind::Def(def)) = self.graph.node_weight(edge.target())
+                            {
                                 let def_name = String::from_utf8_lossy(def.name(src)).to_string();
                                 Some((def_name, def.range))
                             } else {
@@ -376,7 +401,7 @@ impl ScopeGraph {
     /// Find definition by name - returns the range of the definition
     pub fn find_definition(&self, name: &str, src: &[u8]) -> Option<Range> {
         self.graph.node_indices().find_map(|idx| {
-            if let NodeKind::Def(def) = &self.graph[idx]
+            if let Some(NodeKind::Def(def)) = self.graph.node_weight(idx)
                 && def.name(src) == name.as_bytes()
             {
                 return Some(def.range);
@@ -390,7 +415,7 @@ impl ScopeGraph {
         self.graph
             .node_indices()
             .filter_map(|idx| {
-                if let NodeKind::Ref(reference) = &self.graph[idx]
+                if let Some(NodeKind::Ref(reference)) = self.graph.node_weight(idx)
                     && reference.name(src) == name.as_bytes()
                 {
                     return Some(reference.range);
@@ -407,13 +432,11 @@ impl ScopeGraph {
         references: Vec<(String, Range)>,
     ) -> Self {
         // Create a graph with a root scope covering the whole file
-        let root_range = if !definitions.is_empty() {
-            definitions[0].1
-        } else if !references.is_empty() {
-            references[0].1
-        } else {
-            Range::default()
-        };
+        let root_range = definitions
+            .first()
+            .or(references.first())
+            .map(|d| d.1)
+            .unwrap_or_default();
 
         let mut graph = Graph::new();
         let root_idx = graph.add_node(NodeKind::scope(root_range));
@@ -497,8 +520,11 @@ pub fn scope_graph_from_definitions_query(
 
         for capture in match_.captures {
             let range = Range::for_tree_node(&capture.node);
-            let capture_name = &query.capture_names()[capture.index as usize];
-            let text = String::from_utf8_lossy(&src[capture.node.byte_range()]).to_string();
+            let Some(capture_name) = query.capture_names().get(capture.index as usize) else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(src.get(capture.node.byte_range()).unwrap_or(&[]))
+                .to_string();
 
             let parts: Vec<_> = capture_name.split('.').collect();
 
@@ -561,9 +587,13 @@ pub fn extract_symbols_fast(
 
     for (i, name) in capture_names.iter().enumerate() {
         if name.starts_with("name.definition.") {
-            is_def[i] = true;
+            if let Some(slot) = is_def.get_mut(i) {
+                *slot = true;
+            }
         } else if name.starts_with("name.reference.") {
-            is_ref[i] = true;
+            if let Some(slot) = is_ref.get_mut(i) {
+                *slot = true;
+            }
         } else if *name == "alias.original" {
             alias_original_idx = Some(i);
         } else if *name == "alias.name" {
@@ -590,17 +620,19 @@ pub fn extract_symbols_fast(
 
             if is_def.get(idx).copied().unwrap_or(false) {
                 // Convert Cow<str> directly to Arc<str> - avoids intermediate String allocation
-                let text: Arc<str> = String::from_utf8_lossy(&src[byte_range]).into();
+                let text: Arc<str> =
+                    String::from_utf8_lossy(src.get(byte_range).unwrap_or(&[])).into();
                 let range = Range::for_tree_node(&node);
                 definitions.push((text, range));
             } else if is_ref.get(idx).copied().unwrap_or(false) {
-                let text: Arc<str> = String::from_utf8_lossy(&src[byte_range]).into();
+                let text: Arc<str> =
+                    String::from_utf8_lossy(src.get(byte_range).unwrap_or(&[])).into();
                 let range = Range::for_tree_node(&node);
                 references.push((text, range));
             } else if Some(idx) == alias_original_idx {
-                alias_original = Some(&src[byte_range]);
+                alias_original = src.get(byte_range);
             } else if Some(idx) == alias_name_idx {
-                alias_name = Some(&src[byte_range]);
+                alias_name = src.get(byte_range);
             }
         }
 
@@ -1626,8 +1658,8 @@ mod tests {
         let locs = index.find_definitions("sym");
         assert_eq!(locs.len(), 1);
         assert_eq!(
-            locs[0].1,
-            u32::MAX as usize,
+            locs.first().map(|l| l.1),
+            Some(u32::MAX as usize),
             "line number exceeding u32::MAX must saturate to u32::MAX, not wrap"
         );
 
@@ -1637,8 +1669,8 @@ mod tests {
         let refs = index2.find_references("sym");
         assert_eq!(refs.len(), 1);
         assert_eq!(
-            refs[0].1,
-            u32::MAX as usize,
+            refs.first().map(|r| r.1),
+            Some(u32::MAX as usize),
             "reference line number exceeding u32::MAX must saturate"
         );
     }

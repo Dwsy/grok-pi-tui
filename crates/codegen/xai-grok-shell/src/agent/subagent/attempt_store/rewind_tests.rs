@@ -127,9 +127,15 @@ fn replace(bytes: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
         .position(|window| window == old)
         .unwrap();
     let mut changed = Vec::with_capacity(bytes.len() - old.len() + new.len());
-    changed.extend_from_slice(&bytes[..start]);
+    let Some(head) = bytes.get(..start) else {
+        panic!("replace start out of range: {start}");
+    };
+    let Some(tail) = bytes.get(start + old.len()..) else {
+        panic!("replace tail out of range: {start}");
+    };
+    changed.extend_from_slice(head);
     changed.extend_from_slice(new);
-    changed.extend_from_slice(&bytes[start + old.len()..]);
+    changed.extend_from_slice(tail);
     changed
 }
 
@@ -150,6 +156,17 @@ fn strict_decoder_rejects_labeled_adversarial_inputs() {
         hx(2, 32)
     ))
     .into_bytes();
+    let enc = |i: usize| {
+        encoded
+            .get(i)
+            .unwrap_or_else(|| panic!("expected encoded rewind {i}: len {}", encoded.len()))
+    };
+    let Some(first) = encoded.first() else {
+        panic!("expected encoded rewind fixtures");
+    };
+    let Some(truncated) = first.len().checked_sub(1).and_then(|n| first.get(..n)) else {
+        panic!("empty encoded rewind row");
+    };
     let adversarial = [
         (
             "unknown event",
@@ -157,47 +174,47 @@ fn strict_decoder_rejects_labeled_adversarial_inputs() {
         ),
         (
             "zero segment generation",
-            replace(&encoded[0], b"\"g\":33", b"\"g\":0"),
+            replace(enc(0), b"\"g\":33", b"\"g\":0"),
         ),
         (
             "uppercase storage key",
-            replace(&encoded[0], b"\"s\":\"01", b"\"s\":\"A1"),
+            replace(enc(0), b"\"s\":\"01", b"\"s\":\"A1"),
         ),
         (
             "wide mutation ID",
-            replace(&encoded[1], b"\"m\":\"0404", b"\"m\":\"040404"),
+            replace(enc(1), b"\"m\":\"0404", b"\"m\":\"040404"),
         ),
         (
             "duplicate generation",
             replace(
-                &encoded[2],
+                enc(2),
                 b"\"g\":18446744073709551615",
                 b"\"g\":18446744073709551615,\"g\":1",
             ),
         ),
         (
             "accepted count overflow",
-            replace(&encoded[4], b"\"a\":32", b"\"a\":33"),
+            replace(enc(4), b"\"a\":32", b"\"a\":33"),
         ),
         (
             "control count overflow",
-            replace(&encoded[4], b"\"c\":238", b"\"c\":239"),
+            replace(enc(4), b"\"c\":238", b"\"c\":239"),
         ),
         (
             "u64 overflow",
             replace(
-                &encoded[4],
+                enc(4),
                 b"\"q\":18446744073709551615",
                 b"\"q\":18446744073709551616",
             ),
         ),
         (
             "unknown key",
-            replace(&encoded[4], b",\"s\":33", b",\"z\":0,\"s\":33"),
+            replace(enc(4), b",\"s\":33", b",\"z\":0,\"s\":33"),
         ),
         ("complete reordered row", reordered_live),
-        ("missing LF", encoded[0][..encoded[0].len() - 1].to_vec()),
-        ("extra LF", [encoded[0].as_slice(), b"\n"].concat()),
+        ("missing LF", truncated.to_vec()),
+        ("extra LF", [first.as_slice(), b"\n"].concat()),
         ("global cap", vec![b' '; MAX_ENCODED_RECORD_BYTES + 1]),
     ];
     for (case, bytes) in adversarial {
@@ -240,7 +257,11 @@ fn hashes_pin_exact_lf_row_and_mixed_prefix_bytes() {
     }
 
     let core = b"{\"v\":1,\"e\":4,\"g\":1,\"t\":0}\n";
-    let live = EncodedRewindRecord::try_new(&records()[0]).unwrap();
+    let rewind_records = records();
+    let Some(first_rewind) = rewind_records.first() else {
+        panic!("expected rewind fixtures: {rewind_records:?}");
+    };
+    let live = EncodedRewindRecord::try_new(first_rewind).unwrap();
     let prefix = [core.as_slice(), live.as_bytes()].concat();
     assert_eq!(
         journal_prefix_hash(&prefix).unwrap().as_bytes(),
@@ -250,6 +271,9 @@ fn hashes_pin_exact_lf_row_and_mixed_prefix_bytes() {
             0x87, 0x08, 0x24, 0x77
         ]
     );
-    assert!(journal_prefix_hash(&prefix[..prefix.len() - 1]).is_err());
+    let Some(short_prefix) = prefix.len().checked_sub(1).and_then(|n| prefix.get(..n)) else {
+        panic!("empty journal prefix");
+    };
+    assert!(journal_prefix_hash(short_prefix).is_err());
     assert!(journal_prefix_hash(b"{}\n").is_err());
 }

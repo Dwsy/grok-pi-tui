@@ -1,7 +1,7 @@
 //! Wire names of the hub-synthesized Grok Bot harness tools.
 //!
 //! Single source of truth shared by the hub that registers the tools and
-//! by agent hosts that gate the tools per agent config.
+//! by the clients that gate the tools per agent config.
 
 /// Handwritten harness tool ids: every id a hub may register or Plane may
 /// allowlist. A hub registers a prefix of this list, so an id can be
@@ -17,6 +17,8 @@ pub const GROK_BOT_TOOL_IDS: &[&str] = &[
     "bot_transcript_offbox",
     "bot_await_turn",
     "bot_search_agents",
+    "bot_voice_call_plan",
+    "bot_voice_call_tool",
 ];
 
 /// Whether `name` is a hub-synthesized Grok Bot harness tool.
@@ -46,7 +48,7 @@ pub fn is_grok_bot_default_tool(name: &str) -> bool {
 }
 
 /// Model-facing descriptions, one per [`GROK_BOT_TOOL_IDS`] entry (same
-/// order). The hub registers its tools with these strings, and agent hosts
+/// order). The hub registers its tools with these strings, and clients
 /// use them to advertise opted-in bot tools before the hub connection is
 /// live, so both surfaces render the same text.
 pub const GROK_BOT_TOOL_DESCRIPTIONS: &[(&str, &str)] = &[
@@ -54,17 +56,18 @@ pub const GROK_BOT_TOOL_DESCRIPTIONS: &[(&str, &str)] = &[
         "bot_create_agent",
         "Create a Grok Bot agent. It greets the user itself; send no first \
          prompt, never quote its id. Cannot be deleted; check bot_list_agents \
-         first.",
+         first. Only when the user asks for a new agent; to reach an existing \
+         one use bot_list_agents then bot_send_prompt. One agent per call.",
     ),
     (
         "bot_list_agents",
         "List all Grok Bot agents on the user's box with id, name, description, \
-         and status. Wakes the box.",
+         and status. Wakes the box. Its ids are the only valid agent_id values.",
     ),
     (
         "bot_send_prompt",
         "Send a prompt to a Grok Bot agent. Returns once accepted unless mode \
-         waits for the reply. on_busy is reject (default), queue, or supersede. \
+         waits for the reply. on_busy is supersede (default), reject, or queue. \
          After a timeout or a missing notification, resume with bot_await_turn \
          and the returned handle; never re-send. Empty reply with \
          finished:true means no text. A <grok_bot agent_id> tag is that \
@@ -96,14 +99,27 @@ pub const GROK_BOT_TOOL_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "bot_await_turn",
         "Wait for an agent's turn to finish. Pass the handle from \
-         bot_send_prompt to keep waiting after a timeout instead of re-sending. \
-         Without a handle, waits for idle and returns the last message.",
+         bot_send_prompt to keep waiting after a timeout or while its async \
+         wait is pending, instead of re-sending. Without a handle, waits for \
+         the pending turn if one is in flight, otherwise for idle, and \
+         returns the last message.",
     ),
     (
         "bot_search_agents",
         "Find Grok Bot agents by name or description when you know what you \
          want. Returns the best matches only; bot_list_agents shows every bot. \
          Wakes the box.",
+    ),
+    (
+        "bot_voice_call_plan",
+        "Plan a voice call with a Grok Bot agent: its spoken instructions, \
+         voice-side tools, greeting, and task receipt. For a voice backend at \
+         dial time; sends nothing to the agent.",
+    ),
+    (
+        "bot_voice_call_tool",
+        "Run a voice-side tool from bot_voice_call_plan mid-call. For a voice \
+         backend.",
     ),
 ];
 
@@ -114,6 +130,13 @@ pub fn grok_bot_tool_description(name: &str) -> Option<&'static str> {
         .find(|(id, _)| *id == name)
         .map(|(_, desc)| *desc)
 }
+
+/// The model must paste a roster id, not invent a name or a shortened UUID;
+/// the full rule sits on bot_send_prompt, the reads carry the pointer.
+const AGENT_ID_PARAM_DESCRIPTION: &str = "Agent id pasted from bot_list_agents.";
+const SEND_AGENT_ID_DESCRIPTION: &str = "Opaque id copied exactly from \
+     bot_list_agents or bot_search_agents; never a name, never typed from \
+     memory or shortened.";
 
 /// Flattened JSON Schema for a Grok Bot tool's arguments.
 ///
@@ -149,7 +172,7 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
             "properties": {
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent id."
+                    "description": SEND_AGENT_ID_DESCRIPTION
                 },
                 "prompt": {
                     "type": "string",
@@ -162,17 +185,17 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Wait limit in ms for blocking. Async uses the safety max. Out-of-range values are clamped."
+                    "description": "Omit it. A turn often takes longer than two minutes. Async ignores this."
                 },
                 "on_busy": {
                     "type": "string",
                     "enum": ["reject", "queue", "supersede"],
-                    "description": "reject (default), queue after idle, or supersede the current wait."
+                    "description": "supersede (default) the current wait, reject, or queue after idle."
                 },
                 "paths": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Up to 8 files, 25 MiB each. Workspace-relative paths such as attachments/note.pdf; absolute guest paths are rewritten. Without a connected workspace, artifacts/ and attachments/ paths fetch conversation files."
+                    "description": "Up to 8 non-empty files, 25 MiB each. Workspace-relative paths such as attachments/note.pdf; absolute guest paths are rewritten. Without a workspace, artifacts/ and attachments/ paths fetch conversation files."
                 }
             }
         }),
@@ -183,7 +206,7 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
             "properties": {
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent id."
+                    "description": AGENT_ID_PARAM_DESCRIPTION
                 }
             }
         }),
@@ -194,7 +217,7 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
             "properties": {
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent id."
+                    "description": AGENT_ID_PARAM_DESCRIPTION
                 },
                 "limit": {
                     "type": "integer",
@@ -221,7 +244,7 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
             "properties": {
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent id."
+                    "description": AGENT_ID_PARAM_DESCRIPTION
                 },
                 "limit": {
                     "type": "integer",
@@ -240,7 +263,7 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
             "properties": {
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent id."
+                    "description": AGENT_ID_PARAM_DESCRIPTION
                 },
                 "limit": {
                     "type": "integer",
@@ -259,7 +282,7 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
             "properties": {
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent id."
+                    "description": AGENT_ID_PARAM_DESCRIPTION
                 },
                 "cursor": {
                     "type": "string",
@@ -274,7 +297,7 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
             "properties": {
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent id; must match the handle's agent."
+                    "description": "Agent id pasted from bot_list_agents; must match the handle's agent."
                 },
                 "handle": {
                     "type": "object",
@@ -283,7 +306,7 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Wait limit in ms; on timeout, finished:false plus a handle to wait again."
+                    "description": "Omit it. On timeout, finished is false; wait again with the handle."
                 }
             }
         }),
@@ -304,6 +327,61 @@ pub fn grok_bot_tool_arguments_schema(name: &str) -> Option<serde_json::Value> {
                 "limit": {
                     "type": "integer",
                     "description": "Max agents, 1 to 64."
+                }
+            }
+        }),
+        "bot_voice_call_plan" => serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["agent_id"],
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent id."
+                },
+                "user_name": {
+                    "type": "string",
+                    "description": "What the bot should call the user."
+                },
+                "spoken_language": {
+                    "type": "string",
+                    "description": "Language the call is spoken in."
+                },
+                "time_zone": {
+                    "type": "string",
+                    "description": "Caller's IANA time zone."
+                }
+            }
+        }),
+        "bot_voice_call_tool" => serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["agent_id", "call_id", "name", "line"],
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent id."
+                },
+                "call_id": {
+                    "type": "string",
+                    "description": "Voice call id."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Tool name from the plan."
+                },
+                "input": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Tool arguments."
+                },
+                "line": {
+                    "type": "object",
+                    "description": "Required booleans: they_just_talked, news_owed, receipt_owed, already_spoke_this_turn."
+                },
+                "time_zone": {
+                    "type": "string",
+                    "description": "Caller's IANA time zone."
                 }
             }
         }),
@@ -330,6 +408,35 @@ mod tests {
     }
 
     #[test]
+    fn descriptions_steer_copied_agent_ids_and_create_sparingly() {
+        let create = grok_bot_tool_description("bot_create_agent").expect("bot_create_agent");
+        for needle in [
+            "Only when the user asks for a new agent",
+            "bot_list_agents then bot_send_prompt",
+            "One agent per call",
+        ] {
+            assert!(
+                create.contains(needle),
+                "bot_create_agent missing {needle:?}"
+            );
+        }
+        let send = grok_bot_tool_arguments_schema("bot_send_prompt").expect("bot_send_prompt");
+        let agent_id = send["properties"]["agent_id"]["description"]
+            .as_str()
+            .expect("agent_id description");
+        for needle in [
+            "copied exactly from bot_list_agents or bot_search_agents",
+            "opaque id",
+            "never typed from memory or shortened",
+        ] {
+            assert!(
+                agent_id.to_ascii_lowercase().contains(needle),
+                "bot_send_prompt.agent_id missing {needle:?}: {agent_id}"
+            );
+        }
+    }
+
+    #[test]
     fn arguments_schema_covers_every_id() {
         for id in GROK_BOT_TOOL_IDS {
             let schema = grok_bot_tool_arguments_schema(id)
@@ -347,7 +454,7 @@ mod tests {
         assert_eq!(
             GROK_BOT_DEFAULT_TOOL_IDS.len(),
             10,
-            "default set size changed; check the surface budget and the agent-host copies of this list"
+            "default set size changed; check the surface budget and every other copy of this list"
         );
         assert_eq!(
             GROK_BOT_DEFAULT_TOOL_IDS,
@@ -362,7 +469,15 @@ mod tests {
         assert!(!is_grok_bot_default_tool("bot_future_tool"));
     }
 
-    /// Agent hosts advertise this schema from the shared table before the
+    #[test]
+    fn voice_call_tools_are_declared_but_not_default_tools() {
+        for id in ["bot_voice_call_plan", "bot_voice_call_tool"] {
+            assert!(is_grok_bot_tool(id), "{id}");
+            assert!(!is_grok_bot_default_tool(id), "{id}");
+        }
+    }
+
+    /// Clients advertise this schema from the shared table before the
     /// hub bind resolves, so its shape is pinned here rather than only by a
     /// hub's schema goldens.
     #[test]

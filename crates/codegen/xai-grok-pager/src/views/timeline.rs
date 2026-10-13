@@ -8,6 +8,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Widget};
 
+use crate::app::agent_view::ViewSurface;
 use crate::theme::Theme;
 
 pub const RAIL_WIDTH: u16 = 2;
@@ -52,12 +53,12 @@ pub struct RailViewport {
 
 pub fn rail_width(
     show_timeline: bool,
-    is_subagent_view: bool,
+    surface: ViewSurface,
     area_width: u16,
     marker_count: usize,
 ) -> u16 {
     if show_timeline
-        && !is_subagent_view
+        && surface == ViewSurface::Root
         && area_width >= MIN_TERMINAL_WIDTH
         && marker_count >= MIN_MARKERS
     {
@@ -312,6 +313,94 @@ pub fn render_rail(
     }
 }
 
+/// Floating preview card for a hovered tick, anchored left of the rail. The interior must stay
+/// `bg_base`: border glyphs draw mid-cell, so any lighter fill bleeds a half-cell past the border
+/// line.
+pub fn render_tick_hover_popup(
+    buf: &mut Buffer,
+    rail: &TimelineRail,
+    scrollback_area: Rect,
+    turn_idx: usize,
+    preview: &str,
+    theme: &Theme,
+) {
+    if !rail.window.contains(&turn_idx) {
+        return;
+    }
+    let tick_y = rail.ticks_y + (turn_idx - rail.window.start) as u16;
+
+    // Wrap to at most 2 lines by display width; ellipsize the last.
+    let max_text = ((scrollback_area.width / 2).clamp(16, 32)) as usize;
+    let mut lines: Vec<String> = Vec::new();
+    let mut rest: &str = preview.trim();
+    while !rest.is_empty() && lines.len() < 2 {
+        if lines.len() == 1 {
+            lines.push(crate::render::line_utils::truncate_str(rest, max_text));
+            rest = "";
+        } else {
+            let end = crate::render::line_utils::byte_offset_at_width(rest, max_text);
+            let Some(head) = rest.get(..end) else { break };
+            let Some(tail) = rest.get(end..) else { break };
+            lines.push(head.to_string());
+            rest = tail.trim_start();
+        }
+    }
+    if lines.is_empty() {
+        return;
+    }
+
+    let text_w = lines
+        .iter()
+        .map(|l| unicode_width::UnicodeWidthStr::width(l.as_str()))
+        .max()
+        .unwrap_or(0) as u16;
+    let card_w = text_w + 4;
+    let card_h = lines.len() as u16 + 2;
+    // Too short a terminal to place the card without painting over the panes above/below; skip it
+    if card_h > scrollback_area.height {
+        return;
+    }
+    let card_x = rail
+        .rect
+        .x
+        .saturating_sub(card_w + 1)
+        .max(scrollback_area.x);
+    // Vertically centered on the tick row, clamped to the scrollback rows.
+    let card_y = tick_y
+        .saturating_sub(card_h / 2)
+        .max(scrollback_area.y)
+        .min(
+            (scrollback_area.y + scrollback_area.height)
+                .saturating_sub(card_h)
+                .min(buf.area.height.saturating_sub(card_h)),
+        );
+    let card_area = Rect::new(card_x, card_y, card_w, card_h);
+
+    let bg = theme.bg_base;
+    ratatui::widgets::Widget::render(ratatui::widgets::Clear, card_area, buf);
+    buf.set_style(card_area, Style::default().bg(bg));
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(theme.gray).bg(bg));
+    let inner = block.inner(card_area);
+    ratatui::widgets::Widget::render(block, card_area, buf);
+
+    let text_style = Style::default().fg(theme.text_primary).bg(bg);
+    for (i, line) in lines.iter().enumerate() {
+        let y = inner.y + i as u16;
+        if y >= inner.y + inner.height {
+            break;
+        }
+        buf.set_line(
+            inner.x + 1,
+            y,
+            &Line::from(Span::styled(line.clone(), text_style)),
+            text_w,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,11 +589,14 @@ mod tests {
     #[test]
     fn rail_width_gates_eligibility() {
         // All conditions met reserves the rail columns
-        assert_eq!(rail_width(true, false, 80, 5), RAIL_WIDTH);
-        // Setting off / subagent view / narrow terminal / too few turns.
-        assert_eq!(rail_width(false, false, 80, 5), 0);
-        assert_eq!(rail_width(true, true, 80, 5), 0);
-        assert_eq!(rail_width(true, false, MIN_TERMINAL_WIDTH - 1, 5), 0);
-        assert_eq!(rail_width(true, false, 80, 1), 0);
+        assert_eq!(RAIL_WIDTH, rail_width(true, ViewSurface::Root, 80, 5));
+        // Setting off / child surface / narrow terminal / too few turns.
+        assert_eq!(0, rail_width(false, ViewSurface::Root, 80, 5));
+        assert_eq!(0, rail_width(true, ViewSurface::ChildTakeover, 80, 5));
+        assert_eq!(
+            0,
+            rail_width(true, ViewSurface::Root, MIN_TERMINAL_WIDTH - 1, 5)
+        );
+        assert_eq!(0, rail_width(true, ViewSurface::Root, 80, 1));
     }
 }

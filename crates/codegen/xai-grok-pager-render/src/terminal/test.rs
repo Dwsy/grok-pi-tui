@@ -52,24 +52,6 @@ fn brand_otty_from_term_program() {
 }
 
 #[test]
-fn otty_delivers_ime_as_bracketed_paste_only() {
-    assert!(TerminalName::Otty.delivers_ime_as_bracketed_paste());
-    for brand in [
-        TerminalName::AppleTerminal,
-        TerminalName::Ghostty,
-        TerminalName::Iterm2,
-        TerminalName::Unknown,
-        TerminalName::WezTerm,
-        TerminalName::Kitty,
-    ] {
-        assert!(
-            !brand.delivers_ime_as_bracketed_paste(),
-            "{brand:?} must not gate IME bracketed-paste origin"
-        );
-    }
-}
-
-#[test]
 fn otty_is_capability_unclassified_like_unknown() {
     assert!(TerminalName::Otty.is_capability_unclassified());
     assert!(TerminalName::Unknown.is_capability_unclassified());
@@ -1727,6 +1709,119 @@ fn herdr_over_ssh_pane_does_not_skip_kitty_keyboard() {
     assert_eq!(ctx.multiplexer, MultiplexerKind::Herdr);
     assert_eq!(ctx.kitty_skip_reason(), None);
     assert!(!ctx.shift_enter_unavailable());
+    assert!(ctx.prefer_alt_enter_newline());
+}
+
+#[test]
+fn prefer_alt_enter_newline_iterm2_tmux_3_2a_over_ssh() {
+    // iTerm2 + tmux 3.2a + TERM=screen + SSH: Shift+Enter often collapses; doctor newline-fallback stays off
+    let ctx = TerminalContext {
+        brand: TerminalName::Iterm2,
+        env_brand: TerminalName::Iterm2,
+        multiplexer: MultiplexerKind::Tmux,
+        tmux_version: Some("tmux 3.2a".to_owned()),
+        is_ssh: true,
+        term_var: Some("screen".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(ctx.kitty_skip_reason(), Some("tmux_old"));
+    assert!(!ctx.shift_enter_unavailable());
+    assert!(ctx.prefer_alt_enter_newline());
+}
+
+#[test]
+fn prefer_alt_enter_newline_old_tmux_even_locally() {
+    let ctx = TerminalContext {
+        brand: TerminalName::Iterm2,
+        env_brand: TerminalName::Iterm2,
+        multiplexer: MultiplexerKind::Tmux,
+        tmux_version: Some("tmux 3.2a".to_owned()),
+        ..Default::default()
+    };
+    assert!(ctx.prefer_alt_enter_newline());
+}
+
+#[test]
+fn prefer_alt_enter_newline_false_on_local_modern_ghostty() {
+    let ctx = TerminalContext {
+        brand: TerminalName::Ghostty,
+        env_brand: TerminalName::Ghostty,
+        ..Default::default()
+    };
+    assert!(!ctx.shift_enter_unavailable());
+    assert!(!ctx.prefer_alt_enter_newline());
+}
+
+#[test]
+fn prefer_alt_enter_newline_windows_terminal_inside_old_tmux() {
+    // Brand-first kitty_skip_reason reports windows_terminal and would hide tmux_old.
+    let ctx = TerminalContext {
+        brand: TerminalName::WindowsTerminal,
+        env_brand: TerminalName::WindowsTerminal,
+        multiplexer: MultiplexerKind::Tmux,
+        tmux_version: Some("tmux 3.2a".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(ctx.kitty_skip_reason(), Some("windows_terminal"));
+    assert!(!ctx.shift_enter_unavailable());
+    assert!(ctx.prefer_alt_enter_newline());
+}
+
+#[test]
+fn prefer_alt_enter_newline_modern_vte_inside_old_tmux() {
+    let ctx = TerminalContext {
+        brand: TerminalName::Vte,
+        vte_version: Some("8200".to_owned()),
+        multiplexer: MultiplexerKind::Tmux,
+        tmux_version: Some("tmux 3.2a".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(ctx.kitty_skip_reason(), Some("vte"));
+    assert!(!ctx.shift_enter_unavailable());
+    assert!(ctx.prefer_alt_enter_newline());
+}
+
+#[test]
+fn prefer_alt_enter_newline_modern_vte_inside_screen() {
+    let ctx = TerminalContext {
+        brand: TerminalName::Vte,
+        vte_version: Some("8200".to_owned()),
+        multiplexer: MultiplexerKind::Screen,
+        ..Default::default()
+    };
+    assert_eq!(ctx.kitty_skip_reason(), Some("vte"));
+    assert!(!ctx.shift_enter_unavailable());
+    assert!(ctx.prefer_alt_enter_newline());
+}
+
+#[test]
+fn prefer_alt_enter_newline_windows_terminal_tmux_extended_keys_off() {
+    let ctx = TerminalContext {
+        brand: TerminalName::WindowsTerminal,
+        env_brand: TerminalName::WindowsTerminal,
+        multiplexer: MultiplexerKind::Tmux,
+        tmux_version: Some("tmux 3.4".to_owned()),
+        tmux_extended_keys: Some("off".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(ctx.kitty_skip_reason(), Some("windows_terminal"));
+    assert!(!ctx.shift_enter_unavailable());
+    assert!(ctx.prefer_alt_enter_newline());
+}
+
+#[test]
+fn prefer_alt_enter_newline_false_on_local_windows_terminal_modern_tmux() {
+    let ctx = TerminalContext {
+        brand: TerminalName::WindowsTerminal,
+        env_brand: TerminalName::WindowsTerminal,
+        multiplexer: MultiplexerKind::Tmux,
+        tmux_version: Some("tmux 3.4".to_owned()),
+        tmux_extended_keys: Some("on".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(ctx.kitty_skip_reason(), Some("windows_terminal"));
+    assert!(!ctx.shift_enter_unavailable());
+    assert!(!ctx.prefer_alt_enter_newline());
 }
 
 #[test]
@@ -1985,4 +2080,50 @@ fn repaints_pane_out_of_band_per_arm() {
         ..Default::default()
     };
     assert!(!plain.repaints_pane_out_of_band());
+}
+
+#[test]
+fn width_shrink_rewraps_only_for_known_reflowing_layers() {
+    let brand = |brand: TerminalName| TerminalContext {
+        brand,
+        env_brand: brand,
+        ..Default::default()
+    };
+    assert_eq!(
+        WidthShrink::Rewraps,
+        brand(TerminalName::Ghostty).width_shrink()
+    );
+    assert_eq!(
+        WidthShrink::Truncates,
+        brand(TerminalName::Unknown).width_shrink()
+    );
+    assert_eq!(
+        WidthShrink::Truncates,
+        brand(TerminalName::JetBrains).width_shrink()
+    );
+
+    // Only `env_brand` counts, never the assumed native-Windows fallback `brand`
+    let assumed = TerminalContext {
+        brand: TerminalName::WindowsTerminal,
+        env_brand: TerminalName::Unknown,
+        ..Default::default()
+    };
+    assert_eq!(WidthShrink::Truncates, assumed.width_shrink());
+
+    // The innermost layer decides
+    let tmux = TerminalContext {
+        multiplexer: MultiplexerKind::Tmux,
+        ..brand(TerminalName::Unknown)
+    };
+    assert_eq!(WidthShrink::Rewraps, tmux.width_shrink());
+    let screen = TerminalContext {
+        multiplexer: MultiplexerKind::Screen,
+        ..brand(TerminalName::Ghostty)
+    };
+    assert_eq!(WidthShrink::Truncates, screen.width_shrink());
+    let editor = TerminalContext {
+        embedded_editor: Some(EmbeddedEditor::Vim),
+        ..brand(TerminalName::Ghostty)
+    };
+    assert_eq!(WidthShrink::Truncates, editor.width_shrink());
 }

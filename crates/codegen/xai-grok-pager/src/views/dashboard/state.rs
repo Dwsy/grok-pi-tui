@@ -7,6 +7,7 @@ use std::time::Instant;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 
+use super::animation::PaintedAnimations;
 use super::peek::PeekPanelState;
 use super::row::DashboardRow;
 use crate::actions::ActionRegistry;
@@ -20,15 +21,10 @@ use xai_grok_shell::session::persistence::MAX_TITLE_SCALARS as MAX_RENAME_SCALAR
 
 const PROMPT_MULTI_CLICK_MS: u128 = 300;
 
-/// Stable identity for a dashboard row. When the parent closes, the subagent rows naturally
-/// disappear because the row builder iterates `app.agents.values()`; no separate cleanup needed.
+/// Stable identity for a dashboard row.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DashboardRowId {
     TopLevel(AgentId),
-    Subagent {
-        parent: AgentId,
-        child_session_id: String,
-    },
     /// A leader-roster-only row: a session hosted by the leader (or a remote host) that this client is NOT locally attached to.
     /// Keyed by the roster `session_id`.
     /// Not locally controllable.
@@ -41,12 +37,6 @@ pub enum DashboardRowId {
 }
 
 impl DashboardRowId {
-    /// True for a subagent row.
-    /// Used to gate the "rename" affordance; subagents are read-only in this version.
-    pub fn is_subagent(&self) -> bool {
-        matches!(self, Self::Subagent { .. })
-    }
-
     pub fn is_workspace(&self) -> bool {
         matches!(self, Self::Workspace { .. })
     }
@@ -57,7 +47,6 @@ impl DashboardRowId {
 
     pub(crate) fn is_owned_by_agent(&self, agent_id: AgentId) -> bool {
         matches!(self, Self::TopLevel(id) if *id == agent_id)
-            || matches!(self, Self::Subagent { parent, .. } if *parent == agent_id)
     }
 }
 
@@ -73,13 +62,6 @@ pub(crate) fn scrollback_mut_for_row<'a>(
 ) -> Option<&'a mut crate::scrollback::state::ScrollbackState> {
     match row {
         DashboardRowId::TopLevel(id) => agents.get_mut(id).map(|a| &mut a.scrollback),
-        DashboardRowId::Subagent {
-            parent,
-            child_session_id,
-        } => agents
-            .get_mut(parent)
-            .and_then(|p| p.subagent_views.get_mut(child_session_id))
-            .map(|c| &mut c.scrollback),
         DashboardRowId::Roster { .. } | DashboardRowId::Workspace { .. } => None,
     }
 }
@@ -90,12 +72,6 @@ pub(crate) fn scrollback_available_for_row(
 ) -> bool {
     match row {
         DashboardRowId::TopLevel(id) => agents.contains_key(id),
-        DashboardRowId::Subagent {
-            parent,
-            child_session_id,
-        } => agents
-            .get(parent)
-            .is_some_and(|p| p.subagent_views.contains_key(child_session_id)),
         DashboardRowId::Roster { .. } | DashboardRowId::Workspace { .. } => false,
     }
 }
@@ -120,51 +96,28 @@ pub(crate) struct DeferredPeekSend {
 /// the current process lifetime.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PersistedRowId {
-    TopLevel {
-        session_id: String,
-    },
-    Subagent {
-        parent_session_id: String,
-        child_session_id: String,
-    },
+    TopLevel { session_id: String },
 }
 
 impl PersistedRowId {
-    /// On-disk serialisation. `top:<session_id>` or `sub:<parent_session_id>:<child_session_id>`. The
-    /// session ids themselves are opaque to the dashboard; we never split them. The first colon after
-    /// `sub:` is the only one we split on.
+    /// On-disk serialisation: `top:<session_id>`.
     pub fn to_key(&self) -> String {
         match self {
             Self::TopLevel { session_id } => format!("top:{session_id}"),
-            Self::Subagent {
-                parent_session_id,
-                child_session_id,
-            } => format!("sub:{parent_session_id}:{child_session_id}"),
         }
     }
 
     /// Parse a persisted key back.
-    /// Returns `None` for malformed input.
+    /// Returns `None` for malformed input. A `sub:` key is a pinned or reordered subagent row from
+    /// before those rows were removed; dropping it keeps the rest of the dashboard config loadable.
     pub fn from_key(s: &str) -> Option<Self> {
-        if let Some(sid) = s.strip_prefix("top:") {
-            if sid.is_empty() {
-                return None;
-            }
-            return Some(Self::TopLevel {
-                session_id: sid.to_string(),
-            });
+        let sid = s.strip_prefix("top:")?;
+        if sid.is_empty() {
+            return None;
         }
-        if let Some(rest) = s.strip_prefix("sub:")
-            && let Some((parent, child)) = rest.split_once(':')
-            && !parent.is_empty()
-            && !child.is_empty()
-        {
-            return Some(Self::Subagent {
-                parent_session_id: parent.to_string(),
-                child_session_id: child.to_string(),
-            });
-        }
-        None
+        Some(Self::TopLevel {
+            session_id: sid.to_string(),
+        })
     }
 }
 
@@ -172,12 +125,21 @@ impl PersistedRowId {
 /// Also reused by the dashboard-overlay stop for its double-press close confirm.
 pub const CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long after a send an empty Enter still counts as an echo of that send.
+/// One second covers the default key auto-repeat delay on macOS (375 ms), Windows (500 ms), and GNOME (500 ms).
+const SEND_ECHO_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+pub(crate) fn send_echo_window_open(since_send: std::time::Duration) -> bool {
+    since_send < SEND_ECHO_WINDOW
+}
+
 /// Coarse state used for the dashboard grouping.
 ///
-/// See [`super::row::classify_top_level`] / [`super::row::classify_subagent`] for the mapping rules.
+/// See [`super::row::classify_top_level`] for the mapping rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(test, derive(strum::EnumIter))]
 pub enum RowState {
-    /// Pending permission OR pending ask_user_question (top-level only; subagents never enter this state in this version).
+    /// Pending permission OR pending ask_user_question.
     NeedsInput,
     /// Live turn or command running.
     Working,
@@ -393,10 +355,6 @@ impl PersistedDashboard {
     }
 }
 
-/// Show each spinner frame for this many `spinner_tick` ticks.
-/// The frames come from [`crate::glyphs::dot_spinner_frames`] so they degrade to an ASCII pulse on legacy Windows consoles.
-pub(crate) const SPINNER_DIVISOR: u64 = 4;
-
 /// In-memory dashboard state. Refreshed every render frame off `app.agents`. Selection is keyed by
 /// `DashboardRowId` so a rename / reorder / completion does not invalidate the cursor as long as
 /// the row's id is stable.
@@ -448,6 +406,9 @@ pub struct DashboardState {
     pub(crate) deferred_dispatch_send: Option<DeferredDispatchSend>,
     /// A peek-reply send deferred the same way; per-surface slots so stashing one surface can never overwrite the other's pending send.
     pub(crate) deferred_peek_send: Option<DeferredPeekSend>,
+    /// When the dispatch input last sent its text.
+    /// `AppView` clears it on any key other than Enter.
+    pub(crate) last_send_at: Option<Instant>,
     /// Peek panel state (Space toggles).
     pub peek: Option<PeekPanelState>,
     /// Session-scoped guest viewport for the live-tail peek (capture once on select; sticky while the same row is peeked; restore on leave).
@@ -477,10 +438,8 @@ pub struct DashboardState {
     pub workspace_membership_mode: bool,
     /// Ctrl+X meaning for the selected v2 row in the current frame.
     pub(crate) selected_stop_action: Option<DashboardStopAction>,
-    /// Tick counter for spinner animation.
-    /// The counter is bumped by [`crate::app::app_view::AppView::tick`] (NOT the renderer, which is read-only).
-    /// [`SPINNER_DIVISOR`] divides the index so the on-screen animation stays under 10 Hz at the ~30 Hz tick rate.
     pub spinner_tick: u64,
+    pub(crate) painted_animations: PaintedAnimations,
     /// Last frame's row layout: hit areas keyed by row id.
     /// Used by mouse handling to map (col, row) to a row id without scanning the row list a second time.
     pub row_rects: Vec<(DashboardRowId, Rect)>,
@@ -510,7 +469,7 @@ pub struct DashboardState {
     /// Outer rect of the popup overlay (border included). Populated by the renderer; consumed by
     /// `handle_mouse` to.
     pub popup_outer_rect: Option<Rect>,
-    /// Hit area for the header's `[+ New Agent]` button.
+    /// Hit area for the actions row's `+ New Agent` button.
     pub new_agent_button_hit: crate::app::agent_view::HitArea,
     /// Hit area for the actions row's `Open Previous` button (v2 workspace dashboard only).
     pub open_session_button_hit: crate::app::agent_view::HitArea,
@@ -527,10 +486,6 @@ pub struct DashboardState {
     /// Two-focus model: `false` means the dispatch input bar is focused (typing); `true` means the
     /// overview list is focused (navigating).
     pub list_focused: bool,
-    /// All three are cleared by `close_popup` / `exit_overlay` so they can't outlive the overlay state.
-    pub overlay_close_hit: crate::app::agent_view::HitArea,
-    pub overlay_prev_hit: crate::app::agent_view::HitArea,
-    pub overlay_next_hit: crate::app::agent_view::HitArea,
     /// Last mouse position (col, row).
     /// Used by hover and double-click detection.
     pub last_mouse_pos: Option<(u16, u16)>,
@@ -613,6 +568,7 @@ pub struct DashboardState {
     /// Surface-local compose mode for dispatch and peek (not persisted; not shared with agent sessions).
     /// `/multiline` or Ctrl+M.
     pub multiline_mode: bool,
+    pub(crate) preview_enabled: bool,
     /// `/usage` modal, hosted here because the dashboard has no agent to hang it on (session-less: no session id).
     /// Owns input while open; cleared on dashboard-open and on every overlay exit back to the list.
     pub usage_modal: Option<Box<crate::views::usage_modal::UsageInfoModalState>>,
@@ -692,13 +648,14 @@ impl RenameDraft {
     }
 
     pub(crate) fn set_text(&mut self, text: impl Into<String>) {
-        let text = text
+        // The cap runs before the tag pass, so a cut can never leave half a flag
+        let capped: String = text
             .into()
             .chars()
             .filter(|character| rename_wire_character_allowed(*character))
             .take(MAX_RENAME_SCALARS)
-            .collect::<String>();
-        self.editor.set_text(text);
+            .collect();
+        self.editor.set_text(strip_loose_tags(&capped));
     }
 }
 
@@ -707,8 +664,43 @@ fn rename_character_allowed(character: char) -> bool {
 }
 
 fn rename_wire_character_allowed(character: char) -> bool {
-    // Preserve an existing emoji ZWJ sequence; interactive inserts still reject format chars.
-    character == '\u{200d}' || rename_character_allowed(character)
+    // Preserve an existing emoji ZWJ or flag tag sequence; interactive inserts still reject format chars.
+    matches!(character, '\u{200d}' | '\u{e0020}'..='\u{e007f}')
+        || rename_character_allowed(character)
+}
+
+/// Keeps tags only in a subdivision flag (black flag, 1 to 7 tag letters or digits, cancel tag); others hide text
+fn strip_loose_tags(text: &str) -> String {
+    let is_tag = |c: char| ('\u{e0020}'..='\u{e007f}').contains(&c);
+    let is_flag_tag = |c: char| matches!(c, '\u{e0030}'..='\u{e0039}' | '\u{e0061}'..='\u{e007a}');
+    let chars: Vec<char> = text.chars().collect();
+    let mut kept = String::with_capacity(text.len());
+    let mut at = 0;
+    while let Some(&character) = chars.get(at) {
+        at += 1;
+        if is_tag(character) {
+            continue;
+        }
+
+        kept.push(character);
+        if character != '\u{1f3f4}' {
+            continue;
+        }
+
+        let run: Vec<char> = chars
+            .iter()
+            .skip(at)
+            .take_while(|&&c| is_tag(c))
+            .copied()
+            .collect();
+        let valid = matches!(run.split_last(), Some((&'\u{e007f}', letters))
+            if (1..=7).contains(&letters.len()) && letters.iter().all(|&c| is_flag_tag(c)));
+        if valid {
+            kept.extend(&run);
+        }
+        at += run.len();
+    }
+    kept
 }
 
 /// One selectable directory in the location picker (see [`LocationPickerState`]).
@@ -819,8 +811,8 @@ impl LocationPickerState {
         };
         match sep {
             Some(i) => {
-                let parent = resolve_dir_prefix(&q[..=i], &self.base_cwd);
-                (parent, q[i + 1..].to_string())
+                let parent = resolve_dir_prefix(q.get(..=i).unwrap_or(q), &self.base_cwd);
+                (parent, q.get(i + 1..).unwrap_or("").to_owned())
             }
             // No separator: a bare `~` (or `~name`) lists home; on Windows a bare drive (`C:`) lists that drive's root
             None => {
@@ -909,7 +901,7 @@ impl LocationPickerState {
 /// Used only under `cfg!(windows)` to route native absolute paths into path mode.
 fn has_windows_drive_prefix(s: &str) -> bool {
     let b = s.as_bytes();
-    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+    matches!(b, [drive, b':', ..] if drive.is_ascii_alphabetic())
 }
 
 /// Resolve a path-prefix ending in a separator (e.g. `~/src/`, `/etc/`, `../`, or on Windows `C:\Users\`) to an absolute directory.
@@ -1019,11 +1011,6 @@ fn location_picker_config<'a>() -> crate::views::picker::PickerConfig<'a> {
 pub struct SessionIdResolver {
     /// Maps session_id to AgentId (top-level).
     top: std::collections::HashMap<String, crate::app::agent::AgentId>,
-    /// Maps agent_session_id to a set of (child_session_id, AgentId-of-parent).
-    subs: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, crate::app::agent::AgentId>,
-    >,
     /// Reverse: maps AgentId to session_id (for `to_persisted`).
     top_rev: std::collections::HashMap<crate::app::agent::AgentId, String>,
     workspace: std::collections::HashSet<String>,
@@ -1044,47 +1031,19 @@ impl SessionIdResolver {
     ) -> Self {
         let mut top = std::collections::HashMap::new();
         let mut top_rev = std::collections::HashMap::new();
-        let mut subs: std::collections::HashMap<
-            String,
-            std::collections::HashMap<String, crate::app::agent::AgentId>,
-        > = std::collections::HashMap::new();
         for (id, agent) in agents {
             if let Some(sid) = agent.session.session_id.as_ref() {
                 let sid_str = sid.0.to_string();
                 if let Some(prev) = top.get(&sid_str) {
-                    // Top-level collision: keep first mapping.
-                    // And call out the subagents we're dropping by name so a debugger can correlate the missing children back to the losing parent
-                    let dropped: Vec<&str> =
-                        agent.subagent_sessions.keys().map(String::as_str).collect();
                     tracing::warn!(
                         session_id = %sid_str,
                         first = ?prev,
                         duplicate = ?id,
-                        dropped_subagents = ?dropped,
-                        "SessionIdResolver: duplicate session_id; keeping first mapping (subagents of losing parent are dropped)"
+                        "SessionIdResolver: duplicate session_id; keeping first mapping"
                     );
                 } else {
                     top.insert(sid_str.clone(), *id);
-                    top_rev.insert(*id, sid_str.clone());
-                    // Populate the subs map via the entry()/or_insert_with() API so the "first wins" rule is explicit
-                    // Defensive: a colliding child_session_id within a single parent's map would also warn rather than silently overwrite
-                    let children = subs.entry(sid_str.clone()).or_default();
-                    for child_sid in agent.subagent_sessions.keys() {
-                        if let Some(prev_child) = children.get(child_sid) {
-                            tracing::warn!(
-                                parent_session_id = %sid_str,
-                                child_session_id = %child_sid,
-                                first = ?prev_child,
-                                duplicate = ?id,
-                                "SessionIdResolver: duplicate child session_id under same parent; keeping first mapping"
-                            );
-                        } else {
-                            children.insert(child_sid.clone(), *id);
-                        }
-                    }
-                    if children.is_empty() {
-                        subs.remove(&sid_str);
-                    }
+                    top_rev.insert(*id, sid_str);
                 }
             }
         }
@@ -1097,7 +1056,6 @@ impl SessionIdResolver {
             .collect();
         Self {
             top,
-            subs,
             top_rev,
             workspace,
         }
@@ -1108,7 +1066,6 @@ impl SessionIdResolver {
     pub fn empty() -> Self {
         Self {
             top: std::collections::HashMap::new(),
-            subs: std::collections::HashMap::new(),
             top_rev: std::collections::HashMap::new(),
             workspace: std::collections::HashSet::new(),
         }
@@ -1128,17 +1085,6 @@ impl SessionIdResolver {
                             session_id: session_id.clone(),
                         })
                 }),
-            PersistedRowId::Subagent {
-                parent_session_id,
-                child_session_id,
-            } => self
-                .subs
-                .get(parent_session_id)
-                .and_then(|m| m.get(child_session_id).copied())
-                .map(|parent| DashboardRowId::Subagent {
-                    parent,
-                    child_session_id: child_session_id.clone(),
-                }),
         }
     }
 
@@ -1150,16 +1096,6 @@ impl SessionIdResolver {
                     .map(|sid| PersistedRowId::TopLevel {
                         session_id: sid.clone(),
                     })
-            }
-            DashboardRowId::Subagent {
-                parent,
-                child_session_id,
-            } => {
-                let parent_sid = self.top_rev.get(parent)?.clone();
-                Some(PersistedRowId::Subagent {
-                    parent_session_id: parent_sid,
-                    child_session_id: child_session_id.clone(),
-                })
             }
             DashboardRowId::Workspace { session_id } => Some(PersistedRowId::TopLevel {
                 session_id: session_id.clone(),
@@ -1210,6 +1146,7 @@ impl DashboardState {
             paste_probe_in_flight: 0,
             deferred_dispatch_send: None,
             deferred_peek_send: None,
+            last_send_at: None,
             peek: None,
             peek_viewport: None,
             peek_reply,
@@ -1222,6 +1159,7 @@ impl DashboardState {
             workspace_membership_mode: false,
             selected_stop_action: None,
             spinner_tick: 0,
+            painted_animations: PaintedAnimations::default(),
             row_rects: Vec::new(),
             row_delete_rects: Vec::new(),
             hovered_delete: None,
@@ -1239,9 +1177,6 @@ impl DashboardState {
             slash_dropdown_hit: Default::default(),
             file_search_dropdown_items_area: None,
             list_focused: false,
-            overlay_close_hit: crate::app::agent_view::HitArea::default(),
-            overlay_prev_hit: crate::app::agent_view::HitArea::default(),
-            overlay_next_hit: crate::app::agent_view::HitArea::default(),
             last_mouse_pos: None,
             last_click: None,
             last_prompt_click: None,
@@ -1266,6 +1201,8 @@ impl DashboardState {
             voice_listening: false,
             voice_interim: None,
             multiline_mode: false,
+            preview_enabled: xai_grok_shell::agent::config::UiConfig::default()
+                .dashboard_preview_enabled(),
             usage_modal: None,
             // Fresh dashboard with no rows seeded, so the `+ New Agent` button is the default cursor target
             // Open sites that want a specific row seeded call `focus_row` after construction, which clears this atomically
@@ -1406,6 +1343,11 @@ impl DashboardState {
         self.new_agent_button_focused() && !self.dispatch.text().trim().is_empty()
     }
 
+    /// Search mode treats an empty buffer as a filter query, so these keys stay with the caret.
+    fn list_keys_active(&self) -> bool {
+        self.list_focused || (self.dispatch.text().is_empty() && !self.search_mode)
+    }
+
     /// Whether the next dispatch goes into a fresh git worktree: the mode is on and the cwd is a git repo, so it can take effect.
     /// The actions row's labels and the footer's Enter hint both read this so they cannot drift apart.
     pub(crate) fn worktree_armed(&self) -> bool {
@@ -1459,7 +1401,7 @@ impl DashboardState {
         self.delete_confirm = None;
     }
 
-    fn set_list_focused(&mut self, focused: bool) {
+    pub(in crate::views::dashboard) fn set_list_focused(&mut self, focused: bool) {
         self.list_focused = focused;
         if !focused {
             self.delete_confirm = None;
@@ -1536,26 +1478,6 @@ impl DashboardState {
         if !self.collapsed_sections.remove(&key) {
             self.collapsed_sections.insert(key);
         }
-    }
-
-    /// Enter search mode (`Ctrl+/`).
-    /// The dispatch buffer becomes a live filter query and the prompt prefix flips to a yellow `Search:`.
-    /// Starts fresh; clears any half-typed dispatch text and the prior filter so the query builds from empty.
-    pub fn enter_search_mode(&mut self) {
-        self.search_mode = true;
-        self.dispatch.set_text("");
-        self.filter = Filter::None;
-        self.error_toast = None;
-        self.manual_scroll_active = false;
-    }
-
-    /// Leave search mode and CANCEL: clears the filter and the query buffer, restoring the normal dispatch prompt.
-    /// (Enter instead CONFIRMS; it keeps the filter applied and only flips `search_mode` off; see [`Self::handle_key`].)
-    pub fn exit_search_mode(&mut self) {
-        self.search_mode = false;
-        self.dispatch.set_text("");
-        self.filter = Filter::None;
-        self.manual_scroll_active = false;
     }
 
     /// Construct from persisted state, resolving session-id keys to live `DashboardRowId`s via the given resolver.
@@ -1752,7 +1674,9 @@ impl DashboardState {
             .iter()
             .position(|focusable| matches!(focusable, Focusable::Row(id) if id == &selected))
             .and_then(|index| {
-                before[index + 1..]
+                before
+                    .get(index + 1..)
+                    .unwrap_or(&[])
                     .iter()
                     .filter_map(|focusable| match focusable {
                         Focusable::Row(id) if row_survives(id) => Some(id.clone()),
@@ -1760,7 +1684,9 @@ impl DashboardState {
                     })
                     .next()
                     .or_else(|| {
-                        before[..index]
+                        before
+                            .get(..index)
+                            .unwrap_or(&[])
                             .iter()
                             .rev()
                             .find_map(|focusable| match focusable {
@@ -1779,7 +1705,7 @@ impl DashboardState {
     }
 
     /// Garbage-collect stale row ids from `pinned` / `reorder`. Called on dashboard open: any persisted
-    /// id whose underlying agent/subagent no longer exists is silently dropped (e.g. a pinned row whose
+    /// id whose underlying agent no longer exists is silently dropped (e.g. a pinned row whose
     /// agent was deleted).
     pub fn gc_stale_refs(&mut self, alive: &dyn Fn(&DashboardRowId) -> bool) {
         self.pinned.retain(|id| alive(id));
@@ -2031,13 +1957,13 @@ impl DashboardState {
         }
     }
 
-    /// The file-search state backing the `@` dropdown that is actually on screen: the peek reply's while the panel is open (the dropdown is drawn
+    /// The file-search state backing the `@` dropdown that is actually on screen: the peek reply's while the panel is on screen (the dropdown is drawn
     /// from `peek_reply` then; see `render_dashboard`), otherwise the dispatch box's.
     /// Used to route mouse-wheel scrolling to the SAME picker the user is looking at, so wheel navigation matches the rendered list.
     pub(crate) fn dropdown_file_search_mut(
         &mut self,
     ) -> &mut crate::views::file_search::FileSearchState {
-        if self.peek.is_some() {
+        if self.peek_owns_input() {
             &mut self.peek_reply.file_search
         } else {
             &mut self.dispatch.file_search
@@ -2063,9 +1989,6 @@ impl DashboardState {
         self.attached_agent = None;
         self.popup_close_rect = None;
         self.popup_outer_rect = None;
-        self.overlay_close_hit.clear();
-        self.overlay_prev_hit.clear();
-        self.overlay_next_hit.clear();
     }
 
     /// Top-level input handler.
@@ -2126,17 +2049,16 @@ impl DashboardState {
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key, registry),
             Event::Mouse(mouse) => self.handle_mouse(mouse),
-            // Bracketed paste: wrap magic first (never as text); when the peek panel is open it owns the paste
-            // (text and images into `peek_reply`), mirroring the. CtrlCtrl/Cmd+V chord in `handle_peek_key`
-            // (without this, terminals that deliver paste as `Event::Paste` would leak into the.
+            // Bracketed paste: wrap magic first (never as text).
             Event::Paste(text) => {
+                let peek_owns_paste = self.peek_owns_input();
                 if let Some(wrap) =
                     crate::wrap_clipboard_image::try_decode_wrap_host_image_paste(text)
                 {
                     return match wrap {
                         crate::wrap_clipboard_image::WrapImagePaste::Image(data) => {
                             let pasted = crate::prompt_images::from_clipboard_data(&data);
-                            if self.peek.is_some() {
+                            if peek_owns_paste {
                                 if let Some(p) = self.peek.as_mut() {
                                     p.focused = true;
                                 }
@@ -2153,7 +2075,7 @@ impl DashboardState {
                 }
                 self.handle_bracketed_paste(
                     text,
-                    self.peek.is_some(),
+                    peek_owns_paste,
                     paste_provenance.may_probe_clipboard_attachments(),
                 )
             }
@@ -2197,6 +2119,10 @@ impl DashboardState {
         // Question mode is text-only on the wire; never attach/defer an image
         if in_question {
             return self.insert_pasted_caption(Some(text), true).0;
+        }
+        // Search is a text filter. Skip path reads and attachment probes so a slow disk cannot stall the UI future.
+        if self.search_mode && !peek {
+            return self.insert_pasted_caption(Some(text), false).0;
         }
 
         // Pasted text may be image file path(s) / `file://` URL(s) (drag-drop from Finder, or Copy on a file)
@@ -2267,6 +2193,9 @@ impl DashboardState {
                 )
             }
         };
+        if self.search_mode {
+            self.sync_search_filter_from_dispatch();
+        }
         (InputOutcome::Changed, completion)
     }
 
@@ -2292,7 +2221,11 @@ impl DashboardState {
             self.dispatch.handle_paste(text)
         };
         if !peek && matches!(event, PromptEvent::Edited) {
-            self.dispatch.refresh_slash(&self.models);
+            if self.search_mode {
+                self.sync_search_filter_from_dispatch();
+            } else {
+                self.dispatch.refresh_slash(&self.models);
+            }
         }
         let completion = match event {
             PromptEvent::Edited => ClipboardTextInsertion::Inserted,
@@ -2394,6 +2327,11 @@ impl DashboardState {
                 .insert_pasted_caption(clipboard_text.as_deref(), true)
                 .0;
         }
+        if self.search_mode && !peek {
+            return self
+                .insert_pasted_caption(clipboard_text.as_deref(), false)
+                .0;
+        }
 
         // A pasted file path resolves synchronously and wins (drag-drop / Finder Cmd+C); before deferring, so it is not double-attached
         if let Some(text) = clipboard_text.as_deref()
@@ -2461,13 +2399,9 @@ impl DashboardState {
         // A question that arrived on the peeked row mid-probe makes the reply text-only on the wire: attachments are discarded LOUDLY below (the
         // attach helper's silent question no-op would drop them with zero feedback), and the caption/wrap paths stay suppressed
         let peek_in_question = peek && self.peek.as_ref().is_some_and(|p| p.question.is_some());
-        let insert_deferred_text = !peek_in_question
-            && matches!(
-                &image,
-                ProbedAttachment::NoRaster
-                    | ProbedAttachment::ProbeDropped
-                    | ProbedAttachment::ProbeFailed
-            );
+        let text_on_miss = (!peek_in_question)
+            .then(|| ctx.source.text_to_insert_on_miss(&image))
+            .flatten();
         let mut attachment = match image {
             ProbedAttachment::Image(pasted) => {
                 if peek_in_question {
@@ -2523,14 +2457,7 @@ impl DashboardState {
         } else {
             None
         };
-        let text = if insert_deferred_text {
-            ctx.source
-                .text_to_insert_on_miss()
-                .filter(|text| !text.trim().is_empty())
-                .map(|text| self.insert_pasted_caption(Some(text), peek).1)
-        } else {
-            None
-        };
+        let text = text_on_miss.map(|text| self.insert_pasted_caption(Some(text), peek).1);
         let completion = crate::app::actions::reduce_clipboard_paste_completion(
             &ctx.source,
             attachment,
@@ -2578,6 +2505,23 @@ impl DashboardState {
         actions
     }
 
+    pub(crate) fn peek_owns_input(&self) -> bool {
+        self.peek.is_some() && !self.search_mode
+    }
+
+    fn sync_search_filter_from_dispatch(&mut self) {
+        if !self.search_mode {
+            return;
+        }
+        let trimmed = self.dispatch.text().trim();
+        self.filter = if trimmed.is_empty() {
+            Filter::None
+        } else {
+            Filter::from_value(parse_filter(trimmed))
+        };
+        self.manual_scroll_active = false;
+    }
+
     /// Handle a key while the peek panel is open.
     ///
     /// The peek panel's `❯ reply` line is a live [`PromptWidget`]
@@ -2609,14 +2553,6 @@ impl DashboardState {
         from_registry: Option<crate::actions::ActionId>,
     ) -> Option<InputOutcome> {
         let dashboard_owned = from_registry.is_some();
-        // Paste goes to the reply widget (text and images)
-        // Handled up-front because the paste chord carries CONTROL / SUPER and must not be mistaken for a dashboard chord
-        if crate::input::key::is_paste_key(key) {
-            let clipboard_text = crate::app::actions::ClipboardTextRead::from_result(
-                crate::clipboard::system_clipboard_read_text(),
-            );
-            return Some(self.handle_paste_key_deferred(clipboard_text, /* peek */ true));
-        }
 
         // Ctrl+C / Ctrl+D must reach the app-global quit handler (the double-press-to-quit fallback fires only when the view returns `Unchanged`)
         // Returning `Unchanged` here bubbles them up cleanly instead of letting them leak into (and be swallowed by) the reply widget (whose Ctrl+C
@@ -2748,7 +2684,6 @@ impl DashboardState {
                     .as_ref()
                     .is_some_and(|p| p.reject_option == selected);
             match (key.code, selected) {
-                // ── No option selected → navigate agents / open ──
                 (KeyCode::Up, None) => {
                     return Some(InputOutcome::Action(Action::DashboardSelectPrev));
                 }
@@ -2773,7 +2708,6 @@ impl DashboardState {
                             .unwrap_or(InputOutcome::Unchanged),
                     );
                 }
-                // ── Option selected → move within options (spill at edges) ──
                 (KeyCode::Up, Some(0)) => {
                     return Some(InputOutcome::Action(Action::DashboardSelectPrev));
                 }
@@ -2888,8 +2822,9 @@ impl DashboardState {
             {
                 return Some(InputOutcome::Changed);
             }
-            let enter_is_newline =
-                focused && compose_enter_is_newline(self.multiline_mode, mod_enter);
+            let enter_is_newline = focused
+                && (compose_enter_is_newline(self.multiline_mode, mod_enter)
+                    || crate::input::is_delivered_super_enter(key));
             if !enter_is_newline {
                 let Some(row) = self.peek.as_ref().map(|p| p.row.clone()) else {
                     return Some(InputOutcome::Unchanged);
@@ -2968,7 +2903,7 @@ impl DashboardState {
     /// Resolve the dispatch input's send action for the given `attach` flag. A `/command` always routes
     /// to the slash dispatcher (there's no session to "open"), so `attach` only affects the
     /// plain-dispatch path.
-    fn dispatch_send_action(&self, attach: bool) -> InputOutcome {
+    fn dispatch_send_action(&mut self, attach: bool) -> InputOutcome {
         let text = self.dispatch.text().to_string();
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -2981,6 +2916,7 @@ impl DashboardState {
                 .focused_action_click()
                 .map_or(InputOutcome::Unchanged, InputOutcome::Action);
         }
+        self.last_send_at = Some(Instant::now());
         if trimmed.starts_with('/') {
             return InputOutcome::Action(Action::DashboardDispatchSlash { text });
         }
@@ -3011,6 +2947,74 @@ impl DashboardState {
                 self.delete_confirm = None;
                 None
             }
+        }
+    }
+
+    /// Whether an empty Enter now is an echo of the last send.
+    /// Key auto-repeat in older terminals, a bouncing key switch, and a double tap all produce this echo.
+    fn empty_enter_echoes_send(&self) -> bool {
+        self.dispatch.text().trim().is_empty()
+            && self
+                .last_send_at
+                .is_some_and(|sent| send_echo_window_open(sent.elapsed()))
+    }
+
+    /// Enter with the list focused attaches the selected row or acts on the focused right-hand item.
+    fn handle_list_focused_enter(&mut self) -> InputOutcome {
+        if self.empty_enter_echoes_send() {
+            return InputOutcome::Unchanged;
+        }
+        if let Some(id) = self.selected.clone() {
+            return InputOutcome::Action(Action::DashboardAttach(id));
+        }
+        // Enter on a right-hand item acts like a click on it, draft or no draft
+        // Only `+ New Agent` sends a typed draft
+        if self.focused_new_agent_sends_draft() {
+            return self.dispatch_send_action(false);
+        }
+        if let Some(action) = self.focused_action_click() {
+            return InputOutcome::Action(action);
+        }
+        InputOutcome::Unchanged
+    }
+
+    /// Enter while the dispatch input is active confirms the search, expands a chip, or sends.
+    /// Returns `None` when the prompt widget should insert Enter as a newline.
+    fn handle_dispatch_enter(
+        &mut self,
+        key: &KeyEvent,
+        slash_accepted_send: bool,
+    ) -> Option<InputOutcome> {
+        let mod_enter = crate::input::is_mod_enter(key);
+        if self.search_mode {
+            // Enter confirms the filter
+            // The cleared query puts the dispatch input back on the ❯ prompt
+            self.search_mode = false;
+            self.dispatch.set_text("");
+            return Some(InputOutcome::Changed);
+        }
+        // An accepted no-arg slash command always sends
+        // PromptWidget inserts a newline for a delivered SUPER+Enter (Kitty)
+        let enter_is_newline = !slash_accepted_send
+            && (compose_enter_is_newline(self.multiline_mode, mod_enter)
+                || crate::input::is_delivered_super_enter(key));
+        // Only a real bare Enter expands paste and file chips
+        // Apple Terminal rescue makes `is_mod_enter` true for a bare Enter that must send or insert a newline
+        if !mod_enter
+            && matches!(
+                self.dispatch.try_element_interaction(key),
+                Some(crate::views::prompt_widget::ElementInteraction::Inlined)
+            )
+        {
+            self.dispatch.refresh_slash(&self.models);
+            return Some(InputOutcome::Changed);
+        }
+        if enter_is_newline {
+            None
+        } else if self.empty_enter_echoes_send() {
+            Some(InputOutcome::Unchanged)
+        } else {
+            Some(self.dispatch_send_action(false))
         }
     }
 
@@ -3052,6 +3056,13 @@ impl DashboardState {
             ));
         }
 
+        if crate::input::key::is_paste_key(key) {
+            let clipboard_text = crate::app::actions::ClipboardTextRead::from_result(
+                crate::clipboard::system_clipboard_read_text(),
+            );
+            return self.handle_paste_key_deferred(clipboard_text, self.peek_owns_input());
+        }
+
         // The platform Plan shortcut while the peek is open cycles the PEEKED
         // agent's live mode, not the new-session staged mode. The registry resolves the
         // mode shortcut to `DashboardCycleMode`; re-route that to the
@@ -3071,32 +3082,32 @@ impl DashboardState {
         // Keys the panel doesn't own (registry-bound dashboard chords like. CtrlCtrl+X stop or Shift+↑/↓
         // reorder) return `None` and fall through so the dashboard's registry actions and global shortcuts
         // still fire.
-        if self.peek.is_some()
+        if self.peek_owns_input()
             && let Some(outcome) = self.handle_peek_key(key, from_registry)
         {
             return outcome;
         }
 
-        let prompt_empty = self.dispatch.text().is_empty();
-
-        // Peek permission answering (digits 1–9) and all other peek input is handled up-front by `handle_peek_key` (the early return at the top of
-        // this function), so by the time execution reaches here the peek panel is guaranteed closed
-
-        // Ctrl+V / Cmd+V paste. Read the pbpaste text once and route through the shared deferred paste
-        // pipeline: a file path wins synchronously, else the clipboard image/file-url probe defers off the
-        // event loop. Mirrors `AgentView`; without this, Ctrl+V on the dashboard did nothing useful.
-        if crate::input::key::is_paste_key(key) {
-            let clipboard_text = crate::app::actions::ClipboardTextRead::from_result(
-                crate::clipboard::system_clipboard_read_text(),
-            );
-            return self.handle_paste_key_deferred(clipboard_text, /* peek */ false);
-        }
+        let list_keys_active = self.list_keys_active();
+        let vim_nav = vim_mode && self.list_focused && !self.search_mode;
+        let step = match key.code {
+            _ if !key.modifiers.is_empty() => None,
+            KeyCode::Left if list_keys_active => Some(Step::Left),
+            KeyCode::Right if list_keys_active => Some(Step::Right),
+            KeyCode::Char('h') if vim_nav => Some(Step::Left),
+            KeyCode::Char('l') if vim_nav => Some(Step::Right),
+            _ => None,
+        };
 
         // @-file-search intercept.
         if self.dispatch.file_search_visible() {
             match self.dispatch.handle_key(key) {
                 PromptEvent::Edited => {
-                    self.dispatch.refresh_slash(&self.models);
+                    if self.search_mode {
+                        self.sync_search_filter_from_dispatch();
+                    } else {
+                        self.dispatch.refresh_slash(&self.models);
+                    }
                     return InputOutcome::Changed;
                 }
                 PromptEvent::Ignored => {
@@ -3108,46 +3119,29 @@ impl DashboardState {
         // Special cases (Esc cascade, Enter dispatch) are handled below because they require multi-tier
         // behaviour (clear filter, clear input, exit) that a single registry action can't express.
 
-        // ←/→ (and vim h/l) walk the actions row in visual order while an item there holds the cursor, stopping at both ends
-        if self.list_focused && key.modifiers.is_empty() && self.actions_focus.is_some() {
-            let step = match key.code {
-                KeyCode::Left => Some(Step::Left),
-                KeyCode::Right => Some(Step::Right),
-                KeyCode::Char('h') if vim_mode => Some(Step::Left),
-                KeyCode::Char('l') if vim_mode => Some(Step::Right),
-                _ => None,
-            };
-            if let Some(step) = step {
-                if let Some(item) = self.actions_neighbour(step) {
-                    self.focus_action(item);
-                    return InputOutcome::Changed;
-                }
-                return InputOutcome::Unchanged;
+        if let Some(step) = step
+            && self.actions_focus.is_some()
+        {
+            if let Some(item) = self.actions_neighbour(step) {
+                self.focus_action(item);
+                return InputOutcome::Changed;
             }
+            return InputOutcome::Unchanged;
         }
 
-        // Gated on `prompt_empty || list_focused`: while the input is FOCUSED and holds text, Left/Right
-        // edit the draft and Enter dispatches it (a section header is never a reply target).
-        let vim_fold = vim_mode && self.list_focused;
-        if let Some(section) = self.selected_section
-            && (prompt_empty || self.list_focused)
-            && key.modifiers.is_empty()
-        {
-            match key.code {
-                // Right/`l` expand, Left/`h` collapse (vim letters only while list-focused).
-                KeyCode::Right | KeyCode::Char('l')
-                    if matches!(key.code, KeyCode::Right) || vim_fold =>
-                {
+        if let Some(section) = self.selected_section {
+            match (step, key.code) {
+                (Some(Step::Right), _) => {
                     self.set_section_collapsed(section, false);
                     return InputOutcome::Changed;
                 }
-                KeyCode::Left | KeyCode::Char('h')
-                    if matches!(key.code, KeyCode::Left) || vim_fold =>
-                {
+                (Some(Step::Left), _) => {
                     self.set_section_collapsed(section, true);
                     return InputOutcome::Changed;
                 }
-                KeyCode::Enter => {
+                // A section header is never a reply target, so with the input focused and a draft typed Enter falls through to
+                // dispatch instead of toggling
+                (None, KeyCode::Enter) if list_keys_active && key.modifiers.is_empty() => {
                     self.toggle_section(section);
                     return InputOutcome::Changed;
                 }
@@ -3155,25 +3149,17 @@ impl DashboardState {
             }
         }
 
-        // Idle "N more" overflow: Enter toggles; Right/`l` reveal, Left/`h` re-fold.
-        if self.selected_idle_overflow
-            && (prompt_empty || self.list_focused)
-            && key.modifiers.is_empty()
-        {
-            match key.code {
-                KeyCode::Enter => {
+        if self.selected_idle_overflow {
+            match (step, key.code) {
+                (None, KeyCode::Enter) if list_keys_active && key.modifiers.is_empty() => {
                     self.toggle_idle_show_all();
                     return InputOutcome::Changed;
                 }
-                KeyCode::Right | KeyCode::Char('l')
-                    if matches!(key.code, KeyCode::Right) || vim_fold =>
-                {
+                (Some(Step::Right), _) => {
                     self.idle_show_all = true;
                     return InputOutcome::Changed;
                 }
-                KeyCode::Left | KeyCode::Char('h')
-                    if matches!(key.code, KeyCode::Left) || vim_fold =>
-                {
+                (Some(Step::Left), _) => {
                     self.idle_show_all = false;
                     return InputOutcome::Changed;
                 }
@@ -3182,15 +3168,9 @@ impl DashboardState {
         }
 
         // Short-terminal open (peek suppressed)
-        // Right: empty prompt or list focus
-        // Vim `l`: list focus only (same as `j`/`k`)
-        let open_row_detail = key.modifiers.is_empty()
-            && match key.code {
-                KeyCode::Right => prompt_empty || self.list_focused,
-                KeyCode::Char('l') if vim_mode => self.list_focused && !self.search_mode,
-                _ => false,
-            };
-        if open_row_detail && let Some(id) = self.selected.clone() {
+        if step == Some(Step::Right)
+            && let Some(id) = self.selected.clone()
+        {
             return InputOutcome::Action(Action::DashboardAttach(id));
         }
 
@@ -3317,19 +3297,14 @@ impl DashboardState {
             return InputOutcome::Action(Action::ExitDashboard);
         }
 
-        // Focus-aware routing of registry actions (the two-focus model). ↑/↓ navigate the overview when it
-        // is focused OR the input is empty (a convenience so you can browse without first pressing Tab);
-        // with non-empty input they move the caret.
         if let Some(id) = from_registry {
             let honor = match key.code {
-                KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => {
-                    self.list_focused || (prompt_empty && !self.search_mode)
-                }
+                KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => list_keys_active,
                 KeyCode::Char(_)
                     if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
                 {
                     if id == crate::actions::ActionId::DashboardShortcutsHelp {
-                        self.list_focused || (prompt_empty && !self.search_mode)
+                        list_keys_active
                     } else {
                         self.list_focused && !self.search_mode
                     }
@@ -3364,46 +3339,11 @@ impl DashboardState {
         }
 
         if matches!(key.code, KeyCode::Enter) {
-            // Overview focused: attach / create (or send when the button is focused and a draft exists)
             if self.list_focused && key.modifiers.is_empty() {
-                if let Some(id) = self.selected.clone() {
-                    return InputOutcome::Action(Action::DashboardAttach(id));
-                }
-                // Enter on a right-hand item acts like a click on it, draft or no draft; only `+ New Agent` sends a typed draft
-                if self.focused_new_agent_sends_draft() {
-                    return self.dispatch_send_action(false);
-                }
-                if let Some(action) = self.focused_action_click() {
-                    return InputOutcome::Action(action);
-                }
-                return InputOutcome::Unchanged;
+                return self.handle_list_focused_enter();
             }
-            let mod_enter = crate::input::is_mod_enter(key);
-            if self.search_mode {
-                // Confirm filter; clear query so dispatch returns to ❯.
-                self.search_mode = false;
-                self.dispatch.set_text("");
-                return InputOutcome::Changed;
-            }
-            // slash_accepted_send: no-arg slash accept must submit, not newline.
-            let enter_is_newline =
-                !slash_accepted_send && compose_enter_is_newline(self.multiline_mode, mod_enter);
-            // Expand paste/file chips only for real bare Enter
-            // Apple Terminal rescue yields bare Enter while is_mod_enter is true; that
-            // must send/newline, not expand (peek already gates the same way)
-            if !mod_enter
-                && matches!(
-                    self.dispatch.try_element_interaction(key),
-                    Some(crate::views::prompt_widget::ElementInteraction::Inlined)
-                )
-            {
-                self.dispatch.refresh_slash(&self.models);
-                return InputOutcome::Changed;
-            }
-            if enter_is_newline {
-                // fall through for newline
-            } else {
-                return self.dispatch_send_action(false);
+            if let Some(outcome) = self.handle_dispatch_enter(key, slash_accepted_send) {
+                return outcome;
             }
         }
 
@@ -3451,24 +3391,12 @@ impl DashboardState {
             // Live-update the filter as the user types ONLY in search mode; the dispatch buffer is then the search query
             // Outside search mode the buffer is a dispatch prompt and never touches the filter (so `s:`/`a:`/`#`/`/` prefixes dispatch verbatim)
             // `parse_filter` still honours the `a:`/`s:`/`#` prefixes WITHIN search mode for power users; plain text is a substring match
-            let mut filter_changed = false;
             if self.search_mode {
-                let trimmed = new.trim();
-                self.filter = if trimmed.is_empty() {
-                    Filter::None
-                } else {
-                    Filter::from_value(parse_filter(trimmed))
-                };
-                filter_changed = true;
+                self.sync_search_filter_from_dispatch();
             } else {
                 // Outside search mode the buffer is a dispatch prompt; refresh the slash snapshot so the `/command` dropdown opens / updates (and `@`
                 // context) as the user types
                 self.dispatch.refresh_slash(&self.models);
-            }
-            if filter_changed {
-                // Live filter edits reshape the visible row set; the user's prior wheel-scrolled position no longer points at a meaningful row
-                // Re-engage the snap so the viewport tracks selection again
-                self.manual_scroll_active = false;
             }
             InputOutcome::Changed
         } else if event == PromptEvent::Edited || dropped_highlight {
@@ -3517,16 +3445,9 @@ impl DashboardState {
                 changed |= self.dispatch.set_slash_hovered(None);
             }
             if let Some(dd_area) = self.file_search_dropdown_items_area {
-                let result_count = if self.peek.is_some() {
-                    self.peek_reply.file_search.result_count()
-                } else {
-                    self.dispatch.file_search.result_count()
-                };
-                let scroll_offset = if self.peek.is_some() {
-                    self.peek_reply.file_search.scroll_offset()
-                } else {
-                    self.dispatch.file_search.scroll_offset()
-                };
+                let fs = self.dropdown_file_search_mut();
+                let result_count = fs.result_count();
+                let scroll_offset = fs.scroll_offset();
                 let has_scrollbar = result_count > dd_area.height as usize;
                 let on_scrollbar =
                     has_scrollbar && mouse.column >= dd_area.x + dd_area.width.saturating_sub(2);
@@ -3536,12 +3457,9 @@ impl DashboardState {
                     } else {
                         None
                     };
-                changed |= self.dropdown_file_search_mut().set_hovered(new_dd_hover);
+                changed |= fs.set_hovered(new_dd_hover);
             } else {
-                changed |= self.dispatch.file_search.set_hovered(None);
-                if self.peek.is_some() {
-                    changed |= self.peek_reply.file_search.set_hovered(None);
-                }
+                changed |= self.dropdown_file_search_mut().set_hovered(None);
             }
 
             let new_hover = self
@@ -3604,8 +3522,8 @@ impl DashboardState {
             return InputOutcome::Unchanged;
         }
 
-        // Click on the peek-panel close button.
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+        if self.peek_owns_input()
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && let Some(rect) = self.peek_close_rect
             && mouse.column >= rect.x
             && mouse.column < rect.x + rect.width
@@ -3620,7 +3538,7 @@ impl DashboardState {
         // Peek reply input: mouse interaction with the `❯ reply` row (or the reject-feedback slot in
         // question mode), mirroring the dispatch box's click-to-focus plus the agent prompt's drag text
         // selection.
-        if self.peek.is_some() {
+        if self.peek_owns_input() {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
                     if let Some(rect) = self.peek_reply_rect
@@ -3705,41 +3623,34 @@ impl DashboardState {
             if let Some(dd_area) = self.file_search_dropdown_items_area
                 && dd_area.contains((mouse.column, mouse.row).into())
             {
-                let result_count = if self.peek.is_some() {
-                    self.peek_reply.file_search.result_count()
-                } else {
-                    self.dispatch.file_search.result_count()
-                };
-                let scroll_offset = if self.peek.is_some() {
-                    self.peek_reply.file_search.scroll_offset()
-                } else {
-                    self.dispatch.file_search.scroll_offset()
-                };
-                let has_scrollbar = result_count > dd_area.height as usize;
-                let on_scrollbar =
-                    has_scrollbar && mouse.column >= dd_area.x + dd_area.width.saturating_sub(2);
-
-                if on_scrollbar {
-                    let click_frac = (mouse.row - dd_area.y) as f64 / dd_area.height.max(1) as f64;
-                    let target = (click_frac * result_count as f64) as usize;
-                    let max = result_count.saturating_sub(1);
-                    let selected = if self.peek.is_some() {
-                        self.peek_reply.file_search.selected()
-                    } else {
-                        self.dispatch.file_search.selected()
-                    };
-                    self.dropdown_file_search_mut()
-                        .move_selection(target.min(max) as isize - selected as isize);
-                } else {
-                    let row_idx = (mouse.row - dd_area.y) as usize + scroll_offset;
+                let peek_visible = self.peek_owns_input();
+                let accepted = {
                     let fs = self.dropdown_file_search_mut();
-                    fs.set_hovered(Some(row_idx));
-                    if fs.select_hovered() {
-                        if self.peek.is_some() {
-                            self.peek_reply.accept_file_search_result();
-                        } else {
-                            self.dispatch.accept_file_search_result();
-                        }
+                    let result_count = fs.result_count();
+                    let scroll_offset = fs.scroll_offset();
+                    let has_scrollbar = result_count > dd_area.height as usize;
+                    let on_scrollbar = has_scrollbar
+                        && mouse.column >= dd_area.x + dd_area.width.saturating_sub(2);
+                    if on_scrollbar {
+                        let click_frac =
+                            (mouse.row - dd_area.y) as f64 / dd_area.height.max(1) as f64;
+                        let target = (click_frac * result_count as f64) as usize;
+                        let max = result_count.saturating_sub(1);
+                        let selected = fs.selected();
+                        fs.move_selection(target.min(max) as isize - selected as isize);
+                        false
+                    } else {
+                        let row_idx = (mouse.row - dd_area.y) as usize + scroll_offset;
+                        fs.set_hovered(Some(row_idx));
+                        fs.select_hovered()
+                    }
+                };
+                if accepted {
+                    if peek_visible {
+                        self.peek_reply.accept_file_search_result();
+                    } else {
+                        self.dispatch.accept_file_search_result();
+                        self.sync_search_filter_from_dispatch();
                     }
                 }
                 self.set_list_focused(false);
@@ -4207,18 +4118,15 @@ impl DashboardState {
                 self.focus_section(key);
             }
         }
-        // Skip non-selectable placeholders ("… N more").
-        let selectable: Vec<&DashboardRow> =
-            rows.iter().filter(|r| !r.is_more_placeholder).collect();
-        if selectable.is_empty() {
+        if rows.is_empty() {
             self.selected = None;
             self.delete_confirm = None;
             return;
         }
         if let Some(sel) = self.selected.as_ref()
-            && !selectable.iter().any(|r| r.id == *sel)
+            && !rows.iter().any(|r| r.id == *sel)
         {
-            // The previously selected row was filtered out / closed / lost its parent
+            // The previously selected row was filtered out or closed.
             // Drop the cursor; re-selecting is the user's job
             self.selected = None;
         }
@@ -4369,10 +4277,15 @@ fn handle_rename_key(draft: &mut RenameDraft, key: &KeyEvent) -> InputOutcome {
 
 fn handle_rename_paste(draft: &mut RenameDraft, text: &str) -> InputOutcome {
     let remaining = MAX_RENAME_SCALARS.saturating_sub(draft.text().chars().count());
-    let outcome =
-        draft
-            .editor
-            .insert_paste_with_policy(text, rename_wire_character_allowed, remaining);
+    let allowed = text
+        .chars()
+        .filter(|character| rename_wire_character_allowed(*character));
+    let capped: String = allowed.take(remaining).collect();
+    let outcome = draft.editor.insert_paste_with_policy(
+        &strip_loose_tags(&capped),
+        rename_wire_character_allowed,
+        remaining,
+    );
     rename_edit_outcome(outcome)
 }
 
@@ -4384,10 +4297,6 @@ fn rename_edit_outcome(outcome: LineEditOutcome) -> InputOutcome {
         LineEditOutcome::Unhandled => InputOutcome::Unchanged,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Filter parser
-// ---------------------------------------------------------------------------
 
 /// Parse a filter expression from the dispatch input. Unknown values fall back to substring.
 pub fn parse_filter(text: &str) -> FilterValue {
@@ -4443,10 +4352,6 @@ pub fn parse_row_state_token(s: &str) -> Option<RowState> {
         _ => None,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Persistence I/O
-// ---------------------------------------------------------------------------
 
 /// Read the persisted `[dashboard].enabled` flag (defaults to `true`).
 ///
@@ -4535,41 +4440,34 @@ pub fn write_persisted_to_path(
     let Some(t) = dash.as_table_mut() else {
         return Ok(());
     };
-    t["enabled"] = toml_edit::value(p.enabled);
-    t["grouping"] = toml_edit::value(match p.grouping {
-        Grouping::State => "state",
-        Grouping::Directory => "directory",
-    });
+    t.insert("enabled", toml_edit::value(p.enabled));
+    t.insert(
+        "grouping",
+        toml_edit::value(match p.grouping {
+            Grouping::State => "state",
+            Grouping::Directory => "directory",
+        }),
+    );
     let mut pin_arr = toml_edit::Array::new();
     for id in &p.pinned {
         pin_arr.push(id.to_key());
     }
-    t["pinned"] = toml_edit::value(pin_arr);
+    t.insert("pinned", toml_edit::value(pin_arr));
     let mut reorder_arr = toml_edit::Array::new();
     for id in &p.reorder {
         reorder_arr.push(id.to_key());
     }
-    t["reorder"] = toml_edit::value(reorder_arr);
+    t.insert("reorder", toml_edit::value(reorder_arr));
     // The onboarding hint was removed; drop the stale table so old configs don't carry a dead `[dashboard.onboarding]` key forever
     t.remove("onboarding");
-    atomic_write(path, doc.to_string().as_bytes())
+    atomic_write(path, &doc.to_string())
 }
 
-/// Atomic write via `<path>.dashboard.tmp.<pid>` then `rename`. Concurrent readers see either the
-/// old file or the new file, never a partial truncated copy that would parse as `None` and trigger
-/// the catastrophic clobber on the next writer.
-fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let pid = std::process::id();
-    let tmp = path.with_extension(format!("toml.dashboard.tmp.{pid}"));
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        // Ensure the bytes are physically on disk before the rename.
-        // Without this, the rename can complete and the file system can later observe the renamed inode pointing at zeroed data
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)?;
+/// Atomic write through a symlinked `config.toml`. Concurrent readers see either the old file or
+/// the new file, never a partial truncated copy that would parse as `None` and trigger the
+/// catastrophic clobber on the next writer.
+fn atomic_write(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    xai_grok_config::fs_atomic::write_user_file_atomically(path, contents, None)?;
     // Parent directory fsync (defense in depth on unusual filesystems / network mounts)
     if let Some(parent) = path.parent()
         && let Ok(dir) = std::fs::File::open(parent)
@@ -4622,10 +4520,6 @@ fn parse_persist_key_list(item: &toml_edit::Item) -> Vec<PersistedRowId> {
         })
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Helper: relative path display
-// ---------------------------------------------------------------------------
 
 /// Compact a `Path` for display against `$HOME`, returning a `String`. Used by the row renderer and
 /// the filter substring search to keep cwd matching consistent. When `cwd == home`, `strip_prefix`

@@ -19,10 +19,14 @@ pub async fn read_http_request(sock: &mut TcpStream, buf: &mut Vec<u8>) -> Optio
         let mut chunk = [0u8; 4096];
         match sock.read(&mut chunk).await {
             Ok(0) | Err(_) => return None,
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Ok(n) => {
+                if let Some(read) = chunk.get(..n) {
+                    buf.extend_from_slice(read);
+                }
+            }
         }
     };
-    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+    let head = String::from_utf8_lossy(buf.get(..head_end).unwrap_or(buf)).to_string();
     let body_len: usize = head
         .lines()
         .find_map(|l| {
@@ -35,7 +39,11 @@ pub async fn read_http_request(sock: &mut TcpStream, buf: &mut Vec<u8>) -> Optio
         let mut chunk = [0u8; 4096];
         match sock.read(&mut chunk).await {
             Ok(0) | Err(_) => return None,
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Ok(n) => {
+                if let Some(read) = chunk.get(..n) {
+                    buf.extend_from_slice(read);
+                }
+            }
         }
     }
     buf.drain(..head_end + body_len);

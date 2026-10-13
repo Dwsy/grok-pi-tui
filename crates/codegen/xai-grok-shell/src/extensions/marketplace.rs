@@ -59,11 +59,11 @@ async fn handle_list() -> ExtResult {
         })
         .collect();
     let mut results = Vec::with_capacity(scan_handles.len());
-    for (i, handle) in scan_handles.into_iter().enumerate() {
+    for (i, (source, handle)) in sources.iter().zip(scan_handles).enumerate() {
         let (scan, catalog_loaded) = handle.await.unwrap_or_else(|e| {
             (
                 MarketplaceScanResult {
-                    source_name: sources[i].name.clone(),
+                    source_name: source.name.clone(),
                     source_kind: String::new(),
                     source_url_or_path: String::new(),
                     plugins: Vec::new(),
@@ -82,7 +82,7 @@ async fn handle_list() -> ExtResult {
             None,
             Some(serde_json::json!({
                 "source_index": i,
-                "source_name": sources[i].name,
+                "source_name": source.name,
                 "scan_ms": 0, // per-source timing is unavailable when scans run in parallel
                 "plugin_count": scan.plugins.len(),
                 "catalog_loaded": catalog_loaded,
@@ -777,7 +777,7 @@ async fn handle_add_source(url: &str) -> xai_hooks_plugins_types::ActionOutcome 
     // Run the write under the config write guard (SAVE_LOCK + init flock), off the reactor; an
     // unguarded add is exactly the read-modify-write race the guard prevents.
     let config_path = xai_grok_config::grok_home().join("config.toml");
-    let _save_guard = match crate::util::config::lock_config_writes().await {
+    let save_guard = match crate::util::config::lock_config_writes().await {
         Ok(guard) => guard,
         Err(e) => {
             return ActionOutcome {
@@ -790,10 +790,9 @@ async fn handle_add_source(url: &str) -> xai_hooks_plugins_types::ActionOutcome 
     };
     let write = {
         let name = name.clone();
-        tokio::task::spawn_blocking(move || {
-            add_marketplace_source(&config_path, &name, &input, is_official)
-        })
-        .await
+        save_guard
+            .run_blocking(move || add_marketplace_source(&config_path, &name, &input, is_official))
+            .await
     };
     match write {
         Ok(Ok(())) => {}
@@ -829,7 +828,7 @@ async fn handle_remove_source(source_url_or_path: &str) -> xai_hooks_plugins_typ
     let src = source_url_or_path.to_string();
     // Guard (SAVE_LOCK + init flock) held across the whole blocking read-modify-write so a
     // concurrent auto-register can't re-add the source mid-removal.
-    let _save_guard = match crate::util::config::lock_config_writes().await {
+    let save_guard = match crate::util::config::lock_config_writes().await {
         Ok(guard) => guard,
         Err(e) => {
             return xai_hooks_plugins_types::ActionOutcome {
@@ -840,7 +839,10 @@ async fn handle_remove_source(source_url_or_path: &str) -> xai_hooks_plugins_typ
             };
         }
     };
-    match tokio::task::spawn_blocking(move || remove_source_locked(&src)).await {
+    match save_guard
+        .run_blocking(move || remove_source_locked(&src))
+        .await
+    {
         Ok(outcome) => outcome,
         Err(e) => xai_hooks_plugins_types::ActionOutcome {
             status: xai_hooks_plugins_types::OutcomeStatus::InternalError,
@@ -1246,9 +1248,12 @@ mod official_source_tests {
 
         let sources = read_sources(&config_path);
         assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].name, "my-plugins");
+        let Some(source) = sources.first() else {
+            panic!("expected one source: {sources:?}");
+        };
+        assert_eq!(source.name, "my-plugins");
         assert!(matches!(
-            &sources[0].kind,
+            &source.kind,
             xai_grok_plugin_marketplace::SourceKind::Local { path } if path == &dir
         ));
         // The path must not be mangled into a git URL.
@@ -1277,8 +1282,11 @@ mod official_source_tests {
             1,
             "respelled URL must dedupe, got {sources:?}"
         );
+        let Some(source) = sources.first() else {
+            panic!("expected one source: {sources:?}");
+        };
         assert!(matches!(
-            &sources[0].kind,
+            &source.kind,
             xai_grok_plugin_marketplace::SourceKind::Git { url, .. }
                 if url == "https://github.com/org/repo.git"
         ));
@@ -1333,12 +1341,15 @@ mod official_source_tests {
 
         let sources = read_sources(&config_path);
         assert_eq!(sources.len(), 1);
+        let Some(source) = sources.first() else {
+            panic!("expected one source: {sources:?}");
+        };
         assert_eq!(
-            sources[0].name,
+            source.name,
             xai_grok_plugin_marketplace::OFFICIAL_SOURCE_NAME
         );
         assert!(matches!(
-            &sources[0].kind,
+            &source.kind,
             xai_grok_plugin_marketplace::SourceKind::Git { url, .. }
                 if url == xai_grok_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL
         ));
@@ -1818,10 +1829,10 @@ mod conversion_tests {
         assert_eq!(dto.remote_subdir.as_deref(), Some("plugins/acme"));
         let components = dto.components.expect("components passed through");
         assert_eq!(components.skills.len(), 1);
-        assert_eq!(components.skills[0].name, "code-review");
-        assert_eq!(
-            components.skills[0].description.as_deref(),
-            Some("Review staged changes")
-        );
+        let Some(skill) = components.skills.first() else {
+            panic!("expected one skill: {:?}", components.skills);
+        };
+        assert_eq!(skill.name, "code-review");
+        assert_eq!(skill.description.as_deref(), Some("Review staged changes"));
     }
 }

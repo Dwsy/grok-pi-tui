@@ -153,10 +153,7 @@ impl ChatStateActor {
                     break;
                 }
                 xai_grok_sampling_types::ConversationItem::User(u)
-                    if u.prompt_index.is_some()
-                        || u.synthetic_reason
-                            .as_ref()
-                            .is_none_or(|r| r.starts_prompt_turn()) =>
+                    if u.prompt_index.is_some() || u.synthetic_reason.starts_prompt_turn() =>
                 {
                     return None;
                 }
@@ -184,7 +181,7 @@ impl ChatStateActor {
                 // separates distinct answers.
                 xai_grok_sampling_types::ConversationItem::User(u)
                     if u.synthetic_reason
-                        == Some(xai_grok_sampling_types::SyntheticReason::LengthContinue) => {}
+                        == xai_grok_sampling_types::SyntheticReason::LengthContinue => {}
                 // Boundary — deliberately including `BackendToolCall`: a
                 // hosted-tool step between segments is a real step boundary.
                 _ => break,
@@ -209,10 +206,7 @@ impl ChatStateActor {
                     texts.push(a.content.as_ref().to_owned());
                 }
                 xai_grok_sampling_types::ConversationItem::User(u)
-                    if u.prompt_index.is_some()
-                        || u.synthetic_reason
-                            .as_ref()
-                            .is_none_or(|r| r.starts_prompt_turn()) =>
+                    if u.prompt_index.is_some() || u.synthetic_reason.starts_prompt_turn() =>
                 {
                     break;
                 }

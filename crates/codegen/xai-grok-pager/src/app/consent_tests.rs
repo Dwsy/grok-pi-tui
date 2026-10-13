@@ -236,7 +236,12 @@ fn escapes_and_reordering_characters_are_stripped_from_the_body() {
 fn an_unacked_answer_at_or_above_the_version_suppresses() {
     let gate = gate();
     let answers = answered(NOTICE_ID, 3);
-    assert!(!answers[NOTICE_ID].acked);
+    assert!(
+        !answers
+            .get(NOTICE_ID)
+            .unwrap_or_else(|| panic!("missing index"))
+            .acked
+    );
 
     let verdict = consent_verdict(&inputs(Some(&gate), &answers));
 

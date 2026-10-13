@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::plugins::discovery::PluginScope;
+use crate::prompt::paths::expand_tilde;
 use xai_grok_tools::implementations::skills::types::skill_name_from_path;
 pub use xai_grok_tools::implementations::skills::types::{SkillInfo, SkillScope};
 /// Re-export so agent-side discovery (and the shell) can name the resolved vendor-compat config without reaching into `xai_grok_tools` directly.
@@ -317,20 +318,10 @@ async fn list_skills_with_options(
     skills
 }
 
-/// Expand a `~`-prefixed path string to an absolute `PathBuf`.
-fn expand_tilde(raw: &str) -> PathBuf {
-    if let Some(rest) = raw.strip_prefix("~/")
-        && let Some(home) = xai_dirs::home_dir()
-    {
-        return home.join(rest);
-    }
-    PathBuf::from(raw)
-}
-
 /// Collect and parse skills from `SkillsConfig.paths` entries.
 /// Each entry is a SKILL.md file or a directory to walk. `~` is expanded.
 /// Scope is `Repo` if the path falls inside `git_root`, otherwise `User`.
-fn collect_config_skills(config_paths: &[String], git_root: Option<&Path>) -> Vec<SkillInfo> {
+pub fn collect_config_skills(config_paths: &[String], git_root: Option<&Path>) -> Vec<SkillInfo> {
     let mut skill_files: Vec<(PathBuf, SkillScope)> = Vec::new();
     let mut seen = HashSet::new();
 
@@ -405,8 +396,10 @@ fn dedupe_skills(skills: Vec<SkillInfo>) -> Vec<SkillInfo> {
             // A file reached via both auto-discovery and `[skills].paths` is genuinely both
             // Carry the provenance stamp onto the kept entry so the label doesn't depend on source order
             // Scope is untouched
-            let kept = &mut deduped[kept_idx];
-            if kept.config_source.is_none() && skill.config_source.is_some() {
+            if let Some(kept) = deduped.get_mut(kept_idx)
+                && kept.config_source.is_none()
+                && skill.config_source.is_some()
+            {
                 kept.config_source = skill.config_source;
             }
             continue;
@@ -427,22 +420,31 @@ fn dedupe_skills(skills: Vec<SkillInfo>) -> Vec<SkillInfo> {
                     .map(normalize_skill_name)
                     .is_some_and(|dir| dir == skill.name);
                 if challenger_owns_basename {
-                    if rekey_to_dir_basename(&mut deduped[winner_idx], &mut seen_names, winner_idx)
-                    {
+                    let rekeyed = deduped.get_mut(winner_idx).is_some_and(|winner| {
+                        rekey_to_dir_basename(winner, &mut seen_names, winner_idx)
+                    });
+                    if rekeyed {
                         seen_names.insert(skill.name.clone(), (skill.scope, deduped.len()));
                         seen_paths.insert(canonical_path, deduped.len());
                         deduped.push(skill);
                         continue;
                     }
-                    if deduped[winner_idx].display_name.is_some() {
+                    if deduped
+                        .get(winner_idx)
+                        .is_some_and(|w| w.display_name.is_some())
+                    {
                         // The incumbent holds this name only via an earlier re-key and cannot move again, so the frontmatter owner evicts it
                         // A stale copy must not shadow the skill genuinely named after its own directory
-                        let evicted = &deduped[winner_idx];
+                        let Some(evicted) = deduped.get(winner_idx) else {
+                            continue;
+                        };
                         let evicted_path = dunce::canonicalize(&evicted.path)
                             .unwrap_or_else(|_| PathBuf::from(&evicted.path));
                         seen_paths.remove(&evicted_path);
                         seen_paths.insert(canonical_path, winner_idx);
-                        deduped[winner_idx] = skill;
+                        if let Some(slot) = deduped.get_mut(winner_idx) {
+                            *slot = skill;
+                        }
                         continue;
                     }
                 }
@@ -717,8 +719,8 @@ mod tests {
         let dups: Vec<_> = skills.iter().filter(|s| s.name == "dup").collect();
         assert_eq!(dups.len(), 1, "dup should appear once");
         assert_eq!(
-            dups[0].scope,
-            SkillScope::Local,
+            dups.first().map(|s| s.scope),
+            Some(SkillScope::Local),
             "local skill must shadow the server-synced one"
         );
     }
@@ -753,7 +755,7 @@ mod tests {
 
         let dups: Vec<_> = skills.iter().filter(|s| s.name == "dup").collect();
         assert_eq!(dups.len(), 1, "dup should appear once");
-        assert_eq!(dups[0].scope, SkillScope::Local);
+        assert_eq!(dups.first().map(|s| s.scope), Some(SkillScope::Local));
     }
 
     #[tokio::test]
@@ -781,8 +783,8 @@ mod tests {
         let shared: Vec<_> = skills.iter().filter(|s| s.name == "shared").collect();
         assert_eq!(shared.len(), 1, "shared should appear once");
         assert_eq!(
-            shared[0].scope,
-            SkillScope::Server,
+            shared.first().map(|s| s.scope),
+            Some(SkillScope::Server),
             "server skill must shadow the bundled one"
         );
     }
@@ -853,7 +855,11 @@ mod tests {
 
         let paths = find_skill_paths(&grok_dir);
         assert_eq!(paths.len(), 1);
-        assert!(paths[0].display().to_string().contains("valid"));
+        assert!(
+            paths
+                .first()
+                .is_some_and(|p| p.display().to_string().contains("valid"))
+        );
     }
 
     #[test]
@@ -894,7 +900,11 @@ mod tests {
         walk_for_skill_md(&skills_dir, &mut paths, 0);
 
         assert_eq!(paths.len(), 1);
-        assert!(paths[0].display().to_string().contains("shallow"));
+        assert!(
+            paths
+                .first()
+                .is_some_and(|p| p.display().to_string().contains("shallow"))
+        );
     }
 
     #[test]
@@ -977,7 +987,7 @@ mod tests {
         // Must not panic
         assert_eq!(skills.len(), 1);
         assert!(
-            !skills[0].description.is_empty(),
+            skills.first().is_some_and(|s| !s.description.is_empty()),
             "description should be filled from body"
         );
     }
@@ -1150,9 +1160,12 @@ mod tests {
 
         let skills = parse_skill_files(vec![(skill_dir.join("SKILL.md"), SkillScope::Local)]);
         assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "my-skill");
+        let Some(skill) = skills.first() else {
+            panic!("expected one skill: {skills:?}");
+        };
+        assert_eq!(skill.name, "my-skill");
         assert!(
-            skills[0].user_invocable,
+            skill.user_invocable,
             "no-frontmatter skills must be user-invocable"
         );
     }
@@ -1374,7 +1387,7 @@ mod tests {
         let skills = collect_config_skills(&paths, None);
 
         assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "my-skill");
+        assert_eq!(skills.first().map(|s| s.name.as_str()), Some("my-skill"));
     }
 
     #[test]
@@ -1388,7 +1401,7 @@ mod tests {
         let paths = vec![outside.to_str().unwrap().to_string()];
         let skills = collect_config_skills(&paths, Some(&repo));
 
-        assert_eq!(skills[0].scope, SkillScope::User);
+        assert_eq!(skills.first().map(|s| s.scope), Some(SkillScope::User));
     }
 
     #[test]
@@ -1401,7 +1414,7 @@ mod tests {
         let paths = vec![inside.to_str().unwrap().to_string()];
         let skills = collect_config_skills(&paths, Some(&repo));
 
-        assert_eq!(skills[0].scope, SkillScope::Repo);
+        assert_eq!(skills.first().map(|s| s.scope), Some(SkillScope::Repo));
     }
 
     #[test]
@@ -1414,7 +1427,7 @@ mod tests {
         let skills = collect_config_skills(&paths, None);
 
         assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "root-skill");
+        assert_eq!(skills.first().map(|s| s.name.as_str()), Some("root-skill"));
     }
 
     #[test]
@@ -1446,9 +1459,12 @@ mod tests {
         let skills = collect_config_skills(&paths, None);
 
         assert_eq!(skills.len(), 1);
-        match &skills[0].config_source {
+        let Some(skill) = skills.first() else {
+            panic!("expected one skill: {skills:?}");
+        };
+        match &skill.config_source {
             Some(xai_grok_tools::types::config_source::ConfigSource::ConfigToml { path }) => {
-                assert_eq!(path, Path::new(&skills[0].path));
+                assert_eq!(path, Path::new(&skill.path));
             }
             other => panic!("expected ConfigToml source, got {other:?}"),
         }
@@ -1482,6 +1498,7 @@ mod tests {
             disable_model_invocation: false,
             has_user_specified_description: false,
             paths: None,
+            origin: None,
             enabled: true,
             body: None,
         }
@@ -1522,6 +1539,7 @@ mod tests {
             lsp_server_count: 0,
             has_inline_lsp_only: false,
             inline_hooks: None,
+            hook_specs: Vec::new(),
             inline_mcp_servers: None,
             inline_lsp_servers: None,
             conflict: None,
@@ -1535,15 +1553,12 @@ mod tests {
 
         let expected_root = plugin.root_str();
         let expected_data = plugin.data_dir_str();
-        assert_eq!(
-            skills[0].plugin_root.as_deref(),
-            Some(expected_root.as_str())
-        );
-        assert_eq!(
-            skills[0].plugin_data.as_deref(),
-            Some(expected_data.as_str())
-        );
-        assert_eq!(skills[0].plugin_name.as_deref(), Some("plugin-dev"));
+        let Some(skill) = skills.first() else {
+            panic!("expected one skill: {skills:?}");
+        };
+        assert_eq!(skill.plugin_root.as_deref(), Some(expected_root.as_str()));
+        assert_eq!(skill.plugin_data.as_deref(), Some(expected_data.as_str()));
+        assert_eq!(skill.plugin_name.as_deref(), Some("plugin-dev"));
     }
 
     // ── Manifest `skills` entries pointing directly at skill dirs ──
@@ -1672,7 +1687,7 @@ mod tests {
         let result = filter_skills(skills, &ignore);
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].name, "good-skill");
+        assert_eq!(result.first().map(|s| s.name.as_str()), Some("good-skill"));
     }
 
     #[test]
@@ -1705,7 +1720,7 @@ mod tests {
         let result = filter_skills(skills, &ignore);
 
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].name, "keeper");
+        assert_eq!(result.first().map(|s| s.name.as_str()), Some("keeper"));
     }
 
     #[tokio::test]
@@ -1921,18 +1936,21 @@ mod tests {
             1,
             "overlap-skill should only be loaded once"
         );
+        let Some(overlap) = overlaps.first() else {
+            panic!("expected overlap skill: {overlaps:?}");
+        };
         assert_eq!(
-            overlaps[0].scope,
+            overlap.scope,
             SkillScope::Local,
             "auto-discovered scope must win"
         );
         assert!(
             matches!(
-                overlaps[0].config_source,
+                overlap.config_source,
                 Some(xai_grok_tools::types::config_source::ConfigSource::ConfigToml { .. })
             ),
             "ConfigToml stamp should survive path-dedupe: {:?}",
-            overlaps[0].config_source
+            overlap.config_source
         );
     }
 
@@ -1950,14 +1968,16 @@ mod tests {
         let deduped = dedupe_skills(vec![winner, loser]);
 
         // Same-scope siblings both survive (the collision loser is re-keyed to its dir basename); provenance must stay with its own file
-        assert_eq!(deduped.len(), 2);
+        let [first, second] = deduped.as_slice() else {
+            panic!("expected two skills: {deduped:?}");
+        };
         assert!(
-            deduped[0].config_source.is_none(),
+            first.config_source.is_none(),
             "name-dedupe must not propagate provenance across different files"
         );
-        assert_eq!(deduped[1].name, "b");
+        assert_eq!(second.name, "b");
         assert!(
-            deduped[1].config_source.is_some(),
+            second.config_source.is_some(),
             "re-keyed sibling keeps its own provenance"
         );
     }
@@ -2004,12 +2024,13 @@ mod tests {
             1,
             "Expected repo fallback skill after local ignore"
         );
+        let Some(same) = same_skills.first() else {
+            panic!("expected fallback skill: {same_skills:?}");
+        };
         assert!(
-            same_skills[0]
-                .path
-                .starts_with(repo_skill_dir.to_str().unwrap()),
+            same.path.starts_with(repo_skill_dir.to_str().unwrap()),
             "Expected fallback from repo path, got: {}",
-            same_skills[0].path
+            same.path
         );
     }
 
@@ -2177,10 +2198,13 @@ mod tests {
             "Expected exactly one 'commit' after dedup, got {}",
             commit_skills.len()
         );
+        let Some(commit) = commit_skills.first() else {
+            panic!("expected commit skill: {commit_skills:?}");
+        };
         assert!(
-            !commit_skills[0].path.contains("/bundled/"),
+            !commit.path.contains("/bundled/"),
             "User skill should win over bundled: {}",
-            commit_skills[0].path
+            commit.path
         );
     }
 
@@ -2301,7 +2325,9 @@ mod tests {
         let deploy_entries: Vec<_> = raw.iter().filter(|s| s.name == "deploy").collect();
         assert_eq!(deploy_entries.len(), 2);
         assert!(
-            deploy_entries[0].path.contains("SKILL.md"),
+            deploy_entries
+                .first()
+                .is_some_and(|s| s.path.contains("SKILL.md")),
             "skill should appear before command"
         );
 
@@ -2311,7 +2337,7 @@ mod tests {
             .filter(|s| s.name == "deploy")
             .collect::<Vec<_>>();
         assert_eq!(deploy.len(), 1);
-        assert!(deploy[0].path.contains("SKILL.md"));
+        assert!(deploy.first().is_some_and(|s| s.path.contains("SKILL.md")));
     }
 
     // ── Plugin skill identity ─────────────────────────────
@@ -2348,6 +2374,7 @@ mod tests {
             lsp_server_count: 0,
             has_inline_lsp_only: false,
             inline_hooks: None,
+            hook_specs: Vec::new(),
             inline_mcp_servers: None,
             inline_lsp_servers: None,
             conflict: None,
@@ -2371,10 +2398,13 @@ mod tests {
         ];
         stamp_plugin_fields(&mut skills, &min_plugin("infra"));
 
-        assert_eq!(skills[0].name, "deploy-prod");
-        assert_eq!(skills[0].display_name.as_deref(), Some("deploy"));
-        assert_eq!(skills[0].dedup_key(), "infra:deploy-prod");
-        assert_ne!(skills[0].dedup_key(), skills[1].dedup_key());
+        let [prod, staging] = skills.as_slice() else {
+            panic!("expected two skills: {skills:?}");
+        };
+        assert_eq!(prod.name, "deploy-prod");
+        assert_eq!(prod.display_name.as_deref(), Some("deploy"));
+        assert_eq!(prod.dedup_key(), "infra:deploy-prod");
+        assert_ne!(prod.dedup_key(), staging.dedup_key());
     }
 
     #[test]
@@ -2385,8 +2415,11 @@ mod tests {
             ..SkillInfo::default()
         }];
         stamp_plugin_fields(&mut skills, &min_plugin("infra"));
-        assert_eq!(skills[0].name, "deploy-prod");
-        assert_eq!(skills[0].display_name.as_deref(), Some("deploy"));
+        let Some(skill) = skills.first() else {
+            panic!("expected one skill: {skills:?}");
+        };
+        assert_eq!(skill.name, "deploy-prod");
+        assert_eq!(skill.display_name.as_deref(), Some("deploy"));
     }
 
     #[test]
@@ -2398,9 +2431,12 @@ mod tests {
         }];
         stamp_plugin_fields(&mut skills, &min_plugin("infra"));
 
-        assert_eq!(skills[0].name, "deploy");
-        assert_eq!(skills[0].display_name, None);
-        assert_eq!(skills[0].label(), "deploy");
+        let Some(skill) = skills.first() else {
+            panic!("expected one skill: {skills:?}");
+        };
+        assert_eq!(skill.name, "deploy");
+        assert_eq!(skill.display_name, None);
+        assert_eq!(skill.label(), "deploy");
     }
 
     #[tokio::test]
@@ -2483,9 +2519,12 @@ mod tests {
         ]);
         let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["japandi", "japandi2"], "both siblings must survive");
-        assert_eq!(out[0].display_name, None);
+        let [first, second] = out.as_slice() else {
+            panic!("expected two skills: {out:?}");
+        };
+        assert_eq!(first.display_name, None);
         assert_eq!(
-            out[1].display_name.as_deref(),
+            second.display_name.as_deref(),
             Some("japandi"),
             "frontmatter name becomes the display label"
         );
@@ -2504,8 +2543,11 @@ mod tests {
         ]);
         let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["backup-japandi", "japandi"]);
-        assert_eq!(out[0].display_name.as_deref(), Some("japandi"));
-        assert_eq!(out[1].display_name, None);
+        let [first, second] = out.as_slice() else {
+            panic!("expected two skills: {out:?}");
+        };
+        assert_eq!(first.display_name.as_deref(), Some("japandi"));
+        assert_eq!(second.display_name, None);
     }
 
     #[test]
@@ -2535,7 +2577,8 @@ mod tests {
         let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["japandi2", "japandi"]);
         assert_eq!(
-            out[1].path, "/u/skills/original-japandi/SKILL.md",
+            out.get(1).map(|s| s.path.as_str()),
+            Some("/u/skills/original-japandi/SKILL.md"),
             "first-seen claimant keeps the bare name"
         );
     }
@@ -2554,7 +2597,7 @@ mod tests {
         ]);
         let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["japandi", "japandi2"]);
-        assert_eq!(out[1].scope, SkillScope::User);
+        assert_eq!(out.get(1).map(|s| s.scope), Some(SkillScope::User));
     }
 
     #[test]
@@ -2598,7 +2641,9 @@ mod tests {
         ]);
         let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["japandi", "japandi2"]);
-        let owner = &out[1];
+        let Some(owner) = out.get(1) else {
+            panic!("expected two skills: {out:?}");
+        };
         assert_eq!(owner.path, "/u/.claude/skills/japandi2/SKILL.md");
         assert_eq!(owner.display_name, None, "genuine owner, not a re-key");
     }
@@ -2615,7 +2660,7 @@ mod tests {
             named_skill("japandi", "/u/skills/japandi2/SKILL.md", SkillScope::User),
         ]);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].scope, SkillScope::Repo);
+        assert_eq!(out.first().map(|s| s.scope), Some(SkillScope::Repo));
     }
 
     #[test]
@@ -2635,7 +2680,7 @@ mod tests {
             ),
         ]);
         assert_eq!(out.len(), 1);
-        assert!(out[0].path.contains(".grok"));
+        assert!(out.first().is_some_and(|s| s.path.contains(".grok")));
     }
 
     #[tokio::test]

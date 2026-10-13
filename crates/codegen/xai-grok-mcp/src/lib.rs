@@ -15,11 +15,13 @@
 //!    - [`credentials`]: on-disk `$GROK_HOME/mcp_credentials.json` store and the rmcp `CredentialStore` adapter.
 //!    - `auth_status`: decides auth for HTTP servers from what is on disk.
 //!    - [`oauth`]: browser-based OAuth flow with cross-process and in-process dedup.
-//!    - [`oauth_config`]: BYO OAuth config types parsed out of `config.toml`.
+//!    - [`oauth_config`]: re-exports the `xai-grok-config` types that hold BYO OAuth settings from `config.toml`.
 //!    - [`servers`]: MCP transport layer (rmcp's `StreamableHttpClientTransport` and `TokioChildProcess`).
 //!      It also owns client lifecycle, tool invocation, error classification, and managed-MCP refresh.
 //!    - [`mcp_http_client`]: backoff wrapper around the HTTP client handed to rmcp's streamable-HTTP transport.
 //!      It works around rmcp's zero-backoff SSE reconnect loop.
+
+#![deny(clippy::indexing_slicing)]
 
 pub use rmcp;
 
@@ -41,6 +43,8 @@ pub fn isolate_grok_home_for_tests() {
 
 pub mod acp_transport;
 mod auth_status;
+mod bearer_token_file;
+mod call_result;
 pub mod credentials;
 pub mod elicitation;
 mod generation;
@@ -51,4 +55,5 @@ pub mod oauth_config;
 pub mod owned_clients;
 pub mod servers;
 pub mod shared_mcp_state;
+mod tool_name;
 pub mod wire;

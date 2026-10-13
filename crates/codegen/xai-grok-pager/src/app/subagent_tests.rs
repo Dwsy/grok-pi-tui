@@ -113,9 +113,7 @@ fn a_running_child_whose_view_holds_only_the_echoed_prompt_is_not_replayed() {
         &mut child.scrollback,
     );
     assert_eq!(child.scrollback.len(), 1);
-    parent
-        .subagent_views
-        .insert(child_sid.to_string(), Box::new(child));
+    parent.insert_test_child(child_sid.to_string(), Box::new(child));
     let mut info = make_info();
     info.child_session_id = child_sid.into();
     parent.subagent_sessions.insert(child_sid.to_string(), info);
@@ -142,9 +140,7 @@ fn a_disk_backed_child_is_not_replayed_again() {
     child
         .scrollback
         .push_block(RenderBlock::user_prompt("task only"));
-    parent
-        .subagent_views
-        .insert(child_sid.to_string(), Box::new(child));
+    parent.insert_test_child(child_sid.to_string(), Box::new(child));
     let mut info = make_info();
     info.child_session_id = child_sid.into();
     info.transcript = ChildTranscript::DiskBacked;
@@ -166,9 +162,7 @@ fn replay_reports_live_blocks_and_unknown_children_distinctly() {
     let child_sid = "child-live-blocks";
     let mut child = make_min_child_view();
     seed_tool_call(&mut child);
-    parent
-        .subagent_views
-        .insert(child_sid.to_string(), Box::new(child));
+    parent.insert_test_child(child_sid.to_string(), Box::new(child));
     let mut info = make_info();
     info.child_session_id = child_sid.into();
     parent.subagent_sessions.insert(child_sid.to_string(), info);
@@ -185,9 +179,7 @@ fn replay_reports_live_blocks_and_unknown_children_distinctly() {
 fn empty_read_of_a_running_child_is_cached_until_it_finishes() {
     let mut parent = make_min_child_view();
     let child_sid = "child-empty-cache";
-    parent
-        .subagent_views
-        .insert(child_sid.to_string(), Box::new(make_min_child_view()));
+    parent.insert_test_child(child_sid.to_string(), Box::new(make_min_child_view()));
     let mut info = make_info();
     info.child_session_id = child_sid.into();
     parent.subagent_sessions.insert(child_sid.to_string(), info);
@@ -199,8 +191,11 @@ fn empty_read_of_a_running_child_is_cached_until_it_finishes() {
         ChildReplayOutcome::FoundNothingOnDisk
     );
     assert_eq!(
-        parent.subagent_sessions[child_sid].transcript,
-        ChildTranscript::DiskEmptyWhileRunning
+        parent
+            .subagent_sessions
+            .get(child_sid)
+            .map(|s| &s.transcript),
+        Some(&ChildTranscript::DiskEmptyWhileRunning)
     );
     assert_eq!(
         ensure_subagent_child_replayed(&mut parent, child_sid),
@@ -218,8 +213,11 @@ fn empty_read_of_a_running_child_is_cached_until_it_finishes() {
         .transcript
         .retry_disk_after_finish();
     assert_eq!(
-        parent.subagent_sessions[child_sid].transcript,
-        ChildTranscript::NeedsReplay,
+        parent
+            .subagent_sessions
+            .get(child_sid)
+            .map(|s| &s.transcript),
+        Some(&ChildTranscript::NeedsReplay),
         "the finish must allow one more read for a late persistence flush"
     );
     set_replay_grok_home_for_tests(None);
@@ -230,9 +228,7 @@ fn an_empty_read_of_a_running_resumed_child_stays_needs_replay_and_retries() {
     let child_sid = "child-resumed-empty";
     set_replay_grok_home_for_tests(Some(home.path().to_path_buf()));
     let mut parent = make_min_child_view();
-    parent
-        .subagent_views
-        .insert(child_sid.to_string(), Box::new(make_min_child_view()));
+    parent.insert_test_child(child_sid.to_string(), Box::new(make_min_child_view()));
     let mut info = make_info();
     info.child_session_id = child_sid.into();
     info.attempt.context_source = Some("resumed".into());
@@ -242,8 +238,11 @@ fn an_empty_read_of_a_running_resumed_child_stays_needs_replay_and_retries() {
         ChildReplayOutcome::FoundNothingOnDisk
     );
     assert_eq!(
-        parent.subagent_sessions[child_sid].transcript,
-        ChildTranscript::NeedsReplay,
+        parent
+            .subagent_sessions
+            .get(child_sid)
+            .map(|s| &s.transcript),
+        Some(&ChildTranscript::NeedsReplay),
         "a resumed child's empty-while-running read must not settle: its inherited history is expected on disk"
     );
     let session_dir = home
@@ -263,8 +262,11 @@ fn an_empty_read_of_a_running_resumed_child_stays_needs_replay_and_retries() {
         "the retry after the transcript flushes must replay the inherited prefix"
     );
     assert_eq!(
-        parent.subagent_sessions[child_sid].transcript,
-        ChildTranscript::DiskBacked
+        parent
+            .subagent_sessions
+            .get(child_sid)
+            .map(|s| &s.transcript),
+        Some(&ChildTranscript::DiskBacked)
     );
     let child = parent.subagent_views.get(child_sid).unwrap();
     let tools = (0..child.scrollback.len())
@@ -300,9 +302,7 @@ fn a_child_replay_releases_retained_memory_only_once() {
     std::fs::write(session_dir.join("updates.jsonl"), tool_line + "\n").unwrap();
     set_replay_grok_home_for_tests(Some(home.path().to_path_buf()));
     let mut parent = make_min_child_view();
-    parent
-        .subagent_views
-        .insert(child_sid.to_string(), Box::new(make_min_child_view()));
+    parent.insert_test_child(child_sid.to_string(), Box::new(make_min_child_view()));
     let mut info = make_info();
     info.child_session_id = child_sid.into();
     parent.subagent_sessions.insert(child_sid.to_string(), info);
@@ -318,9 +318,10 @@ fn a_child_replay_releases_retained_memory_only_once() {
         "a real replay must purge after the parsed transient drops"
     );
     assert!(
-        !parent.subagent_sessions[child_sid]
-            .transcript
-            .needs_replay(),
+        parent
+            .subagent_sessions
+            .get(child_sid)
+            .is_some_and(|s| !s.transcript.needs_replay()),
         "fixture sanity: the emitting replay must record the disk copy"
     );
     let before = test_support::calls();
@@ -331,9 +332,7 @@ fn a_child_replay_releases_retained_memory_only_once() {
         "the skip path allocates nothing and must not purge"
     );
     let ghost_sid = "child-purge-ghost";
-    parent
-        .subagent_views
-        .insert(ghost_sid.to_string(), Box::new(make_min_child_view()));
+    parent.insert_test_child(ghost_sid.to_string(), Box::new(make_min_child_view()));
     let mut ghost = make_info();
     ghost.child_session_id = ghost_sid.into();
     parent
@@ -355,9 +354,7 @@ fn a_child_replay_releases_retained_memory_only_once() {
     std::fs::create_dir_all(&empty_dir).unwrap();
     std::fs::write(empty_dir.join("summary.json"), "{}").unwrap();
     std::fs::write(empty_dir.join("updates.jsonl"), "").unwrap();
-    parent
-        .subagent_views
-        .insert(empty_sid.to_string(), Box::new(make_min_child_view()));
+    parent.insert_test_child(empty_sid.to_string(), Box::new(make_min_child_view()));
     let mut empty = make_info();
     empty.child_session_id = empty_sid.into();
     parent
@@ -399,9 +396,7 @@ fn rebuilt_child_transcript_keeps_persisted_timestamps_not_the_rebuild_time() {
     .unwrap();
     set_replay_grok_home_for_tests(Some(home.path().to_path_buf()));
     let mut parent = make_min_child_view();
-    parent
-        .subagent_views
-        .insert(child_sid.to_string(), Box::new(make_min_child_view()));
+    parent.insert_test_child(child_sid.to_string(), Box::new(make_min_child_view()));
     let mut info = make_info();
     info.child_session_id = child_sid.into();
     info.set_finished_for_test(true);
@@ -538,9 +533,7 @@ fn a_read_error_reports_read_failed_and_closes_the_scrollback_batch() {
         "end_batch must run after a read error"
     );
     let mut parent = make_min_child_view();
-    parent
-        .subagent_views
-        .insert(child_sid.to_string(), Box::new(view));
+    parent.insert_test_child(child_sid.to_string(), Box::new(view));
     let mut info = make_info();
     info.child_session_id = child_sid.into();
     parent.subagent_sessions.insert(child_sid.to_string(), info);
@@ -603,9 +596,7 @@ fn child_view_for_live_update_hydrates_a_resumed_child_before_returning_it() {
     std::fs::write(session_dir.join("updates.jsonl"), tool_line + "\n").unwrap();
     set_replay_grok_home_for_tests(Some(home.path().to_path_buf()));
     let mut parent = make_min_child_view();
-    parent
-        .subagent_views
-        .insert(child_sid.to_string(), Box::new(make_min_child_view()));
+    parent.insert_test_child(child_sid.to_string(), Box::new(make_min_child_view()));
     let mut info = make_info();
     info.child_session_id = child_sid.into();
     info.attempt.context_source = Some("resumed".into());
@@ -625,8 +616,11 @@ fn child_view_for_live_update_hydrates_a_resumed_child_before_returning_it() {
         );
     }
     assert_eq!(
-        parent.subagent_sessions[child_sid].transcript,
-        ChildTranscript::DiskBacked,
+        parent
+            .subagent_sessions
+            .get(child_sid)
+            .map(|s| &s.transcript),
+        Some(&ChildTranscript::DiskBacked),
         "the hydrate records the proven disk copy"
     );
     set_replay_grok_home_for_tests(None);

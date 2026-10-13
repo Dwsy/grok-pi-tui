@@ -14,8 +14,9 @@ use xai_tool_protocol::{
     COMMAND_REJECTED_ATTACHMENT_CREDENTIAL_UNAVAILABLE, COMMAND_REJECTED_ATTACHMENT_NOT_FOUND,
     COMMAND_REJECTED_ATTACHMENT_NOT_READY, COMMAND_REJECTED_ATTACHMENT_TOO_LARGE,
     COMMAND_REJECTED_ATTACHMENT_WRONG_SOURCE, COMMAND_REJECTED_ATTACHMENTS_NOT_SUPPORTED_IN_LIVE,
-    COMMAND_REJECTED_GATEWAY_UNKNOWN_METHOD, HubChannel, HubResyncRequiredEvent,
-    HubTurnFinishedEvent,
+    COMMAND_REJECTED_AUDIENCE_UNSUPPORTED, COMMAND_REJECTED_GATEWAY_UNKNOWN_METHOD,
+    COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED, COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE, HubChannel,
+    HubResyncRequiredEvent, HubTurnFinishedEvent,
 };
 
 const ERROR_IDENTITY_UNAVAILABLE: &str =
@@ -37,6 +38,8 @@ const ERROR_CURSOR_ACCOUNT_UNAVAILABLE: &str =
     include_str!("../fixtures/bot_relay/error_cursor_account_unavailable.json");
 const ERROR_LINK_UNSUPPORTED: &str =
     include_str!("../fixtures/bot_relay/error_link_unsupported.json");
+const ERROR_LEGACY_PRIVACY_UNSUPPORTED: &str =
+    include_str!("../fixtures/bot_relay/error_legacy_privacy_unsupported.json");
 const ERROR_NO_PLAN: &str = include_str!("../fixtures/bot_relay/error_no_plan.json");
 const ERROR_USAGE_EXHAUSTED: &str =
     include_str!("../fixtures/bot_relay/error_usage_exhausted.json");
@@ -52,6 +55,8 @@ const ERROR_COMMAND_REJECTED_ARGS_TOO_LARGE: &str =
     include_str!("../fixtures/bot_relay/error_command_rejected_args_too_large.json");
 const ERROR_COMMAND_REJECTED_ARGS_INVALID: &str =
     include_str!("../fixtures/bot_relay/error_command_rejected_args_invalid.json");
+const ERROR_COMMAND_REJECTED_AUDIENCE_UNSUPPORTED: &str =
+    include_str!("../fixtures/bot_relay/error_command_rejected_audience_unsupported.json");
 const ERROR_COMMAND_REJECTED_ATTACHMENTS_NOT_SUPPORTED_IN_LIVE: &str = include_str!(
     "../fixtures/bot_relay/error_command_rejected_attachments_not_supported_in_live.json"
 );
@@ -68,6 +73,10 @@ const ERROR_COMMAND_REJECTED_ATTACHMENT_NOT_READY: &str =
     include_str!("../fixtures/bot_relay/error_command_rejected_attachment_not_ready.json");
 const ERROR_COMMAND_REJECTED_GATEWAY_UNKNOWN_METHOD: &str =
     include_str!("../fixtures/bot_relay/error_command_rejected_gateway_unknown_method.json");
+const ERROR_COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE: &str =
+    include_str!("../fixtures/bot_relay/error_command_rejected_voice_call_unavailable.json");
+const ERROR_COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED: &str =
+    include_str!("../fixtures/bot_relay/error_command_rejected_main_agent_not_enabled.json");
 const ERROR_COMPUTER_UNAVAILABLE: &str =
     include_str!("../fixtures/bot_relay/error_computer_unavailable.json");
 const ERROR_UPSTREAM_ERROR: &str = include_str!("../fixtures/bot_relay/error_upstream_error.json");
@@ -250,6 +259,14 @@ fn handwritten_error_fixtures() {
             detail_upstream: None,
         },
         Case {
+            code: BotRelayErrorCode::LegacyPrivacyUnsupported,
+            raw: ERROR_LEGACY_PRIVACY_UNSUPPORTED,
+            retryable: false,
+            detail: json!({}),
+            reason: Some("personal"),
+            detail_upstream: None,
+        },
+        Case {
             code: BotRelayErrorCode::NoPlan,
             raw: ERROR_NO_PLAN,
             retryable: false,
@@ -379,6 +396,19 @@ fn handwritten_args_invalid_reason() {
 }
 
 #[test]
+fn handwritten_audience_unsupported_reason() {
+    let err = assert_error(
+        ERROR_COMMAND_REJECTED_AUDIENCE_UNSUPPORTED,
+        "command_rejected",
+        false,
+        json!({}),
+        Some(COMMAND_REJECTED_AUDIENCE_UNSUPPORTED),
+        BotRelayErrorCode::CommandRejected,
+    );
+    assert_eq!(err.detail.upstream, None);
+}
+
+#[test]
 fn handwritten_attachments_not_supported_in_live_reason() {
     let err = assert_error(
         ERROR_COMMAND_REJECTED_ATTACHMENTS_NOT_SUPPORTED_IN_LIVE,
@@ -438,6 +468,48 @@ fn handwritten_gateway_unknown_method_reason() {
         BotRelayErrorCode::CommandRejected,
     );
     assert_eq!(err.detail.upstream, None);
+}
+
+#[test]
+fn handwritten_voice_call_unavailable_reason_keeps_upstream_detail() {
+    let err = assert_error(
+        ERROR_COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE,
+        "command_rejected",
+        false,
+        json!({
+            "upstream": "status=400 connect=invalid_argument",
+            "upstreamMessage": "Voice call is not enabled for this account.",
+        }),
+        Some(COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE),
+        BotRelayErrorCode::CommandRejected,
+    );
+    assert_eq!(
+        Some("status=400 connect=invalid_argument"),
+        err.detail.upstream.as_deref()
+    );
+    assert_eq!(
+        Some("Voice call is not enabled for this account."),
+        err.detail.upstream_message.as_deref()
+    );
+}
+
+#[test]
+fn handwritten_main_agent_not_enabled_reason_keeps_upstream_detail() {
+    let err = assert_error(
+        ERROR_COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED,
+        "command_rejected",
+        false,
+        json!({
+            "upstream": "status=400 connect=invalid_argument",
+            "upstreamMessage": "Main bot is not enabled.",
+        }),
+        Some(COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED),
+        BotRelayErrorCode::CommandRejected,
+    );
+    assert_eq!(
+        Some("Main bot is not enabled."),
+        err.detail.upstream_message.as_deref()
+    );
 }
 
 #[test]
@@ -526,6 +598,7 @@ fn hub_turn_finished_envelope() {
     assert_eq!(wire["event"]["agentId"], "agt_1");
     assert_eq!(wire["event"]["conversationIds"], json!(["conv_1"]));
     assert_eq!(wire["event"]["preview"], "done");
+    assert_eq!(wire["event"]["turnId"], "turn_7");
     assert!(wire.get("eventId").is_none());
 
     assert_eq!(env.v, 1);
@@ -537,6 +610,7 @@ fn hub_turn_finished_envelope() {
     assert_eq!(body.agent_id, "agt_1");
     assert_eq!(body.conversation_ids, vec!["conv_1".to_owned()]);
     assert_eq!(body.preview, "done");
+    assert_eq!(body.turn_id, "turn_7");
 }
 
 #[test]
@@ -731,9 +805,13 @@ fn method_vnc_descriptor_null_expires_hint() {
 #[test]
 fn method_roster_status_subscribe_bind() {
     let roster: BotRosterResult = serde_json::from_str(METHOD_ROSTER_RESULT).expect("roster");
-    assert_eq!(roster.agents.len(), 1);
+    assert_eq!(roster.agents.len(), 2);
     assert_eq!(roster.agents[0].agent_id, "agt_1");
     assert_eq!(roster.agents[0].last_turn_at, Some(1_700_000_123_000));
+    assert!(roster.agents[0].viewer_is_owner);
+    assert_eq!(roster.agents[1].agent_id, "agt_2");
+    assert!(!roster.agents[1].viewer_is_owner);
+    assert_eq!(Some(1_700_000_200_000), roster.remembered_at_ms);
 
     let status: BotStatusResult = serde_json::from_str(METHOD_STATUS_RESULT).expect("status");
     assert_eq!(status.run_state, xai_tool_protocol::BotRunState::Hibernated);

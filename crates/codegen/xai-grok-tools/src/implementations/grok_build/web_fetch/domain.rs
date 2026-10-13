@@ -14,13 +14,7 @@ use crate::types::output::WebFetchOutput;
 // Domain normalization
 // ───────────────────────────────────────────────────────────────────────────
 
-/// Canonical form for domain comparison: trim whitespace, strip trailing
-/// slashes and dots, remove `www.` prefix, and lowercase.
-pub fn normalize_domain(raw: &str) -> String {
-    let s = raw.trim().trim_end_matches('/').trim_end_matches('.');
-    let s = s.strip_prefix("www.").unwrap_or(s);
-    s.to_lowercase()
-}
+pub use xai_grok_permission_rules::domain::normalize_domain;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Precomputed host entry
@@ -60,7 +54,10 @@ impl DomainMatcher {
 
             // Split on first '/' to separate host from optional path.
             let (host, path) = match normalized.find('/') {
-                Some(i) => (normalized[..i].to_owned(), Some(&normalized[i..])),
+                Some(i) => match (normalized.get(..i), normalized.get(i..)) {
+                    (Some(host), path) => (host.to_owned(), path),
+                    _ => continue,
+                },
                 None => (normalized, None),
             };
 
@@ -163,18 +160,6 @@ mod tests {
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap()
-    }
-
-    // ── normalize_domain ─────────────────────────────────────────────────
-
-    #[test]
-    fn normalize_strips_www_and_trailing_dot() {
-        assert_eq!(normalize_domain("www.Example.COM."), "example.com");
-    }
-
-    #[test]
-    fn normalize_trims_whitespace() {
-        assert_eq!(normalize_domain("  docs.rs  "), "docs.rs");
     }
 
     // ── Host-only entries ────────────────────────────────────────────────

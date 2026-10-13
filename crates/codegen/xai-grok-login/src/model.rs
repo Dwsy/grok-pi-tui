@@ -79,6 +79,9 @@ pub struct GrokAuth {
     /// Defaults to `true` (opted out) for safer consumer privacy until the user explicitly shares or server enrichment sets the team preference.
     #[serde(default = "default_coding_data_retention_opt_out")]
     pub coding_data_retention_opt_out: bool,
+    /// Advisory `canAdministerTeam` from `/user`, scoped to `team_id`. `None` is unknown, never false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_administer_team: Option<bool>,
 
     /// Deprecated. Kept for deserializing existing auth.json files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -207,6 +210,7 @@ impl GrokAuth {
         self.user_blocked_reason = prev.user_blocked_reason.clone();
         self.team_blocked_reasons = prev.team_blocked_reasons.clone();
         self.coding_data_retention_opt_out = prev.coding_data_retention_opt_out;
+        self.can_administer_team = prev.can_administer_team;
     }
 }
 
@@ -232,6 +236,7 @@ impl Default for GrokAuth {
             user_blocked_reason: None,
             team_blocked_reasons: vec![],
             coding_data_retention_opt_out: default_coding_data_retention_opt_out(),
+            can_administer_team: None,
             has_grok_code_access: None,
             refresh_token: None,
             expires_at: None,
@@ -293,6 +298,8 @@ pub struct UserInfo {
     pub(super) team_blocked_reasons: Option<Vec<String>>,
     #[serde(default)]
     pub(super) coding_data_retention_opt_out: Option<bool>,
+    #[serde(default)]
+    pub(super) can_administer_team: Option<bool>,
     /// Live subscription tier from the backend (only present when `?include=subscription` is passed to `/user`).
     #[serde(default)]
     pub subscription_tier: Option<String>,
@@ -356,28 +363,46 @@ mod tests {
         GrokAuth {
             key: "k".into(),
             auth_mode: mode,
-            create_time: Utc::now(),
             user_id: "u".into(),
-            email: None,
-            first_name: None,
-            last_name: None,
-            profile_image_asset_id: None,
-            principal_type: None,
-            principal_id: None,
-            team_id: None,
-            team_name: None,
-            team_role: None,
-            organization_id: None,
-            organization_name: None,
-            organization_role: None,
-            user_blocked_reason: None,
-            team_blocked_reasons: vec![],
             coding_data_retention_opt_out: false,
-            has_grok_code_access: None,
-            refresh_token: None,
-            expires_at: None,
-            oidc_issuer: None,
-            oidc_client_id: None,
+            ..GrokAuth::default()
+        }
+    }
+
+    #[test]
+    fn carry_user_profile_from_keeps_can_administer_team() {
+        for (prev_value, next_value) in [
+            (Some(true), Some(false)),
+            (Some(false), Some(true)),
+            (None, Some(true)),
+        ] {
+            let prev = GrokAuth {
+                can_administer_team: prev_value,
+                ..make_auth(AuthMode::Oidc)
+            };
+            let mut next = GrokAuth {
+                can_administer_team: next_value,
+                ..make_auth(AuthMode::Oidc)
+            };
+            next.carry_user_profile_from(&prev);
+            assert_eq!(prev_value, next.can_administer_team);
+        }
+    }
+
+    #[test]
+    fn can_administer_team_serde_tri_state() {
+        let unknown = serde_json::to_string(&make_auth(AuthMode::Oidc)).unwrap();
+        assert!(!unknown.contains("can_administer_team"));
+        for (json, expected) in [
+            (r#"{"userId": "u1"}"#, None),
+            (r#"{"userId": "u1", "canAdministerTeam": null}"#, None),
+            (
+                r#"{"userId": "u1", "canAdministerTeam": false}"#,
+                Some(false),
+            ),
+        ] {
+            let info: UserInfo = serde_json::from_str(json).unwrap();
+            assert_eq!(expected, info.can_administer_team, "{json}");
         }
     }
 

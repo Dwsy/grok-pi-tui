@@ -71,10 +71,10 @@ fn list_path_completions(cwd: &Path, query: &str) -> Vec<ArgItem> {
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(cwd);
         // Reconstruct the user's prefix up to the last `/` (preserving ~).
-        let prefix = match trimmed.rfind('/') {
-            Some(pos) => &trimmed[..=pos],
-            None => "",
-        };
+        let prefix = trimmed
+            .rfind('/')
+            .and_then(|pos| trimmed.get(..=pos))
+            .unwrap_or("");
         (parent.to_path_buf(), prefix.to_string())
     };
 

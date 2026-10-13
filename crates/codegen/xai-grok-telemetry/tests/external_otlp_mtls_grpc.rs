@@ -1,6 +1,9 @@
 mod otlp_collector;
 
+use std::time::Duration;
+
 use otlp_collector as col;
+use xai_grok_test_support::{OtelRecorder, OtelSignal};
 
 fn write_temp(contents: &str) -> (tempfile::NamedTempFile, String) {
     let file = tempfile::NamedTempFile::new().expect("temp file");
@@ -18,9 +21,9 @@ fn external_stream_grpc_mtls_end_to_end() {
     let (_cert_file, cert_path) = write_temp(&tls.client_cert_pem);
     let (_key_file, key_path) = write_temp(&tls.client_key_pem);
 
-    let collected = col::Collected::default();
+    let recorder = OtelRecorder::new();
     let endpoint = col::start_grpc_mtls_collector(
-        collected.clone(),
+        recorder.clone(),
         tls.server_cert_pem.clone(),
         tls.server_key_pem.clone(),
         tls.ca_cert_pem.clone(),
@@ -86,24 +89,16 @@ fn external_stream_grpc_mtls_end_to_end() {
     });
 
     xai_grok_telemetry::external::flush();
-    assert!(
-        col::wait_until(std::time::Duration::from_secs(10), || {
-            collected.logs_len() > 0
-        }),
-        "log records must arrive over mTLS"
-    );
-    let names = col::event_names(&collected);
+    col::block_on(recorder.wait_for_signals(Duration::from_secs(10), &[OtelSignal::Logs]))
+        .expect("log records must arrive over mTLS");
+    let names = recorder.event_names();
     assert!(
         names.iter().any(|n| n == "grok_code.session_start"),
         "expected grok_code.session_start in {names:?}"
     );
 
-    assert!(
-        col::wait_until(std::time::Duration::from_secs(10), || {
-            collected.metrics_len() > 0
-        }),
-        "metric exports must arrive over mTLS"
-    );
+    col::block_on(recorder.wait_for_signals(Duration::from_secs(10), &[OtelSignal::Metrics]))
+        .expect("metric exports must arrive over mTLS");
 
     xai_grok_telemetry::external::shutdown();
 }

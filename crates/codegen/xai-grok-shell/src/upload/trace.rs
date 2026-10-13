@@ -2390,9 +2390,11 @@ pub(crate) mod tests {
     async fn chat_history_session_state_empty_messages_yields_valid_empty_archive() {
         let archive = build_chat_history_session_state(&[]).await.unwrap();
         let entries = read_tar_gz_entries(&archive);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].0, "chat_history.jsonl");
-        assert!(entries[0].1.is_empty());
+        let [(name, bytes)] = entries.as_slice() else {
+            panic!("expected one archive entry: {entries:?}");
+        };
+        assert_eq!(name, "chat_history.jsonl");
+        assert!(bytes.is_empty());
     }
     #[test]
     fn chat_history_jsonl_is_empty_when_feature_disabled() {
@@ -2409,9 +2411,11 @@ pub(crate) mod tests {
         let messages = vec![ConversationItem::user("must not appear in the archive")];
         let archive = build_chat_history_session_state(&messages).await.unwrap();
         let entries = read_tar_gz_entries(&archive);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].0, "chat_history.jsonl");
-        assert!(entries[0].1.is_empty());
+        let [(name, bytes)] = entries.as_slice() else {
+            panic!("expected one archive entry: {entries:?}");
+        };
+        assert_eq!(name, "chat_history.jsonl");
+        assert!(bytes.is_empty());
     }
     #[test]
     #[serial_test::serial(archive_build_fault)]
@@ -2419,9 +2423,11 @@ pub(crate) mod tests {
         let jsonl = b"{\"role\":\"user\",\"content\":\"hi\"}\n";
         let archive = compress_chat_history_archive(jsonl.to_vec()).unwrap();
         let entries = read_tar_gz_entries(&archive);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].0, "chat_history.jsonl");
-        assert_eq!(entries[0].1, jsonl);
+        let [(name, bytes)] = entries.as_slice() else {
+            panic!("expected one archive entry: {entries:?}");
+        };
+        assert_eq!(name, "chat_history.jsonl");
+        assert_eq!(bytes.as_slice(), jsonl);
     }
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial(archive_build_fault)]
@@ -2481,10 +2487,13 @@ pub(crate) mod tests {
                 "call_001.jsonl"
             ]
         );
-        assert_eq!(entries[0].1, b"sum");
-        assert_eq!(entries[1].1, b"hist");
-        assert_eq!(entries[2].1, b"ev");
-        assert_eq!(entries[3].1, b"call");
+        let [e0, e1, e2, e3] = entries.as_slice() else {
+            panic!("expected four archive entries: {entries:?}");
+        };
+        assert_eq!(e0.1, b"sum");
+        assert_eq!(e1.1, b"hist");
+        assert_eq!(e2.1, b"ev");
+        assert_eq!(e3.1, b"call");
     }
     #[test]
     #[serial_test::serial(archive_build_fault)]
@@ -2514,10 +2523,13 @@ pub(crate) mod tests {
             end_prompt_mode: None,
         };
         let v: serde_json::Value = serde_json::to_value(&meta).unwrap();
-        assert_eq!(v["input_tokens"], 141);
-        assert_eq!(v["cached_input_tokens"], 128);
-        assert_eq!(v["output_tokens"], 237);
-        assert_eq!(v["total_tokens"], 378);
+        assert_eq!(v.get("input_tokens").and_then(|x| x.as_u64()), Some(141));
+        assert_eq!(
+            v.get("cached_input_tokens").and_then(|x| x.as_u64()),
+            Some(128)
+        );
+        assert_eq!(v.get("output_tokens").and_then(|x| x.as_u64()), Some(237));
+        assert_eq!(v.get("total_tokens").and_then(|x| x.as_u64()), Some(378));
     }
     #[test]
     fn turn_result_metadata_omits_unset_breakdown_fields() {

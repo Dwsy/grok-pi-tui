@@ -12,6 +12,8 @@
 //! Definition discovery, gating, prompt context, runtime defaults, and capability/depth tool policy are shared here.
 //! Choosing the model from the catalog and creating the child workspace stay in the host adapters.
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod config;
 pub mod context;
 pub mod definition;
@@ -32,3 +34,4 @@ pub use overrides::{intersect_capability_modes, resolve_effective_overrides};
 pub use resume::{ResumeValidationError, validate_resume_identity};
 pub use types::{ContextSource, EffectiveRuntimeConfig, ResolutionError, ResumeSourceData};
 pub use xai_grok_agent::config::AgentDefinition;
+pub use xai_grok_agent::prompt::paths::PathsConfig;

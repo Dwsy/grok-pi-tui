@@ -2,6 +2,7 @@
 //! It also covers sampling-failure recovery and per-response usage recording.
 
 use super::*;
+use crate::session::persistence::{PersistedAgent, PersistenceMsg};
 use xai_grok_login::backend::{ActiveAuthBackend, AuthBackend};
 use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
@@ -23,10 +24,14 @@ pub(super) const MAX_TRANSIENT_TURN_RETRIES: u32 = 3;
 /// Auto-recovery, stop-hook continuations, and the goal loop re-enter `process_conversation_turn` within one prompt and would reset a local.
 pub(super) const MAX_TRANSIENT_RETRIES_PER_PROMPT: u32 = 10;
 
-/// Wall-clock budget per recovery episode (first transient failure after a success until the next success).
-/// This bounds how many idle stalls can stack up: each stalled attempt burns a full idle-detector cycle before it even fails.
-pub(super) const MAX_TRANSIENT_RETRY_WINDOW: std::time::Duration =
+/// Floor of the per-episode wall clock; `transient_retry_window` is the effective bound.
+pub(super) const TRANSIENT_RETRY_WINDOW_FLOOR: std::time::Duration =
     std::time::Duration::from_secs(10 * 60);
+
+/// Checked at each failure; a stalled retry burns a detector cycle, so `2 * idle_timeout` keeps at least two admissible.
+pub(super) fn transient_retry_window(idle_timeout: std::time::Duration) -> std::time::Duration {
+    TRANSIENT_RETRY_WINDOW_FLOOR.max(idle_timeout.saturating_mul(2))
+}
 
 /// Turn-loop retry state for the transient arm.
 /// The window is evaluated at failure time (`tokio::time::Instant` so paused-clock tests can drive it).
@@ -38,7 +43,6 @@ pub(crate) struct TransientRetryState {
     pub(crate) prompt_attempts: u32,
     /// First transient failure of the current recovery episode (`None` until one happens; cleared on success).
     pub(crate) episode_start: Option<tokio::time::Instant>,
-    /// Spawn-resolved kill switch (foreground root sessions only).
     pub(crate) enabled: bool,
 }
 
@@ -51,12 +55,10 @@ pub(super) fn transient_display_ceiling(step_attempts: u32, prompt_attempts: u32
 }
 
 impl TransientRetryState {
-    fn budget_remaining(&self) -> bool {
+    fn budget_remaining(&self, window: std::time::Duration) -> bool {
         self.step_attempts < MAX_TRANSIENT_TURN_RETRIES
             && self.prompt_attempts < MAX_TRANSIENT_RETRIES_PER_PROMPT
-            && self
-                .episode_start
-                .is_none_or(|s| s.elapsed() < MAX_TRANSIENT_RETRY_WINDOW)
+            && self.episode_start.is_none_or(|s| s.elapsed() < window)
     }
 }
 
@@ -72,10 +74,11 @@ const _: () = assert!(MAX_TRANSIENT_TURN_RETRIES as usize == TRANSIENT_TURN_RETR
 
 /// Delay before resubmit `attempts_used + 1`, clamped to the last rung.
 pub(super) fn transient_backoff_delay(attempts_used: u32) -> std::time::Duration {
-    TRANSIENT_TURN_RETRY_BACKOFF[usize::min(
-        attempts_used as usize,
-        TRANSIENT_TURN_RETRY_BACKOFF.len() - 1,
-    )]
+    TRANSIENT_TURN_RETRY_BACKOFF
+        .get(attempts_used as usize)
+        .or(TRANSIENT_TURN_RETRY_BACKOFF.last())
+        .copied()
+        .unwrap_or(std::time::Duration::from_secs(30))
 }
 
 /// Stream stalls (never retried internally), transport errors, retryable 5xx.
@@ -427,10 +430,26 @@ impl SessionActor {
         let bridge = self.agent.borrow().tool_bridge().clone();
 
         // Local mode: tool search is always enabled
-        let defs = bridge.tool_definitions_builtins_only().await;
+        let defs = if self.mcp_file_forms_hidden().await {
+            bridge.tool_definitions_builtins_only_inline_mcp().await
+        } else {
+            bridge.tool_definitions_builtins_only().await
+        };
 
         let plan_active = self.plan_mode.lock().is_active();
         filter_cursor_tools_by_plan_mode(defs, plan_active)
+    }
+
+    /// Messages-backed models never see `use_tool`'s file forms: the Anthropic Messages API rejects the schema's
+    /// root-level union (`oneOf`) with HTTP 400, which fails every turn. Checked per request because a model switch
+    /// mid-session keeps the finalized toolset.
+    pub(crate) async fn mcp_file_forms_hidden(&self) -> bool {
+        self.chat_state_handle
+            .get_sampling_config()
+            .await
+            .is_some_and(|config| {
+                config.api_backend == xai_grok_sampling_types::ApiBackend::Messages
+            })
     }
 
     pub(super) fn model_auth_facts(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {
@@ -624,6 +643,15 @@ impl SessionActor {
                     headers.insert("traceparent", v);
                 }
             }
+
+            fn set_span_parent(&self, span: &tracing::Span, traceparent: &str) {
+                if !xai_grok_otel::set_parent_from_traceparent(span, traceparent) {
+                    tracing::debug!(
+                        traceparent = %traceparent,
+                        "HTTP span did not adopt its trace parent"
+                    );
+                }
+            }
         }
 
         let cfg = self
@@ -645,7 +673,9 @@ impl SessionActor {
                 query_params: Default::default(),
                 env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
+                max_request_bytes: None,
                 reasoning_effort: None,
+                reasoning_summary: None,
                 stream_tool_calls: None,
             });
         let creds = self.chat_state_handle.get_credentials().await;
@@ -711,6 +741,7 @@ impl SessionActor {
             &cfg.api_backend,
             &cfg.base_url,
         );
+        let request_compression = crate::util::config::request_compression_for_url(&cfg.base_url);
         SamplingConfig {
             api_key,
             base_url: cfg.base_url,
@@ -721,22 +752,25 @@ impl SessionActor {
             top_p: cfg.top_p,
             api_backend: cfg.api_backend,
             auth_scheme,
+            request_compression,
             extra_headers,
             conversation_group_id: cfg.conversation_group_id,
             extra_response_includes,
             query_params: cfg.query_params.clone(),
             env_http_headers: cfg.env_http_headers.clone(),
             context_window: cfg.context_window.get(),
+            max_request_bytes: cfg.max_request_bytes,
             client_version: creds.client_version,
             reasoning_effort: cfg.reasoning_effort,
+            reasoning_summary: cfg.reasoning_summary,
             force_http1: false,
             max_retries: cfg.max_retries.or(Some(self.max_retries)),
             rate_limit_retry_threshold: cfg.rate_limit_retry_threshold,
             stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
             idle_timeout_secs: None,
             client_identifier: self.client_identifier.clone(),
-            deployment_id: crate::managed_config::resolve_deployment_id(
-                crate::managed_config::resolve_deployment_key().as_deref(),
+            deployment_id: xai_grok_cloud_config::managed_config::resolve_deployment_id(
+                xai_grok_cloud_config::managed_config::resolve_deployment_key().as_deref(),
             ),
             user_id: self
                 .auth_manager
@@ -1241,7 +1275,7 @@ impl SessionActor {
                     && let Some(new_cw) = std::num::NonZeroU64::new(cw)
                     && self.compaction.context_window_override.is_none()
                 {
-                    cfg.context_window = new_cw;
+                    cfg.context_window = self.context_window_after_overflow(&cfg, new_cw);
                     self.chat_state_handle.update_sampling_config(cfg);
                 }
 
@@ -1249,6 +1283,7 @@ impl SessionActor {
                     tokens_used: total_tokens,
                     context_window: cw,
                     percentage,
+                    reason_override: None,
                 };
                 if let Err(e) = self.run_compact_only(trigger_info, false).await {
                     if Self::is_auth_compact_error(&e) {
@@ -1263,7 +1298,11 @@ impl SessionActor {
         // Telemetry and notification for terminal failures
         // The drainer already recorded `record_error_typed` from the `SamplingEvent::Failed` event
         // Here we send the `RetryState::Failed` notification, which the drainer intentionally skips because it would fire mid-retry
-        let detailed_message = error.message.clone();
+        let detailed_message = if error.kind == SamplingErrorKind::IdleTimeout {
+            crate::sampling::error::idle_timeout_user_message(self.inference_idle_timeout.as_secs())
+        } else {
+            error.message.clone()
+        };
 
         // 2. Encrypted-content mismatch: friendly error, no retry.
         //    Detect via the BadRequest and "encrypted_content" message pattern that `SamplingError::is_encrypted_content_error` used in the legacy path
@@ -1429,7 +1468,7 @@ impl SessionActor {
         // 4d. Bounded resubmit, after the auth arms, before the terminal paths.
         //     Budgeted workflow children stay terminal (guards above)
         if transient_retry_eligible(&error) && transient.enabled {
-            if transient.budget_remaining() {
+            if transient.budget_remaining(transient_retry_window(self.inference_idle_timeout)) {
                 // Count intercepted attempts; section 5 sees only the final one.
                 if matches!(error.kind, SamplingErrorKind::IdleTimeout) {
                     self.signals_handle().record_idle_timeout();
@@ -1613,6 +1652,50 @@ impl SessionActor {
         )
     }
 
+    /// The window after a server overflow at `server_window`: a selection that fits stays, a larger one is cleared.
+    pub(in crate::session) fn context_window_after_overflow(
+        &self,
+        cfg: &xai_grok_sampling_types::SamplingConfig,
+        server_window: std::num::NonZeroU64,
+    ) -> std::num::NonZeroU64 {
+        let selection = crate::session::handle::load_context_window_selection(
+            &self.compaction.context_window_selection,
+        );
+        let Some(selection) = selection.filter(|selection| *selection == cfg.context_window) else {
+            return server_window;
+        };
+        if selection <= server_window {
+            return selection;
+        }
+
+        self.compaction
+            .context_window_selection
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+
+        // The summary and clients key models by catalog id, not by the routing slug `cfg.model` may hold
+        let model_id = self
+            .models_manager
+            .catalog_key(&cfg.model)
+            .unwrap_or_else(|| acp::ModelId::new(cfg.model.clone()));
+        let agent_name = self.agent.borrow().definition().name.clone();
+        let _ = self
+            .notifications
+            .persistence_tx
+            .send(PersistenceMsg::CurrentModel {
+                model_id: model_id.clone(),
+                agent: PersistedAgent::Named(agent_name),
+                reasoning_effort: None,
+                context_window: Some(None),
+            });
+
+        self.send_xai_notification_transient(XaiSessionUpdate::model_changed(
+            model_id.0.to_string(),
+            cfg.reasoning_effort.map(|effort| effort.to_string()),
+            None,
+        ));
+        server_window
+    }
+
     async fn wait_for_stream_drain(
         &self,
         request_id: &xai_grok_sampler::RequestId,
@@ -1697,7 +1780,7 @@ impl SessionActor {
 
     async fn submit_turn_request(
         self: &Arc<Self>,
-        request: ConversationRequest,
+        mut request: ConversationRequest,
     ) -> Result<SamplerTurnOutcome, xai_grok_sampler::SamplingErrorInfo> {
         let request_id = xai_grok_sampler::RequestId::random();
         self.turn_phases.record_sampling_request();
@@ -1719,7 +1802,10 @@ impl SessionActor {
             let gate_span = region!("turn.sampling_gate", Parent::Inherit);
             let _permit = acquire_subagent_sampling_permit(&self.sampling_gate).await;
             gate_span.close();
-            let _sampling_span = region!("turn.sampling", Parent::Inherit);
+            let sampling_span = region!("turn.sampling", Parent::Inherit);
+            // The sampler task has no tracing ancestor; this parents its HTTP span under the region
+            // without holding it open.
+            request.traceparent = xai_grok_otel::span_traceparent(sampling_span.span());
             self.sampler_handle
                 .submit_and_collect_with_metadata(request_id.clone(), request)
                 .await

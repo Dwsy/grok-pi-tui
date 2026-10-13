@@ -229,9 +229,12 @@ fn filters_bad_rows_and_uses_newest_duplicate_with_title_precedence() {
     let approved_root = ApprovedRoot::new(root.path()).unwrap();
     let sessions = scan_project_dirs(&approved_root, &project_dirs, &cwd, now);
     assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].native_id, duplicate.to_string());
-    assert_eq!(sessions[0].title, "custom title");
-    assert_eq!(sessions[0].branch.as_deref(), Some("feature"));
+    let Some(session) = sessions.first() else {
+        panic!("expected one session: {sessions:?}");
+    };
+    assert_eq!(session.native_id, duplicate.to_string());
+    assert_eq!(session.title, "custom title");
+    assert_eq!(session.branch.as_deref(), Some("feature"));
 }
 
 #[test]
@@ -252,13 +255,12 @@ fn bounds_results_and_orders_ties_by_id() {
 
     let sessions = scan_in_config_dir(root.path(), &cwd, now);
     assert_eq!(sessions.len(), MAX_SESSIONS_PER_TOOL);
-    assert!(
-        sessions
-            .windows(2)
-            .all(|pair| pair[0].updated_at > pair[1].updated_at
-                || (pair[0].updated_at == pair[1].updated_at
-                    && pair[0].native_id < pair[1].native_id))
-    );
+    assert!(sessions.windows(2).all(|pair| {
+        let [a, b] = pair else {
+            return false;
+        };
+        a.updated_at > b.updated_at || (a.updated_at == b.updated_at && a.native_id < b.native_id)
+    }));
 }
 
 #[test]
@@ -294,7 +296,10 @@ fn skips_meta_and_tool_noise_for_first_prompt() {
     );
 
     let sessions = scan_in_config_dir(root.path(), &cwd, now);
-    assert_eq!(sessions[0].title, "real prompt");
+    assert_eq!(
+        sessions.first().map(|s| s.title.as_str()),
+        Some("real prompt")
+    );
 }
 
 #[test]
@@ -345,8 +350,11 @@ fn scoped_scan_keeps_newest_over_budget_and_rejects_symlinks() {
 
     let sessions = scan_in_config_dir(root.path(), &cwd, now);
     assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].native_id, valid.to_string());
-    assert_eq!(sessions[0].title, "valid after invalid rows");
+    let Some(session) = sessions.first() else {
+        panic!("expected one session: {sessions:?}");
+    };
+    assert_eq!(session.native_id, valid.to_string());
+    assert_eq!(session.title, "valid after invalid rows");
 
     let long = PathBuf::from(format!(
         "/{}",

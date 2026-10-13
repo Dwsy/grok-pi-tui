@@ -157,6 +157,15 @@ fn restore_code_checkout_allowed_source_repo_with_worktree_session_is_refused() 
     ));
 }
 #[test]
+fn restore_code_checkout_allowed_moved_cwd_is_refused() {
+    let worktrees = Path::new("/home/u/.grok/worktrees");
+    assert!(!restore_code_checkout_allowed_in(
+        Path::new("/home/u/repo"),
+        Some("/moved/elsewhere"),
+        worktrees,
+    ));
+}
+#[test]
 fn restore_code_checkout_allowed_missing_persisted_cwd_is_refused() {
     let worktrees = Path::new("/home/u/.grok/worktrees");
     assert!(!restore_code_checkout_allowed_in(
@@ -232,6 +241,30 @@ async fn checkout_session_commit_invalid_sha_returns_not_checked_out() {
     let bogus = "0000000000000000000000000000000000000000";
     let outcome = checkout_session_commit(tmp.path(), bogus, true, "sess-bogus").await;
     assert!(!outcome.checked_out);
+}
+#[tokio::test]
+async fn failed_checkout_after_dirty_tree_keeps_stash_and_clean_worktree() {
+    if bazel_skip("failed_checkout_after_dirty_tree_keeps_stash_and_clean_worktree") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path()).await;
+    std::fs::write(tmp.path().join("README.md"), "dirty-line\n").unwrap();
+    let blob = git_cli(tmp.path(), &["hash-object", "-w", "--", "README.md"])
+        .await
+        .unwrap();
+    let blob = blob.trim().to_owned();
+    let outcome = checkout_session_commit(tmp.path(), &blob, true, "sess-fail-checkout").await;
+    assert!(!outcome.checked_out);
+    assert!(outcome.stash_ref.is_some());
+    let stash_list = git_cli(tmp.path(), &["stash", "list"]).await.unwrap();
+    assert!(stash_list.contains("sess-fail-checkout"));
+    let readme = std::fs::read_to_string(tmp.path().join("README.md")).unwrap();
+    assert_eq!("hello\n", readme);
+    let status = git_cli(tmp.path(), &["status", "--porcelain"])
+        .await
+        .unwrap();
+    assert_eq!("", status.trim());
 }
 #[tokio::test]
 async fn checkout_session_commit_refuses_non_oid_refspec() {

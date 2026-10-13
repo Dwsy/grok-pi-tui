@@ -27,23 +27,34 @@ pub const BG_DARK: anstyle::Color = rgb_color(31, 35, 53);
 
 pub const HEADING_COLORS: [anstyle::Color; 6] = [TEAL, BLUE, ORANGE, RED, GREEN, MAGENTA];
 
-pub const fn heading_styles(bold: bool, dimmed: bool, hidden: bool) -> [anstyle::Style; 6] {
-    let mut styles = [anstyle::Style::new(); 6];
-    let mut i = 0;
-    while i < HEADING_COLORS.len() {
-        styles[i] = fg(HEADING_COLORS[i]);
-        if bold {
-            styles[i] = styles[i].bold();
-        }
-        if dimmed {
-            styles[i] = styles[i].dimmed();
-        }
-        if hidden {
-            styles[i] = styles[i].hidden();
-        }
-        i += 1;
+const fn heading_style(
+    color: anstyle::Color,
+    bold: bool,
+    dimmed: bool,
+    hidden: bool,
+) -> anstyle::Style {
+    let mut s = fg(color);
+    if bold {
+        s = s.bold();
     }
-    styles
+    if dimmed {
+        s = s.dimmed();
+    }
+    if hidden {
+        s = s.hidden();
+    }
+    s
+}
+
+pub const fn heading_styles(bold: bool, dimmed: bool, hidden: bool) -> [anstyle::Style; 6] {
+    [
+        heading_style(HEADING_COLORS[0], bold, dimmed, hidden),
+        heading_style(HEADING_COLORS[1], bold, dimmed, hidden),
+        heading_style(HEADING_COLORS[2], bold, dimmed, hidden),
+        heading_style(HEADING_COLORS[3], bold, dimmed, hidden),
+        heading_style(HEADING_COLORS[4], bold, dimmed, hidden),
+        heading_style(HEADING_COLORS[5], bold, dimmed, hidden),
+    ]
 }
 
 pub const fn md_style(text: anstyle::Style) -> MarkdownStyle {

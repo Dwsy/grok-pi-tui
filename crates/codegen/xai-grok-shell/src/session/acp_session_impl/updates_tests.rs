@@ -121,7 +121,6 @@ fn test_persistence_sampling_client() -> crate::sampling::Client {
         base_url: "http://localhost".to_owned(),
         model: "test-model".to_owned(),
         context_window: 256_000,
-        stream_tool_calls: false,
         ..Default::default()
     })
     .expect("sampling client")

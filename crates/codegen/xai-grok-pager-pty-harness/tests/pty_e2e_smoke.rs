@@ -27,10 +27,18 @@ mod fullscreen_external_editor_round_trip;
 mod initial_prompt_positional_auto_submits;
 #[path = "pty_e2e/input_echoes_at_idle_prompt.rs"]
 mod input_echoes_at_idle_prompt;
+#[path = "pty_e2e/plan_overlay_slash_runs_command.rs"]
+mod plan_overlay_slash_runs_command;
 #[path = "pty_e2e/plan_revise_empty_enter_does_not_approve.rs"]
 mod plan_revise_empty_enter_does_not_approve;
 #[path = "pty_e2e/question_tab_cycles_answers.rs"]
 mod question_tab_cycles_answers;
+#[path = "pty_e2e/quit_fence_bounded_when_terminal_silent.rs"]
+mod quit_fence_bounded_when_terminal_silent;
+#[path = "pty_e2e/quit_fence_consumes_kitty_release.rs"]
+mod quit_fence_consumes_kitty_release;
+#[path = "pty_e2e/quit_without_kitty_flags_sends_no_da1.rs"]
+mod quit_without_kitty_flags_sends_no_da1;
 #[path = "pty_e2e/renders_on_action.rs"]
 mod renders_on_action;
 #[path = "pty_e2e/requirements_version_failure_exits_2_with_guidance.rs"]

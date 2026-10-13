@@ -205,7 +205,6 @@ impl HunkTrackerActor {
             cancellation_token,
         );
 
-        // Spawn the actor task
         tokio::spawn(actor.run());
 
         HunkTrackerHandle::new(cmd_tx)

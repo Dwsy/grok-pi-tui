@@ -1,7 +1,5 @@
 use super::*;
 
-// -- accept_ghost ---------------------------------------------------------
-
 #[test]
 fn accept_full_returns_entire_ghost_and_clears() {
     let mut sc = SuggestionController::new();
@@ -95,8 +93,6 @@ fn accept_one_word_progressive() {
     );
     assert!(!sc.has_ghost());
 }
-
-// -- progressive matching -------------------------------------------------
 
 #[test]
 fn progressive_match_trims_matching_char() {
@@ -195,8 +191,6 @@ fn progressive_match_empty_suffix_clears() {
     assert!(!sc.has_ghost());
 }
 
-// -- set_ghost / clear_ghost / generation ---------------------------------
-
 #[test]
 fn set_ghost_increments_generation() {
     let mut sc = SuggestionController::new();
@@ -231,8 +225,6 @@ fn clear_ghost_resets_all_fields() {
     assert!(sc.ghost.full_text.is_empty());
     assert_eq!(sc.ghost.source, SuggestionSource::None);
 }
-
-// -- text_changed ---------------------------------------------------------
 
 fn enabled_controller() -> SuggestionController {
     let mut sc = SuggestionController::new();
@@ -349,8 +341,6 @@ fn text_changed_increments_generation_on_debounce() {
     assert!(g2 > g1);
 }
 
-// -- on_debounce_expired --------------------------------------------------
-
 #[test]
 fn debounce_expired_matching_generation_returns_true() {
     let mut sc = enabled_controller();
@@ -369,8 +359,6 @@ fn debounce_expired_stale_generation_returns_false() {
     sc.text_changed("git c", false, false);
     assert!(!sc.on_debounce_expired(stale_gen));
 }
-
-// -- on_suggestions_loaded ------------------------------------------------
 
 fn make_response(
     generation: u64,
@@ -448,8 +436,6 @@ fn suggestions_loaded_replaces_existing_ghost() {
     assert_eq!(sc.ghost.source, SuggestionSource::AI);
 }
 
-// -- on_suggestions_loaded: dropdown population ----------------------------
-
 #[test]
 fn suggestions_loaded_populates_dropdown() {
     let mut sc = enabled_controller();
@@ -490,8 +476,11 @@ fn suggestions_loaded_populates_dropdown() {
     assert_eq!(sc.dropdown.items.len(), 2);
     assert_eq!(sc.dropdown.generation, current_gen);
     assert_eq!(sc.dropdown.selected, 0);
-    assert_eq!(sc.dropdown.items[0].display, "git commit");
-    assert_eq!(sc.dropdown.items[1].insert_text, "git checkout");
+    let [commit, checkout] = sc.dropdown.items.as_slice() else {
+        panic!("expected two completions: {:?}", sc.dropdown.items);
+    };
+    assert_eq!(commit.display, "git commit");
+    assert_eq!(checkout.insert_text, "git checkout");
     assert_eq!(sc.ghost_text(), Some(" commit"));
 }
 
@@ -552,8 +541,6 @@ fn accept_ghost_closes_dropdown() {
     assert!(sc.dropdown.items.is_empty());
 }
 
-// -- SuggestResponseParsed::from_json -------------------------------------
-
 #[test]
 fn parse_response_with_ghost_and_completions() {
     let json = serde_json::json!({
@@ -583,7 +570,7 @@ fn parse_response_with_ghost_and_completions() {
         SuggestionSource::History
     );
     assert_eq!(parsed.completions.len(), 1);
-    assert_eq!(parsed.completions[0].priority, 10);
+    assert_eq!(parsed.completions.first().map(|c| c.priority), Some(10));
 }
 
 #[test]
@@ -768,8 +755,6 @@ fn parse_completion_truncated_flag() {
     assert!(!malformed.truncated);
 }
 
-// -- validated_replace_range -----------------------------------------------
-
 fn anchored_controller(request_text: &str) -> SuggestionController {
     let mut sc = enabled_controller();
     sc.dropdown.request_text = request_text.to_owned();
@@ -858,8 +843,6 @@ fn validated_range_mid_char_boundary_rejects() {
         None
     );
 }
-
-// -- common_prefix_fill ------------------------------------------------
 
 fn span_item(
     token: &str,
@@ -975,8 +958,6 @@ fn common_prefix_fill_multibyte_boundary_trim() {
     ];
     assert!(sc.common_prefix_fill("cat caf").is_none());
 }
-
-// -- tab_decision --------------------------------------------------------
 
 /// Anchored controller whose items are current for `request_text` typed with the cursor at its end: the state right after a landing.
 fn decision_controller(request_text: &str) -> SuggestionController {
@@ -1139,8 +1120,6 @@ fn tab_decision_lcp_with_complete_escape_fills() {
     );
 }
 
-// -- accept_completion: splice resolution ---------------------------------
-
 fn accept_controller(request_text: &str, items: Vec<CompletionItemParsed>) -> SuggestionController {
     let mut sc = anchored_controller(request_text);
     sc.dropdown.items = items;
@@ -1219,8 +1198,6 @@ fn accept_completion_stale_range_resolves_stale() {
     );
     assert!(sc.dropdown.items.is_empty());
 }
-
-// -- accept_completion / async-race invalidation ---------------------------
 
 fn item(text: &str, source: SuggestionSource) -> CompletionItemParsed {
     CompletionItemParsed {
@@ -1341,8 +1318,6 @@ fn non_matching_edit_tears_down_ghostless_dropdown() {
     assert!(sc.dropdown.items.is_empty());
 }
 
-// -- always-on Tab completion (no GROK_SUGGESTIONS) ------------------------
-
 /// Tab-triggered fetches work with the as-you-type pipeline OFF.
 /// The arming bumps the generation and the landing response still installs its dropdown items.
 #[test]
@@ -1452,8 +1427,6 @@ fn disabled_controller_ignores_response_ghost() {
     assert_eq!(sc.dropdown.items.len(), 1);
 }
 
-// -- SuggestionSource::parse_source ---------------------------------------
-
 #[test]
 fn source_parse_known_values() {
     assert_eq!(
@@ -1480,23 +1453,18 @@ fn source_parse_unknown_returns_none() {
     );
 }
 
-// -- end-to-end pipeline: text_changed → debounce → loaded ----------------
-
 #[test]
 fn full_pipeline_text_change_debounce_load() {
     let mut sc = enabled_controller();
 
-    // 1. User types "g"
     let action = sc.text_changed("g", false, false);
     let current_gen = match action {
         Some(SuggestionAction::Debounce { generation }) => generation,
         other => panic!("expected Debounce, got {other:?}"),
     };
 
-    // 2. Debounce expires: generation still matches
     assert!(sc.on_debounce_expired(current_gen));
 
-    // 3. Response arrives with matching generation
     sc.set_last_request_text("g");
     sc.on_suggestions_loaded(
         make_response(current_gen, Some("it commit"), SuggestionSource::History),
@@ -1505,7 +1473,6 @@ fn full_pipeline_text_change_debounce_load() {
     );
     assert_eq!(sc.ghost_text(), Some("it commit"));
 
-    // 4. User types "i": progressive match trims ghost
     let action = sc.text_changed("gi", false, false);
     assert_eq!(action, Some(SuggestionAction::Matched));
     assert_eq!(sc.ghost_text(), Some("t commit"));
@@ -1515,7 +1482,6 @@ fn full_pipeline_text_change_debounce_load() {
 fn rapid_typing_discards_stale_debounce() {
     let mut sc = enabled_controller();
 
-    // User types "g"
     let action1 = sc.text_changed("g", false, false);
     let gen1 = match action1 {
         Some(SuggestionAction::Debounce { generation }) => generation,
@@ -1540,10 +1506,8 @@ fn rapid_typing_discards_stale_debounce() {
 fn slash_during_pending_debounce_suppresses() {
     let mut sc = enabled_controller();
 
-    // User types "git"
     sc.text_changed("git", false, false);
 
-    // User types "/": slash becomes active
     let result = sc.text_changed("/", true, false);
     assert!(result.is_none());
     assert!(!sc.has_ghost());

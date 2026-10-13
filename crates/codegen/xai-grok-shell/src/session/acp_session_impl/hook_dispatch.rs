@@ -114,10 +114,14 @@ impl SessionActor {
         }
     }
 
-    /// Re-read the disabled-hooks file after this session changed it or reloaded its hooks.
+    /// Re-read the disabled-hooks file after this session changed it.
     pub(super) fn refresh_hook_disabled(&self) {
-        *self.hook_disabled.borrow_mut() =
-            std::sync::Arc::new(xai_grok_hooks::trust::DisabledHooks::load());
+        *self.hook_disabled.borrow_mut() = std::sync::Arc::new(
+            xai_grok_workspace::permission::resolution::disabled_hooks_snapshot(
+                xai_grok_workspace::permission::resolution::managed_settings(),
+                xai_grok_config::user_grok_home().as_deref(),
+            ),
+        );
     }
 
     /// The annotation renders inline with the preceding tool call block rather than as a separate agent message.
@@ -310,8 +314,7 @@ impl SessionActor {
         }
 
         let tool_result = serde_json::to_value(output).unwrap_or(serde_json::Value::Null);
-        let raw_input: serde_json::Value =
-            serde_json::from_str(&prepared.raw_arguments).unwrap_or(serde_json::Value::Null);
+        let raw_input = prepared.hook_arguments().into_owned();
         let (tool_input_value, tool_input_truncated) = truncate_payload(raw_input);
         let (tool_result_value, tool_result_truncated) = truncate_payload(tool_result);
         let hook_tool_name = prepared.hook_tool_name().to_owned();
@@ -384,8 +387,7 @@ impl SessionActor {
         if !self.may_have_hooks_for(xai_grok_hooks::event::HookEventName::PostToolUseFailure) {
             return Vec::new();
         }
-        let raw_input: serde_json::Value =
-            serde_json::from_str(&prepared.raw_arguments).unwrap_or(serde_json::Value::Null);
+        let raw_input = prepared.hook_arguments().into_owned();
         let (tool_input, tool_input_truncated) = xai_grok_hooks::event::truncate_payload(raw_input);
         let hook_tool_name = prepared.hook_tool_name();
         self.dispatch_post_tool_use_failure_hook(

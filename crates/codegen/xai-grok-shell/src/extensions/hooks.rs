@@ -25,7 +25,10 @@ pub(crate) fn current_hook_infos(
     let Some(registry) = registry else {
         return Vec::new();
     };
-    let disabled = xai_grok_hooks::trust::DisabledHooks::load();
+    let disabled = xai_grok_workspace::permission::resolution::disabled_hooks_snapshot(
+        xai_grok_workspace::permission::resolution::managed_settings(),
+        xai_grok_config::user_grok_home().as_deref(),
+    );
     let registered = crate::config::registered_hook_paths();
     hook_specs_to_infos(&registry.all_hooks(), &disabled, &registered)
 }
@@ -97,7 +100,7 @@ fn hook_spec_to_info_with(
         url: url_display,
         timeout_ms: spec.timeout_ms,
         source_dir,
-        disabled: xai_grok_hooks::trust::hook_disabled_for_display_with(spec, disabled),
+        disabled: disabled.blocks(spec),
         pinned: spec.is_managed_policy(),
         removable,
     }
@@ -298,7 +301,7 @@ mod tests {
 
     #[test]
     fn hook_spec_to_info_raw_display_wins_so_secrets_never_reach_dto() {
-        let no_disabled = xai_grok_hooks::trust::DisabledHooks::from_names([]);
+        let no_disabled = xai_grok_hooks::trust::DisabledHooks::new([], false);
         let no_dirs = HashSet::new();
         let command = |raw, resolved| {
             hook_specs_to_infos(
@@ -347,7 +350,7 @@ mod tests {
     /// Both managed tiers (`SystemManaged` and `Requirements`) pin identically.
     #[test]
     fn hook_specs_to_infos_pins_removable_at_source_level() {
-        let no_disabled = xai_grok_hooks::trust::DisabledHooks::from_names([]);
+        let no_disabled = xai_grok_hooks::trust::DisabledHooks::new([], false);
         let registered: HashSet<String> = [
             "/reg/policy".to_string(),
             "/reg/req".to_string(),
@@ -374,21 +377,52 @@ mod tests {
             &no_disabled,
             &registered,
         );
-        assert!(infos[0].pinned && !infos[0].removable);
+        let [
+            policy_info,
+            sibling_info,
+            req_info,
+            req_sib,
+            user_info,
+            unreg,
+            ..,
+        ] = infos.as_slice()
+        else {
+            panic!("expected 6 hook infos: {infos:?}");
+        };
+        assert!(policy_info.pinned && !policy_info.removable);
         assert!(
-            !infos[1].pinned && !infos[1].removable,
+            !sibling_info.pinned && !sibling_info.removable,
             "unpinned sibling of a managed-policy hook must not be removable"
         );
         assert!(
-            infos[2].pinned && !infos[2].removable,
+            req_info.pinned && !req_info.removable,
             "Requirements tier must pin its source like SystemManaged"
         );
         assert!(
-            !infos[3].pinned && !infos[3].removable,
+            !req_sib.pinned && !req_sib.removable,
             "unpinned sibling of a Requirements hook must not be removable"
         );
-        assert!(infos[4].removable);
-        assert!(!infos[5].removable, "unregistered dirs are never removable");
+        assert!(user_info.removable);
+        assert!(!unreg.removable, "unregistered dirs are never removable");
+    }
+
+    /// The `[disabled]` badge under `allow_managed_hooks_only` comes from the dispatch skip rule, not `enabled`/disabled-hooks alone.
+    #[test]
+    fn hook_specs_to_infos_marks_non_managed_hooks_disabled_under_managed_only() {
+        let lockdown = xai_grok_hooks::trust::DisabledHooks::new([], true);
+        let user = make_spec(Some("u"), None, None, None);
+        let mut req = make_spec(Some("r"), None, None, None);
+        req.layer = xai_grok_hooks::config::HookProvenance::Requirements;
+
+        let infos = hook_specs_to_infos(&[&user, &req], &lockdown, &HashSet::new());
+        let [user_info, req_info] = infos.as_slice() else {
+            panic!("expected 2 hook infos: {infos:?}");
+        };
+        assert!(
+            user_info.disabled,
+            "enabled file hook shows disabled under the pin"
+        );
+        assert!(!req_info.disabled, "managed-policy hook stays enabled");
     }
 
     #[test]
@@ -405,14 +439,19 @@ mod tests {
         });
         let hooks = parse_client_hooks(meta.as_object());
 
-        let pre = &hooks[&HookEventName::PreToolUse];
+        let Some(pre) = hooks.get(&HookEventName::PreToolUse) else {
+            panic!("expected PreToolUse hooks: {hooks:?}");
+        };
         assert_eq!(pre.len(), 3);
-        assert_eq!(pre[0].callback_ids, ["cb_0"]);
-        let matcher = pre[0].matcher.as_ref().unwrap();
+        let Some(first) = pre.first() else {
+            panic!("expected PreToolUse group: {pre:?}");
+        };
+        assert_eq!(first.callback_ids, ["cb_0"]);
+        let matcher = first.matcher.as_ref().unwrap();
         assert!(matcher.is_match("run_terminal_command"));
         assert!(!matcher.is_match("read_file"));
-        assert!(pre[1].matcher.is_none());
-        assert!(pre[2].matcher.is_none());
+        assert!(pre.get(1).is_some_and(|g| g.matcher.is_none()));
+        assert!(pre.get(2).is_some_and(|g| g.matcher.is_none()));
         assert!(hooks.contains_key(&HookEventName::PostToolUse));
     }
 
@@ -434,9 +473,15 @@ mod tests {
                 ]
             }
         });
-        let groups = &parse_client_hooks(meta.as_object())[&HookEventName::PreToolUse];
+        let parsed = parse_client_hooks(meta.as_object());
+        let Some(groups) = parsed.get(&HookEventName::PreToolUse) else {
+            panic!("expected PreToolUse hooks: {parsed:?}");
+        };
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].callback_ids, ["good"]);
+        let Some(first) = groups.first() else {
+            panic!("expected one group: {groups:?}");
+        };
+        assert_eq!(first.callback_ids, ["good"]);
     }
 
     #[test]
@@ -451,11 +496,17 @@ mod tests {
                 ]
             }
         });
-        let groups = &parse_client_hooks(meta.as_object())[&HookEventName::PreToolUse];
-        assert_eq!(groups[0].timeout, Some(std::time::Duration::from_secs(5)));
-        assert_eq!(groups[1].timeout, None);
-        assert_eq!(groups[2].timeout, None);
-        assert_eq!(groups[3].timeout, Some(std::time::Duration::from_secs(600)));
+        let parsed = parse_client_hooks(meta.as_object());
+        let Some(groups) = parsed.get(&HookEventName::PreToolUse) else {
+            panic!("expected PreToolUse hooks: {parsed:?}");
+        };
+        let [g0, g1, g2, g3] = groups.as_slice() else {
+            panic!("expected 4 groups: {groups:?}");
+        };
+        assert_eq!(g0.timeout, Some(std::time::Duration::from_secs(5)));
+        assert_eq!(g1.timeout, None);
+        assert_eq!(g2.timeout, None);
+        assert_eq!(g3.timeout, Some(std::time::Duration::from_secs(600)));
     }
 
     #[test]
@@ -550,7 +601,7 @@ mod tests {
         });
         for signal in ADVERTISED_STOP_SIGNALS {
             let response: ClientHookResponse = serde_json::from_value(
-                serde_json::json!({ *signal: signal_values[*signal].clone() }),
+                serde_json::json!({ *signal: signal_values.get(*signal).cloned().unwrap_or(serde_json::Value::Null) }),
             )
             .unwrap();
             let captured = match *signal {
@@ -590,14 +641,38 @@ mod tests {
             envelope: &envelope,
         };
         let value = serde_json::to_value(&dispatch).unwrap();
-        assert_eq!(value["hookCallbackId"], "cb_0");
-        assert_eq!(value["hookEventName"], "pre_tool_use");
-        assert_eq!(value["sessionId"], "s1");
-        assert_eq!(value["cwd"], "/work");
-        assert_eq!(value["toolUseId"], "call_1");
-        assert_eq!(value["toolName"], "run_terminal_command");
-        assert_eq!(value["toolInput"]["command"], "ls");
-        assert_eq!(value["toolInputTruncated"], true);
-        assert_eq!(value["permissionMode"], "default");
+        assert_eq!(
+            value.get("hookCallbackId").and_then(|v| v.as_str()),
+            Some("cb_0")
+        );
+        assert_eq!(
+            value.get("hookEventName").and_then(|v| v.as_str()),
+            Some("pre_tool_use")
+        );
+        assert_eq!(value.get("sessionId").and_then(|v| v.as_str()), Some("s1"));
+        assert_eq!(value.get("cwd").and_then(|v| v.as_str()), Some("/work"));
+        assert_eq!(
+            value.get("toolUseId").and_then(|v| v.as_str()),
+            Some("call_1")
+        );
+        assert_eq!(
+            value.get("toolName").and_then(|v| v.as_str()),
+            Some("run_terminal_command")
+        );
+        assert_eq!(
+            value
+                .get("toolInput")
+                .and_then(|t| t.get("command"))
+                .and_then(|v| v.as_str()),
+            Some("ls")
+        );
+        assert_eq!(
+            value.get("toolInputTruncated").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            value.get("permissionMode").and_then(|v| v.as_str()),
+            Some("default")
+        );
     }
 }

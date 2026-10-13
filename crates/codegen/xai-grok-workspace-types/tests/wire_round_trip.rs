@@ -1,10 +1,4 @@
-//! End-to-end serde round-trip tests for every wire-format enum.
-//!
-//! This integration test exercises the entire crate from the outside, using only the public API.
-//! That gives stronger coverage than the per-module tests.
-//!
-//! Each "rich" sample has at least one variant built from non-default field values.
-//! A regression on those fields is caught here, not at the next protocol bug.
+//! End-to-end serde round-trips for public wire enums, including rich non-default payloads.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -449,19 +443,19 @@ fn session_chunk_round_trips_for_every_variant_including_rich_payloads() {
 fn workspace_event_round_trips_for_every_variant() {
     let events = vec![
         WorkspaceEvent::FsChanged {
-            path: PathBuf::from("/a"),
+            paths: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             kind: FsEventKind::Created,
         },
         WorkspaceEvent::FsChanged {
-            path: PathBuf::from("/a"),
+            paths: vec![PathBuf::from("/a")],
             kind: FsEventKind::Modified,
         },
         WorkspaceEvent::FsChanged {
-            path: PathBuf::from("/a"),
+            paths: vec![PathBuf::from("/a")],
             kind: FsEventKind::Removed,
         },
         WorkspaceEvent::FsChanged {
-            path: PathBuf::from("/a"),
+            paths: vec![PathBuf::from("/a")],
             kind: FsEventKind::Renamed,
         },
         WorkspaceEvent::GitHeadChanged {
@@ -543,10 +537,6 @@ fn workspace_error_round_trips_for_every_variant() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// JSON-shape assertions: lock down the wire field names so any future drift back to camelCase fails loudly
-// ---------------------------------------------------------------------------
-
 #[test]
 fn tool_call_args_uses_snake_case_field_names() {
     let args = ToolCallArgs {
@@ -566,7 +556,6 @@ fn tool_call_args_uses_snake_case_field_names() {
 
 #[test]
 fn workspace_event_inline_struct_variants_use_snake_case() {
-    // CodebaseIndexUpdated is an inline-struct WorkspaceEvent variant with a multi-word field (`files_indexed`)
     let ev = WorkspaceEvent::CodebaseIndexUpdated { files_indexed: 7 };
     let json = serde_json::to_string(&ev).unwrap();
     assert!(json.contains("\"files_indexed\""), "got {json}");
@@ -583,7 +572,6 @@ fn workspace_request_envelope_uses_adjacent_tag() {
 
 #[test]
 fn permission_decision_uses_adjacent_type_data_tag() {
-    // Variant with payload: data wrapped under "data".
     let deny = PermissionDecision::Deny {
         reason: "no".into(),
     };
@@ -594,7 +582,6 @@ fn permission_decision_uses_adjacent_type_data_tag() {
     // Variant payload must NOT be inlined alongside `type` (would indicate a regression to internal tagging)
     assert!(!json.contains(r#""type":"deny","reason":"#), "got {json}");
 
-    // Unit variant: no `data` field.
     let allow = PermissionDecision::AllowOnce;
     let json = serde_json::to_string(&allow).unwrap();
     assert_eq!(json, r#"{"type":"allow_once"}"#);
@@ -602,7 +589,6 @@ fn permission_decision_uses_adjacent_type_data_tag() {
 
 #[test]
 fn plan_mode_decision_uses_adjacent_type_data_tag() {
-    // Variant with payload: data wrapped under "data".
     let reject = PlanModeDecision::Reject {
         feedback: Some("not yet".into()),
     };
@@ -616,7 +602,6 @@ fn plan_mode_decision_uses_adjacent_type_data_tag() {
         "got {json}"
     );
 
-    // Unit variants: no `data` field.
     let approve = PlanModeDecision::Approve;
     let json = serde_json::to_string(&approve).unwrap();
     assert_eq!(json, r#"{"type":"approve"}"#);
@@ -637,7 +622,6 @@ fn plan_mode_transition_uses_adjacent_type_data_tag() {
     let exit = PlanModeTransition::Exit { final_plan: None };
     let json = serde_json::to_string(&exit).unwrap();
     assert_eq!(json, r#"{"type":"exit","data":{"final_plan":null}}"#);
-    // Snake-case field guard.
     assert!(json.contains("\"final_plan\""), "got {json}");
     assert!(!json.contains("\"finalPlan\""), "got {json}");
 }
@@ -658,7 +642,6 @@ fn hunk_action_uses_adjacent_type_data_tag() {
 
 #[test]
 fn tool_progress_uses_adjacent_type_data_tag() {
-    // Variant with a single field: payload wrapped under "data".
     let started = ToolProgress::Started {
         call_id: ToolCallId::new("c1"),
     };
@@ -670,7 +653,6 @@ fn tool_progress_uses_adjacent_type_data_tag() {
         "got {json}"
     );
 
-    // Variant with multiple fields including an f32: still adjacent.
     let percent = ToolProgress::Percent {
         call_id: ToolCallId::new("c1"),
         fraction: 0.5,
@@ -696,8 +678,6 @@ fn tool_progress_uses_adjacent_type_data_tag() {
 
 #[test]
 fn tool_chunk_need_permission_uses_adjacent_type_data_tag() {
-    // NeedPermission carries the workspace's permission request over the bidi stream
-    // Lock down the snake_case tag ("need_permission"), the snake_case field name ("req_id"), and adjacent tagging
     let chunk = ToolChunk::NeedPermission {
         req_id: "perm-1".into(),
         request: PermissionRequest {
@@ -712,7 +692,6 @@ fn tool_chunk_need_permission_uses_adjacent_type_data_tag() {
         json,
         r#"{"type":"need_permission","data":{"req_id":"perm-1","request":{"tool_name":"rm","summary":"deletes a file","input_json":"{\"path\":\"/tmp/x\"}","destructive":true}}}"#
     );
-    // Snake_case field-name guard.
     assert!(json.contains("\"req_id\""), "got {json}");
     assert!(!json.contains("\"reqId\""), "got {json}");
     // Payload must NOT be inlined alongside "type" (would indicate a regression to internal tagging)
@@ -737,11 +716,9 @@ fn tool_chunk_need_user_answer_uses_adjacent_type_data_tag() {
         }],
     };
     let json = serde_json::to_string(&chunk).unwrap();
-    // Snake_case discriminator and snake_case fields
     assert!(json.starts_with(r#"{"type":"need_user_answer","data":{"req_id":"q-1","questions":["#));
     assert!(json.contains("\"multi_select\""), "got {json}");
     assert!(!json.contains("\"multiSelect\""), "got {json}");
-    // Adjacent tagging guard.
     assert!(
         !json.contains(r#""type":"need_user_answer","req_id":"#),
         "got {json}"
@@ -759,10 +736,8 @@ fn tool_response_user_answer_uses_adjacent_type_data_tag() {
         json,
         r#"{"type":"user_answer","data":{"req_id":"q-1","answers":[{"type":"selected","data":"A"}]}}"#
     );
-    // Snake_case field guard.
     assert!(json.contains("\"req_id\""), "got {json}");
     assert!(!json.contains("\"reqId\""), "got {json}");
-    // Adjacent tagging guard.
     assert!(
         !json.contains(r#""type":"user_answer","req_id":"#),
         "got {json}"
@@ -784,8 +759,6 @@ fn tool_response_permission_uses_adjacent_type_data_tag() {
 
 #[test]
 fn tool_chunk_need_plan_mode_change_uses_adjacent_type_data_tag() {
-    // NeedPlanModeChange carries the workspace's plan-mode request over the bidi stream
-    // Lock down the snake_case tag ("need_plan_mode_change"), the snake_case field name ("req_id"), and adjacent tagging
     let chunk = ToolChunk::NeedPlanModeChange {
         req_id: "pm-1".into(),
         transition: PlanModeTransition::Enter {
@@ -797,7 +770,6 @@ fn tool_chunk_need_plan_mode_change_uses_adjacent_type_data_tag() {
         json,
         r#"{"type":"need_plan_mode_change","data":{"req_id":"pm-1","transition":{"type":"enter","data":{"plan":"draft"}}}}"#
     );
-    // Snake_case field-name guard.
     assert!(json.contains("\"req_id\""), "got {json}");
     assert!(!json.contains("\"reqId\""), "got {json}");
     // Payload must NOT be inlined alongside "type" (would indicate a regression to internal tagging)
@@ -818,16 +790,13 @@ fn tool_response_plan_mode_change_uses_adjacent_type_data_tag() {
         json,
         r#"{"type":"plan_mode_change","data":{"req_id":"pm-1","decision":{"type":"approve"}}}"#
     );
-    // Snake_case field guard.
     assert!(json.contains("\"req_id\""), "got {json}");
     assert!(!json.contains("\"reqId\""), "got {json}");
-    // Adjacent tagging guard.
     assert!(
         !json.contains(r#""type":"plan_mode_change","req_id":"#),
         "got {json}"
     );
 
-    // Payload variant with an inner option.
     let resp = ToolResponse::PlanModeChange {
         req_id: "pm-2".into(),
         decision: PlanModeDecision::Reject {

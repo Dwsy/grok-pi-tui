@@ -25,16 +25,17 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use crate::acp::tracker::TurnActivity;
-// Only the test-only setters below reference `AgentSession`.
 #[cfg(any(test, feature = "test-support"))]
 use crate::app::agent::AgentSession;
-use crate::app::agent_view::{AgentView, McpInitProgress};
+use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView, SessionPickerEntry};
 use crate::appearance::LayoutConfig;
 use crate::scrollback::entry::{EntryId, ScrollbackEntry};
 use crate::scrollback::state::ScrollbackState;
 use crate::theme::Theme;
+use crate::views::elicitation_view::ElicitationViewState;
 use crate::views::extensions_modal::{ExtensionsModalState, StatusFilter};
+use crate::views::feedback_modal::FeedbackModalState;
 use crate::views::mcps_modal::{McpServerDisplayStatus, McpServerInfo};
 use crate::views::modal::CancelTurnViewState;
 use crate::views::picker::{PickerEntry, PickerField, PickerState};
@@ -99,9 +100,6 @@ pub(crate) struct SuspendedMinimalBtwLifecycle {
     focused: bool,
 }
 
-// Minimal's private per-session state, consolidated into a single field on the central `AppView` instead of several loose `pub` fields
-// It defaults to empty and does nothing outside `--minimal`
-
 /// In-progress incremental `/transcript` build (minimal mode). The block model is `!Send` (syntect's resumable
 /// highlighter state lives inside markdown blocks), so the work cannot move to a worker. Instead the minimal draw
 /// loop renders a time-budgeted slice per frame (`xai-grok-pager-minimal::full_view::pump_transcript`).
@@ -134,6 +132,16 @@ pub(crate) struct MinimalState {
     /// Minimal prints the whole plan as a normal committed block (rather than under the prompt), so this de-dupes the per-frame push.
     /// Each revision is a fresh ExitPlanMode with a new id, so every revised plan still commits as its own block.
     pub(crate) committed_plan_tool_call_id: Option<String>,
+    /// Layout the history was printed in, and a pending reprint after a resize.
+    pub(crate) reprint: crate::minimal_reprint::ReprintState,
+}
+
+impl MinimalState {
+    /// The sliced `/transcript` build and a waiting reprint advance only inside a draw.
+    /// Ticks keep drawing while either is pending.
+    pub(crate) fn needs_frames(&self) -> bool {
+        self.transcript.is_some() || self.reprint.is_waiting()
+    }
 }
 
 /// `AppView::minimal_state.show_todos`.
@@ -166,8 +174,6 @@ pub fn requeue_minimal_pending_expand(app: &mut AppView, mut ids: Vec<EntryId>) 
     ids.extend(std::mem::take(&mut app.minimal_state.pending_expand));
     app.minimal_state.pending_expand = ids;
 }
-
-// ── Incremental /transcript build ────────────────────────────────────────────
 
 /// Start the incremental minimal `/transcript` build from the active agent's conversation. No-op when a build is
 /// already running; the in-flight one wins. Pushes the "nothing to show" system block when the conversation is
@@ -278,8 +284,6 @@ pub fn set_minimal_committed_plan_id(app: &mut AppView, id: Option<String>) {
     app.minimal_state.committed_plan_tool_call_id = id;
 }
 
-// ── AgentView field accessors ────────────────────────────────────────────────
-
 /// `AgentView::last_activity` (read).
 pub fn last_activity(v: &AgentView) -> Option<&TurnActivity> {
     v.last_activity.as_ref()
@@ -301,6 +305,17 @@ pub fn extensions_modal_mut(v: &mut AgentView) -> Option<&mut ExtensionsModalSta
     v.extensions_modal.as_mut()
 }
 
+/// `AgentView::feedback_modal`.
+pub fn feedback_modal(v: &AgentView) -> Option<&FeedbackModalState> {
+    v.feedback_modal.as_ref()
+}
+
+/// `AgentView::feedback_modal` (mutable).
+/// Minimal reuses the full-TUI modal renderer; it takes `&mut FeedbackModalState` and updates tab/label-row state stored during render.
+pub fn feedback_modal_mut(v: &mut AgentView) -> Option<&mut FeedbackModalState> {
+    v.feedback_modal.as_mut()
+}
+
 /// `AgentView::question_view`.
 pub fn question_view(v: &AgentView) -> Option<&QuestionViewState> {
     v.question_view.as_ref()
@@ -309,6 +324,21 @@ pub fn question_view(v: &AgentView) -> Option<&QuestionViewState> {
 /// `AgentView::question_view` (mutable: minimal clamps the scroll offset).
 pub fn question_view_mut(v: &mut AgentView) -> Option<&mut QuestionViewState> {
     v.question_view.as_mut()
+}
+
+/// `AgentView::elicitation_view`.
+pub fn elicitation_view(v: &AgentView) -> Option<&ElicitationViewState> {
+    v.elicitation_view.as_ref()
+}
+
+/// `AgentView::elicitation_view`, mutable because the renderer clamps the body scroll offset.
+pub fn elicitation_view_mut(v: &mut AgentView) -> Option<&mut ElicitationViewState> {
+    v.elicitation_view.as_mut()
+}
+
+/// [`AgentView::is_awaiting_user_answer`].
+pub fn is_awaiting_user_answer(v: &AgentView) -> bool {
+    v.is_awaiting_user_answer()
 }
 
 /// `AgentView::hovered_question_item`.
@@ -331,9 +361,9 @@ pub fn plan_mode_pending(v: &AgentView) -> Option<bool> {
     v.plan_mode_pending
 }
 
-/// `AgentView::mcp_init_progress`.
-pub fn mcp_init_progress(v: &AgentView) -> Option<&McpInitProgress> {
-    v.mcp_init_progress.as_ref()
+/// `AgentView::session_starting_since`.
+pub fn session_starting_since(v: &AgentView) -> Option<std::time::Instant> {
+    v.session_starting_since
 }
 
 /// `AgentView::plan_approval_view`.
@@ -351,6 +381,7 @@ pub fn minimal_btw_surface_available(v: &AgentView) -> bool {
         && !(v.show_goal_detail && v.goal_state.is_some())
         && v.line_viewer.is_none()
         && v.extensions_modal.is_none()
+        && v.feedback_modal.is_none()
         && v.persona_detail.is_none()
         && v.agents_modal.is_none()
         && v.block_viewer.is_none()
@@ -505,8 +536,6 @@ pub fn rewind_state(v: &AgentView) -> Option<&RewindState> {
     v.rewind_state.as_ref()
 }
 
-// ── AgentView method wrappers ────────────────────────────────────────────────
-
 /// [`AgentView::resolve_turn_activity`].
 pub fn resolve_turn_activity(v: &AgentView) -> Option<TurnActivity> {
     v.resolve_turn_activity()
@@ -571,14 +600,10 @@ pub fn drain_blocked(v: &AgentView) -> bool {
     v.drain_blocked()
 }
 
-// ── PromptWidget accessors ───────────────────────────────────────────────────
-
 /// `PromptWidget::suggestions`.
 pub fn prompt_suggestions(pw: &PromptWidget) -> &SuggestionController {
     &pw.suggestions
 }
-
-// ── Dropdown chrome ──────────────────────────────────────────────────────────
 
 /// Lay out the inline dropdown chrome and return the item area rect (`DropdownChrome::items`), or `None` when it doesn't fit.
 /// Wraps [`crate::app::agent_view::render_dropdown_chrome`]; the `DropdownChrome` DTO itself stays crate-internal.
@@ -609,8 +634,6 @@ pub fn dropdown_chrome_items(
     )
     .map(|chrome| chrome.items)
 }
-
-// ── MCP picker rows ──────────────────────────────────────────────────────────
 
 /// Build the MCP-servers picker rows, returning `(labels, group_keys, data_indices)`.
 /// Wraps [`crate::views::extensions_modal::build_mcp_servers_picker_rows`]; the `McpServersPickerRows` DTO stays crate-internal.
@@ -653,8 +676,6 @@ pub fn mcp_status_theme_color(status: &McpServerDisplayStatus, theme: &Theme) ->
 pub fn mcp_status_label(status: &McpServerDisplayStatus) -> &'static str {
     status.label()
 }
-
-// ── Session picker builders ──────────────────────────────────────────────────
 
 /// Render a search bar from a [`PickerState`] using its grapheme-safe viewport.
 pub fn render_picker_search_bar(
@@ -734,8 +755,6 @@ pub fn build_grouped_picker_entries<'a>(
     )
 }
 
-// ── Welcome logo ─────────────────────────────────────────────────────────────
-
 /// [`crate::views::welcome::logo::compact_logo_line_count`].
 pub fn compact_logo_line_count() -> u16 {
     crate::views::welcome::logo::compact_logo_line_count()
@@ -777,8 +796,6 @@ pub fn record_committed_for_expand(sb: &mut ScrollbackState, id: EntryId) {
     sb.record_committed_for_expand(id);
 }
 
-// ── Test-only surface (minimal's unit tests, via the test-only helpers) ──
-
 /// [`crate::app::agent_view::test_agent_view`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_agent_view(session_id: Option<&str>, cwd: std::path::PathBuf) -> AgentView {
@@ -791,10 +808,39 @@ pub fn set_extensions_modal(v: &mut AgentView, val: Option<ExtensionsModalState>
     v.extensions_modal = val;
 }
 
+/// Test-only setter for `AgentView::feedback_modal`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_feedback_modal(v: &mut AgentView, val: Option<FeedbackModalState>) {
+    v.feedback_modal = val;
+}
+
 /// Test-only setter for `AgentView::question_view`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_question_view(v: &mut AgentView, val: Option<QuestionViewState>) {
     v.question_view = val;
+}
+
+/// Test-only: open a one-text-field form elicitation card from `server_name`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn open_test_elicitation(v: &mut AgentView, server_name: &str, message: &str) {
+    use xai_grok_tools::mcp_elicitation::{McpElicitExtRequest, McpElicitModeFields};
+    v.elicitation_view = Some(ElicitationViewState::from_request(
+        McpElicitExtRequest {
+            session_id: "s".to_owned(),
+            tool_call_id: "mcp-elicit-test".to_owned(),
+            server_name: server_name.to_owned(),
+            message: message.to_owned(),
+            mode: McpElicitModeFields::Form {
+                requested_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": { "title": { "type": "string", "title": "Ticket title" } },
+                    "required": ["title"]
+                })),
+            },
+        },
+        None,
+        None,
+    ));
 }
 
 /// Test-only setter for `AgentView::plan_mode_active`.

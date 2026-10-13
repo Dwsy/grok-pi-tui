@@ -21,13 +21,17 @@ const SNIPPET_CONTEXT: usize = 3;
 /// `"22:abc:rst"`) or only a local hash (e.g. `"22:abc"`).
 fn anchor_format_hint(scheme: &dyn AnchorScheme) -> (&'static str, String) {
     let len = scheme.hash_len().clamp(1, 4);
-    let hash = &"abcd"[..len];
+    let Some(hash) = "abcd".get(..len) else {
+        return ("LINE:HASH", "22:a".to_owned());
+    };
     let has_context = scheme
         .generate_anchors(&["x"])
         .first()
         .is_some_and(|a| a.context.is_some());
     if has_context {
-        let ctx = &"rstu"[..len];
+        let Some(ctx) = "rstu".get(..len) else {
+            return ("LINE:HASH1:HASH2", format!("22:{hash}:r"));
+        };
         ("LINE:HASH1:HASH2", format!("22:{hash}:{ctx}"))
     } else {
         ("LINE:HASH", format!("22:{hash}"))
@@ -76,7 +80,11 @@ fn anchor_content_error(op_label: &str, content: &str, line_num: usize) -> Hashl
     let context: String = (ctx_start..ctx_end)
         .map(|i| {
             let marker = if i + 1 == line_num { ">>>" } else { "   " };
-            format!("{marker} line {}: {}", i + 1, lines[i])
+            format!(
+                "{marker} line {}: {}",
+                i + 1,
+                lines.get(i).copied().unwrap_or("")
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -151,9 +159,9 @@ pub(crate) fn apply_edits(
     let lines = split_lines(content);
 
     if ops.len() == 1
-        && let HashlineOp::Write {
+        && let Some(HashlineOp::Write {
             content: new_content,
-        } = &ops[0]
+        }) = ops.first()
     {
         if let Some(line_num) = detect_anchor_prefix_in_content(new_content) {
             return ApplyResult {
@@ -257,7 +265,10 @@ pub(crate) fn apply_edits(
         edit_regions.push((shifted_start, shifted_end));
 
         let old_text = if op.start < op.end {
-            lines[op.start..op.end].join("\n")
+            match lines.get(op.start..op.end) {
+                Some(span) => span.join("\n"),
+                None => String::new(),
+            }
         } else {
             String::new()
         };
@@ -444,7 +455,7 @@ fn resolve_op(
                 // with '\n', split_lines produces a synthetic trailing empty
                 // line — insert before it rather than after it.
                 let len = lines.len();
-                if len > 1 && lines[len - 1].is_empty() {
+                if len > 1 && lines.last().is_some_and(|line| line.is_empty()) {
                     len - 1
                 } else {
                     len
@@ -509,7 +520,7 @@ fn recover_anchor_by_suffix(
         })
         .collect();
     if matches.len() == 1 {
-        let a = matches[0];
+        let a = matches.first()?;
         Some(ParsedAnchor {
             line: a.line,
             local: a.local.clone(),
@@ -597,19 +608,29 @@ fn validate_anchor(
             let ctx_end = (parsed.line + recovery_ctx).min(lines.len());
 
             let context: String = (ctx_start..ctx_end)
-                .map(|i| render_anchored_line(&anchors[i], lines[i]))
+                .filter_map(|i| Some(render_anchored_line(anchors.get(i)?, lines.get(i)?)))
                 .collect::<Vec<_>>()
                 .join("\n");
 
             let idx = parsed.line.saturating_sub(1);
-            let current =
-                (idx < lines.len()).then(|| render_anchored_line(&anchors[idx], lines[idx]));
+            let current = anchors
+                .get(idx)
+                .zip(lines.get(idx))
+                .map(|(anchor, line)| render_anchored_line(anchor, line));
 
             let (shifted_to, shifted_anchor, ambiguous_candidates, error_kind, message) =
                 match shift {
                     ShiftResult::Found { new_line } => {
-                        let fresh =
-                            format!("{}:{}", new_line, anchor_suffix(&anchors[new_line - 1]));
+                        let fresh = {
+                            let suffix = new_line
+                                .checked_sub(1)
+                                .and_then(|i| anchors.get(i))
+                                .map(anchor_suffix);
+                            match suffix {
+                                Some(suffix) => format!("{new_line}:{suffix}"),
+                                None => format!("{new_line}"),
+                            }
+                        };
                         let msg = format!(
                             "Anchor stale at line {}. Content appears to have shifted to line {new_line}. \
                              Retry with anchor \"{fresh}\".",
@@ -671,14 +692,12 @@ fn check_overlaps(ops: &[ResolvedOp]) -> Option<HashlineEditError> {
 
     // Replacement vs replacement overlap.
     for window in ranges.windows(2) {
-        if window[0].1 > window[1].0 {
+        let [prev, next] = window else {
+            continue;
+        };
+        if prev.1 > next.0 {
             return Some(overlap_error(
-                window[0].0,
-                window[0].1,
-                window[0].2,
-                window[1].0,
-                window[1].1,
-                window[1].2,
+                prev.0, prev.1, prev.2, next.0, next.1, next.2,
             ));
         }
     }
@@ -786,11 +805,29 @@ mod tests {
             .collect()
     }
 
+    fn nth<T: Clone>(items: &[T], i: usize) -> T {
+        let Some(item) = items.get(i) else {
+            panic!("expected item {i}, len {}", items.len());
+        };
+        item.clone()
+    }
+
+    fn nth_ref<T>(items: &[T], i: usize) -> &T {
+        let Some(item) = items.get(i) else {
+            panic!("expected item {i}, len {}", items.len());
+        };
+        item
+    }
+
+    fn detail(details: &[EditRegionDetail], i: usize) -> &EditRegionDetail {
+        nth_ref(details, i)
+    }
+
     #[test]
     fn point_replace() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[1].clone(), // "    let x = 1;"
+            anchor: nth(&anchors, 1), // "    let x = 1;"
             end_anchor: None,
             content: "    let x = 999;".to_owned(),
         }];
@@ -809,7 +846,7 @@ mod tests {
     fn delete_via_empty_content() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[1].clone(),
+            anchor: nth(&anchors, 1),
             end_anchor: None,
             content: String::new(), // delete
         }];
@@ -828,8 +865,8 @@ mod tests {
     fn range_replace() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[1].clone(),           // "    let x = 1;"
-            end_anchor: Some(anchors[2].clone()), // "    let y = 2;"
+            anchor: nth(&anchors, 1),           // "    let x = 1;"
+            end_anchor: Some(nth(&anchors, 2)), // "    let y = 2;"
             content: "    let z = 42;".to_owned(),
         }];
 
@@ -878,7 +915,7 @@ mod tests {
     fn insert_after_anchor() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::InsertAfter {
-            anchor: anchors[1].clone(),
+            anchor: nth(&anchors, 1),
             content: "    let z = 3;".to_owned(),
         }];
 
@@ -912,12 +949,12 @@ mod tests {
         // Two non-overlapping replacements at lines 2 and 4.
         let ops = vec![
             HashlineOp::Replace {
-                anchor: anchors[1].clone(), // line 2
+                anchor: nth(&anchors, 1), // line 2
                 end_anchor: None,
                 content: "    let x = 100;".to_owned(),
             },
             HashlineOp::Replace {
-                anchor: anchors[3].clone(), // line 4
+                anchor: nth(&anchors, 3), // line 4
                 end_anchor: None,
                 content: "    println!(\"changed\");".to_owned(),
             },
@@ -946,12 +983,12 @@ mod tests {
         // Edit lines near the top (line 5) and near the bottom (line 195).
         let ops = vec![
             HashlineOp::Replace {
-                anchor: anchors[4].clone(),
+                anchor: nth(&anchors, 4),
                 end_anchor: None,
                 content: "REPLACED_TOP".to_owned(),
             },
             HashlineOp::Replace {
-                anchor: anchors[194].clone(),
+                anchor: nth(&anchors, 194),
                 end_anchor: None,
                 content: "REPLACED_BOTTOM".to_owned(),
             },
@@ -970,7 +1007,7 @@ mod tests {
                 assert!(
                     result.snippet.contains("lines not shown"),
                     "Snippet should have gap markers between distant edits, got:\n{}",
-                    &result.snippet[..result.snippet.len().min(500)]
+                    crate::util::truncate_str(&result.snippet, 500)
                 );
                 // The snippet should be MUCH smaller than the full span.
                 let snippet_lines = result.snippet.lines().count();
@@ -989,12 +1026,12 @@ mod tests {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![
             HashlineOp::Replace {
-                anchor: anchors[1].clone(), // line 2
+                anchor: nth(&anchors, 1), // line 2
                 end_anchor: None,
                 content: "    let x = 99;".to_owned(),
             },
             HashlineOp::Replace {
-                anchor: anchors[3].clone(), // line 4
+                anchor: nth(&anchors, 3), // line 4
                 end_anchor: None,
                 content: "    println!(\"hi\");".to_owned(),
             },
@@ -1025,18 +1062,18 @@ mod tests {
         let ops = vec![
             // Delete near the top.
             HashlineOp::Replace {
-                anchor: anchors[5].clone(),
+                anchor: nth(&anchors, 5),
                 end_anchor: None,
                 content: String::new(),
             },
             // Insert in the middle.
             HashlineOp::InsertAfter {
-                anchor: anchors[100].clone(),
+                anchor: nth(&anchors, 100),
                 content: "INSERTED_A\nINSERTED_B".to_owned(),
             },
             // Replace near the bottom.
             HashlineOp::Replace {
-                anchor: anchors[190].clone(),
+                anchor: nth(&anchors, 190),
                 end_anchor: None,
                 content: "REPLACED_BOTTOM".to_owned(),
             },
@@ -1096,7 +1133,7 @@ mod tests {
         // First op is valid, second op uses a stale anchor.
         let ops = vec![
             HashlineOp::Replace {
-                anchor: anchors[0].clone(),
+                anchor: nth(&anchors, 0),
                 end_anchor: None,
                 content: "valid edit".to_owned(),
             },
@@ -1136,12 +1173,12 @@ mod tests {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![
             HashlineOp::Replace {
-                anchor: anchors[1].clone(),
-                end_anchor: Some(anchors[3].clone()), // lines 2-4
+                anchor: nth(&anchors, 1),
+                end_anchor: Some(nth(&anchors, 3)), // lines 2-4
                 content: "a".to_owned(),
             },
             HashlineOp::Replace {
-                anchor: anchors[2].clone(), // line 3 — overlaps
+                anchor: nth(&anchors, 2), // line 3 — overlaps
                 end_anchor: None,
                 content: "b".to_owned(),
             },
@@ -1202,12 +1239,12 @@ mod tests {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![
             HashlineOp::Replace {
-                anchor: anchors[1].clone(),
-                end_anchor: Some(anchors[3].clone()), // lines 2-4
+                anchor: nth(&anchors, 1),
+                end_anchor: Some(nth(&anchors, 3)), // lines 2-4
                 content: "a".to_owned(),
             },
             HashlineOp::Replace {
-                anchor: anchors[2].clone(), // line 3 — overlaps
+                anchor: nth(&anchors, 2), // line 3 — overlaps
                 end_anchor: None,
                 content: "b".to_owned(),
             },
@@ -1225,8 +1262,8 @@ mod tests {
     fn end_before_start_error() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[3].clone(),           // line 4
-            end_anchor: Some(anchors[1].clone()), // line 2 — before start
+            anchor: nth(&anchors, 3),           // line 4
+            end_anchor: Some(nth(&anchors, 1)), // line 2 — before start
             content: "x".to_owned(),
         }];
 
@@ -1242,7 +1279,7 @@ mod tests {
     fn success_includes_scheme_name() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[1].clone(),
+            anchor: nth(&anchors, 1),
             end_anchor: None,
             content: "    let x = 42;".to_owned(),
         }];
@@ -1259,7 +1296,7 @@ mod tests {
     fn snippet_has_fresh_anchors() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[1].clone(),
+            anchor: nth(&anchors, 1),
             end_anchor: None,
             content: "    let x = 42;".to_owned(),
         }];
@@ -1300,13 +1337,9 @@ mod tests {
                     .filter_map(|l| l.split('→').nth(1))
                     .collect();
                 if let Some(pos) = texts.iter().position(|t| *t == "line3")
-                    && pos > 0
+                    && let Some(prev) = pos.checked_sub(1).and_then(|j| texts.get(j))
                 {
-                    assert_ne!(
-                        texts[pos - 1],
-                        "",
-                        "should not have blank line before EOF insert"
-                    );
+                    assert_ne!(*prev, "", "should not have blank line before EOF insert");
                 }
             }
             HashlineEditOutput::Error(e) => panic!("Expected success, got error: {}", e.message),
@@ -1335,11 +1368,11 @@ mod tests {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![
             HashlineOp::InsertAfter {
-                anchor: anchors[1].clone(), // after line 2
+                anchor: nth(&anchors, 1), // after line 2
                 content: "    // first".to_owned(),
             },
             HashlineOp::InsertAfter {
-                anchor: anchors[1].clone(), // same anchor
+                anchor: nth(&anchors, 1), // same anchor
                 content: "    // second".to_owned(),
             },
         ];
@@ -1367,12 +1400,12 @@ mod tests {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![
             HashlineOp::Replace {
-                anchor: anchors[1].clone(),
-                end_anchor: Some(anchors[3].clone()), // lines 2-4
+                anchor: nth(&anchors, 1),
+                end_anchor: Some(nth(&anchors, 3)), // lines 2-4
                 content: "replaced".to_owned(),
             },
             HashlineOp::InsertAfter {
-                anchor: anchors[2].clone(), // line 3 — inside replaced span
+                anchor: nth(&anchors, 2), // line 3 — inside replaced span
                 content: "inserted".to_owned(),
             },
         ];
@@ -1392,8 +1425,8 @@ mod tests {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![
             HashlineOp::Replace {
-                anchor: anchors[1].clone(),
-                end_anchor: Some(anchors[3].clone()), // 0-based [1..4)
+                anchor: nth(&anchors, 1),
+                end_anchor: Some(nth(&anchors, 3)), // 0-based [1..4)
                 content: "replaced".to_owned(),
             },
             HashlineOp::InsertAfter {
@@ -1417,12 +1450,12 @@ mod tests {
         // insert_after anchor[0] (line 1) → insert_at=1, which is range.start.
         let ops = vec![
             HashlineOp::Replace {
-                anchor: anchors[1].clone(),
-                end_anchor: Some(anchors[3].clone()), // 0-based [1..4)
+                anchor: nth(&anchors, 1),
+                end_anchor: Some(nth(&anchors, 3)), // 0-based [1..4)
                 content: "replaced".to_owned(),
             },
             HashlineOp::InsertAfter {
-                anchor: anchors[0].clone(), // after line 1 → insert_at=1 = range.start
+                anchor: nth(&anchors, 0), // after line 1 → insert_at=1 = range.start
                 content: "at_range_start".to_owned(),
             },
         ];
@@ -1443,12 +1476,12 @@ mod tests {
         // Replace lines 2-3 (0-based: [1..3))
         let ops = vec![
             HashlineOp::Replace {
-                anchor: anchors[1].clone(),
-                end_anchor: Some(anchors[2].clone()), // lines 2-3
+                anchor: nth(&anchors, 1),
+                end_anchor: Some(nth(&anchors, 2)), // lines 2-3
                 content: "replaced".to_owned(),
             },
             HashlineOp::InsertAfter {
-                anchor: anchors[2].clone(), // insert after line 3 — at idx 3, which is exclusive end
+                anchor: nth(&anchors, 2), // insert after line 3 — at idx 3, which is exclusive end
                 content: "after_range".to_owned(),
             },
         ];
@@ -1474,8 +1507,8 @@ mod tests {
 
         let anchors = anchors_for(&big_content);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[0].clone(),
-            end_anchor: Some(anchors[24].clone()),
+            anchor: nth(&anchors, 0),
+            end_anchor: Some(nth(&anchors, 24)),
             content: "replaced".to_owned(),
         }];
 
@@ -1499,8 +1532,8 @@ mod tests {
 
         let anchors = anchors_for(&content);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[0].clone(),
-            end_anchor: Some(anchors[9].clone()),
+            anchor: nth(&anchors, 0),
+            end_anchor: Some(nth(&anchors, 9)),
             content: "replaced".to_owned(),
         }];
 
@@ -1520,8 +1553,8 @@ mod tests {
     fn small_range_no_warning() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[1].clone(),
-            end_anchor: Some(anchors[2].clone()), // 2-line range
+            anchor: nth(&anchors, 1),
+            end_anchor: Some(nth(&anchors, 2)), // 2-line range
             content: "replaced".to_owned(),
         }];
 
@@ -1538,7 +1571,7 @@ mod tests {
     #[test]
     fn shifted_recovery_after_insert_above() {
         let anchors = anchors_for(SAMPLE);
-        let anchor_line2 = anchors[1].clone(); // "    let x = 1;"
+        let anchor_line2 = nth(&anchors, 1); // "    let x = 1;"
 
         // Insert 2 lines at the top → line 2 shifts to line 4.
         let mut shifted_lines: Vec<&str> = vec!["// new1", "// new2"];
@@ -1580,7 +1613,7 @@ mod tests {
     #[test]
     fn shifted_recovery_after_delete_above() {
         let anchors = anchors_for(SAMPLE);
-        let anchor_line4 = anchors[3].clone(); // "    println!(...)"
+        let anchor_line4 = nth(&anchors, 3); // "    println!(...)"
 
         // Delete line 1 → line 4 shifts to line 3.
         let mut lines: Vec<&str> = SAMPLE.lines().collect();
@@ -1611,11 +1644,14 @@ mod tests {
     #[test]
     fn no_recovery_when_content_changed() {
         let anchors = anchors_for(SAMPLE);
-        let anchor_line2 = anchors[1].clone();
+        let anchor_line2 = nth(&anchors, 1);
 
         // Replace line 2's content entirely.
         let mut lines: Vec<&str> = SAMPLE.lines().collect();
-        lines[1] = "    let completely_different = true;";
+        let Some(line) = lines.get_mut(1) else {
+            panic!("expected SAMPLE line 1, len {}", lines.len());
+        };
+        *line = "    let completely_different = true;";
         let modified = lines.join("\n");
 
         let ops = vec![HashlineOp::Replace {
@@ -1648,7 +1684,7 @@ mod tests {
         let content = lines.join("\n");
 
         let anchors = anchors_for(&content);
-        let anchor_line5 = anchors[4].clone(); // one of the repeated lines
+        let anchor_line5 = nth(&anchors, 4); // one of the repeated lines
 
         // Insert a line at top → all repeated lines shift.
         let mut shifted = vec!["// inserted".to_owned()];
@@ -1711,7 +1747,7 @@ mod tests {
     #[test]
     fn shifted_anchor_is_usable() {
         let anchors = anchors_for(SAMPLE);
-        let anchor_line2 = anchors[1].clone();
+        let anchor_line2 = nth(&anchors, 1);
 
         // Insert 1 line at top → line 2 shifts to line 3.
         let mut shifted_lines: Vec<&str> = vec!["// new"];
@@ -1758,7 +1794,7 @@ mod tests {
 
         // Get the FULL anchor (with chunk context) for line 5.
         let full_anchors = anchors_for(&original);
-        let full_anchor = full_anchors[4].clone(); // line 5, has :local:context
+        let full_anchor = nth(&full_anchors, 4); // line 5, has :local:context
 
         // Insert exactly 8 new lines at the top.
         // Line 5 → position 13. Chunk at [8,16) in the shifted file =
@@ -1812,31 +1848,31 @@ mod tests {
     fn edit_details_for_single_replace() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[1].clone(),
+            anchor: nth(&anchors, 1),
             end_anchor: None,
             content: "    let x = 42;".to_owned(),
         }];
 
         let result = apply_edits(SAMPLE, &ops, &test_path(), &*test_scheme());
         assert_eq!(result.edit_details.len(), 1);
-        assert_eq!(result.edit_details[0].old_text, "    let x = 1;");
-        assert_eq!(result.edit_details[0].new_text, "    let x = 42;");
-        assert_eq!(result.edit_details[0].old_line, 2);
-        assert_eq!(result.edit_details[0].new_line, 2);
+        assert_eq!(detail(&result.edit_details, 0).old_text, "    let x = 1;");
+        assert_eq!(detail(&result.edit_details, 0).new_text, "    let x = 42;");
+        assert_eq!(detail(&result.edit_details, 0).old_line, 2);
+        assert_eq!(detail(&result.edit_details, 0).new_line, 2);
     }
 
     #[test]
     fn edit_details_for_insert_has_empty_old_text() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::InsertAfter {
-            anchor: anchors[1].clone(),
+            anchor: nth(&anchors, 1),
             content: "    let z = 3;".to_owned(),
         }];
 
         let result = apply_edits(SAMPLE, &ops, &test_path(), &*test_scheme());
         assert_eq!(result.edit_details.len(), 1);
-        assert_eq!(result.edit_details[0].old_text, "");
-        assert_eq!(result.edit_details[0].new_text, "    let z = 3;");
+        assert_eq!(detail(&result.edit_details, 0).old_text, "");
+        assert_eq!(detail(&result.edit_details, 0).new_text, "    let z = 3;");
     }
 
     #[test]
@@ -1845,7 +1881,7 @@ mod tests {
         let anchors = anchors_for(content);
 
         let ops = vec![HashlineOp::InsertAfter {
-            anchor: anchors[0].clone(),
+            anchor: nth(&anchors, 0),
             content: String::new(),
         }];
 
@@ -1860,8 +1896,8 @@ mod tests {
 
         // The detail should reflect the blank line insertion.
         assert_eq!(result.edit_details.len(), 1);
-        assert_eq!(result.edit_details[0].old_text, "");
-        assert_eq!(result.edit_details[0].new_text, "");
+        assert_eq!(detail(&result.edit_details, 0).old_text, "");
+        assert_eq!(detail(&result.edit_details, 0).new_text, "");
 
         // The snippet should include the blank line with a fresh anchor.
         match result.output {
@@ -1879,15 +1915,15 @@ mod tests {
     fn edit_details_for_delete_has_empty_new_text() {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[1].clone(),
+            anchor: nth(&anchors, 1),
             end_anchor: None,
             content: String::new(),
         }];
 
         let result = apply_edits(SAMPLE, &ops, &test_path(), &*test_scheme());
         assert_eq!(result.edit_details.len(), 1);
-        assert_eq!(result.edit_details[0].old_text, "    let x = 1;");
-        assert_eq!(result.edit_details[0].new_text, "");
+        assert_eq!(detail(&result.edit_details, 0).old_text, "    let x = 1;");
+        assert_eq!(detail(&result.edit_details, 0).new_text, "");
     }
 
     #[test]
@@ -1896,16 +1932,19 @@ mod tests {
         let anchors = anchors_for(content);
 
         let ops = vec![HashlineOp::Replace {
-            anchor: anchors[1].clone(),           // line2
-            end_anchor: Some(anchors[3].clone()), // line4
+            anchor: nth(&anchors, 1),           // line2
+            end_anchor: Some(nth(&anchors, 3)), // line4
             content: "replaced_range".to_owned(),
         }];
 
         let result = apply_edits(content, &ops, &test_path(), &*test_scheme());
         assert_eq!(result.edit_details.len(), 1);
-        assert_eq!(result.edit_details[0].old_text, "line2\nline3\nline4");
-        assert_eq!(result.edit_details[0].new_text, "replaced_range");
-        assert_eq!(result.edit_details[0].old_line, 2);
+        assert_eq!(
+            detail(&result.edit_details, 0).old_text,
+            "line2\nline3\nline4"
+        );
+        assert_eq!(detail(&result.edit_details, 0).new_text, "replaced_range");
+        assert_eq!(detail(&result.edit_details, 0).old_line, 2);
     }
 
     #[test]
@@ -1913,11 +1952,11 @@ mod tests {
         let anchors = anchors_for(SAMPLE);
         let ops = vec![
             HashlineOp::InsertAfter {
-                anchor: anchors[0].clone(), // after "fn main() {"
+                anchor: nth(&anchors, 0), // after "fn main() {"
                 content: "    // comment".to_owned(),
             },
             HashlineOp::Replace {
-                anchor: anchors[3].clone(), // println line
+                anchor: nth(&anchors, 3), // println line
                 end_anchor: None,
                 content: "    println!(\"changed\");".to_owned(),
             },
@@ -1926,20 +1965,20 @@ mod tests {
         let result = apply_edits(SAMPLE, &ops, &test_path(), &*test_scheme());
         assert_eq!(result.edit_details.len(), 2);
         // Insert: no old content
-        assert_eq!(result.edit_details[0].old_text, "");
-        assert_eq!(result.edit_details[0].new_text, "    // comment");
+        assert_eq!(detail(&result.edit_details, 0).old_text, "");
+        assert_eq!(detail(&result.edit_details, 0).new_text, "    // comment");
         // Replace: old content is the println line
         assert_eq!(
-            result.edit_details[1].old_text,
+            detail(&result.edit_details, 1).old_text,
             "    println!(\"{x} {y}\");"
         );
         assert_eq!(
-            result.edit_details[1].new_text,
+            detail(&result.edit_details, 1).new_text,
             "    println!(\"changed\");"
         );
         // New line should account for the insertion shift
-        assert_eq!(result.edit_details[1].old_line, 4);
-        assert_eq!(result.edit_details[1].new_line, 5); // shifted by 1
+        assert_eq!(detail(&result.edit_details, 1).old_line, 4);
+        assert_eq!(detail(&result.edit_details, 1).new_line, 5); // shifted by 1
     }
 
     #[test]
@@ -1974,11 +2013,11 @@ mod tests {
 
         let ops = vec![
             HashlineOp::InsertAfter {
-                anchor: anchors[4].clone(),
+                anchor: nth(&anchors, 4),
                 content: "INSERTED".to_owned(),
             },
             HashlineOp::Replace {
-                anchor: anchors[194].clone(),
+                anchor: nth(&anchors, 194),
                 end_anchor: None,
                 content: "REPLACED".to_owned(),
             },
@@ -1988,10 +2027,10 @@ mod tests {
         assert_eq!(result.edit_details.len(), 2);
 
         // Each detail should contain only the affected content
-        assert_eq!(result.edit_details[0].old_text, "");
-        assert_eq!(result.edit_details[0].new_text, "INSERTED");
-        assert_eq!(result.edit_details[1].old_text, "line_194");
-        assert_eq!(result.edit_details[1].new_text, "REPLACED");
+        assert_eq!(detail(&result.edit_details, 0).old_text, "");
+        assert_eq!(detail(&result.edit_details, 0).new_text, "INSERTED");
+        assert_eq!(detail(&result.edit_details, 1).old_text, "line_194");
+        assert_eq!(detail(&result.edit_details, 1).new_text, "REPLACED");
 
         // Total size should be tiny — NOT the entire file
         let total: usize = result
@@ -2064,7 +2103,7 @@ mod tests {
         let lines: Vec<&str> = split_lines(content);
         let scheme = ChunkFingerprint::with_params(3, 8);
         let anchors = scheme.generate_anchors(&lines);
-        let real_anchor = anchors[0].render();
+        let real_anchor = nth_ref(&anchors, 0).render();
 
         assert!(validate_anchor(&real_anchor, &lines, &scheme).is_ok());
 
@@ -2098,11 +2137,11 @@ mod tests {
         let anchors = scheme.generate_anchors(&lines);
 
         // Get the suffix (hash portion without line number) for line 3.
-        let suffix = anchor_suffix(&anchors[2]);
+        let suffix = anchor_suffix(nth_ref(&anchors, 2));
         assert!(!suffix.is_empty());
 
         // Full anchor works.
-        let full = anchors[2].render();
+        let full = nth_ref(&anchors, 2).render();
         assert!(validate_anchor(&full, &lines, &scheme).is_ok());
 
         // Hash-only (no line number) should recover if unique.
@@ -2122,7 +2161,7 @@ mod tests {
         let scheme = ContentOnly::with_hash_len(3);
         let anchors = scheme.generate_anchors(&lines);
 
-        let suffix = anchor_suffix(&anchors[0]);
+        let suffix = anchor_suffix(nth_ref(&anchors, 0));
         let result = validate_anchor(&suffix, &lines, &scheme);
         assert!(result.is_err(), "ambiguous hash suffix should not recover");
     }
@@ -2174,7 +2213,7 @@ mod tests {
     #[test]
     fn replace_rejects_content_with_anchor_prefix() {
         let anchors = anchors_for(SAMPLE);
-        let anchor = anchors[1].clone();
+        let anchor = nth(&anchors, 1);
         let content_with_anchor = "22:abc:rst\u{2192}let x = 1;".to_owned();
         let ops = vec![HashlineOp::Replace {
             anchor,
@@ -2193,7 +2232,7 @@ mod tests {
     #[test]
     fn insert_after_rejects_content_with_anchor_prefix() {
         let anchors = anchors_for(SAMPLE);
-        let anchor = anchors[1].clone();
+        let anchor = nth(&anchors, 1);
         let content_with_anchor = "axy:edj\u{2192}    # comment".to_owned();
         let ops = vec![HashlineOp::InsertAfter {
             anchor,

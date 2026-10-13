@@ -1,14 +1,27 @@
-//! Build the strategy report from a dispatch outcome plus the request gate.
+//! Build the strategy report from a dispatch outcome plus the request gate,
+//! and relay the daemon's redirect telemetry ring to the host's `log_event`.
 
-use xai_fast_worktree::{ArmSkip, GroveHardFail, GroveSkip, WorktreeReport};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use xai_fast_worktree::{
+    ArmSkip, GroveHardFail, GroveSkip, NfsWorktreeClient, NfsWorktreeOpts, WorktreeReport,
+};
 use xai_grok_telemetry::events::{
     CloneCancellationDisposition, CloneDaemonCapabilityClass, CloneFallbackReason, CloneOutcome,
-    CloneStrategy, CloneTransport, WorktreeEnded, WorktreeLifecycle,
+    CloneStrategy, CloneTransport, RedirectEvent, WorktreeEnded, WorktreeLifecycle,
 };
 use xai_grok_telemetry::session_ctx::log_event;
 use xai_grok_workspace_types::rpc::worktree::{
     StrategyReport, WorktreeType, is_grove_resolved, transport_for_resolved,
 };
+
+/// Budget for one whole drain. The fetch gets all of it and the ack gets what
+/// is left, but `NfsWorktreeClient::call` applies the value it is handed to
+/// connect, write, and read separately, so a daemon that accepts and stalls
+/// costs at most about three times the remaining budget per call before the
+/// ack is skipped.
+const REDIRECT_EVENTS_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) struct WorktreeEndedEmit<'a> {
     pub lifecycle: WorktreeLifecycle,
@@ -71,11 +84,121 @@ pub(super) fn emit_worktree_ended(emit: WorktreeEndedEmit<'_>) -> WorktreeEnded 
             .and_then(CloneDaemonCapabilityClass::from_class_str),
     };
     log_event(event.clone());
+    drain_redirect_events(&event);
     #[cfg(test)]
     LAST_WORKTREE_ENDED.with(|slot| {
         *slot.borrow_mut() = Some(event.clone());
     });
     event
+}
+
+/// Set while one drain is in flight, so concurrent worktree ends in one
+/// process do not both fetch and log the same unacked entries.
+static REDIRECT_DRAIN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Holds `REDIRECT_DRAIN_IN_FLIGHT`. Releasing on `Drop` keeps the flag from
+/// wedging shut when tokio drops the spawned closure unrun at runtime shutdown
+/// or when the drain panics.
+#[must_use]
+struct RedirectDrainGuard;
+
+impl RedirectDrainGuard {
+    fn try_acquire() -> Option<Self> {
+        REDIRECT_DRAIN_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            .then_some(RedirectDrainGuard)
+    }
+}
+
+impl Drop for RedirectDrainGuard {
+    fn drop(&mut self) {
+        REDIRECT_DRAIN_IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
+
+/// worker thread. Only a grove-backed worktree talked to the daemon, and a
+/// host with telemetry off must not ack entries a telemetry-enabled peer
+/// sharing the daemon would have logged.
+pub(crate) fn drain_redirect_events(event: &WorktreeEnded) {
+    if event.transport.is_none()
+        || !xai_grok_telemetry::is_enabled()
+        || tokio::runtime::Handle::try_current().is_err()
+    {
+        return;
+    }
+    let Some(guard) = RedirectDrainGuard::try_acquire() else {
+        return;
+    };
+    let opts = NfsWorktreeOpts::default();
+    #[cfg(test)]
+    let opts = NfsWorktreeOpts {
+        control_sock: REDIRECT_DRAIN_CONTROL_SOCK.with(|slot| slot.borrow().clone()),
+        ..opts
+    };
+    // The ring is daemon-wide, so its entries carry no session id; the
+    // blocking thread has no task-local session context and none is wanted.
+    tokio::task::spawn_blocking(move || {
+        let _in_flight = guard;
+        drain_redirect_events_sync(&NfsWorktreeClient::from_opts(&opts));
+    });
+}
+
+/// Blocking drain, decode, log, then ack through the last seq seen. Returns
+/// `(logged, undecodable)`. Delivery is at least once, since the ring keeps an
+/// entry until acked and a host that dies mid-translation, or a second host
+/// sharing the daemon, logs it again. Undecodable entries are acked too,
+/// because the host cannot use them and leaving them would block the ring
+/// forever.
+fn drain_redirect_events_sync(client: &NfsWorktreeClient) -> (usize, usize) {
+    // Each call receives the time left on this deadline and applies it per
+    // socket operation, so the deadline bounds the ack's start, not the total.
+    let deadline = Instant::now() + REDIRECT_EVENTS_DRAIN_TIMEOUT;
+    let (values, next_seq) = match client.redirect_events(0, REDIRECT_EVENTS_DRAIN_TIMEOUT) {
+        Ok(reply) => reply,
+        Err(_) => {
+            tracing::debug!("redirect telemetry drain skipped; daemon unreachable or too old");
+            return (0, 0);
+        }
+    };
+    if values.is_empty() {
+        return (0, 0);
+    }
+    let mut logged = 0;
+    let mut undecodable = 0;
+    for value in values {
+        match serde_json::from_value::<RedirectEvent>(value) {
+            Ok(event) => {
+                log_redirect_event(event);
+                logged += 1;
+            }
+            // The serde message would echo daemon-supplied text; the count is enough.
+            Err(_) => undecodable += 1,
+        }
+    }
+    tracing::debug!(logged, undecodable, "redirect telemetry drained");
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        tracing::debug!("redirect telemetry ack skipped; drain budget spent, entries stay queued");
+    } else if client
+        .redirect_events(next_seq.saturating_sub(1), remaining)
+        .is_err()
+    {
+        tracing::debug!("redirect telemetry ack failed; entries stay queued");
+    }
+    (logged, undecodable)
+}
+
+fn log_redirect_event(event: RedirectEvent) {
+    #[cfg(test)]
+    LOGGED_REDIRECT_EVENTS.with(|slot| slot.borrow_mut().push(event.clone()));
+    match event {
+        RedirectEvent::Applied(applied) => log_event(applied),
+        RedirectEvent::FixupFailed(failed) => log_event(failed),
+        RedirectEvent::Demoted(demoted) => log_event(demoted),
+        RedirectEvent::Overwrite(overwrite) => log_event(overwrite),
+        RedirectEvent::LimitHit(hit) => log_event(hit),
+    }
 }
 
 fn classify_fallback(
@@ -89,7 +212,6 @@ fn classify_fallback(
     if !grove_enabled {
         return match grove_gate_source {
             Some("remote_kill") => Some(CloneFallbackReason::RemoteKill),
-            Some("remote_unavailable") => Some(CloneFallbackReason::RemoteUnavailable),
             _ => None,
         };
     }
@@ -149,6 +271,8 @@ fn map_grove_skip(skip: GroveSkip) -> CloneFallbackReason {
         GroveSkip::FuseUnavailable => CloneFallbackReason::FuseUnavailable,
         #[cfg(target_os = "linux")]
         GroveSkip::PrivateMountNamespace => CloneFallbackReason::Other,
+        #[cfg(windows)]
+        GroveSkip::ProjfsUnavailable => CloneFallbackReason::ProjfsUnavailable,
         GroveSkip::SourceIsGroveMount => CloneFallbackReason::SourceIsGrove,
         GroveSkip::DaemonDeclined => CloneFallbackReason::DaemonDeclined,
         GroveSkip::PreserveOnLinkedView
@@ -169,6 +293,25 @@ std::thread_local! {
 #[cfg(test)]
 pub(super) fn last_worktree_ended_for_test() -> Option<WorktreeEnded> {
     LAST_WORKTREE_ENDED.with(|slot| slot.borrow_mut().take())
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static LOGGED_REDIRECT_EVENTS: std::cell::RefCell<Vec<RedirectEvent>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn take_logged_redirect_events_for_test() -> Vec<RedirectEvent> {
+    LOGGED_REDIRECT_EVENTS.with(|slot| std::mem::take(&mut *slot.borrow_mut()))
+}
+
+// Where a test points the drain spawned by `emit_worktree_ended`, so a gate
+// regression is observed on a fake socket instead of the host's daemon.
+#[cfg(test)]
+std::thread_local! {
+    static REDIRECT_DRAIN_CONTROL_SOCK: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 pub(super) fn report_from_worktree(
@@ -208,12 +351,7 @@ fn requested_strategy(
     grove_gate_source: Option<&str>,
     requested_type: WorktreeType,
 ) -> &'static str {
-    if grove_enabled
-        || matches!(
-            grove_gate_source,
-            Some("remote_kill" | "remote_unavailable")
-        )
-    {
+    if grove_enabled || grove_gate_source == Some("remote_kill") {
         return "grove";
     }
     match requested_type {
@@ -233,7 +371,6 @@ fn fallback_reason(
     if !grove_enabled {
         return match grove_gate_source {
             Some("remote_kill") => Some("remote Grove is off".into()),
-            Some("remote_unavailable") => Some("remote Grove is unavailable".into()),
             _ => None,
         };
     }
@@ -407,7 +544,6 @@ mod tests {
 
     #[test]
     fn a_pre_dispatch_rewrite_still_explains_itself() {
-        // The source was already a Grove mount, so the workspace rewrote the mode
         // to git before dispatch: no arm ran, and no arm recorded a skip.
         let rewritten = report_from_worktree(
             true,
@@ -576,27 +712,6 @@ mod tests {
     }
 
     #[test]
-    fn worktree_ended_remote_unavailable_is_typed() {
-        let event = emit_from(
-            WorktreeLifecycle::Create,
-            CloneOutcome::Success,
-            false,
-            Some("remote_unavailable"),
-            None,
-            Some(&report("copy", Vec::new(), Some("unknown"))),
-            None,
-        );
-        assert_eq!(event.requested_strategy, Some(CloneStrategy::Grove));
-        assert_eq!(event.resolved_strategy, Some(CloneStrategy::Copy));
-        assert_eq!(
-            event.fallback_reason,
-            Some(CloneFallbackReason::RemoteUnavailable)
-        );
-        let text = serde_json::to_string(&event).unwrap();
-        assert!(!text.contains("remote Grove is unavailable"), "{text}");
-    }
-
-    #[test]
     fn worktree_ended_fork_cancel_records_disposition() {
         let event = emit_from(
             WorktreeLifecycle::Fork,
@@ -730,6 +845,298 @@ mod tests {
         let text = serde_json::to_string(&event).unwrap();
         assert!(!text.contains("in flight"), "{text}");
         assert!(!text.contains("phase"), "{text}");
+    }
+
+    /// Answers each connection with the next canned reply (an `err` once they
+    /// run out) and returns every request seen once the `stop` op arrives.
+    #[cfg(unix)]
+    fn fake_daemon(
+        sock: &std::path::Path,
+        replies: Vec<&'static str>,
+    ) -> std::thread::JoinHandle<Vec<serde_json::Value>> {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::os::unix::net::UnixListener::bind(sock).unwrap();
+        std::thread::spawn(move || {
+            let mut replies = replies.into_iter();
+            let mut requests = Vec::new();
+            loop {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let request: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                if request.get("op").and_then(|v| v.as_str()) == Some("stop") {
+                    return requests;
+                }
+                requests.push(request);
+                let reply = replies
+                    .next()
+                    .unwrap_or(r#"{"status":"err","data":{"v":1,"error":"unexpected call"}}"#);
+                writeln!(stream, "{reply}").unwrap();
+            }
+        })
+    }
+
+    #[cfg(unix)]
+    fn stop_fake_daemon(sock: &std::path::Path) {
+        use std::io::Write;
+        let mut stream = std::os::unix::net::UnixStream::connect(sock).unwrap();
+        writeln!(stream, r#"{{"op":"stop"}}"#).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn client_for(sock: &std::path::Path) -> NfsWorktreeClient {
+        NfsWorktreeClient::from_opts(&NfsWorktreeOpts {
+            control_sock: Some(sock.to_path_buf()),
+            runtime_dir: Some(sock.parent().unwrap().to_path_buf()),
+            ..NfsWorktreeOpts::default()
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drain_translates_ring_events_to_telemetry_structs_and_acks() {
+        use xai_grok_telemetry::events::{
+            LimitDisposition, RedirectDemoteReason, RedirectDemoted, RedirectLimitHit,
+            RedirectLimitKind, RedirectMechanismKind, RedirectTransport,
+        };
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sock = tmp.path().join("control.sock");
+        let daemon = fake_daemon(
+            &sock,
+            vec![
+                concat!(
+                    r#"{"status":"ok","data":{"v":1,"redirect_events":["#,
+                    r#"{"seq":5,"event":"redirect_demoted","transport":"fuse","mechanism":"bind","reason":"shutdown","demote_ms":5},"#,
+                    r#"{"seq":6,"event":"redirect_limit_hit","limit_kind":"user_entries","limit":64,"observed":65,"disposition":"rejected"},"#,
+                    r#"{"seq":7,"event":"redirect_from_a_newer_daemon","transport":"fuse"}"#,
+                    r#"],"redirect_next_seq":8}}"#
+                ),
+                r#"{"status":"ok","data":{"v":1,"redirect_next_seq":8}}"#,
+            ],
+        );
+        take_logged_redirect_events_for_test();
+
+        let report = drain_redirect_events_sync(&client_for(&sock));
+        stop_fake_daemon(&sock);
+
+        assert_eq!((2, 1), report);
+        assert_eq!(
+            vec![
+                RedirectEvent::Demoted(RedirectDemoted {
+                    transport: RedirectTransport::Fuse,
+                    mechanism: RedirectMechanismKind::Bind,
+                    reason: RedirectDemoteReason::Shutdown,
+                    demote_ms: 5,
+                }),
+                RedirectEvent::LimitHit(RedirectLimitHit {
+                    limit_kind: RedirectLimitKind::UserEntries,
+                    limit: 64,
+                    observed: 65,
+                    disposition: LimitDisposition::Rejected,
+                }),
+            ],
+            take_logged_redirect_events_for_test()
+        );
+        assert_eq!(
+            vec![
+                serde_json::json!({"op":"redirect_events","v":1,"ack_through":0}),
+                serde_json::json!({"op":"redirect_events","v":1,"ack_through":7}),
+            ],
+            daemon.join().unwrap(),
+            "undecodable entries are acked and dropped, not retried"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drain_still_reports_logged_events_when_the_ack_fails() {
+        use xai_grok_telemetry::events::{
+            RedirectDemoteReason, RedirectDemoted, RedirectMechanismKind, RedirectTransport,
+        };
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sock = tmp.path().join("control.sock");
+        let daemon = fake_daemon(
+            &sock,
+            vec![concat!(
+                r#"{"status":"ok","data":{"v":1,"redirect_events":["#,
+                r#"{"seq":1,"event":"redirect_demoted","transport":"fuse","mechanism":"bind","reason":"cleanup","demote_ms":1},"#,
+                r#"{"seq":2,"event":"redirect_demoted","transport":"nfs","mechanism":"image","reason":"convert","demote_ms":2}"#,
+                r#"],"redirect_next_seq":3}}"#
+            )],
+        );
+        take_logged_redirect_events_for_test();
+
+        let report = drain_redirect_events_sync(&client_for(&sock));
+        stop_fake_daemon(&sock);
+
+        assert_eq!((2, 0), report);
+        assert_eq!(
+            vec![
+                RedirectEvent::Demoted(RedirectDemoted {
+                    transport: RedirectTransport::Fuse,
+                    mechanism: RedirectMechanismKind::Bind,
+                    reason: RedirectDemoteReason::Cleanup,
+                    demote_ms: 1,
+                }),
+                RedirectEvent::Demoted(RedirectDemoted {
+                    transport: RedirectTransport::Nfs,
+                    mechanism: RedirectMechanismKind::Image,
+                    reason: RedirectDemoteReason::Convert,
+                    demote_ms: 2,
+                }),
+            ],
+            take_logged_redirect_events_for_test()
+        );
+        assert_eq!(
+            vec![
+                serde_json::json!({"op":"redirect_events","v":1,"ack_through":0}),
+                serde_json::json!({"op":"redirect_events","v":1,"ack_through":2}),
+            ],
+            daemon.join().unwrap(),
+            "the ack is attempted once and its failure is swallowed"
+        );
+    }
+
+    /// Both tests that observe `REDIRECT_DRAIN_IN_FLIGHT` hold this, since the
+    /// flag is process-wide and the test binary runs tests in parallel.
+    static IN_FLIGHT_FLAG_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Telemetry is never initialized in a test binary, so the gate in
+    /// `drain_redirect_events` must keep `emit_worktree_ended` off the socket.
+    #[cfg(unix)]
+    #[test]
+    fn emit_worktree_ended_with_telemetry_disabled_makes_no_connection() {
+        let _serial = IN_FLIGHT_FLAG_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!xai_grok_telemetry::is_enabled());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sock = tmp.path().join("control.sock");
+        let daemon = fake_daemon(
+            &sock,
+            vec![r#"{"status":"ok","data":{"v":1,"redirect_next_seq":1}}"#],
+        );
+        REDIRECT_DRAIN_CONTROL_SOCK.with(|slot| *slot.borrow_mut() = Some(sock.clone()));
+        let mut wt = report("grove-fuse", Vec::new(), Some("current"));
+        wt.strategy_metadata = Some(serde_json::json!({"grove":{"transport":"fuse"}}));
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let event = runtime.block_on(async {
+            assert!(tokio::runtime::Handle::try_current().is_ok());
+            assert!(!REDIRECT_DRAIN_IN_FLIGHT.load(Ordering::Acquire));
+            emit_from(
+                WorktreeLifecycle::Create,
+                CloneOutcome::Success,
+                true,
+                Some("request"),
+                None,
+                Some(&wt),
+                None,
+            )
+        });
+        // Dropping the runtime waits for every blocking task, so a drain that
+        // slipped past the gate has connected by the time the daemon stops.
+        drop(runtime);
+        assert_eq!(
+            Some(sock.clone()),
+            REDIRECT_DRAIN_CONTROL_SOCK.with(|slot| slot.borrow().clone()),
+            "the override is read on this thread, not consumed elsewhere"
+        );
+        REDIRECT_DRAIN_CONTROL_SOCK.with(|slot| *slot.borrow_mut() = None);
+        stop_fake_daemon(&sock);
+
+        assert_eq!(Some(CloneTransport::Fuse), event.transport);
+        assert!(daemon.join().unwrap().is_empty());
+    }
+
+    #[test]
+    fn redirect_drain_guard_releases_on_drop_panic_and_unrun_closure() {
+        let _serial = IN_FLIGHT_FLAG_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let held = RedirectDrainGuard::try_acquire().unwrap();
+        assert!(RedirectDrainGuard::try_acquire().is_none());
+        drop(held);
+        assert!(!REDIRECT_DRAIN_IN_FLIGHT.load(Ordering::Acquire));
+
+        let held = RedirectDrainGuard::try_acquire().unwrap();
+        let unwound = std::panic::catch_unwind(move || {
+            let _in_flight = held;
+            panic!("drain failed");
+        });
+        assert!(unwound.is_err());
+        assert!(!REDIRECT_DRAIN_IN_FLIGHT.load(Ordering::Acquire));
+
+        // A runtime that is shutting down drops a blocking closure unrun.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+        runtime.shutdown_background();
+        let held = RedirectDrainGuard::try_acquire().unwrap();
+        let ran = std::sync::Arc::new(AtomicBool::new(false));
+        let ran_in_closure = std::sync::Arc::clone(&ran);
+        drop(handle.spawn_blocking(move || {
+            let _in_flight = held;
+            ran_in_closure.store(true, Ordering::Release);
+        }));
+        assert!(!ran.load(Ordering::Acquire), "the closure must not run");
+        assert!(!REDIRECT_DRAIN_IN_FLIGHT.load(Ordering::Acquire));
+        let reacquired = RedirectDrainGuard::try_acquire().unwrap();
+        drop(reacquired);
+        assert!(!REDIRECT_DRAIN_IN_FLIGHT.load(Ordering::Acquire));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drain_on_empty_ring_is_a_noop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sock = tmp.path().join("control.sock");
+        let daemon = fake_daemon(
+            &sock,
+            vec![r#"{"status":"ok","data":{"v":1,"redirect_next_seq":1}}"#],
+        );
+        take_logged_redirect_events_for_test();
+
+        let report = drain_redirect_events_sync(&client_for(&sock));
+        stop_fake_daemon(&sock);
+
+        assert_eq!((0, 0), report);
+        assert!(take_logged_redirect_events_for_test().is_empty());
+        assert_eq!(
+            vec![serde_json::json!({"op":"redirect_events","v":1,"ack_through":0})],
+            daemon.join().unwrap(),
+            "an empty ring must not be acked"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drain_against_an_old_daemon_logs_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sock = tmp.path().join("control.sock");
+        let daemon = fake_daemon(
+            &sock,
+            vec![
+                r#"{"status":"err","data":{"v":1,"error":"invalid request json: unknown variant"}}"#,
+            ],
+        );
+        take_logged_redirect_events_for_test();
+
+        let report = drain_redirect_events_sync(&client_for(&sock));
+        stop_fake_daemon(&sock);
+
+        assert_eq!((0, 0), report);
+        assert!(take_logged_redirect_events_for_test().is_empty());
+        assert_eq!(
+            vec![serde_json::json!({"op":"redirect_events","v":1,"ack_through":0})],
+            daemon.join().unwrap()
+        );
     }
 
     #[cfg(target_os = "linux")]

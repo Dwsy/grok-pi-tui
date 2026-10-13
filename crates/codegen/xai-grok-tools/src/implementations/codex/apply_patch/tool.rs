@@ -627,7 +627,7 @@ mod tests {
                 tool_output_for_prompt,
             } => {
                 assert_eq!(files.len(), 1);
-                assert_eq!(files[0].action, "added");
+                assert_eq!(files.first().map(|f| f.action.as_str()), Some("added"));
                 assert!(tool_output_for_prompt.contains("A "));
                 let content = std::fs::read_to_string(tmp.path().join("new.txt")).unwrap();
                 assert_eq!(content, "hello\nworld\n");
@@ -659,7 +659,7 @@ mod tests {
                 tool_output_for_prompt,
             } => {
                 assert_eq!(files.len(), 1);
-                assert_eq!(files[0].action, "deleted");
+                assert_eq!(files.first().map(|f| f.action.as_str()), Some("deleted"));
                 assert!(tool_output_for_prompt.contains("D "));
                 assert!(!tmp.path().join("del.txt").exists());
             }
@@ -690,7 +690,7 @@ mod tests {
                 tool_output_for_prompt,
             } => {
                 assert_eq!(files.len(), 1);
-                assert_eq!(files[0].action, "modified");
+                assert_eq!(files.first().map(|f| f.action.as_str()), Some("modified"));
                 assert!(tool_output_for_prompt.contains("M "));
                 let content = std::fs::read_to_string(tmp.path().join("update.txt")).unwrap();
                 assert_eq!(content, "foo\nbaz\n");
@@ -719,8 +719,11 @@ mod tests {
         match result {
             ApplyPatchOutput::Success { files, .. } => {
                 assert_eq!(files.len(), 1);
-                assert_eq!(files[0].action, "moved");
-                assert_eq!(files[0].move_to, Some(tmp.path().join("dst.txt")));
+                let Some(file) = files.first() else {
+                    panic!("expected a file: {files:?}");
+                };
+                assert_eq!(file.action, "moved");
+                assert_eq!(file.move_to, Some(tmp.path().join("dst.txt")));
                 assert!(!tmp.path().join("src.txt").exists());
                 let content = std::fs::read_to_string(tmp.path().join("dst.txt")).unwrap();
                 assert_eq!(content, "line2\n");

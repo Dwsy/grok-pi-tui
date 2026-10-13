@@ -40,9 +40,16 @@ pub fn indexed_to_rgb(index: u8) -> (u8, u8, u8) {
         // 6×6×6 color cube (16–231)
         16..=231 => {
             let n = index - 16;
-            let r = CUBE_VALUES[(n / 36) as usize];
-            let g = CUBE_VALUES[((n % 36) / 6) as usize];
-            let b = CUBE_VALUES[(n % 6) as usize];
+            // n is 0..=215, so each cube axis is 0..=5.
+            let Some(&r) = CUBE_VALUES.get((n / 36) as usize) else {
+                return (0, 0, 0);
+            };
+            let Some(&g) = CUBE_VALUES.get(((n % 36) / 6) as usize) else {
+                return (0, 0, 0);
+            };
+            let Some(&b) = CUBE_VALUES.get((n % 6) as usize) else {
+                return (0, 0, 0);
+            };
             (r, g, b)
         }
         // Grayscale ramp (232–255): value = 8 + (index − 232) × 10
@@ -64,14 +71,16 @@ pub fn nearest_indexed(r: u8, g: u8, b: u8) -> u8 {
     let gi = nearest_cube_channel(g);
     let bi = nearest_cube_channel(b);
     let cube_idx = 16 + 36 * ri as u16 + 6 * gi as u16 + bi as u16;
-    let cube_dist = sq_dist(
-        r,
-        g,
-        b,
-        CUBE_VALUES[ri as usize],
-        CUBE_VALUES[gi as usize],
-        CUBE_VALUES[bi as usize],
-    );
+    let Some(&cube_r) = CUBE_VALUES.get(ri as usize) else {
+        return 16;
+    };
+    let Some(&cube_g) = CUBE_VALUES.get(gi as usize) else {
+        return 16;
+    };
+    let Some(&cube_b) = CUBE_VALUES.get(bi as usize) else {
+        return 16;
+    };
+    let cube_dist = sq_dist(r, g, b, cube_r, cube_g, cube_b);
 
     // --- nearest in the grayscale ramp (232–255) ---
     // Ramp values: 8, 18, 28, …, 238  (24 entries)
@@ -97,10 +106,10 @@ pub fn nearest_indexed(r: u8, g: u8, b: u8) -> u8 {
 fn nearest_cube_channel(v: u8) -> u8 {
     let mut best = 0u8;
     let mut best_d = v.abs_diff(CUBE_VALUES[0]) as u16;
-    for i in 1..6u8 {
-        let d = v.abs_diff(CUBE_VALUES[i as usize]) as u16;
+    for (i, &cube) in CUBE_VALUES.iter().enumerate().skip(1) {
+        let d = v.abs_diff(cube) as u16;
         if d < best_d {
-            best = i;
+            best = i as u8;
             best_d = d;
         }
     }

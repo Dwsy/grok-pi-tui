@@ -305,7 +305,9 @@ impl SchedulerActor {
             return;
         };
 
-        let task = &state.tasks[idx];
+        let Some(task) = state.tasks.get(idx) else {
+            return;
+        };
         let task_id = task.id.clone();
         let is_expired = task.recurring && task.is_expired(now);
         let should_remove = !task.recurring;
@@ -441,7 +443,9 @@ impl SchedulerActor {
         }
 
         // Advance the cadence before releasing actor state to avoid immediate reselection.
-        let task = &mut state.tasks[idx];
+        let Some(task) = state.tasks.get_mut(idx) else {
+            return;
+        };
         task.last_fired_at = Some(now);
         let next_fire_at = task.recurring.then(|| task.next_fire_at().to_rfc3339());
         let events = res.get::<SubagentEventSender>().cloned();
@@ -755,6 +759,7 @@ impl SchedulerActor {
             // coordinator still has queued at the concurrent limit.
             cancel_token: self.cancel_token.child_token(),
             spawn_root: Default::default(),
+            tool_call_id: None,
         };
 
         if events
@@ -917,7 +922,10 @@ impl SchedulerActor {
                     return;
                 };
                 let mut reservation = self.clock.prepare_transition(1);
-                let task = &mut state.tasks[index];
+                let Some(task) = state.tasks.get_mut(index) else {
+                    let _ = reply.send(Err(SchedulerError::TaskNotFound(id)));
+                    return;
+                };
                 if let Some(prompt) = prompt {
                     // A new prompt is a new job: the next fire starts a fresh transcript. The
                     // anchor is kept (not cleared) so the in-flight guard still sees a running old
@@ -995,6 +1003,12 @@ impl SchedulerActor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_chars_does_not_split_a_four_byte_scalar_at_the_cut() {
+        assert_eq!("xx\u{1F600}\u{2026}", truncate_chars("xx\u{1F600}yy", 3));
+    }
+
     use crate::implementations::grok_build::scheduler::types::{
         ScheduledTask, SchedulerHandle, scheduler_tool_error,
     };
@@ -1072,6 +1086,24 @@ mod tests {
         task.id = id.into();
         task.created_at = Utc::now() - chrono::Duration::seconds(10);
         task.expires_at = Some(Utc::now() - chrono::Duration::seconds(1));
+        task
+    }
+
+    fn json_at<'a>(value: &'a serde_json::Value, keys: &[&str]) -> &'a serde_json::Value {
+        let mut cur = value;
+        for key in keys {
+            let Some(next) = cur.get(*key) else {
+                panic!("missing json key {key} in {value}");
+            };
+            cur = next;
+        }
+        cur
+    }
+
+    fn first_task<T>(tasks: &[T]) -> &T {
+        let Some(task) = tasks.first() else {
+            panic!("expected a task, len {}", tasks.len());
+        };
         task
     }
 
@@ -1218,7 +1250,7 @@ mod tests {
         let snapshot = list_rx.await.unwrap();
         assert_eq!(snapshot.version.revision(), 1);
         assert_eq!(snapshot.tasks.len(), 1);
-        assert_eq!(snapshot.tasks[0].prompt, "check deploy");
+        assert_eq!(first_task(&snapshot.tasks).prompt, "check deploy");
 
         cancel.cancel();
     }
@@ -1550,8 +1582,8 @@ mod tests {
         let persisted: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
-            persisted["state"]["grok_build.Scheduler"]["tasks"],
-            serde_json::json!([]),
+            json_at(&persisted, &["state", "grok_build.Scheduler", "tasks"]),
+            &serde_json::json!([]),
             "expired task must not survive on disk"
         );
     }
@@ -2172,7 +2204,8 @@ mod tests {
             .0
             .send(SchedulerCommand::List { reply: list_tx })
             .unwrap();
-        let task = &list_rx.await.unwrap().tasks[0];
+        let listed = list_rx.await.unwrap();
+        let task = first_task(&listed.tasks);
         assert_eq!(task.last_subagent_id.as_deref(), Some(request.id.as_str()));
         assert_eq!(task.iterations_since_fresh, 1);
 
@@ -2184,12 +2217,17 @@ mod tests {
         let (handle, cancel, mut notif_rx, mut subagent_rx, resources) =
             make_test_actor_with_subagents_at(u64::MAX - 2);
         create_due_task(&handle, "watch ci").await;
-        resources
-            .lock()
-            .await
-            .get_or_default::<State<SchedulerState>>()
-            .tasks[0]
-            .last_fired_at = Some(Utc::now() - chrono::Duration::seconds(1));
+        {
+            let mut res = resources.lock().await;
+            let Some(task) = res
+                .get_or_default::<State<SchedulerState>>()
+                .tasks
+                .first_mut()
+            else {
+                panic!("expected a scheduler task");
+            };
+            task.last_fired_at = Some(Utc::now() - chrono::Duration::seconds(1));
+        }
 
         let first = next_subagent_spawn(&mut subagent_rx).await;
         let first_id = first.id.clone();
@@ -2242,18 +2280,75 @@ mod tests {
             .send(Some(subagent_snapshot(&first_id, completed)))
             .unwrap();
         answer_loop_unit_active(&mut subagent_rx, false).await;
-        resources
-            .lock()
-            .await
-            .get_or_default::<State<SchedulerState>>()
-            .tasks[0]
-            .last_fired_at = Some(Utc::now() - chrono::Duration::seconds(1));
+        {
+            let mut res = resources.lock().await;
+            let Some(task) = res
+                .get_or_default::<State<SchedulerState>>()
+                .tasks
+                .first_mut()
+            else {
+                panic!("expected a scheduler task");
+            };
+            task.last_fired_at = Some(Utc::now() - chrono::Duration::seconds(1));
+        }
         let second = next_subagent_spawn(&mut subagent_rx).await;
         let fired = notification!(next_event(&mut notif_rx).await, ScheduledTaskFired);
         assert_ne!(fired.generation, old_generation);
         assert_eq!(fired.revision, 1);
         assert_eq!(second.resume_from.as_deref(), Some(first_id.as_str()));
         assert_ne!(second.id, first_id);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn paused_clock_advances_past_a_second_fire_while_the_first_is_running() {
+        let (handle, cancel, _notif_rx, mut subagent_rx, resources) =
+            make_test_actor_with_subagents_at(0);
+        create_due_task(&handle, "watch ci").await;
+        tokio::time::advance(Duration::from_millis(1)).await;
+
+        let first = next_subagent_spawn(&mut subagent_rx).await;
+        let first_id = first.id.clone();
+        {
+            let mut res = resources.lock().await;
+            let Some(task) = res
+                .get_or_default::<State<SchedulerState>>()
+                .tasks
+                .first_mut()
+            else {
+                panic!("expected a scheduler task");
+            };
+            task.last_fired_at = Some(Utc::now() - chrono::Duration::seconds(2));
+        }
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        answer_subagent_query(
+            &mut subagent_rx,
+            &first_id,
+            SubagentSnapshotStatus::Running {
+                turn_count: 1,
+                tool_call_count: 1,
+                tokens_used: 0,
+                context_window_tokens: 0,
+                context_usage_pct: 0,
+                tools_used: vec![],
+                error_count: 0,
+            },
+        )
+        .await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+
+        while let Ok(mut event) = subagent_rx.try_recv() {
+            ack_spawn_registration(&mut event);
+            assert!(
+                !matches!(
+                    event,
+                    SubagentEvent::Spawn(_) | SubagentEvent::LoopUnitActive(_)
+                ),
+                "second fire overlapped the running iteration"
+            );
+        }
 
         cancel.cancel();
     }
@@ -2419,8 +2514,8 @@ mod tests {
                 .send(SchedulerCommand::List { reply: list_tx })
                 .unwrap();
             let tasks = list_rx.await.unwrap().tasks;
-            if tasks[0].last_subagent_id.is_none() {
-                assert_eq!(tasks[0].iterations_since_fresh, 0);
+            if first_task(&tasks).last_subagent_id.is_none() {
+                assert_eq!(first_task(&tasks).iterations_since_fresh, 0);
                 break;
             }
             assert!(
@@ -2542,7 +2637,7 @@ mod tests {
             "a refused fire must leave the one-shot to try again"
         );
         assert!(
-            tasks[0].last_subagent_id.is_none(),
+            first_task(tasks).last_subagent_id.is_none(),
             "the chain anchor must be rolled back with it"
         );
         // A skipped fire re-announces the row it kept; what it must never
@@ -2600,12 +2695,17 @@ mod tests {
         let (handle, cancel, _notif_rx, mut subagent_rx, resources) =
             make_test_actor_with_subagents_at(0);
         create_due_task(&handle, "watch ci").await;
-        resources
-            .lock()
-            .await
-            .get_or_default::<State<SchedulerState>>()
-            .tasks[0]
-            .last_fired_at = Some(Utc::now() - chrono::Duration::seconds(1));
+        {
+            let mut res = resources.lock().await;
+            let Some(task) = res
+                .get_or_default::<State<SchedulerState>>()
+                .tasks
+                .first_mut()
+            else {
+                panic!("expected a scheduler task");
+            };
+            task.last_fired_at = Some(Utc::now() - chrono::Duration::seconds(1));
+        }
 
         let first = next_subagent_spawn(&mut subagent_rx).await;
         let first_id = first.id.clone();
@@ -2640,8 +2740,12 @@ mod tests {
         let _ = next_acknowledged(&mut notifications).await;
         let error = delete(&handle, "retry").await.unwrap_err();
         assert_eq!(
-            scheduler_tool_error(error).details.unwrap()["code"],
-            "scheduler_persistence"
+            scheduler_tool_error(error)
+                .details
+                .as_ref()
+                .and_then(|d| d.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("scheduler_persistence")
         );
         let (reply, response) = tokio::sync::oneshot::channel();
         handle
@@ -2674,10 +2778,13 @@ mod tests {
             &std::fs::read_to_string(parent.join("resources_state.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(persisted["state"]["grok_build.WebCitation"]["counter"], 7);
         assert_eq!(
-            persisted["state"]["grok_build.Scheduler"]["tasks"],
-            serde_json::json!([])
+            json_at(&persisted, &["state", "grok_build.WebCitation", "counter"]),
+            &serde_json::json!(7)
+        );
+        assert_eq!(
+            json_at(&persisted, &["state", "grok_build.Scheduler", "tasks"]),
+            &serde_json::json!([])
         );
         cancel.cancel();
     }
@@ -2705,8 +2812,10 @@ mod tests {
         assert_eq!(
             scheduler_tool_error(first.await.unwrap().unwrap_err())
                 .details
-                .unwrap()["code"],
-            "scheduler_notification"
+                .as_ref()
+                .and_then(|d| d.get("code"))
+                .and_then(|v| v.as_str()),
+            Some("scheduler_notification")
         );
         let retry = tokio::spawn({
             let handle = handle.clone();
@@ -2894,8 +3003,8 @@ mod tests {
                 save = next_event(&mut saves) => save,
             };
             assert_eq!(
-                snapshot["state"]["grok_build.Scheduler"]["tasks"],
-                serde_json::json!([])
+                json_at(&snapshot, &["state", "grok_build.Scheduler", "tasks"]),
+                &serde_json::json!([])
             );
             assert!(notifications.try_recv().is_err());
             persisted.send(Ok(())).unwrap();
@@ -3043,11 +3152,13 @@ mod tests {
         let persisted: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(state_path).unwrap()).unwrap();
         assert!(
-            persisted["state"]["grok_build.Scheduler"]["tasks"]
+            json_at(&persisted, &["state", "grok_build.Scheduler", "tasks"])
                 .as_array()
-                .unwrap()
-                .iter()
-                .all(|task| task["id"] != "expired")
+                .is_some_and(|tasks| {
+                    tasks
+                        .iter()
+                        .all(|task| task.get("id").and_then(|v| v.as_str()) != Some("expired"))
+                })
         );
 
         actor.fire_next_task().await;

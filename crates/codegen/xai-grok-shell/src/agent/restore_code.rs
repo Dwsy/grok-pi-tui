@@ -40,9 +40,11 @@ mod tests {
             RestoreKind::RegistryOff,
         )
         .unwrap();
-        assert_eq!(meta["restored"], false);
-        assert!(meta["degree"].is_null());
-        let s = meta["summary"].as_str().unwrap();
+        assert_eq!(meta.get("restored").and_then(|v| v.as_bool()), Some(false));
+        assert!(meta.get("degree").is_some_and(|v| v.is_null()));
+        let Some(s) = meta.get("summary").and_then(|v| v.as_str()) else {
+            panic!("summary missing: {meta:?}");
+        };
         assert!(s.contains("restore aborted"));
         assert!(s.contains("MERGE_HEAD present"));
     }

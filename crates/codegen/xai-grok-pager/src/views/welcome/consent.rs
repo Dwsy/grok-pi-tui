@@ -196,13 +196,13 @@ fn trim_end(row: &[BodyCell]) -> &[BodyCell] {
         .iter()
         .rposition(|cell| cell.text != " ")
         .map_or(0, |i| i + 1);
-    &row[..end]
+    row.get(..end).unwrap_or(&[])
 }
 
 /// Consecutive cells sharing a link, so each run paints as one span and one hit rect.
 fn runs(row: &[BodyCell]) -> impl Iterator<Item = (Option<usize>, &[BodyCell])> {
     row.chunk_by(|a, b| a.link == b.link)
-        .map(|run| (run[0].link, run))
+        .map(|run| (run.first().and_then(|cell| cell.link), run))
 }
 
 /// Centred within the message block rather than the full width, and ellipsized, so an oversized title cannot run edge to edge.

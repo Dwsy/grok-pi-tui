@@ -132,9 +132,17 @@ pub(crate) fn emit_segment_hyperlinks(
         if s_in >= e_in {
             continue;
         }
-        let col_start = col + unicode_display_width(&segment[..s_in]);
-        let col_end = col_start + unicode_display_width(&segment[s_in..e_in]);
-        let lt = &link_targets[clr.link_idx];
+        let Some(prefix) = segment.get(..s_in) else {
+            continue;
+        };
+        let Some(mid) = segment.get(s_in..e_in) else {
+            continue;
+        };
+        let col_start = col + unicode_display_width(prefix);
+        let col_end = col_start + unicode_display_width(mid);
+        let Some(lt) = link_targets.get(clr.link_idx) else {
+            continue;
+        };
         out.push(HyperlinkTarget {
             line_index,
             column_range: col_start..col_end,
@@ -154,6 +162,13 @@ mod hyperlink_tests {
 
     fn line_to_string(line: &Line<'static>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn line_at<'a>(lines: &'a [Line<'static>], idx: usize) -> &'a Line<'static> {
+        let Some(line) = lines.get(idx) else {
+            panic!("expected line {idx}, have {} lines", lines.len());
+        };
+        line
     }
 
     /// Slice the rendered line by display-cell `column_range`.
@@ -184,7 +199,7 @@ mod hyperlink_tests {
         out.hyperlinks
             .iter()
             .find(|h| {
-                let rendered = line_to_string(&out.lines[h.line_index]);
+                let rendered = line_to_string(line_at(&out.lines, h.line_index));
                 slice_by_cells(&rendered, h.column_range.clone()) == expected_slice
             })
             .unwrap_or_else(|| {
@@ -205,7 +220,7 @@ mod hyperlink_tests {
         // The parser produces one HyperlinkTarget over the link text; the url_scan pass produces a second over the `(url)` suffix
         let h = parser_link_text(&out, "link");
         assert_eq!(h.url, "https://example.com");
-        let rendered = line_to_string(&out.lines[h.line_index]);
+        let rendered = line_to_string(line_at(&out.lines, h.line_index));
         let slice: String = rendered
             .chars()
             .skip(h.column_range.start)
@@ -226,7 +241,7 @@ mod hyperlink_tests {
 
         // Non-pretty: `[link](url)` is rendered literally; url_scan also finds the URL inside `(url)` so two hyperlinks are emitted
         let h = parser_link_text(&out, "link");
-        let rendered = line_to_string(&out.lines[h.line_index]);
+        let rendered = line_to_string(line_at(&out.lines, h.line_index));
         let slice: String = rendered
             .chars()
             .skip(h.column_range.start)
@@ -247,7 +262,7 @@ mod hyperlink_tests {
             .hyperlinks
             .iter()
             .filter(|h| {
-                let rendered = line_to_string(&out.lines[h.line_index]);
+                let rendered = line_to_string(line_at(&out.lines, h.line_index));
                 let slice: String = rendered
                     .chars()
                     .skip(h.column_range.start)
@@ -264,8 +279,9 @@ mod hyperlink_tests {
         let urls: Vec<&str> = click_targets.iter().map(|h| h.url.as_str()).collect();
         assert_eq!(urls, vec!["https://a.example", "https://b.example"]);
 
-        let h0 = click_targets[0];
-        let h1 = click_targets[1];
+        let [h0, h1] = click_targets.as_slice() else {
+            panic!("expected two items: {click_targets:?}");
+        };
         assert_eq!(
             h0.line_index, h1.line_index,
             "both links should be on the same rendered line"
@@ -306,9 +322,12 @@ mod hyperlink_tests {
             !out.hyperlinks.is_empty(),
             "expected at least one hyperlink"
         );
-        let url = &out.hyperlinks[0].url;
-        let id = out.hyperlinks[0].id;
-        let line_index = out.hyperlinks[0].line_index;
+        let Some(first) = out.hyperlinks.first() else {
+            panic!("expected at least one hyperlink");
+        };
+        let url = &first.url;
+        let id = first.id;
+        let line_index = first.line_index;
         for h in &out.hyperlinks {
             assert_eq!(&h.url, url, "all autolink fragments share the same URL");
             assert_eq!(h.id, id, "all autolink fragments share the same id");
@@ -319,12 +338,12 @@ mod hyperlink_tests {
         }
         assert_eq!(url, "https://example.com");
 
-        let rendered = line_to_string(&out.lines[line_index]);
+        let rendered = line_to_string(line_at(&out.lines, line_index));
         let mut covered: Vec<bool> = vec![false; rendered.chars().count()];
         for h in &out.hyperlinks {
             for col in h.column_range.clone() {
-                if col < covered.len() {
-                    covered[col] = true;
+                if let Some(slot) = covered.get_mut(col) {
+                    *slot = true;
                 }
             }
         }
@@ -431,7 +450,7 @@ mod hyperlink_tests {
     fn dest_url_containing_bracket_paren_with_streaming_split() {
         let text = "[t](<u](v>) end\n";
         let (full, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
-        let line0 = line_to_string(&full.lines[0]);
+        let line0 = line_to_string(line_at(&full.lines, 0));
         assert!(line0.contains("t (<u](v>)") || line0.contains("t ( <u](v> )"));
         let link = full
             .hyperlinks
@@ -496,7 +515,7 @@ mod hyperlink_tests {
             .expect("table cell link should produce a HyperlinkTarget");
 
         // (2) Column range covers only the rendered "click" glyphs.
-        let rendered = line_to_string(&out.lines[link.line_index]);
+        let rendered = line_to_string(line_at(&out.lines, link.line_index));
         let slice: String = rendered
             .chars()
             .skip(link.column_range.start)
@@ -510,7 +529,7 @@ mod hyperlink_tests {
 
         // (3) The link text span carries `link_text` styling (bold in the test style)
         // The cell wrapper splits the cell into multiple spans; find the span whose content is "click"
-        let cell_line = &out.lines[link.line_index];
+        let cell_line = line_at(&out.lines, link.line_index);
         let click_span = cell_line
             .spans
             .iter()
@@ -611,7 +630,7 @@ mod hyperlink_tests {
         let text = "Hello [click](https://x.com) world.\n";
         let (out, _) = render_markdown_ratatui_full(text, style, true, None);
 
-        let line = &out.lines[0];
+        let line = line_at(&out.lines, 0);
         let click_span = line
             .spans
             .iter()
@@ -665,7 +684,7 @@ mod hyperlink_tests {
             ("~~[click](https://x.com)~~ end.\n", Modifier::CROSSED_OUT),
         ] {
             let (out, _) = render_markdown_ratatui_full(md, style, true, None);
-            let line = &out.lines[0];
+            let line = line_at(&out.lines, 0);
             let click_span = line
                 .spans
                 .iter()
@@ -718,16 +737,19 @@ mod hyperlink_tests {
             assert_eq!(f.line_index, 0, "{f:?}");
         }
         for w in fragments.windows(2) {
+            let [a, b] = w else {
+                panic!("expected two items: {w:?}");
+            };
             assert_eq!(
-                w[0].column_range.end, w[1].column_range.start,
+                a.column_range.end, b.column_range.start,
                 "gap: {:?} -> {:?}",
-                w[0].column_range, w[1].column_range,
+                a.column_range, b.column_range,
             );
         }
 
         let union_start = fragments.first().unwrap().column_range.start;
         let union_end = fragments.last().unwrap().column_range.end;
-        let rendered = line_to_string(&out.lines[0]);
+        let rendered = line_to_string(line_at(&out.lines, 0));
         assert_eq!(
             slice_by_cells(&rendered, union_start..union_end),
             "link text",

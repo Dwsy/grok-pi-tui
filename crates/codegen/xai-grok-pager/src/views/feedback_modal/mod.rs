@@ -484,7 +484,11 @@ impl FeedbackModalState {
             self.window.active_tab = FeedbackTab::Write.index();
             self.open_on_drafts_if_any = false;
         }
-        let requests = self.composer.images[before..]
+        let requests = self
+            .composer
+            .images
+            .get(before..)
+            .unwrap_or(&[])
             .iter()
             .filter(|image| image.encoded_bytes.is_none())
             .filter_map(|image| {
@@ -841,7 +845,10 @@ impl FeedbackModalState {
                 if let Some(index) = self.field_order.iter().position(|f| *f == field)
                     && index > 0
                 {
-                    self.metadata_focus = Some(self.field_order[index - 1]);
+                    self.metadata_focus = index
+                        .checked_sub(1)
+                        .and_then(|i| self.field_order.get(i))
+                        .copied();
                 }
             }
             KeyCode::Down => {
@@ -898,9 +905,18 @@ impl FeedbackModalState {
                 self.step = FeedbackModalStep::Write;
                 return FeedbackModalOutcome::Changed;
             }
-            KeyCode::Up => options[(index + options.len() - 1) % options.len()],
-            KeyCode::Down => options[(index + 1) % options.len()],
-            KeyCode::Char(digit @ '1'..='3') => options[digit as usize - '1' as usize],
+            KeyCode::Up => options
+                .get((index + options.len() - 1) % options.len())
+                .copied()
+                .unwrap_or(selected),
+            KeyCode::Down => options
+                .get((index + 1) % options.len())
+                .copied()
+                .unwrap_or(selected),
+            KeyCode::Char(digit @ '1'..='3') => options
+                .get(digit as usize - '1' as usize)
+                .copied()
+                .unwrap_or(selected),
             KeyCode::Enter => {
                 self.step = FeedbackModalStep::Trace {
                     selected,

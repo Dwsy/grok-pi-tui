@@ -51,11 +51,17 @@ fn legacy_enum_names_become_labels() {
         }
     });
     let specs = parse_form_schema(&schema).unwrap();
-    let ElicitFieldKind::SingleSelect { ref options, .. } = specs[0].kind else {
+    let Some(spec) = specs.first() else {
+        panic!("expected a field: {specs:?}");
+    };
+    let ElicitFieldKind::SingleSelect { ref options, .. } = spec.kind else {
         panic!("expected single-select");
     };
-    assert_eq!(options[0].label, "Red");
-    assert_eq!(options[0].value, "r");
+    let Some(opt) = options.first() else {
+        panic!("expected an option: {options:?}");
+    };
+    assert_eq!(opt.label, "Red");
+    assert_eq!(opt.value, "r");
 }
 
 #[test]
@@ -73,14 +79,20 @@ fn one_of_titles_become_labels() {
         }
     });
     let specs = parse_form_schema(&schema).unwrap();
+    let Some(spec) = specs.first() else {
+        panic!("expected a field: {specs:?}");
+    };
     let ElicitFieldKind::SingleSelect {
         ref options,
         default_index,
-    } = specs[0].kind
+    } = spec.kind
     else {
         panic!("expected single-select");
     };
-    assert_eq!(options[0].label, "Production");
+    assert_eq!(
+        options.first().map(|o| o.label.as_str()),
+        Some("Production")
+    );
     assert_eq!(default_index, Some(1));
 }
 
@@ -100,12 +112,15 @@ fn multi_select_untitled_parses() {
         "required": ["countries"]
     });
     let specs = parse_form_schema(&schema).unwrap();
+    let Some(spec) = specs.first() else {
+        panic!("expected a field: {specs:?}");
+    };
     let ElicitFieldKind::MultiSelect {
         ref options,
         min_items,
         max_items,
         ref default_indexes,
-    } = specs[0].kind
+    } = spec.kind
     else {
         panic!("expected multi-select");
     };
@@ -131,10 +146,13 @@ fn multi_select_titled_parses() {
         }
     });
     let specs = parse_form_schema(&schema).unwrap();
-    let ElicitFieldKind::MultiSelect { ref options, .. } = specs[0].kind else {
+    let Some(spec) = specs.first() else {
+        panic!("expected a field: {specs:?}");
+    };
+    let ElicitFieldKind::MultiSelect { ref options, .. } = spec.kind else {
         panic!("expected multi-select");
     };
-    assert_eq!(options[1].label, "Beta");
+    assert_eq!(options.get(1).map(|o| o.label.as_str()), Some("Beta"));
 }
 
 #[test]
@@ -147,8 +165,16 @@ fn array_without_enum_items_is_unsupported_not_fatal() {
         }
     });
     let specs = parse_form_schema(&schema).unwrap();
-    assert!(matches!(specs[0].kind, ElicitFieldKind::Unsupported { .. }));
-    assert!(matches!(specs[1].kind, ElicitFieldKind::String { .. }));
+    assert!(
+        specs
+            .first()
+            .is_some_and(|s| matches!(s.kind, ElicitFieldKind::Unsupported { .. }))
+    );
+    assert!(
+        specs
+            .get(1)
+            .is_some_and(|s| matches!(s.kind, ElicitFieldKind::String { .. }))
+    );
 }
 
 #[test]
@@ -158,10 +184,11 @@ fn boolean_default_parses() {
         "properties": { "ok": { "type": "boolean", "default": true } }
     });
     let specs = parse_form_schema(&schema).unwrap();
-    assert!(matches!(
-        specs[0].kind,
-        ElicitFieldKind::Boolean { default: true }
-    ));
+    assert!(
+        specs
+            .first()
+            .is_some_and(|s| matches!(s.kind, ElicitFieldKind::Boolean { default: true }))
+    );
 }
 
 #[test]
@@ -173,9 +200,12 @@ fn fractional_integer_bounds_tighten_inward() {
         }
     });
     let specs = parse_form_schema(&schema).unwrap();
+    let Some(spec) = specs.first() else {
+        panic!("expected a field: {specs:?}");
+    };
     let ElicitFieldKind::Integer {
         minimum, maximum, ..
-    } = specs[0].kind
+    } = spec.kind
     else {
         panic!("expected integer");
     };
@@ -231,7 +261,10 @@ fn string_default_uses_the_draft_cap() {
         }
     });
     let specs = parse_form_schema(&schema).unwrap();
-    let ElicitFieldKind::String { ref default, .. } = specs[0].kind else {
+    let Some(spec) = specs.first() else {
+        panic!("expected a field: {specs:?}");
+    };
+    let ElicitFieldKind::String { ref default, .. } = spec.kind else {
         panic!("expected string");
     };
     assert_eq!(

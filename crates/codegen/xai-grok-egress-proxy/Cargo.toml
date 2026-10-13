@@ -1,0 +1,19 @@
+[package]
+license = "Apache-2.0"
+name = "xai-grok-egress-proxy"
+version = "0.1.0"
+edition.workspace = true
+description = "Hidden exact-origin local HTTP and CONNECT proxy for Grok"
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = { workspace = true }
+httparse = { workspace = true }
+rand = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
+
+[lints]
+workspace = true

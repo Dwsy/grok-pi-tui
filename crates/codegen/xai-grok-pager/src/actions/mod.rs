@@ -828,7 +828,10 @@ mod tests {
         assert!(ids.contains(&ActionId::SelectNext));
         // Sorted by priority
         for window in hints.windows(2) {
-            assert!(window[0].hint_priority <= window[1].hint_priority);
+            let [a, b] = window else {
+                panic!("windows(2) yielded {} items", window.len())
+            };
+            assert!(a.hint_priority <= b.hint_priority);
         }
     }
 

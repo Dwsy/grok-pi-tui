@@ -130,7 +130,10 @@ mod tests {
     fn decodes_line_wrapped_base64() {
         // Profile tooling line-wraps base64; interior newlines must be tolerated.
         let raw = b64("allowed_sandbox_modes = [\"read-only\"]\n");
-        let wrapped = format!("{}\n{}", &raw[..4], &raw[4..]);
+        let Some((head, tail)) = raw.split_at_checked(4) else {
+            panic!("expected encoded payload longer than 4 chars: {raw:?}");
+        };
+        let wrapped = format!("{head}\n{tail}");
         assert!(decode_managed_toml(&wrapped).is_some());
     }
 

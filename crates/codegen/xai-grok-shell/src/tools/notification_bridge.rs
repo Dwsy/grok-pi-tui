@@ -405,11 +405,10 @@ async fn handle_notification(
             let (output, output_delta) = if config.incremental_bash_output {
                 let prev_offset = offsets.get(&chunk.base.tool_call_id).copied().unwrap_or(0);
                 let full = &chunk.base.output;
-                let delta = if prev_offset <= full.len() {
-                    full[prev_offset..].to_vec()
-                } else {
-                    full.clone()
-                };
+                let delta = full
+                    .get(prev_offset..)
+                    .map(|s| s.to_vec())
+                    .unwrap_or_else(|| full.clone());
                 offsets.insert(chunk.base.tool_call_id.clone(), full.len());
                 (Vec::new(), Some(delta))
             } else {

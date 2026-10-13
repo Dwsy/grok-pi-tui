@@ -5,23 +5,26 @@ use ratatui::buffer::Buffer;
 use super::row::DashboardRow;
 use super::state::{DashboardRowId, RowState};
 
-/// Helper: read buffer row-by-row so multi-cell substring checks see the visible text in left-to-right order.
+/// Visible text in left-to-right order, including wide-cell glyphs.
 pub(super) fn buf_to_text(buf: &Buffer) -> String {
     let mut content = String::new();
     for y in 0..buf.area.height {
         for x in 0..buf.area.width {
-            content.push_str(buf[(x, y)].symbol());
+            if let Some(cell) = buf.cell((x, y)) {
+                content.push_str(cell.symbol());
+            }
         }
         content.push('\n');
     }
     content
 }
 
-/// Helper for the group-header tests: build a top-level row with the given id and state, all other fields filled with sensible defaults.
+/// A top-level dashboard row with defaults, for chrome and render tests.
 pub(super) fn header_test_row(id: u32, state: RowState, label: &str) -> DashboardRow {
     use crate::app::agent::AgentId;
     DashboardRow {
         id: DashboardRowId::TopLevel(AgentId(id as usize)),
+        session_id: None,
         label: label.to_string(),
         subtitle: None,
         state,
@@ -33,9 +36,5 @@ pub(super) fn header_test_row(id: u32, state: RowState, label: &str) -> Dashboar
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }
 }

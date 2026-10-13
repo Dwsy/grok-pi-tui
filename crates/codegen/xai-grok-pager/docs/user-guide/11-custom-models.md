@@ -94,6 +94,7 @@ description = "Model description"          # Optional description
 api_key = "sk-..."                        # API key for this provider (optional)
 env_key = "XAI_API_KEY"                   # Env var holding the API key (optional; string or array)
 api_backend = "chat_completions"          # "chat_completions", "responses", or "messages"
+reasoning_summary = "concise"             # Responses API only: "none", "auto", "concise", or "detailed"
 temperature = 0.7                         # Sampling temperature
 top_p = 0.95                              # Nucleus sampling parameter
 max_completion_tokens = 8192              # Maximum tokens per response
@@ -115,6 +116,28 @@ Grok resolves the API key in this order:
 ### Context Window
 
 The `context_window` value tells Grok when to trigger auto-compaction. When you override a known model, Grok inherits that model's context window. When you define a new model and omit `context_window`, Grok defaults to 200,000 tokens, so set it explicitly to match your provider.
+
+### Request Size Limit
+
+`max_request_bytes` is the largest request body your endpoint accepts. Grok evicts older inline images from the conversation to stay under it, so a session with many screenshots keeps working instead of being rejected. When you omit it, Grok picks the default for the `api_backend`: 30 MB for `messages`, and 50 MiB for `chat_completions` and `responses`. Set it only when your host enforces a different cap.
+
+The cap is a property of the endpoint, so it also works on a shared `[model_providers.<id>]` block, where every model pointing at that provider inherits it; a `max_request_bytes` on the model itself overrides the provider's value.
+
+```toml
+[model_providers.messages-gateway]
+base_url = "https://gateway.example/v1"
+api_backend = "messages"
+max_request_bytes = 25000000   # every model on this provider inherits it
+
+[model.claude-sonnet]
+model = "claude-sonnet"
+model_provider = "messages-gateway"   # inherits 25 MB
+
+[model.claude-opus]
+model = "claude-opus"
+model_provider = "messages-gateway"
+max_request_bytes = 20000000   # per-model override
+```
 
 ### Global Default Headers
 
@@ -178,6 +201,19 @@ env_http_headers = { "X-Tenant-Token" = "GATEWAY_TENANT_TOKEN" }
 Grok reads each variable when it builds the client for a session and places the value in the request headers only, never on disk. A header is skipped when its variable is unset or blank, and a resolved value overrides an `extra_headers` entry of the same name. Use `extra_headers` for a static value and `env_http_headers` for one that comes from the environment.
 
 Both fields also work on a shared `[model_providers.<id>]` block. A model that points at a provider with `model_provider = "<id>"` inherits the provider's `query_params` and `env_http_headers` when it sets none of its own, matching how `extra_headers` is inherited.
+
+### Model Notice
+
+`notice` puts a message above the prompt for as long as the model is selected. The banner cannot be dismissed. It goes away when you switch to a model without a notice.
+
+```toml
+[model.legacy]
+model = "legacy-model"
+base_url = "https://gateway.example/v1"
+notice = { severity = "warning", text = "This model is deprecated on Oct 15. Switch to grok-4.6.", label = "deprecated" }
+```
+
+`severity` sets the banner color and is `info`, `warning`, or `critical`. It defaults to `info`. `text` is required, and long text wraps. `label` is an optional short tag shown before the text. A custom models endpoint can send the same object as `notice` or `_meta.notice` on a model entry. To remove a notice a built-in or remote model carries, set `notice = { text = "" }`.
 
 ---
 
@@ -249,6 +285,27 @@ api_backend = "responses"
 env_key = "OPENAI_API_KEY"
 ```
 
+On the Responses API, Grok asks for a `concise` reasoning summary by default; that is what the reasoning text shown in the UI comes from. `reasoning_summary` changes the request: `detailed` or `auto` for a fuller summary, or `none` to omit the field for gateways that reject it.
+
+### AWS Bedrock (Mantle)
+
+Bedrock's OpenAI-compatible gateway rejects `reasoning.summary`, so set `reasoning_summary = "none"`. It authenticates with a Bedrock API key as a bearer token; the example below mints a short-lived one through a named auth provider:
+
+```toml
+[auth_provider.bedrock]
+command = "aws-bedrock-token"   # prints a Bedrock API key on stdout (e.g. via aws-bedrock-token-generator)
+token_ttl_secs = 3600
+
+[model."bedrock-grok-4.6"]
+model = "xai.grok-4.6"
+base_url = "https://bedrock-mantle.us-west-2.api.aws/openai/v1"
+name = "Grok 4.6 (Bedrock)"
+api_backend = "responses"
+reasoning_summary = "none"
+auth_provider = "bedrock"
+context_window = 500000
+```
+
 ### Ollama (Local Models)
 
 Run models locally with [Ollama](https://ollama.ai):
@@ -317,11 +374,11 @@ models_base_url = "https://api.acme.com/v1"
 api_key = "my-api-key"
 ```
 
-When you use `[endpoints]` with partial model overrides, Grok inherits the `base_url` from the endpoints config, so you do not need to specify it in each `[model.*]` section.
+When you use `[endpoints]` with partial model overrides, Grok inherits the `base_url` from the endpoints config. You do not need to specify it in each `[model.*]` section. `XAI_API_KEY` is still required. A per-model `api_key` or `env_key` authenticates inference requests for that model. The startup model-list fetch always uses `XAI_API_KEY`.
 
 ### Auth Behavior
 
-When you set `models_base_url`, Grok uses API key auth (`Authorization: Bearer`) instead of session auth. You do not need `grok login` -- the API key is enough.
+When you set `models_base_url`, Grok authenticates the model-list request with `XAI_API_KEY` only (`Authorization: Bearer`). That request never uses your `grok login` session. With an external auth provider (`auth_provider_command`) and no `XAI_API_KEY`, it sends the provider's token instead. Otherwise, if `XAI_API_KEY` is unset, the fetch fails with an error asking you to set it. Inference requests to the custom host authenticate separately. An `api_key` or `env_key` on each model makes those requests use an API key too.
 
 ---
 

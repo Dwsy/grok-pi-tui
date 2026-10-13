@@ -254,6 +254,7 @@ pub(crate) struct SubagentSpawnContext {
     pub app_builder_deployer_config:
         xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployerConfig,
     pub write_file_enabled: bool,
+    pub active_agent_messages_enabled: bool,
     /// Whether goal mode (`/goal`) is enabled.
     pub goal_enabled: bool,
     pub background_workflows_enabled: bool,
@@ -353,14 +354,16 @@ pub(crate) struct SubagentSpawnContext {
     pub managed_mcp_state: crate::session::managed_mcp::ManagedMcpStateHandle,
     /// Snapshot of the parent session's MCP client pool at spawn time.
     pub parent_mcp_pool: Option<crate::session::mcp_servers::SharedMcpPool>,
-    /// Exact parent tool schema for verbatim non-workflow forks.
-    pub parent_tool_definitions: Option<Vec<xai_grok_sampling_types::ToolSpec>>,
+    /// Exact parent tool schema, paired with its selection mode, for verbatim non-workflow forks.
+    pub parent_tool_definitions: Option<crate::session::commands::ForkedToolSnapshot>,
     /// Pre-discovered skills from the parent session, captured at spawn time.
     pub parent_skills: Option<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>>,
     /// Parent's skills config for the child's SkillManager.
     pub parent_skills_config: xai_grok_agent::prompt::skills::SkillsConfig,
     /// Parent's resolved vendor-compat config, inherited by the child so its skills / rules / AGENTS.md discovery honors the same vendor toggles.
     pub parent_compat: xai_grok_tools::types::compat::CompatConfig,
+    /// Parent's `[paths]` config, inherited for the same reason as `parent_compat`.
+    pub parent_paths_config: xai_grok_agent::prompt::paths::PathsConfig,
     /// Channel for requesting trace uploads for synthetic auto-wake turns.
     pub synthetic_trace_tx:
         Option<tokio::sync::mpsc::UnboundedSender<crate::upload::turn::SyntheticTurnTraceRequest>>,
@@ -384,14 +387,6 @@ const _: () = {
     const fn assert_send<T: Send>() {}
     assert_send::<SubagentSpawnContext>()
 };
-pub(crate) fn strip_ask_user_question_tool(tools: &mut Vec<xai_grok_sampling_types::ToolSpec>) {
-    tools.retain(|tool| tool.name != "ask_user_question");
-}
-pub(crate) fn strip_workflow_tool(tools: &mut Vec<xai_grok_sampling_types::ToolSpec>) {
-    tools.retain(|tool| {
-        !xai_grok_tools::implementations::grok_build::is_workflow_tool_id(&tool.name)
-    });
-}
 impl SubagentSpawnContext {
     /// Would installing a live bearer resolver strip this subagent's only credential? A wired resolver is the sampler's sole auth source, so with no session key at spawn it must not displace a fallback key (env `XAI_API_KEY`).
     /// Keyed on the resolved config key, not the session cache alone. The cache is empty in exactly the post-wake / mid-refresh states the resolver targets, and gating on it would freeze the subagent for life.
@@ -438,17 +433,37 @@ impl SubagentSpawnContext {
         }
     }
     /// Not `Config::feature`: the parent's tiers resolve against the subagent's own remote settings snapshot.
-    pub(crate) fn resolve_feature(&self, feature: crate::agent::config::Feature) -> bool {
+    pub(crate) fn feature(
+        &self,
+        feature: crate::agent::config::Feature,
+    ) -> crate::agent::config::Resolved<bool> {
         use crate::agent::config::FeatureSources;
         let mut sources = self.agent_config.as_ref().map_or_else(
             || FeatureSources::from_process_env(feature),
             |parent| parent.feature_sources(feature),
         );
         sources.remote = feature.remote_value(self.remote_settings.as_ref());
-        feature.resolve(sources).value
+        feature.resolve(sources)
+    }
+    pub(crate) fn resolve_feature(&self, feature: crate::agent::config::Feature) -> bool {
+        self.feature(feature).value
     }
     pub(crate) fn resolve_compaction_verbatim_input(&self) -> bool {
         self.resolve_feature(crate::agent::config::Feature::CompactionVerbatimInput)
+    }
+    pub(crate) fn resolve_long_reasoning_reminder(
+        &self,
+    ) -> crate::session::long_reasoning_reminder::LongReasoningReminder {
+        let local = self
+            .agent_config
+            .as_ref()
+            .map(|c| &c.long_reasoning_reminder);
+        crate::session::long_reasoning_reminder::LongReasoningReminder::resolve(
+            local.unwrap_or(&crate::util::config::LongReasoningReminderSettings::default()),
+            self.remote_settings
+                .as_ref()
+                .and_then(|s| s.long_reasoning_reminder.as_ref()),
+        )
     }
     pub(crate) fn resolve_compaction_tool_choice(
         &self,
@@ -783,14 +798,19 @@ async fn read_parent_sampling_config(
                 top_p: cfg.top_p,
                 api_backend: cfg.api_backend,
                 auth_scheme,
+                request_compression: crate::util::config::request_compression_for_url(
+                    &inherited_base_url,
+                ),
                 extra_headers,
                 extra_response_includes,
                 conversation_group_id: cfg.conversation_group_id,
                 query_params: cfg.query_params.clone(),
                 env_http_headers: cfg.env_http_headers.clone(),
                 context_window: cfg.context_window.get(),
+                max_request_bytes: cfg.max_request_bytes,
                 client_version: creds.client_version,
                 reasoning_effort: cfg.reasoning_effort,
+                reasoning_summary: cfg.reasoning_summary,
                 force_http1: false,
                 max_retries: cfg.max_retries.or(ctx.sampling_config.max_retries),
                 rate_limit_retry_threshold: cfg.rate_limit_retry_threshold,
@@ -2515,7 +2535,7 @@ fn completed_finish_from_inspection(
     })
 }
 /// Heal subagents stuck "Running" after a dead process: emit exactly one `SubagentFinished` per id. Two id-keyed sources are unioned, so a crash orphan present in both heals once.
-/// They are `unfinished` (replayed spawns whose finish a rewind dropped, or a forked-in subagent with no meta) and on-disk `running` metas. Ids still active or pending are skipped.
+/// They are `unfinished` (replayed spawns whose finish a rewind dropped, or a forked-in subagent with no meta) and on-disk `running` metas. Ids still live under `parent_session_id` are skipped; a fork source's live children are not.
 /// A `running` meta becomes `cancelled`, unless the coordinator still holds its terminal result, which is then re-emitted. Runs after replay so the finish orders after the spawn. Pre-existing recovery entry point: args are independent handles/sources from two call sites, not one groupable object
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip_all)]
@@ -2530,6 +2550,7 @@ pub(crate) async fn reconcile_orphaned_subagents_with_backend(
     heal_lock: Arc<tokio::sync::Mutex<()>>,
 ) {
     let _heal_guard = heal_lock.lock().await;
+    let backend = backend.scoped_to_session(parent_session_id);
     let subagents_dir = session_dir.join("subagents");
     let mut candidates: std::collections::BTreeMap<
         String,
@@ -2673,5 +2694,7 @@ pub(crate) async fn reconcile_live_orphaned_subagents(
     )
     .await;
 }
+#[cfg(feature = "test-support")]
+pub(crate) mod isolated_spawn_e2e;
 #[cfg(test)]
 mod tests;

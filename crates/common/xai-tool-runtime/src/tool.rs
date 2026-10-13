@@ -8,9 +8,10 @@
 //! a `NotImplemented` terminal at runtime.
 //!
 //! `ToolStream<T>` is a type alias for an opaque pinned stream; the helper
-//! free functions [`terminal_only`] and [`with_progress`] are the supported
-//! ways to build one. Stream invariant: at most arbitrarily many `Progress`
-//! items, ending in exactly one `Terminal`.
+//! free functions [`terminal_only`], [`deferred_terminal`] and
+//! [`with_progress`] are the supported ways to build one. Stream invariant:
+//! at most arbitrarily many `Progress` items, ending in exactly one
+//! `Terminal`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -207,6 +208,21 @@ pub fn terminal_only<T: Send + 'static>(result: Result<T, ToolError>) -> ToolStr
     Box::pin(stream::iter(std::iter::once(ToolStreamItem::Terminal(
         result,
     ))))
+}
+
+/// Build a single-item stream whose terminal result is computed when the
+/// stream is first polled, not when it is built.
+///
+/// `terminal` is not polled until the stream is; the same tail
+/// [`with_progress`] emits after an empty progress stream.
+pub fn deferred_terminal<T, F>(terminal: F) -> ToolStream<T>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, ToolError>> + Send + 'static,
+{
+    Box::pin(stream::once(async move {
+        ToolStreamItem::Terminal(terminal.await)
+    }))
 }
 
 /// Build a stream that emits each progress item from `progress` then

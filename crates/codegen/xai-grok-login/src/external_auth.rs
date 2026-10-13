@@ -31,6 +31,7 @@ pub fn parse_output(output: &std::process::Output) -> anyhow::Result<GrokAuth> {
         user_blocked_reason: None,
         team_blocked_reasons: vec![],
         coding_data_retention_opt_out: crate::default_coding_data_retention_opt_out(),
+        can_administer_team: None,
         has_grok_code_access: None,
         refresh_token: parsed.refresh_token,
         expires_at: parsed.expires_at,

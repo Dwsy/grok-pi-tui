@@ -28,14 +28,22 @@ fn write_session(
         "num_messages": 1,
         "current_model_id": "grok-3",
     });
-    if let Some(la) = last_active_at {
-        summary["last_active_at"] = serde_json::Value::String(la.to_string());
-    }
-    if let Some(profile) = sandbox_profile {
-        summary["sandbox_profile"] = serde_json::Value::String(profile.to_string());
-    }
-    if hidden {
-        summary["hidden"] = serde_json::Value::Bool(true);
+    if let Some(obj) = summary.as_object_mut() {
+        if let Some(la) = last_active_at {
+            obj.insert(
+                "last_active_at".into(),
+                serde_json::Value::String(la.to_string()),
+            );
+        }
+        if let Some(profile) = sandbox_profile {
+            obj.insert(
+                "sandbox_profile".into(),
+                serde_json::Value::String(profile.to_string()),
+            );
+        }
+        if hidden {
+            obj.insert("hidden".into(), serde_json::Value::Bool(true));
+        }
     }
     fs::write(dir.join("summary.json"), summary.to_string()).unwrap();
 }

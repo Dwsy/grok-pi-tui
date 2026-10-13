@@ -1,7 +1,6 @@
 #[allow(unused_imports)]
 use super::common::*;
 
-const CTRL_BACKSLASH: &[u8] = b"\x1b[92;5u";
 const OPTION_BACKSPACE: &[u8] = b"\x1b\x7f";
 const META_B: &[u8] = b"\x1bb";
 const META_F: &[u8] = b"\x1bf";

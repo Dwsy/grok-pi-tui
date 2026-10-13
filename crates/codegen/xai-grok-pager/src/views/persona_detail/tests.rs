@@ -170,20 +170,25 @@ fn detail_editor_uses_canonical_graphemes_and_keeps_cursor_visible() {
     let width = 10usize;
     let theme = Theme::current();
     let mut buffer = Buffer::empty(Rect::new(0, 0, width as u16, 1));
-    let viewport = state.editing_viewport(width).unwrap();
-    let visible = &state.editing_text().unwrap()[viewport.visible_byte_range.clone()];
+    let Some(viewport) = state.editing_viewport(width) else {
+        panic!("expected editing viewport");
+    };
+    let Some(text) = state.editing_text() else {
+        panic!("expected editing text");
+    };
+    let Some(visible) = text.get(viewport.visible_byte_range.clone()) else {
+        panic!("viewport out of range");
+    };
     assert!(visible.contains('中'));
     assert!(visible.contains("e\u{301}"));
     assert!(visible.contains(grapheme));
-    render_detail_editor(
-        &mut buffer,
-        0,
-        0,
-        width,
-        state.editing_editor().unwrap(),
-        Style::default(),
-        &theme,
-    );
+    let Some(editor) = state.editing_editor() else {
+        panic!("expected editing editor");
+    };
+    render_detail_editor(&mut buffer, 0, 0, width, editor, Style::default(), &theme);
     let cursor_x = viewport.cursor_display_column as u16;
-    assert_eq!(buffer[(cursor_x, 0)].bg, theme.text_primary);
+    assert_eq!(
+        buffer.cell((cursor_x, 0)).map(|c| c.bg),
+        Some(theme.text_primary)
+    );
 }

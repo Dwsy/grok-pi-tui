@@ -12,6 +12,8 @@ pub(super) fn dispatch_jump_show_picker(app: &mut AppView) -> Vec<Effect> {
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
+    // Refuse if another prompt overlay owns the input slot (rewind, /btw, or a pending permission/question/cancel-turn/plan overlay)
+    // An opened picker would be hidden but still eat input
     if agent.jump_slot_taken() {
         return vec![];
     }
@@ -33,8 +35,11 @@ pub(super) fn dispatch_jump_show_picker(app: &mut AppView) -> Vec<Effect> {
         .unwrap_or(entries.len() - 1)
         .min(entries.len() - 1);
 
-    let preview_id = entries[selected].prompt_entry_id;
+    let Some(preview_id) = entries.get(selected).map(|entry| entry.prompt_entry_id) else {
+        return vec![];
+    };
     agent.jump_state = Some(JumpState::new(entries, selected, restore));
+    // The same top anchor that cursor moves preview and that Enter lands on.
     if let Some(index) = agent.scrollback.index_of_id(preview_id) {
         agent.scrollback.scroll_to_entry_top(index);
     }

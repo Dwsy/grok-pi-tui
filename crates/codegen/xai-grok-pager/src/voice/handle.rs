@@ -2,10 +2,17 @@
 
 use std::ops::Range;
 
-use xai_grok_voice::VoiceEvent;
+use xai_grok_voice::{TaggedVoiceEvent, VoiceEvent};
 
 use crate::app::app_view::{AppView, VoiceTarget};
 use crate::views::prompt_widget::PromptWidget;
+
+/// Esc on a stopped or uploading clip: nothing else on screen shows what the key did.
+pub(crate) const RECORDING_DISCARDED_TOAST: &str = "Voice: recording discarded";
+pub(crate) const TRANSCRIPTION_TIMED_OUT_TOAST: &str =
+    "Voice: transcription timed out; recording discarded";
+pub(crate) const TRANSCRIPTION_TIMED_OUT_KEPT_TOAST: &str =
+    "Voice: transcription timed out; the words shown so far were kept";
 
 /// Whether a draft counts as blank for voice insertion: an empty or whitespace-only draft is
 /// replaced wholesale rather than dictated into. Shared by the insert, submit-merge, and ghost
@@ -15,15 +22,22 @@ pub(crate) fn prompt_blank_for_voice(text: &str) -> bool {
 }
 
 /// Wraps a voice `fragment` with a leading and/or trailing space so it reads as its own word at
-/// byte offset `at` in `text`, adding each space only where the neighbor is non-whitespace.
+/// byte offset `at` in `text`, adding each space only where the neighbor is non-whitespace. The
+/// second value is whether a trailing space was added, so the caller can leave the caret before it.
 ///
 /// `text`/`at` must describe the buffer as it will look when the fragment lands — with any active
 /// selection already removed — so the neighbors are the characters that actually end up adjacent.
 /// `at` must be a UTF-8 char boundary. The insertion, the submit merge, and the ghost preview all
 /// route through this so their spacing cannot drift.
-pub(crate) fn space_voice_fragment(text: &str, at: usize, fragment: &str) -> String {
-    let needs_leading = at > 0 && !text[..at].ends_with(char::is_whitespace);
-    let needs_trailing = at < text.len() && !text[at..].starts_with(char::is_whitespace);
+pub(crate) fn space_voice_fragment(text: &str, at: usize, fragment: &str) -> (String, bool) {
+    let needs_leading = at > 0
+        && text
+            .get(..at)
+            .is_some_and(|prefix| !prefix.ends_with(char::is_whitespace));
+    let needs_trailing = at < text.len()
+        && text
+            .get(at..)
+            .is_some_and(|suffix| !suffix.starts_with(char::is_whitespace));
     let mut out = String::with_capacity(fragment.len() + 2);
     if needs_leading {
         out.push(' ');
@@ -32,7 +46,7 @@ pub(crate) fn space_voice_fragment(text: &str, at: usize, fragment: &str) -> Str
     if needs_trailing {
         out.push(' ');
     }
-    out
+    (out, needs_trailing)
 }
 
 /// Merges a voice `fragment` into `existing`, replacing `replace` — the selection captured at
@@ -62,12 +76,18 @@ pub(crate) fn merge_voice_fragment(
         None => (existing.len(), existing.len()),
     };
     // Spacing is decided against the buffer as it looks once the selected span is gone.
-    let base = format!("{}{}", &existing[..start], &existing[end..]);
-    let insertion = space_voice_fragment(&base, start, fragment);
+    let Some(prefix) = existing.get(..start) else {
+        return fragment.to_string();
+    };
+    let Some(suffix) = existing.get(end..) else {
+        return fragment.to_string();
+    };
+    let base = format!("{prefix}{suffix}");
+    let (insertion, _) = space_voice_fragment(&base, start, fragment);
     let mut merged = String::with_capacity(base.len() + insertion.len());
-    merged.push_str(&existing[..start]);
+    merged.push_str(prefix);
     merged.push_str(&insertion);
-    merged.push_str(&existing[end..]);
+    merged.push_str(suffix);
     merged
 }
 
@@ -84,7 +104,12 @@ pub(crate) struct VoiceInterimCommit {
 /// The prompt bound to the active voice session (agent or dashboard), if it is reachable.
 /// The shared peek-reply box only resolves while its row is still the peeked one.
 fn bound_voice_prompt_mut(app: &mut AppView) -> Option<&mut PromptWidget> {
-    match app.voice_recording_target()? {
+    let target = app.voice_recording_target()?;
+    prompt_for_target_mut(app, target)
+}
+
+fn prompt_for_target_mut(app: &mut AppView, target: VoiceTarget) -> Option<&mut PromptWidget> {
+    match target {
         VoiceTarget::Agent(id) => app.agents.get_mut(&id).map(|agent| &mut agent.prompt),
         target @ (VoiceTarget::DashboardDispatch | VoiceTarget::DashboardPeekReply(_)) => {
             let dashboard = app.dashboard.as_mut()?;
@@ -105,7 +130,8 @@ fn bound_voice_prompt_mut(app: &mut AppView) -> Option<&mut PromptWidget> {
     }
 }
 
-/// Inserts `fragment` at the caret with smart spacing; replaces a blank draft outright.
+/// Inserts `fragment` at the caret with smart spacing; replaces a blank draft outright. The caret ends right after
+/// the fragment: before a space added for the text that follows, so typing on continues the sentence.
 fn insert_voice_fragment_into_widget(prompt: &mut PromptWidget, fragment: &str) {
     let existing = prompt.text();
     if prompt_blank_for_voice(existing) {
@@ -117,16 +143,19 @@ fn insert_voice_fragment_into_widget(prompt: &mut PromptWidget, fragment: &str) 
     // that decide spacing are the characters left AFTER the selection is gone — not the highlighted
     // ones. Compute the spacing against that post-delete buffer at the selection's start.
     let (base, at) = match prompt.selection_range() {
-        Some(sel) => (
-            format!("{}{}", &existing[..sel.start], &existing[sel.end..]),
-            sel.start,
-        ),
+        Some(sel) => match (existing.get(..sel.start), existing.get(sel.end..)) {
+            (Some(prefix), Some(suffix)) => (format!("{prefix}{suffix}"), sel.start),
+            _ => (existing.to_owned(), prompt.cursor()),
+        },
         None => (existing.to_owned(), prompt.cursor()),
     };
-    let insertion = space_voice_fragment(&base, at, fragment);
+    let (insertion, trailing_space) = space_voice_fragment(&base, at, fragment);
     // Route through insert_replacing_selection so dictation over a selection replaces it the way
     // typed input would, and any image chips the selection spanned get resynced.
     prompt.insert_replacing_selection(&insertion);
+    if trailing_space {
+        prompt.set_cursor(prompt.cursor() - 1);
+    }
 }
 
 /// Inserts `text` at the caret of the prompt bound at capture start (agent or dashboard).
@@ -155,31 +184,86 @@ pub(crate) fn commit_interim_into_prompt(app: &mut AppView) -> Option<VoiceInter
         }
     });
     insert_voice_text_into_prompt(app, &interim);
-    app.voice_clear_interim();
+    app.voice_commit_interim();
     Some(VoiceInterimCommit {
         fragment: interim,
         replace,
     })
 }
 
+/// Drops events from a session other than the current one. Voice events are serviced after input, so a reader the
+/// next press aborted can still have events queued; a stale `Transcribing` would wedge the new session and a stale
+/// final would insert the old clip. `Notice` is a toast and passes regardless, and the one final of the session the
+/// press superseded while it was stopping still lands when both sessions dictate into the same prompt: it is the
+/// last sentence of the previous dictation.
+pub fn handle_tagged_voice_event(app: &mut AppView, tagged: TaggedVoiceEvent) -> bool {
+    let TaggedVoiceEvent { session, event } = tagged;
+    if let Some((stopped, target)) = app.voice_trailing_final
+        && session == stopped
+        && let VoiceEvent::UtteranceFinal { text } = &event
+    {
+        app.voice_trailing_final = None;
+        // Lands in the box it dictated into unless a session on another box has started since; a press that was
+        // cancelled before its mic opened leaves no session and does not lose the sentence
+        let same_box = app
+            .voice_recording_target()
+            .is_none_or(|current| current == target);
+        if same_box
+            && !text.trim().is_empty()
+            && let Some(prompt) = prompt_for_target_mut(app, target)
+        {
+            insert_voice_fragment_into_widget(prompt, text.trim());
+        }
+        return true;
+    }
+    if session != app.voice_session && !matches!(event, VoiceEvent::Notice { .. }) {
+        // The variant only: the event may carry the user's speech
+        let kind: &'static str = (&event).into();
+        tracing::trace!(?session, current = ?app.voice_session, kind, "stale voice event dropped");
+        return false;
+    }
+    handle_voice_event(app, event)
+}
+
 /// Apply a voice event to app state. Returns whether the frame should redraw.
 pub fn handle_voice_event(app: &mut AppView, event: VoiceEvent) -> bool {
     match event {
-        VoiceEvent::InterimTranscript { text } => {
-            // No-op unless recording, so a late interim after a stop can't repopulate the overlay
-            app.voice_set_interim(text)
+        VoiceEvent::InterimTranscript { text } => app.voice_set_interim(text),
+        VoiceEvent::CaptureStarted { route } => {
+            app.voice_set_route(route);
+            // Nothing on screen changes until the first interim
+            false
+        }
+        VoiceEvent::CaptureCancelled => {
+            app.voice_capture_cancelled();
+            true
+        }
+        VoiceEvent::Transcribing => {
+            app.voice_mark_transcribing();
+            true
+        }
+        VoiceEvent::Notice { message } => {
+            app.show_toast(&format!("Voice: {message}"));
+            true
         }
         VoiceEvent::UtteranceFinal { text } => {
-            app.voice_clear_interim();
+            app.voice_commit_interim();
             // The mic stays open across pauses; the user stops it explicitly, then presses Enter to send
             // The bound target survives a stop (`Stopping`), so a trailing final after an explicit stop still lands
             if !text.trim().is_empty() {
                 insert_voice_text_into_prompt(app, text.trim());
             }
+            // After the insert: a clip's final ends its session, and the insert needs the target it drops
+            app.voice_finish_transcribing();
             true
         }
         VoiceEvent::Error { message, hint } => {
             let target = app.voice_recording_target();
+            // A clip's shown partial is the best transcript there is (streaming committed on the way); a failed final
+            // must not take a whole dictation with it
+            if app.voice_state.is_on_clip_route() {
+                let _ = commit_interim_into_prompt(app);
+            }
             app.voice_reset();
             app.show_toast(&format!("Voice: {message}"));
             // The hint holds long fix steps, so it goes to the agent or peek scrollback; a toast is one line, and dashboard dispatch has no scrollback

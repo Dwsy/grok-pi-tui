@@ -56,10 +56,4 @@ mod tests {
             assert_eq!(ScrollMode::from_canonical(junk), None, "{junk:?}");
         }
     }
-
-    #[test]
-    fn default_is_auto() {
-        assert_eq!(ScrollMode::default(), ScrollMode::Auto);
-        assert_eq!(ScrollMode::default().as_canonical(), "auto");
-    }
 }

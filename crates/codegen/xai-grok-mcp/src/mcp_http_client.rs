@@ -4,6 +4,7 @@
 //! We ship rmcp 3.2; still unfixed upstream as of rmcp 3.2.0 (an errored stream
 //! re-enters `Retrying { retry_times: 0 }` immediately, bypassing the retry policy):
 //! <https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v3.2.0/crates/rmcp/src/transport/common/client_side_sse.rs>
+//! The wrapper also supplies each request's bearer token from a `bearer_token_file` when the server has one.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +17,8 @@ use rmcp::transport::streamable_http_client::{
     StreamableHttpClient, StreamableHttpError, StreamableHttpPostResponse,
 };
 use sse_stream::{Error as SseError, Sse};
+
+use crate::bearer_token_file::BearerTokenFile;
 
 /// A stream that survived this long is healthy and resets the backoff.
 /// Flood lifetimes are sub-millisecond; healthy proxies/LBs recycle idle streams no faster than ~25s.
@@ -122,7 +125,8 @@ impl ThrottleState {
     }
 }
 
-/// Wraps any [`StreamableHttpClient`] and backs off `get_stream` reconnects; `post_message` / `delete_session` delegate untouched.
+/// Wraps any [`StreamableHttpClient`] and backs off `get_stream` reconnects.
+/// With a [`BearerTokenFile`], every request's bearer token is read from it; otherwise requests delegate untouched.
 /// Clones share the throttle state (rmcp clones the client per stream task / reconnect).
 /// Backoff and episode state are per instance; the [`WarnBudget`] is the caller's, so a rebuilt client does not warn again within the cooldown.
 #[derive(Clone)]
@@ -130,6 +134,7 @@ pub struct McpHttpClient<C> {
     inner: C,
     server_name: Arc<str>,
     state: Arc<parking_lot::Mutex<ThrottleState>>,
+    bearer_token_file: Option<BearerTokenFile>,
 }
 // No `Debug` derive: rmcp's `AuthClient` (an inner type) is not `Debug`.
 
@@ -141,6 +146,23 @@ impl<C> McpHttpClient<C> {
             state: Arc::new(parking_lot::Mutex::new(ThrottleState::with_budget(
                 warn_budget,
             ))),
+            bearer_token_file: None,
+        }
+    }
+
+    pub(crate) fn with_bearer_token_file(mut self, file: Option<BearerTokenFile>) -> Self {
+        self.bearer_token_file = file;
+        self
+    }
+
+    /// The token file, when configured, replaces the token rmcp passes (none for non-OAuth clients).
+    async fn resolve_auth_token<E: std::error::Error + Send + Sync + 'static>(
+        &self,
+        auth_token: Option<String>,
+    ) -> Result<Option<String>, StreamableHttpError<E>> {
+        match &self.bearer_token_file {
+            Some(file) => Ok(Some(file.read().await?)),
+            None => Ok(auth_token),
         }
     }
 }
@@ -196,6 +218,7 @@ impl<C: StreamableHttpClient + Sync> StreamableHttpClient for McpHttpClient<C> {
             tokio::time::sleep(plan.delay).await;
         }
 
+        let auth_token = self.resolve_auth_token(auth_token).await?;
         let result = self
             .inner
             .get_stream(uri, session_id, last_event_id, auth_token, custom_headers)
@@ -214,6 +237,7 @@ impl<C: StreamableHttpClient + Sync> StreamableHttpClient for McpHttpClient<C> {
         auth_token: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
+        let auth_token = self.resolve_auth_token(auth_token).await?;
         self.inner
             .post_message(uri, message, session_id, auth_token, custom_headers)
             .await
@@ -226,6 +250,7 @@ impl<C: StreamableHttpClient + Sync> StreamableHttpClient for McpHttpClient<C> {
         auth_token: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<(), StreamableHttpError<Self::Error>> {
+        let auth_token = self.resolve_auth_token(auth_token).await?;
         self.inner
             .delete_session(uri, session_id, auth_token, custom_headers)
             .await

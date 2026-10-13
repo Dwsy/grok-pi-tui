@@ -20,6 +20,25 @@
     }
 
     #[test]
+    fn a_usage_update_fills_the_context_bar_with_used_and_size() {
+        let mut app = make_app_with_agent("sess-1");
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let request = acp::SessionNotification::new(
+            acp::SessionId::new("sess-1"),
+            acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(42_000, 272_000)),
+        );
+
+        let changed = handle(
+            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs { request, response_tx: tx }),
+            &mut app,
+        );
+
+        let context = test_agent(&app, AgentId(0)).context_state.as_ref().expect("context state");
+        assert_eq!((42_000, 272_000), (context.used, context.total));
+        assert!(changed, "the bar redraws for the active agent");
+    }
+
+    #[test]
     fn handle_routes_tokens_to_root_when_session_id_not_yet_set() {
         // Regression: a notification racing ahead of TaskResult::SessionCreated (session_id still None) must update the active agent,
         // not be dropped into the empty subagent_views path
@@ -53,7 +72,7 @@
             &mut app,
         );
         assert!(a1, "first event must apply");
-        assert_eq!(app.agents[&id].last_applied_event_seq, Some(5));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, Some(5));
 
         // An exact duplicate eventId is dropped (not affected); highwater unchanged
         let a2 = handle(
@@ -61,7 +80,7 @@
             &mut app,
         );
         assert!(!a2, "a duplicate eventId must be dropped");
-        assert_eq!(app.agents[&id].last_applied_event_seq, Some(5));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, Some(5));
 
         // A stale lower eventId is dropped
         let a3 = handle(
@@ -69,7 +88,7 @@
             &mut app,
         );
         assert!(!a3, "a lower (already-passed) eventId must be dropped");
-        assert_eq!(app.agents[&id].last_applied_event_seq, Some(5));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, Some(5));
 
         // A new higher eventId applies and the highwater advances
         let a4 = handle(
@@ -77,7 +96,7 @@
             &mut app,
         );
         assert!(a4, "a new (higher) eventId must apply");
-        assert_eq!(app.agents[&id].last_applied_event_seq, Some(9));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, Some(9));
 
         // No eventId (older shell) always applies; highwater untouched
         let a5 = handle(
@@ -88,7 +107,7 @@
             a5,
             "an update without an eventId must still apply (back-compat)"
         );
-        assert_eq!(app.agents[&id].last_applied_event_seq, Some(9));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, Some(9));
     }
 
     /// Regression: the per-process `eventId` counter resets each resume, so replayed history isn't monotonic.
@@ -113,11 +132,11 @@
             );
         }
         assert_eq!(
-            app.agents[&id].last_applied_event_seq, None,
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, None,
             "replay must not seed the dedup highwater"
         );
         assert_eq!(
-            app.agents[&id].last_seen_event_id.as_deref(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-resume-9"),
             "reconnect cursor is forward-only: lower post-reset ids must not regress the highwater"
         );
@@ -131,7 +150,7 @@
             ),
             "a live update after resume must render even with a reset-low eventId"
         );
-        assert_eq!(app.agents[&id].last_applied_event_seq, Some(1));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, Some(1));
 
         assert!(
             !handle(
@@ -229,12 +248,12 @@
         );
         let _ = handle_ext_notification(&xai_model_switch_notif("sess-rc", "sess-rc-30"), &mut app);
         assert_eq!(
-            app.agents[&id].last_applied_event_seq,
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq,
             Some(40),
             "the live ACP tail advanced its highwater in-window"
         );
         assert_eq!(
-            app.agents[&id].last_applied_xai_event_seq,
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq,
             Some(30),
             "the live xAI line advanced its highwater in-window"
         );
@@ -270,6 +289,39 @@
             next.value() > staged_max_id.value(),
             "the restored stash must not reuse ids the discarded staging allocated"
         );
+    }
+
+    /// The reload's spawn dedup may skip an already-seen spawn, so the labels must survive the window on both outcomes.
+    #[test]
+    fn reconnect_reload_keeps_subagent_labels_on_both_outcomes() {
+        use crate::scrollback::blocks::tool::SentMessageTarget;
+
+        for success in [true, false] {
+            let mut app = make_app_with_agent("sess-rc");
+            let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+            agent
+                .session
+                .tracker
+                .subagent_labels
+                .borrow_mut()
+                .record("sub-1", "Subagent \u{201c}scan src/\u{201d}", "sub-1");
+            agent.begin_session_reload(1);
+            let expected = SentMessageTarget::Named {
+                label: "Subagent \u{201c}scan src/\u{201d}".into(),
+                child_session_id: "sub-1".into(),
+            };
+            assert_eq!(
+                agent.session.tracker.subagent_labels.borrow().resolve("sub-1".to_owned()),
+                expected,
+                "the staging tracker starts with the pre-outage labels"
+            );
+            assert!(agent.finish_session_reload(1, success));
+            assert_eq!(
+                agent.session.tracker.subagent_labels.borrow().resolve("sub-1".to_owned()),
+                expected,
+                "success={success}"
+            );
+        }
     }
 
     /// Cursor-resolved reconnect: the agent replays nothing (only a live post-cursor tail).
@@ -321,7 +373,7 @@
         // Live streaming continues against the merged transcript
         // Finalize force-idled the turn (open streams are deliberately closed, "tools were lost")
         // The next delta opens exactly one new entry below the tail and keeps advancing the dedup highwater
-        let len_before = app.agents[&id].scrollback.len();
+        let len_before = app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         assert!(handle(
             make_agent_chunk_with_event("sess-rc", "next turn", "p2", Some("sess-rc-5")),
             &mut app,
@@ -442,7 +494,7 @@
         let agent = app.agents.get_mut(&id).unwrap();
         assert!(agent.finish_session_reload(1, true));
         assert_eq!(agent.scrollback.len(), 1);
-        let info = &agent.subagent_sessions["child-replay"];
+        let info = &agent.subagent_sessions.get("child-replay").unwrap_or_else(|| panic!("missing map entry"));
         assert!(
             info.attempt.scrollback_entry_id
                 .is_some_and(|entry_id| agent.scrollback.get_by_id(entry_id).is_some()),
@@ -485,9 +537,9 @@
         );
         assert!(handle_ext_notification(&replay, &mut app));
 
-        let agent = &app.agents[&id];
+        let agent = &app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry"));
         assert_eq!(agent.scrollback.len(), 2);
-        let info = &agent.subagent_sessions["child-late-replay"];
+        let info = &agent.subagent_sessions.get("child-late-replay").unwrap_or_else(|| panic!("missing map entry"));
         assert!(
             info.attempt.scrollback_entry_id
                 .is_some_and(|entry_id| agent.scrollback.get_by_id(entry_id).is_some()),
@@ -504,7 +556,7 @@
         let _ = handle(plan_update_msg("sess-plan", &[], None, false), &mut app);
 
         assert_eq!(
-            app.agents[&id].last_seen_event_id.as_deref(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             None,
             "no eventId on the update — cursor untouched"
         );
@@ -514,10 +566,10 @@
             &mut app,
         );
         assert_eq!(
-            app.agents[&id].last_seen_event_id.as_deref(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-plan-6")
         );
-        assert_eq!(app.agents[&id].last_applied_event_seq, Some(6));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, Some(6));
     }
 
     /// Todo-pane stash behavior across the three reload outcomes.
@@ -603,8 +655,8 @@
             &xai_model_switch_notif("sess-xdup", "sess-xdup-10"),
             &mut app
         ));
-        assert_eq!(app.agents[&id].scrollback.len(), 1);
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(10));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(), 1);
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq, Some(10));
 
         // Exact re-delivery: dropped, nothing re-applied, cursor unchanged.
         assert!(!handle_ext_notification(
@@ -612,12 +664,12 @@
             &mut app
         ));
         assert_eq!(
-            app.agents[&id].scrollback.len(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(),
             1,
             "a duplicate xAI event must not push a second block"
         );
         assert_eq!(
-            app.agents[&id].last_seen_event_id.as_deref(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-xdup-10")
         );
 
@@ -626,8 +678,8 @@
             &xai_model_switch_notif("sess-xdup", "sess-xdup-11"),
             &mut app
         ));
-        assert_eq!(app.agents[&id].scrollback.len(), 2);
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(11));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(), 2);
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq, Some(11));
 
         // Lower-stale re-delivery (an already-applied lower id re-sent by the cursor tail, e.g. goal mode) is dropped too.
         // The check is `<=`, not just equality
@@ -636,11 +688,11 @@
             &mut app
         ));
         assert_eq!(
-            app.agents[&id].scrollback.len(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(),
             2,
             "a stale lower-id xAI event must not push a block"
         );
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(11));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq, Some(11));
     }
 
     /// An unhandled xAI kind (the default `_` arm) leaves no trace, so it must NOT advance the reconnect cursor or the dedup highwater.
@@ -655,11 +707,11 @@
             &mut app
         ));
         assert_eq!(
-            app.agents[&id].last_seen_event_id, None,
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id, None,
             "an unhandled xAI update must not advance the reconnect cursor"
         );
         assert_eq!(
-            app.agents[&id].last_applied_xai_event_seq, None,
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq, None,
             "an unhandled xAI update must not advance the dedup highwater"
         );
 
@@ -669,10 +721,10 @@
             &mut app
         ));
         assert_eq!(
-            app.agents[&id].last_seen_event_id.as_deref(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-ig-8")
         );
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(8));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq, Some(8));
     }
 
     /// Split-highwater regression: a fresh direct-emitted xAI id must NOT make a queued lower-id ACP chunk look stale.
@@ -688,10 +740,10 @@
             &xai_model_switch_notif("sess-split", "sess-split-21"),
             &mut app
         ));
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(21));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq, Some(21));
 
         // The delayed ACP chunk stamped N arrives after; it must render
-        let len_before = app.agents[&id].scrollback.len();
+        let len_before = app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         assert!(
             handle(
                 make_agent_chunk_with_event(
@@ -705,17 +757,17 @@
             "the lower-id ACP chunk must apply"
         );
         assert_eq!(
-            app.agents[&id].scrollback.len(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(),
             len_before + 1,
             "the chunk's text must render — a shared highwater would have dropped it"
         );
         assert_eq!(
-            app.agents[&id].last_applied_event_seq,
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq,
             Some(20),
             "the ACP highwater is seeded by the ACP stream only"
         );
         assert_eq!(
-            app.agents[&id].last_applied_xai_event_seq,
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq,
             Some(21),
             "…and the ACP apply must not clobber the xAI highwater either"
         );
@@ -759,7 +811,7 @@
         );
 
         assert_eq!(
-            app.agents[&id].last_seen_event_id.as_deref(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-bg-6"),
             "the bg-stdout arm must advance the cursor"
         );
@@ -809,7 +861,7 @@
             &mut app,
         ));
         assert_eq!(
-            app.agents[&id].last_seen_event_id.as_deref(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-cur-5")
         );
 
@@ -819,7 +871,7 @@
             &mut app,
         ));
         assert_eq!(
-            app.agents[&id].last_seen_event_id.as_deref(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-cur-5")
         );
 
@@ -834,7 +886,7 @@
             &mut app,
         );
         assert_eq!(
-            app.agents[&id].last_seen_event_id.as_deref(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-cur-5"),
             "a promptId-gated drop must not advance the cursor"
         );
@@ -950,13 +1002,13 @@
         );
 
         // A live child delta after the swap still renders into the child view: pager-side routing is intact when the leader delivers it
-        let child_len_before = app.agents[&id].subagent_views["child-sub"].scrollback.len();
+        let child_len_before = app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).subagent_views.get("child-sub").unwrap_or_else(|| panic!("missing map entry")).scrollback.len();
         let _ = handle(
             make_agent_chunk_with_event("child-sub", "child live text", "p-child", None),
             &mut app,
         );
         assert!(
-            app.agents[&id].subagent_views["child-sub"].scrollback.len() > child_len_before,
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).subagent_views.get("child-sub").unwrap_or_else(|| panic!("missing map entry")).scrollback.len() > child_len_before,
             "a delivered live child update must render into the child view"
         );
     }
@@ -975,10 +1027,10 @@
             &mut app,
         );
         assert_eq!(
-            app.agents[&id].context_state.as_ref().map(|c| c.used),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).context_state.as_ref().map(|c| c.used),
             Some(500_000),
         );
-        assert_eq!(app.agents[&id].last_applied_event_seq, Some(20));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, Some(20));
 
         // Stale historical replay delta: lower eventId (deduped), lower tokens.
         let _ = handle(
@@ -986,12 +1038,12 @@
             &mut app,
         );
         assert_eq!(
-            app.agents[&id].context_state.as_ref().map(|c| c.used),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).context_state.as_ref().map(|c| c.used),
             Some(500_000),
             "a deduped stale delta must not regress context_used to its lower value"
         );
         // Highwater unchanged by the deduped event.
-        assert_eq!(app.agents[&id].last_applied_event_seq, Some(20));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, Some(20));
     }
 
     /// The reconnect adoption path (`finalize_reload_and_maybe_adopt`) must skip a running prompt whose terminal arrived in the reconnect replay.
@@ -1008,7 +1060,7 @@
             &xai_turn_completed_notif("sess-1", "p-run", "end_turn", true),
             &mut app,
         );
-        assert!(app.agents[&id].replayed_terminal_prompts.contains("p-run"));
+        assert!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).replayed_terminal_prompts.contains("p-run"));
 
         let finalized = app
             .agents
@@ -1016,7 +1068,7 @@
             .unwrap()
             .finalize_reload_and_maybe_adopt(1, true, Some("p-run".to_string()));
         assert!(finalized, "the reconnect reload window must finalize");
-        let agent = &app.agents[&id];
+        let agent = &app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry"));
         assert!(
             agent.session.current_prompt_id.is_none(),
             "a terminal-in-replay prompt must NOT be adopted on reconnect"
@@ -1042,11 +1094,11 @@
             &mut app
         ));
         assert_eq!(
-            app.agents[&id].last_seen_event_id, None,
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id, None,
             "an ignored ModelChanged must not advance the reconnect cursor"
         );
         assert_eq!(
-            app.agents[&id].last_applied_xai_event_seq, None,
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq, None,
             "an ignored ModelChanged must not advance the dedup highwater"
         );
 
@@ -1056,11 +1108,11 @@
             &mut app
         ));
         assert_eq!(
-            app.agents[&id].last_seen_event_id.as_deref(),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-1-8"),
             "an applied ModelChanged advances the reconnect cursor"
         );
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(8));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq, Some(8));
     }
 
     #[test]
@@ -1074,7 +1126,7 @@
             &mut app,
         );
         assert_eq!(
-            app.agents[&id].context_state.as_ref().map(|c| c.used),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).context_state.as_ref().map(|c| c.used),
             Some(100_000),
         );
 
@@ -1083,10 +1135,10 @@
             &mut app,
         );
         assert_eq!(
-            app.agents[&id].context_state.as_ref().map(|c| c.used),
+            app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).context_state.as_ref().map(|c| c.used),
             Some(250_000),
             "a newer (higher eventId) delta must update context_used"
         );
-        assert_eq!(app.agents[&id].last_applied_event_seq, Some(8));
+        assert_eq!(app.agents.get(&id).unwrap_or_else(|| panic!("missing map entry")).last_applied_event_seq, Some(8));
     }
 

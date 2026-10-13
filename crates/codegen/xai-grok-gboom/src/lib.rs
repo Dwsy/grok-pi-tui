@@ -11,6 +11,8 @@
 //! Movement uses the continuous held-key model in [`game`], because terminals deliver no key-release events.
 //! It eases toward a steady target while a key is held, staying smooth regardless of the OS key-repeat cadence.
 
+#![deny(clippy::indexing_slicing)]
+
 mod assets;
 mod engine;
 mod game;
@@ -445,7 +447,7 @@ mod tests {
         let mut state = GboomState::new();
         state.tick();
         let png = state.frame_png(320, 200).expect("png frame").to_vec();
-        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(png.get(..8), Some(&b"\x89PNG\r\n\x1a\n"[..]));
         let img = image::load_from_memory(&png).expect("decodable");
         assert_eq!((img.width(), img.height()), (320, 200));
     }

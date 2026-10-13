@@ -209,7 +209,9 @@ pub(crate) fn handle_mcp_elicit(
         crate::views::feedback_modal::FeedbackModalDisplacement::McpElicitation,
     );
 
-    if let Some(mut old) = agent.elicitation_view.take() {
+    if let Some(mut old) =
+        agent.take_unanswered_elicitation(crate::app::agent_view::UnansweredElicitation::Superseded)
+    {
         if let Some(old_tx) = old.take_response_tx() {
             cancel_elicitation_request(old_tx);
         }
@@ -508,16 +510,13 @@ pub(super) fn handle_exit_plan_mode(
         crate::views::feedback_modal::FeedbackModalDisplacement::PlanApproval,
     );
 
-    if let Some(mut old) = agent.plan_approval_view.take() {
+    if let Some(mut old) = agent.unmount_plan_review() {
         tracing::warn!(
             old_tool_call_id = %old.tool_call_id,
             new_tool_call_id = %params.tool_call_id,
             "Replacing active plan approval — dismissing previous"
         );
         old.send_stale_cancel();
-        agent.plan_next_comment_id = old.next_comment_id;
-        agent.prompt.restore(old.stashed_prompt);
-        agent.line_viewer = None;
     }
 
     // Dismiss competing overlays so plan approval owns the screen.
@@ -576,9 +575,18 @@ pub(super) fn handle_exit_plan_mode(
     agent.plan_next_comment_id = 0;
 
     if state.source == PlanReviewSource::Inline {
-        agent.latest_inline_plan_content = state.plan_content.clone();
+        if let Some(body) = state
+            .plan_content
+            .clone()
+            .and_then(crate::app::agent_view::capped_kept_plan_body)
+        {
+            agent.kept_plan = crate::app::agent_view::KeptPlan::kept(Some(body), None);
+        } else {
+            // Empty or oversized inline must not leave the prior keep.
+            agent.clear_kept_plan();
+        }
     } else {
-        agent.latest_inline_plan_content = None;
+        agent.clear_kept_plan();
     }
     agent.plan_approval_view = Some(state);
 

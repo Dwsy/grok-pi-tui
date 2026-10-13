@@ -38,7 +38,7 @@ pub(super) fn resolve<'a>(
         )
 }
 
-/// Extract `(name, args)` if the first text block starts with `/`.
+/// Extract `(name, args)` if the first text block starts with a slash-command token.
 pub(super) fn parse_slash_prefix(prompt_blocks: &[acp::ContentBlock]) -> Option<(&str, &str)> {
     let text = prompt_blocks.iter().find_map(|block| match block {
         acp::ContentBlock::Text(text) => Some(text.text.as_str()),
@@ -46,10 +46,13 @@ pub(super) fn parse_slash_prefix(prompt_blocks: &[acp::ContentBlock]) -> Option<
     })?;
     let without_slash = text.trim().strip_prefix('/')?;
     let (name, args) = match without_slash.find(char::is_whitespace) {
-        Some(index) => (&without_slash[..index], without_slash[index..].trim()),
+        Some(index) => (
+            without_slash.get(..index).unwrap_or(""),
+            without_slash.get(index..).unwrap_or("").trim(),
+        ),
         None => (without_slash, ""),
     };
-    (!name.is_empty()).then_some((name, args))
+    (!name.is_empty() && !name.contains('/') && !name.contains('\\')).then_some((name, args))
 }
 
 // Regression tests read these test-only counters around real `SessionActor::handle_turn_input` calls

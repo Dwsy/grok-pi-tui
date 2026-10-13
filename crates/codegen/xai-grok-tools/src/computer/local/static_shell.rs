@@ -11,7 +11,6 @@
 
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Duration;
 
 use command_fds::FdMapping;
@@ -52,7 +51,10 @@ impl StaticShellSnapshot {
     /// Source the rc once in a login shell and capture alias and function
     /// definitions between SOH markers. Returns an empty snapshot on any
     /// failure or timeout, degrading to a plain shell.
-    pub async fn init(cwd: &Path) -> Self {
+    pub async fn init(
+        cwd: &Path,
+        sandbox_hook: Option<&dyn crate::sandbox_launch::SandboxLaunch>,
+    ) -> Self {
         let shell = xai_grok_config::shell::detect_unix_shell_kind();
 
         let capture = match shell {
@@ -70,15 +72,15 @@ impl StaticShellSnapshot {
 
         let result = tokio::time::timeout(INIT_TIMEOUT, async {
             let mut cmd = tokio::process::Command::new(shell_binary(shell));
-            cmd.args(["-lc", &script])
-                .current_dir(cwd)
-                .stdin(xai_tty_utils::null_stdio())
-                .stdout(Stdio::piped())
-                .stderr(xai_tty_utils::null_stdio())
-                .kill_on_drop(true);
-            crate::util::detach_command(&mut cmd);
-            xai_grok_sandbox::child_net::restrict_child_network(&mut cmd);
+            cmd.args(["-lc", &script]).current_dir(cwd);
             cmd.envs(crate::util::pager_env());
+            let call = crate::sandbox_launch::CallId::shell_init("static-shell");
+            crate::sandbox_launch::prepare(sandbox_hook, &mut cmd, &call)
+                .map_err(|reason| {
+                    tracing::warn!(%reason, "static shell capture refused by the sandbox hook")
+                })
+                .ok()?;
+            crate::sandbox_launch::wire_prepared(&mut cmd, xai_tty_utils::null_stdio());
             #[allow(clippy::disallowed_methods)] // probe killed on drop
             let mut child = cmd.spawn().ok()?;
 
@@ -232,10 +234,15 @@ fn set_cloexec(fd: &OwnedFd) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "static_shell_cli_facing_unchanged_tests.rs"]
+mod cli_facing_unchanged_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use command_fds::CommandFdExt;
+    use std::process::Stdio;
 
     fn bash_available() -> bool {
         std::path::Path::new("/bin/bash").exists()

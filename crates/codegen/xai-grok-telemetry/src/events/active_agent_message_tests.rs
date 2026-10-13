@@ -12,6 +12,10 @@ fn event_names_are_stable() {
         "active_agent_message_limit_hit"
     );
     assert_eq!(
+        ActiveAgentMessageQuotaHit::NAME,
+        "active_agent_message_quota_hit"
+    );
+    assert_eq!(
         ActiveAgentMessageSettled::NAME,
         "active_agent_message_settled"
     );
@@ -24,6 +28,7 @@ fn immediate_outcomes_are_a_closed_content_free_contract() {
         ActiveAgentMessageOutcome::NotFoundOrNotOwned,
         ActiveAgentMessageOutcome::NotActiveOrFinalizing,
         ActiveAgentMessageOutcome::Saturated,
+        ActiveAgentMessageOutcome::QuotaExceeded,
         ActiveAgentMessageOutcome::AdmissionUncertain,
         ActiveAgentMessageOutcome::NotAcceptedBeforeDeadline,
         ActiveAgentMessageOutcome::Unsupported,
@@ -38,6 +43,7 @@ fn immediate_outcomes_are_a_closed_content_free_contract() {
             "not_found_or_not_owned",
             "not_active_or_finalizing",
             "saturated",
+            "quota_exceeded",
             "admission_uncertain",
             "not_accepted_before_deadline",
             "unsupported",
@@ -62,7 +68,28 @@ fn immediate_outcomes_are_a_closed_content_free_contract() {
 }
 
 #[test]
+fn operation_values_are_a_closed_snake_case_set() {
+    let operations = [
+        ActiveAgentMessageOperation::Queue,
+        ActiveAgentMessageOperation::Steer,
+        ActiveAgentMessageOperation::Interject,
+    ];
+    assert_eq!(
+        operations.map(|value| serde_json::to_value(value).expect("serialize operation")),
+        ["queue", "steer", "interject"],
+    );
+}
+
+#[test]
 fn limit_and_settlement_payloads_use_fixed_content_free_fields() {
+    assert_eq!(
+        serde_json::to_value(ActiveAgentMessageQuotaHit {
+            kind: ActiveAgentMessageQuotaKind::SenderTargetInFlight,
+            limit: 4,
+        })
+        .expect("serialize quota"),
+        serde_json::json!({"kind": "sender_target_in_flight", "limit": 4}),
+    );
     assert_eq!(
         serde_json::to_value(ActiveAgentMessageLimitHit {
             max_bytes: 8_u64,
@@ -99,6 +126,7 @@ fn limit_and_settlement_payloads_use_fixed_content_free_fields() {
             fallback_disposition: ActiveAgentMessageFallbackDisposition::NotApplicable,
             fallback_reason: None,
             safe_point_latency_ms: Some(3),
+            safe_point_trigger: Some(ActiveAgentMessageSafePointTrigger::Natural),
             duration_ms: 11,
         })
         .expect("serialize settlement"),
@@ -108,6 +136,7 @@ fn limit_and_settlement_payloads_use_fixed_content_free_fields() {
             "effective_operation": "steer",
             "fallback_disposition": "not_applicable",
             "safe_point_latency_ms": 3,
+            "safe_point_trigger": "natural",
             "duration_ms": 11,
         }),
     );
@@ -119,6 +148,7 @@ fn limit_and_settlement_payloads_use_fixed_content_free_fields() {
             fallback_disposition: ActiveAgentMessageFallbackDisposition::Queued,
             fallback_reason: Some(ActiveAgentMessageFallbackReason::Completion),
             safe_point_latency_ms: None,
+            safe_point_trigger: None,
             duration_ms: 11,
         })
         .expect("serialize fallback settlement"),
@@ -131,4 +161,28 @@ fn limit_and_settlement_payloads_use_fixed_content_free_fields() {
             "duration_ms": 11,
         }),
     );
+}
+
+#[test]
+fn safe_point_trigger_serializes_snake_case_and_omits_none() {
+    let triggers = [
+        ActiveAgentMessageSafePointTrigger::Natural,
+        ActiveAgentMessageSafePointTrigger::WaitAbort,
+    ];
+    assert_eq!(
+        triggers.map(|value| serde_json::to_value(value).expect("serialize trigger")),
+        ["natural", "wait_abort"],
+    );
+    let settled = serde_json::to_value(ActiveAgentMessageSettled {
+        disposition: ActiveAgentMessageSettlementDisposition::Completed,
+        requested_operation: ActiveAgentMessageOperation::Interject,
+        effective_operation: ActiveAgentMessageOperation::Interject,
+        fallback_disposition: ActiveAgentMessageFallbackDisposition::NotApplicable,
+        fallback_reason: None,
+        safe_point_latency_ms: None,
+        safe_point_trigger: None,
+        duration_ms: 11,
+    })
+    .expect("serialize settlement");
+    assert_eq!(None, settled.get("safe_point_trigger"));
 }

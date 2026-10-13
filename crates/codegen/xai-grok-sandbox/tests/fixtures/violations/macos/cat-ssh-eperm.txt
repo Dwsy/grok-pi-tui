@@ -1,0 +1,1 @@
+cat: /opt/ws-fixture/fakehome/.ssh/id_rsa: Operation not permitted

@@ -43,7 +43,9 @@ pub async fn info(cwd: &Path) -> Result<GitInfoData> {
         .lines()
         .filter_map(|line| {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            (parts.len() >= 2 && line.contains("(fetch)")).then(|| parts[1].to_string())
+            (parts.len() >= 2 && line.contains("(fetch)"))
+                .then(|| parts.get(1).map(ToString::to_string))
+                .flatten()
         })
         .collect::<BTreeSet<_>>()
         .into_iter()

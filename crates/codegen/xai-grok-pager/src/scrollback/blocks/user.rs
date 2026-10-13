@@ -61,22 +61,28 @@ fn token_styled_line(
             continue;
         }
         if start > pos {
-            spans.push(Span::styled(
-                line_text[pos - line_start..start - line_start].to_string(),
-                body_style,
-            ));
+            let Some(body) = pos.checked_sub(line_start).and_then(|a| {
+                start
+                    .checked_sub(line_start)
+                    .and_then(|b| line_text.get(a..b))
+            }) else {
+                continue;
+            };
+            spans.push(Span::styled(body.to_string(), body_style));
         }
-        spans.push(Span::styled(
-            line_text[start - line_start..end - line_start].to_string(),
-            token_style,
-        ));
+        let Some(token) = start.checked_sub(line_start).and_then(|a| {
+            end.checked_sub(line_start)
+                .and_then(|b| line_text.get(a..b))
+        }) else {
+            continue;
+        };
+        spans.push(Span::styled(token.to_string(), token_style));
         pos = end;
     }
-    if pos < line_end {
-        spans.push(Span::styled(
-            line_text[pos - line_start..].to_string(),
-            body_style,
-        ));
+    if pos < line_end
+        && let Some(body) = pos.checked_sub(line_start).and_then(|a| line_text.get(a..))
+    {
+        spans.push(Span::styled(body.to_string(), body_style));
     }
     Line::from(spans)
 }
@@ -677,6 +683,18 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    fn line_at(lines: &[BlockLine], i: usize) -> &BlockLine {
+        lines
+            .get(i)
+            .unwrap_or_else(|| panic!("expected line {i}, len={}", lines.len()))
+    }
+
+    fn span_at<'s, 'c>(spans: &'s [Span<'c>], i: usize) -> &'s Span<'c> {
+        spans
+            .get(i)
+            .unwrap_or_else(|| panic!("expected span {i}, len={}", spans.len()))
+    }
+
     #[test]
     fn test_short_prompt_no_truncation() {
         let block = UserPromptBlock::new("hello");
@@ -684,7 +702,7 @@ mod tests {
         let expected = format!("{}hello", crate::glyphs::prompt_arrow());
 
         assert_eq!(lines.len(), 1);
-        assert_eq!(line_text(&lines[0].content), expected);
+        assert_eq!(line_text(&line_at(&lines, 0).content), expected);
     }
 
     #[test]
@@ -694,9 +712,9 @@ mod tests {
         let expected = format!("{}hello", crate::glyphs::prompt_arrow());
 
         assert_eq!(lines.len(), 1);
-        assert_eq!(line_text(&lines[0].content), expected);
+        assert_eq!(line_text(&line_at(&lines, 0).content), expected);
         // No ellipsis because content fits
-        assert!(!line_text(&lines[0].content).contains('\u{2026}'));
+        assert!(!line_text(&line_at(&lines, 0).content).contains('\u{2026}'));
     }
 
     #[test]
@@ -705,9 +723,9 @@ mod tests {
         let lines = block.wrap_prompt_lines(20, None, true, false);
 
         assert!(lines.len() > 1, "Should wrap to multiple lines");
-        assert!(line_text(&lines[0].content).starts_with(crate::glyphs::prompt_arrow()));
+        assert!(line_text(&line_at(&lines, 0).content).starts_with(crate::glyphs::prompt_arrow()));
         // Continuation lines have 2-space indent
-        assert!(line_text(&lines[1].content).starts_with("  "));
+        assert!(line_text(&line_at(&lines, 1).content).starts_with("  "));
     }
 
     #[test]
@@ -717,8 +735,7 @@ mod tests {
         let lines = block.wrap_prompt_lines(20, Some(2), true, false);
 
         assert_eq!(lines.len(), 2);
-        // Last line should have ellipsis
-        let last = line_text(&lines[1].content);
+        let last = line_text(&line_at(&lines, 1).content);
         assert!(
             last.ends_with(" \u{2026}"),
             "Last line should end with ellipsis: {:?}",
@@ -748,8 +765,7 @@ mod tests {
             );
         }
 
-        // Last line should have ellipsis
-        assert!(line_text(&lines[1].content).ends_with(" \u{2026}"));
+        assert!(line_text(&line_at(&lines, 1).content).ends_with(" \u{2026}"));
     }
 
     #[test]
@@ -758,7 +774,41 @@ mod tests {
         let lines = block.wrap_prompt_lines(80, None, true, false);
 
         assert_eq!(lines.len(), 1);
-        assert!(line_text(&lines[0].content).starts_with("$ "));
+        assert!(line_text(&line_at(&lines, 0).content).starts_with("$ "));
+    }
+
+    /// Terminal theme (fullscreen): prompts render bandless — bold primary
+    /// text instead of a bright-black band — including when selected (the
+    /// rewind picker and dimmed tail carry the selection cue).
+    #[test]
+    fn terminal_theme_prompt_is_bold_and_bandless() {
+        let _guard = crate::theme::cache::pin_theme();
+        crate::theme::cache::set(crate::theme::ThemeKind::Terminal);
+
+        let block = UserPromptBlock::new("hello");
+        let lines = block.wrap_prompt_lines(80, None, true, false);
+        assert!(line_at(&lines, 0).background.is_none(), "no band");
+        let text_span = line_at(&lines, 0).content.spans.last().unwrap();
+        assert!(
+            text_span.style.add_modifier.contains(Modifier::BOLD),
+            "prompt text is bold, got {:?}",
+            text_span.style
+        );
+        assert!(!text_span.style.add_modifier.contains(Modifier::REVERSED));
+
+        let selected = block.wrap_prompt_lines(80, None, true, true);
+        assert!(
+            line_at(&selected, 0).background.is_none(),
+            "selected: still no band"
+        );
+        assert!(
+            line_at(&selected, 0)
+                .content
+                .spans
+                .iter()
+                .all(|s| !s.style.add_modifier.contains(Modifier::REVERSED)),
+            "selected prompt carries no reverse video (picker + dim tail cue it)"
+        );
     }
 
     #[test]
@@ -768,12 +818,15 @@ mod tests {
         assert_eq!(lines.len(), 1);
 
         let theme = Theme::current();
-        let spans = &lines[0].content.spans;
+        let spans = &line_at(&lines, 0).content.spans;
         assert_eq!(spans.len(), 3);
-        assert_eq!(spans[1].content.as_ref(), "/pr-workflow");
-        assert_eq!(spans[1].style.fg, Some(theme.accent_skill));
-        assert_eq!(spans[2].content.as_ref(), " create a ticket for this");
-        assert_eq!(spans[2].style.fg, Some(theme.text_primary));
+        assert_eq!(span_at(spans, 1).content.as_ref(), "/pr-workflow");
+        assert_eq!(span_at(spans, 1).style.fg, Some(theme.accent_skill));
+        assert_eq!(
+            span_at(spans, 2).content.as_ref(),
+            " create a ticket for this"
+        );
+        assert_eq!(span_at(spans, 2).style.fg, Some(theme.text_primary));
     }
 
     #[test]
@@ -783,10 +836,10 @@ mod tests {
         assert_eq!(lines.len(), 1);
 
         let theme = Theme::current();
-        let spans = &lines[0].content.spans;
+        let spans = &line_at(&lines, 0).content.spans;
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[1].content.as_ref(), "/pr-workflow");
-        assert_eq!(spans[1].style.fg, Some(theme.accent_skill));
+        assert_eq!(span_at(spans, 1).content.as_ref(), "/pr-workflow");
+        assert_eq!(span_at(spans, 1).style.fg, Some(theme.accent_skill));
     }
 
     #[test]
@@ -796,18 +849,16 @@ mod tests {
         assert_eq!(lines.len(), 2);
 
         let theme = Theme::current();
-        let line0 = &lines[0].content.spans;
-        assert_eq!(line0[1].content.as_ref(), "/foo");
-        assert_eq!(line0[1].style.fg, Some(theme.accent_skill));
-        assert_eq!(line0[2].content.as_ref(), " bar");
-        assert_eq!(line0[2].style.fg, Some(theme.text_primary));
+        let line0 = &line_at(&lines, 0).content.spans;
+        assert_eq!(span_at(line0, 1).content.as_ref(), "/foo");
+        assert_eq!(span_at(line0, 1).style.fg, Some(theme.accent_skill));
+        assert_eq!(span_at(line0, 2).content.as_ref(), " bar");
+        assert_eq!(span_at(line0, 2).style.fg, Some(theme.text_primary));
 
-        let line1 = &lines[1].content.spans;
-        assert_eq!(line1[1].content.as_ref(), "baz");
-        assert_eq!(line1[1].style.fg, Some(theme.text_primary));
+        let line1 = &line_at(&lines, 1).content.spans;
+        assert_eq!(span_at(line1, 1).content.as_ref(), "baz");
+        assert_eq!(span_at(line1, 1).style.fg, Some(theme.text_primary));
     }
-
-    // --- Mid-text skill token styling (with_skill_tokens) ---
 
     #[test]
     fn mid_text_token_only_token_is_teal() {
@@ -817,14 +868,14 @@ mod tests {
         assert_eq!(lines.len(), 1);
 
         let theme = Theme::current();
-        let spans = &lines[0].content.spans;
+        let spans = &line_at(&lines, 0).content.spans;
         assert_eq!(spans.len(), 4);
-        assert_eq!(spans[1].content.as_ref(), "great ");
-        assert_eq!(spans[1].style.fg, Some(theme.text_primary));
-        assert_eq!(spans[2].content.as_ref(), "/pr-workflow");
-        assert_eq!(spans[2].style.fg, Some(theme.accent_skill));
-        assert_eq!(spans[3].content.as_ref(), " all good now");
-        assert_eq!(spans[3].style.fg, Some(theme.text_primary));
+        assert_eq!(span_at(spans, 1).content.as_ref(), "great ");
+        assert_eq!(span_at(spans, 1).style.fg, Some(theme.text_primary));
+        assert_eq!(span_at(spans, 2).content.as_ref(), "/pr-workflow");
+        assert_eq!(span_at(spans, 2).style.fg, Some(theme.accent_skill));
+        assert_eq!(span_at(spans, 3).content.as_ref(), " all good now");
+        assert_eq!(span_at(spans, 3).style.fg, Some(theme.text_primary));
     }
 
     #[test]
@@ -835,7 +886,7 @@ mod tests {
         assert_eq!(lines.len(), 1);
 
         let theme = Theme::current();
-        let teal: Vec<&str> = lines[0]
+        let teal: Vec<&str> = line_at(&lines, 0)
             .content
             .spans
             .iter()
@@ -854,17 +905,17 @@ mod tests {
         assert_eq!(lines.len(), 2);
 
         let theme = Theme::current();
-        let line0 = &lines[0].content.spans;
+        let line0 = &line_at(&lines, 0).content.spans;
         assert!(
             line0.iter().all(|s| s.style.fg != Some(theme.accent_skill)),
             "line 0 has no token"
         );
-        let line1 = &lines[1].content.spans;
-        assert_eq!(line1[1].content.as_ref(), "then ");
-        assert_eq!(line1[1].style.fg, Some(theme.text_primary));
-        assert_eq!(line1[2].content.as_ref(), "/model");
-        assert_eq!(line1[2].style.fg, Some(theme.accent_skill));
-        assert_eq!(line1[3].content.as_ref(), " here");
+        let line1 = &line_at(&lines, 1).content.spans;
+        assert_eq!(span_at(line1, 1).content.as_ref(), "then ");
+        assert_eq!(span_at(line1, 1).style.fg, Some(theme.text_primary));
+        assert_eq!(span_at(line1, 2).content.as_ref(), "/model");
+        assert_eq!(span_at(line1, 2).style.fg, Some(theme.accent_skill));
+        assert_eq!(span_at(line1, 3).content.as_ref(), " here");
     }
 
     #[test]
@@ -884,7 +935,7 @@ mod tests {
 
         let lines = block.wrap_prompt_lines(80, None, true, false);
         let theme = Theme::current();
-        let teal: Vec<&str> = lines[0]
+        let teal: Vec<&str> = line_at(&lines, 0)
             .content
             .spans
             .iter()
@@ -900,10 +951,11 @@ mod tests {
         assert!(block.skill_token_ranges.is_empty());
         let lines = block.wrap_prompt_lines(80, None, true, false);
         let theme = Theme::current();
-        assert_eq!(lines[0].content.spans[1].style.fg, Some(theme.text_primary));
+        assert_eq!(
+            span_at(&line_at(&lines, 0).content.spans, 1).style.fg,
+            Some(theme.text_primary)
+        );
     }
-
-    // --- Token styling across soft-wrap and collapsed truncation ---
 
     /// Concatenated content of a line's skill-accent spans.
     fn teal_text(line: &Line, theme: &Theme) -> String {
@@ -925,7 +977,7 @@ mod tests {
         assert_eq!(lines.len(), 3);
 
         let theme = Theme::current();
-        let last = &lines[2].content;
+        let last = &line_at(&lines, 2).content;
         assert!(line_text(last).ends_with(" \u{2026}"));
         let teal = teal_text(last, &theme);
         assert!(
@@ -944,7 +996,7 @@ mod tests {
         assert_eq!(lines.len(), 3);
 
         let theme = Theme::current();
-        let last = &lines[2].content;
+        let last = &line_at(&lines, 2).content;
         assert!(line_text(last).ends_with(" \u{2026}"));
         assert_eq!(teal_text(last, &theme), "/do-it");
         let body: String = last
@@ -984,9 +1036,9 @@ mod tests {
         let lines = block.wrap_prompt_lines(80, None, true, false);
 
         assert_eq!(lines.len(), 3);
-        assert!(line_text(&lines[0].content).starts_with(crate::glyphs::prompt_arrow()));
-        assert!(line_text(&lines[1].content).starts_with("  ")); // continuation indent
-        assert!(line_text(&lines[2].content).starts_with("  "));
+        assert!(line_text(&line_at(&lines, 0).content).starts_with(crate::glyphs::prompt_arrow()));
+        assert!(line_text(&line_at(&lines, 1).content).starts_with("  ")); // continuation indent
+        assert!(line_text(&line_at(&lines, 2).content).starts_with("  "));
     }
 
     #[test]
@@ -996,7 +1048,7 @@ mod tests {
 
         assert_eq!(lines.len(), 2);
         // Last line should have ellipsis since there's more content
-        assert!(line_text(&lines[1].content).ends_with(" \u{2026}"));
+        assert!(line_text(&line_at(&lines, 1).content).ends_with(" \u{2026}"));
     }
 
     #[test]
@@ -1006,7 +1058,7 @@ mod tests {
         let lines = block.wrap_prompt_lines(80, Some(1), true, false);
 
         assert_eq!(lines.len(), 1);
-        assert!(!line_text(&lines[0].content).contains('\u{2026}'));
+        assert!(!line_text(&line_at(&lines, 0).content).contains('\u{2026}'));
     }
 
     #[test]
@@ -1016,15 +1068,15 @@ mod tests {
         let expected = format!("{}hello", crate::glyphs::prompt_arrow());
 
         assert_eq!(lines.len(), 1);
-        assert_eq!(line_text(&lines[0].content), expected);
+        assert_eq!(line_text(&line_at(&lines, 0).content), expected);
 
         // Prefix always uses accent (or Cyan when accent_user is Reset for
         // terminal-native / NO_COLOR), never dim gray. Bold is minimal-only.
         let theme = Theme::current();
-        let prefix_span = &lines[0].content.spans[0];
+        let prefix_span = span_at(&line_at(&lines, 0).content.spans, 0);
         let expected_fg = match theme.accent_user {
             ratatui::style::Color::Reset => Some(ratatui::style::Color::Cyan),
-            c => Some(c),
+            color => Some(color),
         };
         assert_eq!(prefix_span.style.fg, expected_fg);
         assert!(!prefix_span.style.add_modifier.contains(Modifier::BOLD));
@@ -1040,10 +1092,10 @@ mod tests {
         // Unselected no longer collapses onto gray_dim — same accent pointer
         // so user turns stay scannable in a long transcript.
         let theme = Theme::current();
-        let prefix_span = &lines[0].content.spans[0];
+        let prefix_span = span_at(&line_at(&lines, 0).content.spans, 0);
         let expected_fg = match theme.accent_user {
             ratatui::style::Color::Reset => Some(ratatui::style::Color::Cyan),
-            c => Some(c),
+            color => Some(color),
         };
         assert_eq!(prefix_span.style.fg, expected_fg);
         // Fullscreen (default test env): accent pointer, not bold.
@@ -1054,8 +1106,6 @@ mod tests {
             assert_ne!(prefix_span.style.fg, Some(theme.gray_dim));
         }
     }
-
-    // --- Selection metadata tests ---
 
     #[test]
     fn test_prompt_lines_have_selection_range() {
@@ -1074,7 +1124,7 @@ mod tests {
         let lines = block.wrap_prompt_lines(80, None, true, false);
         assert_eq!(lines.len(), 1);
         // Prefix is span 0, content starts at span 1
-        match &lines[0].selectable {
+        match &line_at(&lines, 0).selectable {
             Selectable::Spans(range) => {
                 assert_eq!(range.start, 1);
             }
@@ -1087,7 +1137,7 @@ mod tests {
         let block = UserPromptBlock::new("hello");
         let lines = block.wrap_prompt_lines(80, None, false, false);
         assert_eq!(lines.len(), 1);
-        assert!(matches!(lines[0].selectable, Selectable::All));
+        assert!(matches!(line_at(&lines, 0).selectable, Selectable::All));
     }
 
     #[test]
@@ -1095,9 +1145,7 @@ mod tests {
         let block = UserPromptBlock::new("this is a long prompt that should wrap");
         let lines = block.wrap_prompt_lines(15, None, true, false);
         assert!(lines.len() > 1);
-        // First line: no joiner
-        assert!(lines[0].joiner.is_none());
-        // Continuation lines within same logical line: should have joiner
+        assert!(line_at(&lines, 0).joiner.is_none());
         assert!(lines.iter().skip(1).any(|l| l.joiner.is_some()));
     }
 
@@ -1106,10 +1154,9 @@ mod tests {
         let block = UserPromptBlock::new("line one\nline two");
         let lines = block.wrap_prompt_lines(80, None, true, false);
         assert_eq!(lines.len(), 2);
-        // First line: no joiner
-        assert!(lines[0].joiner.is_none());
-        // Second line: also no joiner (hard break between logical lines)
-        assert!(lines[1].joiner.is_none());
+        assert!(line_at(&lines, 0).joiner.is_none());
+        // No joiner on the second line either (hard break between logical lines)
+        assert!(line_at(&lines, 1).joiner.is_none());
     }
 
     #[test]
@@ -1117,7 +1164,7 @@ mod tests {
         let block = UserPromptBlock::cron("/pr-babysit check");
         let lines = block.wrap_prompt_lines(80, None, true, false);
         assert_eq!(lines.len(), 1);
-        let text = line_text(&lines[0].content);
+        let text = line_text(&line_at(&lines, 0).content);
         assert!(
             text.starts_with("\u{21BB}  "),
             "Cron prompt should start with \u{21BB}, got: {text:?}"
@@ -1130,7 +1177,7 @@ mod tests {
         let block = UserPromptBlock::bash("ls -la");
         let lines = block.wrap_prompt_lines(80, None, true, false);
         assert_eq!(lines.len(), 1);
-        match &lines[0].selectable {
+        match &line_at(&lines, 0).selectable {
             Selectable::Spans(range) => {
                 assert_eq!(range.start, 1);
             }
@@ -1153,8 +1200,6 @@ mod tests {
             }
         }
     }
-
-    // --- Fold behavior tests ---
 
     #[test]
     fn test_short_prompt_not_foldable() {
@@ -1237,9 +1282,19 @@ mod tests {
         // Default unit-test env is fullscreen (lock off).
         let block = UserPromptBlock::new("hello");
         let lines = block.wrap_prompt_lines(80, None, true, false);
-        let spans = &lines[0].content.spans;
-        assert!(!spans[0].style.add_modifier.contains(Modifier::BOLD));
-        assert!(!spans[1].style.add_modifier.contains(Modifier::BOLD));
+        let spans = &line_at(&lines, 0).content.spans;
+        assert!(
+            !span_at(spans, 0)
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert!(
+            !span_at(spans, 1)
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 
     /// Pure band logic (no global `terminal_native_lock` — that races other
@@ -1282,14 +1337,14 @@ mod tests {
         let block = UserPromptBlock::new("scan me");
         let lines = block.wrap_prompt_lines(80, None, true, false);
         assert!(
-            !lines[0].background_is_panel,
+            !line_at(&lines, 0).background_is_panel,
             "band must be semantic so flat_background keeps it"
         );
         // Whatever Theme::current() is this moment, wrap used the same source
         // for band selection (same process, no lock toggle in this test).
         let theme = Theme::current();
         assert_eq!(
-            lines[0].background,
+            line_at(&lines, 0).background,
             UserPromptBlock::prompt_band_color_for(
                 &theme,
                 false,

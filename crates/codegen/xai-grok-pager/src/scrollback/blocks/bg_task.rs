@@ -8,11 +8,13 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span, Text};
 
 use crate::appearance::AppearanceConfig;
-use crate::render::color::blend_color;
 use crate::scrollback::block::BlockContent;
 use crate::scrollback::types::{AccentStyle, BlockContext, BlockOutput, DisplayMode};
 use crate::theme::Theme;
 use crate::util::format_duration;
+
+/// The signal recorded on a task the user stopped.
+pub(crate) const KILLED_SIGNAL: &str = "killed";
 
 #[derive(Debug, Clone)]
 pub enum BgTaskKind {
@@ -156,7 +158,7 @@ impl BlockContent for BgTaskBlock {
                 // Detect kill signals to show "killed" instead of "failed"
                 let is_killed = signal
                     .as_deref()
-                    .is_some_and(|s| matches!(s, "killed" | "SIGTERM" | "SIGKILL" | "oom"));
+                    .is_some_and(|s| matches!(s, KILLED_SIGNAL | "SIGTERM" | "SIGKILL" | "oom"));
                 let verb = if is_killed { "killed" } else { "failed" };
                 let detail = if is_killed {
                     String::new()
@@ -195,12 +197,7 @@ impl BlockContent for BgTaskBlock {
         match &self.kind {
             BgTaskKind::Started => {
                 if ctx.is_running {
-                    // Animated pulse between bg and dimmed magenta.
-                    // Pre-dim using the same ratio as collapsed execute bullets so the peak brightness matches other collapsed blocks
-                    let dim = ctx.appearance.scrollback.display.dim_accent;
-                    let dimmed = blend_color(theme.bg_base, theme.accent_running, dim)
-                        .unwrap_or(theme.accent_running);
-                    Some(AccentStyle::animated(dimmed))
+                    Some(AccentStyle::animated_running(ctx, &theme))
                 } else {
                     // Normal gray after finish_running() is called
                     None
@@ -342,8 +339,11 @@ mod tests {
     }
 
     fn line_text(block: &BgTaskBlock) -> String {
-        block.output(&test_ctx()).lines[0]
-            .content
+        let output = block.output(&test_ctx());
+        let Some(line) = output.lines.first() else {
+            panic!("expected an output line");
+        };
+        line.content
             .spans
             .iter()
             .map(|s| s.content.as_ref())
@@ -408,7 +408,10 @@ mod tests {
     fn completed_multiline_command_collapses_newlines() {
         let block = BgTaskBlock::completed("cmd1\ncmd2", "t1", std::time::Duration::from_secs(1));
         let output = block.output(&test_ctx());
-        let text: String = output.lines[0]
+        let Some(line) = output.lines.first() else {
+            panic!("expected an output line: {output:?}");
+        };
+        let text: String = line
             .content
             .spans
             .iter()
@@ -438,10 +441,10 @@ mod tests {
         let block = BgTaskBlock::started("cargo test --release", "t1")
             .with_description(Some("Run release tests".into()));
         let plain = preamble_plain(&block);
-        assert_eq!(plain.len(), 3, "expected description + blank + command");
-        assert_eq!(plain[0], "Run release tests");
-        assert_eq!(plain[1], "");
-        assert_eq!(plain[2], "$ cargo test --release");
+        assert_eq!(
+            plain.as_slice(),
+            ["Run release tests", "", "$ cargo test --release"]
+        );
     }
 
     #[test]
@@ -452,7 +455,9 @@ mod tests {
             BgTaskBlock::started("ls", "t1").with_description(Some("List the files".into()));
         let text = block.preamble(&test_ctx()).expect("preamble");
         let theme = Theme::current();
-        let span = &text.lines[0].spans[0];
+        let Some(span) = text.lines.first().and_then(|l| l.spans.first()) else {
+            panic!("expected a description span: {text:?}");
+        };
         assert_eq!(span.content.as_ref(), "List the files");
         assert_eq!(span.style.fg, Some(theme.text_primary));
     }
@@ -461,16 +466,14 @@ mod tests {
     fn preamble_without_description_renders_only_command() {
         let block = BgTaskBlock::started("ls -la", "t1");
         let plain = preamble_plain(&block);
-        assert_eq!(plain.len(), 1);
-        assert_eq!(plain[0], "$ ls -la");
+        assert_eq!(plain.as_slice(), ["$ ls -la"]);
     }
 
     #[test]
     fn preamble_blank_description_falls_back_to_command_only() {
         let block = BgTaskBlock::started("ls", "t1").with_description(Some("   \n  ".into()));
         let plain = preamble_plain(&block);
-        assert_eq!(plain.len(), 1);
-        assert_eq!(plain[0], "$ ls");
+        assert_eq!(plain.as_slice(), ["$ ls"]);
     }
 
     #[test]
@@ -478,11 +481,7 @@ mod tests {
         let block = BgTaskBlock::started("ls", "t1")
             .with_description(Some("First line\nSecond line".into()));
         let plain = preamble_plain(&block);
-        assert_eq!(plain.len(), 4);
-        assert_eq!(plain[0], "First line");
-        assert_eq!(plain[1], "Second line");
-        assert_eq!(plain[2], "");
-        assert_eq!(plain[3], "$ ls");
+        assert_eq!(plain.as_slice(), ["First line", "Second line", "", "$ ls"]);
     }
 
     #[test]
@@ -541,7 +540,10 @@ mod tests {
             None,
         );
         let output = block.output(&test_ctx());
-        let text: String = output.lines[0]
+        let Some(line) = output.lines.first() else {
+            panic!("expected an output line: {output:?}");
+        };
+        let text: String = line
             .content
             .spans
             .iter()

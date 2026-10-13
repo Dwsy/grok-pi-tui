@@ -71,7 +71,8 @@ mod expand_home_tests {
         );
     }
 }
-fn matches_trusted_base_url(candidate: &str, trusted_base: &str) -> bool {
+/// True when `candidate` is `trusted_base` or a path under it (same scheme, host, and port).
+pub fn matches_trusted_base_url(candidate: &str, trusted_base: &str) -> bool {
     let Ok(candidate) = reqwest::Url::parse(candidate) else {
         return false;
     };
@@ -175,12 +176,10 @@ pub fn truncate(s: &str, max_chars: usize) -> &str {
     if s.len() <= max_chars {
         return s;
     }
-    let end = s
-        .char_indices()
-        .nth(max_chars)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len());
-    &s[..end]
+    match s.char_indices().nth(max_chars) {
+        Some((i, _)) => s.get(..i).unwrap_or(s),
+        None => s,
+    }
 }
 /// Check if a process is still alive.
 /// Unix: `kill(pid, 0)` via `nix`. True if the process exists (even under a different UID); false only on ESRCH.
@@ -332,7 +331,10 @@ pub fn is_grok_process(pid: u32) -> bool {
         if result.is_err() {
             return false;
         }
-        String::from_utf16_lossy(&buf[..size as usize])
+        let Some(name) = buf.get(..size as usize) else {
+            return false;
+        };
+        String::from_utf16_lossy(name)
             .to_ascii_lowercase()
             .contains("grok")
     }

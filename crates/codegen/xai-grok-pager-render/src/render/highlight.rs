@@ -40,8 +40,10 @@ pub fn paint_match_highlights(
             for (col_start, col_end) in ranges {
                 for col in col_start..col_end {
                     let x = area.x + prefix_w + col as u16;
-                    if x < area.x + area.width {
-                        invert_cell(&mut buf[(x, row_y)]);
+                    if x < area.x + area.width
+                        && let Some(cell) = buf.cell_mut((x, row_y))
+                    {
+                        invert_cell(cell);
                     }
                 }
             }
@@ -60,8 +62,12 @@ pub fn paint_match_highlights(
             if y >= viewport_bottom {
                 break;
             }
-            let row_range = &ranges[seg.row];
-            let row_text = &text[row_range.start..row_range.end];
+            let Some(row_range) = ranges.get(seg.row) else {
+                continue;
+            };
+            let Some(row_text) = text.get(row_range.start..row_range.end) else {
+                continue;
+            };
             let visual_ranges = if map_visual && is_enabled() && needs_bidi(row_text) {
                 logical_cols_to_visual(row_text, seg.col_start, seg.col_end)
             } else {
@@ -70,8 +76,10 @@ pub fn paint_match_highlights(
             for (col_start, col_end) in visual_ranges {
                 for col in col_start..col_end {
                     let x = area.x + prefix_w + col as u16;
-                    if x < area.x + area.width {
-                        invert_cell(&mut buf[(x, y)]);
+                    if x < area.x + area.width
+                        && let Some(cell) = buf.cell_mut((x, y))
+                    {
+                        invert_cell(cell);
                     }
                 }
             }

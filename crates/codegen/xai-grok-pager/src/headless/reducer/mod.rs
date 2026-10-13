@@ -27,12 +27,20 @@ pub(crate) fn attach_structured_output(
     target: &mut Value,
     structured: Option<Result<Value, String>>,
 ) {
+    let Some(structured) = structured else { return };
+    if !target.is_object() {
+        *target = Value::Object(serde_json::Map::new());
+    }
+    let Some(obj) = target.as_object_mut() else {
+        return;
+    };
     match structured {
-        None => {}
-        Some(Ok(value)) => target["structuredOutput"] = value,
-        Some(Err(err)) => {
-            target["structuredOutput"] = Value::Null;
-            target["structuredOutputError"] = err.into();
+        Ok(value) => {
+            obj.insert("structuredOutput".into(), value);
+        }
+        Err(err) => {
+            obj.insert("structuredOutput".into(), Value::Null);
+            obj.insert("structuredOutputError".into(), err.into());
         }
     }
 }
@@ -71,6 +79,10 @@ pub(crate) enum StreamEvent {
         signature: Option<String>,
         /// Provider's matched stop sequence; set only by the Messages reducer.
         stop_sequence: Option<String>,
+    },
+    /// Token counts for a whole turn. Not one model call, so the Messages reducer does not stamp them on an assistant message.
+    TurnUsage {
+        usage: ResponseUsage,
     },
 }
 
@@ -117,6 +129,13 @@ pub(crate) enum Lifecycle {
         result: String,
         path: Option<String>,
     },
+    MemoryCaptureActivity {
+        activity: String,
+        from_turn: u32,
+        through_turn: u32,
+        attempt: u32,
+        detail: Option<String>,
+    },
 }
 
 impl Lifecycle {
@@ -140,10 +159,35 @@ impl Lifecycle {
             Lifecycle::AutoContinue { .. } => "Resumed after compaction.".to_string(),
             Lifecycle::ImageCompressed { message } => message.clone(),
             Lifecycle::MemoryFlushStarted => "Memory flush started.".to_string(),
-            Lifecycle::MemoryFlushCompleted { result, path } => match path {
-                Some(path) => format!("Memory flush {result}: {path}"),
-                None => format!("Memory flush {result}."),
-            },
+            // `result`, `path`, and capture `detail` remain available in the
+            // structured lifecycle event. Plain lines are trusted UI copy and
+            // must not promote model/parser errors or local paths into it.
+            Lifecycle::MemoryFlushCompleted { .. } => "Memory flush completed.".to_string(),
+            Lifecycle::MemoryCaptureActivity {
+                activity,
+                from_turn,
+                through_turn,
+                attempt,
+                detail: _,
+            } => {
+                let activity = match activity.as_str() {
+                    "queued" => "queued",
+                    "running" => "running",
+                    "completed" => "completed",
+                    "no_op" => "completed with no changes",
+                    "retry" => "scheduled for retry",
+                    "failed" => "failed",
+                    _ => "updated",
+                };
+                let attempt_suffix = if *attempt > 1 {
+                    format!(" (attempt {attempt})")
+                } else {
+                    String::new()
+                };
+                format!(
+                    "Memory capture {activity} for turns {from_turn}-{through_turn}{attempt_suffix}."
+                )
+            }
         }
     }
 }
@@ -390,5 +434,56 @@ pub(crate) fn reducer_for(format: OutputFormat) -> Option<Box<dyn Reducer>> {
         OutputFormat::StreamingJson => Some(Box::new(AcpReducer)),
         OutputFormat::StreamingMessagesJson => Some(Box::new(MessagesReducer::new())),
         OutputFormat::Plain | OutputFormat::Json => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Lifecycle;
+
+    #[test]
+    fn memory_plain_messages_do_not_promote_untrusted_diagnostics() {
+        let secret = "/Users/alice/private/session.jsonl\nhttps://untrusted.example";
+        let flush = Lifecycle::MemoryFlushCompleted {
+            result: format!("terminal failure: {secret}"),
+            path: Some(secret.to_owned()),
+        }
+        .plain_message();
+        assert_eq!(flush, "Memory flush completed.");
+        assert!(!flush.contains(secret));
+
+        let capture = Lifecycle::MemoryCaptureActivity {
+            activity: "failed".to_owned(),
+            from_turn: 2,
+            through_turn: 3,
+            attempt: 1,
+            detail: Some(secret.to_owned()),
+        }
+        .plain_message();
+        assert_eq!(capture, "Memory capture failed for turns 2-3.");
+        assert!(!capture.contains(secret));
+
+        let retry = Lifecycle::MemoryCaptureActivity {
+            activity: "failed".to_owned(),
+            from_turn: 2,
+            through_turn: 3,
+            attempt: 2,
+            detail: None,
+        }
+        .plain_message();
+        assert_eq!(retry, "Memory capture failed for turns 2-3 (attempt 2).");
+    }
+
+    #[test]
+    fn unknown_capture_activity_is_not_rendered_verbatim() {
+        let message = Lifecycle::MemoryCaptureActivity {
+            activity: "https://untrusted.example".to_owned(),
+            from_turn: 1,
+            through_turn: 1,
+            attempt: 1,
+            detail: None,
+        }
+        .plain_message();
+        assert_eq!(message, "Memory capture updated for turns 1-1.");
     }
 }

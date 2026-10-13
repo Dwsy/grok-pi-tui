@@ -2,6 +2,8 @@
 //! single Terminal item.
 
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::stream::{self, Stream, StreamExt};
 use schemars::JsonSchema;
@@ -10,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use xai_tool_protocol::{StreamingSpec, ToolCapabilities, ToolId};
 use xai_tool_runtime::{
     ContentBlock, Tool, ToolCallContext, ToolError, ToolErrorKind, ToolOutput, ToolProgress,
-    ToolStream, ToolStreamItem, with_progress,
+    ToolStream, ToolStreamItem, deferred_terminal, with_progress,
 };
 use xai_tool_types::ToolDescription;
 
@@ -158,6 +160,28 @@ async fn empty_progress_still_yields_terminal() {
     match item {
         ToolStreamItem::Terminal(Ok(v)) => assert_eq!(v, 99),
         other => panic!("expected Terminal(Ok(99)), got {other:?}"),
+    }
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn deferred_terminal_runs_only_when_polled() {
+    let ran = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&ran);
+    let mut stream = deferred_terminal(async move {
+        flag.store(true, Ordering::SeqCst);
+        Ok::<u32, ToolError>(7)
+    });
+    assert!(
+        !ran.load(Ordering::SeqCst),
+        "building the stream must not run the future"
+    );
+
+    let item = stream.next().await.unwrap();
+    assert!(ran.load(Ordering::SeqCst));
+    match item {
+        ToolStreamItem::Terminal(Ok(v)) => assert_eq!(v, 7),
+        other => panic!("expected Terminal(Ok(7)), got {other:?}"),
     }
     assert!(stream.next().await.is_none());
 }

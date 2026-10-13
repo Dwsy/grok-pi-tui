@@ -2,9 +2,7 @@
 #[allow(unused_imports)]
 use super::common::*;
 
-/// Regression, hermetic on Linux: bracketed text that did not come from the system clipboard must
-/// not attach the unrelated clipboard image. This only applies under Otty (`TERM_PROGRAM=otty`),
-/// the only terminal known to deliver macOS IME commits as bracketed paste.
+/// Bracketed text that did not come from the system clipboard must not attach the unrelated clipboard image. The origin check is brand-agnostic, so this harness leaves `TERM_PROGRAM` unset.
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
@@ -81,7 +79,7 @@ async fn bracketed_ime_paste_skips_clipboard_image_linux() {
             .wait_for_text(MOCK_RESPONSE_SENTINEL, Duration::from_secs(30))
             .expect("turn rendered (idle session)");
         harness
-            .inject_keys(b"\x1b[92;5u")
+            .inject_keys(CTRL_BACKSLASH)
             .expect("ctrl+\\ open dashboard");
         harness
             .wait_for_text("+ New Agent", Duration::from_secs(10))
@@ -89,9 +87,7 @@ async fn bracketed_ime_paste_skips_clipboard_image_linux() {
         harness
     }
 
-    // ── Otty: IME-style bracketed paste while the clipboard holds only an image; no image attaches ──
-    let mut harness =
-        spawn_on_dashboard(&content, &base_env, &[EnvOp::set("TERM_PROGRAM", "otty")]);
+    let mut harness = spawn_on_dashboard(&content, &base_env, &[EnvOp::remove("TERM_PROGRAM")]);
     harness
         .inject_keys(format!("\x1b[200~{IME_PAYLOAD}\x1b[201~").as_bytes())
         .expect("bracketed IME payload");
@@ -101,11 +97,10 @@ async fn bracketed_ime_paste_skips_clipboard_image_linux() {
     harness.update(Duration::from_millis(500));
     assert!(
         !harness.contains_text("[Image #"),
-        "under Otty, IME-committed text must NOT attach the clipboard image\nscreen:\n{}",
+        "bracketed text that is not on the clipboard must not attach the image\nscreen:\n{}",
         harness.screen_contents()
     );
 
-    // ── Otty (positive control): the payload matches the clipboard caption, so the image attaches ──
     std::fs::write(&text_file, CAPTION.as_bytes()).expect("genuine-paste clipboard text");
     harness
         .inject_keys(format!("\x1b[200~{CAPTION}\x1b[201~").as_bytes())
@@ -115,25 +110,6 @@ async fn bracketed_ime_paste_skips_clipboard_image_linux() {
         .expect(
             "a genuine clipboard paste (payload matches clipboard text) must still \
              attach the clipboard image — the probe path must stay live",
-        );
-    assert!(
-        !harness.contains_text("panicked"),
-        "pager panicked\nscreen:\n{}",
-        harness.screen_contents()
-    );
-    harness.quit().expect("clean quit");
-
-    // ── No TERM_PROGRAM (any other terminal): historical behavior intact, the same mismatched bracketed payload still attaches the image ──
-    std::fs::write(&text_file, b"").expect("reset clipboard text");
-    let mut harness = spawn_on_dashboard(&content, &base_env, &[]);
-    harness
-        .inject_keys(format!("\x1b[200~{IME_PAYLOAD}\x1b[201~").as_bytes())
-        .expect("bracketed payload without otty");
-    harness
-        .wait_for_text("[Image #1", Duration::from_secs(10))
-        .expect(
-            "outside Otty the payload-origin gate must not run — the historical \
-             bracketed-paste image probe attaches the clipboard image unchanged",
         );
     assert!(
         !harness.contains_text("panicked"),

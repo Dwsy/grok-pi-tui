@@ -53,7 +53,7 @@ fn unpadded(row: &str) -> String {
 
 fn row_text(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width)
-        .map(|x| buf[(x, y)].symbol())
+        .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol()))
         .collect::<String>()
         .trim_end()
         .to_string()
@@ -79,7 +79,9 @@ fn a_link_label_paints_exactly_as_authored() {
     let (_, rect) = result.consent_link_rects.first().expect("the link painted");
 
     for x in rect.x..rect.x + rect.width {
-        let cell = &buf[(x, rect.y)];
+        let Some(cell) = buf.cell((x, rect.y)) else {
+            panic!("cell ({x}, {}) missing", rect.y);
+        };
         assert!(
             cell.modifier.contains(Modifier::UNDERLINED),
             "column {x} ({:?}) inside the label is not underlined",
@@ -106,7 +108,9 @@ fn a_wrapped_link_gets_one_tight_rect_per_row() {
     assert_eq!(rows.len(), result.consent_link_rects.len());
 
     for (_, rect) in &result.consent_link_rects {
-        let last = &buf[(rect.x + rect.width - 1, rect.y)];
+        let Some(last) = buf.cell((rect.x + rect.width - 1, rect.y)) else {
+            panic!("last cell of {rect:?} missing");
+        };
         assert_ne!(
             last.symbol(),
             " ",
@@ -209,13 +213,19 @@ fn hovering_a_link_brightens_every_row_it_wraps_onto() {
     for (_, rect) in &result.consent_link_rects {
         for x in rect.x..rect.x + rect.width {
             assert_eq!(
-                plain[(x, rect.y)].fg,
-                theme.link_fg,
+                plain.cell((x, rect.y)).map(|c| c.fg),
+                Some(theme.link_fg),
                 "a link looks like one"
             );
-            assert!(!plain[(x, rect.y)].modifier.contains(Modifier::BOLD));
             assert!(
-                hovered[(x, rect.y)].modifier.contains(Modifier::BOLD),
+                plain
+                    .cell((x, rect.y))
+                    .is_some_and(|c| !c.modifier.contains(Modifier::BOLD))
+            );
+            assert!(
+                hovered
+                    .cell((x, rect.y))
+                    .is_some_and(|c| c.modifier.contains(Modifier::BOLD)),
                 "a 16-colour palette gives both link colours the same value, so hover cannot be \
                  colour alone",
             );
@@ -264,7 +274,9 @@ fn a_long_accept_label_cannot_overwrite_its_key_hint() {
 
     let (buf, result) = render_with(46, 40, &long, None, None);
 
-    let row = result.menu_rects[0];
+    let Some(&row) = result.menu_rects.first() else {
+        panic!("expected a menu rect: {:?}", result.menu_rects);
+    };
     let painted = row_text(&buf, row.y);
 
     assert!(

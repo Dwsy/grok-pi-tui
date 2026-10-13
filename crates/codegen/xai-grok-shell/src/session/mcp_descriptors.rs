@@ -276,11 +276,18 @@ mod tests {
             &std::fs::read_to_string(temp.path().join("linear/tools/list_issues.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(linear["name"], "list_issues");
-        assert_eq!(linear["description"], "List issues");
+        assert_eq!(linear.get("name"), Some(&serde_json::json!("list_issues")));
         assert_eq!(
-            linear["inputSchema"]["properties"]["limit"]["type"],
-            "number"
+            linear.get("description"),
+            Some(&serde_json::json!("List issues"))
+        );
+        assert_eq!(
+            linear
+                .get("inputSchema")
+                .and_then(|s| s.get("properties"))
+                .and_then(|p| p.get("limit"))
+                .and_then(|l| l.get("type")),
+            Some(&serde_json::json!("number"))
         );
 
         let slack: serde_json::Value = serde_json::from_str(
@@ -288,11 +295,21 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(slack["name"], "search messages");
-        assert_eq!(slack["description"], "Search Slack");
         assert_eq!(
-            slack["inputSchema"]["properties"]["query"]["type"],
-            "string"
+            slack.get("name"),
+            Some(&serde_json::json!("search messages"))
+        );
+        assert_eq!(
+            slack.get("description"),
+            Some(&serde_json::json!("Search Slack"))
+        );
+        assert_eq!(
+            slack
+                .get("inputSchema")
+                .and_then(|s| s.get("properties"))
+                .and_then(|p| p.get("query"))
+                .and_then(|q| q.get("type")),
+            Some(&serde_json::json!("string"))
         );
     }
 

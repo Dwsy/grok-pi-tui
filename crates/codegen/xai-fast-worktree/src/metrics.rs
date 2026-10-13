@@ -87,6 +87,7 @@ pub fn record_grove_wt_dispose(method: DisposeMethod, duration: Duration) {
     );
 }
 
+#[cfg(feature = "metadata")]
 pub(crate) fn record_grove_wt_gc(removed: u64, duration: Duration) {
     tracing::info!(
         metric = "grove_wt_gc_duration_seconds",

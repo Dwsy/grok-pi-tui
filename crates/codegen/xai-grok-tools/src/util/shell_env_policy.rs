@@ -4,6 +4,7 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::sync::LazyLock;
 use wildmatch::WildMatchPattern;
 
@@ -208,12 +209,22 @@ where
 /// Clear the command's inherited env and install the policy-derived base env. `active` must already
 /// be noop-filtered; `None` leaves the command untouched. The one base-env code path, shared by the
 /// public entry point and the spawn sites.
+///
+/// The clear is one removal per inherited (or already set) name rather than `env_clear`:
+/// `Command` does not report a clear, and the sandbox seam and its wrapper must read the child's
+/// whole environment back from `cmd` (`crate::sandbox_launch::child_env`).
 pub(crate) fn install_policy_base_env(
     cmd: &mut tokio::process::Command,
     active: Option<&ShellEnvironmentPolicy>,
 ) {
     if let Some(policy) = active {
-        cmd.env_clear();
+        let names: Vec<OsString> = std::env::vars_os()
+            .map(|(name, _)| name)
+            .chain(cmd.as_std().get_envs().map(|(name, _)| name.to_os_string()))
+            .collect();
+        for name in names {
+            cmd.env_remove(name);
+        }
         cmd.envs(create_env(policy));
     }
 }

@@ -67,7 +67,9 @@ impl RecoveryBudget {
             // Nothing of this text fits and the slot holds nothing to mark; a marker alone would read as retained content
             return;
         }
-        slot.push_str(&text[..cut]);
+        if let Some(prefix) = text.get(..cut) {
+            slot.push_str(prefix);
+        }
         slot.push_str(TRUNCATION_MARKER);
         self.used += cut;
     }

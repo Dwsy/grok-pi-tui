@@ -150,6 +150,13 @@ async fn scripted_image_inputs() {
     run_scenario("image_inputs.yaml").await;
 }
 
+/// Home, Ctrl+K, Ctrl+Y round-trips an image chip through the kill buffer; the yanked `[Image #1]` re-attaches and sends as an image.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "scripted scenario; run with cargo test -- --ignored"]
+async fn scripted_image_chip_kill_yank() {
+    run_scenario("image_chip_kill_yank.yaml").await;
+}
+
 /// An image chip with no backing file path previews and dismisses on a PTY without graphics support.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "scripted scenario; run with cargo test -- --ignored"]
@@ -433,6 +440,13 @@ async fn scripted_mid_text_skill_token_echo() {
     run_scenario("mid_text_skill_token_echo.yaml").await;
 }
 
+/// A mid-message `/btw` token sends the whole message (minus the token) as one side question; no user turn is echoed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "scripted scenario; run with cargo test -- --ignored"]
+async fn scripted_mid_text_btw_sends_side_question() {
+    run_scenario("mid_text_btw_sends_side_question.yaml").await;
+}
+
 /// Auto-compact: shrinking to 14 rows drops the sticky previous-question header (compact chrome engages); growing back to 32 rows restores it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "scripted scenario; run with cargo test -- --ignored"]
@@ -462,29 +476,6 @@ async fn scripted_small_screen_tip_no_show_tiny() {
     run_scenario("small_screen_tip_no_show_tiny.yaml").await;
 }
 
-/// Inline edit-and-resubmit happy path: Enter on a selected previous prompt opens the in-place editor. `y` rewinds
-/// the conversation and resubmits the edited text as a fresh turn, with no "Reverted conversation" note.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "scripted scenario; run with cargo test -- --ignored"]
-async fn scripted_inline_edit_resubmit() {
-    run_scenario("inline_edit_resubmit.yaml").await;
-}
-
-/// Enter on an unchanged inline edit just closes the editor: no rewind popup, no resubmit, and the transcript stays untouched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "scripted scenario; run with cargo test -- --ignored"]
-async fn scripted_inline_edit_unchanged_exit() {
-    run_scenario("inline_edit_unchanged_exit.yaml").await;
-}
-
-/// Esc from the inline resubmit popup returns to the still-open editor with the edit intact.
-/// A second Esc discards the edit and restores the original prompt text in place.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "scripted scenario; run with cargo test -- --ignored"]
-async fn scripted_inline_edit_dismiss_returns_to_editor() {
-    run_scenario("inline_edit_dismiss_returns_to_editor.yaml").await;
-}
-
 /// Sanity-check: every scenario YAML in the list below must parse.
 /// This runs at `cargo test` time without `--ignored`, so a malformed YAML breaks CI immediately, not only when the scripted runner is opted in.
 #[test]
@@ -511,13 +502,11 @@ fn scenarios_parse() {
         "plan_nudge_shows.yaml",
         "plan_nudge_opt_out_no_show.yaml",
         "mid_text_skill_token_echo.yaml",
+        "mid_text_btw_sends_side_question.yaml",
         "auto_compact_resize.yaml",
         "small_screen_tip_band.yaml",
         "small_screen_tip_no_show_tall.yaml",
         "small_screen_tip_no_show_tiny.yaml",
-        "inline_edit_resubmit.yaml",
-        "inline_edit_unchanged_exit.yaml",
-        "inline_edit_dismiss_returns_to_editor.yaml",
     ] {
         let path = scenario_path(name);
         let scenario =

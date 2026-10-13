@@ -25,6 +25,9 @@ pub struct BashToolConfig {
     /// `None` uses the server default of 15s.
     /// `Some(0)` disables the short budget, so auto-backgrounding happens only at the model/default timeout.
     pub foreground_block_budget_ms: Option<u64>,
+    /// How long a command may block the foreground, in milliseconds, when the model omits `block_until_ms`.
+    /// `None` uses the server default of 30s.
+    pub default_block_until_ms: Option<u64>,
     /// Whether to allow a background `&` operator in foreground commands (default: `true`).
     /// Resolution: config.toml (this) > remote settings > `true`.
     pub allow_background_operator: Option<bool>,
@@ -71,6 +74,9 @@ impl BashToolConfig {
         map.insert("auto_background_on_timeout".into(), auto_bg.into());
         if let Some(ms) = self.foreground_block_budget_ms {
             map.insert("foreground_block_budget_ms".into(), ms.into());
+        }
+        if let Some(ms) = self.default_block_until_ms {
+            map.insert("default_block_until_ms".into(), ms.into());
         }
         let allow_bg_op = self
             .allow_background_operator
@@ -204,13 +210,16 @@ impl ShellToolsetConfig {
             top_p: None,
             api_backend: Default::default(),
             auth_scheme: Default::default(),
+            request_compression: Default::default(),
             extra_headers: indexmap::IndexMap::new(),
             extra_response_includes: Vec::new(),
             query_params: indexmap::IndexMap::new(),
             env_http_headers: indexmap::IndexMap::new(),
             context_window: 256_000,
+            max_request_bytes: None,
             client_version: None,
             reasoning_effort: None,
+            reasoning_summary: None,
             force_http1: false,
             max_retries: None,
             rate_limit_retry_threshold: None,
@@ -694,6 +703,29 @@ mod tests {
         assert_eq!(
             fg_budget(&local.to_bash_params_json(None, None)),
             Some(30_000),
+        );
+    }
+
+    // -- default_block_until_ms: only emitted when set (server defaults to 30s) --
+
+    fn default_block_until(map: &serde_json::Map<String, serde_json::Value>) -> Option<u64> {
+        map.get("default_block_until_ms").and_then(|v| v.as_u64())
+    }
+
+    #[test]
+    fn default_block_until_ms_emitted_only_when_set() {
+        assert!(
+            default_block_until(&BashToolConfig::default().to_bash_params_json(None, None))
+                .is_none()
+        );
+
+        let local = BashToolConfig {
+            default_block_until_ms: Some(15_000),
+            ..BashToolConfig::default()
+        };
+        assert_eq!(
+            default_block_until(&local.to_bash_params_json(None, None)),
+            Some(15_000)
         );
     }
 }

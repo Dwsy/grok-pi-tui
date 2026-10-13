@@ -45,7 +45,11 @@ pub async fn run_headless_with_env(
     cwd: &Path,
     env: &[(&str, &str)],
 ) -> HeadlessResult {
-    let sandbox = TestSandbox::builder().mock_url(server.url()).build();
+    let mut sandbox = TestSandbox::builder().mock_url(server.url()).build();
+    // The baseline clears the env, so this is the child's only route to trusting the throwaway CA.
+    if let Some(ca_pem) = server.ca_pem_path() {
+        sandbox.set_env("GROK_EXTRA_CA_BUNDLE", ca_pem);
+    }
     let mut cmd = tokio::process::Command::new(grok_binary());
     cmd.args(args).current_dir(cwd);
     run_headless_with_cmd_and_sandbox(cmd, &sandbox, env).await
@@ -224,11 +228,16 @@ const CRASH_PATTERNS: &[&str] = &[
     "undefined symbol",
     "SIGABRT",
     "cannot open shared object",
+    "has overflowed its stack",
 ];
 
 /// Diagnostic helper: format the tail of stderr for assertion messages.
 pub fn stderr_tail(stderr: &str, max_chars: usize) -> &str {
-    &stderr[stderr.len().saturating_sub(max_chars)..]
+    stderr
+        .len()
+        .checked_sub(max_chars)
+        .and_then(|start| stderr.get(start..))
+        .unwrap_or(stderr)
 }
 
 /// Assert that a headless run succeeded (non-timeout, zero exit code).

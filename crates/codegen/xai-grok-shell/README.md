@@ -496,7 +496,7 @@ Type `/` in the input to access commands:
 | `/new`                             |           | Start a new session (clears context)                     |
 | `/load [workspace] [session]`      | `/resume` | Load a previous session                                  |
 | `/rewind <prompt>`                 |           | Rewind to a previous prompt (restores files)             |
-| `/compact [context]`               |           | Compact conversation history                             |
+| `/compact`                         |           | Compact conversation history                             |
 | `/always-approve [on\|off]`        | `/yolo`   | Toggle auto-approve mode                                 |
 | `/multiline`                       | `/ml`     | Toggle multiline input mode                              |
 | `/memory [workspace\|global] <text>` |         | Append text to a memory file (requires memory enabled) |
@@ -1793,15 +1793,31 @@ never removes or replaces another layer's block. Each hook's `/hooks-list` name 
 prefixed with the layer it came from (for example `managed:` or
 `requirements/user:`).
 
-Hooks from the **root-owned** layers (a system-dir `requirements.toml` such as
-`/etc/grok/requirements.toml`, or `/etc/grok/managed_config.toml`) are enforced:
-they cannot be disabled from the hooks modal, the enable/disable APIs, or the
-`disabled-hooks` file, and a byte-identical copy in a lower layer cannot take
-over their provenance. Enforcement relies on OS file ownership — deploy these
-files root-owned (or via MDM); there is no signature verification. Hooks in
-`$GROK_HOME` layers (`requirements.toml`, `managed_config.toml`, `config.toml`)
+Hooks from two kinds of layer are enforced: they cannot be disabled from the
+hooks modal, the enable/disable APIs, or the `disabled-hooks` file, and a
+byte-identical copy in a lower layer cannot take over their provenance.
+
+- The **root-owned** system layers (`/etc/grok/requirements.toml`,
+  `/etc/grok/managed_config.toml`). Enforcement relies on OS file ownership, so
+  deploy these files root-owned (or via MDM).
+- The **signed** `$GROK_HOME/requirements.toml` the deployment sync writes.
+  Its hooks are enforced while the file's bytes match the server-signed
+  envelope (`requirements/signed:` names); an edited copy, or one whose
+  signature file is missing or unreadable, is the user's own file again
+  (`requirements/user:` names, disableable); an unreadable `requirements.toml`
+  contributes no hooks. Pair the policy with `fail_closed = true`, which
+  refuses the session on an edited copy or a missing signature (an unreadable
+  file is a read error, not tampering, and still starts).
+
+Hooks in the other `$GROK_HOME` layers (`managed_config.toml`, `config.toml`)
 remain convenience distribution, not an enforcement boundary: the user owns
 that directory and can edit or repoint it.
+
+`allow_managed_hooks_only = true` (also `allowManagedHooksOnly`) in any policy
+layer is a tighten-only pin that skips every hook that is not managed policy:
+user, project, plugin, agent-frontmatter, and vendor-compat hooks are left out of
+dispatch and show `[disabled]` in the modal, and enabling them is refused.
+ACP client-registered hooks are unaffected. A non-boolean value engages the pin.
 
 ---
 
@@ -1830,7 +1846,7 @@ context_window = 256000               # Total context window in tokens (for auto
 
 **Credential resolution order:** `api_key` → `env_key` → cached `auth_provider` token (terminal: a cache miss resolves to no credential, never the session token) → session token → `XAI_API_KEY`. See [Per-Model Auth Providers](#per-model-auth-providers).
 
-The `context_window` parameter is used to calculate when auto-compact should trigger. If not specified, Grok falls back to built-in defaults for known models.
+The `context_window` parameter is used to calculate when auto-compact should trigger. If not specified, Grok falls back to built-in defaults for known models. To offer a choice of windows, set `context_windows = [256000, 500000]`. `context_window` stays the default (the first listed window when unset), and older clients ignore the list.
 
 ### Overriding Built-in Models
 
@@ -1965,9 +1981,9 @@ models_base_url = "https://api.acme.com/v1"
 api_key = "my-api-key"
 ```
 
-When using `[endpoints]` with partial model overrides, the `base_url` is inherited from the endpoints config — you don't need to specify it in each `[model.*]` section.
+Each `[model.*]` section inherits `base_url` from the `[endpoints]` config. `XAI_API_KEY` is still required. A per-model `api_key`/`env_key` authenticates that model's inference requests. The startup model-list fetch still uses `XAI_API_KEY`.
 
-**Auth behavior:** When `models_base_url` is set, Grok uses API key auth (`Authorization: Bearer`) instead of session auth. `grok login` is not required — only the API key.
+**Auth behavior:** When `models_base_url` is set, Grok authenticates the model-list request with `XAI_API_KEY` (`Authorization: Bearer`). That request never uses your `grok login` session. With an external auth provider (`auth_provider_command`) and no `XAI_API_KEY`, it sends the provider's token instead. Otherwise, if `XAI_API_KEY` is unset, the fetch fails with an error asking you to set it. Inference requests to the custom host authenticate with each model's `api_key`/`env_key`.
 
 ---
 

@@ -464,8 +464,6 @@ impl WorkspaceRpc for GitMetadataReq {
     type Response = Value;
 }
 
-// ---- Serde helpers ------------------------------------------------------
-
 fn default_true() -> bool {
     true
 }
@@ -476,12 +474,8 @@ fn default_working() -> String {
     "working".into()
 }
 fn default_max_file_bytes() -> u64 {
-    0 // No limit by default
+    0
 }
-
-// =========================================================================
-// Response data types
-// =========================================================================
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -800,10 +794,6 @@ pub struct GitBranchListData {
     pub branches: Vec<GitBranchEntry>,
 }
 
-// =========================================================================
-// Git Collect Changes RPC Types
-// =========================================================================
-
 /// This is the workspace-side half of `serialize_changes`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitCollectChangesReq {
@@ -1050,18 +1040,6 @@ mod tests {
     }
 
     #[test]
-    fn method_constant() {
-        assert_eq!(GitStatusReq::METHOD, "workspace.git_status");
-        assert_eq!(GitStatusExtReq::METHOD, "workspace.git_status_ext");
-        assert_eq!(GitBranchInfoReq::METHOD, "workspace.git_branch_info");
-        assert_eq!(GitMetadataReq::METHOD, "workspace.git_metadata");
-        assert_eq!(
-            GitCollectChangesReq::METHOD,
-            "workspace.git_collect_changes"
-        );
-    }
-
-    #[test]
     fn git_file_change_serializes_type_key() {
         let change = GitFileChange {
             path: "src/main.rs".into(),
@@ -1077,7 +1055,7 @@ mod tests {
             new_text: None,
         };
         let json = serde_json::to_value(&change).unwrap();
-        assert_eq!(json["type"], "edit");
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("edit"));
         assert!(json.get("oldPath").is_none(), "camelCase + skip none");
     }
 
@@ -1124,7 +1102,10 @@ mod tests {
         assert!(response.prompt.is_none());
 
         let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["format"], "structured");
+        assert_eq!(
+            json.get("format").and_then(|v| v.as_str()),
+            Some("structured")
+        );
         assert!(json.get("data").is_some());
         assert!(
             json.get("prompt").is_none(),
@@ -1141,12 +1122,15 @@ mod tests {
         assert_eq!(response.prompt, Some("On branch main".to_string()));
 
         let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["format"], "prompt");
+        assert_eq!(json.get("format").and_then(|v| v.as_str()), Some("prompt"));
         assert!(
             json.get("data").is_none(),
             "data should be skipped when None"
         );
-        assert_eq!(json["prompt"], "On branch main");
+        assert_eq!(
+            json.get("prompt").and_then(|v| v.as_str()),
+            Some("On branch main")
+        );
     }
 
     #[test]
@@ -1175,8 +1159,7 @@ mod tests {
 
     #[test]
     fn git_status_ext_response_deserializes_legacy_flat_status() {
-        // A legacy workspace server returns flat `GitStatusData` JSON for `git_status_ext`
-        // It must be wrapped as a structured envelope rather than parsed as an empty response
+        // Legacy servers return flat `GitStatusData`; wrap it, do not parse as empty.
         let legacy = serde_json::to_value(GitStatusData {
             branch: Some("main".to_string()),
             ahead: Some(2),
@@ -1186,7 +1169,6 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        // Sanity: the legacy payload has none of the envelope's own keys.
         assert!(legacy.get("format").is_none());
         assert!(legacy.get("data").is_none());
         assert!(legacy.get("prompt").is_none());

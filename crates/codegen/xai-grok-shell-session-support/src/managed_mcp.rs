@@ -368,25 +368,9 @@ pub async fn get_or_fetch_gateway_tool_catalog(
     }
 }
 
-pub fn normalize_url(url: &str) -> String {
-    url.trim_end_matches('/').to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalize_url_strips_trailing_slash() {
-        assert_eq!(
-            normalize_url("https://mcp.example.com/sse/"),
-            "https://mcp.example.com/sse"
-        );
-        assert_eq!(
-            normalize_url("https://mcp.example.com/sse"),
-            "https://mcp.example.com/sse"
-        );
-    }
 
     #[test]
     fn gateway_tool_catalog_deserializes() {
@@ -432,19 +416,26 @@ mod tests {
         .unwrap();
         assert_eq!(0, without_total_tools.total_tools);
         assert_eq!(vec!["Slack"], catalog.connectors_needing_reauth);
-        assert_eq!(1, catalog.reauth_connectors.len());
-        assert_eq!("slack", catalog.reauth_connectors[0].connector_id);
+        let [reauth] = catalog.reauth_connectors.as_slice() else {
+            panic!(
+                "expected one reauth connector: {:?}",
+                catalog.reauth_connectors
+            );
+        };
+        assert_eq!("slack", reauth.connector_id);
         assert!(without_total_tools.reauth_connectors.is_empty());
-        assert_eq!("gmail_search", catalog.tools[0].call_id);
-        assert_eq!("gmail__search", catalog.tools[0].qualified_name());
-        assert_eq!("gmail", catalog.tools[0].connector_id);
-        assert_eq!("Gmail", catalog.tools[0].connector_name);
-        assert_eq!("search", catalog.tools[0].tool_id);
-        assert_eq!("Search Gmail", catalog.tools[0].tool_name);
+        let [tool] = catalog.tools.as_slice() else {
+            panic!("expected one tool: {:?}", catalog.tools);
+        };
+        assert_eq!("gmail_search", tool.call_id);
+        assert_eq!("gmail__search", tool.qualified_name());
+        assert_eq!("gmail", tool.connector_id);
+        assert_eq!("Gmail", tool.connector_name);
+        assert_eq!("search", tool.tool_id);
+        assert_eq!("Search Gmail", tool.tool_name);
         assert_eq!(
             Some("string"),
-            catalog.tools[0]
-                .json_schema
+            tool.json_schema
                 .pointer("/properties/query/type")
                 .and_then(|v| v.as_str())
         );
@@ -469,7 +460,13 @@ mod tests {
             .map(|c| c.connector_id.as_str())
             .collect();
         assert_eq!(ids, ["", "github", ""]);
-        assert_eq!(catalog.reauth_connectors[0].connector_name, "Slack");
+        assert_eq!(
+            catalog
+                .reauth_connectors
+                .first()
+                .map(|c| c.connector_name.as_str()),
+            Some("Slack")
+        );
     }
 
     #[tokio::test]
@@ -655,7 +652,10 @@ mod tests {
         let catalog = get_or_fetch_gateway_tool_catalog(&handle, &base_url, Some("token"))
             .await
             .expect("gateway catalog fetch should succeed");
-        assert_eq!("gmail__search", catalog.tools[0].qualified_name());
+        assert_eq!(
+            catalog.tools.first().map(|t| t.qualified_name()),
+            Some("gmail__search".to_string())
+        );
         assert!(matches!(
             handle.lock().await.gateway_tool_cache,
             GatewayToolCatalogCache::Ready(_)
@@ -665,7 +665,10 @@ mod tests {
             get_or_fetch_gateway_tool_catalog(&handle, "http://127.0.0.1:0", Some("token"))
                 .await
                 .expect("second call should use cached catalog");
-        assert_eq!("gmail_search", cached.tools[0].call_id);
+        assert_eq!(
+            cached.tools.first().map(|t| t.call_id.as_str()),
+            Some("gmail_search")
+        );
         assert_eq!(1, calls.load(std::sync::atomic::Ordering::SeqCst));
         server.abort();
     }

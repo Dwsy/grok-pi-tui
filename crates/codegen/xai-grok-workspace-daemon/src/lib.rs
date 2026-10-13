@@ -12,5 +12,7 @@
 //! The activity scraper reports through the [`preview_supervisor::PreviewActivitySink`] trait.
 //! The binary implements that trait over the workspace `ActivityTracker`.
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod daemonize;
 pub mod preview_supervisor;

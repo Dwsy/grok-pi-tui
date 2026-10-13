@@ -47,7 +47,10 @@ pub(crate) fn normalize_json_line(line: Vec<u8>) -> Vec<u8> {
         .iter()
         .rposition(|&b| b != b'\n' && b != b'\r')
         .map_or(0, |pos| pos + 1);
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line[..body_len]) else {
+    let Some(body) = line.get(..body_len) else {
+        return line;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
         // Exactly the line class the acp 0.6 envelope will then drop silently.
         tracing::debug!(
             len = line.len(),
@@ -58,7 +61,9 @@ pub(crate) fn normalize_json_line(line: Vec<u8>) -> Vec<u8> {
     let Ok(mut normalized) = serde_json::to_vec(&value) else {
         return line;
     };
-    normalized.extend_from_slice(&line[body_len..]);
+    if let Some(suffix) = line.get(body_len..) {
+        normalized.extend_from_slice(suffix);
+    }
     tracing::debug!(
         len = line.len(),
         normalized_len = normalized.len(),

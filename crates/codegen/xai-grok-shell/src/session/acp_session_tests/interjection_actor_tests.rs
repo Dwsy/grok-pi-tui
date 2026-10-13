@@ -99,9 +99,11 @@ async fn goal_send_now_routes_text_and_image_as_planner_steering_and_interjectio
             let run = actor.goal_tracker.lock().take_planner_run().unwrap();
             assert_eq!(run.steering, ["steer"]);
             let interjections = actor.pending_interjections.drain_all();
-            assert_eq!(interjections.len(), 1);
-            assert_eq!(interjections[0].text, "steer");
-            assert_eq!(interjections[0].attachments.len(), 1);
+            let [inj] = interjections.as_slice() else {
+                panic!("expected one interjection: {interjections:?}");
+            };
+            assert_eq!(inj.text, "steer");
+            assert_eq!(inj.attachments.len(), 1);
         })
         .await;
 }
@@ -126,10 +128,7 @@ async fn drain_interjection_with_images_attaches_image_parts() {
                 Some(ConversationItem::User(u)) => u,
                 other => panic!("conversation tail must be a user item, got: {other:?}"),
             };
-            assert_eq!(
-                user_item.synthetic_reason,
-                Some(SyntheticReason::Interjection)
-            );
+            assert_eq!(user_item.synthetic_reason, SyntheticReason::Interjection);
             let image_urls: Vec<&str> = user_item
                 .content
                 .iter()
@@ -138,17 +137,59 @@ async fn drain_interjection_with_images_attaches_image_parts() {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(image_urls.len(), 1, "image part must be attached");
+            let [url] = image_urls.as_slice() else {
+                panic!("image part must be attached: {image_urls:?}");
+            };
             assert!(
-                image_urls[0].starts_with("data:image/"),
+                url.starts_with("data:image/"),
                 "inline base64 data URL expected, got {}",
-                &image_urls[0][..image_urls[0].len().min(32)]
+                url.get(..url.len().min(32)).unwrap_or(*url)
             );
             let text = conversation.last().unwrap().text_content();
             assert!(
                 text.contains("[Image #1]") && text.contains("<user_query>"),
                 "placeholder text must survive in the wrapped query, got: {text}"
             );
+        })
+        .await;
+}
+
+/// A grok-build interjection persists its images under the session `assets/` dir and leads with the
+/// `<image_files>` block, like a prompt turn, so compaction can later list the paths.
+#[tokio::test]
+async fn grok_build_interjection_with_images_gets_image_files_block() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _gateway_rx) = build_actor().await;
+            actor.pending_interjections.push(PendingInterjection {
+                text: "look at [Image #1]".to_string(),
+                attachments: vec![test_image_content()],
+            });
+
+            assert!(actor.drain_pending_interjections().await);
+
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            let user_item = match conversation.last() {
+                Some(ConversationItem::User(u)) => u,
+                other => panic!("conversation tail must be a user item, got: {other:?}"),
+            };
+            assert_eq!(user_item.synthetic_reason, SyntheticReason::Interjection);
+            let text = conversation.last().unwrap().text_content();
+            assert!(text.starts_with("<image_files>\n"), "got: {text}");
+            let path = text
+                .lines()
+                .find_map(|line| line.strip_prefix("1. "))
+                .unwrap_or_else(|| panic!("no persisted path line, got: {text}"));
+            assert!(
+                path.contains("/assets/image-") && std::path::Path::new(path).is_file(),
+                "path must point at the persisted asset, got: {path}"
+            );
+            assert!(
+                text.find("</image_files>") < text.find("<user_query>"),
+                "block must precede the wrapped query, got: {text}"
+            );
+            std::fs::remove_file(path).unwrap();
         })
         .await;
 }
@@ -400,7 +441,8 @@ async fn interjection_fallback_prompt_queues_front_with_prefix() {
             );
             assert!(front.queue_meta.is_none(), "not a shared-queue row");
             assert_eq!(
-                state.pending_inputs[1].prompt_id, "queued-later",
+                state.pending_inputs.get(1).map(|i| i.prompt_id.as_str()),
+                Some("queued-later"),
                 "previously queued prompt stays behind the send-now text"
             );
         })
@@ -498,12 +540,15 @@ async fn fallback_prompt_lands_behind_running_front() {
                 .iter()
                 .map(|i| i.prompt_id.as_str())
                 .collect();
-            assert_eq!(ids[0], "running", "running front stays pinned");
+            let [running, fallback, later] = ids.as_slice() else {
+                panic!("expected running/fallback/later: {ids:?}");
+            };
+            assert_eq!(*running, "running", "running front stays pinned");
             assert!(
-                ids[1].starts_with("interject-fallback-"),
+                fallback.starts_with("interject-fallback-"),
                 "fallback lands right behind the running front, got {ids:?}"
             );
-            assert_eq!(ids[2], "later");
+            assert_eq!(*later, "later");
         })
         .await;
 }

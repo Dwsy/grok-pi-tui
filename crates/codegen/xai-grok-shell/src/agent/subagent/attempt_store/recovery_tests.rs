@@ -27,7 +27,13 @@ fn replace(bytes: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
         .windows(old.len())
         .position(|value| value == old)
         .unwrap();
-    [&bytes[..start], new, &bytes[start + old.len()..]].concat()
+    let Some(head) = bytes.get(..start) else {
+        panic!("replace start out of range: {start}");
+    };
+    let Some(tail) = bytes.get(start + old.len()..) else {
+        panic!("replace tail out of range: {start}");
+    };
+    [head, new, tail].concat()
 }
 fn with_generation(bytes: &[u8], generation: u64) -> Vec<u8> {
     replace(
@@ -168,15 +174,16 @@ fn generation_and_run_key_classes_are_closed() {
         RecoveryGenerationV1::try_new(u64::MAX).unwrap(),
         unknown_generation()
     );
-    let reserved = encoded(&terminal_records()[0]);
+    let terminals = terminal_records();
+    let Some(reserved_record) = terminals.first() else {
+        panic!("expected terminal recovery fixtures: {terminals:?}");
+    };
+    let reserved = encoded(reserved_record);
     assert!(decode_recovery_record(&with_generation(&reserved, 33)).is_ok());
     for invalid in [34, u64::MAX - 1] {
         assert!(decode_recovery_record(&with_generation(&reserved, invalid)).is_err());
     }
-    assert_eq!(
-        decode_recovery_record(&reserved).unwrap(),
-        terminal_records()[0]
-    );
+    assert_eq!(decode_recovery_record(&reserved).unwrap(), *reserved_record);
 
     for run in 0..=6 {
         assert_eq!(
@@ -242,9 +249,16 @@ fn ordinary_and_terminal_outcome_rules_are_closed() {
 
 #[test]
 fn strict_decoder_rejects_noncanonical_oversized_and_event_cap_rows() {
-    let valid = encoded(&terminal_records()[1]);
+    let terminals = terminal_records();
+    let Some(outcome_record) = terminals.get(1) else {
+        panic!("expected terminal outcome fixture: {terminals:?}");
+    };
+    let valid = encoded(outcome_record);
+    let Some(truncated) = valid.len().checked_sub(1).and_then(|n| valid.get(..n)) else {
+        panic!("empty encoded recovery row");
+    };
     let invalid = [
-        valid[..valid.len() - 1].to_vec(),
+        truncated.to_vec(),
         [valid.as_slice(), b"\n"].concat(),
         replace(
             &valid,

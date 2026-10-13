@@ -126,7 +126,7 @@ async fn try_resolve_unicode_filename_inner(path: &Path) -> Option<UnicodePathMa
     }
 
     if matches.len() == 1 {
-        let matched = &matches[0];
+        let matched = matches.first()?;
         let matched_name = matched.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
         // zip is safe: FILENAME_SPECIAL_CHARACTER_MAP is (char, char) so

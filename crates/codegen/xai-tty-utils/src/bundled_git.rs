@@ -57,7 +57,6 @@ impl BundledGit {
     /// Whether helpers spawned by name can run from this payload: a
     /// [`Self::helper_dir`] and its [`Self::dll_dir`] both exist. The single
     /// definition of "complete" that the payload picker ranks by and that
-    /// `grove doctor` reports against, so the two never disagree.
     #[must_use]
     pub fn is_usable(&self) -> bool {
         self.helper_dir.is_some() && self.dll_dir().is_some()
@@ -90,26 +89,19 @@ fn locate() -> Option<BundledGit> {
 /// (`hermetic_git` pins the choice with no PATH fallback, so a payload whose
 /// helpers are missing or cannot start would fail every `file://` helper spawn
 /// for the process lifetime). Only when no payload is usable does the newest
-/// helper-carrying one win, then the newest launcher-only one.
+/// helper-carrying one win, then the newest launcher-only one. Hidden entries
+/// are never versions: the installer extracts into `.staging-*` and deletes
+/// stale ones, so a tree there may vanish under a process that picked it.
 fn bundled_git_in(root: &Path) -> Option<BundledGit> {
     std::fs::read_dir(root)
         .ok()?
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let version = entry.file_name().to_str()?.to_owned();
-            let exe = entry.path().join("cmd").join("git.exe");
-            exe.is_file().then(|| {
-                let cmd_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-                let helper_dir = helper_dir_in(&entry.path());
-                (
-                    version,
-                    BundledGit {
-                        cmd_dir,
-                        exe,
-                        helper_dir,
-                    },
-                )
-            })
+            if version.starts_with('.') {
+                return None;
+            }
+            bundled_git_at(&entry.path()).map(|git| (version, git))
         })
         .max_by(|(a, ga), (b, gb)| {
             ga.is_usable()
@@ -119,6 +111,24 @@ fn bundled_git_in(root: &Path) -> Option<BundledGit> {
                 .then_with(|| a.cmp(b))
         })
         .map(|(_, git)| git)
+}
+
+/// The payload in one `<root>\<version>` directory, if it has the launcher.
+/// [`BundledGit::is_usable`] on the result is the completeness test an
+/// installer must apply before publishing or skipping a version directory,
+/// so that it and the picker above agree.
+#[must_use]
+pub fn bundled_git_at(version_dir: &Path) -> Option<BundledGit> {
+    let exe = version_dir.join("cmd").join("git.exe");
+    exe.is_file().then(|| {
+        let cmd_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+        let helper_dir = helper_dir_in(version_dir);
+        BundledGit {
+            cmd_dir,
+            exe,
+            helper_dir,
+        }
+    })
 }
 
 /// The platform tree of `version` that holds `git-upload-pack.exe`, probed in
@@ -141,8 +151,10 @@ fn helper_dir_in(version: &Path) -> Option<PathBuf> {
 const PLATFORM_TREES: &[&str] = &["mingw64", "clangarm64", "clang64", "mingw32"];
 
 /// Numeric dot-separated components (`2.47.1.windows.2` -> `[2, 47, 1, 2]`)
-/// so `2.50.0` outranks `2.9.1`.
-fn version_key(version: &str) -> Vec<u64> {
+/// so `2.50.0` outranks `2.9.1`. The order the picker ranks version
+/// directories by; an installer pruning them must use the same one.
+#[must_use]
+pub fn version_key(version: &str) -> Vec<u64> {
     version
         .split('.')
         .filter_map(|part| part.parse().ok())

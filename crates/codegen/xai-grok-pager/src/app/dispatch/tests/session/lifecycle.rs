@@ -1,5 +1,11 @@
 //! Tests for session create, exit, trust, startup actions, worktree creation, and cloud lifecycle.
 use super::*;
+fn expect_agent(app: &AppView, id: AgentId) -> &AgentView {
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    agent
+}
 use crate::app::dispatch::session::lifecycle::dispatch_accept_consent;
 use crate::app::dispatch::session::lifecycle::handle_switch_model_complete;
 /// Simulate a release-stamped build so folder-trust is active (a local/dev build auto-trusts and persists nothing).
@@ -67,6 +73,16 @@ fn successful_model_switch_refreshes_context_window() {
     assert_eq!(context.total, 200_000);
 }
 
+fn pending_trust_workspace() -> (tempfile::TempDir, std::path::PathBuf, AppView) {
+    use xai_grok_workspace::trust::workspace_key;
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    let workspace = workspace_key(repo.path());
+    let mut app = test_app();
+    app.trust_state = TrustState::Pending {
+        workspace: workspace.clone(),
+    };
+    (repo, workspace, app)
+}
 #[test]
 fn voice_on_welcome_creates_session_and_records() {
     let mut app = test_app();
@@ -85,7 +101,7 @@ fn voice_on_welcome_creates_session_and_records() {
     assert_eq!(app.voice_recording_target(), Some(VoiceTarget::Agent(id)));
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttPress)
+        Ok(xai_grok_voice::VoiceCommand::PttPress { .. })
     ));
 }
 #[test]
@@ -99,7 +115,8 @@ fn voice_final_routes_to_recording_session_not_active_view() {
     app.active_view = ActiveView::Agent(other);
     app.voice_state = VoiceState::Stopping {
         target: VoiceTarget::Agent(rec),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     crate::voice::handle_voice_event(
         &mut app,
@@ -132,7 +149,8 @@ fn voice_auto_stops_when_leaving_recording_session() {
     app.voice_state = VoiceState::Recording {
         hold: false,
         target: VoiceTarget::Agent(id),
-        interim: None,
+        partial: Partial::None,
+        route: None,
     };
     app.active_view = ActiveView::Agent(id);
     app.enforce_voice_session_bound();
@@ -148,7 +166,7 @@ fn voice_auto_stops_when_leaving_recording_session() {
     );
     assert!(matches!(
         rx.try_recv(),
-        Ok(xai_grok_voice::VoiceCommand::PttRelease)
+        Ok(xai_grok_voice::VoiceCommand::Abort)
     ));
 }
 #[test]
@@ -169,7 +187,7 @@ fn chip_submit_without_session_keeps_chips_and_does_not_send() {
         "an unbound-session submit must emit no SendPrompt, got {effects:?}"
     );
     assert!(
-        app.agents[&id].follow_ups.is_some(),
+        expect_agent(&app, id).follow_ups.is_some(),
         "an unbound-session submit must NOT clear the chips"
     );
 }
@@ -180,8 +198,15 @@ fn send_prompt_without_session_queues_but_no_effect() {
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let effects = dispatch(Action::SendPrompt("hello".into()), &mut app);
     assert!(effects.is_empty());
-    assert_eq!(app.agents[&id].session.queue_len(), 1);
-    assert_eq!(app.agents[&id].session.pending_prompts[0].text, "hello");
+    assert_eq!(expect_agent(&app, id).session.queue_len(), 1);
+    assert_eq!(
+        expect_agent(&app, id)
+            .session
+            .pending_prompts
+            .front()
+            .map(|p| p.text.as_str()),
+        Some("hello")
+    );
 }
 #[test]
 fn session_created_sets_session_id() {
@@ -194,31 +219,41 @@ fn session_created_sets_session_id() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
     assert_eq!(effects.len(), 7);
     assert!(matches!(
-        &effects[0],
-        Effect::FetchPromptHistory { session_id, .. } if session_id == "new-session-123"
-    ));
-    assert!(matches!(&effects[1], Effect::FetchSessionAgentName { .. }));
-    assert!(matches!(
-        &effects[2],
-        Effect::RefreshAvailableCommands { .. }
+        effects.first(),
+        Some(Effect::FetchPromptHistory { session_id, .. }) if session_id == "new-session-123"
     ));
     assert!(matches!(
-        &effects[3],
-        Effect::CheckMarketplaceUpdates { .. }
+        effects.get(1),
+        Some(Effect::FetchSessionAgentName { .. })
     ));
-    assert!(matches!(&effects[4], Effect::FetchPluginCtaCatalog { .. }));
     assert!(matches!(
-        &effects[5],
-        Effect::FetchBilling { silent: true, .. }
+        effects.get(2),
+        Some(Effect::RefreshAvailableCommands { .. })
     ));
-    assert!(matches!(&effects[6], Effect::RegisterActiveSession { .. }));
+    assert!(matches!(
+        effects.get(3),
+        Some(Effect::CheckMarketplaceUpdates { .. })
+    ));
+    assert!(matches!(
+        effects.get(4),
+        Some(Effect::FetchPluginCtaCatalog { .. })
+    ));
+    assert!(matches!(
+        effects.get(5),
+        Some(Effect::FetchBilling { silent: true, .. })
+    ));
+    assert!(matches!(
+        effects.get(6),
+        Some(Effect::RegisterActiveSession { .. })
+    ));
     assert_eq!(
-        app.agents[&id]
+        expect_agent(&app, id)
             .session
             .session_id
             .as_ref()
@@ -237,6 +272,7 @@ fn session_created_omits_cta_catalog_when_disabled() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
@@ -253,7 +289,7 @@ fn session_created_omits_cta_catalog_when_disabled() {
 }
 /// All System-block texts in an agent's scrollback, in order.
 fn all_system_texts(app: &AppView, id: AgentId) -> Vec<String> {
-    let sb = &app.agents[&id].scrollback;
+    let sb = &expect_agent(app, id).scrollback;
     (0..sb.len())
         .filter_map(|i| match &sb.get(i).expect("index in range").block {
             RenderBlock::System(sys) => Some(sys.text.clone()),
@@ -278,6 +314,7 @@ fn session_created_banner_advertises_resume_in_minimal_mode() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
@@ -295,6 +332,42 @@ fn session_created_banner_advertises_resume_in_minimal_mode() {
         "minimal mode must NOT advertise /dashboard: {texts:?}"
     );
 }
+/// After a real minimal /new (prior AgentView dropped), the switch tip must still name /resume.
+#[test]
+fn session_created_banner_after_minimal_new_replacing_session() {
+    let mut app = test_app();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
+    dispatch(Action::NewSession, &mut app);
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionCreated {
+            agent_id: AgentId(0),
+            session_id: "sess-a".into(),
+            models: None,
+            modes: None,
+        }),
+        &mut app,
+    );
+    dispatch(Action::NewSession, &mut app);
+    let id = AgentId(1);
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionCreated {
+            agent_id: id,
+            session_id: "sess-b".into(),
+            models: None,
+            modes: None,
+        }),
+        &mut app,
+    );
+    let texts = all_system_texts(&app, id);
+    let banner = texts
+        .iter()
+        .find(|t| t.contains("switch between sessions"))
+        .unwrap_or_else(|| panic!("expected a session-switch banner, got: {texts:?}"));
+    assert!(
+        banner.contains("Session sess-b, use /resume to switch between sessions"),
+        "minimal /new must still advertise /resume after dropping the prior view: {banner}"
+    );
+}
 #[test]
 fn global_cancel_subagents_pref_skips_panel_without_session_override() {
     let mut app = test_app_with_agent();
@@ -308,7 +381,7 @@ fn global_cancel_subagents_pref_skips_panel_without_session_override() {
     }
     app.current_ui.cancel_subagents_on_turn_cancel = Some("always_continue".into());
     let effects = dispatch(Action::CancelTurn, &mut app);
-    assert!(app.agents[&id].cancel_turn_view.is_none());
+    assert!(expect_agent(&app, id).cancel_turn_view.is_none());
     assert!(matches!(
         effects.as_slice(),
         [Effect::CancelTurn {
@@ -329,12 +402,15 @@ fn new_worktree_session_creates_agent_and_returns_effect() {
         &mut app,
     );
     assert_eq!(effects.len(), 1);
-    assert!(matches!(effects[0], Effect::CreateWorktreeSession { .. }));
+    assert!(matches!(
+        effects.first(),
+        Some(Effect::CreateWorktreeSession { .. })
+    ));
     assert!(matches!(app.active_view, ActiveView::Agent(AgentId(0))));
     assert!(app.agents.contains_key(&AgentId(0)));
-    assert_eq!(app.agents[&AgentId(0)].scrollback.len(), 0);
+    assert_eq!(expect_agent(&app, AgentId(0)).scrollback.len(), 0);
     assert!(matches!(
-        app.agents[&AgentId(0)].session.state,
+        expect_agent(&app, AgentId(0)).session.state,
         AgentState::CommandRunning { .. }
     ));
 }
@@ -350,6 +426,7 @@ fn worktree_session_created_sets_session_and_cwd() {
         &mut app,
     );
     let id = AgentId(0);
+    assert!(expect_agent(&app, id).session_starting_since.is_some());
     let worktree_path = PathBuf::from("/tmp/grok-worktrees/pager-123");
     let session_cwd = worktree_path.clone();
     let effects = dispatch(
@@ -359,6 +436,7 @@ fn worktree_session_created_sets_session_and_cwd() {
             worktree_path: worktree_path.clone(),
             session_cwd: session_cwd.clone(),
             models: None,
+            modes: None,
             strategy_summary: None,
         }),
         &mut app,
@@ -384,16 +462,20 @@ fn worktree_session_created_sets_session_and_cwd() {
             .any(|e| matches!(e, Effect::RegisterActiveSession { .. }))
     );
     assert_eq!(
-        app.agents[&id]
+        expect_agent(&app, id)
             .session
             .session_id
             .as_ref()
             .map(|s| s.0.as_ref()),
         Some("wt-session-1")
     );
-    assert_eq!(app.agents[&id].session.cwd, session_cwd);
-    assert_eq!(app.agents[&id].scrollback.len(), 1);
-    assert!(app.agents[&id].session.state.is_idle());
+    assert_eq!(expect_agent(&app, id).session.cwd, session_cwd);
+    assert_eq!(expect_agent(&app, id).scrollback.len(), 1);
+    assert!(expect_agent(&app, id).session.state.is_idle());
+    assert!(
+        expect_agent(&app, id).session_starting_since.is_none(),
+        "binding the worktree session id ends Starting session…"
+    );
 }
 #[test]
 fn worktree_session_created_clears_sticky_branch_from_main_repo() {
@@ -422,11 +504,12 @@ fn worktree_session_created_clears_sticky_branch_from_main_repo() {
             worktree_path,
             session_cwd: session_cwd.clone(),
             models: None,
+            modes: None,
             strategy_summary: None,
         }),
         &mut app,
     );
-    let agent = &app.agents[&id];
+    let agent = &expect_agent(&app, id);
     assert!(
         agent.current_branch.is_none(),
         "sticky main-repo branch must not survive the worktree cwd switch"
@@ -459,6 +542,7 @@ fn worktree_session_preserves_subdirectory_offset() {
             worktree_path: worktree_root.clone(),
             session_cwd: session_cwd.clone(),
             models: None,
+            modes: None,
             strategy_summary: None,
         }),
         &mut app,
@@ -473,8 +557,8 @@ fn worktree_session_preserves_subdirectory_offset() {
             .iter()
             .any(|e| matches!(e, Effect::RegisterActiveSession { .. }))
     );
-    assert_eq!(app.agents[&id].session.cwd, session_cwd);
-    assert_ne!(app.agents[&id].session.cwd, worktree_root);
+    assert_eq!(expect_agent(&app, id).session.cwd, session_cwd);
+    assert_ne!(expect_agent(&app, id).session.cwd, worktree_root);
 }
 #[test]
 fn worktree_session_failed_without_session_returns_to_welcome() {
@@ -495,6 +579,8 @@ fn worktree_session_failed_without_session_returns_to_welcome() {
         Action::TaskComplete(TaskResult::WorktreeSessionFailed {
             agent_id: id,
             error: error_msg.into(),
+            orphaned_worktree_root: None,
+            timed_out: false,
         }),
         &mut app,
     );
@@ -526,13 +612,15 @@ fn worktree_session_failed_with_fork_parent_keeps_agent() {
         Action::TaskComplete(TaskResult::WorktreeSessionFailed {
             agent_id: id,
             error: error_msg.into(),
+            orphaned_worktree_root: None,
+            timed_out: false,
         }),
         &mut app,
     );
     assert!(effects.is_empty());
     assert!(app.agents.contains_key(&id));
-    assert!(app.agents[&id].session.state.is_idle());
-    let entry = app.agents[&id].scrollback.entry(0).unwrap();
+    assert!(expect_agent(&app, id).session.state.is_idle());
+    let entry = expect_agent(&app, id).scrollback.entry(0).unwrap();
     match &entry.block {
         RenderBlock::SessionEvent(block) => match &block.event {
             SessionEvent::TurnFailed { error, .. } => {
@@ -579,7 +667,7 @@ fn worktree_session_created_drains_queued_prompts() {
     let id = AgentId(0);
     let effects = dispatch(Action::SendPrompt("hello".into()), &mut app);
     assert!(effects.is_empty(), "no session_id yet, can't drain");
-    assert_eq!(app.agents[&id].session.queue_len(), 1);
+    assert_eq!(expect_agent(&app, id).session.queue_len(), 1);
     let worktree_path = PathBuf::from("/tmp/grok-worktrees/pager-abc");
     let effects = dispatch(
         Action::TaskComplete(TaskResult::WorktreeSessionCreated {
@@ -588,6 +676,7 @@ fn worktree_session_created_drains_queued_prompts() {
             worktree_path,
             session_cwd: PathBuf::from("/tmp/grok-worktrees/pager-abc"),
             models: None,
+            modes: None,
             strategy_summary: None,
         }),
         &mut app,
@@ -607,7 +696,7 @@ fn worktree_session_created_drains_queued_prompts() {
             .iter()
             .any(|e| matches!(e, Effect::RegisterActiveSession { .. }))
     );
-    assert_eq!(app.agents[&id].session.queue_len(), 0);
+    assert_eq!(expect_agent(&app, id).session.queue_len(), 0);
 }
 #[test]
 fn session_created_drains_queued_prompts() {
@@ -616,12 +705,13 @@ fn session_created_drains_queued_prompts() {
     let id = AgentId(0);
     let effects = dispatch(Action::SendPrompt("queued msg".into()), &mut app);
     assert!(effects.is_empty());
-    assert_eq!(app.agents[&id].session.queue_len(), 1);
+    assert_eq!(expect_agent(&app, id).session.queue_len(), 1);
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SessionCreated {
             agent_id: id,
             session_id: acp::SessionId::new("sess-drain-1"),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
@@ -640,7 +730,7 @@ fn session_created_drains_queued_prompts() {
             .iter()
             .any(|e| matches!(e, Effect::RegisterActiveSession { .. }))
     );
-    assert_eq!(app.agents[&id].session.queue_len(), 0);
+    assert_eq!(expect_agent(&app, id).session.queue_len(), 0);
 }
 #[test]
 fn session_created_with_flag_emits_five_fetches_and_clears_flag() {
@@ -658,6 +748,7 @@ fn session_created_with_flag_emits_five_fetches_and_clears_flag() {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
@@ -667,19 +758,20 @@ fn session_created_with_flag_emits_five_fetches_and_clears_flag() {
             .iter()
             .any(|e| matches!(e, Effect::FetchMcpsList { cache: true, .. }))
     );
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(!expect_agent(&app, id).pending_extensions_fetch);
 }
 #[test]
 fn session_created_without_flag_emits_no_extension_fetches() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().session.session_id = None;
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(!expect_agent(&app, id).pending_extensions_fetch);
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SessionCreated {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
@@ -693,27 +785,64 @@ fn session_failed_keeps_agent_clears_loading_and_toasts() {
         let a = app.agents.get_mut(&id).unwrap();
         a.session.session_id = Some(acp::SessionId::new("existing"));
         a.pending_extensions_fetch = true;
-        a.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
-            total: 0,
-            connected: 0,
-            started_at: std::time::Instant::now(),
-        });
+        a.session_starting_since = Some(std::time::Instant::now());
     }
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SessionFailed {
             agent_id: id,
             error: "No space left on device".to_string(),
+            timed_out: false,
         }),
         &mut app,
     );
     assert!(effects.is_empty());
-    let agent = &app.agents[&id];
+    let agent = &expect_agent(&app, id);
     assert!(!agent.pending_extensions_fetch);
-    assert!(agent.mcp_init_progress.is_none());
+    assert!(agent.session_starting_since.is_none());
     assert_eq!(
         agent.toast.as_ref().map(|(m, _)| m.as_str()),
         Some("Session creation failed: No space left on device"),
     );
+}
+#[test]
+fn session_failed_names_step_only_on_timeout() {
+    for (timed_out, error, expected) in [
+        (
+            true,
+            "raw wire timeout text",
+            "Couldn't start the session: it timed out while loading your plugins. It may still \
+             finish in the background, so give it a moment before trying again.",
+        ),
+        (
+            false,
+            "No space left on device",
+            "Session creation failed: No space left on device",
+        ),
+    ] {
+        let mut app = test_app_with_agent();
+        let id = AgentId(0);
+        {
+            let a = app.agents.get_mut(&id).unwrap();
+            a.session.session_id = Some(acp::SessionId::new("existing"));
+            a.session_starting_since = Some(std::time::Instant::now());
+            a.session_new_phase = Some(xai_grok_shell::agent::SessionSetupPhase::PluginRegistry);
+        }
+        dispatch(
+            Action::TaskComplete(TaskResult::SessionFailed {
+                agent_id: id,
+                error: error.to_string(),
+                timed_out,
+            }),
+            &mut app,
+        );
+        assert_eq!(
+            Some(expected),
+            expect_agent(&app, id)
+                .toast
+                .as_ref()
+                .map(|(m, _)| m.as_str()),
+        );
+    }
 }
 #[test]
 fn session_failed_orphan_returns_to_welcome_with_warning() {
@@ -723,16 +852,13 @@ fn session_failed_orphan_returns_to_welcome_with_warning() {
         let a = app.agents.get_mut(&id).unwrap();
         a.session.session_id = None;
         a.session.forked_from = None;
-        a.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
-            total: 0,
-            connected: 0,
-            started_at: std::time::Instant::now(),
-        });
+        a.session_starting_since = Some(std::time::Instant::now());
     }
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SessionFailed {
             agent_id: id,
             error: "No space left on device".to_string(),
+            timed_out: false,
         }),
         &mut app,
     );
@@ -759,6 +885,7 @@ fn session_failed_orphan_with_fallback_toasts() {
         Action::TaskComplete(TaskResult::SessionFailed {
             agent_id: fail_id,
             error: "No space left on device".to_string(),
+            timed_out: false,
         }),
         &mut app,
     );
@@ -766,7 +893,10 @@ fn session_failed_orphan_with_fallback_toasts() {
     assert!(!app.agents.contains_key(&fail_id));
     assert!(matches!(app.active_view, ActiveView::Agent(id) if id == keep_id));
     assert_eq!(
-        app.agents[&keep_id].toast.as_ref().map(|(m, _)| m.as_str()),
+        expect_agent(&app, keep_id)
+            .toast
+            .as_ref()
+            .map(|(m, _)| m.as_str()),
         Some("Session creation failed: No space left on device"),
     );
 }
@@ -784,6 +914,7 @@ fn session_failed_orphan_does_not_steal_other_active_agent() {
         Action::TaskComplete(TaskResult::SessionFailed {
             agent_id: fail_id,
             error: "No space left on device".to_string(),
+            timed_out: false,
         }),
         &mut app,
     );
@@ -791,7 +922,10 @@ fn session_failed_orphan_does_not_steal_other_active_agent() {
     assert!(!app.agents.contains_key(&fail_id));
     assert!(matches!(app.active_view, ActiveView::Agent(id) if id == keep_id));
     assert_eq!(
-        app.agents[&keep_id].toast.as_ref().map(|(m, _)| m.as_str()),
+        expect_agent(&app, keep_id)
+            .toast
+            .as_ref()
+            .map(|(m, _)| m.as_str()),
         Some("Session creation failed: No space left on device"),
     );
 }
@@ -809,6 +943,7 @@ fn session_failed_orphan_on_welcome_with_survivor_uses_startup_warning() {
         Action::TaskComplete(TaskResult::SessionFailed {
             agent_id: fail_id,
             error: "No space left on device".to_string(),
+            timed_out: false,
         }),
         &mut app,
     );
@@ -827,7 +962,7 @@ fn session_failed_orphan_on_welcome_with_survivor_uses_startup_warning() {
             .collect::<Vec<_>>(),
     );
     assert!(
-        app.agents[&keep_id].toast.is_none(),
+        expect_agent(&app, keep_id).toast.is_none(),
         "must not force-switch to survivor just to toast"
     );
 }
@@ -837,19 +972,13 @@ fn switch_model_without_session_sends_nothing_to_server() {
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
-    let effects = dispatch(
-        Action::SwitchModel {
-            model_id,
-            effort: None,
-        },
-        &mut app,
-    );
+    let effects = dispatch(Action::SwitchModel(ModelChoice::new(model_id)), &mut app);
     assert!(
         !effects
             .iter()
             .any(|e| matches!(e, Effect::SwitchModel { .. }))
     );
-    assert!(!app.agents[&id].session.model_switch_pending);
+    assert!(!expect_agent(&app, id).session.model_switch_pending);
 }
 #[test]
 fn agent_type_mismatch_start_new_creates_session_with_model_id() {
@@ -878,7 +1007,7 @@ fn agent_type_mismatch_start_new_creates_session_with_model_id() {
         _ => unreachable!(),
     }
     if let ActiveView::Agent(new_aid) = app.active_view {
-        let agent = &app.agents[&new_aid];
+        let agent = &expect_agent(&app, new_aid);
         assert!(
             agent.session.deferred_model_switch.is_none(),
             "no-effort mismatch must not set deferred_model_switch",
@@ -888,21 +1017,31 @@ fn agent_type_mismatch_start_new_creates_session_with_model_id() {
     }
 }
 #[test]
-fn new_session_seeds_mcp_init_progress() {
+fn new_session_shows_starting_session_until_created() {
+    let id = AgentId(0);
     let mut app = test_app();
     dispatch(Action::NewSession, &mut app);
-    let id = AgentId(0);
-    let progress = app.agents[&id].mcp_init_progress.as_ref();
     assert!(
-        progress.is_some(),
-        "new session must seed mcp_init_progress",
+        expect_agent(&app, id).session_starting_since.is_some(),
+        "the row must show while session/new is unanswered"
     );
-    let p = progress.unwrap();
-    assert_eq!(
-        p.total, 0,
-        "seeded total must be 0 (unknown until shell reports)"
+    assert!(
+        expect_agent(&app, id).mcp_init_progress.is_none(),
+        "MCP progress comes only from the shell"
     );
-    assert_eq!(p.connected, 0, "seeded connected must be 0");
+    dispatch(
+        Action::TaskComplete(TaskResult::SessionCreated {
+            agent_id: id,
+            session_id: acp::SessionId::new("sess-1"),
+            models: None,
+            modes: None,
+        }),
+        &mut app,
+    );
+    assert!(
+        expect_agent(&app, id).session_starting_since.is_none(),
+        "the session exists, so nothing is starting any more"
+    );
 }
 #[test]
 fn new_session_without_model_switch_has_no_model_id() {
@@ -928,9 +1067,19 @@ fn new_session_seeds_available_commands_from_bootstrap() {
     )];
     dispatch(Action::NewSession, &mut app);
     let id = AgentId(0);
-    assert_eq!(app.agents[&id].session.available_commands.len(), 1);
-    assert_eq!(app.agents[&id].session.available_commands[0].name, "flush");
-    assert_eq!(app.agents[&id].session.available_commands_generation, 1);
+    assert_eq!(expect_agent(&app, id).session.available_commands.len(), 1);
+    assert_eq!(
+        expect_agent(&app, id)
+            .session
+            .available_commands
+            .first()
+            .map(|c| c.name.as_str()),
+        Some("flush")
+    );
+    assert_eq!(
+        expect_agent(&app, id).session.available_commands_generation,
+        1
+    );
 }
 #[test]
 fn new_session_empty_bootstrap_starts_at_generation_1() {
@@ -938,8 +1087,11 @@ fn new_session_empty_bootstrap_starts_at_generation_1() {
     app.bootstrap_acp_commands = Vec::new();
     dispatch(Action::NewSession, &mut app);
     let id = AgentId(0);
-    assert!(app.agents[&id].session.available_commands.is_empty());
-    assert_eq!(app.agents[&id].session.available_commands_generation, 1);
+    assert!(expect_agent(&app, id).session.available_commands.is_empty());
+    assert_eq!(
+        expect_agent(&app, id).session.available_commands_generation,
+        1
+    );
 }
 #[test]
 fn worktree_session_seeds_available_commands_from_bootstrap() {
@@ -957,12 +1109,19 @@ fn worktree_session_seeds_available_commands_from_bootstrap() {
         &mut app,
     );
     let id = AgentId(0);
-    assert_eq!(app.agents[&id].session.available_commands.len(), 1);
+    assert_eq!(expect_agent(&app, id).session.available_commands.len(), 1);
     assert_eq!(
-        app.agents[&id].session.available_commands[0].name,
-        "plugins"
+        expect_agent(&app, id)
+            .session
+            .available_commands
+            .first()
+            .map(|c| c.name.as_str()),
+        Some("plugins")
     );
-    assert_eq!(app.agents[&id].session.available_commands_generation, 1);
+    assert_eq!(
+        expect_agent(&app, id).session.available_commands_generation,
+        1
+    );
 }
 #[test]
 fn exit_session_unregisters_active_session() {
@@ -975,6 +1134,33 @@ fn exit_session_unregisters_active_session() {
         "ExitSession must emit UnregisterActiveSession, got: {effects:?}"
     );
     assert!(matches!(app.active_view, ActiveView::Welcome));
+}
+/// Minimal has no welcome chrome; /exit must open an empty session like startup.
+#[test]
+fn exit_session_minimal_opens_new_session() {
+    let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
+    let effects = dispatch(Action::ExitSession, &mut app);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::UnregisterActiveSession { .. })),
+        "ExitSession must emit UnregisterActiveSession, got: {effects:?}"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::CreateSession { .. })),
+        "minimal /exit must dispatch NewSession, got {effects:?}"
+    );
+    let ActiveView::Agent(id) = app.active_view else {
+        panic!(
+            "minimal /exit must land on an agent, got {:?}",
+            app.active_view
+        );
+    };
+    assert_ne!(id, AgentId(0), "must not stay on the exited agent");
+    assert_eq!(expect_agent(&app, id).active_pane, ActivePane::Prompt);
 }
 #[test]
 fn slash_new_dispatches_new_session() {
@@ -1000,7 +1186,7 @@ fn new_session_falls_back_to_app_cwd_on_welcome_screen() {
         _ => unreachable!(),
     }
     let new_id = AgentId(0);
-    assert!(!app.agents[&new_id].session.is_worktree);
+    assert!(!expect_agent(&app, new_id).session.is_worktree);
 }
 #[test]
 fn new_session_starts_with_prompt_focused() {
@@ -1008,7 +1194,7 @@ fn new_session_starts_with_prompt_focused() {
     assert!(matches!(app.active_view, ActiveView::Welcome));
     dispatch(Action::NewSession, &mut app);
     let id = AgentId(0);
-    assert_eq!(app.agents[&id].active_pane, ActivePane::Prompt);
+    assert_eq!(expect_agent(&app, id).active_pane, ActivePane::Prompt);
 }
 #[test]
 fn switch_model_deferred_when_no_session_id() {
@@ -1017,32 +1203,29 @@ fn switch_model_deferred_when_no_session_id() {
     let model_id = acp::ModelId::new(std::sync::Arc::from("grok-4.5"));
     app.agents.get_mut(&id).unwrap().session.session_id = None;
     let effects = dispatch(
-        Action::SwitchModel {
-            model_id: model_id.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_id.clone())),
         &mut app,
     );
     assert!(
         matches!(
-            &effects[..],
+            effects.as_slice(),
             [Effect::PersistPreferredModel { model_id: m, .. }] if m == &model_id
         ),
         "expected persist-only, got {effects:?}"
     );
     assert_eq!(
-        app.agents[&id].session.models.current,
+        expect_agent(&app, id).session.models.current,
         Some(model_id.clone())
     );
     assert_eq!(
-        app.agents[&id].session.deferred_model_switch,
+        expect_agent(&app, id).session.deferred_model_switch,
         Some(crate::app::agent::DeferredModelSwitch {
             model_id,
             effort: None,
             prev_model_id: None,
         })
     );
-    assert!(!app.agents[&id].session.model_switch_pending);
+    assert!(!expect_agent(&app, id).session.model_switch_pending);
 }
 #[test]
 fn deferred_switch_threads_stash_prev_into_effect() {
@@ -1054,10 +1237,7 @@ fn deferred_switch_threads_stash_prev_into_effect() {
     agent.session.session_id = None;
     agent.session.models.current = Some(model_a.clone());
     dispatch(
-        Action::SwitchModel {
-            model_id: model_b.clone(),
-            effort: None,
-        },
+        Action::SwitchModel(ModelChoice::new(model_b.clone())),
         &mut app,
     );
     let effects = dispatch(
@@ -1065,13 +1245,14 @@ fn deferred_switch_threads_stash_prev_into_effect() {
             agent_id: id,
             session_id: "prev-session".into(),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::SwitchModel { model_id, prev_model_id, .. }
-            if *model_id == model_b && *prev_model_id == Some(model_a.clone())
+        Effect::SwitchModel { choice, prev_model_id, .. }
+            if choice.model_id == model_b && *prev_model_id == Some(model_a.clone())
     )));
 }
 #[test]
@@ -1093,13 +1274,14 @@ fn deferred_switch_prefers_authoritative_current_as_prev() {
             agent_id: id,
             session_id: "auth-session".into(),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
     assert!(effects.iter().any(|e| matches!(
         e,
-        Effect::SwitchModel { model_id, prev_model_id, .. }
-            if *model_id == model_b && *prev_model_id == Some(server_model.clone())
+        Effect::SwitchModel { choice, prev_model_id, .. }
+            if choice.model_id == model_b && *prev_model_id == Some(server_model.clone())
     )));
 }
 #[test]
@@ -1123,18 +1305,24 @@ fn deferred_model_switch_applied_on_session_created() {
             agent_id: id,
             session_id: session_id.clone(),
             models: None,
+            modes: None,
         }),
         &mut app,
     );
-    assert!(app.agents[&id].session.deferred_model_switch.is_none());
-    assert!(app.agents[&id].session.model_switch_pending);
+    assert!(
+        expect_agent(&app, id)
+            .session
+            .deferred_model_switch
+            .is_none()
+    );
+    assert!(expect_agent(&app, id).session.model_switch_pending);
     assert!(effects.iter().any(|e| matches!(
         e,
         Effect::SwitchModel {
             agent_id: a_id,
             session_id: s_id,
-            model_id: m_id,
-            .. } if *a_id == id && *s_id == session_id && *m_id == model_id
+            choice,
+            .. } if *a_id == id && *s_id == session_id && choice.model_id == model_id
     )));
 }
 #[test]
@@ -1167,19 +1355,25 @@ fn deferred_model_switch_applied_on_worktree_session_created() {
             worktree_path: PathBuf::from("/tmp/worktree"),
             session_cwd: PathBuf::from("/tmp/worktree"),
             models: None,
+            modes: None,
             strategy_summary: None,
         }),
         &mut app,
     );
-    assert!(app.agents[&id].session.deferred_model_switch.is_none());
-    assert!(app.agents[&id].session.model_switch_pending);
+    assert!(
+        expect_agent(&app, id)
+            .session
+            .deferred_model_switch
+            .is_none()
+    );
+    assert!(expect_agent(&app, id).session.model_switch_pending);
     assert!(effects.iter().any(|e| matches!(
         e,
         Effect::SwitchModel {
             agent_id: a_id,
             session_id: s_id,
-            model_id: m_id,
-            .. } if *a_id == id && *s_id == session_id && *m_id == model_id
+            choice,
+            .. } if *a_id == id && *s_id == session_id && choice.model_id == model_id
     )));
 }
 /// The session-startup gate requires BOTH auth AND trust resolved.
@@ -1404,16 +1598,11 @@ fn finish_trust_resolves_and_replays_startup() {
 #[serial_test::serial(GROK_HOME)]
 #[test]
 fn trust_folder_grants_and_resolves() {
-    use xai_grok_workspace::trust::{TrustStore, workspace_key};
+    use xai_grok_workspace::trust::TrustStore;
     let home = tempfile::tempdir().expect("home tempdir");
     unsafe { std::env::set_var("GROK_HOME", home.path()) };
     simulate_release_build();
-    let repo = tempfile::tempdir().expect("repo tempdir");
-    let workspace = workspace_key(repo.path());
-    let mut app = test_app();
-    app.trust_state = TrustState::Pending {
-        workspace: workspace.clone(),
-    };
+    let (_repo, workspace, mut app) = pending_trust_workspace();
     let _ = dispatch(Action::TrustFolder, &mut app);
     assert!(matches!(app.trust_state, TrustState::Done));
     assert!(
@@ -1424,19 +1613,13 @@ fn trust_folder_grants_and_resolves() {
 #[serial_test::serial(GROK_HOME)]
 #[test]
 fn trust_folder_quits_when_store_unreadable() {
-    use xai_grok_workspace::trust::workspace_key;
     let home = tempfile::tempdir().expect("home tempdir");
     unsafe { std::env::set_var("GROK_HOME", home.path()) };
     simulate_release_build();
     let store_path = home.path().join("trusted_folders.toml");
     let before = b"[[[not-toml";
     std::fs::write(&store_path, before).unwrap();
-    let repo = tempfile::tempdir().expect("repo tempdir");
-    let workspace = workspace_key(repo.path());
-    let mut app = test_app();
-    app.trust_state = TrustState::Pending {
-        workspace: workspace.clone(),
-    };
+    let (_repo, workspace, mut app) = pending_trust_workspace();
     let effects = dispatch(Action::TrustFolder, &mut app);
     assert!(
         effects.iter().any(|e| matches!(e, Effect::Quit)),
@@ -1463,37 +1646,78 @@ fn trust_folder_quits_when_store_unreadable() {
 }
 #[serial_test::serial(GROK_HOME)]
 #[test]
-fn trust_folder_quits_when_persist_denied() {
-    use xai_grok_workspace::trust::workspace_key;
+fn trust_folder_continues_session_only_when_embedded_and_persist_denied() {
     let home = tempfile::tempdir().expect("home tempdir");
     let blocker = home.path().join("not-a-dir");
     std::fs::write(&blocker, b"x").unwrap();
     unsafe { std::env::set_var("GROK_HOME", &blocker) };
     simulate_release_build();
-    let repo = tempfile::tempdir().expect("repo tempdir");
-    let workspace = workspace_key(repo.path());
-    let mut app = test_app();
-    app.trust_state = TrustState::Pending {
-        workspace: workspace.clone(),
-    };
+    let (_repo, workspace, mut app) = pending_trust_workspace();
+    app.leader_mode = false;
     let effects = dispatch(Action::TrustFolder, &mut app);
     assert!(
-        effects.iter().any(|e| matches!(e, Effect::Quit)),
-        "failed store write must quit like Welcome n"
+        !effects.iter().any(|e| matches!(e, Effect::Quit)),
+        "an embedded session must not quit; the process-local grant still trusts the session"
     );
     assert!(
-        !matches!(app.trust_state, TrustState::Done),
-        "failed store write must not finish trust"
-    );
-    let msg = app.trust_quit_error.as_deref().unwrap_or("");
-    assert!(
-        msg.starts_with("error: folder trust was not saved"),
-        "failed store write must record a post-exit error: {msg}"
+        matches!(app.trust_state, TrustState::Done),
+        "a session-local grant must finish trust so startup proceeds"
     );
     assert!(
-        msg.contains("grok --trust"),
-        "failed store write must name the next step: {msg}"
+        xai_grok_workspace::folder_trust::is_trusted_this_process(&workspace),
+        "the process-local grant must trust this folder for the session"
     );
+    let toast = app
+        .welcome_toast
+        .as_ref()
+        .map(|(m, _)| m.as_str())
+        .unwrap_or_default();
+    assert!(
+        toast.contains("grok --trust"),
+        "a session-only grant must show how to persist: {toast}"
+    );
+}
+#[test]
+fn trust_gate_outcome_maps_every_case() {
+    use crate::app::dispatch::session::lifecycle::{
+        AgentLocation, TrustGateOutcome, trust_gate_outcome,
+    };
+    use xai_grok_workspace::folder_trust::GrantResolution;
+    let cases = [
+        (
+            GrantResolution::Trusted,
+            AgentLocation::Embedded,
+            TrustGateOutcome::Finish,
+        ),
+        (
+            GrantResolution::Trusted,
+            AgentLocation::Leader,
+            TrustGateOutcome::Finish,
+        ),
+        (
+            GrantResolution::SessionLocal,
+            AgentLocation::Embedded,
+            TrustGateOutcome::FinishSessionLocal,
+        ),
+        (
+            GrantResolution::SessionLocal,
+            AgentLocation::Leader,
+            TrustGateOutcome::Quit,
+        ),
+        (
+            GrantResolution::Unrecorded,
+            AgentLocation::Embedded,
+            TrustGateOutcome::Quit,
+        ),
+        (
+            GrantResolution::Unrecorded,
+            AgentLocation::Leader,
+            TrustGateOutcome::Quit,
+        ),
+    ];
+    for (resolution, agent, want) in cases {
+        assert_eq!(want, trust_gate_outcome(resolution, agent));
+    }
 }
 /// When BOTH auth and trust are pending, `AuthComplete` must NOT replay the deferred startup.
 /// The trust question renders next, and its answer drains it.
@@ -1911,7 +2135,7 @@ fn auth_complete_strips_reauth_prompt_after_mid_session_login() {
         &mut app,
     );
     assert_eq!(app.active_view, ActiveView::Agent(id));
-    let sb = &app.agents[&id].scrollback;
+    let sb = &expect_agent(&app, id).scrollback;
     let has_reauth = (0..sb.len()).any(|i| {
         matches!(
             sb.entry(i).map(|e| &e.block),
@@ -1952,7 +2176,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
         &mut app,
     );
     assert_eq!(app.active_view, ActiveView::Agent(id));
-    let agent = &app.agents[&id];
+    let agent = &expect_agent(&app, id);
     assert!(
         agent.reauth_stashed_prompt.is_none(),
         "stashed prompt must be consumed on re-auth"
@@ -1996,7 +2220,7 @@ fn dispatch_new_session_has_empty_scrollback() {
     let mut app = test_app_with_agent();
     dispatch(Action::NewSession, &mut app);
     let new_id = AgentId(1);
-    assert_eq!(app.agents[&new_id].scrollback.len(), 0);
+    assert_eq!(expect_agent(&app, new_id).scrollback.len(), 0);
 }
 /// Dashboard attach follows the new session after `/new`.
 #[test]
@@ -2043,13 +2267,14 @@ fn session_failed_orphan_restores_dashboard_attach_to_survivor() {
         "precondition: attach followed /new onto the orphan"
     );
     assert!(
-        app.agents[&fail_id].session.session_id.is_none(),
+        expect_agent(&app, fail_id).session.session_id.is_none(),
         "precondition: create has not completed"
     );
     dispatch(
         Action::TaskComplete(TaskResult::SessionFailed {
             agent_id: fail_id,
             error: "No space left on device".to_string(),
+            timed_out: false,
         }),
         &mut app,
     );
@@ -2086,6 +2311,7 @@ fn session_failed_last_orphan_clears_dashboard_attach() {
         Action::TaskComplete(TaskResult::SessionFailed {
             agent_id: AgentId(0),
             error: "No space left on device".to_string(),
+            timed_out: false,
         }),
         &mut app,
     );
@@ -2139,9 +2365,7 @@ fn dispatch_new_session_repoints_attach_while_subagent_view_open() {
     let mut parent_view = AgentView::new(session, ScrollbackState::new());
     let child_session = make_test_agent_session(&app, AgentId(0), "child-session");
     let child = AgentView::new(child_session, ScrollbackState::new());
-    parent_view
-        .subagent_views
-        .insert("child-sid".into(), Box::new(child));
+    parent_view.insert_test_child("child-sid".into(), Box::new(child));
     parent_view.active_subagent = Some("child-sid".into());
     app.agents.insert(parent, parent_view);
     app.next_agent_id = 6;
@@ -2229,7 +2453,10 @@ fn translate_local_submit_always_returns_persist_always_for_new_session() {
         crate::views::prompt_widget::StashedPrompt::default(),
     )
     .with_local_kind(LocalQuestionKind::NewSession);
-    state.selections[0] = crate::views::question_view::QuestionSelection::Single(Some(2));
+    let Some(slot) = state.selections.get_mut(0) else {
+        panic!("expected a selection slot: {:?}", state.selections);
+    };
+    *slot = crate::views::question_view::QuestionSelection::Single(Some(2));
     let kind = state.local_kind.take().unwrap();
     let outcome = crate::app::agent_view::translate_local_submit_for_test(&state, kind, false);
     match outcome {
@@ -2271,7 +2498,10 @@ fn translate_local_submit_never_returns_persist_never_for_new_session() {
         crate::views::prompt_widget::StashedPrompt::default(),
     )
     .with_local_kind(LocalQuestionKind::NewSession);
-    state.selections[0] = crate::views::question_view::QuestionSelection::Single(Some(3));
+    let Some(slot) = state.selections.get_mut(0) else {
+        panic!("expected a selection slot: {:?}", state.selections);
+    };
+    *slot = crate::views::question_view::QuestionSelection::Single(Some(3));
     let kind = state.local_kind.take().unwrap();
     let outcome = crate::app::agent_view::translate_local_submit_for_test(&state, kind, false);
     match outcome {
@@ -2322,7 +2552,7 @@ fn delete_current_session_confirm_emits_effect() {
     }
     assert!(dispatch(Action::DeleteCurrentSession, &mut app).is_empty());
     assert!(matches!(
-        app.agents[&AgentId(0)]
+        expect_agent(&app, AgentId(0))
             .question_view
             .as_ref()
             .unwrap()
@@ -2330,14 +2560,13 @@ fn delete_current_session_confirm_emits_effect() {
         Some(crate::views::question_view::LocalQuestionKind::DeleteCurrentSession)
     ));
     assert_eq!(
-        app.agents[&AgentId(0)]
+        expect_agent(&app, AgentId(0))
             .question_view
             .as_ref()
-            .unwrap()
-            .questions[0]
-            .options[0]
-            .description,
-        "Remove history and return home"
+            .and_then(|qv| qv.questions.first())
+            .and_then(|q| q.options.first())
+            .map(|o| o.description.as_str()),
+        Some("Remove history and return home")
     );
     assert!(
         dispatch(
@@ -2425,14 +2654,13 @@ fn delete_current_session_confirm_from_dashboard_emits_dashboard_after() {
     app.dashboard.as_mut().unwrap().attached_agent = Some(AgentId(0));
     assert!(dispatch(Action::DeleteCurrentSession, &mut app).is_empty());
     assert_eq!(
-        app.agents[&AgentId(0)]
+        expect_agent(&app, AgentId(0))
             .question_view
             .as_ref()
-            .unwrap()
-            .questions[0]
-            .options[0]
-            .description,
-        "Remove history and return to the dashboard"
+            .and_then(|qv| qv.questions.first())
+            .and_then(|q| q.options.first())
+            .map(|o| o.description.as_str()),
+        Some("Remove history and return to the dashboard")
     );
     let effects = dispatch(
         Action::DeleteCurrentSessionAnswered { confirmed: true },
@@ -2509,14 +2737,13 @@ fn delete_current_session_dashboard_state_without_attach_stays_welcome() {
     assert!(app.dashboard.as_ref().unwrap().attached_agent.is_none());
     assert!(dispatch(Action::DeleteCurrentSession, &mut app).is_empty());
     assert_eq!(
-        app.agents[&AgentId(0)]
+        expect_agent(&app, AgentId(0))
             .question_view
             .as_ref()
-            .unwrap()
-            .questions[0]
-            .options[0]
-            .description,
-        "Remove history and return home"
+            .and_then(|qv| qv.questions.first())
+            .and_then(|q| q.options.first())
+            .map(|o| o.description.as_str()),
+        Some("Remove history and return home")
     );
     let effects = dispatch(
         Action::DeleteCurrentSessionAnswered { confirmed: true },
@@ -2554,14 +2781,13 @@ fn delete_current_session_stale_attach_other_agent_stays_welcome() {
     app.active_view = ActiveView::Agent(AgentId(0));
     assert!(dispatch(Action::DeleteCurrentSession, &mut app).is_empty());
     assert_eq!(
-        app.agents[&AgentId(0)]
+        expect_agent(&app, AgentId(0))
             .question_view
             .as_ref()
-            .unwrap()
-            .questions[0]
-            .options[0]
-            .description,
-        "Remove history and return home"
+            .and_then(|qv| qv.questions.first())
+            .and_then(|q| q.options.first())
+            .map(|o| o.description.as_str()),
+        Some("Remove history and return home")
     );
     let effects = dispatch(
         Action::DeleteCurrentSessionAnswered { confirmed: true },
@@ -2627,6 +2853,43 @@ fn delete_current_session_complete_welcome_and_guard() {
     assert!(!app.agents.contains_key(&AgentId(0)));
     assert!(!effects.iter().any(|e| matches!(e, Effect::Quit)));
 }
+/// Minimal has no welcome chrome; /delete must open an empty session like startup.
+#[test]
+fn delete_current_session_complete_minimal_opens_new_session() {
+    use crate::app::actions::{AfterSessionDelete, TaskResult};
+    let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
+    app.agents.get_mut(&AgentId(0)).unwrap().session.session_id =
+        Some(acp::SessionId::new("sess-a"));
+    let effects = dispatch_task_result(
+        TaskResult::DeleteSessionComplete {
+            source: "current".into(),
+            session_id: "sess-a".into(),
+            after: AfterSessionDelete::Welcome,
+        },
+        &mut app,
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::UnregisterActiveSession { .. }))
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::CreateSession { .. })),
+        "minimal /delete must dispatch NewSession, got {effects:?}"
+    );
+    let ActiveView::Agent(id) = app.active_view else {
+        panic!(
+            "minimal /delete must land on an agent, got {:?}",
+            app.active_view
+        );
+    };
+    assert_ne!(id, AgentId(0), "must not stay on the deleted agent");
+    assert!(!app.agents.contains_key(&AgentId(0)));
+    assert_eq!(expect_agent(&app, id).active_pane, ActivePane::Prompt);
+}
 #[test]
 fn delete_current_session_complete_returns_to_dashboard() {
     use crate::app::actions::{AfterSessionDelete, TaskResult};
@@ -2664,8 +2927,9 @@ fn entry_title_falls_back_to_short_session_id_when_no_prompt() {
     if let Some(a) = app.agents.get_mut(&AgentId(0)) {
         a.session.session_id = Some("abcdef0123456".into());
     }
-    let title = entry_title(&app.agents[&AgentId(0)]);
+    let title = entry_title(expect_agent(&app, AgentId(0)));
     assert_eq!(title, "session abcdef01");
+    assert!(crate::views::session_title::named_title(expect_agent(&app, AgentId(0))).is_none());
 }
 #[test]
 fn bg_task_killed_no_op_for_unknown_session() {
@@ -2679,7 +2943,13 @@ fn bg_task_killed_no_op_for_unknown_session() {
         &mut app,
     );
     assert!(effects.is_empty());
-    assert!(app.agents[&AgentId(1)].session.bg_tasks["task-B-1"].pending_kill);
+    assert!(
+        expect_agent(&app, AgentId(1))
+            .session
+            .bg_tasks
+            .get("task-B-1")
+            .is_some_and(|t| t.pending_kill)
+    );
 }
 /// Mutual exclusion: enabling always-approve via dispatch clears the per-session `auto_mode` display flag (yolo wins).
 #[test]
@@ -2691,13 +2961,13 @@ fn set_yolo_on_clears_session_auto_mode() {
         &mut app,
     );
     assert!(
-        app.agents[&AgentId(0)].session.is_auto(),
+        expect_agent(&app, AgentId(0)).session.is_auto(),
         "precondition: active agent is in auto"
     );
     dispatch(Action::SetYoloMode(true), &mut app);
-    assert!(app.agents[&AgentId(0)].session.is_yolo());
+    assert!(expect_agent(&app, AgentId(0)).session.is_yolo());
     assert!(
-        !app.agents[&AgentId(0)].session.is_auto(),
+        !expect_agent(&app, AgentId(0)).session.is_auto(),
         "enabling always-approve must clear the per-session auto flag (yolo wins)"
     );
 }
@@ -2711,11 +2981,14 @@ fn cycle_mode_plan_exit_under_gate_off_pin_emits_set_session_mode() {
     app.agents.get_mut(&AgentId(0)).unwrap().plan_mode_pending = Some(true);
     let effects = dispatch(Action::CycleMode, &mut app);
     assert!(
-        !app.agents[&AgentId(0)].session.is_yolo(),
+        !expect_agent(&app, AgentId(0)).session.is_yolo(),
         "the pin must keep yolo off when exiting Plan"
     );
     assert_eq!(app.current_ui.permission_mode.as_deref(), Some("ask"));
-    assert_eq!(app.agents[&AgentId(0)].plan_mode_pending, Some(false));
+    assert_eq!(
+        expect_agent(&app, AgentId(0)).plan_mode_pending,
+        Some(false)
+    );
     assert_eq!(agent_toast(&app).as_deref(), Some(POLICY_WARNING));
     assert!(
         effects
@@ -2747,14 +3020,14 @@ fn cycle_mode_pre_session_blocked_by_policy_pin() {
         agent.deferred_session_mode = Some(xai_grok_tools::types::SessionMode::Plan);
     }
     let _ = dispatch(Action::CycleMode, &mut app);
-    let agent = &app.agents[&AgentId(0)];
+    let agent = &expect_agent(&app, AgentId(0));
     assert!(
         !agent.session.is_yolo(),
         "pre-session Plan→Auto must not stage yolo under the pin"
     );
     assert_eq!(app.current_ui.permission_mode.as_deref(), Some("auto"));
     let _ = dispatch(Action::CycleMode, &mut app);
-    let agent = &app.agents[&AgentId(0)];
+    let agent = &expect_agent(&app, AgentId(0));
     assert!(
         !agent.session.is_yolo(),
         "pre-session cycle must not stage yolo under the pin"
@@ -2777,7 +3050,7 @@ fn cycle_mode_pre_session_clears_stale_yolo_under_pin() {
         agent.session.yolo_mode = true;
     }
     let _ = dispatch(Action::CycleMode, &mut app);
-    let agent = &app.agents[&AgentId(0)];
+    let agent = &expect_agent(&app, AgentId(0));
     assert!(
         !agent.session.is_yolo(),
         "stale pre-session yolo must be cleared so Normal is enforced, not just displayed"
@@ -2797,7 +3070,7 @@ fn dispatch_cycle_mode_pre_session_cycles_locally() {
     let mut app = test_app_with_agent();
     app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;
     let effects = dispatch(Action::CycleMode, &mut app);
-    let agent = &app.agents[&AgentId(0)];
+    let agent = &expect_agent(&app, AgentId(0));
     assert_eq!(
         agent.plan_mode_pending,
         Some(true),
@@ -2815,7 +3088,7 @@ fn dispatch_cycle_mode_pre_session_cycles_locally() {
         "cycling a mode must not create a session, got {effects:?}"
     );
     let effects = dispatch(Action::CycleMode, &mut app);
-    let agent = &app.agents[&AgentId(0)];
+    let agent = &expect_agent(&app, AgentId(0));
     assert!(!agent.session.is_yolo(), "Plan → Auto must not enable yolo");
     assert_eq!(app.current_ui.permission_mode.as_deref(), Some("auto"));
     assert_eq!(agent.plan_mode_pending, Some(false));
@@ -2838,10 +3111,10 @@ fn dispatch_cycle_mode_pre_session_cycles_locally() {
         "pre-session Plan → Auto must persist the displayed mode, got {effects:?}"
     );
     let _ = dispatch(Action::CycleMode, &mut app);
-    let agent = &app.agents[&AgentId(0)];
+    let agent = &expect_agent(&app, AgentId(0));
     assert!(agent.session.is_yolo(), "Auto → Always-Approve flips yolo");
     let _ = dispatch(Action::CycleMode, &mut app);
-    let agent = &app.agents[&AgentId(0)];
+    let agent = &expect_agent(&app, AgentId(0));
     assert!(!agent.session.is_yolo());
     assert_eq!(agent.plan_mode_pending, Some(false));
 }
@@ -2879,7 +3152,7 @@ fn set_plan_mode_on_from_off_emits_set_session_mode() {
     );
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(&effects[0], Effect::SetSessionMode { mode_id, .. } if &*mode_id.0 == "plan"),
+        matches!(effects.first(), Some(Effect::SetSessionMode { mode_id, .. }) if &*mode_id.0 == "plan"),
         "expected SetSessionMode(plan), got: {effects:?}"
     );
     let agent = app.agents.get(&AgentId(0)).unwrap();
@@ -2908,9 +3181,11 @@ fn dashboard_stop_with_peek_open_moves_selection_and_peek_down_one() {
     }
     open_dashboard(&mut app);
     let order = dashboard_row_order(&app);
-    assert!(order.len() >= 3, "need >=3 rows, got {}", order.len());
-    let first = order[0].clone();
-    let second = order[1].clone();
+    let [first, second, _, ..] = order.as_slice() else {
+        panic!("need >=3 rows, got {order:?}");
+    };
+    let first = first.clone();
+    let second = second.clone();
     app.dashboard.as_mut().unwrap().focus_row(first.clone());
     let area = Rect::new(0, 0, 80, 40);
     let reg = crate::actions::ActionRegistry::defaults();
@@ -2956,7 +3231,7 @@ fn dashboard_stop_with_peek_open_moves_selection_and_peek_down_one() {
     let crate::views::dashboard::DashboardRowId::TopLevel(first_id) = &first else {
         panic!("first row should be top-level");
     };
-    let session_id = app.agents[first_id]
+    let session_id = expect_agent(&app, *first_id)
         .session
         .session_id
         .as_ref()
@@ -3032,7 +3307,7 @@ fn dashboard_stop_double_press_via_handle_key_deletes_top_level() {
         other => panic!("second Ctrl+X must produce DashboardStop, got {other:?}"),
     }
     assert!(app.dashboard.as_ref().unwrap().delete_confirm.is_none());
-    let session_id = app.agents[&target]
+    let session_id = expect_agent(&app, target)
         .session
         .session_id
         .as_ref()
@@ -3065,32 +3340,6 @@ fn session_id_resolver_round_trip_top_level() {
         session_id: "no-such-session".into(),
     };
     assert!(resolver.resolve(&absent).is_none());
-}
-/// Subagent resolver round-trip.
-#[test]
-fn session_id_resolver_round_trip_subagent() {
-    use crate::views::dashboard::{DashboardRowId, PersistedRowId, SessionIdResolver};
-    let mut app = test_app_with_agent();
-    let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-    let info = make_test_subagent("child-1", "sa-1");
-    agent
-        .subagent_sessions
-        .insert(info.child_session_id.to_string(), info);
-    let resolver = SessionIdResolver::from_agents(&app.agents);
-    let pid = PersistedRowId::Subagent {
-        parent_session_id: "test-session".into(),
-        child_session_id: "child-1".into(),
-    };
-    let live = resolver.resolve(&pid).expect("must resolve");
-    assert_eq!(
-        live,
-        DashboardRowId::Subagent {
-            parent: AgentId(0),
-            child_session_id: "child-1".into(),
-        }
-    );
-    let back = resolver.to_persisted(&live).expect("must reverse");
-    assert_eq!(back, pid);
 }
 #[cfg(feature = "local-workspace")]
 mod welcome_workspace_mode {
@@ -3361,7 +3610,7 @@ mod welcome_workspace_mode {
         app.active_view = ActiveView::Welcome;
         app.welcome_workspace_mode = WelcomeWorkspaceMode::Sandbox;
         let effects = dispatch(Action::FetchSessionList, &mut app);
-        match &effects[..] {
+        match effects.as_slice() {
             [Effect::FetchSessionList { kind_filter, .. }] => {
                 assert_eq!(
                     kind_filter.as_deref(),
@@ -3372,7 +3621,7 @@ mod welcome_workspace_mode {
         }
         app.welcome_workspace_mode = WelcomeWorkspaceMode::LocalWorkspace;
         let effects = dispatch(Action::FetchSessionList, &mut app);
-        match &effects[..] {
+        match effects.as_slice() {
             [Effect::FetchSessionList { kind_filter, .. }] => {
                 assert_eq!(
                     kind_filter.as_deref(),
@@ -3879,6 +4128,7 @@ mod welcome_workspace_mode {
         assert!(!welcome_history_build_bypass_applies(
             &[Effect::FetchSessionList {
                 host: crate::views::session_picker_surface::SessionPickerHost::Welcome,
+                cwd_override: None,
                 generation: 0,
                 query: None,
                 seq: 0,
@@ -3913,6 +4163,7 @@ mod welcome_workspace_mode {
                 model_id: None,
                 permission_mode_override: None,
                 preferred_session_id: None,
+                minted_session_id: None,
                 chat_kind: false,
             }],
             true
@@ -3927,6 +4178,7 @@ mod welcome_workspace_mode {
                     model_id: None,
                     permission_mode_override: None,
                     preferred_session_id: None,
+                    minted_session_id: None,
                     chat_kind: false,
                 }],
                 true
@@ -3963,7 +4215,7 @@ mod welcome_workspace_mode {
         welcome.chat_mode = true;
         welcome.active_view = ActiveView::Welcome;
         welcome.welcome_workspace_mode = WelcomeWorkspaceMode::LocalWorkspace;
-        match &dispatch(Action::FetchSessionList, &mut welcome)[..] {
+        match dispatch(Action::FetchSessionList, &mut welcome).as_slice() {
             [Effect::FetchSessionList { kind_filter, .. }] => {
                 assert_eq!(
                     kind_filter.as_deref(),
@@ -3974,7 +4226,7 @@ mod welcome_workspace_mode {
         }
         let mut in_session = test_app_with_agent();
         in_session.chat_mode = true;
-        match &dispatch(Action::FetchSessionList, &mut in_session)[..] {
+        match dispatch(Action::FetchSessionList, &mut in_session).as_slice() {
             [Effect::FetchSessionList { kind_filter, .. }] => {
                 assert!(kind_filter.is_none())
             }

@@ -110,6 +110,14 @@ impl AgentView {
         }
     }
 
+    /// Whether the running tool waits on a card only the user can answer. The cancel-turn confirm does not count.
+    pub(crate) fn is_awaiting_user_answer(&self) -> bool {
+        matches!(
+            self.blocking_card(),
+            Some(BlockingCard::Permission | BlockingCard::Question | BlockingCard::McpElicitation)
+        )
+    }
+
     pub(crate) fn key_owner(&self) -> KeyOwner {
         self.key_owner_when_parked(self.active_pane == AgentPane::Scrollback)
     }

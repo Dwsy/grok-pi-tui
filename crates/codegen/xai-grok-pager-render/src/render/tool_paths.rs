@@ -140,8 +140,11 @@ pub fn shorten_path(path: &str, budget: usize) -> String {
         if shortened.iter().map(String::len).sum::<usize>() + shortened.len() - 1 <= budget {
             break;
         }
-        if let Some(first) = parts[i].chars().next() {
-            shortened[i] = first.to_string();
+        if let Some(part) = parts.get(i)
+            && let Some(first) = part.chars().next()
+            && let Some(slot) = shortened.get_mut(i)
+        {
+            *slot = first.to_string();
         }
     }
 
@@ -156,15 +159,24 @@ pub fn shorten_path(path: &str, budget: usize) -> String {
             continue;
         }
         if path.as_bytes().get(i.wrapping_sub(1)) == Some(&b'/') {
-            let candidate = format!("\u{2026}{}", &path[i - 1..]);
+            let Some(j) = i.checked_sub(1) else {
+                continue;
+            };
+            let Some(suffix) = path.get(j..) else {
+                continue;
+            };
+            let candidate = format!("\u{2026}{suffix}");
             if candidate.width() <= budget {
-                tail_start = i - 1;
+                tail_start = j;
                 break;
             }
         }
     }
     if tail_start > 0 {
-        let result = format!("\u{2026}{}", &path[tail_start..]);
+        let Some(suffix) = path.get(tail_start..) else {
+            return truncate_str(path, budget);
+        };
+        let result = format!("\u{2026}{suffix}");
         if result.width() <= budget {
             return result;
         }

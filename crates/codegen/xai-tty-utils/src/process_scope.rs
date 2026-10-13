@@ -150,6 +150,23 @@ impl ProcessScope {
         Ok((child, group))
     }
 
+    /// [`spawn`] for synchronous `std::process::Command`. Detaches the child into its own group, then enrolls it.
+    ///
+    /// `cmd` must not already be detached or assigned a process group. On Unix this adds a `setsid` hook, and a second
+    /// `setsid` (or the `setpgid` fallback) returns `EPERM` once the child is a session leader.
+    #[must_use = "the returned Arc<ProcessGroup> must be kept alive or the scope cannot reap the child"]
+    pub fn spawn_std(
+        &self,
+        mut cmd: std::process::Command,
+    ) -> io::Result<(std::process::Child, Arc<ProcessGroup>)> {
+        crate::detach_std_command(&mut cmd);
+        #[allow(clippy::disallowed_methods)]
+        // ProcessScope::spawn_std is the enrollment primitive itself.
+        let child = cmd.spawn()?;
+        let group = self.enroll_std(&child)?;
+        Ok((child, group))
+    }
+
     /// Idempotently kill every still-owned process tree (`killpg(SIGKILL)` / `TerminateJobObject`). Safe to call multiple
     /// times and from any thread. Groups whose owner already reaped+dropped them upgrade to `None` and are skipped — so this
     /// never `killpg`s a reused PID.

@@ -76,20 +76,15 @@ pub(crate) fn classify_luminance(r: u8, g: u8, b: u8) -> SystemAppearance {
 /// Handles both 4-digit (`rgb:RRRR/GGGG/BBBB`) and 2-digit (`rgb:RR/GG/BB`) hex formats.
 pub(crate) fn parse_osc11_rgb(response: &str) -> Option<(u8, u8, u8)> {
     let rgb_start = response.find("rgb:")? + 4;
-    let rgb_part = &response[rgb_start..];
+    let rgb_part = response.get(rgb_start..)?;
 
     // Split on channel separator `/` and terminators (BEL, ESC).
     let parts: Vec<&str> = rgb_part.split(['/', '\x07', '\x1b']).take(3).collect();
-
-    if parts.len() < 3 {
+    let [r, g, b] = parts.as_slice() else {
         return None;
-    }
+    };
 
-    Some((
-        parse_channel(parts[0])?,
-        parse_channel(parts[1])?,
-        parse_channel(parts[2])?,
-    ))
+    Some((parse_channel(r)?, parse_channel(g)?, parse_channel(b)?))
 }
 
 /// For 3- or 4-digit values, extracts the high byte (`>> 8`) to map to 0-255.
@@ -183,7 +178,7 @@ fn read_with_timeout(timeout: Duration) -> Option<String> {
 #[cfg(unix)]
 fn unix_read_with_timeout(timeout: Duration) -> Option<String> {
     let buf = crate::terminal::probe::read_tty_reply(timeout, |buf, byte| {
-        byte == 0x07 || (buf.len() >= 2 && buf[buf.len() - 2] == 0x1b && byte == 0x5c)
+        byte == 0x07 || (buf.len() >= 2 && buf.get(buf.len() - 2) == Some(&0x1b) && byte == 0x5c)
     })?;
     // Reject partial buffers: a reply truncated mid-channel would mis-parse, since channel width is inferred from digit count
     if !ends_with_osc_terminator(&buf) {

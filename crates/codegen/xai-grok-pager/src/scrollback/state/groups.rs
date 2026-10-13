@@ -137,7 +137,11 @@ fn scan_verb_runs(
 
         // Which entries inside the run get claimed must agree with the member arms in `scan_run_forward`
         // Transparent entries stay unclaimed inside the span and keep rendering their own rows
-        for (offset, slot) in claimed[i..scan.end].iter_mut().enumerate() {
+        let Some(claimed_run) = claimed.get_mut(i..scan.end) else {
+            i = scan.end;
+            continue;
+        };
+        for (offset, slot) in claimed_run.iter_mut().enumerate() {
             if matches!(
                 run_step(
                     entry_at(i + offset).expect("index within entries"),
@@ -195,7 +199,11 @@ fn scan_truncations(
     let mut i = 0;
     while i < n {
         let (_, entry) = entries.get_index(i).unwrap();
-        if claimed[i] || !participates_in_truncation(entry, show_thinking) {
+        let Some(&is_claimed) = claimed.get(i) else {
+            i += 1;
+            continue;
+        };
+        if is_claimed || !participates_in_truncation(entry, show_thinking) {
             i += 1;
             continue;
         }
@@ -205,7 +213,7 @@ fn scan_truncations(
         let mut j = i + 1;
         while j < n {
             let (_, e) = entries.get_index(j).unwrap();
-            if claimed[j] {
+            if claimed.get(j) != Some(&false) {
                 break;
             }
             if participates_in_truncation(e, show_thinking) {
@@ -279,7 +287,9 @@ fn project_verb_run(
     let last_claimed = span.range.end - 1;
     for idx in span.range.clone() {
         let (_, e) = entries.get_index(idx).unwrap();
-        let cached = &mut layout_cache[idx];
+        let Some(cached) = layout_cache.get_mut(idx) else {
+            continue;
+        };
         match run_step(e, show_thinking) {
             RunStep::Member(_) | RunStep::ThoughtMember => {}
             RunStep::Transparent => {
@@ -324,7 +334,9 @@ fn project_truncation(
     show_thinking: bool,
 ) {
     if span.expanded {
-        let cached = &mut layout_cache[span.range.start];
+        let Some(cached) = layout_cache.get_mut(span.range.start) else {
+            return;
+        };
         cached.group_collapse_header = true;
         cached.group_header_count = (participants - 1).min(u16::MAX as usize) as u16;
         cached.height = 1;
@@ -338,7 +350,9 @@ fn project_truncation(
         if e.is_hidden_thinking(show_thinking) {
             continue;
         }
-        let cached = &mut layout_cache[idx];
+        let Some(cached) = layout_cache.get_mut(idx) else {
+            continue;
+        };
         if seen == 0 {
             cached.height = 1;
             cached.gap_after = 0;
@@ -435,20 +449,32 @@ mod tests {
         );
 
         // Verb header row plus its folded member.
-        assert!(layout[0].verb_group_header);
-        assert_eq!(layout[0].group_header_count, 2);
-        assert_eq!(layout[0].height, 1);
-        assert_eq!(layout[1].height, 0);
+        let Some(verb) = layout.first() else {
+            panic!("expected layout rows, got {layout:?}");
+        };
+        assert!(verb.verb_group_header);
+        assert_eq!(verb.group_header_count, 2);
+        assert_eq!(verb.height, 1);
+        assert_eq!(layout.get(1).map(|i| i.height), Some(0));
 
         // Truncation header reads "8 more" and hides the 8 rows behind it.
-        assert!(!layout[2].verb_group_header);
-        assert_eq!(layout[2].group_header_count, 8);
-        assert_eq!(layout[2].height, 1);
-        for info in &layout[3..11] {
+        let Some(trunc) = layout.get(2) else {
+            panic!("expected truncation header at 2, len={}", layout.len());
+        };
+        assert!(!trunc.verb_group_header);
+        assert_eq!(trunc.group_header_count, 8);
+        assert_eq!(trunc.height, 1);
+        let Some(hidden) = layout.get(3..11) else {
+            panic!("expected hidden rows 3..11, len={}", layout.len());
+        };
+        for info in hidden {
             assert_eq!((info.height, info.group_header_count), (0, 0));
         }
         // The newest `max_visible` rows keep their seeded layout.
-        for info in &layout[11..21] {
+        let Some(kept) = layout.get(11..21) else {
+            panic!("expected kept rows 11..21, len={}", layout.len());
+        };
+        for info in kept {
             assert_eq!((info.height, info.gap_after), (5, 1));
         }
     }
@@ -487,14 +513,30 @@ mod tests {
         let mut layout = seeded_layout(entries.len());
         let expanded: HashSet<EntryId> = [EntryId::new(0)].into();
         let spans = apply(&entries, &mut layout, 10, &expanded);
-        assert!(spans[0].expanded);
-        assert!(layout[0].group_collapse_header);
-        assert_eq!(layout[0].height, 6, "header stacks above measured rows");
-        assert_eq!(layout[1].height, 5, "expanded members keep their rows");
+        assert!(spans.first().is_some_and(|s| s.expanded));
+        assert!(layout.first().is_some_and(|i| i.group_collapse_header));
+        assert_eq!(
+            layout.first().map(|i| i.height),
+            Some(6),
+            "header stacks above measured rows"
+        );
+        assert_eq!(
+            layout.get(1).map(|i| i.height),
+            Some(5),
+            "expanded members keep their rows"
+        );
 
         apply(&entries, &mut layout, 10, &expanded);
-        assert_eq!(layout[0].height, 6, "reapplying the fold is idempotent");
-        assert_eq!(layout[1].height, 5, "member height stays stable");
+        assert_eq!(
+            layout.first().map(|i| i.height),
+            Some(6),
+            "reapplying the fold is idempotent"
+        );
+        assert_eq!(
+            layout.get(1).map(|i| i.height),
+            Some(5),
+            "member height stays stable"
+        );
     }
 
     #[test]
@@ -504,16 +546,20 @@ mod tests {
         let expanded: HashSet<EntryId> = [EntryId::new(0)].into();
         let spans = scan_and_project(&entries, &mut layout, 10, &expanded);
         assert_eq!(
-            spans[0].kind,
-            GroupKind::Truncation {
+            spans.first().map(|s| &s.kind),
+            Some(&GroupKind::Truncation {
                 participants: 13,
                 hidden: 3,
-            }
+            })
         );
-        assert!(layout[0].group_collapse_header);
-        assert_eq!(layout[0].group_header_count, 12);
-        assert_eq!(layout[0].height, 1);
-        assert!(layout[1..].iter().all(|i| i.height == 5));
+        assert!(layout.first().is_some_and(|i| i.group_collapse_header));
+        assert_eq!(layout.first().map(|i| i.group_header_count), Some(12));
+        assert_eq!(layout.first().map(|i| i.height), Some(1));
+        assert!(
+            layout
+                .get(1..)
+                .is_some_and(|rest| rest.iter().all(|i| i.height == 5))
+        );
     }
 
     #[test]
@@ -533,17 +579,21 @@ mod tests {
         );
         project_to_layout(&spans, &entries, &mut layout, false);
         assert_eq!(
-            spans[0].kind,
-            GroupKind::Truncation {
+            spans.first().map(|s| &s.kind),
+            Some(&GroupKind::Truncation {
                 participants: 12,
                 hidden: 2,
-            }
+            })
         );
-        assert_eq!(layout[6].height, 5, "hidden thought layout untouched");
+        assert_eq!(
+            layout.get(6).map(|i| i.height),
+            Some(5),
+            "hidden thought layout untouched"
+        );
         // The header and one hidden row land on the participating executes around it
-        assert_eq!(layout[0].group_header_count, 1);
-        assert_eq!(layout[1].height, 0);
-        assert_eq!(layout[2].height, 5);
+        assert_eq!(layout.first().map(|i| i.group_header_count), Some(1));
+        assert_eq!(layout.get(1).map(|i| i.height), Some(0));
+        assert_eq!(layout.get(2).map(|i| i.height), Some(5));
     }
 
     #[test]
@@ -574,7 +624,10 @@ mod tests {
         let spans = scan(&entries, 10, &HashSet::new(), true, true);
         assert!(spans.len() >= 2);
         for pair in spans.windows(2) {
-            assert!(pair[0].range.end <= pair[1].range.start);
+            let [a, b] = pair else {
+                panic!("windows(2) yielded {pair:?}");
+            };
+            assert!(a.range.end <= b.range.start);
         }
     }
 }

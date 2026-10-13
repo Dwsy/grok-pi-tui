@@ -3,12 +3,11 @@
 
 use super::support::*;
 use super::*;
-use serial_test::serial;
 use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicUsize, Ordering as SeqOrd};
 use tempfile::TempDir;
 use xai_grok_tools::implementations::grok_build::task::types::{
-    SubagentCancelTarget, SubagentEvent, SubagentResult,
+    SubagentCancelTarget, SubagentEvent, SubagentResult, SubagentSpawnRequest,
 };
 
 /// Pull the planner's plan-file path from the prompt by its backtick-quoted `.md` token.
@@ -37,6 +36,11 @@ enum SpawnBehaviour {
     NoWriteThenDone,
     /// Reply with subagent runtime failure.
     Runtime { message: String, cancelled: bool },
+    /// First spawn fails with `Runtime { message, cancelled: false }`; every later spawn behaves as `WritePlanThenDone`.
+    RuntimeThenWritePlan {
+        message: String,
+        body: &'static [u8],
+    },
 }
 
 /// Captured planner spawn flags (harness-internal `SubagentRequest` fields).
@@ -45,6 +49,25 @@ struct PlannerSpawnCapture {
     fork_context: StdArc<std::sync::Mutex<Vec<bool>>>,
     surface_completion: StdArc<std::sync::Mutex<Vec<bool>>>,
     model: StdArc<std::sync::Mutex<Vec<Option<String>>>>,
+}
+
+/// Write `body` at the plan path the prompt names, then reply the planner's `Done`.
+fn plan_written(
+    req: &SubagentSpawnRequest,
+    plan_path: Option<&str>,
+    body: &[u8],
+) -> SubagentResult {
+    if let Some(p) = plan_path {
+        let _ = std::fs::create_dir_all(std::path::Path::new(p).parent().unwrap());
+        let _ = std::fs::write(p, body);
+    }
+    SubagentResult {
+        success: true,
+        output: StdArc::from("Done"),
+        subagent_id: req.id.clone(),
+        child_session_id: req.id.clone(),
+        ..Default::default()
+    }
 }
 
 /// Stand up a coordinator that handles exactly the spawn behaviours the planner exercises: each `Spawn` is answered on its `result_tx`.
@@ -87,18 +110,7 @@ fn spawn_planner_coordinator_capturing(
                 let plan_path = plan_path_from_prompt(&req.prompt);
                 let result = match &behaviour {
                     SpawnBehaviour::WritePlanThenDone { body } => {
-                        if let Some(p) = plan_path.as_deref() {
-                            let _ =
-                                std::fs::create_dir_all(std::path::Path::new(p).parent().unwrap());
-                            let _ = std::fs::write(p, body);
-                        }
-                        SubagentResult {
-                            success: true,
-                            output: StdArc::from("Done"),
-                            subagent_id: req.id.clone(),
-                            child_session_id: req.id.clone(),
-                            ..Default::default()
-                        }
+                        plan_written(&req, plan_path.as_deref(), body)
                     }
                     SpawnBehaviour::WaitForCancelsThenWrite {
                         cancels,
@@ -120,19 +132,7 @@ fn spawn_planner_coordinator_capturing(
                                 ..Default::default()
                             }
                         } else {
-                            if let Some(p) = plan_path.as_deref() {
-                                let _ = std::fs::create_dir_all(
-                                    std::path::Path::new(p).parent().unwrap(),
-                                );
-                                let _ = std::fs::write(p, body);
-                            }
-                            SubagentResult {
-                                success: true,
-                                output: StdArc::from("Done"),
-                                subagent_id: req.id.clone(),
-                                child_session_id: req.id.clone(),
-                                ..Default::default()
-                            }
+                            plan_written(&req, plan_path.as_deref(), body)
                         }
                     }
                     SpawnBehaviour::NoWriteThenDone => SubagentResult {
@@ -150,6 +150,19 @@ fn spawn_planner_coordinator_capturing(
                         child_session_id: req.id.clone(),
                         ..Default::default()
                     },
+                    SpawnBehaviour::RuntimeThenWritePlan { message, body } => {
+                        if count_task.load(SeqOrd::SeqCst) == 1 {
+                            SubagentResult {
+                                success: false,
+                                error: Some(message.clone()),
+                                subagent_id: req.id.clone(),
+                                child_session_id: req.id.clone(),
+                                ..Default::default()
+                            }
+                        } else {
+                            plan_written(&req, plan_path.as_deref(), body)
+                        }
+                    }
                 };
                 let _ = req.result_tx.send(result);
             }
@@ -240,7 +253,6 @@ fn create_test_goal(actor: &SessionActor) {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn send_now_restarts_planner_with_all_steering() {
     let local = tokio::task::LocalSet::new();
     local
@@ -342,7 +354,6 @@ async fn send_now_restarts_planner_with_all_steering() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_early_exit_clears_planning_latch() {
     let local = tokio::task::LocalSet::new();
     local
@@ -370,7 +381,6 @@ async fn planner_early_exit_clears_planning_latch() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_success_stamps_plan_file_on_orchestration() {
     let local = tokio::task::LocalSet::new();
     local
@@ -406,7 +416,6 @@ async fn planner_success_stamps_plan_file_on_orchestration() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_spawn_sets_harness_only_fork_context() {
     let local = tokio::task::LocalSet::new();
     local
@@ -434,7 +443,6 @@ async fn planner_spawn_sets_harness_only_fork_context() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_fork_inherits_parent_model() {
     let local = tokio::task::LocalSet::new();
     local
@@ -482,7 +490,6 @@ async fn planner_fork_inherits_parent_model() {
 /// A second `maybe_run_goal_planner` early-returns because a plan already exists.
 /// It must leave the baseline pinned to the original body even after `plan.md` itself is edited on disk.
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_snapshots_plan_baseline_once_and_does_not_overwrite() {
     let local = tokio::task::LocalSet::new();
     local
@@ -530,7 +537,6 @@ async fn planner_snapshots_plan_baseline_once_and_does_not_overwrite() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_records_own_harness_trace_turn_with_footer() {
     // The planner subagent is represented by its OWN trace turn.
     // After `maybe_run_goal_planner`, the chat-state side buffer holds exactly one sealed harness trace turn.
@@ -547,16 +553,20 @@ async fn planner_records_own_harness_trace_turn_with_footer() {
 
             let turns = actor.chat_state_handle.take_harness_trace_turns().await;
             assert_eq!(turns.len(), 1, "planner rides its own trace turn");
-            let items = &turns[0];
-            assert_eq!(items.len(), 2, "synthetic task call + result pair");
+            let [items] = turns.as_slice() else {
+                panic!("planner rides its own trace turn: {turns:?}");
+            };
+            let [call, result] = items.as_slice() else {
+                panic!("synthetic task call + result pair: {items:?}");
+            };
             assert!(
                 matches!(
-                    &items[0],
+                    call,
                     crate::sampling::ConversationItem::Assistant(a) if !a.tool_calls.is_empty()
                 ),
                 "first item is the synthetic task call",
             );
-            let result_text = items[1].text_content();
+            let result_text = result.text_content();
             assert!(
                 result_text.contains("<subagent_result>"),
                 "footer present for trace-viewer / subagent discovery: {result_text}",
@@ -570,7 +580,6 @@ async fn planner_records_own_harness_trace_turn_with_footer() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_disabled_records_no_harness_trace_turn() {
     // When there is no goal or the planner is off, the fast path produces no harness trace turn
     let local = tokio::task::LocalSet::new();
@@ -588,7 +597,6 @@ async fn planner_disabled_records_no_harness_trace_turn() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_success_sets_then_clears_planning_flag() {
     // The transient "planning…" badge fires before the subagent runs (planning=Some(true))
     // The success exit path clears it with a snapshot-derived GoalUpdated (planning=None)
@@ -619,7 +627,6 @@ async fn planner_success_sets_then_clears_planning_flag() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_clears_planning_latch_before_publishing_the_plan() {
     // Regression: the "planning…" badge must be cleared at the moment the planner run is taken and we commit to publishing the produced plan.
     // Clearing it only at the very end, after the plan/baseline I/O, is too late.
@@ -685,7 +692,6 @@ async fn planner_clears_planning_latch_before_publishing_the_plan() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_fail_closed_clears_planning_flag() {
     // Even when the planner fails closed (goal paused), the last GoalUpdated must clear planning so the "planning…" badge never sticks on screen
     let local = tokio::task::LocalSet::new();
@@ -718,7 +724,6 @@ async fn planner_fail_closed_clears_planning_flag() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planning_badge_survives_intervening_goal_update() {
     // Regression: the subagent-spawn / token-accounting `GoalUpdated` that fires while the planner runs must NOT clear the "planning…" badge
     // The latch keeps every snapshot-derived update carrying it
@@ -748,7 +753,6 @@ async fn planning_badge_survives_intervening_goal_update() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_runtime_failure_pauses_goal_with_canonical_message() {
     let local = tokio::task::LocalSet::new();
     local
@@ -779,7 +783,59 @@ async fn planner_runtime_failure_pauses_goal_with_canonical_message() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
+async fn planner_runtime_cancelled_pauses_as_planner() {
+    // `cancelled: true` (max turns, rewind, dequeue) is a harness failure: the wire reason stays `aborted`, the pause is the planner's, not the user's
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (tx, spawn_count) = spawn_planner_coordinator(SpawnBehaviour::Runtime {
+                message: "max turns".into(),
+                cancelled: true,
+            });
+            let (actor, tmp) = make_planner_actor(Some(tx), true).await;
+            create_test_goal(&actor);
+
+            actor.maybe_run_goal_planner("do X").await;
+
+            assert_eq!(spawn_count.load(SeqOrd::SeqCst), 1);
+            let snap = actor.goal_tracker.lock().snapshot().cloned().unwrap();
+            assert_eq!(
+                snap.status,
+                crate::session::goal_tracker::GoalStatus::InfraPaused
+            );
+            assert_eq!(
+                snap.pause_message.as_deref(),
+                Some(planner_failure_pause_message().as_str()),
+            );
+            // `InfraPaused` is shared with `Infra`; the history is what distinguishes the planner pause.
+            assert!(
+                snap.history.iter().any(|entry| {
+                    matches!(
+                        entry.event,
+                        crate::session::goal_tracker::GoalEvent::PlanningFailed
+                    ) && entry.detail.as_deref() == Some("aborted")
+                }),
+                "{:?}",
+                snap.history
+            );
+            assert!(
+                snap.history
+                    .iter()
+                    .any(|entry| entry.detail.as_deref() == Some("planner")),
+                "{:?}",
+                snap.history
+            );
+            let events =
+                std::fs::read_to_string(tmp.path().join("events.jsonl")).expect("events.jsonl");
+            assert!(
+                has_event_with(&events, "goal_auto_paused", |v| v["reason"] == "planner"),
+                "{events}"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn planner_missing_plan_file_pauses_goal() {
     let local = tokio::task::LocalSet::new();
     local
@@ -798,7 +854,6 @@ async fn planner_missing_plan_file_pauses_goal() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_disabled_short_circuits_no_spawn_no_attempt() {
     let local = tokio::task::LocalSet::new();
     local
@@ -818,7 +873,6 @@ async fn planner_disabled_short_circuits_no_spawn_no_attempt() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_no_coordinator_skips_silently() {
     // External harness path: planner enabled but no subagent_event_tx.
     let local = tokio::task::LocalSet::new();
@@ -840,7 +894,6 @@ async fn planner_no_coordinator_skips_silently() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_existing_plan_does_not_re_fire() {
     // Defensive: if `plan_file` is already populated (e.g. future re-trigger path that calls the helper twice), we do NOT re-spawn.
     let local = tokio::task::LocalSet::new();
@@ -864,7 +917,6 @@ async fn planner_existing_plan_does_not_re_fire() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn reconcile_pauses_active_goal_with_no_plan() {
     let local = tokio::task::LocalSet::new();
     local
@@ -894,7 +946,6 @@ async fn reconcile_pauses_active_goal_with_no_plan() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn reconcile_skips_active_goal_with_plan() {
     let local = tokio::task::LocalSet::new();
     local
@@ -918,7 +969,6 @@ async fn reconcile_skips_active_goal_with_plan() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn reconcile_is_idempotent_via_atomic_flag() {
     let local = tokio::task::LocalSet::new();
     local
@@ -946,7 +996,6 @@ async fn reconcile_is_idempotent_via_atomic_flag() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn reconcile_skips_when_planner_disabled() {
     let local = tokio::task::LocalSet::new();
     local
@@ -968,7 +1017,6 @@ async fn reconcile_skips_when_planner_disabled() {
 /// The planner spawn routes through the same `SubagentSpawned` notification path the classifier uses.
 /// The actor's notification handler tags the record with the active goal_id and `goal_tokens()` sums every matching record.
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn planner_subagent_tokens_fold_into_goal_total() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1047,7 +1095,6 @@ async fn planner_subagent_tokens_fold_into_goal_total() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn lifecycle_fail_pause_resume_retry_success() {
     use crate::session::goal_tracker::GoalStatus;
     use std::sync::Mutex;
@@ -1128,11 +1175,10 @@ async fn lifecycle_fail_pause_resume_retry_success() {
             let plan_path = actor.goal_tracker.lock().plan_path();
             assert_eq!(snap.plan_file.as_deref(), Some(plan_path.as_path()));
             let targets = plan_targets.lock().unwrap();
-            assert_eq!(targets.len(), 2);
-            assert_ne!(
-                targets[0], targets[1],
-                "each attempt must use an isolated plan path"
-            );
+            let [first, second] = targets.as_slice() else {
+                panic!("expected two plan targets: {targets:?}");
+            };
+            assert_ne!(first, second, "each attempt must use an isolated plan path");
             assert!(targets.iter().all(|path| {
                 std::path::Path::new(path)
                     .file_name()
@@ -1145,7 +1191,6 @@ async fn lifecycle_fail_pause_resume_retry_success() {
 /// Repeated-failure variant: the planner fails, resume retries, the planner fails again, and the goal re-pauses with the canonical message.
 /// This pins the retry path to the same fail-closed handling.
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn lifecycle_fail_pause_resume_retry_fail_repauses() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1182,7 +1227,6 @@ async fn lifecycle_fail_pause_resume_retry_fail_repauses() {
 
 /// Resume of a goal that already has a `plan_file` must NOT re-fire the planner (defensive: the retry path keys off `plan_file.is_none()`).
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn lifecycle_resume_with_plan_does_not_re_fire_planner() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1276,7 +1320,6 @@ fn spawn_latching_planner_coordinator() -> (
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn stop_then_slash_goal_resume_reopens_spawn_admission_before_planner_retry() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1373,7 +1416,6 @@ async fn stop_then_slash_goal_resume_reopens_spawn_admission_before_planner_retr
 /// That block carries the actual `plan_path()` pointer plus the seed-todos, `## Deviations`, and verifier-threading instructions.
 /// The legacy discipline stays intact.
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn setup_goal_reminder_is_plan_aware_when_planner_enabled() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1384,7 +1426,10 @@ async fn setup_goal_reminder_is_plan_aware_when_planner_enabled() {
             let (actor, _tmp) = make_planner_actor(Some(tx), true).await;
             let plan_path = actor.goal_tracker.lock().plan_path();
 
-            let reminder = actor.setup_goal("ship it", None).await;
+            let GoalSetupOutcome::Inference { reminder } = actor.setup_goal("ship it", None).await
+            else {
+                panic!("a published plan must flow through to inference");
+            };
 
             let snap = actor.goal_tracker.lock().snapshot().cloned().unwrap();
             assert_eq!(snap.plan_file.as_deref(), Some(plan_path.as_path()));
@@ -1400,14 +1445,16 @@ async fn setup_goal_reminder_is_plan_aware_when_planner_enabled() {
 /// End-to-end gate (disabled side, the default today): with the planner off, `setup_goal` writes no plan and the reminder renders the no-plan block.
 /// There is no dangling `Plan:` pointer and no plan-aware phrasing, while the discipline and slim TRACKING/TEST sections remain.
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn setup_goal_reminder_is_no_plan_when_planner_disabled() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let (actor, _tmp) = make_planner_actor(None, false).await;
 
-            let reminder = actor.setup_goal("ship it", None).await;
+            let GoalSetupOutcome::Inference { reminder } = actor.setup_goal("ship it", None).await
+            else {
+                panic!("a disabled planner must flow through to inference");
+            };
 
             let snap = actor.goal_tracker.lock().snapshot().cloned().unwrap();
             assert!(snap.plan_file.is_none(), "planner off writes no plan");
@@ -1423,7 +1470,6 @@ async fn setup_goal_reminder_is_no_plan_when_planner_disabled() {
 /// Guards against the resume site regressing to `None` while setup_goal stays correct (a prior regression: the sibling branch was untested).
 /// The reminder is returned as the `Inference` turn content (resume flows through to inference now).
 #[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn goal_resume_reminder_is_plan_aware_when_planner_enabled() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1452,6 +1498,167 @@ async fn goal_resume_reminder_is_plan_aware_when_planner_enabled() {
             assert!(
                 reminder.contains(&expected),
                 "resume reminder must carry the plan pointer `{expected}`:\n{reminder}"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn setup_goal_returns_message_when_planner_pauses() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (tx, spawn_count) = spawn_planner_coordinator(SpawnBehaviour::Runtime {
+                message: "planner crashed".into(),
+                cancelled: false,
+            });
+            let (actor, _tmp) = make_planner_actor(Some(tx), true).await;
+
+            let GoalSetupOutcome::Message(msg) = actor.setup_goal("ship it", None).await else {
+                panic!("a planner pause must end the turn, not seed inference");
+            };
+
+            assert_eq!(
+                msg,
+                format!("Goal paused. {}", planner_failure_pause_message())
+            );
+            assert_eq!(spawn_count.load(SeqOrd::SeqCst), 1);
+            assert_eq!(
+                actor.goal_tracker.lock().status(),
+                Some(crate::session::goal_tracker::GoalStatus::InfraPaused)
+            );
+        })
+        .await;
+}
+
+/// A `/goal pause` landing mid-plan stores no `pause_message`; the short-circuit must still produce a complete sentence.
+#[tokio::test(flavor = "current_thread")]
+async fn setup_goal_message_is_total_when_pause_message_missing() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SubagentEvent>();
+            let (actor, _tmp) = make_planner_actor(Some(tx), true).await;
+            let tracker = Arc::clone(&actor.goal_tracker);
+            tokio::task::spawn_local(async move {
+                while let Some(ev) = rx.recv().await {
+                    if let SubagentEvent::Spawn(req) = ev {
+                        tracker
+                            .lock()
+                            .pause(crate::session::goal_tracker::GoalPauseReason::User);
+                        let result = plan_written(&req, None, b"");
+                        let _ = req.result_tx.send(result);
+                    }
+                }
+            });
+
+            let GoalSetupOutcome::Message(msg) = actor.setup_goal("ship it", None).await else {
+                panic!("a goal paused mid-plan must end the turn");
+            };
+
+            assert_eq!(msg, format!("Goal paused. {GOAL_RESUME_HINT}"));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resume_after_planner_failure_refires_planner_and_reports_failure_again() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (tx, spawn_count) = spawn_planner_coordinator(SpawnBehaviour::Runtime {
+                message: "planner crashed".into(),
+                cancelled: false,
+            });
+            let (actor, _tmp) = make_planner_actor(Some(tx), true).await;
+            create_test_goal(&actor);
+            actor.maybe_run_goal_planner("do X").await;
+            assert!(actor.goal_tracker.lock().status().unwrap().is_paused());
+
+            let GoalResumeOutcome::Message(msg) = actor.resume_goal().await else {
+                panic!("a re-paused resume must end the turn");
+            };
+
+            assert_eq!(
+                msg,
+                format!(
+                    "Planning failed again; goal paused. {}",
+                    planner_failure_pause_message()
+                )
+            );
+            assert_eq!(spawn_count.load(SeqOrd::SeqCst), 2);
+            assert_eq!(
+                actor.goal_tracker.lock().status(),
+                Some(crate::session::goal_tracker::GoalStatus::InfraPaused)
+            );
+        })
+        .await;
+}
+
+/// A planner pause is `InfraPaused`, but a plan published on the resume supersedes it: no "prior turn failed" recap.
+#[tokio::test(flavor = "current_thread")]
+async fn resume_after_planner_failure_succeeds_without_infra_recap() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (tx, spawn_count) =
+                spawn_planner_coordinator(SpawnBehaviour::RuntimeThenWritePlan {
+                    message: "planner crashed".into(),
+                    body: b"# Plan\n",
+                });
+            let (actor, _tmp) = make_planner_actor(Some(tx), true).await;
+            create_test_goal(&actor);
+            actor.maybe_run_goal_planner("do X").await;
+            assert_eq!(
+                actor.goal_tracker.lock().status(),
+                Some(crate::session::goal_tracker::GoalStatus::InfraPaused)
+            );
+
+            let GoalResumeOutcome::Inference { reminder, .. } = actor.resume_goal().await else {
+                panic!("a published plan must flow through to inference");
+            };
+
+            assert!(
+                !reminder.contains("Previous state: Paused (infrastructure error)."),
+                "{reminder}"
+            );
+            assert_eq!(spawn_count.load(SeqOrd::SeqCst), 2);
+            let snap = actor.goal_tracker.lock().snapshot().cloned().unwrap();
+            assert!(snap.plan_file.is_some());
+            assert_eq!(
+                snap.status,
+                crate::session::goal_tracker::GoalStatus::Active
+            );
+        })
+        .await;
+}
+
+/// With the planner disabled `plan_file` is always `None`, so the recap guard must key on a plan actually published, not on the retry attempt.
+#[tokio::test(flavor = "current_thread")]
+async fn resume_with_planner_disabled_keeps_infra_recap() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _tmp) = make_planner_actor(None, false).await;
+            create_test_goal(&actor);
+            let _ = actor
+                .auto_pause_goal_if_active_with_message(
+                    crate::session::goal_tracker::GoalPauseReason::Infra,
+                    "Turn failed: rate limit".into(),
+                )
+                .await;
+
+            let GoalResumeOutcome::Inference { reminder, .. } = actor.resume_goal().await else {
+                panic!("an infra resume must flow through to inference");
+            };
+
+            assert!(
+                reminder.contains("Previous state: Paused (infrastructure error)."),
+                "{reminder}"
+            );
+            assert!(
+                reminder.contains("Previous error: Turn failed: rate limit"),
+                "{reminder}"
             );
         })
         .await;

@@ -109,19 +109,8 @@ pub enum ConsentState {
 /// A bidi or zero-width character would let the painted order differ from the text the acceptance is recorded against.
 fn sanitize_notice_text(raw: &str) -> String {
     raw.chars()
-        .filter(|c| {
-            *c == '\n'
-                || !(crate::render::line_utils::is_unsafe_display_char(*c) || is_format_char(*c))
-        })
+        .filter(|c| *c == '\n' || !crate::render::line_utils::is_unsafe_display_char(*c))
         .collect()
-}
-
-/// The invisible characters the shared set misses: soft hyphen, line and paragraph separators, annotation marks.
-fn is_format_char(c: char) -> bool {
-    matches!(
-        c,
-        '\u{00ad}' | '\u{2028}' | '\u{2029}' | '\u{fff9}'..='\u{fffb}'
-    )
 }
 
 /// Every string the server supplies goes through here, so none can skip the cap or the sanitize.
@@ -180,27 +169,41 @@ fn split_markdown_links(
     while let Some(open) = rest.find('[') {
         // The label ends at the first `]`, so a stray bracket cannot swallow the sentence that follows it into a hyperlink
         // A `[` with no `]` at all is prose, and carries no url
-        let Some(close) = rest[open..].find(']').map(|i| open + i) else {
+        let Some(close) = rest.get(open..).and_then(|s| s.find(']')).map(|i| open + i) else {
             break;
         };
-        let Some(after_label) = rest[close..].strip_prefix("](") else {
+        let Some(after_label) = rest.get(close..).and_then(|s| s.strip_prefix("](")) else {
             // A bracketed phrase, not a link.
-            segments.push(ConsentSegment::Text(rest[..=close].to_string()));
-            rest = &rest[close + 1..];
+            let Some(text) = rest.get(..=close) else {
+                break;
+            };
+            segments.push(ConsentSegment::Text(text.to_string()));
+            let Some(next) = rest.get(close + 1..) else {
+                break;
+            };
+            rest = next;
             continue;
         };
         // A closer with whitespace or a bracket before it belongs to something further along, and taking it would swallow the text in between
         // Unsafe characters are a different matter: they make a well-formed link we will not open, which costs the hyperlink, not the copy
         let Some(url_len) = after_label.find(')').filter(|end| {
-            !after_label[..*end].contains(|c: char| c.is_whitespace() || "[](".contains(c))
+            after_label
+                .get(..*end)
+                .is_none_or(|s| !s.contains(|c: char| c.is_whitespace() || "[](".contains(c)))
         }) else {
             return Err(ConsentArmRefusal::UnpairedMarkup);
         };
 
-        let label = &rest[open + 1..close];
-        let url = &after_label[..url_len];
-        if !rest[..open].is_empty() {
-            segments.push(ConsentSegment::Text(rest[..open].to_string()));
+        let Some(label) = rest.get(open + 1..close) else {
+            return Err(ConsentArmRefusal::UnpairedMarkup);
+        };
+        let Some(url) = after_label.get(..url_len) else {
+            return Err(ConsentArmRefusal::UnpairedMarkup);
+        };
+        if let Some(prefix) = rest.get(..open)
+            && !prefix.is_empty()
+        {
+            segments.push(ConsentSegment::Text(prefix.to_string()));
         }
 
         // A label with nothing to paint takes its url with it
@@ -217,7 +220,10 @@ fn split_markdown_links(
             }
         }
 
-        rest = &after_label[url_len + 1..];
+        let Some(next) = after_label.get(url_len + 1..) else {
+            return Err(ConsentArmRefusal::UnpairedMarkup);
+        };
+        rest = next;
     }
 
     // A `](` the loop never reached is a `]` too many earlier in the body.

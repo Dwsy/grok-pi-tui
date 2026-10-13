@@ -65,8 +65,8 @@
     }
 
     fn terminal_rows(app: &crate::app::app_view::AppView, child: &str) -> Vec<crate::scrollback::entry::EntryId> {
-        (0..app.agents[&AgentId(0)].scrollback.len()).filter_map(|index| {
-            let entry = app.agents[&AgentId(0)].scrollback.entry(index)?;
+        (0..app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len()).filter_map(|index| {
+            let entry = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.entry(index)?;
             matches!(&entry.block, RenderBlock::Subagent(block)
                 if block.child_session_id == child && block.is_background
                     && !matches!(block.kind, SubagentBlockKind::Started)).then_some(entry.id)
@@ -74,8 +74,8 @@
     }
 
     fn assert_attempt(app: &crate::app::app_view::AppView, child: &str, attempt: &str, finished: bool, background: bool) {
-        let agent = &app.agents[&AgentId(0)];
-        let info = &agent.subagent_sessions[child];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        let info = &agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"));
         assert_eq!(info.attempt.lifecycle.current_attempt_id(), Some(attempt));
         assert_eq!(info.is_finished(), finished);
         assert_eq!(info.attempt.is_background, background);
@@ -94,8 +94,8 @@
         ));
         assert!(handle_ext_notification(&notification(test_subagent_spawned("sess-parent", "child"), 1), &mut app));
 
-        let agent = &app.agents[&AgentId(0)];
-        assert!(agent.subagent_sessions["child"].is_finished());
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        assert!(agent.subagent_sessions.get("child").unwrap_or_else(|| panic!("missing map entry")).is_finished());
         assert_eq!(agent.last_seen_event_id.as_deref(), Some("sess-parent-3"));
     }
 
@@ -106,12 +106,12 @@
         enable_replay(&mut app);
         assert!(replay(&mut app, test_subagent_spawned_for_attempt("sess-parent", child, Some("at1.one")), 1));
         assert!(replay(&mut app, test_subagent_finished_for_attempt(child, Some("at1.one")), 2));
-        let old_entry = app.agents[&AgentId(0)].subagent_sessions[child].attempt.scrollback_entry_id.unwrap();
+        let old_entry = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt.scrollback_entry_id.unwrap();
         app.agents.get_mut(&AgentId(0)).unwrap().scrollback.remove_entry(old_entry);
         assert!(replay(&mut app, test_subagent_spawned_for_attempt("sess-parent", child, Some("at1.two")), 3));
 
-        let agent = &app.agents[&AgentId(0)];
-        let info = &agent.subagent_sessions[child];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        let info = &agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"));
         assert_eq!(info.attempt.lifecycle.current_attempt_id(), Some("at1.two"));
         assert!(info.is_running());
         assert!(info.attempt.is_background);
@@ -127,7 +127,7 @@
         enable_replay(&mut app);
         assert!(replay(&mut app, test_subagent_spawned_for_attempt("sess-parent", child, Some("at1.one")), 1));
         assert!(replay(&mut app, test_subagent_finished_for_attempt(child, Some("at1.one")), 2));
-        let entry = app.agents[&AgentId(0)].subagent_sessions[child].attempt.scrollback_entry_id.unwrap();
+        let entry = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt.scrollback_entry_id.unwrap();
         app.agents.get_mut(&AgentId(0)).unwrap().scrollback.remove_entry(entry);
 
         let mut update = test_subagent_finished_for_attempt(child, Some("at1.two"));
@@ -138,7 +138,7 @@
         assert!(!replay(&mut app, update, 4));
         assert!(replay(&mut app, test_subagent_spawned_for_attempt("sess-parent", child, Some("at1.two")), 3));
 
-        let attempt = &app.agents[&AgentId(0)].subagent_sessions[child].attempt;
+        let attempt = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt;
         assert_eq!(attempt.status.as_deref(), Some("failed"));
         assert_eq!(attempt.error.as_deref(), Some("wake failed"));
         assert_eq!((attempt.tool_calls, attempt.turns, attempt.duration_ms, attempt.tokens_used),
@@ -153,13 +153,13 @@
         let spawn = subagent_ext_replay("sess-parent", serde_json::to_value(test_subagent_spawned("sess-parent", child)).unwrap(), "sess-parent-1");
         let finish = subagent_ext_replay("sess-parent", serde_json::to_value(test_subagent_finished(child)).unwrap(), "sess-parent-2");
         assert!(handle_ext_notification(&spawn, &mut app));
-        let first = app.agents[&AgentId(0)].subagent_sessions[child].attempt.scrollback_entry_id.unwrap();
+        let first = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt.scrollback_entry_id.unwrap();
         app.agents.get_mut(&AgentId(0)).unwrap().scrollback.remove_entry(first);
         assert!(handle_ext_notification(&finish, &mut app));
         assert!(handle_ext_notification(&spawn, &mut app));
 
-        let agent = &app.agents[&AgentId(0)];
-        let info = &agent.subagent_sessions[child];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        let info = &agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"));
         assert!(info.is_finished());
         let rebuilt = info.attempt.scrollback_entry_id.unwrap();
         assert_ne!(rebuilt, first);
@@ -180,7 +180,7 @@
         mark_background(&mut app);
         assert!(replay(&mut app, test_subagent_spawned_for_attempt("sess-parent", child, Some("at1.one")), 1));
         assert!(replay(&mut app, test_subagent_finished_for_attempt(child, Some("at1.one")), 2));
-        let attempt = &app.agents[&AgentId(0)].subagent_sessions[child].attempt;
+        let attempt = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt;
         let started = attempt.scrollback_entry_id.unwrap();
         let terminal = attempt.terminal_entry_id.unwrap();
         assert_eq!(terminal_rows(&app, child), vec![terminal]);
@@ -189,8 +189,8 @@
         mark_background(&mut app);
         assert!(replay(&mut app, test_subagent_spawned_for_attempt("sess-parent", child, Some("at1.one")), 1));
 
-        let agent = &app.agents[&AgentId(0)];
-        let info = &agent.subagent_sessions[child];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        let info = &agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"));
         assert!(info.is_finished());
         assert_ne!(info.attempt.scrollback_entry_id.unwrap(), started);
         assert_eq!(info.attempt.terminal_entry_id, Some(terminal));
@@ -209,7 +209,7 @@
         assert!(spawn(&mut app, child, "at1.two", 3));
         assert!(finish(&mut app, child, "at1.two", 4));
         assert_attempt(&app, child, "at1.two", true, true);
-        let attempt = &app.agents[&AgentId(0)].subagent_sessions[child].attempt;
+        let attempt = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt;
         let started = attempt.scrollback_entry_id.unwrap();
         let terminal = attempt.terminal_entry_id.unwrap();
         assert_eq!(terminal_rows(&app, child), vec![terminal]);
@@ -218,8 +218,8 @@
         enable_replay(&mut app);
         assert!(replay(&mut app, test_subagent_spawned_for_attempt("sess-parent", child, Some("at1.two")), 3));
 
-        let agent = &app.agents[&AgentId(0)];
-        let info = &agent.subagent_sessions[child];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        let info = &agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"));
         assert!(info.is_finished());
         assert!(info.attempt.is_background);
         assert_ne!(info.attempt.scrollback_entry_id.unwrap(), started);
@@ -255,7 +255,7 @@
             agent.open_subagent_fullscreen(child.to_owned());
 
             assert_eq!(child_scrollback_tool_call_count(agent, child), 1);
-            assert_eq!(agent.subagent_sessions[child].transcript, ChildTranscript::DiskBacked);
+            assert_eq!(agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).transcript, ChildTranscript::DiskBacked);
         });
     }
 
@@ -265,16 +265,16 @@
         let child = "child-late-terminal-rebuild";
         assert!(handle(make_ext_session_notification("sess-parent", test_subagent_spawned("sess-parent", child)), &mut app));
         assert!(handle(make_ext_session_notification("sess-parent", test_subagent_finished(child)), &mut app));
-        let entry = app.agents[&AgentId(0)].subagent_sessions[child].attempt.scrollback_entry_id.unwrap();
+        let entry = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt.scrollback_entry_id.unwrap();
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
         agent.scrollback.remove_entry(entry);
         agent.arm_late_replay_grace();
 
         assert!(replay(&mut app, test_subagent_spawned("sess-parent", child), 1));
-        assert!(app.agents[&AgentId(0)].late_replay_until.is_some());
+        assert!(app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).late_replay_until.is_some());
         assert!(!replay(&mut app, test_subagent_progress("sess-parent", child), 2));
-        let agent = &app.agents[&AgentId(0)];
-        assert_eq!(agent.subagent_sessions[child].attempt.turn_count, None);
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        assert_eq!(agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt.turn_count, None);
         assert!(agent.late_replay_until.is_some());
     }
 
@@ -288,7 +288,7 @@
         assert!(!replay(&mut app, progress_update(child, 300, 30), 3));
         assert!(!sequenced(&mut app, progress_update(child, 400, 40), 4));
 
-        let attempt = &app.agents[&AgentId(0)].subagent_sessions[child].attempt;
+        let attempt = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt;
         assert_eq!(attempt.duration_ms, Some(500));
         assert_eq!(attempt.tokens_used, Some(50));
         assert_eq!(attempt.lifecycle.last_event_seq(), Some(5));
@@ -305,8 +305,8 @@
             1,
         ));
         assert!(replay(&mut app, progress_update(child, 1_000, 100), 2));
-        let tokens_before = app.agents[&AgentId(0)].live_standalone_subagent_tokens();
-        let entry = app.agents[&AgentId(0)].subagent_sessions[child]
+        let tokens_before = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).live_standalone_subagent_tokens();
+        let entry = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"))
             .attempt
             .scrollback_entry_id
             .unwrap();
@@ -323,8 +323,8 @@
         ));
         assert!(!replay(&mut app, progress_update(child, 1_000, 100), 2));
 
-        let agent = &app.agents[&AgentId(0)];
-        let attempt = &agent.subagent_sessions[child].attempt;
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        let attempt = &agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt;
         assert_eq!(attempt.duration_ms, Some(1_000));
         assert_eq!(attempt.tokens_used, Some(100));
         assert_eq!(attempt.lifecycle.last_event_seq(), Some(2));
@@ -349,8 +349,8 @@
             5,
         ));
 
-        let agent = &app.agents[&AgentId(0)];
-        let info = &agent.subagent_sessions[child];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        let info = &agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"));
         assert_eq!(info.completed_attempt_tokens, 100);
         assert_eq!(info.attempt.tokens_used, Some(30));
         assert_eq!(agent.live_standalone_subagent_tokens(), 130);
@@ -375,7 +375,7 @@
         assert!(spawn(&mut app, child, "at1.two", 3));
         assert!(!finish_with_tokens(&mut app, child, "at1.one", 120, 4));
 
-        let info = &app.agents[&AgentId(0)].subagent_sessions[child];
+        let info = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"));
         assert_eq!(info.completed_attempt_tokens, 120);
         assert_eq!(info.attempt.lifecycle.current_attempt_id(), Some("at1.two"));
         assert!(info.is_running());
@@ -386,10 +386,10 @@
         let mut app = make_app_with_agent("sess-parent");
         let child = "child-overlap";
         assert!(spawn(&mut app, child, "at1.one", 1));
-        let first = app.agents[&AgentId(0)].subagent_sessions[child].attempt.scrollback_entry_id.unwrap();
+        let first = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt.scrollback_entry_id.unwrap();
         assert!(spawn(&mut app, child, "at1.two", 2));
         assert_attempt(&app, child, "at1.two", false, true);
-        assert!(!app.agents[&AgentId(0)].scrollback.get_by_id(first).unwrap().is_running);
+        assert!(!app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.get_by_id(first).unwrap().is_running);
         assert!(!finish(&mut app, child, "at1.one", 3));
         assert!(terminal_rows(&app, child).is_empty());
         assert!(finish(&mut app, child, "at1.two", 4));
@@ -405,8 +405,8 @@
         assert!(spawn(&mut app, child, "at1.one", 1));
         assert_attempt(&app, child, "at1.one", true, false);
         assert!(terminal_rows(&app, child).is_empty());
-        let agent = &app.agents[&AgentId(0)];
-        let info = &agent.subagent_sessions[child];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        let info = &agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"));
         assert!(matches!(&agent.scrollback.get_by_id(info.attempt.scrollback_entry_id.unwrap()).unwrap().block,
             RenderBlock::Subagent(block) if matches!(block.kind, SubagentBlockKind::Completed { .. }) && !block.is_background));
     }
@@ -430,7 +430,7 @@
         assert!(spawn(&mut app, child, "at1.two", 3));
 
         assert_attempt(&app, child, "at1.two", false, true);
-        assert!(app.agents[&AgentId(0)].subagent_sessions[child]
+        assert!(app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"))
             .attempt
             .lifecycle
             .is_attempt_finished("at1.one"));
@@ -447,7 +447,10 @@
         assert_attempt(&app, child, "at1.two", true, true);
         let rows = terminal_rows(&app, child);
         assert_eq!(rows.len(), 1);
-        assert!(matches!(&app.agents[&AgentId(0)].scrollback.get_by_id(rows[0]).unwrap().block,
+        let Some(row) = rows.first().copied() else {
+            panic!("missing terminal row");
+        };
+        assert!(matches!(&app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.get_by_id(row).unwrap().block,
             RenderBlock::Subagent(block) if matches!(block.kind, SubagentBlockKind::Completed { .. }) && block.is_background));
     }
 
@@ -458,7 +461,7 @@
         app.agents.get_mut(&AgentId(0)).unwrap().session.tracker.task_tool_background.insert(child.into(), true);
         assert!(handle(make_ext_session_notification("sess-parent", test_subagent_spawned_for_attempt("sess-parent", child, Some("at1.one"))), &mut app));
         assert!(handle(make_ext_session_notification("sess-parent", test_subagent_finished_for_attempt(child, Some("at1.one"))), &mut app));
-        let first = app.agents[&AgentId(0)].subagent_sessions[child].attempt.terminal_entry_id.unwrap();
+        let first = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt.terminal_entry_id.unwrap();
         assert!(handle(make_ext_session_notification("sess-parent", test_subagent_spawned_for_attempt("sess-parent", child, Some("at1.two"))), &mut app));
         let mut update = test_subagent_finished_for_attempt(child, Some("at1.two"));
         let XaiSessionUpdate::SubagentFinished { status, error, .. } = &mut update else { unreachable!() };
@@ -466,8 +469,8 @@
         *error = Some("second attempt failed".into());
         assert!(handle(make_ext_session_notification("sess-parent", update), &mut app));
 
-        let agent = &app.agents[&AgentId(0)];
-        let second = agent.subagent_sessions[child].attempt.terminal_entry_id.unwrap();
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        let second = agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry")).attempt.terminal_entry_id.unwrap();
         assert_ne!(first, second);
         assert!(matches!(&agent.scrollback.get_by_id(first).unwrap().block,
             RenderBlock::Subagent(block) if matches!(block.kind, SubagentBlockKind::Completed { .. })));
@@ -489,16 +492,16 @@
         assert!(spawn(&mut app, child, "at1.one", 1));
         assert!(handle(make_ext_session_notification(child, delta()), &mut app));
         assert!(finish(&mut app, child, "at1.one", 2));
-        let first_view = app.agents[&AgentId(0)].subagent_views[child].as_ref() as *const AgentView;
+        let first_view = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_views.get(child).unwrap_or_else(|| panic!("missing map entry")).as_ref() as *const AgentView;
         assert!(spawn(&mut app, child, "at1.two", 3));
 
-        let agent = &app.agents[&AgentId(0)];
-        assert_eq!(agent.subagent_views[child].as_ref() as *const AgentView, first_view);
-        let info = &agent.subagent_sessions[child];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        assert_eq!(agent.subagent_views.get(child).unwrap_or_else(|| panic!("missing map entry")).as_ref() as *const AgentView, first_view);
+        let info = &agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"));
         assert!(info.attempt.activity_label.is_none());
         assert!(handle(make_ext_session_notification(child, delta()), &mut app));
         assert!(matches!(
-            app.agents[&AgentId(0)].subagent_views[child]
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_views.get(child).unwrap_or_else(|| panic!("missing map entry"))
                 .session
                 .tracker
                 .activity(),
@@ -520,19 +523,19 @@
             info.transcript = ChildTranscript::MemoryOnly;
         }
         assert!(finish(&mut app, child, "at1.one", 2));
-        let first_view = app.agents[&AgentId(0)].subagent_views[child].as_ref() as *const AgentView;
+        let first_view = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_views.get(child).unwrap_or_else(|| panic!("missing map entry")).as_ref() as *const AgentView;
         assert!(spawn(&mut app, child, "at1.two", 3));
         assert!(handle(make_agent_chunk_with_event(child, "second attempt", "p-child-2", None), &mut app));
 
-        let agent = &app.agents[&AgentId(0)];
-        assert_eq!(agent.subagent_views[child].as_ref() as *const AgentView, first_view);
-        let info = &agent.subagent_sessions[child];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
+        assert_eq!(agent.subagent_views.get(child).unwrap_or_else(|| panic!("missing map entry")).as_ref() as *const AgentView, first_view);
+        let info = &agent.subagent_sessions.get(child).unwrap_or_else(|| panic!("missing map entry"));
         assert_eq!(info.prompt.as_deref(), Some("preserved prompt"));
         assert_eq!(info.child_cwd.as_deref(), Some("/preserved/cwd"));
         assert_eq!(info.worktree_path.as_deref(), Some("/preserved/worktree"));
         assert_eq!(info.transcript, ChildTranscript::MemoryOnly);
-        let messages: Vec<_> = (0..agent.subagent_views[child].scrollback.len()).filter_map(|index| {
-            let entry = agent.subagent_views[child].scrollback.entry(index)?;
+        let messages: Vec<_> = (0..agent.subagent_views.get(child).unwrap_or_else(|| panic!("missing map entry")).scrollback.len()).filter_map(|index| {
+            let entry = agent.subagent_views.get(child).unwrap_or_else(|| panic!("missing map entry")).scrollback.entry(index)?;
             let RenderBlock::AgentMessage(message) = &entry.block else { return None };
             Some(message.text())
         }).collect();

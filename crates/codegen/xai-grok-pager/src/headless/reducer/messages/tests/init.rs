@@ -15,23 +15,26 @@ fn messages_init_is_deferred_and_carries_tools() {
         .is_empty()
     );
     let out = r.reduce(StreamEvent::AgentMessage("hi".into()));
-    assert_eq!(out[0]["type"], "system");
-    assert_eq!(out[0]["subtype"], "init");
-    assert_eq!(out[0]["model"], "grok-4");
-    assert_eq!(out[0]["permissionMode"], "bypassPermissions");
-    assert_eq!(out[0]["tools"][0], "read_file");
-    assert_eq!(out[0]["slash_commands"][0], "review");
-    assert_eq!(out[0]["mcp_servers"][0]["name"], "linear");
-    assert_eq!(out[0]["mcp_servers"][0]["status"], "connected");
-    assert_eq!(out[0]["apiKeySource"], "user");
-    assert!(out[0]["skills"].is_array());
-    assert!(out[0]["claude_code_version"].is_null());
-    assert!(out[0]["output_style"].is_null());
-    assert!(out[0]["plugins"].is_null());
+    let Some(init) = out.first() else {
+        panic!("expected init message: {out:?}");
+    };
+    assert_eq!(msg_type(init), Some("system"));
+    assert_eq!(json_str(init, "/subtype"), Some("init"));
+    assert_eq!(json_str(init, "/model"), Some("grok-4"));
+    assert_eq!(json_str(init, "/permissionMode"), Some("bypassPermissions"));
+    assert_eq!(json_str(init, "/tools/0"), Some("read_file"));
+    assert_eq!(json_str(init, "/slash_commands/0"), Some("review"));
+    assert_eq!(json_str(init, "/mcp_servers/0/name"), Some("linear"));
+    assert_eq!(json_str(init, "/mcp_servers/0/status"), Some("connected"));
+    assert_eq!(json_str(init, "/apiKeySource"), Some("user"));
+    assert!(init.get("skills").is_some_and(Value::is_array));
+    assert!(init.get("claude_code_version").is_none_or(Value::is_null));
+    assert!(init.get("output_style").is_none_or(Value::is_null));
+    assert!(init.get("plugins").is_none_or(Value::is_null));
     assert!(
         !r.reduce(StreamEvent::AgentMessage(" there".into()))
             .iter()
-            .any(|m| m["type"] == "system")
+            .any(|m| msg_type(m) == Some("system"))
     );
 }
 
@@ -55,9 +58,12 @@ fn messages_init_carries_real_skills() {
         skills: vec!["pdf".into(), "brainstorm".into()],
     });
     let out = r.reduce(StreamEvent::AgentMessage("hi".into()));
-    assert_eq!(out[0]["subtype"], "init");
-    assert_eq!(out[0]["skills"][0], "pdf");
-    assert_eq!(out[0]["skills"][1], "brainstorm");
+    let Some(init) = out.first() else {
+        panic!("expected init message: {out:?}");
+    };
+    assert_eq!(json_str(init, "/subtype"), Some("init"));
+    assert_eq!(json_str(init, "/skills/0"), Some("pdf"));
+    assert_eq!(json_str(init, "/skills/1"), Some("brainstorm"));
 }
 
 #[test]
@@ -69,8 +75,11 @@ fn messages_init_skills_fallback_is_empty() {
         skills: Vec::new(),
     });
     let out = r.reduce(StreamEvent::AgentMessage("hi".into()));
-    assert_eq!(out[0]["subtype"], "init");
-    assert_eq!(out[0]["skills"], json!([]));
+    let Some(init) = out.first() else {
+        panic!("expected init message: {out:?}");
+    };
+    assert_eq!(json_str(init, "/subtype"), Some("init"));
+    assert_eq!(init.get("skills"), Some(&json!([])));
 }
 
 #[test]
@@ -87,9 +96,16 @@ fn messages_init_maps_permission_mode_and_api_key_source() {
         context_window: None,
     });
     let out = r.reduce(StreamEvent::AgentMessage("hi".into()));
-    assert_eq!(out[0]["permissionMode"], "default");
-    assert_eq!(out[0]["apiKeySource"], "oauth");
-    assert!(out[0]["model"].is_string(), "{:?}", out[0]["model"]);
+    let Some(init) = out.first() else {
+        panic!("expected init message: {out:?}");
+    };
+    assert_eq!(json_str(init, "/permissionMode"), Some("default"));
+    assert_eq!(json_str(init, "/apiKeySource"), Some("oauth"));
+    assert!(
+        init.get("model").is_some_and(Value::is_string),
+        "{:?}",
+        init.get("model")
+    );
 }
 
 #[test]
@@ -106,17 +122,22 @@ fn messages_skills_stay_subset_when_later_command_update_is_empty() {
         skills: Vec::new(),
     });
     let out = r.reduce(StreamEvent::AgentMessage("hi".into()));
-    let cmds: Vec<String> = out[0]["slash_commands"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().to_string())
+    let Some(init) = out.first() else {
+        panic!("expected init message: {out:?}");
+    };
+    let cmds: Vec<String> = init
+        .get("slash_commands")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_owned))
         .collect();
-    let skills: Vec<String> = out[0]["skills"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().to_string())
+    let skills: Vec<String> = init
+        .get("skills")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_owned))
         .collect();
     assert!(skills.contains(&"pdf".to_string()));
     for s in &skills {

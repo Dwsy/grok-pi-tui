@@ -560,6 +560,6 @@ mod tests {
     fn pattern_labels_match_source_table_order() {
         let from_sources: Vec<&'static str> =
             STOP_REGEX_SOURCES.iter().map(|(label, _)| *label).collect();
-        assert_eq!(PATTERN_LABELS, &from_sources[..]);
+        assert_eq!(PATTERN_LABELS, from_sources.as_slice());
     }
 }

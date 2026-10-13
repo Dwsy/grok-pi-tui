@@ -673,7 +673,16 @@ mod tests {
         state.prepare_layout(80, 8);
         let before = state.scroll_offset;
         let entry_id = *state.entries.get_index(0).expect("history entry").0;
-        let before_height = state.layout_cache.as_ref().expect("layout cache").entries[0].height;
+        let Some(before_height) = state
+            .layout_cache
+            .as_ref()
+            .expect("layout cache")
+            .entries
+            .first()
+            .map(|e| e.height)
+        else {
+            panic!("expected a cached history entry");
+        };
         {
             let entry = state.entry_mut(0).expect("history entry");
             entry.block = tall_agent_block();
@@ -682,7 +691,16 @@ mod tests {
         state.dirty_heights.insert(entry_id);
         state.prepare_layout(80, 8);
 
-        let after_height = state.layout_cache.as_ref().expect("layout cache").entries[0].height;
+        let Some(after_height) = state
+            .layout_cache
+            .as_ref()
+            .expect("layout cache")
+            .entries
+            .first()
+            .map(|e| e.height)
+        else {
+            panic!("expected a cached history entry");
+        };
         assert!(
             after_height > before_height,
             "fixture must grow above the prompt"
@@ -704,7 +722,16 @@ mod tests {
         state.prepare_layout(80, 8);
         let before = state.pin_reserve_target.expect("captured target");
         let entry_id = *state.entries.get_index(0).expect("history entry").0;
-        let old_height = state.layout_cache.as_ref().expect("layout").entries[0].height;
+        let Some(old_height) = state
+            .layout_cache
+            .as_ref()
+            .expect("layout")
+            .entries
+            .first()
+            .map(|e| e.height)
+        else {
+            panic!("expected a cached history entry");
+        };
         {
             let entry = state.entry_mut(0).expect("history entry");
             entry.block = tall_agent_block();
@@ -715,7 +742,16 @@ mod tests {
 
         state.prepare_layout(80, 8);
 
-        let new_height = state.layout_cache.as_ref().expect("layout").entries[0].height;
+        let Some(new_height) = state
+            .layout_cache
+            .as_ref()
+            .expect("layout")
+            .entries
+            .first()
+            .map(|e| e.height)
+        else {
+            panic!("expected a cached history entry");
+        };
         let delta = new_height as usize - old_height as usize;
         assert!(delta > 0, "fixture must grow above the prompt");
         assert_eq!(state.pin_reserve_target, Some(before + delta));

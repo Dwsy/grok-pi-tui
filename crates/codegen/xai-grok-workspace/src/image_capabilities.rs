@@ -266,10 +266,11 @@ mod tests {
         }
         let caps = load(tmp.path());
         assert_eq!(caps.wire().len(), MAX_IMAGE_CAPABILITIES);
-        assert_eq!(caps.wire()[0], "cap.t0000");
+        assert_eq!(caps.wire().first().map(String::as_str), Some("cap.t0000"));
+        let expected_last = format!("cap.t{:04}", MAX_IMAGE_CAPABILITIES - 1);
         assert_eq!(
-            caps.wire()[MAX_IMAGE_CAPABILITIES - 1],
-            format!("cap.t{:04}", MAX_IMAGE_CAPABILITIES - 1)
+            caps.wire().last().map(String::as_str),
+            Some(expected_last.as_str())
         );
     }
 
@@ -283,7 +284,10 @@ mod tests {
         }
         let caps = load(tmp.path());
         assert_eq!(caps.wire().len(), MAX_IMAGE_CAPABILITIES);
-        assert_eq!(caps.wire()[0], IMAGE_CAPABILITIES_V1);
+        assert_eq!(
+            caps.wire().first().map(String::as_str),
+            Some(IMAGE_CAPABILITIES_V1)
+        );
         // A trimmed set would answer `Some(false)` for tokens that are present.
         assert!(!caps.is_declared());
         assert_eq!(caps.state("zz.t0000"), None);

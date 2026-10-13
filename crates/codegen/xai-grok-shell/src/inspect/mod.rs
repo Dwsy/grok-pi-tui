@@ -209,6 +209,8 @@ pub(crate) enum EnforcedSetting {
     ProjectMcpServers,
     /// `plugin_auto_update = false` pin: session-start plugin auto-update off.
     PluginAutoUpdate,
+    /// `allow_managed_hooks_only = true` pin: hooks that are not managed policy do not run.
+    NonManagedHooks,
 }
 
 #[derive(Debug, Serialize)]
@@ -403,12 +405,16 @@ async fn build_report(cwd: &Path) -> InspectReport {
     let project_trusted = crate::agent::folder_trust::project_scope_allowed(cwd);
 
     let trust_store = xai_grok_agent::plugins::TrustStore::load();
-    let mut plugins_cfg: crate::agent::config::PluginsConfig = effective_config
-        .get("plugins")
-        .and_then(|v| v.clone().try_into().ok())
-        .unwrap_or_default();
-    plugins_cfg.merge_claude_enabled_plugins(Some(cwd));
-    let mut plugin_config = plugins_cfg.to_discovery_config();
+    let mut plugin_config = xai_grok_workspace::plugins::resolve_effective_plugins_config(
+        xai_grok_workspace::plugins::PluginConfigInputs {
+            effective_config: effective_config_result.as_ref().ok(),
+            home: xai_dirs::home_dir().as_deref(),
+            grok_home: xai_grok_config::user_grok_home().as_deref(),
+            cwd,
+            trust: xai_grok_hooks::trust::Trust::from_verdict(project_trusted),
+            claude_import: crate::claude_import::import_marker(),
+        },
+    );
     // Project plugins gate on the same folder-trust verdict as hooks and the live session/doctor sites
     // The listing's `enabled` flags therefore match runtime gating
     let discovered_plugins = xai_grok_agent::plugins::discover_plugins(
@@ -425,13 +431,18 @@ async fn build_report(cwd: &Path) -> InspectReport {
         &plugin_config.enabled,
     );
 
-    let external_compat = resolve_inspect_compat(effective_config_result.as_ref().map_err(|_| ()));
+    let external_compat = resolve_inspect_compat(effective_config_result.as_ref().ok());
 
     // This is the same `[skills]` table the runtime loads: `paths` skills appear, `ignore`d ones are hidden, `disabled` ones show as disabled
     let skills_config = crate::config::parse_skills_config(&effective_config);
+    // Same for `[paths]`: rules from `extra_rule_dirs` appear, as they do in a session
+    let paths_config: crate::agent::config::PathsConfig = effective_config
+        .get("paths")
+        .and_then(|v| v.clone().try_into().ok())
+        .unwrap_or_default();
 
     let (mut instructions, permissions, mut skills) = tokio::join!(
-        list_instructions(cwd, project_trusted),
+        list_instructions(cwd, &paths_config, project_trusted),
         list_permissions(cwd, project_trusted),
         list_skills(cwd, &plugin_registry, &skills_config, project_trusted),
     );
@@ -502,23 +513,6 @@ async fn build_report(cwd: &Path) -> InspectReport {
     }
 }
 
-/// Read `[paths] extra_rule_dirs` from the effective config.
-/// Returns empty on any read/parse failure so misconfiguration never breaks classification.
-fn extra_rule_dirs_from_config() -> Vec<String> {
-    let Ok(root) = crate::config::load_effective_config() else {
-        return Vec::new();
-    };
-    root.get("paths")
-        .and_then(|v| v.get("extra_rule_dirs"))
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn has_rules_directory(file_path: &str, config_dir: &str) -> bool {
     let mut previous = None;
     for component in file_path
@@ -551,12 +545,7 @@ fn instruction_scope(
     }
 }
 
-fn instruction_file_type(
-    file_path: &str,
-    grok_home: &Path,
-    claude_imported: bool,
-    extra_rule_prefixes: &[PathBuf],
-) -> &'static str {
+fn instruction_file_type(file_path: &str, grok_home: &Path, claude_imported: bool) -> &'static str {
     let path = Path::new(file_path);
     if path
         .parent()
@@ -564,9 +553,6 @@ fn instruction_file_type(
         || has_rules_directory(file_path, ".grok")
         || has_rules_directory(file_path, ".cursor")
         || (!claude_imported && has_rules_directory(file_path, ".claude"))
-        || extra_rule_prefixes
-            .iter()
-            .any(|prefix| path.starts_with(prefix))
     {
         "rules"
     } else {
@@ -575,10 +561,16 @@ fn instruction_file_type(
 }
 
 /// Wraps the production instruction discovery (`agents_md::read_agents_config_with_paths`).
-async fn list_instructions(cwd: &Path, project_trusted: bool) -> Vec<InstructionFile> {
+/// `paths` is the same `[paths]` table a session loads, so inspect lists exactly the rules the model receives.
+async fn list_instructions(
+    cwd: &Path,
+    paths: &crate::agent::config::PathsConfig,
+    project_trusted: bool,
+) -> Vec<InstructionFile> {
     let configs = xai_grok_agent::prompt::agents_md::read_agents_config_with_paths(
         &cwd.display().to_string(),
         xai_grok_agent::prompt::skills::CompatConfig::default(),
+        paths,
         project_trusted,
     )
     .await;
@@ -600,23 +592,21 @@ async fn list_instructions(cwd: &Path, project_trusted: bool) -> Vec<Instruction
     // Phase 2 cutoff: when imported, stop classifying `.claude/rules/` paths as rules
     // Equivalent dirs come in via `[paths] extra_rule_dirs`
     let imported = crate::claude_import::is_claude_import_marked();
-    let extra_rule_dirs = extra_rule_dirs_from_config();
-    // Pre-expand `~/` and resolve once, so the per-config-file matching loop can use a clean prefix check. Empty/invalid paths fall through to a no-op match.
-    // TODO: `extra_rule_dirs` only re-classifies files that `read_agents_config_with_paths` has already discovered. Plumbing it through discovery (so arbitrary user-configured dirs are surfaced as rules) is out of scope for this stack.
-    // Skills (`extensions/skills.rs`) take the typed-scan path so they don't have this limitation; rules need the same treatment in a follow-up.
-    let extra_rule_prefixes: Vec<std::path::PathBuf> = extra_rule_dirs
-        .iter()
-        .map(|d| crate::util::expand_home(d))
-        .collect();
 
     configs
         .into_iter()
         .map(|c| {
-            let file_type =
-                instruction_file_type(&c.file_path, &grok_home, imported, &extra_rule_prefixes);
-            let scope = instruction_scope(&c.file_path, &grok_home, &vendor_homes, &workspace_root);
+            let (scope, file_type, vendor) =
+                if c.source == xai_grok_agent::prompt::agents_md::InstructionSource::Configured {
+                    (Scope::Global, "rules", None)
+                } else {
+                    (
+                        instruction_scope(&c.file_path, &grok_home, &vendor_homes, &workspace_root),
+                        instruction_file_type(&c.file_path, &grok_home, imported),
+                        derive_vendor(&c.file_path).map(String::from),
+                    )
+                };
             let size = c.content.len();
-            let vendor = derive_vendor(&c.file_path).map(String::from);
             InstructionFile {
                 size_bytes: size,
                 approx_tokens: estimate_tokens(&c.content),
@@ -792,6 +782,7 @@ fn permission_policy_report(
     for (pin, setting) in [
         (&ms.project_mcp, EnforcedSetting::ProjectMcpServers),
         (&ms.plugin_auto_update, EnforcedSetting::PluginAutoUpdate),
+        (&ms.non_managed_hooks, EnforcedSetting::NonManagedHooks),
     ] {
         if let Some(source) = pin.source() {
             enforced.push(EnforcedPolicy {
@@ -830,9 +821,12 @@ fn list_hooks(
     // Route through the same assembly as session startup
     // Config-layer hooks (config.toml / managed_config.toml / requirements.toml) then appear in `/hooks` status alongside file hooks
     // Each carries its provenance name prefix
-    let config_layers = xai_grok_config::hook_config_layers();
-    let (registry, _errors) =
-        crate::util::hooks::assemble_hooks(&config_layers, git_root, &all_on, project_trusted);
+    let (registry, _errors) = crate::util::hooks::discover_hooks(
+        &crate::util::hooks::process_hook_inputs(),
+        git_root,
+        &all_on,
+        xai_grok_hooks::trust::Trust::from_verdict(project_trusted),
+    );
 
     let mut entries: Vec<HookEntry> = registry
         .all_hooks()
@@ -1092,7 +1086,7 @@ fn list_mcp_servers(
 
     sourced
         .into_iter()
-        .map(|(server, source)| {
+        .map(|(server, origin)| {
             let (name, transport, target) =
                 match &server {
                     agent_client_protocol::McpServer::Stdio(
@@ -1107,7 +1101,8 @@ fn list_mcp_servers(
                     // TODO(acp-0.10): `McpServer` is #[non_exhaustive].
                     _ => ("unknown".to_string(), "unknown", String::new()),
                 };
-            let subject = crate::session::managed_mcp::mcp_subject(&server, &source, &project);
+            let subject = crate::session::managed_mcp::mcp_subject(&server, &origin, &project);
+            let source = ConfigSource::from(origin);
             // The verdict mirrors the merge's deny/allow and project-MCP pin
             // so the report matches what actually loads.
             let disabled_reason = match ms.mcp_verdict(&server, subject) {
@@ -1429,6 +1424,7 @@ fn enforced_label(p: &EnforcedPolicy) -> String {
         EnforcedSetting::Feedback => "Feedback",
         EnforcedSetting::ProjectMcpServers => "Project MCP servers",
         EnforcedSetting::PluginAutoUpdate => "Plugin auto-update",
+        EnforcedSetting::NonManagedHooks => "Hooks outside managed policy",
     };
     let state = if p.enabled { "enabled" } else { "disabled" };
     format!("{name} {state}")
@@ -1844,14 +1840,22 @@ fn print_human(r: &InspectReport, out: &mut impl Write) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::config::PathsConfig;
     use xai_grok_agent::prompt::skills::{SkillInfo, SkillsConfig};
     use xai_grok_tools::implementations::skills::types::SkillScope;
+
+    fn paths_config(extra_rule_dir: &Path) -> PathsConfig {
+        PathsConfig {
+            extra_rule_dirs: vec![extra_rule_dir.to_string_lossy().into_owned()],
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn harness_compatibility_human_output_stays_compact() {
         let effective_config: toml::Value =
             toml::from_str("[compat.cursor]\nrules = false").unwrap();
-        let report = compat::resolve_inspect_compat_with_env(Ok(&effective_config), |_| None);
+        let report = compat::resolve_inspect_compat_with_env(Some(&effective_config), |_| None);
 
         let human = render_harness_compatibility(&report);
 
@@ -2010,7 +2014,7 @@ mod tests {
             ("claude", "/repo/.claude/rules/team.md"),
             ("claude", r"C:\repo\.claude\rules\team.md"),
         ] {
-            let file_type = instruction_file_type(path, Path::new("/home/user/.grok"), false, &[]);
+            let file_type = instruction_file_type(path, Path::new("/home/user/.grok"), false);
             assert_eq!(file_type, "rules");
             assert_eq!(
                 instruction_compat_status(&Some(vendor.to_owned()), file_type, &report),
@@ -2020,7 +2024,7 @@ mod tests {
 
         for path in ["/repo/.grok/rules/team.md", r"C:\repo\.grok\rules\team.md"] {
             assert_eq!(
-                instruction_file_type(path, Path::new("/home/user/.grok"), false, &[]),
+                instruction_file_type(path, Path::new("/home/user/.grok"), false),
                 "rules"
             );
         }
@@ -2029,7 +2033,7 @@ mod tests {
             r"C:\repo\.cursor\rules\team.md",
         ] {
             assert_eq!(
-                instruction_file_type(path, Path::new("/home/user/.grok"), true, &[]),
+                instruction_file_type(path, Path::new("/home/user/.grok"), true),
                 "rules"
             );
         }
@@ -2037,7 +2041,7 @@ mod tests {
             "/repo/.claude/rules/team.md",
             r"C:\repo\.claude\rules\team.md",
         ] {
-            let file_type = instruction_file_type(path, Path::new("/home/user/.grok"), true, &[]);
+            let file_type = instruction_file_type(path, Path::new("/home/user/.grok"), true);
             assert_eq!(file_type, "agents_md");
             assert_eq!(
                 instruction_compat_status(&Some("claude".to_owned()), file_type, &report),
@@ -2049,7 +2053,7 @@ mod tests {
             r"C:\repo\.cursor\ruleset\team.md",
         ] {
             assert_eq!(
-                instruction_file_type(path, Path::new("/home/user/.grok"), false, &[]),
+                instruction_file_type(path, Path::new("/home/user/.grok"), false),
                 "agents_md"
             );
         }
@@ -2123,7 +2127,6 @@ mod tests {
                 "/custom/config/rules/team.md",
                 Path::new("/custom/config"),
                 false,
-                &[],
             ),
             "rules"
         );
@@ -2132,7 +2135,6 @@ mod tests {
                 "/custom/config/AGENTS.md",
                 Path::new("/custom/config"),
                 false,
-                &[],
             ),
             "agents_md"
         );
@@ -2216,6 +2218,13 @@ mod tests {
             "Permissions mode: always-approve disabled"
         );
         assert!(!enforced_label(&p).contains("yolo"));
+
+        let p = EnforcedPolicy {
+            setting: EnforcedSetting::NonManagedHooks,
+            enabled: false,
+            source: "requirements.toml".into(),
+        };
+        assert_eq!(enforced_label(&p), "Hooks outside managed policy disabled");
     }
 
     fn permissions_report(
@@ -2245,7 +2254,10 @@ mod tests {
     #[test]
     fn permissions_report_pins_advisory_and_enforced_wire_contract() {
         let json = serde_json::to_value(permissions_report(false, vec![])).unwrap();
-        assert_eq!(json["claudeBypassLockAdvisory"], serde_json::json!(false));
+        assert_eq!(
+            json.get("claudeBypassLockAdvisory"),
+            Some(&serde_json::json!(false))
+        );
         assert!(
             json.get("enforced").is_none(),
             "empty enforced list must be omitted: {json}"
@@ -2257,14 +2269,17 @@ mod tests {
             source: "/etc/grok/requirements.toml".to_string(),
         };
         let json = serde_json::to_value(permissions_report(true, vec![row])).unwrap();
-        assert_eq!(json["claudeBypassLockAdvisory"], serde_json::json!(true));
         assert_eq!(
-            json["enforced"],
-            serde_json::json!([{
+            json.get("claudeBypassLockAdvisory"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            json.get("enforced"),
+            Some(&serde_json::json!([{
                 "setting": "alwaysApprove",
                 "enabled": false,
                 "source": "/etc/grok/requirements.toml",
-            }])
+            }]))
         );
     }
 
@@ -2319,12 +2334,14 @@ mod tests {
             claude_bypass_lock_advisory: advisory,
         } = permission_policy_report(&managed_features(Some(true), Some(true), Some(true)), None);
         assert!(advisory);
-        assert_eq!(enforced.len(), 2);
-        assert_eq!(enforced[0].setting, EnforcedSetting::Telemetry);
-        assert_eq!(enforced[1].setting, EnforcedSetting::Feedback);
+        let [tel, fb] = enforced.as_slice() else {
+            panic!("expected telemetry and feedback rows: {enforced:?}");
+        };
+        assert_eq!(tel.setting, EnforcedSetting::Telemetry);
+        assert_eq!(fb.setting, EnforcedSetting::Feedback);
         // Same granularity as the alwaysApprove row: the full file path.
-        assert_eq!(enforced[0].source, "/etc/claude-code/managed-settings.json");
-        assert_eq!(enforced[1].source, "/etc/claude-code/managed-settings.json");
+        assert_eq!(tel.source, "/etc/claude-code/managed-settings.json");
+        assert_eq!(fb.source, "/etc/claude-code/managed-settings.json");
     }
 
     /// The enforced alwaysApprove row comes from grok's own requirements lock,
@@ -2341,10 +2358,12 @@ mod tests {
             claude_bypass_lock_advisory: advisory,
         } = permission_policy_report(&Default::default(), Some(&lock));
         assert!(!advisory);
-        assert_eq!(enforced.len(), 1);
-        assert_eq!(enforced[0].setting, EnforcedSetting::AlwaysApprove);
-        assert!(!enforced[0].enabled);
-        assert_eq!(enforced[0].source, "/etc/grok/requirements.toml");
+        let [row] = enforced.as_slice() else {
+            panic!("expected one alwaysApprove row: {enforced:?}");
+        };
+        assert_eq!(row.setting, EnforcedSetting::AlwaysApprove);
+        assert!(!row.enabled);
+        assert_eq!(row.source, "/etc/grok/requirements.toml");
 
         // Both present: the real lock row + the advisory flag, no duplicate row.
         let PermissionPolicyReport {
@@ -2352,8 +2371,10 @@ mod tests {
             claude_bypass_lock_advisory: advisory,
         } = permission_policy_report(&managed_features(Some(true), None, None), Some(&lock));
         assert!(advisory);
-        assert_eq!(enforced.len(), 1);
-        assert_eq!(enforced[0].source, "/etc/grok/requirements.toml");
+        let [row] = enforced.as_slice() else {
+            panic!("expected one alwaysApprove row: {enforced:?}");
+        };
+        assert_eq!(row.source, "/etc/grok/requirements.toml");
     }
 
     /// An MDM-only lockdown has no requirements.toml; the enforced row must
@@ -2370,9 +2391,11 @@ mod tests {
             claude_bypass_lock_advisory: advisory,
         } = permission_policy_report(&Default::default(), Some(&lock));
         assert!(!advisory);
-        assert_eq!(enforced.len(), 1);
-        assert_eq!(enforced[0].setting, EnforcedSetting::AlwaysApprove);
-        assert_eq!(enforced[0].source, crate::config::MDM_REQUIREMENTS_SOURCE);
+        let [row] = enforced.as_slice() else {
+            panic!("expected one alwaysApprove row: {enforced:?}");
+        };
+        assert_eq!(row.setting, EnforcedSetting::AlwaysApprove);
+        assert_eq!(row.source, crate::config::MDM_REQUIREMENTS_SOURCE);
     }
 
     /// The pins report as enforced rows with stable camelCase setting keys.
@@ -2388,6 +2411,10 @@ mod tests {
             source: "/etc/grok/requirements.toml".into(),
             ownership: PolicyLayerOwnership::Admin,
         };
+        ms.non_managed_hooks = PolicyPin::Disabled {
+            source: "/Users/me/.grok/requirements.toml".into(),
+            ownership: PolicyLayerOwnership::User,
+        };
         let PermissionPolicyReport { enforced, .. } = permission_policy_report(&ms, None);
         assert_eq!(
             serde_json::to_value(&enforced).unwrap(),
@@ -2401,6 +2428,11 @@ mod tests {
                     "setting": "pluginAutoUpdate",
                     "enabled": false,
                     "source": "/etc/grok/requirements.toml",
+                },
+                {
+                    "setting": "nonManagedHooks",
+                    "enabled": false,
+                    "source": "/Users/me/.grok/requirements.toml",
                 },
             ])
         );
@@ -2483,14 +2515,24 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|w| w["field"] == "send_compactions_remaining")
+            .find(|w| w.get("field").and_then(|v| v.as_str()) == Some("send_compactions_remaining"))
             .expect("alias warning present in JSON");
-        assert_eq!(alias_warning["target"], "model");
-        assert_eq!(alias_warning["key"], "grok-4.5");
-        assert_eq!(alias_warning["kind"], "duplicate-alias");
+        assert_eq!(
+            alias_warning.get("target").and_then(|v| v.as_str()),
+            Some("model")
+        );
+        assert_eq!(
+            alias_warning.get("key").and_then(|v| v.as_str()),
+            Some("grok-4.5")
+        );
+        assert_eq!(
+            alias_warning.get("kind").and_then(|v| v.as_str()),
+            Some("duplicate-alias")
+        );
         assert!(
-            alias_warning["reason"]
-                .as_str()
+            alias_warning
+                .get("reason")
+                .and_then(|v| v.as_str())
                 .is_some_and(|r| !r.is_empty())
         );
     }
@@ -2574,18 +2616,18 @@ mod tests {
         );
         login.plugin_name = Some("acme".into());
         let deploy = skill_fixture("deploy", "/tmp/deploy/SKILL.md", SkillScope::Local);
-        // Gated builtins like /flush stay untagged: inspect must not invent /local:flush while the live catalog may still advertise /flush
-        let flush = skill_fixture("flush", "/tmp/flush/SKILL.md", SkillScope::Local);
+        // Gated builtins like /goal stay untagged: inspect must not invent /local:goal while the live catalog may still advertise /goal
+        let goal = skill_fixture("goal", "/tmp/goal/SKILL.md", SkillScope::Local);
         let commit_local = skill_fixture("commit", "/tmp/l/commit/SKILL.md", SkillScope::Local);
         let commit_user = skill_fixture("commit", "/tmp/u/commit/SKILL.md", SkillScope::User);
-        let all = [login, deploy, flush, commit_local, commit_user];
-        let [login, deploy, flush, commit_local, commit_user] = &all;
+        let all = [login, deploy, goal, commit_local, commit_user];
+        let [login, deploy, goal, commit_local, commit_user] = &all;
 
         let entry = collision_entry(login, &all);
         assert_eq!(entry.collides_with.as_deref(), Some("login"));
         assert_eq!(entry.invocable_as.as_deref(), Some("acme:login"));
 
-        for skill in [deploy, flush] {
+        for skill in [deploy, goal] {
             let entry = collision_entry(skill, &all);
             assert_eq!(entry.collides_with, None, "{}", skill.name);
             assert_eq!(entry.invocable_as, None, "{}", skill.name);
@@ -2611,7 +2653,10 @@ mod tests {
         let a = skill_fixture("commit", "/tmp/a/commit/SKILL.md", SkillScope::Local);
         let b = skill_fixture("commit", "/tmp/b/commit/SKILL.md", SkillScope::Local);
         let all = [a, b];
-        let entry = collision_entry(&all[0], &all);
+        let Some(first) = all.first() else {
+            panic!("expected a skill fixture");
+        };
+        let entry = collision_entry(first, &all);
         assert_eq!(entry.collides_with.as_deref(), Some("commit"));
         assert_eq!(entry.invocable_as, None);
     }
@@ -2688,6 +2733,57 @@ mod tests {
         assert!(
             !entries.iter().any(|e| e.name == "inspect-cfg-ignored"),
             "[skills].ignore must hide the skill"
+        );
+    }
+
+    /// A vendor on a listed dir's entry would let `build_report` mark it disabled when that compat cell is off.
+    #[tokio::test]
+    async fn list_instructions_reports_configured_dirs_as_global_rules_without_vendor() {
+        // Discovery also reads this machine's real home dirs, so assert only on the scratch entries.
+        let home = tempfile::tempdir().unwrap();
+        let rules = home.path().join(".claude").join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        let rule = rules.join("imported.md");
+        std::fs::write(&rule, "imported rule").unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+
+        let without = list_instructions(
+            cwd.path(),
+            &PathsConfig::default(),
+            /*project_trusted*/ true,
+        )
+        .await;
+        assert!(
+            !without.iter().any(|e| Path::new(&e.path) == rule),
+            "an unlisted dir must not be scanned"
+        );
+
+        let with = list_instructions(
+            cwd.path(),
+            &paths_config(&rules),
+            /*project_trusted*/ true,
+        )
+        .await;
+        let entry = with
+            .iter()
+            .find(|e| Path::new(&e.path) == rule)
+            .expect("[paths].extra_rule_dirs rule should be listed");
+        assert_eq!("rules", entry.file_type);
+        assert!(matches!(entry.scope, Scope::Global), "{:?}", entry.scope);
+        assert_eq!(None, entry.vendor);
+
+        let claude_rules_off = ExternalCompatReport {
+            remote_settings_loaded: false,
+            cells: vec![ExternalCompatEntry {
+                vendor: "claude".to_owned(),
+                surface: "rules".to_owned(),
+                enabled: false,
+                source: CompatSource::Config,
+            }],
+        };
+        assert_eq!(
+            None,
+            instruction_compat_status(&entry.vendor, &entry.file_type, &claude_rules_off)
         );
     }
 
@@ -2860,14 +2956,19 @@ mod tests {
             source: "managed-settings.json".into(),
             advisory: true,
         }];
-        let json = serde_json::to_value(&report).unwrap()["permissions"].clone();
+        let json = serde_json::to_value(&report).unwrap();
+        let Some(json) = json.get("permissions") else {
+            panic!("expected permissions in report JSON");
+        };
         assert_eq!(
-            json["mcpLockdownSources"],
-            serde_json::json!([{ "source": "/etc/grok/managed_config.toml", "advisory": false }])
+            json.get("mcpLockdownSources"),
+            Some(
+                &serde_json::json!([{ "source": "/etc/grok/managed_config.toml", "advisory": false }])
+            )
         );
         assert_eq!(
-            json["marketplaceLockdownSources"],
-            serde_json::json!([{ "source": "managed-settings.json", "advisory": true }])
+            json.get("marketplaceLockdownSources"),
+            Some(&serde_json::json!([{ "source": "managed-settings.json", "advisory": true }]))
         );
     }
 
@@ -2903,9 +3004,11 @@ mod tests {
 
         let (mcp, marketplace) = policy_lockdown_sources(&ms);
         for sources in [mcp, marketplace] {
-            assert_eq!(sources.len(), 1);
-            assert_eq!(sources[0].source, "/etc/grok/managed_config.toml");
-            assert!(!sources[0].advisory);
+            let [src] = sources.as_slice() else {
+                panic!("expected one lockdown source: {sources:?}");
+            };
+            assert_eq!(src.source, "/etc/grok/managed_config.toml");
+            assert!(!src.advisory);
         }
     }
 

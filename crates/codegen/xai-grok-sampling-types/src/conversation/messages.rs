@@ -46,23 +46,29 @@ fn apply_cache_breakpoints(
         last.cache_control = Some(CacheControl::ephemeral());
     }
 
-    let tip = (0..messages.len())
-        .rev()
-        .find(|&i| mark_message_cache_breakpoint(&mut messages[i]));
+    let tip = (0..messages.len()).rev().find(|&i| {
+        messages
+            .get_mut(i)
+            .is_some_and(mark_message_cache_breakpoint)
+    });
 
     // Where the previous request ended
     // A turn can append several user messages in a row, so skip the whole trailing run rather than a neighbour of the tip
     if let Some(tip) = tip
-        && let Some(prev) = messages[..tip]
+        && let Some(before_tip) = messages.get(..tip)
+        && let Some(prev) = before_tip
             .iter()
             .rposition(|m| matches!(m.role, MessageRole::Assistant))
             .and_then(|assistant| {
-                messages[..assistant]
-                    .iter()
-                    .rposition(|m| matches!(m.role, MessageRole::User))
+                before_tip.get(..assistant).and_then(|before_asst| {
+                    before_asst
+                        .iter()
+                        .rposition(|m| matches!(m.role, MessageRole::User))
+                })
             })
+        && let Some(msg) = messages.get_mut(prev)
     {
-        mark_message_cache_breakpoint(&mut messages[prev]);
+        mark_message_cache_breakpoint(msg);
     }
 }
 
@@ -274,8 +280,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
 
     let system: Option<SystemParam> = if system_blocks.is_empty() {
         None
-    } else if system_blocks.len() == 1 && system_blocks[0].cache_control.is_none() {
-        Some(SystemParam::Text(system_blocks[0].text.clone()))
+    } else if let [block] = system_blocks.as_slice()
+        && block.cache_control.is_none()
+    {
+        Some(SystemParam::Text(block.text.clone()))
     } else {
         Some(SystemParam::Blocks(system_blocks))
     };

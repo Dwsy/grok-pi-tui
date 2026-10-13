@@ -504,8 +504,12 @@ fn validate_media_magic_bytes(content_type: &str, body: &[u8]) -> bool {
         "image/png" => body.starts_with(&[0x89, 0x50, 0x4E, 0x47]),
         "image/jpeg" => body.starts_with(&[0xFF, 0xD8, 0xFF]),
         "image/gif" => body.starts_with(b"GIF8"),
-        "image/webp" => body.len() >= 12 && &body[..4] == b"RIFF" && &body[8..12] == b"WEBP",
-        "video/mp4" => body.len() >= 8 && &body[4..8] == b"ftyp",
+        "image/webp" => {
+            body.len() >= 12
+                && body.get(..4) == Some(b"RIFF".as_slice())
+                && body.get(8..12) == Some(b"WEBP".as_slice())
+        }
+        "video/mp4" => body.len() >= 8 && body.get(4..8) == Some(b"ftyp".as_slice()),
         "video/webm" => body.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
         _ => true, // unknown subtypes: allow (fail-open for niche formats)
     }
@@ -778,19 +782,26 @@ fn strip_base64_data_uris(content: String) -> String {
     let mut last_end = 0;
     let mut search_from = 0;
 
-    while let Some(rel) = s[search_from..].find("data:") {
+    while let Some(rel) = s.get(search_from..).and_then(|tail| tail.find("data:")) {
         let start = search_from + rel;
 
         // "data:" must look like a URI scheme start, not a substring of
         // another word (e.g. "metadata:", "validata:").
-        if start > 0 && s.as_bytes()[start - 1].is_ascii_alphanumeric() {
+        if start
+            .checked_sub(1)
+            .and_then(|i| s.as_bytes().get(i))
+            .is_some_and(|b| b.is_ascii_alphanumeric())
+        {
             search_from = start + 5;
             continue;
         }
 
-        if let Some(rel_comma) = s[start..].find(',') {
+        if let Some(rel_comma) = s.get(start..).and_then(|tail| tail.find(',')) {
             let comma = start + rel_comma;
-            let header = &s[start + 5..comma];
+            let Some(header) = s.get(start + 5..comma) else {
+                search_from = start + 5;
+                continue;
+            };
 
             // RFC 2397 forbids whitespace in the header, and real headers
             // are short ASCII. Reject anything that violates this.
@@ -808,7 +819,11 @@ fn strip_base64_data_uris(content: String) -> String {
             if parts.any(|p| p.eq_ignore_ascii_case("base64")) {
                 // Consume valid base64 characters after the comma.
                 let payload_start = comma + 1;
-                let payload_len = s[payload_start..]
+                let Some(payload) = s.get(payload_start..) else {
+                    search_from = start + 5;
+                    continue;
+                };
+                let payload_len = payload
                     .bytes()
                     .take_while(|b| {
                         matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'=')
@@ -816,7 +831,11 @@ fn strip_base64_data_uris(content: String) -> String {
                     .count();
 
                 if payload_len >= MIN_BASE64_PAYLOAD {
-                    result.push_str(&s[last_end..start]);
+                    let Some(prefix) = s.get(last_end..start) else {
+                        search_from = start + 5;
+                        continue;
+                    };
+                    result.push_str(prefix);
                     result.push_str("[base64 ");
                     result.push_str(mime);
                     result.push_str(" data removed]");
@@ -833,7 +852,9 @@ fn strip_base64_data_uris(content: String) -> String {
     if last_end == 0 {
         return content;
     }
-    result.push_str(&s[last_end..]);
+    if let Some(tail) = s.get(last_end..) {
+        result.push_str(tail);
+    }
     result
 }
 
@@ -1458,15 +1479,21 @@ mod tests {
     #[test]
     fn magic_bytes_valid_webp() {
         let mut webp = vec![0u8; 12];
-        webp[..4].copy_from_slice(b"RIFF");
-        webp[8..12].copy_from_slice(b"WEBP");
+        if let Some(head) = webp.get_mut(..4) {
+            head.copy_from_slice(b"RIFF");
+        }
+        if let Some(tag) = webp.get_mut(8..12) {
+            tag.copy_from_slice(b"WEBP");
+        }
         assert!(validate_media_magic_bytes("image/webp", &webp));
     }
 
     #[test]
     fn magic_bytes_valid_mp4() {
         let mut mp4 = vec![0u8; 12];
-        mp4[4..8].copy_from_slice(b"ftyp");
+        if let Some(tag) = mp4.get_mut(4..8) {
+            tag.copy_from_slice(b"ftyp");
+        }
         assert!(validate_media_magic_bytes("video/mp4", &mp4));
     }
 

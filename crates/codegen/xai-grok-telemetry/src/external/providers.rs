@@ -798,7 +798,7 @@ mod tests {
         let candidates = grpc_tls_candidates("http://localhost:4317", None, None, None)
             .expect("http must resolve");
         assert_eq!(candidates.len(), 1);
-        assert!(candidates[0].is_none());
+        assert!(candidates.first().is_some_and(|c| c.is_none()));
     }
 
     #[test]
@@ -821,7 +821,7 @@ mod tests {
         let candidates = grpc_tls_candidates("collector.corp.example:4317", None, None, None)
             .expect("schemeless");
         assert_eq!(candidates.len(), 1);
-        assert!(candidates[0].is_none());
+        assert!(candidates.first().is_some_and(|c| c.is_none()));
     }
 
     /// Scheme detection is on the parsed URI, so case differences cannot diverge from the exporter's own https check.

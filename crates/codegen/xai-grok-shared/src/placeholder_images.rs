@@ -199,12 +199,16 @@ pub fn strip_paths_from_image_placeholders(text: String) -> String {
         // Group 0 is the full match and group 1 is `(\d+)`; both are structurally guaranteed by the regex
         let whole = cap.get(0).expect("regex match always has group 0");
         let n = cap.get(1).expect("regex always has group 1").as_str();
-        out.push_str(&text[last..whole.start()]);
+        if let Some(prefix) = text.get(last..whole.start()) {
+            out.push_str(prefix);
+        }
         // `write!` to a String is infallible.
         let _ = write!(out, "[Image #{n}]");
         last = whole.end();
     }
-    out.push_str(&text[last..]);
+    if let Some(suffix) = text.get(last..) {
+        out.push_str(suffix);
+    }
     out
 }
 
@@ -628,19 +632,23 @@ mod tests {
     fn extract_placeholders_basic() {
         let text = "look at [Image #1: /tmp/a.png] and [Image #2: /home/user/b.jpg]";
         let matches = extract_placeholders(text);
-        assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].display_number, 1);
-        assert_eq!(matches[0].path, "/tmp/a.png");
-        assert_eq!(matches[1].display_number, 2);
-        assert_eq!(matches[1].path, "/home/user/b.jpg");
+        let [m0, m1] = matches.as_slice() else {
+            panic!("expected two matches: {matches:?}");
+        };
+        assert_eq!(m0.display_number, 1);
+        assert_eq!(m0.path, "/tmp/a.png");
+        assert_eq!(m1.display_number, 2);
+        assert_eq!(m1.path, "/home/user/b.jpg");
     }
 
     #[test]
     fn extract_placeholders_with_spaces_in_path() {
         let text = "[Image #3: /Users/me/My Pictures/cat.png]";
         let matches = extract_placeholders(text);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].path, "/Users/me/My Pictures/cat.png");
+        let [m] = matches.as_slice() else {
+            panic!("expected one match: {matches:?}");
+        };
+        assert_eq!(m.path, "/Users/me/My Pictures/cat.png");
     }
 
     #[test]
@@ -658,54 +666,68 @@ mod tests {
     fn extract_placeholders_inside_larger_text_returns_spans() {
         let text = "before [Image #7: /tmp/a.png] after";
         let matches = extract_placeholders(text);
-        assert_eq!(matches.len(), 1);
-        let (start, end) = matches[0].span;
-        assert_eq!(&text[start..end], "[Image #7: /tmp/a.png]");
+        let [m] = matches.as_slice() else {
+            panic!("expected one match: {matches:?}");
+        };
+        let (start, end) = m.span;
+        assert_eq!(text.get(start..end), Some("[Image #7: /tmp/a.png]"));
     }
 
     #[test]
     fn extract_placeholders_unicode_path() {
         let text = "[Image #9: /tmp/café.png]";
         let matches = extract_placeholders(text);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].path, "/tmp/café.png");
+        let [m] = matches.as_slice() else {
+            panic!("expected one match: {matches:?}");
+        };
+        assert_eq!(m.path, "/tmp/café.png");
     }
 
     #[test]
     fn extract_placeholders_large_display_number() {
         let text = "[Image #99999: /tmp/a.png]";
         let matches = extract_placeholders(text);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].display_number, 99999);
+        let [m] = matches.as_slice() else {
+            panic!("expected one match: {matches:?}");
+        };
+        assert_eq!(m.display_number, 99999);
     }
 
     #[test]
     fn extract_placeholders_display_number_zero_is_kept() {
         let text = "[Image #0: /tmp/a.png]";
         let matches = extract_placeholders(text);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].display_number, 0);
+        let [m] = matches.as_slice() else {
+            panic!("expected one match: {matches:?}");
+        };
+        assert_eq!(m.display_number, 0);
     }
 
     #[test]
     fn extract_placeholders_multiple_on_same_line() {
         let text = "[Image #1: /tmp/a.png] [Image #2: /tmp/b.png] [Image #3: /tmp/c.png]";
         let matches = extract_placeholders(text);
-        assert_eq!(matches.len(), 3);
-        assert_eq!(matches[0].display_number, 1);
-        assert_eq!(matches[1].display_number, 2);
-        assert_eq!(matches[2].display_number, 3);
+        let [m0, m1, m2] = matches.as_slice() else {
+            panic!("expected three matches: {matches:?}");
+        };
+        assert_eq!(m0.display_number, 1);
+        assert_eq!(m1.display_number, 2);
+        assert_eq!(m2.display_number, 3);
     }
 
     #[test]
     fn extract_placeholders_at_text_boundaries() {
         let matches = extract_placeholders("[Image #1: /tmp/a.png] tail");
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].span.0, 0);
+        let [m] = matches.as_slice() else {
+            panic!("expected one match: {matches:?}");
+        };
+        assert_eq!(m.span.0, 0);
         let text2 = "head [Image #2: /tmp/b.png]";
         let matches2 = extract_placeholders(text2);
-        assert_eq!(matches2.len(), 1);
-        assert_eq!(matches2[0].span.1, text2.len());
+        let [m2] = matches2.as_slice() else {
+            panic!("expected one match: {matches2:?}");
+        };
+        assert_eq!(m2.span.1, text2.len());
     }
 
     #[test]
@@ -728,10 +750,12 @@ mod tests {
         // Also pin the span so a future regex revision that consumes nested brackets is caught
         let text = "[Image #1: /tmp/[odd].png]";
         let matches = extract_placeholders(text);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].path, "/tmp/[odd");
-        let (start, end) = matches[0].span;
-        assert_eq!(&text[start..end], "[Image #1: /tmp/[odd]");
+        let [m] = matches.as_slice() else {
+            panic!("expected one match: {matches:?}");
+        };
+        assert_eq!(m.path, "/tmp/[odd");
+        let (start, end) = m.span;
+        assert_eq!(text.get(start..end), Some("[Image #1: /tmp/[odd]"));
     }
 
     // ----- load_placeholder_image ----------------------------------------
@@ -1031,12 +1055,17 @@ mod tests {
         let allowed = vec![dunce::canonicalize(dir.path()).unwrap()];
         let n = recover_orphan_placeholders_with_prefixes(&query, &mut raw, &allowed);
         assert_eq!(n, 1);
-        assert_eq!(raw.len(), 1);
-        assert_eq!(raw[0].mime_type, "image/png");
-        assert!(!raw[0].data.is_empty());
-        assert!(raw[0].uri.as_deref().unwrap().starts_with("file://"));
+        let [img] = raw.as_slice() else {
+            panic!("expected one recovered image: {raw:?}");
+        };
+        assert_eq!(img.mime_type, "image/png");
+        assert!(!img.data.is_empty());
+        let Some(uri) = img.uri.as_deref() else {
+            panic!("expected uri on recovered image");
+        };
+        assert!(uri.starts_with("file://"));
         // The recovered image carries its real `[Image #N]` number so `image_edit` can resolve the token to it by number
-        assert_eq!(display_number_from_meta(raw[0].meta.as_ref()), Some(1));
+        assert_eq!(display_number_from_meta(img.meta.as_ref()), Some(1));
     }
 
     #[test]
@@ -1052,7 +1081,7 @@ mod tests {
         assert_eq!(n, 0, "canonical-canonical dedup must skip the load");
         assert_eq!(raw.len(), 1);
         // The original entry must be untouched, not silently overwritten by a duplicate load
-        assert_eq!(raw[0].data, "AAAA");
+        assert_eq!(raw.first().map(|i| i.data.as_str()), Some("AAAA"));
     }
 
     #[cfg(unix)]
@@ -1075,7 +1104,7 @@ mod tests {
             "non-canonical TUI URI must still dedup against canonical placeholder path"
         );
         assert_eq!(raw.len(), 1);
-        assert_eq!(raw[0].data, "AAAA");
+        assert_eq!(raw.first().map(|i| i.data.as_str()), Some("AAAA"));
     }
 
     #[test]
@@ -1097,7 +1126,7 @@ mod tests {
             "percent-encoded `file://` URI must dedup against canonical placeholder"
         );
         assert_eq!(raw.len(), 1);
-        assert_eq!(raw[0].data, "AAAA");
+        assert_eq!(raw.first().map(|i| i.data.as_str()), Some("AAAA"));
     }
 
     /// Pin the inverse direction.
@@ -1122,7 +1151,7 @@ mod tests {
         let n = recover_orphan_placeholders_with_prefixes(&query, &mut raw, &allowed);
         assert_eq!(n, 0);
         assert_eq!(raw.len(), 1, "attached URI must remain intact");
-        assert_eq!(raw[0].data, "AAAA");
+        assert_eq!(raw.first().map(|i| i.data.as_str()), Some("AAAA"));
     }
 
     #[test]
@@ -1183,7 +1212,12 @@ mod tests {
         assert_eq!(n, 1, "aggregate cap must allow exactly one image");
         assert_eq!(raw.len(), 1);
         // Order matters: the first placeholder's canonical URI is the one that landed in `raw`
-        let attached_uri = raw[0].uri.as_deref().unwrap();
+        let Some(attached) = raw.first() else {
+            panic!("expected attached image: {raw:?}");
+        };
+        let Some(attached_uri) = attached.uri.as_deref() else {
+            panic!("expected uri on attached image");
+        };
         assert!(
             attached_uri.contains("a.png"),
             "expected the first placeholder to be the one kept, got: {attached_uri}"

@@ -219,10 +219,15 @@ impl StreamingTurnCapture {
             .iter()
             .rposition(|segment| segment.request_id.as_deref() == Some(request_id))
         {
-            let segment = &mut self.segments[index];
-            if segment.doom_loop.is_some() {
-                segment.reasoning_text.clear();
-                segment.response_text.clear();
+            let keep_stamp = self
+                .segments
+                .get(index)
+                .is_some_and(|segment| segment.doom_loop.is_some());
+            if keep_stamp {
+                if let Some(segment) = self.segments.get_mut(index) {
+                    segment.reasoning_text.clear();
+                    segment.response_text.clear();
+                }
             } else {
                 self.segments.remove(index);
             }
@@ -306,7 +311,7 @@ impl StreamingTurnCapture {
             while cut > 0 && !text.is_char_boundary(cut) {
                 cut -= 1;
             }
-            &text[..cut]
+            text.get(..cut).unwrap_or("")
         };
         if channel_is_reasoning {
             self.reasoning_text.push_str(to_append);
@@ -406,16 +411,18 @@ mod streaming_turn_capture_tests {
         cap.append(true, "fresh reasoning");
         cap.push_current_segment();
 
-        assert_eq!(cap.segments.len(), 2, "stamp-only slot folded");
-        let stamped = cap.segments[0].doom_loop.as_ref().expect("stamp preserved");
+        let [s0, s1] = cap.segments.as_slice() else {
+            panic!("expected two segments: {:?}", cap.segments);
+        };
+        let stamped = s0.doom_loop.as_ref().expect("stamp preserved");
         assert_eq!(stamped.action, "resampled");
         assert_eq!(stamped.attempt, 1);
-        assert!(cap.segments[0].reasoning_text.is_empty(), "text-free");
+        assert!(s0.reasoning_text.is_empty(), "text-free");
         assert!(
-            cap.segments[1].doom_loop.is_none(),
+            s1.doom_loop.is_none(),
             "the fresh generation is not mislabeled by the lingering stamp"
         );
-        assert_eq!(cap.segments[1].reasoning_text, "fresh reasoning");
+        assert_eq!(s1.reasoning_text, "fresh reasoning");
     }
 
     /// Doom stamps fold into segments, survive JSON round-trip, and a stamped committed slot keeps a text-free segment on clear.
@@ -443,28 +450,27 @@ mod streaming_turn_capture_tests {
         // Committed generation: text discarded, stamp retained text-free.
         cap.clear_current_segment();
 
-        assert_eq!(cap.segments.len(), 2);
+        let [s0, s1] = cap.segments.as_slice() else {
+            panic!("expected two segments: {:?}", cap.segments);
+        };
         assert_eq!(
-            cap.segments[0]
-                .doom_loop
-                .as_ref()
-                .map(|s| s.action.as_str()),
+            s0.doom_loop.as_ref().map(|s| s.action.as_str()),
             Some("resampled")
         );
-        assert_eq!(cap.segments[0].reasoning_text, "loop loop");
+        assert_eq!(s0.reasoning_text, "loop loop");
         assert_eq!(
-            cap.segments[1]
-                .doom_loop
-                .as_ref()
-                .map(|s| s.action.as_str()),
+            s1.doom_loop.as_ref().map(|s| s.action.as_str()),
             Some("accepted_after_budget")
         );
-        assert!(cap.segments[1].reasoning_text.is_empty());
+        assert!(s1.reasoning_text.is_empty());
         assert!(cap.has_doom_loop_segments());
 
         let json = serde_json::to_string(&cap).unwrap();
         let back: StreamingTurnCapture = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.segments[0].doom_loop, cap.segments[0].doom_loop);
+        assert_eq!(
+            back.segments.first().and_then(|s| s.doom_loop.as_ref()),
+            cap.segments.first().and_then(|s| s.doom_loop.as_ref())
+        );
         // Unstamped captures serialize without the field
         let plain = serde_json::to_string(&StreamingTurnCapture::default()).unwrap();
         assert!(!plain.contains("doom_loop"));
@@ -482,10 +488,12 @@ mod streaming_turn_capture_tests {
         cap.append(true, "reasoning attempt two");
         cap.finalize_for_upload();
 
-        assert_eq!(cap.segments.len(), 2, "both same-turn generations kept");
+        let [s0, s1] = cap.segments.as_slice() else {
+            panic!("expected two segments: {:?}", cap.segments);
+        };
         assert_eq!(cap.attempt_count, 2);
-        assert_eq!(cap.segments[0].reasoning_text, "reasoning attempt one");
-        assert_eq!(cap.segments[1].reasoning_text, "reasoning attempt two");
+        assert_eq!(s0.reasoning_text, "reasoning attempt one");
+        assert_eq!(s1.reasoning_text, "reasoning attempt two");
         assert!(cap.reasoning_text.contains("reasoning attempt one"));
         assert!(cap.reasoning_text.contains("reasoning attempt two"));
         assert!(cap.reasoning_text.contains("--- attempt 2 ---"));
@@ -511,10 +519,12 @@ mod streaming_turn_capture_tests {
         cap.phase = CapturePhase::ToolCall;
         cap.finalize_for_upload();
 
-        assert_eq!(cap.segments.len(), 3, "committed cleared, uncommitted kept");
-        assert_eq!(cap.segments[0].reasoning_text, "doomloop reasoning");
-        assert_eq!(cap.segments[1].response_text, "answer cut off");
-        assert_eq!(cap.segments[2].phase, CapturePhase::ToolCall);
+        let [s0, s1, s2] = cap.segments.as_slice() else {
+            panic!("expected three segments: {:?}", cap.segments);
+        };
+        assert_eq!(s0.reasoning_text, "doomloop reasoning");
+        assert_eq!(s1.response_text, "answer cut off");
+        assert_eq!(s2.phase, CapturePhase::ToolCall);
         assert_eq!(cap.attempt_count, 4, "all four generations counted");
         assert!(cap.reasoning_text.contains("doomloop reasoning"));
         assert!(cap.response_text.contains("answer cut off"));
@@ -590,9 +600,11 @@ mod streaming_turn_capture_tests {
         cap.append(true, "doomloop reasoning after a capped commit");
         cap.finalize_for_upload();
 
-        assert_eq!(cap.segments.len(), 1);
+        let [s0] = cap.segments.as_slice() else {
+            panic!("expected one segment: {:?}", cap.segments);
+        };
         assert_eq!(
-            cap.segments[0].reasoning_text,
+            s0.reasoning_text,
             "doomloop reasoning after a capped commit"
         );
         assert!(!cap.truncated);
@@ -675,7 +687,10 @@ mod streaming_turn_capture_tests {
         cap.append(false, "accepted answer");
         cap.clear_current_segment();
         assert!(cap.assembled_response_text().is_empty());
-        assert_eq!(cap.segments[0].response_text, "discarded attempt");
+        assert_eq!(
+            cap.segments.first().map(|s| s.response_text.as_str()),
+            Some("discarded attempt")
+        );
     }
 
     #[test]

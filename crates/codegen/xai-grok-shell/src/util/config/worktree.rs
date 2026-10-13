@@ -93,16 +93,28 @@ pub fn worktree_type() -> WorktreeType {
     worktree_type_from_toml(&root)
 }
 
-/// Env override for grove vs copy (`grove` | `grove-fuse` | `grove-nfs` | `nfs` | `copy`).
+/// Env override for grove vs copy (`grove` | `grove-fuse` | `grove-nfs` | `grove-projfs` | `nfs` | `copy`).
 /// Distinct from [`WorktreeType`] (`linked` | `standalone` | `git`).
 pub const ENV_WORKTREE_TYPE: &str = "GROK_WORKTREE_TYPE";
 
+/// Convenience that enables both `grok clone` and session / `-w` Grove when specific knobs are unset.
+pub const ENV_GROVE: &str = "GROK_GROVE";
+
 fn grove_from_str(s: &str) -> Option<bool> {
     match s.trim().to_ascii_lowercase().as_str() {
-        "grove" | "grove-fuse" | "grove-nfs" | "nfs" | "true" | "1" | "on" => Some(true),
+        "grove" | "grove-fuse" | "grove-nfs" | "grove-projfs" | "nfs" | "true" | "1" | "on" => {
+            Some(true)
+        }
         "copy" | "false" | "0" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn grove_enable_all_from_str(s: &str) -> Option<bool> {
+    if s.trim().eq_ignore_ascii_case("all") {
+        return Some(true);
+    }
+    grove_from_str(s)
 }
 
 fn grove_worktree_from_toml_opt(root: &TomlValue) -> Option<bool> {
@@ -120,7 +132,7 @@ fn grove_worktree_from_toml_opt(root: &TomlValue) -> Option<bool> {
     }
     if let Some(s) = cli.get("worktree_type").and_then(|v| v.as_str()) {
         match s {
-            "grove" | "grove-fuse" | "grove-nfs" | "nfs" => return Some(true),
+            "grove" | "grove-fuse" | "grove-nfs" | "grove-projfs" | "nfs" => return Some(true),
             "copy" => return Some(false),
             _ => {}
         }
@@ -128,8 +140,19 @@ fn grove_worktree_from_toml_opt(root: &TomlValue) -> Option<bool> {
     None
 }
 
-/// The kill switch and a missing remote run **last** and fail **closed**.
-/// `remote = None` forces copy; `grove_worktree = false` forces copy even when `desired`, env, or local asked for grove.
+pub fn grove_enable_all_from_toml(root: &TomlValue) -> Option<bool> {
+    let v = root.get("cli")?.get("grove")?;
+    if let Some(b) = v.as_bool() {
+        return Some(b);
+    }
+    if let Some(s) = v.as_str() {
+        return grove_enable_all_from_str(s);
+    }
+    tracing::warn!("Invalid [cli].grove value: {v:?}, ignoring");
+    None
+}
+
+/// Remote `grove_worktree = false` kills last; a missing remote is not a refusal.
 pub fn resolve_grove_worktree(
     raw_config: &TomlValue,
     remote: Option<&RemoteSettings>,
@@ -143,11 +166,23 @@ pub fn grove_worktree_env() -> Option<bool> {
         .and_then(|s| grove_from_str(&s))
 }
 
-/// Resolves in layer order: request, then env, then local, then remote (which only enables when true); the kill switch runs last.
-/// Tests inject `env` instead of mutating process state.
+pub fn grove_enable_all_env() -> Option<bool> {
+    std::env::var(ENV_GROVE)
+        .ok()
+        .and_then(|s| grove_enable_all_from_str(&s))
+}
+
+/// Env `GROK_GROVE` first; a set false skips `[cli] grove` rather than forcing both surfaces off.
+pub fn grove_enable_all_asked(env: Option<bool>, raw_config: &TomlValue) -> bool {
+    env.unwrap_or_else(|| grove_enable_all_from_toml(raw_config).unwrap_or(false))
+}
+
+/// Resolves request → env → local → enable-all → remote-true; remote kill last.
+/// Tests inject `env` and `enable_all` instead of mutating process state.
 pub fn gate_grove_worktree_layers(
     desired: Option<bool>,
     env: Option<bool>,
+    enable_all: Option<bool>,
     raw_config: &TomlValue,
     remote: Option<&RemoteSettings>,
 ) -> (bool, &'static str) {
@@ -162,22 +197,18 @@ pub fn gate_grove_worktree_layers(
     } else if let Some(v) = grove_worktree_from_toml_opt(raw_config) {
         enabled = v;
         src = "local";
+    } else if grove_enable_all_asked(enable_all, raw_config) {
+        enabled = true;
+        src = "enable_all";
     } else if remote.and_then(|r| r.grove_worktree) == Some(true) {
         enabled = true;
         src = "remote";
     }
-    let refusal = match remote {
-        None => Some("remote_unavailable"),
-        Some(r) if r.grove_worktree == Some(false) => Some("remote_kill"),
-        _ => None,
-    };
-    match refusal {
-        // A refusal is only the *reason* when a layer actually asked for grove;
-        // otherwise callers would read `remote_unavailable` (returned on every
-        // settings-fetch failure) as proof of a grove request that never happened.
-        Some(reason) => (false, if enabled { reason } else { src }),
-        None => (enabled, src),
+    if remote.is_some_and(|r| r.grove_worktree == Some(false)) {
+        // A kill is only the *reason* when a layer actually asked for grove.
+        return (false, if enabled { "remote_kill" } else { src });
     }
+    (enabled, src)
 }
 
 /// Single grove-vs-copy gate. `desired` is an explicit client/resume flag.
@@ -186,15 +217,38 @@ pub fn gate_grove_worktree(
     raw_config: &TomlValue,
     remote: Option<&RemoteSettings>,
 ) -> (bool, &'static str) {
-    gate_grove_worktree_layers(desired, grove_worktree_env(), raw_config, remote)
+    gate_grove_worktree_layers(
+        desired,
+        grove_worktree_env(),
+        grove_enable_all_env(),
+        raw_config,
+        remote,
+    )
 }
 
-pub fn grove_worktree_enabled(remote: Option<&RemoteSettings>) -> bool {
+/// Same gate as session create, with no client request slot (subagent spawn,
+/// rehydrate). Does not emit `WORKTREE_REQUEST_SHELL`.
+pub fn grove_worktree_gate(remote: Option<&RemoteSettings>) -> (bool, &'static str) {
     let root: TomlValue = match crate::config::load_effective_config() {
         Ok(r) => r,
         Err(_) => TomlValue::Table(toml::map::Map::new()),
     };
-    gate_grove_worktree(None, &root, remote).0
+    gate_grove_worktree(None, &root, remote)
+}
+
+pub fn grove_worktree_enabled(remote: Option<&RemoteSettings>) -> bool {
+    grove_worktree_gate(remote).0
+}
+
+/// Same `NfsWorktreeOpts` as session create (`enabled_grove_opts` in xai-grok-workspace).
+/// `None` leaves the Grove arm off (`WorktreeBuilder` default).
+pub(crate) fn grove_worktree_opts_if_enabled(
+    enabled: bool,
+) -> Option<xai_fast_worktree::NfsWorktreeOpts> {
+    enabled.then(|| xai_fast_worktree::NfsWorktreeOpts {
+        enabled: true,
+        ..xai_fast_worktree::NfsWorktreeOpts::default()
+    })
 }
 
 pub(crate) fn restore_code_from_toml(root: &TomlValue) -> Option<bool> {
@@ -398,6 +452,7 @@ worktree_type = "invalid"
 
     fn clear_worktree_type_env() {
         unsafe { std::env::remove_var(ENV_WORKTREE_TYPE) };
+        unsafe { std::env::remove_var(ENV_GROVE) };
     }
 
     fn remote_unset() -> RemoteSettings {
@@ -487,35 +542,159 @@ worktree_type = "invalid"
         };
 
         assert_eq!(
-            gate_grove_worktree_layers(None, None, &local_grove, Some(&remote_unset)),
+            gate_grove_worktree_layers(None, None, None, &local_grove, Some(&remote_unset)),
             (true, "local"),
             "remote Some(unset) + local grove must enable, same as create"
         );
         assert_eq!(
-            gate_grove_worktree_layers(None, Some(true), &empty, Some(&remote_unset)),
+            gate_grove_worktree_layers(None, None, None, &local_grove, None),
+            (true, "local"),
+            "local opt-in must survive missing remote settings"
+        );
+        assert_eq!(
+            gate_grove_worktree_layers(None, Some(true), None, &empty, Some(&remote_unset)),
             (true, "env"),
             "remote Some(unset) + env grove must enable, same as create"
         );
         assert_eq!(
-            gate_grove_worktree_layers(None, Some(true), &empty, Some(&remote_kill)),
+            gate_grove_worktree_layers(None, Some(true), None, &empty, Some(&remote_kill)),
             (false, "remote_kill"),
             "remote kill must disable even when env asked for grove"
         );
         assert_eq!(
-            gate_grove_worktree_layers(None, Some(true), &empty, None),
-            (false, "remote_unavailable"),
-            "true unavailability must fail-close even if env asked for grove"
+            gate_grove_worktree_layers(None, Some(true), None, &empty, None),
+            (true, "env"),
+            "env opt-in must survive missing remote settings"
         );
         assert_eq!(
-            gate_grove_worktree_layers(None, None, &empty, None),
+            gate_grove_worktree_layers(None, None, None, &empty, None),
             (false, "default"),
             "a missing remote must not be reported as a refused grove request"
         );
         assert_eq!(
-            gate_grove_worktree_layers(Some(false), None, &local_grove, Some(&remote_kill)),
+            gate_grove_worktree_layers(Some(false), None, None, &local_grove, Some(&remote_kill)),
             (false, "request"),
             "the kill switch must not claim a request that asked for copy"
         );
+    }
+
+    #[test]
+    fn inherited_subagent_grove_opts_follow_gate_layers() {
+        let local_grove: TomlValue = toml::from_str("[cli]\ngrove_worktree = true").unwrap();
+        let empty: TomlValue = toml::from_str("[cli]\nauto_update = true").unwrap();
+        let remote_kill = RemoteSettings {
+            grove_worktree: Some(false),
+            ..RemoteSettings::default()
+        };
+
+        let (on, src) = gate_grove_worktree_layers(None, None, None, &local_grove, None);
+        assert_eq!((on, src), (true, "local"));
+        assert!(
+            grove_worktree_opts_if_enabled(on).is_some_and(|opts| opts.enabled),
+            "inherited local gate must attach enabled Grove opts"
+        );
+
+        let (off, src) = gate_grove_worktree_layers(None, None, None, &empty, None);
+        assert_eq!((off, src), (false, "default"));
+        assert!(
+            grove_worktree_opts_if_enabled(off).is_none(),
+            "default-off must not attach Grove opts"
+        );
+
+        let (killed, src) =
+            gate_grove_worktree_layers(None, Some(true), None, &empty, Some(&remote_kill));
+        assert_eq!((killed, src), (false, "remote_kill"));
+        assert!(
+            grove_worktree_opts_if_enabled(killed).is_none(),
+            "remote kill must not attach Grove opts"
+        );
+    }
+
+    #[test]
+    fn gate_grove_worktree_layers_enable_all_and_overrides() {
+        let empty: TomlValue = toml::from_str("[cli]\nauto_update = true").unwrap();
+        let enable_all_toml: TomlValue = toml::from_str("[cli]\ngrove = true").unwrap();
+        let specific_off: TomlValue =
+            toml::from_str("[cli]\ngrove = true\ngrove_worktree = false").unwrap();
+        let remote_unset = remote_unset();
+        let remote_kill = RemoteSettings {
+            grove_worktree: Some(false),
+            ..Default::default()
+        };
+        let remote_true = RemoteSettings {
+            grove_worktree: Some(true),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            gate_grove_worktree_layers(None, None, Some(true), &empty, Some(&remote_unset)),
+            (true, "enable_all")
+        );
+        assert_eq!(
+            gate_grove_worktree_layers(None, None, None, &enable_all_toml, Some(&remote_unset)),
+            (true, "enable_all")
+        );
+        assert_eq!(
+            gate_grove_worktree_layers(None, None, None, &enable_all_toml, None),
+            (true, "enable_all"),
+            "enable-all must survive missing remote"
+        );
+        assert_eq!(
+            gate_grove_worktree_layers(None, Some(false), Some(true), &empty, Some(&remote_unset)),
+            (false, "env"),
+            "GROK_WORKTREE_TYPE=copy must beat enable-all"
+        );
+        assert_eq!(
+            gate_grove_worktree_layers(None, None, None, &specific_off, Some(&remote_unset)),
+            (false, "local"),
+            "[cli] grove_worktree = false must beat [cli] grove"
+        );
+        assert_eq!(
+            gate_grove_worktree_layers(None, None, Some(true), &empty, Some(&remote_kill)),
+            (false, "remote_kill"),
+            "remote kill must win over enable-all"
+        );
+        assert_eq!(
+            gate_grove_worktree_layers(
+                None,
+                None,
+                Some(false),
+                &enable_all_toml,
+                Some(&remote_unset)
+            ),
+            (false, "default"),
+            "GROK_GROVE=off must skip [cli] grove and fall through"
+        );
+        assert_eq!(
+            gate_grove_worktree_layers(None, None, Some(false), &empty, Some(&remote_true)),
+            (true, "remote")
+        );
+        assert_eq!(
+            gate_grove_worktree_layers(Some(true), None, None, &empty, None),
+            (true, "request")
+        );
+        assert_eq!(
+            gate_grove_worktree_layers(None, None, None, &empty, Some(&remote_unset)),
+            (false, "default")
+        );
+        let all_spelling: TomlValue = toml::from_str("[cli]\ngrove = \"all\"").unwrap();
+        assert_eq!(
+            gate_grove_worktree_layers(None, None, None, &all_spelling, Some(&remote_unset)),
+            (true, "enable_all")
+        );
+        let copy_spelling: TomlValue = toml::from_str("[cli]\ngrove = \"copy\"").unwrap();
+        assert_eq!(grove_enable_all_from_toml(&copy_spelling), Some(false));
+        assert_eq!(
+            gate_grove_worktree_layers(None, None, None, &copy_spelling, Some(&remote_unset)),
+            (false, "default")
+        );
+        assert!(!grove_enable_all_asked(Some(false), &enable_all_toml));
+        assert!(grove_enable_all_asked(None, &enable_all_toml));
+        let invalid: TomlValue = toml::from_str("[cli]\ngrove = \"maybe\"").unwrap();
+        assert_eq!(grove_enable_all_from_toml(&invalid), None);
+        assert_eq!(grove_enable_all_from_toml(&enable_all_toml), Some(true));
+        let enable_all_off: TomlValue = toml::from_str("[cli]\ngrove = false").unwrap();
+        assert_eq!(grove_enable_all_from_toml(&enable_all_off), Some(false));
     }
 
     #[test]
@@ -534,7 +713,7 @@ worktree_type = "invalid"
         unsafe { std::env::set_var(ENV_WORKTREE_TYPE, "grove") };
         assert_eq!(
             gate_grove_worktree(Some(true), &root, None),
-            (false, "remote_unavailable")
+            (true, "request")
         );
         clear_worktree_type_env();
     }

@@ -5,6 +5,8 @@
 //! Single workspace root only; multi-root composition (parent + worktrees)
 //! lives in the workspace layer.
 
+#![deny(clippy::indexing_slicing)]
+
 mod checkout;
 mod error;
 mod event;

@@ -85,7 +85,8 @@ fn panel_rows(item_rows: u16) -> u16 {
 
 /// Kept well below a full screen so closing the modal leaves only a small blank band (the band equals `target - base`).
 /// A screen-tall band was the "bunch of blank space" dogfooding complaint.
-const MINIMAL_APP_MODAL_ROWS: u16 = 18;
+/// The feedback form shares this band.
+pub(super) const MINIMAL_APP_MODAL_ROWS: u16 = 18;
 
 /// Target live-viewport height for a centered app-modal: a moderate, bottom-anchored panel rather than the full screen.
 /// Never below the live region's `base`, never above the screen `ceiling`.
@@ -93,7 +94,7 @@ fn app_modal_target(base: u16, ceiling: u16) -> u16 {
     MINIMAL_APP_MODAL_ROWS.clamp(base, ceiling)
 }
 
-/// Target live-viewport height for a prompt-replacing modal (permission / question / rewind). Floored at `base`
+/// Target live-viewport height for a prompt-replacing modal (permission / question / elicitation / rewind). Floored at `base`
 /// (and at 3) so some live region always remains.
 fn modal_target(tail_h: u16, modal_h: u16, sl_h: u16, base: u16, ceiling: u16) -> u16 {
     tail_h
@@ -151,7 +152,7 @@ fn will_commit(app: &AppView) -> bool {
     let Some(agent) = app.agents.get(id) else {
         return false;
     };
-    if app_modal_active(agent) {
+    if is_live_region_modal_active(agent) {
         return false;
     }
     let turn_running = minimal_api::is_turn_or_wake_running(agent);
@@ -208,13 +209,13 @@ fn compute_target(app: &mut AppView, term_h: u16, width: u16) -> u16 {
         return super::panel::panel_height(agent, kind, width, ceiling);
     }
 
-    // A centered app-modal (command palette / settings / pickers) reuses the full-TUI popup renderer, which fills
-    // whatever area it's given. Committed rows scrolled into native scrollback can't be pulled back.
-    if app_modal_active(agent) || minimal_api::extensions_modal(agent).is_some() {
+    // A centered app-modal (command palette / settings / pickers) or the feedback form reuses the full-TUI popup
+    // renderer, which fills whatever area it's given. Committed rows scrolled into native scrollback can't be pulled back.
+    if is_live_region_modal_active(agent) || minimal_api::extensions_modal(agent).is_some() {
         return app_modal_target(base, ceiling);
     }
 
-    // A prompt-replacing modal (permission / question / rewind) takes the bottom region in place of the prompt.
+    // A prompt-replacing modal (permission / question / elicitation / rewind) takes the bottom region in place of the prompt.
     // Without reserving room for it, the viewport collapses to just the modal and the "Allow Edit to …?" prompt shows
     // with no visible diff.
     if let Some(modal) = active_modal(agent) {
@@ -354,6 +355,8 @@ pub fn render(
 pub enum Modal {
     Permission,
     Question,
+    /// An MCP server's elicitation card. The shared router sends it every key.
+    Elicitation,
     Rewind,
     /// The "Subagents are still running. Stop them?" confirm shown when cancelling a turn with running subagents (`AgentView::cancel_turn_view`).
     Cancel,
@@ -361,7 +364,7 @@ pub enum Modal {
     Plan,
 }
 
-/// The active prompt-replacing modal, in the full-TUI render precedence (cancel-confirm > plan > permission > question > rewind), or `None`.
+/// The active prompt-replacing modal, in the full-TUI render precedence (cancel-confirm > plan > permission > question > elicitation > rewind), or `None`.
 pub fn active_modal(agent: &AgentView) -> Option<Modal> {
     // The cancel-turn confirm is checked first to match the input router
     // The router intercepts keys for `cancel_turn_view` ahead of the question view (`AgentView::handle_input`)
@@ -377,6 +380,9 @@ pub fn active_modal(agent: &AgentView) -> Option<Modal> {
     }
     if minimal_api::question_view(agent).is_some() {
         return Some(Modal::Question);
+    }
+    if minimal_api::elicitation_view(agent).is_some() {
+        return Some(Modal::Elicitation);
     }
     if minimal_api::rewind_state(agent).is_some() {
         return Some(Modal::Rewind);
@@ -421,6 +427,13 @@ pub fn modal_height(modal: Modal, agent: &mut AgentView, screen_h: u16, content_
                 })
                 .unwrap_or(0)
         }
+        Modal::Elicitation => minimal_api::elicitation_view(agent)
+            .map(|ev| {
+                xai_grok_pager::views::elicitation_view::elicitation_view_height(
+                    ev, screen_h, content_w,
+                )
+            })
+            .unwrap_or(0),
         Modal::Rewind => minimal_api::rewind_state(agent)
             .map(|rw| xai_grok_pager::views::rewind::rewind_overlay_height(&rw.phase, screen_h))
             .unwrap_or(0),
@@ -449,6 +462,15 @@ pub fn render_modal(
     match modal {
         Modal::Permission => render_permission(buf, area, agent, theme),
         Modal::Question => render_question(buf, area, agent, theme, screen_h),
+        Modal::Elicitation => {
+            // Minimal never captures the mouse and has no click targets to record
+            if let Some(ev) = minimal_api::elicitation_view_mut(agent) {
+                xai_grok_pager::views::elicitation_view::render_elicitation_view(
+                    buf, area, ev, theme, /*focused*/ true, None,
+                );
+            }
+            None
+        }
         Modal::Rewind => {
             if let Some(rw) = minimal_api::rewind_state(agent) {
                 xai_grok_pager::views::rewind::render_rewind_overlay(buf, area, &rw.phase, true);
@@ -489,6 +511,12 @@ pub fn render_modal(
 /// Minimal hosts these as centered overlays.
 pub fn app_modal_active(agent: &AgentView) -> bool {
     agent.active_modal.is_some()
+}
+
+/// Whether a modal owns the whole live band (a centered app-modal or the feedback form), so no `insert_before` may run under it.
+/// The extensions modal shares the band size (see `compute_target`) but is not held here.
+pub fn is_live_region_modal_active(agent: &AgentView) -> bool {
+    app_modal_active(agent) || minimal_api::feedback_modal(agent).is_some()
 }
 
 /// Render the active centered app-modal into `area`.
@@ -741,7 +769,14 @@ mod tests {
             }],
             StashedPrompt::default(),
         );
-        qv.per_question_cursor[0] = qv.questions[0].options.len();
+        let Some(q) = qv.questions.first() else {
+            panic!("expected a question");
+        };
+        let n = q.options.len();
+        let Some(cursor) = qv.per_question_cursor.get_mut(0) else {
+            panic!("expected a cursor slot");
+        };
+        *cursor = n;
         let _stashed = qv.activate_freeform_input();
         minimal_api::set_question_view(&mut agent, Some(qv));
         agent.prompt.set_text(text);
@@ -865,10 +900,66 @@ mod tests {
     }
 
     #[test]
-    fn fresh_prompt_has_no_overlay() {
-        let pw = PromptWidget::new();
-        assert_eq!(overlay_rows(&pw, 80), 0);
-        assert!(active(&pw, 80).is_none());
+    fn elicitation_card_replaces_the_prompt_and_paints() {
+        let screen_h = 40u16;
+        let content_w = 80usize;
+        let mut agent = minimal_api::test_agent_view(Some("s1"), std::path::PathBuf::from("/tmp"));
+        assert_eq!(active_modal(&agent), None);
+        minimal_api::open_test_elicitation(&mut agent, "airlock", "Create the ticket?");
+        assert_eq!(active_modal(&agent), Some(Modal::Elicitation));
+        assert!(!is_live_region_modal_active(&agent));
+
+        let modal_h = modal_height(Modal::Elicitation, &mut agent, screen_h, content_w);
+        assert!(modal_h >= 8, "the card reserves its rows, got {modal_h}");
+        let area = Rect::new(0, 0, content_w as u16, modal_h);
+        let mut buf = Buffer::empty(area);
+        let cursor = render_modal(
+            &mut buf,
+            area,
+            Modal::Elicitation,
+            &mut agent,
+            &Theme::terminal_default(),
+            screen_h,
+        );
+        assert_eq!(cursor, None);
+        let painted: String = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or_default())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for needle in [
+            "airlock",
+            "Create the ticket?",
+            "Ticket title",
+            "Accept",
+            "Decline",
+        ] {
+            assert!(
+                painted.contains(needle),
+                "{needle:?} must paint:\n{painted}"
+            );
+        }
+    }
+
+    /// Prompt-replacing modals are sized by `modal_target`; only band-owning modals may hold commits.
+    #[test]
+    fn is_live_region_modal_active_ignores_prompt_modals() {
+        use xai_grok_pager::views::feedback_modal::{FeedbackModalState, OpenFeedbackModal};
+
+        let mut agent = question_input_agent("answer");
+        assert_eq!(active_modal(&agent), Some(Modal::Question));
+        assert!(!is_live_region_modal_active(&agent));
+
+        minimal_api::set_question_view(&mut agent, None);
+        minimal_api::set_feedback_modal(
+            &mut agent,
+            Some(FeedbackModalState::new(OpenFeedbackModal::default())),
+        );
+        assert!(!app_modal_active(&agent));
+        assert!(is_live_region_modal_active(&agent));
     }
 
     #[test]

@@ -1,11 +1,53 @@
 //! Per-session resources and the registry that owns them.
 //! Distinct from `agent::session_registry_client`, which talks to the remote registry.
 use super::*;
+use xai_grok_tools::registry::types::FinalizedToolset;
 /// The map stays private so every caller goes through a named operation.
 #[derive(Clone, Default)]
 pub(super) struct SessionRegistry {
     sessions: Rc<RefCell<HashMap<acp::SessionId, SessionResources>>>,
+    pub(super) agent_directory: Rc<RefCell<super::agent_directory::AgentDirectory>>,
+    next_install_id: Rc<std::cell::Cell<u64>>,
 }
+/// Whether an installed actor's root identity has reached disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum IdentityStamp {
+    Pending,
+    Durable,
+    Failed,
+}
+/// The actor an attach installed. The id is monotonic, so a stamp outcome lands on this incarnation
+/// and never on a newer actor under the same session id; adopting attaches subscribe to `stamp`.
+/// `bound_toolset` is the workspace binding the installer took for it, so a rollback releases exactly that.
+pub(super) struct InstalledIncarnation {
+    install_id: u64,
+    stamp: tokio::sync::watch::Sender<IdentityStamp>,
+    bound_toolset: Option<Arc<FinalizedToolset>>,
+}
+/// An install taken back or refused: the actor, its thread, and the workspace binding taken for it.
+pub(super) struct WithdrawnInstall {
+    pub(super) handle: SessionHandle,
+    pub(super) thread: Option<SessionThread>,
+    pub(super) bound_toolset: Option<Arc<FinalizedToolset>>,
+}
+impl WithdrawnInstall {
+    /// A refused install was never bound: the installer binds only after the registry accepts.
+    fn refused(handle: SessionHandle, thread: SessionThread) -> Box<Self> {
+        Box::new(Self {
+            handle,
+            thread: Some(thread),
+            bound_toolset: None,
+        })
+    }
+}
+/// What a stamp outcome did to the incarnation it was addressed to.
+pub(super) enum StampResolution {
+    Landed,
+    Withdrawn(Box<WithdrawnInstall>),
+    Superseded,
+}
+/// An install the registry refused, for the caller to shut down.
+pub(super) type StaleInstall = Box<WithdrawnInstall>;
 /// Turn activity of a resident actor.
 /// Split from [`SessionLiveState`] so a reader cannot observe `Working` without a resident actor.
 /// That combination was representable when liveness was a parallel field.
@@ -23,6 +65,10 @@ pub(super) enum SessionPresence {
         handle: Option<SessionHandle>,
         thread: Option<SessionThread>,
         activity: Activity,
+        root_identity: Option<super::agent_directory::PendingRootIdentity>,
+        /// The hosted actor's outstanding stamp; an attach that settled ahead of it has no guard
+        /// left, so the outcome lands on this record.
+        incarnation: Option<InstalledIncarnation>,
     },
     /// A load or resume is building the actor.
     /// `waiter` wakes racing requests; `displaced` is what the attach replaced and what a failed attach restores.
@@ -35,6 +81,9 @@ pub(super) enum SessionPresence {
         /// Activity a mid-attach `set_live` asked to apply once the attach settles.
         /// Independent liveness writes must not retire this variant.
         settled_activity: Option<Activity>,
+        root_identity: Option<super::agent_directory::PendingRootIdentity>,
+        /// The installed actor whose identity stamp is still outstanding.
+        incarnation: Option<InstalledIncarnation>,
     },
     /// Client gone (`release` kept a flushing actor) with no live bit.
     Evicted {
@@ -76,17 +125,23 @@ impl SessionPresence {
         state: SessionLiveState,
         thread: Option<SessionThread>,
         handle: Option<SessionHandle>,
+        root_identity: Option<super::agent_directory::PendingRootIdentity>,
+        incarnation: Option<InstalledIncarnation>,
     ) -> Self {
         match state {
             SessionLiveState::Working => Self::Resident {
                 handle,
                 thread,
                 activity: Activity::Working,
+                root_identity,
+                incarnation,
             },
             SessionLiveState::IdleResident => Self::Resident {
                 handle,
                 thread,
                 activity: Activity::Idle,
+                root_identity,
+                incarnation,
             },
             SessionLiveState::Attaching => {
                 let (_tx, waiter) = tokio::sync::watch::channel(false);
@@ -96,6 +151,8 @@ impl SessionPresence {
                     handle,
                     thread,
                     settled_activity: None,
+                    root_identity,
+                    incarnation,
                 }
             }
             SessionLiveState::Dormant => Self::Dormant { thread },
@@ -180,6 +237,50 @@ impl SessionPresence {
             | Self::Dormant { .. } => None,
         }
     }
+    fn root_identity(&self) -> Option<&super::agent_directory::PendingRootIdentity> {
+        match self {
+            Self::Resident { root_identity, .. } | Self::Attaching { root_identity, .. } => {
+                root_identity.as_ref()
+            }
+            Self::Evicted { .. }
+            | Self::Closed { .. }
+            | Self::Dead { .. }
+            | Self::Dormant { .. } => None,
+        }
+    }
+    /// The stamp slot of the hosted actor, on either variant that hosts one.
+    fn incarnation_slot_mut(&mut self) -> Option<&mut Option<InstalledIncarnation>> {
+        match self {
+            Self::Resident { incarnation, .. } | Self::Attaching { incarnation, .. } => {
+                Some(incarnation)
+            }
+            Self::Evicted { .. }
+            | Self::Closed { .. }
+            | Self::Dead { .. }
+            | Self::Dormant { .. } => None,
+        }
+    }
+    /// The installed actor whose stamp is outstanding, only while its handle is still hosted here.
+    fn installed(&self) -> Option<&InstalledIncarnation> {
+        match self {
+            Self::Resident {
+                handle: Some(_),
+                incarnation,
+                ..
+            }
+            | Self::Attaching {
+                handle: Some(_),
+                incarnation,
+                ..
+            } => incarnation.as_ref(),
+            Self::Resident { handle: None, .. }
+            | Self::Attaching { handle: None, .. }
+            | Self::Evicted { .. }
+            | Self::Closed { .. }
+            | Self::Dead { .. }
+            | Self::Dormant { .. } => None,
+        }
+    }
     /// True when this presence holds nothing `drop_if_empty` should keep: an `Evicted` with no thread is today's `live = None, thread = None`.
     fn is_resource_empty(&self) -> bool {
         matches!(self, Self::Evicted { thread: None })
@@ -194,6 +295,8 @@ struct SessionResources {
     /// Cleared at idle-unload; survives a reload rebuild.
     resident: Option<ResidentResources>,
     presence: Option<SessionPresence>,
+    /// Running actor threads that lost the presence's slot to another; the sweep drops each once it exits.
+    retired_threads: Vec<SessionThread>,
     unavailable_model: Option<acp::ModelId>,
 }
 #[derive(Default)]
@@ -216,8 +319,8 @@ pub(super) struct SessionCounts {
 }
 impl SessionRegistry {
     /// Releases everything a closing session leaves behind, in one drop.
-    /// A running actor thread stays: dropping its handle would detach it, and nothing would track the memory it holds.
-    /// The sweep reclaims it later.
+    /// Running actor threads stay, the presence's and any retired: dropping a handle would detach its
+    /// thread, and nothing would track the memory it holds. The sweep reclaims them later.
     pub(super) fn release(&self, id: &acp::SessionId) {
         let mut entries = self.sessions.borrow_mut();
         let Some(mut released) = entries.remove(id) else {
@@ -228,11 +331,14 @@ impl SessionRegistry {
             .as_mut()
             .and_then(SessionPresence::take_thread)
             .filter(|t| !t.is_finished());
-        if running.is_some() {
+        let mut retired_threads = std::mem::take(&mut released.retired_threads);
+        retired_threads.retain(|t| !t.is_finished());
+        if running.is_some() || !retired_threads.is_empty() {
             entries.insert(
                 id.clone(),
                 SessionResources {
                     presence: Some(SessionPresence::Evicted { thread: running }),
+                    retired_threads,
                     retained: None,
                     resident: None,
                     unavailable_model: None,
@@ -243,18 +349,17 @@ impl SessionRegistry {
         drop(released);
     }
     pub(super) fn set_thread(&self, id: &acp::SessionId, thread: SessionThread) {
-        let displaced = self.edit(id, |e| match &mut e.presence {
-            Some(presence) => presence.replace_thread(thread),
+        self.edit(id, |e| match &mut e.presence {
+            Some(presence) => {
+                let displaced = presence.replace_thread(thread);
+                e.retire_running(id, displaced);
+            }
             None => {
                 e.presence = Some(SessionPresence::Evicted {
                     thread: Some(thread),
                 });
-                None
             }
         });
-        if displaced.is_some_and(|t| !t.is_finished()) {
-            tracing::warn!(session_id = %id.0, "session thread displaced while still running");
-        }
     }
     /// Drops the tracked thread.
     /// Returns nothing on purpose: handing a `SessionThread` to a caller lets the last handle die in a local.
@@ -304,6 +409,22 @@ impl SessionRegistry {
             e.presence = None;
         });
     }
+    /// Drop the retired threads that have exited; a running one stays tracked. An entry kept only
+    /// for them goes with the last.
+    pub(super) fn reap_retired_threads(&self) {
+        let mut entries = self.sessions.borrow_mut();
+        let mut emptied = Vec::new();
+        for (id, entry) in entries.iter_mut() {
+            let before = entry.retired_threads.len();
+            entry.retired_threads.retain(|thread| !thread.is_finished());
+            if entry.retired_threads.len() < before && entry.is_empty() {
+                emptied.push(id.clone());
+            }
+        }
+        for id in emptied {
+            entries.remove(&id);
+        }
+    }
     pub(super) fn set_live(&self, id: &acp::SessionId, state: SessionLiveState) {
         if state == SessionLiveState::Attaching {
             tracing::warn!(session_id = %id.0, "ignoring set_live(Attaching) outside begin_attach");
@@ -334,12 +455,28 @@ impl SessionRegistry {
                 }
                 return;
             }
+            let root_identity = e
+                .presence
+                .as_ref()
+                .and_then(SessionPresence::root_identity)
+                .cloned();
+            let incarnation = e
+                .presence
+                .as_mut()
+                .and_then(SessionPresence::incarnation_slot_mut)
+                .and_then(Option::take);
             let thread = e.presence.as_mut().and_then(SessionPresence::take_thread);
             let handle = e
                 .presence
                 .as_mut()
                 .and_then(SessionPresence::take_hosted_handle);
-            e.presence = Some(SessionPresence::from_live(state, thread, handle));
+            e.presence = Some(SessionPresence::from_live(
+                state,
+                thread,
+                handle,
+                root_identity,
+                incarnation,
+            ));
         });
     }
     /// Hosted actor handle, if any.
@@ -432,32 +569,291 @@ impl SessionRegistry {
         &self,
         id: &acp::SessionId,
         handle: SessionHandle,
+        root_identity: Option<super::agent_directory::PendingRootIdentity>,
     ) -> Option<SessionHandle> {
-        self.edit(id, |e| match &mut e.presence {
-            Some(SessionPresence::Resident {
-                handle: existing, ..
-            })
-            | Some(SessionPresence::Attaching {
-                handle: existing, ..
-            }) => existing.replace(handle),
-            Some(presence) => {
-                let thread = presence.take_thread();
-                e.presence = Some(SessionPresence::Resident {
-                    handle: Some(handle),
+        self.put_resident_inner(id, handle, root_identity)
+    }
+    /// Returns the displaced handle and the install id the stamp outcome must be addressed to.
+    pub(super) fn put_resident_for_attach(
+        &self,
+        id: &acp::SessionId,
+        handle: SessionHandle,
+        thread: SessionThread,
+        root_identity: Option<super::agent_directory::PendingRootIdentity>,
+        waiter: &tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(Option<SessionHandle>, u64), StaleInstall> {
+        let mut entries = self.sessions.borrow_mut();
+        let Some(entry) = entries.get_mut(id) else {
+            return Err(WithdrawnInstall::refused(handle, thread));
+        };
+        let Some(SessionPresence::Attaching {
+            waiter: current,
+            handle: current_handle,
+            thread: current_thread,
+            root_identity: current_identity,
+            incarnation,
+            ..
+        }) = &mut entry.presence
+        else {
+            return Err(WithdrawnInstall::refused(handle, thread));
+        };
+        if !current.same_channel(waiter) {
+            return Err(WithdrawnInstall::refused(handle, thread));
+        }
+        if root_identity.is_some() {
+            *current_identity = root_identity;
+        }
+        let install_id = self.next_install_id.get() + 1;
+        self.next_install_id.set(install_id);
+        *incarnation = Some(InstalledIncarnation {
+            install_id,
+            stamp: tokio::sync::watch::Sender::new(IdentityStamp::Pending),
+            bound_toolset: None,
+        });
+        let displaced_handle = current_handle.replace(handle);
+        let displaced_thread = current_thread.replace(thread);
+        entry.retire_running(id, displaced_thread);
+        drop(entries);
+        self.agent_directory.borrow_mut().hide_attaching(id);
+        Ok((displaced_handle, install_id))
+    }
+    /// Record the workspace binding the installer took for `install_id`, so withdrawing that install
+    /// releases it, on whichever presence hosts the slot. A newer incarnation under the same id is never touched.
+    pub(super) fn record_bound_toolset(
+        &self,
+        id: &acp::SessionId,
+        install_id: u64,
+        toolset: Arc<FinalizedToolset>,
+    ) {
+        let mut entries = self.sessions.borrow_mut();
+        let installed = match entries
+            .get_mut(id)
+            .and_then(|entry| entry.presence.as_mut())
+            .and_then(SessionPresence::incarnation_slot_mut)
+        {
+            Some(Some(installed)) if installed.install_id == install_id => installed,
+            _ => {
+                tracing::warn!(
+                    session_id = %id.0,
+                    install_id,
+                    "bound toolset recorded for an install the registry no longer hosts"
+                );
+                return;
+            }
+        };
+        installed.bound_toolset = Some(toolset);
+    }
+    /// Record the stamp outcome for one incarnation; a newer incarnation under the same id is never
+    /// touched. Mid-attach the owning guard publishes or restores at settle; a record that already
+    /// settled as `Resident` has no guard left, so it publishes or releases itself here.
+    pub(super) fn resolve_identity_stamp(
+        &self,
+        id: &acp::SessionId,
+        install_id: u64,
+        outcome: IdentityStamp,
+    ) -> StampResolution {
+        let mut entries = self.sessions.borrow_mut();
+        let Some(presence) = entries
+            .get_mut(id)
+            .and_then(|entry| entry.presence.as_mut())
+        else {
+            return StampResolution::Superseded;
+        };
+        let Some(installed) = presence
+            .installed()
+            .filter(|installed| installed.install_id == install_id)
+        else {
+            return StampResolution::Superseded;
+        };
+        installed.stamp.send_replace(outcome);
+        match presence {
+            SessionPresence::Attaching {
+                handle,
+                thread,
+                root_identity,
+                incarnation,
+                displaced,
+                ..
+            } => {
+                if outcome == IdentityStamp::Durable {
+                    return StampResolution::Landed;
+                }
+                *root_identity = None;
+                let bound_toolset = incarnation
+                    .take()
+                    .and_then(|installed| installed.bound_toolset);
+                let Some(withdrawn) = handle.take() else {
+                    return StampResolution::Superseded;
+                };
+                let mut thread = thread.take();
+                if let Some(displaced) = displaced
+                    && displaced
+                        .hosted_handle()
+                        .is_some_and(|h| h.cmd_tx.same_channel(&withdrawn.cmd_tx))
+                {
+                    let _ = displaced.take_hosted_handle();
+                    if thread.is_none() {
+                        thread = displaced.take_thread();
+                    }
+                }
+                StampResolution::Withdrawn(Box::new(WithdrawnInstall {
+                    handle: withdrawn,
                     thread,
-                    activity: Activity::Idle,
-                });
-                None
+                    bound_toolset,
+                }))
             }
-            None => {
-                e.presence = Some(SessionPresence::Resident {
-                    handle: Some(handle),
-                    thread: None,
-                    activity: Activity::Idle,
-                });
-                None
+            SessionPresence::Resident {
+                handle,
+                thread,
+                root_identity,
+                incarnation,
+                ..
+            } => {
+                let bound_toolset = incarnation
+                    .take()
+                    .and_then(|installed| installed.bound_toolset);
+                if outcome == IdentityStamp::Durable {
+                    let identity = root_identity.clone();
+                    let is_resident = handle
+                        .as_ref()
+                        .is_some_and(|handle| !handle.cmd_tx.is_closed());
+                    drop(entries);
+                    self.agent_directory
+                        .borrow_mut()
+                        .settle_attach(id, identity, is_resident);
+                    return StampResolution::Landed;
+                }
+                let Some(withdrawn) = handle.take() else {
+                    return StampResolution::Superseded;
+                };
+                let thread = thread.take();
+                *presence = SessionPresence::Evicted { thread: None };
+                drop(entries);
+                self.release_failed_load(id);
+                StampResolution::Withdrawn(Box::new(WithdrawnInstall {
+                    handle: withdrawn,
+                    thread,
+                    bound_toolset,
+                }))
             }
+            _ => StampResolution::Superseded,
+        }
+    }
+    /// Drop what a load that produced nothing left behind: its directory row and the whole entry,
+    /// retained state included (a lone `presence = None` would leave the turn counter behind).
+    fn release_failed_load(&self, id: &acp::SessionId) {
+        self.agent_directory
+            .borrow_mut()
+            .settle_attach(id, None, false);
+        self.release(id);
+    }
+    /// The outstanding stamp of the installed actor an attach would adopt, with its install id.
+    pub(super) fn pending_identity_stamp(
+        &self,
+        id: &acp::SessionId,
+    ) -> Option<(u64, tokio::sync::watch::Receiver<IdentityStamp>)> {
+        self.with(id, |entry| {
+            let installed = entry.presence.as_ref()?.installed()?;
+            Some((installed.install_id, installed.stamp.subscribe()))
         })
+        .flatten()
+    }
+    #[cfg(test)]
+    pub(super) fn identity_stamp_waiters(&self, id: &acp::SessionId) -> usize {
+        self.with(id, |entry| {
+            entry
+                .presence
+                .as_ref()
+                .and_then(SessionPresence::installed)
+                .map_or(0, |installed| installed.stamp.receiver_count())
+        })
+        .unwrap_or(0)
+    }
+    /// The identity to stamp for `install_id`, whether its attach is still in flight or a superseding
+    /// guard already settled the record.
+    pub(super) fn current_attach_identity(
+        &self,
+        id: &acp::SessionId,
+        install_id: u64,
+    ) -> Option<super::agent_directory::PendingRootIdentity> {
+        self.with(id, |entry| {
+            let presence = entry.presence.as_ref()?;
+            presence
+                .installed()
+                .filter(|installed| installed.install_id == install_id)?;
+            presence.root_identity().cloned()
+        })
+        .flatten()
+    }
+    fn put_resident_inner(
+        &self,
+        id: &acp::SessionId,
+        handle: SessionHandle,
+        root_identity: Option<super::agent_directory::PendingRootIdentity>,
+    ) -> Option<SessionHandle> {
+        let publish_identity = root_identity.clone();
+        let displaced = self.edit(id, |e| {
+            if let Some(slot) = e
+                .presence
+                .as_mut()
+                .and_then(SessionPresence::incarnation_slot_mut)
+            {
+                *slot = None;
+            }
+            match &mut e.presence {
+                Some(SessionPresence::Resident {
+                    handle: existing,
+                    root_identity: identity,
+                    ..
+                }) => {
+                    *identity = root_identity;
+                    existing.replace(handle)
+                }
+                Some(SessionPresence::Attaching {
+                    handle: existing,
+                    root_identity: identity,
+                    ..
+                }) => {
+                    if root_identity.is_some() {
+                        *identity = root_identity;
+                    }
+                    existing.replace(handle)
+                }
+                Some(presence) => {
+                    let thread = presence.take_thread();
+                    e.presence = Some(SessionPresence::Resident {
+                        handle: Some(handle),
+                        thread,
+                        activity: Activity::Idle,
+                        root_identity,
+                        incarnation: None,
+                    });
+                    None
+                }
+                None => {
+                    e.presence = Some(SessionPresence::Resident {
+                        handle: Some(handle),
+                        thread: None,
+                        activity: Activity::Idle,
+                        root_identity,
+                        incarnation: None,
+                    });
+                    None
+                }
+            }
+        });
+        if self.is_attaching(id) {
+            self.agent_directory.borrow_mut().hide_attaching(id);
+            displaced
+        } else {
+            let is_resident = self
+                .resident_handle(id)
+                .is_some_and(|handle| !handle.cmd_tx.is_closed());
+            self.agent_directory
+                .borrow_mut()
+                .settle_attach(id, publish_identity, is_resident);
+            displaced
+        }
     }
     /// Start an attach.
     /// Current presence becomes `displaced` so a failed attach can restore it.
@@ -470,21 +866,43 @@ impl SessionRegistry {
         tokio::sync::watch::Receiver<bool>,
     ) {
         let (tx, rx) = tokio::sync::watch::channel(false);
+        let directory_identity =
+            self.agent_directory
+                .borrow_mut()
+                .begin_attach(id)
+                .map(|snapshot| {
+                    super::agent_directory::PendingRootIdentity::from_snapshot(
+                        snapshot,
+                        crate::agent::roster::RosterOrigin::Local,
+                    )
+                });
         self.edit(id, |e| {
             let previous = e.presence.take();
-            let (handle, thread, displaced) = match previous {
+            let (handle, thread, displaced, root_identity, incarnation) = match previous {
                 Some(SessionPresence::Attaching {
                     handle,
                     thread,
                     displaced,
+                    root_identity,
+                    incarnation,
                     ..
-                }) => (handle, thread, displaced),
-                other => {
+                }) => (handle, thread, displaced, root_identity, incarnation),
+                mut other => {
                     let handle = other
                         .as_ref()
                         .and_then(SessionPresence::hosted_handle)
                         .cloned();
-                    (handle, None, other.map(Box::new))
+                    let incarnation = other
+                        .as_mut()
+                        .and_then(SessionPresence::incarnation_slot_mut)
+                        .and_then(Option::take);
+                    let identity = match &other {
+                        Some(SessionPresence::Resident { root_identity, .. }) => {
+                            root_identity.clone()
+                        }
+                        _ => directory_identity.clone(),
+                    };
+                    (handle, None, other.map(Box::new), identity, incarnation)
                 }
             };
             e.presence = Some(SessionPresence::Attaching {
@@ -493,6 +911,8 @@ impl SessionRegistry {
                 handle,
                 thread,
                 settled_activity: None,
+                root_identity,
+                incarnation,
             });
         });
         (tx, rx)
@@ -547,6 +967,8 @@ impl SessionRegistry {
             handle,
             thread,
             settled_activity,
+            root_identity,
+            incarnation,
             ..
         }) = entry.presence.take()
         else {
@@ -558,19 +980,16 @@ impl SessionRegistry {
                 .map(|p| p.is_some())
                 .unwrap_or(true)
         });
+        let root_is_resident = handle
+            .as_ref()
+            .is_some_and(|handle| !handle.cmd_tx.is_closed());
+        let incarnation =
+            incarnation.filter(|installed| *installed.stamp.borrow() == IdentityStamp::Pending);
+        let identity_is_durable = incarnation.is_none();
         entry.presence = if let Some(running) = running {
             let thread = match thread {
                 Some(own) => {
-                    if displaced
-                        .as_mut()
-                        .and_then(|d| d.take_thread())
-                        .is_some_and(|t| !t.is_finished())
-                    {
-                        tracing::warn!(
-                            session_id = %id.0,
-                            "session thread displaced while still running"
-                        );
-                    }
+                    entry.retire_running(id, displaced.as_mut().and_then(|d| d.take_thread()));
                     Some(own)
                 }
                 None => displaced.as_mut().and_then(|d| d.take_thread()),
@@ -584,6 +1003,8 @@ impl SessionRegistry {
                 handle,
                 thread,
                 activity,
+                root_identity: root_identity.clone(),
+                incarnation,
             })
         } else if let Some(displaced) = displaced {
             let mut restored = match *displaced {
@@ -598,21 +1019,22 @@ impl SessionRegistry {
             if let Some(own) = thread {
                 if restored.thread_slot().is_none() {
                     let _ = restored.replace_thread(own);
-                } else if !own.is_finished() {
-                    tracing::warn!(
-                        session_id = %id.0,
-                        "session thread displaced while still running"
-                    );
+                } else {
+                    entry.retire_running(id, Some(own));
                 }
             }
             Some(restored)
         } else {
             entry.presence = Some(SessionPresence::Evicted { thread });
             drop(entries);
-            self.release(id);
+            self.release_failed_load(id);
             return;
         };
+        let settled_identity = root_identity.filter(|_| root_is_resident && identity_is_durable);
         drop(entries);
+        self.agent_directory
+            .borrow_mut()
+            .settle_attach(id, settled_identity, root_is_resident);
         self.drop_if_empty(id);
     }
     /// Drop residency only.
@@ -623,7 +1045,12 @@ impl SessionRegistry {
             .borrow_mut()
             .get_mut(id)
             .and_then(|e| e.presence.as_mut())
-            .and_then(SessionPresence::take_hosted_handle);
+            .and_then(|presence| {
+                if let Some(slot) = presence.incarnation_slot_mut() {
+                    *slot = None;
+                }
+                presence.take_hosted_handle()
+            });
         self.drop_if_empty(id);
         handle
     }
@@ -752,12 +1179,14 @@ impl SessionRegistry {
                 retained,
                 resident,
                 presence,
+                retired_threads,
                 unavailable_model,
             } = entry;
             counts.retained_resources += usize::from(retained.is_some());
             counts.resident_resources += usize::from(resident.is_some());
             counts.session_threads +=
-                usize::from(presence.as_ref().is_some_and(SessionPresence::has_thread));
+                usize::from(presence.as_ref().is_some_and(SessionPresence::has_thread))
+                    + retired_threads.len();
             counts.session_live_state += usize::from(
                 presence
                     .as_ref()
@@ -806,11 +1235,20 @@ impl SessionRegistry {
     }
 }
 impl SessionResources {
+    /// The one rule for a thread displaced from a presence: a running one stays tracked for the
+    /// sweep; a finished one has nothing left to track. Dropping a running `JoinHandle` detaches it.
+    fn retire_running(&mut self, id: &acp::SessionId, thread: Option<SessionThread>) {
+        if let Some(thread) = thread.filter(|thread| !thread.is_finished()) {
+            tracing::debug!(session_id = %id.0, "session thread displaced while still running; retired for the sweep");
+            self.retired_threads.push(thread);
+        }
+    }
     fn is_empty(&self) -> bool {
         let Self {
             retained,
             resident,
             presence,
+            retired_threads,
             unavailable_model,
         } = self;
         let chat_vacant = true;
@@ -821,6 +1259,7 @@ impl SessionResources {
         retained.is_none()
             && resident.is_none()
             && presence_vacant
+            && retired_threads.is_empty()
             && unavailable_model.is_none()
             && chat_vacant
     }

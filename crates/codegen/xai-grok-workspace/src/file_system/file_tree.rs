@@ -61,11 +61,13 @@ fn get_file_ext_str(files: &[String], k: usize) -> String {
     let top_exts = get_top_exts(files);
     let include_dots = top_exts.len() > k
         || (top_exts.len() == k && top_exts.iter().any(|(ext, _)| ext.is_empty()));
-    let top_k_exts = &top_exts[0..std::cmp::min(k, top_exts.len())];
+    let top_k_exts = top_exts
+        .get(..std::cmp::min(k, top_exts.len()))
+        .unwrap_or(&[]);
     if top_k_exts.is_empty() {
         return String::new();
     }
-    if top_k_exts.len() == 1 && top_k_exts[0].0.is_empty() {
+    if top_k_exts.len() == 1 && top_k_exts.first().is_some_and(|(ext, _)| ext.is_empty()) {
         return "(...)".to_string();
     }
     let filtered_top_k_exts: Vec<_> = top_k_exts
@@ -305,7 +307,13 @@ impl DirectoryNode {
         assert!(self.is_expanded());
         let children = self.children.as_ref().unwrap();
         let mut remaining_subitems = self.dirs.clone();
-        remaining_subitems.extend(self.files[0..self.num_listed_files].iter().cloned());
+        remaining_subitems.extend(
+            self.files
+                .get(..self.num_listed_files)
+                .unwrap_or(&[])
+                .iter()
+                .cloned(),
+        );
         remaining_subitems.sort_by_key(|s| s.to_lowercase());
         let mut curr_str = String::new();
         for subitem in remaining_subitems {
@@ -322,8 +330,11 @@ impl DirectoryNode {
             }
         }
         if self.files.len() > self.num_listed_files {
-            let remaining_str =
-                self.get_remaining_str(&self.files[0..self.num_listed_files], true, 3);
+            let remaining_str = self.get_remaining_str(
+                self.files.get(..self.num_listed_files).unwrap_or(&[]),
+                true,
+                3,
+            );
             curr_str.push_str(&remaining_str);
         }
         curr_str.trim_end_matches('\n').to_string()
@@ -480,7 +491,10 @@ pub async fn list_contents(
             }
             let num_file_limit = node.files.len();
             for i in node.num_listed_files..num_file_limit {
-                let new_additional_len = node.subitem_str(&node.files[i]).len();
+                let Some(file) = node.files.get(i) else {
+                    break;
+                };
+                let new_additional_len = node.subitem_str(file).len();
                 if new_additional_len <= remaining_chars {
                     node.num_listed_files = i + 1;
                     remaining_chars -= new_additional_len;

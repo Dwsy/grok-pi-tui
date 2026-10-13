@@ -9,7 +9,7 @@ pub const BEARER_SUFFIX_LEN: usize = 12;
 /// Counts chars, not bytes: slicing at `len - N` panics mid-character, and tokens from `auth.json` or an auth-provider command can be non-ASCII.
 pub fn bearer_suffix(s: &str) -> &str {
     match s.char_indices().rev().nth(BEARER_SUFFIX_LEN - 1) {
-        Some((i, _)) => &s[i..],
+        Some((i, _)) => s.get(i..).unwrap_or(s),
         None => s,
     }
 }

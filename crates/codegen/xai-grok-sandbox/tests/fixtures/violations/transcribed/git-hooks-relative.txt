@@ -1,0 +1,1 @@
+error: unable to create file .git/hooks/pre-commit: Operation not permitted

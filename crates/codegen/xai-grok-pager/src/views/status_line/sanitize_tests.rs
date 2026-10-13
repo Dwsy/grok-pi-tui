@@ -9,9 +9,17 @@ fn runaway_is_capped_in_lines_and_characters_but_keeps_its_prefix() {
     assert_eq!(tall.line_count(), MAX_STATUS_LINE_LINES);
     assert_eq!(wide.line_count(), 1);
     // Every character here is one column, so this is the character cap.
-    assert!(painted_line_width(&wide.lines[0]) <= MAX_SANITIZED_CHARS);
+    let Some(first) = wide.lines.first() else {
+        panic!("expected a sanitized line");
+    };
+    assert!(painted_line_width(first) <= MAX_SANITIZED_CHARS);
     // A `<=` bound on its own is satisfied by an empty line.
-    assert!(wide.lines[0].spans[0].content.starts_with("xxx"));
+    assert!(
+        first
+            .spans
+            .first()
+            .is_some_and(|s| s.content.starts_with("xxx"))
+    );
 }
 
 /// A label, the input, the text that survives, and the link columns.
@@ -85,7 +93,9 @@ fn scanner_strips_escapes_and_records_link_columns() {
 #[test]
 fn link_on_the_second_line_is_measured_from_that_line() {
     let text = SanitizedText::new("first\nsee \x1b]8;;https://x.ai\x07x.ai\x1b]8;;\x07");
-    let link = &text.links[0];
+    let Some(link) = text.links.first() else {
+        panic!("expected a link: {:?}", text.links);
+    };
 
     assert_eq!(text.line_count(), 2);
     // Column 4 of the second line, not column 10 of the whole text.
@@ -103,7 +113,7 @@ fn link_is_dropped_with_the_line_the_cap_cuts() {
     let text = SanitizedText::new(&input);
 
     // The scanner found it one line past the last line kept.
-    assert_eq!(scanned[0].line, MAX_STATUS_LINE_LINES);
+    assert_eq!(scanned.first().map(|l| l.line), Some(MAX_STATUS_LINE_LINES));
     assert_eq!(text.line_count(), MAX_STATUS_LINE_LINES);
     assert!(text.links.is_empty());
 }

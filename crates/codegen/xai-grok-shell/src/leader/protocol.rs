@@ -1,11 +1,13 @@
 use std::io;
 use std::path::PathBuf;
 
+use bytes::{Buf, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::cpu_profile::{ControlError, ProfileArtifactFormat};
 
 const MAX_MESSAGE_SIZE: u32 = 64 * 1024 * 1024;
+const FRAME_HEADER_LEN: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
@@ -39,6 +41,64 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
     let mut buf = vec![0u8; len as usize];
     reader.read_exact(&mut buf).await?;
     Ok(buf)
+}
+
+/// Reads length-prefixed frames into a buffer that outlives each read, so [`FrameReader::read_message`]
+/// is cancel-safe: a `select!` branch that wins mid-frame leaves the partial frame for the next read
+/// instead of desynchronizing the stream.
+pub(crate) struct FrameReader<R> {
+    reader: R,
+    buf: BytesMut,
+}
+
+impl<R: AsyncRead + Unpin> FrameReader<R> {
+    pub(crate) fn new(reader: R) -> Self {
+        FrameReader {
+            reader,
+            buf: BytesMut::new(),
+        }
+    }
+
+    /// Cancel-safe: only `read_buf` awaits, and it appends to `buf` or reads nothing.
+    pub(crate) async fn read_frame(&mut self) -> Result<Vec<u8>, ProtocolError> {
+        loop {
+            if let Some(frame) = self.take_frame()? {
+                return Ok(frame);
+            }
+            if self.reader.read_buf(&mut self.buf).await? == 0 {
+                // Matches `read_frame`: EOF inside the length prefix is a close, inside a body an error.
+                return Err(if self.buf.len() < FRAME_HEADER_LEN {
+                    ProtocolError::ConnectionClosed
+                } else {
+                    ProtocolError::Io(io::ErrorKind::UnexpectedEof.into())
+                });
+            }
+        }
+    }
+
+    pub(crate) async fn read_message<T: serde::de::DeserializeOwned>(
+        &mut self,
+    ) -> Result<T, ProtocolError> {
+        let data = self.read_frame().await?;
+        Ok(serde_json::from_slice(&data)?)
+    }
+
+    fn take_frame(&mut self) -> Result<Option<Vec<u8>>, ProtocolError> {
+        let Some(header) = self.buf.first_chunk::<FRAME_HEADER_LEN>() else {
+            return Ok(None);
+        };
+        let len = u32::from_be_bytes(*header);
+        if len > MAX_MESSAGE_SIZE {
+            return Err(ProtocolError::MessageTooLarge(len));
+        }
+        let frame_len = FRAME_HEADER_LEN + len as usize;
+        if self.buf.len() < frame_len {
+            self.buf.reserve(frame_len - self.buf.len());
+            return Ok(None);
+        }
+        self.buf.advance(FRAME_HEADER_LEN);
+        Ok(Some(self.buf.split_to(len as usize).to_vec()))
+    }
 }
 
 pub(crate) async fn write_frame<W: AsyncWrite + Unpin>(
@@ -183,6 +243,121 @@ pub struct LeaderCapabilities {
     /// Old leaders default to `false`, so a new client falls back to advising a manual restart.
     #[serde(default)]
     pub relaunch_v1: bool,
+    /// Whether the leader can run the worker door (`ControlCommand::CursorWorker*`).
+    /// `false` on leaders built without that support, which answer those commands with a `ControlError`.
+    #[serde(default)]
+    pub cursor_worker: bool,
+}
+
+/// Prefix of the `last_error` a `stopped_link_required` door reports: the worker crate's
+/// `TokenStop::LinkState` text, `<prefix><code> (<reason>)`, forwarded verbatim by the leader.
+/// Clients parse it until the status payload carries the code structurally; the `cursor-worker`
+/// build pins it against the crate's Display in `cursor_worker_tests`.
+pub const CURSOR_WORKER_HUB_REFUSAL_PREFIX: &str = "hub refused the cursor session: ";
+
+/// Bound on opening one worker door inside the leader (git in `claim::start`,
+/// the repository URL scan, the bridge spawn). `CursorWorkerStart` can open two
+/// kinds sequentially, so the first reply may take two of these plus a stop.
+pub const CURSOR_WORKER_DOOR_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// One worker claim in [`ControlPayload::CursorWorkerStatus`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CursorWorkerClaim {
+    pub bc_id: String,
+    /// `claimed`, `idle`, or `released`.
+    pub state: String,
+    pub worktree_path: String,
+    pub source_dir: String,
+    #[serde(default)]
+    pub controller_id: Option<String>,
+    pub claimed_at_ms: i64,
+    pub active_requests: u32,
+}
+
+/// One door's status in the `doors` list of [`ControlPayload::CursorWorkerStatus`]. `kind` is
+/// `bound` or `any_repo`; `state` is the same set as the flat `state` field, with `none` for a
+/// door that is not running (only its last open failure is reported then).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CursorWorkerDoorStatus {
+    pub kind: String,
+    pub state: String,
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// The registered working directory: the first worker dir (bound) or the clone root (any-repo).
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    #[serde(default)]
+    pub worker_dirs: Vec<String>,
+    #[serde(default)]
+    pub cursor_api_base: Option<String>,
+    pub uptime_ms: u64,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub claims: Vec<CursorWorkerClaim>,
+}
+
+impl CursorWorkerDoorStatus {
+    /// A slot with no live door: open failed, or a whole-start refusal with no slot row.
+    pub fn not_running(kind: impl Into<String>, error: Option<String>) -> CursorWorkerDoorStatus {
+        CursorWorkerDoorStatus {
+            kind: kind.into(),
+            state: "none".to_owned(),
+            worker_id: None,
+            display_name: None,
+            working_dir: None,
+            worker_dirs: Vec::new(),
+            cursor_api_base: None,
+            uptime_ms: 0,
+            last_error: error,
+            claims: Vec::new(),
+        }
+    }
+}
+
+/// One door's summary in [`CursorWorkerSummary::doors`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CursorWorkerDoorSummary {
+    pub kind: String,
+    pub state: String,
+    pub claims: u32,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+impl CursorWorkerDoorSummary {
+    pub fn not_running(kind: impl Into<String>, error: Option<String>) -> CursorWorkerDoorSummary {
+        CursorWorkerDoorSummary {
+            kind: kind.into(),
+            state: "none".to_owned(),
+            claims: 0,
+            last_error: error,
+        }
+    }
+}
+
+/// Cursor worker summary in [`ControlPayload::LeaderInfo`]. The flat fields mirror the bound
+/// door, else the first running door, else the `none` state. `doors` is empty only from
+/// leaders that predate the two-door split; a current leader that refused before any slot
+/// still emits one `none` row carrying `last_start_error`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CursorWorkerSummary {
+    pub state: String,
+    pub claims: u32,
+    #[serde(default)]
+    pub doors: Vec<CursorWorkerDoorSummary>,
+}
+
+/// Arguments of [`ControlCommand::CursorWorkerStart`] and of the leader boot hook. Fields left
+/// empty fall back to the `[cursor_worker]` table on the leader.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct CursorWorkerStartArgs {
+    pub name: Option<String>,
+    pub worker_dirs: Vec<String>,
+    pub max_agents: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -206,6 +381,10 @@ pub enum ControlCommand {
     WorkspaceResume,
     WorkspaceStop,
     WorkspaceStatus,
+    /// Register the leader as a worker. Idempotent for identical arguments on a live door; different arguments, or a door that stopped, restart it.
+    CursorWorkerStart(CursorWorkerStartArgs),
+    CursorWorkerStop,
+    CursorWorkerStatus,
     /// Ask the leader to relaunch onto a freshly-installed binary (driven by `grok update`). The leader stops admitting new turns, waits a bounded grace period for in-flight turns, and flushes session state.
     /// It then exits with [`ShutdownReason::AutoUpdate`] so connected clients reconnect onto the new binary and restore sessions via `session/load`.
     /// `to_version` is the version `grok update` just installed; the leader declines if it already runs that version or newer.
@@ -231,6 +410,9 @@ pub enum ControlPayload {
         cpu_profile_stopping: bool,
         profile_started_at: Option<String>,
         profile_formats: Vec<ProfileArtifactFormat>,
+        /// `None` from leaders that predate the worker door.
+        #[serde(default)]
+        cursor_worker: Option<CursorWorkerSummary>,
     },
     CpuProfileStatus {
         active: bool,
@@ -262,6 +444,29 @@ pub enum ControlPayload {
         active_tool_calls: u32,
         #[serde(default)]
         sessions: Vec<String>,
+        pid: u32,
+    },
+    /// `state` is one of `none`, `connecting`, `registered`, `reconnecting`, `stopped_link_required`, `stopped_hub_unavailable`, `stopped_unimplemented`.
+    /// The flat fields mirror the bound door, else the first running door, else the `none` state,
+    /// for clients that predate `doors`; `doors` carries one entry per door and is empty from
+    /// leaders that predate the two-door split.
+    CursorWorkerStatus {
+        state: String,
+        #[serde(default)]
+        worker_id: Option<String>,
+        #[serde(default)]
+        display_name: Option<String>,
+        #[serde(default)]
+        worker_dirs: Vec<String>,
+        #[serde(default)]
+        cursor_api_base: Option<String>,
+        uptime_ms: u64,
+        #[serde(default)]
+        last_error: Option<String>,
+        #[serde(default)]
+        claims: Vec<CursorWorkerClaim>,
+        #[serde(default)]
+        doors: Vec<CursorWorkerDoorStatus>,
         pid: u32,
     },
     /// Ack for [`ControlCommand::RelaunchForUpdate`]: the leader accepted the request and will exit after a bounded grace period of `grace_ms`.
@@ -440,6 +645,66 @@ mod tests {
         assert_eq!(received, data);
     }
 
+    /// A read cancelled mid-frame, as when an outbound write wins the client loop's `select!`, must
+    /// leave the partial frame for the next read; `read_frame` over `read_exact` drops it and
+    /// desynchronizes the stream.
+    #[tokio::test]
+    async fn frame_reader_survives_cancellation_mid_frame() {
+        let (mut client, server) = duplex(1024);
+        let mut reader = FrameReader::new(server);
+        let data = b"hello world";
+        let mut frame = (data.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(data);
+
+        let (head, tail) = frame.split_at(6);
+        client.write_all(head).await.unwrap();
+        tokio::select! {
+            biased;
+            _ = reader.read_frame() => panic!("a partial frame must not complete a read"),
+            () = tokio::task::yield_now() => {}
+        }
+        client.write_all(tail).await.unwrap();
+        write_frame(&mut client, b"next").await.unwrap();
+
+        assert_eq!(data.as_slice(), reader.read_frame().await.unwrap());
+        assert_eq!(b"next".as_slice(), reader.read_frame().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn frame_reader_eof_in_prefix_is_a_close_and_in_body_an_error() {
+        let (client, server) = duplex(64);
+        drop(client);
+        let mut reader = FrameReader::new(server);
+        assert!(matches!(
+            reader.read_frame().await,
+            Err(ProtocolError::ConnectionClosed)
+        ));
+
+        let (mut client, server) = duplex(64);
+        client.write_all(&8u32.to_be_bytes()).await.unwrap();
+        client.write_all(b"abc").await.unwrap();
+        drop(client);
+        let mut reader = FrameReader::new(server);
+        assert!(matches!(
+            reader.read_frame().await,
+            Err(ProtocolError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof
+        ));
+    }
+
+    #[tokio::test]
+    async fn frame_reader_rejects_an_oversized_prefix() {
+        let (mut client, server) = duplex(64);
+        client
+            .write_all(&(MAX_MESSAGE_SIZE + 1).to_be_bytes())
+            .await
+            .unwrap();
+        let mut reader = FrameReader::new(server);
+        assert!(matches!(
+            reader.read_frame().await,
+            Err(ProtocolError::MessageTooLarge(len)) if len == MAX_MESSAGE_SIZE + 1
+        ));
+    }
+
     #[tokio::test]
     async fn message_roundtrip() {
         let (mut client, mut server) = duplex(1024);
@@ -565,6 +830,7 @@ mod tests {
                 profile_formats: vec![ProfileArtifactFormat::Svg],
                 workspace_exposure: true,
                 relaunch_v1: true,
+                cursor_worker: true,
             }),
         };
 
@@ -583,6 +849,7 @@ mod tests {
                     profile_formats,
                     workspace_exposure: true,
                     relaunch_v1: true,
+                    cursor_worker: true,
                 }),
             } if profile_formats == vec![ProfileArtifactFormat::Svg]
         ));
@@ -638,6 +905,7 @@ mod tests {
                 cpu_profile_active: false,
                 cpu_profile_stopping: false,
                 profile_started_at: None,
+                cursor_worker: None,
                 ..
             }
         ));
@@ -716,6 +984,192 @@ mod tests {
         let json = r#"{"control_v1":true,"runtime_cpu_profile":false,"profile_formats":[]}"#;
         let caps: LeaderCapabilities = serde_json::from_str(json).unwrap();
         assert!(!caps.workspace_exposure);
+        assert!(!caps.cursor_worker);
+    }
+
+    #[tokio::test]
+    async fn cursor_worker_control_command_roundtrip() {
+        let (mut client, mut server) = duplex(1024);
+        let args = CursorWorkerStartArgs {
+            name: Some("devbox".into()),
+            worker_dirs: vec!["/home/u/proj".into()],
+            max_agents: Some(2),
+        };
+        let msg = ClientMessage::Control {
+            request_id: "cw-1".into(),
+            command: ControlCommand::CursorWorkerStart(args.clone()),
+        };
+
+        write_message(&mut client, &msg).await.unwrap();
+        let received: ClientMessage = read_message(&mut server).await.unwrap();
+
+        assert!(matches!(
+            received,
+            ClientMessage::Control {
+                request_id,
+                command: ControlCommand::CursorWorkerStart(received_args),
+            } if request_id == "cw-1" && received_args == args
+        ));
+    }
+
+    /// The newtype variant must stay wire-identical to a struct variant: the tag and the
+    /// argument fields share one flat object.
+    #[test]
+    fn cursor_worker_start_serializes_flat() {
+        let command = ControlCommand::CursorWorkerStart(CursorWorkerStartArgs {
+            name: Some("devbox".into()),
+            worker_dirs: vec!["/home/u/proj".into()],
+            max_agents: Some(2),
+        });
+        assert_eq!(
+            serde_json::json!({
+                "type": "cursor_worker_start",
+                "name": "devbox",
+                "worker_dirs": ["/home/u/proj"],
+                "max_agents": 2,
+            }),
+            serde_json::to_value(&command).unwrap()
+        );
+    }
+
+    #[test]
+    fn cursor_worker_start_defaults_every_argument() {
+        let decoded: ControlCommand =
+            serde_json::from_str(r#"{"type":"cursor_worker_start"}"#).unwrap();
+        assert_eq!(
+            ControlCommand::CursorWorkerStart(CursorWorkerStartArgs::default()),
+            decoded
+        );
+        let stop: ControlCommand =
+            serde_json::from_str(r#"{"type":"cursor_worker_stop"}"#).unwrap();
+        assert_eq!(ControlCommand::CursorWorkerStop, stop);
+        let status: ControlCommand =
+            serde_json::from_str(r#"{"type":"cursor_worker_status"}"#).unwrap();
+        assert_eq!(ControlCommand::CursorWorkerStatus, status);
+    }
+
+    #[test]
+    fn cursor_worker_status_payload_roundtrip() {
+        let claim = CursorWorkerClaim {
+            bc_id: "bc-1".into(),
+            state: "claimed".into(),
+            worktree_path: "/home/u/.grok/worktrees/proj/cursor-bc-1".into(),
+            source_dir: "/home/u/proj".into(),
+            controller_id: Some("ctrl-1".into()),
+            claimed_at_ms: 1_762_000_000_000,
+            active_requests: 1,
+        };
+        let payload = ControlPayload::CursorWorkerStatus {
+            state: "registered".into(),
+            worker_id: Some("3f1c3b2e-0000-4000-8000-000000000000".into()),
+            display_name: Some("devbox".into()),
+            worker_dirs: vec!["/home/u/proj".into()],
+            cursor_api_base: Some("https://cursor.example".into()),
+            uptime_ms: 4200,
+            last_error: None,
+            claims: vec![claim.clone()],
+            doors: vec![
+                CursorWorkerDoorStatus {
+                    kind: "bound".into(),
+                    state: "registered".into(),
+                    worker_id: Some("3f1c3b2e-0000-4000-8000-000000000000".into()),
+                    display_name: Some("devbox".into()),
+                    working_dir: Some("/home/u/proj".into()),
+                    worker_dirs: vec!["/home/u/proj".into()],
+                    cursor_api_base: Some("https://cursor.example".into()),
+                    uptime_ms: 4200,
+                    last_error: None,
+                    claims: vec![claim],
+                },
+                CursorWorkerDoorStatus {
+                    kind: "any_repo".into(),
+                    state: "none".into(),
+                    worker_id: None,
+                    display_name: None,
+                    working_dir: None,
+                    worker_dirs: Vec::new(),
+                    cursor_api_base: None,
+                    uptime_ms: 0,
+                    last_error: Some("cursor any-repo id: unwritable".into()),
+                    claims: Vec::new(),
+                },
+            ],
+            pid: 4242,
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let decoded: ControlPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(payload, decoded);
+        assert!(json.contains("\"type\":\"cursor_worker_status\""));
+        assert!(json.contains("\"kind\":\"any_repo\""));
+    }
+
+    /// An old leader sends no `doors`; a new CLI must decode its payload with an empty list.
+    #[test]
+    fn cursor_worker_status_payload_defaults_optional_fields() {
+        let json = r#"{"type":"cursor_worker_status","state":"none","uptime_ms":0,"pid":1}"#;
+        let decoded: ControlPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            ControlPayload::CursorWorkerStatus {
+                state: "none".into(),
+                worker_id: None,
+                display_name: None,
+                worker_dirs: Vec::new(),
+                cursor_api_base: None,
+                uptime_ms: 0,
+                last_error: None,
+                claims: Vec::new(),
+                doors: Vec::new(),
+                pid: 1,
+            },
+            decoded
+        );
+    }
+
+    #[test]
+    fn cursor_worker_claim_defaults_controller_id() {
+        let json = r#"{"bc_id":"b","state":"idle","worktree_path":"/w","source_dir":"/s","claimed_at_ms":1,"active_requests":0}"#;
+        let decoded: CursorWorkerClaim = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            CursorWorkerClaim {
+                bc_id: "b".into(),
+                state: "idle".into(),
+                worktree_path: "/w".into(),
+                source_dir: "/s".into(),
+                controller_id: None,
+                claimed_at_ms: 1,
+                active_requests: 0,
+            },
+            decoded
+        );
+    }
+
+    #[test]
+    fn leader_info_cursor_worker_summary_roundtrip() {
+        let summary = CursorWorkerSummary {
+            state: "registered".into(),
+            claims: 2,
+            doors: vec![CursorWorkerDoorSummary {
+                kind: "bound".into(),
+                state: "registered".into(),
+                claims: 2,
+                last_error: None,
+            }],
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        let decoded: CursorWorkerSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(summary, decoded);
+
+        // An old leader's summary carries no `doors`.
+        let legacy: CursorWorkerSummary =
+            serde_json::from_str(r#"{"state":"none","claims":0}"#).unwrap();
+        assert_eq!(
+            CursorWorkerSummary {
+                state: "none".into(),
+                claims: 0,
+                doors: Vec::new(),
+            },
+            legacy
+        );
     }
 
     #[test]
@@ -758,7 +1212,9 @@ mod tests {
             ] {
                 let json: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
                 assert_eq!(
-                    json["method"].as_str().and_then(|m| m.strip_prefix('_')),
+                    json.get("method")
+                        .and_then(|v| v.as_str())
+                        .and_then(|m| m.strip_prefix('_')),
                     Some(method.name()),
                     "unroutable wire method: {line}"
                 );

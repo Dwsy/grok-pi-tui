@@ -221,8 +221,11 @@ impl EmbeddingProvider for MockEmbeddingProvider {
             .map(|text| {
                 let hash = blake3::hash(text.as_bytes());
                 let bytes = hash.as_bytes();
-                (0..self.dimensions)
-                    .map(|i| bytes[i % 32] as f32 / 255.0)
+                bytes
+                    .iter()
+                    .cycle()
+                    .take(self.dimensions)
+                    .map(|&b| b as f32 / 255.0)
                     .collect()
             })
             .collect())
@@ -253,8 +256,10 @@ mod tests {
     async fn test_mock_embedding_different_texts() {
         let provider = MockEmbeddingProvider { dimensions: 4 };
         let results = provider.embed_batch(&["hello", "world"]).await.unwrap();
-        assert_eq!(results.len(), 2);
-        assert_ne!(results[0], results[1]);
+        let [a, b] = results.as_slice() else {
+            panic!("expected two embeddings: {results:?}");
+        };
+        assert_ne!(a, b);
     }
 
     #[tokio::test]
@@ -268,6 +273,6 @@ mod tests {
     async fn test_mock_embedding_correct_dimensions() {
         let provider = MockEmbeddingProvider { dimensions: 128 };
         let results = provider.embed_batch(&["test"]).await.unwrap();
-        assert_eq!(results[0].len(), 128);
+        assert_eq!(results.first().map(Vec::len), Some(128));
     }
 }

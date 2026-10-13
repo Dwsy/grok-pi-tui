@@ -336,10 +336,12 @@ mod tests {
     #[test]
     fn kind_schema_is_open_string_namespace_stays_closed() {
         let kind = serde_json::to_value(schemars::schema_for!(ToolKind)).unwrap();
-        assert_eq!(kind["type"], "string");
+        assert_eq!(kind.get("type").and_then(|v| v.as_str()), Some("string"));
         assert!(kind.get("enum").is_none(), "kind must not be a closed enum");
         assert!(
-            kind["description"].as_str().unwrap().contains("`read`"),
+            kind.get("description")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.contains("`read`")),
             "known values must be listed in the description"
         );
         let ns = serde_json::to_value(schemars::schema_for!(ToolNamespace)).unwrap();
@@ -353,13 +355,22 @@ mod tests {
             Some(serde_json::json!({ "path": "/a" })),
         );
         let t = serde_json::to_value(&meta).unwrap();
-        assert_eq!(t["version"], serde_json::json!(TOOL_META_VERSION));
-        assert_eq!(t["name"], "read_file");
-        assert_eq!(t["kind"], "read");
-        assert_eq!(t["namespace"], "grok_build");
-        assert_eq!(t["label"], "Read");
-        assert_eq!(t["read_only"], true);
-        assert_eq!(t["input"]["path"], "/a");
+        assert_eq!(
+            t.get("version"),
+            Some(&serde_json::json!(TOOL_META_VERSION))
+        );
+        assert_eq!(t.get("name").and_then(|v| v.as_str()), Some("read_file"));
+        assert_eq!(t.get("kind").and_then(|v| v.as_str()), Some("read"));
+        assert_eq!(
+            t.get("namespace").and_then(|v| v.as_str()),
+            Some("grok_build")
+        );
+        assert_eq!(t.get("label").and_then(|v| v.as_str()), Some("Read"));
+        assert_eq!(t.get("read_only"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            t.pointer("/input/path").and_then(|v| v.as_str()),
+            Some("/a")
+        );
         assert_eq!(
             serde_json::from_value::<CanonicalToolMeta>(t).unwrap(),
             meta
@@ -383,7 +394,10 @@ mod tests {
         }
         let mut expected: serde_json::Value =
             serde_json::from_str(tool_meta_json_schema_str()).expect("checked-in schema parses");
-        if let Some(values) = expected["definitions"]["ToolNamespace"]["enum"].as_array_mut() {
+        if let Some(values) = expected
+            .pointer_mut("/definitions/ToolNamespace/enum")
+            .and_then(|v| v.as_array_mut())
+        {
             use std::collections::HashSet;
             use strum::IntoEnumIterator;
             let compiled: HashSet<String> = ToolNamespace::iter()
@@ -406,9 +420,15 @@ mod tests {
         let meta = CanonicalToolMeta::new("run_terminal_cmd", &identity(ToolKind::Execute), None);
         let merged = meta.merge_into(Some(serde_json::json!({"bash_mode": true})));
         let o = merged.as_object().unwrap();
-        assert_eq!(o["bash_mode"], true, "existing meta must be preserved");
-        let t = &o[TOOL_META_KEY];
-        assert_eq!(t["kind"], "execute");
+        assert_eq!(
+            o.get("bash_mode"),
+            Some(&serde_json::json!(true)),
+            "existing meta must be preserved"
+        );
+        let Some(t) = o.get(TOOL_META_KEY) else {
+            panic!("missing {TOOL_META_KEY}");
+        };
+        assert_eq!(t.get("kind").and_then(|v| v.as_str()), Some("execute"));
         assert!(t.get("input").is_none(), "absent input omitted");
     }
 }

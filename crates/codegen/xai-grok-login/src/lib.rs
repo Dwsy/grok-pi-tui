@@ -9,6 +9,7 @@
 //!
 //! Extracted from `xai-grok-shell::auth`; the shell re-exports this crate as
 //! `xai_grok_shell::auth` so existing `crate::*` paths keep resolving.
+#![deny(clippy::indexing_slicing)]
 pub use xai_grok_telemetry::unified_log;
 pub mod api_key_probe;
 pub mod attribution;
@@ -29,6 +30,7 @@ pub mod oidc;
 pub mod pre_tui;
 pub mod recovery;
 pub mod refresh;
+pub mod side_call_bearer;
 pub mod single_flight;
 pub mod storage;
 pub mod token_output;
@@ -44,11 +46,13 @@ pub use auth_provider::{
 pub use auth_provider::{test_backdate_provider_mint, test_counting_provider};
 pub use config::LEGACY_AUTH_SCOPE;
 pub use config::{
-    ForceLoginTeam, GrokComConfig, OAuth2ProviderConfig, OidcAuthConfig, PreferredAuthMethod,
-    XAI_OAUTH2_ISSUER, is_xai_oauth2_issuer, xai_oauth2_issuer,
+    CLI_CHAT_PROXY_BASE_URL_DEFAULT, ForceLoginTeam, GrokComConfig, OAuth2ProviderConfig,
+    OidcAuthConfig, PreferredAuthMethod, XAI_OAUTH2_ISSUER, expand_auth_alias,
+    is_xai_oauth2_issuer, xai_oauth2_issuer,
 };
 pub use config::{
-    force_login_team_from_env, force_login_team_from_requirements_value, resolve_force_login_team,
+    force_login_team_from_env, force_login_team_from_requirements,
+    force_login_team_from_requirements_value, resolve_force_login_team,
 };
 pub use external_auth::{ExternalRefreshError, parse_output, refresh_with_command};
 pub use flow::{
@@ -60,16 +64,19 @@ pub use flow::{
     ensure_authenticated_or_noninteractive, ensure_authenticated_with_override, perform_logout,
     run_cli_login, try_ensure_fresh_auth,
 };
-pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration};
+pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration, parse_jwt_subject};
 pub use pre_tui::{PreTuiLoginOutcome, maybe_run_pre_tui_external_login};
 pub use xai_grok_config_types::AuthProviderConfig;
 pub mod meta;
 pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
-pub use manager::{AuthManager, shared_api_key_provider};
-pub use manager::{AuthRemedy, CachedTokenState, SilentRefresh};
+pub use manager::AuthManager;
+pub use manager::{
+    AuthRemedy, CachedTokenState, Login, LoginChanges, LoginSnapshot, SilentRefresh,
+};
 pub use meta::{AuthMeta, GateInfo};
 pub use model::{AuthMode, GrokAuth, lookup_auth};
 pub use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired};
 pub use refresh::DiagnosticUploader;
+pub use side_call_bearer::{SharedAuthKeyProvider, shared_api_key_provider};
 pub use storage::auth_json_path;
 pub use storage::{clear_api_key, read_api_key, read_auth_json, store_api_key};

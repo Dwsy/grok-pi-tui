@@ -8,10 +8,6 @@ use xai_grok_shell::tools::{TodoItem, TodoStatus};
 
 use super::list_pane::ListItem;
 
-// ---------------------------------------------------------------------------
-// TodoPaneStyle: per-status colors
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy)]
 pub struct TodoStatusStyle {
     pub icon_fg: Color,
@@ -55,10 +51,6 @@ impl Default for TodoPaneStyle {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// TodoListEntry: ListItem wrapper around TodoItem
-// ---------------------------------------------------------------------------
 
 /// A `TodoItem` wrapped for display in a `ListPane`.
 ///
@@ -121,10 +113,6 @@ impl ListItem for TodoListEntry {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TodoPane: self-contained pane owning items, state, and rendering
-// ---------------------------------------------------------------------------
-
 use crossterm::event::{KeyCode, KeyEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -135,10 +123,6 @@ use crate::theme::ThemeKind;
 
 use super::list_pane::{ListPane, ListPaneConfig, ListPaneState, ListPaneStyle, WrapMode};
 use super::overlay::OverlayState;
-
-// ---------------------------------------------------------------------------
-// TodoCounts: aggregate status counts
-// ---------------------------------------------------------------------------
 
 /// Feeds the placeholder message shown when the pane is empty.
 /// Counts ALL items regardless of the `show_done` filter.
@@ -226,8 +210,6 @@ impl TodoPane {
             last_theme: crate::theme::Theme::current_kind(),
         }
     }
-
-    // -- Data management -----------------------------------------------------
 
     pub fn todos(&self) -> &[TodoItem] {
         &self.todos
@@ -326,8 +308,6 @@ impl TodoPane {
         }
     }
 
-    // -- Input handling ------------------------------------------------------
-
     /// Handle a key event when the todo pane is focused.
     ///
     /// Returns `true` if the event was consumed.
@@ -371,8 +351,6 @@ impl TodoPane {
             .handle_mouse_event(kind, col, row, area, &self.entries)
     }
 
-    // -- Rendering -----------------------------------------------------------
-
     /// Compute the inner content area with horizontal padding matching the scrollback's `HorizontalLayout`.
     /// The left pad is accent + block_pad_left; the right pad is block_pad_right.
     fn content_area(area: Rect, layout_cfg: &LayoutConfig) -> Rect {
@@ -408,7 +386,6 @@ impl TodoPane {
         self.rebuild_entries();
         let inner = Self::content_area(area, layout_cfg);
         if self.entries.is_empty() {
-            // Empty state: draw the placeholder message in a muted style
             if inner.height > 0 && inner.width > 0 {
                 let msg = empty_placeholder_message(self.todos.is_empty(), self.counts());
                 let theme = crate::theme::Theme::current();

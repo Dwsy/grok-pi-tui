@@ -172,6 +172,16 @@ impl JsonlStorageAdapter {
         let chat_file = dir.join(super::CHAT_HISTORY_FILE);
         self.read_chat_history_sync(chat_file, CHAT_FORMAT_VERSION)
     }
+    /// Read a durable transcript snapshot while enforcing caller-owned input caps.
+    pub(crate) fn load_chat_history_bounded_from_dir(
+        &self,
+        dir: &std::path::Path,
+        max_bytes: usize,
+        max_items: usize,
+    ) -> std::io::Result<Vec<ConversationItem>> {
+        let chat_file = dir.join(super::CHAT_HISTORY_FILE);
+        self.read_chat_history_sync_bounded(chat_file, CHAT_FORMAT_VERSION, max_bytes, max_items)
+    }
     fn session_dir(&self, info: &Info) -> PathBuf {
         match &self.dir_mode {
             SessionDirMode::FromRoot(root) => {
@@ -949,10 +959,40 @@ impl JsonlStorageAdapter {
         path: PathBuf,
         chat_format_version: u8,
     ) -> io::Result<Vec<ConversationItem>> {
+        self.read_chat_history_sync_bounded(path, chat_format_version, usize::MAX, usize::MAX)
+    }
+    fn read_chat_history_sync_bounded(
+        &self,
+        path: PathBuf,
+        chat_format_version: u8,
+        max_bytes: usize,
+        max_items: usize,
+    ) -> io::Result<Vec<ConversationItem>> {
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let contents = std::fs::read(&path)?;
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if !metadata.file_type().is_file()
+            || metadata.len() > u64::try_from(max_bytes).unwrap_or(u64::MAX)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("chat history is not a regular file within the {max_bytes}-byte limit"),
+            ));
+        }
+        let read_limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut contents = Vec::with_capacity(metadata.len() as usize);
+        std::fs::File::open(&path)?
+            .take(read_limit)
+            .read_to_end(&mut contents)?;
+        if contents.len() > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("chat history exceeds the {max_bytes}-byte read limit"),
+            ));
+        }
         let mut sibling_btc_ids_seen: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut upgraded_reasoning_count: usize = 0;
@@ -1012,6 +1052,12 @@ impl JsonlStorageAdapter {
                 sibling_btc_ids_seen.insert(b.id().to_string());
             }
             items.push(item);
+            if items.len() > max_items {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("chat history exceeds the {max_items}-item limit"),
+                ));
+            }
         }
         let stripped = strip_invalid_images(&mut items);
         if first_skipped.is_some() || stripped > 0 {
@@ -1177,6 +1223,15 @@ impl StorageAdapter for JsonlStorageAdapter {
         )
         .await
     }
+    async fn stamp_session_identity(
+        &self,
+        info: &Info,
+        identity: crate::session::persistence::SessionIdentity,
+    ) -> io::Result<crate::session::persistence::SessionIdentity> {
+        let required_agent_id = identity.agent_id.clone();
+        self.stamp_session_identity_if_absent(info, Some(required_agent_id), move |_| identity)
+            .await
+    }
     async fn set_session_kind_if_absent(&self, info: &Info, kind: String) -> io::Result<()> {
         self.apply_summary_patch(
             info,
@@ -1306,17 +1361,19 @@ impl StorageAdapter for JsonlStorageAdapter {
         &self,
         info: &Info,
         model_id: &acp::ModelId,
-        agent_name: Option<&str>,
+        agent: Option<&crate::session::persistence::PersistedAgent>,
         reasoning_effort: Option<Option<xai_grok_sampling_types::ReasoningEffort>>,
+        context_window: Option<Option<std::num::NonZeroU64>>,
     ) -> io::Result<()> {
         self.apply_summary_patch(
             info,
             super::summary_write::SummaryPatch {
                 model: Some(super::summary_write::ModelPatch {
                     model_id: model_id.clone(),
-                    agent_name: agent_name.map(String::from),
                     reasoning_effort,
+                    context_window,
                 }),
+                agent: agent.cloned(),
                 ..Default::default()
             },
         )
@@ -1857,7 +1914,7 @@ impl StorageAdapter for JsonlStorageAdapter {
         let path = dir.join(format!("{}.json", checkpoint.checkpoint_id));
         let bytes = serde_json::to_vec_pretty(checkpoint)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        tokio::fs::write(path, bytes).await
+        super::write_bytes_atomic_async(&path, bytes).await
     }
     async fn write_compaction_request(
         &self,
@@ -1979,8 +2036,12 @@ fn is_valid_data_uri_image(url: &str) -> bool {
         Some(i) => i,
         None => return false,
     };
-    let header = &after_data[..comma];
-    let payload = &after_data[comma + 1..];
+    let Some(header) = after_data.get(..comma) else {
+        return false;
+    };
+    let Some(payload) = after_data.get(comma + 1..) else {
+        return false;
+    };
     if !header
         .as_bytes()
         .windows(7)

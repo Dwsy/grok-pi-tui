@@ -281,7 +281,13 @@ mod tests {
                 ))
             });
             // Rows start at y+2; content at x+3.
-            (buf[(3, 3)].style(), buf[(3, 2)].style())
+            let Some(cursor) = buf.cell((3, 3)) else {
+                panic!("cursor cell");
+            };
+            let Some(normal) = buf.cell((3, 2)) else {
+                panic!("normal cell");
+            };
+            (cursor.style(), normal.style())
         };
 
         crate::theme::cache::set(crate::theme::ThemeKind::Terminal);

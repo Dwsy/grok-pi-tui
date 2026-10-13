@@ -1,9 +1,11 @@
 //! A *recap* is a short "where was I" summary of the session so far, modelled on common coding-agent `/recap` and automatic session-recap features.
 //! Unlike compaction, a recap never mutates the conversation: it is generated from a read-only snapshot and sent to the client for display only.
 //!
-//! Generation reuses the parent session's conversation prefix verbatim, so the provider prompt cache stays warm.
-//! It appends a single instruction turn that asks for the recap.
+//! Generation sends a compact transcript of recent user messages and agent replies, so its cost does not grow with the session.
 //! The pure helpers here build that request and tidy the model's output; the actual model call lives on the `SessionActor` (`handle_recap`).
+//! The budgeting helpers below are shared by the side calls that still replay the full conversation (title refresh).
+
+use std::time::Duration;
 
 use crate::sampling::ConversationItem;
 use crate::session::helpers::chat::floor_char_boundary;
@@ -13,10 +15,36 @@ use xai_chat_state::{compaction_utils, estimate_conversation_tokens, estimate_it
 /// This only guards against runaway model output and never cuts a normal recap.
 const RECAP_MAX_CHARS: usize = 1200;
 
-/// All recap directions live in this single user message (wrapped in a `<system-reminder>`) rather than a separate system prompt.
 /// The output is body text only: the pager adds `Recap —` on render (manual and auto).
 /// Few-shots must stay synthetic: never embed real eval/session content.
-pub(crate) fn recap_instruction(tag: &str) -> String {
+pub(crate) const RECAP_SYSTEM: &str = "Write ONE sentence recap body for a user returning from idle, \
+     based on the session transcript the user sends. \
+     Output ONLY the body (the UI adds the \"Recap —\" label).\n\n\
+     LANGUAGE: write the body in the language of the user's messages in the transcript. \
+     Keep code identifiers verbatim.\n\n\
+     Lead with agency:\n\
+     - \"You asked …\" if the session was mainly questions, walkthroughs, or review with no landed change.\n\
+     - \"We <past-tense verb> …\" if the agent implemented, fixed, merged, or changed code/config/docs \
+     (e.g. \"We fixed …\", \"We merged …\", \"We wired …\" — not \"We did fix\" / \"We did merge\").\n\
+     - If almost nothing happened: \"You had just begun this session.\"\n\n\
+     Shape: <lead>: <concrete specifics — crate/file/flag/behavior/endpoint>. ~25–40 words.\n\n\
+     Synthetic examples (style only — adapt to THIS session, do not copy):\n\n\
+     You asked how retries work in the payment client: exponential backoff in `billing/retry.rs`, max 5 attempts, 429s only.\n\n\
+     You asked for a walkthrough of the auth middleware change: warn-only mode in the API layer, no hard fail on missing claims.\n\n\
+     We fixed the flaky integration test: race in `queue_worker` shutdown by awaiting the drain channel before exit.\n\n\
+     We merged the feature branch: kept the new telemetry hooks, dropped the obsolete feature flag in `config/flags.toml`.\n\n\
+     Bad (never):\n\
+     - Start with Recap / Session recap / extra labels\n\
+     - English recap for a non-English session\n\
+     - Quote or restate these instructions\n\
+     - Bullets, markdown, code fences, extra sentences\n\
+     - Invent work not reflected in the transcript";
+
+/// The recap instruction for the daemon path, which forks the live session and appends this as one reminder-wrapped user message.
+/// The shell path sends [`RECAP_SYSTEM`] with a transcript instead.
+/// The output is body text only: the pager adds `Recap —` on render (manual and auto).
+/// Few-shots must stay synthetic: never embed real eval/session content.
+pub fn recap_instruction(tag: &str) -> String {
     format!(
         "<{tag}>Write ONE sentence recap body for a user returning from idle. \
          Output ONLY the body (the UI adds the \"Recap —\" label). \
@@ -44,6 +72,66 @@ pub(crate) fn recap_instruction(tag: &str) -> String {
          - Call tools or emit tool/function calls\n\
          - Invent work not reflected in the session</{tag}>"
     )
+}
+
+/// Recent real user messages and the agent's visible replies, oldest first, as `User:` / `Agent:` blocks.
+/// Reasoning, tool calls, tool results, and injected user-role turns are dropped.
+/// Each user message keeps its first `user_max_chars`, each reply its last `reply_max_chars`, and the newest blocks fill `transcript_max_chars`.
+/// `None` when the conversation has no such messages.
+pub(crate) fn recap_transcript(
+    conversation: &[ConversationItem],
+    user_max_chars: usize,
+    reply_max_chars: usize,
+    transcript_max_chars: usize,
+) -> Option<String> {
+    let mut blocks = Vec::new();
+    let mut used = 0usize;
+    for item in conversation.iter().rev() {
+        let block = match item {
+            ConversationItem::User(u) if u.synthetic_reason.is_human() => {
+                let text = item.text_content();
+                let text = text.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                format!("User: {}", keep_head(text, user_max_chars))
+            }
+            ConversationItem::Assistant(a) if !a.content.trim().is_empty() => {
+                format!("Agent: {}", keep_tail(a.content.trim(), reply_max_chars))
+            }
+            _ => continue,
+        };
+        if used + block.len() > transcript_max_chars && !blocks.is_empty() {
+            break;
+        }
+        used += block.len();
+        blocks.push(block);
+    }
+    if blocks.is_empty() {
+        return None;
+    }
+    blocks.reverse();
+    Some(blocks.join("\n\n"))
+}
+
+fn keep_head(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_owned();
+    }
+    let head = text
+        .get(..floor_char_boundary(text, max))
+        .unwrap_or_default();
+    format!("{head}\u{2026}")
+}
+
+fn keep_tail(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_owned();
+    }
+    let tail = (text.len() - max..=text.len())
+        .find_map(|start| text.get(start..))
+        .unwrap_or_default();
+    format!("\u{2026}{tail}")
 }
 
 /// Optionally strips reasoning/thinking blocks (`strip_reasoning`).
@@ -81,22 +169,8 @@ const RECAP_BUDGET_HEADROOM_TOKENS: u64 = 4_000;
 
 /// The budget uses the same bytes/4 estimator that compaction triggers on, preventing `ic_400_prompt_too_long` on long sessions.
 /// Over budget: strips reasoning (the prefix cache is lost once we trim) and normalizes the trailing boundary ([`pop_trailing_tool_run`]).
-/// `context_window` MUST be the window of the model the recap is actually sent to (today the session model).
-pub(crate) fn budget_recap_items(
-    conversation: Vec<ConversationItem>,
-    tag: &str,
-    strip_reasoning: bool,
-    context_window: u64,
-) -> Vec<ConversationItem> {
-    budget_instruction_items(
-        conversation,
-        recap_instruction(tag),
-        strip_reasoning,
-        context_window,
-    )
-}
-
-/// Instruction-generic core of [`budget_recap_items`], shared with the turn-summary side-call.
+/// `context_window` MUST be the window of the model the request is actually sent to.
+/// Shared by the side calls that replay the full conversation (title refresh, turn summary).
 pub(crate) fn budget_instruction_items(
     conversation: Vec<ConversationItem>,
     instruction: String,
@@ -137,7 +211,7 @@ pub(crate) fn budget_instruction_items(
 
 /// Pops a trailing tool run so the appended `User` instruction never follows a `tool_use`/`tool_result`.
 /// Trailing `Reasoning` goes too: it precedes its owner, which the pop just removed.
-/// Shared by [`build_instruction_items`] and [`budget_recap_items`].
+/// Shared by [`build_instruction_items`] and [`budget_instruction_items`].
 pub(crate) fn pop_trailing_tool_run(items: &mut Vec<ConversationItem>) {
     while let Some(last) = items.last() {
         match last {
@@ -155,18 +229,22 @@ pub(crate) fn pop_trailing_tool_run(items: &mut Vec<ConversationItem>) {
 /// Minimum main turns before an automatic return-from-away recap (manual exempt).
 pub(crate) const MIN_TURNS_FOR_AUTO_RECAP: usize = 3;
 
+/// Minimum idle time before an automatic recap (manual exempt).
+/// The shell counts it from its last model request; a daemon route counts it from the last turn's end.
+pub const RECAP_MIN_IDLE: Duration = Duration::from_secs(3 * 60);
+
 /// Durable auto-recap watermark under `{session_dir}/`.
 /// It is written only when a recap commits (success, or an over-long auto recap suppressed from display), never on failure/cancel.
 pub(crate) const RECAP_WATERMARK_FILE: &str = "last_recap_main_turn";
 
-/// Counts real user prompts (`synthetic_reason.is_none()`), not assistant/tool items.
+/// Counts real user prompts (`synthetic_reason.is_human()`), not assistant/tool items.
 pub(crate) fn main_turn_count(conversation: &[ConversationItem]) -> usize {
     conversation
         .iter()
         .filter(|item| {
             matches!(
                 item,
-                ConversationItem::User(u) if u.synthetic_reason.is_none()
+                ConversationItem::User(u) if u.synthetic_reason.is_human()
             )
         })
         .count()
@@ -197,7 +275,7 @@ pub(crate) fn save_recap_watermark(session_dir: &std::path::Path, main_turns: us
 }
 
 /// Manual recaps pass with any `main_turns > 0`; auto recaps also require a new turn since `last`, the minimum turn count, and `idle_ok`.
-pub(crate) fn recap_gate(
+pub fn recap_gate(
     main_turns: usize,
     last: usize,
     auto: bool,
@@ -224,7 +302,7 @@ pub(crate) fn recap_gate(
 pub(crate) const RECAP_AUTO_RAW_DISPLAY_MAX: usize = 500;
 
 /// Auto only: over-long output is saved as an artifact but not displayed.
-pub(crate) fn should_suppress_auto_recap_display(raw: &str, summary: &str) -> bool {
+pub fn should_suppress_auto_recap_display(raw: &str, summary: &str) -> bool {
     if raw.len() > RECAP_AUTO_RAW_DISPLAY_MAX {
         return true;
     }
@@ -234,7 +312,7 @@ pub(crate) fn should_suppress_auto_recap_display(raw: &str, summary: &str) -> bo
 /// Clean the model's raw recap output into a readable one-liner body.
 /// Caps length at [`RECAP_MAX_CHARS`] as a safety net against runaway output (the cap is generous, so a normal recap is never cut).
 /// Does not prepend `Recap —`; the pager always prefixes with that label on render.
-pub(crate) fn clean_recap_text(raw: &str) -> String {
+pub fn clean_recap_text(raw: &str) -> String {
     // Collapse runs of whitespace/newlines into single spaces (one scrollback line).
     let mut out: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
 
@@ -257,10 +335,11 @@ pub(crate) fn clean_recap_text(raw: &str) -> String {
     // Strip symmetric wrapping quotes around the whole string.
     if out.len() >= 2 {
         let bytes = out.as_bytes();
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            out = out[1..out.len() - 1].trim().to_string();
+        if let (Some(&first), Some(&last)) = (bytes.first(), bytes.last())
+            && ((first == b'"' && last == b'"') || (first == b'\'' && last == b'\''))
+            && let Some(inner) = out.get(1..out.len() - 1)
+        {
+            out = inner.trim().to_string();
         }
     }
 
@@ -277,6 +356,20 @@ pub(crate) fn clean_recap_text(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn budget_recap_items(
+        conversation: Vec<ConversationItem>,
+        tag: &str,
+        strip_reasoning: bool,
+        context_window: u64,
+    ) -> Vec<ConversationItem> {
+        budget_instruction_items(
+            conversation,
+            recap_instruction(tag),
+            strip_reasoning,
+            context_window,
+        )
+    }
     use crate::sampling::ConversationItem;
 
     #[test]
@@ -378,7 +471,7 @@ mod tests {
                 content: vec![ContentPart::Text {
                     text: Arc::from("injected"),
                 }],
-                synthetic_reason: Some(SyntheticReason::SystemReminder),
+                synthetic_reason: SyntheticReason::SystemReminder,
                 ..Default::default()
             }),
         ];
@@ -514,20 +607,38 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn instruction_uses_provided_tag() {
-        assert!(recap_instruction("system_reminder").contains("<system_reminder>"));
-        assert!(recap_instruction("system-reminder").contains("</system-reminder>"));
-    }
+    const USER_MAX: usize = 2_000;
+    const REPLY_MAX: usize = 4_000;
+    const TRANSCRIPT_MAX: usize = 48_000;
 
     #[test]
-    fn instruction_asks_for_one_sentence_body() {
-        let text = recap_instruction("system-reminder");
-        assert!(text.contains("billing/retry.rs"));
-        assert!(text.contains("queue_worker"));
-        assert!(text.contains("We fixed the flaky"));
-        assert!(text.contains("We merged the feature"));
-        assert!(!text.contains("217584"));
+    fn recap_transcript_keeps_recent_messages_and_visible_text() {
+        let conv = vec![
+            ConversationItem::system("sys"),
+            ConversationItem::user("o".repeat(USER_MAX + 1)),
+            ConversationItem::assistant("old answer"),
+            ConversationItem::user("fix the parser"),
+            ConversationItem::assistant("Looking at the parser."),
+            ConversationItem::tool_result("call-1", "tool output"),
+            ConversationItem::system_reminder("injected"),
+            ConversationItem::assistant(format!("{}Fixed the parser.", "x".repeat(REPLY_MAX))),
+        ];
+        let transcript = recap_transcript(&conv, USER_MAX, REPLY_MAX, TRANSCRIPT_MAX).unwrap();
+        assert!(transcript.starts_with("User: ooo"));
+        assert!(transcript.contains("o\u{2026}\n\nAgent: old answer\n\nUser: fix the parser"));
+        assert!(transcript.ends_with("Fixed the parser."));
+        assert!(transcript.contains("Agent: \u{2026}x"));
+        assert!(!transcript.contains("tool output") && !transcript.contains("injected"));
+
+        assert_eq!(
+            recap_transcript(
+                &[ConversationItem::system_reminder("injected")],
+                USER_MAX,
+                REPLY_MAX,
+                TRANSCRIPT_MAX
+            ),
+            None
+        );
     }
 
     #[test]
@@ -660,7 +771,9 @@ mod tests {
 
         // (b) No trailing tool run before the appended instruction.
         assert!(matches!(out.last(), Some(ConversationItem::User(_))));
-        let before = &out[out.len() - 2];
+        let Some(before) = out.len().checked_sub(2).and_then(|i| out.get(i)) else {
+            panic!("expected at least two recap items: {out:?}");
+        };
         assert!(
             !matches!(before, ConversationItem::ToolResult(_)),
             "no tool_result immediately before the appended instruction"
@@ -772,7 +885,7 @@ mod tests {
         ];
         pop_trailing_tool_run(&mut items);
         assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], ConversationItem::User(_)));
+        assert!(matches!(items.first(), Some(ConversationItem::User(_))));
 
         let mut clean = vec![
             ConversationItem::user("hi"),

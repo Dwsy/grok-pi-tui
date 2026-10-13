@@ -3,6 +3,7 @@
 //! These methods form a second `impl SessionActor` block that lives alongside the primary one in `acp_session.rs`.
 use super::SessionActor;
 use super::is_project_instructions;
+use crate::extensions::notification::MODEL_FAMILY_SWITCH_COMPACT_BANNER;
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use crate::session::compaction_config::{
     AsyncCompactionCache, SUPPRESS_AUTH, SUPPRESS_NONE, SUPPRESS_STICKY, SUPPRESS_TURN,
@@ -12,8 +13,8 @@ use crate::session::helpers::CompactionStateContext;
 use crate::session::helpers::compaction_context::CompactionInputs;
 use crate::session::helpers::compaction_context::to_system_reminder;
 use crate::session::helpers::session_compact::{
-    COMPACT_FAILED_PREFIX, CompactOutput, CompactionOutcome, build_two_pass_compaction_prompt,
-    generate_session_compact, is_context_length_error,
+    COMPACT_FAILED_PREFIX, CompactOutput, CompactionOutcome, build_compaction_prompt,
+    generate_session_compact, is_context_length_error, retain_session_asset_files,
 };
 use crate::session::persistence::PersistenceMsg;
 use crate::session::two_pass::{
@@ -22,6 +23,7 @@ use crate::session::two_pass::{
 };
 use agent_client_protocol as acp;
 use std::sync::Arc;
+use xai_chat_state::compaction_image_context::CompactionImageContext;
 use xai_chat_state::compaction_utils::{
     CompactedHistoryInput, CompactionAttempt, build_compacted_history, is_degenerate_summary,
     prepare_conversation_for_verbatim_summarization, sanitize_compacted_history,
@@ -52,6 +54,8 @@ fn format_loop_next_fire(
     }
     next.format("%d %b %H:%M UTC").to_string()
 }
+/// Reserve for the prompt and generated summary (plus reasoning on Responses/Messages); 32_768 covers p99 of prod output (~20k p95).
+const SUMMARY_BUDGET_RESERVE_TOKENS: u64 = 32_768;
 /// Default percentage points below the auto-compact threshold at which prefire (background pass-1) starts.
 /// The lead gives pass-1 runway to finish before the limit.
 /// Override with `GROK_PREFIRE_LEAD_PERCENT`.
@@ -119,6 +123,9 @@ impl From<PrefireOutcome> for PrefirePass1Run {
 #[cfg(test)]
 #[path = "compaction_two_pass_prefire_helper_tests.rs"]
 mod two_pass_prefire_helper_tests;
+#[cfg(test)]
+#[path = "compaction_verbatim_input_tests.rs"]
+mod verbatim_input_tests;
 impl SessionActor {
     /// Two-pass is active for this session when the flag resolved on at build and the agent is not one that keeps its single short self-summary.
     pub(crate) fn two_pass_active(&self) -> bool {
@@ -252,13 +259,16 @@ impl SessionActor {
             .as_ref()
             .map(|c| c.model.to_string())
             .unwrap_or_default();
-        let prefix_prepared =
-            prepare_conversation_for_verbatim_summarization(split.prefix.to_vec(), strips);
+        let prefix_prepared = apply_turn_image_budget_and_prune(
+            &self.chat_state_handle,
+            prepare_conversation_for_verbatim_summarization(split.prefix.to_vec(), strips),
+        )
+        .await;
         let prefix_est_tokens = prefix_prepared
             .iter()
             .map(xai_chat_state::estimate_item_tokens)
             .sum::<u64>();
-        let prompt = build_two_pass_compaction_prompt(None);
+        let prompt = build_compaction_prompt(None, false);
         let pass1_history = build_two_pass_pass1_history(&prefix_prepared, &prompt);
         let started = std::time::Instant::now();
         let out = self.two_pass_sample(pass1_history).await;
@@ -278,10 +288,13 @@ impl SessionActor {
             return attempted(PrefireOutcome::EmptyNote1, None);
         }
         let note1_chars = note1.chars().count();
+        let Some(prefix) = conversation.get(..split.split_idx) else {
+            return attempted(PrefireOutcome::SampleFailed, None);
+        };
         let cache = AsyncCompactionCache {
             note1,
             prefix_len: split.split_idx,
-            fingerprint: fingerprint_prefix(&conversation[..split.split_idx]),
+            fingerprint: fingerprint_prefix(prefix),
             model_slug,
             pass1_latency_ms,
         };
@@ -329,10 +342,17 @@ impl SessionActor {
             .await
             .map(|c| c.model.to_string())
             .unwrap_or_default();
+        let Some((prefix, tail)) = live.split_at_checked(cache.prefix_len) else {
+            tracing::Span::current().record("compaction_prefire_stale", true);
+            tracing::info!(
+                target: "two_pass",
+                "two_pass: cached NOTE1 stale or model changed; falling back to single-pass"
+            );
+            return None;
+        };
         if cache.prefix_len == 0
-            || cache.prefix_len > live.len()
             || cache.model_slug != model_slug
-            || fingerprint_prefix(&live[..cache.prefix_len]) != cache.fingerprint
+            || fingerprint_prefix(prefix) != cache.fingerprint
         {
             tracing::Span::current().record("compaction_prefire_stale", true);
             tracing::info!(
@@ -341,11 +361,9 @@ impl SessionActor {
             );
             return None;
         }
-        let prefix = &live[..cache.prefix_len];
-        let tail = &live[cache.prefix_len..];
         let prepared_tail =
             prepare_conversation_for_verbatim_summarization(tail.to_vec(), strips_reasoning);
-        let prompt = build_two_pass_compaction_prompt(user_context);
+        let prompt = build_compaction_prompt(user_context, false);
         let pass2_history =
             build_two_pass_pass2_history(prefix, &prepared_tail, &cache.note1, &prompt);
         let started = std::time::Instant::now();
@@ -382,10 +400,59 @@ pub(crate) struct AutoCompactTriggerInfo {
     pub tokens_used: u64,
     pub context_window: u64,
     pub percentage: u8,
+    pub reason_override: Option<&'static str>,
 }
 /// The "always fits" lossy summarization budget (~70% of window, minus tool definitions); shared by the ladder's Lossy step and the cold Lossy start.
 fn lossy_input_budget(context_window: u64, tool_tokens: u64) -> u64 {
     (context_window.saturating_mul(7) / 10).saturating_sub(tool_tokens)
+}
+/// Verbatim-fitted budget: leave room for the summary prompt plus tool-definition prefix.
+fn fitted_input_budget(context_window: u64, tool_tokens: u64) -> u64 {
+    context_window
+        .saturating_sub(SUMMARY_BUDGET_RESERVE_TOKENS)
+        .saturating_sub(tool_tokens)
+}
+/// Input ladder: verbatim, then verbatim fitted, then lossy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+enum CompactInputStage {
+    Verbatim,
+    VerbatimFitted,
+    Lossy,
+}
+/// Same image budget then tool-result prune a live turn request uses.
+async fn apply_turn_image_budget_and_prune(
+    chat_state: &xai_chat_state::ChatStateHandle,
+    items: Vec<ConversationItem>,
+) -> Vec<ConversationItem> {
+    let max_request_bytes = chat_state
+        .get_sampling_config()
+        .await
+        .and_then(|config| config.max_request_bytes);
+    let items = xai_chat_state::image_budget::apply_image_budget(items, max_request_bytes).items;
+    chat_state.apply_turn_request_pruning(items).await
+}
+/// Start fitted when the (already image-budgeted and pruned) estimate cannot leave room for tools + summary.
+fn start_verbatim_compact_turns(
+    turns: Vec<ConversationItem>,
+    tool_tokens: u64,
+    context_window: u64,
+) -> (Vec<ConversationItem>, CompactInputStage) {
+    let estimate = xai_chat_state::estimate_conversation_tokens(&turns);
+    let budget = fitted_input_budget(context_window, tool_tokens);
+    if estimate > budget {
+        tracing::info!(
+            estimate,
+            budget,
+            "verbatim compact estimate exceeds fitted budget; starting at verbatim_fitted"
+        );
+        (
+            xai_chat_state::compaction_utils::fit_conversation_to_budget(turns, budget),
+            CompactInputStage::VerbatimFitted,
+        )
+    } else {
+        (turns, CompactInputStage::Verbatim)
+    }
 }
 /// Why auto-compaction was suppressed after a deterministic failure.
 /// [`SuppressReason::as_str`] is a stable telemetry value (BQ/OTLP/dashboards key off it); don't rename the strings.
@@ -419,10 +486,12 @@ fn preserve_inherited_prefix(
     compacted_history: Vec<ConversationItem>,
     prefix_len: usize,
 ) -> Result<Vec<ConversationItem>, Vec<ConversationItem>> {
-    if prefix_len == 0 || prefix_len > conversation.len() {
+    if prefix_len == 0 {
         return Err(compacted_history);
     }
-    let inherited = &conversation[..prefix_len];
+    let Some(inherited) = conversation.get(..prefix_len) else {
+        return Err(compacted_history);
+    };
     let drop_reinjected_agents_md = inherited.iter().any(is_project_instructions);
     let mut preserved = inherited.to_vec();
     let child_items = compacted_history
@@ -526,10 +595,7 @@ impl SessionActor {
             error = tracing::field::Empty,
         )
     )]
-    pub(crate) async fn run_compact(
-        self: &Arc<Self>,
-        user_context: Option<String>,
-    ) -> Result<(), acp::Error> {
+    pub(crate) async fn run_compact(self: &Arc<Self>) -> Result<(), acp::Error> {
         let (_cancel, _cancel_scope) = self.compaction.cancel.enter();
         self.record_compaction_variant();
         let total_tokens = self.chat_state_handle.get_total_tokens().await;
@@ -543,7 +609,6 @@ impl SessionActor {
             .await;
         if let Err(e) = self
             .run_compact_inner(
-                user_context,
                 None,
                 xai_grok_telemetry::events::CompactionTrigger::Manual,
                 false,
@@ -694,7 +759,10 @@ impl SessionActor {
             }) else {
                 break;
             };
-            rest = rest[prefix.len()..].trim_start();
+            let Some(stripped) = rest.get(prefix.len()..) else {
+                break;
+            };
+            rest = stripped.trim_start();
         }
         normalize_compact_detail(rest)
     }
@@ -837,6 +905,7 @@ impl SessionActor {
             compaction_trigger_pct = tracing::field::Empty,
             compaction_threshold_pct = tracing::field::Empty,
             compaction_outcome = tracing::field::Empty,
+            compaction_failure_reason = tracing::field::Empty,
             compaction_stop_reason = tracing::field::Empty,
             compaction_ttft_ms = tracing::field::Empty,
             compaction_stream_ms = tracing::field::Empty,
@@ -852,7 +921,6 @@ impl SessionActor {
     )]
     async fn run_compact_inner(
         &self,
-        user_context: Option<String>,
         auto_continue: Option<crate::extensions::notification::AutoContinueInfo>,
         trigger: xai_grok_telemetry::events::CompactionTrigger,
         lossy_input: bool,
@@ -895,7 +963,6 @@ impl SessionActor {
                 tokens_used: tokens_before,
                 context_window,
                 model_id: model_id.clone(),
-                user_context_provided: user_context.is_some(),
                 compaction_mode: match self.compaction.compaction_mode {
                     xai_chat_state::CompactionMode::Summary => {
                         xai_grok_telemetry::events::CompactionModeLabel::Summary
@@ -911,6 +978,7 @@ impl SessionActor {
                 is_subagent: self.startup_hints.is_subagent,
             },
         );
+        let user_context = self.goal_compaction_user_context();
         let compact_source = trigger_str;
         self.dispatch_hook(
             xai_grok_hooks::event::HookEventName::PreCompact,
@@ -935,7 +1003,6 @@ impl SessionActor {
         } else {
             Vec::new()
         };
-        const SUMMARY_BUDGET_RESERVE_TOKENS: u64 = 32_768;
         let verbatim_input_enabled = self.compaction.verbatim_input && !lossy_input;
         let mut simplified_messages = if verbatim_input_enabled {
             xai_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
@@ -947,6 +1014,11 @@ impl SessionActor {
                 full_conversation,
             )
         };
+        if verbatim_input_enabled {
+            simplified_messages =
+                apply_turn_image_budget_and_prune(&self.chat_state_handle, simplified_messages)
+                    .await;
+        }
         let pre_compaction_ms = assembly_start.elapsed().as_millis() as u64;
         if conv_len == 0 {
             tracing::error!(
@@ -1026,17 +1098,17 @@ impl SessionActor {
         );
         let mut last_error: Option<acp::Error> = None;
         let mut last_failure_outcome = CompactionOutcome::Failed;
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
-        #[strum(serialize_all = "snake_case")]
-        enum InputStage {
-            Verbatim,
-            VerbatimFitted,
-            Lossy,
-        }
+        let mut last_failure_reason: Option<SuppressReason> = None;
         let mut input_stage = if verbatim_input_enabled {
-            InputStage::Verbatim
+            let (turns, stage) = start_verbatim_compact_turns(
+                simplified_messages,
+                compaction_tool_tokens,
+                context_window,
+            );
+            simplified_messages = turns;
+            stage
         } else {
-            InputStage::Lossy
+            CompactInputStage::Lossy
         };
         let use_short_prompt = false;
         let started_at = chrono::Utc::now().to_rfc3339();
@@ -1132,9 +1204,9 @@ impl SessionActor {
                     }
                     if context_overflow {
                         let next_stage = match input_stage {
-                            InputStage::Verbatim => Some(InputStage::VerbatimFitted),
-                            InputStage::VerbatimFitted => Some(InputStage::Lossy),
-                            InputStage::Lossy => None,
+                            CompactInputStage::Verbatim => Some(CompactInputStage::VerbatimFitted),
+                            CompactInputStage::VerbatimFitted => Some(CompactInputStage::Lossy),
+                            CompactInputStage::Lossy => None,
                         };
                         if let Some(stage) = next_stage {
                             input_overflow_rejections += 1;
@@ -1158,20 +1230,22 @@ impl SessionActor {
                             );
                             let conv = self.chat_state_handle.get_conversation().await;
                             request_turns = match stage {
-                                InputStage::VerbatimFitted => {
-                                    let budget = context_window
-                                        .saturating_sub(SUMMARY_BUDGET_RESERVE_TOKENS)
-                                        .saturating_sub(compaction_tool_tokens);
+                                CompactInputStage::VerbatimFitted => {
                                     let verbatim = xai_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
                                         conv,
                                         summary_strips_reasoning,
                                     );
+                                    let pruned = apply_turn_image_budget_and_prune(
+                                            &self.chat_state_handle,
+                                            verbatim,
+                                        )
+                                        .await;
                                     xai_chat_state::compaction_utils::fit_conversation_to_budget(
-                                        verbatim,
-                                        budget,
+                                        pruned,
+                                        fitted_input_budget(context_window, compaction_tool_tokens),
                                     )
                                 }
-                                InputStage::Lossy => {
+                                CompactInputStage::Lossy => {
                                     xai_chat_state::compaction_utils::fit_conversation_to_budget(
                                         xai_chat_state::compaction_utils::prepare_conversation_for_summarization(
                                             conv,
@@ -1179,7 +1253,7 @@ impl SessionActor {
                                         lossy_input_budget(context_window, compaction_tool_tokens),
                                     )
                                 }
-                                InputStage::Verbatim => {
+                                CompactInputStage::Verbatim => {
                                     unreachable!("ladder only steps forward")
                                 }
                             };
@@ -1187,6 +1261,7 @@ impl SessionActor {
                             continue;
                         }
                         last_failure_outcome = CompactionOutcome::Deterministic;
+                        last_failure_reason = Some(SuppressReason::Size);
                         if auto_trigger {
                             self.suppress_auto_compaction(
                                 SuppressReason::Size,
@@ -1201,8 +1276,9 @@ impl SessionActor {
                     }
                     if deterministic {
                         last_failure_outcome = CompactionOutcome::Deterministic;
+                        let reason = Self::classify_suppress_reason(&message);
+                        last_failure_reason = Some(reason);
                         if auto_trigger {
-                            let reason = Self::classify_suppress_reason(&message);
                             self.suppress_auto_compaction(
                                 reason,
                                 &message,
@@ -1227,7 +1303,6 @@ impl SessionActor {
             self.persist_compaction_request_artifact(
                 request_chat_history,
                 compaction_tools,
-                user_context.as_deref(),
                 use_short_prompt,
                 &sampling_config.model,
                 trigger,
@@ -1267,6 +1342,9 @@ impl SessionActor {
                     telemetry.transient_rejections as i64,
                 );
                 span.record("compaction_outcome", last_failure_outcome.as_ref());
+                if let Some(reason) = last_failure_reason {
+                    span.record("compaction_failure_reason", reason.as_ref());
+                }
                 return Err(last_error.unwrap_or_else(|| {
                     acp::Error::internal_error().data("compaction failed: unknown error")
                 }));
@@ -1275,11 +1353,17 @@ impl SessionActor {
         let generate_session_compact = compact_output.content.clone();
         let user_message_prefix = self.build_user_message_prefix().await;
         let conversation = self.chat_state_handle.get_conversation().await;
-        let (discovered_agents_md, all_skills_for_compaction, _agent_edited_paths, state_context) =
+        let (discovered_agents_md, all_skills_for_compaction, _edited_paths, mut state_context) =
             if use_short_prompt {
                 let empty_edited: std::collections::BTreeSet<String> = Default::default();
-                let ctx =
-                    CompactionStateContext::build(&conversation, CompactionInputs::default()).await;
+                let ctx = CompactionStateContext::build(
+                    &conversation,
+                    CompactionInputs {
+                        goal_objective: self.goal_objective_for_compaction(),
+                        ..Default::default()
+                    },
+                )
+                .await;
                 (Vec::<std::path::PathBuf>::new(), vec![], empty_edited, ctx)
             } else {
                 let agents_md: Vec<std::path::PathBuf> = self
@@ -1473,6 +1557,7 @@ impl SessionActor {
                             scheduled_loops,
                             workflows,
                             workflow_tool_name,
+                            goal_objective: self.goal_objective_for_compaction(),
                             ..Default::default()
                         },
                     )
@@ -1480,6 +1565,38 @@ impl SessionActor {
                 };
                 (agents_md, skills, edited_paths, ctx)
             };
+        if self.is_cursor_harness() {
+            state_context.images = CompactionImageContext::default();
+        }
+        let harvested_paths = std::mem::take(&mut state_context.images.attached_paths);
+        let (kept, dropped_paths) = if harvested_paths.is_empty() {
+            (Vec::new(), 0)
+        } else {
+            match crate::session::persistence::ensure_owner_only_session_dir(&self.session_info) {
+                Ok(session_dir) => {
+                    retain_session_asset_files(
+                        harvested_paths,
+                        &crate::session::image_describe::session_assets_dir(&session_dir),
+                    )
+                    .await
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        "compaction: session dir unavailable; attached image paths dropped"
+                    );
+                    (Vec::new(), harvested_paths.len())
+                }
+            }
+        };
+        state_context.images.attached_paths = kept;
+        if dropped_paths > 0 {
+            tracing::debug!(
+                session_id = %self.session_info.id.0,
+                dropped_paths,
+                "compaction: dropped attached image paths that are not session asset files"
+            );
+        }
         use crate::session::helpers::compaction_context::SubagentToolNames;
         let subagent_tool_names: Option<SubagentToolNames> =
             if use_short_prompt || state_context.running_subagents.is_empty() {
@@ -1574,21 +1691,52 @@ impl SessionActor {
             )
             .await
         };
-        let v2_memory_context = if self.memory.is_enabled()
-            && self.memory.mode() == Some(crate::config::MemoryMode::V2)
-        {
+        let v2_memory_context = if self.memory.can_expose_v2() {
             if let Some(storage) = self.memory.storage() {
+                let compact_index = self.memory.v2_config.compact_index_enabled;
                 match tokio::task::spawn_blocking(move || {
-                    crate::session::helpers::memory_context::format_v2_memory_context(&storage)
+                    crate::session::helpers::memory_context::format_v2_memory_context(
+                        &storage,
+                        compact_index,
+                    )
                 })
                 .await
                 {
-                    Ok(Ok(context)) => Some(context),
+                    Ok(Ok(context)) => {
+                        let injected_bytes = context.content.len() as u64;
+                        self.memory.record_injected_bytes(injected_bytes);
+                        crate::session::memory_observation::log_memory_injection(
+                            self.session_info.id.to_string(),
+                            xai_grok_telemetry::memory_telemetry::MemoryInjectionOutcome::Results,
+                            crate::session::memory_observation::MemoryInjectionMetrics {
+                                result_count: context
+                                    .global_entry_count
+                                    .saturating_add(context.workspace_entry_count),
+                                injected_bytes,
+                                estimated_tokens: xai_token_estimation::estimate_tokens(
+                                    &context.content,
+                                ),
+                                global_entry_count: context.global_entry_count,
+                                workspace_entry_count: context.workspace_entry_count,
+                                compact_index,
+                                ..Default::default()
+                            },
+                        );
+                        Some(context.content)
+                    }
                     Ok(Err(error)) => {
                         tracing::warn!(
                             target: xai_grok_telemetry::memory_log::TARGET,
                             %error,
                             "MEMORY_COMPACTION_RECOVERY: failed to refresh v2 manifests"
+                        );
+                        crate::session::memory_observation::log_memory_injection(
+                            self.session_info.id.to_string(),
+                            xai_grok_telemetry::memory_telemetry::MemoryInjectionOutcome::Error,
+                            crate::session::memory_observation::MemoryInjectionMetrics {
+                                compact_index,
+                                ..Default::default()
+                            },
                         );
                         None
                     }
@@ -1597,6 +1745,14 @@ impl SessionActor {
                             target: xai_grok_telemetry::memory_log::TARGET,
                             %error,
                             "MEMORY_COMPACTION_RECOVERY: v2 manifest task failed"
+                        );
+                        crate::session::memory_observation::log_memory_injection(
+                            self.session_info.id.to_string(),
+                            xai_grok_telemetry::memory_telemetry::MemoryInjectionOutcome::Error,
+                            crate::session::memory_observation::MemoryInjectionMetrics {
+                                compact_index,
+                                ..Default::default()
+                            },
                         );
                         None
                     }
@@ -1689,6 +1845,16 @@ impl SessionActor {
         let agents_md_reminder = self.agent.borrow().agents_md_user_reminder();
         let compaction_context = state_context.for_compaction();
         let compaction_state_context: &CompactionStateContext = &compaction_context;
+        tracing::debug!(
+            session_id = %self.session_info.id.0,
+            has_last_user_query = compaction_state_context.last_user_query.is_some(),
+            last_turn_image_parts = compaction_state_context.images.last_turn_image_parts.len(),
+            has_last_turn_image_files = compaction_state_context
+                .images
+                .last_turn_image_files
+                .is_some(),
+            "compaction: last-turn image context"
+        );
         let transcript_hint = self.transcript_hint();
         let summary_count = self
             .compaction
@@ -1792,9 +1958,10 @@ impl SessionActor {
             )
             .await
         };
-        let new_len = compacted_history.len();
         self.chat_state_handle
             .replace_conversation_for_compaction(compacted_history);
+        self.reseed_active_goal_after_compaction().await;
+        let new_len = self.chat_state_handle.get_conversation_len().await;
         if self.startup_hints.inherited_prefix_len.is_some() {
             let post_replace_tokens = self.chat_state_handle.get_total_tokens().await;
             if xai_token_estimation::exceeds_threshold(
@@ -1846,6 +2013,15 @@ impl SessionActor {
             .on_skill_discovery_compaction()
             .await;
         self.rearm_failed_server_announcements().await;
+        if self
+            .tool_bridge_handle()
+            .toolset()
+            .tool_name_for_kind(xai_grok_tools::types::tool::ToolKind::UseTool)
+            .is_some()
+            && let Some(hint) = self.rendered_mcp_hint().await
+        {
+            self.push_system_reminder_with_tag(&hint, self.reminder_wrapper_tag());
+        }
         self.plan_mode.lock().reset_after_compaction();
         self.persist_plan_mode_state();
         self.dispatch_hook(
@@ -1932,6 +2108,7 @@ impl SessionActor {
                 tokens_used: total_tokens,
                 context_window: cw,
                 percentage,
+                reason_override: None,
             })
         } else {
             None
@@ -2012,6 +2189,7 @@ impl SessionActor {
                 tokens_used: estimated_total,
                 context_window: cw,
                 percentage,
+                reason_override: None,
             });
         }
         if let Some(trigger_info) = self.should_auto_compact(estimated_total, context_window) {
@@ -2051,6 +2229,7 @@ impl SessionActor {
             tokens_used: estimated_total,
             context_window: cw,
             percentage,
+            reason_override: None,
         })
     }
     /// On model change: clear sticky/other suppress and compact if the window shrank.
@@ -2140,11 +2319,16 @@ impl SessionActor {
         });
         self.signals_handle()
             .record_compaction(trigger_info.tokens_used);
+        let reason = if trigger_info.reason_override == Some(MODEL_FAMILY_SWITCH_COMPACT_BANNER) {
+            MODEL_FAMILY_SWITCH_COMPACT_BANNER.to_string()
+        } else {
+            format!("Context window {}% full", trigger_info.percentage)
+        };
         self.send_xai_notification(XaiSessionUpdate::AutoCompactStarted {
             tokens_used: trigger_info.tokens_used,
             context_window: trigger_info.context_window,
             percentage: trigger_info.percentage,
-            reason: format!("Context window {}% full", trigger_info.percentage),
+            reason,
         })
         .await;
         self.maybe_pre_compaction_flush(
@@ -2156,7 +2340,6 @@ impl SessionActor {
         let compact_start = std::time::Instant::now();
         let result = self
             .run_compact_inner(
-                None,
                 None,
                 xai_grok_telemetry::events::CompactionTrigger::Auto,
                 lossy_input,
@@ -2211,7 +2394,6 @@ impl SessionActor {
         &self,
         chat_history: Vec<ConversationItem>,
         tools: Vec<xai_grok_sampling_types::ToolSpec>,
-        user_context: Option<&str>,
         use_short_prompt: bool,
         model: &str,
         trigger: xai_grok_telemetry::events::CompactionTrigger,
@@ -2246,7 +2428,6 @@ impl SessionActor {
             trigger: trigger_str.to_owned(),
             prompt_variant: prompt_variant.to_owned(),
             model: model.to_owned(),
-            user_context: user_context.map(str::to_owned),
             chat_history,
             tools,
             summary: summary.map(str::to_owned),

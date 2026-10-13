@@ -1287,7 +1287,10 @@ mod tests {
         match outcome {
             AttemptOutcome::Completed { response, .. } => {
                 assert_eq!(response.tool_calls().len(), 1);
-                assert_eq!(response.tool_calls()[0].arguments.as_ref(), "{\"x\": 1}");
+                let Some(call) = response.tool_calls().first() else {
+                    panic!("expected a tool call");
+                };
+                assert_eq!(call.arguments.as_ref(), "{\"x\": 1}");
                 assert_eq!(
                     response.stop_reason,
                     Some(xai_grok_sampling_types::StopReason::Length)

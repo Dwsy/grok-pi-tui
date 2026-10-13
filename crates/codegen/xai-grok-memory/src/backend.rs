@@ -567,10 +567,8 @@ mod factory_tests {
             rowid: 1,
             rank: -1.0,
         }];
-        assert_eq!(
-            merge_fts_results(Ok(base), Err("evergreen"))[0].chunk_id,
-            "base"
-        );
+        let merged = merge_fts_results(Ok(base), Err("evergreen"));
+        assert_eq!(merged.first().map(|r| r.chunk_id.as_str()), Some("base"));
     }
 
     #[test]
@@ -869,7 +867,10 @@ mod factory_tests {
             !results.is_empty(),
             "FTS-only backend should return results"
         );
-        let ts = results[0].created_at;
+        let Some(first) = results.first() else {
+            panic!("expected FTS-only results: {results:?}");
+        };
+        let ts = first.created_at;
         assert!(
             ts.is_some() && ts.unwrap() > 0,
             "created_at must be Some(positive) after backend search (got {ts:?})"
@@ -1213,7 +1214,7 @@ mod tests {
 
         let results = backend.search("rust programming", 10, 0.0).await.unwrap();
         assert!(!results.is_empty(), "should find indexed content");
-        assert!(results[0].snippet.contains("Rust"));
+        assert!(results.first().is_some_and(|r| r.snippet.contains("Rust")));
     }
 
     #[test]
@@ -1394,7 +1395,10 @@ mod tests {
             "FTS-only fallback should still return results"
         );
         // Hybrid scoring normalizes scores into the (0,1] range
-        assert!(results[0].score > 0.0, "hybrid scores should be positive");
+        assert!(
+            results.first().is_some_and(|r| r.score > 0.0),
+            "hybrid scores should be positive"
+        );
     }
 
     /// The supplemental evergreen query in `search()` adds global/workspace candidates that the base `search_fts` missed due to candidate_limit.
@@ -1522,7 +1526,9 @@ mod index_embedding_tests {
         );
 
         // After upserting an embedding, the chunk should disappear from missing
-        let (chunk_id, _) = &missing[0];
+        let Some((chunk_id, _)) = missing.first() else {
+            panic!("expected a chunk missing embeddings: {missing:?}");
+        };
         let dummy_embedding = vec![0.0f32; 4];
         idx.upsert_embedding(chunk_id, &dummy_embedding).unwrap();
 

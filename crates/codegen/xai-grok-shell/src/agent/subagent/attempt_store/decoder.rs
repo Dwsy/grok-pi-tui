@@ -135,8 +135,10 @@ pub(super) fn decode_attempt_record(bytes: &[u8]) -> Result<DecodedAttemptRecord
         RecordFamilyV1::Attempt,
         MAX_ENCODED_RECORD_BYTES,
         |event| match event {
-            0..=10 => Some(ROW_LIMITS[usize::from(event)].1),
-            11..=15 => Some(A2_EXACT_ALIGNED_ROW_BYTES[usize::from(event - 11)].1),
+            0..=10 => ROW_LIMITS.get(usize::from(event)).map(|row| row.1),
+            11..=15 => A2_EXACT_ALIGNED_ROW_BYTES
+                .get(usize::from(event - 11))
+                .map(|row| row.1),
             _ => None,
         },
         |event, body| {
@@ -369,10 +371,13 @@ fn key_is_c(key: &[u8]) -> Result<bool> {
     let mut out_len = 0_usize;
     let mut index = 0_usize;
     while index < key.len() {
-        let (byte, consumed) = match key[index] {
-            b'\\' => match key.get(index + 1) {
-                Some(b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') => {
-                    let mapped = match key[index + 1] {
+        let Some(&current) = key.get(index) else {
+            break;
+        };
+        let (byte, consumed) = match current {
+            b'\\' => match key.get(index + 1).copied() {
+                Some(esc @ (b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't')) => {
+                    let mapped = match esc {
                         b'b' => b'\x08',
                         b'f' => b'\x0c',
                         b'n' => b'\n',
@@ -383,7 +388,9 @@ fn key_is_c(key: &[u8]) -> Result<bool> {
                     (mapped, 2)
                 }
                 Some(b'u') if index + 6 <= key.len() => {
-                    let hex = &key[index + 2..index + 6];
+                    let Some(hex) = key.get(index + 2..index + 6) else {
+                        return Err(CodecError::Invalid("agent text field"));
+                    };
                     let mut value = 0_u16;
                     for byte in hex {
                         value = (value << 4)
@@ -407,7 +414,10 @@ fn key_is_c(key: &[u8]) -> Result<bool> {
         if out_len >= decoded.len() {
             return Ok(false);
         }
-        decoded[out_len] = byte;
+        let Some(slot) = decoded.get_mut(out_len) else {
+            return Ok(false);
+        };
+        *slot = byte;
         out_len += 1;
         index += consumed;
     }
@@ -418,14 +428,18 @@ fn json_string(input: &[u8]) -> Option<(&[u8], &[u8])> {
     let rest = input.strip_prefix(b"\"")?;
     let mut index = 0_usize;
     while index < rest.len() {
-        match rest[index] {
-            b'"' => return Some((&rest[..index], &rest[index + 1..])),
+        match rest.get(index).copied()? {
+            b'"' => {
+                let interior = rest.get(..index)?;
+                let after = rest.get(index + 1..)?;
+                return Some((interior, after));
+            }
             b'\\' => {
                 index += 1;
                 if index >= rest.len() {
                     return None;
                 }
-                if rest[index] == b'u' {
+                if rest.get(index).copied() == Some(b'u') {
                     index = index.checked_add(4)?;
                 }
                 index += 1;
@@ -442,21 +456,24 @@ fn json_value(input: &[u8]) -> Option<(&[u8], &[u8])> {
         b'"' => {
             let (interior, rest) = json_string(input)?;
             let value_len = interior.len() + 2;
-            Some((&input[..value_len], rest))
+            Some((input.get(..value_len)?, rest))
         }
         b'{' => json_container(input, b'{', b'}'),
         b'[' => json_container(input, b'[', b']'),
-        b't' if input.starts_with(b"true") => Some((&input[..4], &input[4..])),
-        b'f' if input.starts_with(b"false") => Some((&input[..5], &input[5..])),
-        b'n' if input.starts_with(b"null") => Some((&input[..4], &input[4..])),
+        b't' if input.starts_with(b"true") => Some(input.split_at_checked(4)?),
+        b'f' if input.starts_with(b"false") => Some(input.split_at_checked(5)?),
+        b'n' if input.starts_with(b"null") => Some(input.split_at_checked(4)?),
         b'-' | b'0'..=b'9' => {
             let mut index = 0_usize;
             while index < input.len()
-                && matches!(input[index], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+                && matches!(
+                    input.get(index).copied(),
+                    Some(b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+                )
             {
                 index += 1;
             }
-            (index > 0).then_some((&input[..index], &input[index..]))
+            (index > 0).then_some((input.get(..index)?, input.get(index..)?))
         }
         _ => None,
     }
@@ -469,7 +486,7 @@ fn json_container(input: &[u8], open: u8, close: u8) -> Option<(&[u8], &[u8])> {
     let mut depth = 0_usize;
     let mut index = 0_usize;
     while index < input.len() {
-        match input[index] {
+        match input.get(index).copied()? {
             byte if byte == open => {
                 depth += 1;
                 index += 1;
@@ -478,12 +495,12 @@ fn json_container(input: &[u8], open: u8, close: u8) -> Option<(&[u8], &[u8])> {
                 depth -= 1;
                 index += 1;
                 if depth == 0 {
-                    return Some((&input[..index], &input[index..]));
+                    return Some((input.get(..index)?, input.get(index..)?));
                 }
             }
             b'"' => {
-                let (_, rest) = json_string(&input[index..])?;
-                index = input.len() - rest.len();
+                let (_, rest) = json_string(input.get(index..)?)?;
+                index = input.len().checked_sub(rest.len())?;
             }
             _ => index += 1,
         }
@@ -496,7 +513,7 @@ fn trim_start(input: &[u8]) -> &[u8] {
         .iter()
         .position(|byte| !matches!(byte, b' ' | b'\t'))
         .unwrap_or(input.len());
-    &input[index..]
+    input.get(index..).unwrap_or(&[])
 }
 
 fn check_bounded_cap(bytes: &[u8], max: usize, field: &'static str) -> Result<()> {
@@ -551,7 +568,10 @@ pub(super) fn decode_fixed_hex<const N: usize>(
             b'a'..=b'f' => Ok(byte - b'a' + 10),
             _ => Err(CodecError::Invalid(field)),
         };
-        *output = (nibble(pair[0])? << 4) | nibble(pair[1])?;
+        let [hi, lo] = pair else {
+            return Err(CodecError::Invalid(field));
+        };
+        *output = (nibble(*hi)? << 4) | nibble(*lo)?;
     }
     Ok(decoded)
 }

@@ -12,13 +12,20 @@ use super::start_artifact_publication::{
     PreparedStartArtifacts, PublicationBoundary, StartArtifactPublication,
 };
 use super::*;
+use crate::agent::remote_config::task_model_policy::{
+    TaskModelSelection, selection_telemetry_kind,
+};
 use crate::upload::trace::PromptMetadataParams;
 use xai_grok_sampling_types::ReasoningEffort;
+use xai_grok_telemetry::events::{SubagentModelOverrideRejected, SubagentModelRejectionReason};
 use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
 use xai_grok_telemetry::subagent_spawn::{SubagentSpawnPhase, phase_region};
+use xai_grok_tools::implementations::grok_build::task::model_policy;
 use xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageSource;
+use xai_grok_tools::implementations::grok_build::task::types::SubagentCapabilityModeExt;
 use xai_grok_tools::implementations::{grok_build, opencode};
+use xai_grok_tools::types::tool::ToolKind;
 static SUBAGENTS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
     xai_grok_telemetry::activity::ActivityGauge::work(
         xai_grok_telemetry::activity::SUBAGENTS_ACTIVE_KEY,
@@ -299,18 +306,44 @@ impl WakePersistenceContext {
         }
     }
 }
-pub(super) fn task_model_override_error(
-    requested: Option<&str>,
-    provenance: ModelOverrideProvenance,
+/// `None` on resume: the source model stays pinned.
+pub(super) fn explicit_tool_model(
+    overrides: &SubagentRuntimeOverrides,
     is_resume: bool,
-    available: &indexmap::IndexMap<String, crate::agent::config::ModelEntry>,
-    is_session_auth: bool,
-) -> Option<String> {
-    if provenance != ModelOverrideProvenance::Tool || is_resume {
+) -> Option<(String, TaskModelSelection)> {
+    let ModelOverrideProvenance::Tool { selection } = overrides.model_override_provenance else {
+        return None;
+    };
+    if is_resume {
         return None;
     }
-    let requested = requested?;
-    crate::agent::remote_config::task_model_error_for_catalog(requested, available, is_session_auth)
+    overrides.model.clone().map(|model| (model, selection))
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TaskModelAdmissionError {
+    HiddenSelection,
+    Unavailable(String),
+}
+/// The originating mode is enforced before availability, whatever the catalog says now.
+pub(super) fn admit_explicit_tool_model(
+    requested: &str,
+    selection: TaskModelSelection,
+    available: &indexmap::IndexMap<String, crate::agent::config::ModelEntry>,
+    is_session_auth: bool,
+) -> Result<(), TaskModelAdmissionError> {
+    match selection {
+        TaskModelSelection::Inherited => Err(TaskModelAdmissionError::HiddenSelection),
+        TaskModelSelection::Selectable => {
+            crate::agent::remote_config::task_model_error_for_catalog(
+                requested,
+                available,
+                is_session_auth,
+            )
+            .map_or(Ok(()), |message| {
+                Err(TaskModelAdmissionError::Unavailable(message))
+            })
+        }
+    }
 }
 #[tracing::instrument(
     name = "subagent.handle_request",
@@ -336,6 +369,8 @@ pub(crate) async fn run_shell_child(
         cancellation: cancel_token,
         reporter,
         attempt_id: attempt_identity,
+        generation: target_generation,
+        mut agent_message_sender,
         wake_origin,
         queued_for,
         session_running,
@@ -374,66 +409,6 @@ pub(crate) async fn run_shell_child(
             cancelled_result(&request, "Subagent was cancelled"),
             completion_data,
             None,
-        );
-    }
-    let Some(mut definition) = resolve_agent_definition(&request.subagent_type, &ctx) else {
-        let msg = format!("Unknown subagent type: {}", request.subagent_type);
-        return child_run_output(failure_result(&request, &msg), completion_data, None);
-    };
-    match gate_subagent_type(&request.subagent_type, &ctx) {
-        SubagentValidateTypeOutcome::Disabled => {
-            let msg = format!(
-                "Subagent '{}' is disabled via [subagents.toggle] in config.toml",
-                request.subagent_type
-            );
-            return child_run_output(failure_result(&request, &msg), completion_data, None);
-        }
-        SubagentValidateTypeOutcome::NotAllowed { allowed } => {
-            let msg = format!(
-                "agent can only spawn: {}; '{}' not allowed",
-                allowed.join(", "),
-                request.subagent_type
-            );
-            return child_run_output(failure_result(&request, &msg), completion_data, None);
-        }
-        SubagentValidateTypeOutcome::Ok => {}
-        _ => {
-            let msg = format!("Cannot validate subagent '{}'", request.subagent_type);
-            return child_run_output(failure_result(&request, &msg), completion_data, None);
-        }
-    }
-    resolve_subagent_toolset(
-        &request.subagent_type,
-        request.runtime_overrides.harness_agent_type.as_deref(),
-        &ctx,
-        &mut definition,
-    );
-    let cwd = ctx
-        .parent_session_info
-        .as_ref()
-        .map(|i| std::path::Path::new(&i.cwd));
-    let mut effective_runtime = xai_grok_subagent_resolution::resolve_runtime_config(
-        &request.subagent_type,
-        &request.runtime_overrides,
-        &ctx.subagent_roles,
-        &ctx.subagent_personas,
-        cwd,
-        &definition,
-    );
-    let prompt = request.prompt.clone();
-    if let Some(ref err) = effective_runtime.persona_error {
-        tracing::error!(
-            subagent_id = %request.id,
-            error = err,
-            "Persona resolution failed, aborting subagent spawn"
-        );
-        return child_run_output(failure_result(&request, err), completion_data, None);
-    }
-    if let Some(ref warn) = effective_runtime.role_prompt_warning {
-        tracing::warn!(
-            subagent_id = %request.id,
-            warning = warn,
-            "Role prompt_file degraded, continuing without role prompt"
         );
     }
     let resume_source = if is_wake {
@@ -506,6 +481,72 @@ pub(crate) async fn run_shell_child(
         );
         return child_run_output(failure_result(&request, &error), completion_data, None);
     }
+    if let Some(source) = resume_source.as_ref() {
+        request.subagent_type = source.subagent_type.clone();
+        let _ = reporter
+            .set_resolved_subagent_type(source.subagent_type.clone())
+            .await;
+    }
+    let Some(mut definition) = resolve_agent_definition(&request.subagent_type, &ctx) else {
+        let msg = format!("Unknown subagent type: {}", request.subagent_type);
+        return child_run_output(failure_result(&request, &msg), completion_data, None);
+    };
+    match gate_subagent_type(&request.subagent_type, &ctx) {
+        SubagentValidateTypeOutcome::Disabled => {
+            let msg = format!(
+                "Subagent '{}' is disabled via [subagents.toggle] in config.toml",
+                request.subagent_type
+            );
+            return child_run_output(failure_result(&request, &msg), completion_data, None);
+        }
+        SubagentValidateTypeOutcome::NotAllowed { allowed } => {
+            let msg = format!(
+                "agent can only spawn: {}; '{}' not allowed",
+                allowed.join(", "),
+                request.subagent_type
+            );
+            return child_run_output(failure_result(&request, &msg), completion_data, None);
+        }
+        SubagentValidateTypeOutcome::Ok => {}
+        _ => {
+            let msg = format!("Cannot validate subagent '{}'", request.subagent_type);
+            return child_run_output(failure_result(&request, &msg), completion_data, None);
+        }
+    }
+    resolve_subagent_toolset(
+        &request.subagent_type,
+        request.runtime_overrides.harness_agent_type.as_deref(),
+        &ctx,
+        &mut definition,
+    );
+    let cwd = ctx
+        .parent_session_info
+        .as_ref()
+        .map(|i| std::path::Path::new(&i.cwd));
+    let mut effective_runtime = xai_grok_subagent_resolution::resolve_runtime_config(
+        &request.subagent_type,
+        &request.runtime_overrides,
+        &ctx.subagent_roles,
+        &ctx.subagent_personas,
+        cwd,
+        &definition,
+    );
+    let prompt = request.prompt.clone();
+    if let Some(ref err) = effective_runtime.persona_error {
+        tracing::error!(
+            subagent_id = %request.id,
+            error = err,
+            "Persona resolution failed, aborting subagent spawn"
+        );
+        return child_run_output(failure_result(&request, err), completion_data, None);
+    }
+    if let Some(ref warn) = effective_runtime.role_prompt_warning {
+        tracing::warn!(
+            subagent_id = %request.id,
+            warning = warn,
+            "Role prompt_file degraded, continuing without role prompt"
+        );
+    }
     if let Some(ref source) = resume_source {
         if request.runtime_overrides.model.is_some() {
             tracing::debug!(
@@ -526,16 +567,29 @@ pub(crate) async fn run_shell_child(
             );
         }
     }
-    if let Some(error) = task_model_override_error(
-        request.runtime_overrides.model.as_deref(),
-        request.runtime_overrides.model_override_provenance,
-        resume_source.is_some(),
-        &ctx.available_models,
-        ctx.auth_manager
-            .current_or_expired()
-            .is_some_and(|a| a.is_session_auth()),
-    ) {
-        return child_run_output(failure_result(&request, &error), completion_data, None);
+    if let Some((requested, selection)) =
+        explicit_tool_model(&request.runtime_overrides, resume_source.is_some())
+        && let Err(error) = admit_explicit_tool_model(
+            &requested,
+            selection,
+            &ctx.available_models,
+            ctx.auth_manager
+                .current_or_expired()
+                .is_some_and(|a| a.is_session_auth()),
+        )
+    {
+        let message = match error {
+            TaskModelAdmissionError::HiddenSelection => {
+                xai_grok_telemetry::session_ctx::log_event(SubagentModelOverrideRejected {
+                    parent_session_id: request.parent_session_id.clone(),
+                    owner: telemetry_owner_kind(&request),
+                    reason: SubagentModelRejectionReason::HiddenSelection,
+                });
+                model_policy::hidden_selection_message(model_policy::MODEL_PARAM)
+            }
+            TaskModelAdmissionError::Unavailable(message) => message,
+        };
+        return child_run_output(failure_result(&request, &message), completion_data, None);
     }
     let worktree_path = if let Some(ref source) = resume_source {
         if effective_runtime.isolation != xai_tool_types::SubagentIsolationMode::None
@@ -611,6 +665,8 @@ pub(crate) async fn run_shell_child(
         let subagent_id = request.id.clone();
         let creation_mode: xai_fast_worktree::CreationMode = ctx.worktree_type.into();
         let btrfs_delegate = crate::session::worktree::btrfs_delegate_from_env();
+        let (grove_enabled, grove_gate_source) =
+            crate::util::config::grove_worktree_gate(ctx.remote_settings.as_ref());
         let worktree_create_span = region!(
             "subagent_spawn.worktree_create",
             Parent::Explicit(spawn_prepare_span.span())
@@ -623,6 +679,11 @@ pub(crate) async fn run_shell_child(
                     .creation_mode(creation_mode)
                     .worktree_kind(xai_fast_worktree::WorktreeKind::Subagent)
                     .session_id(subagent_id);
+                if let Some(opts) =
+                    crate::util::config::grove_worktree_opts_if_enabled(grove_enabled)
+                {
+                    builder = builder.grove_worktree(opts);
+                }
                 if let Some(delegate) = btrfs_delegate {
                     builder = builder.btrfs_delegate(delegate);
                 }
@@ -638,6 +699,8 @@ pub(crate) async fn run_shell_child(
                     commit = %report.commit,
                     resolved_strategy = report.resolved_strategy,
                     skipped = %xai_fast_worktree::render_arm_skips(&report.skipped),
+                    grove_worktree = grove_enabled,
+                    grove_gate_source,
                     "Created isolated worktree for subagent"
                 );
                 Some(report.worktree_path)
@@ -646,7 +709,11 @@ pub(crate) async fn run_shell_child(
                 tracing::warn!(
                     subagent_id = %request.id,
                     error = %e,
-                    "Failed to create worktree, falling back to shared workspace"
+                    resolved_strategy = "none",
+                    skipped = "",
+                    grove_worktree = grove_enabled,
+                    grove_gate_source,
+                    "Failed to create worktree (grove gate {grove_gate_source}), falling back to shared workspace"
                 );
                 None
             }
@@ -654,7 +721,11 @@ pub(crate) async fn run_shell_child(
                 tracing::warn!(
                     subagent_id = %request.id,
                     error = %e,
-                    "Worktree creation task panicked, falling back to shared workspace"
+                    resolved_strategy = "none",
+                    skipped = "",
+                    grove_worktree = grove_enabled,
+                    grove_gate_source,
+                    "Worktree creation task panicked (grove gate {grove_gate_source}), falling back to shared workspace"
                 );
                 None
             }
@@ -708,6 +779,7 @@ pub(crate) async fn run_shell_child(
         effective_runtime.capability_mode,
         definition.capability_mode,
     );
+    definition.capability_mode = effective_runtime.capability_mode;
     let child_depth = request
         .runtime_overrides
         .spawn_depth
@@ -1146,6 +1218,14 @@ pub(crate) async fn run_shell_child(
     )
     .with_hunk_tracking_enabled(ctx.hunk_tracking_enabled);
     tool_ctx.subagent_event_tx = Some(ctx.subagent_event_tx.clone());
+    let active_agent_messages_enabled = ctx.active_agent_messages_enabled
+        && agent_message_sender.is_some()
+        && definition
+            .capability_mode
+            .is_none_or(|mode| mode.allows_tool_kind(ToolKind::ActiveAgentMessage));
+    if !active_agent_messages_enabled {
+        drop(agent_message_sender.take());
+    }
     let task_output_budget = request
         .runtime_overrides
         .output_token_budget
@@ -1300,76 +1380,9 @@ pub(crate) async fn run_shell_child(
             }
         }
     }
-    let agent_mcp_servers: Vec<_> = if definition.mcp_servers.is_empty() {
-        vec![]
-    } else if is_plugin_agent {
-        tracing::warn!(
-            agent = %definition.name,
-            plugin = ?definition.plugin_name,
-            "ignoring mcpServers on plugin agent (not supported for security)"
-        );
-        vec![]
-    } else if !crate::agent::folder_trust::agent_inline_hooks_allowed(definition.scope, || {
-        crate::agent::folder_trust::project_scope_allowed(&ctx.parent_cwd)
-    }) {
-        tracing::warn!(
-            agent = %definition.name,
-            "ignoring mcpServers on untrusted project agent (folder not trusted; re-run with --trust)"
-        );
-        vec![]
-    } else {
-        definition
-                .mcp_servers
-                .iter()
-                .filter_map(|entry| match entry {
-                    xai_grok_agent::config::McpServerRef::Named(name) => {
-                        ctx.parent_mcp_configs
-                            .iter()
-                            .find(|s| {
-                                crate::session::mcp_servers::mcp_server_name(s) == name
-                            })
-                            .cloned()
-                            .or_else(|| {
-                                tracing::warn!(agent = %definition.name, server = name, "mcpServers: named ref not found in parent");
-                                None
-                            })
-                    }
-                    xai_grok_agent::config::McpServerRef::Inline { name, config } => {
-                        if let serde_json::Value::Object(obj) = config
-                            && obj.contains_key("type")
-                        {
-                            let mut flat = obj.clone();
-                            flat.insert(
-                                "name".to_string(),
-                                serde_json::Value::String(name.clone()),
-                            );
-                            if let Ok(server) = serde_json::from_value::<
-                                agent_client_protocol::McpServer,
-                            >(serde_json::Value::Object(flat)) {
-                                return Some(server);
-                            }
-                            tracing::debug!(agent = %definition.name, server = name, "ACP wire format parse failed, trying map-keyed");
-                        }
-                        if let Some(inner_obj) = config.as_object() {
-                            let mut flat = inner_obj.clone();
-                            flat.insert(
-                                "name".to_string(),
-                                serde_json::Value::String(name.clone()),
-                            );
-                            if let Ok(server) = serde_json::from_value::<
-                                agent_client_protocol::McpServer,
-                            >(serde_json::Value::Object(flat)) {
-                                return Some(server);
-                            }
-                        }
-                        tracing::warn!(agent = %definition.name, server = name, "mcpServers: inline config could not be parsed");
-                        None
-                    }
-                })
-                .collect()
-    };
-    let agent_mcp_servers = crate::session::managed_mcp::filter_policy_blocked_agent_mcp(
-        agent_mcp_servers,
+    let agent_mcp_servers = crate::session::agent_mcp::materialize_agent_mcp_servers(
+        &definition,
+        &ctx.parent_mcp_configs,
         &ctx.parent_cwd,
     );
     let parent_mcp_pool =
@@ -1426,6 +1439,12 @@ pub(crate) async fn run_shell_child(
         parent_session_id: request.parent_session_id.clone(),
         subagent_type: request.subagent_type.clone(),
         owner: telemetry_owner_kind(&request),
+        model_selection: match request.runtime_overrides.model_override_provenance {
+            ModelOverrideProvenance::Tool { selection } => {
+                Some(selection_telemetry_kind(selection))
+            }
+            ModelOverrideProvenance::Harness => None,
+        },
         workflow_run_id: request.owner.workflow_run_id().map(str::to_string),
         queued_ms: queued_for.map(|queued| u64::try_from(queued.as_millis()).unwrap_or(u64::MAX)),
         session_running: u32::try_from(session_running).unwrap_or(u32::MAX),
@@ -1447,8 +1466,9 @@ pub(crate) async fn run_shell_child(
             .tx
             .send(crate::session::persistence::PersistenceMsg::CurrentModel {
                 model_id: effective_model_id.clone(),
-                agent_name: Some(definition.name.clone()),
+                agent: crate::session::persistence::PersistedAgent::from(&definition),
                 reasoning_effort: Some(effective_sampling_config.reasoning_effort),
+                context_window: None,
             });
     }
     crate::waterfall::mark(&request.id, crate::waterfall::stage::SESSION_SPAWN);
@@ -1487,6 +1507,7 @@ pub(crate) async fn run_shell_child(
             parent_session_id: Some(ctx.parent_session_id.clone()),
             subagent_type: Some(request.subagent_type.clone()),
             preserve_inherited_system: verbatim_mirror_fork,
+            parent_cwd: Some(ctx.parent_cwd.clone()),
             ..Default::default()
         },
         xai_grok_workspace::permission::ClientType::Generic,
@@ -1494,6 +1515,7 @@ pub(crate) async fn run_shell_child(
         xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_string(),
         pins.mode,
         ctx.resolve_compaction_verbatim_input(),
+        ctx.resolve_long_reasoning_reminder(),
         ctx.resolve_compaction_tool_choice(),
         pins.two_pass,
         None,
@@ -1510,6 +1532,10 @@ pub(crate) async fn run_shell_child(
         None,
         false,
         false,
+        ctx.agent_config
+            .as_ref()
+            .map(crate::session::file_acceleration::settings)
+            .unwrap_or_default(),
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         definition,
         subagent_session_default_agent_profile,
@@ -1524,6 +1550,7 @@ pub(crate) async fn run_shell_child(
             None
         },
         ctx.parent_compat,
+        ctx.parent_paths_config.clone(),
         false,
         None,
         None,
@@ -1565,7 +1592,8 @@ pub(crate) async fn run_shell_child(
         ctx.video_gen_config.clone(),
         ctx.app_builder_deployer_config.clone(),
         ctx.write_file_enabled,
-        false,
+        active_agent_messages_enabled,
+        agent_message_sender,
         ctx.goal_enabled,
         ctx.background_workflows_enabled,
         true,
@@ -1612,6 +1640,7 @@ pub(crate) async fn run_shell_child(
         } else {
             None
         },
+        ctx.feature(crate::agent::config::Feature::SubagentModelInheritance),
         false,
         Some(xai_grok_telemetry::subagent_spawn::SpawnPhaseContext {
             timer: spawn_timer.clone(),
@@ -1628,7 +1657,7 @@ pub(crate) async fn run_shell_child(
     );
     session_bootstrap_span.close();
     let session_ready_at = std::time::Instant::now();
-    let (child_handle, mut permission_rx, _system_prompt, child_thread) = match spawn_result {
+    let (child_init, child_thread) = match spawn_result {
         Ok(r) => r,
         Err(e) => {
             let msg = format!("Failed to spawn child session: {e}");
@@ -1647,6 +1676,19 @@ pub(crate) async fn run_shell_child(
             return child_run_output(result, completion_data, None);
         }
     };
+    let session::SessionInitResult {
+        handle: child_handle,
+        permission_events_rx: mut permission_rx,
+        toolset: child_toolset,
+        ..
+    } = child_init;
+    session::bind_installed_toolset(
+        &ctx.workspace_ops,
+        &child_handle.info.id,
+        child_handle.tool_context.cwd.as_path(),
+        &child_handle.hunk_tracker_handle,
+        &child_toolset,
+    );
     let ready_to_first_turn_span = phase_region(SubagentSpawnPhase::ReadyToFirstTurn);
     let (receipt_sink, receipt_stream) = mpsc::channel(ACTIVE_MESSAGE_RECEIPT_CAPACITY);
     let receipt_drain = PromptTurnReceiptDrain::start(
@@ -1715,6 +1757,8 @@ pub(crate) async fn run_shell_child(
                     child_cmd_tx: child_handle.cmd_tx.clone(),
                     message_delivery: child_handle.message_delivery(),
                     active_message_target_session_id: child_session_id.0.to_string(),
+                    active_message_target_agent_id: agent_id.clone(),
+                    active_message_target_generation: target_generation,
                     child_signals: child_handle.signals_handle.clone(),
                     _child_thread: None,
                     receipt_sink,

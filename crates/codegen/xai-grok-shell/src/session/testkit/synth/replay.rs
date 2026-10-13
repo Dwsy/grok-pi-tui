@@ -88,7 +88,9 @@ fn filler(n: usize) -> String {
     let mut s = String::with_capacity(n + 8);
     let mut i = 0usize;
     while s.len() < n {
-        s.push_str(WORDS[i % WORDS.len()]);
+        if let Some(word) = WORDS.get(i % WORDS.len()) {
+            s.push_str(word);
+        }
         s.push(' ');
         i += 1;
     }

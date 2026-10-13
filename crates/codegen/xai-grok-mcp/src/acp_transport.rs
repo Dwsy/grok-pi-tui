@@ -257,8 +257,14 @@ mod tests {
             .unwrap();
 
         let response = read_line(&mut reader).await;
-        assert_eq!(response["id"], 1);
-        assert_eq!(response["result"]["method"], "tools/list");
+        assert_eq!(response.get("id").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(
+            response
+                .get("result")
+                .and_then(|r| r.get("method"))
+                .and_then(|m| m.as_str()),
+            Some("tools/list")
+        );
     }
 
     /// A slow request must not block a later fast one (no head-of-line blocking).
@@ -305,8 +311,20 @@ mod tests {
             .unwrap();
 
         // The fast request (id 2) returns before the slow one (id 1).
-        assert_eq!(read_line(&mut reader).await["id"], 2);
-        assert_eq!(read_line(&mut reader).await["id"], 1);
+        assert_eq!(
+            read_line(&mut reader)
+                .await
+                .get("id")
+                .and_then(|v| v.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            read_line(&mut reader)
+                .await
+                .get("id")
+                .and_then(|v| v.as_i64()),
+            Some(1)
+        );
     }
 
     /// Regression: a chunked request (JSON args exceed the read buffer) must still parse when an in-flight invoke completes mid-read.
@@ -367,8 +385,8 @@ mod tests {
         let first = read_line(&mut reader).await;
         let second = read_line(&mut reader).await;
         let mut ids = [
-            first["id"].as_i64().unwrap(),
-            second["id"].as_i64().unwrap(),
+            first.get("id").and_then(|v| v.as_i64()).unwrap_or(-1),
+            second.get("id").and_then(|v| v.as_i64()).unwrap_or(-1),
         ];
         ids.sort_unstable();
         assert_eq!(ids, [1, 2]);
@@ -385,9 +403,21 @@ mod tests {
             .unwrap();
 
         let response = read_line(&mut reader).await;
-        assert_eq!(response["id"], 7);
-        assert_eq!(response["error"]["code"], -32603);
-        assert_eq!(response["error"]["message"], "server exploded");
+        assert_eq!(response.get("id").and_then(|v| v.as_i64()), Some(7));
+        assert_eq!(
+            response
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|c| c.as_i64()),
+            Some(-32603)
+        );
+        assert_eq!(
+            response
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str()),
+            Some("server exploded")
+        );
     }
 
     /// A non-object SDK response can't carry an `id`, so rmcp couldn't correlate it.
@@ -426,8 +456,14 @@ mod tests {
             .unwrap();
 
         let response = read_line(&mut reader).await;
-        assert_eq!(response["id"], 9);
-        assert_eq!(response["error"]["code"], -32603);
+        assert_eq!(response.get("id").and_then(|v| v.as_i64()), Some(9));
+        assert_eq!(
+            response
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|c| c.as_i64()),
+            Some(-32603)
+        );
     }
 
     /// The configured per-server timeout (not a hardcoded constant) must reach the invoker for every reverse call.
@@ -471,7 +507,13 @@ mod tests {
             .await
             .unwrap();
         // Wait for the response so the invoke has definitely run.
-        assert_eq!(read_line(&mut reader).await["id"], 1);
+        assert_eq!(
+            read_line(&mut reader)
+                .await
+                .get("id")
+                .and_then(|v| v.as_i64()),
+            Some(1)
+        );
         assert_eq!(*seen.lock().unwrap(), Some(configured));
     }
 
@@ -593,7 +635,11 @@ mod tests {
             let result = match method {
                 "initialize" => serde_json::json!({
                     // Echo the client's protocol version so the handshake is always compatible.
-                    "protocolVersion": message["params"]["protocolVersion"],
+                    "protocolVersion": message
+                        .get("params")
+                        .and_then(|p| p.get("protocolVersion"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "mock-sdk-server", "version": "0.0.0" },
                 }),
@@ -609,8 +655,11 @@ mod tests {
                     }],
                 }),
                 "tools/call" => {
-                    let text = message["params"]["arguments"]["text"]
-                        .as_str()
+                    let text = message
+                        .get("params")
+                        .and_then(|p| p.get("arguments"))
+                        .and_then(|a| a.get("text"))
+                        .and_then(|t| t.as_str())
                         .unwrap_or_default();
                     serde_json::json!({
                         "content": [{ "type": "text", "text": text }],
@@ -648,7 +697,7 @@ mod tests {
             .await
             .expect("tools/list over the bridge");
         assert_eq!(tools.tools.len(), 1);
-        assert_eq!(tools.tools[0].name.as_ref(), "echo");
+        assert_eq!(tools.tools.first().map(|t| t.name.as_ref()), Some("echo"));
 
         let result = client
             .call_tool(
@@ -661,8 +710,10 @@ mod tests {
             )
             .await
             .expect("tools/call over the bridge");
-        let text = result.content[0]
-            .as_text()
+        let text = result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
             .expect("text content")
             .text
             .clone();

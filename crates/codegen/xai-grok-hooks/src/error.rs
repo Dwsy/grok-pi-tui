@@ -49,4 +49,27 @@ pub enum HookError {
         path: PathBuf,
         handler_type: String,
     },
+
+    #[error("config unreadable, so vendor hooks use their default settings: {source}")]
+    ConfigUnreadable { source: std::io::Error },
+
+    #[error(
+        "remote settings were not available from the settings cache, so vendor hooks use their local settings"
+    )]
+    RemoteSettingsUnavailable,
+
+    #[error(
+        "git root {root} is neither the workspace {workspace} nor a parent of it, so its project hooks are not loaded"
+    )]
+    GitRootDoesNotContainWorkspace { root: PathBuf, workspace: PathBuf },
+
+    #[error(
+        "the git root of {workspace} could not be found, so its project hooks are not loaded: {detail}"
+    )]
+    GitDiscoveryFailed { workspace: PathBuf, detail: String },
+
+    #[error(
+        "{workspace} is outside {root}, the only directory the hook service's sandbox lets hooks work in, so no hooks are loaded"
+    )]
+    WorkspaceOutsideSandbox { workspace: PathBuf, root: PathBuf },
 }

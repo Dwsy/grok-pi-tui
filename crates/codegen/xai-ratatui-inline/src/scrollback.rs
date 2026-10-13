@@ -137,6 +137,12 @@ mod tests {
 
         // Viewport should have moved down
         assert_eq!(terminal.viewport_updates.len(), 1);
-        assert!(terminal.viewport_updates[0].y > 10);
+        let Some(update) = terminal.viewport_updates.first() else {
+            panic!(
+                "expected a viewport update: {:?}",
+                terminal.viewport_updates
+            );
+        };
+        assert!(update.y > 10);
     }
 }

@@ -37,9 +37,8 @@ mod imp {
         unsafe {
             let uc = ctx as *const libc::ucontext_t;
             let gregs = &(*uc).uc_mcontext.gregs;
-            let ip = gregs[libc::REG_RIP as usize] as usize;
-            let fp = gregs[libc::REG_RBP as usize] as usize;
-            return (ip, fp);
+            let reg = |r: i32| gregs.get(r as usize).map_or(0, |v| *v as usize);
+            return (reg(libc::REG_RIP), reg(libc::REG_RBP));
         }
 
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -168,7 +167,10 @@ mod imp {
             if ret_addr == 0 || ret_addr < 4096 {
                 break;
             }
-            out[count] = ret_addr;
+            let Some(slot) = out.get_mut(count) else {
+                break;
+            };
+            *slot = ret_addr;
             count += 1;
 
             // Frame pointer must move upward (toward higher addresses on
@@ -362,8 +364,11 @@ mod imp {
 
                 // Best-effort: walk frame pointers for additional context.
                 // If this faults, the 1-frame blob above is already on disk.
-                if crash_fp != 0 && crash_pc != 0 {
-                    let walked = walk_frame_pointers(crash_fp, &mut frames[1..], MAX_FRAMES - 1);
+                if crash_fp != 0
+                    && crash_pc != 0
+                    && let Some(rest) = frames.get_mut(1..)
+                {
+                    let walked = walk_frame_pointers(crash_fp, rest, MAX_FRAMES - 1);
                     if walked > 0 {
                         n_frames += walked as u16;
                         let mut offset = format::writer::write_header(
@@ -458,7 +463,12 @@ mod imp {
             let version = &mut *std::ptr::addr_of_mut!(APP_VERSION);
             version.fill(0);
             let copy_len = grok_version.len().min(format::VERSION_STRING_LEN);
-            version[..copy_len].copy_from_slice(&grok_version.as_bytes()[..copy_len]);
+            if let (Some(dst), Some(src)) = (
+                version.get_mut(..copy_len),
+                grok_version.as_bytes().get(..copy_len),
+            ) {
+                dst.copy_from_slice(src);
+            }
         }
 
         save_termios();
@@ -542,7 +552,10 @@ mod win {
             if ret_addr == 0 || ret_addr < 4096 {
                 break;
             }
-            out[count] = ret_addr;
+            let Some(slot) = out.get_mut(count) else {
+                break;
+            };
+            *slot = ret_addr;
             count += 1;
 
             if prev_fp <= fp {
@@ -653,8 +666,11 @@ mod win {
             write_to_handle(handle, buf, offset);
 
             // Best-effort: walk frame pointers for a full backtrace.
-            if crash_fp != 0 && crash_pc != 0 {
-                let walked = walk_frame_pointers(crash_fp, &mut frames[1..], MAX_FRAMES - 1);
+            if crash_fp != 0
+                && crash_pc != 0
+                && let Some(rest) = frames.get_mut(1..)
+            {
+                let walked = walk_frame_pointers(crash_fp, rest, MAX_FRAMES - 1);
                 if walked > 0 {
                     n_frames += walked as u16;
                     let mut offset = format::writer::write_header(
@@ -774,7 +790,12 @@ mod win {
             let version = &mut *std::ptr::addr_of_mut!(APP_VERSION);
             version.fill(0);
             let copy_len = grok_version.len().min(format::VERSION_STRING_LEN);
-            version[..copy_len].copy_from_slice(&grok_version.as_bytes()[..copy_len]);
+            if let (Some(dst), Some(src)) = (
+                version.get_mut(..copy_len),
+                grok_version.as_bytes().get(..copy_len),
+            ) {
+                dst.copy_from_slice(src);
+            }
         }
 
         unsafe {

@@ -7,16 +7,17 @@
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
+use prod_mc_cli_chat_proxy_types::feedback_types::{
+    FeedbackImage, FeedbackSubmission, validate_feedback_images,
+};
 
 use super::feedback_drafts::feedback_store;
 use super::{ExtResult, btw, feedback_drafts, feedback_trace, parse_params, review};
-// The pager classifies its predraft failures the same way; `feedback_drafts` is crate-private.
-pub use super::feedback_drafts::draft_op_error;
 use crate::agent::MvpAgent;
 use crate::session::persistence::{LocalFeedbackEntry, UserFeedbackEntry};
 use crate::session::{
-    ClientFeedbackInput, FeedbackDraftSendRequest, FeedbackRequestDismiss, FeedbackResponse,
-    SessionCommand,
+    ClientFeedbackInput, FeedbackContext, FeedbackDraftSendRequest, FeedbackOutcome,
+    FeedbackRequestDismiss, FeedbackResponse, SessionCommand,
 };
 
 #[tracing::instrument(skip_all, fields(method = %args.method))]
@@ -26,12 +27,11 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             tracing::info!("handling /btw side question");
             btw::handle_btw(agent, args).await
         }
-        "x.ai/feedback"
-        | "x.ai/feedback/dismiss"
-        | "x.ai/feedback/drafts/list"
-        | "x.ai/feedback/drafts/get"
-        | "x.ai/feedback/drafts/delete"
-        | "x.ai/feedback/drafts/update" => {
+        "x.ai/feedback" | "x.ai/feedback/dismiss" => {
+            tracing::info!("handling user feedback");
+            handle_feedback(agent, args).await
+        }
+        m if m.starts_with(feedback_drafts::DRAFTS_METHOD_PREFIX) => {
             tracing::info!("handling user feedback");
             handle_feedback(agent, args).await
         }
@@ -44,161 +44,45 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     }
 }
 
-fn parse_legacy_feedback(args: &acp::ExtRequest) -> Result<ClientFeedbackInput, acp::Error> {
-    match serde_json::from_str::<ClientFeedbackInput>(args.params.get()) {
-        Ok(input) => Ok(input),
-        Err(_) => {
-            let simple: crate::session::FeedbackRequest = parse_params(args)?;
-            Ok(ClientFeedbackInput {
-                session_id: simple.session_id,
-                client_type: prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Tui,
-                rating_type: None,
-                rating_value: None,
-                feedback_text: Some(simple.feedback_text),
-                images: vec![],
-                feedback_categories: vec![],
-                context_type: None,
-                turn_number: None,
-                request_id: None,
-                client_version: None,
-                metadata: None,
-                terminal_info: None,
-                request_trace_upload_token: false,
-            })
-        }
-    }
-}
+/// Shown for every `x.ai/feedback*` request while the feature flag is off
+pub const FEEDBACK_DISABLED_MESSAGE: &str = "Feedback is disabled. To enable, set \
+GROK_FEEDBACK_ENABLED=true or [features] feedback = true in config.toml.";
 
-async fn parse_draft_feedback(
-    agent: &MvpAgent,
-    params: serde_json::Value,
-) -> Result<
-    (
-        ClientFeedbackInput,
-        Option<(
-            xai_grok_feedback::FeedbackDraftStore,
-            xai_grok_feedback::FeedbackDraftId,
-        )>,
-    ),
-    acp::Error,
-> {
-    let object = params
-        .as_object()
-        .ok_or_else(|| acp::Error::invalid_params().data("feedback params must be an object"))?;
-    for legacy in [
-        "feedback_text",
-        "images",
-        "rating_type",
-        "rating_value",
-        "feedback_categories",
-        "context_type",
-        "turn_number",
-        "request_id",
-        "metadata",
-        "type",
-        "task_category",
-        "failure_mode",
-    ] {
-        if object.contains_key(legacy) {
-            return Err(acp::Error::invalid_params().data(format!(
-                "draft feedback field `{legacy}` belongs in edited_body"
-            )));
-        }
-    }
-    let request: FeedbackDraftSendRequest = serde_json::from_value(params)
-        .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
-    let store = feedback_store(agent, &request.session_id)?;
-    let draft_id = request.draft_id;
-    let lookup_store = store.clone();
-    let lookup_id = draft_id.clone();
-    let is_present = tokio::task::spawn_blocking(move || lookup_store.get(&lookup_id))
-        .await
-        .map_err(|error| acp::Error::internal_error().data(error.to_string()))?
-        .map_err(|error| acp::Error::internal_error().data(error.to_string()))?
-        .is_some();
-    if !is_present {
-        return Err(acp::Error::invalid_params().data("feedback draft not found"));
-    }
-    let body = request.edited_body;
-    let taxonomy = xai_grok_feedback::FeedbackTaxonomy {
-        r#type: Some(body.input.r#type),
-        task_category: body.input.task_category,
-        failure_mode: body.input.failure_mode,
+fn apply_feedback_context(submission: &mut FeedbackSubmission, ctx: Option<FeedbackContext>) {
+    let Some(ctx) = ctx else {
+        submission.reasoning_effort = None;
+        return;
     };
-    xai_grok_feedback::validate_feedback_draft_send(&body.input, !body.images.is_empty())
-        .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
-    let metadata = Some(xai_grok_feedback::structured_feedback(
-        xai_grok_feedback::FeedbackSource::Draft,
-        taxonomy,
-    ));
-    Ok((
-        ClientFeedbackInput {
-            session_id: request.session_id,
-            client_type: prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Tui,
-            rating_type: None,
-            rating_value: None,
-            feedback_text: Some(xai_grok_feedback::post_text(
-                &body.input.title,
-                &body.input.details,
-            )),
-            images: body.images,
-            feedback_categories: vec![],
-            context_type: None,
-            turn_number: None,
-            request_id: None,
-            client_version: body.client_version,
-            metadata,
-            terminal_info: body.terminal_info,
-            request_trace_upload_token: request.request_trace_upload_token,
-        },
-        Some((store, draft_id)),
-    ))
-}
-
-fn is_feedback_outcome_unknown(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<reqwest::Error>()
-            .is_some_and(|error| !error.is_builder() && !error.is_connect() && !error.is_status())
-    })
+    submission.tool_outcomes = ctx.tool_outcomes;
+    submission.session_cwd = Some(ctx.session_cwd);
+    submission.compaction_count = Some(ctx.compaction_count);
+    submission.context_window_usage = Some(ctx.context_window_usage);
+    submission.context_tokens_used = Some(ctx.context_tokens_used);
+    submission.context_window_tokens = Some(ctx.context_window_tokens);
+    submission.reasoning_effort = ctx.reasoning_effort.map(|effort| effort.to_string());
+    if let Some(rated_id) = ctx.model_id {
+        if submission.resolved_model_id.as_ref() != Some(&rated_id)
+            && submission.model_id.as_ref() != Some(&rated_id)
+        {
+            submission.model_id = Some(rated_id);
+            submission.resolved_model_id = None;
+        }
+        submission.model_fingerprint = ctx.model_fingerprint;
+    }
 }
 
 async fn handle_feedback(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     if !agent.cfg.borrow().is_feedback_enabled() {
-        return Err(acp::Error::internal_error().data(
-            "Feedback is disabled. To enable, set GROK_FEEDBACK_ENABLED=true or \
-             [features] feedback = true in config.toml.",
-        ));
+        return Err(acp::Error::internal_error().data(FEEDBACK_DISABLED_MESSAGE));
     }
 
     match args.method.as_ref() {
-        "x.ai/feedback/drafts/list" => feedback_drafts::list_feedback_drafts(agent, args).await,
-        "x.ai/feedback/drafts/get" => feedback_drafts::get_feedback_draft(agent, args).await,
-        "x.ai/feedback/drafts/delete" => feedback_drafts::delete_feedback_draft(agent, args).await,
-        "x.ai/feedback/drafts/update" => feedback_drafts::update_feedback_draft(agent, args).await,
+        m if m.starts_with(feedback_drafts::DRAFTS_METHOD_PREFIX) => {
+            feedback_drafts::handle(agent, args).await
+        }
         "x.ai/feedback" => {
-            let params: serde_json::Value = serde_json::from_str(args.params.get())
-                .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
-            let draft_request = params
-                .as_object()
-                .is_some_and(|params| params.contains_key("draft_id"));
-            let (mut feedback_input, draft_cleanup) = if draft_request {
-                parse_draft_feedback(agent, params).await?
-            } else {
-                let mut legacy_input = parse_legacy_feedback(args)?;
-                legacy_input.request_trace_upload_token = params
-                    .as_object()
-                    .and_then(|params| params.get("request_trace_upload_token"))
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                (legacy_input, None)
-            };
-
-            if let Err(e) = prod_mc_cli_chat_proxy_types::feedback_types::validate_feedback_images(
-                &feedback_input.images,
-            ) {
-                return Err(acp::Error::invalid_params().data(format!("feedback images: {e}")));
-            }
+            let (mut feedback_input, draft_cleanup) = parse_feedback(agent, args).await?;
+            let draft_request = draft_cleanup.is_some();
 
             let session_id = acp::SessionId::new(feedback_input.session_id.clone());
             let session_handle = agent.resident_handle(&session_id);
@@ -208,24 +92,18 @@ async fn handle_feedback(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
                 let _ = session
                     .cmd_tx
                     .send(SessionCommand::GetCurrentModel { responds_to: tx1 });
-                let model_id = rx1.await.ok();
-
+                let model_id = rx1.await.ok().map(|c| c.id);
                 let model_metadata = session.get_model_metadata().await;
-
                 (model_id, model_metadata)
             } else {
                 let sampling_config = agent.sampling_config.borrow().clone();
                 (Some(sampling_config.model.clone()), Default::default())
             };
 
-            let turn_number = feedback_input.turn_number.or_else(|| {
-                agent
-                    .session_turn_number(&session_id)
-                    .map(|t| t.saturating_sub(1) as i64)
-            });
+            let turn_number = feedback_input.turn_number;
 
             let mut submission = feedback_input.take_submission(
-                model_id.clone(),
+                model_id,
                 model_metadata.resolved_model_id,
                 model_metadata.model_fingerprint,
                 turn_number,
@@ -233,7 +111,7 @@ async fn handle_feedback(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
             let turn_number = submission.turn_number;
 
             // Enrich with session context for Slack notifications (best-effort).
-            if let Some(ref session_handle) = session_handle {
+            let ctx = if let Some(ref session_handle) = session_handle {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let _ = session_handle
                     .cmd_tx
@@ -241,15 +119,11 @@ async fn handle_feedback(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
                         turn_number,
                         responds_to: tx,
                     });
-                if let Ok(ctx) = rx.await {
-                    submission.tool_outcomes = ctx.tool_outcomes;
-                    submission.session_cwd = Some(ctx.session_cwd);
-                    submission.compaction_count = Some(ctx.compaction_count);
-                    submission.context_window_usage = Some(ctx.context_window_usage);
-                    submission.context_tokens_used = Some(ctx.context_tokens_used);
-                    submission.context_window_tokens = Some(ctx.context_window_tokens);
-                }
-            }
+                rx.await.ok()
+            } else {
+                None
+            };
+            apply_feedback_context(&mut submission, ctx);
 
             // Track rating in session signals
             if let (Some(session_handle), Some(rating_value)) =
@@ -315,20 +189,7 @@ async fn handle_feedback(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
             let response_outcome = match &outcome {
                 crate::session::feedback_manager::SubmitOutcome::Submitted => {
                     tracing::info!("feedback submitted to proxy successfully");
-                    if let Some((store, draft_id)) = draft_cleanup {
-                        let cleanup = tokio::task::spawn_blocking(move || store.delete(&draft_id))
-                            .await
-                            .map_err(|error| error.to_string())
-                            .and_then(|result| result.map_err(|error| error.to_string()));
-                        if let Err(error) = cleanup {
-                            tracing::warn!(%error, "submitted feedback draft cleanup failed");
-                            Some(crate::session::FeedbackOutcome::SubmittedCleanupFailed)
-                        } else {
-                            Some(crate::session::FeedbackOutcome::Submitted)
-                        }
-                    } else {
-                        Some(crate::session::FeedbackOutcome::Submitted)
-                    }
+                    Some(delete_sent_draft(draft_cleanup).await)
                 }
                 crate::session::feedback_manager::SubmitOutcome::LocalOnly => {
                     tracing::warn!("feedback saved locally only (no proxy client)");
@@ -369,78 +230,252 @@ async fn handle_feedback(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult 
             .expect("to work");
             Ok(acp::ExtResponse::new(value))
         }
-        "x.ai/feedback/dismiss" => {
-            let dismiss_input: FeedbackRequestDismiss = parse_params(args)?;
-
-            tracing::info!(
-                session_id = %dismiss_input.session_id,
-                request_id = %dismiss_input.request_id,
-                "Feedback request dismissed by user"
-            );
-
-            // Count dismissals too; otherwise event_type is always "responded" and the response rate is unknowable
-            // Gated like the responded path so a ZDR team emits no survey data and the ratio stays comparable
-            if agent.product_analytics_enabled() {
-                xai_grok_telemetry::event_span!(
-                    "feedback.survey",
-                    survey_type = "session",
-                    event_type = "dismissed",
-                    appearance_id = %dismiss_input.request_id,
-                    has_feedback_text = false,
-                    is_solicited = true,
-                );
-            }
-
-            // Persist dismiss locally; flushed before storage CopyFile by the persistence actor.
-            {
-                let session_id = acp::SessionId::new(dismiss_input.session_id.clone());
-                if let Some(session_handle) = agent.resident_handle(&session_id) {
-                    session_handle.persist_feedback(LocalFeedbackEntry::UserFeedback(
-                        UserFeedbackEntry {
-                            submitted_at: chrono::Utc::now(),
-                            session_id: dismiss_input.session_id.clone(),
-                            turn_number: None,
-                            solicited: true,
-                            request_id: Some(dismiss_input.request_id.clone()),
-                            dismissed: true,
-                            submission: None,
-                        },
-                    ));
-                }
-            }
-
-            let request_id = dismiss_input.request_id.clone();
-            let client = agent
-                .feedback_client()
-                .ok_or_else(|| acp::Error::internal_error().data("No credentials for feedback"))?;
-            let feedback_base_url = agent.cfg.borrow().endpoints.resolve_feedback_base_url();
-            match client.dismiss_request(&request_id).await {
-                Ok(response) => {
-                    tracing::info!(
-                        request_id = %response.request_id,
-                        status = %response.status,
-                        feedback_url = %feedback_base_url,
-                        "Feedback request dismissed"
-                    );
-                    let value = serde_json::to_value(&response)
-                        .map(|value| serde_json::value::to_raw_value(&value).map(Arc::from))
-                        .expect("to work")
-                        .expect("to work");
-                    Ok(acp::ExtResponse::new(value))
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        request_id = %request_id,
-                        feedback_url = %feedback_base_url,
-                        "Failed to dismiss feedback request"
-                    );
-                    Err(acp::Error::internal_error()
-                        .data(format!("Failed to dismiss feedback request: {e}")))
-                }
-            }
-        }
+        "x.ai/feedback/dismiss" => dismiss_request(agent, args).await,
         _ => Err(acp::Error::method_not_found()),
+    }
+}
+
+/// A draft body reaches `parse_draft_send_request` as raw JSON. A legacy body is parsed and validated here.
+async fn parse_feedback(
+    agent: &MvpAgent,
+    args: &acp::ExtRequest,
+) -> Result<(ClientFeedbackInput, Option<DraftCleanup>), acp::Error> {
+    let params: serde_json::Value = serde_json::from_str(args.params.get())
+        .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+    if params.get("draft_id").is_some() {
+        let request = parse_draft_send_request(params)?;
+        let store = feedback_store(agent, &request.session_id)?;
+        let (input, cleanup) = draft_send_input(request, store).await?;
+        return Ok((input, Some(cleanup)));
+    }
+
+    let mut input = parse_legacy_feedback(args)?;
+    input.request_trace_upload_token = params
+        .get("request_trace_upload_token")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    validate_images(&input.images)?;
+    Ok((input, None))
+}
+
+/// The store and draft id to delete once the proxy has accepted the report.
+pub type DraftCleanup = (
+    xai_grok_feedback::FeedbackDraftStore,
+    xai_grok_feedback::FeedbackDraftId,
+);
+
+fn parse_legacy_feedback(args: &acp::ExtRequest) -> Result<ClientFeedbackInput, acp::Error> {
+    match serde_json::from_str::<ClientFeedbackInput>(args.params.get()) {
+        Ok(input) => Ok(input),
+        Err(_) => {
+            let simple: crate::session::FeedbackRequest = parse_params(args)?;
+            Ok(ClientFeedbackInput {
+                session_id: simple.session_id,
+                client_type: prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Tui,
+                rating_type: None,
+                rating_value: None,
+                feedback_text: Some(simple.feedback_text),
+                images: vec![],
+                feedback_categories: vec![],
+                context_type: None,
+                turn_number: None,
+                request_id: None,
+                client_version: None,
+                metadata: None,
+                terminal_info: None,
+                request_trace_upload_token: false,
+            })
+        }
+    }
+}
+
+fn validate_images(images: &[FeedbackImage]) -> Result<(), acp::Error> {
+    validate_feedback_images(images)
+        .map_err(|error| acp::Error::invalid_params().data(format!("feedback images: {error}")))
+}
+
+/// Parses a draft send request. Form fields outside `edited_body` are rejected.
+pub fn parse_draft_send_request(
+    params: serde_json::Value,
+) -> Result<FeedbackDraftSendRequest, acp::Error> {
+    let object = params
+        .as_object()
+        .ok_or_else(|| acp::Error::invalid_params().data("feedback params must be an object"))?;
+    for legacy in [
+        "feedback_text",
+        "images",
+        "rating_type",
+        "rating_value",
+        "feedback_categories",
+        "context_type",
+        "turn_number",
+        "request_id",
+        "metadata",
+        "type",
+        "task_category",
+        "failure_mode",
+    ] {
+        if object.contains_key(legacy) {
+            return Err(acp::Error::invalid_params().data(format!(
+                "draft feedback field `{legacy}` belongs in edited_body"
+            )));
+        }
+    }
+
+    serde_json::from_value(params)
+        .map_err(|error| acp::Error::invalid_params().data(error.to_string()))
+}
+
+/// Builds the report for a draft send. Fails when `store` no longer holds the draft.
+pub async fn draft_send_input(
+    request: FeedbackDraftSendRequest,
+    store: xai_grok_feedback::FeedbackDraftStore,
+) -> Result<(ClientFeedbackInput, DraftCleanup), acp::Error> {
+    let draft_id = request.draft_id;
+    let lookup_store = store.clone();
+    let lookup_id = draft_id.clone();
+    let is_present = tokio::task::spawn_blocking(move || lookup_store.get(&lookup_id))
+        .await
+        .map_err(|error| acp::Error::internal_error().data(error.to_string()))?
+        .map_err(|error| acp::Error::internal_error().data(error.to_string()))?
+        .is_some();
+    if !is_present {
+        return Err(acp::Error::invalid_params().data("feedback draft not found"));
+    }
+
+    let body = request.edited_body;
+    let taxonomy = xai_grok_feedback::FeedbackTaxonomy {
+        r#type: Some(body.input.r#type),
+        task_category: body.input.task_category,
+        failure_mode: body.input.failure_mode,
+    };
+    xai_grok_feedback::validate_feedback_draft_send(&body.input, !body.images.is_empty())
+        .map_err(|error| acp::Error::invalid_params().data(error.to_string()))?;
+    validate_images(&body.images)?;
+    let metadata = Some(xai_grok_feedback::structured_feedback(
+        xai_grok_feedback::FeedbackSource::Draft,
+        taxonomy,
+    ));
+    Ok((
+        ClientFeedbackInput {
+            session_id: request.session_id,
+            client_type: prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Tui,
+            rating_type: None,
+            rating_value: None,
+            feedback_text: Some(xai_grok_feedback::post_text(
+                &body.input.title,
+                &body.input.details,
+            )),
+            images: body.images,
+            feedback_categories: vec![],
+            context_type: None,
+            turn_number: None,
+            request_id: None,
+            client_version: body.client_version,
+            metadata,
+            terminal_info: body.terminal_info,
+            request_trace_upload_token: request.request_trace_upload_token,
+        },
+        (store, draft_id),
+    ))
+}
+
+/// The report has already been sent. A draft left behind can only produce a duplicate report.
+pub async fn delete_sent_draft(cleanup: Option<DraftCleanup>) -> FeedbackOutcome {
+    let Some((store, draft_id)) = cleanup else {
+        return FeedbackOutcome::Submitted;
+    };
+
+    let deleted = tokio::task::spawn_blocking(move || store.delete(&draft_id))
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result.map_err(|error| error.to_string()));
+    match deleted {
+        Ok(_) => FeedbackOutcome::Submitted,
+        Err(error) => {
+            tracing::warn!(%error, "sent draft not deleted");
+            FeedbackOutcome::SubmittedCleanupFailed
+        }
+    }
+}
+
+fn is_feedback_outcome_unknown(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(request_may_have_arrived)
+    })
+}
+
+/// False only when the request never left (bad URL, connection refused) or the proxy answered.
+/// A retry after false cannot send a duplicate.
+pub fn request_may_have_arrived(error: &reqwest::Error) -> bool {
+    !error.is_builder() && !error.is_connect() && !error.is_status()
+}
+
+/// Tells the proxy that the user dismissed a solicited feedback request.
+async fn dismiss_request(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let input: FeedbackRequestDismiss = parse_params(args)?;
+    tracing::info!(
+        session_id = %input.session_id,
+        request_id = %input.request_id,
+        "Feedback request dismissed by user"
+    );
+
+    // `submit_feedback_workflow` checks the same flag before its "responded" event
+    if agent.product_analytics_enabled() {
+        xai_grok_telemetry::event_span!(
+            "feedback.survey",
+            survey_type = "session",
+            event_type = "dismissed",
+            appearance_id = %input.request_id,
+            has_feedback_text = false,
+            is_solicited = true,
+        );
+    }
+
+    persist_dismissal(agent, &input);
+
+    let client = agent
+        .feedback_client()
+        .ok_or_else(|| acp::Error::internal_error().data("No credentials for feedback"))?;
+    let feedback_url = agent.cfg.borrow().endpoints.resolve_feedback_base_url();
+    match client.dismiss_request(&input.request_id).await {
+        Ok(response) => {
+            tracing::info!(
+                request_id = %response.request_id,
+                status = %response.status,
+                %feedback_url,
+                "Feedback request dismissed"
+            );
+            super::to_raw_response(&response)
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                request_id = %input.request_id,
+                %feedback_url,
+                "Failed to dismiss feedback request"
+            );
+            Err(acp::Error::internal_error()
+                .data(format!("Failed to dismiss feedback request: {error}")))
+        }
+    }
+}
+
+/// The persistence actor flushes this entry before the storage `CopyFile`.
+fn persist_dismissal(agent: &MvpAgent, input: &FeedbackRequestDismiss) {
+    let session_id = acp::SessionId::new(input.session_id.clone());
+    if let Some(session_handle) = agent.resident_handle(&session_id) {
+        session_handle.persist_feedback(LocalFeedbackEntry::UserFeedback(UserFeedbackEntry {
+            submitted_at: chrono::Utc::now(),
+            session_id: input.session_id.clone(),
+            turn_number: None,
+            solicited: true,
+            request_id: Some(input.request_id.clone()),
+            dismissed: true,
+            submission: None,
+        }));
     }
 }
 

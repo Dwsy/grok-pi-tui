@@ -16,7 +16,7 @@ pub(crate) fn take_at_char_boundary(s: &str, max_bytes: usize) -> &str {
         }
         last_ok = nb;
     }
-    &s[..last_ok]
+    s.get(..last_ok).unwrap_or("")
 }
 
 /// UTF-8 lossy decode + truncate at MAX_LINE_LENGTH.

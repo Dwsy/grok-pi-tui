@@ -173,7 +173,7 @@ impl ConfigLayers {
     }
 
     /// Active campaigns against `base`: the kill switch, then the priority merge (first-id-wins), then dropping dismissed ids.
-    /// This is the one place that resolves disk campaigns; the shell wraps it with the `GROK_CAMPAIGNS_OVERRIDE` env layer.
+    /// The environment-aware path is `effective_config::CampaignOverlay`, which also applies `GROK_CAMPAIGNS_OVERRIDE`.
     pub fn resolve_campaigns(
         &self,
         base: &toml::Value,
@@ -183,6 +183,15 @@ impl ConfigLayers {
         if campaigns_application_disabled(base) {
             return Vec::new();
         }
+        self.merge_active_campaigns(remote_campaigns, dismissed_ids)
+    }
+
+    /// Every campaign source merged by priority (first id wins), less the dismissed ids.
+    pub(crate) fn merge_active_campaigns(
+        &self,
+        remote_campaigns: &[crate::campaigns::CampaignEntry],
+        dismissed_ids: &std::collections::HashSet<String>,
+    ) -> Vec<crate::campaigns::CampaignEntry> {
         let merged = crate::campaigns::merge_campaign_entries(
             &self.campaign_source_slices(remote_campaigns),
         );
@@ -246,9 +255,11 @@ impl ConfigLayers {
 
 /// `GROK_CAMPAIGNS=0` or `[features] campaigns = false` on pre-campaign base.
 pub fn campaigns_application_disabled(base_effective: &toml::Value) -> bool {
-    if crate::env_bool("GROK_CAMPAIGNS") == Some(false) {
-        return true;
-    }
+    crate::env_bool("GROK_CAMPAIGNS") == Some(false) || campaigns_disabled_in_config(base_effective)
+}
+
+/// `[features] campaigns = false` on pre-campaign base.
+pub(crate) fn campaigns_disabled_in_config(base_effective: &toml::Value) -> bool {
     base_effective
         .get("features")
         .and_then(|f| f.get("campaigns"))
@@ -289,10 +300,14 @@ pub fn campaigns_state_path(home: &std::path::Path) -> std::path::PathBuf {
 
 /// Fail-open dismissed ids from `$GROK_HOME/campaigns_state.json`.
 pub fn load_dismissed_ids_from_home() -> std::collections::HashSet<String> {
-    let Some(home) = crate::user_grok_home() else {
-        return std::collections::HashSet::new();
-    };
-    let Ok(contents) = std::fs::read_to_string(campaigns_state_path(&home)) else {
+    crate::user_grok_home()
+        .map(|grok_home| load_dismissed_ids(&grok_home))
+        .unwrap_or_default()
+}
+
+/// Fail-open dismissed ids from `campaigns_state.json` under `grok_home`.
+pub fn load_dismissed_ids(grok_home: &std::path::Path) -> std::collections::HashSet<String> {
+    let Ok(contents) = std::fs::read_to_string(campaigns_state_path(grok_home)) else {
         return std::collections::HashSet::new();
     };
     serde_json::from_str::<CampaignsState>(&contents)
@@ -305,6 +320,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn requirements_pin_subagents_enabled_over_a_user_true() {
+        let layers = ConfigLayers {
+            user: toml::from_str("[subagents]\nenabled = true\n").unwrap(),
+            user_requirements: Some(toml::from_str("[subagents]\nenabled = false\n").unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(
+            layers
+                .effective_config_base()
+                .get("subagents")
+                .and_then(|section| section.get("enabled"))
+                .and_then(toml::Value::as_bool),
+            Some(false),
+        );
+    }
+
+    #[test]
     fn effective_config_mdm_requirements_win_over_system_and_user() {
         // MDM is merged last, so an admin-forced value clamps the effective config over both the user config and the system requirements layer
         let layers = ConfigLayers {
@@ -314,7 +346,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            layers.effective_config_disk_only()["features"]["web_fetch"].as_bool(),
+            layers
+                .effective_config_disk_only()
+                .get("features")
+                .and_then(|f| f.get("web_fetch"))
+                .and_then(toml::Value::as_bool),
             Some(false),
         );
     }
@@ -382,5 +418,302 @@ mod tests {
         )
         .unwrap();
         assert_eq!(layers.effective_config_with_campaigns(&[], &none), clamped);
+    }
+
+    fn toml_bool(value: &toml::Value, table: &str, key: &str) -> Option<bool> {
+        value
+            .get(table)
+            .and_then(|section| section.get(key))
+            .and_then(toml::Value::as_bool)
+    }
+
+    fn toml_str(value: &toml::Value, table: &str, key: &str) -> Option<String> {
+        value
+            .get(table)
+            .and_then(|section| section.get(key))
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+    }
+
+    /// User config outranks managed config. The daemon ignores this merge, so the e2e suite keeps
+    /// one row per route only where a resolved value is used.
+    #[test]
+    fn user_config_wins_over_managed_layer() {
+        let layers = ConfigLayers {
+            managed: toml::from_str("[ui]\nyolo = false\n").unwrap(),
+            user: toml::from_str("[ui]\nyolo = true\n").unwrap(),
+            ..Default::default()
+        };
+        let none = std::collections::HashSet::new();
+        assert_eq!(
+            toml_bool(
+                &layers.effective_config_with_campaigns(&[], &none),
+                "ui",
+                "yolo"
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn requirement_wins_over_user_config() {
+        let layers = ConfigLayers {
+            user: toml::from_str("[ui]\nyolo = false\n").unwrap(),
+            user_requirements: Some(toml::from_str("[ui]\nyolo = true\n").unwrap()),
+            ..Default::default()
+        };
+        let none = std::collections::HashSet::new();
+        assert_eq!(
+            toml_bool(
+                &layers.effective_config_with_campaigns(&[], &none),
+                "ui",
+                "yolo"
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn requirement_timeout_wins_over_user_timeout() {
+        let layers = ConfigLayers {
+            user: toml::from_str("[toolset.bash]\ntimeout_secs = 30\n").unwrap(),
+            user_requirements: Some(toml::from_str("[toolset.bash]\ntimeout_secs = 1\n").unwrap()),
+            ..Default::default()
+        };
+        let none = std::collections::HashSet::new();
+        let secs = layers
+            .effective_config_with_campaigns(&[], &none)
+            .get("toolset")
+            .and_then(|toolset| toolset.get("bash"))
+            .and_then(|bash| bash.get("timeout_secs"))
+            .and_then(toml::Value::as_integer);
+        assert_eq!(secs, Some(1));
+    }
+
+    #[test]
+    fn in_range_version_override_applies_and_out_of_range_is_ignored() {
+        let version = semver::Version::new(1, 0, 0);
+        let mut in_range: toml::Value = toml::from_str(
+            "[ui]\nyolo = false\n\n[[version_overrides]]\nmaximum_version = \"9999.0.0\"\n[version_overrides.ui]\nyolo = true\n",
+        )
+        .unwrap();
+        crate::version_overrides::apply_version_overrides(&mut in_range, &version).unwrap();
+        assert_eq!(toml_bool(&in_range, "ui", "yolo"), Some(true));
+
+        let mut out_of_range: toml::Value = toml::from_str(
+            "[ui]\nyolo = true\n\n[[version_overrides]]\nminimum_version = \"9999.0.0\"\n[version_overrides.ui]\nyolo = false\n",
+        )
+        .unwrap();
+        crate::version_overrides::apply_version_overrides(&mut out_of_range, &version).unwrap();
+        assert_eq!(toml_bool(&out_of_range, "ui", "yolo"), Some(true));
+    }
+
+    #[test]
+    fn version_override_applies_on_the_requirements_layer_before_merge() {
+        let version = semver::Version::new(1, 0, 0);
+        let mut requirements: toml::Value = toml::from_str(
+            "[[version_overrides]]\nmaximum_version = \"9999.0.0\"\n[version_overrides.ui]\nyolo = true\n",
+        )
+        .unwrap();
+        crate::version_overrides::apply_version_overrides(&mut requirements, &version).unwrap();
+        let layers = ConfigLayers {
+            user: toml::from_str("[ui]\nyolo = false\n").unwrap(),
+            user_requirements: Some(requirements),
+            ..Default::default()
+        };
+        let none = std::collections::HashSet::new();
+        assert_eq!(
+            toml_bool(
+                &layers.effective_config_with_campaigns(&[], &none),
+                "ui",
+                "yolo"
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn bad_version_override_soft_fails_and_keeps_the_layer() {
+        let mut layer: toml::Value = toml::from_str(
+            "[ui]\nyolo = true\n\n[[version_overrides]]\nminimum_version = \"not-a-version\"\n",
+        )
+        .unwrap();
+        let error = crate::version_overrides::apply_version_overrides(
+            &mut layer,
+            &semver::Version::new(1, 0, 0),
+        );
+        assert!(error.is_err());
+        assert_eq!(toml_bool(&layer, "ui", "yolo"), Some(true));
+
+        // A requirements layer that would turn yolo off is dropped whole when its
+        // version override cannot parse, so the user's yolo stays on.
+        let rejected = crate::validation::normalize_requirements_value(
+            toml::from_str(
+                "[ui]\nyolo = false\n\n[[version_overrides]]\nminimum_version = \"not-a-version\"\n",
+            )
+            .unwrap(),
+            "requirements.toml",
+        );
+        assert!(rejected.is_none());
+        let layers = ConfigLayers {
+            user: toml::from_str("[ui]\nyolo = true\n").unwrap(),
+            user_requirements: rejected,
+            ..Default::default()
+        };
+        let none = std::collections::HashSet::new();
+        assert_eq!(
+            toml_bool(
+                &layers.effective_config_with_campaigns(&[], &none),
+                "ui",
+                "yolo"
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn campaign_overlays_user_model_and_loses_to_requirements() {
+        let none = std::collections::HashSet::new();
+        let mut layers = ConfigLayers {
+            user: toml::from_str("[models]\ndefault = \"user-model\"\n").unwrap(),
+            ..Default::default()
+        };
+        layers.campaigns.managed = vec![crate::campaigns::CampaignEntry {
+            id: "conformance-campaign-1".into(),
+            patch: toml::from_str("[models]\ndefault = \"campaign-model\"\n").unwrap(),
+        }];
+        assert_eq!(
+            toml_str(
+                &layers.effective_config_with_campaigns(&[], &none),
+                "models",
+                "default"
+            )
+            .as_deref(),
+            Some("campaign-model")
+        );
+
+        layers.user_requirements =
+            Some(toml::from_str("[models]\ndefault = \"pinned-model\"\n").unwrap());
+        assert_eq!(
+            toml_str(
+                &layers.effective_config_with_campaigns(&[], &none),
+                "models",
+                "default"
+            )
+            .as_deref(),
+            Some("pinned-model")
+        );
+    }
+
+    fn layer(text: &str) -> toml::Value {
+        toml::from_str(text).unwrap()
+    }
+
+    fn overlay(text: &str) -> toml::Value {
+        let mut value = layer(text);
+        crate::config_override::retain_overlay_allowed(value.as_table_mut().unwrap());
+        value
+    }
+
+    fn web_fetch(config: &toml::Value) -> Option<bool> {
+        config
+            .get("features")
+            .and_then(|features| features.get("web_fetch"))
+            .and_then(toml::Value::as_bool)
+    }
+
+    fn exclude_len(config: &toml::Value) -> Option<usize> {
+        config
+            .get("shell_environment_policy")
+            .and_then(|policy| policy.get("exclude"))
+            .and_then(toml::Value::as_array)
+            .map(Vec::len)
+    }
+
+    fn empty() -> toml::Value {
+        toml::Value::Table(toml::map::Map::new())
+    }
+
+    #[test]
+    fn layer_precedence_managed_user_overlay_requirements() {
+        type Row<'a> = (
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<bool>,
+        );
+        let rows: &[Row] = &[
+            (
+                Some("[features]\nweb_fetch = true\n"),
+                None,
+                None,
+                None,
+                Some(true),
+            ),
+            (
+                Some("[features]\nweb_fetch = true\n"),
+                Some("[features]\nweb_fetch = false\n"),
+                None,
+                None,
+                Some(false),
+            ),
+            (
+                Some("[features]\nweb_fetch = true\n"),
+                Some("[features]\nweb_fetch = false\n"),
+                Some("[features]\nweb_fetch = true\n"),
+                None,
+                Some(true),
+            ),
+            (
+                Some("[features]\nweb_fetch = true\n"),
+                Some("[features]\nweb_fetch = false\n"),
+                Some("[features]\nweb_fetch = true\n"),
+                Some("[features]\nweb_fetch = false\n"),
+                Some(false),
+            ),
+            (
+                None,
+                Some("[features]\nweb_fetch = true\n"),
+                Some("[features]\nweb_fetch = false\n"),
+                None,
+                Some(false),
+            ),
+            (
+                None,
+                None,
+                Some("[features]\nweb_fetch = true\n"),
+                Some("[features]\nweb_fetch = false\n"),
+                Some(false),
+            ),
+            (None, None, None, None, None),
+        ];
+        for (managed, user, env_overlay, requirements, expected) in rows {
+            let layers = ConfigLayers {
+                managed: managed.map(layer).unwrap_or_else(empty),
+                user: user.map(layer).unwrap_or_else(empty),
+                env_overlay: env_overlay.map(overlay),
+                user_requirements: requirements.map(layer),
+                ..ConfigLayers::default()
+            };
+            assert_eq!(*expected, web_fetch(&layers.effective_config_base()));
+        }
+    }
+
+    #[test]
+    fn valid_overlay_clears_a_lower_exclude_and_a_missing_overlay_leaves_it() {
+        let user = layer("[shell_environment_policy]\nexclude = [\"CONFORMANCE_PROBED\"]\n");
+        let without = ConfigLayers {
+            user: user.clone(),
+            env_overlay: None,
+            ..ConfigLayers::default()
+        };
+        assert_eq!(Some(1), exclude_len(&without.effective_config_base()));
+        let with = ConfigLayers {
+            user,
+            env_overlay: Some(overlay("[shell_environment_policy]\nexclude = []\n")),
+            ..ConfigLayers::default()
+        };
+        assert_eq!(Some(0), exclude_len(&with.effective_config_base()));
     }
 }

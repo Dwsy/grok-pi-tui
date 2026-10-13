@@ -6,6 +6,8 @@
 //! `index_worktree_options.thread_limit` so produce workers stay within
 //! headroom. `Some(0)` means unlimited in gix — never pass 0.
 
+#![deny(clippy::indexing_slicing)]
+
 /// Past 8 produce workers a status scan gains no speed, only spawn pressure.
 const HARD_CAP: usize = 8;
 /// Reserve for non-gix threads; nproc tests use `used + OUTER_RESERVE - 2`.

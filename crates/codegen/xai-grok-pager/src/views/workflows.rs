@@ -96,6 +96,29 @@ impl WorkflowRunSnapshot {
         self.agents.iter().filter(|a| a.state == "running").count()
     }
 
+    pub fn activity_label(&self) -> String {
+        if self.is_active() {
+            let phase = self
+                .current_phase
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty());
+            let agents = match self.active_agent_count() {
+                0 => None,
+                1 => Some("1 agent".to_owned()),
+                n => Some(format!("{n} agents")),
+            };
+            match (phase, agents) {
+                (Some(p), Some(a)) => format!("{p} · {a}"),
+                (Some(p), None) => p.to_owned(),
+                (None, Some(a)) => a,
+                (None, None) => "running".to_owned(),
+            }
+        } else {
+            self.status.replace('_', " ")
+        }
+    }
+
     pub fn live_elapsed_ms(&self) -> u64 {
         let base = self.elapsed_ms;
         if self.is_active() {
@@ -272,11 +295,11 @@ impl WorkflowsViewState {
                 self.selected_run = idx;
             } else {
                 self.selected_run = self.selected_run.min(runs.len() - 1);
-                self.selected_run_id = Some(runs[self.selected_run].run_id.clone());
+                self.selected_run_id = runs.get(self.selected_run).map(|run| run.run_id.clone());
             }
         } else {
             self.selected_run = self.selected_run.min(runs.len() - 1);
-            self.selected_run_id = Some(runs[self.selected_run].run_id.clone());
+            self.selected_run_id = runs.get(self.selected_run).map(|run| run.run_id.clone());
         }
 
         if let Some(id) = &self.detail_run_id
@@ -285,7 +308,7 @@ impl WorkflowsViewState {
             self.detail_run_id = None;
         }
         if runs.len() == 1 && self.detail_run_id.is_none() {
-            self.detail_run_id = Some(runs[0].run_id.clone());
+            self.detail_run_id = runs.first().map(|run| run.run_id.clone());
         }
 
         if let Some(run) = self.detail_run(runs) {
@@ -339,7 +362,7 @@ impl WorkflowsViewState {
             return;
         }
         self.selected_run = idx.min(runs.len() - 1);
-        self.selected_run_id = Some(runs[self.selected_run].run_id.clone());
+        self.selected_run_id = runs.get(self.selected_run).map(|run| run.run_id.clone());
     }
 
     pub fn select_phase(&mut self, idx: usize, run: &WorkflowRunSnapshot) {
@@ -610,13 +633,7 @@ fn render_list(
                 if run.phases.len() == 1 { "" } else { "s" }
             )
         };
-        let meta = format!(
-            "{phase_part} · {}/{} agent{} · {}",
-            run.done_agents(),
-            run.agents.len(),
-            if run.agents.len() == 1 { "" } else { "s" },
-            format_elapsed(run.live_elapsed_ms()),
-        );
+        let meta = format!("{phase_part} · {}", format_elapsed(run.live_elapsed_ms()));
         let label = format!(
             "{} · {}",
             strip_control(&run.name),
@@ -673,7 +690,10 @@ fn render_detail(
     let (glyph, glyph_style) = status_glyph_and_style(&run.status, theme);
     let spinner = if run.is_active() {
         let frames = crate::glyphs::dot_spinner_frames();
-        format!("{} ", frames[(tick / 4) % frames.len()])
+        format!(
+            "{} ",
+            frames.get((tick / 4) % frames.len()).copied().unwrap_or("")
+        )
     } else {
         format!("{glyph} ")
     };
@@ -726,7 +746,8 @@ fn render_detail(
         inner.right(),
     );
 
-    let mut body_y = inner.y + 2;
+    // Blank row between the objective and the phase/roster body
+    let mut body_y = inner.y + 3;
     let status_line = if run.status == "budget_limited" {
         let body = if run.agents_used >= 1_024 {
             "budget limited: maximum agent budget reached; start a new run".to_string()
@@ -983,7 +1004,7 @@ fn render_detail(
         let (glyph, glyph_style) = if running {
             let frames = crate::glyphs::dot_spinner_frames();
             (
-                frames[(tick / 4) % frames.len()],
+                frames.get((tick / 4) % frames.len()).copied().unwrap_or(""),
                 Style::default().fg(theme.accent_plan),
             )
         } else {
@@ -1138,7 +1159,9 @@ mod tests {
         let mut out = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                out.push_str(buf[(x, y)].symbol());
+                if let Some(cell) = buf.cell((x, y)) {
+                    out.push_str(cell.symbol());
+                }
             }
             out.push('\n');
         }
@@ -1158,6 +1181,14 @@ mod tests {
             &WorkflowAgentLiveMap::default(),
         );
         buf_text(&buf, area)
+    }
+
+    #[test]
+    fn activity_label_uses_phase_while_active_and_status_otherwise() {
+        let running = make_run("wf-1", "learn-traces-2", "active");
+        assert_eq!(running.activity_label(), "Research · 1 agent");
+        let paused = make_run("wf-1", "learn-traces-2", "user_paused");
+        assert_eq!(paused.activity_label(), "user paused");
     }
 
     #[test]
@@ -1309,7 +1340,11 @@ mod tests {
         let text = buf_text(&buf, area);
         assert!(text.contains("deep-research"), "{text}");
         assert!(text.contains("count-v2"), "{text}");
-        assert!(text.contains("1/2 agents"), "{text}");
+        assert!(text.contains("1/3 phases"), "{text}");
+        assert!(
+            !text.contains("agent"),
+            "list rows omit agent counts: {text}"
+        );
         assert!(!text.contains("128"), "budget cap is not shown: {text}");
         assert!(!text.contains(" · out "), "{text}");
         assert!(text.contains("enter open"), "{text}");
@@ -1468,7 +1503,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a2"],
         );
-        let (rect, _) = &state.agent_hits[0];
+        let Some((rect, _)) = state.agent_hits.first() else {
+            panic!("expected an agent hit: {:?}", state.agent_hits);
+        };
         assert!(rect.width > 0 && rect.height == 1);
         let tiny = Rect::new(0, 0, 4, 2);
         let mut buf = Buffer::empty(tiny);
@@ -1577,7 +1614,10 @@ mod tests {
         let visible = state.agent_hits.len();
         assert!(visible > 0 && visible < 30, "fixture must overflow");
         let newest_first_visible = format!("a{:02}", 30 - visible);
-        assert_eq!(state.agent_hits[0].1, newest_first_visible);
+        assert_eq!(
+            state.agent_hits.first().map(|h| h.1.as_str()),
+            Some(newest_first_visible.as_str())
+        );
 
         state.roster_scroll = 5;
         let mut buf = Buffer::empty(area);
@@ -1589,10 +1629,16 @@ mod tests {
             0,
             &WorkflowAgentLiveMap::default(),
         );
-        assert_eq!(state.agent_hits[0].1, format!("a{:02}", 30 - visible - 5));
+        let expected = format!("a{:02}", 30 - visible - 5);
+        assert_eq!(
+            state.agent_hits.first().map(|h| h.1.as_str()),
+            Some(expected.as_str())
+        );
         let text = buf_text(&buf, area);
         assert!(text.contains("↑5"), "{text}");
-        let anchored_top = state.agent_hits[0].1.clone();
+        let Some(anchored_top) = state.agent_hits.first().map(|h| h.1.clone()) else {
+            panic!("expected an agent hit: {:?}", state.agent_hits);
+        };
 
         run.agents.push(WorkflowAgentRowView {
             agent_id: "a30".to_owned(),
@@ -1613,7 +1659,10 @@ mod tests {
             0,
             &WorkflowAgentLiveMap::default(),
         );
-        assert_eq!(state.agent_hits[0].1, anchored_top);
+        assert_eq!(
+            state.agent_hits.first().map(|h| h.1.as_str()),
+            Some(anchored_top.as_str())
+        );
         assert_eq!(state.roster_scroll, 6);
 
         state.roster_scroll = 10_000;
@@ -1628,7 +1677,7 @@ mod tests {
             &WorkflowAgentLiveMap::default(),
         );
         assert_eq!(state.roster_scroll, 31 - visible);
-        assert_eq!(state.agent_hits[0].1, "a00");
+        assert_eq!(state.agent_hits.first().map(|h| h.1.as_str()), Some("a00"));
 
         state.normalize(&runs);
         assert_eq!(
@@ -1697,7 +1746,10 @@ mod tests {
     #[test]
     fn pinned_phase_unpins_when_run_progresses() {
         let mut run = make_run("wf_1", "deep-research", "active");
-        run.agents[1].state = "running".to_owned();
+        let Some(agent) = run.agents.get_mut(1) else {
+            panic!("expected agent 1: {:?}", run.agents);
+        };
+        agent.state = "running".to_owned();
         let runs = vec![&run];
         let mut state = WorkflowsViewState::default();
         state.normalize(&runs);
@@ -1706,7 +1758,10 @@ mod tests {
         assert!(state.phase_pinned);
         assert_eq!(state.selected_phase_name.as_deref(), Some("Plan"));
 
-        run.agents[1].state = "done".to_owned();
+        let Some(agent) = run.agents.get_mut(1) else {
+            panic!("expected agent 1: {:?}", run.agents);
+        };
+        agent.state = "done".to_owned();
         run.agents.push(WorkflowAgentRowView {
             agent_id: "a3".into(),
             label: "synthesizer".into(),
@@ -1759,8 +1814,11 @@ mod tests {
         let mut run = make_run("wf_1", "deep-research", "complete");
         run.current_phase = Some("Plan".to_owned());
         run.agents.truncate(1);
-        run.agents[0].tokens_used = 375_136;
-        run.agents[0].duration_ms = 75_000;
+        let Some(agent) = run.agents.first_mut() else {
+            panic!("expected an agent: {:?}", run.agents);
+        };
+        agent.tokens_used = 375_136;
+        agent.duration_ms = 75_000;
         let runs = vec![&run];
         let mut state = WorkflowsViewState::default();
         state.normalize(&runs);

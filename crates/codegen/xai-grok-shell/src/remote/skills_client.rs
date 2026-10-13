@@ -237,6 +237,7 @@ fn product_skill_info(
         description,
         has_user_specified_description: true,
         paths: None,
+        origin: None,
         when_to_use: None,
         short_description: None,
         author: None,
@@ -701,11 +702,13 @@ mod tests {
             }]
         });
         let resp: ListBundledSkillsResponse = serde_json::from_value(json).unwrap();
-        assert_eq!(resp.skills.len(), 2);
-        assert_eq!(resp.skills[0].name, "docx");
-        assert_eq!(resp.skills[0].display_name, "Word Documents");
-        assert_eq!(resp.skills[0].icon, "file-text");
-        assert_eq!(resp.skills[1].name, "ffmpeg");
+        let [docx, ffmpeg] = resp.skills.as_slice() else {
+            panic!("expected two bundled skills: {:?}", resp.skills);
+        };
+        assert_eq!(docx.name, "docx");
+        assert_eq!(docx.display_name, "Word Documents");
+        assert_eq!(docx.icon, "file-text");
+        assert_eq!(ffmpeg.name, "ffmpeg");
     }
 
     #[test]
@@ -748,21 +751,30 @@ mod tests {
         let names: Vec<_> = infos.iter().map(|s| s.name.as_str()).collect();
         // user review and user docx override; bundled pdf; no disabled; no bundled docx
         assert_eq!(names, vec!["review", "docx", "pdf"]);
-        assert_eq!(infos[0].scope, SkillScope::User);
-        assert_eq!(infos[1].scope, SkillScope::User);
-        assert_eq!(infos[2].scope, SkillScope::Server);
-        assert_eq!(
-            infos[0].metadata.as_ref().unwrap().get("product").unwrap(),
-            "chat"
+        let [review, docx, pdf] = infos.as_slice() else {
+            panic!("expected three skill infos: {infos:?}");
+        };
+        assert_eq!(review.scope, SkillScope::User);
+        assert_eq!(docx.scope, SkillScope::User);
+        assert_eq!(pdf.scope, SkillScope::Server);
+        assert!(
+            review
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("product"))
+                .is_some_and(|v| v == "chat")
         );
-        assert!(infos[0].path.starts_with("chat-product://"));
+        assert!(review.path.starts_with("chat-product://"));
     }
 
     #[test]
     fn user_enabled_defaults_true_when_omitted() {
         let json = serde_json::json!({ "skills": [{ "name": "review" }] });
         let resp: ListUserSkillsResponse = serde_json::from_value(json).unwrap();
-        assert!(resp.skills[0].enabled);
+        let [skill, ..] = resp.skills.as_slice() else {
+            panic!("expected one user skill: {:?}", resp.skills);
+        };
+        assert!(skill.enabled);
     }
 
     #[test]
@@ -902,9 +914,11 @@ mod tests {
         let client = SkillsClient::with_base_url(test_auth_manager(), base);
         let (catalog, _) = client.try_list_catalog("en").await.unwrap();
         let infos = catalog.to_skill_infos();
-        assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0].name, "docx");
-        assert!(infos[0].path.starts_with("chat-product://"));
+        let [info] = infos.as_slice() else {
+            panic!("expected one skill info: {infos:?}");
+        };
+        assert_eq!(info.name, "docx");
+        assert!(info.path.starts_with("chat-product://"));
         handle.abort();
     }
 
@@ -972,11 +986,13 @@ mod tests {
             &primary,
             [&same_team, &untagged, &other_team, &team_plus_org],
         );
-        assert_eq!(alts.len(), 2);
-        assert_eq!(alts[0].key, "web-team");
-        assert!(!alts[0].untagged_recovery);
-        assert_eq!(alts[1].key, "web-personal");
-        assert!(alts[1].untagged_recovery);
+        let [team, personal] = alts.as_slice() else {
+            panic!("expected two auth alts: {alts:?}");
+        };
+        assert_eq!(team.key, "web-team");
+        assert!(!team.untagged_recovery);
+        assert_eq!(personal.key, "web-personal");
+        assert!(personal.untagged_recovery);
     }
 
     #[test]
@@ -1008,9 +1024,11 @@ mod tests {
             ..Default::default()
         };
         let alts = skills_auth_alt_candidates(&primary, [&untagged, &team]);
-        assert_eq!(alts.len(), 1);
-        assert_eq!(alts[0].key, "web");
-        assert!(!alts[0].untagged_recovery);
+        let [alt] = alts.as_slice() else {
+            panic!("expected one auth alt: {alts:?}");
+        };
+        assert_eq!(alt.key, "web");
+        assert!(!alt.untagged_recovery);
     }
 
     #[test]
@@ -1064,8 +1082,10 @@ mod tests {
             user_list_failed: false,
         };
         let infos = catalog.to_skill_infos();
-        assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0].body.as_deref(), Some("Do the review."));
+        let [info] = infos.as_slice() else {
+            panic!("expected one skill info: {infos:?}");
+        };
+        assert_eq!(info.body.as_deref(), Some("Do the review."));
     }
 
     #[test]
@@ -1082,9 +1102,11 @@ mod tests {
             user_list_failed: false,
         };
         let infos = catalog.to_skill_infos();
-        assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0].name, "my-cool-review");
-        assert_eq!(infos[0].display_name.as_deref(), Some("My Cool Review"));
+        let [info] = infos.as_slice() else {
+            panic!("expected one skill info: {infos:?}");
+        };
+        assert_eq!(info.name, "my-cool-review");
+        assert_eq!(info.display_name.as_deref(), Some("My Cool Review"));
     }
 
     #[test]
@@ -1140,9 +1162,11 @@ mod tests {
             user_list_failed: false,
         };
         let infos = catalog.to_skill_infos();
-        assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0].name, "my-docx");
-        assert_eq!(infos[0].display_name.as_deref(), Some("My Docx"));
+        let [info] = infos.as_slice() else {
+            panic!("expected one skill info: {infos:?}");
+        };
+        assert_eq!(info.name, "my-docx");
+        assert_eq!(info.display_name.as_deref(), Some("My Docx"));
     }
 
     #[test]
@@ -1164,10 +1188,12 @@ mod tests {
             user_list_failed: false,
         };
         let infos = catalog.to_skill_infos();
-        assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0].name, "docx");
-        assert_eq!(infos[0].scope, SkillScope::User);
-        assert_eq!(infos[0].display_name.as_deref(), Some("Docx"));
+        let [info] = infos.as_slice() else {
+            panic!("expected one skill info: {infos:?}");
+        };
+        assert_eq!(info.name, "docx");
+        assert_eq!(info.scope, SkillScope::User);
+        assert_eq!(info.display_name.as_deref(), Some("Docx"));
     }
 
     #[test]
@@ -1193,8 +1219,10 @@ mod tests {
             user_list_failed: false,
         };
         let infos = catalog.to_skill_infos();
-        assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0].name, "my-skill");
-        assert_eq!(infos[0].description, "first");
+        let [info] = infos.as_slice() else {
+            panic!("expected one skill info: {infos:?}");
+        };
+        assert_eq!(info.name, "my-skill");
+        assert_eq!(info.description, "first");
     }
 }

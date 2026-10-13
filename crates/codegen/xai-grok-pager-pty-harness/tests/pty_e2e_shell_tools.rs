@@ -16,6 +16,8 @@ mod bash_mode_file_completion_shell_like;
 mod bash_mode_strips_redundant_session_cd_from_chrome;
 #[path = "pty_e2e/bash_mode_tab_completion_dropdown.rs"]
 mod bash_mode_tab_completion_dropdown;
+#[path = "pty_e2e/configured_bash_filename_arguments.rs"]
+mod configured_bash_filename_arguments;
 #[path = "pty_e2e/consent_gate_blocks_session_pty.rs"]
 mod consent_gate_blocks_session_pty;
 #[path = "pty_e2e/edit_collapsed_oneliner_pty.rs"]
@@ -48,3 +50,7 @@ mod mcp_menu_loads_servers_in_project_dir;
 mod mid_text_skill_token_echo_styled_pty;
 #[path = "pty_e2e/permission_prompt_hook_chimes_only_on_real_wait.rs"]
 mod permission_prompt_hook_chimes_only_on_real_wait;
+#[path = "pty_e2e/send_subagent_message_row.rs"]
+mod send_subagent_message_row;
+#[path = "pty_e2e/send_subagent_message_row_opens_child.rs"]
+mod send_subagent_message_row_opens_child;

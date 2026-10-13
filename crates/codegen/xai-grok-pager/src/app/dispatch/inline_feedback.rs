@@ -1,19 +1,12 @@
-//! `/feedback <text>`: the drain-time predraft write; the drain and the modal send share [`select_feedback_images`], so a dropped image never drops the report.
+//! Feedback image policy shared by the send paths ([`select_feedback_images`], so a dropped image never drops the report) and the draft-image readers for the modal's Drafts tab.
 
 use std::path::Path;
 
-use crate::app::agent_view::{AgentView, PromptInputMode, PromptMode};
-use xai_grok_feedback::{
-    DraftImage, DraftImagePolicy, FeedbackDraftId, FeedbackDraftStore, FeedbackStoreError,
-    derive_title, read_draft_images, write_draft_images,
-};
+use xai_grok_feedback::{DraftImagePolicy, FeedbackDraftId, read_draft_images};
 use xai_grok_shell::session::{
     MAX_FEEDBACK_IMAGE_BYTES, MAX_FEEDBACK_IMAGE_TOTAL_BYTES, MAX_FEEDBACK_IMAGES,
     feedback_image_extension,
 };
-
-/// Pushed once per requeued row: a bare Enter on an empty composer drains nothing, so the gesture is a real send.
-pub(super) const FEEDBACK_STORE_BUSY_NOTICE: &str = "Could not save the feedback draft right now (another process has it open); the report stays queued. Send your next message to retry.";
 
 /// Applies the send-time image policy in order; `None` is an image whose bytes could not be read or decoded.
 /// Returns the accepted indices plus the user notice for anything dropped.
@@ -81,114 +74,11 @@ pub(crate) fn select_feedback_images(
     (accepted, notice)
 }
 
-#[derive(Debug)]
-pub(super) struct InlineDraftSaved {
-    pub(super) draft_id: FeedbackDraftId,
-    /// Images dropped by policy or lost to a write failure; the text is saved either way.
-    pub(super) notice: Option<String>,
-}
-
-#[derive(Debug)]
-pub(super) enum InlineDraftSaveError {
-    /// Another process holds the store lock; the row can be retried unchanged.
-    Busy,
-    Failed(String),
-}
-
 const DRAFT_IMAGE_POLICY: DraftImagePolicy = DraftImagePolicy {
     max_images: MAX_FEEDBACK_IMAGES,
     max_image_bytes: MAX_FEEDBACK_IMAGE_BYTES,
     extension_for_mime: feedback_image_extension,
 };
-
-/// `images` are the row's wire images decoded to `(bytes, mime_type)`, `None` where decoding failed.
-/// Images are written after the JSON commit so they are keyed by a real id; a write failure downgrades to a notice instead of deleting the draft.
-pub(super) fn save_inline_feedback_draft(
-    session_dir: Option<&Path>,
-    user_text: &str,
-    images: &[Option<(Vec<u8>, String)>],
-) -> Result<InlineDraftSaved, InlineDraftSaveError> {
-    let Some(session_dir) = session_dir else {
-        return Err(InlineDraftSaveError::Failed("No active session".to_owned()));
-    };
-    let (accepted, mut notice) = select_feedback_images(images);
-    let draft = FeedbackDraftStore::new(session_dir)
-        .append_predraft(&derive_title(user_text), user_text)
-        .map_err(|error| match error {
-            FeedbackStoreError::Busy => InlineDraftSaveError::Busy,
-            FeedbackStoreError::InvalidSessionDirectory { .. } => {
-                InlineDraftSaveError::Failed("No active session".to_owned())
-            }
-            other => InlineDraftSaveError::Failed(format!(
-                "Could not save the local feedback draft: {other}"
-            )),
-        })?;
-    let accepted: Vec<DraftImage> = accepted
-        .iter()
-        .filter_map(|&index| images[index].as_ref())
-        .map(|(bytes, mime_type)| DraftImage {
-            bytes: bytes.clone(),
-            mime_type: mime_type.clone(),
-        })
-        .collect();
-    if let Err(error) = write_draft_images(session_dir, &draft.id, &accepted, DRAFT_IMAGE_POLICY) {
-        let error = format!("Could not save feedback draft images: {error}");
-        notice = Some(match notice {
-            Some(notice) => format!("{notice} {error}"),
-            None => error,
-        });
-    }
-    Ok(InlineDraftSaved {
-        draft_id: draft.id,
-        notice,
-    })
-}
-
-/// Puts a report whose draft could not be saved back where the user can recover it and returns the notice to show.
-/// The composer is spliced through [`crate::views::prompt_widget::PromptWidget::prepend_text`] (never `set_text`, which drops its chips). While it holds a queued row's edit buffer or a non-prompt input mode (`!`/`#`) the composer is left alone and the report is echoed in the notice instead.
-pub(super) fn restore_inline_feedback_report(
-    agent: &mut AgentView,
-    report: &str,
-    images: Vec<(Vec<u8>, String)>,
-    failure: String,
-) -> String {
-    let composer_is_taken = matches!(agent.prompt_mode, PromptMode::EditingQueued { .. })
-        || agent.prompt_input_mode != PromptInputMode::Normal;
-    if composer_is_taken {
-        let images_note = match images.len() {
-            0 => String::new(),
-            1 => " (its image was dropped)".to_owned(),
-            count => format!(" (its {count} images were dropped)"),
-        };
-        return format!("{failure}\nNot sent: {report}{images_note}");
-    }
-    let separator = if agent.prompt.text().is_empty() {
-        ""
-    } else {
-        "\n"
-    };
-    // The chips go after the report on its own line, so leave room for them before the separator.
-    let chip_gap = if images.is_empty() { "" } else { " " };
-    agent
-        .prompt
-        .prepend_text(&format!("{report}{chip_gap}{separator}"));
-    agent.prompt.set_cursor(report.len() + chip_gap.len());
-    let mut refused = 0usize;
-    for (data, mime_type) in images {
-        let image = crate::prompt_images::from_clipboard_data(&crate::clipboard::ImageData {
-            data,
-            mime_type,
-        });
-        if agent.prompt.insert_image(image).is_err() {
-            refused += 1;
-        }
-    }
-    if refused == 0 {
-        return failure;
-    }
-    let plural = if refused == 1 { "" } else { "s" };
-    format!("{failure}; {refused} image{plural} could not be restored.")
-}
 
 pub(super) fn attach_saved_draft_images(
     modal: &mut crate::views::feedback_modal::FeedbackModalState,
@@ -200,7 +90,7 @@ pub(super) fn attach_saved_draft_images(
     }
 }
 
-pub(super) fn read_feedback_draft_images(
+fn read_feedback_draft_images(
     session_dir: &Path,
     draft_id: &FeedbackDraftId,
 ) -> Vec<crate::prompt_images::PastedImage> {
@@ -213,4 +103,74 @@ pub(super) fn read_feedback_draft_images(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png(len: usize) -> Option<(Vec<u8>, String)> {
+        Some((vec![0u8; len], "image/png".to_owned()))
+    }
+
+    /// `(case name, decoded images, expected accepted indices, expected notice)`.
+    type Case = (
+        &'static str,
+        Vec<Option<(Vec<u8>, String)>>,
+        Vec<usize>,
+        Option<&'static str>,
+    );
+
+    /// Each policy branch drops its image and names the reason; the report itself is never refused.
+    #[test]
+    fn select_feedback_images_applies_each_policy_branch_in_order() {
+        let cases: [Case; 6] = [
+            ("all good", vec![png(16), png(16)], vec![0, 1], None),
+            (
+                "over count",
+                vec![png(16); MAX_FEEDBACK_IMAGES + 1],
+                (0..MAX_FEEDBACK_IMAGES).collect(),
+                Some("Dropped 1 image from the feedback: 1 over the 4-image limit."),
+            ),
+            (
+                "unsupported mime",
+                vec![Some((vec![1], "image/webp".to_owned())), png(16)],
+                vec![1],
+                Some(
+                    "Dropped 1 image from the feedback: 1 in a format feedback can't carry (PNG, JPEG, or GIF only).",
+                ),
+            ),
+            (
+                "too large",
+                vec![png(MAX_FEEDBACK_IMAGE_BYTES + 1)],
+                vec![],
+                Some(
+                    "Dropped 1 image from the feedback: 1 over the size limit (8 MB each, 16 MB combined).",
+                ),
+            ),
+            (
+                "unreadable and empty",
+                vec![None, Some((vec![], "image/png".to_owned())), png(16)],
+                vec![2],
+                Some("Dropped 2 images from the feedback: 2 unreadable."),
+            ),
+            (
+                "combined cap counts as too large",
+                vec![
+                    png(MAX_FEEDBACK_IMAGE_BYTES),
+                    png(MAX_FEEDBACK_IMAGE_BYTES),
+                    png(1),
+                ],
+                vec![0, 1],
+                Some(
+                    "Dropped 1 image from the feedback: 1 over the size limit (8 MB each, 16 MB combined).",
+                ),
+            ),
+        ];
+        for (name, images, expected_accepted, expected_notice) in cases {
+            let (accepted, notice) = select_feedback_images(&images);
+            assert_eq!(expected_accepted, accepted, "{name}");
+            assert_eq!(expected_notice.map(str::to_owned), notice, "{name}");
+        }
+    }
 }

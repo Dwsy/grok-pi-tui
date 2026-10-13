@@ -196,10 +196,15 @@ pub fn create_snapshot_with_symlink(btrfs_info: &BtrfsInfo, dest: &Path) -> Resu
 /// a label on one mount cannot clobber each other. Shared with the delegate.
 pub fn snapshot_dest_path(btrfs_mount: &Path, subvolume_root: &Path, dest: &Path) -> PathBuf {
     let subdir = if btrfs_mount == subvolume_root {
-        BTRFS_SNAPSHOT_SUBDIRS[1] // ".grok-snapshots"
+        BTRFS_SNAPSHOT_SUBDIRS.get(1).copied()
     } else {
-        BTRFS_SNAPSHOT_SUBDIRS[0] // "worktrees"
-    };
+        BTRFS_SNAPSHOT_SUBDIRS.first().copied()
+    }
+    .unwrap_or(if btrfs_mount == subvolume_root {
+        ".grok-snapshots"
+    } else {
+        "worktrees"
+    });
     let basename = dest
         .file_name()
         .and_then(|n| n.to_str())

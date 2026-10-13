@@ -368,7 +368,10 @@ mod tests {
 
             let affs = block.diagram_affordances(&ctx(60, false));
             assert_eq!(affs.len(), 1, "one diagram → one affordance row");
-            assert_eq!(affs[0].source, "A-->B\n");
+            let Some(aff) = affs.first() else {
+                panic!("expected one affordance: {affs:?}");
+            };
+            assert_eq!(aff.source, "A-->B\n");
 
             // The diagram is shown as its source code block (never an image)
             // The affordance row sits at its reported (non-selectable) offset
@@ -378,8 +381,10 @@ mod tests {
                 "the source code block stays on screen",
             );
             assert!(matches!(
-                out.lines[affs[0].row_offset as usize].selectable,
-                Selectable::None
+                out.lines
+                    .get(aff.row_offset as usize)
+                    .map(|l| &l.selectable),
+                Some(&Selectable::None)
             ));
         }
 
@@ -435,18 +440,23 @@ mod tests {
             let out = block.output(&ctx(60, false));
             let affs = block.diagram_affordances(&ctx(60, false));
             assert_eq!(affs.len(), 2);
+            let [a0, a1] = affs.as_slice() else {
+                panic!("expected two affordances: {affs:?}");
+            };
             assert!(
-                affs[0].row_offset < affs[1].row_offset,
+                a0.row_offset < a1.row_offset,
                 "diagram order preserved: {} < {}",
-                affs[0].row_offset,
-                affs[1].row_offset,
+                a0.row_offset,
+                a1.row_offset,
             );
-            assert_eq!(affs[0].source, "AAA-->BBB\n");
-            assert_eq!(affs[1].source, "CCC-->DDD\n");
+            assert_eq!(a0.source, "AAA-->BBB\n");
+            assert_eq!(a1.source, "CCC-->DDD\n");
             for aff in &affs {
                 assert!(matches!(
-                    out.lines[aff.row_offset as usize].selectable,
-                    Selectable::None
+                    out.lines
+                        .get(aff.row_offset as usize)
+                        .map(|l| &l.selectable),
+                    Some(&Selectable::None)
                 ));
             }
             // Both diagrams' sources remain visible as code blocks.

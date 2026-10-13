@@ -4,6 +4,7 @@
 //! It tracks which entries are currently being streamed to (agent message, thinking) and which tool calls are pending.
 //! Each `handle_update()` call processes one event and mutates the scrollback.
 use crate::acp::meta::{NotificationMeta, user_message_chunk_meta, user_prompt_meta};
+use crate::acp::subagent_label_registry::SubagentLabelRegistry;
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::SessionEvent;
 use crate::scrollback::blocks::tool::list_dir::ListDirToolCallBlock;
@@ -22,13 +23,16 @@ use crate::scrollback::state::verb_group::verb_group_kind_changed;
 use agent_client_protocol as acp;
 use chrono::{DateTime, Local, TimeZone};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use tracing::debug;
 use xai_grok_shell::session::storage::chunk_meta_flag;
 use xai_grok_tools::types::output::{BashOutput, ToolOutput};
 use xai_grok_tools::types::output::{ReadFileOutput, SearchToolOutput, WebFetchOutput};
 use xai_grok_tools::util::strip_redundant_session_cd;
+use xai_tool_types::{ReadLineCounts, parse_lenient_u64_value};
 /// Convert a UTC millisecond timestamp to local time.
 fn utc_ms_to_local(ms: i64) -> DateTime<Local> {
     chrono::Utc
@@ -116,8 +120,8 @@ pub enum WaitingReason {
     /// Waiting for the model to (re)start streaming.
     /// This covers the gap before the first token after the prompt is sent, and the gap after a tool completes before the next inference step begins.
     Model,
-    /// Blocked on a running foreground subagent (`task` / `spawn_subagent`). The view fills it in; the tracker always
-    /// leaves it `None`.
+    /// Blocked on a running foreground subagent (`task` / `spawn_subagent`).
+    /// Only the view sets `display`, to `Waiting for subagent` or `Waiting for N subagents`.
     Subagent { display: Option<String> },
     /// Blocked polling/awaiting a background task's output (`get_command_or_subagent_output` / `get_task_output`). The
     /// tracker itself always leaves it `None`.
@@ -155,6 +159,15 @@ pub fn clamp_activity_subject(s: &str) -> String {
         line.chars().take(MAX_ACTIVITY_SUBJECT_CHARS).collect()
     }
 }
+/// `n == 0` is treated as 1: a `Subagent` wait means at least one child.
+pub fn waiting_on_subagents_subject(n: usize) -> String {
+    let n = n.max(1);
+    if n == 1 {
+        "Waiting for subagent".to_string()
+    } else {
+        format!("Waiting for {n} subagents")
+    }
+}
 /// Shared in-progress subject label (clamped description/command) used by turn-status, title bar, and dashboard/subagent activity columns.
 ///
 /// Renders as `{subject}…` (no "Waiting for" prefix or quotes) so a description like `Wait 5 seconds` reads cleanly next to the spinner.
@@ -183,10 +196,14 @@ impl WaitingReason {
     pub fn label(&self) -> String {
         match self {
             Self::Model => "Waiting for response…".to_string(),
-            Self::Subagent { display } => match display.as_deref().map(clamp_activity_subject) {
-                Some(display) if !display.is_empty() => format!("{display}…"),
-                _ => "Waiting on subagent…".to_string(),
-            },
+            Self::Subagent { display } => {
+                let subject = display
+                    .as_deref()
+                    .map(clamp_activity_subject)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| waiting_on_subagents_subject(1));
+                format!("{subject}…")
+            }
             Self::TaskOutput {
                 subject: Some(subject),
                 ..
@@ -444,6 +461,10 @@ pub struct AcpUpdateTracker {
     /// Task tool `run_in_background` flags, keyed by `task_id` (subagent_id).
     /// Populated when a task tool call is detected (variant == "Task"), consumed by the acp_handler when `SubagentSpawned` arrives.
     pub(crate) task_tool_background: std::collections::HashMap<String, bool>,
+    /// Display labels of spawned subagents, recorded by the acp_handler on `SubagentSpawned` and read when a
+    /// `send_subagent_message` row is built or rebuilt. One handle per root session, shared with every child
+    /// tracker: a child's own sends name siblings the parent spawned.
+    pub(crate) subagent_labels: Rc<RefCell<SubagentLabelRegistry>>,
     /// Tool call IDs marked as background (`is_background=true`). Late-detection (Execute block already exists):
     /// suppresses further output streaming. `handle_task_backgrounded` demotes the existing block. Value is the
     /// optional description from `raw_input.description`.
@@ -545,6 +566,14 @@ impl Utf8Decoder {
 impl AcpUpdateTracker {
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Fresh streaming state over the root session's label registry, so a child tracker's and the reconnect staging
+    /// tracker's sent-message rows resolve the same labels as the root's.
+    pub(crate) fn sharing_labels(labels: &Rc<RefCell<SubagentLabelRegistry>>) -> AcpUpdateTracker {
+        AcpUpdateTracker {
+            subagent_labels: Rc::clone(labels),
+            ..AcpUpdateTracker::default()
+        }
     }
     pub(crate) fn output_since_last_finish(&self) -> bool {
         self.agent_output_epoch != self.epoch_at_last_finish
@@ -1347,7 +1376,11 @@ impl AcpUpdateTracker {
         let tc_id = tc.tool_call_id.0.to_string();
         if let Some(orphan) = self.orphan_updates.remove(&tc_id) {
             let merged = merge_tool_call_update(tc, orphan);
-            let block = tool_call_to_block(&merged, self.session_cwd.as_deref());
+            let block = tool_call_to_block(
+                &merged,
+                self.session_cwd.as_deref(),
+                &self.subagent_labels.borrow(),
+            );
             let trace = tool_trace_from_call(&merged, meta);
             self.finish_completed_tool(block, trace, scrollback, is_replay);
             return true;
@@ -1357,11 +1390,19 @@ impl AcpUpdateTracker {
             acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed
         );
         if is_completed {
-            let block = tool_call_to_block(&tc, self.session_cwd.as_deref());
+            let block = tool_call_to_block(
+                &tc,
+                self.session_cwd.as_deref(),
+                &self.subagent_labels.borrow(),
+            );
             let trace = tool_trace_from_call(&tc, meta);
             self.finish_completed_tool(block, trace, scrollback, is_replay);
         } else {
-            let block = tool_call_to_block(&tc, self.session_cwd.as_deref());
+            let block = tool_call_to_block(
+                &tc,
+                self.session_cwd.as_deref(),
+                &self.subagent_labels.borrow(),
+            );
             let id = scrollback.push_block(block);
             refresh_tool_trace(scrollback, id, &tc, meta);
             scrollback.set_last_running(true);
@@ -1434,7 +1475,11 @@ impl AcpUpdateTracker {
                         && !is_bg_plumbing_tool(&base)
                     {
                         base.update(tcu.fields);
-                        let block = tool_call_to_block(&base, self.session_cwd.as_deref());
+                        let block = tool_call_to_block(
+                            &base,
+                            self.session_cwd.as_deref(),
+                            &self.subagent_labels.borrow(),
+                        );
                         let trace = tool_trace_from_call(&base, meta);
                         self.finish_completed_tool(block, trace, scrollback, is_replay);
                         return true;
@@ -1483,8 +1528,11 @@ impl AcpUpdateTracker {
                         Some((tc_id.clone(), desc, false))
                     } else {
                         if let Some(entry_id) = pending.entry_id {
-                            let mut block =
-                                tool_call_to_block(&pending.base, self.session_cwd.as_deref());
+                            let mut block = tool_call_to_block(
+                                &pending.base,
+                                self.session_cwd.as_deref(),
+                                &self.subagent_labels.borrow(),
+                            );
                             let mut kind_changed = false;
                             if let Some(entry) = scrollback.get_by_id_mut(entry_id) {
                                 if let RenderBlock::ToolCall(new_tc) = &mut block
@@ -1504,11 +1552,19 @@ impl AcpUpdateTracker {
                     }
                 } else {
                     let entry_id = if let Some(entry_id) = pending.entry_id {
-                        let block = tool_call_to_block(&pending.base, self.session_cwd.as_deref());
+                        let block = tool_call_to_block(
+                            &pending.base,
+                            self.session_cwd.as_deref(),
+                            &self.subagent_labels.borrow(),
+                        );
                         scrollback.replace_tool_block(entry_id, block, pending.started_at);
                         entry_id
                     } else {
-                        let block = tool_call_to_block(&pending.base, self.session_cwd.as_deref());
+                        let block = tool_call_to_block(
+                            &pending.base,
+                            self.session_cwd.as_deref(),
+                            &self.subagent_labels.borrow(),
+                        );
                         let id = scrollback.push_block(block);
                         scrollback.set_last_running(true);
                         pending.entry_id = Some(id);
@@ -1544,7 +1600,11 @@ impl AcpUpdateTracker {
         }
         if let Some(pending) = self.pending_tools.remove(&tc_id) {
             let merged = merge_tool_call_update(pending.base, tcu);
-            let mut block = tool_call_to_block(&merged, self.session_cwd.as_deref());
+            let mut block = tool_call_to_block(
+                &merged,
+                self.session_cwd.as_deref(),
+                &self.subagent_labels.borrow(),
+            );
             // Replay timing: the stashed `Instant` spans only the batching
             // latency between the replayed start and completion, so the card
             // would show 0ms. Prefer the agent-stamped start/end delta there;
@@ -1600,6 +1660,11 @@ impl AcpUpdateTracker {
             if let Some(entry_id) = pending.entry_id {
                 scrollback.finish_running(entry_id);
             }
+        }
+        if self.skip_next_user_echo
+            && chunk_meta_flag(&chunk, user_message_chunk_meta::HIDE_FROM_SCROLLBACK)
+        {
+            return false;
         }
         if self.skip_next_user_echo {
             self.skip_next_user_echo = false;
@@ -1779,9 +1844,9 @@ fn extract_skill_header_command(text: &str) -> Option<String> {
     if !text.starts_with('/') {
         return None;
     }
-    let cmd_name = text.split(&[' ', '\n'][..]).next()?;
+    let cmd_name = text.split([' ', '\n']).next()?;
     if let Some(input_idx) = text.find("## Input\n") {
-        let args = text[input_idx + "## Input\n".len()..].trim();
+        let args = text.get(input_idx + "## Input\n".len()..)?.trim();
         if !args.is_empty() {
             return Some(format!("{cmd_name} {args}"));
         }
@@ -1822,11 +1887,11 @@ fn extract_cron_prompt_body(text: &str) -> Option<String> {
     }
     let end_tag = "</system-reminder>";
     let close = text.find(end_tag)?;
-    let header = &text[..close];
+    let header = text.get(..close)?;
     if !header.contains("scheduled task execution") {
         return None;
     }
-    let body = text[close + end_tag.len()..].trim();
+    let body = text.get(close + end_tag.len()..)?.trim();
     if body.is_empty() {
         return None;
     }
@@ -1900,7 +1965,12 @@ fn execute_command_from_tool_call(tc: &acp::ToolCall) -> String {
 /// Convert an ACP ToolCall to a RenderBlock.
 /// Parses `tool_call.kind` to create the appropriate block type, extracting fields from `raw_input` JSON when available.
 /// `session_cwd` sets execute `header_display` when a leading `cd <cwd>` is redundant.
-fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderBlock {
+/// `labels` names the target of a `send_subagent_message` row.
+fn tool_call_to_block(
+    tc: &acp::ToolCall,
+    session_cwd: Option<&Path>,
+    labels: &SubagentLabelRegistry,
+) -> RenderBlock {
     let success = !matches!(tc.status, acp::ToolCallStatus::Failed);
     match tc.kind {
         acp::ToolKind::Execute => {
@@ -1960,11 +2030,12 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
             if is_memory_v2_activity(tc) {
                 block = block.with_memory_activity();
             }
-            if let Some(ref raw) = tc.raw_output
-                && let Ok(ToolOutput::ReadFile(read_output)) =
-                    serde_json::from_value::<ToolOutput>(raw.clone())
-            {
-                match read_output {
+            let structured = tc
+                .raw_output
+                .as_ref()
+                .map(|raw| serde_json::from_value::<ToolOutput>(raw.clone()));
+            match structured {
+                Some(Ok(ToolOutput::ReadFile(read_output))) => match read_output {
                     ReadFileOutput::FileContent(fc) => {
                         if fc.offset.is_some() || fc.limit.is_some() {
                             let off = fc.offset.unwrap_or(0);
@@ -1994,14 +2065,33 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                             pages: pdf.total_pages,
                         });
                     }
+                },
+                _ if !success => {
+                    let text = content_text(tc);
+                    block = block.with_error(if text.is_empty() {
+                        "Read failed".to_string()
+                    } else {
+                        text
+                    });
                 }
-            } else if !success {
-                let text = content_text(tc);
-                block = block.with_error(if text.is_empty() {
-                    "Read failed".to_string()
-                } else {
-                    text
-                });
+                Some(Ok(_)) => {}
+                None | Some(Err(_)) => {
+                    let counts = tc
+                        .raw_output
+                        .as_ref()
+                        .and_then(|raw| serde_json::from_value::<ReadLineCounts>(raw.clone()).ok())
+                        .unwrap_or_default();
+                    if let Some(range) = counts.range {
+                        block = block.with_line_range(LineRange::new(range.start, range.end));
+                    }
+                    block.total_lines = counts.total_lines;
+                    if has_text_content(tc) {
+                        let text = content_text(tc);
+                        let total_lines =
+                            counts.total_lines.unwrap_or_else(|| text.lines().count());
+                        block = block.with_content(text, total_lines);
+                    }
+                }
             }
             RenderBlock::ToolCall(ToolCallBlock::Read(block))
         }
@@ -2053,6 +2143,7 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
             let query = extract_raw_field(tc, "query")
+                .or_else(|| extract_raw_field(tc, "search_term"))
                 .or_else(|| {
                     tc.title
                         .strip_prefix("Web search: ")
@@ -2163,7 +2254,7 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                     }
                     block.citations = ws.citations;
                 }
-                if block.content.is_none() {
+                if success && block.content.is_none() {
                     let text = content_text(tc);
                     if !text.is_empty() {
                         block.content = Some(text);
@@ -2171,7 +2262,7 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                 }
             }
             if !success {
-                block = block.with_error("Web search failed");
+                block = block.with_error(failure_reason(tc, "Web search failed"));
             }
             RenderBlock::ToolCall(ToolCallBlock::WebSearch(block))
         }
@@ -2200,7 +2291,7 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
             block.file_matches = grep.file_matches;
             block.file_paths = grep.file_paths;
             if !success {
-                block.error = Some("Search failed".into());
+                block.error = Some(failure_reason(tc, "Search failed"));
             }
             RenderBlock::ToolCall(ToolCallBlock::Search(block))
         }
@@ -2267,7 +2358,12 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                 block.content = Some(content);
             }
             if !success {
-                block = block.with_error("Search failed");
+                let error = block
+                    .content
+                    .take()
+                    .filter(|_| block.results.is_empty())
+                    .unwrap_or_else(|| "Search failed".to_owned());
+                block = block.with_error(error);
             }
             RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(block))
         }
@@ -2322,7 +2418,11 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
             }
             RenderBlock::ToolCall(ToolCallBlock::Eval(block))
         }
-        _ if extract_raw_field(tc, "variant").as_deref() == Some("UseTool") => {
+        _ if matches!(
+            extract_raw_field(tc, "variant").as_deref(),
+            Some("UseTool") | Some("MCPTool")
+        ) =>
+        {
             let tool_name = extract_raw_field(tc, "tool_name").unwrap_or_else(|| tc.title.clone());
             let mut block = UseToolCallBlock::new(tool_name);
             block.input_args = extract_use_tool_args(tc);
@@ -2343,7 +2443,7 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
             RenderBlock::ToolCall(ToolCallBlock::UseTool(block))
         }
         _ if crate::acp::subagent_message::is_tool(tc) => {
-            crate::acp::subagent_message::to_block(tc)
+            crate::acp::subagent_message::to_block(tc, labels)
         }
         _ if canonical_tool_name(tc)
             == Some(xai_grok_tools::implementations::grok_build::SEND_FEEDBACK_TOOL_NAME) =>
@@ -2437,10 +2537,11 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                 .eq_ignore_ascii_case("skill")
                 || name.to_ascii_lowercase().starts_with("skill:")
             {
-                let label = match name.find(':') {
-                    Some(i) => format!("Skill{}", &name[i..]),
-                    None => "Skill".into(),
-                };
+                let label = name
+                    .find(':')
+                    .and_then(|i| name.get(i..))
+                    .map(|rest| format!("Skill{rest}"))
+                    .unwrap_or_else(|| "Skill".into());
                 (label, ToolCallBlock::Skill)
             } else {
                 (name.into_owned(), ToolCallBlock::Other)
@@ -2449,15 +2550,15 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
             if let Some(input_json) = format_other_tool_input(tc) {
                 block = block.with_input_json(input_json);
             }
-            let ct = content_text(tc);
-            if !success {
-                block.error = Some(if ct.is_empty() {
-                    "Failed".into()
-                } else {
-                    ct.clone()
-                });
+            let mut ct = content_text(tc);
+            if ct.is_empty()
+                && let Some(extracted) = extract_use_tool_output(&tc.raw_output)
+            {
+                ct = extracted;
             }
-            if !ct.is_empty() {
+            if !success {
+                block.error = Some(if ct.is_empty() { "Failed".into() } else { ct });
+            } else if !ct.is_empty() {
                 block.set_output_text(ct);
             }
             RenderBlock::ToolCall(ctor(block))
@@ -2533,6 +2634,27 @@ fn extract_text_from_content(content: &acp::ContentBlock) -> String {
 /// Extract text from tool call content blocks.
 fn content_text(tc: &acp::ToolCall) -> String {
     content_blocks_text(&tc.content)
+}
+/// A search streams nothing, so a failed one's content is the reason; `default` covers an empty one
+fn failure_reason(tc: &acp::ToolCall, default: &str) -> String {
+    let reason = content_text(tc);
+    if reason.is_empty() {
+        default.to_owned()
+    } else {
+        reason
+    }
+}
+/// True when at least one content block is text, even empty text (an empty file read)
+fn has_text_content(tc: &acp::ToolCall) -> bool {
+    tc.content.iter().any(|c| {
+        matches!(
+            c,
+            acp::ToolCallContent::Content(acp::Content {
+                content: acp::ContentBlock::Text(_),
+                ..
+            })
+        )
+    })
 }
 pub(crate) fn content_blocks_text(content: &[acp::ToolCallContent]) -> String {
     content
@@ -2644,19 +2766,32 @@ fn task_ids_from_raw_input(raw: &serde_json::Value) -> Vec<String> {
     }
     out
 }
-/// Check if a tool call is a background execute (`is_background=true`). These are deferred from scrollback; the
-/// `x.ai/task_backgrounded` notification creates a `BgTask` block instead of an `Execute` block. Still treat those
-/// as execute tools when `raw_input` requests background so we don't flash the function name.
+/// True when an execute tool call asked to run in the background.
+/// Scrollback skips these; the `x.ai/task_backgrounded` notification adds a `BgTask` block for them.
 fn is_bg_tool(tc: &acp::ToolCall) -> bool {
     let looks_like_execute =
         tc.kind == acp::ToolKind::Execute || is_execute_tool_function_name(&tc.title);
-    looks_like_execute
-        && tc
-            .raw_input
-            .as_ref()
-            .and_then(|v| v.get("is_background").or_else(|| v.get("background")))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
+    if !looks_like_execute {
+        return false;
+    }
+    let Some(input) = tc.raw_input.as_ref() else {
+        return false;
+    };
+    raw_input_requests_background(input)
+}
+/// Uses the same precedence as `BashTool::resolve_block_until_ms`.
+/// An explicit `block_until_ms` wins over the legacy flags and `timeout: 0`.
+fn raw_input_requests_background(input: &serde_json::Value) -> bool {
+    let ms = |key: &str| input.get(key).and_then(|v| parse_lenient_u64_value(v).ok());
+    if let Some(block) = ms("block_until_ms") {
+        return block == 0;
+    }
+    let legacy_flag = input
+        .get("is_background")
+        .or_else(|| input.get("background"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    legacy_flag || ms("timeout") == Some(0)
 }
 /// Check if an Edit-kind tool call is a whole-file write (write) rather than a targeted replacement (search_replace / edit).
 ///
@@ -2784,7 +2919,7 @@ fn extract_raw_field(tc: &acp::ToolCall, field: &str) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
 }
-/// Extract a short, user-friendly error label from a failed Edit tool call.
+/// The error shown on a failed Edit block: a short label for a structured search_replace output, else the text content
 fn extract_edit_error(tc: &acp::ToolCall) -> String {
     use xai_grok_tools::types::output::SearchReplaceOutput;
     if let Some(ref raw) = tc.raw_output
@@ -2800,7 +2935,10 @@ fn extract_edit_error(tc: &acp::ToolCall) -> String {
             SearchReplaceOutput::EditsApplied(_) => "Edit failed".to_owned(),
         };
     }
-    "Edit failed".to_owned()
+    match content_text(tc) {
+        text if text.is_empty() => "Edit failed".to_owned(),
+        text => text,
+    }
 }
 /// Extract search input metadata from a tool call's rawInput.
 fn extract_search_meta(tc: &acp::ToolCall) -> SearchInputMeta {
@@ -2971,6 +3109,9 @@ fn update_summary(update: &acp::SessionUpdate) -> String {
         acp::SessionUpdate::CurrentModeUpdate(u) => {
             format!("current_mode_update mode={}", u.current_mode_id.0)
         }
+        acp::SessionUpdate::UsageUpdate(u) => {
+            format!("usage_update used={} size={}", u.used, u.size)
+        }
         _ => "unknown_update".to_string(),
     }
 }
@@ -3065,8 +3206,9 @@ fn parse_search_tool_results(content: &str) -> Vec<DiscoveredTool> {
     }
     out
 }
-/// Extract output text from a use_tool's raw_output.
-/// MCP tools don't put content in ACP content blocks; they only set raw_output.
+/// Extract output text from a tool call's raw_output.
+/// MCP tools don't put content in ACP content blocks; they only set raw_output, whether
+/// called through use_tool or listed directly.
 /// This extracts the text from ToolOutput::MCP, ToolOutput::Text, or ToolOutput::Dynamic variants.
 fn extract_use_tool_output(raw: &Option<serde_json::Value>) -> Option<String> {
     let val = raw.as_ref()?;
@@ -3110,7 +3252,7 @@ fn format_other_tool_input(tc: &acp::ToolCall) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
-/// Extract input arguments from a use_tool call's raw_input.tool_input.
+/// Extract input arguments from a use_tool or MCPTool call's raw_input.tool_input.
 /// Flattens the top-level JSON object into key-value string pairs for display.
 /// Nested objects/arrays are rendered as compact JSON strings.
 fn extract_use_tool_args(tc: &acp::ToolCall) -> Vec<(String, String)> {

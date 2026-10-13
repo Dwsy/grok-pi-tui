@@ -139,19 +139,26 @@ fn test_messages_request_previous_tip_skips_a_trailing_user_run() {
         &ConversationRequest::from_items(items).with_model("messages-compatible-model"),
     ))
     .unwrap();
-    let messages = json["messages"].as_array().unwrap();
+    let Some(messages) = json.get("messages").and_then(|v| v.as_array()) else {
+        panic!("expected messages array: {json:#}");
+    };
 
-    let marked: Vec<usize> = (0..messages.len())
-        .filter(|&i| marker_on_last_block(&messages[i]).is_some())
+    let marked: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| marker_on_last_block(m).is_some())
+        .map(|(i, _)| i)
         .collect();
     let last_assistant = messages
         .iter()
-        .rposition(|m| m["role"] == "assistant")
+        .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
         .unwrap();
-    assert_eq!(marked.len(), 2, "tip and previous tip only: {json:#}");
-    assert_eq!(marked[1], messages.len() - 1, "tip: {json:#}");
+    let [prev_tip, tip] = marked.as_slice() else {
+        panic!("tip and previous tip only: {json:#}");
+    };
+    assert_eq!(*tip, messages.len() - 1, "tip: {json:#}");
     assert!(
-        marked[0] < last_assistant,
+        *prev_tip < last_assistant,
         "the previous tip must sit before the last assistant turn, not inside \
              the trailing user run; got {marked:?} in {json:#}",
     );
@@ -176,15 +183,35 @@ fn test_messages_request_cache_breakpoint_marks_an_image_tip() {
     .with_model("messages-compatible-model");
 
     let json = serde_json::to_value(build_messages_request(&req)).unwrap();
-    let blocks = json["messages"][0]["content"].as_array().unwrap();
+    let Some(first_msg) = json
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .and_then(|m| m.first())
+    else {
+        panic!("expected first message: {json:#}");
+    };
+    let Some(blocks) = first_msg.get("content").and_then(|c| c.as_array()) else {
+        panic!("expected content array: {json:#}");
+    };
 
-    assert_eq!(blocks.last().unwrap()["type"].as_str(), Some("image"));
     assert_eq!(
-        marker_on_last_block(&json["messages"][0]),
+        blocks
+            .last()
+            .and_then(|b| b.get("type"))
+            .and_then(|t| t.as_str()),
+        Some("image")
+    );
+    assert_eq!(
+        marker_on_last_block(first_msg),
         Some("ephemeral"),
         "{json:#}",
     );
-    assert!(blocks[0].get("cache_control").is_none(), "{json:#}");
+    assert!(
+        blocks
+            .first()
+            .is_some_and(|b| b.get("cache_control").is_none()),
+        "{json:#}"
+    );
 }
 
 #[test]
@@ -197,18 +224,23 @@ fn test_messages_request_cache_breakpoint_skips_thinking() {
     .with_model("messages-compatible-model");
 
     let json = serde_json::to_value(build_messages_request(&req)).unwrap();
-    let blocks = json["messages"][1]["content"].as_array().unwrap();
+    let Some(asst) = json
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .and_then(|m| m.get(1))
+    else {
+        panic!("expected assistant message: {json:#}");
+    };
+    let Some(blocks) = asst.get("content").and_then(|c| c.as_array()) else {
+        panic!("expected content array: {json:#}");
+    };
 
     let thinking = blocks
         .iter()
-        .find(|b| b["type"] == "thinking")
+        .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
         .expect("reasoning should emit a thinking block");
     assert!(thinking.get("cache_control").is_none(), "{json:#}");
-    assert_eq!(
-        marker_on_last_block(&json["messages"][1]),
-        Some("ephemeral"),
-        "{json:#}",
-    );
+    assert_eq!(marker_on_last_block(asst), Some("ephemeral"), "{json:#}",);
 }
 
 #[test]
@@ -351,12 +383,14 @@ fn test_tool_result_with_images_to_anthropic() {
     let crate::messages::ToolResultContent::Blocks(inner) = tool_result_block else {
         panic!("Expected ToolResultContent::Blocks, got Text");
     };
-    assert_eq!(inner.len(), 2);
+    let [t0, t1] = inner.as_slice() else {
+        panic!("expected two inner blocks: {inner:?}");
+    };
     assert!(
-        matches!(&inner[0], crate::messages::ContentBlock::Text { text, .. } if text == "Read image file: photo.png")
+        matches!(t0, crate::messages::ContentBlock::Text { text, .. } if text == "Read image file: photo.png")
     );
     assert!(
-        matches!(&inner[1], crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Base64 { media_type, data }, .. } if media_type == "image/png" && data == "iVBOR")
+        matches!(t1, crate::messages::ContentBlock::Image { source: crate::messages::ImageSource::Base64 { media_type, data }, .. } if media_type == "image/png" && data == "iVBOR")
     );
 }
 
@@ -377,8 +411,8 @@ fn upgrade_legacy_reasoning_singular_anthropic_no_id() {
     let mut seen = std::collections::HashSet::new();
     let siblings = upgrade_legacy_reasoning(&raw, &mut seen);
     assert_eq!(siblings.len(), 1);
-    let ConversationItem::Reasoning(r) = &siblings[0] else {
-        panic!("expected Reasoning sibling");
+    let Some(ConversationItem::Reasoning(r)) = siblings.first() else {
+        panic!("expected Reasoning sibling: {siblings:?}");
     };
     assert_eq!(r.id, "");
     assert_eq!(r.encrypted_content.as_deref(), Some("signature-bytes-here"));

@@ -136,6 +136,10 @@ impl crate::types::tool_metadata::ToolMetadata for CodexReadFileTool {
         ToolNamespace::Codex
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("file_path")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }

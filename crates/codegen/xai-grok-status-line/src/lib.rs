@@ -3,6 +3,8 @@
 //!
 //! This is a leaf crate, upstream of the agent and of every client.
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod config;
 pub mod context;
 

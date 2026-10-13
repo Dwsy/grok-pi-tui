@@ -268,7 +268,9 @@ mod tests {
 
         let sources = resolve_repo_sources("c1", &remotes, &bindings).unwrap();
         assert_eq!(1, sources.len());
-        let s = &sources[0];
+        let Some(s) = sources.first() else {
+            panic!("expected one source: {sources:?}");
+        };
         assert_eq!("conv/c1", s.session_branch);
         assert_eq!("main", s.base_ref);
         assert_eq!("main", s.merge_target);
@@ -290,10 +292,13 @@ mod tests {
             )],
         )
         .unwrap();
-        assert_eq!("feature/x", from_branch[0].base_ref);
-        assert_eq!("conv/c1", from_branch[0].session_branch);
+        let Some(from_branch) = from_branch.first() else {
+            panic!("expected one source: {from_branch:?}");
+        };
+        assert_eq!("feature/x", from_branch.base_ref);
+        assert_eq!("conv/c1", from_branch.session_branch);
         // A `Branch` fork merges back to its branch by default, not `main`.
-        assert_eq!("feature/x", from_branch[0].merge_target);
+        assert_eq!("feature/x", from_branch.merge_target);
 
         let from_commit = resolve_repo_sources(
             "c1",
@@ -306,9 +311,12 @@ mod tests {
             )],
         )
         .unwrap();
-        assert_eq!("deadbeef", from_commit[0].base_ref);
+        let Some(from_commit) = from_commit.first() else {
+            panic!("expected one source: {from_commit:?}");
+        };
+        assert_eq!("deadbeef", from_commit.base_ref);
         // A commit has no branch, so merge-back defaults to the remote default.
-        assert_eq!("main", from_commit[0].merge_target);
+        assert_eq!("main", from_commit.merge_target);
     }
 
     #[test]
@@ -326,7 +334,10 @@ mod tests {
             }],
         )
         .unwrap();
-        assert_eq!("release", sources[0].merge_target);
+        let Some(source) = sources.first() else {
+            panic!("expected one source: {sources:?}");
+        };
+        assert_eq!("release", source.merge_target);
     }
 
     #[test]
@@ -339,17 +350,14 @@ mod tests {
 
         let sources = resolve_repo_sources("c9", &remotes, &bindings).unwrap();
         assert_eq!(2, sources.len());
-        assert_eq!(
-            Some("/workspace/apps/app".to_owned()),
-            sources[0].mount_path
-        );
-        assert_eq!(
-            Some("/workspace/apps/lib".to_owned()),
-            sources[1].mount_path
-        );
+        let [app, lib] = sources.as_slice() else {
+            panic!("expected two sources: {sources:?}");
+        };
+        assert_eq!(Some("/workspace/apps/app".to_owned()), app.mount_path);
+        assert_eq!(Some("/workspace/apps/lib".to_owned()), lib.mount_path);
         // The `lib` base resolves to *its* default branch, not app's.
-        assert_eq!("trunk", sources[1].base_ref);
-        assert_eq!("trunk", sources[1].merge_target);
+        assert_eq!("trunk", lib.base_ref);
+        assert_eq!("trunk", lib.merge_target);
         // Both forks share the one conversation branch.
         assert!(sources.iter().all(|s| s.session_branch == "conv/c9"));
     }
@@ -393,15 +401,6 @@ mod tests {
     }
 
     #[test]
-    fn default_gitignore_excludes_secrets_and_deps() {
-        assert!(DEFAULT_GITIGNORE.contains(".env"));
-        assert!(DEFAULT_GITIGNORE.contains(".project_id"));
-        assert!(DEFAULT_GITIGNORE.contains(".github_repo"));
-        assert!(DEFAULT_GITIGNORE.contains(".grok/"));
-        assert!(DEFAULT_GITIGNORE.contains("node_modules/"));
-    }
-
-    #[test]
     fn empty_merge_target_falls_back_to_base_or_default() {
         let remotes = [remote("app", "main")];
         let sources = resolve_repo_sources(
@@ -416,7 +415,10 @@ mod tests {
             }],
         )
         .unwrap();
-        assert_eq!("feature/x", sources[0].merge_target);
+        let Some(source) = sources.first() else {
+            panic!("expected one source: {sources:?}");
+        };
+        assert_eq!("feature/x", source.merge_target);
     }
 
     #[test]

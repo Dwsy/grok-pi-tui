@@ -191,7 +191,7 @@ pub(crate) fn is_filesystem_mountpoint(path: &Path) -> bool {
             if fields.len() < 5 {
                 continue;
             }
-            if fields[4] == path_s.as_ref() {
+            if fields.get(4).copied() == Some(path_s.as_ref()) {
                 return true;
             }
         }

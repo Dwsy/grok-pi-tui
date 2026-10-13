@@ -87,9 +87,10 @@ pub fn get_bind_mount_info(path: &Path) -> Result<Option<BindMountInfo>> {
         return Ok(None);
     }
 
-    let source = parts[0];
-    let target = parts[1];
-    let fs_type = parts[2];
+    let [source, target, fs_type, ..] = parts.as_slice() else {
+        tracing::debug!(path = %path.display(), line = %line, "unexpected findmnt output format");
+        return Ok(None);
+    };
     let options = parts.get(3).unwrap_or(&"");
 
     // Check if this is a bind mount by looking for "bind" in options
@@ -144,13 +145,17 @@ fn resolve_bind_mount_source(target: &Path) -> Result<Option<PathBuf>> {
             continue;
         }
 
-        let mount_point = parts[4];
+        let Some(mount_point) = parts.get(4).copied() else {
+            continue;
+        };
         if mount_point != target_str {
             continue;
         }
 
         // Found our mount point
-        let root = parts[3]; // The root within the filesystem
+        let Some(root) = parts.get(3).copied() else {
+            continue;
+        };
         let fstype_idx = parts.iter().position(|&p| p == "-").map(|i| i + 1);
 
         if let Some(fstype_idx) = fstype_idx {
@@ -213,8 +218,12 @@ fn find_btrfs_mount_for_source(source: &str, mountinfo: &str) -> Result<Option<P
             continue;
         }
 
-        let root = parts[3];
-        let mount_point = parts[4];
+        let Some(root) = parts.get(3).copied() else {
+            continue;
+        };
+        let Some(mount_point) = parts.get(4).copied() else {
+            continue;
+        };
 
         let fstype_idx = parts.iter().position(|&p| p == "-").map(|i| i + 1);
         if let Some(fstype_idx) = fstype_idx {
@@ -244,8 +253,12 @@ fn resolve_via_subvol_mount(
             continue;
         }
 
-        let mount_root = parts[3];
-        let mount_point = parts[4];
+        let Some(mount_root) = parts.get(3).copied() else {
+            continue;
+        };
+        let Some(mount_point) = parts.get(4).copied() else {
+            continue;
+        };
 
         let fstype_idx = parts.iter().position(|&p| p == "-").map(|i| i + 1);
         if let Some(fstype_idx) = fstype_idx {
@@ -294,7 +307,9 @@ pub fn get_btrfs_mount_point(path: &Path) -> Result<Option<PathBuf>> {
             continue;
         }
 
-        let mount_point = parts[4];
+        let Some(mount_point) = parts.get(4).copied() else {
+            continue;
+        };
         let fstype_idx = parts.iter().position(|&p| p == "-").map(|i| i + 1);
 
         if let Some(fstype_idx) = fstype_idx {

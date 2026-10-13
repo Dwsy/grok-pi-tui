@@ -62,12 +62,27 @@ pub fn normalize_forked_context(items: Vec<ConversationItem>) -> (Vec<Conversati
         }
     } else {
         // Summarize early turns, keep last MAX_VERBATIM_TURNS verbatim.
-        let early_end = turns[turns.len() - MAX_VERBATIM_TURNS];
+        let Some(&early_end) = turns
+            .len()
+            .checked_sub(MAX_VERBATIM_TURNS)
+            .and_then(|i| turns.get(i))
+        else {
+            for item in parent_items {
+                render_item_to_background(&mut background, item);
+            }
+            background.push_str("</background_context>");
+            let conversation = vec![system, ConversationItem::user(&background)];
+            return (conversation, 2);
+        };
         background.push_str("=== Earlier context (summarized) ===\n");
-        render_summary(&mut background, &parent_items[..early_end]);
+        if let Some(early) = parent_items.get(..early_end) {
+            render_summary(&mut background, early);
+        }
         background.push_str("\n=== Recent turns (verbatim) ===\n");
-        for item in &parent_items[early_end..] {
-            render_item_to_background(&mut background, item);
+        if let Some(recent) = parent_items.get(early_end..) {
+            for item in recent {
+                render_item_to_background(&mut background, item);
+            }
         }
     }
     background.push_str("</background_context>");
@@ -84,37 +99,46 @@ fn count_complete_turns(items: &[&ConversationItem]) -> Vec<usize> {
     let mut i = 0;
     while i < items.len() {
         // Skip until the start of a turn (a User message).
-        if !matches!(items[i], ConversationItem::User(_)) {
+        if !items
+            .get(i)
+            .is_some_and(|item| matches!(item, ConversationItem::User(_)))
+        {
             i += 1;
             continue;
         }
         // Consume consecutive User messages.
-        while i < items.len() && matches!(items[i], ConversationItem::User(_)) {
-            i += 1;
-        }
-        // Skip Reasoning / BackendToolCall siblings that precede the Assistant.
-        while i < items.len()
-            && matches!(
-                items[i],
-                ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
-            )
+        while items
+            .get(i)
+            .is_some_and(|item| matches!(item, ConversationItem::User(_)))
         {
             i += 1;
         }
+        // Skip Reasoning / BackendToolCall siblings that precede the Assistant.
+        while items.get(i).is_some_and(|item| {
+            matches!(
+                item,
+                ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
+            )
+        }) {
+            i += 1;
+        }
         // Expect Assistant.
-        if i >= items.len() || !matches!(items[i], ConversationItem::Assistant(_)) {
+        if !items
+            .get(i)
+            .is_some_and(|item| matches!(item, ConversationItem::Assistant(_)))
+        {
             break;
         }
         i += 1; // skip past Assistant
         // Consume the post-assistant run: ToolResults plus interleaved Reasoning / BackendToolCall siblings, until the next User/Assistant
-        while i < items.len()
-            && matches!(
-                items[i],
+        while items.get(i).is_some_and(|item| {
+            matches!(
+                item,
                 ConversationItem::ToolResult(_)
                     | ConversationItem::Reasoning(_)
                     | ConversationItem::BackendToolCall(_)
             )
-        {
+        }) {
             i += 1;
         }
         turn_ends.push(i);
@@ -160,17 +184,28 @@ fn strip_xml_block<'a>(text: &'a str, tag: &str) -> Cow<'a, str> {
     let mut remaining = text;
 
     while let Some(open_start) = remaining.find(&open_prefix) {
-        let after_name = &remaining[open_start + open_prefix.len()..];
+        let Some(after_name) = remaining.get(open_start + open_prefix.len()..) else {
+            break;
+        };
         let is_tag = after_name.starts_with(|c: char| c == '>' || c.is_ascii_whitespace());
         if !is_tag {
-            result.push_str(&remaining[..open_start + open_prefix.len()]);
-            remaining = &remaining[open_start + open_prefix.len()..];
+            let Some(keep) = remaining.get(..open_start + open_prefix.len()) else {
+                break;
+            };
+            result.push_str(keep);
+            remaining = remaining
+                .get(open_start + open_prefix.len()..)
+                .unwrap_or("");
             continue;
         }
 
-        if let Some(close_rel) = remaining[open_start..].find(&close_tag) {
-            result.push_str(&remaining[..open_start]);
-            remaining = &remaining[open_start + close_rel + close_tag.len()..];
+        if let Some(close_rel) = remaining.get(open_start..).and_then(|r| r.find(&close_tag)) {
+            if let Some(head) = remaining.get(..open_start) {
+                result.push_str(head);
+            }
+            remaining = remaining
+                .get(open_start + close_rel + close_tag.len()..)
+                .unwrap_or("");
         } else {
             tracing::warn!(
                 tag,
@@ -195,14 +230,15 @@ fn strip_skill_instructions<'a>(text: &'a str) -> Cow<'a, str> {
     };
     let after_marker = marker_pos + marker.len();
 
-    let end_pos = text[after_marker..]
-        .find("</user_query>")
+    let end_pos = text
+        .get(after_marker..)
+        .and_then(|rest| rest.find("</user_query>"))
         .map(|p| after_marker + p)
         .unwrap_or(text.len());
 
     let mut result = String::with_capacity(text.len());
-    result.push_str(&text[..after_marker]);
-    result.push_str(&text[end_pos..]);
+    result.push_str(text.get(..after_marker).unwrap_or(""));
+    result.push_str(text.get(end_pos..).unwrap_or(""));
     Cow::Owned(result)
 }
 
@@ -324,7 +360,7 @@ fn render_summary(out: &mut String, items: &[&ConversationItem]) {
 /// `max_chars` or fewer characters.
 fn truncate_str(s: &str, max_chars: usize) -> &str {
     match s.char_indices().nth(max_chars) {
-        Some((byte_offset, _)) => &s[..byte_offset],
+        Some((byte_offset, _)) => s.get(..byte_offset).unwrap_or(s),
         None => s, // string has at most max_chars characters
     }
 }
@@ -396,7 +432,7 @@ mod tests {
         let (result, prefix_len) = normalize_forked_context(items);
         assert_eq!(prefix_len, 1);
         assert_eq!(result.len(), 1);
-        assert!(matches!(result[0], ConversationItem::System(_)));
+        assert!(matches!(result.first(), Some(ConversationItem::System(_))));
     }
 
     #[test]
@@ -411,7 +447,7 @@ mod tests {
         assert_eq!(result.len(), 2);
 
         // Second item should be User with background_context
-        if let ConversationItem::User(u) = &result[1] {
+        if let Some(ConversationItem::User(u)) = result.get(1) {
             let text = u
                 .content
                 .iter()
@@ -447,7 +483,7 @@ mod tests {
         let (result, prefix_len) = normalize_forked_context(items);
         assert_eq!(prefix_len, 2);
 
-        if let ConversationItem::User(u) = &result[1] {
+        if let Some(ConversationItem::User(u)) = result.get(1) {
             let text = u
                 .content
                 .iter()
@@ -487,7 +523,7 @@ mod tests {
         let (result, prefix_len) = normalize_forked_context(items);
         assert_eq!(prefix_len, 2);
 
-        if let ConversationItem::User(u) = &result[1] {
+        if let Some(ConversationItem::User(u)) = result.get(1) {
             let text = u
                 .content
                 .iter()
@@ -538,7 +574,11 @@ mod tests {
         assert_eq!(prefix_len, 2);
         assert_eq!(result.len(), 2);
 
-        let text = extract_background_text(&result[1]);
+        let text = extract_background_text(
+            result
+                .get(1)
+                .unwrap_or_else(|| panic!("expected background item")),
+        );
         assert!(
             text.contains("UNIQUE_FORK_MARKER_TEST"),
             "marker must appear in background: {text}"
@@ -557,7 +597,11 @@ mod tests {
             assistant_item("OK"),
         ];
         let (result, _) = normalize_forked_context(items);
-        let text = extract_background_text(&result[1]);
+        let text = extract_background_text(
+            result
+                .get(1)
+                .unwrap_or_else(|| panic!("expected background item")),
+        );
         assert!(text.contains("Before"));
         assert!(text.contains("After"));
         assert!(!text.contains("lots of files here"));
@@ -576,7 +620,7 @@ mod tests {
         ];
         let (result, _) = normalize_forked_context(items);
 
-        if let ConversationItem::User(u) = &result[1] {
+        if let Some(ConversationItem::User(u)) = result.get(1) {
             let text = u
                 .content
                 .iter()
@@ -605,7 +649,7 @@ mod tests {
         let items = vec![user_item("Hello"), assistant_item("Hi")];
         let (result, prefix_len) = normalize_forked_context(items);
         assert_eq!(prefix_len, 2);
-        if let ConversationItem::System(s) = &result[0] {
+        if let Some(ConversationItem::System(s)) = result.first() {
             assert!(s.content.is_empty());
         } else {
             panic!("Expected System item");
@@ -626,7 +670,7 @@ mod tests {
         let items = vec![system_item("System"), user_item("Go"), item];
         let (result, _) = normalize_forked_context(items);
 
-        if let ConversationItem::User(u) = &result[1] {
+        if let Some(ConversationItem::User(u)) = result.get(1) {
             let text = u
                 .content
                 .iter()
@@ -659,9 +703,7 @@ mod tests {
         ];
         let refs: Vec<&ConversationItem> = items.iter().collect();
         let turns = count_complete_turns(&refs);
-        assert_eq!(turns.len(), 2);
-        assert_eq!(turns[0], 2); // after A1
-        assert_eq!(turns[1], 4); // after A2
+        assert_eq!(turns.as_slice(), [2, 4]); // after A1, after A2
     }
 
     #[test]
@@ -676,9 +718,7 @@ mod tests {
         ];
         let refs: Vec<&ConversationItem> = items.iter().collect();
         let turns = count_complete_turns(&refs);
-        assert_eq!(turns.len(), 2);
-        assert_eq!(turns[0], 4); // after 2 tool results
-        assert_eq!(turns[1], 6);
+        assert_eq!(turns.as_slice(), [4, 6]); // after 2 tool results, then A2
     }
 
     #[test]
@@ -690,8 +730,7 @@ mod tests {
         ];
         let refs: Vec<&ConversationItem> = items.iter().collect();
         let turns = count_complete_turns(&refs);
-        assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0], 2);
+        assert_eq!(turns.as_slice(), [2]);
     }
 
     #[test]
@@ -708,9 +747,7 @@ mod tests {
         ];
         let refs: Vec<&ConversationItem> = items.iter().collect();
         let turns = count_complete_turns(&refs);
-        assert_eq!(turns.len(), 2);
-        assert_eq!(turns[0], 3); // after reasoning and A1
-        assert_eq!(turns[1], 6); // after reasoning and A2
+        assert_eq!(turns.as_slice(), [3, 6]); // after reasoning+A1, after reasoning+A2
     }
 
     #[test]
@@ -909,7 +946,11 @@ This is a very long skill body with many lines of instructions.\n\n\
             assistant_item("Real answer"),
         ];
         let (result, _) = normalize_forked_context(items);
-        let text = extract_background_text(&result[1]);
+        let text = extract_background_text(
+            result
+                .get(1)
+                .unwrap_or_else(|| panic!("expected background item")),
+        );
         // The noise-only message should be skipped entirely
         assert!(
             !text.contains("[User]: \n"),
@@ -930,7 +971,11 @@ This is a very long skill body with many lines of instructions.\n\n\
             assistant_item("4"),
         ];
         let (result, _) = normalize_forked_context(items);
-        let text = extract_background_text(&result[1]);
+        let text = extract_background_text(
+            result
+                .get(1)
+                .unwrap_or_else(|| panic!("expected background item")),
+        );
         assert!(text.contains("What is 2+2?"));
         assert!(!text.contains("noise"));
         assert!(!text.contains("os: linux"));
@@ -946,7 +991,11 @@ This is a very long skill body with many lines of instructions.\n\n\
             assistant_item("answer"),
         ];
         let (result, _) = normalize_forked_context(items);
-        let text = extract_background_text(&result[1]);
+        let text = extract_background_text(
+            result
+                .get(1)
+                .unwrap_or_else(|| panic!("expected background item")),
+        );
         assert!(text.contains("Actual query"));
         assert!(!text.contains("Skill content"));
     }

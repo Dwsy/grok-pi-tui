@@ -710,10 +710,8 @@ pub enum PaletteCommand {
     OpenSettings,
     /// Open the Agents modal (listing all agent definitions).
     OpenAgentsModal,
-    /// Open the feedback modal directly in the full TUI. Minimal mode carries a slash draft instead.
+    /// Open the feedback modal directly (every screen mode).
     OpenFeedbackModal,
-    /// Replace the minimal-mode composer with `/feedback ` so the user can add the required inline text.
-    InsertFeedbackSlash,
 }
 /// Build the default set of palette entries with section grouping.
 pub(crate) fn default_palette_entries(
@@ -722,7 +720,6 @@ pub(crate) fn default_palette_entries(
 ) -> Vec<PaletteEntry> {
     let screen_mode = slash.screen_mode();
     let mut entries = vec![
-        // ── Session ──
         PaletteEntry {
             label: "Session".into(),
             shortcut: String::new(),
@@ -776,13 +773,8 @@ pub(crate) fn default_palette_entries(
         PaletteEntry {
             label: "Send Feedback".into(),
             shortcut: "/feedback".into(),
-            command: if screen_mode.is_minimal() {
-                PaletteCommand::InsertFeedbackSlash
-            } else {
-                PaletteCommand::OpenFeedbackModal
-            },
+            command: PaletteCommand::OpenFeedbackModal,
         },
-        // ── Context ──
         PaletteEntry {
             label: "Context".into(),
             shortcut: String::new(),
@@ -808,7 +800,6 @@ pub(crate) fn default_palette_entries(
             shortcut: "/memory".into(),
             command: PaletteCommand::Memory,
         },
-        // ── Model & Input ──
         PaletteEntry {
             label: "Model & Input".into(),
             shortcut: String::new(),
@@ -839,7 +830,6 @@ pub(crate) fn default_palette_entries(
             shortcut: "Ctrl+G".into(),
             command: PaletteCommand::EditPromptExternal,
         },
-        // ── Tools ──
         PaletteEntry {
             label: "Tools".into(),
             shortcut: String::new(),
@@ -892,7 +882,6 @@ pub(crate) fn default_palette_entries(
             shortcut: "/config-agents".into(),
             command: PaletteCommand::OpenAgentsModal,
         },
-        // ── Other ──
         PaletteEntry {
             label: "Other".into(),
             shortcut: String::new(),
@@ -1663,7 +1652,11 @@ pub fn render_doc_picker_overlay(
                 selected: *orig_idx == selected_orig,
                 expanded: narrow,
                 fields: &[],
-                description_lines: if narrow { &desc_slices[i] } else { &[] },
+                description_lines: if narrow {
+                    desc_slices.get(i).map(Vec::as_slice).unwrap_or(&[])
+                } else {
+                    &[]
+                },
                 summary_lines: &[],
                 dimmed: false,
                 indent: 0,
@@ -2342,24 +2335,6 @@ mod palette_sharing_tests {
         }
     }
     #[test]
-    fn feedback_palette_entry_uses_a_live_surface_in_each_mode() {
-        let command = |mode| {
-            default_palette_entries(true, &slash(mode))
-                .into_iter()
-                .find(|entry| entry.label == "Send Feedback")
-                .expect("palette offers feedback in every mode")
-                .command
-        };
-        assert!(matches!(
-            command(crate::app::ScreenMode::Minimal),
-            PaletteCommand::InsertFeedbackSlash
-        ));
-        assert!(matches!(
-            command(crate::app::ScreenMode::Fullscreen),
-            PaletteCommand::OpenFeedbackModal
-        ));
-    }
-    #[test]
     fn edit_prompt_palette_entry_shows_mode_correct_hint() {
         let hint = |mode| {
             default_palette_entries(true, &slash(mode))
@@ -2597,7 +2572,9 @@ mod palette_sharing_tests {
             })
             .collect();
         assert!(
-            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            positions
+                .windows(2)
+                .all(|pair| matches!(pair, [a, b] if a < b)),
             "Tools hub rows out of tab order: {positions:?}"
         );
     }

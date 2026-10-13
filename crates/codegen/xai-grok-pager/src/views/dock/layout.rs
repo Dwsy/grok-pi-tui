@@ -36,21 +36,28 @@ impl Default for MaxRows {
     }
 }
 
+const ROW_SECTION_COUNT: usize = 4;
+
 /// Per-section values, keyed so callers cannot index the wrong slot.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub struct SectionSlots<T>([T; 3])
+pub struct SectionSlots<T>([T; ROW_SECTION_COUNT])
 where
     T: Copy;
 
 impl<T: Copy + Default> SectionSlots<T> {
     /// `Queued` owns no rows of its own, so it reads as the default.
     pub fn get(&self, section: Section) -> T {
-        section.slot().map_or_else(T::default, |slot| self.0[slot])
+        section
+            .slot()
+            .and_then(|slot| self.0.get(slot).copied())
+            .unwrap_or_default()
     }
 
     pub fn set(&mut self, section: Section, value: T) {
-        if let Some(slot) = section.slot() {
-            self.0[slot] = value;
+        if let Some(slot) = section.slot()
+            && let Some(cell) = self.0.get_mut(slot)
+        {
+            *cell = value;
         }
     }
 }
@@ -94,7 +101,9 @@ impl DockLayout {
             if !section.expanded {
                 continue;
             }
-            let granted = grants.sections[slot];
+            let Some(&granted) = grants.sections.get(slot) else {
+                continue;
+            };
             // A 0-row grant still has to paint the header. Emitting RevealRemaining
             // on top of that would spend an unbudgeted row and let `truncate`
             // drop a later header.
@@ -179,8 +188,14 @@ pub(super) struct SectionCounts {
 }
 
 impl DockCounts {
-    pub(super) fn sections(&self) -> [SectionCounts; 3] {
+    pub(super) fn sections(&self) -> [SectionCounts; ROW_SECTION_COUNT] {
         [
+            SectionCounts {
+                section: Section::Workflows,
+                len: self.workflows,
+                expanded: self.workflows_expanded,
+                show_all: self.workflows_show_all,
+            },
             SectionCounts {
                 section: Section::Subagents,
                 len: self.subagents,
@@ -206,7 +221,7 @@ impl DockCounts {
 /// Rows handed out below the headers.
 #[derive(Default, Clone, Copy)]
 struct RowGrants {
-    sections: [usize; 3],
+    sections: [usize; ROW_SECTION_COUNT],
     queue_body: u16,
 }
 
@@ -214,7 +229,7 @@ impl RowGrants {
     /// A truncated section spends one of its granted rows on the `show N more`
     /// line, so it shows one fewer than it was given.
     fn visible(&self, slot: usize, len: usize) -> usize {
-        let granted = self.sections[slot];
+        let granted = self.sections.get(slot).copied().unwrap_or(0);
         if granted >= len {
             len
         } else {
@@ -248,8 +263,10 @@ fn grant_rows(counts: &DockCounts, cap: usize) -> RowGrants {
         if spare == 0 {
             break;
         }
-        if *want > 0 {
-            grants.sections[slot] += 1;
+        if *want > 0
+            && let Some(granted) = grants.sections.get_mut(slot)
+        {
+            *granted += 1;
             *want -= 1;
             spare -= 1;
         }
@@ -268,8 +285,10 @@ fn grant_rows(counts: &DockCounts, cap: usize) -> RowGrants {
         if spare == 0 {
             break;
         }
-        if *want > 0 {
-            grants.sections[slot] += 1;
+        if *want > 0
+            && let Some(granted) = grants.sections.get_mut(slot)
+        {
+            *granted += 1;
             *want -= 1;
             spare -= 1;
         }
@@ -293,7 +312,7 @@ fn grant_rows(counts: &DockCounts, cap: usize) -> RowGrants {
             .saturating_sub(granted),
     );
 
-    spare = share_rows(&mut grants, &mut want, spare, &[true; 3]);
+    spare = share_rows(&mut grants, &mut want, spare, &[true; ROW_SECTION_COUNT]);
 
     while queue_want > 0 && spare > 0 {
         grants.queue_body += 1;
@@ -319,23 +338,31 @@ fn grant_rows(counts: &DockCounts, cap: usize) -> RowGrants {
 
 /// A section ends up with none of its rows, at least two, or all of them.
 fn normalize_no_lone_rows(
-    sections: &[SectionCounts; 3],
+    sections: &[SectionCounts; ROW_SECTION_COUNT],
     grants: &mut RowGrants,
-    want: &mut [usize; 3],
+    want: &mut [usize; ROW_SECTION_COUNT],
     spare: &mut usize,
     queue_floor: usize,
 ) {
     for (slot, section) in sections.iter().enumerate() {
-        if grants.sections[slot] != 1 || section.len < 2 {
+        if grants.sections.get(slot).copied() != Some(1) || section.len < 2 {
             continue;
         }
-        grants.sections[slot] = 0;
-        want[slot] += 1;
+        if let Some(granted) = grants.sections.get_mut(slot) {
+            *granted = 0;
+        }
+        if let Some(w) = want.get_mut(slot) {
+            *w += 1;
+        }
         *spare += 1;
     }
 
     for (slot, section) in sections.iter().enumerate() {
-        if grants.sections[slot] != 0 || !section.expanded || section.len < 2 || want[slot] < 2 {
+        if grants.sections.get(slot).copied() != Some(0)
+            || !section.expanded
+            || section.len < 2
+            || want.get(slot).copied().unwrap_or(0) < 2
+        {
             continue;
         }
         // Only what the body holds above the floor it was granted is available;
@@ -351,8 +378,12 @@ fn normalize_no_lone_rows(
         } else {
             continue;
         }
-        grants.sections[slot] += 2;
-        want[slot] -= 2;
+        if let Some(granted) = grants.sections.get_mut(slot) {
+            *granted += 2;
+        }
+        if let Some(w) = want.get_mut(slot) {
+            *w -= 2;
+        }
     }
 }
 
@@ -388,9 +419,9 @@ fn paint_cap(counts: &DockCounts) -> usize {
 /// left over.
 fn share_rows(
     grants: &mut RowGrants,
-    want: &mut [usize; 3],
+    want: &mut [usize; ROW_SECTION_COUNT],
     mut spare: usize,
-    eligible: &[bool; 3],
+    eligible: &[bool; ROW_SECTION_COUNT],
 ) -> usize {
     while spare > 0 {
         let before = spare;
@@ -398,8 +429,11 @@ fn share_rows(
             if spare == 0 {
                 break;
             }
-            if eligible[slot] && *want > 0 {
-                grants.sections[slot] += 1;
+            if eligible.get(slot).copied() == Some(true)
+                && *want > 0
+                && let Some(granted) = grants.sections.get_mut(slot)
+            {
+                *granted += 1;
                 *want -= 1;
                 spare -= 1;
             }
@@ -431,6 +465,7 @@ fn granted_height(counts: &DockCounts, grants: &RowGrants) -> usize {
 pub fn is_show_all_needed(counts: &DockCounts, section: Section) -> bool {
     let mut without = *counts;
     match section {
+        Section::Workflows => without.workflows_show_all = false,
         Section::Subagents => without.subagents_show_all = false,
         Section::Tasks => without.tasks_show_all = false,
         Section::Watchers => without.watchers_show_all = false,
@@ -441,7 +476,8 @@ pub fn is_show_all_needed(counts: &DockCounts, section: Section) -> bool {
     without.max_rows = MaxRows::default();
     let len = section
         .slot()
-        .map_or(0, |slot| without.sections()[slot].len);
+        .and_then(|slot| without.sections().get(slot).map(|s| s.len))
+        .unwrap_or(0);
     DockLayout::new(&without).visible_rows(section) < len
 }
 

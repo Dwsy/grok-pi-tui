@@ -339,7 +339,7 @@ fn process_file_fast(
         let mut f = fs::File::open(path).ok()?;
         let mut buf = [0u8; 8000];
         let n = f.read(&mut buf).ok()?;
-        if buf[..n].contains(&0) {
+        if buf.iter().take(n).any(|&b| b == 0) {
             return None;
         }
     }
@@ -409,9 +409,13 @@ fn extract_symbols_fast_inline(
 
     for (i, name) in capture_names.iter().enumerate() {
         if name.starts_with("name.definition.") {
-            is_def[i] = true;
+            if let Some(slot) = is_def.get_mut(i) {
+                *slot = true;
+            }
         } else if name.starts_with("name.reference.") {
-            is_ref[i] = true;
+            if let Some(slot) = is_ref.get_mut(i) {
+                *slot = true;
+            }
         } else if *name == "alias.original" {
             alias_original_idx = Some(i);
         } else if *name == "alias.name" {
@@ -438,16 +442,18 @@ fn extract_symbols_fast_inline(
 
             if is_def.get(idx).copied().unwrap_or(false) {
                 // Convert Cow<str> directly to Arc<str> - avoids intermediate String allocation
-                let text: Arc<str> = String::from_utf8_lossy(&src[byte_range]).into();
+                let text: Arc<str> =
+                    String::from_utf8_lossy(src.get(byte_range).unwrap_or(&[])).into();
                 // Line numbers are 1-indexed
                 definitions.push(SymbolOccurrence::new(text, node.start_position().row + 1));
             } else if is_ref.get(idx).copied().unwrap_or(false) {
-                let text: Arc<str> = String::from_utf8_lossy(&src[byte_range]).into();
+                let text: Arc<str> =
+                    String::from_utf8_lossy(src.get(byte_range).unwrap_or(&[])).into();
                 references.push(SymbolOccurrence::new(text, node.start_position().row + 1));
             } else if Some(idx) == alias_original_idx {
-                alias_original = Some(&src[byte_range]);
+                alias_original = src.get(byte_range);
             } else if Some(idx) == alias_name_idx {
-                alias_name = Some(&src[byte_range]);
+                alias_name = src.get(byte_range);
             }
         }
 

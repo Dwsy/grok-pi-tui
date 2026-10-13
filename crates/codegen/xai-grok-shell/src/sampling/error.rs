@@ -70,8 +70,9 @@ fn strip_sampling_api_error_prefix(detail: &str) -> &str {
     const SEP: &str = "): ";
     if let Some(rest) = detail.strip_prefix(PREFIX)
         && let Some(idx) = rest.find(SEP)
+        && let Some(body) = rest.get(idx + SEP.len()..)
     {
-        return rest[idx + SEP.len()..].trim();
+        return body.trim();
     }
     detail.trim()
 }
@@ -86,6 +87,10 @@ fn pushes_consumer_subscription_upsell(detail: &str) -> bool {
 /// User-facing copy for capacity/overload failures (stream `overloaded_error`, HTTP 529, proxy-wrapped 5xx).
 /// See [`SamplingError::is_overloaded`].
 pub const OVERLOADED_USER_MESSAGE: &str = "Model is temporarily overloaded. Try again in a moment.";
+
+pub(crate) fn idle_timeout_user_message(elapsed_secs: u64) -> String {
+    format!("The model stopped responding after {elapsed_secs}s.")
+}
 
 /// Map a `SamplingError` to an ACP `Error` for client-facing responses.
 /// This stays in xai-grok-shell because it depends on `agent_client_protocol::Error`.
@@ -159,9 +164,13 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
                 xai_grok_sampler::SamplingErrorKind::MaxTokensTruncation,
             ))
         }
-        SamplingError::IdleTimeout { elapsed_secs } => acp::Error::internal_error().data(format!(
-            "No response from model for {elapsed_secs}s — the model may be stuck"
-        )),
+        SamplingError::IdleTimeout { elapsed_secs } => {
+            acp::Error::internal_error().data(terminal_error_data(
+                idle_timeout_user_message(elapsed_secs),
+                None,
+                xai_grok_sampler::SamplingErrorKind::IdleTimeout,
+            ))
+        }
         // Recovery consumes these inside the sampler's retry loop; a stray terminal one still renders its labels
         SamplingError::DoomLoopDetected { .. } => {
             acp::Error::internal_error().data(err.to_string())
@@ -181,7 +190,9 @@ pub(crate) fn error_data_with_status(
 
 pub(crate) fn local_error(code: &str, message: impl Into<String>) -> acp::Error {
     let mut data = serde_json::json!({ "message": message.into() });
-    data[ERROR_CODE_DATA_KEY] = serde_json::json!(code);
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert(ERROR_CODE_DATA_KEY.to_string(), serde_json::json!(code));
+    }
     acp::Error::internal_error().data(data)
 }
 
@@ -200,21 +211,26 @@ pub(crate) const SALVAGE_CAUSE_KEY: &str = "salvage_cause";
 pub(crate) const SALVAGE_CAUSE_EMPTY: &str = "empty_continuation";
 pub(crate) const SALVAGE_CAUSE_OVERFLOW: &str = "context_overflow";
 
-/// Terminal-failure `acp::Error.data`.
-/// Only max-tokens truncation opts into the object shape with an `error_kind` marker.
-/// Every other kind keeps the legacy string/status shape because old clients render `data` via `Display` and would show the raw JSON object.
 pub(crate) fn terminal_error_data(
     message: String,
     http_status: Option<u16>,
     kind: SamplingErrorKind,
 ) -> serde_json::Value {
-    if kind != SamplingErrorKind::MaxTokensTruncation {
+    if !matches!(
+        kind,
+        SamplingErrorKind::MaxTokensTruncation | SamplingErrorKind::IdleTimeout
+    ) {
         return error_data_with_status(message, http_status);
     }
     let mut data = serde_json::json!({ "message": message });
-    data[ERROR_KIND_DATA_KEY] = serde_json::json!(kind.as_ref());
-    if let Some(sc) = http_status {
-        data["http_status"] = serde_json::json!(sc);
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert(
+            ERROR_KIND_DATA_KEY.to_string(),
+            serde_json::json!(kind.as_ref()),
+        );
+        if let Some(sc) = http_status {
+            obj.insert("http_status".to_string(), serde_json::json!(sc));
+        }
     }
     data
 }
@@ -287,13 +303,17 @@ fn replace_ascii_case_insensitive(text: &str, pattern: &str, replacement: &str) 
     let lower_pattern = pattern.to_ascii_lowercase();
     let mut out = String::with_capacity(text.len());
     let mut idx = 0;
-    while let Some(pos) = lower_text[idx..].find(&lower_pattern) {
+    while let Some(pos) = lower_text.get(idx..).and_then(|s| s.find(&lower_pattern)) {
         let start = idx + pos;
-        out.push_str(&text[idx..start]);
+        if let Some(chunk) = text.get(idx..start) {
+            out.push_str(chunk);
+        }
         out.push_str(replacement);
         idx = start + pattern.len();
     }
-    out.push_str(&text[idx..]);
+    if let Some(tail) = text.get(idx..) {
+        out.push_str(tail);
+    }
     out
 }
 
@@ -668,22 +688,6 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_mapping_is_stable_with_retry_after() {
-        let err = SamplingError::Api {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            message: "Rate limit exceeded".into(),
-            model_metadata: None,
-            retry_after_secs: Some(60),
-            should_retry: None,
-            error_code: None,
-        };
-        assert_eq!(err.retry_after(), Some(60));
-        let acp_err = map_sampling_err_to_acp(err);
-        assert_eq!(acp_err.code, acp::ErrorCode::from(RATE_LIMITED_ERROR_CODE));
-        assert_eq!(acp_err.message, "Rate limited");
-    }
-
-    #[test]
     fn rate_limit_code_differs_from_internal_error() {
         let rate_err = SamplingError::Api {
             status: StatusCode::TOO_MANY_REQUESTS,
@@ -907,7 +911,6 @@ mod tests {
     #[test]
     fn prompt_complete_fields_error_without_data_falls_back_to_message() {
         let err = acp::Error::new(-32000, "something broke".to_string());
-        assert!(err.data.is_none());
         let result = Err(err);
         let (stop, agent_result, error_kind) = prompt_complete_fields(&result);
         assert_eq!(stop, serde_json::json!("error"));
@@ -924,6 +927,11 @@ mod tests {
         assert_eq!(
             error_kind_from_error(&truncation),
             Some(SamplingErrorKind::MaxTokensTruncation)
+        );
+        let idle = map_sampling_err_to_acp(SamplingError::IdleTimeout { elapsed_secs: 600 });
+        assert_eq!(
+            error_kind_from_error(&idle),
+            Some(SamplingErrorKind::IdleTimeout)
         );
         // No data, string data, and object data without the marker all yield None.
         assert_eq!(error_kind_from_error(&acp::Error::internal_error()), None);

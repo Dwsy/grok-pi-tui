@@ -171,6 +171,14 @@ pub(super) enum GoalResumeOutcome {
     Message(String),
 }
 
+/// Result of `setup_goal`, shaped like [`GoalResumeOutcome`] minus the slash-output line `/goal <objective>` never prints.
+pub(super) enum GoalSetupOutcome {
+    /// Planner published (or is disabled / has no coordinator): run the turn seeded with the goal-rules reminder.
+    Inference { reminder: String },
+    /// The planner left the goal non-`Active` before any model turn: print this message and end the turn.
+    Message(String),
+}
+
 /// Goal-only `<task_completion_discipline>` (Rules 1-4); `{TODO_TOOL}` from [`GoalToolNames`].
 /// Template must end with `\n` so `{DISCIPLINE_BLOCK}TRACKING:` glues correctly.
 pub(super) fn render_goal_task_discipline(names: &GoalToolNames) -> String {
@@ -522,8 +530,12 @@ pub(super) fn render_strategist_note(
         return String::new();
     }
     // Per-render nonce: a fresh short token the untrusted body can't predict, so it can't forge the closing marker to break out of the fence
-    let nonce = uuid::Uuid::new_v4().simple().to_string();
-    let nonce = &nonce[..12];
+    let nonce_owned = uuid::Uuid::new_v4().simple().to_string();
+    let nonce = if let Some(head) = nonce_owned.get(..12) {
+        head
+    } else {
+        nonce_owned.as_str()
+    };
     let begin = format!("--- STRATEGIST RECOMMENDATION (advisory) [{nonce}] ---");
     let end = format!("--- END STRATEGIST RECOMMENDATION [{nonce}] ---");
     // Static marker prefixes used to drop any body line that LOOKS like a fence marker (with or without a nonce)
@@ -990,8 +1002,15 @@ pub(crate) struct GoalRoleModelConfig {
     pub(crate) skeptic_pool: Vec<crate::util::config::GoalRoleModel>,
 }
 
+/// Resume hint shared by the generic planner pause message and the no-`pause_message` fallback.
+pub(super) const GOAL_RESUME_HINT: &str = "Retry with /goal resume.";
+
+/// Host-turn text when the goal vanished (`/goal clear`) while the planner ran.
+pub(super) const GOAL_CLEARED_DURING_PLANNING: &str = "Goal was cleared during planning.";
+
+/// Stored `pause_message` for a planner failure. Callers prefix it (`"Goal paused. …"`).
 pub(crate) fn planner_failure_pause_message() -> String {
-    "Planning failed; run /goal resume to retry.".to_string()
+    format!("No plan was produced. {GOAL_RESUME_HINT}")
 }
 
 pub(crate) fn goal_slash_and_harness_available(goal_enabled: bool, tool_names: &[String]) -> bool {
@@ -1119,7 +1138,7 @@ impl SessionActor {
         }
         let _ = self
             .auto_pause_goal_if_active_with_message(
-                crate::session::goal_tracker::GoalPauseReason::User,
+                crate::session::goal_tracker::GoalPauseReason::Planner,
                 planner_failure_pause_message(),
             )
             .await;
@@ -1159,7 +1178,7 @@ impl SessionActor {
                     let _ = self
                         .auto_pause_goal_if_matches_with_message(
                             goal_id,
-                            crate::session::goal_tracker::GoalPauseReason::User,
+                            crate::session::goal_tracker::GoalPauseReason::Planner,
                             planner_failure_pause_message(),
                         )
                         .await;
@@ -1215,7 +1234,7 @@ impl SessionActor {
                             let _ = self
                                 .auto_pause_goal_if_matches_with_message(
                                     &goal_id,
-                                    crate::session::goal_tracker::GoalPauseReason::User,
+                                    crate::session::goal_tracker::GoalPauseReason::Planner,
                                     planner_failure_pause_message(),
                                 )
                                 .await;
@@ -1277,11 +1296,23 @@ impl SessionActor {
                     }
                 }
                 crate::session::goal_planner::GoalPlannerOutcome::Interrupted => continue,
-                crate::session::goal_planner::GoalPlannerOutcome::FailClosed { .. } => {
+                crate::session::goal_planner::GoalPlannerOutcome::FailClosed { reason, .. } => {
+                    // History reads "Planning failed" + "Paused: planner", not a bare pause.
+                    {
+                        let mut tracker = self.goal_tracker.lock();
+                        if tracker.snapshot().is_some_and(same_active_goal) {
+                            tracker.append_history(
+                                crate::session::goal_tracker::GoalHistoryEntry::now(
+                                    crate::session::goal_tracker::GoalEvent::PlanningFailed,
+                                    Some(reason.as_const_str().to_owned()),
+                                ),
+                            );
+                        }
+                    }
                     let _ = self
                         .auto_pause_goal_if_matches_with_message(
                             &goal_id,
-                            crate::session::goal_tracker::GoalPauseReason::User,
+                            crate::session::goal_tracker::GoalPauseReason::Planner,
                             planner_failure_pause_message(),
                         )
                         .await;
@@ -1294,6 +1325,20 @@ impl SessionActor {
         // Those paths: Stop, cap-exhausted, fail-closed, steered-retry, or a publish that broke out before committing.
         // The conditional emit inside the helper keeps the success path's earlier clear from being re-emitted as a duplicate `planning=None` A no-op if the orchestration has since vanished or the goal was replaced.
         self.clear_goal_planning_latch(run_goal_id.as_deref()).await;
+    }
+
+    /// Host-turn text when a planner run left the goal non-`Active`; `None` while it is still `Active`.
+    /// Total over a missing `pause_message` (a `/goal pause` stores none) and a vanished snapshot (`/goal clear` mid-plan).
+    pub(super) fn planner_pause_short_circuit_message(&self, prefix: &str) -> Option<String> {
+        let tracker = self.goal_tracker.lock();
+        let Some(goal) = tracker.snapshot() else {
+            return Some(GOAL_CLEARED_DURING_PLANNING.to_string());
+        };
+        if goal.status == crate::session::goal_tracker::GoalStatus::Active {
+            return None;
+        }
+        let message = goal.pause_message.as_deref().unwrap_or(GOAL_RESUME_HINT);
+        Some(format!("{prefix} {message}"))
     }
 
     /// Only if the latch was actually set, emit a snapshot-derived `GoalUpdated` so the pager's planning badge turns off.
@@ -1770,6 +1815,16 @@ mod compaction_goal_section_tests {
         let out = format_compaction_goal_section("A goal has been set: ship it");
         assert_eq!(out, "## Active Goal\nA goal has been set: ship it");
         assert!(!out.contains("GoalTracker was not reset"));
+    }
+
+    #[test]
+    fn wraps_continuation_style_body() {
+        let out = format_compaction_goal_section(
+            "Objective: device test\nGoal NOT complete — continue working. Next step:\nssh in",
+        );
+        assert!(out.starts_with("## Active Goal\n"));
+        assert!(out.contains("Goal NOT complete — continue working. Next step:"));
+        assert!(out.contains("Objective: device test"));
     }
 
     #[test]

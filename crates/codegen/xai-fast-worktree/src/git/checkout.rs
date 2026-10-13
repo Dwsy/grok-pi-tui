@@ -1300,9 +1300,12 @@ mod tests {
             .filter(|r| r.path == dest || r.path == dest_canon)
             .collect();
         assert_eq!(mine.len(), 1, "exactly one rehydrated subagent record");
-        assert_eq!(mine[0].kind, crate::db::WorktreeKind::Subagent);
-        assert_eq!(mine[0].head_commit.as_deref(), Some(report.commit.as_str()));
+        let Some(rec) = mine.first() else {
+            panic!("expected one subagent record: {mine:?}");
+        };
+        assert_eq!(rec.kind, crate::db::WorktreeKind::Subagent);
+        assert_eq!(rec.head_commit.as_deref(), Some(report.commit.as_str()));
         // session_id is threaded through to the DB record (create-path parity).
-        assert_eq!(mine[0].session_id.as_deref(), Some("subagent-42"));
+        assert_eq!(rec.session_id.as_deref(), Some("subagent-42"));
     }
 }

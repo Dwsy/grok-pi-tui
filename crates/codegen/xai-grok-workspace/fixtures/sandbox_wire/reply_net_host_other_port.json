@@ -1,0 +1,11 @@
+{
+  "outcome": "approve",
+  "tool_call_id": "tc-0192c1a0",
+  "scope": {
+    "kind": "net_host",
+    "value": "registry.npmjs.org:8443"
+  },
+  "duration": {
+    "kind": "session"
+  }
+}

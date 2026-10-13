@@ -1,14 +1,16 @@
 use pretty_assertions::assert_eq;
 
 use super::*;
-use crate::implementations::grok_build::task::backend::ChannelBackend;
+use crate::implementations::grok_build::task::backend::{ChannelBackend, SubagentBackend};
 use crate::implementations::grok_build::task::coordinator::{
-    ChildCompletion, ChildControl, ChildRunOutput, ChildRunRequest, ChildRunner, SendBoxFuture,
-    SubagentCoordinator, SubagentCoordinatorReceiver, SubagentProgress,
+    ActiveMessageAdmission, ChildCompletion, ChildControl, ChildRunOutput, ChildRunRequest,
+    ChildRunner, SendBoxFuture, StartedChild, SubagentCoordinator, SubagentCoordinatorReceiver,
+    SubagentProgress,
 };
 use crate::implementations::grok_build::task::types::{
-    ActiveAgentMessageOutcome, MAX_ACTIVE_AGENT_MESSAGE_BYTES, SubagentDepthCounter,
-    SubagentDescribeOutcome, SubagentValidateTypeOutcome,
+    ActiveAgentMessageDelivery, ActiveAgentMessageOutcome, ActiveMessageRoute, AgentMessageSender,
+    AgentMessageSenderResource, MAX_ACTIVE_AGENT_MESSAGE_BYTES, SubagentDepthCounter,
+    SubagentDescribeOutcome, SubagentOwner, SubagentRequest, SubagentValidateTypeOutcome,
 };
 use crate::types::resources::{Resources, SharedResources};
 use crate::types::tool_metadata::test_ctx;
@@ -21,7 +23,9 @@ async fn completes<T>(future: impl std::future::Future<Output = T>) -> T {
         .expect("send_subagent_message test operation timed out")
 }
 
-struct ToolTestControl;
+struct ToolTestControl {
+    routes: Option<tokio::sync::mpsc::UnboundedSender<ActiveMessageRoute>>,
+}
 
 impl ChildControl for ToolTestControl {
     type ProgressFuture = std::future::Ready<SubagentProgress>;
@@ -30,20 +34,59 @@ impl ChildControl for ToolTestControl {
         std::future::ready(SubagentProgress::default())
     }
 
+    fn send_active_message(
+        &self,
+        delivery: ActiveAgentMessageDelivery,
+    ) -> SendBoxFuture<ActiveMessageAdmission> {
+        let route = delivery.route();
+        let routes = self.routes.clone();
+        let admitted =
+            delivery.commit_admission(|| routes.is_none_or(|routes| routes.send(route).is_ok()));
+        Box::pin(std::future::ready(if admitted == Some(true) {
+            ActiveMessageAdmission::Admitted
+        } else {
+            ActiveMessageAdmission::Rejected
+        }))
+    }
+
     fn cancel(&self) {}
 }
 
-struct ToolTestRunner;
+struct ToolTestRunner {
+    senders: tokio::sync::mpsc::UnboundedSender<(String, Option<AgentMessageSender>)>,
+    routes: Option<tokio::sync::mpsc::UnboundedSender<ActiveMessageRoute>>,
+}
 
 impl ChildRunner for ToolTestRunner {
     type Control = ToolTestControl;
+    type RootControl = crate::implementations::grok_build::task::root_control::NoRootControl;
     type CompletionData = ();
     type RunFuture = SendBoxFuture<ChildRunOutput<()>>;
     type ValidateFuture = SendBoxFuture<SubagentValidateTypeOutcome>;
     type DescribeFuture = SendBoxFuture<SubagentDescribeOutcome>;
 
-    fn run(&self, _: ChildRunRequest<Self::Control>) -> Self::RunFuture {
-        Box::pin(std::future::pending())
+    fn run(&self, run: ChildRunRequest<Self::Control>) -> Self::RunFuture {
+        let senders = self.senders.clone();
+        let routes = self.routes.clone();
+        Box::pin(async move {
+            let id = run.request.id.clone();
+            let sender = run.agent_message_sender;
+            let _ = run
+                .reporter
+                .started(StartedChild {
+                    child_session_id: id.clone(),
+                    persona: None,
+                    resumed_from: None,
+                    child_cwd: String::new(),
+                    worktree_path: None,
+                    effective_model_id: "test-model".to_owned(),
+                    definition_background: false,
+                    control: ToolTestControl { routes },
+                })
+                .await;
+            let _ = senders.send((id, sender));
+            std::future::pending().await
+        })
     }
 
     fn validate_type(&self, _: String, _: String) -> Self::ValidateFuture {
@@ -55,6 +98,10 @@ impl ChildRunner for ToolTestRunner {
     }
 
     fn supports_wake(&self) -> bool {
+        true
+    }
+
+    fn supports_agent_message_sender(&self) -> bool {
         true
     }
 
@@ -82,10 +129,11 @@ fn resources_with_backend(backend: ChannelBackend) -> Resources {
     resources
 }
 
-async fn run_with_queue(
+async fn run_with_delivery(
     resources: SharedResources,
     subagent_id: &str,
     text: String,
+    delivery: Option<SendSubagentMessageDelivery>,
     queue: bool,
 ) -> SendSubagentMessageOutput {
     completes(xai_tool_runtime::Tool::run(
@@ -94,6 +142,7 @@ async fn run_with_queue(
         SendSubagentMessageInput {
             subagent_id: subagent_id.to_owned(),
             text,
+            delivery,
             queue,
         },
     ))
@@ -106,7 +155,58 @@ async fn run(
     subagent_id: &str,
     text: String,
 ) -> SendSubagentMessageOutput {
-    run_with_queue(resources, subagent_id, text, false).await
+    run_with_delivery(resources, subagent_id, text, None, false).await
+}
+
+async fn backend_operation(
+    delivery: Option<SendSubagentMessageDelivery>,
+    queue: bool,
+) -> ActiveAgentMessageOperation {
+    let (backend, mut receiver) = coordinator_backend();
+    let send = run_with_delivery(
+        resources_with_backend(backend).into_shared(),
+        "sub-1",
+        "follow up".to_owned(),
+        delivery,
+        queue,
+    );
+    let respond = async move {
+        let ingress = completes(receiver.active_messages.recv())
+            .await
+            .expect("expected active-message ingress");
+        let operation = ingress.request.request.operation();
+        ingress
+            .request
+            .respond_to
+            .send(ActiveAgentMessageOutcome::Accepted {
+                message_id: "message-1".to_owned(),
+            })
+            .unwrap();
+        operation
+    };
+    completes(async { tokio::join!(send, respond) }).await.1
+}
+
+fn request(id: &str, parent_session_id: &str, owner: SubagentOwner) -> SubagentRequest {
+    SubagentRequest {
+        id: id.to_owned(),
+        prompt: "work".to_owned(),
+        description: "test child".to_owned(),
+        subagent_type: "general-purpose".to_owned(),
+        parent_session_id: parent_session_id.to_owned(),
+        parent_prompt_id: Some("prompt".to_owned()),
+        resume_from: None,
+        cwd: None,
+        runtime_overrides: Default::default(),
+        run_in_background: true,
+        surface_completion: false,
+        await_to_completion: false,
+        fork_context: false,
+        owner,
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        spawn_root: Default::default(),
+        tool_call_id: None,
+    }
 }
 
 async fn run_backend_outcome(outcome: ActiveAgentMessageOutcome) -> SendSubagentMessageOutput {
@@ -128,15 +228,46 @@ async fn run_backend_outcome(outcome: ActiveAgentMessageOutcome) -> SendSubagent
 #[test]
 fn required_input_keys_are_semantically_pinned() {
     let schema = crate::registry::types::generate_schema::<SendSubagentMessageInput>();
-    let mut required = schema["required"]
-        .as_array()
-        .expect("required keys")
+    let Some(required_keys) = schema.get("required").and_then(|v| v.as_array()) else {
+        panic!("schema missing required: {schema}");
+    };
+    let mut required = required_keys
         .iter()
         .filter_map(serde_json::Value::as_str)
         .collect::<Vec<_>>();
     required.sort_unstable();
     assert_eq!(required, ["subagent_id", "text"]);
-    assert_eq!(schema["properties"]["queue"]["default"], false);
+    assert!(schema.pointer("/properties/queue").is_none());
+    assert!(
+        schema
+            .pointer("/properties/delivery")
+            .is_some_and(serde_json::Value::is_object)
+    );
+}
+
+#[test]
+fn delivery_values_are_a_closed_snake_case_set() {
+    let values = [
+        SendSubagentMessageDelivery::Steer,
+        SendSubagentMessageDelivery::Queue,
+        SendSubagentMessageDelivery::Interject,
+    ]
+    .map(|value| serde_json::to_value(value).expect("serialize delivery"));
+    assert_eq!(values, ["steer", "queue", "interject"]);
+}
+
+#[test]
+fn unknown_delivery_value_fails_to_deserialize() {
+    let error = serde_json::from_value::<SendSubagentMessageInput>(serde_json::json!({
+        "subagent_id": "sub-1",
+        "text": "follow up",
+        "delivery": "urgent",
+    }))
+    .expect_err("an unknown delivery must fail closed");
+    assert!(
+        error.to_string().contains("unknown variant `urgent`"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -161,7 +292,12 @@ async fn accepted_roundtrip_uses_backend_bound_parent_and_preserves_request() {
         let ingress = completes(receiver.active_messages.recv())
             .await
             .expect("expected active-message ingress");
-        assert_eq!(ingress.request.parent_session_id, "trusted-parent");
+        assert!(matches!(
+            &ingress.request.sender_context,
+            crate::implementations::grok_build::task::types::ActiveMessageSenderContext::RootSession {
+                session_id
+            } if session_id.as_ref() == "trusted-parent"
+        ));
         assert!(matches!(
             ingress.request.request.target(),
             crate::implementations::grok_build::task::types::ActiveMessageTarget::ChildId(id)
@@ -190,35 +326,27 @@ async fn accepted_roundtrip_uses_backend_bound_parent_and_preserves_request() {
 }
 
 #[tokio::test]
-async fn queue_true_preserves_legacy_queue_operation() {
-    let (backend, mut receiver) = coordinator_backend();
-    let send = run_with_queue(
-        resources_with_backend(backend).into_shared(),
-        "sub-1",
-        "follow up".to_owned(),
-        true,
+async fn legacy_queue_true_without_delivery_maps_to_queue() {
+    assert_eq!(
+        ActiveAgentMessageOperation::Queue,
+        backend_operation(None, true).await
     );
-    let respond = async move {
-        let ingress = completes(receiver.active_messages.recv())
-            .await
-            .expect("expected active-message ingress");
-        assert_eq!(
-            ingress.request.request.operation(),
-            crate::implementations::grok_build::task::types::ActiveAgentMessageOperation::Queue
-        );
-        ingress
-            .request
-            .respond_to
-            .send(ActiveAgentMessageOutcome::Accepted {
-                message_id: "message-1".to_owned(),
-            })
-            .unwrap();
-    };
+}
 
-    assert!(matches!(
-        completes(async { tokio::join!(send, respond) }).await.0,
-        SendSubagentMessageOutput::Accepted { .. }
-    ));
+#[tokio::test]
+async fn explicit_delivery_wins_over_legacy_queue() {
+    assert_eq!(
+        ActiveAgentMessageOperation::Steer,
+        backend_operation(Some(SendSubagentMessageDelivery::Steer), true).await
+    );
+}
+
+#[tokio::test]
+async fn delivery_interject_reaches_the_backend_as_interject() {
+    assert_eq!(
+        ActiveAgentMessageOperation::Interject,
+        backend_operation(Some(SendSubagentMessageDelivery::Interject), false).await
+    );
 }
 
 #[tokio::test]
@@ -255,7 +383,7 @@ async fn explicit_root_depth_without_backend_returns_unsupported() {
 }
 
 #[tokio::test]
-async fn missing_or_nested_depth_returns_unsupported_without_calling_backend() {
+async fn missing_or_ungranted_nested_depth_returns_unsupported_without_calling_backend() {
     for depth in [None, Some(1)] {
         let (backend, mut receiver) = coordinator_backend();
         let mut resources = Resources::new();
@@ -269,6 +397,192 @@ async fn missing_or_nested_depth_returns_unsupported_without_calling_backend() {
             SendSubagentMessageOutput::Unsupported
         );
         assert!(receiver.active_messages.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
+async fn child_sender_parses_targets_at_any_depth() {
+    let (coordinator_sender, receiver) = SubagentCoordinator::<ToolTestRunner>::channel();
+    let (senders, mut sender_rx) = tokio::sync::mpsc::unbounded_channel();
+    let coordinator = SubagentCoordinator::from_channel(
+        receiver,
+        ToolTestRunner {
+            senders,
+            routes: None,
+        },
+        Default::default(),
+    );
+    let coordinator_task = tokio::spawn(coordinator.run());
+    let backend = ChannelBackend::from_coordinator(coordinator_sender);
+    let child_id = uuid::Uuid::now_v7().to_string();
+    let spawn = tokio::spawn({
+        let backend = backend.clone();
+        let child_id = child_id.clone();
+        async move {
+            backend
+                .spawn(request(&child_id, "root", SubagentOwner::Task), None)
+                .await
+        }
+    });
+    let (_, sender) = completes(sender_rx.recv()).await.expect("child sender");
+    let mut resources = Resources::new();
+    resources.insert(SubagentDepthCounter(0));
+    resources.insert(AgentMessageSenderResource(
+        sender.expect("granted child sender"),
+    ));
+    let resources = resources.into_shared();
+
+    assert_eq!(
+        run(resources.clone(), "parent", "follow up".to_owned()).await,
+        SendSubagentMessageOutput::Unsupported,
+    );
+    assert_eq!(
+        run_with_delivery(
+            resources.clone(),
+            &child_id,
+            "follow up".to_owned(),
+            Some(SendSubagentMessageDelivery::Interject),
+            false,
+        )
+        .await,
+        SendSubagentMessageOutput::NotFoundOrNotOwned,
+    );
+    let error = completes(xai_tool_runtime::Tool::run(
+        &SendSubagentMessageTool,
+        test_ctx(resources),
+        SendSubagentMessageInput {
+            subagent_id: "not-an-agent-id".to_owned(),
+            text: "follow up".to_owned(),
+            delivery: None,
+            queue: false,
+        },
+    ))
+    .await
+    .expect_err("invalid child target must fail input parsing");
+    assert_eq!(
+        error.kind,
+        xai_tool_runtime::ToolErrorKind::InvalidArguments
+    );
+    assert_eq!(error.detail, "subagent_id must be a valid agent ID");
+
+    coordinator_task.abort();
+    spawn.abort();
+}
+
+#[tokio::test]
+async fn depth_zero_child_sender_uses_granted_path_not_backend() {
+    let (coordinator_sender, receiver) = SubagentCoordinator::<ToolTestRunner>::channel();
+    let (senders, mut sender_rx) = tokio::sync::mpsc::unbounded_channel();
+    let coordinator = SubagentCoordinator::from_channel(
+        receiver,
+        ToolTestRunner {
+            senders,
+            routes: None,
+        },
+        Default::default(),
+    );
+    let coordinator_task = tokio::spawn(coordinator.run());
+    let backend = ChannelBackend::from_coordinator(coordinator_sender);
+    let child_id = uuid::Uuid::now_v7().to_string();
+    let spawn = tokio::spawn({
+        let backend = backend.clone();
+        let child_id = child_id.clone();
+        async move {
+            backend
+                .spawn(request(&child_id, "root", SubagentOwner::Task), None)
+                .await
+        }
+    });
+    let (_, sender) = completes(sender_rx.recv()).await.expect("child sender");
+    let (legacy, mut legacy_rx) = coordinator_backend();
+    let mut resources = resources_with_backend(legacy);
+    resources.insert(AgentMessageSenderResource(
+        sender.expect("granted child sender"),
+    ));
+
+    assert_eq!(
+        run(resources.into_shared(), &child_id, "follow up".to_owned()).await,
+        SendSubagentMessageOutput::NotFoundOrNotOwned,
+    );
+    assert!(legacy_rx.active_messages.try_recv().is_err());
+
+    coordinator_task.abort();
+    spawn.abort();
+}
+
+#[tokio::test]
+async fn child_tool_routes_parent_and_sibling_through_coordinator() {
+    let (coordinator_sender, receiver) = SubagentCoordinator::<ToolTestRunner>::channel();
+    let (senders, mut sender_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (routes, mut route_rx) = tokio::sync::mpsc::unbounded_channel();
+    let coordinator = SubagentCoordinator::from_channel(
+        receiver,
+        ToolTestRunner {
+            senders,
+            routes: Some(routes),
+        },
+        Default::default(),
+    );
+    let coordinator_task = tokio::spawn(coordinator.run());
+    let root_backend = ChannelBackend::from_coordinator(coordinator_sender.clone());
+    let parent_id = uuid::Uuid::now_v7().to_string();
+    let sibling_id = uuid::Uuid::now_v7().to_string();
+    let child_id = uuid::Uuid::now_v7().to_string();
+    let mut spawns = Vec::new();
+    for id in [&parent_id, &sibling_id] {
+        spawns.push(tokio::spawn({
+            let backend = root_backend.clone();
+            let id = id.clone();
+            async move {
+                backend
+                    .spawn(request(&id, "root", SubagentOwner::Task), None)
+                    .await
+            }
+        }));
+        let _ = completes(sender_rx.recv())
+            .await
+            .expect("root child sender");
+    }
+    let nested_backend =
+        ChannelBackend::for_coordinator_session(coordinator_sender, parent_id.clone());
+    spawns.push(tokio::spawn({
+        let child_id = child_id.clone();
+        async move {
+            nested_backend
+                .spawn(request(&child_id, "ignored", SubagentOwner::Task), None)
+                .await
+        }
+    }));
+    let (_, sender) = completes(sender_rx.recv())
+        .await
+        .expect("nested child sender");
+    let mut resources = Resources::new();
+    resources.insert(SubagentDepthCounter(2));
+    resources.insert(AgentMessageSenderResource(
+        sender.expect("granted child sender"),
+    ));
+    let resources = resources.into_shared();
+
+    assert!(matches!(
+        run(resources.clone(), "parent", "up".to_owned()).await,
+        SendSubagentMessageOutput::Accepted { .. }
+    ));
+    assert_eq!(
+        completes(route_rx.recv()).await,
+        Some(ActiveMessageRoute::DescendantToParent)
+    );
+    assert!(matches!(
+        run(resources, &sibling_id, "across".to_owned()).await,
+        SendSubagentMessageOutput::Accepted { .. }
+    ));
+    assert_eq!(
+        completes(route_rx.recv()).await,
+        Some(ActiveMessageRoute::Peer)
+    );
+
+    coordinator_task.abort();
+    for spawn in spawns {
+        spawn.abort();
     }
 }
 

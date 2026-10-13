@@ -127,14 +127,46 @@ fn arrows_skip_actions_items_that_were_not_painted() {
     assert_eq!(narrow.actions_focus, Some(ActionsFocus::NewAgent));
 }
 
-/// The arrows only act on the actions row while the list has focus; with the dispatch input focused they stay caret movement.
 #[test]
-fn arrows_leave_actions_row_alone_when_input_is_focused() {
-    use crossterm::event::KeyCode::Right;
+fn arrows_walk_actions_row_from_empty_input_but_not_over_a_draft() {
+    use crossterm::event::KeyCode::{Char, Left, Right};
     let mut state = painted_actions_state(120, true);
     state.list_focused = false;
-    press(&mut state, Right);
+
+    assert!(matches!(
+        press(&mut state, Right),
+        crate::app::app_view::InputOutcome::Changed
+    ));
+    assert_eq!(state.actions_focus, Some(ActionsFocus::OpenPrevious));
+    press(&mut state, Left);
     assert_eq!(state.actions_focus, Some(ActionsFocus::NewAgent));
+
+    crate::appearance::cache::set_vim_mode(true);
+    press(&mut state, Char('l'));
+    crate::appearance::cache::set_vim_mode(false);
+    assert_eq!(
+        state.actions_focus,
+        Some(ActionsFocus::NewAgent),
+        "a letter types into the empty input instead of walking the row"
+    );
+    assert_eq!(state.dispatch.text(), "l");
+
+    state.dispatch.set_text("a typed draft");
+    press(&mut state, Right);
+    assert_eq!(
+        state.actions_focus,
+        Some(ActionsFocus::NewAgent),
+        "with a draft the arrows move the caret, not the cursor"
+    );
+
+    state.dispatch.set_text("");
+    state.enter_search_mode();
+    press(&mut state, Right);
+    assert_eq!(
+        state.actions_focus,
+        Some(ActionsFocus::NewAgent),
+        "in search mode the buffer is a query even when empty"
+    );
 }
 
 /// Enter on a right-hand item is a click on it, draft or no draft; only `+ New Agent` sends a typed draft.
@@ -206,7 +238,10 @@ fn focused_worktree_toggle_is_green_and_falls_back_when_dropped() {
     let mut buf = Buffer::empty(area);
     render_actions_only(&mut buf, area, &theme, &mut state, true);
     let worktree = state.worktree_toggle_hit.rect.expect("painted");
-    assert_eq!(buf[(worktree.x, worktree.y)].fg, theme.accent_success);
+    assert_eq!(
+        buf.cell((worktree.x, worktree.y)).map(|c| c.fg),
+        Some(theme.accent_success)
+    );
 
     // Shrink below the width the toggle needs: focus must land on `+ New Agent`, painted focused in this frame
     let narrow = Rect::new(0, 0, 20, 1);
@@ -214,7 +249,7 @@ fn focused_worktree_toggle_is_green_and_falls_back_when_dropped() {
     render_actions_only(&mut buf2, narrow, &theme, &mut state, true);
     assert!(state.worktree_toggle_hit.rect.is_none());
     assert_eq!(state.actions_focus, Some(ActionsFocus::NewAgent));
-    assert_eq!(buf2[(0, 0)].fg, theme.accent_success);
+    assert_eq!(buf2.cell((0, 0)).map(|c| c.fg), Some(theme.accent_success));
 }
 
 /// Regression: a click on a right-hand item while the dispatch input has focus must not leave Enter dead.

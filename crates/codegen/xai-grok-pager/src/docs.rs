@@ -259,10 +259,11 @@ pub fn extract_user_guide_docs(grok_home: &std::path::Path) {
             USER_GUIDE.iter().map(|d| d.filename).collect();
         for dir_entry in entries.flatten() {
             if let Some(name) = dir_entry.file_name().to_str() {
+                let bytes = name.as_bytes();
                 let is_managed = name.len() > 3
-                    && name.as_bytes()[0].is_ascii_digit()
-                    && name.as_bytes()[1].is_ascii_digit()
-                    && name.as_bytes()[2] == b'-'
+                    && bytes.first().is_some_and(|b| b.is_ascii_digit())
+                    && bytes.get(1).is_some_and(|b| b.is_ascii_digit())
+                    && bytes.get(2) == Some(&b'-')
                     && name.ends_with(".md");
                 if is_managed
                     && !valid.contains(name)
@@ -317,8 +318,8 @@ mod tests {
     fn default_howto_entries_includes_all_user_guide_docs() {
         let entries = default_howto_entries();
         assert_eq!(entries.len(), USER_GUIDE.len() + REFERENCE_DOCS.len());
-        for (i, doc) in USER_GUIDE.iter().enumerate() {
-            assert_eq!(entries[i].title, doc.title, "Entry {} title mismatch", i);
+        for (i, (entry, doc)) in entries.iter().zip(USER_GUIDE.iter()).enumerate() {
+            assert_eq!(entry.title, doc.title, "Entry {} title mismatch", i);
         }
     }
 

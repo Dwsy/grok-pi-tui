@@ -256,16 +256,19 @@ mod tests {
         let hits = detect_confusables("say \u{201C}hi\u{201D}");
         assert_eq!(hits.len(), 2);
 
-        assert_eq!(hits[0].byte_offset, 4); // "say " is 4 bytes
-        assert_eq!(hits[0].unicode_char, '\u{201C}');
-        assert_eq!(hits[0].ascii_replacement, "\"");
-        assert_eq!(hits[0].line_number, 1);
+        let [left, right] = hits.as_slice() else {
+            panic!("expected two hits: {hits:?}");
+        };
+        assert_eq!(left.byte_offset, 4); // "say " is 4 bytes
+        assert_eq!(left.unicode_char, '\u{201C}');
+        assert_eq!(left.ascii_replacement, "\"");
+        assert_eq!(left.line_number, 1);
 
         // '\u{201C}' is 3 bytes, "hi" is 2 bytes → offset = 4+3+2 = 9
-        assert_eq!(hits[1].byte_offset, 9);
-        assert_eq!(hits[1].unicode_char, '\u{201D}');
-        assert_eq!(hits[1].ascii_replacement, "\"");
-        assert_eq!(hits[1].line_number, 1);
+        assert_eq!(right.byte_offset, 9);
+        assert_eq!(right.unicode_char, '\u{201D}');
+        assert_eq!(right.ascii_replacement, "\"");
+        assert_eq!(right.line_number, 1);
     }
 
     #[test]
@@ -273,9 +276,12 @@ mod tests {
         let s = "line one\nline\u{00A0}two\nline \u{201C}three\u{201D}\n";
         let hits = detect_confusables(s);
         assert_eq!(hits.len(), 3);
-        assert_eq!(hits[0].line_number, 2); // NBSP on line 2
-        assert_eq!(hits[1].line_number, 3); // left quote on line 3
-        assert_eq!(hits[2].line_number, 3); // right quote on line 3
+        let [nbsp, left, right] = hits.as_slice() else {
+            panic!("expected three hits: {hits:?}");
+        };
+        assert_eq!(nbsp.line_number, 2); // NBSP on line 2
+        assert_eq!(left.line_number, 3); // left quote on line 3
+        assert_eq!(right.line_number, 3); // right quote on line 3
     }
 
     #[test]
@@ -284,8 +290,11 @@ mod tests {
         let s = "\u{2014}\u{2014}";
         let hits = detect_confusables(s);
         assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].byte_offset, 0);
-        assert_eq!(hits[1].byte_offset, 3); // em-dash is 3 bytes
+        let [first, second] = hits.as_slice() else {
+            panic!("expected two hits: {hits:?}");
+        };
+        assert_eq!(first.byte_offset, 0);
+        assert_eq!(second.byte_offset, 3); // em-dash is 3 bytes
     }
 
     #[test]
@@ -293,11 +302,14 @@ mod tests {
         let s = "\u{2018}hello\u{2019}";
         let hits = detect_confusables(s);
         assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].byte_offset, 0);
-        assert_eq!(hits[0].unicode_char, '\u{2018}');
+        let [first, last] = hits.as_slice() else {
+            panic!("expected two hits: {hits:?}");
+        };
+        assert_eq!(first.byte_offset, 0);
+        assert_eq!(first.unicode_char, '\u{2018}');
         // '\u{2018}' is 3 bytes, "hello" is 5 bytes → offset = 8
-        assert_eq!(hits[1].byte_offset, 8);
-        assert_eq!(hits[1].unicode_char, '\u{2019}');
+        assert_eq!(last.byte_offset, 8);
+        assert_eq!(last.unicode_char, '\u{2019}');
     }
 
     // ── build_offset_map ────────────────────────────────────────────────
@@ -339,16 +351,8 @@ mod tests {
         assert_eq!(normalized.len(), 4);
         assert_eq!(map.len(), 5); // 4 bytes + sentinel
 
-        // Byte 0 of normalized ('"') maps to byte 0 of original ('\u{201C}' start)
-        assert_eq!(map[0], 0);
-        // Byte 1 of normalized ('h') maps to byte 3 of original
-        assert_eq!(map[1], 3);
-        // Byte 2 of normalized ('i') maps to byte 4 of original
-        assert_eq!(map[2], 4);
-        // Byte 3 of normalized ('"') maps to byte 5 of original ('\u{201D}' start)
-        assert_eq!(map[3], 5);
-        // Terminal sentinel
-        assert_eq!(map[4], 8);
+        // Normalized '"' 'h' 'i' '"' + sentinel → original starts of smart quotes / hi.
+        assert_eq!(map, vec![0, 3, 4, 5, 8]);
     }
 
     #[test]
@@ -361,11 +365,7 @@ mod tests {
         assert_eq!(normalized, "a--b");
         assert_eq!(map.len(), 5); // 4 bytes + sentinel
 
-        assert_eq!(map[0], 0); // 'a' → 'a'
-        assert_eq!(map[1], 1); // first '-' → start of em-dash
-        assert_eq!(map[2], 1); // second '-' → start of em-dash
-        assert_eq!(map[3], 4); // 'b' → 'b'
-        assert_eq!(map[4], 5); // sentinel
+        assert_eq!(map, vec![0, 1, 1, 4, 5]);
     }
 
     #[test]
@@ -379,10 +379,7 @@ mod tests {
         assert_eq!(map.len(), 4); // 3 bytes + sentinel
 
         // All three dots map to the start of the original ellipsis character.
-        assert_eq!(map[0], 0);
-        assert_eq!(map[1], 0);
-        assert_eq!(map[2], 0);
-        assert_eq!(map[3], 3); // sentinel
+        assert_eq!(map, vec![0, 0, 0, 3]);
     }
 
     #[test]
@@ -395,10 +392,7 @@ mod tests {
         assert_eq!(normalized, "a b");
         assert_eq!(map.len(), 4); // 3 bytes + sentinel
 
-        assert_eq!(map[0], 0); // 'a'
-        assert_eq!(map[1], 1); // ' ' maps to NBSP start
-        assert_eq!(map[2], 3); // 'b'
-        assert_eq!(map[3], 4); // sentinel
+        assert_eq!(map, vec![0, 1, 3, 4]);
     }
 
     #[test]
@@ -410,13 +404,7 @@ mod tests {
         assert_eq!(normalized, s); // no confusables → identical
         // 'a'=1 byte, '🌍'=4 bytes, 'b'=1 byte → 6 bytes + sentinel
         assert_eq!(map.len(), 7);
-        assert_eq!(map[0], 0); // 'a'
-        assert_eq!(map[1], 1); // '🌍' byte 0
-        assert_eq!(map[2], 2); // '🌍' byte 1
-        assert_eq!(map[3], 3); // '🌍' byte 2
-        assert_eq!(map[4], 4); // '🌍' byte 3
-        assert_eq!(map[5], 5); // 'b'
-        assert_eq!(map[6], 6); // sentinel
+        assert_eq!(map, vec![0, 1, 2, 3, 4, 5, 6]);
     }
 
     #[test]
@@ -428,17 +416,13 @@ mod tests {
 
         // Verify invariants.
         assert_eq!(map.len(), normalized.len() + 1);
-        assert_eq!(map[0], 0);
-        assert_eq!(*map.last().unwrap(), s.len());
+        assert_eq!(map.first().copied(), Some(0));
+        assert_eq!(map.last().copied(), Some(s.len()));
 
         // Monotonically non-decreasing.
         for window in map.windows(2) {
-            assert!(
-                window[0] <= window[1],
-                "offset_map not monotonic: {} > {}",
-                window[0],
-                window[1]
-            );
+            let [a, b] = window else { continue };
+            assert!(a <= b, "offset_map not monotonic: {a} > {b}");
         }
     }
 
@@ -449,8 +433,7 @@ mod tests {
         let (normalized, map) = build_offset_map(s);
         assert_eq!(normalized, "-");
         assert_eq!(map.len(), 2); // 1 byte + sentinel
-        assert_eq!(map[0], 0); // '-' maps to start of en-dash
-        assert_eq!(map[1], 3); // sentinel = original len
+        assert_eq!(map, vec![0, 3]);
     }
 
     // ── Compound / integration scenarios ────────────────────────────────
@@ -496,9 +479,16 @@ mod tests {
             .find(pattern)
             .expect("pattern not found in normalized text");
         let norm_end = norm_start + pattern.len();
-        let orig_start = offset_map[norm_start];
-        let orig_end = offset_map[norm_end];
-        &original[orig_start..orig_end]
+        let Some(&orig_start) = offset_map.get(norm_start) else {
+            panic!("norm_start {norm_start} out of offset_map");
+        };
+        let Some(&orig_end) = offset_map.get(norm_end) else {
+            panic!("norm_end {norm_end} out of offset_map");
+        };
+        let Some(slice) = original.get(orig_start..orig_end) else {
+            panic!("original slice {orig_start}..{orig_end} out of range");
+        };
+        slice
     }
 
     #[test]

@@ -133,10 +133,6 @@ type FxBuildHasher = std::hash::BuildHasherDefault<FxHasher>;
 
 type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
 
-// ============================================================================
-// Constants
-// ============================================================================
-
 const MAGIC_INDEX: &[u8; 4] = b"FIDX";
 #[allow(dead_code)] // Reserved for delta wire format
 const MAGIC_DELTA: &[u8; 4] = b"FDLT";
@@ -156,10 +152,6 @@ fn num_cpus() -> usize {
         .unwrap_or(4)
         .min(8) // Cap at 8 to avoid excessive parallelism
 }
-
-// ============================================================================
-// WalkOptions - configuration for directory walking
-// ============================================================================
 
 /// Options for building a FileIndex from a directory walk.
 #[derive(Debug, Clone)]
@@ -215,10 +207,6 @@ impl WalkOptions {
     }
 }
 
-// ============================================================================
-// SegmentId - a handle into the string interner
-// ============================================================================
-
 /// Handle to an interned path segment; u32 allows up to 4 billion unique segments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SegmentId(u32);
@@ -232,10 +220,6 @@ impl SegmentId {
         self.0
     }
 }
-
-// ============================================================================
-// StringInterner - deduplicates path segments
-// ============================================================================
 
 /// Arena-based string interner for path segments: one contiguous buffer, O(1) average lookup.
 /// Segments are arbitrary bytes so non-UTF-8 OS paths are stored losslessly.
@@ -426,10 +410,6 @@ impl StringInterner {
     }
 }
 
-// ============================================================================
-// FileEntry - a single file/directory in the index
-// ============================================================================
-
 /// Paths up to 6 segments store inline (covers 99% of cases); deeper paths heap-allocate.
 const INLINE_SEGMENTS: usize = 6;
 
@@ -469,10 +449,6 @@ impl FileEntry {
     }
 }
 
-// ============================================================================
-// PathKey - for O(1) lookup by path
-// ============================================================================
-
 /// Uses the segment IDs directly for fast comparison.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PathKey(smallvec::SmallVec<[SegmentId; INLINE_SEGMENTS]>);
@@ -482,10 +458,6 @@ impl From<&[SegmentId]> for PathKey {
         Self(segments.into())
     }
 }
-
-// ============================================================================
-// FileIndex - the main index structure
-// ============================================================================
 
 #[derive(Debug, Clone)]
 pub struct FileIndex {
@@ -617,7 +589,9 @@ impl FileIndex {
 
         if let Some(idx) = self.path_to_idx.remove(&key) {
             // Mark as removed by clearing segments (tombstone)
-            self.entries[idx].segments.clear();
+            if let Some(entry) = self.entries.get_mut(idx) {
+                entry.segments.clear();
+            }
             self.removed_count += 1;
 
             if self.removed_count > self.entries.len() / 4 {
@@ -708,10 +682,6 @@ impl FileIndex {
         self.interner.get(id)
     }
 
-    // ------------------------------------------------------------------------
-    // Internal helpers
-    // ------------------------------------------------------------------------
-
     fn intern_path(&mut self, path: &Path) -> smallvec::SmallVec<[SegmentId; INLINE_SEGMENTS]> {
         path.components()
             .map(|c| c.as_os_str())
@@ -749,10 +719,6 @@ impl FileIndex {
         self.path_to_idx = new_path_to_idx;
         self.removed_count = 0;
     }
-
-    // ------------------------------------------------------------------------
-    // Serialization
-    // ------------------------------------------------------------------------
 
     /// Serialize to binary format.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -894,13 +860,13 @@ impl FileIndex {
             for _ in 0..depth {
                 r.read_exact(&mut buf4)?;
                 let seg_idx = u32::from_le_bytes(buf4) as usize;
-                if seg_idx >= seg_id_map.len() {
+                let Some(&id) = seg_id_map.get(seg_idx) else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "invalid segment id",
                     ));
-                }
-                segments.push(seg_id_map[seg_idx]);
+                };
+                segments.push(id);
             }
 
             let key = PathKey::from(segments.as_slice());
@@ -917,10 +883,6 @@ impl FileIndex {
         })
     }
 }
-
-// ============================================================================
-// FileIndexDelta - incremental updates
-// ============================================================================
 
 #[derive(Debug, Clone)]
 pub enum FileIndexDelta {
@@ -1026,10 +988,6 @@ impl FileIndexDelta {
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1133,7 +1091,7 @@ mod tests {
 
         if let FileIndexDelta::Add(entries) = restored {
             assert_eq!(entries.len(), 2);
-            assert_eq!(entries[0], ("src/main.rs".to_string(), false));
+            assert_eq!(entries.first(), Some(&("src/main.rs".to_string(), false)));
         } else {
             panic!("expected Add delta");
         }

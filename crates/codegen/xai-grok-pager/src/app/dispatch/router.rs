@@ -51,9 +51,9 @@ use super::prompt::{
 use super::queue;
 use super::queue::dispatch_drain_queue;
 use super::rewind::{
-    dispatch_inline_edit_submit, dispatch_rewind, dispatch_rewind_cancel_offer,
-    dispatch_rewind_confirm, dispatch_rewind_confirm_never_ask, dispatch_rewind_dismiss,
-    dispatch_rewind_dismiss_error, dispatch_rewind_picker_select, dispatch_rewind_show_picker,
+    dispatch_rewind, dispatch_rewind_cancel_offer, dispatch_rewind_confirm,
+    dispatch_rewind_confirm_never_ask, dispatch_rewind_dismiss, dispatch_rewind_dismiss_error,
+    dispatch_rewind_picker_select, dispatch_rewind_show_picker,
 };
 use super::session::foreign::dispatch_fetch_session_list;
 use super::session::fork::{
@@ -63,7 +63,7 @@ use super::session::fork::{
 use super::session::lifecycle::{
     clear_startup_actions, dispatch_accept_consent, dispatch_agent_type_mismatch_answered,
     dispatch_delete_current_session_answered, dispatch_exit_session, dispatch_new_session,
-    dispatch_new_session_inner, dispatch_new_session_with_id, dispatch_new_worktree_session,
+    dispatch_new_session_from_tab, dispatch_new_session_with_id, dispatch_new_worktree_session,
     dispatch_trust_folder, leave_welcome_for_session, open_delete_current_session_question,
     open_new_session_question,
 };
@@ -81,28 +81,31 @@ use super::session::tree::{
     dispatch_show_session_tree, dispatch_show_tree_map,
 };
 use super::settings::setters::{
-    clear_default_model, clear_fork_secondary_model, clear_recap_model, preview_auto_dark_theme,
-    preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
-    set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_cancel_turn_key,
-    set_collapsed_edit_blocks, set_combine_queued_prompts, set_compact_mode,
-    set_confirm_before_rewind, set_contextual_hint_export_copy, set_contextual_hint_image_input,
-    set_contextual_hint_plan_mode, set_contextual_hint_send_now, set_contextual_hint_small_screen,
-    set_contextual_hint_ssh_wrap, set_contextual_hint_undo, set_contextual_hint_word_select,
-    set_ctrl_o_tool_expansion, set_default_model, set_default_selected_permission,
-    set_display_refresh_auto_cadence, set_follow_up_behavior, set_fork_secondary_model,
-    set_group_tool_verbs, set_host_feature_bool, set_hunk_tracker_mode, set_invert_scroll,
-    set_keep_text_selection, set_max_thoughts_width, set_model_slot, set_multiline_mode,
-    set_page_flip_on_send, set_pi_ask_user_question_notifications, set_pi_at_search_hidden,
-    set_pi_bash, set_pi_bash_command_format, set_pi_bash_run_display, set_pi_builtin_tool,
+    clear_default_model, clear_fork_secondary_model, clear_recap_model,
+    clear_subagent_model_inheritance, preview_auto_dark_theme, preview_auto_light_theme,
+    preview_theme, set_ask_user_question_timeout_enabled, set_auto_dark_theme,
+    set_auto_light_theme, set_auto_update, set_cancel_turn_key, set_collapsed_edit_blocks,
+    set_combine_queued_prompts, set_compact_mode, set_confirm_before_rewind,
+    set_contextual_hint_export_copy, set_contextual_hint_image_input,
+    set_contextual_hint_plan_mode, set_contextual_hint_send_now,
+    set_contextual_hint_small_screen, set_contextual_hint_ssh_wrap, set_contextual_hint_undo,
+    set_contextual_hint_word_select, set_ctrl_o_tool_expansion, set_default_model,
+    set_default_selected_permission, set_display_refresh_auto_cadence, set_follow_up_behavior,
+    set_fork_secondary_model, set_group_tool_verbs, set_host_feature_bool,
+    set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
+    set_model_slot, set_multiline_mode, set_page_flip_on_send,
+    set_pi_ask_user_question_notifications, set_pi_at_search_hidden, set_pi_bash,
+    set_pi_bash_command_format, set_pi_bash_run_display, set_pi_builtin_tool,
     set_pi_cache_graph, set_pi_config_skill, set_pi_eval, set_pi_eval_mcp,
     set_pi_eval_v2_display_mode, set_pi_eval_v2_language, set_pi_eval_v2_only,
     set_pi_keep_multi_agent, set_pi_tree_file_rollback, set_pi_tree_skip_summary_prompt,
     set_pi_user_markdown, set_progress_bar, set_prompt_cursor, set_prompt_suggestions,
     set_psm_resume_index, set_recap_mermaid, set_recap_model, set_remember_tool_approvals,
-    set_remote_tui_footer, set_render_mermaid, set_respect_manual_folds, set_review_file_tree,
-    set_review_include_reads, set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed,
-    set_session_recap, set_show_other_tool_args, set_show_thinking_blocks, set_show_tips,
-    set_side_by_side_edit, set_simple_mode, set_theme, set_thinking_border_colors, set_timeline,
+    set_remote_tui_footer, set_render_mermaid, set_respect_manual_folds,
+    set_review_file_tree, set_review_include_reads, set_screen_mode, set_scroll_lines,
+    set_scroll_mode, set_scroll_speed, set_session_recap, set_show_other_tool_args,
+    set_show_thinking_blocks, set_show_tips, set_side_by_side_edit, set_simple_mode,
+    set_subagent_model_inheritance, set_theme, set_thinking_border_colors, set_timeline,
     set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled,
     set_voice_stt_language, set_write_edit_hover_popups,
 };
@@ -133,7 +136,7 @@ use super::turn::{
     dispatch_demote_to_background, dispatch_kill_bg_task, dispatch_kill_subagent,
 };
 use super::voice::{dispatch_enable_voice_mode, dispatch_voice_stop, dispatch_voice_toggle};
-use crate::app::actions::{Action, Effect};
+use crate::app::actions::{Action, Effect, ModelChoice};
 use crate::app::agent_view::ActivePane;
 use crate::app::app_view::{ActiveView, AppView, AuthState};
 use crate::app::consent::ConsentState;
@@ -168,7 +171,19 @@ pub(in crate::app::dispatch) fn confirmed_quit(app: &mut AppView) -> Vec<Effect>
     effects.push(Effect::Quit);
     effects
 }
+/// Every action enters here, including the nested dispatches a slash command or task result issues.
+/// Only the outermost call shows the image notices the whole tree queued, so a nested action's own
+/// toast cannot bury them and one submission yields one message.
 pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
+    app.dispatch_depth = app.dispatch_depth.saturating_add(1);
+    let effects = dispatch_inner(action, app);
+    app.dispatch_depth = app.dispatch_depth.saturating_sub(1);
+    if app.dispatch_depth == 0 {
+        flush_image_notices(app);
+    }
+    effects
+}
+fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
     app.reconcile_foreign_resume_launch();
     let effects = match action {
         Action::Quit | Action::QuitConfirmed => confirmed_quit(app),
@@ -357,7 +372,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                             return vec![];
                         }
                         state.expanded.insert(idx);
-                        let entry = &entries[idx];
+                        let Some(entry) = entries.get(idx) else {
+                            return vec![];
+                        };
                         if native_source && entry.card_detail.is_none() {
                             return vec![Effect::LoadCardDetail {
                                 host: SessionPickerHost::AgentModal,
@@ -433,16 +450,31 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::SendPrompt(text) => dispatch_send_prompt(app, text),
+        Action::RevisePlan(text) => super::prompt::dispatch_revise_plan(app, text),
         Action::SubmitFollowUp(text) => dispatch_send_prompt_inner(app, text, false, true, true),
         Action::SendSlashCommandPreservingDraft(text) => {
             dispatch_send_prompt_inner(app, text, false, false, false)
         }
-        Action::Interject { text, images } => dispatch_interject(app, text, images),
-        Action::SendPromptNow { text, images } => {
-            // Phase 1 (queue-architecture-redesign): Send Now → steering
-            // semantics via interject. No cancel-and-restart, no optimistic
-            // echo, no reconcile — eliminates the duplicate-message bug.
-            dispatch_interject(app, text, images)
+        Action::Interject { text, images } => {
+            super::queue::with_held_queue_flush(app, |app| dispatch_interject(app, text, images))
+        }
+        Action::ExecutePlan {
+            plan_file_content,
+            plan_file_uri,
+        } => super::prompt::dispatch_execute_plan(app, plan_file_content, plan_file_uri),
+        Action::SendPromptNow {
+            text,
+            images,
+            image_notice,
+        } => {
+            if app.external_agent {
+                app.pending_image_notices.extend(image_notice);
+                super::queue::with_held_queue_flush(app, |app| {
+                    dispatch_interject(app, text, images)
+                })
+            } else {
+                super::interject::dispatch_send_prompt_now(app, text, images, image_notice)
+            }
         }
         Action::EnableVoiceMode => dispatch_enable_voice_mode(app, true),
         Action::VoiceToggle => dispatch_voice_toggle(app),
@@ -856,14 +888,19 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             let Some(session_id) = agent.session.session_id.clone() else {
                 return vec![];
             };
-            if let Some(ref mut modal) = agent.extensions_modal {
-                modal.skills_data = crate::views::extensions_modal::TabDataState::Loading;
-                modal.workflows_data = crate::views::extensions_modal::TabDataState::Loading;
-            }
+            let Some(ref mut modal) = agent.extensions_modal else {
+                return vec![];
+            };
+            modal.skills_data = crate::views::extensions_modal::TabDataState::Loading;
+            modal.workflows_data = crate::views::extensions_modal::TabDataState::Loading;
             vec![
                 Effect::FetchSkillsList {
                     agent_id: id,
                     session_id: session_id.clone(),
+                    // `r` on the Workflows tab reloads the skills too, from the cache
+                    refresh: modal.active_tab
+                        == crate::views::extensions_modal::ExtensionsTab::Skills,
+                    fetch: modal.next_skills_fetch(),
                 },
                 Effect::FetchWorkflowsList {
                     agent_id: id,
@@ -1057,8 +1094,10 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![Effect::SwitchModel {
                 agent_id: id,
                 session_id,
-                model_id,
-                effort,
+                choice: ModelChoice {
+                    effort,
+                    ..ModelChoice::new(model_id)
+                },
                 prev_model_id: None,
             }]
         }
@@ -1098,19 +1137,46 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![Effect::SwitchModel {
                 agent_id: id,
                 session_id,
-                model_id,
-                effort: Some(effort),
+                choice: ModelChoice {
+                    effort: Some(effort),
+                    ..ModelChoice::new(model_id)
+                },
                 prev_model_id: None,
             }]
         }
-        Action::SwitchModel { model_id, effort } => {
+        Action::SwitchModel(mut choice) => {
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];
             };
             let Some(agent) = app.agents.get_mut(&id) else {
                 return vec![];
             };
+            if choice.context_window_selection.is_some() && agent.session.model_switch_pending {
+                agent
+                    .scrollback
+                    .push_block(crate::scrollback::block::RenderBlock::system(
+                        "Model switch in progress; retry once it completes",
+                    ));
+                return vec![];
+            }
+            let models = &agent.session.models;
+            choice.context_window_selection = choice.context_window_selection.filter(|window| {
+                models.current.as_ref() == Some(&choice.model_id)
+                    || Some(window.get()) != models.window_after_switch_to(&choice.model_id)
+            });
             let Some(session_id) = agent.session.session_id.clone() else {
+                if choice.context_window_selection.is_some() {
+                    agent
+                        .scrollback
+                        .push_block(
+                            crate::scrollback::block::RenderBlock::system(
+                                "Context window applies once the session starts; run /context-window then",
+                            ),
+                        );
+                }
+                let ModelChoice {
+                    model_id, effort, ..
+                } = choice;
                 let prev_model = agent.session.models.current.clone();
                 let prev_effort = agent.session.models.reasoning_effort;
                 agent.session.models.set_current(model_id.clone(), effort);
@@ -1142,8 +1208,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![Effect::SwitchModel {
                 agent_id: id,
                 session_id,
-                model_id,
-                effort,
+                choice,
                 prev_model_id: None,
             }]
         }
@@ -1201,9 +1266,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::CancelScheduledTask(task_id) => dispatch_cancel_scheduled_task(app, task_id),
         Action::DemoteToBackground => dispatch_demote_to_background(app),
         Action::RequestBundleStatus => vec![Effect::FetchBundleStatus],
-        Action::ViewCatalogEntry { kind, name } => {
-            vec![Effect::FetchCatalogEntry { kind, name }]
-        }
         Action::CycleMode => dispatch_cycle_mode(app),
         Action::ShareSession => dispatch_share_session(app),
         Action::ShowSessionInfo => dispatch_show_session_info(app),
@@ -1248,7 +1310,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::EnterRememberMode => dispatch_enter_remember_mode(app),
         Action::SendRememberNote(text) => dispatch_send_remember_note(app, text),
         Action::SaveRememberNoteFromModal => dispatch_save_remember_note_from_modal(app),
-        Action::SendBtw(question) => dispatch_send_btw(app, question),
+        Action::SendBtw { question, images } => dispatch_send_btw(app, question, images),
         Action::SendRecap {
             auto,
             custom_instructions,
@@ -1268,6 +1330,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetAskUserQuestionTimeoutEnabled(v) => {
             set_ask_user_question_timeout_enabled(app, v)
         }
+        Action::SetSubagentModelInheritance(v) => set_subagent_model_inheritance(app, v),
+        Action::ClearSubagentModelInheritance => clear_subagent_model_inheritance(app),
         Action::SetKeepTextSelection(v) => set_keep_text_selection(app, v),
         Action::SetScrollSpeed(v) => set_scroll_speed(app, v),
         Action::SetScrollMode(v) => set_scroll_mode(app, v),
@@ -1300,6 +1364,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetTimestamps(v) => set_timestamps(app, v),
         Action::SetTimeline(v) => set_timeline(app, v),
         Action::SetPageFlipOnSend(v) => set_page_flip_on_send(app, v),
+        Action::SetDashboardPreview(enabled) => {
+            crate::app::dispatch::settings::dashboard::set_dashboard_preview(app, enabled)
+        }
         Action::SetConfirmBeforeRewind(v) => set_confirm_before_rewind(app, v),
         Action::SetCombineQueuedPrompts(v) => set_combine_queued_prompts(app, v),
         Action::SetFollowUpBehavior(v) => set_follow_up_behavior(app, v),
@@ -1569,7 +1636,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             let mut effects = if worktree {
                 dispatch_new_worktree_session(app, None, None, None, None, None, None)
             } else {
-                dispatch_new_session_inner(app, None)
+                dispatch_new_session_from_tab(app)
             };
             apply_persist_worktree_mode(
                 &mut app.new_session_worktree_mode,
@@ -1615,19 +1682,57 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::PersistMemoryFullscreen(fs) => {
             vec![Effect::PersistMemoryFullscreen { fullscreen: fs }]
         }
+        Action::MemoryForget {
+            path,
+            expected_content_hash,
+        } => {
+            if let ActiveView::Agent(id) = app.active_view
+                && let Some(agent) = app.agents.get(&id)
+                && let Some(session_id) = agent.session.session_id.clone()
+            {
+                return vec![Effect::MemoryForget {
+                    agent_id: id,
+                    session_id,
+                    path,
+                    expected_content_hash,
+                }];
+            }
+            vec![]
+        }
         Action::OpenMemoryModal => {
             if let ActiveView::Agent(id) = app.active_view
                 && let Some(agent) = app.agents.get(&id)
                 && let Some(session_id) = agent.session.session_id.clone()
             {
-                return vec![Effect::SendPrompt {
+                return vec![Effect::FetchMemoryList {
                     agent_id: id,
                     session_id,
-                    text: "/memory".to_string(),
-                    prompt_id: uuid::Uuid::new_v4().to_string(),
-                    skill_token_ranges: Vec::new(),
                 }];
             }
+            vec![]
+        }
+        Action::MemoryToggle { enabled } => {
+            if let ActiveView::Agent(id) = app.active_view
+                && let Some(agent) = app.agents.get(&id)
+                && let Some(session_id) = agent.session.session_id.clone()
+            {
+                return vec![Effect::MemoryToggle {
+                    agent_id: id,
+                    session_id,
+                    enabled,
+                }];
+            }
+            vec![]
+        }
+        Action::MemoryCopy { text } => {
+            let delivery = crate::clipboard::copy_text_or_file(&text);
+            with_active_agent(app, |agent| {
+                if let Some(crate::views::modal::ActiveModal::MemoryBrowser { state }) =
+                    agent.active_modal.as_mut()
+                {
+                    state.report_copy(&delivery);
+                }
+            });
             vec![]
         }
         Action::OpenGboom => dispatch_open_gboom(app),
@@ -1854,12 +1959,46 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::RewindCancelOffer => dispatch_rewind_cancel_offer(app),
         Action::RewindDismiss => dispatch_rewind_dismiss(app),
         Action::RewindDismissError => dispatch_rewind_dismiss_error(app),
-        Action::InlineEditSubmit => dispatch_inline_edit_submit(app),
     };
     restore_stash_where_the_draft_was_consumed(app);
     app.reconcile_foreign_resume_launch();
     sync_sleep_inhibitor(app);
     effects
+}
+/// Show the image notices queued so far as one message on the visible surface; true when a surface
+/// changed. The command that queued them may have navigated away (`/home`, `/new`), so the
+/// originating agent's own toast could be off-screen or gone.
+pub(crate) fn flush_image_notices(app: &mut AppView) -> bool {
+    if app.pending_image_notices.is_empty() {
+        return false;
+    }
+    if !app.screen_mode.is_minimal() {
+        let message = join_image_notices(&mut app.pending_image_notices);
+        app.show_toast(&message);
+        return true;
+    }
+    let target = match app.active_view {
+        ActiveView::Agent(id) => app.agents.get_mut(&id),
+        _ => app.agents.values_mut().next(),
+    };
+    let Some(agent) = target else {
+        return false;
+    };
+    let message = join_image_notices(&mut app.pending_image_notices);
+    agent
+        .scrollback
+        .push_block(crate::scrollback::block::RenderBlock::system(message));
+    true
+}
+/// Drain the queued notices into one `; `-joined message, dropping repeats.
+fn join_image_notices(pending: &mut Vec<String>) -> String {
+    let mut notices: Vec<String> = Vec::new();
+    for notice in pending.drain(..) {
+        if !notices.contains(&notice) {
+            notices.push(notice);
+        }
+    }
+    notices.join("; ")
 }
 /// Drains the agent and its focused subagent: the paste drain reports on the parent while `with_active_agent` would pick the child.
 /// A stranded flag restores on a later dispatch.

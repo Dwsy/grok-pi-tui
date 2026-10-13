@@ -173,7 +173,7 @@ fn replace_home_prefix(input: &str, home: &str) -> String {
     while let Some(idx) = rest.find(home) {
         let (before, tail) = rest.split_at(idx);
         out.push_str(before);
-        let after = &tail[home.len()..];
+        let after = tail.get(home.len()..).unwrap_or("");
         let prev_ok = before.chars().last().is_none_or(is_segment_boundary_char);
         let next_ok = after
             .chars()
@@ -345,13 +345,20 @@ mod tests {
 
         let out = before_send(event, &s).unwrap();
         assert_eq!(out.message.as_deref(), Some("error in ~/foo"));
-        let ex = &out.exception.values[0];
+        let Some(ex) = out.exception.values.first() else {
+            panic!("expected an exception");
+        };
         assert_eq!(ex.value.as_deref(), Some("~/x failed"));
-        let frame = &ex.stacktrace.as_ref().unwrap().frames[0];
+        let Some(frame) = ex.stacktrace.as_ref().and_then(|st| st.frames.first()) else {
+            panic!("expected a stack frame");
+        };
         assert_eq!(frame.filename.as_deref(), Some("~/src/lib.rs"));
         assert_eq!(frame.abs_path.as_deref(), Some("~/src/lib.rs"));
         assert_eq!(
-            out.breadcrumbs.values[0].message.as_deref(),
+            out.breadcrumbs
+                .values
+                .first()
+                .and_then(|b| b.message.as_deref()),
             Some("opened /srv/<user>/log"),
         );
     }
@@ -385,9 +392,10 @@ mod tests {
 
         let out = before_send(event, &s).unwrap();
         assert_eq!(
-            out.breadcrumbs.values[0]
-                .data
-                .get("path")
+            out.breadcrumbs
+                .values
+                .first()
+                .and_then(|b| b.data.get("path"))
                 .and_then(|v| v.as_str()),
             Some("~/foo"),
         );

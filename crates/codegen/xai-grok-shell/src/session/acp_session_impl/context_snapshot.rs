@@ -421,8 +421,10 @@ mod tests {
             workflows_count: 0,
         };
         let jobs = texts.jobs();
-        assert_eq!(jobs.len(), 1);
-        assert!(matches!(jobs[0].field, TokenizeField::Tools));
+        let [job] = jobs.as_slice() else {
+            panic!("expected one tokenize job");
+        };
+        assert!(matches!(job.field, TokenizeField::Tools));
     }
 
     #[test]

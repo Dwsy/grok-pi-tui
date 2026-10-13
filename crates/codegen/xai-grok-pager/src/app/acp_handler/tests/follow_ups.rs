@@ -9,7 +9,7 @@
             &mut app,
         );
         assert!(affected, "fresh chips on the active agent warrant a redraw");
-        let fu = app.agents[&AgentId(0)]
+        let fu = test_agent(&app, AgentId(0))
             .follow_ups
             .as_ref()
             .expect("chips set on the active agent");
@@ -35,7 +35,7 @@
         ));
         // Clear at the turn boundary (keeps the seen ring)
         app.agents.get_mut(&AgentId(0)).unwrap().clear_follow_ups();
-        assert!(app.agents[&AgentId(0)].follow_ups.is_none());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_none());
 
         // (a) Re-delivery of the active turn re-renders.
         assert!(
@@ -46,7 +46,7 @@
             "active-turn re-delivery must re-render via promptId match"
         );
         assert_eq!(
-            app.agents[&AgentId(0)]
+            test_agent(&app, AgentId(0))
                 .follow_ups
                 .as_ref()
                 .unwrap()
@@ -70,7 +70,7 @@
             ),
             "prior-turn replay must be rejected"
         );
-        assert!(app.agents[&AgentId(0)].follow_ups.is_none());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_none());
     }
 
     #[test]
@@ -87,7 +87,7 @@
         );
         let affected = handle_ext_notification(&notif, &mut app);
         assert!(!affected, "a replayed chunk must not render chips");
-        assert!(app.agents[&AgentId(0)].follow_ups.is_none());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_none());
     }
 
     #[test]
@@ -107,7 +107,7 @@
             let affected = handle_ext_notification(&notif, &mut app);
             assert!(!affected, "malformed params must be ignored: {params}");
         }
-        assert!(app.agents[&AgentId(0)].follow_ups.is_none());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_none());
     }
 
     #[test]
@@ -118,10 +118,13 @@
             &follow_ups_ext("resp-1", &["safe\u{1b}[31mred\nmore"]),
             &mut app,
         );
-        let fu = app.agents[&AgentId(0)].follow_ups.as_ref().unwrap();
+        let fu = test_agent(&app, AgentId(0)).follow_ups.as_ref().unwrap();
         assert_eq!(fu.suggestions, vec!["safe[31mredmore"]);
-        assert!(!fu.suggestions[0].contains('\u{1b}'));
-        assert!(!fu.suggestions[0].contains('\n'));
+        let Some(first) = fu.suggestions.first() else {
+            panic!("expected a suggestion");
+        };
+        assert!(!first.contains('\u{1b}'));
+        assert!(!first.contains('\n'));
     }
 
     #[test]
@@ -132,7 +135,7 @@
             !affected,
             "without a response_id there is no newest-wins key"
         );
-        assert!(app.agents[&AgentId(0)].follow_ups.is_none());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_none());
     }
 
     #[test]
@@ -140,7 +143,7 @@
         let mut app = make_app_with_agent("sess-1");
         let affected = handle_ext_notification(&follow_ups_ext("resp-1", &["   ", ""]), &mut app);
         assert!(!affected);
-        assert!(app.agents[&AgentId(0)].follow_ups.is_none());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_none());
     }
 
     #[test]
@@ -152,10 +155,13 @@
             &follow_ups_ext("resp-1", &["\u{202e}/rm\u{200b}-rf"]),
             &mut app,
         );
-        let fu = app.agents[&AgentId(0)].follow_ups.as_ref().unwrap();
+        let fu = test_agent(&app, AgentId(0)).follow_ups.as_ref().unwrap();
         assert_eq!(fu.suggestions, vec!["/rm-rf"]);
-        assert!(!fu.suggestions[0].contains('\u{202e}'));
-        assert!(!fu.suggestions[0].contains('\u{200b}'));
+        let Some(first) = fu.suggestions.first() else {
+            panic!("expected a suggestion");
+        };
+        assert!(!first.contains('\u{202e}'));
+        assert!(!first.contains('\u{200b}'));
     }
 
     #[test]
@@ -165,7 +171,7 @@
         let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         handle_ext_notification(&follow_ups_ext("resp-1", &refs), &mut app);
         assert_eq!(
-            app.agents[&AgentId(0)]
+            test_agent(&app, AgentId(0))
                 .follow_ups
                 .as_ref()
                 .unwrap()
@@ -176,11 +182,13 @@
         );
         let long = "x".repeat(10_000);
         handle_ext_notification(&follow_ups_ext("resp-2", &[&long]), &mut app);
-        let label = &app.agents[&AgentId(0)]
+        let Some(label) = test_agent(&app, AgentId(0))
             .follow_ups
             .as_ref()
-            .unwrap()
-            .suggestions[0];
+            .and_then(|fu| fu.suggestions.first())
+        else {
+            panic!("expected a follow-up suggestion");
+        };
         assert!(
             label.len() <= super::MAX_FOLLOW_UP_LABEL,
             "label length clamped"
@@ -194,14 +202,14 @@
         let big = "r".repeat(super::MAX_RESPONSE_ID_LEN + 1);
         let affected = handle_ext_notification(&follow_ups_ext(&big, &["x"]), &mut app);
         assert!(!affected, "an oversized response_id must be rejected");
-        assert!(app.agents[&AgentId(0)].follow_ups.is_none());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_none());
         // A sane-length id still works.
         let ok = "r".repeat(super::MAX_RESPONSE_ID_LEN);
         assert!(handle_ext_notification(
             &follow_ups_ext(&ok, &["x"]),
             &mut app
         ));
-        assert!(app.agents[&AgentId(0)].follow_ups.is_some());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_some());
     }
 
     #[test]
@@ -220,7 +228,7 @@
             handle_ext_notification(&notif, &mut app),
             "_meta replayed=false must still render"
         );
-        assert!(app.agents[&AgentId(0)].follow_ups.is_some());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_some());
     }
 
     #[test]
@@ -239,7 +247,7 @@
                 "a malformed suggestion element drops the notification: {bad}"
             );
         }
-        assert!(app.agents[&AgentId(0)].follow_ups.is_none());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_none());
     }
 
     #[test]
@@ -247,17 +255,17 @@
         let mut app = make_app_with_agent("sess-1");
         let affected = handle_ext_notification(&follow_ups_ext("resp-1", &[]), &mut app);
         assert!(!affected);
-        assert!(app.agents[&AgentId(0)].follow_ups.is_none());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_none());
     }
 
     #[test]
     fn follow_ups_empty_for_current_response_clears_chips() {
         let mut app = make_app_with_agent("sess-1");
         handle_ext_notification(&follow_ups_ext("resp-1", &["a"]), &mut app);
-        assert!(app.agents[&AgentId(0)].follow_ups.is_some());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_some());
         let affected = handle_ext_notification(&follow_ups_ext("resp-1", &[]), &mut app);
         assert!(affected, "empty for the shown response clears the chips");
-        assert!(app.agents[&AgentId(0)].follow_ups.is_none());
+        assert!(test_agent(&app, AgentId(0)).follow_ups.is_none());
     }
 
     #[test]
@@ -292,12 +300,12 @@
             &mut app,
         );
         assert!(
-            app.agents[&id].follow_ups.is_none(),
+            test_agent(&app, id).follow_ups.is_none(),
             "viewer adopting a new turn must clear the prior chips"
         );
         let affected = handle_ext_notification(&follow_ups_ext("resp-2", &["new"]), &mut app);
         assert!(affected);
-        let fu = app.agents[&id].follow_ups.as_ref().unwrap();
+        let fu = test_agent(&app, id).follow_ups.as_ref().unwrap();
         assert_eq!(fu.response_id, "resp-2");
         assert_eq!(fu.suggestions, vec!["new"]);
     }

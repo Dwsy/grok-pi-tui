@@ -257,13 +257,14 @@ mod tests {
 
         sanitize_summary_for_host(&mut summary, "s-new", "/local/work");
 
-        assert_eq!(summary["info"]["id"], json!("s-new"));
-        assert_eq!(summary["info"]["cwd"], json!("/local/work"));
+        let info = summary.get("info").and_then(Value::as_object);
+        assert_eq!(info.and_then(|i| i.get("id")), Some(&json!("s-new")));
+        assert_eq!(info.and_then(|i| i.get("cwd")), Some(&json!("/local/work")));
         assert_eq!(
-            summary["chat_format_version"],
-            json!(crate::session::persistence::CHAT_FORMAT_VERSION)
+            summary.get("chat_format_version"),
+            Some(&json!(crate::session::persistence::CHAT_FORMAT_VERSION))
         );
-        assert_eq!(summary["git_remotes"], json!([]));
+        assert_eq!(summary.get("git_remotes"), Some(&json!([])));
         for gone in [
             "prompt_display_cwd",
             "source_workspace_dir",

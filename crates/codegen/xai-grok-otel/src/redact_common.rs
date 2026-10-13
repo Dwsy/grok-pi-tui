@@ -46,8 +46,13 @@ pub fn redact_urls_in_text(input: &str) -> String {
             out.push_str(rest);
             break;
         };
-        out.push_str(&rest[..start]);
-        let url_rest = &rest[start..];
+        let Some(prefix) = rest.get(..start) else {
+            break;
+        };
+        out.push_str(prefix);
+        let Some(url_rest) = rest.get(start..) else {
+            break;
+        };
         let end = url_rest
             .char_indices()
             .find(|&(_, c)| {
@@ -55,9 +60,11 @@ pub fn redact_urls_in_text(input: &str) -> String {
             })
             .map(|(i, _)| i)
             .unwrap_or(url_rest.len());
-        let url = &url_rest[..end];
+        let Some(url) = url_rest.get(..end) else {
+            break;
+        };
         out.push_str(url_origin(url).as_ref());
-        rest = &url_rest[end..];
+        rest = url_rest.get(end..).unwrap_or("");
     }
     redact_to_owned(&out)
 }

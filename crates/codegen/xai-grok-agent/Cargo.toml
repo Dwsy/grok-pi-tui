@@ -9,6 +9,7 @@ description = "Agent builder, definition parsing, and system prompt assembly"
 dunce = { workspace = true }
 xai-grok-hooks = { path = "../xai-grok-hooks" }
 xai-grok-sampling-types = { path = "../xai-grok-sampling-types" }
+xai-grok-telemetry = { workspace = true }
 xai-grok-tools = { path = "../xai-grok-tools" }
 xai-tty-utils = { workspace = true }
 xai-token-estimation = { workspace = true }
@@ -25,6 +26,7 @@ fs2 = { workspace = true }
 ignore = { workspace = true }
 xai-grok-config = { workspace = true }
 xai-dirs = { workspace = true }
+xai-grok-permission-rules = { workspace = true }
 sha2 = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }

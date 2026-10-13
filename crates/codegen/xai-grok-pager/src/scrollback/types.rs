@@ -10,6 +10,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::appearance::AppearanceConfig;
+use crate::render::color::blend_color;
+use crate::theme::Theme;
 
 /// How to wrap content that exceeds the available width.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -45,6 +47,15 @@ impl AccentStyle {
             color,
             animated: true,
         }
+    }
+
+    /// The pulsing bullet of a row whose work is still running. `accent_running` is pre-dimmed by the collapsed-bullet
+    /// ratio so the pulse peaks at the same brightness as the other collapsed blocks.
+    pub fn animated_running(ctx: &BlockContext, theme: &Theme) -> Self {
+        let dim = ctx.appearance.scrollback.display.dim_accent;
+        let dimmed =
+            blend_color(theme.bg_base, theme.accent_running, dim).unwrap_or(theme.accent_running);
+        Self::animated(dimmed)
     }
 }
 
@@ -340,11 +351,13 @@ pub fn derive_selection_text(line: &BlockLine) -> String {
             }
         }
         sel @ Selectable::Spans(_) => {
-            let r = sel.clamped_span_range(line.content.spans.len()).unwrap();
-            line.content.spans[r]
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect()
+            let Some(r) = sel.clamped_span_range(line.content.spans.len()) else {
+                return String::new();
+            };
+            let Some(spans) = line.content.spans.get(r) else {
+                return String::new();
+            };
+            spans.iter().map(|span| span.content.as_ref()).collect()
         }
     }
 }
@@ -669,8 +682,18 @@ pub(crate) fn selectable_cols_usize(line: &Line, selectable: &Selectable) -> Opt
         Selectable::All => Some(0..line.spans.iter().map(span_display_cells).sum()),
         sel @ Selectable::Spans(_) => {
             let r = sel.clamped_span_range(line.spans.len())?;
-            let start_col = line.spans[..r.start].iter().map(span_display_cells).sum();
-            let end_col = line.spans[..r.end].iter().map(span_display_cells).sum();
+            let start_col = line
+                .spans
+                .get(..r.start)?
+                .iter()
+                .map(span_display_cells)
+                .sum();
+            let end_col = line
+                .spans
+                .get(..r.end)?
+                .iter()
+                .map(span_display_cells)
+                .sum();
             Some(start_col..end_col)
         }
     }
@@ -728,9 +751,24 @@ mod tests {
     fn test_block_output_plain() {
         let output = BlockOutput::plain("line1\nline2\nline3");
         assert_eq!(output.len(), 3);
-        assert!(matches!(output.lines[0].selectable, Selectable::All));
-        assert!(matches!(output.lines[1].selectable, Selectable::All));
-        assert!(matches!(output.lines[2].selectable, Selectable::All));
+        assert!(
+            output
+                .lines
+                .first()
+                .is_some_and(|l| matches!(l.selectable, Selectable::All))
+        );
+        assert!(
+            output
+                .lines
+                .get(1)
+                .is_some_and(|l| matches!(l.selectable, Selectable::All))
+        );
+        assert!(
+            output
+                .lines
+                .get(2)
+                .is_some_and(|l| matches!(l.selectable, Selectable::All))
+        );
     }
 
     #[test]
@@ -794,7 +832,9 @@ mod tests {
             output.with_decorations(Some(Span::raw("Prefix: ")), Some(Span::raw(" [suffix]")));
 
         assert_eq!(decorated.lines.len(), 1);
-        let line = &decorated.lines[0];
+        let Some(line) = decorated.lines.first() else {
+            panic!("expected a decorated line: {decorated:?}");
+        };
 
         assert_eq!(line.content.spans.len(), 3);
         assert!(matches!(line.selectable, Selectable::Spans(ref r) if *r == (1..2)));
@@ -913,7 +953,9 @@ mod tests {
             ],
         };
         let decorated = output.with_decorations(Some(Span::raw("> ")), None);
-        let line = &decorated.lines[0];
+        let Some(line) = decorated.lines.first() else {
+            panic!("expected a decorated line: {decorated:?}");
+        };
 
         assert_eq!(line.selection_range, Some(7));
         assert_eq!(line.selection_text.as_deref(), Some("body"));

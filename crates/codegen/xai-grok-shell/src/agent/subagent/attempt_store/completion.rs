@@ -118,15 +118,12 @@ pub(super) enum CompletionRecordV1 {
     Complete(CompletionComplete),
 }
 impl CompletionRecordV1 {
-    fn event(&self) -> u8 {
-        match self {
-            Self::Progress(_) => 0,
-            Self::ProductClaim(_) => 1,
-            Self::Complete(_) => 2,
-        }
-    }
     pub(super) fn limits(&self) -> (usize, usize) {
-        COMPLETION_ROW_BYTES[usize::from(self.event())]
+        match self {
+            Self::Progress(_) => COMPLETION_ROW_BYTES[0],
+            Self::ProductClaim(_) => COMPLETION_ROW_BYTES[1],
+            Self::Complete(_) => COMPLETION_ROW_BYTES[2],
+        }
     }
 }
 

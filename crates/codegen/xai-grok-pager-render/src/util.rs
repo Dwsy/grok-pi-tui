@@ -74,6 +74,13 @@ pub fn abbreviate_path(path: &str) -> Cow<'_, str> {
     Cow::Borrowed(path)
 }
 
+/// Location-chrome path: [`abbreviate_path`] then last-two-component shortening.
+/// Clipboard and other callers keep [`abbreviate_path`].
+pub fn display_location_path(path: impl AsRef<Path>) -> String {
+    let lossy = path.as_ref().to_string_lossy();
+    crate::location_path::shorten_location_path(&abbreviate_path(&lossy)).into_owned()
+}
+
 /// True when `path` is under user [`grok_home()`] (not project `{cwd}/.grok`).
 pub fn is_under_user_grok_home(path: &Path) -> bool {
     path.starts_with(grok_home())
@@ -150,9 +157,9 @@ pub fn parse_schedule_interval_secs(human: &str) -> Option<u64> {
     if !s.starts_with("every ") {
         return None;
     }
-    let rest = s[6..].trim_start();
+    let rest = s.get(6..)?.trim_start();
     let (num_str, unit) = if let Some(sp) = rest.find(char::is_whitespace) {
-        (&rest[..sp], &rest[sp + 1..])
+        (rest.get(..sp)?, rest.get(sp + 1..)?)
     } else if rest.len() >= 2 {
         let (d, u) = rest.split_at(rest.len() - 1);
         (d, u)
@@ -202,7 +209,10 @@ pub fn truncate_to_width(s: &str, max_width: usize) -> Cow<'_, str> {
         return Cow::Borrowed("");
     }
     let end = byte_offset_at_width(s, max_width - 1);
-    Cow::Owned(format!("{}…", &s[..end]))
+    let Some(prefix) = s.get(..end) else {
+        return Cow::Borrowed(s);
+    };
+    Cow::Owned(format!("{prefix}…"))
 }
 
 /// Byte offset at which display width would exceed `max_width`, or `s.len()`.

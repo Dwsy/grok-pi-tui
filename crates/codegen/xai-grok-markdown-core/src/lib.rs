@@ -7,6 +7,8 @@
 //! After parsing, Grok applies [`offset_events`]: only `~~…~~` counts as strikethrough.
 //! Single-tilde pairs (`~text~`), which pulldown treats as strike, are demoted to literal `~` text so LLM output like `~**10%**` is not struck.
 
+#![deny(clippy::indexing_slicing)]
+
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::ops::Range;
 
@@ -52,11 +54,13 @@ fn strike_delim_text<'a>(
     let delim = if opening {
         let end = range.start + 1;
         debug_assert!(text.is_char_boundary(end) && end <= text.len());
-        (range.start..end, &text[range.start..end])
+        (range.start..end, text.get(range.start..end).unwrap_or(""))
     } else {
-        let start = range.end - 1;
+        let Some(start) = range.end.checked_sub(1) else {
+            return (Event::Text("".into()), range.clone());
+        };
         debug_assert!(text.is_char_boundary(start) && start < text.len());
-        (start..range.end, &text[start..range.end])
+        (start..range.end, text.get(start..range.end).unwrap_or(""))
     };
     (Event::Text(delim.1.into()), delim.0)
 }
@@ -283,7 +287,9 @@ pub fn analyze(text: &str) -> MarkdownAnalysis {
             // The range spans the opening fence through the close (or to EOF when unterminated).
             Event::Start(Tag::CodeBlock(kind)) => {
                 if matches!(kind, CodeBlockKind::Fenced(_))
-                    && fenced_block_is_unterminated(&text[range.clone()])
+                    && text
+                        .get(range.clone())
+                        .is_some_and(fenced_block_is_unterminated)
                 {
                     issues.push(StructuralIssue::UnterminatedCodeBlock);
                 }
@@ -985,7 +991,11 @@ mod tests {
                     "drop_delimiter_cell",
                     with_delimiter(base, |line| {
                         let at = line.rfind(" - |").expect("delimiter has a ` - |` cell");
-                        format!("{}{}", &line[..at], &line[at + 4..])
+                        format!(
+                            "{}{}",
+                            line.get(..at).unwrap_or(""),
+                            line.get(at + 4..).unwrap_or("")
+                        )
                     }),
                 ),
             ];

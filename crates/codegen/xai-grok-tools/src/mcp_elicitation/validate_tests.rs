@@ -34,7 +34,7 @@ fn rejects_missing_required() {
     });
     let specs = parse_form_schema(&schema).unwrap();
     let err = validate_form(&specs, &draft_values(&specs, &[""])).unwrap_err();
-    assert_eq!(err[0].field, "email");
+    assert_eq!(err.first().map(|e| e.field.as_str()), Some("email"));
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn string_values_are_submitted_verbatim() {
     // Whitespace is part of the value: it counts toward minLength and is
     // preserved in the accepted content, exactly as the user reviewed it.
     let content = validate_form(&specs, &draft_values(&specs, &["  ab  "])).unwrap();
-    assert_eq!(content["note"], "  ab  ");
+    assert_eq!(content.get("note"), Some(&json!("  ab  ")));
     assert!(
         validate_form(&specs, &draft_values(&specs, &["  ab"])).is_err(),
         "4 chars including spaces is below minLength 6"
@@ -65,7 +65,7 @@ fn whitespace_only_string_is_a_value() {
     });
     let specs = parse_form_schema(&schema).unwrap();
     let content = validate_form(&specs, &draft_values(&specs, &["   "])).unwrap();
-    assert_eq!(content["sep"], "   ");
+    assert_eq!(content.get("sep"), Some(&json!("   ")));
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn accepts_valid_email() {
     });
     let specs = parse_form_schema(&schema).unwrap();
     let content = validate_form(&specs, &draft_values(&specs, &["user@example.com"])).unwrap();
-    assert_eq!(content["email"], "user@example.com");
+    assert_eq!(content.get("email"), Some(&json!("user@example.com")));
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn unknown_format_is_not_validated() {
     });
     let specs = parse_form_schema(&schema).unwrap();
     let content = validate_form(&specs, &draft_values(&specs, &["/relative/path"])).unwrap();
-    assert_eq!(content["ref"], "/relative/path");
+    assert_eq!(content.get("ref"), Some(&json!("/relative/path")));
 }
 
 #[test]
@@ -208,7 +208,7 @@ fn integer_is_parsed_losslessly() {
     });
     let specs = parse_form_schema(&schema).unwrap();
     let content = validate_form(&specs, &draft_values(&specs, &["30"])).unwrap();
-    assert_eq!(content["age"], 30);
+    assert_eq!(content.get("age"), Some(&json!(30)));
     for bad in ["30.5", "200", "1e20", "9223372036854775808"] {
         assert!(
             validate_form(&specs, &draft_values(&specs, &[bad])).is_err(),
@@ -227,7 +227,7 @@ fn large_integer_keeps_every_digit() {
     let specs = parse_form_schema(&schema).unwrap();
     // Above 2^53: an f64 round-trip would change the value.
     let content = validate_form(&specs, &draft_values(&specs, &["9007199254740993"])).unwrap();
-    assert_eq!(content["id"], 9007199254740993_i64);
+    assert_eq!(content.get("id"), Some(&json!(9007199254740993_i64)));
 }
 
 #[test]
@@ -256,12 +256,13 @@ fn single_select_field() {
         "required": ["color"]
     });
     let specs = parse_form_schema(&schema).unwrap();
-    assert!(matches!(
-        specs[0].kind,
-        ElicitFieldKind::SingleSelect { .. }
-    ));
+    assert!(
+        specs
+            .first()
+            .is_some_and(|s| matches!(s.kind, ElicitFieldKind::SingleSelect { .. }))
+    );
     let content = validate_form(&specs, &[ElicitFieldValue::Choice(Some(1))]).unwrap();
-    assert_eq!(content["color"], "blue");
+    assert_eq!(content.get("color"), Some(&json!("blue")));
     assert!(validate_form(&specs, &[ElicitFieldValue::Choice(None)]).is_err());
 }
 
@@ -281,7 +282,7 @@ fn multi_select_validates_items() {
     });
     let specs = parse_form_schema(&schema).unwrap();
     let content = validate_form(&specs, &[ElicitFieldValue::MultiChoice(&[0, 2])]).unwrap();
-    assert_eq!(content["countries"], json!(["US", "DE"]));
+    assert_eq!(content.get("countries"), Some(&json!(["US", "DE"])));
     // minItems enforced.
     assert!(validate_form(&specs, &[ElicitFieldValue::MultiChoice(&[])]).is_err());
     // maxItems enforced.
@@ -321,7 +322,7 @@ fn required_multi_select_submits_empty_array_without_min_items() {
     });
     let specs = parse_form_schema(&schema).unwrap();
     let content = validate_form(&specs, &[ElicitFieldValue::MultiChoice(&[])]).unwrap();
-    assert_eq!(content["tags"], json!([]));
+    assert_eq!(content.get("tags"), Some(&json!([])));
 }
 
 #[test]
@@ -333,7 +334,10 @@ fn required_unsupported_field_errors() {
     });
     let specs = parse_form_schema(&schema).unwrap();
     let err = validate_form(&specs, &[ElicitFieldValue::Draft("")]).unwrap_err();
-    assert_eq!(err[0].message, "unsupported field type");
+    assert_eq!(
+        err.first().map(|e| e.message.as_str()),
+        Some("unsupported field type")
+    );
 }
 
 #[test]
@@ -351,7 +355,7 @@ fn optional_unsupported_field_is_omitted() {
         &[ElicitFieldValue::Draft(""), ElicitFieldValue::Draft("n")],
     )
     .unwrap();
-    assert_eq!(content["name"], "n");
+    assert_eq!(content.get("name"), Some(&json!("n")));
     assert!(!content.contains_key("blobs"));
 }
 
@@ -363,5 +367,5 @@ fn boolean_field() {
     });
     let specs = parse_form_schema(&schema).unwrap();
     let content = validate_form(&specs, &[ElicitFieldValue::Bool(true)]).unwrap();
-    assert_eq!(content["ok"], true);
+    assert_eq!(content.get("ok"), Some(&json!(true)));
 }

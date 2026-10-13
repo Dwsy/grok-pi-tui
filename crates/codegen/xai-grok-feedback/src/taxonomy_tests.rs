@@ -19,8 +19,9 @@ where
 /// The `enum` array the tool schema advertises to the model; schemars spells variants independently of serde.
 fn schema_enum<T: schemars::JsonSchema>() -> Vec<String> {
     let schema = schemars::schema_for!(T).to_value();
-    schema["enum"]
-        .as_array()
+    schema
+        .get("enum")
+        .and_then(|e| e.as_array())
         .unwrap()
         .iter()
         .map(|value| value.as_str().unwrap().to_owned())

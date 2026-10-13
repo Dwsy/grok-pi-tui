@@ -509,9 +509,10 @@ mod tests {
         // Embed the existing chunk.
         let existing_embedding = provider.embed_batch(&[content]).await.unwrap();
         let chunk_id = format!("{}:0", file_path.to_string_lossy());
-        index
-            .upsert_embedding(&chunk_id, &existing_embedding[0])
-            .unwrap();
+        let Some(emb0) = existing_embedding.first() else {
+            panic!("embed_batch returns one vector per input: {existing_embedding:?}");
+        };
+        index.upsert_embedding(&chunk_id, emb0).unwrap();
 
         // Identical content embeds to the same vector, so the similarity is 1.0
         let result = is_semantically_duplicate(
@@ -547,7 +548,10 @@ mod tests {
         index.reindex_file(&file_path, "session").unwrap();
         let emb = provider.embed_batch(&[existing]).await.unwrap();
         let chunk_id = format!("{}:0", file_path.to_string_lossy());
-        index.upsert_embedding(&chunk_id, &emb[0]).unwrap();
+        let Some(emb0) = emb.first() else {
+            panic!("embed_batch returns one vector per input: {emb:?}");
+        };
+        index.upsert_embedding(&chunk_id, emb0).unwrap();
 
         // Different content should not be flagged as duplicate.
         let novel = "## Architecture\n\nThe API uses Python FastAPI with async handlers.";

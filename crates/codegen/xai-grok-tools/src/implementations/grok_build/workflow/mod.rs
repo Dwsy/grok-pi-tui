@@ -506,26 +506,37 @@ mod tests {
     #[test]
     fn model_schema_requires_one_tagged_source() {
         let schema = crate::registry::types::generate_schema::<WorkflowToolInput>();
-        assert_eq!(schema["required"], serde_json::json!(["source"]));
-        let source = &schema["properties"]["source"];
+        assert_eq!(schema.get("required"), Some(&serde_json::json!(["source"])));
+        let Some(source) = schema.get("properties").and_then(|p| p.get("source")) else {
+            panic!("schema missing properties.source: {schema}");
+        };
         assert_eq!(
-            source["oneOf"].as_array().map(Vec::len),
+            source.get("oneOf").and_then(|v| v.as_array()).map(Vec::len),
             Some(6),
             "{source}"
         );
-        assert!(schema["properties"].get("name").is_none());
-        assert!(schema["properties"].get("script").is_none());
-        assert!(schema["properties"].get("script_path").is_none());
-        assert!(schema["properties"].get("resume_from_run_id").is_none());
+        let Some(props) = schema.get("properties") else {
+            panic!("schema missing properties: {schema}");
+        };
+        assert!(props.get("name").is_none());
+        assert!(props.get("script").is_none());
+        assert!(props.get("script_path").is_none());
+        assert!(props.get("resume_from_run_id").is_none());
         assert_eq!(
-            schema["properties"]["agent_budget"]["default"],
-            serde_json::Value::Null
+            props.get("agent_budget").and_then(|v| v.get("default")),
+            Some(&serde_json::Value::Null)
         );
         assert_eq!(
-            schema["properties"]["args"]["default"],
-            serde_json::Value::Null
+            props.get("args").and_then(|v| v.get("default")),
+            Some(&serde_json::Value::Null)
         );
-        assert_eq!(schema["properties"]["validate_only"]["default"], false);
+        assert_eq!(
+            props
+                .get("validate_only")
+                .and_then(|v| v.get("default"))
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
     }
 
     #[test]
@@ -542,10 +553,16 @@ mod tests {
             let input = parse(case.clone()).unwrap();
             assert!(input.validate().is_ok(), "{case}");
             let serialized = serde_json::to_value(input).unwrap();
-            assert_eq!(serialized["source"], case["source"]);
-            assert_eq!(serialized["agent_budget"], serde_json::Value::Null);
-            assert_eq!(serialized["args"], serde_json::Value::Null);
-            assert_eq!(serialized["validate_only"], false);
+            assert_eq!(serialized.get("source"), case.get("source"));
+            assert_eq!(
+                serialized.get("agent_budget"),
+                Some(&serde_json::Value::Null)
+            );
+            assert_eq!(serialized.get("args"), Some(&serde_json::Value::Null));
+            assert_eq!(
+                serialized.get("validate_only").and_then(|v| v.as_bool()),
+                Some(false)
+            );
         }
     }
 
@@ -622,7 +639,14 @@ mod tests {
         }))
         .unwrap();
         assert!(input.validate().is_ok());
-        assert_eq!(input.args.unwrap()["objective"], "review");
+        assert_eq!(
+            input
+                .args
+                .as_ref()
+                .and_then(|a| a.get("objective"))
+                .and_then(|v| v.as_str()),
+            Some("review")
+        );
 
         let resume_with_args = parse(serde_json::json!({
             "source": {"type": "resume", "resume_from_run_id": "wf_123"},

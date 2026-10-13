@@ -6,6 +6,8 @@
 use super::side_call::{AuxCall, log_prompt_cache_usage};
 use super::*;
 
+use agent_client_protocol as acp;
+
 use crate::session::SideQuestionError;
 use xai_grok_sampling_types::SamplingError;
 
@@ -13,6 +15,60 @@ use xai_grok_sampling_types::SamplingError;
 /// The full recap can be long and rides every row of the session-list response.
 /// Listing cards only show a short preview, so bound what goes on the wire.
 const RECAP_PERSIST_MAX_CHARS: usize = 240;
+
+/// What the model is told about a `/btw` side question. Shared with other backends that answer one
+pub const SIDE_QUESTION_INSTRUCTION: &str = "This is a side question from the user. \
+         You must answer this question directly in a single response.\n\n\
+         IMPORTANT CONTEXT:\n\
+         - You are a separate, lightweight agent spawned to answer this one question\n\
+         - The main agent is NOT interrupted - it continues working independently in the background\n\
+         - You share the conversation context but are a completely separate instance\n\
+         - Do NOT reference being interrupted or what you were \"previously doing\" - that framing is incorrect\n\n\
+         CRITICAL CONSTRAINTS:\n\
+         - Do NOT call any tools, respond with plain text only\n\
+         - A tool call cannot help you: nothing runs on the user's machine and you get no turn in which to read a result\n\
+         - This is a one-off response - there will be no follow-up turns\n\
+         - You can ONLY provide information based on the conversation context and any images attached to this side question\n\
+         - NEVER say things like \"Let me try...\", \"I'll now...\", \"Let me check...\", or promise to take any action\n\
+         - If you don't know the answer, say so - do not offer to look it up or investigate\n\n\
+         Simply answer the question with the information you have.";
+
+/// The `/btw` user turn. Images attached to this call are inlined on the item;
+/// the parent conversation is left unchanged.
+fn side_question_instruction(tag: &str, question: &str) -> String {
+    format!("<{tag}>{SIDE_QUESTION_INSTRUCTION}</{tag}>\n\n{question}")
+}
+
+fn side_question_item(body: String, images: &[acp::ImageContent]) -> ConversationItem {
+    let mut item = ConversationItem::user(body);
+    for image in images {
+        item.add_image(super::prompt_build::pick_user_image_url(image));
+    }
+    item
+}
+
+#[cfg(test)]
+mod side_question_item_tests {
+    use super::*;
+
+    #[test]
+    fn attached_images_are_inlined_on_the_side_question_item() {
+        let image = acp::ImageContent::new("aGVsbG8=", "image/png");
+        let item = side_question_item("what is this".into(), std::slice::from_ref(&image));
+        let ConversationItem::User(user) = item else {
+            panic!("side question must be a user item");
+        };
+        assert!(
+            user.content.iter().any(|part| matches!(
+                part,
+                xai_grok_sampling_types::ContentPart::Image { url }
+                    if url.as_ref() == "data:image/png;base64,aGVsbG8="
+            )),
+            "the model call must see the attached image, got {:?}",
+            user.content
+        );
+    }
+}
 
 /// Retry policy for the one-shot `/btw` model call: 3 attempts total (1 try, then 2 retries) with jittered backoff from 500ms to 1s.
 /// Deliberately short, nothing like the sampler actor's budget: a fleet-wide capacity event must not multiply side questions into a retry storm.
@@ -44,6 +100,7 @@ impl SessionActor {
     pub(super) async fn handle_side_question(
         &self,
         question: &str,
+        images: Vec<acp::ImageContent>,
     ) -> Result<String, SideQuestionError> {
         let btw_session_id = format!("btw-{}", uuid::Uuid::new_v4());
         let parent_session_id = self.session_info.id.to_string();
@@ -70,7 +127,7 @@ impl SessionActor {
         crate::session::helpers::session_recap::pop_trailing_tool_run(&mut items);
 
         let (instruction, tool_specs, hosted_tools) =
-            self.side_question_prompt_and_tools(question).await;
+            self.side_question_prompt_and_tools(question, images).await;
         items.push(instruction);
 
         let model = sampling_config.map(|c| c.model).unwrap_or_default();
@@ -141,41 +198,75 @@ impl SessionActor {
         }
     }
 
+    /// Normalize in memory and inline survivors. Cursor cannot inline images; say so
+    /// instead of transcribing through the parent-session asset writer.
+    async fn prepare_side_question_images(
+        &self,
+        body: &mut String,
+        images: Vec<acp::ImageContent>,
+        is_cursor: bool,
+    ) -> Vec<acp::ImageContent> {
+        if images.is_empty() {
+            return images;
+        }
+        let norm = crate::session::image_normalize::normalize_images(images, is_cursor).await;
+        if let Some((notice, notes)) =
+            crate::session::image_normalize::dropped_to_envelope(norm.dropped, is_cursor)
+        {
+            body.push_str(&notice);
+            self.send_xai_notification(
+                crate::extensions::notification::SessionUpdate::ImageDropped { notes },
+            )
+            .await;
+        }
+        if !norm.compressed.is_empty() {
+            body.push_str(&crate::session::image_normalize::render_compression_notice(
+                &norm.compressed,
+                is_cursor,
+            ));
+        }
+        if !norm.re_encode_fallbacks.is_empty() {
+            body.push_str(
+                &crate::session::image_normalize::render_re_encode_fallback_notice(
+                    &norm.re_encode_fallbacks,
+                    is_cursor,
+                ),
+            );
+        }
+        if is_cursor && !norm.images.is_empty() {
+            body.push_str(
+                "\n\nThe user attached image(s) to this side question. This session cannot inline them, and they were not saved to the session.",
+            );
+            return Vec::new();
+        }
+        norm.images
+    }
+
     /// The `/btw` instruction and tools. Tools ship unchanged so the cached prefix matches; only the prompt keeps the model from calling them.
     async fn side_question_prompt_and_tools(
         &self,
         question: &str,
+        images: Vec<acp::ImageContent>,
     ) -> (
         ConversationItem,
         Vec<ToolSpec>,
         Vec<xai_grok_sampling_types::HostedTool>,
     ) {
         let tag = self.reminder_wrapper_tag();
-        let instruction = ConversationItem::user(format!(
-            "<{tag}>This is a side question from the user. \
-             You must answer this question directly in a single response.\n\n\
-             IMPORTANT CONTEXT:\n\
-             - You are a separate, lightweight agent spawned to answer this one question\n\
-             - The main agent is NOT interrupted - it continues working independently in the background\n\
-             - You share the conversation context but are a completely separate instance\n\
-             - Do NOT reference being interrupted or what you were \"previously doing\" - that framing is incorrect\n\n\
-             CRITICAL CONSTRAINTS:\n\
-             - Do NOT call any tools, respond with plain text only\n\
-             - A tool call cannot help you: nothing runs on the user's machine and you get no turn in which to read a result\n\
-             - This is a one-off response - there will be no follow-up turns\n\
-             - You can ONLY provide information based on what you already know from the conversation context\n\
-             - NEVER say things like \"Let me try...\", \"I'll now...\", \"Let me check...\", or promise to take any action\n\
-             - If you don't know the answer, say so - do not offer to look it up or investigate\n\n\
-             Simply answer the question with the information you have.</{tag}>\n\n\
-             {question}"
-        ));
+        let mut body = side_question_instruction(tag, question);
+        // In-memory only. Do not use the interjection pipeline: its cursor path
+        // writes image assets into the parent session.
+        let images = self
+            .prepare_side_question_images(&mut body, images, self.is_cursor_harness())
+            .await;
+        let instruction = side_question_item(body, &images);
         // Same tools as the main turn: they serialize into the cached prefix, and a side question must not search past the active cutoff.
         let tool_specs = self.turn_base_tool_specs(&self.prepare_tool_definitions().await);
         (instruction, tool_specs, self.hosted_tools_for_turn())
     }
 
-    /// Snapshots the conversation and appends a single recap instruction turn, reusing the prompt prefix verbatim so the provider cache stays warm.
-    /// Makes one tool-free model call and emits the cleaned one-line summary for display only.
+    /// Sends a compact transcript of recent user messages and agent replies in one small tool-free model call.
+    /// Emits the cleaned one-line summary for display only.
     /// A missing recap must never disrupt the session.
     pub(super) async fn handle_recap(&self, auto: bool) {
         use crate::session::helpers::session_recap;
@@ -201,12 +292,13 @@ impl SessionActor {
             stored
         };
 
-        const RECAP_MIN_IDLE_MS: i64 = 3 * 60 * 1000;
+        let min_idle_ms =
+            i64::try_from(session_recap::RECAP_MIN_IDLE.as_millis()).unwrap_or(i64::MAX);
         let last_ms = self
             .last_api_request_at
             .load(std::sync::atomic::Ordering::Relaxed);
         let idle_ms = chrono::Utc::now().timestamp_millis() - last_ms;
-        let idle_ok = last_ms != 0 && idle_ms >= RECAP_MIN_IDLE_MS;
+        let idle_ok = last_ms != 0 && idle_ms >= min_idle_ms;
 
         if let Err(reason) = session_recap::recap_gate(main_turns, last, auto, idle_ok) {
             tracing::debug!(auto, main_turns, last, reason, "skipping recap");
@@ -231,8 +323,22 @@ impl SessionActor {
         // Advance the watermark only on success or suppress (not on failure, empty, or cancel) so auto can retry later for this turn
         let clear_in_flight = || self.recap_in_flight.set(false);
 
-        let setup = match self.prepare_side_call().await {
-            Ok(s) => s,
+        let settings = crate::util::config::resolve_session_recap_settings_from_disk();
+        let Some(transcript) = session_recap::recap_transcript(
+            &conversation,
+            settings.user_message_max_chars,
+            settings.agent_reply_max_chars,
+            settings.transcript_max_chars,
+        ) else {
+            tracing::debug!(auto, main_turns, "skipping recap: no transcript");
+            clear_in_flight();
+            if !auto {
+                self.emit_recap_unavailable().await;
+            }
+            return;
+        };
+        let (client, model, reasoning_effort) = match self.recap_sampling_client(&settings).await {
+            Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "recap: failed to prepare sampling client");
                 clear_in_flight();
@@ -243,25 +349,40 @@ impl SessionActor {
                 return;
             }
         };
-        let tag = self.reminder_wrapper_tag();
-        let items = session_recap::budget_recap_items(
-            conversation,
-            tag,
-            setup.strip_reasoning,
-            setup.context_window,
-        );
-        let strip_reasoning = setup.strip_reasoning;
-        let model = setup.model.clone();
         let started_at = chrono::Utc::now().to_rfc3339();
         let x_grok_conv_id = format!("recap-{}", uuid::Uuid::new_v4());
         let x_grok_req_id = format!("xai-recap-{}", uuid::Uuid::new_v4());
-        let request = self
-            .side_call_request(&setup, items, x_grok_conv_id.clone(), x_grok_req_id.clone())
-            .await;
+        let request = ConversationRequest {
+            items: vec![
+                ConversationItem::system(session_recap::RECAP_SYSTEM),
+                ConversationItem::user(transcript),
+            ],
+            model: Some(model.clone()),
+            reasoning_effort,
+            x_grok_conv_id: Some(x_grok_conv_id.clone()),
+            x_grok_req_id: Some(x_grok_req_id.clone()),
+            x_grok_session_id: Some(self.session_info.id.to_string()),
+            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
+            length_policy: xai_grok_sampling_types::LengthPolicy::Fail,
+            ..Default::default()
+        };
         // The artifact records the exact model-facing items after trust projection; the canonical conversation state remains raw
         let chat_history_for_artifact = request.items.clone();
 
-        let response = match setup.client.conversation_collect(request).await {
+        let response = match tokio::time::timeout(
+            settings.timeout,
+            client.conversation_collect(request),
+        )
+        .await
+        {
+            Ok(Ok(r)) => Ok(r),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err(format!(
+                "timed out after {} ms",
+                settings.timeout.as_millis()
+            )),
+        };
+        let response = match response {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, "recap: model call failed");
@@ -269,14 +390,12 @@ impl SessionActor {
                     chat_history_for_artifact,
                     &model,
                     auto,
-                    strip_reasoning,
-                    tag,
                     &x_grok_req_id,
                     &x_grok_conv_id,
                     started_at,
                     None,
                     None,
-                    Some(&e.to_string()),
+                    Some(&e),
                 );
                 clear_in_flight();
                 // A manual `/recap` shows a loading spinner; clear it on failure.
@@ -287,7 +406,6 @@ impl SessionActor {
             }
         };
 
-        log_prompt_cache_usage("recap", setup.client.api_backend(), &response);
         let raw_response = response.assistant_text();
         let summary = session_recap::clean_recap_text(&raw_response);
         if summary.is_empty() {
@@ -296,8 +414,6 @@ impl SessionActor {
                 chat_history_for_artifact,
                 &model,
                 auto,
-                strip_reasoning,
-                tag,
                 &x_grok_req_id,
                 &x_grok_conv_id,
                 started_at,
@@ -326,8 +442,6 @@ impl SessionActor {
                 chat_history_for_artifact,
                 &model,
                 auto,
-                strip_reasoning,
-                tag,
                 &x_grok_req_id,
                 &x_grok_conv_id,
                 started_at,
@@ -350,8 +464,6 @@ impl SessionActor {
                 chat_history_for_artifact,
                 &model,
                 auto,
-                strip_reasoning,
-                tag,
                 &x_grok_req_id,
                 &x_grok_conv_id,
                 started_at,
@@ -369,8 +481,6 @@ impl SessionActor {
             chat_history_for_artifact,
             &model,
             auto,
-            strip_reasoning,
-            tag,
             &x_grok_req_id,
             &x_grok_conv_id,
             started_at,
@@ -396,6 +506,46 @@ impl SessionActor {
             crate::extensions::notification::SessionUpdate::SessionRecap { summary, auto },
         )
         .await;
+    }
+
+    /// Client for the recap call: the configured model when it shares the session's endpoint and auth, else the session model.
+    /// The configured effort applies when the chosen model supports it, else the session's effort stays.
+    async fn recap_sampling_client(
+        &self,
+        settings: &crate::util::config::SessionRecapSettings,
+    ) -> Result<
+        (
+            xai_grok_sampler::SamplingClient,
+            String,
+            Option<xai_grok_sampling_types::ReasoningEffort>,
+        ),
+        acp::Error,
+    > {
+        self.refresh_token_if_expired().await;
+        let mut config = self.reconstruct_full_config().await;
+        if self.models_manager.model_shares_route(
+            &settings.model,
+            &config.base_url,
+            &config.api_backend,
+        ) {
+            config.model = settings.model.clone();
+        }
+        if self
+            .models_manager
+            .model_supports_reasoning_effort_value(&config.model, settings.reasoning_effort)
+        {
+            self.models_manager.apply_supported_effort(
+                &mut config,
+                Some(settings.reasoning_effort),
+                &self.session_info.id,
+                crate::sampling::EffortTarget::SummaryClient,
+            );
+        }
+        let model = config.model.clone();
+        let reasoning_effort = config.reasoning_effort;
+        let client =
+            xai_grok_sampler::SamplingClient::new(config).map_err(|e| self.to_acp_error(e))?;
+        Ok((client, model, reasoning_effort))
     }
 
     pub(crate) fn recap_was_cancelled(&self, epoch: u64) -> bool {
@@ -436,8 +586,6 @@ impl SessionActor {
         chat_history: Vec<ConversationItem>,
         model: &str,
         auto: bool,
-        strip_reasoning: bool,
-        reminder_tag: &str,
         x_grok_req_id: &str,
         x_grok_conv_id: &str,
         started_at: String,
@@ -456,8 +604,8 @@ impl SessionActor {
             model: model.to_owned(),
             x_grok_req_id: x_grok_req_id.to_owned(),
             x_grok_conv_id: x_grok_conv_id.to_owned(),
-            strip_reasoning,
-            reminder_tag: reminder_tag.to_owned(),
+            strip_reasoning: false,
+            reminder_tag: String::new(),
             chat_history,
             summary: summary.map(str::to_owned),
             raw_response: raw_response.map(str::to_owned),

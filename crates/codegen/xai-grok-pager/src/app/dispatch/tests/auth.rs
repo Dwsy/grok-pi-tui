@@ -32,9 +32,9 @@ fn cta_mcps_loaded_needs_auth_opens_modal_and_seeds() {
         &mut app,
     );
     // The CTA is finished; the modal owns the flow from here
-    assert_eq!(app.agents[&id].plugin_cta.phase, CtaPhase::Hidden);
+    assert_eq!(test_agent(&app, id).plugin_cta.phase, CtaPhase::Hidden);
     // Modal opened to the MCP Servers tab.
-    let modal = app.agents[&id]
+    let modal = test_agent(&app, id)
         .extensions_modal
         .as_ref()
         .expect("extensions modal should be open");
@@ -124,12 +124,12 @@ fn cta_mcps_loaded_no_needs_auth_terminal_sets_installed() {
         &mut app,
     );
     assert_eq!(
-        app.agents[&id].plugin_cta.phase,
+        test_agent(&app, id).plugin_cta.phase,
         CtaPhase::Installed {
             name: "figma".into()
         }
     );
-    assert!(app.agents[&id].extensions_modal.is_none());
+    assert!(test_agent(&app, id).extensions_modal.is_none());
     // No modal repopulation; settling emits the auto-dismiss timer and the candidate refresh, and never re-fetches the MCP list
     assert!(
         !effects
@@ -181,16 +181,14 @@ fn cta_mcps_loaded_later_needs_auth_opens_handoff() {
         &mut app,
     );
     // NeedsAuth is terminal: the modal opens immediately even mid-poll
-    assert_eq!(app.agents[&id].plugin_cta.phase, CtaPhase::Hidden);
-    assert!(app.agents[&id].extensions_modal.is_some());
+    assert_eq!(test_agent(&app, id).plugin_cta.phase, CtaPhase::Hidden);
+    assert!(test_agent(&app, id).extensions_modal.is_some());
     assert!(
         !effects
             .iter()
             .any(|e| matches!(e, Effect::RetryPluginCtaMcps { .. }))
     );
 }
-
-// ── agent-bound kinds (bash) ─────────
 
 /// A bash command typed while a turn is running goes straight to the server: an Effect and an optimistic echo, no local queue entry.
 #[test]
@@ -200,7 +198,10 @@ fn bash_while_running_is_server_authoritative() {
     app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
 
     let effects = dispatch(Action::SendBashCommand("ls -la".into()), &mut app);
-    let pid = match &effects[0] {
+    let Some(effect) = effects.first() else {
+        panic!("expected an effect, got {effects:?}");
+    };
+    let pid = match effect {
         Effect::SendBashCommand {
             command, prompt_id, ..
         } => {
@@ -209,15 +210,18 @@ fn bash_while_running_is_server_authoritative() {
         }
         other => panic!("expected immediate SendBashCommand, got {other:?}"),
     };
-    assert_eq!(app.agents[&id].session.queue_len(), 0);
+    assert_eq!(test_agent(&app, id).session.queue_len(), 0);
     // Optimistic echo present with kind="bash".
     let q = app
         .shared_prompt_queue("test-session")
         .expect("echo present");
     assert_eq!(q.len(), 1);
-    assert_eq!(q[0].id, pid);
-    assert_eq!(q[0].kind, "bash");
-    assert_eq!(q[0].text, "ls -la");
+    let Some(front) = q.first() else {
+        panic!("expected queue echo: {q:?}");
+    };
+    assert_eq!(front.id, pid);
+    assert_eq!(front.kind, "bash");
+    assert_eq!(front.text, "ls -la");
 }
 
 #[test]
@@ -294,6 +298,48 @@ fn login_from_welcome_does_not_stash_return_view() {
 
     assert_eq!(app.active_view, ActiveView::Welcome);
     assert_eq!(app.auth_return_view, None);
+}
+
+/// A build without account logins refuses a login, a logout or an account switch, in the session.
+#[test]
+fn without_account_logins_login_and_logout_are_refused_in_the_session() {
+    let refusal =
+        xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::AccountLogin])
+            .refusal(xai_grok_config::Capability::AccountLogin)
+            .expect("a build without account logins refuses one");
+    for action in [Action::Login, Action::Logout, Action::SwitchAccount] {
+        let mut app = test_app_with_agent();
+        app.distribution = xai_grok_config::Distribution::withholding(&[
+            xai_grok_config::Capability::AccountLogin,
+        ]);
+        let view = app.active_view;
+
+        let effects = dispatch(action, &mut app);
+
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(view, app.active_view, "no login screen");
+        assert_eq!(refusal, last_system_text(&app, AgentId(0)));
+    }
+}
+
+#[test]
+fn without_account_logins_the_welcome_login_is_refused() {
+    let mut app = test_app();
+    app.distribution =
+        xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::AccountLogin]);
+    app.auth_state = AuthState::Pending { error: None };
+
+    assert!(dispatch(Action::Login, &mut app).is_empty());
+    assert!(matches!(app.auth_state, AuthState::Pending { .. }));
+    let refusal =
+        xai_grok_config::Distribution::withholding(&[xai_grok_config::Capability::AccountLogin])
+            .refusal(xai_grok_config::Capability::AccountLogin);
+    assert_eq!(
+        refusal,
+        app.welcome_toast
+            .as_ref()
+            .map(|(message, _)| message.as_str())
+    );
 }
 
 /// Compact-auth recovery: the prompt is held across an auto-compact 401, stashed on PromptResponse, and resubmitted on a mid-session AuthComplete.
@@ -382,7 +428,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
         &mut app,
     );
     assert_eq!(
-        app.agents[&id]
+        test_agent(&app, id)
             .reauth_stashed_prompt
             .as_ref()
             .map(|p| p.text.as_str()),
@@ -400,7 +446,7 @@ fn e2e_compact_auth_failure_holds_prompt_and_resubmits_after_login() {
         &mut app,
     );
     assert!(
-        app.agents[&id].reauth_stashed_prompt.is_none(),
+        test_agent(&app, id).reauth_stashed_prompt.is_none(),
         "stash consumed on AuthComplete"
     );
     assert!(
@@ -442,7 +488,7 @@ fn pre_fix_compact_start_without_hold_cannot_stash_for_reauth() {
         &mut app,
     );
     assert!(
-        app.agents[&id].reauth_stashed_prompt.is_none(),
+        test_agent(&app, id).reauth_stashed_prompt.is_none(),
         "without compact_held / in_flight, reauth cannot stash — the pre-fix bug"
     );
 }
@@ -481,7 +527,7 @@ fn second_auth_failure_does_not_clobber_reauth_stash() {
     );
 
     assert_eq!(
-        app.agents[&id]
+        test_agent(&app, id)
             .reauth_stashed_prompt
             .as_ref()
             .map(|prompt| prompt.text.as_str()),
@@ -508,7 +554,7 @@ fn cancel_login_drops_reauth_stashed_prompt() {
     dispatch(Action::CancelLogin, &mut app);
 
     assert!(
-        app.agents[&id].reauth_stashed_prompt.is_none(),
+        test_agent(&app, id).reauth_stashed_prompt.is_none(),
         "cancelling re-auth must drop the stashed prompt"
     );
 }
@@ -537,7 +583,7 @@ fn cancel_login_strips_reauth_prompt_from_scrollback() {
     dispatch(Action::Login, &mut app);
     dispatch(Action::CancelLogin, &mut app);
 
-    let sb = &app.agents[&id].scrollback;
+    let sb = &test_agent(&app, id).scrollback;
     let has_reauth = (0..sb.len()).any(|i| {
         matches!(
             sb.entry(i).map(|e| &e.block),

@@ -284,7 +284,9 @@ mod tests {
         let parsed: NotificationConfig = toml::from_str(toml_str).expect("deserialize hooks");
 
         assert_eq!(parsed.hooks.len(), 1);
-        let hook = &parsed.hooks[0];
+        let Some(hook) = parsed.hooks.first() else {
+            panic!("expected one hook: {:?}", parsed.hooks);
+        };
         assert_eq!(hook.command, "my-script.sh");
         assert!(hook.events.is_empty());
         assert!(hook.only_unfocused);

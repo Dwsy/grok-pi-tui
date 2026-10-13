@@ -135,7 +135,7 @@ async fn list_dir_slice(
 
     // Compute end index, saturating to avoid overflow with large limits.
     let end_index = start_index.saturating_add(limit).min(total);
-    let page = &entries[start_index..end_index];
+    let page = entries.get(start_index..end_index).unwrap_or(&[]);
 
     let mut lines: Vec<String> = page.iter().map(format_entry_line).collect();
 
@@ -243,7 +243,7 @@ fn format_entry_component(name: &std::ffi::OsStr) -> String {
 /// Truncate a string at a char boundary, returning at most `max_bytes` bytes.
 fn take_at_char_boundary(s: &str, max_bytes: usize) -> &str {
     let end = crate::util::floor_char_boundary(s, max_bytes);
-    &s[..end]
+    s.get(..end).unwrap_or(s)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────
@@ -431,8 +431,11 @@ mod tests {
 
         // First page: limit=2, should get a.txt, b.txt + overflow message
         let page1 = list_dir_slice(tmp.path(), 1, 2, 1).await.unwrap();
-        assert!(page1[0].contains("a.txt"), "first entry should be a.txt");
-        assert!(page1[1].contains("b.txt"), "second entry should be b.txt");
+        let [a, b, ..] = page1.as_slice() else {
+            panic!("expected at least two page1 entries: {page1:?}");
+        };
+        assert!(a.contains("a.txt"), "first entry should be a.txt");
+        assert!(b.contains("b.txt"), "second entry should be b.txt");
         assert!(
             page1.last().unwrap().contains("More than 2 entries found"),
             "should have overflow message"
@@ -441,7 +444,10 @@ mod tests {
         // Second page: offset=3 → c.txt only, no overflow
         let page2 = list_dir_slice(tmp.path(), 3, 2, 1).await.unwrap();
         assert_eq!(page2.len(), 1, "second page should have 1 entry");
-        assert!(page2[0].contains("c.txt"), "should be c.txt");
+        assert!(
+            page2.first().is_some_and(|e| e.contains("c.txt")),
+            "should be c.txt"
+        );
     }
 
     #[tokio::test]
@@ -452,7 +458,7 @@ mod tests {
         // usize::MAX as limit should not panic
         let result = list_dir_slice(tmp.path(), 1, usize::MAX, 1).await.unwrap();
         assert_eq!(result.len(), 1);
-        assert!(result[0].contains("only.txt"));
+        assert!(result.first().is_some_and(|e| e.contains("only.txt")));
     }
 
     #[tokio::test]
@@ -482,7 +488,10 @@ mod tests {
 
         // limit=2, offset=2 → should get m.txt (2nd sorted entry)
         let result = list_dir_slice(tmp.path(), 2, 1, 1).await.unwrap();
-        assert!(result[0].contains("m.txt"), "offset=2 should land on m.txt");
+        assert!(
+            result.first().is_some_and(|e| e.contains("m.txt")),
+            "offset=2 should land on m.txt"
+        );
     }
 
     // ── Tool integration tests ──────────────────────────────────

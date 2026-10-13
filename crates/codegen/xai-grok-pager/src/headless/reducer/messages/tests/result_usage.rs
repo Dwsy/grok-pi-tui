@@ -3,6 +3,11 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+fn at<'a>(v: &'a Value, path: &str) -> &'a Value {
+    static NULL: Value = Value::Null;
+    v.pointer(path).unwrap_or(&NULL)
+}
+
 #[test]
 fn messages_usage_drops_reasoning_tokens() {
     let mut r = messages(false);
@@ -21,10 +26,55 @@ fn messages_usage_drops_reasoning_tokens() {
         stop_sequence: None,
     });
     let msg = r.flush_assistant(Some("end_turn")).expect("assistant");
-    let usage = &msg["message"]["usage"];
-    assert_eq!(usage["input_tokens"], 4);
-    assert_eq!(usage["output_tokens"], 2);
+    let usage = at(&msg, "/message/usage");
+    assert_eq!(at(usage, "/input_tokens"), 4);
+    assert_eq!(at(usage, "/output_tokens"), 2);
     assert!(usage.get("reasoning_tokens").is_none(), "{usage:?}");
+}
+
+#[test]
+fn turn_usage_does_not_stamp_the_sum_on_one_assistant_message() {
+    let mut r = messages(false);
+    let mut out = Vec::new();
+    out.extend(r.reduce(StreamEvent::AgentMessage("look".into())));
+    out.extend(r.reduce(StreamEvent::ToolCall(tool_call_ev())));
+    out.extend(r.reduce(StreamEvent::ToolCallUpdate(tool_update(
+        "completed",
+        json!({"ok": true}),
+    ))));
+    out.extend(r.reduce(StreamEvent::AgentMessage("done".into())));
+    out.extend(r.reduce(StreamEvent::TurnUsage {
+        usage: ResponseUsage {
+            input_tokens: 5_000,
+            output_tokens: 80,
+            cache_read_input_tokens: 400,
+            cache_creation_input_tokens: 25,
+            reasoning_tokens: 10,
+        },
+    }));
+    out.extend(r.finish(&turn_end("end_turn", "done")));
+
+    let assistants: Vec<_> = out
+        .iter()
+        .filter(|line| line.get("type").and_then(Value::as_str) == Some("assistant"))
+        .collect();
+    assert_eq!(2, assistants.len(), "{out:?}");
+    for message in assistants {
+        assert_eq!(
+            Some(0),
+            message
+                .pointer("/message/usage/input_tokens")
+                .and_then(Value::as_u64),
+            "{message}"
+        );
+        assert_eq!(
+            Some(0),
+            message
+                .pointer("/message/usage/output_tokens")
+                .and_then(Value::as_u64),
+            "{message}"
+        );
+    }
 }
 
 #[test]
@@ -33,10 +83,14 @@ fn messages_refusal_marks_result_error() {
     r.reduce(StreamEvent::AgentMessage("declined".into()));
     let out = r.finish(&turn_end("refusal", "declined"));
     let result = out.last().expect("result line");
-    assert_eq!(result["type"], "result");
-    assert_eq!(result["is_error"], true, "{result:?}");
-    assert_eq!(result["subtype"], "error_during_execution", "{result:?}");
-    assert!(result["errors"].is_array(), "{result:?}");
+    assert_eq!(at(result, "/type"), "result");
+    assert_eq!(at(result, "/is_error"), true, "{result:?}");
+    assert_eq!(
+        at(result, "/subtype"),
+        "error_during_execution",
+        "{result:?}"
+    );
+    assert!(at(result, "/errors").is_array(), "{result:?}");
     assert!(
         result.get("result").is_none(),
         "error result omits result text"
@@ -49,9 +103,9 @@ fn messages_result_carries_required_fields() {
     r.reduce(StreamEvent::AgentMessage("hi".into()));
     let out = r.finish(&turn_end("end_turn", "done"));
     let result = out.last().expect("result line");
-    assert_eq!(result["subtype"], "success");
-    assert_eq!(result["result"], "hi");
-    assert_eq!(result["stop_reason"], "end_turn");
+    assert_eq!(at(result, "/subtype"), "success");
+    assert_eq!(at(result, "/result"), "hi");
+    assert_eq!(at(result, "/stop_reason"), "end_turn");
     for key in [
         "duration_ms",
         "duration_api_ms",
@@ -61,14 +115,17 @@ fn messages_result_carries_required_fields() {
     ] {
         assert!(result.get(key).is_some(), "missing {key}: {result:?}");
     }
-    assert!(result["permission_denials"].is_null());
+    assert!(at(result, "/permission_denials").is_null());
     for key in [
         "input_tokens",
         "output_tokens",
         "cache_read_input_tokens",
         "cache_creation_input_tokens",
     ] {
-        assert!(result["usage"].get(key).is_some(), "usage missing {key}");
+        assert!(
+            at(result, "/usage").get(key).is_some(),
+            "usage missing {key}"
+        );
     }
 }
 
@@ -93,11 +150,11 @@ fn messages_result_usage_splits_disjoint_buckets() {
         result_text: "",
         duration_ms: 0,
     });
-    let usage = &out.last().unwrap()["usage"];
-    assert_eq!(usage["input_tokens"], 85);
-    assert_eq!(usage["cache_read_input_tokens"], 10);
-    assert_eq!(usage["cache_creation_input_tokens"], 5);
-    assert_eq!(usage["output_tokens"], 7);
+    let usage = out.last().map(|v| at(v, "/usage")).expect("usage");
+    assert_eq!(at(usage, "/input_tokens"), 85);
+    assert_eq!(at(usage, "/cache_read_input_tokens"), 10);
+    assert_eq!(at(usage, "/cache_creation_input_tokens"), 5);
+    assert_eq!(at(usage, "/output_tokens"), 7);
 }
 
 #[test]
@@ -115,9 +172,9 @@ fn messages_result_usage_incomplete_aggregate_zeroes_buckets() {
         stop_sequence: None,
     });
     let out = r.finish(&end_turn());
-    let usage = &out.last().unwrap()["usage"];
-    assert_eq!(usage["input_tokens"], 0);
-    assert_eq!(usage["cache_creation_input_tokens"], 0);
+    let usage = out.last().map(|v| at(v, "/usage")).expect("usage");
+    assert_eq!(at(usage, "/input_tokens"), 0);
+    assert_eq!(at(usage, "/cache_creation_input_tokens"), 0);
 }
 
 #[test]
@@ -126,15 +183,15 @@ fn messages_model_usage_maps_and_zero_fills() {
         "grok-4": {"inputTokens": 90, "outputTokens": 7, "cacheReadInputTokens": 10, "cacheCreationInputTokens": 25, "costUSD": 0.02},
     });
     let out = messages_model_usage(Some(&rows), Some("grok-4"), 0, Some(131_072));
-    let mu = &out["grok-4"];
-    assert_eq!(mu["inputTokens"], 90);
-    assert_eq!(mu["outputTokens"], 7);
-    assert_eq!(mu["cacheReadInputTokens"], 10);
-    assert_eq!(mu["cacheCreationInputTokens"], 25);
-    assert_eq!(mu["webSearchRequests"], 0);
-    assert_eq!(mu["contextWindow"], 131_072);
-    assert!(mu["maxOutputTokens"].is_null());
-    assert!((mu["costUSD"].as_f64().unwrap() - 0.02).abs() < 1e-9);
+    let mu = at(&out, "/grok-4");
+    assert_eq!(at(mu, "/inputTokens"), 90);
+    assert_eq!(at(mu, "/outputTokens"), 7);
+    assert_eq!(at(mu, "/cacheReadInputTokens"), 10);
+    assert_eq!(at(mu, "/cacheCreationInputTokens"), 25);
+    assert_eq!(at(mu, "/webSearchRequests"), 0);
+    assert_eq!(at(mu, "/contextWindow"), 131_072);
+    assert!(at(mu, "/maxOutputTokens").is_null());
+    assert!((at(mu, "/costUSD").as_f64().unwrap() - 0.02).abs() < 1e-9);
     assert_eq!(messages_model_usage(None, None, 0, None), json!({}));
 }
 
@@ -145,10 +202,10 @@ fn messages_model_usage_attributes_web_search_to_current_model() {
         "grok-mini": {"inputTokens": 5, "outputTokens": 1},
     });
     let out = messages_model_usage(Some(&rows), Some("grok-4"), 3, Some(131_072));
-    assert_eq!(out["grok-4"]["webSearchRequests"], 3);
-    assert_eq!(out["grok-mini"]["webSearchRequests"], 0);
-    assert_eq!(out["grok-4"]["contextWindow"], 131_072);
-    assert!(out["grok-mini"]["contextWindow"].is_null());
+    assert_eq!(at(&out, "/grok-4/webSearchRequests"), 3);
+    assert_eq!(at(&out, "/grok-mini/webSearchRequests"), 0);
+    assert_eq!(at(&out, "/grok-4/contextWindow"), 131_072);
+    assert!(at(&out, "/grok-mini/contextWindow").is_null());
 }
 
 #[test]
@@ -166,8 +223,8 @@ fn messages_result_carries_durations() {
         duration_ms: 4242,
     });
     let result = out.last().unwrap();
-    assert_eq!(result["duration_ms"], 4242);
-    assert_eq!(result["duration_api_ms"], 1234);
+    assert_eq!(at(result, "/duration_ms"), 4242);
+    assert_eq!(at(result, "/duration_api_ms"), 1234);
 }
 
 #[test]
@@ -175,19 +232,19 @@ fn messages_error_flushes_then_marks_error_result() {
     let mut r = messages(false);
     r.reduce(StreamEvent::AgentMessage("partial answer".into()));
     let out = r.error("boom", None, 0, None);
-    assert!(out.iter().any(|m| m["type"] == "assistant"));
+    assert!(out.iter().any(|m| at(m, "/type") == "assistant"));
     let result = out.last().unwrap();
-    assert_eq!(result["type"], "result");
-    assert_eq!(result["subtype"], "error_during_execution");
-    assert_eq!(result["is_error"], true);
-    assert_eq!(result["errors"][0], "boom");
+    assert_eq!(at(result, "/type"), "result");
+    assert_eq!(at(result, "/subtype"), "error_during_execution");
+    assert_eq!(at(result, "/is_error"), true);
+    assert_eq!(at(result, "/errors/0"), "boom");
     assert!(result.get("result").is_none());
-    let assistant = out.iter().find(|m| m["type"] == "assistant").unwrap();
+    let assistant = out.iter().find(|m| at(m, "/type") == "assistant").unwrap();
     assert!(
-        assistant["message"]["stop_reason"].is_null(),
+        at(assistant, "/message/stop_reason").is_null(),
         "generic error frame reports null stop_reason, not end_turn: {assistant:?}"
     );
-    assert!(result["stop_reason"].is_null());
+    assert!(at(result, "/stop_reason").is_null());
 }
 
 #[test]
@@ -199,18 +256,18 @@ fn messages_error_max_tokens_stamps_stop_reason() {
     let out = r.error("output truncated", None, 0, Some("max_tokens"));
     let assistant = out
         .iter()
-        .find(|m| m["type"] == "assistant")
+        .find(|m| at(m, "/type") == "assistant")
         .expect("partial content flushed as an assistant frame");
-    assert_eq!(assistant["message"]["stop_reason"], "max_tokens");
+    assert_eq!(at(assistant, "/message/stop_reason"), "max_tokens");
     assert_eq!(
-        assistant["message"]["content"][0]["text"],
+        at(assistant, "/message/content/0/text"),
         "partial before truncation"
     );
     let result = out.last().unwrap();
-    assert_eq!(result["type"], "result");
-    assert_eq!(result["subtype"], "error_during_execution");
-    assert_eq!(result["is_error"], true);
-    assert_eq!(result["stop_reason"], "max_tokens");
+    assert_eq!(at(result, "/type"), "result");
+    assert_eq!(at(result, "/subtype"), "error_during_execution");
+    assert_eq!(at(result, "/is_error"), true);
+    assert_eq!(at(result, "/stop_reason"), "max_tokens");
 }
 
 #[test]
@@ -230,30 +287,27 @@ fn messages_partial_error_max_tokens_recovers_real_id_and_usage() {
     out.extend(r.error("output truncated", None, 0, Some("max_tokens")));
     let start = out
         .iter()
-        .find(|m| m["event"]["type"] == "message_start")
+        .find(|m| at(m, "/event/type") == "message_start")
         .expect("message_start");
-    assert_eq!(start["event"]["message"]["id"], "msg_real");
-    assert_eq!(start["event"]["message"]["usage"]["input_tokens"], 42);
+    assert_eq!(at(start, "/event/message/id"), "msg_real");
+    assert_eq!(at(start, "/event/message/usage/input_tokens"), 42);
     assert_eq!(
-        start["event"]["message"]["usage"]["cache_read_input_tokens"],
+        at(start, "/event/message/usage/cache_read_input_tokens"),
         100
     );
     let assistant = out
         .iter()
-        .find(|m| m["type"] == "assistant")
+        .find(|m| at(m, "/type") == "assistant")
         .expect("partial content flushed as an assistant frame");
-    assert_eq!(assistant["message"]["id"], "msg_real");
-    assert_eq!(assistant["message"]["stop_reason"], "max_tokens");
-    assert_eq!(assistant["message"]["usage"]["input_tokens"], 42);
+    assert_eq!(at(assistant, "/message/id"), "msg_real");
+    assert_eq!(at(assistant, "/message/stop_reason"), "max_tokens");
+    assert_eq!(at(assistant, "/message/usage/input_tokens"), 42);
+    assert_eq!(at(assistant, "/message/usage/cache_read_input_tokens"), 100);
     assert_eq!(
-        assistant["message"]["usage"]["cache_read_input_tokens"],
-        100
-    );
-    assert_eq!(
-        assistant["message"]["usage"]["cache_creation_input_tokens"],
+        at(assistant, "/message/usage/cache_creation_input_tokens"),
         20
     );
-    assert_eq!(assistant["message"]["usage"]["output_tokens"], 0);
+    assert_eq!(at(assistant, "/message/usage/output_tokens"), 0);
 }
 
 #[test]
@@ -273,21 +327,18 @@ fn messages_partial_error_max_tokens_delta_carries_input_usage() {
     out.extend(r.error("output truncated", None, 0, Some("max_tokens")));
     let delta = out
         .iter()
-        .find(|m| m["event"]["type"] == "message_delta")
+        .find(|m| at(m, "/event/type") == "message_delta")
         .expect("message_delta");
-    assert_eq!(delta["event"]["delta"]["stop_reason"], "max_tokens");
-    assert_eq!(delta["event"]["usage"]["input_tokens"], 42);
-    assert_eq!(delta["event"]["usage"]["cache_read_input_tokens"], 100);
-    assert_eq!(delta["event"]["usage"]["cache_creation_input_tokens"], 20);
+    assert_eq!(at(delta, "/event/delta/stop_reason"), "max_tokens");
+    assert_eq!(at(delta, "/event/usage/input_tokens"), 42);
+    assert_eq!(at(delta, "/event/usage/cache_read_input_tokens"), 100);
+    assert_eq!(at(delta, "/event/usage/cache_creation_input_tokens"), 20);
     let assistant = out
         .iter()
-        .find(|m| m["type"] == "assistant")
+        .find(|m| at(m, "/type") == "assistant")
         .expect("frame");
-    assert_eq!(assistant["message"]["usage"]["input_tokens"], 42);
-    assert_eq!(
-        assistant["message"]["usage"]["cache_read_input_tokens"],
-        100
-    );
+    assert_eq!(at(assistant, "/message/usage/input_tokens"), 42);
+    assert_eq!(at(assistant, "/message/usage/cache_read_input_tokens"), 100);
 }
 
 #[test]
@@ -298,17 +349,17 @@ fn messages_partial_generic_error_delta_stop_reason_null() {
     out.extend(r.error("boom", None, 0, None));
     let delta = out
         .iter()
-        .find(|m| m["event"]["type"] == "message_delta")
+        .find(|m| at(m, "/event/type") == "message_delta")
         .expect("message_delta");
     assert!(
-        delta["event"]["delta"]["stop_reason"].is_null(),
+        at(delta, "/event/delta/stop_reason").is_null(),
         "generic error partial delta reports null stop_reason: {delta:?}"
     );
     let assistant = out
         .iter()
-        .find(|m| m["type"] == "assistant")
+        .find(|m| at(m, "/type") == "assistant")
         .expect("frame");
-    assert!(assistant["message"]["stop_reason"].is_null());
+    assert!(at(assistant, "/message/stop_reason").is_null());
 }
 
 #[test]
@@ -325,9 +376,12 @@ fn messages_structured_output_error_marks_retry_subtype() {
         duration_ms: 0,
     });
     let result = out.last().unwrap();
-    assert_eq!(result["subtype"], "error_max_structured_output_retries");
-    assert_eq!(result["is_error"], true);
-    assert_eq!(result["errors"][0], "output does not match schema");
+    assert_eq!(
+        at(result, "/subtype"),
+        "error_max_structured_output_retries"
+    );
+    assert_eq!(at(result, "/is_error"), true);
+    assert_eq!(at(result, "/errors/0"), "output does not match schema");
     assert!(result.get("result").is_none());
     assert!(result.get("structured_output").is_none());
 }
@@ -339,8 +393,8 @@ fn messages_max_turns_marks_error_subtype() {
     assert!(r.max_turns().is_empty());
     let out = r.finish(&turn_end("cancelled", ""));
     let result = out.last().expect("result line");
-    assert_eq!(result["subtype"], "error_max_turns", "{result:?}");
-    assert_eq!(result["is_error"], true, "{result:?}");
+    assert_eq!(at(result, "/subtype"), "error_max_turns", "{result:?}");
+    assert_eq!(at(result, "/is_error"), true, "{result:?}");
 }
 
 #[test]
@@ -352,8 +406,8 @@ fn to_line_degrades_failing_serialize_to_error_line() {
         }
     }
     let line = to_line(&AlwaysFails);
-    assert_eq!(line["type"], "error");
-    let message = line["message"].as_str().expect("message string");
+    assert_eq!(at(&line, "/type"), "error");
+    let message = at(&line, "/message").as_str().expect("message string");
     assert!(message.contains("serialize failed"), "{message}");
     assert!(message.contains("boom"), "{message}");
 }
@@ -376,9 +430,13 @@ fn non_finite_cost_serializes_to_finite_result_frame() {
         session_id: "s".into(),
         uuid: "u".into(),
     })));
-    assert_eq!(line["type"], "result", "not the error fallback: {line}");
-    assert_eq!(line["total_cost_usd"], 0.0);
-    assert!(line["total_cost_usd"].as_f64().unwrap().is_finite());
+    assert_eq!(
+        at(&line, "/type"),
+        "result",
+        "not the error fallback: {line}"
+    );
+    assert_eq!(at(&line, "/total_cost_usd"), 0.0);
+    assert!(at(&line, "/total_cost_usd").as_f64().unwrap().is_finite());
 
     let mu = to_line(&ModelUsage {
         input_tokens: 0,
@@ -389,8 +447,8 @@ fn non_finite_cost_serializes_to_finite_result_frame() {
         cost_usd: f64::NAN,
         context_window: None,
     });
-    assert_ne!(mu["type"], "error", "not the error fallback: {mu}");
-    assert_eq!(mu["costUSD"], 0.0);
+    assert_ne!(at(&mu, "/type"), "error", "not the error fallback: {mu}");
+    assert_eq!(at(&mu, "/costUSD"), 0.0);
 }
 
 #[test]
@@ -408,10 +466,13 @@ fn messages_finish_abnormal_outcomes_stamp_null_stop_reason() {
             result_text: "",
             duration_ms: 0,
         });
-        out.iter()
-            .find(|m| m["type"] == "assistant")
-            .expect("assistant frame")["message"]["stop_reason"]
-            .clone()
+        at(
+            out.iter()
+                .find(|m| at(m, "/type") == "assistant")
+                .expect("assistant frame"),
+            "/message/stop_reason",
+        )
+        .clone()
     };
     assert!(frame_stop("refusal", |_| {}).is_null(), "refusal");
     assert!(frame_stop("cancelled", |_| {}).is_null(), "cancelled");
@@ -431,24 +492,29 @@ fn messages_cancelled_turn_marks_error_result() {
     r.reduce(StreamEvent::AgentMessage("partial before cancel".into()));
     let out = r.finish(&turn_end("cancelled", "partial before cancel"));
     let result = out.last().expect("result line");
-    assert_eq!(result["type"], "result");
-    assert_eq!(result["is_error"], true, "{result:?}");
+    assert_eq!(at(result, "/type"), "result");
+    assert_eq!(at(result, "/is_error"), true, "{result:?}");
     assert_ne!(
-        result["subtype"], "success",
+        at(result, "/subtype"),
+        "success",
         "cancelled is not success: {result:?}"
     );
-    assert_eq!(result["subtype"], "error_during_execution", "{result:?}");
-    assert_eq!(result["errors"][0], "cancelled", "{result:?}");
+    assert_eq!(
+        at(result, "/subtype"),
+        "error_during_execution",
+        "{result:?}"
+    );
+    assert_eq!(at(result, "/errors/0"), "cancelled", "{result:?}");
     assert!(
         result.get("result").is_none(),
         "error result omits result text"
     );
     let assistant = out
         .iter()
-        .find(|m| m["type"] == "assistant")
+        .find(|m| at(m, "/type") == "assistant")
         .expect("assistant frame");
     assert!(
-        assistant["message"]["stop_reason"].is_null(),
+        at(assistant, "/message/stop_reason").is_null(),
         "cancelled frame reports null stop_reason: {assistant:?}"
     );
 }
@@ -463,11 +529,12 @@ fn messages_num_turns_counts_contentless_response() {
     out.extend(r.reduce(response_started("msg_b", None, 0)));
     out.extend(r.reduce(response_completed("msg_b", "end_turn")));
     out.extend(r.finish(&end_turn()));
-    let frames = out.iter().filter(|m| m["type"] == "assistant").count();
+    let frames = out.iter().filter(|m| at(m, "/type") == "assistant").count();
     assert_eq!(frames, 1, "contentless B emits no frame: {out:?}");
     let result = out.last().expect("result line");
     assert_eq!(
-        result["num_turns"], 2,
+        at(result, "/num_turns"),
+        2,
         "both the content-bearing and the contentless response count: {result:?}"
     );
 }
@@ -489,21 +556,24 @@ fn messages_retry_exhausted_null_stop_reason_overrides_retained_end_turn() {
         });
         let assistant = out
             .iter()
-            .find(|m| m["type"] == "assistant")
+            .find(|m| at(m, "/type") == "assistant")
             .expect("assistant frame");
         assert!(
-            assistant["message"]["stop_reason"].is_null(),
+            at(assistant, "/message/stop_reason").is_null(),
             "retained end_turn must not win on failure (partials={partials}): {assistant:?}"
         );
         let result = out.last().expect("result line");
-        assert_eq!(result["subtype"], "error_max_structured_output_retries");
+        assert_eq!(
+            at(result, "/subtype"),
+            "error_max_structured_output_retries"
+        );
         if partials {
             let delta = out
                 .iter()
-                .find(|m| m["event"]["type"] == "message_delta")
+                .find(|m| at(m, "/event/type") == "message_delta")
                 .expect("message_delta");
             assert!(
-                delta["event"]["delta"]["stop_reason"].is_null(),
+                at(delta, "/event/delta/stop_reason").is_null(),
                 "partial delta null too: {delta:?}"
             );
         }
@@ -523,7 +593,8 @@ fn messages_late_orphaned_completion_does_not_inflate_num_turns() {
     out.extend(r.finish(&end_turn()));
     let result = out.last().expect("result line");
     assert_eq!(
-        result["num_turns"], 1,
+        at(result, "/num_turns"),
+        1,
         "orphaned late completion must not add a turn: {result:?}"
     );
 }

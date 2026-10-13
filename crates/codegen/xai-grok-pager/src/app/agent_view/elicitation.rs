@@ -7,6 +7,17 @@ use crate::input::key::RowWalk;
 use crate::key;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+/// How an elicitation card closed without this window's answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnansweredElicitation {
+    Declined,
+    Cancelled,
+    /// The server stopped waiting (its own timeout), or another window answered.
+    ClosedElsewhere,
+    /// This window cancelled it to show a newer request.
+    Superseded,
+}
+
 impl AgentView {
     pub(super) fn handle_elicitation_key(&mut self, key: &KeyEvent) -> InputOutcome {
         use crate::views::elicitation_view::{ElicitationActionFocus, ElicitationFocus};
@@ -365,7 +376,13 @@ impl AgentView {
                 }
             };
             if !delivered {
-                return self.dismiss_elicitation_view();
+                if let Some(ev) =
+                    self.take_unanswered_elicitation(UnansweredElicitation::ClosedElsewhere)
+                {
+                    self.restore_elicitation_prompt(ev.stashed_prompt);
+                    self.promote_pending_elicitation();
+                }
+                return InputOutcome::Changed;
             }
             if let Some(url) = url {
                 self.open_untrusted_url_or_show(&url);
@@ -400,15 +417,60 @@ impl AgentView {
         self.finish_elicitation(ElicitationViewState::cancel_response())
     }
 
+    /// Closes the open card without this window's answer. A scrollback line names its server.
+    pub(crate) fn take_unanswered_elicitation(
+        &mut self,
+        outcome: UnansweredElicitation,
+    ) -> Option<crate::views::elicitation_view::ElicitationViewState> {
+        let ev = self.elicitation_view.take()?;
+        self.push_unanswered_elicitation_notice(&ev.server_name, outcome);
+        Some(ev)
+    }
+
+    fn push_unanswered_elicitation_notice(&mut self, server: &str, outcome: UnansweredElicitation) {
+        let server = notice_server_name(server);
+        let text = match outcome {
+            UnansweredElicitation::Declined => {
+                format!("Declined MCP “{server}” request for input.")
+            }
+            UnansweredElicitation::Cancelled => {
+                format!("Dismissed MCP “{server}” request for input without answering.")
+            }
+            UnansweredElicitation::ClosedElsewhere => format!(
+                "MCP “{server}” request for input closed before it was answered here (it timed out or was answered elsewhere)."
+            ),
+            UnansweredElicitation::Superseded => {
+                format!("Cancelled MCP “{server}” request for input to show a newer one.")
+            }
+        };
+        crate::app::mode_switch::push_block_behind_live_stream(
+            &mut self.scrollback,
+            crate::scrollback::block::RenderBlock::system(text),
+        );
+    }
+
     fn finish_elicitation(
         &mut self,
         response: xai_grok_tools::mcp_elicitation::McpElicitExtResponse,
     ) -> InputOutcome {
+        use xai_grok_tools::mcp_elicitation::McpElicitExtResponse;
         let Some(mut ev) = self.elicitation_view.take() else {
             return InputOutcome::Unchanged;
         };
-        // The card closes either way; an undelivered answer means the MCP side already gave up on the request
-        let _ = ev.send_response(response);
+        let refusal = match &response {
+            McpElicitExtResponse::Accept { .. } => None,
+            McpElicitExtResponse::Decline => Some(UnansweredElicitation::Declined),
+            McpElicitExtResponse::Cancel => Some(UnansweredElicitation::Cancelled),
+        };
+        // An undelivered answer means the MCP side already gave up on the request
+        let unanswered = if ev.send_response(response) {
+            refusal
+        } else {
+            Some(UnansweredElicitation::ClosedElsewhere)
+        };
+        if let Some(outcome) = unanswered {
+            self.push_unanswered_elicitation_notice(&ev.server_name, outcome);
+        }
         self.restore_elicitation_prompt(ev.stashed_prompt);
         self.promote_pending_elicitation();
         InputOutcome::Changed
@@ -440,5 +502,19 @@ impl AgentView {
         if let Some(stashed) = stashed {
             self.restore_card_prompt(stashed);
         }
+    }
+}
+
+/// Grok's own notice quotes only the characters an MCP catalog name allows.
+/// Quotes, spaces, and url punctuation from a configured name could otherwise reshape the notice or become a link.
+fn notice_server_name(server: &str) -> String {
+    let name: String = server
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        .collect();
+    if name.is_empty() {
+        "unnamed".to_owned()
+    } else {
+        name
     }
 }

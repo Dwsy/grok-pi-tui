@@ -1,0 +1,49 @@
+[package]
+license = "Apache-2.0"
+name = "xai-grok-cloud-config"
+version = "0.1.0"
+edition.workspace = true
+description = "Fetches Grok cloud settings, keeps them in a signed cache, and refreshes them mid-session"
+
+[features]
+# Exposes the test-only functions in `settings_get` to downstream test targets.
+test-support = []
+default-bazel = ["test-support"]
+
+[dependencies]
+blake3 = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+globset = { workspace = true }
+indexmap = { workspace = true }
+fs2 = { workspace = true }
+hmac = { workspace = true }
+prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" }
+reqwest = { workspace = true, features = ["blocking", "json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+xai-dirs = { workspace = true }
+xai-grok-config = { workspace = true }
+xai-grok-env = { workspace = true }
+xai-grok-extra-ca = { workspace = true }
+xai-grok-http = { workspace = true }
+xai-grok-login = { workspace = true }
+xai-grok-telemetry = { workspace = true }
+xai-grok-version = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+futures = { workspace = true }
+serial_test = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+toml = { workspace = true }
+xai-grok-login = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

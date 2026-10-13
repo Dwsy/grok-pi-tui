@@ -280,7 +280,7 @@ fn is_compiled_in_builtin(name: &str) -> bool {
 }
 
 /// True only while the file is byte-identical to what the GCS bundle update wrote; an edited copy loses builtin privilege.
-fn bundled_file_is_managed(path: &Path) -> bool {
+pub(crate) fn bundled_file_is_managed(path: &Path) -> bool {
     let Some(workflows_dir) = path.parent() else {
         return false;
     };
@@ -871,8 +871,11 @@ mod tests {
             entries,
             duplicate_names: BTreeMap::new(),
         };
-        assert_eq!(registry.list().len(), 1);
-        assert_eq!(registry.list()[0].source, "builtin");
+        let listed = registry.list();
+        let [first] = listed.as_slice() else {
+            panic!("expected one listing: {listed:?}");
+        };
+        assert_eq!(first.source, "builtin");
         assert_eq!(
             registry.resolve_by_name("same").unwrap().source,
             WorkflowSource::Builtin

@@ -27,25 +27,35 @@ pub(crate) const CLI_BASE_URLS: &[&str] = &[CLI_BASE_URL_PRIMARY, CLI_BASE_URL_F
 /// [`CLI_BASE_URLS`], unless tests set `GROK_CLI_BASE_URL` to point fetches and downloads at one base (as they set `GROK_INSTALLER`).
 /// Loopback-only: downloads are verified by a smoke test, not a checksum, so redirecting to an arbitrary base could serve a hijacked install.
 pub(crate) fn cli_base_urls() -> Vec<String> {
-    if let Ok(base) = std::env::var("GROK_CLI_BASE_URL") {
-        let base = base.trim();
-        if is_loopback_base(base) {
-            return vec![base.to_owned()];
-        }
-        if !base.is_empty() {
-            tracing::warn!("GROK_CLI_BASE_URL ignored: only loopback bases are honored");
-        }
+    if let Some(base) = loopback_base_override() {
+        return vec![base];
     }
     CLI_BASE_URLS.iter().map(|s| (*s).to_owned()).collect()
 }
 
+/// `GROK_CLI_BASE_URL` when it names a loopback base.
+pub(crate) fn loopback_base_override() -> Option<String> {
+    let base = std::env::var("GROK_CLI_BASE_URL").ok()?;
+    let base = base.trim();
+    if is_loopback_base(base) {
+        return Some(base.to_owned());
+    }
+    if !base.is_empty() {
+        tracing::warn!("GROK_CLI_BASE_URL ignored: only loopback bases are honored");
+    }
+    None
+}
+
 /// Parsed, not prefix-matched: `http://127.0.0.1:9@evil.com` starts with a
 /// loopback prefix but its host is `evil.com` (userinfo trick).
+/// `https` loopback is allowed so merge CI can smoke rustls/aws-lc against a
+/// local SHA-512 server (GB-6134); non-loopback https is still rejected.
 fn is_loopback_base(base: &str) -> bool {
     let Ok(u) = url::Url::parse(base) else {
         return false;
     };
-    if u.scheme() != "http" || !u.username().is_empty() || u.password().is_some() {
+    if !matches!(u.scheme(), "http" | "https") || !u.username().is_empty() || u.password().is_some()
+    {
         return false;
     }
     match u.host() {
@@ -358,6 +368,8 @@ pub async fn fetch_latest_version(installer: &str, config: &UpdateConfig) -> Res
     match installer {
         "npm" => fetch_npm_version(&config.channel, config.npm_registry.as_deref()).await,
         "gh-release" => fetch_gh_release_version(&config.channel).await,
+        // The WinGet package ships only stable releases, whatever channel is configured.
+        crate::winget::WINGET => fetch_gcs_version("stable").await,
         _ => fetch_gcs_version(&config.channel).await,
     }
 }
@@ -450,7 +462,7 @@ pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -
         .iter()
         .position(|p| PLATFORM_OS.contains(p))
         .unwrap_or(parts.len());
-    let ver_str = parts[..platform_start].join("-");
+    let ver_str = parts.get(..platform_start).unwrap_or(&[]).join("-");
     semver::Version::parse(&ver_str).ok()?;
     Some(ver_str)
 }
@@ -479,6 +491,11 @@ pub fn cached_stable_version() -> Option<String> {
     let content = std::fs::read_to_string(&version_path).ok()?;
     let gv: GrokVersion = serde_json::from_str(&content).ok()?;
     gv.stable_version
+}
+
+/// An empty or `"stable"` channel means stable, the installers' default (`CHANNEL="${GROK_CHANNEL:-stable}"` in install.sh).
+pub(crate) fn is_stable_channel(channel: &str) -> bool {
+    channel.is_empty() || channel == "stable"
 }
 
 /// Returns `Some("alpha")` when `current > stable`, `Some("stable")` when `current <= stable`, or `None` when either version fails to parse.
@@ -531,6 +548,8 @@ mod tests {
         assert!(is_loopback_base("http://127.0.0.1:8971"));
         assert!(is_loopback_base("http://localhost:8971"));
         assert!(is_loopback_base("http://[::1]:8971"));
+        assert!(is_loopback_base("https://127.0.0.1:8971"));
+        assert!(is_loopback_base("https://localhost:8971"));
         // Prefix-check bypass vectors.
         assert!(!is_loopback_base("http://127.0.0.1:9@evil.com"));
         assert!(!is_loopback_base("http://localhost.evil.com:80"));

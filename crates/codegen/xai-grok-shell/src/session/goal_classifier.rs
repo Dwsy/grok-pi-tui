@@ -12,8 +12,7 @@ pub(crate) mod evidence;
 
 use crate::session::events::{Event, GoalClassifierFailOpenReason};
 use crate::session::goal_planner::{
-    GOAL_ROLE_AWAIT_BUDGET_EXCEEDED, GOAL_ROLE_SUBAGENT_TYPE, RoleRenderedPrompt,
-    RoleSpawnOverride, spawn_with_fail_open_retry,
+    GOAL_ROLE_SUBAGENT_TYPE, RoleRenderedPrompt, RoleSpawnOverride, spawn_with_fail_open_retry,
 };
 use crate::session::goal_role_tools::RoleToolNames;
 use crate::session::goal_tracker::GoalClassifierVerdict;
@@ -22,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use xai_grok_session_events::EventWriter;
-use xai_grok_tools::implementations::grok_build::task::backend::{ChannelBackend, SubagentBackend};
+use xai_grok_tools::implementations::grok_build::task::backend::ChannelBackend;
 use xai_grok_tools::implementations::grok_build::task::types::{
     SubagentOwner, SubagentRequest, SubagentRuntimeOverrides,
 };
@@ -96,7 +95,10 @@ pub(crate) fn expand_skeptic_assignment(
         return out;
     }
     for i in out.len()..n {
-        out.push(pool[i % pool.len()].clone());
+        let Some(model) = pool.get(i % pool.len()) else {
+            break;
+        };
+        out.push(model.clone());
     }
     out
 }
@@ -189,14 +191,11 @@ impl std::fmt::Display for SpawnError {
 }
 
 impl crate::session::goal_planner::RetryableSpawnError for SpawnError {
-    fn is_cancelled(&self) -> bool {
-        matches!(
-            self,
-            SpawnError::Runtime {
-                cancelled: true,
-                ..
-            }
-        )
+    fn is_retryable(&self) -> bool {
+        match self {
+            SpawnError::Transport(_) => true,
+            SpawnError::Runtime { cancelled, .. } => !cancelled,
+        }
     }
 }
 
@@ -374,7 +373,7 @@ pub(crate) fn build_subagent_trace_items(
         name: task_tool_name.to_string(),
         arguments: std::sync::Arc::from(arguments),
     }]);
-    let footer = xai_tool_types::format_resume_footer(subagent_id, subagent_type, None);
+    let footer = xai_tool_types::format_resume_footer(subagent_id, None);
     let result = ConversationItem::tool_result(subagent_id, format!("{output}\n\n{footer}"));
     vec![call, result]
 }
@@ -504,11 +503,13 @@ impl ChannelSpawner {
             run_in_background: false,
             // Harness-internal: never surface to the model's idle reminder.
             surface_completion: false,
-            await_to_completion: false,
+            // Goal roles are never auto-backgrounded: the child runs until it finishes.
+            await_to_completion: true,
             fork_context: false,
             owner: SubagentOwner::Task,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             spawn_root: Default::default(),
+            tool_call_id: None,
         };
         let backend = ChannelBackend::new(self.event_tx.clone());
         let result = backend
@@ -516,9 +517,8 @@ impl ChannelSpawner {
             .await
             .map_err(|error| SpawnError::Transport(error.to_string()))?;
         if result.backgrounded {
-            let _ = backend.cancel(&result.subagent_id).await;
             return Err(SpawnError::Runtime {
-                message: GOAL_ROLE_AWAIT_BUDGET_EXCEEDED.to_owned(),
+                message: "engine bug: goal role subagent was auto-backgrounded despite await_to_completion".into(),
                 cancelled: true,
             });
         }
@@ -870,8 +870,11 @@ fn sanitize_prior_gaps(gaps: &str) -> String {
 pub(crate) fn cap_chars(text: &str, max_chars: usize) -> String {
     match text.char_indices().nth(max_chars) {
         Some((cut, _)) => {
+            let Some(prefix) = text.get(..cut) else {
+                return text.to_string();
+            };
             let mut s = String::with_capacity(cut + '…'.len_utf8());
-            s.push_str(&text[..cut]);
+            s.push_str(prefix);
             s.push('…');
             s
         }
@@ -1957,8 +1960,11 @@ fn cap_panel_details(body: String) -> String {
     }
     // Count from the cut after the boundary walk so the marker reports the exact elided byte count, not the approximation from before the walk
     let elided = body.len() - cut;
+    let Some(prefix) = body.get(..cut) else {
+        return body;
+    };
     let mut out = String::with_capacity(cut + 64);
-    out.push_str(&body[..cut]);
+    out.push_str(prefix);
     out.push_str(&format!(
         "\n... (panel details truncated, {elided} bytes elided) ...\n"
     ));
@@ -1991,12 +1997,13 @@ pub(crate) fn parse_verdict_path_from_prompt(prompt: &str) -> Option<String> {
 #[cfg(test)]
 fn parse_prompt_path(prompt: &str, marker: &str, suffix: &str) -> Option<String> {
     let marker = prompt.find(marker)?;
-    let start = prompt[..marker]
+    let start = prompt
+        .get(..marker)?
         .rfind(|c: char| c.is_whitespace() || c == '`')
         .map_or(0, |i| i + 1);
-    let tail = &prompt[start..];
+    let tail = prompt.get(start..)?;
     let end = tail.find(suffix)?;
-    Some(tail[..end + suffix.len()].to_string())
+    tail.get(..end + suffix.len()).map(str::to_string)
 }
 
 // Tests

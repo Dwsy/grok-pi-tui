@@ -236,12 +236,16 @@ description = "Path to write the summary"
         );
         assert_eq!(persona.model.as_deref(), Some("grok-3-fast"));
         assert_eq!(persona.reasoning_effort.as_deref(), Some("low"));
-        assert_eq!(persona.inputs.len(), 1);
-        assert_eq!(persona.inputs[0].name, "review_file");
-        assert!(persona.inputs[0].required);
-        assert_eq!(persona.outputs.len(), 1);
-        assert_eq!(persona.outputs[0].name, "summary_file");
-        assert!(!persona.outputs[0].required);
+        let [input] = persona.inputs.as_slice() else {
+            panic!("expected one input: {:?}", persona.inputs);
+        };
+        assert_eq!(input.name, "review_file");
+        assert!(input.required);
+        let [output] = persona.outputs.as_slice() else {
+            panic!("expected one output: {:?}", persona.outputs);
+        };
+        assert_eq!(output.name, "summary_file");
+        assert!(!output.required);
         assert_eq!(
             persona.description.as_deref(),
             Some("A concise writing persona.")

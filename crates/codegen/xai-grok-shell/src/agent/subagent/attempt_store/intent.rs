@@ -190,7 +190,13 @@ impl AttemptTransactionIntentV1 {
         }
     }
     fn limits(&self) -> (usize, usize) {
-        INTENT_BYTES[usize::from(self.tag() as u8)]
+        match self.tag() {
+            AttemptTransactionTagV1::RegisterRewindRef => INTENT_BYTES[0],
+            AttemptTransactionTagV1::SupersedeRewindRefs => INTENT_BYTES[1],
+            AttemptTransactionTagV1::ReleaseRewindRefs => INTENT_BYTES[2],
+            AttemptTransactionTagV1::RelocationHandoff => INTENT_BYTES[3],
+            AttemptTransactionTagV1::CompactAgentInputs => INTENT_BYTES[4],
+        }
     }
 }
 

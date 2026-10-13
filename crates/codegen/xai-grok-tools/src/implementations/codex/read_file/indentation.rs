@@ -76,13 +76,13 @@ fn collect_lines(bytes: &[u8]) -> Vec<LineRecord> {
     let mut start = 0;
 
     for i in 0..bytes.len() {
-        if bytes[i] == b'\n' {
+        if bytes.get(i) == Some(&b'\n') {
             line_num += 1;
             let mut end = i;
-            if end > start && bytes[end - 1] == b'\r' {
+            if end > start && end.checked_sub(1).and_then(|j| bytes.get(j)) == Some(&b'\r') {
                 end -= 1;
             }
-            let raw_bytes = &bytes[start..end];
+            let raw_bytes = bytes.get(start..end).unwrap_or(&[]);
             let raw = String::from_utf8_lossy(raw_bytes).into_owned();
             let display = format_display(raw_bytes);
             let indent = measure_indent(&raw);
@@ -100,10 +100,10 @@ fn collect_lines(bytes: &[u8]) -> Vec<LineRecord> {
     if start < bytes.len() {
         line_num += 1;
         let mut end = bytes.len();
-        if end > start && bytes[end - 1] == b'\r' {
+        if end > start && bytes.last() == Some(&b'\r') {
             end -= 1;
         }
-        let raw_bytes = &bytes[start..end];
+        let raw_bytes = bytes.get(start..end).unwrap_or(&[]);
         let raw = String::from_utf8_lossy(raw_bytes).into_owned();
         let display = format_display(raw_bytes);
         let indent = measure_indent(&raw);
@@ -182,7 +182,9 @@ pub(crate) fn read_block(
     let final_limit = limit.min(guard_limit).min(collected.len());
 
     let anchor_idx = anchor - 1; // 0-indexed
-    let anchor_indent = effective[anchor_idx];
+    let Some(&anchor_indent) = effective.get(anchor_idx) else {
+        return Err("anchor_line exceeds file length".to_string());
+    };
 
     // Compute min_indent threshold.
     let min_indent = if options.max_levels == 0 {
@@ -193,7 +195,9 @@ pub(crate) fn read_block(
 
     // Early return: final_limit == 1 → just the anchor line.
     if final_limit == 1 {
-        let rec = &collected[anchor_idx];
+        let Some(rec) = collected.get(anchor_idx) else {
+            return Err("anchor_line exceeds file length".to_string());
+        };
         return Ok(vec![format!("L{}: {}", rec.number, rec.display)]);
     }
 
@@ -264,9 +268,9 @@ pub(crate) fn read_block(
     // Format output.
     let lines: Vec<String> = out
         .iter()
-        .map(|&idx| {
-            let rec = &collected[idx];
-            format!("L{}: {}", rec.number, rec.display)
+        .filter_map(|&idx| {
+            let rec = collected.get(idx)?;
+            Some(format!("L{}: {}", rec.number, rec.display))
         })
         .collect();
 
@@ -292,7 +296,9 @@ fn expand_up(
     }
 
     let iu = *i as usize;
-    let eff = effective[iu];
+    let Some(&eff) = effective.get(iu) else {
+        return false;
+    };
 
     if eff < min_indent {
         // Below threshold — stop cursor.
@@ -306,7 +312,8 @@ fn expand_up(
 
     // Sibling filter: only applies when eff == min_indent && !include_siblings.
     if eff == min_indent && !include_siblings {
-        let allow_header_comment = include_header && collected[iu].is_comment();
+        let allow_header_comment =
+            include_header && collected.get(iu).is_some_and(|r| r.is_comment());
         let can_take_line = allow_header_comment || *counter == 0;
         if can_take_line {
             *counter += 1; // line is kept, increment counter
@@ -338,7 +345,9 @@ fn expand_down(
     }
 
     let ju = *j;
-    let eff = effective[ju];
+    let Some(&eff) = effective.get(ju) else {
+        return false;
+    };
 
     if eff < min_indent {
         // Below threshold — stop cursor.
@@ -369,14 +378,14 @@ fn expand_down(
 /// Trim leading and trailing blank lines from the result deque.
 fn trim_empty_lines(records: &[LineRecord], deque: &mut VecDeque<usize>) {
     while let Some(&idx) = deque.front() {
-        if records[idx].is_blank() {
+        if records.get(idx).is_some_and(|r| r.is_blank()) {
             deque.pop_front();
         } else {
             break;
         }
     }
     while let Some(&idx) = deque.back() {
-        if records[idx].is_blank() {
+        if records.get(idx).is_some_and(|r| r.is_blank()) {
             deque.pop_back();
         } else {
             break;
@@ -446,11 +455,18 @@ mod tests {
         let opts = make_opts(Some(3), 2, false, true, None);
         let result = read_block(content, 1, 2000, opts).unwrap();
 
-        assert_eq!(result[0], "L1: class MyClass:");
-        assert_eq!(result[1], "L2:     def method(self):");
-        assert_eq!(result[2], "L3:         x = 1");
-        assert_eq!(result[3], "L4:         y = 2");
-        assert_eq!(result[4], "L5:         return x + y");
+        let head: Vec<&str> = result.iter().take(5).map(String::as_str).collect();
+        assert_eq!(
+            head,
+            [
+                "L1: class MyClass:",
+                "L2:     def method(self):",
+                "L3:         x = 1",
+                "L4:         y = 2",
+                "L5:         return x + y",
+            ],
+            "{result:?}"
+        );
     }
 
     #[test]

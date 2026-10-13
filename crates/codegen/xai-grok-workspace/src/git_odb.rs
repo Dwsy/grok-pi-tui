@@ -2,7 +2,7 @@
 //!
 //! libgit2 walks serialize on an in-process mutex and this permit.
 //! CLI status takes a permit only to bound pack I/O when uncontended.
-//! Prompt CLI may run without a permit under contention so `<git_status>` is not dropped behind a long acquire wait.
+//! Prompt CLI may run without a permit under contention so status is not dropped behind a long acquire wait.
 
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;

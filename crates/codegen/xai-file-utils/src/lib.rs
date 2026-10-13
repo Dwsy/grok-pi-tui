@@ -6,6 +6,7 @@
     dead_code
 )]
 //! Local data collection: upload queueing and S3-compatible blob storage.
+#![deny(clippy::indexing_slicing)]
 pub(crate) mod circuit_breaker_observer;
 /// Wrap a raw client with [`xai_grok_auth::AuthRetryMiddleware`] for automatic 401 retry.
 pub fn with_auth_retry(
@@ -51,7 +52,9 @@ pub fn sha256_hex_from_file(
         if bytes_read == 0 {
             break;
         }
-        hasher.update(&buffer[..bytes_read]);
+        if let Some(chunk) = buffer.get(..bytes_read) {
+            hasher.update(chunk);
+        }
     }
     Ok(format!("{:x}", hasher.finalize()))
 }

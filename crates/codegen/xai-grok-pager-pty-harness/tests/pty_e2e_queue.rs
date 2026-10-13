@@ -40,10 +40,6 @@ mod esc_idle_empty_no_messages_is_swallowed_noop;
 mod esc_mid_turn_hints_ctrl_c_from_prompt_preserves_draft;
 #[path = "pty_e2e/esc_mid_turn_hints_ctrl_c_from_scrollback.rs"]
 mod esc_mid_turn_hints_ctrl_c_from_scrollback;
-#[path = "pty_e2e/interjection_reaches_model_ctrl_l_in_vscode_family.rs"]
-mod interjection_reaches_model_ctrl_l_in_vscode_family;
-#[path = "pty_e2e/interjection_reaches_model_in_same_turn.rs"]
-mod interjection_reaches_model_in_same_turn;
 #[path = "pty_e2e/mid_turn_slash_dropdown_esc_dismisses_not_cancel.rs"]
 mod mid_turn_slash_dropdown_esc_dismisses_not_cancel;
 #[path = "pty_e2e/minimal/minimal_ctrl_o_send_now_queued_apple_terminal.rs"]
@@ -56,10 +52,10 @@ mod queue_reorder_local_row_above_server_row;
 mod queue_reorder_moves_row_up;
 #[path = "pty_e2e/queued_bash_promotion_renders_output_pty.rs"]
 mod queued_bash_promotion_renders_output_pty;
-#[path = "pty_e2e/queued_message_renders_once_not_twice.rs"]
-mod queued_message_renders_once_not_twice;
 #[path = "pty_e2e/removed_queued_prompt_never_sent.rs"]
 mod removed_queued_prompt_never_sent;
+#[path = "pty_e2e/rewind_after_compaction_with_missing_checkpoint.rs"]
+mod rewind_after_compaction_with_missing_checkpoint;
 #[path = "pty_e2e/send_now_tip_after_mid_turn_queue.rs"]
 mod send_now_tip_after_mid_turn_queue;
 #[path = "pty_e2e/send_then_ctrlc_rewinds_to_composer_no_history_dup.rs"]

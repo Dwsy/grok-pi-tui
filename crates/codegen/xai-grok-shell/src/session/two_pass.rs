@@ -4,6 +4,7 @@
 //! Pass2 rewrites NOTE₁ and the ~5% tail into NOTE₂, the note the successor sees.
 //! Sampling lives in [`super::compaction`]; this module has no I/O.
 
+use xai_chat_state::compaction_utils::format_compact_summary_content;
 use xai_chat_state::estimate_item_tokens;
 use xai_grok_sampling_types::ConversationItem;
 
@@ -14,8 +15,8 @@ pub(crate) const TWO_PASS_DEFAULT_SPLIT_FRACTION: f64 = 0.95;
 /// Minimum char length for a closed `<summary>` block to be preferred as NOTE₁ over the full pass1 response.
 const TWO_PASS_MIN_SUMMARY_BLOCK_CHARS: usize = 1000;
 
-/// Cap on NOTE₁ text embedded in pass2 (carrier and special turn).
-const TWO_PASS_MAX_NOTE1_CHARS: usize = 12_000;
+/// Cap on NOTE₁ text embedded in pass2.
+const TWO_PASS_MAX_NOTE1_CHARS: usize = 60_000;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TwoPassSplit<'a> {
@@ -58,15 +59,25 @@ fn snap_split_idx_to_tool_boundaries(
     }
     split_idx = split_idx.min(n);
 
-    while split_idx < n && matches!(conversation[split_idx], ConversationItem::ToolResult(_)) {
+    while split_idx < n
+        && matches!(
+            conversation.get(split_idx),
+            Some(ConversationItem::ToolResult(_))
+        )
+    {
         split_idx += 1;
     }
     if split_idx < n
-        && let ConversationItem::Assistant(a) = &conversation[split_idx]
+        && let Some(ConversationItem::Assistant(a)) = conversation.get(split_idx)
         && !a.tool_calls.is_empty()
     {
         split_idx += 1;
-        while split_idx < n && matches!(conversation[split_idx], ConversationItem::ToolResult(_)) {
+        while split_idx < n
+            && matches!(
+                conversation.get(split_idx),
+                Some(ConversationItem::ToolResult(_))
+            )
+        {
             split_idx += 1;
         }
     }
@@ -83,26 +94,39 @@ fn snap_split_idx_to_tool_boundaries(
         ) {
             break;
         }
-        while split_idx < n && matches!(conversation[split_idx], ConversationItem::ToolResult(_)) {
+        while split_idx < n
+            && matches!(
+                conversation.get(split_idx),
+                Some(ConversationItem::ToolResult(_))
+            )
+        {
             split_idx += 1;
         }
     }
 
     if split_idx >= n && n > 1 {
         let mut candidate = n - 1;
-        while candidate > 1 && matches!(conversation[candidate], ConversationItem::ToolResult(_)) {
+        while candidate > 1
+            && matches!(
+                conversation.get(candidate),
+                Some(ConversationItem::ToolResult(_))
+            )
+        {
             candidate -= 1;
         }
         if candidate > 0
-            && let ConversationItem::Assistant(a) = &conversation[candidate]
+            && let Some(ConversationItem::Assistant(a)) = conversation.get(candidate)
             && !a.tool_calls.is_empty()
         {
             // The candidate already sits on an assistant `tool_calls` turn, a valid tail start
         } else if candidate > 0
-            && matches!(conversation[candidate], ConversationItem::ToolResult(_))
+            && matches!(
+                conversation.get(candidate),
+                Some(ConversationItem::ToolResult(_))
+            )
         {
             let mut i = candidate;
-            while i > 0 && matches!(conversation[i], ConversationItem::ToolResult(_)) {
+            while i > 0 && matches!(conversation.get(i), Some(ConversationItem::ToolResult(_))) {
                 i -= 1;
             }
             if matches!(
@@ -130,8 +154,8 @@ pub(crate) fn split_conversation_for_two_pass(
     split_idx = snap_split_idx_to_tool_boundaries(conversation, split_idx);
     let split_idx = split_idx.min(conversation.len());
     TwoPassSplit {
-        prefix: &conversation[..split_idx],
-        tail: &conversation[split_idx..],
+        prefix: conversation.get(..split_idx).unwrap_or(&[]),
+        tail: conversation.get(split_idx..).unwrap_or(&[]),
         split_idx,
     }
 }
@@ -148,15 +172,24 @@ fn extract_summary_block(text: &str, min_chars: usize) -> Option<String> {
     let text_bytes = text.as_bytes();
     let lower_bytes = lower.as_bytes();
     while search_from < lower_bytes.len() {
-        let Some(rel) = find_bytes(&lower_bytes[search_from..], open.as_bytes()) else {
+        let Some(rel) = lower_bytes
+            .get(search_from..)
+            .and_then(|hay| find_bytes(hay, open.as_bytes()))
+        else {
             break;
         };
         let start = search_from + rel + open.len();
-        let Some(rel_close) = find_bytes(&lower_bytes[start..], close.as_bytes()) else {
+        let Some(rel_close) = lower_bytes
+            .get(start..)
+            .and_then(|hay| find_bytes(hay, close.as_bytes()))
+        else {
             break;
         };
         let end = start + rel_close;
-        let inner = std::str::from_utf8(&text_bytes[start..end]).unwrap_or("");
+        let inner = text_bytes
+            .get(start..end)
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .unwrap_or("");
         blocks.push(inner.to_string());
         search_from = end + close.len();
     }
@@ -185,45 +218,6 @@ pub(crate) fn note_for_two_pass_pass2(pass1_raw: &str) -> String {
     note
 }
 
-fn format_two_pass_note1_carrier(note1: &str) -> String {
-    let note1 = note1.trim();
-    format!(
-        "Your conversation was summarized due to context constraints. \
-         Here is the summary of the conversation so far:\n\n\
-         <summary_content>\n{note1}\n</summary_content>\n\n\
-         Continue with the compaction task below."
-    )
-}
-
-fn format_two_pass_special_pass2_user(note1: &str, compaction_prompt: &str) -> String {
-    let note1 = note1.trim();
-    let summary_block = format!("<summary_content>\n{note1}\n</summary_content>");
-    let uq = if compaction_prompt.trim().is_empty() {
-        "Please summarize the conversation so far."
-    } else {
-        compaction_prompt
-    };
-    format!(
-        "This is a special compaction case (two-pass / hierarchical summarization).\n\
-         You are writing the *final* compaction note that a successor assistant will \
-         rely on as their only memory of the conversation.\n\n\
-         Critical requirements:\n\
-         - Incorporate the **entire** prior summary below into your final note — do not \
-         omit sections, defer to \"see prior compaction\", or drop early history because \
-         newer turns are in context.\n\
-         - Merge that prior summary with the more recent conversation turns above into \
-         one coherent, faithful, self-contained summary (same structure/sections you \
-         normally use for compaction).\n\
-         - Preserve concrete values, file paths, errors/blockers, operational how-tos, \
-         key findings, and pending tasks from *both* the prior summary and the recent \
-         turns when they still matter.\n\n\
-         Prior summary to incorporate in full (duplicate of the summary_content above):\n\n\
-         {summary_block}\n\n\
-         Compaction instruction:\n\
-         {uq}"
-    )
-}
-
 /// Pass1 sample history: `prefix` followed by the compaction instruction as a user turn.
 pub(crate) fn build_two_pass_pass1_history(
     prefix: &[ConversationItem],
@@ -234,7 +228,7 @@ pub(crate) fn build_two_pass_pass1_history(
     history
 }
 
-/// Pass2 sample history: the system turns from `prefix`, then the NOTE₁ carrier, the tail, and the special turn.
+/// Pass2 sample history: the system turns from `prefix`, then the NOTE₁ carrier, the tail, and the compaction instruction.
 ///
 /// The successor sees only the model output of *this* history (NOTE₂).
 pub(crate) fn build_two_pass_pass2_history(
@@ -243,26 +237,20 @@ pub(crate) fn build_two_pass_pass2_history(
     note1: &str,
     compaction_prompt: &str,
 ) -> Vec<ConversationItem> {
-    let mut history: Vec<ConversationItem> = Vec::new();
-
-    for item in prefix {
-        if matches!(item, ConversationItem::System(_)) {
-            history.push(item.clone());
-        }
-    }
-    if !history
+    let mut history: Vec<ConversationItem> = prefix
         .iter()
-        .any(|i| matches!(i, ConversationItem::System(_)))
-    {
+        .filter(|item| matches!(item, ConversationItem::System(_)))
+        .cloned()
+        .collect();
+    if history.is_empty() {
         history.push(ConversationItem::system("You are a helpful assistant."));
     }
 
-    history.push(ConversationItem::user(format_two_pass_note1_carrier(note1)));
-    history.extend(tail.iter().cloned());
-    history.push(ConversationItem::user(format_two_pass_special_pass2_user(
+    history.push(ConversationItem::user_meta(format_compact_summary_content(
         note1,
-        compaction_prompt,
     )));
+    history.extend(tail.iter().cloned());
+    history.push(ConversationItem::user(compaction_prompt));
     history
 }
 
@@ -349,34 +337,5 @@ mod tests {
         let note = note_for_two_pass_pass2(&huge);
         assert!(note.chars().count() <= TWO_PASS_MAX_NOTE1_CHARS + 80);
         assert!(note.contains("truncated"));
-    }
-
-    #[test]
-    fn pass_histories_shape() {
-        let conv = vec![
-            ConversationItem::system("You are Grok."),
-            ConversationItem::user("early"),
-            ConversationItem::assistant("early-a"),
-            ConversationItem::user("late"),
-            ConversationItem::assistant("late-a"),
-        ];
-        let split = split_conversation_for_two_pass(&conv, 0.5);
-        let prompt = "1. Primary Request and Intent: x\n5. Optional Next Step: y\n";
-        let pass1 = build_two_pass_pass1_history(split.prefix, prompt);
-        assert!(matches!(pass1.last(), Some(ConversationItem::User(_))));
-
-        let note1 = "x".repeat(1001);
-        let pass2 = build_two_pass_pass2_history(split.prefix, split.tail, &note1, prompt);
-        assert!(pass2.iter().any(|i| matches!(
-            i,
-            ConversationItem::System(s) if s.content.as_ref() == "You are Grok."
-        )));
-        let texts: Vec<String> = pass2.iter().map(|i| i.text_content()).collect();
-        assert!(texts.iter().any(|t| t.contains("<summary_content>")));
-        assert!(
-            texts
-                .last()
-                .is_some_and(|t| t.contains("special compaction case"))
-        );
     }
 }

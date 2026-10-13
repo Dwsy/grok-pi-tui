@@ -151,7 +151,7 @@ fn final_path_from_raw_handle(handle: *mut std::ffi::c_void) -> Option<PathBuf> 
         return None;
     }
     Some(PathBuf::from(OsString::from_wide(
-        &buffer[..written as usize],
+        buffer.get(..written as usize)?,
     )))
 }
 

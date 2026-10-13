@@ -5,7 +5,9 @@
 //!
 //! Only `hooks` stays here: it is session glue (depends on `crate::sampling` and `crate::session::helpers::session_compact`).
 
+pub(crate) mod capture_transcript;
 pub mod hooks;
+pub(crate) mod v2_capture;
 
 pub use xai_grok_memory::{
     EndpointScopedCredentials, MemoryBackendImpl, MemoryBackendParams, MemoryIndex, MemoryScope,

@@ -23,7 +23,6 @@ pub(super) fn log_dashboard_closed(app: &AppView) {
 pub(super) fn log_dashboard_attached(id: &DashboardRowId) {
     let kind = match id {
         DashboardRowId::TopLevel(_) => "top_level",
-        DashboardRowId::Subagent { .. } => "subagent",
         DashboardRowId::Roster { .. } => "roster",
         DashboardRowId::Workspace { .. } => "workspace",
     };

@@ -1,6 +1,9 @@
 mod otlp_collector;
 
+use std::time::Duration;
+
 use otlp_collector as col;
+use xai_grok_test_support::{OtelExport, OtelRecorder};
 
 #[test]
 fn external_stream_grpc_mtls_fails_without_client_identity() {
@@ -11,9 +14,9 @@ fn external_stream_grpc_mtls_fails_without_client_identity() {
     std::fs::write(ca_file.path(), &tls.ca_cert_pem).expect("write CA pem");
     let ca_path = ca_file.path().to_str().expect("utf-8 CA path").to_string();
 
-    let collected = col::Collected::default();
+    let recorder = OtelRecorder::new();
     let endpoint = col::start_grpc_mtls_collector(
-        collected.clone(),
+        recorder.clone(),
         tls.server_cert_pem.clone(),
         tls.server_key_pem.clone(),
         tls.ca_cert_pem.clone(),
@@ -66,18 +69,17 @@ fn external_stream_grpc_mtls_fails_without_client_identity() {
     });
     xai_grok_telemetry::external::flush();
 
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    col::block_on(
+        recorder.wait_for_silence(Duration::from_millis(800), |events| !events.is_empty()),
+    )
+    .expect("mTLS-required collector must reject clients without identity");
     let health = xai_grok_telemetry::external::export_health()
         .expect("active stream must expose export health");
     assert!(
         health.export_failures > 0,
         "mTLS rejection must record at least one export failure; health={health:?}"
     );
-    assert_eq!(
-        collected.logs_len(),
-        0,
-        "mTLS-required collector must reject clients without identity"
-    );
+    assert_eq!(Vec::<OtelExport>::new(), recorder.exports());
 
     xai_grok_telemetry::external::shutdown();
 }

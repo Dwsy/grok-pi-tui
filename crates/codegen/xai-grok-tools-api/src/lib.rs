@@ -5,6 +5,7 @@
 //! that must not depend on the tools implementation crate.
 
 #![allow(clippy::derive_partial_eq_without_eq)]
+#![deny(clippy::indexing_slicing)]
 
 /// Generated protobuf types.
 pub mod pb {
@@ -96,6 +97,7 @@ pub use pb::{
     TruncationConfig,
     // Version lifecycle warnings
     VersionWarning,
+    WholeReadPolicy,
 };
 
 /// Default client-facing tool name derived from a namespaced tool id. Tool ids are colon-separated `Namespace:tool`

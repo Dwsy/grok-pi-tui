@@ -1,6 +1,6 @@
 [package]
 name = "xai-grok-pager-bin"
-version = "1.0.24"
+version = "1.0.45"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
@@ -20,18 +20,20 @@ path = "src/main.rs"
 [[bin]]
 name = "grok-pi"
 path = "src/bin/grok-pi.rs"
+required-features = ["pi-grok"]
 
 [dependencies]
 # The pager library (all application logic + the public API main.rs drives).
-xai-grok-pager = { path = "../xai-grok-pager" }
+xai-grok-pager = { path = "../xai-grok-pager", default-features = false }
 # Optional scrollback-native render mode, wired in via the fn-pointer seam.
-xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal" }
+xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal", default-features = false }
 pi-grok-adapter = { path = "../pi-grok-adapter" }
 
 # Agent runtime + leader/stdio/headless entry points.
+xai-grok-cloud-config = { workspace = true }
 xai-grok-login = { workspace = true }
-xai-grok-shell = { workspace = true }
-xai-grok-update = { path = "../xai-grok-update" }
+xai-grok-shell = { path = "../xai-grok-shell", default-features = false }
+xai-grok-update = { path = "../xai-grok-update", default-features = false }
 xai-grok-version = { workspace = true }
 xai-grok-telemetry = { workspace = true }
 xai-grok-workspace = { workspace = true }
@@ -51,17 +53,12 @@ tokio = { workspace = true, features = [
 ] }
 tokio-util = { workspace = true, features = ["compat", "rt"] }
 anyhow = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
-tempfile = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
-toml = { workspace = true }
 dunce = { workspace = true }
 semver = { workspace = true }
 xai-tty-utils = { workspace = true }
-# `collect_crashed()` for the startup crash notice.
-xai-grok-active-sessions = { workspace = true }
 xai-grok-config = { workspace = true }
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
 rustls = { version = "0.23", default-features = false, features = [
@@ -75,6 +72,19 @@ xai-grok-extra-ca = { workspace = true }
 # Binary hardening: compile-time string + control-flow obfuscation.
 obfstr = { workspace = true }
 cryptify = { workspace = true }
+
+# Single-binary builds: the embedded runtime, its unpacker, and the site setup command.
+clap = { workspace = true, features = ["derive"], optional = true }
+serde = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+xai-dirs = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
+
+[build-dependencies]
+sha2 = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 
@@ -103,18 +113,41 @@ clap = { workspace = true, features = ["derive"] }
 
 [features]
 default = [
+    "stock",
+    "pi-grok",
     "jemalloc",
     "sandbox-enforce",
     ]
 default-bazel = [
+    "stock",
+    "pi-grok",
     "jemalloc",
     "sandbox-enforce",
     "local-workspace",
     ]
+# The defaults of the crates this binary builds on. `default` and `release-dist` turn them on; a
+# `--no-default-features` build that wants them names this feature.
+stock = [
+    "xai-grok-pager/default",
+    "xai-grok-pager-minimal/default",
+    "xai-grok-shell/default",
+    "xai-grok-update/default",
+]
+# The fork composition root directly uses the optional single-binary helpers.
+# Keep them optional for upstream packaging, but enable them for every normal
+# grok-pi build and require the feature on the fork-only binary target.
+pi-grok = ["clap", "tempfile", "toml"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
 # xai-grok-workspace no longer enables sandbox-enforce by default, so enable it here.
 sandbox-enforce = ["xai-grok-pager/sandbox-enforce", "xai-grok-workspace/sandbox-enforce"]
 local-workspace = ["xai-grok-pager/local-workspace"]
+# Test-only, prod-inert seam: lets the e2e harness install a TEST-signed managed-policy key the
+# spawned pager trusts. Double locked out of production: absent from `default`, `default-bazel`, and
+# `release-dist`, and the install hook is additionally gated on `debug_assertions` (off in shipped
+# `-c opt`/release builds). Never add this to a shipped feature set.
+test-seams = []
 release-dist = [
+    "stock",
+    "pi-grok",
     "xai-grok-pager/release-dist",
     ]

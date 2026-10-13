@@ -276,7 +276,11 @@
         let f = tempfile::NamedTempFile::new().unwrap();
         let real_path = f.path().to_string_lossy().into_owned();
         let mut update = goal_update_value("g1", "active", 0);
-        update["last_classifier_details_path"] = serde_json::json!(real_path);
+        json_set(
+            &mut update,
+            "last_classifier_details_path",
+            serde_json::json!(real_path),
+        );
         dispatch_goal_update(&mut app, update);
         let g = app
             .agents
@@ -296,7 +300,11 @@
 
         // A missing path is cached as not existing (modal renders "(unavailable)")
         let mut update = goal_update_value("g1", "active", 0);
-        update["last_classifier_details_path"] = serde_json::json!("/no/such/details-xyz.md");
+        json_set(
+            &mut update,
+            "last_classifier_details_path",
+            serde_json::json!("/no/such/details-xyz.md"),
+        );
         dispatch_goal_update(&mut app, update);
         let g = app
             .agents
@@ -458,7 +466,7 @@
         revision: u64,
     ) -> bool {
         let mut update = workflow_update_value(run_id, name, status, foreground);
-        update["revision"] = serde_json::json!(revision);
+        json_set(&mut update, "revision", serde_json::json!(revision));
         dispatch_goal_update(app, update)
     }
 
@@ -466,8 +474,8 @@
     fn workflow_updated_never_owns_goal_ui() {
         let mut app = make_app_with_agent("sess-A");
         send_workflow_update(&mut app, "wf_goal", "goal", "active", true);
-        assert!(app.agents[&AgentId(0)].goal_state.is_none());
-        assert_eq!(app.agents[&AgentId(0)].workflow_runs.len(), 1);
+        assert!(test_agent(&app, AgentId(0)).goal_state.is_none());
+        assert_eq!(test_agent(&app, AgentId(0)).workflow_runs.len(), 1);
     }
 
     #[test]
@@ -477,7 +485,7 @@
         app.agents.get_mut(&id).unwrap().last_applied_xai_event_seq = Some(100);
 
         let mut update = workflow_update_value("wf", "deep-research", "active", false);
-        update["revision"] = serde_json::json!(1);
+        json_set(&mut update, "revision", serde_json::json!(1));
         let raw_payload = serde_json::json!({
             "sessionId": "sess-A",
             "update": update,
@@ -494,9 +502,15 @@
         );
 
         assert!(affected, "per-run workflow revision must win over the global highwater");
-        assert_eq!(app.agents[&id].workflow_runs[0].run_id, "wf");
-        assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(100));
-        assert_eq!(app.agents[&id].last_seen_event_id.as_deref(), Some("sess-A-5"));
+        assert_eq!(
+            test_agent(&app, id)
+                .workflow_runs
+                .first()
+                .map(|r| r.run_id.as_str()),
+            Some("wf")
+        );
+        assert_eq!(test_agent(&app, id).last_applied_xai_event_seq, Some(100));
+        assert_eq!(test_agent(&app, id).last_seen_event_id.as_deref(), Some("sess-A-5"));
     }
 
     #[test]
@@ -506,26 +520,42 @@
         assert!(!send_revisioned_workflow_update(
             &mut app, "wf", "deep-research", "active", false, 2,
         ));
-        assert_eq!(app.agents[&AgentId(0)].workflow_runs[0].status, "complete");
+        assert_eq!(
+            test_agent(&app, AgentId(0))
+                .workflow_runs
+                .first()
+                .map(|r| r.status.as_str()),
+            Some("complete")
+        );
         send_revisioned_workflow_update(&mut app, "wf", "", "cleared", false, 4);
         assert!(!send_revisioned_workflow_update(
             &mut app, "wf", "deep-research", "complete", false, 3,
         ));
-        assert!(app.agents[&AgentId(0)].workflow_runs.is_empty());
+        assert!(test_agent(&app, AgentId(0)).workflow_runs.is_empty());
     }
 
     #[test]
     fn workflow_snapshot_derives_active_count_from_roster() {
         let mut app = make_app_with_agent("sess-A");
         let mut update = workflow_update_value("wf", "deep-research", "active", false);
-        update["revision"] = serde_json::json!(1);
-        update["active_agents"] = serde_json::json!(99);
-        update["agents"] = serde_json::json!([
-            { "agent_id": "a1", "label": "one", "state": "running" },
-            { "agent_id": "a2", "label": "two", "state": "done" }
-        ]);
+        json_set(&mut update, "revision", serde_json::json!(1));
+        json_set(&mut update, "active_agents", serde_json::json!(99));
+        json_set(
+            &mut update,
+            "agents",
+            serde_json::json!([
+                { "agent_id": "a1", "label": "one", "state": "running" },
+                { "agent_id": "a2", "label": "two", "state": "done" }
+            ]),
+        );
         dispatch_goal_update(&mut app, update);
-        assert_eq!(app.agents[&AgentId(0)].workflow_runs[0].active_agents, 1);
+        assert_eq!(
+            test_agent(&app, AgentId(0))
+                .workflow_runs
+                .first()
+                .map(|r| r.active_agents),
+            Some(1)
+        );
     }
 
     #[test]
@@ -580,9 +610,9 @@
         let id = AgentId(0);
 
         assert!(send_revisioned_workflow_update(&mut app, "wf", "deep-research", "active", false, 3));
-        assert_eq!(app.agents[&id].workflow_runs.len(), 1);
-        assert_eq!(count_workflow_blocks(&app.agents[&id]), 1);
-        let block_id = *app.agents[&id].workflow_blocks.get("wf").expect("live block id");
+        assert_eq!(test_agent(&app, id).workflow_runs.len(), 1);
+        assert_eq!(count_workflow_blocks(test_agent(&app, id)), 1);
+        let block_id = *test_agent(&app, id).workflow_blocks.get("wf").expect("live block id");
 
         {
             let agent = app.agents.get_mut(&id).unwrap();
@@ -592,12 +622,12 @@
         }
 
         assert_eq!(
-            app.agents[&id].workflow_runs.len(),
+            test_agent(&app, id).workflow_runs.len(),
             1,
             "run list restored after a failed reload"
         );
         assert_eq!(
-            app.agents[&id].workflow_blocks.get("wf").copied(),
+            test_agent(&app, id).workflow_blocks.get("wf").copied(),
             Some(block_id),
             "block map restored, still pointing at the restored scrollback block"
         );
@@ -608,7 +638,7 @@
         );
         assert!(send_revisioned_workflow_update(&mut app, "wf", "deep-research", "complete", false, 4));
         assert_eq!(
-            count_workflow_blocks(&app.agents[&id]),
+            count_workflow_blocks(test_agent(&app, id)),
             1,
             "restored block map prevents a duplicate workflow history block"
         );
@@ -620,19 +650,19 @@
         let id = AgentId(0);
 
         assert!(send_revisioned_workflow_update(&mut app, "wf", "deep-research", "active", false, 5));
-        assert_eq!(app.agents[&id].workflow_runs.len(), 1);
+        assert_eq!(test_agent(&app, id).workflow_runs.len(), 1);
 
         assert!(send_workflow_update(&mut app, "wf", "deep-research", "cleared", false));
         assert!(
-            app.agents[&id].workflow_runs.is_empty(),
+            test_agent(&app, id).workflow_runs.is_empty(),
             "cleared removes the run despite a lower/default revision"
         );
         assert!(
-            !app.agents[&id].workflow_blocks.contains_key("wf"),
+            !test_agent(&app, id).workflow_blocks.contains_key("wf"),
             "cleared drops the live block id"
         );
         assert!(
-            app.agents[&id].cleared_workflow_runs.contains("wf"),
+            test_agent(&app, id).cleared_workflow_runs.contains("wf"),
             "clear tombstone recorded"
         );
     }

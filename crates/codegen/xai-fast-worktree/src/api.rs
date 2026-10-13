@@ -71,7 +71,7 @@ pub trait BtrfsDelegate: Send + Sync {
 }
 
 /// How to treat the source working tree when creating the destination worktree.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WorkingTreeMode {
     /// Replicate the working tree exactly as-is (including local modifications and untracked files).
     #[default]
@@ -177,7 +177,6 @@ pub struct WorktreeReport {
     pub strategy_metadata: Option<serde_json::Value>,
     /// Arms that declined before the one that ran.
     pub skipped: Vec<crate::ArmSkip>,
-    /// Grove daemon capability class: `current`, `old`, or `unknown`.
     pub daemon_capability_class: Option<&'static str>,
 }
 
@@ -583,7 +582,7 @@ impl RemoveReport {
 /// Btrfs subvolume delete when possible, else `rm -rf` plus deregister.
 /// Not `git worktree remove`: on large repos it walks every file. Blocking.
 pub fn remove_worktree(worktree_path: &std::path::Path) -> Result<RemoveReport> {
-    remove_worktree_inner(worktree_path, None)
+    remove_worktree_inner(worktree_path, None, None)
 }
 
 /// Like [`remove_worktree`], but falls back to `delegate` when direct btrfs
@@ -592,7 +591,18 @@ pub fn remove_worktree_with_delegate(
     worktree_path: &std::path::Path,
     delegate: Option<Arc<dyn BtrfsDelegate>>,
 ) -> Result<RemoveReport> {
-    remove_worktree_inner(worktree_path, delegate.as_ref())
+    remove_worktree_inner(worktree_path, delegate.as_ref(), None)
+}
+
+/// Like [`remove_worktree`], deregistering in `<registry_home>/worktrees.db`
+/// (the counterpart of [`WorktreeBuilder::registry_home`]) instead of the DB
+/// under the resolved grok home, for callers that inject their grok home.
+#[cfg(feature = "metadata")]
+pub fn remove_worktree_in(
+    worktree_path: &std::path::Path,
+    registry_home: &std::path::Path,
+) -> Result<RemoveReport> {
+    remove_worktree_inner(worktree_path, None, Some(registry_home))
 }
 
 #[tracing::instrument(
@@ -603,7 +613,10 @@ pub fn remove_worktree_with_delegate(
 fn remove_worktree_inner(
     worktree_path: &std::path::Path,
     delegate: Option<&Arc<dyn BtrfsDelegate>>,
+    registry_home: Option<&std::path::Path>,
 ) -> Result<RemoveReport> {
+    #[cfg(not(feature = "metadata"))]
+    let _ = registry_home;
     let start = std::time::Instant::now();
     let report = remove_worktree_from_disk(worktree_path, delegate)?;
     let method = report.dispose_method();
@@ -614,7 +627,7 @@ fn remove_worktree_inner(
     // EPERM on btrfs delete) must keep the record so the worktree stays tracked
     // by list/gc instead of leaking untracked on disk.
     #[cfg(feature = "metadata")]
-    unregister_worktree(worktree_path);
+    unregister_worktree(registry_home, worktree_path);
 
     Ok(report)
 }
@@ -805,7 +818,7 @@ fn cleanup_single_worktree(
     delegate: Option<&Arc<dyn BtrfsDelegate>>,
     report: &mut CleanupReport,
 ) {
-    match remove_worktree_inner(path, delegate) {
+    match remove_worktree_inner(path, delegate, None) {
         Ok(r) => {
             report.removed += 1;
             if r.unmounted_overlay {
@@ -1421,8 +1434,12 @@ pub(crate) fn register_worktree(
 }
 
 #[cfg(feature = "metadata")]
-fn unregister_worktree(worktree_path: &std::path::Path) {
-    if let Ok(db) = crate::db::WorktreeDb::open_default() {
+fn unregister_worktree(registry_home: Option<&std::path::Path>, worktree_path: &std::path::Path) {
+    let opened = match registry_home {
+        Some(home) => crate::db::WorktreeDb::open(home),
+        None => crate::db::WorktreeDb::open_default(),
+    };
+    if let Ok(db) = opened {
         let path =
             dunce::canonicalize(worktree_path).unwrap_or_else(|_| worktree_path.to_path_buf());
         let _ = db.unregister_by_path(&path);

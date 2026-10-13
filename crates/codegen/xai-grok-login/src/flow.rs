@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::{mpsc, oneshot};
+use xai_grok_config::{Capability, Distribution};
 use xai_grok_http::TransportFailureKind;
 use xai_grok_shell_base::util::grok_home;
 use xai_grok_telemetry::events::{LoginFailed, LoginFailureKind};
@@ -396,6 +397,7 @@ async fn run_auth_flow_inner(
     code_rx: Option<mpsc::Receiver<String>>,
     login_override: LoginTransportOverride,
 ) -> anyhow::Result<(GrokAuth, bool)> {
+    refuse_withheld_login()?;
     let result = ActiveAuthBackend::default()
         .login(LoginRequest {
             auth_manager,
@@ -824,6 +826,7 @@ pub async fn run_cli_login(
     devbox: bool,
     configure_telemetry: impl FnOnce(&AuthManager),
 ) -> anyhow::Result<GrokAuth> {
+    refuse_withheld_login()?;
     let _ = devbox;
     let auth_manager = Arc::new(AuthManager::new_with_proxy_base_url(
         &grok_home::grok_home(),
@@ -910,6 +913,14 @@ pub struct LogoutResult {
     /// `true` if `XAI_API_KEY` / `GROK_CODE_XAI_API_KEY` env var is set.
     pub api_key_still_set: bool,
 }
+/// Every interactive login and logout starts here, so a build without account logins opens no
+/// browser or device flow and touches no credential.
+fn refuse_withheld_login() -> anyhow::Result<()> {
+    match Distribution::current().refusal(Capability::AccountLogin) {
+        Some(refusal) => anyhow::bail!(refusal),
+        None => Ok(()),
+    }
+}
 /// Core logout logic shared by the CLI subcommand and the ACP handler.
 /// `None` scope clears the default (same as `/logout`); `Some` removes only that scope entry.
 /// `clear_orphan_managed_config` is injected so this crate stays off the shell's managed config.
@@ -918,6 +929,12 @@ pub fn perform_logout(
     scope: Option<&str>,
     clear_orphan_managed_config: impl FnOnce(),
 ) -> std::io::Result<LogoutResult> {
+    if let Err(refusal) = refuse_withheld_login() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            refusal.to_string(),
+        ));
+    }
     let auth = auth_manager.current_or_expired();
     let email = auth.as_ref().and_then(|a| a.email.clone());
     let was_logged_in = auth.is_some();
@@ -1521,28 +1538,9 @@ mod tests {
         GrokAuth {
             key: "k".into(),
             auth_mode: AuthMode::WebLogin,
-            create_time: Utc::now(),
             user_id: "u".into(),
-            email: None,
-            first_name: None,
-            last_name: None,
-            profile_image_asset_id: None,
-            principal_type: None,
-            principal_id: None,
-            team_id: None,
-            team_name: None,
-            team_role: None,
-            organization_id: None,
-            organization_name: None,
-            organization_role: None,
-            user_blocked_reason: None,
-            team_blocked_reasons: vec![],
             coding_data_retention_opt_out: false,
-            has_grok_code_access: None,
-            refresh_token: None,
-            expires_at: None,
-            oidc_issuer: None,
-            oidc_client_id: None,
+            ..GrokAuth::default()
         }
     }
     fn oidc_auth(issuer: &str) -> GrokAuth {

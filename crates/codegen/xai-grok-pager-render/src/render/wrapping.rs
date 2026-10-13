@@ -52,7 +52,9 @@ pub fn byte_range_to_row_cols(
         let end = match_range.end.min(wr.end);
         if start < end {
             // Convert byte offsets within this row to display columns.
-            let row_text = &text[wr.start..wr.end];
+            let Some(row_text) = text.get(wr.start..wr.end) else {
+                continue;
+            };
             let col_start = byte_offset_to_display_col(row_text, start - wr.start);
             let col_end = byte_offset_to_display_col(row_text, end - wr.start);
             segments.push(HighlightSegment {
@@ -91,11 +93,16 @@ pub fn wrap_byte_ranges_matching(text: &str, width: usize) -> Vec<Range<usize>> 
     // Mirror that here so search-highlight breakpoints stay in sync with the visual rendering
     let bq_len = blockquote_prefix_len(text);
     let subsequent_width = if bq_len > 0 && bq_len < text.len() {
-        let prefix_display_width = text[..bq_len]
-            .chars()
-            .map(|c| c.width().unwrap_or(0))
-            .sum::<usize>();
-        width.saturating_sub(prefix_display_width).max(1)
+        match text.get(..bq_len) {
+            Some(prefix) => {
+                let prefix_display_width = prefix
+                    .chars()
+                    .map(|c| c.width().unwrap_or(0))
+                    .sum::<usize>();
+                width.saturating_sub(prefix_display_width).max(1)
+            }
+            None => width,
+        }
     } else {
         width
     };
@@ -114,11 +121,16 @@ pub fn wrap_byte_ranges_matching(text: &str, width: usize) -> Vec<Range<usize>> 
     let mut base = first.end;
 
     // Skip whitespace at the wrap boundary (mirrors word_wrap_line_with_joiners).
-    let skip = text[base..].chars().take_while(|c| *c == ' ').count();
+    let skip = match text.get(base..) {
+        Some(rest) => rest.chars().take_while(|c| *c == ' ').count(),
+        None => 0,
+    };
     base = base.saturating_add(skip);
 
     if base < text.len() {
-        let remainder = &text[base..];
+        let Some(remainder) = text.get(base..) else {
+            return ranges;
+        };
         let rem_opts = textwrap::Options::new(subsequent_width)
             .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit)
             .word_splitter(textwrap::WordSplitter::HyphenSplitter)
@@ -380,15 +392,24 @@ where
 
     // Wrap the remainder using subsequent indent width.
     let mut base = first_line_range.end;
-    let skip_leading_spaces = flat[base..].chars().take_while(|c| *c == ' ').count();
-    let joiner_first = flat[base..base.saturating_add(skip_leading_spaces)].to_string();
-    base = base.saturating_add(skip_leading_spaces);
+    let skip_leading_spaces = match flat.get(base..) {
+        Some(rest) => rest.chars().take_while(|c| *c == ' ').count(),
+        None => 0,
+    };
+    let joiner_end = base.saturating_add(skip_leading_spaces);
+    let joiner_first = match flat.get(base..joiner_end) {
+        Some(s) => s.to_string(),
+        None => String::new(),
+    };
+    base = joiner_end;
 
     let subsequent_width_available = opts
         .width
         .saturating_sub(rt_opts.subsequent_indent.width())
         .max(1);
-    let remaining = &flat[base..];
+    let Some(remaining) = flat.get(base..) else {
+        return (out, joiners);
+    };
     let remaining_wrapped = wrap_ranges_trim(remaining, opts.width(subsequent_width_available));
 
     let mut prev_end = 0usize;
@@ -400,7 +421,10 @@ where
         let joiner = if i == 0 {
             joiner_first.clone()
         } else {
-            remaining[prev_end..r.start].to_string()
+            match remaining.get(prev_end..r.start) {
+                Some(s) => s.to_string(),
+                None => String::new(),
+            }
         };
         prev_end = r.end;
 
@@ -585,8 +609,12 @@ fn slice_line_spans<'a>(
         if seg_end > seg_start {
             let local_start = seg_start - s;
             let local_end = seg_end - s;
-            let content = original.spans[i].content.as_ref();
-            let slice = &content[local_start..local_end];
+            let Some(content) = original.spans.get(i).map(|s| s.content.as_ref()) else {
+                continue;
+            };
+            let Some(slice) = content.get(local_start..local_end) else {
+                continue;
+            };
             acc.push(Span {
                 style: *style,
                 content: Cow::Borrowed(slice),
@@ -615,7 +643,10 @@ pub fn wrap_header_hanging(
         return vec![header];
     }
 
-    let prefix_width = unicode_width::UnicodeWidthStr::width(header.spans[0].content.as_ref());
+    let Some(prefix_span) = header.spans.first().cloned() else {
+        return vec![header];
+    };
+    let prefix_width = unicode_width::UnicodeWidthStr::width(prefix_span.content.as_ref());
     let total_indent = extra_indent + prefix_width;
     let wrap_width = width.saturating_sub(total_indent);
 
@@ -623,8 +654,10 @@ pub fn wrap_header_hanging(
         return word_wrap_lines(std::iter::once(header), width);
     }
 
-    let prefix_span = header.spans[0].clone();
-    let content_line = Line::from(header.spans[1..].to_vec());
+    let Some(rest) = header.spans.get(1..) else {
+        return word_wrap_lines(std::iter::once(header), width);
+    };
+    let content_line = Line::from(rest.to_vec());
     let mut wrapped = word_wrap_lines(std::iter::once(content_line), wrap_width);
 
     if let Some(first) = wrapped.first_mut() {
@@ -670,12 +703,19 @@ mod tests {
             .collect::<String>()
     }
 
+    fn nth_line<'a, 'b>(out: &'a [Line<'b>], i: usize) -> &'a Line<'b> {
+        let Some(line) = out.get(i) else {
+            panic!("expected line {i}, got {} lines", out.len());
+        };
+        line
+    }
+
     #[test]
     fn trivial_unstyled_no_indents_wide_width() {
         let line = Line::from("hello");
         let out = word_wrap_line(&line, 10);
         assert_eq!(out.len(), 1);
-        assert_eq!(concat_line(&out[0]), "hello");
+        assert_eq!(concat_line(nth_line(&out, 0)), "hello");
     }
 
     #[test]
@@ -683,8 +723,8 @@ mod tests {
         let line = Line::from("hello world");
         let out = word_wrap_line(&line, 5);
         assert_eq!(out.len(), 2);
-        assert_eq!(concat_line(&out[0]), "hello");
-        assert_eq!(concat_line(&out[1]), "world");
+        assert_eq!(concat_line(nth_line(&out, 0)), "hello");
+        assert_eq!(concat_line(nth_line(&out, 1)), "world");
     }
 
     #[test]
@@ -693,13 +733,21 @@ mod tests {
         let out = word_wrap_line(&line, 6);
         assert_eq!(out.len(), 2);
         // First line carries the red style
-        assert_eq!(concat_line(&out[0]), "hello");
-        assert_eq!(out[0].spans.len(), 1);
-        assert_eq!(out[0].spans[0].style.fg, Some(Color::Red));
+        assert_eq!(concat_line(nth_line(&out, 0)), "hello");
+        let first = nth_line(&out, 0);
+        assert_eq!(first.spans.len(), 1);
+        let Some(span) = first.spans.first() else {
+            panic!("expected a span on first line");
+        };
+        assert_eq!(span.style.fg, Some(Color::Red));
         // Second line is unstyled
-        assert_eq!(concat_line(&out[1]), "world");
-        assert_eq!(out[1].spans.len(), 1);
-        assert_eq!(out[1].spans[0].style.fg, None);
+        assert_eq!(concat_line(nth_line(&out, 1)), "world");
+        let second = nth_line(&out, 1);
+        assert_eq!(second.spans.len(), 1);
+        let Some(span) = second.spans.first() else {
+            panic!("expected a span on second line");
+        };
+        assert_eq!(span.style.fg, None);
     }
     #[test]
     fn real_markdown_link_underline_does_not_leak_after_wrap() {
@@ -821,12 +869,12 @@ mod tests {
             .subsequent_indent(Line::from("  "));
         let line = Line::from("hello world foo");
         let out = word_wrap_line(&line, opts);
-        assert!(concat_line(&out[0]).starts_with("- "));
-        assert!(concat_line(&out[1]).starts_with("  "));
-        assert!(concat_line(&out[2]).starts_with("  "));
-        assert_eq!(concat_line(&out[0]), "- hello");
-        assert_eq!(concat_line(&out[1]), "  world");
-        assert_eq!(concat_line(&out[2]), "  foo");
+        assert!(concat_line(nth_line(&out, 0)).starts_with("- "));
+        assert!(concat_line(nth_line(&out, 1)).starts_with("  "));
+        assert!(concat_line(nth_line(&out, 2)).starts_with("  "));
+        assert_eq!(concat_line(nth_line(&out, 0)), "- hello");
+        assert_eq!(concat_line(nth_line(&out, 1)), "  world");
+        assert_eq!(concat_line(nth_line(&out, 2)), "  foo");
     }
 
     #[test]
@@ -834,7 +882,7 @@ mod tests {
         let line = Line::from("");
         let out = word_wrap_line(&line, 10);
         assert_eq!(out.len(), 1);
-        assert_eq!(concat_line(&out[0]), "");
+        assert_eq!(concat_line(nth_line(&out, 0)), "");
     }
 
     #[test]
@@ -842,7 +890,7 @@ mod tests {
         let line = Line::from("   hello");
         let out = word_wrap_line(&line, 8);
         assert_eq!(out.len(), 1);
-        assert_eq!(concat_line(&out[0]), "   hello");
+        assert_eq!(concat_line(nth_line(&out, 0)), "   hello");
     }
 
     #[test]
@@ -850,8 +898,8 @@ mod tests {
         let line = Line::from("hello   world");
         let out = word_wrap_line(&line, 8);
         assert_eq!(out.len(), 2);
-        assert_eq!(concat_line(&out[0]), "hello");
-        assert_eq!(concat_line(&out[1]), "world");
+        assert_eq!(concat_line(nth_line(&out, 0)), "hello");
+        assert_eq!(concat_line(nth_line(&out, 1)), "world");
     }
 
     #[test]
@@ -860,7 +908,7 @@ mod tests {
         let line = Line::from("supercalifragilistic");
         let out = word_wrap_line(&line, opts);
         assert_eq!(out.len(), 1);
-        assert_eq!(concat_line(&out[0]), "supercalifragilistic");
+        assert_eq!(concat_line(nth_line(&out, 0)), "supercalifragilistic");
     }
 
     #[test]
@@ -868,8 +916,8 @@ mod tests {
         let line = Line::from("hello-world");
         let out = word_wrap_line(&line, 7);
         assert_eq!(out.len(), 2);
-        assert_eq!(concat_line(&out[0]), "hello-");
-        assert_eq!(concat_line(&out[1]), "world");
+        assert_eq!(concat_line(nth_line(&out, 0)), "hello-");
+        assert_eq!(concat_line(nth_line(&out, 1)), "world");
     }
 
     #[test]
@@ -938,8 +986,8 @@ mod tests {
         let line = Line::from("😀😀😀");
         let out = word_wrap_line(&line, 4);
         assert_eq!(out.len(), 2);
-        assert_eq!(concat_line(&out[0]), "😀😀");
-        assert_eq!(concat_line(&out[1]), "😀");
+        assert_eq!(concat_line(nth_line(&out, 0)), "😀😀");
+        assert_eq!(concat_line(nth_line(&out, 1)), "😀");
     }
 
     #[test]
@@ -947,12 +995,20 @@ mod tests {
         let line = Line::from(vec!["abcd".red()]);
         let out = word_wrap_line(&line, 2);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].spans.len(), 1);
-        assert_eq!(out[1].spans.len(), 1);
-        assert_eq!(out[0].spans[0].style.fg, Some(Color::Red));
-        assert_eq!(out[1].spans[0].style.fg, Some(Color::Red));
-        assert_eq!(concat_line(&out[0]), "ab");
-        assert_eq!(concat_line(&out[1]), "cd");
+        let first = nth_line(&out, 0);
+        let second = nth_line(&out, 1);
+        assert_eq!(first.spans.len(), 1);
+        assert_eq!(second.spans.len(), 1);
+        let Some(span0) = first.spans.first() else {
+            panic!("expected a span on first line");
+        };
+        let Some(span1) = second.spans.first() else {
+            panic!("expected a span on second line");
+        };
+        assert_eq!(span0.style.fg, Some(Color::Red));
+        assert_eq!(span1.style.fg, Some(Color::Red));
+        assert_eq!(concat_line(first), "ab");
+        assert_eq!(concat_line(second), "cd");
     }
 
     /// The monotonic `cursor` fast path must produce byte-for-byte the same slices as a naive rescan-from-0.
@@ -993,11 +1049,13 @@ mod tests {
                 let seg_start = range.start.max(r.start);
                 let seg_end = range.end.min(r.end);
                 if seg_end > seg_start {
-                    let content = original.spans[i].content.as_ref();
-                    out.push((
-                        content[seg_start - r.start..seg_end - r.start].to_string(),
-                        style.fg,
-                    ));
+                    let Some(content) = original.spans.get(i).map(|s| s.content.as_ref()) else {
+                        continue;
+                    };
+                    let Some(slice) = content.get(seg_start - r.start..seg_end - r.start) else {
+                        continue;
+                    };
+                    out.push((slice.to_string(), style.fg));
                 }
             }
             out
@@ -1249,12 +1307,12 @@ mod tests {
         let (wrapped, joiners) = word_wrap_line_with_joiners(&line, 10);
         assert_eq!(wrapped.len(), 1, "Table line should not be wrapped");
         assert_eq!(
-            concat_line(&wrapped[0]).width(),
+            concat_line(nth_line(&wrapped, 0)).width(),
             10,
             "Table line should be clipped to the content width"
         );
         assert!(
-            concat_line(&line).starts_with(&concat_line(&wrapped[0])),
+            concat_line(&line).starts_with(&concat_line(nth_line(&wrapped, 0))),
             "Clipped row must be a verbatim prefix of the original (no ellipsis)"
         );
         assert_eq!(joiners, vec![None]);
@@ -1275,12 +1333,12 @@ mod tests {
         assert_eq!(wrapped.len(), 1);
         assert_eq!(joiners, vec![None]);
         assert_eq!(
-            concat_line(&wrapped[0]).width(),
+            concat_line(nth_line(&wrapped, 0)).width(),
             content_width,
             "table row must own every column up to the content width"
         );
         assert!(
-            concat_line(&wrapped[0]).starts_with("│ Status  │ Note      │"),
+            concat_line(nth_line(&wrapped, 0)).starts_with("│ Status  │ Note      │"),
             "original content must be preserved before the padding"
         );
     }
@@ -1300,7 +1358,7 @@ mod tests {
 
         assert_eq!(wrapped.len(), 1);
         assert_eq!(
-            concat_line(&wrapped[0]).width(),
+            concat_line(nth_line(&wrapped, 0)).width(),
             content_width,
             "emoji/em-dash row must be padded to exactly the content width"
         );
@@ -1384,8 +1442,14 @@ mod tests {
             );
         }
 
-        assert_eq!(joiners[0], None);
-        assert!(joiners[1..].iter().all(|j| j.is_some()));
+        let Some(first_joiner) = joiners.first() else {
+            panic!("expected joiners");
+        };
+        assert_eq!(first_joiner, &None);
+        let Some(rest) = joiners.get(1..) else {
+            panic!("expected continuation joiners");
+        };
+        assert!(rest.iter().all(|j| j.is_some()));
     }
 
     #[test]
@@ -1412,7 +1476,7 @@ mod tests {
         let line = Line::from("│ Short");
         let (wrapped, _) = word_wrap_line_with_joiners(&line, 80);
         assert_eq!(wrapped.len(), 1);
-        assert_eq!(concat_line(&wrapped[0]), "│ Short");
+        assert_eq!(concat_line(nth_line(&wrapped, 0)), "│ Short");
     }
 
     #[test]

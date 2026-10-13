@@ -228,6 +228,7 @@ fn a_failed_attach_leaves_no_trace() {
                 Some(SessionLiveState::Attaching),
                 "an in-flight load publishes Attaching"
             );
+            super::assert_root_views(&agent, &sid, None);
             agent.session_registry.set_turn_number(&sid, 7);
         }
         assert_eq!(
@@ -241,6 +242,7 @@ fn a_failed_attach_leaves_no_trace() {
             "and no registry entry either: an attach populates the entry before \
              it registers a handle, so clearing one field is not enough"
         );
+        super::assert_root_views(&agent, &sid, None);
     });
 }
 /// A load registers its handle and then keeps running.
@@ -566,10 +568,14 @@ fn set_live_does_not_retire_an_in_flight_attach() {
     super::run_local_for_bridge_test(|| async {
         let agent = super::build_minimal_agent_for_tests();
         let sid = acp::SessionId::new("sess-cold-load-set-live");
+        let root = agent
+            .session_registry
+            .register_root(sid.clone(), super::test_root_identity(1, 2));
         let guard = agent.begin_session_load(&sid);
         let (handle, _tx, _rx) = super::make_live_session_handle(&sid, None);
         agent.insert_resident(&sid, handle);
         agent.set_session_live_state(&sid, SessionLiveState::IdleResident);
+        super::assert_root_views(&agent, &sid, None);
         assert!(
             agent.session_registry.is_attaching(&sid),
             "set_live during a load must leave the attach in flight"
@@ -588,6 +594,7 @@ fn set_live_does_not_retire_an_in_flight_attach() {
             agent.session_live_state_for(&sid),
             Some(SessionLiveState::IdleResident)
         );
+        super::assert_root_views(&agent, &sid, Some(&root));
     });
 }
 /// Client-disconnect eviction writes Working against a still-resident session.
@@ -632,7 +639,11 @@ fn a_settled_attach_does_not_resurrect_an_unloaded_resident() {
         let sid = acp::SessionId::new("sess-unload-mid-attach");
         let (handle, _tx, rx) = super::make_live_session_handle(&sid, None);
         agent.insert_resident(&sid, handle);
+        let root = agent
+            .session_registry
+            .register_root(sid.clone(), super::test_root_identity(7, 8));
         let guard = agent.begin_session_load(&sid);
+        super::assert_root_views(&agent, &sid, None);
         let _ = agent.session_registry.take_resident(&sid);
         drop(rx);
         drop(guard);
@@ -645,6 +656,13 @@ fn a_settled_attach_does_not_resurrect_an_unloaded_resident() {
             Some(SessionLiveState::Dormant),
             "an unloaded session settles Dormant, not phantom-resident"
         );
+        assert!(
+            agent
+                .session_registry
+                .root_for_agent(&root.agent_id)
+                .is_none()
+        );
+        super::assert_root_views(&agent, &sid, None);
     });
 }
 /// Internal spellings must not round-trip from a client.

@@ -258,7 +258,9 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         let Some(request) = self.list_requests.get_mut(&request_id) else {
             return;
         };
-        request.slots[index] = inspection;
+        if let Some(slot) = request.slots.get_mut(index) {
+            *slot = inspection;
+        }
         request.remaining = request.remaining.saturating_sub(1);
         if request.remaining != 0 {
             return;

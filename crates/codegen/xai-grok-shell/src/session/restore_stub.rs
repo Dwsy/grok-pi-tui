@@ -161,6 +161,10 @@ pub async fn restore_session_with_progress(
     bail!(UNAVAILABLE)
 }
 
+pub fn ensure_available() -> Result<()> {
+    bail!(UNAVAILABLE)
+}
+
 pub async fn restore_session_with_storage(
     _client: &SessionRegistryClient,
     _storage_client: &StorageClient,

@@ -58,11 +58,21 @@ async fn run() -> Result<()> {
     let mut first = submit_and_settle(&binary, &content, project.path(), CANARY)
         .context("submit canary in first pager")?;
 
+    // ACK can paint while the turn is still running. Ctrl+C then cancels the turn
+    // instead of arming quit, and the confirming press only arms it.
+    first
+        .wait_for_turn_idle(Duration::from_secs(15))
+        .context("turn idle before double Ctrl+C")?;
+
     // Double Ctrl+C: the first opens the quit confirmation on the empty prompt, the second confirms
     // That is the same graceful Action::Quit as `/exit`
+    // Two 0x03 bytes in one read collapse to a single Ctrl+C (same as Esc Esc), which arms quit and never confirms it.
+    // Wait for the hint so the confirm byte is a separate event.
     let pre = first.raw_output().len();
     first.inject_keys(keys::CTRL_C).context("ctrl-c arm")?;
-    first.update(Duration::from_millis(250));
+    first
+        .wait_for_text("press again to quit", Duration::from_secs(5))
+        .context("quit confirmation after the first Ctrl+C")?;
     first.inject_keys(keys::CTRL_C).context("ctrl-c confirm")?;
 
     // Drain output until the child exits so the post-`pre` suffix holds the full graceful teardown for the assertions below
@@ -75,7 +85,8 @@ async fn run() -> Result<()> {
     assert_eq!(
         exit,
         PtyExitPoll::Exited(0),
-        "double Ctrl+C should exit via the graceful quit (exit 0), got {exit:?}"
+        "double Ctrl+C should exit via the graceful quit (exit 0), got {exit:?}\nscreen:\n{}",
+        first.screen_contents()
     );
     assert!(
         terminal_restored(&first, pre),

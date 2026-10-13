@@ -181,10 +181,11 @@ pub(crate) mod hydrate {
             generated_title,
             title_is_manual,
             worktree_label: None,
-            agent_name: None,
+            agent: Default::default(),
             // Hydrated locally: record the profile this process runs under
             sandbox_profile: xai_grok_sandbox::configured_profile_name().map(String::from),
             reasoning_effort: None,
+            context_window: None,
             last_turn_summary: None,
             last_turn_summary_prompt_id: None,
             last_recap: None,
@@ -332,9 +333,19 @@ mod tests {
 
         for line in &lines {
             let v: serde_json::Value = serde_json::from_str(line).unwrap();
-            assert_eq!(v["timestamp"], 0);
-            assert_eq!(v["method"], "session/update");
-            assert!(v["params"].is_object());
+            assert_eq!(
+                v.pointer("/timestamp").unwrap_or(&serde_json::Value::Null),
+                0
+            );
+            assert_eq!(
+                v.pointer("/method").unwrap_or(&serde_json::Value::Null),
+                "session/update"
+            );
+            assert!(
+                v.pointer("/params")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .is_object()
+            );
         }
     }
 
@@ -411,16 +422,15 @@ mod tests {
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect();
 
-        assert_eq!(items.len(), 2, "should have 1 user + 1 agent item");
+        let [user, agent] = items.as_slice() else {
+            panic!("should have 1 user + 1 agent item: {items:?}");
+        };
+        assert!(matches!(user, crate::sampling::ConversationItem::User(_)));
         assert!(matches!(
-            &items[0],
-            crate::sampling::ConversationItem::User(_)
-        ));
-        assert!(matches!(
-            &items[1],
+            agent,
             crate::sampling::ConversationItem::Assistant(_)
         ));
-        if let crate::sampling::ConversationItem::User(u) = &items[0] {
+        if let crate::sampling::ConversationItem::User(u) = user {
             let text: String = u
                 .content
                 .iter()
@@ -495,17 +505,15 @@ mod tests {
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect();
 
-        assert_eq!(items.len(), 2);
-        if let crate::sampling::ConversationItem::User(u) = &items[0] {
-            assert_eq!(u.content.len(), 2, "should have text + image parts");
-            assert!(matches!(
-                &u.content[0],
-                crate::sampling::ContentPart::Text { .. }
-            ));
-            assert!(matches!(
-                &u.content[1],
-                crate::sampling::ContentPart::Image { .. }
-            ));
+        let [user, _agent] = items.as_slice() else {
+            panic!("should have 1 user + 1 agent item, got {}", items.len());
+        };
+        if let crate::sampling::ConversationItem::User(u) = user {
+            let [text, image] = u.content.as_slice() else {
+                panic!("should have text + image parts: {:?}", u.content);
+            };
+            assert!(matches!(text, crate::sampling::ContentPart::Text { .. }));
+            assert!(matches!(image, crate::sampling::ContentPart::Image { .. }));
         } else {
             panic!("expected User item");
         }

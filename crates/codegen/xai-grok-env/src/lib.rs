@@ -5,6 +5,7 @@
     unreachable_code,
     dead_code
 )]
+#![deny(clippy::indexing_slicing)]
 mod registry;
 pub use registry::{FIRST_PARTY_CREDENTIAL_ENV_VARS, env_bool, env_string};
 /// The endpoint set for one backend environment.

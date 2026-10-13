@@ -74,7 +74,13 @@ fn encoded(intent: &AttemptTransactionIntentV1) -> Vec<u8> {
 }
 fn replace(bytes: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
     let start = bytes.windows(old.len()).position(|v| v == old).unwrap();
-    [&bytes[..start], new, &bytes[start + old.len()..]].concat()
+    let Some(head) = bytes.get(..start) else {
+        panic!("replace start out of range: {start}");
+    };
+    let Some(tail) = bytes.get(start + old.len()..) else {
+        panic!("replace tail out of range: {start}");
+    };
+    [head, new, tail].concat()
 }
 
 #[test]
@@ -83,39 +89,42 @@ fn remaining_intents_exact_goldens_and_complete_metadata() {
     let hashes = (2..=11)
         .map(|value| format!("{value:02x}").repeat(32))
         .collect::<Vec<_>>();
+    let [h0, h1, h2, h3, h4, h5, h6, h7, h8, h9] = hashes.as_slice() else {
+        panic!("expected 10 fixture hashes: {hashes:?}");
+    };
     let common = |tag, operation, locator: Option<u64>| {
         let locator = locator.map_or_else(String::new, |value| format!(",\"lr\":{value}"));
         format!(
             r#"{{"v":1,"k":{tag},"p":3,"o":{operation},"s":0,"m":"{id}","x":"{}","bl":{U},"bh":"{}","rl":{U},"rh":"{}","ba":"{}","ra":"{}","bj":"{}","rj":"{}","q":{U},"c":"{}","bg":{},"br":"{}","rg":{U},"rr":"{}"{locator},"t":{T}}}
 "#,
-            hashes[0],
-            hashes[1],
-            hashes[2],
-            hashes[3],
-            hashes[4],
-            hashes[5],
-            hashes[6],
-            hashes[7],
+            h0,
+            h1,
+            h2,
+            h3,
+            h4,
+            h5,
+            h6,
+            h7,
             U - 1,
-            hashes[8],
-            hashes[9],
+            h8,
+            h9,
         )
     };
     let expected = [
         format!(
             r#"{{"v":1,"k":0,"p":3,"o":0,"s":0,"m":"{id}","g":33,"x":"{}","z":{U},"bl":{U},"bh":"{}","rl":{U},"rh":"{}","ba":"{}","ra":"{}","bj":"{}","rj":"{}","q":{U},"c":"{}","bg":{},"br":"{}","rg":{U},"rr":"{}","t":{T}}}
 "#,
-            hashes[0],
-            hashes[1],
-            hashes[2],
-            hashes[3],
-            hashes[4],
-            hashes[5],
-            hashes[6],
-            hashes[7],
+            h0,
+            h1,
+            h2,
+            h3,
+            h4,
+            h5,
+            h6,
+            h7,
             U - 1,
-            hashes[8],
-            hashes[9],
+            h8,
+            h9,
         ),
         common(1, 2, None),
         common(2, 3, None),
@@ -123,7 +132,7 @@ fn remaining_intents_exact_goldens_and_complete_metadata() {
         format!(
             r#"{{"v":1,"k":4,"p":3,"o":5,"s":1,"m":"{id}","bl":{U},"bh":"{}","rl":{U},"rh":"{}","g":{U},"t":{T}}}
 "#,
-            hashes[1], hashes[2]
+            h1, h2
         ),
     ];
     let maximum = intents(AttemptTransactionPhaseV1::ProjectionsCommitted);
@@ -169,7 +178,11 @@ fn complete_family_all_phases_and_supersede_operations_roundtrip() {
             );
         }
     }
-    let mut supersede = intents(AttemptTransactionPhaseV1::Prepared)[1].clone();
+    let prepared = intents(AttemptTransactionPhaseV1::Prepared);
+    let Some(supersede_fixture) = prepared.get(1) else {
+        panic!("expected supersede fixture: {prepared:?}");
+    };
+    let mut supersede = supersede_fixture.clone();
     let AttemptTransactionIntentV1::SupersedeRewindRefs(value) = &mut supersede else {
         unreachable!("fixture is supersede")
     };
@@ -183,11 +196,23 @@ fn complete_family_all_phases_and_supersede_operations_roundtrip() {
 #[test]
 fn remaining_intents_reject_noncanonical_and_illegal_products() {
     let records = intents(AttemptTransactionPhaseV1::Prepared);
-    let supersede = encoded(&records[1]);
-    let release = encoded(&records[2]);
-    let compact = encoded(&records[4]);
+    let rec = |i: usize| {
+        records
+            .get(i)
+            .unwrap_or_else(|| panic!("expected fixture {i}: {records:?}"))
+    };
+    let supersede = encoded(rec(1));
+    let release = encoded(rec(2));
+    let compact = encoded(rec(4));
+    let Some(truncated) = supersede
+        .len()
+        .checked_sub(1)
+        .and_then(|n| supersede.get(..n))
+    else {
+        panic!("empty encoded supersede intent");
+    };
     let invalid = [
-        supersede[..supersede.len() - 1].to_vec(),
+        truncated.to_vec(),
         [supersede.as_slice(), b"\n"].concat(),
         replace(&supersede, b"\"p\":0,\"o\":2", b"\"o\":2,\"p\":0"),
         replace(&supersede, b"\"p\":0", b"\"p\":4"),

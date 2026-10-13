@@ -45,7 +45,9 @@ pub fn parse_marketplace_ref(arg: &str) -> Option<MarketplaceRef> {
 
 fn is_windows_drive_path(arg: &str) -> bool {
     let bytes = arg.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    bytes.len() >= 2
+        && bytes.first().is_some_and(|b| b.is_ascii_alphabetic())
+        && bytes.get(1) == Some(&b':')
 }
 
 /// Lowercase a source name and turn whitespace runs into single hyphens.
@@ -166,9 +168,9 @@ pub fn select_bare_name(
             let official: Vec<usize> = matched
                 .iter()
                 .copied()
-                .filter(|&index| match &scanned[index].source.kind {
-                    SourceKind::Git { url, .. } => is_official_source_url(url),
-                    SourceKind::Local { .. } => false,
+                .filter(|&index| match scanned.get(index).map(|c| &c.source.kind) {
+                    Some(SourceKind::Git { url, .. }) => is_official_source_url(url),
+                    _ => false,
                 })
                 .collect();
             match official.as_slice() {
@@ -413,7 +415,10 @@ mod tests {
     #[test]
     fn resolve_qualifier_github_owner_named_git_round_trips() {
         let sources = [git_source("X", "https://github.com/git/tools.git")];
-        assert_eq!(addressable_qualifier(&sources[0]), "git/tools");
+        let Some(source) = sources.first() else {
+            panic!("expected a source");
+        };
+        assert_eq!(addressable_qualifier(source), "git/tools");
         assert_eq!(resolve_qualified_source("git/tools", &sources), Ok(0));
     }
 

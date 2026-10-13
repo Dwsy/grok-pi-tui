@@ -21,6 +21,7 @@
 
 pub mod config;
 mod emit;
+pub(crate) mod metrics;
 pub(crate) mod providers;
 mod redact;
 pub mod schema;
@@ -84,7 +85,7 @@ pub struct ExternalTelemetry {
     logger_provider: Option<SdkLoggerProvider>,
     meter_provider: Option<SdkMeterProvider>,
     logger: Option<SdkLogger>,
-    instruments: Option<emit::Instruments>,
+    instruments: Option<metrics::Instruments>,
     /// Emission gate; cleared by the remote force-disable.
     /// The single authority for "emitting right now".
     active: AtomicBool,
@@ -186,7 +187,7 @@ fn build_handle(cfg: ExternalOtelConfig) -> Option<Arc<ExternalTelemetry>> {
     let instruments = built
         .meter_provider
         .as_ref()
-        .map(|p| emit::Instruments::new(&p.meter(schema::SCOPE_NAME)));
+        .map(|p| metrics::Instruments::new(&p.meter(schema::SCOPE_NAME)));
 
     let configured_meta = ConfiguredMeta {
         metrics_exporter: exporter_label(cfg.metrics_exporter),
@@ -554,7 +555,7 @@ pub(crate) mod test_support {
             .build();
 
         let logger = logger_provider.logger(schema::SCOPE_NAME);
-        let instruments = emit::Instruments::new(&meter_provider.meter(schema::SCOPE_NAME));
+        let instruments = metrics::Instruments::new(&meter_provider.meter(schema::SCOPE_NAME));
 
         let ext = ExternalTelemetry {
             logger_provider: Some(logger_provider),

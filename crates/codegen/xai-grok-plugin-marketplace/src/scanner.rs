@@ -239,6 +239,13 @@ fn scan_single_plugin(plugin_dir: &Path, relative_path: &str) -> MarketplaceEntr
 mod tests {
     use super::*;
 
+    fn nth<T>(xs: &[T], i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected item {i}, got {} items", xs.len());
+        };
+        x
+    }
+
     /// Create a minimal plugin directory with a manifest.
     fn make_plugin(dir: &Path, name: &str, version: &str) {
         let plugin_dir = dir.join("plugins").join(name);
@@ -263,11 +270,11 @@ mod tests {
 
         let plugins = scan_marketplace(dir.path()).entries;
         assert_eq!(plugins.len(), 2);
-        assert_eq!(plugins[0].name, "plugin-a");
-        assert_eq!(plugins[0].version.as_deref(), Some("1.0.0"));
-        assert_eq!(plugins[0].skill_count, 1);
-        assert!(plugins[0].keywords.is_empty());
-        assert_eq!(plugins[1].name, "plugin-b");
+        assert_eq!(nth(&plugins, 0).name, "plugin-a");
+        assert_eq!(nth(&plugins, 0).version.as_deref(), Some("1.0.0"));
+        assert_eq!(nth(&plugins, 0).skill_count, 1);
+        assert!(nth(&plugins, 0).keywords.is_empty());
+        assert_eq!(nth(&plugins, 1).name, "plugin-b");
     }
 
     #[test]
@@ -296,12 +303,12 @@ mod tests {
 
         let plugins = scan_marketplace(dir.path()).entries;
         assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].name, "indexed-plugin");
-        assert_eq!(plugins[0].category.as_deref(), Some("development"));
-        assert_eq!(plugins[0].tags, vec!["test"]);
-        assert_eq!(plugins[0].keywords, vec!["editor", "code"]);
+        assert_eq!(nth(&plugins, 0).name, "indexed-plugin");
+        assert_eq!(nth(&plugins, 0).category.as_deref(), Some("development"));
+        assert_eq!(nth(&plugins, 0).tags, vec!["test"]);
+        assert_eq!(nth(&plugins, 0).keywords, vec!["editor", "code"]);
         // Version comes from per-plugin manifest, not index.
-        assert_eq!(plugins[0].version.as_deref(), Some("1.0.0"));
+        assert_eq!(nth(&plugins, 0).version.as_deref(), Some("1.0.0"));
     }
 
     #[test]
@@ -327,15 +334,15 @@ mod tests {
 
         let plugins = scan_marketplace(dir.path()).entries;
         assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].name, "remote-plugin");
+        assert_eq!(nth(&plugins, 0).name, "remote-plugin");
         assert_eq!(
-            plugins[0].remote_url.as_deref(),
+            nth(&plugins, 0).remote_url.as_deref(),
             Some("https://github.com/acme/remote-plugin.git")
         );
-        assert_eq!(plugins[0].tags, vec!["t1"]);
-        assert_eq!(plugins[0].keywords, vec!["acme", "remote tool"]);
-        assert_eq!(plugins[0].domains, vec!["acme.example.com"]);
-        assert!(plugins[0].remote_subdir.is_none());
+        assert_eq!(nth(&plugins, 0).tags, vec!["t1"]);
+        assert_eq!(nth(&plugins, 0).keywords, vec!["acme", "remote tool"]);
+        assert_eq!(nth(&plugins, 0).domains, vec!["acme.example.com"]);
+        assert!(nth(&plugins, 0).remote_subdir.is_none());
     }
 
     #[test]
@@ -362,12 +369,15 @@ mod tests {
 
         let plugins = scan_marketplace(dir.path()).entries;
         assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].name, "acme");
+        assert_eq!(nth(&plugins, 0).name, "acme");
         assert_eq!(
-            plugins[0].remote_url.as_deref(),
+            nth(&plugins, 0).remote_url.as_deref(),
             Some("https://github.com/acme/agent-skills.git")
         );
-        assert_eq!(plugins[0].remote_subdir.as_deref(), Some("plugins/acme"));
+        assert_eq!(
+            nth(&plugins, 0).remote_subdir.as_deref(),
+            Some("plugins/acme")
+        );
     }
 
     #[test]
@@ -448,10 +458,10 @@ mod tests {
 
         let plugins = scan_marketplace(dir.path()).entries;
         assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].name, "grok-plugin");
-        assert_eq!(plugins[0].category.as_deref(), Some("design"));
-        assert_eq!(plugins[0].tags, vec!["grok"]);
-        assert!(plugins[0].keywords.is_empty());
+        assert_eq!(nth(&plugins, 0).name, "grok-plugin");
+        assert_eq!(nth(&plugins, 0).category.as_deref(), Some("design"));
+        assert_eq!(nth(&plugins, 0).tags, vec!["grok"]);
+        assert!(nth(&plugins, 0).keywords.is_empty());
     }
 
     #[test]
@@ -465,7 +475,7 @@ mod tests {
 
         let plugins = scan_marketplace(dir.path()).entries;
         assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].name, "fallback-plugin");
+        assert_eq!(nth(&plugins, 0).name, "fallback-plugin");
     }
 
     #[test]
@@ -496,8 +506,8 @@ mod tests {
 
         let plugins = scan_marketplace(dir.path()).entries;
         assert_eq!(plugins.len(), 1);
-        assert!(plugins[0].has_hooks);
-        assert_eq!(plugins[0].name, "hooked");
+        assert!(nth(&plugins, 0).has_hooks);
+        assert_eq!(nth(&plugins, 0).name, "hooked");
     }
 
     fn write_grok_file(dir: &Path, file: &str, content: &str) {
@@ -539,15 +549,15 @@ mod tests {
         let scan = scan_marketplace(dir.path());
         assert!(scan.catalog_loaded);
         assert_eq!(scan.entries.len(), 1);
-        let components = scan.entries[0].components.as_ref().unwrap();
-        assert_eq!(components.skills[0].name, "my-skill");
+        let components = nth(&scan.entries, 0).components.as_ref().unwrap();
+        assert_eq!(nth(&components.skills, 0).name, "my-skill");
         assert_eq!(
-            components.skills[0].description.as_deref(),
+            nth(&components.skills, 0).description.as_deref(),
             Some("Does things")
         );
-        assert_eq!(components.commands[0].name, "/go");
+        assert_eq!(nth(&components.commands, 0).name, "/go");
         // Legacy scan fields are still populated alongside catalog data
-        assert_eq!(scan.entries[0].skill_count, 1);
+        assert_eq!(nth(&scan.entries, 0).skill_count, 1);
     }
 
     #[test]
@@ -579,9 +589,9 @@ mod tests {
 
         let scan = scan_marketplace(dir.path());
         assert_eq!(scan.entries.len(), 1);
-        assert_eq!(scan.entries[0].name, "plugin-a");
-        let components = scan.entries[0].components.as_ref().unwrap();
-        assert_eq!(components.skills[0].name, "indexed-skill");
+        assert_eq!(nth(&scan.entries, 0).name, "plugin-a");
+        let components = nth(&scan.entries, 0).components.as_ref().unwrap();
+        assert_eq!(nth(&components.skills, 0).name, "indexed-skill");
     }
 
     fn url_marketplace_index(sha_field: &str) -> String {
@@ -618,8 +628,8 @@ mod tests {
 
         let scan = scan_marketplace(dir.path());
         assert!(scan.catalog_loaded);
-        let components = scan.entries[0].components.as_ref().unwrap();
-        assert_eq!(components.skills[0].name, "remote-skill");
+        let components = nth(&scan.entries, 0).components.as_ref().unwrap();
+        assert_eq!(nth(&components.skills, 0).name, "remote-skill");
     }
 
     #[test]
@@ -634,7 +644,7 @@ mod tests {
 
         let scan = scan_marketplace(dir.path());
         assert!(scan.catalog_loaded);
-        assert!(scan.entries[0].components.is_none());
+        assert!(nth(&scan.entries, 0).components.is_none());
     }
 
     #[test]
@@ -645,7 +655,7 @@ mod tests {
 
         let scan = scan_marketplace(dir.path());
         assert!(scan.catalog_loaded);
-        assert!(scan.entries[0].components.is_none());
+        assert!(nth(&scan.entries, 0).components.is_none());
     }
 
     #[test]
@@ -667,7 +677,7 @@ mod tests {
         let scan = scan_marketplace(dir.path());
         assert!(!scan.catalog_loaded);
         assert_eq!(scan.entries.len(), 1);
-        assert!(scan.entries[0].components.is_none());
+        assert!(nth(&scan.entries, 0).components.is_none());
     }
 
     #[test]
@@ -686,8 +696,8 @@ mod tests {
         let scan = scan_marketplace(dir.path());
         assert!(!scan.catalog_loaded);
         assert_eq!(scan.entries.len(), 1);
-        assert!(scan.entries[0].components.is_none());
-        assert_eq!(scan.entries[0].skill_count, 1);
+        assert!(nth(&scan.entries, 0).components.is_none());
+        assert_eq!(nth(&scan.entries, 0).skill_count, 1);
     }
 
     #[test]
@@ -703,7 +713,7 @@ mod tests {
 
         let plugins = scan_marketplace(dir.path()).entries;
         assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].name, "root-manifest");
-        assert_eq!(plugins[0].version.as_deref(), Some("2.0.0"));
+        assert_eq!(nth(&plugins, 0).name, "root-manifest");
+        assert_eq!(nth(&plugins, 0).version.as_deref(), Some("2.0.0"));
     }
 }

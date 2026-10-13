@@ -4,12 +4,22 @@ use super::*;
 fn newer_pin_gesture_survives_acknowledgement_of_in_flight_value() {
     let (_temp, mut membership) = ready_membership(vec![member("saved", "Saved")]);
     membership.request_pin(key("saved"), true).unwrap();
-    assert!(membership.view().unwrap().members[0].pin_rank.is_some());
+    assert!(
+        membership
+            .view()
+            .unwrap()
+            .members
+            .first()
+            .is_some_and(|m| m.pin_rank.is_some())
+    );
     let (store, patch) = take_layout_write(&mut membership);
 
     membership.request_pin(key("saved"), false).unwrap();
     let mut committed = snapshot(vec![member("saved", "Saved")]);
-    committed.members[0].pin_rank = Some(xai_grok_dashboard_store::RANK_GAP);
+    let Some(m) = committed.members.get_mut(0) else {
+        panic!("expected member: {:?}", committed.members);
+    };
+    m.pin_rank = Some(xai_grok_dashboard_store::RANK_GAP);
     complete_layout(
         &mut membership,
         store,
@@ -17,10 +27,15 @@ fn newer_pin_gesture_survives_acknowledgement_of_in_flight_value() {
         LayoutApplyOutcome::Committed(committed),
     );
 
-    assert_eq!(membership.view().unwrap().members[0].pin_rank, None);
+    let view = membership.view().unwrap();
+    let m = view
+        .members
+        .first()
+        .unwrap_or_else(|| panic!("expected a member"));
+    assert_eq!(m.pin_rank, None);
     let (_store, next) = take_layout_write(&mut membership);
     assert_eq!(next.pin_assignments.len(), 1);
-    assert!(!next.pin_assignments[0].pinned);
+    assert!(next.pin_assignments.first().is_some_and(|a| !a.pinned));
 }
 
 #[test]
@@ -65,7 +80,14 @@ fn rolled_back_busy_layout_also_retries_without_dropping_optimism() {
     );
 
     assert!(transition.notices.is_empty());
-    assert!(membership.view().unwrap().members[0].pin_rank.is_some());
+    assert!(
+        membership
+            .view()
+            .unwrap()
+            .members
+            .first()
+            .is_some_and(|m| m.pin_rank.is_some())
+    );
     assert!(matches!(
         membership.next_effect(vec![]).effects.as_slice(),
         [Effect::WriteWorkspace {
@@ -133,7 +155,11 @@ fn terminal_layout_failure_rolls_back_matching_values_but_keeps_newer_edits() {
     );
 
     let view = membership.view().unwrap();
-    assert_eq!(view.members[0].pin_rank, None);
+    let m = view
+        .members
+        .first()
+        .unwrap_or_else(|| panic!("expected a member"));
+    assert_eq!(m.pin_rank, None);
     assert_eq!(view.grouping, WorkspaceGrouping::Directory);
     assert!(matches!(
         transition.notices.as_slice(),
@@ -172,7 +198,7 @@ fn fatal_layout_failure_clears_even_newer_optimistic_gestures() {
     let view = membership.view().unwrap();
     assert_eq!(view.grouping, WorkspaceGrouping::State);
     assert_eq!(view.members.len(), 1);
-    assert_eq!(view.members[0].pin_rank, None);
+    assert_eq!(view.members.first().and_then(|m| m.pin_rank), None);
     assert!(matches!(
         transition.notices.as_slice(),
         [WorkspaceNotice::ReadOnly]
@@ -192,7 +218,12 @@ fn read_only_layout_refuses_before_optimistic_mutation() {
         membership.request_pin(key("saved"), true),
         Err(LayoutRequestError::ReadOnly)
     );
-    assert_eq!(membership.view().unwrap().members[0].pin_rank, None);
+    let view = membership.view().unwrap();
+    let m = view
+        .members
+        .first()
+        .unwrap_or_else(|| panic!("expected a member"));
+    assert_eq!(m.pin_rank, None);
     assert!(membership.next_effect(vec![]).effects.is_empty());
 }
 
@@ -237,8 +268,11 @@ fn gesture_accepted_during_refresh_rebases_over_foreign_snapshot() {
 
     let view = membership.view().unwrap();
     assert_eq!(view.grouping, WorkspaceGrouping::Directory);
-    assert_eq!(view.members[0].title.as_deref(), Some("Peer title"));
-    assert!(view.members[0].pin_rank.is_some());
+    let Some(m) = view.members.first() else {
+        panic!("expected member: {:?}", view.members);
+    };
+    assert_eq!(m.title.as_deref(), Some("Peer title"));
+    assert!(m.pin_rank.is_some());
     assert!(matches!(
         membership.next_effect(vec![]).effects.as_slice(),
         [Effect::WriteWorkspace {
@@ -264,7 +298,14 @@ fn lost_layout_writer_reopens_and_preserves_semantic_overlay() {
         &HashSet::new(),
     );
 
-    assert!(membership.view().unwrap().members[0].pin_rank.is_some());
+    assert!(
+        membership
+            .view()
+            .unwrap()
+            .members
+            .first()
+            .is_some_and(|m| m.pin_rank.is_some())
+    );
     assert!(matches!(
         membership.next_effect(vec![]).effects.as_slice(),
         [Effect::WriteWorkspace {
@@ -301,7 +342,10 @@ fn layout_is_scheduled_between_removal_and_upsert_and_blocks_refresh() {
         panic!("layout must run after removal");
     };
     let mut committed = snapshot(vec![member("pin", "Pin")]);
-    committed.members[0].pin_rank = Some(xai_grok_dashboard_store::RANK_GAP);
+    let Some(m) = committed.members.get_mut(0) else {
+        panic!("expected member: {:?}", committed.members);
+    };
+    m.pin_rank = Some(xai_grok_dashboard_store::RANK_GAP);
     complete_layout(
         &mut membership,
         store,
@@ -317,6 +361,6 @@ fn layout_is_scheduled_between_removal_and_upsert_and_blocks_refresh() {
         [Effect::WriteWorkspace {
             mutation: WorkspaceMutation::Upsert(members),
             ..
-        }] if members.len() == 1 && members[0].key == key("new")
+        }] if matches!(members.as_slice(), [m] if m.key == key("new"))
     ));
 }

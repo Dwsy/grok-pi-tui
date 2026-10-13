@@ -257,7 +257,10 @@ mod tests {
             !store.install(A, reported("the late pull", 1)),
             "an answer about text the server has since been sent a replacement for"
         );
-        assert_eq!(store.items(A)[0].message, "the current truth");
+        assert_eq!(
+            store.items(A).first().map(|d| d.message.as_str()),
+            Some("the current truth")
+        );
         assert_eq!(store.covers(A), Some(2));
     }
 

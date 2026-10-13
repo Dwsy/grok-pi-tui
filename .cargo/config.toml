@@ -84,6 +84,13 @@ rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"
 # See: https://github.com/tikv/jemallocator/issues/122
 [env]
 SYSTEM_DEPS_DAV1D_BUILD_INTERNAL = "auto"
+# rusty_ffmpeg (rsmpeg): link the hermetic static FFmpeg staged by
+# third_party/ffmpeg/fetch_local.py and use the pregenerated bindings
+# for that exact build, so cargo never runs pkg-config or bindgen. Bazel wires
+# the same two inputs through the rusty_ffmpeg annotation in MODULE.bazel.
+FFMPEG_BINDING_PATH = { value = "third_party/ffmpeg/binding.rs", relative = true }
+FFMPEG_LIBS_DIR = { value = "third_party/ffmpeg/local/lib", relative = true }
+FFMPEG_LINK_MODE = "static"
 AARCH64_APPLE_DARWIN_JEMALLOC_SYS_WITH_LG_PAGE = "14"
 AARCH64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_LG_PAGE = "16"
 AARCH64_UNKNOWN_LINUX_MUSL_JEMALLOC_SYS_WITH_LG_PAGE = "16"

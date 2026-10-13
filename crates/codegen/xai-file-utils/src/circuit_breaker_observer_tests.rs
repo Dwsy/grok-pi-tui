@@ -150,7 +150,7 @@ fn open_to_half_open_emits_debug_half_open_not_info_closed() {
         1,
         "Open -> HalfOpen must emit debug 'half-open'"
     );
-    assert_eq!(half_open[0].level, Level::DEBUG);
+    assert_eq!(half_open.first().map(|e| e.level), Some(Level::DEBUG));
     assert!(closed.is_empty(), "Open -> HalfOpen must NOT emit 'closed'");
 }
 
@@ -173,9 +173,12 @@ fn half_open_to_closed_emits_info_closed() {
         1,
         "HalfOpen -> Closed must emit info 'closed'"
     );
-    assert_eq!(closed[0].level, Level::INFO);
-    assert_eq!(closed[0].target, "circuit_breaker");
-    assert_eq!(closed[0].breaker.as_deref(), Some("storage_breaker"));
+    let Some(closed_ev) = closed.first() else {
+        panic!("expected closed event: {closed:?}");
+    };
+    assert_eq!(closed_ev.level, Level::INFO);
+    assert_eq!(closed_ev.target, "circuit_breaker");
+    assert_eq!(closed_ev.breaker.as_deref(), Some("storage_breaker"));
 }
 
 #[test]
@@ -189,7 +192,7 @@ fn half_open_to_open_on_probe_failure_emits_warn_opened() {
         .filter(|e| e.message == "circuit breaker opened")
         .collect();
     assert_eq!(openings.len(), 1);
-    assert_eq!(openings[0].level, Level::WARN);
+    assert_eq!(openings.first().map(|e| e.level), Some(Level::WARN));
 }
 
 #[test]
@@ -203,8 +206,11 @@ fn on_outcome_failure_emits_trace_event() {
         .filter(|e| e.message == "circuit breaker outcome failure")
         .collect();
     assert_eq!(failures.len(), 1);
-    assert_eq!(failures[0].level, Level::TRACE);
-    assert_eq!(failures[0].breaker.as_deref(), Some("storage_breaker"));
+    let Some(failure) = failures.first() else {
+        panic!("expected failure event: {failures:?}");
+    };
+    assert_eq!(failure.level, Level::TRACE);
+    assert_eq!(failure.breaker.as_deref(), Some("storage_breaker"));
 }
 
 #[test]

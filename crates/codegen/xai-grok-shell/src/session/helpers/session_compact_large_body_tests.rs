@@ -141,8 +141,10 @@ async fn responses_large_tool_result_images_fit_transport_limit() {
     assert!(unbudgeted_bytes.0 > TRANSPORT_LIMIT_BYTES);
     drop(unbudgeted_request);
 
-    let prepared = build_compaction_chat_history(source.clone(), Some(LARGE_CONTEXT), true, 0);
-    let repeated = build_compaction_chat_history(source.clone(), Some(LARGE_CONTEXT), true, 0);
+    let prepared =
+        build_compaction_chat_history(source.clone(), Some(LARGE_CONTEXT), true, None, 0);
+    let repeated =
+        build_compaction_chat_history(source.clone(), Some(LARGE_CONTEXT), true, None, 0);
     assert!(prepared.image_budget.body_bytes >= IMAGE_COMPACT_TRIGGER_BYTES);
     assert!(prepared.image_budget.body_bytes_after <= IMAGE_COMPACT_RECLAIM_TARGET_BYTES);
     assert_eq!(prepared.image_budget.evicted, EVICTED_MARKERS.len());
@@ -227,8 +229,15 @@ async fn responses_large_tool_result_images_fit_transport_limit() {
     assert!(wire.contains("call-0"));
     assert!(wire.contains("call-5"));
     assert!(wire.contains(LARGE_CONTEXT));
-    let tools = body["tools"].as_array().expect("tools must be attached");
-    assert!(tools.iter().any(|tool| tool["name"] == "read_file"));
+    let tools = body
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .expect("tools must be attached");
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.get("name") == Some(&json!("read_file")))
+    );
     assert_eq!(
         source
             .iter()

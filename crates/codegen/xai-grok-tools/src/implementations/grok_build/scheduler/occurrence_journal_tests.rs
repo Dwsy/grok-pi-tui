@@ -191,11 +191,12 @@ fn overflow_tail_suppresses_globally_and_never_serializes_a_fifty_first_entry() 
 
     let encoded = serde_json::to_value(&state).unwrap();
     assert_eq!(
-        encoded["occurrenceJournal"]["entries"]
-            .as_array()
-            .unwrap()
-            .len(),
-        MAX_PENDING_ONE_SHOTS
+        encoded
+            .get("occurrenceJournal")
+            .and_then(|j| j.get("entries"))
+            .and_then(|e| e.as_array())
+            .map(Vec::len),
+        Some(MAX_PENDING_ONE_SHOTS)
     );
     let mut reloaded: SchedulerState = serde_json::from_value(encoded).unwrap();
     let reloaded_plan = reloaded.reconcile_one_shot_occurrences();
@@ -247,7 +248,13 @@ fn inconsistent_current_overflow_metadata_normalizes_and_round_trips() {
     assert!(plan.block_all_one_shots() && plan.recovery_required());
 
     let encoded = serde_json::to_value(&state).unwrap();
-    assert!(encoded["occurrenceJournal"]["blockAllOneShots"] == true);
+    assert_eq!(
+        encoded
+            .get("occurrenceJournal")
+            .and_then(|j| j.get("blockAllOneShots"))
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
     let reloaded: SchedulerState = serde_json::from_value(encoded).unwrap();
     assert!(
         reloaded
@@ -284,7 +291,10 @@ async fn production_loader_preserves_tasks_and_quarantine_metadata() {
     resources.register_state::<SchedulerState>();
     assert!(ResourcesPersistence::new(path.clone()).load(&mut resources));
     let state = resources.get::<State<SchedulerState>>().unwrap();
-    assert_eq!(state.tasks[0].id, "recurring");
+    let Some(first) = state.tasks.first() else {
+        panic!("expected a loaded task: {:?}", state.tasks);
+    };
+    assert_eq!(first.id, "recurring");
     let (task_ids, is_global_block, is_overflowed) =
         state.occurrence_journal.quarantine_diagnostics();
     assert_eq!(task_ids, ["bad"]);
@@ -310,7 +320,10 @@ async fn production_loader_preserves_tasks_and_quarantine_metadata() {
         resources.register_state::<SchedulerState>();
         assert!(ResourcesPersistence::new(path.clone()).load(&mut resources));
         let state = resources.get::<State<SchedulerState>>().unwrap();
-        assert_eq!(state.tasks[0].id, "kept");
+        let Some(first) = state.tasks.first() else {
+            panic!("expected a loaded task: {:?}", state.tasks);
+        };
+        assert_eq!(first.id, "kept");
         assert!(state.occurrence_journal.block_all_one_shots);
     }
 }
@@ -324,7 +337,10 @@ fn reconciliation_exposes_only_persistence_and_suppression_foundation() {
     let plan = state.reconcile_one_shot_occurrences();
     assert!(plan.requires_resources_persistence());
     assert_eq!(plan.task_ids_to_remove(), ["resurrected"]);
-    assert_eq!(state.tasks[0].id, "resurrected");
+    let Some(first) = state.tasks.first() else {
+        panic!("expected a loaded task: {:?}", state.tasks);
+    };
+    assert_eq!(first.id, "resurrected");
 }
 
 #[test]
@@ -354,7 +370,16 @@ fn conflict_receipts_produce_diagnostics_and_suppress_every_task() {
     ] {
         let ids: Vec<_> = entries
             .iter()
-            .map(|entry| entry["task"]["id"].as_str().unwrap().to_owned())
+            .map(|entry| {
+                let Some(id) = entry
+                    .get("task")
+                    .and_then(|t| t.get("id"))
+                    .and_then(|v| v.as_str())
+                else {
+                    panic!("entry missing task.id: {entry}");
+                };
+                id.to_owned()
+            })
             .collect();
         let mut state = state(
             ids.iter().map(|id| task(id, false, true)).collect(),

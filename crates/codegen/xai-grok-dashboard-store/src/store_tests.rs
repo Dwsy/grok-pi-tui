@@ -533,6 +533,9 @@ fn rank_batch_is_atomic_and_grouping_persists() {
             member
         })
         .collect();
+    let [m0, m1, m2] = members.as_slice() else {
+        panic!("expected three members: {members:?}");
+    };
 
     // The renumber operation: every row's rank rewritten in one call
     store
@@ -545,9 +548,9 @@ fn rank_batch_is_atomic_and_grouping_persists() {
     assert_eq!(
         store.snapshot().unwrap().members,
         vec![
-            expected_member(&members[0], None, Some(RANK_GAP)),
-            expected_member(&members[1], None, Some(2 * RANK_GAP)),
-            expected_member(&members[2], None, Some(3 * RANK_GAP)),
+            expected_member(m0, None, Some(RANK_GAP)),
+            expected_member(m1, None, Some(2 * RANK_GAP)),
+            expected_member(m2, None, Some(3 * RANK_GAP)),
         ]
     );
 
@@ -566,10 +569,8 @@ fn rank_batch_is_atomic_and_grouping_persists() {
     store
         .set_order_rank(&[assign("r0", MemberKind::Build, None)])
         .unwrap();
-    assert_eq!(
-        store.snapshot().unwrap().members[0],
-        expected_member(&members[0], None, None)
-    );
+    let expected = expected_member(m0, None, None);
+    assert_eq!(store.snapshot().unwrap().members.first(), Some(&expected));
 
     store.set_grouping(&Grouping::Directory).unwrap();
     assert_eq!(store.snapshot().unwrap().grouping, Grouping::Directory);

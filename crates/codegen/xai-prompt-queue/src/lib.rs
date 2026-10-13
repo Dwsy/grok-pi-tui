@@ -1,5 +1,7 @@
 //! Shared prompt-queue wire types and combine-queued-prompts merge rules.
 
+#![deny(clippy::indexing_slicing)]
+
 mod combine;
 mod types;
 

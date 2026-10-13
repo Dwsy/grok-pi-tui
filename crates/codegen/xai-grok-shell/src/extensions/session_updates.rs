@@ -160,14 +160,18 @@ fn try_stream_tail_page(request: &Request, updates_path: &Path) -> io::Result<Op
         let start = if tail_n >= prompt_starts.len() {
             0
         } else {
-            prompt_starts[prompt_starts.len() - tail_n]
+            prompt_starts
+                .len()
+                .checked_sub(tail_n)
+                .and_then(|i| prompt_starts.get(i).copied())
+                .unwrap_or(0)
         };
         let end = match request.limit {
             Some(lim) => (start + lim).min(total_count),
             None => total_count,
         };
         let has_more = start > 0;
-        let lines = all_lines[start..end].to_vec();
+        let lines = all_lines.get(start..end).unwrap_or(&[]).to_vec();
         Ok(Some(TailPage {
             lines,
             total_count,
@@ -409,7 +413,11 @@ pub async fn handle(
         let start = if tail_n >= prompt_starts.len() {
             0
         } else {
-            prompt_starts[prompt_starts.len() - tail_n]
+            prompt_starts
+                .len()
+                .checked_sub(tail_n)
+                .and_then(|i| prompt_starts.get(i).copied())
+                .unwrap_or(0)
         };
         let end = match request.limit {
             Some(lim) => (start + lim).min(total_count),
@@ -420,7 +428,9 @@ pub async fn handle(
         let b = page_bounds(&request, total_count);
         (b, b.end < total_count)
     };
-    let page = &live_lines[bounds.start..bounds.end];
+    let Some(page) = live_lines.get(bounds.start..bounds.end) else {
+        return Err(acp::Error::internal_error().data("page bounds out of range"));
+    };
 
     if request.stream {
         let chunk_size = request.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE).max(1);
@@ -552,11 +562,20 @@ mod tests {
             .unwrap();
         let json = parse_response(response);
 
-        assert_eq!(json["totalCount"], 6);
-        assert_eq!(json["hasMore"], true);
-        assert_eq!(json["updates"].as_array().unwrap().len(), 2);
-        assert_eq!(json["updates"][0]["params"]["seq"], 4);
-        assert_eq!(json["updates"][1]["params"]["seq"], 5);
+        assert_eq!(json.get("totalCount"), Some(&serde_json::json!(6)));
+        assert_eq!(json.get("hasMore"), Some(&serde_json::json!(true)));
+        let Some(updates) = json.get("updates").and_then(|v| v.as_array()) else {
+            panic!("expected updates array: {json}");
+        };
+        assert_eq!(updates.len(), 2);
+        assert_eq!(
+            json.pointer("/updates/0/params/seq"),
+            Some(&serde_json::json!(4))
+        );
+        assert_eq!(
+            json.pointer("/updates/1/params/seq"),
+            Some(&serde_json::json!(5))
+        );
     }
 
     #[tokio::test]
@@ -591,10 +610,12 @@ mod tests {
             .await
             .unwrap();
         let json = parse_response(response);
-        let updates = json["updates"].as_array().unwrap();
+        let Some(updates) = json.get("updates").and_then(|v| v.as_array()) else {
+            panic!("expected updates array: {json}");
+        };
         let rendered = serde_json::to_string(updates).unwrap();
 
-        assert_eq!(json["totalCount"], 4);
+        assert_eq!(json.get("totalCount"), Some(&serde_json::json!(4)));
         assert_eq!(updates.len(), 3);
         assert!(!rendered.contains("dead-branch"));
         assert!(!rendered.contains("dead-resp"));
@@ -649,10 +670,16 @@ mod tests {
         let json = parse_response(response);
 
         assert_eq!(
-            json["totalCount"], 2,
+            json.get("totalCount"),
+            Some(&serde_json::json!(2)),
             "id fallback should resolve the divergent-cwd transcript"
         );
-        assert_eq!(json["updates"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            json.get("updates")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(2)
+        );
 
         // Clean up the dir written under the real grok home.
         let _ = std::fs::remove_dir_all(&child_dir);
@@ -735,21 +762,39 @@ mod tests {
         .unwrap();
         let json = parse_response(response);
 
-        assert_eq!(json["totalCount"], 5);
-        assert_eq!(json["chunkCount"], 3);
+        assert_eq!(json.get("totalCount"), Some(&serde_json::json!(5)));
+        assert_eq!(json.get("chunkCount"), Some(&serde_json::json!(3)));
         assert!(json.get("updates").is_none());
 
         let chunks = extract_chunk_params(&mut rx);
         assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0]["index"], 0);
-        assert_eq!(chunks[0]["updates"].as_array().unwrap().len(), 2);
-        assert_eq!(chunks[0]["done"], false);
-        assert_eq!(chunks[1]["index"], 1);
-        assert_eq!(chunks[1]["updates"].as_array().unwrap().len(), 2);
-        assert_eq!(chunks[1]["done"], false);
-        assert_eq!(chunks[2]["index"], 2);
-        assert_eq!(chunks[2]["updates"].as_array().unwrap().len(), 1);
-        assert_eq!(chunks[2]["done"], true);
+        let [c0, c1, c2] = chunks.as_slice() else {
+            panic!("expected three chunks: {chunks:?}");
+        };
+        assert_eq!(c0.get("index"), Some(&serde_json::json!(0)));
+        assert_eq!(
+            c0.get("updates")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(2)
+        );
+        assert_eq!(c0.get("done"), Some(&serde_json::json!(false)));
+        assert_eq!(c1.get("index"), Some(&serde_json::json!(1)));
+        assert_eq!(
+            c1.get("updates")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(2)
+        );
+        assert_eq!(c1.get("done"), Some(&serde_json::json!(false)));
+        assert_eq!(c2.get("index"), Some(&serde_json::json!(2)));
+        assert_eq!(
+            c2.get("updates")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(1)
+        );
+        assert_eq!(c2.get("done"), Some(&serde_json::json!(true)));
     }
 
     #[tokio::test]
@@ -767,8 +812,8 @@ mod tests {
         .unwrap();
         let json = parse_response(response);
 
-        assert_eq!(json["totalCount"], 0);
-        assert_eq!(json["chunkCount"], 0);
+        assert_eq!(json.get("totalCount"), Some(&serde_json::json!(0)));
+        assert_eq!(json.get("chunkCount"), Some(&serde_json::json!(0)));
         assert!(json.get("updates").is_none());
 
         let chunks = extract_chunk_params(&mut rx);
@@ -850,9 +895,11 @@ mod tests {
         .unwrap();
         let json = parse_response(response);
 
-        assert_eq!(json["totalCount"], 6);
-        assert_eq!(json["hasMore"], true);
-        let updates = json["updates"].as_array().unwrap();
+        assert_eq!(json.get("totalCount"), Some(&serde_json::json!(6)));
+        assert_eq!(json.get("hasMore"), Some(&serde_json::json!(true)));
+        let Some(updates) = json.get("updates").and_then(|v| v.as_array()) else {
+            panic!("expected updates array: {json}");
+        };
         // The last 2 turns hold 4 updates (p2, r2, p3, r3)
         assert_eq!(updates.len(), 4);
         let rendered = serde_json::to_string(updates).unwrap();
@@ -860,7 +907,9 @@ mod tests {
         assert!(rendered.contains("r3"));
         assert!(!rendered.contains("p1"));
         // promptStarts indexes into the full updates array
-        let ps = json["promptStarts"].as_array().unwrap();
+        let Some(ps) = json.get("promptStarts").and_then(|v| v.as_array()) else {
+            panic!("expected promptStarts array: {json}");
+        };
         assert_eq!(ps, &[0, 2, 4]);
     }
 
@@ -887,9 +936,14 @@ mod tests {
         .unwrap();
         let json = parse_response(response);
 
-        assert_eq!(json["totalCount"], 4);
-        assert_eq!(json["hasMore"], false);
-        assert_eq!(json["updates"].as_array().unwrap().len(), 4);
+        assert_eq!(json.get("totalCount"), Some(&serde_json::json!(4)));
+        assert_eq!(json.get("hasMore"), Some(&serde_json::json!(false)));
+        assert_eq!(
+            json.get("updates")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(4)
+        );
     }
 
     #[tokio::test]
@@ -922,9 +976,11 @@ mod tests {
         let json = parse_response(response);
 
         // The live lines are p1, r1, p2-new, r2-new, p3, r3
-        assert_eq!(json["totalCount"], 6);
-        assert_eq!(json["hasMore"], true);
-        let updates = json["updates"].as_array().unwrap();
+        assert_eq!(json.get("totalCount"), Some(&serde_json::json!(6)));
+        assert_eq!(json.get("hasMore"), Some(&serde_json::json!(true)));
+        let Some(updates) = json.get("updates").and_then(|v| v.as_array()) else {
+            panic!("expected updates array: {json}");
+        };
         // Last 2 turns: p2-new, r2-new, p3, r3
         assert_eq!(updates.len(), 4);
         let rendered = serde_json::to_string(updates).unwrap();
@@ -932,7 +988,9 @@ mod tests {
         assert!(rendered.contains("p2-new"));
         assert!(rendered.contains("p3"));
         // promptStarts is computed over the live lines
-        let ps = json["promptStarts"].as_array().unwrap();
+        let Some(ps) = json.get("promptStarts").and_then(|v| v.as_array()) else {
+            panic!("expected promptStarts array: {json}");
+        };
         assert_eq!(ps, &[0, 2, 4]);
     }
 
@@ -962,9 +1020,11 @@ mod tests {
         .unwrap();
         let json = parse_response(response);
 
-        assert_eq!(json["totalCount"], 6);
+        assert_eq!(json.get("totalCount"), Some(&serde_json::json!(6)));
         // offset -2 selects the last 2 updates
-        let updates = json["updates"].as_array().unwrap();
+        let Some(updates) = json.get("updates").and_then(|v| v.as_array()) else {
+            panic!("expected updates array: {json}");
+        };
         assert_eq!(updates.len(), 2);
     }
 
@@ -989,7 +1049,9 @@ mod tests {
             .unwrap();
         let json = parse_response(response);
 
-        let ps = json["promptStarts"].as_array().unwrap();
+        let Some(ps) = json.get("promptStarts").and_then(|v| v.as_array()) else {
+            panic!("expected promptStarts array: {json}");
+        };
         assert_eq!(ps, &[0, 2]);
     }
 
@@ -1016,7 +1078,9 @@ mod tests {
         .unwrap();
         let json = parse_response(response);
 
-        let ps = json["promptStarts"].as_array().unwrap();
+        let Some(ps) = json.get("promptStarts").and_then(|v| v.as_array()) else {
+            panic!("expected promptStarts array: {json}");
+        };
         assert_eq!(ps, &[0, 2]);
         // Drain the chunks
         let _ = extract_chunk_params(&mut rx);

@@ -44,6 +44,12 @@ fn main() {
     println!("cargo:rustc-env=GROK_PI_VERSION={version}");
     println!("cargo:rustc-env=VERSION_WITH_COMMIT={version} ({commit})");
     generate_host_ui_catalog();
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        println!("cargo:rustc-link-arg=/DELAYLOAD:ProjectedFSLib.dll");
+        println!("cargo:rustc-link-arg=delayimp.lib");
+    }
 }
 
 fn generate_host_ui_catalog() {

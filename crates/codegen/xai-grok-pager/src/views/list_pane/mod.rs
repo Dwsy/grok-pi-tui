@@ -23,10 +23,6 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::text::Line;
 
-// ---------------------------------------------------------------------------
-// ListPaneStyle: configurable colors for the framework's post-pass overlays
-// ---------------------------------------------------------------------------
-
 /// Controls colors for selection highlighting, the input bar, and other framework-level overlays.
 /// Match highlights use style inversion (REVERSED modifier) and don't need configurable colors.
 /// Items do not need to know about these; the framework applies them in a pass after each item renders.
@@ -95,17 +91,9 @@ impl Default for ListPaneStyle {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ListItem trait
-// ---------------------------------------------------------------------------
-
 /// Items are owned by the model, not the view. The view borrows them through `&[T]` in
 /// [`ListPaneState::prepare_layout`] and [`ListPane::new`].
 pub trait ListItem {
-    // =======================================================================
-    // Content-based API (preferred)
-    // =======================================================================
-
     /// The styled content to display: one logical line of text.
     /// The framework handles wrapping (Wrap mode) and truncation (NoWrap mode) based on this content. Return a reference to a stored `Line`.
     /// Default returns an empty `Line` (signals "use custom `render()`").
@@ -139,9 +127,7 @@ pub trait ListItem {
         None
     }
 
-    // =======================================================================
     // Custom rendering API (escape hatch)
-    // =======================================================================
 
     /// Override this only when the content/prefix model doesn't fit; with the content-based API, leave it as the default no-op.
     /// The framework calls this only when `content()` returns an empty Line.
@@ -178,10 +164,6 @@ pub trait ListItem {
         (textwrap::wrap(&flat, opts).len() as u16).max(1)
     }
 
-    // =======================================================================
-    // Identity & behavior
-    // =======================================================================
-
     /// Stable identity that survives insertions, removals, and reordering.
     /// Must be unique within the list. Used so that selection state persists across mutations without index arithmetic.
     fn stable_id(&self) -> u64;
@@ -200,10 +182,6 @@ pub trait ListItem {
     fn needs_tick(&self) -> bool {
         false
     }
-
-    // =======================================================================
-    // Search / filter
-    // =======================================================================
 
     /// Plain text for search/filter matching.
     fn search_text(&self) -> &str {

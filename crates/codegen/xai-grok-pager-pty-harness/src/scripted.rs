@@ -179,7 +179,7 @@ pub struct ImageFixture {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageFixtureKind {
-    /// 8x8 RGBA PNG; meets the minimum vision-model dimension requirement.
+    /// 32x32 RGBA PNG (1024 px); clears the backend's 512-total-pixel minimum.
     #[default]
     Standard,
     /// 1x1 RGBA PNG, below the 8 px minimum; rejected client-side.
@@ -1320,7 +1320,7 @@ fn standard_png_bytes() -> Result<Vec<u8>> {
     use image::{ImageBuffer, ImageFormat, Rgba};
 
     let buffer: ImageBuffer<Rgba<u8>, Vec<u8>> =
-        ImageBuffer::from_pixel(8, 8, Rgba([128, 64, 32, 255]));
+        ImageBuffer::from_pixel(32, 32, Rgba([128, 64, 32, 255]));
     let mut png = Vec::new();
     buffer.write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)?;
     Ok(png)
@@ -2260,8 +2260,8 @@ mod tests {
             &bodies,
             1,
             "image/png",
-            &DimensionAssertion::Exact(8),
-            &DimensionAssertion::Exact(8),
+            &DimensionAssertion::Exact(32),
+            &DimensionAssertion::Exact(32),
         )
         .expect("exact match");
         // Range form succeeds when width is at least 1
@@ -2279,18 +2279,18 @@ mod tests {
             },
         )
         .expect("range match");
-        // Range form fails when width must be at least 28 but the actual is 8
+        // Range form fails when width must be at least 64 but the actual is 32
         assert!(
             assert_inline_images(
                 &bodies,
                 1,
                 "image/png",
                 &DimensionAssertion::Range {
-                    min: Some(28),
+                    min: Some(64),
                     max: None
                 },
                 &DimensionAssertion::Range {
-                    min: Some(28),
+                    min: Some(64),
                     max: None
                 },
             )

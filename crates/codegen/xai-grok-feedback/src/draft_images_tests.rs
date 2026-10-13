@@ -104,7 +104,10 @@ fn planted_paths_are_refused_and_a_failed_write_leaves_nothing_behind() {
 
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("0.png"), [9u8; 4]).unwrap();
-    let error = write_draft_images(session.path(), &id, &images[..1], POLICY).unwrap_err();
+    let Some(one) = images.get(..1) else {
+        panic!("expected at least one image: {images:?}");
+    };
+    let error = write_draft_images(session.path(), &id, one, POLICY).unwrap_err();
     assert!(
         matches!(&error, DraftImageError::Write { path, .. } if *path == dir),
         "{error}"
@@ -117,7 +120,10 @@ fn planted_paths_are_refused_and_a_failed_write_leaves_nothing_behind() {
         let elsewhere = tempfile::tempdir().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         std::os::unix::fs::symlink(elsewhere.path(), &dir).unwrap();
-        let error = write_draft_images(session.path(), &id, &images[..1], POLICY).unwrap_err();
+        let Some(one) = images.get(..1) else {
+            panic!("expected at least one image: {images:?}");
+        };
+        let error = write_draft_images(session.path(), &id, one, POLICY).unwrap_err();
         assert!(
             matches!(&error, DraftImageError::Write { path, .. } if *path == dir),
             "{error}"

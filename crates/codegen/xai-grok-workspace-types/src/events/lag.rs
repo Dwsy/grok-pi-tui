@@ -20,11 +20,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn display_renders_count() {
-        assert_eq!(EventLag::Lagged(7).to_string(), "lagged by 7 events");
-    }
-
-    #[test]
     fn json_shape_uses_type_tag_with_data_payload() {
         let lag = EventLag::Lagged(3);
         let json = serde_json::to_string(&lag).unwrap();

@@ -25,7 +25,10 @@ impl PipeReader {
             loop {
                 match stream.read(&mut chunk).await {
                     Ok(0) | Err(_) => break,
-                    Ok(n) => Self::lock_buffer(&task_buffer).extend_from_slice(&chunk[..n]),
+                    Ok(n) => {
+                        let Some(read) = chunk.get(..n) else { break };
+                        Self::lock_buffer(&task_buffer).extend_from_slice(read);
+                    }
                 }
             }
         });
@@ -72,7 +75,10 @@ fn truncate_buffer(buf: &mut Vec<u8>, limit: usize) -> bool {
             .map(|(i, _)| i)
             .unwrap_or(s.len());
 
-        *buf = s[start_idx..].as_bytes().to_vec();
+        let Some(tail) = s.get(start_idx..) else {
+            return false;
+        };
+        *buf = tail.as_bytes().to_vec();
 
         true
     } else {

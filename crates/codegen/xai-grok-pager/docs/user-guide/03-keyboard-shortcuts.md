@@ -160,14 +160,39 @@ The title always includes the MCP server name.
 | `Shift+X` | Dismiss the question (the agent continues without an answer) |
 | `Ctrl+F` | Fullscreen the card |
 
-The `/feedback` pane is the one exception to this table: the report box has no
-answers to walk, `Enter` sends the report, and `Esc` dismisses the pane. When a
-trace upload can be offered, `Enter` on the report first shows an upload
-question (`↑`/`↓` choose, `Enter` sends with your choice, `Esc` skips the
-upload and still sends the report).
+The `/feedback` form is the one exception to this table: its report box has no
+answers to walk, so it has its own keys (below).
 
 While typing a free-text answer, `Enter` submits and `Esc` returns to the
 answer rows; every other key goes to the text field.
+
+### `/feedback` form
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Switch between the Write and Drafts tabs |
+| `Esc` | Close the form (a focused label row or an open confirm is dismissed first) |
+
+Write tab:
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send the report |
+| `Tab` | Focus the type/task/failure label rows (shown when a draft supplied them); `Tab` again returns to the report box |
+| `←` / `→` | Pick a value on the focused label row |
+
+Drafts tab:
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓`, `j` / `k` | Select a saved draft |
+| `Enter` | Load the selected draft into Write |
+| `d` | Delete the selected draft (confirm with `y`) |
+| `/` | Search the drafts |
+
+When a trace upload can be offered, `Enter` on the report first shows an upload
+question (`↑`/`↓` choose, `Enter` sends with your choice, `Esc` skips the
+upload and still sends the report).
 
 ### Permission prompt
 
@@ -201,15 +226,15 @@ sends it and `Esc` returns to the options.
 |--------|---------|--------|
 | Turn running (every mode and pane) | `Esc` | Does **not** cancel. Shows a "Press Ctrl+c to cancel the turn" toast; the draft is untouched. Use `Ctrl+C` (or palette / other cancel entry points). |
 | Turn cancelling | `Esc` | Swallowed no-op. `Ctrl+C` in this state escalates toward quit. |
-| Idle + non-empty prompt (text or image chips), **prompt focused** | **2× `Esc` within 800ms** | Clear the prompt; the cleared draft is stashed (`Ctrl+S` or `Alt+S` restores it, images included) and its text ranks first in the `↑` history browse. First press shows “press again to clear”. |
+| Idle + non-empty prompt (text or image chips), **prompt focused** | **2× `Esc` within 800ms** | Clear the prompt; the cleared draft is stashed (`Ctrl+S`, `Alt+S`, or `Ctrl+Z` pressed right after the clear restores it, images included). First press shows “press again to clear”. |
 | Idle + empty prompt + conversation messages, **prompt or scrollback focused** | **2× `Esc` within 800ms** | Open the rewind picker (same as `/rewind`). First press is silent (no toast). |
 | Idle + empty + no messages, **or scrollback focused with a draft / moded (`!` `#`) composer / pending needs-input overlay / open history search** | `Esc` | Swallowed no-op (does not focus scrollback). Clear is prompt-pane only; rewind requires an empty Normal-mode composer, no pending overlay, and no open history search. Reading the scrollback never mutates your draft, your composer mode, a question awaiting an answer, or an in-progress search. |
 
 **Mid-turn Esc grace:** for about a second after a mid-turn Esc, the idle rewind arm stays suppressed — mashing Esc at a turn that then ends cannot silently open the rewind picker. Only the rewind arm is held; every other Esc behavior is unaffected.
 
-**Steal-Esc (runs before the mid-turn hint and clear / rewind):** overlays, modals, slash/file/completion dropdowns, history search, scrollback search, text selection, link highlight, voice, and **Bash / Remember mode exit** when the prompt is empty (Esc leaves `!` / `#` mode and returns to the normal prompt, even while a turn is running). Bare `/feedback` opens the report pane; Esc dismisses it.
+**Steal-Esc (runs before the mid-turn hint and clear / rewind):** overlays, modals, slash/file/completion dropdowns, history search, scrollback search, text selection, link highlight, voice, and **Bash / Remember mode exit** when the prompt is empty (Esc leaves `!` / `#` mode and returns to the normal prompt, even while a turn is running). Bare `/feedback` opens the feedback form; Esc closes it.
 
-**Ctrl+C vs Esc:** with a non-empty draft while a turn is running, Ctrl+C clears the draft and keeps the turn; a second Ctrl+C on an empty prompt cancels. Esc never cancels: mid-turn it only points you at Ctrl+C and leaves the draft alone. Idle non-empty Ctrl+C clears in one press; Esc requires two presses within 800ms. The two clears differ in what they leave behind: `Esc Esc` stashes the draft, so `Ctrl+S` brings it back, while `Ctrl+C` discards it (its text is still in the `↑` history).
+**Ctrl+C vs Esc:** with a non-empty draft while a turn is running, Ctrl+C clears the draft and keeps the turn; a second Ctrl+C on an empty prompt cancels. Esc never cancels: mid-turn it only points you at Ctrl+C and leaves the draft alone. Idle non-empty Ctrl+C clears in one press; Esc requires two presses within 800ms. The two clears differ in what they leave behind: `Esc Esc` stashes the draft, so `Ctrl+S` (or `Ctrl+Z` pressed right after) brings it back, while `Ctrl+C` discards it (`Ctrl+Z` still undoes that clear, text only).
 
 ---
 
@@ -227,7 +252,7 @@ Actions that affect the agent session, available from the agent screen.
 | `Ctrl+O` | Agent screen | Toggle always-approve (YOLO) mode |
 | `Ctrl+R` | Agent screen | Open the session picker (resume a previous session, same as `/resume`) |
 | `Ctrl+;` (alt: `Ctrl+'`) | Agent screen | Toggle the prompt queue pane (when non-empty). **Local macOS** VS Code family only: primary **`Ctrl+4`** (`;` / `'` still alts). SSH and non-Mac keep **`Ctrl+;`** / **`Ctrl+'`**. |
-| `Shift+Tab` | Prompt focused | Cycle mode (Normal → Plan → Auto (when enabled) → Always-approve) |
+| `Shift+Tab` | Prompt focused | Cycle mode (Normal → Plan → Auto-review (when enabled) → Always-approve) |
 | `Ctrl+B` | Agent screen | Send the running foreground command to the background |
 | `Ctrl+T` | Agent screen | Toggle the todos pane |
 | `Ctrl+G` | Agent screen (full TUI) | Toggle the tasks pane |
@@ -235,14 +260,16 @@ Actions that affect the agent session, available from the agent screen.
 | `/plugins` / `/hooks` / `/mcp` | Agent screen | Open the extensions modal (no default chord; formerly Ctrl+L) |
 | `Ctrl+L` | Agent screen | Open the extensions modal (**non–VS Code family only**; on VS Code / Cursor / Windsurf / Zed, `Ctrl+L` is mid-turn **interject** and extensions open via `/plugins` / `/hooks`) |
 | `↑` | Prompt focused (empty prompt, normal input mode) | With prompts queued, move focus into the queue pane with the last row highlighted (`e` edits it, `Enter` sends it now). Otherwise open the history panel with your last prompt filled in; `↑`/`↓` step through entries (each lands in the input), `↓` at the newest closes the panel, and typing edits the recalled prompt in place. Recalled `!` shell commands re-enter shell mode. `↓` never opens history. |
-| `Ctrl+S` (alt: `Alt+S`) | Prompt focused | Stash / pop the draft, `git stash`-style. With text or images in the composer: stash it and start fresh. On an empty composer: restore the newest stash (images and `!` shell mode included). A chord-stashed draft also **restores automatically after you send your next prompt** (a double-Esc-cleared draft stays stashed, since that gesture is a discard). One draft at a time: a new stash replaces the old one, whose text stays reachable in the `↑` history; the stashed draft's text ranks first there. |
+| `Ctrl+S` (alt: `Alt+S`) | Prompt focused | Stash / pop the draft, `git stash`-style. With text or images in the composer: stash it and start fresh. On an empty composer: restore the newest stash (images and `!` shell mode included). After restore, the cursor is at the end of the restored draft. `Ctrl+Z` pressed right after the stash restores it too (any other key you type into the prompt disarms that). A chord-stashed draft also **restores automatically after you send your next prompt** (a double-Esc-cleared draft stays stashed, since that gesture is a discard). One draft at a time: a new stash replaces the old one. |
 | `!` | Prompt focused | Enter shell mode (type `!` on an empty prompt) |
 | `Ctrl+.` (alt: `Ctrl+X`) | Agent screen | Open the keyboard shortcuts help |
 | `F2` (alt: `Ctrl+,` / `Cmd+,`) | Agent screen | Open the settings modal |
 
-**Note:** `Ctrl+L` opens the model picker from the agent screen and while the prompt is focused (aligned with Pi TUI). `Ctrl+M` only toggles multiline while the prompt is focused.
+**Note:** `Ctrl+L` opens the model picker from the agent screen and while the prompt is focused (aligned with Pi TUI). `Ctrl+M` toggles multiline while the prompt is focused and opens the model picker otherwise.
 
-**Note:** While a draft is stashed, the prompt's top border reads `Stashed` (next to the `/rename` title, if you set one). Minimal mode draws no border, so it prints a line in the scrollback each time you stash or restore. The stash lives in memory only: it is gone when you quit, and it does not travel to a resumed session. A new stash replaces the old one, and only the old one's **text** moves to the `↑` history, so any images on the replaced draft are lost.
+**Note:** While a **subagent fullscreen view** is open, the composer is hidden. Root-only chords (`Ctrl+P`, `Ctrl+M`, `Ctrl+R`, `Ctrl+O`, `Ctrl+B`, settings, extensions, Shift+Tab) do nothing. `Ctrl+C` cancels the **child's** turn. `q` / `Esc` closes the view. `Ctrl+Q` still quits (`Ctrl+D` on VS Code family). See [Viewing Subagents in the TUI](16-subagents.md#fullscreen-framed-view-the-child-transcript).
+
+**Note:** While a draft is stashed, the prompt's top border reads `Stashed` (next to the `/rename` title, if you set one). Minimal mode draws no border, so it prints a line in the scrollback each time you stash or restore. The stash lives in memory only: it is gone when you quit, and it does not travel to a resumed session. A new stash replaces the old one; the replaced draft is discarded.
 
 **Note:** External editing works in every render mode: minimal mode binds `Ctrl+G`, and the full TUI uses `/edit-prompt` or the command palette. Grok resolves `$VISUAL`, then `$EDITOR`, then `vi`. Values may include quoted arguments. Saving replaces only the draft (the final newline editors append on save is stripped); an empty file clears it. Drafts with pasted/file/image chips must be edited in the composer so attachments are not flattened.
 
@@ -332,6 +359,8 @@ Bindings that only fire on the welcome screen (before any agent session is open)
 
 | Key | Action |
 |-----|--------|
+| `Ctrl+P` | Open the command palette and leave home |
+| `?` | Type `?` when the welcome prompt is focused |
 | `Ctrl+R` | Resume session (open the session picker) |
 | `Ctrl+W` | Open the New Worktree dialog (only inside a git repository) |
 | `Ctrl+I` | Import Claude settings (when available) |
@@ -437,6 +466,24 @@ Clear (idle):     Esc Esc within 800ms (non-empty prompt)
 Rewind (idle):    Esc Esc within 800ms (empty prompt + messages)
 ```
 
+The composer footer shows the newline chord next to `Enter:send` (or
+`Enter:queue` while a turn is running) once the draft is non-empty
+(including `/btw` and other arg-required slash commands). Over SSH, old
+tmux, or terminals that cannot tell Shift+Enter from Enter, the footer
+prefers `Alt+Enter`.
+
+`Cmd+Enter` is not an advertised send or newline chord. Many terminals
+bind it to fullscreen, so `SUPER` is excluded from the Shift/Alt newline
+matcher and from the agent's bare-Enter send binding. When a terminal
+that speaks the Kitty keyboard protocol delivers `SUPER+Enter`, the
+composer still inserts a newline: the key misses send and lands in the
+textarea, which treats any Enter as a line break. Apple Terminal is a
+separate local path: CoreGraphics rescue treats held Cmd as modified
+Enter and inserts a newline on what arrives as bare Enter. Over SSH the
+Cmd/`SUPER` modifier never arrives (iTerm2 + tmux included), so the
+chord looks like bare Enter and sends. Remotely, use `Alt+Enter`, a
+trailing `\` then Enter, or `/ml`.
+
 With a selection active, typing / `Enter` / paste replace it, delete and
 word-kill chords delete just the selection, arrows collapse it to the
 matching edge (word/line moves continue from that edge), and `Esc` or `Tab`
@@ -462,7 +509,11 @@ focused the same chords jump between turns (see Navigation above).
 > prompt selects every character in the prompt buffer, including pasted
 > image chips. Image chips are always path-free (`[Image #N]`); the
 > filepath (when known) appears only in the image preview overlay on
-> hover or when the cursor is on/right after the chip.
+> hover or when the cursor is on/right after the chip. `[Image #N]` text
+> that comes back as plain text (Ctrl+K then Ctrl+Y, undo, a plain-text
+> paste) re-attaches as a chip while the composer still holds the image;
+> a placeholder for an image it no longer holds is sent as text with a
+> toast saying so.
 
 ### Always available
 

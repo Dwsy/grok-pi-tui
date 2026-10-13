@@ -25,6 +25,8 @@
 //! });
 //! ```
 
+#![deny(clippy::indexing_slicing)]
+
 mod timed;
 mod timestamp;
 

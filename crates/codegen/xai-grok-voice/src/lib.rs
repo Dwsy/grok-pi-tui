@@ -5,9 +5,14 @@
 //! On macOS and Linux the mic is opened in a short-lived subprocess, so the long-lived TUI never pays the audio stack's permanent memory cost.
 //! See [`audio`] and [`maybe_run_capture_subprocess`].
 
+#![deny(clippy::indexing_slicing)]
+
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod auth;
+// The clip route only runs with capture compiled in; its tests need no device.
+#[cfg(any(test, feature = "audio"))]
+mod clip;
 pub mod config;
 pub mod error;
 pub mod event;
@@ -15,26 +20,33 @@ pub mod language;
 pub mod pipeline;
 pub mod probe;
 pub mod stt;
+pub mod transcriber;
+#[cfg(any(test, feature = "audio"))]
+mod wav;
 
-pub use auth::{SharedVoiceAuth, StaticVoiceAuth, VoiceAuthProvider};
+pub use auth::{SharedVoiceAuth, StaticVoiceAuth, VoiceAuthError, VoiceAuthProvider};
 pub use config::VoiceConfig;
 pub use error::VoiceError;
-pub use event::VoiceEvent;
+pub use event::{TaggedVoiceEvent, VoiceEvent, VoiceRoute, VoiceSessionId};
 pub use language::{
     STT_LANGUAGE_AUTO, STT_LANGUAGE_DEFAULT, STT_LANGUAGES, SttLanguage, canonicalize_stt_language,
     language_for_api, stt_language_by_code,
 };
-pub use pipeline::{VoiceCommand, run_voice_pipeline};
+pub use pipeline::{SttRoutes, VoiceCommand, run_voice_pipeline};
 #[cfg(feature = "audio")]
 pub use probe::run_mic_only_probe;
 pub use probe::{
     InputDeviceInfo, VoiceProbeOptions, VoiceProbeReport, format_probe_report, input_device_info,
     run_streaming_probe,
 };
+pub use transcriber::{
+    AudioClip, ClipTranscriber, FINAL_TIMEOUT, SharedClipTranscriber, TranscribeError,
+};
 
 /// Linux shells out to a system recorder (`pw-record`/`parec`/`arecord`) so the static-musl binary links no audio
 /// library. On Linux a `true` value means capture is *compiled in*; whether a recorder is actually installed is reported
 /// when a session starts. Consumers gate voice on this so a no-audio build never advertises a mic it can't open.
+/// The [`ClipTranscriber`] seam is exported regardless; without capture nothing ever calls it.
 pub const AUDIO_SUPPORTED: bool = cfg!(feature = "audio");
 
 /// Hidden subcommand consumers re-exec themselves with to capture microphone audio in a short-lived helper process on macOS.

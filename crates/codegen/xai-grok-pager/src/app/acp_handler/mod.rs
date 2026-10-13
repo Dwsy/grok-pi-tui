@@ -1,18 +1,6 @@
-use std::collections::hash_map::Entry;
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use agent_client_protocol as acp;
-use xai_acp_lib::AcpClientMessage;
-
 use super::actions::Effect;
-use xai_grok_shell::extensions::notification::{
-    SessionNotification, SessionUpdate as XaiSessionUpdate, is_reauthable_failure,
-};
-use xai_grok_shell::tools::todo::todo_item_from_plan_entry;
-use xai_grok_tools::notification::ScheduledTaskRemovedReason;
-use xai_grok_workspace::permission::bash_command_splitting::BashCommandHighlights;
-
+use super::agent_view::{AgentPane, AgentView, InputMode};
+use super::app_view::{ActiveView, AppView};
 use crate::acp::meta::NotificationMeta;
 use crate::acp::tracker::AcpUpdateTracker;
 use crate::acp::tracker::TurnActivity;
@@ -28,10 +16,17 @@ use crate::views::permission_view::{
     McpScope, McpScopeState, PermissionFocus, PermissionViewState, SubagentInfo,
 };
 use crate::views::plan_approval_view::PlanReviewSource;
-
-use super::agent_view::{AgentPane, AgentView, InputMode};
-use super::app_view::{ActiveView, AppView};
-
+use agent_client_protocol as acp;
+use std::collections::hash_map::Entry;
+use std::path::PathBuf;
+use std::sync::Arc;
+use xai_acp_lib::AcpClientMessage;
+use xai_grok_shell::extensions::notification::{
+    SessionNotification, SessionUpdate as XaiSessionUpdate, is_reauthable_failure,
+};
+use xai_grok_shell::tools::todo::todo_item_from_plan_entry;
+use xai_grok_tools::notification::ScheduledTaskRemovedReason;
+use xai_grok_workspace::permission::bash_command_splitting::BashCommandHighlights;
 mod background;
 mod follow_ups;
 mod interactions;
@@ -45,7 +40,30 @@ mod settings;
 mod subagent_activity;
 mod subagent_lifecycle;
 mod workflow_ingest;
-
+#[cfg(test)]
+#[allow(unused_imports)]
+use background::*;
+use background::{
+    derive_child_cwd, handle_git_head_changed, handle_monitor_event, handle_scheduled_task_created,
+    handle_scheduled_task_deleted, handle_scheduled_task_fired, handle_task_backgrounded,
+    handle_task_completed, route_bg_task_stdout,
+};
+use follow_ups::handle_follow_ups;
+#[cfg(test)]
+#[allow(unused_imports)]
+use follow_ups::*;
+pub(crate) use interactions::handle_ask_user_question;
+#[cfg(test)]
+#[allow(unused_imports)]
+use interactions::*;
+use interactions::{handle_exit_plan_mode, handle_mcp_elicit};
+#[cfg(test)]
+#[allow(unused_imports)]
+use mcp::*;
+use mcp::{
+    handle_mcp_elicit_complete, handle_mcp_init_progress, handle_mcp_server_status,
+    handle_mcp_servers_updated, handle_mcp_tools_changed, push_server_status_enabled,
+};
 #[cfg(test)]
 use permissions::{
     MCP_ARGS_MAX_LINE_CHARS, MCP_ARGS_MAX_LINES, build_permission_display, mcp_args_lines,
@@ -54,89 +72,60 @@ use permissions::{
     apply_recap_block, handle_permission_request, should_drop_duplicate_auto_recap,
     should_drop_late_auto_recap,
 };
-
-use routing::{
-    SessionMatch, find_session_match, interaction_target_agent, is_matched_agent_active,
-    mcp_target_agent, resolve_notif_agent, resolve_target_view,
+#[cfg(test)]
+#[allow(unused_imports)]
+use prompt_origin::*;
+use prompt_origin::{
+    backdate_child_turn_clock, finish_wake_turn, note_child_live_prompt, viewer_turn_anchor,
 };
-
-use prompt_origin::{finish_wake_turn, viewer_turn_anchor};
 pub(crate) use prompt_origin::{
     is_scheduler_fired_prompt, is_server_initiated_prompt, is_wake_prompt,
     should_adopt_running_prompt,
 };
-
-pub(crate) use subagent_activity::finalize_killed_subagent;
-use subagent_activity::{subagent_activity_label, sync_subagent_activity};
-use subagent_lifecycle::{
-    LifecycleOrigin, classify_subagent_lifecycle, prepare_tui_subagent_lifecycle,
+pub(crate) use queue::PendingRunningAdoption;
+#[cfg(test)]
+#[allow(unused_imports)]
+use queue::*;
+use queue::{handle_prompt_complete, handle_queue_changed};
+pub(crate) use routing::task_view_by_session_id;
+#[cfg(test)]
+#[allow(unused_imports)]
+use routing::*;
+use routing::{
+    SessionMatch, find_session_match, interaction_target_agent, is_matched_agent_active,
+    mcp_target_agent, resolve_notif_agent, resolve_target_view, setup_phase_target_agent,
 };
-
-use workflow_ingest::ingest_workflow_update;
-
 pub(crate) use session_notification::apply_child_view_session_event;
 #[cfg(test)]
 pub(crate) use session_notification::apply_session_event_for_test;
+pub(crate) use session_notification::detect_plan_mode_change_replayed;
 pub(crate) use session_notification::drop_unexpected_replay;
+#[cfg(test)]
+#[allow(unused_imports)]
+use session_notification::*;
 use session_notification::{
-    PlanModeTransition, advance_reconnect_cursor, confirm_context_used, detect_plan_mode_change,
+    PlanModeTransition, advance_reconnect_cursor, confirm_context_used,
     handle_session_notification, handle_session_notification_with_origin,
 };
-
-pub(crate) use queue::PendingRunningAdoption;
-use queue::{handle_prompt_complete, handle_queue_changed};
-
-use background::{
-    derive_child_cwd, handle_git_head_changed, handle_monitor_event, handle_scheduled_task_created,
-    handle_scheduled_task_deleted, handle_scheduled_task_fired, handle_task_backgrounded,
-    handle_task_completed, route_bg_task_stdout,
-};
-use follow_ups::handle_follow_ups;
-pub(crate) use interactions::handle_ask_user_question;
-use interactions::{handle_exit_plan_mode, handle_mcp_elicit};
-use mcp::{
-    handle_mcp_elicit_complete, handle_mcp_init_progress, handle_mcp_server_status,
-    handle_mcp_servers_updated, handle_mcp_tools_changed, push_server_status_enabled,
-};
+#[cfg(test)]
+#[allow(unused_imports)]
+use settings::*;
 use settings::{
     handle_announcements_update, handle_models_update, handle_sessions_changed,
     handle_settings_update,
 };
-
-#[cfg(test)]
-#[allow(unused_imports)]
-use background::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-use follow_ups::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-use interactions::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-use mcp::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-use prompt_origin::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-use queue::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-use routing::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-use session_notification::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-use settings::*;
+pub(crate) use subagent_activity::finalize_killed_subagent;
 #[cfg(test)]
 #[allow(unused_imports)]
 use subagent_activity::*;
+use subagent_activity::{subagent_activity_label, sync_subagent_activity};
+use subagent_lifecycle::{
+    LifecycleOrigin, classify_subagent_lifecycle, prepare_tui_subagent_lifecycle,
+};
+use workflow_ingest::ingest_workflow_update;
 #[cfg(test)]
 #[allow(unused_imports)]
 use workflow_ingest::*;
-
 fn is_replay_bash_execute(update: &acp::SessionUpdate) -> bool {
     let acp::SessionUpdate::ToolCall(tc) = update else {
         return false;
@@ -147,7 +136,6 @@ fn is_replay_bash_execute(update: &acp::SessionUpdate) -> bool {
         .and_then(|v| v.as_bool())
         == Some(true)
 }
-
 /// Any live update stamped with the awaited prompt id proves the shell accepted it, whichever branch applies it.
 fn ack_prompt_from_update(view: &mut AgentView, meta: &NotificationMeta) {
     if !meta.is_replay {
@@ -158,12 +146,15 @@ fn ack_prompt_from_update(view: &mut AgentView, meta: &NotificationMeta) {
         );
     }
 }
-
 pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
+    let state_changed = handle_inner(msg, app);
+    let flushed = app.flush_image_notices_if_root();
+    state_changed || flushed
+}
+fn handle_inner(msg: AcpClientMessage, app: &mut AppView) -> bool {
     match msg {
         AcpClientMessage::SessionNotification(notif) => {
             let mut meta = NotificationMeta::from_json(notif.request.meta.as_ref());
-
             let affected = match find_session_match(app, &notif.request.session_id) {
                 Some(SessionMatch::Root(id)) => {
                     let is_active = is_matched_agent_active(app, id);
@@ -175,7 +166,6 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         .agents
                         .get_mut(&id)
                         .expect("find_session_match returned an existing AgentId");
-
                     let dedup_drop = !meta.is_replay
                         && meta.event_seq.is_some_and(|seq| {
                             agent.last_applied_event_seq.is_some_and(|last| seq <= last)
@@ -187,7 +177,6 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         agent.last_applied_event_seq = Some(seq);
                     }
                     ack_prompt_from_update(agent, &meta);
-
                     if drop_unexpected_replay(
                         agent,
                         &meta,
@@ -197,7 +186,6 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         notif.response_tx.send(Ok(())).ok();
                         return false;
                     }
-
                     if !dedup_drop
                         && !meta.is_replay
                         && let Some(notif_pid) = meta.prompt_id.as_deref()
@@ -206,7 +194,6 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                     {
                         agent.attached_as_viewer = !agent.is_self_originated_prompt(notif_pid);
                     }
-
                     if !dedup_drop {
                         if let Some(tokens) = meta.total_tokens {
                             confirm_context_used(agent, tokens);
@@ -216,10 +203,8 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                             agent.turn_start_ms_prompt = meta.prompt_id.clone();
                         }
                     }
-
                     let mut plan_mode_modal_refresh_needed = false;
                     let mut workflows_modal_refresh = false;
-
                     let mutated = if dedup_drop {
                         tracing::debug!(
                             session_id = notif.request.session_id.0.as_ref(),
@@ -239,6 +224,11 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         agent.mark_reload_todo_update();
                         advance_reconnect_cursor(agent, &mut meta);
                         !meta.is_replay && !agent.session.loading_replay
+                    } else if let acp::SessionUpdate::UsageUpdate(ref usage) = notif.request.update
+                    {
+                        agent.apply_context_used(usage.used, usage.size);
+                        advance_reconnect_cursor(agent, &mut meta);
+                        is_active
                     } else if let acp::SessionUpdate::ToolCallUpdate(ref tcu) = notif.request.update
                         && route_bg_task_stdout(tcu, &mut agent.session)
                     {
@@ -308,10 +298,12 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         {
                             agent.note_streaming_wake_turn(notif_pid);
                         }
-
-                        let plan_transition = detect_plan_mode_change(&notif.request.update, agent);
+                        let plan_transition = detect_plan_mode_change_replayed(
+                            &notif.request.update,
+                            agent,
+                            meta.is_replay,
+                        );
                         plan_mode_modal_refresh_needed |= plan_transition.is_some();
-                        // User-driven entries already got a banner or toast; a replay must not duplicate the row
                         if plan_transition == Some(PlanModeTransition::EnteredByAgent)
                             && !meta.is_replay
                             && !agent.session.loading_replay
@@ -322,7 +314,6 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                                 },
                             ));
                         }
-
                         let had_activity_before = agent.session.tracker.activity().is_some();
                         let update = notif.request.update;
                         let (is_visible_kind, is_bash) = if meta.is_replay {
@@ -334,10 +325,18 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                             (false, false)
                         };
                         let user_echo = matches!(update, acp::SessionUpdate::UserMessageChunk(_));
-                        let changed =
+                        let swallow_send_now_echo = user_echo
+                            && !meta.is_replay
+                            && user_message_text(&update).is_some_and(|text| {
+                                agent.take_send_now_user_echo(text, meta.prompt_id.as_deref())
+                            });
+                        let changed = if swallow_send_now_echo {
+                            false
+                        } else {
                             agent
                                 .session
-                                .handle_update(update, &meta, &mut agent.scrollback);
+                                .handle_update(update, &meta, &mut agent.scrollback)
+                        };
                         if meta.is_replay
                             && let Some(pid) = meta.prompt_id.as_ref()
                         {
@@ -359,7 +358,6 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         if !had_activity_before && agent.session.tracker.activity().is_some() {
                             note_first_turn_activity(agent);
                         }
-
                         if let Some(commands) = agent.session.tracker.take_pending_acp_commands() {
                             let workflows_changed = workflow_commands(&commands)
                                 != workflow_commands(&agent.session.available_commands);
@@ -377,7 +375,6 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         for entry_id in agent.session.tracker.take_pending_edit_hl() {
                             agent.submit_edit_highlight(entry_id);
                         }
-
                         if agent.attached_as_viewer
                             && !meta.is_replay
                             && !agent.session.loading_replay
@@ -391,19 +388,26 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                             agent.session.state = AgentState::TurnRunning;
                             agent.turn_started_at = Some(viewer_turn_anchor(agent.turn_start_ms));
                         }
-
                         advance_reconnect_cursor(agent, &mut meta);
-
                         !meta.is_replay && !agent.session.loading_replay
                     };
-
                     if plan_mode_modal_refresh_needed {
                         crate::app::dispatch::refresh_open_settings_modals(app);
                     }
                     if workflows_modal_refresh {
                         queue_open_workflows_modal_refresh(app, id);
                     }
-
+                    if mutated
+                        && !meta.is_replay
+                        && app
+                            .agents
+                            .get(&id)
+                            .is_some_and(|agent| !agent.session.loading_replay)
+                    {
+                        let flush =
+                            crate::app::dispatch::flush_held_local_queue_into_wait(app, Some(id));
+                        app.pending_effects.extend(flush);
+                    }
                     mutated && is_active
                 }
                 Some(SessionMatch::Child(parent_id)) => {
@@ -413,7 +417,7 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         .get_mut(&parent_id)
                         .expect("find_session_match returned an existing AgentId");
                     let child_key: &str = notif.request.session_id.0.as_ref();
-
+                    record_child_usage_update(parent, child_key, &notif.request.update);
                     let activity_label = {
                         let child_view = parent
                             .descendant_view_for_live_update_mut(child_key)
@@ -425,38 +429,82 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         if let Some(tokens) = meta.total_tokens {
                             confirm_context_used(child_view, tokens);
                         }
-                        if let Some(ts) = meta.turn_start_ms {
-                            child_view.turn_start_ms = Some(ts);
+                        if let acp::SessionUpdate::UsageUpdate(ref usage) = notif.request.update {
+                            child_view.apply_context_used(usage.used, usage.size);
                         }
-                        let had_activity_before = child_view.session.tracker.activity().is_some();
-                        let bg_stdout_routed = if let acp::SessionUpdate::ToolCallUpdate(ref tcu) =
-                            notif.request.update
-                        {
-                            route_bg_task_stdout(tcu, &mut child_view.session)
-                        } else {
-                            false
-                        };
-                        if !bg_stdout_routed {
-                            child_view.session.handle_update(
-                                notif.request.update,
-                                &meta,
-                                &mut child_view.scrollback,
-                            );
-                        }
-                        if !had_activity_before && child_view.session.tracker.activity().is_some() {
-                            note_first_turn_activity(child_view);
-                        }
-                        if let Some(commands) =
-                            child_view.session.tracker.take_pending_acp_commands()
-                        {
-                            child_view.session.available_commands = commands;
-                            child_view.session.available_commands_generation += 1;
-                        }
-                        if let Some(tools) = child_view.session.tracker.take_pending_acp_tools() {
-                            child_view.session.available_tools = Some(tools.into_iter().collect());
-                        }
-                        for entry_id in child_view.session.tracker.take_pending_edit_hl() {
-                            child_view.submit_edit_highlight(entry_id);
+                        let ended = !meta.is_replay
+                            && meta.prompt_id.as_deref().is_some_and(|pid| {
+                                child_view.ended_child_prompt_ids.contains(pid)
+                                    || child_view.superseded_child_prompt_ids.contains(pid)
+                            });
+                        if !ended {
+                            let is_live = !meta.is_replay && !child_view.session.loading_replay;
+                            let apply = !is_live
+                                || note_child_live_prompt(
+                                    child_view,
+                                    meta.prompt_id.as_deref(),
+                                    meta.turn_start_ms,
+                                    meta.is_replay,
+                                );
+                            if apply {
+                                if is_live {
+                                    if let Some(ts) = meta.turn_start_ms {
+                                        let named = meta
+                                            .prompt_id
+                                            .as_deref()
+                                            .is_some_and(|pid| !pid.is_empty());
+                                        if named
+                                            || child_view.turn_start_ms_prompt.is_none()
+                                            || child_view.turn_start_ms == Some(ts)
+                                        {
+                                            child_view.turn_start_ms = Some(ts);
+                                            if named {
+                                                child_view.turn_start_ms_prompt =
+                                                    meta.prompt_id.clone();
+                                            }
+                                        }
+                                    }
+                                    backdate_child_turn_clock(child_view);
+                                }
+
+                                let had_activity_before =
+                                    child_view.session.tracker.activity().is_some();
+                                let bg_stdout_routed =
+                                    if let acp::SessionUpdate::ToolCallUpdate(ref tcu) =
+                                        notif.request.update
+                                    {
+                                        route_bg_task_stdout(tcu, &mut child_view.session)
+                                    } else {
+                                        false
+                                    };
+                                if !bg_stdout_routed {
+                                    child_view.session.handle_update(
+                                        notif.request.update,
+                                        &meta,
+                                        &mut child_view.scrollback,
+                                    );
+                                }
+                                if !had_activity_before
+                                    && child_view.session.tracker.activity().is_some()
+                                {
+                                    note_first_turn_activity(child_view);
+                                }
+                                if let Some(commands) =
+                                    child_view.session.tracker.take_pending_acp_commands()
+                                {
+                                    child_view.session.available_commands = commands;
+                                    child_view.session.available_commands_generation += 1;
+                                }
+                                if let Some(tools) =
+                                    child_view.session.tracker.take_pending_acp_tools()
+                                {
+                                    child_view.session.available_tools =
+                                        Some(tools.into_iter().collect());
+                                }
+                                for entry_id in child_view.session.tracker.take_pending_edit_hl() {
+                                    child_view.submit_edit_highlight(entry_id);
+                                }
+                            }
                         }
                         subagent_activity_label(child_view)
                     };
@@ -495,10 +543,24 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
         _ => false,
     }
 }
-
+/// Copies a child's `UsageUpdate` into its `SubagentInfo` for the dock.
+/// A child on a daemon backend sends no `SubagentProgress`.
+fn record_child_usage_update(parent: &mut AgentView, child_key: &str, update: &acp::SessionUpdate) {
+    if let acp::SessionUpdate::UsageUpdate(usage) = update
+        && usage.used > 0
+        && let Some(info) = parent.subagent_sessions.get_mut(child_key)
+    {
+        info.attempt.tokens_used = Some(usage.used);
+        if usage.size > 0 {
+            info.attempt.context_window_tokens = Some(usage.size);
+            info.attempt.context_usage_pct = Some(xai_token_estimation::usage_percentage_u8(
+                usage.used, usage.size,
+            ));
+        }
+    }
+}
 pub(super) fn note_first_turn_activity(agent: &mut AgentView) {
     agent.session.in_flight_prompt = None;
-
     if let Some(started) = agent.turn_started_at
         && agent.first_activity_logged_for != Some(started)
     {
@@ -521,7 +583,6 @@ pub(super) fn note_first_turn_activity(agent: &mut AgentView) {
         );
     }
 }
-
 fn workflow_commands(
     commands: &[acp::AvailableCommand],
 ) -> Vec<(&str, &str, Option<&str>, Option<&str>)> {
@@ -539,7 +600,6 @@ fn workflow_commands(
         })
         .collect()
 }
-
 pub(super) fn is_builtin_workflow_handle(
     commands: &[acp::AvailableCommand],
     display_name: &str,
@@ -562,7 +622,6 @@ pub(super) fn is_builtin_workflow_handle(
                 .is_some_and(|ordinal| ordinal.parse::<u32>().is_ok_and(|n| n >= 2))
     })
 }
-
 pub(crate) fn refresh_workflow_run_capabilities(agent: &mut AgentView) {
     let management_available = agent
         .session
@@ -574,7 +633,6 @@ pub(crate) fn refresh_workflow_run_capabilities(agent: &mut AgentView) {
         run.builtin = is_builtin_workflow_handle(&agent.session.available_commands, &run.name);
     }
 }
-
 fn queue_open_workflows_modal_refresh(app: &mut AppView, agent_id: AgentId) {
     let Some(session_id) = app
         .agents
@@ -599,7 +657,6 @@ fn queue_open_workflows_modal_refresh(app: &mut AppView, agent_id: AgentId) {
         });
     }
 }
-
 fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
     let method = notif.method.as_ref();
     if crate::acp::is_session_update_ext_method(method) {
@@ -624,6 +681,7 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         "x.ai/git_head_changed" => handle_git_head_changed(notif, app),
         "x.ai/leader/version_mismatch" => handle_version_mismatch(notif, app),
         "x.ai/mcp/init_progress" => handle_mcp_init_progress(notif, app),
+        "x.ai/session/setup" => handle_session_setup_phase(notif, app),
         "x.ai/mcp/tools_changed" | "x.ai/mcp_initialized" => handle_mcp_tools_changed(notif, app),
         "x.ai/mcp/server_status" if push_server_status_enabled() => {
             handle_mcp_server_status(notif, app)
@@ -1141,6 +1199,38 @@ fn handle_pi_ui_cancel_interaction(notif: &acp::ExtNotification, app: &mut AppVi
     app.dismiss_external_interaction(tool_call_id)
 }
 
+/// Record the shell's latest `session/new` setup step so a create timeout can name where it stalled.
+fn handle_session_setup_phase(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Payload {
+        #[serde(default)]
+        method: Option<String>,
+        phase: String,
+        #[serde(default)]
+        session_id: Option<String>,
+    }
+    let Ok(payload) = serde_json::from_str::<Payload>(notif.params.get()) else {
+        return false;
+    };
+    if payload.method.as_deref() != Some("session/new") {
+        return false;
+    }
+    let Ok(phase) = payload
+        .phase
+        .parse::<xai_grok_shell::agent::SessionSetupPhase>()
+    else {
+        return false;
+    };
+    let Some(session_id) = payload.session_id.as_deref() else {
+        return false;
+    };
+    let Some(agent) = setup_phase_target_agent(app, session_id) else {
+        return false;
+    };
+    agent.session_new_phase = Some(phase);
+    false
+}
 fn handle_version_mismatch(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
     let Some(banner) = crate::acp::version_mismatch_banner(notif.params.get()) else {
         tracing::warn!("ignoring x.ai/leader/version_mismatch without usable versions");
@@ -1149,7 +1239,15 @@ fn handle_version_mismatch(notif: &acp::ExtNotification, app: &mut AppView) -> b
     app.show_toast(&banner);
     true
 }
-
+fn user_message_text(update: &acp::SessionUpdate) -> Option<&str> {
+    let acp::SessionUpdate::UserMessageChunk(chunk) = update else {
+        return None;
+    };
+    match &chunk.content {
+        acp::ContentBlock::Text(text) => Some(text.text.as_str()),
+        _ => None,
+    }
+}
 fn handle_interjection(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(notif.params.get()) else {
         tracing::warn!("Failed to parse x.ai/session/interjection");
@@ -1162,7 +1260,6 @@ fn handle_interjection(notif: &acp::ExtNotification, app: &mut AppView) -> bool 
         return false;
     };
     let interjection_id = parsed.get("interjectionId").and_then(|v| v.as_str());
-
     let sid = acp::SessionId::new(session_id.to_string());
     let Some(SessionMatch::Root(id)) = find_session_match(app, &sid) else {
         return false;
@@ -1171,14 +1268,16 @@ fn handle_interjection(notif: &acp::ExtNotification, app: &mut AppView) -> bool 
     let Some(agent) = app.agents.get_mut(&id) else {
         return false;
     };
-
     if let Some(iid) = interjection_id {
         if agent.self_interjection_ids.remove(iid) {
+            agent.interjection_painted_blocks.remove(iid);
+            agent.interjection_retry_images.remove(iid);
             return false;
         }
         if agent.is_self_originated_prompt(iid)
             && let Some((entry_id, _)) = agent.send_now_painted_blocks.remove(iid)
         {
+            agent.send_now_echo_pending.remove(iid);
             agent.clear_send_now_expectation();
             if let Some(index) = agent.scrollback.index_of_id(entry_id)
                 && let Some(RenderBlock::UserPrompt(block)) = agent
@@ -1191,13 +1290,11 @@ fn handle_interjection(notif: &acp::ExtNotification, app: &mut AppView) -> bool 
             return false;
         }
     }
-
     agent
         .scrollback
         .push_block(RenderBlock::interjection_prompt(text));
     is_active
 }
-
 fn handle_ext_method(ext: xai_acp_lib::AcpArgs<acp::ExtRequest>, app: &mut AppView) -> bool {
     match ext.request.method.as_ref() {
         "x.ai/ask_user_question" => handle_ask_user_question(ext, app),
@@ -1215,6 +1312,5 @@ fn handle_ext_method(ext: xai_acp_lib::AcpArgs<acp::ExtRequest>, app: &mut AppVi
         }
     }
 }
-
 #[cfg(test)]
 mod tests;

@@ -1,5 +1,6 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
     use super::*;
+    use crate::app::agent_view::ChildLink;
 
     #[test]
     fn nested_subagent_spawn_builds_descendant_agent_view() {
@@ -137,10 +138,30 @@
                 None,
                 "cancelled",
             ));
-            let info = &app.agents[&AgentId(0)].subagent_sessions["child-1"];
+            let info = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get("child-1").unwrap_or_else(|| panic!("missing map entry"));
             assert!(info.is_finished());
             assert_eq!(info.attempt.status.as_deref(), Some(status));
         }
+    }
+
+    /// The spawn arm links the child to the wire's parent session; nothing on the wire makes it addressable.
+    #[test]
+    fn spawn_links_child_to_wire_parent_session() {
+        let mut app = make_app_with_agent("sess-1");
+        let spawn = make_ext_session_notification(
+            "sess-1",
+            test_subagent_spawned("sess-1", "child-1"),
+        );
+        assert!(handle(spawn, &mut app));
+        assert_eq!(
+            Some(&ChildLink::unaddressable(acp::SessionId::new("sess-1"))),
+            app.agents
+                .get(&AgentId(0))
+                .unwrap_or_else(|| panic!("missing root agent"))
+                .subagent_view("child-1")
+                .expect("spawn inserts the child view")
+                .child_link()
+        );
     }
 
     #[test]
@@ -184,7 +205,7 @@
             "cancelled",
         ));
 
-        let info = &app.agents[&AgentId(0)].subagent_sessions["child-1"];
+        let info = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get("child-1").unwrap_or_else(|| panic!("missing map entry"));
         assert!(info.is_finished());
         assert_eq!(
             info.attempt.status.as_deref(),
@@ -198,7 +219,7 @@
         assert_eq!(info.attempt.tokens_used, Some(543));
         assert!(!info.attempt.pending_kill);
         let entry_id = info.attempt.scrollback_entry_id.unwrap();
-        let entry = app.agents[&AgentId(0)].scrollback.get_by_id(entry_id).unwrap();
+        let entry = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.get_by_id(entry_id).unwrap();
         let RenderBlock::Subagent(sb) = &entry.block else {
             panic!("expected subagent row");
         };
@@ -206,6 +227,27 @@
             matches!(sb.kind, SubagentBlockKind::Failed { .. }),
             "parent row must keep Failed, not repaint as Cancelled/Completed"
         );
+    }
+
+    #[test]
+    fn child_spawn_sets_read_only_pane() {
+        use crate::views::queue_mutation::QueueMutation;
+
+        let mut app = make_app_with_agent("sess-1");
+        assert!(handle(
+            make_ext_session_notification("sess-1", test_subagent_spawned("sess-1", "child-1")),
+            &mut app,
+        ));
+        let root = app
+            .agents
+            .get(&AgentId(0))
+            .unwrap_or_else(|| panic!("missing root agent"));
+        assert_eq!(QueueMutation::PerRowKind, root.queue.mutation());
+        let child = root
+            .subagent_views
+            .get("child-1")
+            .unwrap_or_else(|| panic!("missing child view"));
+        assert_eq!(QueueMutation::ReadOnly, child.queue.mutation());
     }
 
     #[test]
@@ -229,10 +271,10 @@
             &mut app,
         ));
         let terminal_rows = |app: &crate::app::app_view::AppView| {
-            (0..app.agents[&AgentId(0)].scrollback.len())
+            (0..app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len())
                 .filter(|&idx| {
                     matches!(
-                        app.agents[&AgentId(0)].scrollback.entry(idx).map(|e| &e.block),
+                        app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.entry(idx).map(|e| &e.block),
                         Some(RenderBlock::Subagent(sb))
                             if sb.child_session_id == "child-bg"
                                 && !matches!(sb.kind, SubagentBlockKind::Started)
@@ -241,7 +283,7 @@
                 .count()
         };
         let footer_count = |app: &crate::app::app_view::AppView| {
-            count_turn_markers(&app.agents[&AgentId(0)].subagent_views["child-bg"])
+            count_turn_markers(app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_views.get("child-bg").unwrap_or_else(|| panic!("missing map entry")))
         };
         assert_eq!(terminal_rows(&app), 1, "first finish appends one terminal row");
         assert_eq!(footer_count(&app), 1, "first finish appends one footer");
@@ -263,7 +305,7 @@
 
         assert_eq!(terminal_rows(&app), 1, "re-finalize must not add a second row");
         assert_eq!(footer_count(&app), 1, "re-finalize must not add a second footer");
-        let info = &app.agents[&AgentId(0)].subagent_sessions["child-bg"];
+        let info = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get("child-bg").unwrap_or_else(|| panic!("missing map entry"));
         assert!(info.is_finished() && info.attempt.is_background);
         assert_eq!(info.attempt.status.as_deref(), Some("completed"));
     }
@@ -324,6 +366,59 @@
                 "re-finalize must not append a third footer"
             );
         }
+    }
+
+    #[test]
+    fn finished_child_footer_skips_trailing_turn_cancelled() {
+        use crate::app::subagent::finalize_finished_child_view;
+
+        for event in [
+            SessionEvent::TurnCancelled {
+                elapsed: Some(std::time::Duration::from_secs(1)),
+                cause: crate::scrollback::blocks::CancelledBy::User,
+            },
+            SessionEvent::TurnFailed {
+                error: "boom".into(),
+                elapsed: None,
+            },
+            SessionEvent::TurnBlockedByHook {
+                elapsed: Some(std::time::Duration::from_secs(1)),
+            },
+        ] {
+            let mut child = make_agent(Some("child-footer"));
+            child
+                .scrollback
+                .push_block(RenderBlock::session_event(event));
+            let len = child.scrollback.len();
+            finalize_finished_child_view(&mut child, std::time::Duration::from_secs(2));
+            assert_eq!(
+                child.scrollback.len(),
+                len,
+                "a trailing turn-terminal marker must not grow a second TurnCompleted"
+            );
+            assert!(
+                !matches!(
+                    last_session_event(&child.scrollback),
+                    Some(SessionEvent::TurnCompleted { .. })
+                ),
+                "trailing marker must stay, got {:?}",
+                last_session_event(&child.scrollback)
+            );
+        }
+
+        let mut child = make_agent(Some("child-footer"));
+        child
+            .scrollback
+            .push_block(RenderBlock::session_event(SessionEvent::TurnCancelled {
+                elapsed: Some(std::time::Duration::from_secs(1)),
+                cause: crate::scrollback::blocks::CancelledBy::User,
+            }));
+        child.scrollback.push_block(RenderBlock::system("later turn"));
+        finalize_finished_child_view(&mut child, std::time::Duration::from_secs(4));
+        assert!(matches!(
+            last_session_event(&child.scrollback),
+            Some(SessionEvent::TurnCompleted { .. })
+        ));
     }
 
     #[test]
@@ -544,16 +639,16 @@
         ));
         assert_eq!(
             (
-                app.agents[&AgentId(0)].last_applied_xai_event_seq,
-                app.agents[&AgentId(0)].scrollback.len(),
+                app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq,
+                app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(),
             ),
             (Some(100), 7)
         );
 
         let _ = handle(finished("child-1", 50), &mut app);
-        assert!(app.agents[&AgentId(0)].subagent_sessions["child-1"].is_finished());
+        assert!(app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get("child-1").unwrap_or_else(|| panic!("missing map entry")).is_finished());
         assert_eq!(
-            app.agents[&AgentId(0)].last_applied_xai_event_seq,
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).last_applied_xai_event_seq,
             Some(100),
             "a late lower-ID lifecycle event must not regress the scalar xAI highwater"
         );
@@ -561,7 +656,7 @@
         // A restarted producer can reuse an eventId for a different child.
         let _ = handle(spawned("child-reused-id", 1), &mut app);
         assert!(
-            app.agents[&AgentId(0)]
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"))
                 .subagent_sessions
                 .contains_key("child-reused-id"),
             "raw eventId reuse must not suppress a new child lifecycle"
@@ -570,14 +665,14 @@
         let _ = handle(spawned("child-8", 8), &mut app);
         assert_eq!(
             (
-                app.agents[&AgentId(0)].subagent_sessions.len(),
-                app.agents[&AgentId(0)].scrollback.len(),
+                app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.len(),
+                app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(),
             ),
             (9, 9),
             "a unique late subagent lifecycle event must not be treated as a duplicate"
         );
         assert_eq!(
-            app.agents[&AgentId(0)].last_seen_event_id.as_deref(),
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-parent-100"),
             "applied late lifecycle must not move the reconnect cursor backwards"
         );
@@ -587,14 +682,14 @@
         let _ = handle(finished("child-2", 9), &mut app);
         assert_eq!(
             (
-                app.agents[&AgentId(0)].subagent_sessions.len(),
-                app.agents[&AgentId(0)].scrollback.len(),
+                app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.len(),
+                app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.len(),
             ),
             (9, 9),
             "exact spawn and finish redeliveries must remain idempotent"
         );
         assert_eq!(
-            app.agents[&AgentId(0)].last_seen_event_id.as_deref(),
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).last_seen_event_id.as_deref(),
             Some("sess-parent-100"),
             "dropped duplicates and late lower-ID applies must not move the reconnect cursor"
         );
@@ -608,7 +703,7 @@
             test_subagent_spawned("sess-parent", "child-live-duplicate"),
         );
         assert!(handle(spawn, &mut app));
-        let entry_id = app.agents[&AgentId(0)].subagent_sessions["child-live-duplicate"]
+        let entry_id = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_sessions.get("child-live-duplicate").unwrap_or_else(|| panic!("missing map entry"))
             .attempt.scrollback_entry_id
             .unwrap();
         app.agents
@@ -616,7 +711,7 @@
             .unwrap()
             .scrollback
             .remove_entry(entry_id);
-        let first_view = app.agents[&AgentId(0)].subagent_views["child-live-duplicate"]
+        let first_view = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_views.get("child-live-duplicate").unwrap_or_else(|| panic!("missing map entry"))
             .as_ref() as *const AgentView;
 
         let duplicate = make_ext_session_notification(
@@ -625,15 +720,15 @@
         );
         assert!(!handle(duplicate, &mut app));
 
-        let agent = &app.agents[&AgentId(0)];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
         assert!(agent.scrollback.is_empty());
         assert_eq!(
-            agent.subagent_views["child-live-duplicate"].as_ref() as *const AgentView,
+            agent.subagent_views.get("child-live-duplicate").unwrap_or_else(|| panic!("missing map entry")).as_ref() as *const AgentView,
             first_view,
             "live duplicate spawn must not replace the child view"
         );
         assert_eq!(
-            agent.subagent_sessions["child-live-duplicate"].attempt.scrollback_entry_id,
+            agent.subagent_sessions.get("child-live-duplicate").unwrap_or_else(|| panic!("missing map entry")).attempt.scrollback_entry_id,
             Some(entry_id),
             "live duplicate spawn must preserve retained domain state"
         );
@@ -661,14 +756,14 @@
         };
 
         assert!(handle_ext_notification(&spawn(), &mut app));
-        let first_view = app.agents[&AgentId(0)].subagent_views["workflow-child"]
+        let first_view = app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).subagent_views.get("workflow-child").unwrap_or_else(|| panic!("missing map entry"))
             .as_ref() as *const AgentView;
         assert!(!handle_ext_notification(&spawn(), &mut app));
 
-        let agent = &app.agents[&AgentId(0)];
+        let agent = &app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry"));
         assert!(agent.scrollback.is_empty());
         assert_eq!(
-            agent.subagent_views["workflow-child"].as_ref() as *const AgentView,
+            agent.subagent_views.get("workflow-child").unwrap_or_else(|| panic!("missing map entry")).as_ref() as *const AgentView,
             first_view,
             "duplicate replay must not replace the workflow child's AgentView"
         );
@@ -1079,15 +1174,15 @@
                 Case::Live => {
                     assert!(changed, "a live child's write delta must redraw");
                     assert_eq!(
-                        agent.subagent_sessions[child_sid].attempt.activity_label.as_deref(),
+                        agent.subagent_sessions.get(child_sid).unwrap_or_else(|| panic!("missing map entry")).attempt.activity_label.as_deref(),
                         Some("Writing file…")
                     );
                 }
                 Case::ReloadingTranscript => {
                     assert!(!changed, "a delta must be ignored while the child reloads its transcript");
-                    assert!(agent.subagent_sessions[child_sid].attempt.activity_label.is_none());
+                    assert!(agent.subagent_sessions.get(child_sid).unwrap_or_else(|| panic!("missing map entry")).attempt.activity_label.is_none());
                     assert_eq!(
-                        agent.subagent_views[child_sid].session.tracker.activity(),
+                        agent.subagent_views.get(child_sid).unwrap_or_else(|| panic!("missing map entry")).session.tracker.activity(),
                         None,
                         "the reloading tracker must not pick up the delta"
                     );
@@ -1157,7 +1252,7 @@
 
             let agent = app.agents.get(&AgentId(0)).unwrap();
             assert!(
-                agent.subagent_sessions[child_sid].attempt.activity_label.is_none(),
+                agent.subagent_sessions.get(child_sid).unwrap_or_else(|| panic!("missing map entry")).attempt.activity_label.is_none(),
                 "a finished subagent's label must stay cleared after a late event"
             );
         }
@@ -1168,7 +1263,7 @@
         with_replay_disk_home(|_| {
             let child_sid = "child-unexpected-replay";
             let mut app = make_app_with_agent("sess-parent");
-            assert!(!app.agents[&AgentId(0)].session.loading_replay);
+            assert!(!app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).session.loading_replay);
             write_child_updates_jsonl(
                 replay_disk_test_home(),
                 child_sid,
@@ -1310,15 +1405,15 @@
             }
 
             let agent = app.agents.get_mut(&AgentId(0)).unwrap();
-            agent.open_subagent_fullscreen(child_sids[0].clone());
+            agent.open_subagent_fullscreen(child_sids.first().unwrap_or_else(|| panic!("missing index")).clone());
             assert_eq!(
                 crate::app::subagent::test_support::transcript_reads(),
                 reads_before + 1,
                 "the first open must read exactly the opened child's transcript"
             );
-            assert_eq!(child_scrollback_tool_call_count(agent, &child_sids[0]), 1);
+            assert_eq!(child_scrollback_tool_call_count(agent, child_sids.first().unwrap_or_else(|| panic!("missing index"))), 1);
             assert_eq!(
-                child_scrollback_tool_call_count(agent, &child_sids[1]),
+                child_scrollback_tool_call_count(agent, child_sids.get(1).unwrap_or_else(|| panic!("missing index"))),
                 0,
                 "opening one child must not read its siblings"
             );
@@ -1529,7 +1624,7 @@
             }
 
             fn transcript(&self) -> ChildTranscript {
-                self.agent().subagent_sessions[self.child_sid].transcript
+                self.agent().subagent_sessions.get(self.child_sid).unwrap_or_else(|| panic!("missing map entry")).transcript
             }
 
             fn set_transcript(&mut self, state: ChildTranscript) {
@@ -1793,7 +1888,7 @@
                 let mut s = Scenario::spawn(child_sid, Some(updates));
 
                 assert!(
-                    s.agent().subagent_views[child_sid].scrollback.is_empty(),
+                    s.agent().subagent_views.get(child_sid).unwrap_or_else(|| panic!("missing map entry")).scrollback.is_empty(),
                     "spawn seeds nothing and reads nothing"
                 );
                 assert!(
@@ -1804,7 +1899,7 @@
                 if matches!(entry, Entry::Evicted) {
                     s.finish();
                     assert!(
-                        s.agent().subagent_views[child_sid].scrollback.is_empty(),
+                        s.agent().subagent_views.get(child_sid).unwrap_or_else(|| panic!("missing map entry")).scrollback.is_empty(),
                         "eviction resets to the empty baseline"
                     );
                     assert!(
@@ -1904,7 +1999,7 @@
             let mut s = Scenario { app, child_sid };
 
             assert!(
-                s.agent().subagent_views[child_sid].scrollback.is_empty(),
+                s.agent().subagent_views.get(child_sid).unwrap_or_else(|| panic!("missing map entry")).scrollback.is_empty(),
                 "a resumed spawn seeds nothing and reads nothing"
             );
 
@@ -2174,7 +2269,7 @@
 
                 let agent = app.agents.get(&AgentId(0)).unwrap();
                 assert_eq!(
-                    agent.subagent_sessions[child_sid.as_str()].prompt.as_deref(),
+                    agent.subagent_sessions.get(child_sid.as_str()).unwrap_or_else(|| panic!("missing map entry")).prompt.as_deref(),
                     *meta,
                     "meta.json enrichment for {meta:?}"
                 );
@@ -2514,3 +2609,77 @@
         );
     }
 
+    /// The wake replaces A's tracker; B keeps the one its spawn created. Both share the root's registry,
+    /// so each names the other, and A's label is the wake's description and persona, not the first spawn's.
+    #[test]
+    fn spawn_labels_are_recorded_overwritten_on_wake_and_shared_with_child_trackers() {
+        use crate::acp::meta::NotificationMeta;
+        use crate::scrollback::block::RenderBlock;
+        use crate::scrollback::blocks::tool::ToolCallBlock;
+        use xai_grok_tools::implementations::grok_build::send_subagent_message::{
+            SEND_SUBAGENT_MESSAGE_TOOL_NAME, SendSubagentMessageOutput,
+        };
+        use xai_grok_tools::types::output::ToolOutput;
+
+        let mut app = make_app_with_agent("sess-parent");
+        let spawn = |child: &str, attempt: &str, description: &str, persona: Option<&str>| {
+            let mut update = test_subagent_spawned_for_attempt("sess-parent", child, Some(attempt));
+            let XaiSessionUpdate::SubagentSpawned { description: wire, persona: wire_persona, .. } =
+                &mut update
+            else {
+                panic!("spawn fixture must be a SubagentSpawned update");
+            };
+            *wire = description.to_owned();
+            *wire_persona = persona.map(str::to_owned);
+            make_ext_session_notification("sess-parent", update)
+        };
+        assert!(handle(spawn("child-a", "at1.one", "scan src/", None), &mut app));
+        assert!(handle(spawn("child-b", "at1.one", "index docs/", None), &mut app));
+        assert!(handle(
+            make_ext_session_notification(
+                "sess-parent",
+                test_subagent_finished_for_attempt("child-a", Some("at1.one")),
+            ),
+            &mut app,
+        ));
+        assert!(handle(
+            spawn("child-a", "at1.two", "[review] recheck the callers", Some("scout")),
+            &mut app,
+        ));
+
+        let accepted = serde_json::to_value(ToolOutput::SendSubagentMessage(
+            SendSubagentMessageOutput::Accepted { message_id: "message-1".into() },
+        ))
+        .unwrap();
+        for (sender, target, expected_header) in [
+            ("child-a", "child-b", "Message sent to Subagent \u{201c}index docs/\u{201d}"),
+            ("child-b", "child-a", "Message sent to Scout \u{201c}recheck the callers\u{201d}"),
+        ] {
+            let send = acp::ToolCall::new(
+                acp::ToolCallId::new("send-1"),
+                SEND_SUBAGENT_MESSAGE_TOOL_NAME,
+            )
+                .kind(acp::ToolKind::Other)
+                .status(acp::ToolCallStatus::Completed)
+                .raw_input(Some(serde_json::json!({"subagent_id": target, "text": "follow up"})))
+                .raw_output(Some(accepted.clone()));
+            let child = app
+                .agents
+                .get_mut(&AgentId(0))
+                .unwrap()
+                .subagent_view_mut(sender)
+                .expect("child view");
+            child.session.tracker.handle_update(
+                acp::SessionUpdate::ToolCall(send),
+                &NotificationMeta::default(),
+                &mut child.scrollback,
+            );
+
+            let entry = child.scrollback.get(0).expect("the send row");
+            let RenderBlock::ToolCall(ToolCallBlock::SentMessage(block)) = &entry.block else {
+                panic!("expected a sent-message block, got {:?}", entry.block);
+            };
+            assert_eq!(expected_header, block.header_text(), "{sender} -> {target}");
+            assert_eq!(Some(target), block.child_session_id(), "{sender} -> {target}");
+        }
+    }

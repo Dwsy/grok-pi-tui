@@ -271,16 +271,29 @@ impl AuthManager {
         match &failure {
             LockFailure::TimedOut { holder } => {
                 tracing::warn!("auth: file lock timed out, waiting for sibling to finish");
-                payload["outcome"] = "timed_out".into();
-                payload["timeout_ms"] = elapsed_ms.into();
-                payload["holder_pid"] = serde_json::json!(holder.and_then(|h| h.pid));
-                payload["holder_state"] = serde_json::json!(holder.map(|h| h.state.label()));
-                payload["holder_age_secs"] = serde_json::json!(holder.and_then(|h| h.age_secs));
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert("outcome".into(), "timed_out".into());
+                    obj.insert("timeout_ms".into(), elapsed_ms.into());
+                    obj.insert(
+                        "holder_pid".into(),
+                        serde_json::json!(holder.and_then(|h| h.pid)),
+                    );
+                    obj.insert(
+                        "holder_state".into(),
+                        serde_json::json!(holder.map(|h| h.state.label())),
+                    );
+                    obj.insert(
+                        "holder_age_secs".into(),
+                        serde_json::json!(holder.and_then(|h| h.age_secs)),
+                    );
+                }
             }
             LockFailure::Io { error } => {
                 tracing::warn!(error = %error, "auth lock: acquire failed (io)");
-                payload["outcome"] = "io_failed".into();
-                payload["error"] = error.to_string().into();
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert("outcome".into(), "io_failed".into());
+                    obj.insert("error".into(), error.to_string().into());
+                }
             }
         }
         xai_grok_telemetry::unified_log::warn(

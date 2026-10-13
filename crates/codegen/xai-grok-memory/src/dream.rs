@@ -172,7 +172,9 @@ pub fn build_dream_user_message(
                 while end > 0 && !trimmed.is_char_boundary(end) {
                     end -= 1;
                 }
-                buf.push_str(&trimmed[..end]);
+                if let Some(prefix) = trimmed.get(..end) {
+                    buf.push_str(prefix);
+                }
                 tracing::warn!(
                     target: LOG,
                     original = trimmed.len(),
@@ -477,7 +479,7 @@ mod tests {
         match result {
             DreamGate::Open { sessions } => {
                 assert_eq!(sessions.len(), 6);
-                assert!(sessions.windows(2).all(|w| w[0] <= w[1]));
+                assert!(sessions.windows(2).all(|w| matches!(w, [a, b] if a <= b)));
             }
             other => panic!("expected Open, got {other:?}"),
         }
@@ -999,8 +1001,14 @@ mod tests {
             2,
             "only first 2 sessions should fit within 32K cap"
         );
-        assert_eq!(dream_msg.processed_stems[0], "aaa-first");
-        assert_eq!(dream_msg.processed_stems[1], "bbb-second");
+        assert_eq!(
+            dream_msg.processed_stems.first().map(String::as_str),
+            Some("aaa-first")
+        );
+        assert_eq!(
+            dream_msg.processed_stems.get(1).map(String::as_str),
+            Some("bbb-second")
+        );
 
         let response = "## Consolidated\n\nMerged from 2 sessions.";
         let result = execute_dream(&storage, response, all_stems.len());
@@ -1037,7 +1045,7 @@ mod tests {
             1,
             "only the existing file should count as cleaned"
         );
-        assert_eq!(cleaned[0], "exists");
+        assert_eq!(cleaned.first().map(String::as_str), Some("exists"));
         assert!(!sessions.join("exists.md").exists());
     }
 

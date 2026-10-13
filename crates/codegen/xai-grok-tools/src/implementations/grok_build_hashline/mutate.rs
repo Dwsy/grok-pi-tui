@@ -66,7 +66,8 @@ pub struct MutationResult {
 }
 
 /// Apply a mutation to a mutable vec of owned lines. Returns metadata about what was affected, for
-/// benchmark analysis. Panics if indices are out of range for the current `lines` vec.
+/// benchmark analysis. An index outside the current `lines` vec leaves the lines untouched and
+/// reports every line as `Unchanged`.
 pub fn apply_mutation(lines: &mut Vec<String>, mutation: &Mutation) -> MutationResult {
     let orig_len = lines.len();
 
@@ -128,7 +129,13 @@ pub fn apply_mutation(lines: &mut Vec<String>, mutation: &Mutation) -> MutationR
             line_idx,
             new_content,
         } => {
-            lines[*line_idx] = new_content.clone();
+            let Some(line) = lines.get_mut(*line_idx) else {
+                return MutationResult {
+                    outcomes: vec![LineOutcome::Unchanged; orig_len],
+                    line_delta: 0,
+                };
+            };
+            *line = new_content.clone();
 
             let outcomes = (0..orig_len)
                 .map(|i| {
@@ -150,8 +157,14 @@ pub fn apply_mutation(lines: &mut Vec<String>, mutation: &Mutation) -> MutationR
             line_idx,
             new_indent,
         } => {
-            let trimmed = lines[*line_idx].trim_start().to_owned();
-            lines[*line_idx] = format!("{new_indent}{trimmed}");
+            let Some(line) = lines.get_mut(*line_idx) else {
+                return MutationResult {
+                    outcomes: vec![LineOutcome::Unchanged; orig_len],
+                    line_delta: 0,
+                };
+            };
+            let trimmed = line.trim_start().to_owned();
+            *line = format!("{new_indent}{trimmed}");
 
             // Reindent changes only leading whitespace — anchors using
             // whitespace-normalized hashing should survive this.
@@ -266,20 +279,33 @@ mod tests {
         ]
     }
 
+    fn nth_ref<T>(items: &[T], i: usize) -> &T {
+        let Some(item) = items.get(i) else {
+            panic!("expected item {i}, len {}", items.len());
+        };
+        item
+    }
+
     #[test]
     fn insert_lines_above() {
         let mut lines = sample_lines();
         let m = gen_insert_above(1, 2);
         let result = apply_mutation(&mut lines, &m);
         assert_eq!(lines.len(), 7);
-        assert!(lines[1].contains("inserted line 0"));
-        assert!(lines[2].contains("inserted line 1"));
-        assert_eq!(lines[3], "    let x = 1;");
+        assert!(nth_ref(&lines, 1).contains("inserted line 0"));
+        assert!(nth_ref(&lines, 2).contains("inserted line 1"));
+        assert_eq!(nth_ref(&lines, 3), "    let x = 1;");
         assert_eq!(result.line_delta, 2);
         // Line 0 unchanged, lines 1-4 shifted by +2.
-        assert_eq!(result.outcomes[0], LineOutcome::Unchanged);
-        assert_eq!(result.outcomes[1], LineOutcome::Shifted { new_idx: 3 });
-        assert_eq!(result.outcomes[4], LineOutcome::Shifted { new_idx: 6 });
+        assert_eq!(*nth_ref(&result.outcomes, 0), LineOutcome::Unchanged);
+        assert_eq!(
+            *nth_ref(&result.outcomes, 1),
+            LineOutcome::Shifted { new_idx: 3 }
+        );
+        assert_eq!(
+            *nth_ref(&result.outcomes, 4),
+            LineOutcome::Shifted { new_idx: 6 }
+        );
     }
 
     #[test]
@@ -288,7 +314,7 @@ mod tests {
         let m = gen_insert_above(100, 1); // past end → clamped
         let result = apply_mutation(&mut lines, &m);
         assert_eq!(lines.len(), 6);
-        assert!(lines[5].contains("inserted line 0"));
+        assert!(nth_ref(&lines, 5).contains("inserted line 0"));
         assert_eq!(result.line_delta, 1);
         // All original lines unchanged (insert was at end).
         assert!(result.outcomes.iter().all(|o| *o == LineOutcome::Unchanged));
@@ -300,13 +326,16 @@ mod tests {
         let m = gen_delete(1, 2);
         let result = apply_mutation(&mut lines, &m);
         assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "fn main() {");
-        assert_eq!(lines[1], "    println!(\"{x} {y}\");");
+        assert_eq!(nth_ref(&lines, 0), "fn main() {");
+        assert_eq!(nth_ref(&lines, 1), "    println!(\"{x} {y}\");");
         assert_eq!(result.line_delta, -2);
-        assert_eq!(result.outcomes[0], LineOutcome::Unchanged);
-        assert_eq!(result.outcomes[1], LineOutcome::Deleted);
-        assert_eq!(result.outcomes[2], LineOutcome::Deleted);
-        assert_eq!(result.outcomes[3], LineOutcome::Shifted { new_idx: 1 });
+        assert_eq!(*nth_ref(&result.outcomes, 0), LineOutcome::Unchanged);
+        assert_eq!(*nth_ref(&result.outcomes, 1), LineOutcome::Deleted);
+        assert_eq!(*nth_ref(&result.outcomes, 2), LineOutcome::Deleted);
+        assert_eq!(
+            *nth_ref(&result.outcomes, 3),
+            LineOutcome::Shifted { new_idx: 1 }
+        );
     }
 
     #[test]
@@ -316,8 +345,8 @@ mod tests {
         let result = apply_mutation(&mut lines, &m);
         assert_eq!(lines.len(), 3); // only deleted 2 (indices 3,4)
         assert_eq!(result.line_delta, -2);
-        assert_eq!(result.outcomes[3], LineOutcome::Deleted);
-        assert_eq!(result.outcomes[4], LineOutcome::Deleted);
+        assert_eq!(*nth_ref(&result.outcomes, 3), LineOutcome::Deleted);
+        assert_eq!(*nth_ref(&result.outcomes, 4), LineOutcome::Deleted);
     }
 
     #[test]
@@ -325,10 +354,10 @@ mod tests {
         let mut lines = sample_lines();
         let m = gen_token_edit(1, "    let x = 999;");
         let result = apply_mutation(&mut lines, &m);
-        assert_eq!(lines[1], "    let x = 999;");
+        assert_eq!(nth_ref(&lines, 1), "    let x = 999;");
         assert_eq!(result.line_delta, 0);
-        assert_eq!(result.outcomes[1], LineOutcome::Modified);
-        assert_eq!(result.outcomes[0], LineOutcome::Unchanged);
+        assert_eq!(*nth_ref(&result.outcomes, 1), LineOutcome::Modified);
+        assert_eq!(*nth_ref(&result.outcomes, 0), LineOutcome::Unchanged);
     }
 
     #[test]
@@ -336,9 +365,9 @@ mod tests {
         let mut lines = sample_lines();
         let m = gen_reindent(1, "        "); // double indent
         let result = apply_mutation(&mut lines, &m);
-        assert_eq!(lines[1], "        let x = 1;");
+        assert_eq!(nth_ref(&lines, 1), "        let x = 1;");
         assert_eq!(result.line_delta, 0);
-        assert_eq!(result.outcomes[1], LineOutcome::Reindented);
+        assert_eq!(*nth_ref(&result.outcomes, 1), LineOutcome::Reindented);
     }
 
     #[test]
@@ -347,12 +376,15 @@ mod tests {
         let m = gen_range_rewrite(1, 3, &["    let z = 42;"]);
         let result = apply_mutation(&mut lines, &m);
         assert_eq!(lines.len(), 4); // 5 - 2 removed + 1 added
-        assert_eq!(lines[1], "    let z = 42;");
-        assert_eq!(lines[2], "    println!(\"{x} {y}\");");
+        assert_eq!(nth_ref(&lines, 1), "    let z = 42;");
+        assert_eq!(nth_ref(&lines, 2), "    println!(\"{x} {y}\");");
         assert_eq!(result.line_delta, -1);
-        assert_eq!(result.outcomes[1], LineOutcome::Deleted);
-        assert_eq!(result.outcomes[2], LineOutcome::Deleted);
-        assert_eq!(result.outcomes[3], LineOutcome::Shifted { new_idx: 2 });
+        assert_eq!(*nth_ref(&result.outcomes, 1), LineOutcome::Deleted);
+        assert_eq!(*nth_ref(&result.outcomes, 2), LineOutcome::Deleted);
+        assert_eq!(
+            *nth_ref(&result.outcomes, 3),
+            LineOutcome::Shifted { new_idx: 2 }
+        );
     }
 
     #[test]
@@ -361,14 +393,20 @@ mod tests {
         let m = gen_boilerplate_insert(0, "// boilerplate", 3);
         let result = apply_mutation(&mut lines, &m);
         assert_eq!(lines.len(), 8);
-        assert_eq!(lines[0], "// boilerplate");
-        assert_eq!(lines[1], "// boilerplate");
-        assert_eq!(lines[2], "// boilerplate");
-        assert_eq!(lines[3], "fn main() {");
+        assert_eq!(nth_ref(&lines, 0), "// boilerplate");
+        assert_eq!(nth_ref(&lines, 1), "// boilerplate");
+        assert_eq!(nth_ref(&lines, 2), "// boilerplate");
+        assert_eq!(nth_ref(&lines, 3), "fn main() {");
         assert_eq!(result.line_delta, 3);
         // All original lines shifted by +3.
-        assert_eq!(result.outcomes[0], LineOutcome::Shifted { new_idx: 3 });
-        assert_eq!(result.outcomes[4], LineOutcome::Shifted { new_idx: 7 });
+        assert_eq!(
+            *nth_ref(&result.outcomes, 0),
+            LineOutcome::Shifted { new_idx: 3 }
+        );
+        assert_eq!(
+            *nth_ref(&result.outcomes, 4),
+            LineOutcome::Shifted { new_idx: 7 }
+        );
     }
 
     #[test]
@@ -382,7 +420,10 @@ mod tests {
         let result = apply_mutation(&mut lines, &m);
         assert_eq!(lines.len(), 7); // 5 - 1 removed + 3 added
         assert_eq!(result.line_delta, 2);
-        assert_eq!(result.outcomes[1], LineOutcome::Deleted);
-        assert_eq!(result.outcomes[2], LineOutcome::Shifted { new_idx: 4 });
+        assert_eq!(*nth_ref(&result.outcomes, 1), LineOutcome::Deleted);
+        assert_eq!(
+            *nth_ref(&result.outcomes, 2),
+            LineOutcome::Shifted { new_idx: 4 }
+        );
     }
 }

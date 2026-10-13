@@ -884,7 +884,7 @@ mod tests {
             Some(make_auth("xai-session-token", ChronoDuration::hours(1))),
         );
         let api_key_provider: xai_grok_tools::types::SharedApiKeyProvider =
-            Arc::new(crate::manager::SharedAuthKeyProvider(mgr.clone()));
+            Arc::new(crate::side_call_bearer::SharedAuthKeyProvider(mgr.clone()));
 
         for denied in [
             "https://byok.attacker.example/v1",

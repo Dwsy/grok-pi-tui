@@ -372,13 +372,32 @@ impl ProfileName {
     ) -> anyhow::Result<(SandboxProfile, Vec<PathBuf>)> {
         let mut profile = self.resolve(workspace, config)?;
         let mut runtime_socket_denies = Vec::new();
+        // Devbox keeps host D-Bus/systemd; container-runtime masks still follow `restrict_network`.
+        let skip_dbus = match self {
+            ProfileName::Devbox => true,
+            ProfileName::Custom(name) => {
+                config.profiles.get(name).and_then(|p| p.extends.as_deref()) == Some("devbox")
+            }
+            _ => false,
+        };
+        let mut policy = if skip_dbus {
+            Vec::new()
+        } else {
+            crate::runtime_sockets::dbus_socket_deny_paths()
+        };
         if profile.restrict_network {
-            crate::runtime_sockets::append_runtime_socket_denies(
-                &mut profile.deny,
-                &mut runtime_socket_denies,
-            )
-            .map_err(|error| anyhow::anyhow!("runtime-socket deny resolution failed: {error}"))?;
+            for path in crate::runtime_sockets::runtime_socket_deny_paths() {
+                if !policy.contains(&path) {
+                    policy.push(path);
+                }
+            }
         }
+        crate::runtime_sockets::append_socket_denies(
+            &mut profile.deny,
+            &mut runtime_socket_denies,
+            &policy,
+        )
+        .map_err(|error| anyhow::anyhow!("socket deny resolution failed: {error}"))?;
         Ok((profile, runtime_socket_denies))
     }
 
@@ -874,8 +893,11 @@ read_write = ["/tmp/ci-artifacts"]
         assert_eq!(config.profiles.len(), 2);
         assert!(config.profiles.contains_key("devbox"));
         assert!(config.profiles.contains_key("ci"));
-        assert_eq!(config.profiles["devbox"].read_only, vec!["/data"]);
-        assert_eq!(config.profiles["devbox"].deny, vec!["/data/private"]);
+        let Some(devbox) = config.profiles.get("devbox") else {
+            panic!("expected devbox profile: {:?}", config.profiles);
+        };
+        assert_eq!(devbox.read_only, vec!["/data"]);
+        assert_eq!(devbox.deny, vec!["/data/private"]);
     }
 
     /// Custom-profile resolve: allow entries are normalized, deny entries are not.
@@ -905,18 +927,39 @@ read_write = ["/tmp/ci-artifacts"]
             .expect("cargo profile resolves");
 
         // Custom entries are appended after the base profile's own paths.
+        let Some(tail) = resolved
+            .read_write
+            .len()
+            .checked_sub(2)
+            .and_then(|n| resolved.read_write.get(n..))
+        else {
+            panic!(
+                "expected at least 2 read_write entries: {:?}",
+                resolved.read_write
+            );
+        };
         assert_eq!(
-            resolved.read_write[resolved.read_write.len() - 2..],
+            tail,
             [
                 PathBuf::from("/home/user/.cargo/registry/cache"),
                 PathBuf::from("/home/user/.cargo/registry/index"),
             ]
         );
         assert_eq!(resolved.read_only, [PathBuf::from("/opt/tooling")]);
-        assert_eq!(
-            resolved.deny,
-            [PathBuf::from("**/.env"), PathBuf::from("/secrets/**")]
-        );
+        let mut expected = vec![PathBuf::from("**/.env"), PathBuf::from("/secrets/**")];
+        for socket in crate::runtime_sockets::materialize_runtime_socket_deny_paths_from(
+            crate::runtime_sockets::dbus_socket_deny_paths(),
+        )
+        .expect("dbus sockets materialize")
+        {
+            if !expected.contains(&socket) {
+                expected.push(socket);
+            }
+        }
+        let mut actual = resolved.deny.clone();
+        expected.sort();
+        actual.sort();
+        assert_eq!(expected, actual, "deny must be globs ∪ materialized dbus");
     }
 
     /// Building the capability set pre-creates missing `read_write` dirs.
@@ -1011,14 +1054,17 @@ read_write = ["/tmp/ci-artifacts"]
 
         merge_project_profiles(&mut config, project);
 
+        let Some(secure) = config.profiles.get("secure") else {
+            panic!("expected secure profile: {:?}", config.profiles);
+        };
         assert_eq!(
-            config.profiles["secure"].deny,
+            secure.deny,
             vec!["/home/user/.ssh".to_string()],
             "global deny must be preserved"
         );
-        assert_eq!(config.profiles["secure"].restrict_network, Some(true));
+        assert_eq!(secure.restrict_network, Some(true));
         assert!(
-            config.profiles["secure"].read_write.is_empty(),
+            secure.read_write.is_empty(),
             "project must not widen global read_write"
         );
         assert!(

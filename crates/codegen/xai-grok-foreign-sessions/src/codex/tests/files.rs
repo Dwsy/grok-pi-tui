@@ -257,10 +257,13 @@ fn falls_back_to_bounded_plain_and_compressed_heads() {
 
     let sessions = scan_in_home(root.path(), &cwd, now);
     assert_eq!(sessions.len(), 2);
-    assert_eq!(sessions[0].native_id, plain_id.to_string());
-    assert_eq!(sessions[0].title, "filesystem title");
-    assert_eq!(sessions[1].native_id, compressed_id.to_string());
-    assert_eq!(sessions[1].title, "compressed title");
+    let [first, second] = sessions.as_slice() else {
+        panic!("expected two sessions: {sessions:?}");
+    };
+    assert_eq!(first.native_id, plain_id.to_string());
+    assert_eq!(first.title, "filesystem title");
+    assert_eq!(second.native_id, compressed_id.to_string());
+    assert_eq!(second.title, "compressed title");
 }
 
 #[test]
@@ -440,6 +443,6 @@ fn date_dirs_include_utc_and_offset_boundary_days() {
     )
     .unwrap();
     let positive = super::super::files::recent_date_dirs(root, late, 2 * 60 * 60);
-    assert_eq!(positive[0], root.join("2026/01/02"));
+    assert_eq!(positive.first(), Some(&root.join("2026/01/02")));
     assert!(positive.contains(&root.join("2026/01/01")));
 }

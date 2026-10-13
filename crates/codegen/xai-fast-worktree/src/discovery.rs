@@ -36,6 +36,11 @@ fn should_skip_entry(name: &str) -> bool {
 }
 
 fn detect_creation_mode(worktree_path: &Path) -> &'static str {
+    // backing markers, so every ProjFS root arrives here) is labelled by the
+    // platform's Grove strategy, not by the shape of its `.git` entry.
+    if crate::nfs::dest_is_projected_mount(worktree_path) {
+        return crate::nfs::default_grove_creation_mode();
+    }
     let git_entry = worktree_path.join(".git");
     if git_entry.is_file() {
         "linked"
@@ -209,7 +214,6 @@ pub fn rebuild_worktree_db(
     rebuild_worktree_db_from_grove_dirs(db, grok_home, &crate::nfs::candidate_data_dirs())
 }
 
-/// Rebuild with an explicit grove data dir (daemon.db / mounts.toml / markers).
 /// `None` skips the NFS union pass (tests).
 pub fn rebuild_worktree_db_with_grove_data(
     db: &crate::db::WorktreeDb,
@@ -480,11 +484,7 @@ fn grove_mode_for_identity(idn: &crate::nfs::NfsIdentity) -> &'static str {
 }
 
 fn grove_metadata_from_identity(idn: &crate::nfs::NfsIdentity) -> serde_json::Value {
-    let transport = if grove_mode_for_identity(idn) == crate::worktree::STRATEGY_GROVE_FUSE {
-        "fuse"
-    } else {
-        "nfs"
-    };
+    let transport = crate::grove_api::transport_for_strategy(grove_mode_for_identity(idn));
     serde_json::json!({
         "grove": {
             "transport": transport,
@@ -538,9 +538,12 @@ mod tests {
 
         let report = discover_worktrees(grok_home);
         assert_eq!(report.found.len(), 1);
-        assert_eq!(report.found[0].kind, WorktreeKind::Session);
-        assert_eq!(report.found[0].creation_mode, "linked");
-        assert_eq!(report.found[0].path, wt);
+        let Some(found) = report.found.first() else {
+            panic!("expected one worktree: {:?}", report.found);
+        };
+        assert_eq!(found.kind, WorktreeKind::Session);
+        assert_eq!(found.creation_mode, "linked");
+        assert_eq!(found.path, wt);
     }
 
     #[test]
@@ -553,8 +556,11 @@ mod tests {
 
         let report = discover_worktrees(grok_home);
         assert_eq!(report.found.len(), 1);
-        assert_eq!(report.found[0].kind, WorktreeKind::Pool);
-        assert_eq!(report.found[0].creation_mode, "standalone");
+        let Some(found) = report.found.first() else {
+            panic!("expected one worktree: {:?}", report.found);
+        };
+        assert_eq!(found.kind, WorktreeKind::Pool);
+        assert_eq!(found.creation_mode, "standalone");
     }
 
     #[test]
@@ -574,7 +580,10 @@ mod tests {
 
         let report = discover_worktrees(grok_home);
         assert_eq!(report.found.len(), 1);
-        assert_eq!(report.found[0].path, base.join("real-session"));
+        assert_eq!(
+            report.found.first().map(|f| &f.path),
+            Some(&base.join("real-session"))
+        );
         assert!(report.skipped > 0);
     }
 
@@ -925,7 +934,6 @@ mod tests {
         std::fs::create_dir_all(grok_home.join("worktrees")).unwrap();
         let data = tmp.path().join("grove");
         std::fs::create_dir_all(&data).unwrap();
-        // mounts.toml worktree row with pin_ref id but no mountpoint.
         std::fs::write(
             data.join("mounts.toml"),
             "[[mounts]]\nkind = \"worktree\"\npin_ref = \"refs/grok/worktrees/no-dest\"\nbacking = \"/unused/worktree-backing/no-dest\"\n",

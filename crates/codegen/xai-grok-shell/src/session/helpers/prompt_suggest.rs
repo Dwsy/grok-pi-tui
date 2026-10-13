@@ -2,8 +2,8 @@
 
 use crate::config::PromptSuggestModelPin;
 use crate::sampling::ConversationItem;
-use crate::session::helpers::chat::floor_char_boundary;
 use xai_grok_sampling_types::ReasoningEffort;
+use xai_grok_tools::util::truncate_str;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SuggestReasoning {
@@ -94,6 +94,8 @@ const TRANSCRIPT_BUDGET_CHARS: usize = 24_000;
 /// Long messages (pasted logs, big diffs) carry little signal for next-prompt prediction.
 const MESSAGE_CAP_CHARS: usize = 1_500;
 
+const TRUNCATION_MARKER: &str = "\n…";
+
 /// The model sees a compact transcript and must reply with ONLY the predicted next user message (or nothing).
 pub(crate) const SUGGEST_PROMPT_SYSTEM: &str = "You predict the next line the USER will type into their coding agent.\n\
     You see a transcript. The last line is from the agent.\n\
@@ -112,18 +114,42 @@ pub(crate) fn suggestion_size(s: &str) -> (usize, usize) {
     (s.chars().count(), s.split_whitespace().count())
 }
 
+fn truncate_to(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        return text.to_owned();
+    }
+    if max_len <= TRUNCATION_MARKER.len() {
+        return truncate_str(text, max_len).to_owned();
+    }
+    let prefix = truncate_str(text, max_len - TRUNCATION_MARKER.len());
+    let floor = prefix.len() / 2;
+    let cut = prefix
+        .rfind('\n')
+        .filter(|&index| index >= floor)
+        .or_else(|| {
+            prefix
+                .rfind(char::is_whitespace)
+                .filter(|&index| index >= floor)
+        })
+        .unwrap_or(prefix.len());
+    let Some(head) = prefix.get(..cut) else {
+        return truncate_str(text, max_len).to_owned();
+    };
+    format!("{}{TRUNCATION_MARKER}", head.trim_end())
+}
+
 /// One transcript line: role label and flattened text content.
-fn transcript_line(role: &str, text: &str) -> Option<String> {
+fn transcript_line(role: &str, text: &str, cap: usize) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
         return None;
     }
-    let mut text = text;
-    if text.len() > MESSAGE_CAP_CHARS {
-        let cut = floor_char_boundary(text, MESSAGE_CAP_CHARS);
-        text = &text[..cut];
-    }
-    Some(format!("{role}: {text}"))
+    let body = if text.len() > cap {
+        truncate_to(text, cap)
+    } else {
+        text.to_owned()
+    };
+    Some(format!("{role}: {body}"))
 }
 
 /// Keeps genuine `User` messages (skipping runtime-synthesized ones) and `Assistant` text, newest-last.
@@ -136,22 +162,27 @@ pub(crate) fn build_transcript(conversation: &[ConversationItem]) -> Option<Stri
 
     for item in conversation.iter().rev() {
         let line = match item {
-            ConversationItem::User(u) => {
-                if u.synthetic_reason.is_some() {
+            ConversationItem::User(u) if u.synthetic_reason.is_human() => {
+                let Some(line) = transcript_line("User", &item.text_content(), MESSAGE_CAP_CHARS)
+                else {
                     continue;
-                }
-                transcript_line("User", &item.text_content())
+                };
+                line
             }
             ConversationItem::Assistant(_) => {
-                let line = transcript_line("Agent", &item.text_content());
-                if line.is_some() {
-                    saw_assistant = true;
-                }
+                let cap = if saw_assistant {
+                    MESSAGE_CAP_CHARS
+                } else {
+                    TRANSCRIPT_BUDGET_CHARS.saturating_sub(used + "Agent: ".len())
+                };
+                let Some(line) = transcript_line("Agent", &item.text_content(), cap) else {
+                    continue;
+                };
+                saw_assistant = true;
                 line
             }
             _ => continue,
         };
-        let Some(line) = line else { continue };
         if used + line.len() > TRANSCRIPT_BUDGET_CHARS && !lines.is_empty() {
             break;
         }
@@ -177,7 +208,7 @@ pub(crate) fn suggest_prompt_user_message(transcript: &str, cwd: &str) -> String
 /// Returns `None` when there is nothing to show. Matches the eval: empty or a
 /// silence token is NONE. Other text is shown as the first line.
 pub(crate) fn sanitize_suggestion(raw: &str) -> Option<String> {
-    let line = raw.trim().lines().next()?.trim();
+    let line = raw.trim().lines().next()?.trim().replace("<|eos|>", "");
     let line = line
         .trim_start_matches(['"', '\'', '`', '“', '‘'])
         .trim_end_matches(['"', '\'', '`', '”', '’'])
@@ -378,6 +409,14 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_strips_eos_token() {
+        assert_eq!(
+            sanitize_suggestion("\"run the tests\"<|eos|>").as_deref(),
+            Some("run the tests")
+        );
+    }
+
+    #[test]
     fn unset_effort_is_low_only_on_a_reasoning_model() {
         assert_eq!(
             suggest_request_effort(None, "grok-4.6", true),
@@ -434,7 +473,7 @@ mod tests {
     fn transcript_skips_synthetic_user_messages() {
         let mut synthetic = ConversationItem::user("synthetic reminder".to_owned());
         if let ConversationItem::User(u) = &mut synthetic {
-            u.synthetic_reason = Some(crate::sampling::SyntheticReason::SystemReminder);
+            u.synthetic_reason = crate::sampling::SyntheticReason::SystemReminder;
         }
         let conv = vec![user("real question"), synthetic, assistant("answer")];
         let t = build_transcript(&conv).unwrap();
@@ -447,11 +486,32 @@ mod tests {
         let long = "a".repeat(10_000);
         let conv = vec![user(&long), assistant("ok")];
         let t = build_transcript(&conv).unwrap();
-        assert!(
-            t.len() < 2_000,
-            "long message must be truncated: {}",
-            t.len()
-        );
+        let user_line = t.split("\n\n").next().unwrap();
+        assert!(user_line.starts_with("User: "));
+        assert!(user_line.contains(TRUNCATION_MARKER));
+        assert!(user_line.len() <= "User: ".len() + MESSAGE_CAP_CHARS);
+        assert!(t.ends_with("Agent: ok"));
+        assert!(!t.contains(&long));
+    }
+
+    #[test]
+    fn transcript_does_not_cap_newest_agent() {
+        let long = "c".repeat(10_000);
+        let conv = vec![user("hi"), assistant(&long)];
+        let t = build_transcript(&conv).unwrap();
+        assert!(t.contains(&long));
+        assert!(!t.contains(TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn transcript_bounds_newest_agent_by_pack() {
+        let long = "c".repeat(TRANSCRIPT_BUDGET_CHARS + 500);
+        let conv = vec![user("hi"), assistant(&long)];
+        let t = build_transcript(&conv).unwrap();
+        assert!(t.starts_with("Agent: "));
+        assert!(t.contains(TRUNCATION_MARKER));
+        assert!(t.len() <= TRANSCRIPT_BUDGET_CHARS);
+        assert!(!t.contains(&long));
     }
 
     #[test]

@@ -183,6 +183,23 @@ impl SessionActor {
             .await;
         }
 
+        // A `/memory` toggle during the previous turn could not swap the prompt; do it before this
+        // turn samples. Takes `state` briefly on its own, so it stays outside the lock below.
+        if self
+            .memory
+            .prompt_sync_pending
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && self.sync_v2_memory_prompt().await
+                == super::memory_control::MemoryPromptSync::RenderFailed
+        {
+            tracing::warn!(
+                target: xai_grok_telemetry::memory_log::TARGET,
+                session_id = %self.session_info.id.0,
+                "memory prompt sync failed again at turn promotion; this turn samples with the \
+                 previous memory section"
+            );
+        }
+
         let mut state = self.state.lock().await;
         // Re-check after the await gap.
         if state.running_task.is_some()
@@ -728,8 +745,9 @@ impl SessionActor {
                 &monitor_events,
                 Some(task_output_tool_name),
             ),
-        ) {
-            sections[index] = vec![acp::ContentBlock::Text(acp::TextContent::new(batch))];
+        ) && let Some(slot) = sections.get_mut(index)
+        {
+            *slot = vec![acp::ContentBlock::Text(acp::TextContent::new(batch))];
         }
 
         let mut blocks = Vec::new();
@@ -1076,8 +1094,10 @@ mod live_orphan_hook_tests {
                 let (actor, sub_dir, mut persistence_rx) =
                     actor_with_orphan(id, Some(running_inspection(id))).await;
                 let listed = actor.list_running_subagents().await;
-                assert_eq!(listed.len(), 1);
-                assert_eq!(listed[0].snapshot.subagent_id, id);
+                let [listed_one] = listed.as_slice() else {
+                    panic!("expected one listed subagent: {listed:?}");
+                };
+                assert_eq!(listed_one.snapshot.subagent_id, id);
 
                 let reread: SubagentMeta = serde_json::from_str(
                     &std::fs::read_to_string(sub_dir.join("meta.json")).unwrap(),

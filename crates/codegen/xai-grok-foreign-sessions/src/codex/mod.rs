@@ -156,12 +156,12 @@ fn rollout_id(path: &Path) -> Option<String> {
     if id_start == 0 || value.as_bytes().get(id_start - 1) != Some(&b'-') {
         return None;
     }
-    let timestamp = &value[..id_start - 1];
+    let timestamp = value.get(..id_start.checked_sub(1)?)?;
     if timestamp.len() != 19 {
         return None;
     }
     chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H-%M-%S").ok()?;
-    let id = &value[id_start..];
+    let id = value.get(id_start..)?;
     uuid::Uuid::try_parse(id).ok()?;
     Some(id.to_owned())
 }

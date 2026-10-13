@@ -1,0 +1,15 @@
+tree/order/B.txt
+1:needle B
+
+tree/order/a.txt
+1:needle one
+3:needle two
+
+tree/order/dir/x
+1:needle x
+
+tree/order/dir-y.txt
+1:needle y
+
+tree/order/dir.txt
+1:needle dot

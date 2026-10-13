@@ -9,6 +9,7 @@
 //! Foreign SQLite stores are opened only when `xai_sqlite_journal::JournalMode` selects local WAL.
 //! The direct read-only/query-only transaction makes no logical writes, though WAL coordination may update shared-memory read marks.
 //! Network filesystems fail soft before SQLite open, conversion, or writes.
+#![deny(clippy::indexing_slicing)]
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -196,7 +197,7 @@ where
     }
     let canonical_cwd = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let mut cwd_spellings = vec![canonical_cwd];
-    if cwd_spellings[0].as_path() != cwd {
+    if cwd_spellings.first().is_some_and(|p| p.as_path() != cwd) {
         cwd_spellings.push(cwd.to_path_buf());
     }
     let now = SystemTime::now();
@@ -659,12 +660,13 @@ mod tests {
         sessions.push(summary("54", now + Duration::from_secs(500)));
         let sessions = finish_tool_scan(sessions);
         assert_eq!(sessions.len(), MAX_SESSIONS_PER_TOOL);
-        assert_eq!(sessions[0].native_id, "54");
-        assert!(
-            sessions
-                .windows(2)
-                .all(|pair| pair[0].updated_at >= pair[1].updated_at)
-        );
+        assert_eq!(sessions.first().map(|s| s.native_id.as_str()), Some("54"));
+        assert!(sessions.windows(2).all(|pair| {
+            let [a, b] = pair else {
+                return false;
+            };
+            a.updated_at >= b.updated_at
+        }));
     }
     #[test]
     fn top_k_helper_uses_comparator_ties() {

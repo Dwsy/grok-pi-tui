@@ -1,7 +1,6 @@
 use super::{AgentPane, AgentView, AppRenderParams, BannerSlotParams, test_fixtures};
 use crate::actions::ActionRegistry;
 use crate::app::app_view::InputOutcome;
-use crate::app::bundle::BundleState;
 use crate::scrollback::render::ScratchBuffer;
 use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -32,7 +31,6 @@ fn workflow_run(status: &str) -> crate::views::workflows::WorkflowRunSnapshot {
 }
 fn draw_frame(agent: &mut AgentView, registry: &ActionRegistry) -> Buffer {
     let area = Rect::new(0, 0, 80, 30);
-    let bundle = BundleState::default();
     let mut buf = Buffer::empty(area);
     let mut scratch = ScratchBuffer::new();
     agent.draw(
@@ -50,8 +48,7 @@ fn draw_frame(agent: &mut AgentView, registry: &ActionRegistry) -> Buffer {
             mouse_pos: None,
             tip: None,
         },
-        &bundle,
-        false,
+        &crate::app::bundle::BundleState::default(),
         false,
         &mut Vec::new(),
         AppRenderParams::default(),
@@ -86,7 +83,11 @@ fn paused_status_has_one_click_target_that_clears_when_terminal() {
     assert!(matches!(outcome, InputOutcome::Changed));
     assert!(!agent.tasks.overlay.visible && !agent.tasks.overlay.focused);
     assert_eq!(agent.active_pane, AgentPane::Scrollback);
-    agent.workflow_runs[0].status = "complete".to_owned();
+    agent
+        .workflow_runs
+        .first_mut()
+        .unwrap_or_else(|| panic!("missing index"))
+        .status = "complete".to_owned();
     let _ = draw_frame(&mut agent, &registry);
     assert!(agent.hit_bg_status.rect.is_none());
 }

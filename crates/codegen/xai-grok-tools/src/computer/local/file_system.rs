@@ -119,7 +119,10 @@ where
                     on_exhausted(&e, retry_count);
                     return Err(e);
                 }
-                let delay = WRITE_RETRY_DELAYS[retry_count];
+                let Some(&delay) = WRITE_RETRY_DELAYS.get(retry_count) else {
+                    on_exhausted(&e, retry_count);
+                    return Err(e);
+                };
                 retry_count += 1;
                 on_retry(&e, retry_count, delay);
                 sleep_for(delay).await;
@@ -133,7 +136,12 @@ where
 impl AsyncFileSystem for LocalFs {
     #[tracing::instrument(name = "fs.read_file", skip_all)]
     async fn read_file(&self, path: &Path) -> Result<Vec<u8>, ComputerError> {
-        match fs::read(path).await {
+        match crate::util::file_reader::read_file(
+            path,
+            crate::util::file_reader::FileReadOptions::default(),
+        )
+        .await
+        {
             Ok(data) => Ok(data),
             Err(e) => {
                 if is_permission_error(&e) {
@@ -142,6 +150,34 @@ impl AsyncFileSystem for LocalFs {
                 Err(e.into())
             }
         }
+    }
+
+    fn supports_bounded_read(&self) -> bool {
+        true
+    }
+
+    #[tracing::instrument(name = "fs.read_file_bounded", skip_all)]
+    async fn read_file_bounded(
+        &self,
+        path: &Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ComputerError> {
+        use crate::util::file_reader::{FileReadMode, FileReadOptions, read_file};
+
+        read_file(
+            path,
+            FileReadOptions {
+                mode: FileReadMode::BoundedComplete { max_bytes },
+                require_regular_file: true,
+            },
+        )
+        .await
+        .map_err(|error| {
+            if is_permission_error(&error) {
+                xai_grok_sandbox::log_violation(&path.display().to_string(), "read");
+            }
+            ComputerError::from(error)
+        })
     }
 
     #[tracing::instrument(name = "fs.write_file", skip_all)]

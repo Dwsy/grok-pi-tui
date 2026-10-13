@@ -13,8 +13,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::scrollback::text_selection::apply_selection_highlight;
-use crate::scrollback::types::{col_past_grapheme, grapheme_cells_at, slice_display_cols};
+use crate::views::drag_select::{
+    TextDrag, TextEndpoint, endpoint_at, endpoint_at_clamped, paint_text_drag, text_for_drag,
+};
 
 use crate::scrollback::blocks::ContextInfoBlock;
 use crate::theme::Theme;
@@ -57,7 +58,10 @@ impl UsageInfoTab {
     }
 
     pub fn from_index(i: usize) -> Self {
-        *Self::ALL.get(i).unwrap_or(&Self::ALL[0])
+        match Self::ALL.get(i) {
+            Some(&tab) => tab,
+            None => UsageInfoTab::ContextUsage,
+        }
     }
 }
 
@@ -134,34 +138,6 @@ struct PendingPress {
     click_value: Option<String>,
 }
 
-/// Display-column endpoints into `plain_lines`; copy happens on mouse-up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TextDrag {
-    anchor: TextEndpoint,
-    head: TextEndpoint,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct TextEndpoint {
-    line_idx: usize,
-    col: u16,
-}
-
-impl TextDrag {
-    fn ordered(self) -> (TextEndpoint, TextEndpoint) {
-        if self.anchor <= self.head {
-            (self.anchor, self.head)
-        } else {
-            (self.head, self.anchor)
-        }
-    }
-
-    fn is_non_empty(self) -> bool {
-        let (s, e) = self.ordered();
-        s != e
-    }
-}
-
 impl UsageInfoModalState {
     pub fn new(tab: UsageInfoTab, ctx: UsageInfoContext) -> Self {
         Self {
@@ -203,6 +179,26 @@ impl UsageInfoModalState {
 
     pub(crate) fn has_active_drag(&self) -> bool {
         self.text_drag.is_some()
+    }
+
+    fn endpoint_at(&self, column: u16, row: u16) -> Option<TextEndpoint> {
+        endpoint_at(
+            &self.plain_lines,
+            self.content_rect,
+            self.scroll as usize,
+            column,
+            row,
+        )
+    }
+
+    fn endpoint_at_clamped(&self, column: u16, row: u16) -> Option<TextEndpoint> {
+        endpoint_at_clamped(
+            &self.plain_lines,
+            self.content_rect,
+            self.scroll as usize,
+            column,
+            row,
+        )
     }
 
     fn scroll_to(&mut self, offset: u16) {
@@ -437,7 +433,7 @@ fn handle_usage_modal_mouse(
         MouseEventKind::Down(MouseButton::Left)
             if state.active_tab == UsageInfoTab::SessionInfo && in_content(state, column, row) =>
         {
-            let Some(ep) = endpoint_at(state, column, row) else {
+            let Some(ep) = state.endpoint_at(column, row) else {
                 return UsageModalOutcome::Unchanged;
             };
             // Hold the press; promote to drag only after a 1-cell move (same threshold as scrollback)
@@ -478,11 +474,7 @@ fn handle_usage_modal_mouse(
             } else if row >= rect.y.saturating_add(rect.height) {
                 state.scroll = state.scroll.saturating_add(1);
             }
-            let max_c = rect.x.saturating_add(rect.width.saturating_sub(1));
-            let max_r = rect.y.saturating_add(rect.height.saturating_sub(1));
-            let cc = column.clamp(rect.x, max_c);
-            let rr = row.clamp(rect.y, max_r);
-            if let Some(ep) = endpoint_at(state, cc, rr)
+            if let Some(ep) = state.endpoint_at_clamped(column, row)
                 && let Some(d) = state.text_drag.as_mut()
             {
                 d.head = ep;
@@ -499,15 +491,8 @@ fn handle_usage_modal_mouse(
             let Some(mut final_drag) = state.text_drag.take() else {
                 return UsageModalOutcome::Unchanged;
             };
-            let rect = state.content_rect;
-            if rect.width > 0 && rect.height > 0 {
-                let max_c = rect.x.saturating_add(rect.width.saturating_sub(1));
-                let max_r = rect.y.saturating_add(rect.height.saturating_sub(1));
-                let cc = column.clamp(rect.x, max_c);
-                let rr = row.clamp(rect.y, max_r);
-                if let Some(ep) = endpoint_at(state, cc, rr) {
-                    final_drag.head = ep;
-                }
+            if let Some(ep) = state.endpoint_at_clamped(column, row) {
+                final_drag.head = ep;
             }
             if final_drag.is_non_empty()
                 && let Some(text) =
@@ -679,7 +664,16 @@ pub fn render_usage_modal(
         .take(content.height as usize)
         .collect();
     Paragraph::new(visible).render(content, buf);
-    paint_text_drag(state, buf, theme);
+    if let Some(drag) = state.text_drag {
+        paint_text_drag(
+            drag,
+            &state.plain_lines,
+            state.content_rect,
+            state.scroll as usize,
+            buf,
+            theme,
+        );
+    }
 }
 
 fn in_content(state: &UsageInfoModalState, column: u16, row: u16) -> bool {
@@ -690,121 +684,6 @@ fn in_content(state: &UsageInfoModalState, column: u16, row: u16) -> bool {
         && column < r.x.saturating_add(r.width)
         && row >= r.y
         && row < r.y.saturating_add(r.height)
-}
-
-fn endpoint_at(state: &UsageInfoModalState, column: u16, row: u16) -> Option<TextEndpoint> {
-    let rect = state.content_rect;
-    if rect.width == 0 || rect.height == 0 || state.plain_lines.is_empty() {
-        return None;
-    }
-    let visible_row = row.saturating_sub(rect.y) as usize;
-    let line_idx = (state.scroll as usize).saturating_add(visible_row);
-    if line_idx >= state.plain_lines.len() {
-        return None;
-    }
-    let text = &state.plain_lines[line_idx];
-    let line_w = text.width().min(u16::MAX as usize) as u16;
-    let col = column.saturating_sub(rect.x).min(line_w);
-    Some(TextEndpoint { line_idx, col })
-}
-
-fn col_at_char_start(text: &str, col: u16) -> u16 {
-    grapheme_cells_at(text, col).map_or(col, |cells| cells.start)
-}
-
-/// Display-column range `[lo, hi)` for one line of a drag, clamped to the panel width so copy and highlight cover the same characters.
-fn selection_cols(
-    drag: TextDrag,
-    line_idx: usize,
-    text: &str,
-    panel_width: u16,
-) -> Option<(u16, u16)> {
-    let (start, end) = drag.ordered();
-    if line_idx < start.line_idx || line_idx > end.line_idx {
-        return None;
-    }
-    let line_w = (text.width().min(u16::MAX as usize) as u16).min(panel_width);
-    let (raw_lo, raw_hi) = if start.line_idx == end.line_idx {
-        (
-            col_at_char_start(text, start.col),
-            col_past_grapheme(text, end.col),
-        )
-    } else if line_idx == start.line_idx {
-        (col_at_char_start(text, start.col), line_w)
-    } else if line_idx == end.line_idx {
-        (0, col_past_grapheme(text, end.col))
-    } else {
-        (0, line_w)
-    };
-    let lo = raw_lo.min(line_w);
-    let hi = raw_hi.min(line_w);
-    if hi < lo {
-        return None;
-    }
-    // Blank lines yield hi == lo == 0; keep them so multi-line copy preserves newlines.
-    if hi == lo && line_w > 0 {
-        return None;
-    }
-    Some((lo, hi))
-}
-
-fn text_for_drag(drag: TextDrag, lines: &[String], panel_width: u16) -> Option<String> {
-    let (start, end) = drag.ordered();
-    if start.line_idx >= lines.len() {
-        return None;
-    }
-    let mut out = String::new();
-    let mut wrote_any = false;
-    let last = end.line_idx.min(lines.len().saturating_sub(1));
-    for (idx, text) in lines.iter().enumerate().take(last + 1).skip(start.line_idx) {
-        let Some((lo, hi)) = selection_cols(drag, idx, text, panel_width) else {
-            continue;
-        };
-        let slice = slice_display_cols(text, lo, hi);
-        if wrote_any {
-            out.push('\n');
-        }
-        out.push_str(&slice);
-        wrote_any = true;
-    }
-    if out.is_empty() { None } else { Some(out) }
-}
-
-fn paint_text_drag(state: &UsageInfoModalState, buf: &mut Buffer, theme: &Theme) {
-    let Some(drag) = state.text_drag else {
-        return;
-    };
-    if !drag.is_non_empty() {
-        return;
-    }
-    let rect = state.content_rect;
-    if rect.width == 0 || rect.height == 0 {
-        return;
-    }
-    let (start, end) = drag.ordered();
-    let scroll = state.scroll as usize;
-    for idx in start.line_idx..=end.line_idx {
-        let Some(text) = state.plain_lines.get(idx) else {
-            break;
-        };
-        let Some(visible_row) = idx.checked_sub(scroll) else {
-            continue;
-        };
-        if visible_row >= rect.height as usize {
-            break;
-        }
-        let Some((lo, hi)) = selection_cols(drag, idx, text, rect.width) else {
-            continue;
-        };
-        let screen_y = rect.y + visible_row as u16;
-        let x_lo = (rect.x + lo).min(rect.x + rect.width);
-        let x_hi = (rect.x + hi).min(rect.x + rect.width);
-        for x in x_lo..x_hi {
-            if let Some(cell) = buf.cell_mut((x, screen_y)) {
-                apply_selection_highlight(theme, cell);
-            }
-        }
-    }
 }
 
 /// A copyable value row: `line_idx` indexes the tab's lines; `value` is copied on click.
@@ -1314,8 +1193,15 @@ mod tests {
         let theme = Theme::current();
         let lines = usage_limit_lines(&state, Some(&bal), &theme);
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-        assert_eq!(text[0], "Weekly limit (SuperGrok)");
-        assert!(text[2].ends_with("50%"), "bar row: {:?}", text[2]);
+        assert_eq!(
+            text.first().map(String::as_str),
+            Some("Weekly limit (SuperGrok)")
+        );
+        assert!(
+            text.get(2).is_some_and(|l| l.ends_with("50%")),
+            "bar row: {:?}",
+            text.get(2)
+        );
         assert!(text.iter().any(|l| l.contains("Resets: May 29, 00:00")));
         assert!(text.iter().any(|l| l == "Pay as you go: Enabled"));
         assert!(
@@ -1334,20 +1220,36 @@ mod tests {
         let mut state = state_with_session();
         state.billing_loading = true;
         let lines = usage_limit_lines(&state, None, &theme);
-        assert!(lines[0].to_string().contains("Loading usage"));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|l| l.to_string().contains("Loading usage"))
+        );
 
         state.ctx.billing_redirect_url = Some("https://x.example/usage".to_string());
         let lines = usage_limit_lines(&state, None, &theme);
-        assert!(lines[0].to_string().contains("https://x.example/usage"));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|l| l.to_string().contains("https://x.example/usage"))
+        );
 
         state.ctx.usage_visible = false;
         let lines = usage_limit_lines(&state, None, &theme);
-        assert!(lines[0].to_string().contains("managed by your team"));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|l| l.to_string().contains("managed by your team"))
+        );
 
         // Gateway chat sessions show no billing at all
         state.ctx.chat_kind = true;
         let lines = usage_limit_lines(&state, None, &theme);
-        assert!(lines[0].to_string().contains("Loading session usage"));
+        assert!(
+            lines
+                .first()
+                .is_some_and(|l| l.to_string().contains("Loading session usage"))
+        );
     }
 
     #[test]
@@ -1361,7 +1263,7 @@ mod tests {
         let text: String = (0..area.height)
             .map(|y| {
                 (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
                     .collect::<String>()
                     + "\n"
             })
@@ -1401,7 +1303,7 @@ mod tests {
         let text: String = (0..area.height)
             .map(|y| {
                 (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
                     .collect::<String>()
                     + "\n"
             })
@@ -1495,7 +1397,9 @@ mod tests {
             .iter()
             .position(|l| l.contains("fp-abc"))
             .expect("hash row");
-        let line = &state.plain_lines[line_idx];
+        let Some(line) = state.plain_lines.get(line_idx) else {
+            panic!("plain line {line_idx} missing");
+        };
         let hash_col = line.find("fp-abc").expect("hash") as u16;
         let rect = state.content_rect;
         let y = rect.y + (line_idx as u16).saturating_sub(state.scroll);
@@ -1517,7 +1421,9 @@ mod tests {
         );
 
         render_usage_modal(&mut buf, area, &mut state, None, false, &theme);
-        let cell = &buf[(x0, y)];
+        let Some(cell) = buf.cell((x0, y)) else {
+            panic!("cell ({x0},{y}) missing");
+        };
         if theme.text_primary != ratatui::style::Color::Reset
             && theme.bg_base != ratatui::style::Color::Reset
         {
@@ -1616,7 +1522,9 @@ mod tests {
         state.set_tab(UsageInfoTab::SessionInfo);
         state.session_fields = Some(vec![field("Model Hash", "fp-abc", true)]);
         render_usage_modal(&mut buf, area, &mut state, None, false, &Theme::current());
-        let hit = state.copy_hits[0].clone();
+        let Some(hit) = state.copy_hits.first().cloned() else {
+            panic!("expected a copy hit: {:?}", state.copy_hits);
+        };
         let line = state
             .plain_lines
             .iter()
@@ -1655,7 +1563,9 @@ mod tests {
         state.set_tab(UsageInfoTab::SessionInfo);
         state.session_fields = Some(vec![field("Model Hash", "fp-abc", true)]);
         render_usage_modal(&mut buf, area, &mut state, None, false, &Theme::current());
-        let hit = state.copy_hits[0].clone();
+        let Some(hit) = state.copy_hits.first().cloned() else {
+            panic!("expected a copy hit: {:?}", state.copy_hits);
+        };
         handle_usage_modal_mouse(
             &mut state,
             MouseEventKind::Down(MouseButton::Left),
@@ -1718,23 +1628,6 @@ mod tests {
         assert!(state.hovered_copy_line.is_none());
         assert!(state.pending_press.is_none());
         assert!(state.text_drag.is_none());
-    }
-
-    #[test]
-    fn selection_cols_clamps_to_panel_width() {
-        let drag = TextDrag {
-            anchor: TextEndpoint {
-                line_idx: 0,
-                col: 0,
-            },
-            head: TextEndpoint {
-                line_idx: 1,
-                col: 3,
-            },
-        };
-        let long = "abcdefghijklmnopqrstuvwxyz";
-        assert_eq!(selection_cols(drag, 0, long, 10), Some((0, 10)));
-        assert_eq!(selection_cols(drag, 1, "abcde", 10), Some((0, 4)));
     }
 
     #[test]

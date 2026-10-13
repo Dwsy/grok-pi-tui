@@ -5,103 +5,10 @@
 
 use opentelemetry::KeyValue;
 use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _, Severity};
-use opentelemetry::metrics::{Counter, Histogram, Meter};
 
 use super::ExternalTelemetry;
-use super::config::ContentGates;
-use super::schema::{
-    AttrValue, ExternalKey, ExternalRecord, Gate, METRIC_COST_USAGE, METRIC_ERROR_COUNT,
-    METRIC_SESSION_COUNT, METRIC_STARTUP_INTERACTIVE, METRIC_STARTUP_PHASE_DURATION,
-    METRIC_STARTUP_SUBTIMER_DURATION, METRIC_STARTUP_TIMEOUT, METRIC_STARTUP_TOTAL,
-    METRIC_TOKEN_USAGE, METRIC_TOOL_DECISION, METRIC_TOOL_USAGE, METRIC_TURN_COUNT,
-    METRIC_TURN_TTFM, METRIC_TURN_TTFT, MetricIncrement,
-};
-
-/// Default OTel buckets end at 10s; startup failures and slow first tokens land in the 10-120s range, so those samples need real buckets, not +Inf.
-const LATENCY_MS_BOUNDARIES: &[f64] = &[
-    50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0, 10000.0, 15000.0, 30000.0, 60000.0, 120000.0,
-];
-
-/// A `ms`-unit `u64` histogram over the shared latency buckets.
-fn ms_histogram(meter: &Meter, name: &'static str) -> Histogram<u64> {
-    meter
-        .u64_histogram(name)
-        .with_unit("ms")
-        .with_boundaries(LATENCY_MS_BOUNDARIES.to_vec())
-        .build()
-}
-
-/// Pre-created counters/histograms (a test pins the names, units, and attr keys).
-pub(crate) struct Instruments {
-    session_count: Counter<u64>,
-    token_usage: Counter<u64>,
-    cost_usage: Counter<f64>,
-    turn_count: Counter<u64>,
-    tool_decision: Counter<u64>,
-    tool_usage: Counter<u64>,
-    error_count: Counter<u64>,
-    turn_ttft: Histogram<u64>,
-    turn_ttfm: Histogram<u64>,
-    startup_timeout: Counter<u64>,
-    startup_phase_duration: Histogram<u64>,
-    startup_subtimer_duration: Histogram<u64>,
-    startup_total: Histogram<u64>,
-    startup_interactive: Histogram<u64>,
-}
-
-impl Instruments {
-    pub(crate) fn new(meter: &Meter) -> Self {
-        Self {
-            session_count: meter
-                .u64_counter(METRIC_SESSION_COUNT)
-                .with_unit("{session}")
-                .build(),
-            token_usage: meter
-                .u64_counter(METRIC_TOKEN_USAGE)
-                .with_unit("{token}")
-                .build(),
-            cost_usage: meter
-                .f64_counter(METRIC_COST_USAGE)
-                .with_unit("USD")
-                .build(),
-            turn_count: meter
-                .u64_counter(METRIC_TURN_COUNT)
-                .with_unit("{turn}")
-                .build(),
-            tool_decision: meter
-                .u64_counter(METRIC_TOOL_DECISION)
-                .with_unit("{decision}")
-                .build(),
-            tool_usage: meter
-                .u64_counter(METRIC_TOOL_USAGE)
-                .with_unit("{call}")
-                .build(),
-            error_count: meter
-                .u64_counter(METRIC_ERROR_COUNT)
-                .with_unit("{error}")
-                .build(),
-            turn_ttft: ms_histogram(meter, METRIC_TURN_TTFT),
-            turn_ttfm: ms_histogram(meter, METRIC_TURN_TTFM),
-            startup_timeout: meter
-                .u64_counter(METRIC_STARTUP_TIMEOUT)
-                .with_unit("{timeout}")
-                .build(),
-            startup_phase_duration: ms_histogram(meter, METRIC_STARTUP_PHASE_DURATION),
-            startup_subtimer_duration: ms_histogram(meter, METRIC_STARTUP_SUBTIMER_DURATION),
-            startup_total: ms_histogram(meter, METRIC_STARTUP_TOTAL),
-            startup_interactive: ms_histogram(meter, METRIC_STARTUP_INTERACTIVE),
-        }
-    }
-}
-
-fn gate_open(gates: ContentGates, gate: Gate) -> bool {
-    match gate {
-        Gate::UserPrompts => gates.log_user_prompts,
-        Gate::ToolDetails => gates.log_tool_details,
-        Gate::AssistantResponses => gates.log_assistant_responses,
-        Gate::ToolContent => gates.log_tool_content,
-    }
-}
+use super::metrics::{Instruments, MetricIncrement};
+use super::schema::{AttrValue, ExternalKey, ExternalRecord};
 
 /// Scrub and truncate one string attribute value.
 /// Every string passes the secret/path scrub; prompt, response, tool_input, tool_output, and full_command get the 60 KB content cap; tool_parameters preview and error_message get the 4 KB preview cap; everything else the standard 512-to-128 value truncation.
@@ -132,6 +39,27 @@ fn to_any_value(v: AttrValue) -> AnyValue {
     }
 }
 
+/// Shared by the log and metric paths so the identity attr set cannot drift.
+fn for_each_identity_attr(
+    identity: &super::IdentityAttrs,
+    mut sink: impl FnMut(&'static str, String),
+) {
+    for (key, value) in [
+        (ExternalKey::UserId, identity.user_id.as_deref()),
+        (ExternalKey::UserEmail, identity.email.as_deref()),
+        (
+            ExternalKey::OrganizationId,
+            identity.organization_id.as_deref(),
+        ),
+        (ExternalKey::TeamId, identity.team_id.as_deref()),
+        (ExternalKey::DeploymentId, identity.deployment_id.as_deref()),
+    ] {
+        if let Some(v) = value.filter(|v| !v.is_empty()) {
+            sink(<&'static str>::from(key), v.to_owned());
+        }
+    }
+}
+
 /// Convert one mapped [`ExternalRecord`] into a log record and metric increments.
 /// Synchronous and cheap: the `BatchLogProcessor` queues the record; unlike the product-events path there is no `tokio::spawn`.
 pub(crate) fn emit_record(ext: &ExternalTelemetry, mut record: ExternalRecord) {
@@ -140,7 +68,7 @@ pub(crate) fn emit_record(ext: &ExternalTelemetry, mut record: ExternalRecord) {
     // Gated attributes: emitted only when the matching gate is on
     // A gated value sharing a key with a default attr (verbatim vs. sanitized `tool_name`) replaces the default.
     for gated in std::mem::take(&mut record.gated) {
-        if !gate_open(gates, gated.gate) {
+        if !gated.gate.is_open(&gates) {
             continue;
         }
         let value = match gated.value {
@@ -209,20 +137,9 @@ pub(crate) fn emit_record(ext: &ExternalTelemetry, mut record: ExternalRecord) {
                 to_any_value(value.clone()),
             );
         }
-        for (key, value) in [
-            (ExternalKey::UserId, identity.user_id.as_deref()),
-            (ExternalKey::UserEmail, identity.email.as_deref()),
-            (
-                ExternalKey::OrganizationId,
-                identity.organization_id.as_deref(),
-            ),
-            (ExternalKey::TeamId, identity.team_id.as_deref()),
-            (ExternalKey::DeploymentId, identity.deployment_id.as_deref()),
-        ] {
-            if let Some(v) = value.filter(|v| !v.is_empty()) {
-                log_record.add_attribute(Into::<&'static str>::into(key), v.to_owned());
-            }
-        }
+        for_each_identity_attr(&identity, |key, value| {
+            log_record.add_attribute(key, value);
+        });
         logger.emit(log_record);
     }
 
@@ -257,131 +174,7 @@ fn add_increment(
     if ext.include_version_on_metrics && !ext.app_version.is_empty() {
         attrs.push(KeyValue::new("app.version", ext.app_version.clone()));
     }
-    for (key, value) in [
-        ("user.id", identity.user_id.as_deref()),
-        ("user.email", identity.email.as_deref()),
-        ("organization.id", identity.organization_id.as_deref()),
-        ("team.id", identity.team_id.as_deref()),
-        ("deployment.id", identity.deployment_id.as_deref()),
-    ] {
-        if let Some(v) = value.filter(|v| !v.is_empty()) {
-            attrs.push(KeyValue::new(key, v.to_owned()));
-        }
-    }
+    for_each_identity_attr(identity, |key, value| attrs.push(KeyValue::new(key, value)));
 
-    // `model` is the one non-enum metric attribute value: scrub it at increment time rather than trusting every call site
-    // A collector fixture pins this by asserting on the wire payload
-    let scrub = |s: &str| crate::redact_common::redact_to_owned(s);
-
-    match increment {
-        MetricIncrement::SessionCount => {
-            instruments.session_count.add(1, &attrs);
-        }
-        MetricIncrement::TokenUsage {
-            token_type,
-            model,
-            count,
-        } => {
-            attrs.push(KeyValue::new("type", token_type));
-            attrs.push(KeyValue::new("model", scrub(&model)));
-            instruments.token_usage.add(count, &attrs);
-        }
-        MetricIncrement::CostUsage { model, cost_usd } => {
-            attrs.push(KeyValue::new("model", scrub(&model)));
-            instruments.cost_usage.add(cost_usd, &attrs);
-        }
-        MetricIncrement::TurnCount { outcome, model } => {
-            attrs.push(KeyValue::new("outcome", outcome));
-            attrs.push(KeyValue::new("model", scrub(&model)));
-            instruments.turn_count.add(1, &attrs);
-        }
-        MetricIncrement::TurnTtft { duration_ms, model } => {
-            attrs.push(KeyValue::new("model", scrub(&model)));
-            instruments.turn_ttft.record(duration_ms, &attrs);
-        }
-        MetricIncrement::TurnTtfm { duration_ms, model } => {
-            attrs.push(KeyValue::new("model", scrub(&model)));
-            instruments.turn_ttfm.record(duration_ms, &attrs);
-        }
-        MetricIncrement::ToolDecision {
-            tool_name,
-            decision,
-            access_kind,
-            permission_mode,
-        } => {
-            attrs.push(KeyValue::new("tool_name", scrub(&tool_name)));
-            attrs.push(KeyValue::new("decision", decision));
-            attrs.push(KeyValue::new("access_kind", access_kind));
-            attrs.push(KeyValue::new("permission_mode", permission_mode));
-            instruments.tool_decision.add(1, &attrs);
-        }
-        MetricIncrement::ToolUsage {
-            tool_name,
-            outcome,
-            model,
-        } => {
-            attrs.push(KeyValue::new("tool_name", scrub(&tool_name)));
-            attrs.push(KeyValue::new("outcome", outcome));
-            attrs.push(KeyValue::new("model", scrub(&model)));
-            instruments.tool_usage.add(1, &attrs);
-        }
-        MetricIncrement::ErrorCount {
-            error_category,
-            model,
-        } => {
-            attrs.push(KeyValue::new("error_category", scrub(&error_category)));
-            attrs.push(KeyValue::new("model", scrub(&model)));
-            instruments.error_count.add(1, &attrs);
-        }
-        MetricIncrement::StartupTimeout {
-            stuck_in,
-            auth_mode,
-        } => {
-            attrs.push(KeyValue::new("stuck_in", scrub(&stuck_in)));
-            attrs.push(KeyValue::new("auth_mode", auth_mode));
-            instruments.startup_timeout.add(1, &attrs);
-        }
-        MetricIncrement::StartupPhaseDuration {
-            phase,
-            duration_ms,
-            outcome,
-            auth_mode,
-        } => {
-            attrs.push(KeyValue::new("phase", scrub(&phase)));
-            attrs.push(KeyValue::new("outcome", outcome));
-            attrs.push(KeyValue::new("auth_mode", auth_mode));
-            instruments
-                .startup_phase_duration
-                .record(duration_ms, &attrs);
-        }
-        MetricIncrement::StartupSubTimerDuration {
-            phase,
-            duration_ms,
-            outcome,
-            auth_mode,
-        } => {
-            attrs.push(KeyValue::new("phase", scrub(&phase)));
-            attrs.push(KeyValue::new("outcome", outcome));
-            attrs.push(KeyValue::new("auth_mode", auth_mode));
-            instruments
-                .startup_subtimer_duration
-                .record(duration_ms, &attrs);
-        }
-        MetricIncrement::StartupTotal {
-            duration_ms,
-            outcome,
-            auth_mode,
-        } => {
-            attrs.push(KeyValue::new("outcome", outcome));
-            attrs.push(KeyValue::new("auth_mode", auth_mode));
-            instruments.startup_total.record(duration_ms, &attrs);
-        }
-        MetricIncrement::StartupInteractive {
-            duration_ms,
-            auth_mode,
-        } => {
-            attrs.push(KeyValue::new("auth_mode", auth_mode));
-            instruments.startup_interactive.record(duration_ms, &attrs);
-        }
-    }
+    instruments.record_increment(increment, attrs);
 }

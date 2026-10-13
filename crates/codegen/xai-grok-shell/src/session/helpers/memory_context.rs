@@ -62,23 +62,39 @@ pub fn format_memory_reminder(results: &[MemorySearchResult]) -> Option<String> 
     Some(section)
 }
 
+pub struct V2InjectedContext {
+    pub content: String,
+    pub global_entry_count: usize,
+    pub workspace_entry_count: usize,
+}
+
 /// Regenerate and format both bounded v2 manifests for model context.
+///
+/// With `compact_index` both the injected text and the on-disk `MEMORY.md`
+/// are the titles-only view (no descriptions, no pending observations), so
+/// the file a user opens is the index the model saw.
 pub fn format_v2_memory_context(
     storage: &crate::session::memory::MemoryStorage,
-) -> Result<String, String> {
+    compact_index: bool,
+) -> Result<V2InjectedContext, String> {
+    let budget = if compact_index {
+        crate::session::memory::V2ManifestBudget::compact()
+    } else {
+        crate::session::memory::V2ManifestBudget::default()
+    };
     let global = crate::session::memory::regenerate_scope_manifest(
         storage.global_dir(),
         crate::session::memory::V2MemoryScope::Global,
-        crate::session::memory::V2ManifestBudget::default(),
+        budget,
     )
     .map_err(|error| error.to_string())?;
     let workspace = crate::session::memory::regenerate_scope_manifest(
         storage.workspace_dir(),
         crate::session::memory::V2MemoryScope::Workspace,
-        crate::session::memory::V2ManifestBudget::default(),
+        budget,
     )
     .map_err(|error| error.to_string())?;
-    Ok(format!(
+    let content = format!(
         "{MEMORY_CONTEXT_OPEN_TAG}\n\
          ## Global memory manifest\n\
          **Scope root:** `{}`\n\n{}\n\
@@ -89,7 +105,12 @@ pub fn format_v2_memory_context(
         global.content,
         storage.workspace_dir().display(),
         workspace.content,
-    ))
+    );
+    Ok(V2InjectedContext {
+        content,
+        global_entry_count: global.included_entries,
+        workspace_entry_count: workspace.included_entries,
+    })
 }
 
 /// Check if a message looks like a greeting or generic opener.
@@ -145,20 +166,68 @@ mod tests {
         )
         .unwrap();
 
-        let empty = format_v2_memory_context(&storage).unwrap();
-        assert!(empty.contains("## Global memory manifest"));
-        assert!(empty.contains("## Workspace memory manifest"));
-        assert!(empty.contains(&storage.global_dir().display().to_string()));
-        assert!(empty.contains(&storage.workspace_dir().display().to_string()));
+        let empty = format_v2_memory_context(&storage, false).unwrap();
+        assert!(empty.content.contains("## Global memory manifest"));
+        assert!(empty.content.contains("## Workspace memory manifest"));
+        assert!(
+            empty
+                .content
+                .contains(&storage.global_dir().display().to_string())
+        );
+        assert!(
+            empty
+                .content
+                .contains(&storage.workspace_dir().display().to_string())
+        );
+        assert_eq!(empty.workspace_entry_count, 0);
 
         std::fs::write(
             storage.workspace_dir().join("topics/new.md"),
             "# New\n\nCurrent.",
         )
         .unwrap();
-        let refreshed = format_v2_memory_context(&storage).unwrap();
-        assert!(refreshed.contains("topics/new.md"));
-        assert_ne!(empty, refreshed);
+        std::fs::write(
+            storage.workspace_dir().join("observations/_inbox/note.md"),
+            "# Pending note\n\nEvidence.",
+        )
+        .unwrap();
+        let refreshed = format_v2_memory_context(&storage, false).unwrap();
+        assert!(refreshed.content.contains("topics/new.md"));
+        assert!(refreshed.content.contains("**New** — Current."));
+        assert!(refreshed.content.contains("observations/_inbox/note.md"));
+        assert_ne!(empty.content, refreshed.content);
+        assert_eq!(refreshed.workspace_entry_count, 2);
+
+        let compact = format_v2_memory_context(&storage, true).unwrap();
+        assert!(compact.content.contains("**New** (`topics/new.md`)"));
+        assert!(!compact.content.contains("Current."));
+        assert!(!compact.content.contains("observations/_inbox/note.md"));
+        assert_eq!(compact.workspace_entry_count, 1);
+        let on_disk = std::fs::read_to_string(storage.workspace_dir().join("MEMORY.md")).unwrap();
+        assert!(!on_disk.contains("observations/_inbox/note.md"));
+        assert!(on_disk.contains("**New** (`topics/new.md`)"));
+        assert!(compact.content.contains(&on_disk));
+        assert!(!compact.content.contains("More topics"));
+
+        for index in 0..300 {
+            std::fs::write(
+                storage
+                    .workspace_dir()
+                    .join(format!("topics/topic-{index:03}.md")),
+                format!("# Topic {index}\n\nBody."),
+            )
+            .unwrap();
+        }
+        let crowded = format_v2_memory_context(&storage, true).unwrap();
+        assert!(crowded.content.contains("\n## More topics\n"));
+        assert!(crowded.content.contains("By file name under `topics/`: "));
+        let omitted = 301 - crowded.workspace_entry_count;
+        assert_eq!(
+            crowded.content.contains("more topics are not listed."),
+            omitted > 0
+        );
+        let on_disk = std::fs::read_to_string(storage.workspace_dir().join("MEMORY.md")).unwrap();
+        assert!(crowded.content.contains(&on_disk));
     }
 
     #[test]

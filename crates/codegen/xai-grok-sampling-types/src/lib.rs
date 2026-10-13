@@ -4,6 +4,8 @@
 //! It contains no I/O: no HTTP clients, no file system access.
 //! Downstream crates like `xai-chat-state` can depend on it without pulling in the full `xai-grok-shell`.
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod conversation;
 pub mod doom_loop;
 pub mod error;

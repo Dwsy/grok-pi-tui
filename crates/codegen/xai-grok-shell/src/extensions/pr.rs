@@ -176,15 +176,15 @@ fn parse_is_in_merge_queue(stdout: &[u8]) -> Option<bool> {
 fn strip_ansi_csi(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
+    while let Some(&b) = bytes.get(i) {
+        if b == 0x1b && bytes.get(i + 1) == Some(&b'[') {
             i += 2;
-            while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+            while bytes.get(i).is_some_and(|c| !(0x40..=0x7e).contains(c)) {
                 i += 1;
             }
             i += 1;
         } else {
-            out.push(bytes[i]);
+            out.push(b);
             i += 1;
         }
     }

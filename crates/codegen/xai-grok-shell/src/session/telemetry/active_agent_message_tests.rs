@@ -6,6 +6,7 @@ fn event_name(event: &ActiveAgentMessageEvent) -> &'static str {
     match event {
         ActiveAgentMessageEvent::Completed(_) => Completed::NAME,
         ActiveAgentMessageEvent::LimitHit(_) => LimitHit::NAME,
+        ActiveAgentMessageEvent::QuotaHit(_) => QuotaHit::NAME,
         ActiveAgentMessageEvent::Settled(_) => Settled::NAME,
     }
 }
@@ -58,22 +59,44 @@ fn completed_output_projection_emits_exactly_one_completion() {
         ActiveAgentMessageOperation::Steer,
     );
 
-    assert_eq!(events.len(), 1);
-    assert_eq!(event_name(&events[0]), "active_agent_message_completed");
+    let [event] = events.as_slice() else {
+        panic!("expected one event: {events:?}");
+    };
+    assert_eq!(event_name(event), "active_agent_message_completed");
     assert!(matches!(
-        &events[0],
+        event,
         ActiveAgentMessageEvent::Completed(Completed {
             outcome: Outcome::Accepted,
             requested_operation: Operation::Steer,
             duration_ms: 13,
         })
     ));
-    let serialized = serde_json::to_string(match &events[0] {
+    let serialized = serde_json::to_string(match event {
         ActiveAgentMessageEvent::Completed(event) => event,
         _ => unreachable!("one accepted completion event was asserted above"),
     })
     .expect("serialize captured completion");
     assert!(!serialized.contains(private_identifier));
+}
+
+#[test]
+fn requested_operation_is_derived_from_args_and_defaults_to_steer_on_parse_failure() {
+    for (args, expected) in [
+        (
+            serde_json::json!({"subagent_id": "sub-1", "text": "t", "delivery": "interject"}),
+            ActiveAgentMessageOperation::Interject,
+        ),
+        (
+            serde_json::json!({"subagent_id": "sub-1", "text": "t", "queue": true}),
+            ActiveAgentMessageOperation::Queue,
+        ),
+        (
+            serde_json::json!({"delivery": "interject"}),
+            ActiveAgentMessageOperation::Steer,
+        ),
+    ] {
+        assert_eq!(expected, requested_operation_from_args(&args));
+    }
 }
 
 #[test]
@@ -139,6 +162,13 @@ fn immediate_projection_covers_every_current_tool_outcome() {
         (Send::NotFoundOrNotOwned, Outcome::NotFoundOrNotOwned),
         (Send::NotActiveOrFinalizing, Outcome::NotActiveOrFinalizing),
         (Send::Saturated { max_in_flight: 8 }, Outcome::Saturated),
+        (
+            Send::QuotaExceeded {
+                kind: xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageQuotaKind::AttemptOutbound,
+                limit: 32,
+            },
+            Outcome::QuotaExceeded,
+        ),
         (Send::AdmissionUncertain, Outcome::AdmissionUncertain),
         (
             Send::NotAcceptedBeforeDeadline,
@@ -221,6 +251,7 @@ fn folded_cancellation_beats_closed_receipt_once_at_settlement_boundary() {
             fallback_disposition: FallbackDisposition::NotApplicable,
             fallback_reason: None,
             safe_point_latency_ms: None,
+            safe_point_trigger: None,
             duration_ms: 9,
         })]
     ));
@@ -261,7 +292,10 @@ async fn settlement_projection_is_closed_and_suppresses_no_admission() {
             ActiveAgentMessageOperation::Steer,
             None,
         );
-        telemetry.record_safe_point_delivery(admitted_at + std::time::Duration::from_millis(3));
+        telemetry.record_safe_point_delivery(
+            admitted_at + std::time::Duration::from_millis(3),
+            SafePointTrigger::Natural,
+        );
         let projected = project_settlement(
             Some(telemetry),
             status,
@@ -281,6 +315,7 @@ async fn settlement_projection_is_closed_and_suppresses_no_admission() {
                 fallback_disposition: FallbackDisposition::NotApplicable,
                 fallback_reason: None,
                 safe_point_latency_ms: Some(3),
+                safe_point_trigger: Some(SafePointTrigger::Natural),
                 duration_ms: 9,
             } if disposition == expected
         ));
@@ -298,21 +333,41 @@ async fn settlement_projection_is_closed_and_suppresses_no_admission() {
 #[test]
 fn fallback_projection_reports_idle_and_terminal_queue_reasons() {
     let admitted_at = Instant::now();
-    for (effective, reason) in [
-        (ActiveAgentMessageOperation::Queue, FallbackReason::Idle),
+    for (requested, effective, reason) in [
         (
+            ActiveAgentMessageOperation::Steer,
+            ActiveAgentMessageOperation::Queue,
+            FallbackReason::Idle,
+        ),
+        (
+            ActiveAgentMessageOperation::Steer,
             ActiveAgentMessageOperation::Steer,
             FallbackReason::Completion,
         ),
         (
             ActiveAgentMessageOperation::Steer,
+            ActiveAgentMessageOperation::Steer,
             FallbackReason::SoftCancel,
         ),
-        (ActiveAgentMessageOperation::Steer, FallbackReason::Rewind),
+        (
+            ActiveAgentMessageOperation::Steer,
+            ActiveAgentMessageOperation::Steer,
+            FallbackReason::Rewind,
+        ),
+        (
+            ActiveAgentMessageOperation::Interject,
+            ActiveAgentMessageOperation::Queue,
+            FallbackReason::Idle,
+        ),
+        (
+            ActiveAgentMessageOperation::Interject,
+            ActiveAgentMessageOperation::Interject,
+            FallbackReason::Completion,
+        ),
     ] {
         let telemetry = admission(
             admitted_at,
-            ActiveAgentMessageOperation::Steer,
+            requested,
             effective,
             (reason == FallbackReason::Idle).then_some(reason),
         );
@@ -329,13 +384,53 @@ fn fallback_projection_reports_idle_and_terminal_queue_reasons() {
             settled,
             Settled {
                 disposition: SettlementDisposition::Completed,
-                requested_operation: Operation::Steer,
+                requested_operation: operation(requested),
                 effective_operation: operation(effective),
                 fallback_disposition: FallbackDisposition::Queued,
                 fallback_reason: Some(reason),
                 safe_point_latency_ms: None,
+                safe_point_trigger: None,
                 duration_ms: 0,
             }
         );
     }
+}
+
+#[test]
+fn wait_abort_trigger_projects_into_settlement() {
+    let admitted_at = Instant::now();
+    let telemetry = admission(
+        admitted_at,
+        ActiveAgentMessageOperation::Interject,
+        ActiveAgentMessageOperation::Interject,
+        None,
+    );
+    telemetry.record_safe_point_delivery(
+        admitted_at + std::time::Duration::from_millis(3),
+        SafePointTrigger::WaitAbort,
+    );
+    // Only the first delivery counts; a later natural drain must not overwrite it.
+    telemetry.record_safe_point_delivery(
+        admitted_at + std::time::Duration::from_millis(5),
+        SafePointTrigger::Natural,
+    );
+    let (_, settled) = project_settlement(
+        Some(telemetry),
+        ActiveAgentMessageSettlementStatus::Completed,
+        admitted_at + std::time::Duration::from_millis(9),
+    )
+    .expect("admitted settlement must project");
+    assert_eq!(
+        Settled {
+            disposition: SettlementDisposition::Completed,
+            requested_operation: Operation::Interject,
+            effective_operation: Operation::Interject,
+            fallback_disposition: FallbackDisposition::NotApplicable,
+            fallback_reason: None,
+            safe_point_latency_ms: Some(3),
+            safe_point_trigger: Some(SafePointTrigger::WaitAbort),
+            duration_ms: 9,
+        },
+        settled
+    );
 }

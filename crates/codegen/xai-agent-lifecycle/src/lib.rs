@@ -1,6 +1,8 @@
-//! Host-agnostic agent lifecycle hooks shared by multiple agent hosts (e.g. xai-grok-shell).
+//! Host-agnostic agent lifecycle hooks shared by multiple embedding crates (e.g. xai-grok-shell).
 //! Contributors receive data-only per-hook inputs at dispatch time; anything they act through is a
 //! capability injected at install time, and they never own loop control.
+
+#![deny(clippy::indexing_slicing)]
 
 pub mod local;
 pub mod send;

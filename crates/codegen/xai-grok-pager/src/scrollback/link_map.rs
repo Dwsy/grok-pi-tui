@@ -184,6 +184,12 @@ mod tests {
         overlay
     }
 
+    fn nth_link(map: &VisibleLinkMap, i: usize) -> &VisibleLink {
+        map.links()
+            .get(i)
+            .unwrap_or_else(|| panic!("expected link {i}, got {} links", map.links().len()))
+    }
+
     fn link(url: &str, widths: &[u16]) -> VisibleLink {
         VisibleLink {
             rects: widths
@@ -234,14 +240,18 @@ mod tests {
         let mut map = VisibleLinkMap::default();
         map.rebuild(1, &overlay, vec![]);
 
-        assert_eq!(map.links()[0].target, LinkTarget::File(Arc::clone(&path)));
-        let resolved = resolve_link_target(&map.links()[0].target).expect("resolved file target");
+        assert_eq!(
+            nth_link(&map, 0).target,
+            LinkTarget::File(Arc::clone(&path))
+        );
+        let resolved =
+            resolve_link_target(&nth_link(&map, 0).target).expect("resolved file target");
         assert_eq!(resolved.open_target, Some(LinkTarget::File(path)));
         assert_eq!(
             resolved.osc8_url.unwrap().as_ref(),
             "file:///tmp/non-display-target/file%20name.rs"
         );
-        assert!(!map.links()[0].looks_like_bare_url_text());
+        assert!(!nth_link(&map, 0).looks_like_bare_url_text());
     }
 
     #[test]
@@ -273,7 +283,7 @@ mod tests {
         map.rebuild_for_context(1, &overlay, vec![], &terminal);
 
         assert_eq!(map.links().len(), 1);
-        assert_eq!(map.links()[0].target, web);
+        assert_eq!(nth_link(&map, 0).target, web);
         assert!(map.link_at(5, 3).is_none());
         assert!(map.link_at(5, 4).is_some());
     }
@@ -384,7 +394,7 @@ mod tests {
         map.rebuild(2, &overlay2, vec![]);
         assert_eq!(map.links().len(), 2);
         assert_eq!(
-            &*resolve_link_target(&map.links()[0].target)
+            &*resolve_link_target(&nth_link(&map, 0).target)
                 .unwrap()
                 .osc8_url
                 .unwrap(),
@@ -402,7 +412,7 @@ mod tests {
         map.rebuild(1, &overlay, vec![]);
         assert_eq!(map.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&map.links()[0].target)
+            &*resolve_link_target(&nth_link(&map, 0).target)
                 .unwrap()
                 .osc8_url
                 .unwrap(),
@@ -488,9 +498,9 @@ mod tests {
 
         // One logical link with 2 rects
         assert_eq!(map.links().len(), 1);
-        assert_eq!(map.links()[0].rects.len(), 2);
+        assert_eq!(nth_link(&map, 0).rects.len(), 2);
         assert_eq!(
-            &*resolve_link_target(&map.links()[0].target)
+            &*resolve_link_target(&nth_link(&map, 0).target)
                 .unwrap()
                 .osc8_url
                 .unwrap(),
@@ -549,9 +559,9 @@ mod tests {
                 .unwrap(),
             "https://third.com"
         );
-        assert_eq!(map.links()[0].rects.len(), 1);
-        assert_eq!(map.links()[1].rects.len(), 1);
-        assert_eq!(map.links()[2].rects.len(), 1);
+        assert_eq!(nth_link(&map, 0).rects.len(), 1);
+        assert_eq!(nth_link(&map, 1).rects.len(), 1);
+        assert_eq!(nth_link(&map, 2).rects.len(), 1);
     }
 
     #[test]
@@ -606,7 +616,7 @@ mod tests {
         ]);
         map.append_from_overlay(&btw);
         assert_eq!(map.len(), 1);
-        assert_eq!(map.links()[0].rects.len(), 2);
+        assert_eq!(nth_link(&map, 0).rects.len(), 2);
         assert!(map.link_at(12, 3).is_some());
         assert!(map.link_at(5, 4).is_some());
     }

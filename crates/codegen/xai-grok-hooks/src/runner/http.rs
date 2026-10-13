@@ -23,7 +23,9 @@ async fn read_body_capped(mut response: reqwest::Response) -> reqwest::Result<St
             break;
         };
         let take = chunk.len().min(MAX_OUTPUT_BYTES - buf.len());
-        buf.extend_from_slice(&chunk[..take]);
+        if let Some(part) = chunk.get(..take) {
+            buf.extend_from_slice(part);
+        }
         if take < chunk.len() {
             break;
         }
@@ -461,7 +463,10 @@ fn truncate_preview(s: &str) -> String {
             .last()
             .map(|(i, _)| i)
             .unwrap_or(0);
-        let mut preview = trimmed[..boundary].to_string();
+        let Some(prefix) = trimmed.get(..boundary) else {
+            return trimmed.to_string();
+        };
+        let mut preview = prefix.to_string();
         preview.push_str("...");
         preview
     }
@@ -483,7 +488,10 @@ mod tests {
             HookRunnerResult::Allow {
                 updated_input: Some(rewrite),
                 ..
-            } => assert_eq!(rewrite["command"], "echo hi"),
+            } => assert_eq!(
+                rewrite.get("command").and_then(|v| v.as_str()),
+                Some("echo hi")
+            ),
             other => panic!("expected Allow with updatedInput, got {other:?}"),
         }
     }
@@ -551,7 +559,10 @@ mod tests {
                 ..
             } => {
                 assert_eq!(reason.as_deref(), Some("confirm"));
-                assert_eq!(rewrite["command"], "echo hi");
+                assert_eq!(
+                    rewrite.get("command").and_then(|v| v.as_str()),
+                    Some("echo hi")
+                );
             }
             other => panic!("expected Ask with rewrite, got {other:?}"),
         }

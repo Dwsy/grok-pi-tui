@@ -1,24 +1,70 @@
-//! `send_subagent_message` — send an active message to an owned subagent.
-
 use crate::implementations::grok_build::task::backend::SubagentBackendResource;
 use crate::implementations::grok_build::task::types::{
-    ActiveAgentMessageOperation, ActiveAgentMessageOutcome, ActiveAgentMessageRequest,
+    ActiveAgentMessageOperation, ActiveAgentMessageOutcome, ActiveAgentMessageQuotaKind,
+    ActiveAgentMessageRequest, ActiveMessageTarget, AgentMessageSenderResource,
     SubagentDepthCounter,
 };
 use crate::types::tool::{ToolKind, ToolNamespace};
 
 pub const SEND_SUBAGENT_MESSAGE_TOOL_NAME: &str = "send_subagent_message";
 
+/// How the message reaches an active subagent. An inactive subagent always
+/// wakes and runs the text as its next turn.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SendSubagentMessageDelivery {
+    /// Join the current turn at its next safe point (default).
+    Steer,
+    /// Wait as a later turn.
+    Queue,
+    /// Arrives before a pending steer. It interrupts a subagent waiting on background work.
+    Interject,
+}
+
+impl From<SendSubagentMessageDelivery> for ActiveAgentMessageOperation {
+    fn from(delivery: SendSubagentMessageDelivery) -> Self {
+        match delivery {
+            SendSubagentMessageDelivery::Steer => ActiveAgentMessageOperation::Steer,
+            SendSubagentMessageDelivery::Queue => ActiveAgentMessageOperation::Queue,
+            SendSubagentMessageDelivery::Interject => ActiveAgentMessageOperation::Interject,
+        }
+    }
+}
+
+/// The one place the legacy `queue` flag becomes an operation.
+pub fn resolve_delivery(
+    delivery: Option<SendSubagentMessageDelivery>,
+    legacy_queue: bool,
+) -> ActiveAgentMessageOperation {
+    match delivery {
+        Some(delivery) => ActiveAgentMessageOperation::from(delivery),
+        None if legacy_queue => ActiveAgentMessageOperation::Queue,
+        None => ActiveAgentMessageOperation::Steer,
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct SendSubagentMessageInput {
-    /// ID of the owned subagent that should receive the message.
+    /// The durable agent ID of the target subagent.
     pub subagent_id: String,
     /// Text to send to the subagent.
     pub text: String,
-    /// Queue for a later turn instead of steering the active turn.
+    /// Delivery operation; omitted means `steer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<SendSubagentMessageDelivery>,
+    /// Legacy `queue: true`; accepted on the wire, hidden from the schema,
+    /// ignored when `delivery` is present.
     #[serde(default)]
-    #[schemars(default)]
+    #[schemars(skip)]
     pub queue: bool,
+}
+
+impl SendSubagentMessageInput {
+    pub fn operation(&self) -> ActiveAgentMessageOperation {
+        resolve_delivery(self.delivery, self.queue)
+    }
 }
 
 #[derive(
@@ -34,6 +80,10 @@ pub enum SendSubagentMessageOutput {
     NotActiveOrFinalizing,
     Saturated {
         max_in_flight: usize,
+    },
+    QuotaExceeded {
+        kind: ActiveAgentMessageQuotaKind,
+        limit: usize,
     },
     AdmissionUncertain,
     NotAcceptedBeforeDeadline,
@@ -65,6 +115,7 @@ impl SendSubagentMessageOutput {
             Self::NotFoundOrNotOwned
             | Self::NotActiveOrFinalizing
             | Self::Saturated { .. }
+            | Self::QuotaExceeded { .. }
             | Self::NotAcceptedBeforeDeadline
             | Self::Unsupported
             | Self::Limit { .. }
@@ -81,6 +132,9 @@ impl From<ActiveAgentMessageOutcome> for SendSubagentMessageOutput {
             ActiveAgentMessageOutcome::NotActiveOrFinalizing => Self::NotActiveOrFinalizing,
             ActiveAgentMessageOutcome::Saturated { max_in_flight } => {
                 Self::Saturated { max_in_flight }
+            }
+            ActiveAgentMessageOutcome::QuotaExceeded { kind, limit } => {
+                Self::QuotaExceeded { kind, limit }
             }
             ActiveAgentMessageOutcome::AdmissionUncertain => Self::AdmissionUncertain,
             ActiveAgentMessageOutcome::NotAcceptedBeforeDeadline => Self::NotAcceptedBeforeDeadline,
@@ -111,6 +165,9 @@ impl std::fmt::Display for SendSubagentMessageOutput {
                 f,
                 "Message admission is saturated (maximum {max_in_flight} in flight)."
             ),
+            Self::QuotaExceeded { kind, limit } => {
+                write!(f, "Agent-message quota exceeded ({kind:?}, limit {limit}).")
+            }
             Self::AdmissionUncertain => f.write_str(
                 "Message admission could not be confirmed; the message may or may not have been accepted.",
             ),
@@ -149,7 +206,12 @@ impl crate::types::tool_metadata::ToolMetadata for SendSubagentMessageTool {
     }
 
     fn description_template(&self) -> &str {
-        "Send a follow-up message to a subagent owned by this session. An inactive subagent resumes with the same identity and receives the message as its next turn. For an active subagent, the default steers the current turn at its next safe point; set queue to true to wait for a later turn."
+        "Send a message to a subagent that this session owns. \
+         An eligible completed subagent resumes with the same identity. \
+         Use this tool to add a fact or correct a wrong target. \
+         Do not use this tool to tell a subagent to stop, send its result now, or stop reading and start writing. \
+         There is no time limit, whatever the subagent shows. \
+         Trust the subagent and let it run to completion, unless it needs guidance or more information."
     }
 }
 
@@ -190,32 +252,50 @@ impl xai_tool_runtime::Tool for SendSubagentMessageTool {
         input: SendSubagentMessageInput,
     ) -> Result<SendSubagentMessageOutput, xai_tool_runtime::ToolError> {
         let resources = crate::types::tool_metadata::shared_resources(&ctx)?;
-        let (depth, backend) = {
+        let (depth, backend, sender) = {
             let res = resources.lock().await;
             (
                 res.get::<SubagentDepthCounter>().map(|value| value.0),
                 res.get::<SubagentBackendResource>().cloned(),
+                res.get::<AgentMessageSenderResource>().cloned(),
             )
         };
-
-        let (Some(0), Some(backend)) = (depth, backend) else {
-            return Ok(SendSubagentMessageOutput::Unsupported);
-        };
-        let operation = if input.queue {
-            ActiveAgentMessageOperation::Queue
+        let operation = input.operation();
+        let outcome = if let Some(sender) = sender {
+            let target = if input.subagent_id == "parent" {
+                ActiveMessageTarget::Parent
+            } else {
+                let agent_id = xai_message_delivery_core::AgentId::parse(&input.subagent_id)
+                    .ok_or_else(|| {
+                        xai_tool_runtime::ToolError::invalid_arguments(
+                            "subagent_id must be a valid agent ID",
+                        )
+                    })?;
+                ActiveMessageTarget::Agent { agent_id }
+            };
+            let request =
+                match ActiveAgentMessageRequest::try_from_parts(target, input.text, operation) {
+                    Ok(request) => request,
+                    Err(outcome) => return Ok(outcome.into()),
+                };
+            sender.0.send(request).await
         } else {
-            ActiveAgentMessageOperation::Steer
-        };
-        let request = match ActiveAgentMessageRequest::try_new_with_operation(
-            input.subagent_id,
-            input.text,
-            operation,
-        ) {
-            Ok(request) => request,
-            Err(outcome) => return Ok(outcome.into()),
+            // Only a root may use the coordinator backend; an ungranted nested child is refused here.
+            let (Some(0), Some(backend)) = (depth, backend) else {
+                return Ok(SendSubagentMessageOutput::Unsupported);
+            };
+            let request = match ActiveAgentMessageRequest::try_new_with_operation(
+                input.subagent_id,
+                input.text,
+                operation,
+            ) {
+                Ok(request) => request,
+                Err(outcome) => return Ok(outcome.into()),
+            };
+            backend.backend().send_active_message(request).await
         };
 
-        Ok(backend.backend().send_active_message(request).await.into())
+        Ok(outcome.into())
     }
 }
 

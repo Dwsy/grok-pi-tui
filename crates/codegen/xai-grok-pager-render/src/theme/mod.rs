@@ -757,6 +757,25 @@ pub fn reset_cursor_color() {
 mod tests {
     use super::*;
 
+    /// `faint()` sits strictly between the background and `gray_dim` on a palette that can blend, and degrades to the DIM
+    /// attribute with no hard colour on the bandless terminal palette.
+    #[test]
+    fn faint_is_between_bg_and_gray_dim_or_dim_when_unblendable() {
+        use ratatui::style::{Color, Modifier};
+        let luma = |c: Color| match c {
+            Color::Rgb(r, g, b) => u32::from(r) + u32::from(g) + u32::from(b),
+            other => panic!("expected RGB, got {other:?}"),
+        };
+        let night = Theme::groknight();
+        let faint = night.faint().fg.expect("GrokNight blends to a hard colour");
+        assert!(luma(night.bg_base) < luma(faint) && luma(faint) < luma(night.gray_dim));
+
+        let terminal = Theme::terminal_default();
+        let style = terminal.faint();
+        assert_eq!(style.fg, None, "no hard colour on the bandless palette");
+        assert!(style.add_modifier.contains(Modifier::DIM));
+    }
+
     #[test]
     fn from_name_auto() {
         assert_eq!(ThemeKind::from_name("auto"), Some(ThemeKind::Auto));

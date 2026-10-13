@@ -121,8 +121,18 @@ async fn client_hooks_fire_without_file_registry() {
             assert_eq!(args.request.method.as_ref(), "x.ai/hooks/event");
             let params: serde_json::Value =
                 serde_json::from_str(args.request.params.get()).unwrap();
-            assert_eq!(params["hookCallbackId"], "cb_0");
-            assert_eq!(params["hookEventName"], "stop");
+            assert_eq!(
+                params
+                    .pointer("/hookCallbackId")
+                    .unwrap_or(&serde_json::Value::Null),
+                "cb_0"
+            );
+            assert_eq!(
+                params
+                    .pointer("/hookEventName")
+                    .unwrap_or(&serde_json::Value::Null),
+                "stop"
+            );
         })
         .await;
 }
@@ -166,7 +176,7 @@ async fn pre_tool_use_resolves_meta_dispatch_tool_name_end_to_end() {
             let mut deferred = Vec::new();
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                actor.prepare_tool_call(call, &mut deferred),
+                actor.prepare_tool_call(call, &mut deferred, None),
             )
             .await
             .expect("prepare_tool_call must not hang")
@@ -209,8 +219,11 @@ async fn subagent_inherits_parent_pre_tool_use_client_hook() {
                         xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             let params: serde_json::Value =
                                 serde_json::from_str(args.request.params.get()).unwrap();
-                            *seen.lock().unwrap() =
-                                params["subagentType"].as_str().map(str::to_string);
+                            *seen.lock().unwrap() = params
+                                .pointer("/subagentType")
+                                .unwrap_or(&serde_json::Value::Null)
+                                .as_str()
+                                .map(str::to_string);
                             let deny: Arc<serde_json::value::RawValue> =
                                 serde_json::value::to_raw_value(&serde_json::json!({
                                     "decision": "deny",
@@ -289,7 +302,11 @@ async fn pre_tool_use_slow_callback_does_not_starve_a_deny() {
                         xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             let params: serde_json::Value =
                                 serde_json::from_str(args.request.params.get()).unwrap();
-                            if params["hookCallbackId"] == "deny_cb" {
+                            if params
+                                .pointer("/hookCallbackId")
+                                .unwrap_or(&serde_json::Value::Null)
+                                == "deny_cb"
+                            {
                                 let deny: Arc<serde_json::value::RawValue> =
                                     serde_json::value::to_raw_value(&serde_json::json!({
                                         "decision": "deny",
@@ -376,7 +393,7 @@ async fn post_tool_use_and_failure_never_double_fire() {
             };
 
             actor
-                .execute_tool_calls(vec![todo_call("call_err")])
+                .execute_tool_calls(vec![todo_call("call_err")], None)
                 .await
                 .expect("execute_tool_calls must not error");
             let mut failure_events = Vec::new();
@@ -386,7 +403,11 @@ async fn post_tool_use_and_failure_never_double_fire() {
                 {
                     let params: serde_json::Value =
                         serde_json::from_str(args.request.params.get()).unwrap();
-                    if let Some(name) = params["hookEventName"].as_str() {
+                    if let Some(name) = params
+                        .pointer("/hookEventName")
+                        .unwrap_or(&serde_json::Value::Null)
+                        .as_str()
+                    {
                         failure_events.push(name.to_string());
                     }
                 }
@@ -406,7 +427,11 @@ async fn post_tool_use_and_failure_never_double_fire() {
                             if args.request.method.as_ref() == "x.ai/hooks/run" {
                                 let params: serde_json::Value =
                                     serde_json::from_str(args.request.params.get()).unwrap();
-                                if let Some(name) = params["hookEventName"].as_str() {
+                                if let Some(name) = params
+                                    .pointer("/hookEventName")
+                                    .unwrap_or(&serde_json::Value::Null)
+                                    .as_str()
+                                {
                                     seen_task.lock().unwrap().push(name.to_string());
                                 }
                             }
@@ -420,7 +445,11 @@ async fn post_tool_use_and_failure_never_double_fire() {
                             if args.request.method.as_ref() == "x.ai/hooks/event" {
                                 let params: serde_json::Value =
                                     serde_json::from_str(args.request.params.get()).unwrap();
-                                if let Some(name) = params["hookEventName"].as_str() {
+                                if let Some(name) = params
+                                    .pointer("/hookEventName")
+                                    .unwrap_or(&serde_json::Value::Null)
+                                    .as_str()
+                                {
                                     seen_task.lock().unwrap().push(name.to_string());
                                 }
                             }
@@ -444,7 +473,7 @@ async fn post_tool_use_and_failure_never_double_fire() {
                 )
                 .expect("bind_local_session must succeed");
             actor
-                .execute_tool_calls(vec![todo_call("call_ok")])
+                .execute_tool_calls(vec![todo_call("call_ok")], None)
                 .await
                 .expect("execute_tool_calls must not error");
             assert_eq!(
@@ -544,7 +573,7 @@ async fn mcp_error_result_fires_only_failure_and_delivers_original_output() {
                             if args.request.method.as_ref() == "x.ai/hooks/run" {
                                 let params: serde_json::Value =
                                     serde_json::from_str(args.request.params.get()).unwrap();
-                                if let Some(name) = params["hookEventName"].as_str() {
+                                if let Some(name) = params.pointer("/hookEventName").unwrap_or(&serde_json::Value::Null).as_str() {
                                     seen_task.lock().unwrap().push(name.to_string());
                                 }
                             }
@@ -558,7 +587,7 @@ async fn mcp_error_result_fires_only_failure_and_delivers_original_output() {
                             if args.request.method.as_ref() == "x.ai/hooks/event" {
                                 let params: serde_json::Value =
                                     serde_json::from_str(args.request.params.get()).unwrap();
-                                if let Some(name) = params["hookEventName"].as_str() {
+                                if let Some(name) = params.pointer("/hookEventName").unwrap_or(&serde_json::Value::Null).as_str() {
                                     seen_task.lock().unwrap().push(name.to_string());
                                 }
                             }
@@ -588,7 +617,7 @@ async fn mcp_error_result_fires_only_failure_and_delivers_original_output() {
                 function: crate::sampling::types::ToolCallFunction::new("mock_error_tool", "{}"),
             };
             actor
-                .execute_tool_calls(vec![call])
+                .execute_tool_calls(vec![call], None)
                 .await
                 .expect("execute_tool_calls must not error");
             // Let the observe-only failure notification drain to the recorder.
@@ -645,7 +674,7 @@ async fn post_tool_use_failure_additional_context_reaches_model() {
             };
 
             actor
-                .execute_tool_calls(vec![failing_call])
+                .execute_tool_calls(vec![failing_call], None)
                 .await
                 .expect("execute_tool_calls must not error");
 
@@ -695,7 +724,7 @@ async fn pre_tool_use_deny_feeds_reason_back_and_continues_turn() {
 
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                actor.execute_tool_calls(vec![call]),
+                actor.execute_tool_calls(vec![call], None),
             )
             .await
             .expect("execute_tool_calls must not hang")
@@ -730,7 +759,11 @@ async fn stop_client_gate_maps_deny_continue_false_and_context() {
             );
 
             spawn_run_responder(gateway_rx, |params| {
-                match params["hookCallbackId"].as_str() {
+                match params
+                    .pointer("/hookCallbackId")
+                    .unwrap_or(&serde_json::Value::Null)
+                    .as_str()
+                {
                     Some("cb_block") => serde_json::json!({
                         "decision": "deny",
                         "systemMessage": "finish the tests first",
@@ -760,9 +793,11 @@ async fn stop_client_gate_maps_deny_continue_false_and_context() {
             .await
             .expect("the stop gate must not hang");
 
-            assert_eq!(result.blocks.len(), 1, "only the deny becomes a block");
-            assert_eq!(result.blocks[0].hook_name, "client:cb_block");
-            assert_eq!(result.blocks[0].reason, "finish the tests first");
+            let [block] = result.blocks.as_slice() else {
+                panic!("only the deny becomes a block: {:?}", result.blocks);
+            };
+            assert_eq!(block.hook_name, "client:cb_block");
+            assert_eq!(block.reason, "finish the tests first");
             let prevent = result
                 .prevent_continuation
                 .expect("continue:false becomes prevent_continuation");
@@ -787,7 +822,11 @@ async fn post_tool_use_client_gate_contributes_block_and_context() {
             );
 
             spawn_run_responder(gateway_rx, |params| {
-                if params["hookCallbackId"] == "cb_block" {
+                if params
+                    .pointer("/hookCallbackId")
+                    .unwrap_or(&serde_json::Value::Null)
+                    == "cb_block"
+                {
                     serde_json::json!({ "decision": "block", "reason": "revert that edit" })
                 } else {
                     serde_json::json!({ "additionalContext": "run the linter" })
@@ -803,11 +842,20 @@ async fn post_tool_use_client_gate_contributes_block_and_context() {
             .expect("the post_tool_use gate must not hang");
 
             assert_eq!(result.blocks.len(), 1, "only the denying callback blocks");
-            assert_eq!(result.blocks[0].hook_name, "client:cb_block");
-            assert_eq!(result.blocks[0].reason, "revert that edit");
+            let [block] = result.blocks.as_slice() else {
+                panic!("expected one block: {:?}", result.blocks);
+            };
+            assert_eq!(block.hook_name, "client:cb_block");
+            assert_eq!(block.reason, "revert that edit");
             assert_eq!(result.additional_context.len(), 1);
-            assert_eq!(result.additional_context[0].hook_name, "client:cb_ctx");
-            assert_eq!(result.additional_context[0].text, "run the linter");
+            let [ctx] = result.additional_context.as_slice() else {
+                panic!(
+                    "expected one additional context: {:?}",
+                    result.additional_context
+                );
+            };
+            assert_eq!(ctx.hook_name, "client:cb_ctx");
+            assert_eq!(ctx.text, "run the linter");
         })
         .await;
 }
@@ -837,21 +885,26 @@ async fn post_tool_use_client_gate_records_failure_and_orders_contributions() {
                                 while let Some(args) = buffered.pop() {
                                     let params: serde_json::Value =
                                         serde_json::from_str(args.request.params.get()).unwrap();
-                                    let reply: Result<acp::ExtResponse, acp::Error> =
-                                        if params["hookCallbackId"] == "cb_fail" {
-                                            Err(acp::Error::internal_error())
+                                    let reply: Result<acp::ExtResponse, acp::Error> = if params
+                                        .pointer("/hookCallbackId")
+                                        .unwrap_or(&serde_json::Value::Null)
+                                        == "cb_fail"
+                                    {
+                                        Err(acp::Error::internal_error())
+                                    } else {
+                                        let value = if params
+                                            .pointer("/hookCallbackId")
+                                            .unwrap_or(&serde_json::Value::Null)
+                                            == "cb_ctx_a"
+                                        {
+                                            serde_json::json!({ "additionalContext": "first" })
                                         } else {
-                                            let value = if params["hookCallbackId"] == "cb_ctx_a" {
-                                                serde_json::json!({ "additionalContext": "first" })
-                                            } else {
-                                                serde_json::json!({ "additionalContext": "second" })
-                                            };
-                                            let response_params: Arc<serde_json::value::RawValue> =
-                                                serde_json::value::to_raw_value(&value)
-                                                    .unwrap()
-                                                    .into();
-                                            Ok(acp::ExtResponse::new(response_params))
+                                            serde_json::json!({ "additionalContext": "second" })
                                         };
+                                        let response_params: Arc<serde_json::value::RawValue> =
+                                            serde_json::value::to_raw_value(&value).unwrap().into();
+                                        Ok(acp::ExtResponse::new(response_params))
+                                    };
                                     let _ = args.response_tx.send(reply);
                                 }
                             }
@@ -949,9 +1002,14 @@ async fn post_tool_use_dispatch_merges_file_then_client_contributions() {
                 tool_call_id: acp::ToolCallId::new("call_1"),
                 tool_name: "search__memory".to_string(),
                 raw_arguments: "{}".to_string(),
+                mcp_file: None,
                 parsed_args: serde_json::json!({}),
-                model_id: "test-model".to_string(),
+                model_id: Some("test-model".to_string()),
+                invocation_id: "018f6b6c-7b3a-7c3a-8c3a-000000000001".to_string(),
+                tool_id: "opaque".to_string(),
+                tool_version: None,
                 concatenated_json_count: 0,
+                coercion_note: None,
                 dispatch_target_name: None,
                 is_read_only: false,
                 rewriting_hook: None,
@@ -1162,7 +1220,10 @@ async fn client_force_stop_attribution_is_registration_ordered() {
                         xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             let params: serde_json::Value =
                                 serde_json::from_str(args.request.params.get()).unwrap();
-                            let is_first = params["hookCallbackId"] == "cb_first";
+                            let is_first = params
+                                .pointer("/hookCallbackId")
+                                .unwrap_or(&serde_json::Value::Null)
+                                == "cb_first";
                             tokio::task::spawn_local(async move {
                                 if is_first {
                                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1280,8 +1341,18 @@ async fn alias_envelope_serializes_canonical_event_name() {
                 },
             );
             let value = serde_json::to_value(&envelope).expect("envelope serializes");
-            assert_eq!(value["hookEventName"], "subagent_stop");
-            assert_eq!(value["permissionMode"], "bypassPermissions");
+            assert_eq!(
+                value
+                    .pointer("/hookEventName")
+                    .unwrap_or(&serde_json::Value::Null),
+                "subagent_stop"
+            );
+            assert_eq!(
+                value
+                    .pointer("/permissionMode")
+                    .unwrap_or(&serde_json::Value::Null),
+                "bypassPermissions"
+            );
         })
         .await;
 }

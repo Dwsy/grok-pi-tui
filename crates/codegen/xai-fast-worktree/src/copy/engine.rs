@@ -177,7 +177,9 @@ pub(crate) fn copy_parallel(
 
             // Compute shard and send.
             let shard = shard_for_path(&rel_path, n);
-            let _ = senders[shard].send(CopyEntry { rel_path, kind });
+            if let Some(sender) = senders.get(shard) {
+                let _ = sender.send(CopyEntry { rel_path, kind });
+            }
 
             WalkState::Continue
         })

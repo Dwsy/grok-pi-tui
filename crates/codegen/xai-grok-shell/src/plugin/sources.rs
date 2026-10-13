@@ -313,8 +313,11 @@ mod tests {
         let added = managed_extra_marketplace_sources(&managed, &existing);
         let names: Vec<&str> = added.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["approved-plugins", "local-pin"]);
+        let Some(first) = added.first() else {
+            panic!("expected managed extra sources: {added:?}");
+        };
         assert!(matches!(
-            &added[0].kind,
+            &first.kind,
             SourceKind::Git { url, branch }
                 if url == "https://github.com/example-corp/approved-plugins.git"
                     && branch.as_deref() == Some("main")
@@ -373,8 +376,10 @@ mod tests {
                 .iter()
                 .filter(|(s, _)| matches!(&s.kind, SourceKind::Git { url: u, .. } if u == url))
                 .collect();
-            assert_eq!(hits.len(), 1, "{url} must resolve to one entry: {tagged:?}");
-            hits[0].1
+            let [hit] = hits.as_slice() else {
+                panic!("{url} must resolve to one entry: {tagged:?}");
+            };
+            hit.1
         };
         assert_eq!(
             origin_of("https://example.com/cfg.git"),

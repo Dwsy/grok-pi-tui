@@ -221,7 +221,7 @@ fn print_component_summary(manifest: &PluginManifest, root: &Path) {
 }
 
 fn abbreviated_commit(c: Option<&str>) -> &str {
-    c.map(|s| &s[..7.min(s.len())]).unwrap_or("?")
+    c.and_then(|s| s.get(..7.min(s.len()))).unwrap_or("?")
 }
 
 fn trust_prompt(subject: &str, source_arg: &str) -> String {
@@ -1123,7 +1123,8 @@ mod tests {
             update_failure_summary(&outcomes).as_deref(),
             Some("1 of 2 plugin update(s) failed")
         );
-        assert_eq!(update_failure_summary(&outcomes[..1]), None);
+        let (first, _) = outcomes.split_at_checked(1).expect("two outcomes");
+        assert_eq!(update_failure_summary(first), None);
     }
 
     fn removal_fixture() -> Vec<MarketplaceSource> {

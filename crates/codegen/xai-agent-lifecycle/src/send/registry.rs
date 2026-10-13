@@ -248,7 +248,10 @@ mod tests {
                 })
                 .await;
             assert_eq!(1, fragments.len());
-            assert_eq!("nudge", fragments[0].text);
+            let Some(fragment) = fragments.first() else {
+                panic!("expected a turn-input fragment");
+            };
+            assert_eq!("nudge", fragment.text);
         }
 
         assert!(registry.command_handler("nope").is_none());

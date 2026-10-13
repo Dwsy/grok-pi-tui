@@ -22,7 +22,7 @@ pub enum RosterActivity {
     Dead,
 }
 
-/// Origin of a roster entry (local leader vs. a remote host). We don't render origin yet, but must parse it without failing.
+/// Origin of a roster entry (the local leader or a remote host).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RosterOrigin {
     #[serde(default)]
@@ -41,6 +41,10 @@ pub struct RosterEntry {
     pub cwd: String,
     #[serde(default)]
     pub is_worktree: bool,
+    /// Set only on rows the leader synthesizes for remote claims; those are not loadable
+    /// sessions. `None` for rows a local agent owns.
+    #[serde(default)]
+    pub session_kind: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
     #[serde(default)]
@@ -94,6 +98,7 @@ mod tests {
             title: Some("Fix the roster".to_string()),
             cwd: "/repo/worktree".to_string(),
             is_worktree: true,
+            session_kind: None,
             model_id: Some("grok-4".to_string()),
             reasoning_effort: None,
             yolo: true,
@@ -142,7 +147,9 @@ mod tests {
             1,
             "session must survive the `result` envelope"
         );
-        let e = &parsed.sessions[0];
+        let Some(e) = parsed.sessions.first() else {
+            panic!("expected session: {:?}", parsed.sessions);
+        };
         assert_eq!(e.session_id, "sess-abc");
         assert_eq!(e.title.as_deref(), Some("Fix the roster"));
         assert_eq!(e.cwd, "/repo/worktree");
@@ -159,13 +166,56 @@ mod tests {
         assert_eq!(e.origin.kind, "local");
     }
 
+    /// A leader-synthesized Cursor worker row (`sessionKind`, no model, not resident) parses with
+    /// its kind visible, so the dashboard can tell it from a loadable session.
+    #[test]
+    fn roster_list_response_keeps_cursor_worker_rows() {
+        use xai_grok_shell::agent::roster as agent;
+        use xai_grok_shell::session::ExtMethodResult;
+
+        let cursor_row = agent::RosterEntry {
+            session_id: "cursor-worker:bc-1".to_string(),
+            title: Some("External agent bc-1".to_string()),
+            cwd: "/home/u/.grok/worktrees/proj/cursor-bc-1".to_string(),
+            is_worktree: true,
+            session_kind: Some("cursor-worker".to_string()),
+            model_id: None,
+            reasoning_effort: None,
+            yolo: false,
+            activity: agent::RosterActivity::Idle,
+            last_turn_summary: None,
+            resident: false,
+            last_change_unix_ms: 1_762_000_000_000,
+            origin: agent::RosterOrigin::Local,
+        };
+        let ext_response = ExtMethodResult::success(agent::RosterListResponse {
+            sessions: vec![agent_entry(), cursor_row],
+        })
+        .to_ext_response()
+        .expect("agent serializes the roster response");
+
+        let parsed = parse_roster_list_response(ext_response.0.get()).expect("parses");
+        let [live, row] = parsed.sessions.as_slice() else {
+            panic!("expected two roster rows, got {}", parsed.sessions.len());
+        };
+        assert_eq!(None, live.session_kind);
+        assert_eq!("cursor-worker:bc-1", row.session_id);
+        assert_eq!(Some("cursor-worker"), row.session_kind.as_deref());
+        assert_eq!(None, row.model_id);
+        assert!(!row.resident);
+        assert_eq!(RosterActivity::Idle, row.activity);
+    }
+
     /// A bare `{ "sessions": [...] }` body (no `result` envelope) must still parse; the parser tolerates both shapes.
     #[test]
     fn roster_list_response_parses_bare_body() {
         let body = r#"{"sessions":[{"sessionId":"s1","cwd":"/x","isWorktree":false,"yolo":false,"activity":"idle","resident":true,"lastChangeUnixMs":7,"origin":{"kind":"local"}}]}"#;
         let parsed = parse_roster_list_response(body).expect("bare body parses");
         assert_eq!(parsed.sessions.len(), 1);
-        assert_eq!(parsed.sessions[0].session_id, "s1");
+        assert_eq!(
+            parsed.sessions.first().map(|s| s.session_id.as_str()),
+            Some("s1")
+        );
     }
 
     /// Round-trip for `x.ai/sessions/changed`: serialize the agent's `RosterChanged` as `emit_roster_changed` does (bare params, no envelope).
@@ -184,8 +234,11 @@ mod tests {
         let parsed: RosterChanged =
             serde_json::from_str(&params).expect("pager parses the broadcast params");
         assert_eq!(parsed.upserted.len(), 1, "upserted entry must survive");
-        assert_eq!(parsed.upserted[0].session_id, "sess-abc");
-        assert_eq!(parsed.upserted[0].activity, RosterActivity::Working);
+        let Some(upserted) = parsed.upserted.first() else {
+            panic!("expected upserted: {:?}", parsed.upserted);
+        };
+        assert_eq!(upserted.session_id, "sess-abc");
+        assert_eq!(upserted.activity, RosterActivity::Working);
         assert_eq!(parsed.removed, vec!["sess-gone".to_string()]);
     }
 }

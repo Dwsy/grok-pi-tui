@@ -12,8 +12,15 @@
     )
 )]
 use super::*;
+use xai_grok_tools::registry::types::FinalizedToolset;
 /// Bound on close's wait for a prompt still in intake.
 pub(super) const CLOSE_INTAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// Who releases a workspace binding: the session's owner outright, or a rolled-back install that
+/// releases only while the toolset bound for it at install is still the bound one.
+enum WorkspaceBindingOwner {
+    Session,
+    Install(Option<Arc<FinalizedToolset>>),
+}
 /// Bound on close's wait for an in-flight attach.
 const CLOSE_ATTACH_SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Cap on the sum of every close wait.
@@ -149,12 +156,21 @@ impl MvpAgent {
         self.session_registry.is_resident(id)
     }
     /// Register or replace the hosted handle. Returns the displaced handle.
+    #[cfg(test)]
     pub(crate) fn insert_resident(
         &self,
         id: &acp::SessionId,
         handle: SessionHandle,
     ) -> Option<SessionHandle> {
-        self.session_registry.put_resident(id, handle)
+        self.session_registry.put_resident(id, handle, None)
+    }
+    pub(super) fn install_resident(
+        &self,
+        id: &acp::SessionId,
+        handle: SessionHandle,
+        identity: Option<super::agent_directory::PendingRootIdentity>,
+    ) -> Option<SessionHandle> {
+        self.session_registry.put_resident(id, handle, identity)
     }
     pub(crate) fn resident_count(&self) -> usize {
         self.session_registry.resident_count()
@@ -193,6 +209,7 @@ impl MvpAgent {
     }
     /// Remove a session without finalizing; it stays resumable on disk.
     pub(crate) fn remove_session(&self, id: &acp::SessionId) {
+        self.retire_root_session(id);
         let _ = self
             .subagent_event_tx
             .send(xai_grok_tools::implementations::grok_build::task::types::SubagentEvent::TeardownSession {
@@ -203,11 +220,102 @@ impl MvpAgent {
         self.resident_roster_titles
             .borrow_mut()
             .remove(id.0.as_ref());
+        self.session_registry.remove_retired_root(id);
         self.session_registry.release(id);
-        if let Some(ops) = self.workspace_ops.borrow().as_ref() {
-            ops.end_local_session(id.0.as_ref());
-        }
+        self.end_local_workspace_session(id, WorkspaceBindingOwner::Session);
         self.log_resource_usage(xai_grok_telemetry::events::ResourceReportTrigger::SessionClose);
+    }
+    /// Release the workspace binding an install took; a resumed session re-binds at install.
+    /// A successor install may have re-bound the id since, so an install's release is the
+    /// workspace's compare-and-unmap against the toolset bound for that install.
+    fn end_local_workspace_session(&self, id: &acp::SessionId, owner: WorkspaceBindingOwner) {
+        let ops = self.workspace_ops.borrow();
+        let Some(ops) = ops.as_ref() else {
+            return;
+        };
+        match owner {
+            WorkspaceBindingOwner::Session => ops.end_local_session(id.0.as_ref()),
+            WorkspaceBindingOwner::Install(Some(bound)) => {
+                if !ops.end_local_session_if_bound(id.0.as_ref(), &bound) {
+                    tracing::debug!(
+                        session_id = %id.0,
+                        "install rollback: binding no longer held by this install; nothing released"
+                    );
+                }
+            }
+            WorkspaceBindingOwner::Install(None) => {}
+        }
+    }
+    /// Bind an accepted install's toolset to its workspace session and, for an attach, record the
+    /// binding on the install so [`Self::roll_back_install`] releases exactly that. One synchronous
+    /// step, so the record can never lag the bind.
+    pub(super) fn bind_accepted_install(
+        &self,
+        workspace_ops: &xai_grok_workspace::WorkspaceOps,
+        id: &acp::SessionId,
+        cwd: &std::path::Path,
+        hunk_tracker: &xai_hunk_tracker::HunkTrackerHandle,
+        toolset: &Arc<FinalizedToolset>,
+        install_id: Option<u64>,
+    ) {
+        let bound =
+            crate::session::bind_installed_toolset(workspace_ops, id, cwd, hunk_tracker, toolset);
+        if let (Some(install_id), Some(bound)) = (install_id, bound) {
+            self.session_registry
+                .record_bound_toolset(id, install_id, bound);
+        }
+    }
+    /// Take a refused or withdrawn install back: shut its actor down, then release the binding taken
+    /// for it, owner-checked so a successor's binding under the same id survives. A refused install
+    /// was never bound, so it releases nothing.
+    pub(super) async fn roll_back_install(&self, id: &acp::SessionId, withdrawn: WithdrawnInstall) {
+        let WithdrawnInstall {
+            handle,
+            thread,
+            bound_toolset,
+        } = withdrawn;
+        self.discard_failed_install(handle, thread).await;
+        #[cfg(test)]
+        super::test_hooks::pause_at(super::test_hooks::AttachPause::BeforeRelease).await;
+        self.end_local_workspace_session(id, WorkspaceBindingOwner::Install(bound_toolset));
+    }
+    /// [`Self::roll_back_install`] from a `Drop`, which cannot drain: a still-running actor thread
+    /// goes back on the entry so the sweep reaps it (settlement retires it if a restored presence
+    /// already carries one).
+    pub(super) fn roll_back_install_sync(&self, id: &acp::SessionId, withdrawn: WithdrawnInstall) {
+        let WithdrawnInstall {
+            handle,
+            thread,
+            bound_toolset,
+        } = withdrawn;
+        self.shutdown_install(handle);
+        if let Some(thread) = thread.filter(|thread| !thread.is_finished()) {
+            self.session_registry.set_thread(id, thread);
+        }
+        self.end_local_workspace_session(id, WorkspaceBindingOwner::Install(bound_toolset));
+    }
+    /// Shut down an actor whose install was taken back and reap its child processes.
+    fn shutdown_install(&self, installed: SessionHandle) {
+        if let Some(scope) = &installed.tool_context.process_scope {
+            scope.kill_all();
+        }
+        let _ = installed
+            .cmd_tx
+            .send(SessionCommand::Shutdown(ShutdownKind::Graceful));
+    }
+    /// [`Self::shutdown_install`], then wait out the actor thread within the drain budget.
+    async fn discard_failed_install(
+        &self,
+        installed: SessionHandle,
+        thread: Option<SessionThread>,
+    ) {
+        self.shutdown_install(installed);
+        let deadline = std::time::Instant::now() + DRAIN_OLD_THREAD_WAIT;
+        while thread.as_ref().is_some_and(|thread| !thread.is_finished())
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
     /// Per-session prompt-intake lock: prompts land in submission order and a cancel cannot overtake the prompt it targets.
     /// Keep the work done while holding it short.
@@ -346,6 +454,7 @@ impl MvpAgent {
             session_id,
             cwd,
             is_worktree,
+            session_kind: None,
             model_id,
             reasoning_effort,
             yolo,
@@ -402,6 +511,7 @@ impl MvpAgent {
     /// Resident and finished is a crash (`DeadFailed`); non-resident and finished is the expected clean exit, dropped without demotion.
     /// `is_finished()` alone cannot tell them apart, which is why residency decides.
     pub(super) fn sweep_dead_sessions(&self) {
+        self.session_registry.reap_retired_threads();
         let dead = self.session_registry.finished_threads();
         for id in dead {
             if self.session_registry.live(&id) == Some(SessionLiveState::Attaching)

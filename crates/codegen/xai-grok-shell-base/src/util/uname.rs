@@ -84,8 +84,8 @@ fn windows_version() -> Option<String> {
     // The bracketed portion is locale-independent.
     let stdout = String::from_utf8_lossy(&output.stdout);
     let start = stdout.find("[Version ")? + "[Version ".len();
-    let end = stdout[start..].find(']')? + start;
-    let version = stdout[start..end].trim();
+    let end = stdout.get(start..).and_then(|rest| rest.find(']'))? + start;
+    let version = stdout.get(start..end)?.trim();
     if version.is_empty() {
         return None;
     }

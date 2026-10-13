@@ -1,19 +1,14 @@
 //! Worktree orchestration: plan + execute.
-
 pub mod execute;
 pub(crate) mod plan;
-
-use std::path::PathBuf;
-
-use anyhow::Result;
-
 use crate::copy::{CopyStats, DirtyFilesReport};
-
+use anyhow::Result;
 pub(crate) use plan::WorktreePlan;
-
+use std::path::PathBuf;
 /// Strategy strings written to `worktrees.db` `creation_mode` and metrics.
 pub const STRATEGY_GROVE_FUSE: &str = "grove-fuse";
 pub const STRATEGY_GROVE_NFS: &str = "grove-nfs";
+pub const STRATEGY_GROVE_PROJFS: &str = "grove-projfs";
 /// Deprecated alias for [`STRATEGY_GROVE_NFS`]. Still accepted on read/GC.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const STRATEGY_NFS: &str = "nfs";
@@ -24,32 +19,18 @@ pub const STRATEGY_BTRFS: &str = "btrfs";
 pub const STRATEGY_COPY: &str = "copy";
 pub const STRATEGY_GIT: &str = "git";
 pub const STRATEGY_STANDALONE: &str = "standalone";
-
-/// Projected grove worktree: Linux FUSE, macOS NFS, or the legacy `nfs` spelling.
+/// Projected grove worktree: Linux FUSE, macOS NFS, Windows ProjFS, or the
+/// legacy `nfs` spelling.
 #[must_use]
 pub fn is_grove_strategy(s: &str) -> bool {
-    matches!(s, STRATEGY_GROVE_FUSE | STRATEGY_GROVE_NFS | STRATEGY_NFS)
+    matches!(
+        s,
+        STRATEGY_GROVE_FUSE | STRATEGY_GROVE_NFS | STRATEGY_GROVE_PROJFS | STRATEGY_NFS
+    )
 }
-
 /// The one decline both the Grove arm and the workspace's pre-dispatch rewrite
 /// can reach, so they account for the same source the same way.
 pub const SKIP_SOURCE_IS_GROVE_MOUNT: &str = "source is itself a Grove mount";
-
-/// Outcome of the Grove arm when it was requested.
-pub(crate) enum GroveTry {
-    Adopted(Box<CreateWorktreeResult>),
-    Skipped(GroveSkip),
-}
-
-impl std::fmt::Debug for GroveTry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Adopted(_) => f.write_str("Adopted(..)"),
-            Self::Skipped(skip) => f.debug_tuple("Skipped").field(skip).finish(),
-        }
-    }
-}
-
 /// Why the Grove arm declined. Every variant is a fallthrough: the next arm runs.
 /// `Display` is the wording that reaches the user through the strategy report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +40,10 @@ pub enum GroveSkip {
     FuseUnavailable,
     #[cfg(target_os = "linux")]
     PrivateMountNamespace,
+    /// Windows-only: `ProjectedFSLib.dll` is absent (the `Client-ProjFS`
+    /// optional feature is off) or the build predates Windows 11 22H2.
+    #[cfg(windows)]
+    ProjfsUnavailable,
     SourceIsGroveMount,
     PreserveOnLinkedView,
     MountTableInconclusive,
@@ -68,25 +53,19 @@ pub enum GroveSkip {
     HeadUnreadableAfterAdopt,
     DaemonDeclined,
 }
-
-impl GroveSkip {
-    /// The daemon is the only decline its capability class explains; every other
-    /// variant is a local decision the daemon never saw, so grading it there
-    /// would spend a Status RPC to answer a question nobody asked.
-    pub(crate) fn is_daemon_refusal(self) -> bool {
-        matches!(self, Self::DaemonDeclined)
-    }
-}
-
+impl GroveSkip {}
 impl std::fmt::Display for GroveSkip {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // This text is printed to users, not just logged: say what happened in
-        // the user's terms, not in the implementation's.
         f.write_str(match self {
             #[cfg(target_os = "linux")]
             Self::FuseUnavailable => "/dev/fuse or fusermount is missing",
             #[cfg(target_os = "linux")]
             Self::PrivateMountNamespace => "this process is in a private mount namespace",
+            #[cfg(windows)]
+            Self::ProjfsUnavailable => {
+                "Windows Projected File System is not available (enable the Client-ProjFS \
+                 feature on Windows 11 22H2 or later)"
+            }
             Self::SourceIsGroveMount => crate::worktree::SKIP_SOURCE_IS_GROVE_MOUNT,
             Self::PreserveOnLinkedView => {
                 "uncommitted changes cannot be carried onto a linked Grove view"
@@ -104,35 +83,33 @@ impl std::fmt::Display for GroveSkip {
         })
     }
 }
-
 /// A dispatch arm that can decline before a later arm serves the worktree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorktreeArm {
     GroveFuse,
     GroveNfs,
+    GroveProjfs,
     Overlay,
     Btrfs,
 }
-
 impl WorktreeArm {
     /// Only a Grove skip explains why Grove did not serve the worktree; a
     /// snapshot arm's skip means an earlier arm lost and Grove never ran.
     #[must_use]
     pub fn is_grove(self) -> bool {
-        matches!(self, Self::GroveFuse | Self::GroveNfs)
+        matches!(self, Self::GroveFuse | Self::GroveNfs | Self::GroveProjfs)
     }
-
     #[must_use]
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::GroveFuse => STRATEGY_GROVE_FUSE,
             Self::GroveNfs => STRATEGY_GROVE_NFS,
+            Self::GroveProjfs => STRATEGY_GROVE_PROJFS,
             Self::Overlay => STRATEGY_OVERLAY,
             Self::Btrfs => STRATEGY_BTRFS,
         }
     }
 }
-
 /// One arm that did not serve the worktree, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArmSkip {
@@ -143,7 +120,6 @@ pub struct ArmSkip {
     /// failures and flattened error chains, which have no typed Grove decline.
     pub grove_skip: Option<GroveSkip>,
 }
-
 impl ArmSkip {
     pub fn new(arm: WorktreeArm, detail: impl Into<String>) -> Self {
         Self {
@@ -152,7 +128,6 @@ impl ArmSkip {
             grove_skip: None,
         }
     }
-
     pub fn from_grove(arm: WorktreeArm, skip: GroveSkip) -> Self {
         Self {
             arm,
@@ -161,13 +136,11 @@ impl ArmSkip {
         }
     }
 }
-
 impl std::fmt::Display for ArmSkip {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.arm.label(), self.detail)
     }
 }
-
 /// Skip lines joined for a log field or a fallback message.
 #[must_use]
 pub fn render_arm_skips(skips: &[ArmSkip]) -> String {
@@ -177,48 +150,35 @@ pub fn render_arm_skips(skips: &[ArmSkip]) -> String {
         .collect::<Vec<_>>()
         .join("; ")
 }
-
 /// Result of worktree creation.
 #[derive(Debug)]
 pub struct CreateWorktreeResult {
     /// Path to the created worktree
     pub worktree_path: PathBuf,
-
     /// Git commit the worktree is based on
     pub commit: String,
-
     /// Statistics from the file copy phase
     pub copy_stats: CopyStats,
-
     /// Statistics from ignored files copy (if enabled)
     pub ignored_stats: Option<CopyStats>,
-
     /// Report about dirty files (modified/untracked/deleted) in the source worktree
     pub dirty_files_report: Option<DirtyFilesReport>,
-
-    /// Which dispatch arm actually ran (`grove-fuse` / `grove-nfs` / `overlay` / `btrfs` / `copy` / `git` / `standalone`).
+    /// Which dispatch arm actually ran (`grove-fuse` / `grove-nfs` / `grove-projfs` / `overlay` / `btrfs` / `copy` / `git` / `standalone`).
     pub resolved_strategy: &'static str,
-
     /// Arm-specific metadata (NFS mount/backing/pin; overlay/btrfs snapshot paths).
     pub strategy_metadata: Option<serde_json::Value>,
-
     /// Arms that declined before the one that ran.
     pub skipped: Vec<ArmSkip>,
-
-    /// Grove daemon capability class: `current`, `old`, or `unknown`.
     pub daemon_capability_class: Option<&'static str>,
 }
-
 /// Execute worktree creation plan. This is a blocking operation.
 pub(crate) fn execute_plan(plan: WorktreePlan) -> Result<CreateWorktreeResult> {
     execute::execute_create_worktree(plan)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder};
-
     #[test]
     fn grove_strategy_names() {
         assert!(is_grove_strategy(STRATEGY_GROVE_FUSE));
@@ -229,26 +189,19 @@ mod tests {
     }
     use tempfile::TempDir;
     use xai_test_utils::git::{git_commit_all, init_git_repo};
-
     #[test]
     fn test_create_worktree_simple() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create and commit a file
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .create()
             .unwrap();
-
         assert!(result.worktree_path.exists());
         assert!(result.worktree_path.join("file.txt").exists());
         assert!(!result.commit.is_empty());
@@ -258,55 +211,36 @@ mod tests {
             "grove_wt_create must record the copy arm"
         );
     }
-
     #[test]
     fn test_create_worktree_creates_parent_dirs() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create and commit a file
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Destination parent directory does NOT exist.
         let worktree_path = temp.path().join("nested").join("worktree");
         assert!(!worktree_path.parent().unwrap().exists());
-
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .create()
             .unwrap();
-
         assert!(result.worktree_path.exists());
         assert!(result.worktree_path.join("file.txt").exists());
         assert!(!result.commit.is_empty());
     }
-
     #[test]
     fn test_create_worktree_with_ignored_files() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create tracked file
         std::fs::write(repo_path.join("tracked.txt"), "tracked").unwrap();
-
-        // Create .gitignore
         std::fs::write(repo_path.join(".gitignore"), "ignored/").unwrap();
-
-        // Create ignored directory
         std::fs::create_dir(repo_path.join("ignored")).unwrap();
         std::fs::write(repo_path.join("ignored/deps.txt"), "deps").unwrap();
-
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree with ignored file copying
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .ignored_files_mode(IgnoredFilesMode::Copy {
@@ -314,49 +248,30 @@ mod tests {
             })
             .create()
             .unwrap();
-
-        // Both tracked and ignored files should exist
         assert!(result.worktree_path.join("tracked.txt").exists());
         assert!(result.worktree_path.join("ignored/deps.txt").exists());
-
-        // Should have ignored stats
         assert!(result.ignored_copy.is_some());
     }
-
     #[test]
     fn test_create_worktree_skip_ignored_files() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create tracked file
         std::fs::write(repo_path.join("tracked.txt"), "tracked").unwrap();
-
-        // Create .gitignore
         std::fs::write(repo_path.join(".gitignore"), "*.log\nnode_modules/\n").unwrap();
-
-        // Create ignored files
         std::fs::write(repo_path.join("debug.log"), "debug").unwrap();
         std::fs::create_dir(repo_path.join("node_modules")).unwrap();
         std::fs::write(repo_path.join("node_modules/package.json"), "{}").unwrap();
-
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree with IgnoredFilesMode::Skip (explicit)
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .ignored_files_mode(IgnoredFilesMode::Skip)
             .create()
             .unwrap();
-
-        // Tracked files should exist
         assert!(result.worktree_path.join("tracked.txt").exists());
         assert!(result.worktree_path.join(".gitignore").exists());
-
-        // Ignored files should NOT exist
         assert!(!result.worktree_path.join("debug.log").exists());
         assert!(
             !result
@@ -364,11 +279,8 @@ mod tests {
                 .join("node_modules/package.json")
                 .exists()
         );
-
-        // Should NOT have ignored stats
         assert!(result.ignored_copy.is_none());
     }
-
     #[test]
     fn test_copy_ignored_only_standalone() {
         xai_test_utils::require_git!();
@@ -377,39 +289,22 @@ mod tests {
         let dest_path = temp.path().join("dest");
         std::fs::create_dir(&repo_path).unwrap();
         std::fs::create_dir(&dest_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create tracked file
         std::fs::write(repo_path.join("tracked.txt"), "tracked").unwrap();
-
-        // Create .gitignore
         std::fs::write(repo_path.join(".gitignore"), "node_modules/\n*.log").unwrap();
-
-        // Create ignored files
         std::fs::create_dir(repo_path.join("node_modules")).unwrap();
         std::fs::write(repo_path.join("node_modules/package.json"), "{}").unwrap();
         std::fs::write(repo_path.join("debug.log"), "log content").unwrap();
-
         git_commit_all(&repo_path, "initial");
-
-        // Copy only ignored files
         let result = WorktreeBuilder::new(repo_path.clone(), dest_path.clone())
             .copy_ignored_only()
             .unwrap();
-
-        // Ignored files should be copied
         assert!(dest_path.join("node_modules/package.json").exists());
         assert!(dest_path.join("debug.log").exists());
-
-        // Tracked files should NOT be copied
         assert!(!dest_path.join("tracked.txt").exists());
         assert!(!dest_path.join(".gitignore").exists());
-
-        // Stats should reflect what was copied
         assert!(result.files_copied >= 2);
     }
-
     #[test]
     fn test_copy_ignored_only_with_skip_patterns() {
         xai_test_utils::require_git!();
@@ -418,94 +313,55 @@ mod tests {
         let dest_path = temp.path().join("dest");
         std::fs::create_dir(&repo_path).unwrap();
         std::fs::create_dir(&dest_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create tracked file
         std::fs::write(repo_path.join("tracked.txt"), "tracked").unwrap();
-
-        // Create .gitignore
         std::fs::write(
             repo_path.join(".gitignore"),
             "node_modules/\n*.log\n.cache/\n",
         )
         .unwrap();
-
-        // Create ignored files
         std::fs::create_dir(repo_path.join("node_modules")).unwrap();
         std::fs::write(repo_path.join("node_modules/package.json"), "{}").unwrap();
         std::fs::write(repo_path.join("debug.log"), "debug").unwrap();
         std::fs::write(repo_path.join("error.log"), "error").unwrap();
-
         std::fs::create_dir(repo_path.join(".cache")).unwrap();
         std::fs::write(repo_path.join(".cache/data.bin"), "cache").unwrap();
-
         git_commit_all(&repo_path, "initial");
-
-        // Copy only ignored files, but skip .log files and .cache directory
         let result = WorktreeBuilder::new(repo_path.clone(), dest_path.clone())
             .ignored_files_mode(IgnoredFilesMode::CopyOnly {
                 skip_patterns: vec!["*.log".to_string(), ".cache/**".to_string()],
             })
             .copy_ignored_only()
             .unwrap();
-
-        // node_modules should be copied (not in skip patterns)
         assert!(dest_path.join("node_modules/package.json").exists());
-
-        // .log files should be SKIPPED (in skip patterns)
         assert!(!dest_path.join("debug.log").exists());
         assert!(!dest_path.join("error.log").exists());
-
-        // .cache directory should be SKIPPED (in skip patterns)
         assert!(!dest_path.join(".cache/data.bin").exists());
-
-        // Tracked files should NOT be copied
         assert!(!dest_path.join("tracked.txt").exists());
         assert!(!dest_path.join(".gitignore").exists());
-
-        // Stats should only reflect what was actually copied (just node_modules)
         assert_eq!(result.files_copied, 1);
     }
-
     #[test]
     #[cfg(unix)]
     fn test_worktree_with_symlinks() {
         xai_test_utils::require_git!();
         use std::os::unix::fs::symlink;
-
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create a regular file
         std::fs::write(repo_path.join("target.txt"), "target content").unwrap();
-
-        // Create a symlink to the file
         symlink("target.txt", repo_path.join("link.txt")).unwrap();
-
-        // Create a directory with a file
         std::fs::create_dir(repo_path.join("subdir")).unwrap();
         std::fs::write(repo_path.join("subdir/file.txt"), "subdir file").unwrap();
-
-        // Create a symlink to the directory
         symlink("subdir", repo_path.join("link_dir")).unwrap();
-
         git_commit_all(&repo_path, "initial with symlinks");
-
-        // Create worktree
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .create()
             .unwrap();
-
-        // Regular files should exist
         assert!(result.worktree_path.join("target.txt").exists());
         assert!(result.worktree_path.join("subdir/file.txt").exists());
-
-        // Symlinks should be preserved as symlinks
         let link_path = result.worktree_path.join("link.txt");
         assert!(link_path.exists());
         assert!(
@@ -515,12 +371,8 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
-
-        // Symlink should point to correct target
         let link_target = std::fs::read_link(&link_path).unwrap();
         assert_eq!(link_target, PathBuf::from("target.txt"));
-
-        // Directory symlink should also work
         let dir_link_path = result.worktree_path.join("link_dir");
         assert!(
             dir_link_path
@@ -530,40 +382,26 @@ mod tests {
                 .is_symlink()
         );
     }
-
     #[test]
     #[cfg(unix)]
     fn test_copy_ignored_only_with_symlinks() {
         xai_test_utils::require_git!();
         use std::os::unix::fs::symlink;
-
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         let dest_path = temp.path().join("dest");
         std::fs::create_dir(&repo_path).unwrap();
         std::fs::create_dir(&dest_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create tracked file
         std::fs::write(repo_path.join("tracked.txt"), "tracked").unwrap();
-
-        // Create .gitignore
         std::fs::write(repo_path.join(".gitignore"), "ignored/").unwrap();
-
-        // Create ignored directory with symlinks
         std::fs::create_dir(repo_path.join("ignored")).unwrap();
         std::fs::write(repo_path.join("ignored/real.txt"), "real").unwrap();
         symlink("real.txt", repo_path.join("ignored/link.txt")).unwrap();
-
         git_commit_all(&repo_path, "initial");
-
-        // Copy only ignored files
         let result = WorktreeBuilder::new(repo_path.clone(), dest_path.clone())
             .copy_ignored_only()
             .unwrap();
-
-        // Symlink should be copied
         let link_path = dest_path.join("ignored/link.txt");
         assert!(link_path.exists());
         assert!(
@@ -573,58 +411,37 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
-
-        // Symlink stats should be tracked
         assert!(result.symlinks_copied >= 1);
     }
-
     #[test]
     fn test_worktree_with_dirty_files() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create and commit initial file
         std::fs::write(repo_path.join("file.txt"), "original").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Modify the file (dirty state)
         std::fs::write(repo_path.join("file.txt"), "modified").unwrap();
-
-        // Create worktree with copy_dirty_files=true
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .working_tree_mode(WorkingTreeMode::PreserveWorkingTree)
             .create()
             .unwrap();
-
         let worktree_path = result.worktree_path.clone();
-
-        // Dirty file should have modified content.
         let content = std::fs::read_to_string(worktree_path.join("file.txt")).unwrap();
         assert_eq!(content, "modified");
     }
-
     #[test]
     fn test_worktree_preserves_git_status_for_dirty_files() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create and commit initial file
         std::fs::write(repo_path.join("file.txt"), "original content").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Modify the file (dirty state)
         std::fs::write(repo_path.join("file.txt"), "modified content").unwrap();
-
-        // Verify source shows file as modified
         let source_status = std::process::Command::new("git")
             .current_dir(&repo_path)
             .args(["status", "--porcelain"])
@@ -636,21 +453,14 @@ mod tests {
             source_status_str.contains("file.txt"),
             "Source should show file.txt as modified"
         );
-
-        // Create worktree with PreserveWorkingTree mode
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .working_tree_mode(WorkingTreeMode::PreserveWorkingTree)
             .create()
             .unwrap();
-
         let worktree_path = result.worktree_path.clone();
-
-        // File should have modified content
         let content = std::fs::read_to_string(worktree_path.join("file.txt")).unwrap();
         assert_eq!(content, "modified content");
-
-        // CRITICAL: git status should show the file as modified
         let worktree_status = std::process::Command::new("git")
             .current_dir(&worktree_path)
             .args(["status", "--porcelain"])
@@ -658,25 +468,19 @@ mod tests {
             .unwrap();
         let worktree_status_str = String::from_utf8_lossy(&worktree_status.stdout);
         eprintln!("Worktree git status: {}", worktree_status_str);
-
-        // The file should still show as modified in the worktree
         assert!(
             worktree_status_str.contains("file.txt"),
             "Worktree should show file.txt as modified, but got: {}",
             worktree_status_str
         );
     }
-
     #[test]
     fn test_git_status_is_instant_after_worktree_creation() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create multiple committed files
         for i in 0..10 {
             std::fs::write(
                 repo_path.join(format!("file{}.txt", i)),
@@ -685,16 +489,11 @@ mod tests {
             .unwrap();
         }
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .create()
             .unwrap();
-
         let worktree_path = result.worktree_path.clone();
-
-        // Run git status TWICE - first one should not refresh index
         let start = std::time::Instant::now();
         let status1 = std::process::Command::new("git")
             .current_dir(&worktree_path)
@@ -702,7 +501,6 @@ mod tests {
             .output()
             .unwrap();
         let first_duration = start.elapsed();
-
         let start = std::time::Instant::now();
         let status2 = std::process::Command::new("git")
             .current_dir(&worktree_path)
@@ -710,38 +508,25 @@ mod tests {
             .output()
             .unwrap();
         let second_duration = start.elapsed();
-
         eprintln!("First git status: {:?}", first_duration);
         eprintln!("Second git status: {:?}", second_duration);
-
-        // Both should be clean
         let status1_str = String::from_utf8_lossy(&status1.stdout);
         let status2_str = String::from_utf8_lossy(&status2.stdout);
         assert!(status1_str.is_empty(), "Worktree should be clean");
         assert!(status2_str.is_empty(), "Worktree should be clean");
-
-        // More definitive test: Run git status with GIT_TRACE_PERFORMANCE
-        // This will show if git is re-hashing files
         let trace_status = std::process::Command::new("git")
             .current_dir(&worktree_path)
             .env("GIT_TRACE_PERFORMANCE", "1")
             .args(["status", "--porcelain"])
             .output()
             .unwrap();
-
         let trace_output = String::from_utf8_lossy(&trace_status.stderr);
         eprintln!("GIT_TRACE_PERFORMANCE output:\n{}", trace_output);
-
-        // If index needs refresh, we'd see "lstat" or "refresh index" in trace
-        // The key indicator is if git is doing filesystem operations on every file
         let has_refresh_indicator = trace_output.contains("refresh_index")
             || trace_output.lines().filter(|l| l.contains("lstat")).count() > 3;
-
         if has_refresh_indicator {
             eprintln!("WARNING: git status appears to be refreshing the index");
         }
-
-        // This is informational - the real test is that status is clean
         if first_duration.as_millis() > 200 {
             eprintln!(
                 "NOTE: First git status took {:?}, which seems slow",
@@ -749,34 +534,23 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_clean_files_dont_show_as_modified() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create and commit files
         std::fs::write(repo_path.join("clean.txt"), "clean content").unwrap();
         std::fs::write(repo_path.join("will_be_dirty.txt"), "original").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Modify one file to make it dirty
         std::fs::write(repo_path.join("will_be_dirty.txt"), "modified").unwrap();
-
-        // Create worktree
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .working_tree_mode(WorkingTreeMode::PreserveWorkingTree)
             .create()
             .unwrap();
-
         let worktree_path = result.worktree_path.clone();
-
-        // Check git status
         let status = std::process::Command::new("git")
             .current_dir(&worktree_path)
             .args(["status", "--porcelain"])
@@ -784,8 +558,6 @@ mod tests {
             .unwrap();
         let status_str = String::from_utf8_lossy(&status.stdout);
         eprintln!("Git status output:\n{}", status_str);
-
-        // Only will_be_dirty.txt should show as modified
         assert!(
             status_str.contains("will_be_dirty.txt"),
             "Dirty file should show as modified"
@@ -796,164 +568,103 @@ mod tests {
             status_str
         );
     }
-
     #[test]
     fn test_worktree_clean_state() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create and commit initial file
         std::fs::write(repo_path.join("file.txt"), "original").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Modify the file (dirty state)
         std::fs::write(repo_path.join("file.txt"), "modified").unwrap();
-
-        // Create worktree with copy_dirty_files=false (clean state)
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .working_tree_mode(WorkingTreeMode::CleanTracked)
             .create()
             .unwrap();
-
         let worktree_path = result.worktree_path.clone();
-
-        // File should have original (committed) content.
         let content = std::fs::read_to_string(worktree_path.join("file.txt")).unwrap();
         assert_eq!(content, "original");
     }
-
     #[test]
     fn test_worktree_clean_all_state() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create and commit initial file
         std::fs::write(repo_path.join("committed.txt"), "committed").unwrap();
-
-        // Create .gitignore
         std::fs::write(repo_path.join(".gitignore"), "*.log\n").unwrap();
-
         git_commit_all(&repo_path, "initial");
-
-        // Modify committed file (dirty tracked file)
         std::fs::write(repo_path.join("committed.txt"), "modified").unwrap();
-
-        // Add an untracked file
         std::fs::write(repo_path.join("untracked.txt"), "untracked").unwrap();
-
-        // Add an ignored file
         std::fs::write(repo_path.join("debug.log"), "debug").unwrap();
-
-        // Create worktree with CleanAll mode
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .working_tree_mode(WorkingTreeMode::CleanAll)
             .create()
             .unwrap();
-
         let worktree_path = result.worktree_path.clone();
-
-        // Committed file should have original content
         let content = std::fs::read_to_string(worktree_path.join("committed.txt")).unwrap();
         assert_eq!(content, "committed");
-
-        // Untracked file should NOT exist (cleaned)
         assert!(!worktree_path.join("untracked.txt").exists());
-
-        // Ignored file should NOT exist (cleaned by CleanAll)
         assert!(!worktree_path.join("debug.log").exists());
-
-        // .gitignore should exist (it's tracked)
         assert!(worktree_path.join(".gitignore").exists());
     }
-
     #[test]
     fn test_background_finalization() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create files
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .create()
             .unwrap();
-
-        // Worktree should be usable and finalization is complete.
         assert!(result.worktree_path.join("file.txt").exists());
     }
-
     #[test]
     fn test_worktree_with_nested_directories() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create deeply nested structure
         std::fs::create_dir_all(repo_path.join("a/b/c/d")).unwrap();
         std::fs::write(repo_path.join("a/file1.txt"), "1").unwrap();
         std::fs::write(repo_path.join("a/b/file2.txt"), "2").unwrap();
         std::fs::write(repo_path.join("a/b/c/file3.txt"), "3").unwrap();
         std::fs::write(repo_path.join("a/b/c/d/file4.txt"), "4").unwrap();
-
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .create()
             .unwrap();
-
-        // All nested files should exist
         assert!(result.worktree_path.join("a/file1.txt").exists());
         assert!(result.worktree_path.join("a/b/file2.txt").exists());
         assert!(result.worktree_path.join("a/b/c/file3.txt").exists());
         assert!(result.worktree_path.join("a/b/c/d/file4.txt").exists());
     }
-
     #[test]
     fn test_worktree_preserves_file_content() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create files with specific content
         let binary_content: Vec<u8> = (0..=255).collect();
         std::fs::write(repo_path.join("text.txt"), "Hello, World! 🌍").unwrap();
         std::fs::write(repo_path.join("binary.bin"), &binary_content).unwrap();
         std::fs::write(repo_path.join("empty.txt"), "").unwrap();
-
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .create()
             .unwrap();
-
-        // Verify content is preserved
         assert_eq!(
             std::fs::read_to_string(result.worktree_path.join("text.txt")).unwrap(),
             "Hello, World! 🌍"
@@ -967,36 +678,26 @@ mod tests {
             ""
         );
     }
-
     #[test]
     #[cfg(unix)]
     fn test_worktree_preserves_permissions() {
         xai_test_utils::require_git!();
         use std::os::unix::fs::PermissionsExt;
-
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create executable file
         std::fs::write(repo_path.join("script.sh"), "#!/bin/bash\necho hello").unwrap();
         let mut perms = std::fs::metadata(repo_path.join("script.sh"))
             .unwrap()
             .permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(repo_path.join("script.sh"), perms).unwrap();
-
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .create()
             .unwrap();
-
-        // Verify executable bit is preserved
         let dest_perms = std::fs::metadata(result.worktree_path.join("script.sh"))
             .unwrap()
             .permissions();
@@ -1005,76 +706,51 @@ mod tests {
             "executable bit should be set"
         );
     }
-
     #[test]
     fn test_worktree_with_btrfs_disabled() {
         xai_test_utils::require_git!();
         use crate::BtrfsMode;
-
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create and commit a file
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree with BTRFS disabled - should use copy method
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .btrfs_mode(BtrfsMode::Disabled)
             .create()
             .unwrap();
-
         assert!(result.worktree_path.exists());
         assert!(result.worktree_path.join("file.txt").exists());
         assert!(!result.commit.is_empty());
-        // With copy method, files_copied should be > 0
         assert!(result.unignored_copy.files_copied > 0);
     }
-
     #[test]
     fn test_worktree_with_btrfs_auto_on_non_btrfs() {
         xai_test_utils::require_git!();
         use crate::BtrfsMode;
-
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create and commit a file
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree with BTRFS auto - should fall back to copy on non-BTRFS
         let worktree_path = temp.path().join("worktree");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .btrfs_mode(BtrfsMode::Auto)
             .create()
             .unwrap();
-
         assert!(result.worktree_path.exists());
         assert!(result.worktree_path.join("file.txt").exists());
         assert!(!result.commit.is_empty());
-        // On non-BTRFS (like tmpfs in tests), should use copy method
-        // so files_copied should be > 0
         assert!(result.unignored_copy.files_copied > 0);
     }
-
-    // Integration test for real BTRFS systems
-    // This test automatically runs if BTRFS is detected, skips otherwise
     #[test]
     #[cfg(target_os = "linux")]
     fn test_worktree_btrfs_snapshot_integration() {
         use crate::BtrfsMode;
-
-        // Helper to find a writable BTRFS subvolume
         fn get_btrfs_test_dir() -> Option<std::path::PathBuf> {
-            // Check environment variable first
             if let Ok(path) = std::env::var("BTRFS_TEST_PATH") {
                 let path = std::path::PathBuf::from(&path);
                 if path.exists()
@@ -1087,8 +763,6 @@ mod tests {
                     return Some(path);
                 }
             }
-
-            // Check if current temp directory is on BTRFS subvolume
             let temp = std::env::temp_dir();
             if crate::btrfs::is_btrfs(&temp).unwrap_or(false)
                 && crate::btrfs::is_btrfs_subvolume(&temp)
@@ -1098,49 +772,35 @@ mod tests {
             {
                 return Some(temp);
             }
-
             None
         }
-
         let Some(btrfs_path) = get_btrfs_test_dir() else {
             eprintln!("Skipping test: no BTRFS subvolume detected");
             eprintln!("Set BTRFS_TEST_PATH to a BTRFS subvolume to run this test");
             return;
         };
-
         eprintln!(
             "Running BTRFS integration test on: {}",
             btrfs_path.display()
         );
-
-        // Create test directories within the BTRFS subvolume
         let test_id = std::process::id();
         let repo_path = btrfs_path.join(format!("test_repo_{}", test_id));
         let worktree_path = btrfs_path.join(format!("test_worktree_{}", test_id));
-
-        // Clean up from any previous runs
         let _ = std::fs::remove_dir_all(&repo_path);
         let _ = std::process::Command::new("btrfs")
             .args(["subvolume", "delete", &worktree_path.to_string_lossy()])
             .output();
-
-        // Create and initialize repo
         std::fs::create_dir_all(&repo_path).unwrap();
         init_git_repo(&repo_path);
         std::fs::write(repo_path.join("file.txt"), "btrfs test content").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Create worktree using BTRFS snapshot
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .btrfs_mode(BtrfsMode::Auto)
             .create();
-
         match result {
             Ok(report) => {
                 assert!(report.worktree_path.exists());
                 assert!(report.worktree_path.join("file.txt").exists());
-
-                // Check if BTRFS was used (files_copied == 0) or fallback to copy
                 if report.unignored_copy.files_copied == 0 {
                     eprintln!("✓ BTRFS snapshot worktree created successfully!");
                 } else {
@@ -1149,8 +809,6 @@ mod tests {
                         report.unignored_copy.files_copied
                     );
                 }
-
-                // Clean up
                 let _ = std::process::Command::new("btrfs")
                     .args(["subvolume", "delete", &worktree_path.to_string_lossy()])
                     .output();
@@ -1158,62 +816,43 @@ mod tests {
             }
             Err(e) => {
                 eprintln!("BTRFS test failed: {}", e);
-                // Don't fail the test - might be permission issues
             }
         }
-
-        // Clean up repo
         let _ = std::fs::remove_dir_all(&repo_path);
     }
-
-    // ─── Standalone mode tests ───────────────────────────────────────────
-
     #[test]
     fn test_standalone_worktree_simple() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
         let worktree_path = temp.path().join("standalone");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .standalone(true)
             .create()
             .unwrap();
-
         assert!(result.worktree_path.exists());
         assert!(result.worktree_path.join("file.txt").exists());
         assert!(!result.commit.is_empty());
-
-        // Should be a standalone repo (`.git` is a directory, not a file)
         assert!(result.worktree_path.join(".git").is_dir());
     }
-
     #[test]
     fn test_standalone_worktree_is_independent() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
         let worktree_path = temp.path().join("standalone");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .standalone(true)
             .create()
             .unwrap();
-
-        // The standalone repo should work independently of the source.
-        // Verify git log works (proves objects were copied).
         let log_output = std::process::Command::new("git")
             .current_dir(&result.worktree_path)
             .args(["log", "--oneline"])
@@ -1225,8 +864,6 @@ mod tests {
             log_str.contains("initial"),
             "standalone repo should have commit history"
         );
-
-        // Source should NOT have any worktree registrations.
         let worktree_list = std::process::Command::new("git")
             .current_dir(&repo_path)
             .args(["worktree", "list", "--porcelain"])
@@ -1238,17 +875,13 @@ mod tests {
             "standalone copy should NOT be registered as a worktree in the source"
         );
     }
-
     #[test]
     fn test_standalone_worktree_no_worktrees_dir() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
-        // Create a linked worktree in the source to populate .git/worktrees/
         let linked_wt = temp.path().join("linked-wt");
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
@@ -1258,17 +891,12 @@ mod tests {
             .output()
             .unwrap();
         assert!(repo_path.join(".git/worktrees").exists());
-
-        // Create standalone copy — .git/worktrees/ should be skipped.
         let standalone_path = temp.path().join("standalone");
         WorktreeBuilder::new(repo_path.clone(), standalone_path.clone())
             .standalone(true)
             .create()
             .unwrap();
-
         assert!(!standalone_path.join(".git/worktrees").exists());
-
-        // Clean up linked worktree
         let _ = std::process::Command::new("git")
             .current_dir(&repo_path)
             .args([
@@ -1279,98 +907,69 @@ mod tests {
             ])
             .output();
     }
-
     #[test]
     fn test_standalone_worktree_preserves_dirty_files() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
         std::fs::write(repo_path.join("file.txt"), "original").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Dirty the file
         std::fs::write(repo_path.join("file.txt"), "modified").unwrap();
-
         let worktree_path = temp.path().join("standalone");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .standalone(true)
             .working_tree_mode(WorkingTreeMode::PreserveWorkingTree)
             .create()
             .unwrap();
-
-        // Dirty file should have modified content.
         let content = std::fs::read_to_string(result.worktree_path.join("file.txt")).unwrap();
         assert_eq!(content, "modified");
     }
-
     #[test]
     fn test_standalone_worktree_clean_tracked() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
         std::fs::write(repo_path.join("file.txt"), "original").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Dirty the file
         std::fs::write(repo_path.join("file.txt"), "modified").unwrap();
-
         let worktree_path = temp.path().join("standalone");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .standalone(true)
             .working_tree_mode(WorkingTreeMode::CleanTracked)
             .create()
             .unwrap();
-
-        // Should have original (committed) content.
         let content = std::fs::read_to_string(result.worktree_path.join("file.txt")).unwrap();
         assert_eq!(content, "original");
     }
-
     #[test]
     fn test_standalone_worktree_promotable_via_rename() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
-        // Create standalone copy
         let standalone_path = temp.path().join("standalone");
         let result = WorktreeBuilder::new(repo_path.clone(), standalone_path.clone())
             .standalone(true)
             .create()
             .unwrap();
-
         let original_commit = result.commit.clone();
-
-        // Simulate promotion: rename standalone to replace the original.
         let promoted_path = temp.path().join("promoted");
         std::fs::rename(&standalone_path, &promoted_path).unwrap();
-
-        // Promoted copy should be a fully functional repo.
         assert!(promoted_path.join("file.txt").exists());
         assert!(promoted_path.join(".git").is_dir());
-
         let log_output = std::process::Command::new("git")
             .current_dir(&promoted_path)
             .args(["log", "--oneline"])
             .output()
             .unwrap();
         assert!(log_output.status.success());
-
-        // Commit should be the same
         let rev_output = std::process::Command::new("git")
             .current_dir(&promoted_path)
             .args(["rev-parse", "HEAD"])
@@ -1381,22 +980,18 @@ mod tests {
             .to_string();
         assert_eq!(commit, original_commit);
     }
-
     #[test]
     fn test_standalone_worktree_with_ignored_files() {
         xai_test_utils::require_git!();
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
-
         init_git_repo(&repo_path);
-
         std::fs::write(repo_path.join("tracked.txt"), "tracked").unwrap();
         std::fs::write(repo_path.join(".gitignore"), "ignored/").unwrap();
         std::fs::create_dir(repo_path.join("ignored")).unwrap();
         std::fs::write(repo_path.join("ignored/deps.txt"), "deps").unwrap();
         git_commit_all(&repo_path, "initial");
-
         let worktree_path = temp.path().join("standalone");
         let result = WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .standalone(true)
@@ -1405,12 +1000,10 @@ mod tests {
             })
             .create()
             .unwrap();
-
         assert!(result.worktree_path.join("tracked.txt").exists());
         assert!(result.worktree_path.join("ignored/deps.txt").exists());
         assert!(result.ignored_copy.is_some());
     }
-
     #[test]
     fn test_standalone_worktree_narrows_origin_fetch() {
         xai_test_utils::require_git!();
@@ -1444,13 +1037,11 @@ mod tests {
             xai_test_utils::git::run_git(&repo_path, &["config", "--get", "remote.origin.fetch"]),
             "+refs/heads/*"
         );
-
         let worktree_path = temp.path().join("standalone");
         WorktreeBuilder::new(repo_path.clone(), worktree_path.clone())
             .standalone(true)
             .create()
             .unwrap();
-
         assert_eq!(
             xai_test_utils::git::run_git(
                 &worktree_path,
@@ -1463,7 +1054,6 @@ mod tests {
             "https://github.com/xai-org/xai.git"
         );
     }
-
     #[test]
     fn test_standalone_worktree_drops_inconsistent_shallow() {
         xai_test_utils::require_git!();
@@ -1483,13 +1073,11 @@ mod tests {
         xai_test_utils::git::run_git(&repo_path, &["update-ref", "refs/heads/main", &b]);
         xai_test_utils::git::run_git(&repo_path, &["update-ref", "refs/remotes/origin/main", &b]);
         std::fs::write(repo_path.join(".git/shallow"), format!("{b}\n")).unwrap();
-
         let worktree_path = temp.path().join("standalone");
         WorktreeBuilder::new(repo_path, worktree_path.clone())
             .standalone(true)
             .create()
             .unwrap();
-
         assert!(!worktree_path.join(".git/shallow").exists());
         assert_eq!(
             xai_test_utils::git::run_git(&worktree_path, &["rev-parse", "--is-shallow-repository"]),
@@ -1500,7 +1088,6 @@ mod tests {
             a
         );
     }
-
     #[test]
     fn test_standalone_worktree_sanitizes_after_checkout_ref() {
         xai_test_utils::require_git!();
@@ -1548,14 +1135,12 @@ mod tests {
         );
         xai_test_utils::git::run_git(&repo_path, &["update-ref", "refs/remotes/origin/noise", &b]);
         std::fs::write(repo_path.join(".git/shallow"), format!("{b}\n")).unwrap();
-
         let worktree_path = temp.path().join("standalone");
         WorktreeBuilder::new(repo_path, worktree_path.clone())
             .standalone(true)
             .git_ref("feature")
             .create()
             .unwrap();
-
         assert_eq!(
             xai_test_utils::git::run_git(&worktree_path, &["rev-parse", "--abbrev-ref", "HEAD"]),
             "feature"
@@ -1597,7 +1182,6 @@ mod tests {
             a
         );
     }
-
     #[test]
     fn test_standalone_worktree_keeps_origin_ref_after_detached_checkout() {
         xai_test_utils::require_git!();
@@ -1626,14 +1210,12 @@ mod tests {
             &["update-ref", "refs/remotes/origin/feature", &a],
         );
         xai_test_utils::git::run_git(&repo_path, &["update-ref", "refs/remotes/origin/noise", &b]);
-
         let worktree_path = temp.path().join("standalone");
         WorktreeBuilder::new(repo_path, worktree_path.clone())
             .standalone(true)
             .git_ref("origin/feature")
             .create()
             .unwrap();
-
         assert_eq!(
             xai_test_utils::git::run_git(&worktree_path, &["rev-parse", "HEAD"]),
             a
@@ -1656,7 +1238,6 @@ mod tests {
             "unrelated origin/noise must still be pruned"
         );
     }
-
     #[test]
     fn test_standalone_worktree_skips_extra_origin_remotes() {
         xai_test_utils::require_git!();
@@ -1691,13 +1272,11 @@ mod tests {
                 ],
             );
         }
-
         let worktree_path = temp.path().join("standalone");
         WorktreeBuilder::new(repo_path, worktree_path.clone())
             .standalone(true)
             .create()
             .unwrap();
-
         assert_eq!(
             xai_test_utils::git::run_git(
                 &worktree_path,
@@ -1728,35 +1307,25 @@ mod tests {
             );
         }
     }
-
-    // ─── Cancellation / partial-creation cleanup tests ───────────────────
-
     #[test]
     fn test_linked_cancel_after_worktree_add_deregisters() {
-        // A pre-cancelled Linked creation bails right after `git worktree add`.
-        // Both the partial dir and its `.git/worktrees/<name>` registration must
-        // be cleaned up, or a later create at the same dest is blocked.
         xai_test_utils::require_git!();
         use crate::CreationMode;
         use tokio_util::sync::CancellationToken;
-
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
         init_git_repo(&repo_path);
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
         let dest = temp.path().join("wt");
         let token = CancellationToken::new();
         token.cancel();
-
         let result = WorktreeBuilder::new(repo_path.clone(), dest.clone())
             .creation_mode(CreationMode::Linked)
             .cancellation_token(token)
             .create();
         assert!(result.is_err(), "cancelled creation must fail");
-
         assert!(!dest.exists(), "cancelled worktree dir must be removed");
         let registrations = std::fs::read_dir(repo_path.join(".git/worktrees"))
             .map(|rd| rd.flatten().count())
@@ -1766,26 +1335,19 @@ mod tests {
             "the linked-worktree registration must be deregistered"
         );
     }
-
     #[test]
     fn test_standalone_cancel_removes_partial_dest() {
-        // A pre-cancelled standalone creation must join the background `.git/`
-        // copy and then remove the partial dest. A tiny repo finishes instantly,
-        // so this pins join-before-teardown ordering, not timing.
         xai_test_utils::require_git!();
         use tokio_util::sync::CancellationToken;
-
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
         init_git_repo(&repo_path);
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
         let dest = temp.path().join("standalone-wt");
         let token = CancellationToken::new();
         token.cancel();
-
         let result = WorktreeBuilder::new(repo_path.clone(), dest.clone())
             .standalone(true)
             .cancellation_token(token)
@@ -1793,31 +1355,24 @@ mod tests {
         assert!(result.is_err(), "cancelled standalone creation must fail");
         assert!(!dest.exists(), "cancelled standalone dest must be removed");
     }
-
     #[test]
     fn test_linked_hard_error_reclaims_and_deregisters() {
-        // A hard error after `git worktree add` must reclaim the dir and
-        // deregister `.git/worktrees/<name>` — the guard fires on error, not
-        // only on cancel. An invalid ignored-files glob fails that phase.
         xai_test_utils::require_git!();
         use crate::{CreationMode, IgnoredFilesMode};
-
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
         init_git_repo(&repo_path);
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
         let dest = temp.path().join("wt");
         let result = WorktreeBuilder::new(repo_path.clone(), dest.clone())
             .creation_mode(CreationMode::Linked)
             .ignored_files_mode(IgnoredFilesMode::Copy {
-                skip_patterns: vec!["[".to_string()], // invalid glob → build fails
+                skip_patterns: vec!["[".to_string()],
             })
             .create();
         assert!(result.is_err(), "invalid skip glob must fail creation");
-
         assert!(
             !dest.exists(),
             "partial worktree dir must be reclaimed on a hard error"
@@ -1830,20 +1385,15 @@ mod tests {
             "registration must be deregistered on a hard error"
         );
     }
-
     #[test]
     fn test_standalone_hard_error_reclaims_dest() {
-        // A hard (non-cancel) error after the guard is armed (a bogus non-HEAD
-        // ref → checkout fails) must reclaim the partial standalone dest.
         xai_test_utils::require_git!();
-
         let temp = TempDir::new().unwrap();
         let repo_path = temp.path().join("repo");
         std::fs::create_dir(&repo_path).unwrap();
         init_git_repo(&repo_path);
         std::fs::write(repo_path.join("file.txt"), "content").unwrap();
         git_commit_all(&repo_path, "initial");
-
         let dest = temp.path().join("standalone-wt");
         let result = WorktreeBuilder::new(repo_path.clone(), dest.clone())
             .standalone(true)

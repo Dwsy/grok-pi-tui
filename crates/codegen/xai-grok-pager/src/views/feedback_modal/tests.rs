@@ -463,7 +463,10 @@ fn label_text_left_aligns_with_the_composer_draft() {
     let col_of = |rendered: &str, needle: &str| {
         rendered
             .lines()
-            .find_map(|line| line.find(needle).map(|idx| line[..idx].chars().count()))
+            .find_map(|line| {
+                line.find(needle)
+                    .and_then(|idx| line.get(..idx).map(|s| s.chars().count()))
+            })
             .unwrap_or_else(|| panic!("{needle} must render"))
     };
     let rendered = buffer_text(&buf);
@@ -850,7 +853,11 @@ fn metadata_row_is_not_rendered_disabled_gray() {
     let row = row_of(&rendered, "Type: Bug");
     let line = rendered.lines().nth(row).unwrap();
     // Byte offsets overshoot columns once the border's box-drawing chars appear; count cells instead.
-    let col = line[..line.find("Type: Bug").unwrap()].chars().count() as u16;
+    let col = line
+        .find("Type: Bug")
+        .and_then(|idx| line.get(..idx))
+        .map(|s| s.chars().count() as u16)
+        .unwrap_or_else(|| panic!("Type: Bug must render"));
     assert_ne!(
         buf.cell((col, row as u16)).unwrap().style().fg,
         Some(theme.gray)
@@ -966,7 +973,13 @@ fn bare_open_does_not_yank_the_user_back_to_drafts_after_they_left() {
     });
     stays_on_write_after("click", |modal| {
         render_to_text(modal);
-        let write_tab = modal.window.tab_rects[FeedbackTab::Write.index()].expect("Write tab rect");
+        let write_tab = modal
+            .window
+            .tab_rects
+            .get(FeedbackTab::Write.index())
+            .copied()
+            .flatten()
+            .expect("Write tab rect");
         modal.handle_mouse(&left_click(write_tab.x, write_tab.y));
     });
 }
@@ -1193,7 +1206,13 @@ fn mouse_tab_change_is_blocked_while_delete_is_pending() {
     render_to_text(&mut modal);
     modal.handle_key(&key(KeyCode::Char('d'), KeyModifiers::NONE));
     modal.handle_key(&key(KeyCode::Char('y'), KeyModifiers::NONE));
-    let write_tab = modal.window.tab_rects[FeedbackTab::Write.index()].expect("Write tab rect");
+    let write_tab = modal
+        .window
+        .tab_rects
+        .get(FeedbackTab::Write.index())
+        .copied()
+        .flatten()
+        .expect("Write tab rect");
 
     modal.handle_mouse(&MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -1279,7 +1298,10 @@ fn double_click_on_rendered_draft_row_starts_same_load_as_enter() {
     };
     let double_click_first_row = |modal: &mut FeedbackModalState| {
         render_to_text(modal);
-        let row = modal.draft_row_areas[0].1;
+        let Some((_, row)) = modal.draft_row_areas.first() else {
+            panic!("expected a draft row: {:?}", modal.draft_row_areas);
+        };
+        let row = *row;
         modal.handle_mouse(&left_click(row.x, row.y));
         assert!(modal.take_pending_request().is_none());
         modal.handle_mouse(&left_click(row.x, row.y));
@@ -1519,7 +1541,13 @@ fn successful_rehydration_installs_bytes_before_unlinking() {
     modal.apply_rehydrated_image(identity, Ok(b"fake".to_vec()));
 
     assert!(!session_copy.exists());
-    assert!(modal.composer.images[0].encoded_bytes.is_some());
+    assert!(
+        modal
+            .composer
+            .images
+            .first()
+            .is_some_and(|img| img.encoded_bytes.is_some())
+    );
 }
 
 #[test]

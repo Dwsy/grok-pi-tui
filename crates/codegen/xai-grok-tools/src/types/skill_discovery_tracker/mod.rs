@@ -12,7 +12,7 @@ mod skill_path_suggestion;
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use crate::implementations::skills::types::SkillInfo;
 use crate::types::compat::CompatConfig;
@@ -146,6 +146,22 @@ pub struct SkillManager {
 /// files or symlink-resolution failures.
 fn canonical_path(path: &str) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+fn lexical_path(path: &Path) -> Vec<std::ffi::OsString> {
+    let mut stack = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                stack.pop();
+            }
+            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
+                stack.push(component.as_os_str().to_owned());
+            }
+        }
+    }
+    stack
 }
 
 fn listing_content_hash(text: &str) -> u64 {
@@ -647,6 +663,38 @@ impl SkillManager {
         &self.startup_skills
     }
 
+    /// Already-loaded registry match. Lexical only: no filesystem scan and no skill name.
+    pub fn registered_scope(
+        &self,
+        path: &Path,
+    ) -> Option<crate::implementations::skills::types::SkillScope> {
+        let requested = lexical_path(path);
+        let mut best: Option<(usize, crate::implementations::skills::types::SkillScope)> = None;
+        for skill in self
+            .startup_skills
+            .iter()
+            .chain(self.conditional.held())
+            .chain(&self.discovered_skills)
+        {
+            let skill_path = lexical_path(Path::new(&skill.path));
+            if skill_path == requested {
+                return Some(skill.scope);
+            }
+            let Some(parent_len) = skill_path.len().checked_sub(1) else {
+                continue;
+            };
+            if parent_len == 0 || requested.len() <= parent_len {
+                continue;
+            }
+            if requested.get(..parent_len) == skill_path.get(..parent_len)
+                && best.as_ref().is_none_or(|(len, _)| parent_len > *len)
+            {
+                best = Some((parent_len, skill.scope));
+            }
+        }
+        best.map(|(_, scope)| scope)
+    }
+
     /// Reset discovery state for compaction. Clears `announced_names` so the reminder will re-announce on the next file access after compaction,
     /// and clears `checked_dirs` so dynamically discovered skills can be re-discovered if the model navigates back into the same directories. Does
     /// NOT clear `discovered_skills` (those are preserved for the compaction context and slash commands).
@@ -852,7 +900,10 @@ mod tests {
         let runtime = manager.take_pending().unwrap().0;
         assert!(runtime.iter().all(|skill| skill.name != "plugin"));
         assert!(manager.conditional.held().is_empty());
-        assert_eq!("other", manager.slash_skills()[0].name);
+        assert_eq!(
+            manager.slash_skills().first().map(|s| s.name.as_str()),
+            Some("other")
+        );
     }
 
     #[test]
@@ -1026,7 +1077,10 @@ mod tests {
             "baseline change should produce system-reminder"
         );
         assert_eq!(r.runtime_skills.len(), 1);
-        assert_eq!(r.runtime_skills[0].name, "startup");
+        assert_eq!(
+            r.runtime_skills.first().map(|s| s.name.as_str()),
+            Some("startup")
+        );
     }
 
     #[test]
@@ -1182,7 +1236,7 @@ mod tests {
         // Slash skills are read from the manager directly, not from effects.
         let slash = tracker.slash_skills();
         assert_eq!(slash.len(), 1);
-        assert_eq!(slash[0].name, "new");
+        assert_eq!(slash.first().map(|s| s.name.as_str()), Some("new"));
     }
 
     fn drained(skills: Vec<SkillInfo>) -> SkillManager {
@@ -1423,7 +1477,10 @@ mod tests {
         tracker.add_discovered(vec![make_skill("new", "/new/SKILL.md")]);
         assert!(tracker.take_pending_reconciliation().is_some());
         assert_eq!(tracker.discovered_skills().len(), 1);
-        assert_eq!(tracker.discovered_skills()[0].name, "new");
+        assert_eq!(
+            tracker.discovered_skills().first().map(|s| s.name.as_str()),
+            Some("new")
+        );
     }
 
     // ── Architecture invariant tests ──────────────────────────────
@@ -1473,7 +1530,10 @@ mod tests {
         let _ = mgr.take_pending_reconciliation();
 
         assert_eq!(mgr.slash_skills().len(), 1);
-        assert_eq!(mgr.slash_skills()[0].name, "startup");
+        assert_eq!(
+            mgr.slash_skills().first().map(|s| s.name.as_str()),
+            Some("startup")
+        );
 
         mgr.add_discovered(vec![make_skill("dyn", "/d/SKILL.md")]);
         let _ = mgr.take_pending_reconciliation();
@@ -1500,7 +1560,7 @@ mod tests {
 
         let slash = mgr.slash_skills();
         assert_eq!(slash.len(), 1);
-        assert_eq!(slash[0].name, "startup");
+        assert_eq!(slash.first().map(|s| s.name.as_str()), Some("startup"));
     }
 
     #[test]

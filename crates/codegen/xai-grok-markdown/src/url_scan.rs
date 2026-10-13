@@ -38,8 +38,9 @@ pub(crate) fn detect_plain_urls_with_offset(
         let line_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
         for_each_plain_link(&line_text, |range, url| {
-            let col_start = unicode_display_width(&line_text[..range.start]);
-            let col_end = col_start + unicode_display_width(&line_text[range]);
+            let col_start = unicode_display_width(line_text.get(..range.start).unwrap_or(""));
+            let col_end =
+                col_start + unicode_display_width(line_text.get(range.clone()).unwrap_or(""));
 
             // Dedup: skip if any existing or already-added target overlaps on the same line
             let overlaps = existing.iter().chain(result.iter()).any(|h| {
@@ -116,14 +117,19 @@ mod tests {
         let hyperlinks = finish_and_get_hyperlinks(text);
 
         assert_eq!(hyperlinks.len(), 1, "exactly one hyperlink expected");
-        let h = &hyperlinks[0];
+        let Some(h) = hyperlinks.first() else {
+            panic!("expected a hyperlink: {hyperlinks:?}");
+        };
         assert_eq!(h.url, "https://example.com");
 
         // Verify column range covers only the URL
         let mut renderer = StreamingMarkdownRenderer::new(test_style::STYLE, true);
         renderer.push_and_render(text, None);
         let view = renderer.finish(None);
-        let rendered = line_to_string(&view.lines[h.line_index]);
+        let Some(line) = view.lines.get(h.line_index) else {
+            panic!("missing line {}", h.line_index);
+        };
+        let rendered = line_to_string(line);
         let slice: String = rendered
             .chars()
             .skip(h.column_range.start)
@@ -138,14 +144,17 @@ mod tests {
         let hyperlinks = finish_and_get_hyperlinks(text);
 
         assert_eq!(hyperlinks.len(), 2, "two hyperlinks expected");
-        assert_ne!(hyperlinks[0].id, hyperlinks[1].id, "ids must differ");
-        assert_eq!(hyperlinks[0].url, "https://a.example");
-        assert_eq!(hyperlinks[1].url, "https://b.example");
+        let [a, b] = hyperlinks.as_slice() else {
+            panic!("expected two hyperlinks: {hyperlinks:?}");
+        };
+        assert_ne!(a.id, b.id, "ids must differ");
+        assert_eq!(a.url, "https://a.example");
+        assert_eq!(b.url, "https://b.example");
         assert!(
-            hyperlinks[0].column_range.end <= hyperlinks[1].column_range.start,
+            a.column_range.end <= b.column_range.start,
             "column ranges must be disjoint, got {:?} vs {:?}",
-            hyperlinks[0].column_range,
-            hyperlinks[1].column_range,
+            a.column_range,
+            b.column_range,
         );
     }
 
@@ -164,12 +173,15 @@ mod tests {
             hyperlinks.len()
         );
         assert!(hyperlinks.iter().all(|h| h.url == "https://example.com"));
+        let [a, b] = hyperlinks.as_slice() else {
+            panic!("expected two hyperlinks: {hyperlinks:?}");
+        };
         assert!(
-            hyperlinks[0].column_range.end <= hyperlinks[1].column_range.start
-                || hyperlinks[1].column_range.end <= hyperlinks[0].column_range.start,
+            a.column_range.end <= b.column_range.start
+                || b.column_range.end <= a.column_range.start,
             "column ranges must be disjoint, got {:?} and {:?}",
-            hyperlinks[0].column_range,
-            hyperlinks[1].column_range,
+            a.column_range,
+            b.column_range,
         );
     }
 
@@ -197,16 +209,22 @@ mod tests {
         let hyperlinks = finish_and_get_hyperlinks(text);
 
         assert_eq!(hyperlinks.len(), 1, "exactly one hyperlink expected");
-        assert_eq!(hyperlinks[0].url, "mailto:foo@bar.com");
+        let Some(h) = hyperlinks.first() else {
+            panic!("expected a hyperlink: {hyperlinks:?}");
+        };
+        assert_eq!(h.url, "mailto:foo@bar.com");
 
         let mut renderer = StreamingMarkdownRenderer::new(test_style::STYLE, true);
         renderer.push_and_render(text, None);
         let view = renderer.finish(None);
-        let rendered = line_to_string(&view.lines[hyperlinks[0].line_index]);
+        let Some(line) = view.lines.get(h.line_index) else {
+            panic!("missing line {}", h.line_index);
+        };
+        let rendered = line_to_string(line);
         let slice: String = rendered
             .chars()
-            .skip(hyperlinks[0].column_range.start)
-            .take(hyperlinks[0].column_range.len())
+            .skip(h.column_range.start)
+            .take(h.column_range.len())
             .collect();
         assert_eq!(slice, "foo@bar.com");
     }
@@ -215,7 +233,10 @@ mod tests {
     fn email_after_multibyte_prefix_is_mailto() {
         let hyperlinks = finish_and_get_hyperlinks("連絡先: foo@bar.com です\n");
         assert_eq!(hyperlinks.len(), 1);
-        assert_eq!(hyperlinks[0].url, "mailto:foo@bar.com");
+        assert_eq!(
+            hyperlinks.first().map(|h| h.url.as_str()),
+            Some("mailto:foo@bar.com")
+        );
     }
 
     #[test]
@@ -234,7 +255,8 @@ mod tests {
 
         assert_eq!(hyperlinks.len(), 1);
         assert_eq!(
-            hyperlinks[0].url, "https://example.com",
+            hyperlinks.first().map(|h| h.url.as_str()),
+            Some("https://example.com"),
             "trailing dot should be excluded by linkify"
         );
     }
@@ -247,7 +269,9 @@ mod tests {
         let hyperlinks = finish_and_get_hyperlinks(text);
 
         assert_eq!(hyperlinks.len(), 1);
-        let h = &hyperlinks[0];
+        let Some(h) = hyperlinks.first() else {
+            panic!("expected a hyperlink: {hyperlinks:?}");
+        };
         assert_eq!(h.url, "https://example.com");
 
         // "日本語 " has 3 CJK chars (2 cells each) plus 1 space, 7 display cells
@@ -276,13 +300,15 @@ mod tests {
         let (found, _) = detect_plain_urls(&[line], &[], 0);
         assert_eq!(found.len(), 1, "style boundary must not split the URL");
         assert_eq!(
-            found[0].url,
-            "https://tracker.example.com/projects/issues/#12345"
+            found.first().map(|h| h.url.as_str()),
+            Some("https://tracker.example.com/projects/issues/#12345")
         );
-        assert_eq!(found[0].column_range.start, 0);
+        assert_eq!(found.first().map(|h| h.column_range.start), Some(0));
         assert_eq!(
-            found[0].column_range.end,
-            unicode_display_width("https://tracker.example.com/projects/issues/#12345")
+            found.first().map(|h| h.column_range.end),
+            Some(unicode_display_width(
+                "https://tracker.example.com/projects/issues/#12345"
+            ))
         );
     }
 
@@ -306,7 +332,10 @@ mod tests {
             !hyperlinks.is_empty(),
             "behavior pin: URL inside inline code currently produces a HyperlinkTarget"
         );
-        assert_eq!(hyperlinks[0].url, "https://example.com");
+        assert_eq!(
+            hyperlinks.first().map(|h| h.url.as_str()),
+            Some("https://example.com")
+        );
     }
 
     /// Pins the current behavior for a URL inside a fenced code block; same rationale as `url_inside_inline_code_documented_behavior`.
@@ -344,11 +373,13 @@ mod tests {
                 .iter()
                 .all(|h| h.url == "https://example.com/some/long/path")
         );
+        let [a, b] = view.hyperlinks else {
+            panic!("expected two hyperlinks: {:?}", view.hyperlinks);
+        };
         assert_ne!(
-            view.hyperlinks[0].id, view.hyperlinks[1].id,
+            a.id, b.id,
             "link-text and URL-suffix hyperlinks must have distinct OSC 8 ids",
         );
-        let (a, b) = (&view.hyperlinks[0], &view.hyperlinks[1]);
         assert!(
             a.column_range.end <= b.column_range.start
                 || b.column_range.end <= a.column_range.start,

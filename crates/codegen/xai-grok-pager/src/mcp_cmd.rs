@@ -435,6 +435,7 @@ fn resolve_add(args: &AddArgs) -> Result<ResolvedAdd> {
                     url: url.to_string(),
                     transport_type: (transport == McpTransport::Sse).then(|| "sse".to_string()),
                     bearer_token_env_var: None,
+                    bearer_token_file: None,
                     headers: (!headers.is_empty()).then_some(headers),
                     oauth_client_id: None,
                     oauth_client_secret_env_var: None,
@@ -851,7 +852,7 @@ mod tests {
                 command, args, env, ..
             } => {
                 assert_eq!(command, "npx");
-                assert_eq!(args[0], "-y");
+                assert_eq!(args.first().map(String::as_str), Some("-y"));
                 let env = env.expect("env should be set");
                 assert_eq!(env.get("FOO").map(String::as_str), Some("bar"));
                 // Values may themselves contain '='.
@@ -982,11 +983,10 @@ mod tests {
                 other => panic!("expected http transport, got {other:?}"),
             }
             assert_eq!(resolved.warnings.len(), 1);
-            assert!(
-                resolved.warnings[0].contains("No --transport given"),
-                "got: {}",
-                resolved.warnings[0]
-            );
+            let Some(warning) = resolved.warnings.first() else {
+                panic!("expected a warning: {:?}", resolved.warnings);
+            };
+            assert!(warning.contains("No --transport given"), "got: {warning}");
         }
     }
 
@@ -1026,10 +1026,12 @@ mod tests {
             McpServerTransportConfig::Stdio { .. }
         ));
         assert_eq!(resolved.warnings.len(), 1);
+        let Some(warning) = resolved.warnings.first() else {
+            panic!("expected a warning: {:?}", resolved.warnings);
+        };
         assert!(
-            resolved.warnings[0].contains("--transport http local http://localhost:3000"),
-            "got: {}",
-            resolved.warnings[0]
+            warning.contains("--transport http local http://localhost:3000"),
+            "got: {warning}"
         );
 
         // Extra args or --env mean a command; URLs stay stdio with a warning.
@@ -1048,7 +1050,12 @@ mod tests {
             McpServerTransportConfig::Stdio { .. }
         ));
         assert_eq!(resolved.warnings.len(), 1);
-        assert!(resolved.warnings[0].contains("--transport http"));
+        assert!(
+            resolved
+                .warnings
+                .first()
+                .is_some_and(|w| w.contains("--transport http"))
+        );
 
         let add = parse_add(&[
             "grok",

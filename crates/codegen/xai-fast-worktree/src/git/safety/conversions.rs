@@ -93,7 +93,7 @@ fn find_converted_path_in(
         .split(|byte| *byte == 0)
         .filter_map(|record| {
             let tab_index = record.iter().position(|byte| *byte == b'\t')?;
-            let (head, path) = (&record[..tab_index], &record[tab_index + 1..]);
+            let (head, path) = (record.get(..tab_index)?, record.get(tab_index + 1..)?);
             Some((path, head.rsplit(|byte| *byte == b' ').next()?))
         })
         .collect();

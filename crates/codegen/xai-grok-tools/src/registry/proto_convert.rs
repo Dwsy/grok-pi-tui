@@ -116,8 +116,11 @@ mod tests {
         );
         assert_eq!(cfg.name_override.as_deref(), Some("search"));
         assert_eq!(
-            cfg.params_name_overrides.as_ref().unwrap()["pattern"],
-            "query"
+            cfg.params_name_overrides
+                .as_ref()
+                .and_then(|m| m.get("pattern"))
+                .map(String::as_str),
+            Some("query")
         );
         assert_eq!(cfg.behavior_version.as_deref(), Some("legacy-0.4.10"));
         assert_eq!(
@@ -202,8 +205,11 @@ mod tests {
         a.name_override = Some("search".to_owned());
         let cfg = tool_server_config_from_entries(vec![a, entry("GrokBuild:bash")]).unwrap();
         assert_eq!(cfg.tools.len(), 2);
-        assert_eq!(cfg.tools[0].name_override.as_deref(), Some("search"));
-        assert_eq!(cfg.tools[1].name_override, None);
+        let [first, second] = cfg.tools.as_slice() else {
+            panic!("expected 2 tools: {:?}", cfg.tools);
+        };
+        assert_eq!(first.name_override.as_deref(), Some("search"));
+        assert_eq!(second.name_override, None);
     }
 
     #[test]

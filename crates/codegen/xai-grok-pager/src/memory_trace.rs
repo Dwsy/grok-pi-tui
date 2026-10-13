@@ -105,8 +105,6 @@ struct TraceEvent<'a> {
     version: Option<&'a str>,
 }
 
-// ─── Seams (installed by the composition-root binary) ────────────────────
-
 static STATS_PROVIDER: OnceLock<fn() -> Option<AllocatorStats>> = OnceLock::new();
 static DUMP_PROVIDER: OnceLock<fn() -> String> = OnceLock::new();
 static THRESHOLD_HOOK: OnceLock<fn(&Path, u64)> = OnceLock::new();
@@ -129,8 +127,6 @@ pub fn install_allocator_dump_provider(provider: fn() -> String) {
 pub fn install_threshold_hook(hook: fn(&Path, u64)) {
     let _ = THRESHOLD_HOOK.set(hook);
 }
-
-// ─── Threshold state (pure; unit-tested) ──────────────────────────────────
 
 /// Threshold buckets that fire exactly once per growth cycle.
 /// A bucket fires when the footprint reaches it while armed, then stays disarmed until the footprint drops below half the bucket.
@@ -155,19 +151,17 @@ impl Thresholds {
     /// Feed a footprint observation; returns the buckets that fire on it.
     fn observe(&mut self, footprint: u64) -> Vec<u64> {
         let mut fired = Vec::new();
-        for (i, &bucket) in self.buckets.iter().enumerate() {
-            if self.armed[i] && footprint >= bucket {
-                self.armed[i] = false;
+        for (armed, &bucket) in self.armed.iter_mut().zip(&self.buckets) {
+            if *armed && footprint >= bucket {
+                *armed = false;
                 fired.push(bucket);
-            } else if !self.armed[i] && footprint < bucket / 2 {
-                self.armed[i] = true;
+            } else if !*armed && footprint < bucket / 2 {
+                *armed = true;
             }
         }
         fired
     }
 }
-
-// ─── Sink ──────────────────────────────────────────────────────────────────
 
 const ROTATE_BYTES_DEFAULT: u64 = 4 << 20; // 4 MiB, then one .1 rotation.
 static DUMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -381,8 +375,6 @@ pub(crate) fn record_purge(
         );
     });
 }
-
-// ─── Startup ───────────────────────────────────────────────────────────────
 
 /// Env: disable with `GROK_MEMTRACE=0|false|off`.
 fn enabled_by_env() -> bool {
@@ -628,8 +620,6 @@ pub fn collect_for_export(dir: &Path, limits: ExportLimits) -> Vec<ExportedTrace
     exported
 }
 
-// ─── Test support ──────────────────────────────────────────────────────────
-
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -725,8 +715,12 @@ mod tests {
             let body = std::fs::read_to_string(p).unwrap();
             for line in body.lines() {
                 let v: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
-                assert_eq!(v["kind"], "sample");
-                assert!(v["ts_ms"].as_u64().unwrap() > 0);
+                assert_eq!(v.get("kind").and_then(|k| k.as_str()), Some("sample"));
+                assert!(
+                    v.get("ts_ms")
+                        .and_then(|t| t.as_u64())
+                        .is_some_and(|n| n > 0)
+                );
             }
         }
     }
@@ -744,14 +738,30 @@ mod tests {
         let purge_line = body
             .lines()
             .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
-            .find(|v| v["kind"] == "purge" && v["reason"] == "unit-test-cliff")
+            .find(|v| {
+                v.get("kind").and_then(|k| k.as_str()) == Some("purge")
+                    && v.get("reason").and_then(|r| r.as_str()) == Some("unit-test-cliff")
+            })
             .expect("a purge event tagged with the calling cliff");
-        assert!(purge_line["purge_us"].as_u64().is_some());
-        assert!(purge_line["hook_installed"].as_bool().is_some());
+        assert!(
+            purge_line
+                .get("purge_us")
+                .and_then(|u| u.as_u64())
+                .is_some()
+        );
+        assert!(
+            purge_line
+                .get("hook_installed")
+                .and_then(|h| h.as_bool())
+                .is_some()
+        );
         // The before-gauge must exist on every supported platform (footprint on macOS, RSS fallback on Linux) or purge deltas are uncomputable
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert!(
-            purge_line["gauge_before_bytes"].as_u64().unwrap_or(0) > 0,
+            purge_line
+                .get("gauge_before_bytes")
+                .and_then(|g| g.as_u64())
+                .is_some_and(|n| n > 0),
             "purge events must carry a before-gauge for delta analysis"
         );
     }
@@ -782,7 +792,7 @@ mod tests {
 
         let body = std::fs::read_to_string(&path).unwrap();
         let event: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
-        assert_eq!(event["kind"], "crash");
+        assert_eq!(event.get("kind").and_then(|k| k.as_str()), Some("crash"));
     }
 
     #[test]

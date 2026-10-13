@@ -194,7 +194,9 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             wake,
             ..
         } = queued;
-        if let Some(wake) = wake {
+        if let Some(mut wake) = wake {
+            // The user withdrew this wake; the prior record must not be re-woken.
+            wake.completed.wake_eligible = false;
             self.restore_displaced_completion(wake);
             return;
         }

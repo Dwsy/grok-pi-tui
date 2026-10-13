@@ -21,6 +21,7 @@ fn request(parent_session_id: &str) -> SubagentRequest {
         owner: SubagentOwner::Task,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         spawn_root: Default::default(),
+        tool_call_id: None,
     }
 }
 

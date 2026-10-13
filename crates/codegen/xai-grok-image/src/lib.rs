@@ -2,6 +2,8 @@
 //! full-pixel decode (catches CRC/IDAT corruption a header-only check
 //! misses).
 
+#![deny(clippy::indexing_slicing)]
+
 use image::{ImageError, ImageFormat};
 
 /// `image`-crate error message substrings classified as `Truncated`.
@@ -122,23 +124,21 @@ pub fn validate_image_bytes_unrestricted(
 /// Annex D, which none of our decoders or the inference API accept) may
 /// be false-rejected.
 pub fn jpeg_reaches_eoi(bytes: &[u8]) -> bool {
-    let n = bytes.len();
-    if n < 2 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+    let [0xFF, 0xD8, ..] = bytes else {
         return false;
-    }
+    };
     let mut i = 2;
     loop {
         // Find the next marker: skip stray garbage, then FF fill bytes.
-        while i < n && bytes[i] != 0xFF {
+        while bytes.get(i).is_some_and(|&b| b != 0xFF) {
             i += 1;
         }
-        while i < n && bytes[i] == 0xFF {
+        while bytes.get(i).copied() == Some(0xFF) {
             i += 1;
         }
-        if i >= n {
+        let Some(&marker) = bytes.get(i) else {
             return false;
-        }
-        let marker = bytes[i];
+        };
         i += 1;
         match marker {
             // Not a marker (stuffed/stray `FF00`): keep scanning.
@@ -154,20 +154,17 @@ pub fn jpeg_reaches_eoi(bytes: &[u8]) -> bool {
                 };
                 i = next;
                 loop {
-                    while i < n && bytes[i] != 0xFF {
+                    while bytes.get(i).is_some_and(|&b| b != 0xFF) {
                         i += 1;
                     }
-                    if i + 1 >= n {
-                        return false;
-                    }
-                    match bytes[i + 1] {
+                    match bytes.get(i + 1).copied() {
                         // Byte-stuffed FF or fill byte: still entropy data.
-                        0x00 => i += 2,
-                        0xFF => i += 1,
+                        Some(0x00) => i += 2,
+                        Some(0xFF) => i += 1,
                         // Restart marker: entropy data continues after it.
-                        0xD0..=0xD7 => i += 2,
-                        // Real marker terminates the scan; outer loop consumes it.
-                        _ => break,
+                        Some(0xD0..=0xD7) => i += 2,
+                        Some(_) => break,
+                        None => return false,
                     }
                 }
             }
@@ -185,7 +182,10 @@ pub fn jpeg_reaches_eoi(bytes: &[u8]) -> bool {
 /// Returns the offset just past the segment, or `None` if it runs off the end.
 fn skip_segment(bytes: &[u8], at: usize) -> Option<usize> {
     let len_bytes = bytes.get(at..at + 2)?;
-    let len = usize::from(len_bytes[0]) << 8 | usize::from(len_bytes[1]);
+    let [hi, lo] = len_bytes else {
+        return None;
+    };
+    let len = usize::from(*hi) << 8 | usize::from(*lo);
     if len < 2 {
         return None;
     }
@@ -208,8 +208,11 @@ pub fn png_structurally_valid(bytes: &[u8]) -> bool {
     // Each chunk: 4-byte length, 4-byte type, data, 4-byte CRC (over
     // type + data).
     while let Some(header) = bytes.get(i..i + 8) {
-        let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-        let is_iend = &header[4..8] == b"IEND";
+        let [l0, l1, l2, l3, t0, t1, t2, t3] = header else {
+            return false;
+        };
+        let len = u32::from_be_bytes([*l0, *l1, *l2, *l3]) as usize;
+        let is_iend = [*t0, *t1, *t2, *t3] == *b"IEND";
         let data_start = i + 8;
         let Some(data_end) = data_start.checked_add(len) else {
             return false;
@@ -220,14 +223,18 @@ pub fn png_structurally_valid(bytes: &[u8]) -> bool {
         if end > n {
             return false;
         }
-        let expected = u32::from_be_bytes([
-            bytes[data_end],
-            bytes[data_end + 1],
-            bytes[data_end + 2],
-            bytes[data_end + 3],
-        ]);
+        let Some(crc) = bytes.get(data_end..data_end + 4) else {
+            return false;
+        };
+        let [c0, c1, c2, c3] = crc else {
+            return false;
+        };
+        let expected = u32::from_be_bytes([*c0, *c1, *c2, *c3]);
+        let Some(crc_span) = bytes.get(i + 4..data_end) else {
+            return false;
+        };
         let mut hasher = crc32fast::Hasher::new();
-        hasher.update(&bytes[i + 4..data_end]);
+        hasher.update(crc_span);
         if hasher.finalize() != expected {
             return false;
         }
@@ -246,10 +253,16 @@ pub fn webp_riff_complete(bytes: &[u8]) -> bool {
     let Some(header) = bytes.get(..12) else {
         return false;
     };
-    if &header[..4] != b"RIFF" || &header[8..12] != b"WEBP" {
+    if header.get(..4) != Some(&b"RIFF"[..]) || header.get(8..12) != Some(&b"WEBP"[..]) {
         return false;
     }
-    let riff_size = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+    let Some(size_bytes) = header.get(4..8) else {
+        return false;
+    };
+    let [s0, s1, s2, s3] = size_bytes else {
+        return false;
+    };
+    let riff_size = u32::from_le_bytes([*s0, *s1, *s2, *s3]) as usize;
     riff_size
         .checked_add(8)
         .is_some_and(|end| end <= bytes.len())

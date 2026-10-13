@@ -539,6 +539,10 @@ mod permission_analytics_tests {
     #[test]
     fn security_finding_enum_matches_manager_tokens() {
         use std::collections::BTreeSet;
+        assert_eq!(
+            Some(vec![PermissionSecurityFinding::UnresolvedArgument]),
+            convert_findings(&["unresolved_argument".to_owned()]),
+        );
         let manager: BTreeSet<&str> = ClassifierSecurityFinding::ALL
             .iter()
             .map(|f| f.token())
@@ -738,18 +742,18 @@ mod permission_analytics_tests {
         assert_eq!((alignments, disagreements), (1, 1), "50/50");
 
         // Content-free: no command, path, or free text on the projected payload JSON
-        let json = serde_json::to_string(&payloads[0]).unwrap();
+        let [first, second, ..] = payloads.as_slice() else {
+            panic!("expected at least two payloads, got {}", payloads.len());
+        };
+        let json = serde_json::to_string(first).unwrap();
         assert!(!json.contains("$X") && !json.contains("bash -c"));
         assert_eq!(
             events::PermissionDecisionReason::try_from("auto_denial_limit"),
             Ok(PermissionDecisionReason::AutoDenialLimit)
         );
+        assert_eq!(first.prompt_outcome, Some(PermissionPromptOutcome::Reject));
         assert_eq!(
-            payloads[0].prompt_outcome,
-            Some(PermissionPromptOutcome::Reject)
-        );
-        assert_eq!(
-            payloads[1].classifier_verdict,
+            second.classifier_verdict,
             Some(PermissionClassifierVerdict::Block)
         );
     }

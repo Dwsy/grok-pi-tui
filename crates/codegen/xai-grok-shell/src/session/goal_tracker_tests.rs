@@ -150,7 +150,7 @@ fn goal_event_unknown_string_deserializes_to_unknown() {
 
 #[test]
 fn pause_records_cause_specific_history_detail() {
-    // All six pause reasons record a distinct history `detail` (the `history_detail` mapping, exercised via the real pause path)
+    // Every pause reason records a distinct history `detail` (the `history_detail` mapping, exercised via the real pause path)
     for (reason, expected) in [
         (GoalPauseReason::User, "user"),
         (GoalPauseReason::User, "user"),
@@ -158,6 +158,7 @@ fn pause_records_cause_specific_history_detail() {
         (GoalPauseReason::NoProgress, "no_progress"),
         (GoalPauseReason::Verification, "blocked"),
         (GoalPauseReason::Infra, "infra"),
+        (GoalPauseReason::Planner, "planner"),
     ] {
         let mut t = make_tracker();
         activate_tracker(&mut t);
@@ -868,6 +869,11 @@ fn pause_reason_maps_to_correct_status() {
 
     t.resume();
     assert!(t.pause_with_message(GoalPauseReason::Infra, "Turn failed: rate limit".into()));
+    assert_eq!(t.status(), Some(GoalStatus::InfraPaused));
+
+    // No new wire status for a planner failure: it renders as the same error pause.
+    t.resume();
+    assert!(t.pause_with_message(GoalPauseReason::Planner, "No plan was produced.".into()));
     assert_eq!(t.status(), Some(GoalStatus::InfraPaused));
 }
 

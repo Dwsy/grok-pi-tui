@@ -1,0 +1,1 @@
+/bin/sh: ../outside.txt: Operation not permitted

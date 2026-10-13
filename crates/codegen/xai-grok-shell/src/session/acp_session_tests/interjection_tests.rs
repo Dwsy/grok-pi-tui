@@ -52,7 +52,7 @@ async fn drain_interjections_pushes_synthetic_user_message_after_tool_result() {
             };
             assert_eq!(
                 user_item.synthetic_reason,
-                Some(SyntheticReason::Interjection),
+                SyntheticReason::Interjection,
                 "interjection must be tagged SyntheticReason::Interjection"
             );
             let text = conversation
@@ -120,7 +120,7 @@ async fn drain_multiple_interjections_pushes_one_user_message_each_in_order() {
                 .iter()
                 .filter_map(|item| match item {
                     ConversationItem::User(u)
-                        if u.synthetic_reason == Some(SyntheticReason::Interjection) =>
+                        if u.synthetic_reason == SyntheticReason::Interjection =>
                     {
                         Some(item.text_content())
                     }
@@ -285,17 +285,11 @@ mod interjection_format_tests {
     }
 
     #[test]
-    fn interjection_reminds_to_finish_previous_work() {
+    fn interjection_does_not_defer_the_user() {
         let wrapped = format_interjection("please also add tests".to_string());
         assert!(
             !wrapped.contains("After completing your current task"),
             "interjection must not defer the user's message, got: {wrapped}"
-        );
-        assert!(
-            wrapped.trim_end().ends_with(
-                "</user_query>\nMake sure to complete any unfinished tasks from previous turns."
-            ),
-            "unfinished-task reminder must follow the wrapped query, got: {wrapped}"
         );
     }
 }

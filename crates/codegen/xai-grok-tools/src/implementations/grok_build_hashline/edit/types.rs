@@ -189,8 +189,10 @@ mod tests {
         // Model wraps the array in quotes — should still parse.
         let json = r#"{"file_path":"f.py","edits":"[{\"op\":\"replace\",\"anchor\":\"1:ab:cd\",\"content\":\"x\"}]"}"#;
         let input: HashlineEditInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.edits.len(), 1);
-        assert!(matches!(input.edits[0], HashlineOp::Replace { .. }));
+        let [edit] = input.edits.as_slice() else {
+            panic!("expected exactly one edit, got {}", input.edits.len())
+        };
+        assert!(matches!(edit, HashlineOp::Replace { .. }));
     }
 
     #[test]

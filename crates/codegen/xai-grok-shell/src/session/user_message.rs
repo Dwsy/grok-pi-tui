@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use xai_grok_workspace::session::git::VcsKind;
-
 // Re-export from xai-chat-state; the canonical definition lives there
 pub(crate) use xai_chat_state::compaction_utils::extract_user_query;
 
@@ -23,7 +21,8 @@ pub(crate) struct UserInfoOverride {
 }
 
 /// Minimal user message prefix for fast-start / headless contexts.
-/// Intentionally excludes workspace snapshot and git status.
+/// Intentionally excludes workspace snapshot and git status — training/actors
+/// never put `<git_status>` on the first-message prefix, and the harness matches that.
 /// When `override_info` is provided, uses remote workspace info instead of local machine introspection.
 pub(crate) fn construct_user_message_minimal(
     working_directory: &Path,
@@ -48,7 +47,6 @@ OS Version: {os}
 Shell: {shell}
 Workspace Path: {cwd}
 {USER_INFO_DATE_MARKER} {today}
-Note: Prefer using relative paths over absolute paths as tool call args when possible.
 </user_info>"#,
     )
 }
@@ -73,25 +71,6 @@ fn resolve_shell_display() -> String {
     }
 }
 
-pub(crate) fn format_vcs_status_block(status: &str, vcs_kind: VcsKind) -> String {
-    let (tag, description) = if vcs_kind.is_jj() {
-        (
-            "jj_status",
-            "This is the Jujutsu (jj) status at the start of the conversation. This is a \
-             jj-managed repository \u{2014} use `jj` commands instead of `git`. There is no staging \
-             area; all changes are part of the working-copy commit (@). Use `jj describe` to \
-             set commit messages and `jj new` to finalize changes.",
-        )
-    } else {
-        (
-            "git_status",
-            "This is the git status at the start of the conversation. Note that this status \
-             is a snapshot in time, and will not update during the conversation.",
-        )
-    };
-    format!("\n\n<{tag}>\n{description}\n{status}\n</{tag}>\n")
-}
-
 // Tests for extract_user_query now live in xai_chat_state::compaction_utils.
-// The `<user_info>` + status block is assembled by `SessionActor::construct_legacy_prefix`
-// (see `acp_session_impl/prompt_build.rs`) from a single `RepoStatusSnapshot`.
+// The `<user_info>` prefix is assembled by `SessionActor::construct_legacy_prefix`
+// (see `acp_session_impl/prompt_build.rs`).

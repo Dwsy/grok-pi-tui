@@ -47,9 +47,13 @@ pub fn prompt_complete_payload(
         "stopReason": stop_reason,
         "agentResult": agent_result,
     });
-    if let Some(kind) = error_kind {
-        payload[crate::extensions::notification::PROMPT_COMPLETE_ERROR_KIND_KEY] =
-            serde_json::json!(kind.as_ref());
+    if let Some(kind) = error_kind
+        && let Some(obj) = payload.as_object_mut()
+    {
+        obj.insert(
+            crate::extensions::notification::PROMPT_COMPLETE_ERROR_KIND_KEY.to_string(),
+            serde_json::json!(kind.as_ref()),
+        );
     }
     payload
 }
@@ -199,19 +203,34 @@ mod tests {
             crate::sampling::error::SamplingError::MaxTokensTruncation,
         ));
         let payload = prompt_complete_payload(&sid, "p1", &result);
-        assert_eq!(payload["sessionId"], "s1");
-        assert_eq!(payload["promptId"], "p1");
-        assert_eq!(payload["stopReason"], "error");
-        assert_eq!(payload["errorKind"], "max_tokens_truncation");
+        assert_eq!(
+            payload.get("sessionId").and_then(|v| v.as_str()),
+            Some("s1")
+        );
+        assert_eq!(payload.get("promptId").and_then(|v| v.as_str()), Some("p1"));
+        assert_eq!(
+            payload.get("stopReason").and_then(|v| v.as_str()),
+            Some("error")
+        );
+        assert_eq!(
+            payload.get("errorKind").and_then(|v| v.as_str()),
+            Some("max_tokens_truncation")
+        );
 
         let ok: std::result::Result<acp::StopReason, acp::Error> = Ok(acp::StopReason::EndTurn);
         let payload = prompt_complete_payload(&sid, "p2", &ok);
-        assert_eq!(payload["stopReason"], "end_turn");
+        assert_eq!(
+            payload.get("stopReason").and_then(|v| v.as_str()),
+            Some("end_turn")
+        );
         assert!(payload.get("errorKind").is_none());
 
         let generic = Err(acp::Error::internal_error().data("boom"));
         let payload = prompt_complete_payload(&sid, "p3", &generic);
-        assert_eq!(payload["stopReason"], "error");
+        assert_eq!(
+            payload.get("stopReason").and_then(|v| v.as_str()),
+            Some("error")
+        );
         assert!(payload.get("errorKind").is_none());
     }
 }

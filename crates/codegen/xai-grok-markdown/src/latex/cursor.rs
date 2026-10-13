@@ -12,7 +12,7 @@ impl<'a> Cursor<'a> {
     }
 
     pub(super) fn peek(&self) -> Option<char> {
-        self.src[self.pos..].chars().next()
+        self.src.get(self.pos..)?.chars().next()
     }
 
     pub(super) fn bump(&mut self) -> Option<char> {
@@ -30,11 +30,11 @@ impl<'a> Cursor<'a> {
                 while matches!(self.peek(), Some(c) if c.is_ascii_alphabetic()) {
                     self.bump();
                 }
-                &self.src[start..self.pos]
+                self.src.get(start..self.pos).unwrap_or("")
             }
             Some(_) => {
                 self.bump();
-                &self.src[start..self.pos]
+                self.src.get(start..self.pos).unwrap_or("")
             }
             None => "",
         }
@@ -62,13 +62,17 @@ impl<'a> Cursor<'a> {
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
-                        return &self.src[start..self.pos - 1];
+                        return self
+                            .pos
+                            .checked_sub(1)
+                            .and_then(|end| self.src.get(start..end))
+                            .unwrap_or("");
                     }
                 }
                 _ => {}
             }
         }
-        &self.src[start..self.pos]
+        self.src.get(start..self.pos).unwrap_or("")
     }
 
     /// Read the next "atom": a `{...}` group body, a `\command` (returned with backslash), or a single char. Skips leading whitespace.
@@ -83,11 +87,11 @@ impl<'a> Cursor<'a> {
             '\\' => {
                 self.bump();
                 self.read_command_name();
-                Some(&self.src[start..self.pos])
+                Some(self.src.get(start..self.pos).unwrap_or(""))
             }
             _ => {
                 self.bump();
-                Some(&self.src[start..self.pos])
+                Some(self.src.get(start..self.pos).unwrap_or(""))
             }
         }
     }

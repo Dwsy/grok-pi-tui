@@ -125,6 +125,6 @@ mod tests {
         // Multiplexers (zellij/tmux) must stop buffering before subsequent
         // resets arrive, otherwise they get batched onto the wrong screen.
         let end_sync = b"\x1b[?2026l";
-        assert_eq!(&RESTORE_SEQ[..end_sync.len()], end_sync);
+        assert_eq!(RESTORE_SEQ.get(..end_sync.len()), Some(end_sync.as_slice()));
     }
 }

@@ -74,13 +74,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn method_constants() {
-        assert_eq!(BeginPromptReq::METHOD, "workspace.begin_prompt");
-        assert_eq!(EndPromptReq::METHOD, "workspace.end_prompt");
-        assert_eq!(RewindToReq::METHOD, "workspace.rewind_to");
-    }
-
-    #[test]
     fn conflict_type_snake_case_wire_values() {
         assert_eq!(
             serde_json::to_value(ConflictType::DeletedExternally).unwrap(),

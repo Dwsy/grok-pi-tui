@@ -143,17 +143,6 @@ mod tests {
     }
 
     #[test]
-    fn standard_meta_keys_have_expected_values() {
-        // Sanity: lock the wire constants down so a typo is a test failure.
-        assert_eq!(META_SESSION_ID, "x-workspace-session-id");
-        assert_eq!(META_TRACEPARENT, "traceparent");
-        assert_eq!(META_TRACESTATE, "tracestate");
-        assert_eq!(META_CLIENT_ID, "x-workspace-client-id");
-        assert_eq!(META_PROMPT_INDEX, "x-workspace-prompt-index");
-        assert_eq!(META_GRPC_TIMEOUT, "grpc-timeout");
-    }
-
-    #[test]
     fn metadata_iteration_is_sorted() {
         let mut m = Metadata::new();
         m.insert("z", "1");

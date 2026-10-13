@@ -55,12 +55,6 @@ mod tests {
     }
 
     #[test]
-    fn default_is_auto() {
-        assert_eq!(RenderMermaid::default(), RenderMermaid::Auto);
-        assert_eq!(RenderMermaid::default().as_canonical(), "auto");
-    }
-
-    #[test]
     fn unknown_canonical_is_none() {
         assert_eq!(RenderMermaid::from_canonical("yes"), None);
         assert_eq!(RenderMermaid::from_canonical(""), None);

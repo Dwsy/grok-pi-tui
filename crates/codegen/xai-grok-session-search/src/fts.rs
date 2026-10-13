@@ -666,9 +666,15 @@ impl SessionSearchIndex {
             let lower = token.to_ascii_lowercase();
             if lower.ends_with("es") {
                 // Stemming `caches` to `cach` still finds `cache`: the trailing `*` covers the dropped `e`
-                &token[..token.len() - 2]
+                match token.len().checked_sub(2).and_then(|n| token.get(..n)) {
+                    Some(s) => s,
+                    None => token,
+                }
             } else if lower.ends_with('s') && !lower.ends_with("ss") {
-                &token[..token.len() - 1]
+                match token.len().checked_sub(1).and_then(|n| token.get(..n)) {
+                    Some(s) => s,
+                    None => token,
+                }
             } else {
                 token
             }
@@ -905,7 +911,10 @@ mod tests {
             .unwrap();
         let qr = reopened.query("python", None, 10, 0, false).unwrap();
         assert_eq!(qr.total_estimate, Some(1));
-        assert_eq!(qr.results[0].session_id, "s2");
+        assert_eq!(
+            qr.results.first().map(|r| r.session_id.as_str()),
+            Some("s2")
+        );
     }
 
     #[test]
@@ -942,7 +951,10 @@ mod tests {
         );
         // The tolerated index must stay fully usable for the older binary.
         let qr = reopened.query("borrow", None, 10, 0, false).unwrap();
-        assert_eq!(qr.results[0].session_id, "s1");
+        assert_eq!(
+            qr.results.first().map(|r| r.session_id.as_str()),
+            Some("s1")
+        );
     }
 
     #[test]
@@ -985,7 +997,10 @@ mod tests {
         .expect("with_index self-heals then upserts");
         let qr = with_index(&path, |index| index.query("works", None, 10, 0, false))
             .expect("query after heal");
-        assert_eq!(qr.results[0].session_id, "s1");
+        assert_eq!(
+            qr.results.first().map(|r| r.session_id.as_str()),
+            Some("s1")
+        );
 
         // Original path is a real DB again; a quarantine sibling should exist.
         assert!(path.is_file());
@@ -1080,7 +1095,10 @@ mod tests {
             .set_meta("last_bootstrap_at", "1783393999")
             .unwrap();
         let qr = reopened.query("fresh", None, 10, 0, false).unwrap();
-        assert_eq!(qr.results[0].session_id, "s2");
+        assert_eq!(
+            qr.results.first().map(|r| r.session_id.as_str()),
+            Some("s2")
+        );
     }
 
     #[test]
@@ -1097,9 +1115,16 @@ mod tests {
 
         let qr = index.query("rust", None, 10, 0, false).unwrap();
         assert_eq!(qr.total_estimate, Some(1));
-        assert_eq!(qr.results[0].session_id, "s1");
-        assert!(qr.results[0].score > 0.0);
-        assert!(qr.results[0].matched_fields.contains(&"title".to_string()));
+        assert_eq!(
+            qr.results.first().map(|r| r.session_id.as_str()),
+            Some("s1")
+        );
+        assert!(qr.results.first().is_some_and(|r| r.score > 0.0));
+        assert!(
+            qr.results
+                .first()
+                .is_some_and(|r| r.matched_fields.contains(&"title".to_string()))
+        );
     }
 
     #[test]
@@ -1162,7 +1187,8 @@ mod tests {
         );
         let qr = index.query("borrow", None, 10, 0, false).unwrap();
         assert_eq!(
-            qr.results[0].session_id, "s1",
+            qr.results.first().map(|r| r.session_id.as_str()),
+            Some("s1"),
             "full content must remain FTS-queryable after the no-op insert"
         );
 
@@ -1172,7 +1198,10 @@ mod tests {
             .unwrap();
         let qr = index.query("python", None, 10, 0, false).unwrap();
         assert_eq!(qr.total_estimate, Some(1));
-        assert_eq!(qr.results[0].session_id, "s2");
+        assert_eq!(
+            qr.results.first().map(|r| r.session_id.as_str()),
+            Some("s2")
+        );
     }
 
     /// `/resume` search types a session UUID; CLI `--resume <id>` works because it looks up by id globally.
@@ -1192,17 +1221,19 @@ mod tests {
 
         let qr = index.query(id, None, 10, 0, false).unwrap();
         assert_eq!(qr.results.len(), 1, "full session id must match");
-        assert_eq!(qr.results[0].session_id, id);
+        assert_eq!(qr.results.first().map(|r| r.session_id.as_str()), Some(id));
         assert!(
-            qr.results[0]
-                .matched_fields
-                .iter()
-                .any(|f| f == "session_id")
+            qr.results
+                .first()
+                .is_some_and(|r| r.matched_fields.iter().any(|f| f == "session_id"))
         );
 
         let prefix = index.query("019f870d-6976", None, 10, 0, false).unwrap();
         assert_eq!(prefix.results.len(), 1, "session id prefix must match");
-        assert_eq!(prefix.results[0].session_id, id);
+        assert_eq!(
+            prefix.results.first().map(|r| r.session_id.as_str()),
+            Some(id)
+        );
 
         let mut other_cwd = test_doc("019f870d-6976-7d73-a12a-ffffffffffff", "other", "unrelated");
         other_cwd.cwd = "/other".to_string();
@@ -1211,7 +1242,10 @@ mod tests {
             .query(id, Some("/test/workspace"), 10, 0, false)
             .unwrap();
         assert_eq!(scoped.results.len(), 1);
-        assert_eq!(scoped.results[0].session_id, id);
+        assert_eq!(
+            scoped.results.first().map(|r| r.session_id.as_str()),
+            Some(id)
+        );
     }
 
     #[test]
@@ -1233,7 +1267,10 @@ mod tests {
             .query("rust", Some("/workspace/a"), 10, 0, false)
             .unwrap();
         assert_eq!(filtered.results.len(), 1);
-        assert_eq!(filtered.results[0].session_id, "s1");
+        assert_eq!(
+            filtered.results.first().map(|r| r.session_id.as_str()),
+            Some("s1")
+        );
     }
 
     #[test]
@@ -1273,7 +1310,7 @@ mod tests {
 
         let qr = index.query("borrow checker", None, 10, 0, true).unwrap();
         assert_eq!(qr.results.len(), 1);
-        assert!(qr.results[0].snippet.is_some());
+        assert!(qr.results.first().is_some_and(|r| r.snippet.is_some()));
     }
 
     #[test]
@@ -1314,7 +1351,11 @@ mod tests {
 
         let qr = index.query("kubernetes", None, 10, 0, false).unwrap();
         assert_eq!(qr.results.len(), 1);
-        assert!(qr.results[0].matched_fields.contains(&"title".to_string()));
+        assert!(
+            qr.results
+                .first()
+                .is_some_and(|r| r.matched_fields.contains(&"title".to_string()))
+        );
     }
 
     /// cwd is a filter dimension, not a search dimension.
@@ -1354,7 +1395,10 @@ mod tests {
             .query("session_picker.rs", None, 10, 0, false)
             .unwrap();
         assert_eq!(qr.total_estimate, Some(1));
-        assert_eq!(qr.results[0].session_id, "s1");
+        assert_eq!(
+            qr.results.first().map(|r| r.session_id.as_str()),
+            Some("s1")
+        );
     }
 
     #[test]
@@ -1381,12 +1425,18 @@ mod tests {
         // AND has hits: only the doc matching every token is returned, so partial matches cannot dilute the result set
         let qr = index.query("borrow checker", None, 10, 0, false).unwrap();
         assert_eq!(qr.total_estimate, Some(1));
-        assert_eq!(qr.results[0].session_id, "s1");
+        assert_eq!(
+            qr.results.first().map(|r| r.session_id.as_str()),
+            Some("s1")
+        );
 
         // A separator-only word (`->`) must be dropped, not become an empty phrase that silently makes the whole AND match nothing
         let qr = index.query("fix -> borrow", None, 10, 0, false).unwrap();
         assert_eq!(qr.total_estimate, Some(1));
-        assert_eq!(qr.results[0].session_id, "s1");
+        assert_eq!(
+            qr.results.first().map(|r| r.session_id.as_str()),
+            Some("s1")
+        );
 
         // No doc has both tokens: the OR rerun returns the partial matches
         let qr = index.query("tokio sqlite", None, 10, 0, false).unwrap();

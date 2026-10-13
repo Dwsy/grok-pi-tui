@@ -163,8 +163,16 @@ fn a_message_that_cannot_fit_at_all_is_not_returned() {
 #[test]
 fn a_recorded_completion_with_an_oversized_path_is_refit_not_dropped() {
     let mut record = serde_json::to_value(notification(&"Z".repeat(64 * 1024))).unwrap();
-    record["update"]["task_snapshot"]["output_file"] =
-        serde_json::Value::String(format!("/tmp/{}/task.log", "p".repeat(80 * 1024)));
+    if let Some(obj) = record
+        .get_mut("update")
+        .and_then(|u| u.get_mut("task_snapshot"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        obj.insert(
+            "output_file".to_string(),
+            serde_json::Value::String(format!("/tmp/{}/task.log", "p".repeat(80 * 1024))),
+        );
+    }
     let raw = serde_json::value::to_raw_value(&record).unwrap();
 
     match refit_recorded(&raw) {
@@ -179,7 +187,16 @@ fn a_recorded_completion_with_an_oversized_path_is_refit_not_dropped() {
 #[test]
 fn a_recorded_completion_with_an_oversized_command_is_refit() {
     let mut record = serde_json::to_value(notification("small\n")).unwrap();
-    record["update"]["task_snapshot"]["command"] = serde_json::Value::String("c".repeat(80 * 1024));
+    if let Some(obj) = record
+        .get_mut("update")
+        .and_then(|u| u.get_mut("task_snapshot"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        obj.insert(
+            "command".to_string(),
+            serde_json::Value::String("c".repeat(80 * 1024)),
+        );
+    }
     let raw = serde_json::value::to_raw_value(&record).unwrap();
 
     match refit_recorded(&raw) {

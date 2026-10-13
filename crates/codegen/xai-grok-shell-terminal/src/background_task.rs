@@ -535,10 +535,12 @@ mod tests {
         persist_manifest(dir.path(), entries);
 
         let loaded = load_and_clear_manifest(dir.path());
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].task_id, "task-a");
-        assert_eq!(loaded[1].task_id, "task-b");
-        assert_eq!(loaded[0].command, "rsync -aP src:task-a /data/");
+        let [a, b] = loaded.as_slice() else {
+            panic!("expected two entries: {loaded:?}");
+        };
+        assert_eq!(a.task_id, "task-a");
+        assert_eq!(b.task_id, "task-b");
+        assert_eq!(a.command, "rsync -aP src:task-a /data/");
 
         // File is deleted after load
         let again = load_and_clear_manifest(dir.path());
@@ -626,9 +628,11 @@ mod tests {
         persist_manifest(dir.path(), vec![entry]);
 
         let loaded = load_and_clear_manifest(dir.path());
-        assert_eq!(loaded.len(), 1);
+        let [entry] = loaded.as_slice() else {
+            panic!("expected 1 entry, got {}", loaded.len());
+        };
         assert_eq!(
-            loaded[0].kind,
+            entry.kind,
             xai_grok_tools::computer::types::TaskKind::Monitor
         );
     }

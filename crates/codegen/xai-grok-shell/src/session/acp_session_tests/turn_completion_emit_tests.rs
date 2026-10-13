@@ -7,7 +7,6 @@
 use super::support::*;
 use super::turn_end_reporting_tests::RecordingLifecycle;
 use super::*;
-
 use tokio::sync::mpsc;
 
 /// Drain every persistence message queued so far.
@@ -220,12 +219,17 @@ async fn completion_and_cancel_arbitrate_during_cleanup() {
                 );
                 assert_eq!(
                     turn_completed_fields(&persisted).unwrap().1,
-                    ["cancelled", "end_turn"][usize::from(completion_wins)]
+                    if completion_wins {
+                        "end_turn"
+                    } else {
+                        "cancelled"
+                    }
                 );
-                let expected_report = [
-                    super::turn_report_slot::CommitOutcome::LostToAnotherReporter,
-                    super::turn_report_slot::CommitOutcome::Reported,
-                ][usize::from(completion_wins)];
+                let expected_report = if completion_wins {
+                    super::turn_report_slot::CommitOutcome::Reported
+                } else {
+                    super::turn_report_slot::CommitOutcome::LostToAnotherReporter
+                };
                 assert_eq!(report.commit(), expected_report);
                 assert_eq!(std::iter::from_fn(|| gateway_rx.try_recv().ok()).count(), 1);
                 drop(resources_guard);
@@ -849,14 +853,15 @@ async fn send_now_cancel_stamps_cancel_trigger_on_turn_end() {
                     && args.request.method.as_ref() == "x.ai/session_notification"
                     && let Ok(v) =
                         serde_json::from_str::<serde_json::Value>(args.request.params.get())
-                    && v["update"]["sessionUpdate"] == "turn_completed"
+                    && j(j(&v, "update"), "sessionUpdate") == "turn_completed"
                 {
-                    wire_meta = Some(v["_meta"].clone());
+                    wire_meta = Some(j(&v, "_meta").clone());
                 }
             }
             let wire_meta = wire_meta.expect("the TurnCompleted terminal must reach the wire");
             assert_eq!(
-                wire_meta["cancelTrigger"], "send_now",
+                j(&wire_meta, "cancelTrigger"),
+                "send_now",
                 "wire `_meta.cancelTrigger` must be send_now"
             );
 
@@ -1241,13 +1246,14 @@ fn cancel_before_the_turn_task_runs_posts_this_turns_cancelled_delta() {
                 Ok(acp::StopReason::Cancelled)
             );
             let delta = next_turn_delta(&mut delta_rx).await;
-            assert_eq!(delta["turnNumber"], 1, "{delta}");
-            assert_eq!(delta["requestId"], "p1");
-            assert_eq!(delta["turnOutcome"], "cancelled");
-            assert_eq!(delta["deltaCancellations"], 1);
-            assert!(delta["turnDurationMs"].is_number(), "{delta}");
+            assert_eq!(j(&delta, "turnNumber"), 1, "{delta}");
+            assert_eq!(j(&delta, "requestId"), "p1");
+            assert_eq!(j(&delta, "turnOutcome"), "cancelled");
+            assert_eq!(j(&delta, "deltaCancellations"), 1);
+            assert!(j(&delta, "turnDurationMs").is_number(), "{delta}");
             assert_eq!(
-                delta["metadata"]["startPromptMode"], "agent",
+                j(j(&delta, "metadata"), "startPromptMode"),
+                "agent",
                 "the row carries this request's mode, not the previous turn's: {delta}"
             );
 
@@ -1271,14 +1277,15 @@ fn cancel_before_the_turn_task_runs_posts_this_turns_cancelled_delta() {
             assert_eq!(snapshot.turn_input_tokens, 10);
             assert_eq!(snapshot.turn_output_tokens, 5);
             let delta = next_turn_delta(&mut delta_rx).await;
-            assert_eq!(delta["turnNumber"], 2, "{delta}");
-            assert_eq!(delta["requestId"], "p2");
-            assert_eq!(delta["turnOutcome"], "completed");
+            assert_eq!(j(&delta, "turnNumber"), 2, "{delta}");
+            assert_eq!(j(&delta, "requestId"), "p2");
+            assert_eq!(j(&delta, "turnOutcome"), "completed");
             assert_eq!(
-                delta["deltaCancellations"], 0,
+                j(&delta, "deltaCancellations"),
+                0,
                 "the idle Esc must not land on this turn's row"
             );
-            assert!(delta["turnDurationMs"].is_number(), "{delta}");
+            assert!(j(&delta, "turnDurationMs").is_number(), "{delta}");
             assert_no_turn_delta(&mut delta_rx, "one row per turn").await;
         });
     });
@@ -1362,15 +1369,19 @@ fn every_terminal_posts_one_delta_with_the_settled_outcome() {
                     _ => assert!(result.is_err(), "{prompt_id}: {result:?}"),
                 }
                 let delta = next_turn_delta(&mut delta_rx).await;
-                assert_eq!(delta["turnNumber"], turn, "{prompt_id}: {delta}");
-                assert_eq!(delta["requestId"], prompt_id);
-                assert_eq!(delta["turnOutcome"], outcome, "{prompt_id}");
-                assert_eq!(delta["deltaToolCalls"], tool_calls, "{prompt_id}");
+                assert_eq!(j(&delta, "turnNumber"), turn, "{prompt_id}: {delta}");
+                assert_eq!(j(&delta, "requestId"), prompt_id);
+                assert_eq!(j(&delta, "turnOutcome"), outcome, "{prompt_id}");
+                assert_eq!(j(&delta, "deltaToolCalls"), tool_calls, "{prompt_id}");
                 assert_eq!(
-                    delta["deltaCancellations"], 0,
+                    j(&delta, "deltaCancellations"),
+                    0,
                     "{prompt_id}: not a user cancel"
                 );
-                assert!(delta["turnDurationMs"].is_number(), "{prompt_id}: {delta}");
+                assert!(
+                    j(&delta, "turnDurationMs").is_number(),
+                    "{prompt_id}: {delta}"
+                );
             }
             assert_no_turn_delta(&mut delta_rx, "one row per turn").await;
         });
@@ -1422,9 +1433,9 @@ fn cancel_racing_a_finished_task_posts_one_cancelled_delta() {
                 Ok(acp::StopReason::Cancelled)
             );
             let delta = next_turn_delta(&mut delta_rx).await;
-            assert_eq!(delta["turnNumber"], 1, "{delta}");
-            assert_eq!(delta["turnOutcome"], "cancelled");
-            assert_eq!(delta["deltaCancellations"], 1);
+            assert_eq!(j(&delta, "turnNumber"), 1, "{delta}");
+            assert_eq!(j(&delta, "turnOutcome"), "cancelled");
+            assert_eq!(j(&delta, "deltaCancellations"), 1);
 
             assert!(!settle(&actor, msg).await, "the completion lost the lease");
             assert_no_turn_delta(&mut delta_rx, "a stale completion posts no second row").await;
@@ -1521,10 +1532,10 @@ fn multi_round_turn_posts_one_delta_spanning_every_round() {
             assert_eq!(snapshot.turn_output_tokens, 10, "both rounds' completions");
 
             let delta = next_turn_delta(&mut delta_rx).await;
-            assert_eq!(delta["turnNumber"], 1, "{delta}");
-            assert_eq!(delta["turnOutcome"], "completed");
-            assert_eq!(delta["deltaAssistantMessages"], 2, "{delta}");
-            let duration_ms = delta["turnDurationMs"]
+            assert_eq!(j(&delta, "turnNumber"), 1, "{delta}");
+            assert_eq!(j(&delta, "turnOutcome"), "completed");
+            assert_eq!(j(&delta, "deltaAssistantMessages"), 2, "{delta}");
+            let duration_ms = j(&delta, "turnDurationMs")
                 .as_u64()
                 .expect("rows carry a duration");
             assert!(

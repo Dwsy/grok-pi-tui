@@ -232,6 +232,10 @@ pub struct StatusConfig {
     /// Optional WebSocket liveness deadline (`GROK_WORKSPACE_WS_LIVENESS_DEADLINE_SECS`).
     /// `None` leaves the SDK's `min(4× ping, 120s)` default in place.
     pub ws_liveness_deadline: Option<Duration>,
+    /// Initial hub-connect hedge delay (`GROK_WORKSPACE_HUB_CONNECT_HEDGE_AFTER_SECS`).
+    pub hub_connect_hedge_after: Option<Duration>,
+    /// Initial hub-connect deadline (`GROK_WORKSPACE_HUB_CONNECT_DEADLINE_SECS`).
+    pub hub_connect_deadline: Option<Duration>,
     /// Proactive OIDC refresh policy (`GROK_WORKSPACE_OIDC_*`).
     pub oidc_refresh: ProactiveRefreshConfig,
     /// Number of consecutive server reconnect failures before warning.
@@ -302,6 +306,8 @@ impl Default for StatusConfig {
             ws_ping: Duration::from_secs(DEFAULT_WS_PING_SECS),
             ws_reconnect_backoff: None,
             ws_liveness_deadline: None,
+            hub_connect_hedge_after: None,
+            hub_connect_deadline: None,
             oidc_refresh: ProactiveRefreshConfig::default(),
             hub_warn_threshold: DEFAULT_HUB_WARN_THRESHOLD,
             hub_backoff_base: Duration::from_millis(DEFAULT_HUB_BACKOFF_BASE_MS),
@@ -346,6 +352,8 @@ impl StatusConfig {
                 "GROK_WORKSPACE_WS_RECONNECT_BACKOFF_MS",
             ),
             ws_liveness_deadline: optional_secs("GROK_WORKSPACE_WS_LIVENESS_DEADLINE_SECS"),
+            hub_connect_hedge_after: optional_secs("GROK_WORKSPACE_HUB_CONNECT_HEDGE_AFTER_SECS"),
+            hub_connect_deadline: optional_secs("GROK_WORKSPACE_HUB_CONNECT_DEADLINE_SECS"),
             oidc_refresh: ProactiveRefreshConfig::from_env(),
             hub_warn_threshold: parse_or(
                 "GROK_WORKSPACE_HUB_WARN_THRESHOLD",
@@ -672,6 +680,8 @@ mod tests {
         assert_eq!(cfg.ws_ping, Duration::from_secs(30));
         assert_eq!(cfg.ws_reconnect_backoff, None);
         assert_eq!(cfg.ws_liveness_deadline, None);
+        assert_eq!(cfg.hub_connect_hedge_after, None);
+        assert_eq!(cfg.hub_connect_deadline, None);
         assert_eq!(cfg.oidc_refresh, ProactiveRefreshConfig::default());
         assert!(cfg.oidc_refresh.enabled);
         assert_eq!(cfg.oidc_refresh.fraction, 0.6);
@@ -923,6 +933,8 @@ mod tests {
             "GROK_WORKSPACE_WS_PING_SECS",
             "GROK_WORKSPACE_WS_RECONNECT_BACKOFF_MS",
             "GROK_WORKSPACE_WS_LIVENESS_DEADLINE_SECS",
+            "GROK_WORKSPACE_HUB_CONNECT_HEDGE_AFTER_SECS",
+            "GROK_WORKSPACE_HUB_CONNECT_DEADLINE_SECS",
             "GROK_WORKSPACE_OIDC_PROACTIVE_REFRESH_ENABLED",
             "GROK_WORKSPACE_OIDC_REFRESH_FRACTION",
             "GROK_WORKSPACE_OIDC_REFRESH_JITTER_FRACTION",
@@ -956,6 +968,8 @@ mod tests {
         assert_eq!(cfg.ws_ping, default.ws_ping);
         assert_eq!(cfg.ws_reconnect_backoff, default.ws_reconnect_backoff);
         assert_eq!(cfg.ws_liveness_deadline, default.ws_liveness_deadline);
+        assert_eq!(cfg.hub_connect_hedge_after, default.hub_connect_hedge_after);
+        assert_eq!(cfg.hub_connect_deadline, default.hub_connect_deadline);
         assert_eq!(cfg.oidc_refresh, default.oidc_refresh);
         assert_eq!(cfg.hub_warn_threshold, default.hub_warn_threshold);
         assert_eq!(cfg.hub_backoff_base, default.hub_backoff_base);
@@ -1480,6 +1494,26 @@ mod tests {
         assert_eq!(StatusConfig::from_env().ws_liveness_deadline, None);
 
         unsafe { std::env::remove_var(var) };
+    }
+
+    #[test]
+    fn hub_connect_policy_env_parses() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let hedge_var = "GROK_WORKSPACE_HUB_CONNECT_HEDGE_AFTER_SECS";
+        let deadline_var = "GROK_WORKSPACE_HUB_CONNECT_DEADLINE_SECS";
+
+        unsafe {
+            std::env::set_var(hedge_var, "3");
+            std::env::set_var(deadline_var, "50");
+        }
+        let cfg = StatusConfig::from_env();
+        unsafe {
+            std::env::remove_var(hedge_var);
+            std::env::remove_var(deadline_var);
+        }
+
+        assert_eq!(Some(Duration::from_secs(3)), cfg.hub_connect_hedge_after);
+        assert_eq!(Some(Duration::from_secs(50)), cfg.hub_connect_deadline);
     }
 
     /// A malformed element makes the whole schedule fall back to `None` (and warns) rather than silently dropping entries.

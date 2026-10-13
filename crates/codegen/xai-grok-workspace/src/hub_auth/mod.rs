@@ -5,7 +5,9 @@
 //! It gets an in-memory provider from the leader's `AuthManager` (see `LeaderAuthProvider`) so it never races the leader's own auth.json writer.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use url::Url;
@@ -186,6 +188,15 @@ enum OidcProviderKind {
     Proactive,
 }
 
+/// Resolves, with the cause, once the provider's refresh has been rejected for good and the
+/// token it serves will expire unreplaced; pending forever for a provider that never refreshes
+/// ([`ProactiveOidcAuthProvider::refresh_ended`]).
+pub type RefreshEnded = Pin<Box<dyn Future<Output = String> + Send>>;
+
+fn never_ends() -> RefreshEnded {
+    Box::pin(std::future::pending())
+}
+
 /// Writes `auth.json` on the calling thread.
 /// The proactive provider already offloads this onto its persist worker, whose seq check drops stale writes.
 /// A nested spawn here would run `write_refreshed_token` after that check and let a stale write land over a newer one.
@@ -221,7 +232,7 @@ fn build_oidc_provider(
     entry: &AuthEntry,
     auth_path: PathBuf,
     refresh_cfg: &ProactiveRefreshConfig,
-) -> anyhow::Result<(Arc<dyn AuthProvider>, OidcProviderKind)> {
+) -> anyhow::Result<(Arc<dyn AuthProvider>, OidcProviderKind, RefreshEnded)> {
     let refresh_token = entry.refresh_token.as_ref().ok_or_else(|| {
         anyhow::anyhow!("auth entry has no refresh_token — cannot refresh expired tokens")
     })?;
@@ -233,23 +244,22 @@ fn build_oidc_provider(
     })?;
 
     if refresh_cfg.enabled {
-        return Ok((
-            Arc::new(ProactiveOidcAuthProvider::new(ProactiveOidcParams {
-                access_token: entry.key.clone(),
-                refresh_token: refresh_token.clone(),
-                issuer: issuer.clone(),
-                client_id: client_id.clone(),
-                identity: identity_from_entry(entry),
-                expires_at: entry.expires_at,
-                refresh: refresh_cfg.clone(),
-                on_refresh: Some(persist_on_refresh(
-                    auth_path,
-                    scope_key,
-                    entry.user_id.clone(),
-                )),
-            })),
-            OidcProviderKind::Proactive,
-        ));
+        let provider = ProactiveOidcAuthProvider::new(ProactiveOidcParams {
+            access_token: entry.key.clone(),
+            refresh_token: refresh_token.clone(),
+            issuer: issuer.clone(),
+            client_id: client_id.clone(),
+            identity: identity_from_entry(entry),
+            expires_at: entry.expires_at,
+            refresh: refresh_cfg.clone(),
+            on_refresh: Some(persist_on_refresh(
+                auth_path,
+                scope_key,
+                entry.user_id.clone(),
+            )),
+        });
+        let ended = Box::pin(provider.refresh_ended());
+        return Ok((Arc::new(provider), OidcProviderKind::Proactive, ended));
     }
 
     let mut builder = OidcAuthProviderBuilder::new(&entry.key, refresh_token, issuer, client_id);
@@ -271,7 +281,11 @@ fn build_oidc_provider(
         entry.user_id.clone(),
     ));
 
-    Ok((Arc::new(builder.build()), OidcProviderKind::Sdk))
+    Ok((
+        Arc::new(builder.build()),
+        OidcProviderKind::Sdk,
+        never_ends(),
+    ))
 }
 
 /// How long [`lock_auth_file`] polls for the shared `auth.json.lock` before skipping the persist.
@@ -414,37 +428,12 @@ pub(crate) fn write_refreshed_token(
     Ok(())
 }
 
-/// Atomically replace `path`: temp file (0600 on Unix), fsync, then rename.
-/// Avoids the window where a truncate-in-place rewrite would leave auth.json partially written.
+/// Atomically replace `auth.json` (owner-only, fsync'd) through a `GROK_HOME`-overlay link, so the
+/// refreshed token reaches the file the shell reads.
 fn write_json_atomic(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
-    use std::io::Write;
-
     let json = serde_json::to_string_pretty(value)?;
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-
-    let mut file = opts
-        .open(&tmp)
-        .map_err(|e| anyhow::anyhow!("failed to open {}: {e}", tmp.display()))?;
-    file.write_all(json.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-
-    #[cfg(windows)]
-    let _ = std::fs::remove_file(path);
-
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(anyhow::anyhow!("failed to replace {}: {e}", path.display()));
-    }
-    Ok(())
+    xai_grok_config::fs_atomic::write_user_file_atomically(path, &json, Some(0o600))
+        .map_err(|e| anyhow::anyhow!("failed to replace {}: {e}", path.display()))
 }
 
 /// Hub auth provider for `hub_url`. `auth_config` overrides `~/.grok/auth.json`.
@@ -454,6 +443,16 @@ pub fn provider(
     auth_config: Option<&Path>,
     refresh_cfg: &ProactiveRefreshConfig,
 ) -> anyhow::Result<Arc<dyn AuthProvider>> {
+    provider_with_refresh_ended(hub_url, auth_config, refresh_cfg).map(|(provider, _)| provider)
+}
+
+/// [`provider`], with the future that resolves once its refresh has been rejected for good;
+/// see [`RefreshEnded`].
+pub fn provider_with_refresh_ended(
+    hub_url: &Url,
+    auth_config: Option<&Path>,
+    refresh_cfg: &ProactiveRefreshConfig,
+) -> anyhow::Result<(Arc<dyn AuthProvider>, RefreshEnded)> {
     let auth_path = match auth_config {
         Some(p) => p.to_path_buf(),
         None => default_auth_path()?,
@@ -465,12 +464,16 @@ pub fn provider(
 
     if is_loopback {
         tracing::info!("Using local-dev auth (loopback hub)");
-        Ok(Arc::new(BearerWithIdentity {
-            identity: identity_from_entry(&entry),
-            token: entry.key.clone(),
-        }))
+        Ok((
+            Arc::new(BearerWithIdentity {
+                identity: identity_from_entry(&entry),
+                token: entry.key.clone(),
+            }),
+            never_ends(),
+        ))
     } else {
-        build_oidc_provider(scope_key, &entry, auth_path, refresh_cfg).map(|(provider, _)| provider)
+        build_oidc_provider(scope_key, &entry, auth_path, refresh_cfg)
+            .map(|(provider, _, ended)| (provider, ended))
     }
 }
 
@@ -672,7 +675,8 @@ mod tests {
             PathBuf::from("/tmp/x"),
             &ProactiveRefreshConfig::default(),
         )
-        .unwrap_err();
+        .err()
+        .expect("the entry must be rejected");
         assert!(err.to_string().contains("refresh_token"));
     }
 
@@ -694,7 +698,8 @@ mod tests {
             PathBuf::from("/tmp/x"),
             &ProactiveRefreshConfig::default(),
         )
-        .unwrap_err();
+        .err()
+        .expect("the entry must be rejected");
         assert!(err.to_string().contains("oidc_issuer"));
     }
 
@@ -716,7 +721,8 @@ mod tests {
             PathBuf::from("/tmp/x"),
             &ProactiveRefreshConfig::default(),
         )
-        .unwrap_err();
+        .err()
+        .expect("the entry must be rejected");
         assert!(err.to_string().contains("oidc_client_id"));
     }
 
@@ -732,7 +738,7 @@ mod tests {
             principal_id: Some("t1".into()),
             expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
         };
-        let (provider, kind) = build_oidc_provider(
+        let (provider, kind, _ended) = build_oidc_provider(
             "oidc".into(),
             &entry,
             PathBuf::from("/tmp/x"),
@@ -777,9 +783,27 @@ mod tests {
 
         let updated: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(updated["oidc"]["key"], "eyJ.new");
-        assert_eq!(updated["oidc"]["refresh_token"], "rt-new");
-        assert_eq!(updated["legacy"]["key"], "xai-old");
+        assert_eq!(
+            updated
+                .get("oidc")
+                .and_then(|v| v.get("key"))
+                .unwrap_or(&serde_json::Value::Null),
+            "eyJ.new"
+        );
+        assert_eq!(
+            updated
+                .get("oidc")
+                .and_then(|v| v.get("refresh_token"))
+                .unwrap_or(&serde_json::Value::Null),
+            "rt-new"
+        );
+        assert_eq!(
+            updated
+                .get("legacy")
+                .and_then(|v| v.get("key"))
+                .unwrap_or(&serde_json::Value::Null),
+            "xai-old"
+        );
     }
 
     /// A refresh that lands after `grok login` as someone else reused the scope key must not write
@@ -799,14 +823,32 @@ mod tests {
         write_refreshed_token(&path, "oidc", "u-old", &event).unwrap();
         let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(after["oidc"]["key"], "eyJ.theirs");
-        assert_eq!(after["oidc"]["refresh_token"], "rt-theirs");
+        assert_eq!(
+            after
+                .get("oidc")
+                .and_then(|v| v.get("key"))
+                .unwrap_or(&serde_json::Value::Null),
+            "eyJ.theirs"
+        );
+        assert_eq!(
+            after
+                .get("oidc")
+                .and_then(|v| v.get("refresh_token"))
+                .unwrap_or(&serde_json::Value::Null),
+            "rt-theirs"
+        );
 
         // The same account, or a provider whose entry named no account, still updates it.
         write_refreshed_token(&path, "oidc", "u-new", &event).unwrap();
         let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(after["oidc"]["key"], "eyJ.ours");
+        assert_eq!(
+            after
+                .get("oidc")
+                .and_then(|v| v.get("key"))
+                .unwrap_or(&serde_json::Value::Null),
+            "eyJ.ours"
+        );
         let unnamed = RefreshEvent {
             access_token: "eyJ.unnamed".into(),
             new_refresh_token: None,
@@ -815,7 +857,13 @@ mod tests {
         write_refreshed_token(&path, "oidc", "", &unnamed).unwrap();
         let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(after["oidc"]["key"], "eyJ.unnamed");
+        assert_eq!(
+            after
+                .get("oidc")
+                .and_then(|v| v.get("key"))
+                .unwrap_or(&serde_json::Value::Null),
+            "eyJ.unnamed"
+        );
     }
 
     /// With several OIDC entries (personal and enterprise login), the latest `expires_at` wins; the user's grok sessions refresh that entry.
@@ -871,10 +919,34 @@ mod tests {
 
         let updated: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(updated["aaa"]["key"], "eyJ.a-new");
-        assert_eq!(updated["aaa"]["refresh_token"], "rt-a-new");
-        assert_eq!(updated["zzz"]["key"], "eyJ.z");
-        assert_eq!(updated["zzz"]["refresh_token"], "rt-z");
+        assert_eq!(
+            updated
+                .get("aaa")
+                .and_then(|v| v.get("key"))
+                .unwrap_or(&serde_json::Value::Null),
+            "eyJ.a-new"
+        );
+        assert_eq!(
+            updated
+                .get("aaa")
+                .and_then(|v| v.get("refresh_token"))
+                .unwrap_or(&serde_json::Value::Null),
+            "rt-a-new"
+        );
+        assert_eq!(
+            updated
+                .get("zzz")
+                .and_then(|v| v.get("key"))
+                .unwrap_or(&serde_json::Value::Null),
+            "eyJ.z"
+        );
+        assert_eq!(
+            updated
+                .get("zzz")
+                .and_then(|v| v.get("refresh_token"))
+                .unwrap_or(&serde_json::Value::Null),
+            "rt-z"
+        );
     }
 
     /// Persists run on detached threads and race a sibling shell writing the same file.
@@ -898,8 +970,20 @@ mod tests {
 
         let updated: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(updated["oidc"]["refresh_token"], "rt-newer");
-        assert_eq!(updated["oidc"]["key"], "eyJ.newer");
+        assert_eq!(
+            updated
+                .get("oidc")
+                .and_then(|v| v.get("refresh_token"))
+                .unwrap_or(&serde_json::Value::Null),
+            "rt-newer"
+        );
+        assert_eq!(
+            updated
+                .get("oidc")
+                .and_then(|v| v.get("key"))
+                .unwrap_or(&serde_json::Value::Null),
+            "eyJ.newer"
+        );
     }
 
     #[test]
@@ -921,8 +1005,20 @@ mod tests {
 
         let updated: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(updated["oidc"]["key"], "eyJ.new");
-        assert_eq!(updated["oidc"]["refresh_token"], "rt-keep");
+        assert_eq!(
+            updated
+                .get("oidc")
+                .and_then(|v| v.get("key"))
+                .unwrap_or(&serde_json::Value::Null),
+            "eyJ.new"
+        );
+        assert_eq!(
+            updated
+                .get("oidc")
+                .and_then(|v| v.get("refresh_token"))
+                .unwrap_or(&serde_json::Value::Null),
+            "rt-keep"
+        );
     }
 
     #[test]
@@ -958,7 +1054,7 @@ mod tests {
 
     #[test]
     fn build_oidc_provider_flag_off_uses_sdk_provider() {
-        let (provider, kind) = build_oidc_provider(
+        let (provider, kind, _ended) = build_oidc_provider(
             "oidc".into(),
             &complete_oidc_entry(),
             PathBuf::from("/tmp/x"),
@@ -981,7 +1077,7 @@ mod tests {
             enabled: true,
             ..ProactiveRefreshConfig::default()
         };
-        let (provider, kind) = build_oidc_provider(
+        let (provider, kind, _ended) = build_oidc_provider(
             "oidc".into(),
             &complete_oidc_entry(),
             PathBuf::from("/tmp/x"),

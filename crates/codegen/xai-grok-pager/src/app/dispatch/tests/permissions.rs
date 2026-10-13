@@ -2,6 +2,13 @@
 
 use super::*;
 
+fn agent_ref(app: &AppView, id: AgentId) -> &AgentView {
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    agent
+}
+
 /// `ConfirmResetSetting { Reset }` on `permission_mode` dispatches `Action::SetPermissionMode(PermissionModeKind::Ask)` via recursive dispatch.
 /// The setting is the security-critical SHELL Enum; a modal commit must go through the typed setter.
 /// Emitting `Effect::PersistPermissionMode` shows the dispatch went through `set_permission_mode`, not the legacy `set_yolo_mode`.
@@ -11,7 +18,7 @@ fn dispatch_confirm_reset_setting_reset_dispatches_set_permission_mode_for_permi
     let mut app = test_app_with_agent();
     // Flip yolo on first (the default is OFF, "ask")
     let _ = dispatch(Action::SetYoloMode(true), &mut app);
-    assert!(app.agents[&AgentId(0)].session.is_yolo());
+    assert!(agent_ref(&app, AgentId(0)).session.is_yolo());
 
     setup_reset_confirm_open(&mut app, "permission_mode");
 
@@ -31,7 +38,7 @@ fn dispatch_confirm_reset_setting_reset_dispatches_set_permission_mode_for_permi
         "Reset of permission_mode must emit PersistPermissionMode, got {effects:?}",
     );
     assert!(
-        !app.agents[&AgentId(0)].session.is_yolo(),
+        !agent_ref(&app, AgentId(0)).session.is_yolo(),
         "agent.session.yolo_mode must be reset to default (off)",
     );
 }
@@ -97,7 +104,7 @@ fn set_yolo_mode_on_drains_permission_queue_with_allow_once() {
 
     // Queue is drained.
     assert!(
-        app.agents[&AgentId(0)].permission_queue.is_empty(),
+        agent_ref(&app, AgentId(0)).permission_queue.is_empty(),
         "YOLO ON must drain the permission_queue",
     );
     // Verify the `AllowOnce` response was actually sent (NOT `Cancelled`)
@@ -142,7 +149,7 @@ fn permission_select_clears_double_click_tracker_for_next_prompt() {
         &mut app,
     );
 
-    let agent = &app.agents[&AgentId(0)];
+    let agent = &agent_ref(&app, AgentId(0));
     assert_eq!(agent.permission_queue.len(), 1);
     assert!(
         agent.last_permission_click.is_none(),
@@ -190,7 +197,7 @@ fn set_permission_mode_always_approve_blocked_by_policy_pin() {
         effects.is_empty(),
         "blocked modal commit must not persist, got {effects:?}",
     );
-    assert!(!app.agents[&AgentId(0)].session.is_yolo());
+    assert!(!agent_ref(&app, AgentId(0)).session.is_yolo());
     assert_eq!(
         app.current_ui.permission_mode, None,
         "canonical mirror must stay untouched"
@@ -225,7 +232,7 @@ fn set_permission_mode_auto_persists_without_yolo() {
         Action::SetPermissionMode(PermissionModeKind::Auto),
         &mut app,
     );
-    assert!(!app.agents[&AgentId(0)].session.is_yolo());
+    assert!(!agent_ref(&app, AgentId(0)).session.is_yolo());
     assert_eq!(app.current_ui.permission_mode.as_deref(), Some("auto"));
     assert!(
         effects.iter().any(|e| matches!(
@@ -288,7 +295,7 @@ fn rollback_permission_mode_unknown_canonical_defaults_to_ask() {
     );
 
     assert!(
-        !app.agents[&AgentId(0)].session.is_yolo(),
+        !agent_ref(&app, AgentId(0)).session.is_yolo(),
         "unknown canonical → safe default (ask = no auto-approve)",
     );
     assert_eq!(app.current_ui.permission_mode.as_deref(), Some("ask"));
@@ -355,12 +362,12 @@ fn set_permission_mode_ask_emits_brand_consistent_toast() {
 
     let effects = dispatch(Action::SetPermissionMode(PermissionModeKind::Ask), &mut app);
 
-    assert!(!app.agents[&AgentId(0)].session.is_yolo());
+    assert!(!agent_ref(&app, AgentId(0)).session.is_yolo());
     assert_eq!(app.current_ui.permission_mode.as_deref(), Some("ask"));
 
     // The toast brands as "Permission mode", not "Always-approve"
     // The Ask arm used to reuse `yolo_toast(false)`, producing the mismatched "✓ Always-approve: off"
-    let toast = app.agents[&AgentId(0)]
+    let toast = agent_ref(&app, AgentId(0))
         .toast
         .as_ref()
         .map(|(s, _)| s.clone())
@@ -372,10 +379,10 @@ fn set_permission_mode_ask_emits_brand_consistent_toast() {
 
     // Effect carries the new canonical and the prior canonical (was "always-approve" from the test-setup pre-set)
     assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::PersistPermissionMode {
+    match effects.first() {
+        Some(Effect::PersistPermissionMode {
             canonical, persist, ..
-        } => {
+        }) => {
             assert_eq!(*canonical, "ask");
             assert_eq!(
                 *persist,
@@ -406,13 +413,13 @@ fn set_permission_mode_with_live_yolo_and_no_ui_mirror_rolls_back_to_always_appr
     );
 
     // The dispatch flipped yolo off (Default projects onto bool=false) and set the canonical to "default"
-    assert!(!app.agents[&AgentId(0)].session.is_yolo());
+    assert!(!agent_ref(&app, AgentId(0)).session.is_yolo());
     assert_eq!(app.current_ui.permission_mode.as_deref(), Some("default"));
 
     // **Rollback contract.**
     // Rollback must target "always-approve" (the LIVE state at dispatch time), NOT "ask" (a bool-projected guess from the None mirror)
-    match &effects[0] {
-        Effect::PersistPermissionMode { persist, .. } => {
+    match effects.first() {
+        Some(Effect::PersistPermissionMode { persist, .. }) => {
             assert_eq!(
                 *persist,
                 crate::app::actions::PermissionModePersist::WithRollback("always-approve"),
@@ -434,7 +441,7 @@ fn rollback_permission_mode_default_canonical_preserves_default() {
     let mut app = test_app_with_agent();
     // Pre-flip to YOLO so the rollback has somewhere to roll back FROM
     let _ = dispatch(Action::SetYoloMode(true), &mut app);
-    assert!(app.agents[&AgentId(0)].session.is_yolo());
+    assert!(agent_ref(&app, AgentId(0)).session.is_yolo());
     assert_eq!(
         app.current_ui.permission_mode.as_deref(),
         Some("always-approve"),
@@ -457,7 +464,7 @@ fn rollback_permission_mode_default_canonical_preserves_default() {
     );
 
     assert!(
-        !app.agents[&AgentId(0)].session.is_yolo(),
+        !agent_ref(&app, AgentId(0)).session.is_yolo(),
         "Default projects onto yolo=false; agent.session.yolo_mode must flip back",
     );
     // Canonical preserved as "default"
@@ -598,7 +605,11 @@ fn abandoned_pattern_edit_is_not_persisted() {
         &mut app,
     );
 
-    assert!(app.agents[&AgentId(0)].permission_pattern_edit.is_none());
+    assert!(
+        agent_ref(&app, AgentId(0))
+            .permission_pattern_edit
+            .is_none()
+    );
     let terms = selected_terms(rx.try_recv().expect("response").expect("ok"));
     assert_eq!(terms.command_parts, vec!["gh", "api"]);
     assert!(!terms.is_glob, "arrow-scope grant is literal, not a glob");
@@ -632,7 +643,11 @@ fn confirmed_pattern_edit_is_persisted() {
         &mut app,
     );
 
-    assert!(app.agents[&AgentId(0)].permission_pattern_edit.is_none());
+    assert!(
+        agent_ref(&app, AgentId(0))
+            .permission_pattern_edit
+            .is_none()
+    );
     let terms = selected_terms(rx.try_recv().expect("response").expect("ok"));
     assert_eq!(terms.command_parts, vec!["gh api repos/owner/*"]);
     assert!(terms.is_glob, "dirty editor routes to the glob set");

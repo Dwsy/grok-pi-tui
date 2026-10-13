@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
+use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Layer as _;
@@ -21,6 +21,10 @@ pub enum OtelProviderMode {
 
 pub type SessionMetricsGate = Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// Redacts each span batch in place before export. The domain layer injects the allowlist,
+/// so this foundation crate holds no product-specific field policy.
+pub type SpanRedactor = Arc<dyn Fn(&mut [opentelemetry_sdk::trace::SpanData]) + Send + Sync>;
+
 const ENV_OTEL_FILTER: &str = "GROK_OTEL_FILTER";
 const DEFAULT_OTEL_FILTER: &str = "info";
 
@@ -29,12 +33,13 @@ pub fn build_otel_layer<S>(
     config: OtelLayerConfig,
     mode: OtelProviderMode,
     session_metrics_gate: SessionMetricsGate,
+    redact: SpanRedactor,
 ) -> impl tracing_subscriber::layer::Layer<S>
 where
     S: tracing::Subscriber + for<'span> LookupSpan<'span>,
 {
     let provider = TRACER_PROVIDER
-        .get_or_init(|| build_tracer_provider(client, config, mode, session_metrics_gate));
+        .get_or_init(|| build_tracer_provider(client, config, mode, session_metrics_gate, redact));
     let tracer = provider.tracer("grok-cli");
 
     global::set_tracer_provider(provider.clone());
@@ -69,9 +74,12 @@ fn build_tracer_provider(
     config: OtelLayerConfig,
     mode: OtelProviderMode,
     session_metrics_gate: SessionMetricsGate,
+    redact: SpanRedactor,
 ) -> SdkTracerProvider {
     match mode {
-        OtelProviderMode::Server => build_server_provider(client, config, session_metrics_gate),
+        OtelProviderMode::Server => {
+            build_server_provider(client, config, session_metrics_gate, redact)
+        }
         OtelProviderMode::Local => SdkTracerProvider::builder().build(),
     }
 }
@@ -86,6 +94,7 @@ struct RefreshableSpanExporter {
     token_header_value: Arc<str>,
     extra_headers: Arc<Vec<(String, String)>>,
     session_metrics_gate: SessionMetricsGate,
+    redact: SpanRedactor,
 }
 
 impl std::fmt::Debug for RefreshableSpanExporter {
@@ -117,6 +126,8 @@ fn build_otlp_exporter(
     );
     opentelemetry_otlp::SpanExporter::builder()
         .with_http()
+        // Pin http/protobuf: Bazel feature unification of http-json flips `.with_http()` to JSON.
+        .with_protocol(Protocol::HttpBinary)
         .with_http_client(http_client)
         .with_endpoint(endpoint)
         .with_headers(headers)
@@ -149,6 +160,7 @@ impl opentelemetry_sdk::trace::SpanExporter for RefreshableSpanExporter {
         &self,
         batch: Vec<opentelemetry_sdk::trace::SpanData>,
     ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
+        let redact = Arc::clone(&self.redact);
         let prepared = ((self.session_metrics_gate)() && self.credentials.has_usable_credential())
             .then(|| {
                 let snapshot = self.credentials.snapshot();
@@ -210,7 +222,7 @@ impl opentelemetry_sdk::trace::SpanExporter for RefreshableSpanExporter {
             };
 
             let mut batch = batch;
-            crate::redact::redact_batch(&mut batch);
+            redact(&mut batch);
 
             let batch_for_retry = tokio::runtime::Handle::try_current()
                 .is_ok()
@@ -273,6 +285,7 @@ fn build_server_provider(
     client: OtelClientInfo,
     config: OtelLayerConfig,
     session_metrics_gate: SessionMetricsGate,
+    redact: SpanRedactor,
 ) -> SdkTracerProvider {
     let snapshot = config.credentials.snapshot();
     let initial_token = snapshot.token.unwrap_or_default();
@@ -317,6 +330,7 @@ fn build_server_provider(
             token_header_value: Arc::from(config.token_header_value.as_str()),
             extra_headers: Arc::new(config.exporter.extra_headers),
             session_metrics_gate,
+            redact,
         };
 
         let mut batch_builder = opentelemetry_sdk::trace::BatchConfigBuilder::default()

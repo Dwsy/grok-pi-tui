@@ -114,10 +114,10 @@ fn pure_tail_with_ellipsis(flat: Vec<Line<'static>>, budget: usize) -> (bool, Ve
     }
     if budget == 1 {
         // No room for both marker and content; keep the live tail line
-        return (false, flat[flat.len() - 1..].to_vec());
+        return (false, flat.last().cloned().into_iter().collect());
     }
     let take = budget - 1;
-    (true, flat[flat.len() - take..].to_vec())
+    (true, flat.get(flat.len() - take..).unwrap_or(&[]).to_vec())
 }
 
 fn find_last_user_idx(scrollback: &ScrollbackState) -> Option<usize> {
@@ -225,8 +225,18 @@ mod tests {
         let (ell, body) = pure_tail_with_ellipsis(lines, 4);
         assert!(ell);
         assert_eq!(body.len(), 3);
-        assert_eq!(body[0].spans[0].content.as_ref(), "L7");
-        assert_eq!(body[2].spans[0].content.as_ref(), "L9");
+        assert_eq!(
+            body.first()
+                .and_then(|l| l.spans.first())
+                .map(|s| s.content.as_ref()),
+            Some("L7")
+        );
+        assert_eq!(
+            body.get(2)
+                .and_then(|l| l.spans.first())
+                .map(|s| s.content.as_ref()),
+            Some("L9")
+        );
     }
 
     #[test]
@@ -253,11 +263,11 @@ mod tests {
         paint_peek_live_tail(&sb, area, &mut buf);
         let rows = plain_cells(&buf, area);
         assert!(
-            rows[0].contains("latest prompt"),
+            rows.first().is_some_and(|r| r.contains("latest prompt")),
             "pinned user on first row: {rows:?}"
         );
         assert!(
-            !rows[0].contains("first prompt"),
+            !rows.first().is_some_and(|r| r.contains("first prompt")),
             "older user must not pin: {rows:?}"
         );
         let joined = rows.join("\n");
@@ -292,10 +302,10 @@ mod tests {
             paint_peek_live_tail(&sb, area, &mut buf);
             let rows = plain_cells(&buf, area);
             assert!(
-                rows[0].contains("say hi to me"),
+                rows.first().is_some_and(|r| r.contains("say hi to me")),
                 "h={h}: new user pinned: {rows:?}"
             );
-            let body = rows[1..].join("\n");
+            let body = rows.get(1..).unwrap_or(&[]).join("\n");
             assert!(
                 !body.contains("prior answer")
                     && !body.contains("old ask")
@@ -325,9 +335,13 @@ mod tests {
         let mut buf = filled_buf(area);
         paint_peek_live_tail(&sb, area, &mut buf);
         let rows = plain_cells(&buf, area);
-        assert!(rows[0].contains("ask"), "user pin first: {rows:?}");
         assert!(
-            rows[1].contains('…') || rows[1].contains("..."),
+            rows.first().is_some_and(|r| r.contains("ask")),
+            "user pin first: {rows:?}"
+        );
+        assert!(
+            rows.get(1)
+                .is_some_and(|r| r.contains('…') || r.contains("...")),
             "top ellipsis under pin when truncated: {rows:?}"
         );
         let joined = rows.join("\n");
@@ -363,7 +377,10 @@ mod tests {
         paint_peek_live_tail(&sb, area, &mut buf);
         let rows = plain_cells(&buf, area);
         let joined = rows.join("\n");
-        assert!(rows[0].contains("ask"), "pin on min-box middle: {rows:?}");
+        assert!(
+            rows.first().is_some_and(|r| r.contains("ask")),
+            "pin on min-box middle: {rows:?}"
+        );
         assert!(
             !joined.contains("prior turn") && !joined.contains("old"),
             "prior turn must not fill min-box middle: {joined:?}"

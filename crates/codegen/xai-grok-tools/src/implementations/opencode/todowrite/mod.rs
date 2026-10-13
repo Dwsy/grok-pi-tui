@@ -527,7 +527,10 @@ mod tests {
                 .unwrap(),
         );
 
-        assert_eq!(output.todos[0].status, TodoStatus::Cancelled);
+        assert_eq!(
+            output.todos.first().map(|t| t.status),
+            Some(TodoStatus::Cancelled)
+        );
     }
 
     #[tokio::test]
@@ -576,18 +579,32 @@ mod tests {
         let json = serde_json::to_value(&input).unwrap();
 
         // Verify the JSON structure has the expected shape.
-        let arr = json["todos"].as_array().unwrap();
+        let Some(arr) = json.get("todos").and_then(|v| v.as_array()) else {
+            panic!("todos array: {json}");
+        };
         assert_eq!(arr.len(), 3);
-        assert_eq!(arr[0]["content"], "Task A");
-        assert_eq!(arr[0]["status"], "pending");
-        assert_eq!(arr[0]["priority"], "high");
+        assert_eq!(
+            arr.first().and_then(|v| v.get("content")),
+            Some(&serde_json::json!("Task A"))
+        );
+        assert_eq!(
+            arr.first().and_then(|v| v.get("status")),
+            Some(&serde_json::json!("pending"))
+        );
+        assert_eq!(
+            arr.first().and_then(|v| v.get("priority")),
+            Some(&serde_json::json!("high"))
+        );
 
         // Round-trip back.
         let deserialized: TodoWriteInput = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.todos.len(), 3);
-        assert_eq!(deserialized.todos[1].content, "Task B");
-        assert_eq!(deserialized.todos[1].status, "in_progress");
-        assert_eq!(deserialized.todos[2].priority, "low");
+        let [_, b, c] = deserialized.todos.as_slice() else {
+            panic!("expected 3 todos: {:?}", deserialized.todos);
+        };
+        assert_eq!(b.content, "Task B");
+        assert_eq!(b.status, "in_progress");
+        assert_eq!(c.priority, "low");
     }
 
     #[tokio::test]
@@ -632,9 +649,12 @@ mod tests {
                 .unwrap(),
         );
 
-        assert_eq!(output.todos[0].priority, TodoPriority::High);
-        assert_eq!(output.todos[1].priority, TodoPriority::Medium);
-        assert_eq!(output.todos[2].priority, TodoPriority::Low);
+        let [high, medium, low, ..] = output.todos.as_slice() else {
+            panic!("expected 3 todos: {:?}", output.todos);
+        };
+        assert_eq!(high.priority, TodoPriority::High);
+        assert_eq!(medium.priority, TodoPriority::Medium);
+        assert_eq!(low.priority, TodoPriority::Low);
     }
 
     #[tokio::test]
@@ -657,10 +677,13 @@ mod tests {
         );
 
         assert_eq!(output.todos.len(), 4);
-        assert_eq!(output.todos[0].status, TodoStatus::Pending);
-        assert_eq!(output.todos[1].status, TodoStatus::InProgress);
-        assert_eq!(output.todos[2].status, TodoStatus::Completed);
-        assert_eq!(output.todos[3].status, TodoStatus::Cancelled);
+        let [pending, active, done, dropped] = output.todos.as_slice() else {
+            panic!("expected 4 todos: {:?}", output.todos);
+        };
+        assert_eq!(pending.status, TodoStatus::Pending);
+        assert_eq!(active.status, TodoStatus::InProgress);
+        assert_eq!(done.status, TodoStatus::Completed);
+        assert_eq!(dropped.status, TodoStatus::Cancelled);
     }
 
     #[tokio::test]
@@ -724,9 +747,9 @@ mod tests {
             priority: "high".to_owned(),
         };
         let json = serde_json::to_value(&item).unwrap();
-        assert_eq!(json["content"], "Write tests");
-        assert_eq!(json["status"], "in_progress");
-        assert_eq!(json["priority"], "high");
+        assert_eq!(json.get("content"), Some(&serde_json::json!("Write tests")));
+        assert_eq!(json.get("status"), Some(&serde_json::json!("in_progress")));
+        assert_eq!(json.get("priority"), Some(&serde_json::json!("high")));
 
         // Deserialize back.
         let recovered: OpenCodeTodoItem = serde_json::from_value(json).unwrap();
@@ -754,10 +777,13 @@ mod tests {
                 .unwrap(),
         );
 
-        assert_eq!(output.todos[0].status, TodoStatus::Pending);
-        assert_eq!(output.todos[1].status, TodoStatus::InProgress);
-        assert_eq!(output.todos[2].status, TodoStatus::Completed);
-        assert_eq!(output.todos[3].status, TodoStatus::Cancelled);
+        let [pending, active, done, dropped, ..] = output.todos.as_slice() else {
+            panic!("expected 4 todos: {:?}", output.todos);
+        };
+        assert_eq!(pending.status, TodoStatus::Pending);
+        assert_eq!(active.status, TodoStatus::InProgress);
+        assert_eq!(done.status, TodoStatus::Completed);
+        assert_eq!(dropped.status, TodoStatus::Cancelled);
     }
 
     #[tokio::test]
@@ -784,9 +810,12 @@ mod tests {
 
         // Verify items in the snapshot match the input.
         let items: Vec<_> = output.state.todo_items().collect();
-        assert_eq!(items[0].content, "Task A");
-        assert_eq!(items[1].content, "Task B");
-        assert_eq!(items[2].content, "Task C");
+        let [a, b, c] = items.as_slice() else {
+            panic!("expected 3 items: {items:?}");
+        };
+        assert_eq!(a.content, "Task A");
+        assert_eq!(b.content, "Task B");
+        assert_eq!(c.content, "Task C");
     }
 
     #[tokio::test]

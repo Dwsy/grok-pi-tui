@@ -198,7 +198,8 @@ where
             };
             let keep = n.min(MAX_CAPTURE_BYTES.saturating_sub(sent));
             if keep > 0 {
-                if tx.send(chunk[..keep].to_vec()).is_err() {
+                let Some(kept) = chunk.get(..keep) else { break };
+                if tx.send(kept.to_vec()).is_err() {
                     break;
                 }
                 sent += keep;

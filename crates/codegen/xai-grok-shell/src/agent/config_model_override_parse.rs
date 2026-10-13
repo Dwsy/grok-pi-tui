@@ -359,7 +359,10 @@ fn dedupe_aliases(
         if !(table.contains_key(canonical) && table.contains_key(legacy)) {
             continue;
         }
-        match field_parse_error(canonical, &table[canonical]) {
+        let Some(value) = table.get(canonical) else {
+            continue;
+        };
+        match field_parse_error(canonical, value) {
             None => {
                 table.remove(legacy);
                 warnings.push(ConfigWarning::model(
@@ -443,6 +446,7 @@ mod tests {
     use crate::sampling::ApiBackend;
     use xai_grok_sampling_types::{
         CompactionAtTokens, CompactionsRemaining, ReasoningEffort, ReasoningEffortOption,
+        ReasoningSummary,
     };
 
     fn parse_cfg(toml_str: &str) -> crate::agent::config::Config {
@@ -522,6 +526,45 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_summary_parses_and_reaches_the_resolved_model() {
+        let cfg = parse_cfg(
+            r#"
+            [model.bedrock]
+            model = "xai.grok-4.6"
+            base_url = "https://bedrock-mantle.us-west-2.api.aws/openai/v1"
+            api_backend = "responses"
+            env_key = "BEDROCK_TOKEN"
+            reasoning_summary = "none"
+            "#,
+        );
+        assert_eq!(
+            cfg.config_models.get("bedrock").unwrap().reasoning_summary,
+            Some(ReasoningSummary::None)
+        );
+        let resolved = crate::agent::config::resolve_model_list(&cfg, None);
+        assert_eq!(
+            resolved.get("bedrock").unwrap().info.reasoning_summary,
+            Some(ReasoningSummary::None)
+        );
+    }
+
+    #[test]
+    fn invalid_reasoning_summary_skips_field_keeps_model() {
+        let cfg = parse_cfg(
+            r#"
+            [model."grok-4.5"]
+            model = "grok-4.5"
+            reasoning_summary = "verbose"
+            "#,
+        );
+        let model = cfg.config_models.get("grok-4.5").unwrap();
+        assert!(model.reasoning_summary.is_none());
+        assert!(cfg.config_warnings.iter().any(|w| {
+            w.kind == ConfigWarningKind::InvalidValue && w.field() == Some("reasoning_summary")
+        }));
+    }
+
+    #[test]
     fn unknown_field_warns_but_keeps_known_fields() {
         let (models, warnings) = parse_raw(
             r#"
@@ -572,8 +615,10 @@ mod tests {
             "#,
         );
         assert_eq!(fast, slow);
-        assert_eq!(fast.len(), 1);
-        assert_eq!(fast[0].field(), Some("temprature"));
+        let [fast0] = fast.as_slice() else {
+            panic!("expected one warning: {fast:?}");
+        };
+        assert_eq!(fast0.field(), Some("temprature"));
     }
 
     #[test]
@@ -630,18 +675,22 @@ mod tests {
             entry.compactions_remaining,
             Some(CompactionsRemaining::Fixed(2))
         );
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].kind, ConfigWarningKind::InvalidValue);
-        assert_eq!(warnings[0].field(), Some("compactions_remaining"));
+        let [warning] = warnings.as_slice() else {
+            panic!("expected one warning: {warnings:?}");
+        };
+        assert_eq!(warning.kind, ConfigWarningKind::InvalidValue);
+        assert_eq!(warning.field(), Some("compactions_remaining"));
     }
 
     #[test]
     fn non_table_model_section_warns_and_is_ignored() {
         let (models, warnings) = parse_raw(r#"model = "grok-4""#);
         assert!(models.is_empty());
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].kind, ConfigWarningKind::NotATable);
-        assert!(matches!(warnings[0].target, WarningTarget::ModelSection));
+        let [warning] = warnings.as_slice() else {
+            panic!("expected one warning: {warnings:?}");
+        };
+        assert_eq!(warning.kind, ConfigWarningKind::NotATable);
+        assert!(matches!(warning.target, WarningTarget::ModelSection));
     }
 
     #[test]
@@ -653,10 +702,12 @@ mod tests {
             "#,
         );
         assert!(models.is_empty(), "a scalar cannot define a model");
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].kind, ConfigWarningKind::NotATable);
+        let [warning] = warnings.as_slice() else {
+            panic!("expected one warning: {warnings:?}");
+        };
+        assert_eq!(warning.kind, ConfigWarningKind::NotATable);
         assert!(matches!(
-            &warnings[0].target,
+            &warning.target,
             WarningTarget::Model { key, field: None } if key == "oops"
         ));
     }
@@ -670,6 +721,11 @@ mod tests {
             mtls_cert_dir: Some("/run/model-identity".into()),
             name: Some("Model M".into()),
             description: Some("desc".into()),
+            notice: Some(xai_grok_sampling_types::ModelNotice {
+                severity: xai_grok_sampling_types::ModelNoticeSeverity::Warning,
+                text: "Deprecated".into(),
+                label: Some("deprecated".into()),
+            }),
             api_key: Some("key".into()),
             env_key: Some(crate::agent::config::EnvKeys::single("ENV_KEY")),
             auth_provider: Some("corp-gateway".into()),
@@ -689,6 +745,8 @@ mod tests {
                 .into_iter()
                 .collect(),
             context_window: Some(200_000),
+            context_windows: None,
+            max_request_bytes: None,
             auto_compact_threshold_percent: Some(80),
             system_prompt_label: Some("label".into()),
             use_concise: Some(true),
@@ -713,6 +771,7 @@ mod tests {
             compaction_at_tokens: Some(CompactionAtTokens::Fixed(100_000)),
             show_model_fingerprint: Some(true),
             stream_tool_calls: Some(false),
+            reasoning_summary: Some(ReasoningSummary::None),
         }
     }
 
@@ -755,9 +814,11 @@ mod tests {
             toml::Value::String("corp".into()),
         );
         let (models, warnings) = parse_single_entry(entry);
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].kind, ConfigWarningKind::ConflictingFields);
-        assert_eq!(warnings[0].field(), Some("auth_provider"));
+        let [warning] = warnings.as_slice() else {
+            panic!("expected one warning: {warnings:?}");
+        };
+        assert_eq!(warning.kind, ConfigWarningKind::ConflictingFields);
+        assert_eq!(warning.field(), Some("auth_provider"));
         let parsed = models.get("m").unwrap();
         assert_eq!(parsed.api_key.as_deref(), Some("sk-x"));
         assert_eq!(parsed.auth_provider.as_deref(), Some("corp"));
@@ -779,9 +840,11 @@ mod tests {
             toml::Value::String("corp".into()),
         );
         let (_, warnings) = parse_single_entry(entry);
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].kind, ConfigWarningKind::ConflictingFields);
-        assert!(warnings[0].reason.contains("may be shadowed"));
+        let [warning] = warnings.as_slice() else {
+            panic!("expected one warning: {warnings:?}");
+        };
+        assert_eq!(warning.kind, ConfigWarningKind::ConflictingFields);
+        assert!(warning.reason.contains("may be shadowed"));
 
         // An empty api_key does not shadow, so it must not warn.
         let mut entry = toml::map::Map::new();
@@ -802,16 +865,32 @@ mod tests {
         let start = source
             .find("pub struct ConfigModelOverride {")
             .expect("ConfigModelOverride definition in config.rs");
-        let block = &source[start..];
-        let block = &block[..block.find("\n}").expect("struct end")];
+        let Some(block) = source.get(start..) else {
+            panic!("ConfigModelOverride slice after find");
+        };
+        let end = block.find("\n}").expect("struct end");
+        let Some(block) = block.get(..end) else {
+            panic!("struct end not a char boundary");
+        };
 
         let mut found = Vec::new();
         let mut rest = block;
         while let Some(pos) = rest.find("#[serde(alias = \"") {
-            let after = &rest[pos + "#[serde(alias = \"".len()..];
-            let legacy = &after[..after.find('"').expect("closing quote")];
-            let field = &after[after.find("pub ").expect("field after alias") + 4..];
-            let canonical = &field[..field.find(':').expect("field type colon")];
+            let Some(after) = rest.get(pos + "#[serde(alias = \"".len()..) else {
+                break;
+            };
+            let quote = after.find('"').expect("closing quote");
+            let Some(legacy) = after.get(..quote) else {
+                break;
+            };
+            let pub_at = after.find("pub ").expect("field after alias");
+            let Some(field) = after.get(pub_at + 4..) else {
+                break;
+            };
+            let colon = field.find(':').expect("field type colon");
+            let Some(canonical) = field.get(..colon) else {
+                break;
+            };
             found.push((canonical.to_owned(), legacy.to_owned()));
             rest = after;
         }
@@ -861,9 +940,11 @@ mod tests {
                 Some(value),
                 "canonical value must be retained"
             );
-            assert_eq!(warnings.len(), 1);
-            assert_eq!(warnings[0].kind, ConfigWarningKind::DuplicateAlias);
-            assert_eq!(warnings[0].field(), Some(legacy));
+            let [warning] = warnings.as_slice() else {
+                panic!("expected one warning: {warnings:?}");
+            };
+            assert_eq!(warning.kind, ConfigWarningKind::DuplicateAlias);
+            assert_eq!(warning.field(), Some(legacy));
         }
     }
 }

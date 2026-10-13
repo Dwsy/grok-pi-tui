@@ -113,7 +113,7 @@ impl RelocationView {
 
 /// A candidate is unambiguous only when exactly one path carries the id.
 fn select(paths: &[PathBuf], cwd_parent: Option<&Path>) -> Option<PathBuf> {
-    let selected = (paths.len() == 1).then(|| paths[0].clone());
+    let selected = (paths.len() == 1).then(|| paths.first().cloned()).flatten();
     selected.filter(|path| cwd_parent.is_none_or(|parent| path.parent() == Some(parent)))
 }
 

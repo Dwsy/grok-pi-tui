@@ -96,6 +96,42 @@ impl crate::types::tool_metadata::ToolMetadata for BashConciseTool {
         crate::types::tool_metadata::ToolMetadata::emitted_notifications(&BashTool)
     }
 
+    fn advertised_input_schema(
+        &self,
+        contract_version: Option<&str>,
+        input_schema: &serde_json::Value,
+        effective_params: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        crate::types::tool_metadata::ToolMetadata::advertised_input_schema(
+            &BashTool,
+            contract_version,
+            input_schema,
+            effective_params,
+        )
+    }
+
+    fn versioned_definition(
+        &self,
+        contract_version: Option<&str>,
+        client_name: &str,
+        description_override: Option<&str>,
+        renderer: &crate::types::template_renderer::TemplateRenderer,
+        param_map: &std::collections::HashMap<String, String>,
+        input_schema: &serde_json::Value,
+        effective_params: &serde_json::Value,
+    ) -> crate::types::ToolDefinition {
+        crate::types::tool_metadata::ToolMetadata::versioned_definition(
+            &BashTool,
+            contract_version,
+            client_name,
+            description_override,
+            renderer,
+            param_map,
+            input_schema,
+            effective_params,
+        )
+    }
+
     fn requires_expr(&self) -> Expr<ToolRequirement> {
         Expr::And(vec![
             Expr::Value(ToolRequirement::if_params(

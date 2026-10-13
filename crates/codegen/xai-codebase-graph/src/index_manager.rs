@@ -1038,7 +1038,7 @@ impl IndexManager {
 
         match node {
             Some(n) => {
-                let text = std::str::from_utf8(&content[n.byte_range()])
+                let text = std::str::from_utf8(content.get(n.byte_range()).unwrap_or(&[]))
                     .map_err(|_| QueryError::ParseError("Invalid UTF-8".to_string()))?;
                 Ok(text.to_string())
             }
@@ -1394,9 +1394,13 @@ fn intern_symbols_directly(
 
     for (i, name) in capture_names.iter().enumerate() {
         if name.starts_with("name.definition.") {
-            is_def[i] = true;
+            if let Some(slot) = is_def.get_mut(i) {
+                *slot = true;
+            }
         } else if name.starts_with("name.reference.") {
-            is_ref[i] = true;
+            if let Some(slot) = is_ref.get_mut(i) {
+                *slot = true;
+            }
         } else if *name == "alias.original" {
             alias_original_idx = Some(i);
         } else if *name == "alias.name" {
@@ -1417,7 +1421,9 @@ fn intern_symbols_directly(
             let byte_range = node.byte_range();
             let line = node.start_position().row + 1;
 
-            let bytes = &src[byte_range];
+            let Some(bytes) = src.get(byte_range) else {
+                continue;
+            };
             // Skip non-UTF-8 ranges (binary artifact) instead of lossy replacement
             let Ok(text) = std::str::from_utf8(bytes) else {
                 continue;
@@ -1460,9 +1466,12 @@ impl CoalescedEvents {
     fn add(&mut self, event: FileEvent) {
         // Renames are special: they carry two paths. Process the "to" path
         // as Created (it needs indexing) and the "from" as Removed.
-        if event.kind == FileEventKind::Renamed && event.paths.len() >= 2 {
-            self.insert(event.paths[0].clone(), FileEventKind::Removed);
-            self.insert(event.paths[1].clone(), FileEventKind::Created);
+        if event.kind == FileEventKind::Renamed
+            && let Some(from) = event.paths.first()
+            && let Some(to) = event.paths.get(1)
+        {
+            self.insert(from.clone(), FileEventKind::Removed);
+            self.insert(to.clone(), FileEventKind::Created);
             return;
         }
 
@@ -1501,8 +1510,7 @@ impl CoalescedEvents {
 /// Check if content appears to be binary by scanning for null bytes.
 /// Uses the same heuristic as git (check first 8000 bytes).
 pub fn is_binary_content(content: &[u8]) -> bool {
-    let check_len = content.len().min(8000);
-    content[..check_len].contains(&0)
+    content.iter().take(8000).any(|&b| b == 0)
 }
 
 /// Check if a file appears binary by reading only the first 8KB.
@@ -1516,7 +1524,7 @@ fn is_binary_file(path: &Path) -> bool {
     let Ok(n) = f.read(&mut buf) else {
         return false;
     };
-    buf[..n].contains(&0)
+    buf.iter().take(n).any(|&b| b == 0)
 }
 
 /// Check if a path is under a hidden directory (component starting with `.`).
@@ -1730,8 +1738,12 @@ mod tests {
         let file_path = dir.path().join("binary.py");
         // Write binary content (urandom-like with null bytes)
         let mut content = vec![0u8; 1024];
-        content[0] = b'x';
-        content[100] = 0;
+        if let Some(slot) = content.get_mut(0) {
+            *slot = b'x';
+        }
+        if let Some(slot) = content.get_mut(100) {
+            *slot = 0;
+        }
         fs::write(&file_path, &content).unwrap();
 
         let config = IndexManagerConfig::new(dir.path().to_path_buf())
@@ -1809,8 +1821,12 @@ mod tests {
 
         // Binary file with supported extension — should be skipped
         let mut binary = vec![0u8; 1024];
-        binary[0] = b'f';
-        binary[10] = 0;
+        if let Some(slot) = binary.get_mut(0) {
+            *slot = b'f';
+        }
+        if let Some(slot) = binary.get_mut(10) {
+            *slot = 0;
+        }
         fs::write(dir.path().join("binary.rs"), &binary).unwrap();
 
         // Oversized file — should be skipped
@@ -1882,7 +1898,10 @@ mod tests {
         c.add(FileEvent::removed("/a.rs".into()));
         c.add(FileEvent::created("/a.rs".into()));
         assert_eq!(c.events.len(), 1);
-        assert_eq!(c.events[&PathBuf::from("/a.rs")], FileEventKind::Created);
+        assert_eq!(
+            c.events.get(&PathBuf::from("/a.rs")).copied(),
+            Some(FileEventKind::Created)
+        );
     }
 
     #[test]
@@ -1891,7 +1910,10 @@ mod tests {
         c.add(FileEvent::removed("/a.rs".into()));
         c.add(FileEvent::modified("/a.rs".into()));
         assert_eq!(c.events.len(), 1);
-        assert_eq!(c.events[&PathBuf::from("/a.rs")], FileEventKind::Created);
+        assert_eq!(
+            c.events.get(&PathBuf::from("/a.rs")).copied(),
+            Some(FileEventKind::Created)
+        );
     }
 
     #[test]
@@ -1901,7 +1923,10 @@ mod tests {
         c.add(FileEvent::modified("/a.rs".into()));
         c.add(FileEvent::modified("/a.rs".into()));
         assert_eq!(c.events.len(), 1);
-        assert_eq!(c.events[&PathBuf::from("/a.rs")], FileEventKind::Modified);
+        assert_eq!(
+            c.events.get(&PathBuf::from("/a.rs")).copied(),
+            Some(FileEventKind::Modified)
+        );
     }
 
     #[test]
@@ -1909,8 +1934,14 @@ mod tests {
         let mut c = CoalescedEvents::new();
         c.add(FileEvent::renamed("/old.rs".into(), "/new.rs".into()));
         assert_eq!(c.events.len(), 2);
-        assert_eq!(c.events[&PathBuf::from("/old.rs")], FileEventKind::Removed);
-        assert_eq!(c.events[&PathBuf::from("/new.rs")], FileEventKind::Created);
+        assert_eq!(
+            c.events.get(&PathBuf::from("/old.rs")).copied(),
+            Some(FileEventKind::Removed)
+        );
+        assert_eq!(
+            c.events.get(&PathBuf::from("/new.rs")).copied(),
+            Some(FileEventKind::Created)
+        );
     }
 
     #[test]
@@ -1928,7 +1959,10 @@ mod tests {
         c.add(FileEvent::removed("/b.rs".into()));
         // /a.rs should still be Removed, /b.rs Created+Removed = cancelled
         assert_eq!(c.events.len(), 1);
-        assert_eq!(c.events[&PathBuf::from("/a.rs")], FileEventKind::Removed);
+        assert_eq!(
+            c.events.get(&PathBuf::from("/a.rs")).copied(),
+            Some(FileEventKind::Removed)
+        );
     }
 
     #[test]
@@ -1938,8 +1972,14 @@ mod tests {
         c.add(FileEvent::modified("/b.rs".into()));
         // /a.rs Removed, /b.rs Created+Modified → Modified (last writer wins)
         assert_eq!(c.events.len(), 2);
-        assert_eq!(c.events[&PathBuf::from("/a.rs")], FileEventKind::Removed);
-        assert_eq!(c.events[&PathBuf::from("/b.rs")], FileEventKind::Modified);
+        assert_eq!(
+            c.events.get(&PathBuf::from("/a.rs")).copied(),
+            Some(FileEventKind::Removed)
+        );
+        assert_eq!(
+            c.events.get(&PathBuf::from("/b.rs")).copied(),
+            Some(FileEventKind::Modified)
+        );
     }
 
     // Verify has_definition_blocking agrees with get_snapshot().has_definition()

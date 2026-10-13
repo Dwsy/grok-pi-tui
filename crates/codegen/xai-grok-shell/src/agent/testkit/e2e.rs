@@ -80,7 +80,7 @@ pub async fn load_session_via_agent<C: acp::Client + 'static>(
                 )
                 .meta(
                     serde_json::json!({
-                        "startupHints": { "nonInteractive": true, "skipGitStatus": true, "skipProjectLayout": true },
+                        "startupHints": { "nonInteractive": true },
                         "clientType": client_type,
                         "clientVersion": "0.0-test",
                     })

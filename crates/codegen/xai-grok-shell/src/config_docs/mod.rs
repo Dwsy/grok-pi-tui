@@ -183,27 +183,32 @@ fn parse_tables(markdown: &str) -> (Vec<Row>, Vec<Row>) {
             .split('|')
             .map(str::trim)
             .collect();
-        if cells.len() < 4 {
+        let [key_cell, type_cell, req_cell, fourth, extra @ ..] = cells.as_slice() else {
             continue;
-        }
-        let key = strip_cell(cells[0]);
+        };
+        let key = strip_cell(key_cell);
         if key == "Key" || key.is_empty() {
             continue;
         }
         match section {
-            "config" if cells.len() >= 5 => config.push(Row {
-                key,
-                type_name: strip_cell(cells[1]),
-                requirements: strip_cell(cells[2]),
-                managed: Some(strip_cell(cells[3])),
-                details: cells[4].trim().to_string(),
-            }),
+            "config" => {
+                let Some(details_cell) = extra.first() else {
+                    continue;
+                };
+                config.push(Row {
+                    key,
+                    type_name: strip_cell(type_cell),
+                    requirements: strip_cell(req_cell),
+                    managed: Some(strip_cell(fourth)),
+                    details: details_cell.trim().to_string(),
+                });
+            }
             "requirements" => requirements_only.push(Row {
                 key,
-                type_name: strip_cell(cells[1]),
+                type_name: strip_cell(type_cell),
                 requirements: String::new(),
                 managed: None,
-                details: cells.last().copied().unwrap_or("").trim().to_string(),
+                details: extra.last().copied().unwrap_or(*fourth).trim().to_string(),
             }),
             _ => {}
         }
@@ -390,14 +395,14 @@ mod tests {
                 "{alias} should name `{leaf}`"
             );
         }
-        assert_eq!(
-            map["grok_com_config.disable_api_key_auth"].requirements,
-            "pin"
-        );
-        assert_eq!(
-            map["grok_com_config.force_login_team_uuid"].requirements,
-            "pin"
-        );
+        let Some(disable_auth) = map.get("grok_com_config.disable_api_key_auth") else {
+            panic!("missing grok_com_config.disable_api_key_auth: {map:?}");
+        };
+        assert_eq!(disable_auth.requirements, "pin");
+        let Some(force_team) = map.get("grok_com_config.force_login_team_uuid") else {
+            panic!("missing grok_com_config.force_login_team_uuid: {map:?}");
+        };
+        assert_eq!(force_team.requirements, "pin");
     }
 
     #[test]

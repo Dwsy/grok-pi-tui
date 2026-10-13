@@ -89,9 +89,13 @@ pub fn compute_replacements(
         let mut new_slice: &[String] = &chunk.new_lines;
 
         if found.is_none() && pattern.last().is_some_and(String::is_empty) {
-            pattern = &pattern[..pattern.len() - 1];
-            if new_slice.last().is_some_and(String::is_empty) {
-                new_slice = &new_slice[..new_slice.len() - 1];
+            if let Some((_, rest)) = pattern.split_last() {
+                pattern = rest;
+            }
+            if new_slice.last().is_some_and(String::is_empty)
+                && let Some((_, rest)) = new_slice.split_last()
+            {
+                new_slice = rest;
             }
             found = seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
         }
@@ -163,8 +167,8 @@ mod tests {
             path.display()
         ));
         let parsed = parse_patch(&patch).unwrap();
-        let chunks = match &parsed.hunks[0] {
-            Hunk::UpdateFile { chunks, .. } => chunks,
+        let chunks = match parsed.hunks.first() {
+            Some(Hunk::UpdateFile { chunks, .. }) => chunks,
             _ => panic!("expected UpdateFile"),
         };
         let result = derive_new_contents(original, &path, chunks).unwrap();
@@ -180,8 +184,8 @@ mod tests {
             path.display()
         ));
         let parsed = parse_patch(&patch).unwrap();
-        let chunks = match &parsed.hunks[0] {
-            Hunk::UpdateFile { chunks, .. } => chunks,
+        let chunks = match parsed.hunks.first() {
+            Some(Hunk::UpdateFile { chunks, .. }) => chunks,
             _ => panic!("expected UpdateFile"),
         };
         let result = derive_new_contents(original, &path, chunks).unwrap();
@@ -200,8 +204,8 @@ mod tests {
             path.display()
         ));
         let parsed = parse_patch(&patch).unwrap();
-        let chunks = match &parsed.hunks[0] {
-            Hunk::UpdateFile { chunks, .. } => chunks,
+        let chunks = match parsed.hunks.first() {
+            Some(Hunk::UpdateFile { chunks, .. }) => chunks,
             _ => panic!("expected UpdateFile"),
         };
         let result = derive_new_contents(original, &path, chunks).unwrap();
@@ -222,8 +226,8 @@ mod tests {
             path.display()
         ));
         let parsed = parse_patch(&patch).unwrap();
-        let chunks = match &parsed.hunks[0] {
-            Hunk::UpdateFile { chunks, .. } => chunks,
+        let chunks = match parsed.hunks.first() {
+            Some(Hunk::UpdateFile { chunks, .. }) => chunks,
             _ => panic!("expected UpdateFile"),
         };
         let result = derive_new_contents(original, &path, chunks).unwrap();
@@ -241,8 +245,8 @@ mod tests {
             path.display()
         ));
         let parsed = parse_patch(&patch).unwrap();
-        let chunks = match &parsed.hunks[0] {
-            Hunk::UpdateFile { chunks, .. } => chunks,
+        let chunks = match parsed.hunks.first() {
+            Some(Hunk::UpdateFile { chunks, .. }) => chunks,
             _ => panic!("expected UpdateFile"),
         };
         let result = derive_new_contents(original, &path, chunks).unwrap();
@@ -261,8 +265,8 @@ mod tests {
             path.display()
         ));
         let parsed = parse_patch(&patch).unwrap();
-        let chunks = match &parsed.hunks[0] {
-            Hunk::UpdateFile { chunks, .. } => chunks,
+        let chunks = match parsed.hunks.first() {
+            Some(Hunk::UpdateFile { chunks, .. }) => chunks,
             _ => panic!("expected UpdateFile"),
         };
         let err = derive_new_contents(original, &path, chunks).unwrap_err();
@@ -283,8 +287,8 @@ mod tests {
             path.display()
         ));
         let parsed = parse_patch(&patch).unwrap();
-        let chunks = match &parsed.hunks[0] {
-            Hunk::UpdateFile { chunks, .. } => chunks,
+        let chunks = match parsed.hunks.first() {
+            Some(Hunk::UpdateFile { chunks, .. }) => chunks,
             _ => panic!("expected UpdateFile"),
         };
         let err = derive_new_contents(original, &path, chunks).unwrap_err();
@@ -305,8 +309,8 @@ mod tests {
             path.display()
         ));
         let parsed = parse_patch(&patch).unwrap();
-        let chunks = match &parsed.hunks[0] {
-            Hunk::UpdateFile { chunks, .. } => chunks,
+        let chunks = match parsed.hunks.first() {
+            Some(Hunk::UpdateFile { chunks, .. }) => chunks,
             _ => panic!("expected UpdateFile"),
         };
         let result = derive_new_contents(original, &path, chunks).unwrap();

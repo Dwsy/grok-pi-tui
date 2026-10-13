@@ -227,7 +227,7 @@ impl Harness {
     fn fired(&mut self) -> Vec<String> {
         self.fired_payloads()
             .iter()
-            .filter_map(|p| p["hookEventName"].as_str().map(str::to_string))
+            .filter_map(|p| j(p, "hookEventName").as_str().map(str::to_string))
             .collect()
     }
 
@@ -267,10 +267,10 @@ async fn interrupting_a_turn_reports_stop_cancelled_once() {
         h.drain_turn_ends().await;
         let fired = h.fired_payloads();
         assert_eq!(fired.len(), 1);
-        assert_eq!(fired[0]["hookEventName"], "stop_cancelled");
-        assert_eq!(fired[0]["reason"], "user_interrupt");
-        assert_eq!(fired[0]["cancelTrigger"], "ctrl_c");
-        assert_eq!(fired[0]["lastAssistantMessage"], "partway through");
+        assert_eq!(j(at(&fired, 0), "hookEventName"), "stop_cancelled");
+        assert_eq!(j(at(&fired, 0), "reason"), "user_interrupt");
+        assert_eq!(j(at(&fired, 0), "cancelTrigger"), "ctrl_c");
+        assert_eq!(j(at(&fired, 0), "lastAssistantMessage"), "partway through");
 
         let second = h.actor.claim_and_queue(
             "p1",
@@ -519,7 +519,7 @@ async fn session_end_cancels_in_flight_start_hook() {
                 let saw_end = fired
                     .borrow()
                     .iter()
-                    .any(|e| e["hookEventName"] == "session_end");
+                    .any(|e| j(e, "hookEventName") == "session_end");
                 if saw_end {
                     return;
                 }
@@ -534,7 +534,7 @@ async fn session_end_cancels_in_flight_start_hook() {
         let names: Vec<String> = fired
             .borrow()
             .iter()
-            .filter_map(|e| e["hookEventName"].as_str().map(String::from))
+            .filter_map(|e| j(e, "hookEventName").as_str().map(String::from))
             .collect();
         let end = names.iter().position(|n| n == "session_end");
         assert!(end.is_some(), "session-end missing: {names:?}");
@@ -607,8 +607,8 @@ async fn a_subagent_session_end_names_the_child() {
             1,
             "the session-end `Stop` stays subagent-guarded"
         );
-        assert_eq!(fired[0]["hookEventName"], "session_end");
-        assert_eq!(fired[0]["subagentType"], "explore");
+        assert_eq!(j(at(&fired, 0), "hookEventName"), "session_end");
+        assert_eq!(j(at(&fired, 0), "subagentType"), "explore");
     })
     .await;
 }
@@ -721,11 +721,11 @@ async fn a_subagent_reports_only_its_own_turn_ends() {
         h.drain_turn_ends().await;
 
         let fired = h.fired_payloads();
-        assert_eq!(fired[0]["reason"], "max_turns");
-        assert_eq!(fired[0]["subagentType"], "explore");
-        assert_eq!(fired[1]["hookEventName"], "stop_failure");
-        assert_eq!(fired[1]["subagentType"], "explore");
-        let details = fired[1]["errorDetails"].as_str().expect("a detail");
+        assert_eq!(j(at(&fired, 0), "reason"), "max_turns");
+        assert_eq!(j(at(&fired, 0), "subagentType"), "explore");
+        assert_eq!(j(at(&fired, 1), "hookEventName"), "stop_failure");
+        assert_eq!(j(at(&fired, 1), "subagentType"), "explore");
+        let details = j(at(&fired, 1), "errorDetails").as_str().expect("a detail");
         assert!(details.ends_with("… [+1000 chars]"), "{details}");
     })
     .await;
@@ -757,7 +757,7 @@ async fn the_loop_reports_and_settles_a_cancelled_turn() {
 
         let fired = fired.borrow();
         assert_eq!(fired.len(), 1, "the loop must dispatch the queued report");
-        assert_eq!(fired[0]["hookEventName"], "stop_cancelled");
+        assert_eq!(j(at(&fired, 0), "hookEventName"), "stop_cancelled");
         assert_eq!(h.lifecycle.idles.get(), 1, "the loop must settle the host");
     })
     .await;
@@ -867,7 +867,7 @@ async fn a_long_assistant_message_is_clipped() {
         h.drain_turn_ends().await;
         let fired = h.fired_payloads();
         assert_clipped(
-            fired[0]["lastAssistantMessage"]
+            j(at(&fired, 0), "lastAssistantMessage")
                 .as_str()
                 .expect("a last message"),
         );
@@ -928,7 +928,7 @@ async fn teardown_runs_queued_reports_before_the_session_end_hooks() {
             let names: Vec<String> = fired
                 .borrow()
                 .iter()
-                .filter_map(|p| p["hookEventName"].as_str().map(str::to_string))
+                .filter_map(|p| j(p, "hookEventName").as_str().map(str::to_string))
                 .collect();
             assert_eq!(
                 names,
@@ -1090,9 +1090,9 @@ async fn a_completion_reports_its_own_cancel_reason() {
 
         let fired = h.fired_payloads();
         assert_eq!(fired.len(), 2);
-        assert_eq!(fired[0]["reason"], "max_turns");
-        assert_eq!(fired[0]["promptId"], "p1");
-        assert_eq!(fired[1]["reason"], "permission_rejected");
+        assert_eq!(j(at(&fired, 0), "reason"), "max_turns");
+        assert_eq!(j(at(&fired, 0), "promptId"), "p1");
+        assert_eq!(j(at(&fired, 1), "reason"), "permission_rejected");
         for (field, prefix, max) in [
             (
                 "cancelTrigger",
@@ -1105,7 +1105,7 @@ async fn a_completion_reports_its_own_cancel_reason() {
                 xai_grok_hooks::event::MAX_STOP_ENTRY_TEXT_CHARS,
             ),
         ] {
-            let text = fired[1][field]
+            let text = j(at(&fired, 1), field)
                 .as_str()
                 .unwrap_or_else(|| panic!("{field}"));
             assert!(text.starts_with(prefix), "{field}: {text}");
@@ -1131,8 +1131,8 @@ async fn a_flush_leaves_the_queue_open() {
         h.drain_turn_ends().await;
         let fired = h.fired_payloads();
         assert_eq!(fired.len(), 2);
-        assert_eq!(fired[0]["promptId"], "p1");
-        assert_eq!(fired[1]["promptId"], "p2");
+        assert_eq!(j(at(&fired, 0), "promptId"), "p1");
+        assert_eq!(j(at(&fired, 1), "promptId"), "p2");
     })
     .await;
 }

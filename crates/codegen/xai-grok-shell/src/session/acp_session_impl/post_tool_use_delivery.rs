@@ -1,6 +1,7 @@
 use super::*;
 use xai_grok_hooks::dispatcher::{
-    AdditionalContext, OutputReplacement, PostToolUseBlock, PostToolUseResult, SelectedReplacement,
+    AdditionalContext, OutputReplacement, PostToolUseBlock, PostToolUseResult, RejectedReplacement,
+    ReplacementChoice, ReplacementKind, SelectedReplacement,
 };
 use xai_grok_hooks::event::{MAX_HOOK_OUTPUT_REPLACEMENT_CHARS, clip_text};
 use xai_grok_hooks::result::HookRunResult;
@@ -12,33 +13,17 @@ pub(super) struct PostToolUseDelivery {
     pub blocks: Vec<PostToolUseBlock>,
 }
 
-struct Rejection {
-    run_index: usize,
-    reason: String,
-}
-
 pub(super) fn plan_post_tool_use_delivery(
-    result: PostToolUseResult,
+    mut result: PostToolUseResult,
     output: &ToolsToolOutput,
     reminder_tag: &str,
     results: &mut [HookRunResult],
 ) -> PostToolUseDelivery {
-    let tool_is_mcp = matches!(output, ToolsToolOutput::MCP(_));
-    let selected = if tool_is_mcp {
-        latest_replacement(result.builtin_replacement, result.mcp_replacement)
-    } else {
-        if let Some(mcp) = result.mcp_replacement {
-            downgrade_run(
-                results,
-                mcp.run_index,
-                "updatedMCPToolOutput does not match the tool's kind",
-            );
-        }
-        result.builtin_replacement
-    };
-    let (model_output, rejection) = post_tool_use_model_output(selected, output, reminder_tag);
-    if let Some(Rejection { run_index, reason }) = rejection {
-        downgrade_run(results, run_index, &reason);
+    let tool_kind = replacement_kind(output);
+    let ReplacementChoice { chosen, rejected } = result.take_replacement(tool_kind);
+    let (model_output, unrendered) = post_tool_use_model_output(chosen, output, reminder_tag);
+    for rejection in rejected.into_iter().chain(unrendered) {
+        downgrade_run(results, rejection);
     }
     PostToolUseDelivery {
         model_output,
@@ -47,7 +32,25 @@ pub(super) fn plan_post_tool_use_delivery(
     }
 }
 
-fn downgrade_run(results: &mut [HookRunResult], run_index: usize, reason: &str) {
+fn replacement_kind(output: &ToolsToolOutput) -> ReplacementKind {
+    if matches!(output, ToolsToolOutput::MCP(_)) {
+        ReplacementKind::Mcp
+    } else {
+        ReplacementKind::Builtin
+    }
+}
+
+fn downgrade_run(results: &mut [HookRunResult], rejection: RejectedReplacement) {
+    let RejectedReplacement {
+        hook_name: rejected_hook,
+        run_index,
+        reason,
+    } = rejection;
+    tracing::warn!(
+        hook_name = %rejected_hook,
+        reason = %reason,
+        "post_tool_use output replacement rejected; the model keeps the tool's output"
+    );
     if let Some(slot) = results.get_mut(run_index)
         && let HookRunResult::Success {
             hook_name,
@@ -56,15 +59,9 @@ fn downgrade_run(results: &mut [HookRunResult], run_index: usize, reason: &str) 
             system_message,
         } = slot
     {
-        tracing::debug!(
-            hook_name = %hook_name,
-            run_index,
-            reason,
-            "downgrading the run that produced a rejected post_tool_use replacement"
-        );
         *slot = HookRunResult::Failed {
             hook_name: hook_name.clone(),
-            error: reason.to_string(),
+            error: reason,
             elapsed: *elapsed,
             http_info: http_info.clone(),
             system_message: system_message.clone(),
@@ -72,25 +69,11 @@ fn downgrade_run(results: &mut [HookRunResult], run_index: usize, reason: &str) 
     }
 }
 
-fn latest_replacement(
-    builtin: Option<SelectedReplacement>,
-    mcp: Option<SelectedReplacement>,
-) -> Option<SelectedReplacement> {
-    match (builtin, mcp) {
-        (Some(builtin), Some(mcp)) => Some(if mcp.run_index > builtin.run_index {
-            mcp
-        } else {
-            builtin
-        }),
-        (builtin, mcp) => builtin.or(mcp),
-    }
-}
-
 fn post_tool_use_model_output(
     selected: Option<SelectedReplacement>,
     output: &ToolsToolOutput,
     reminder_tag: &str,
-) -> (Option<String>, Option<Rejection>) {
+) -> (Option<String>, Option<RejectedReplacement>) {
     let Some(SelectedReplacement {
         replacement,
         run_index,
@@ -98,11 +81,9 @@ fn post_tool_use_model_output(
     else {
         return (None, None);
     };
+    let hook_name = replacement.hook_name.clone();
     match post_tool_use_rendered_replacement(replacement, output) {
-        RenderedReplacement::Replace {
-            hook_name,
-            rendered,
-        } => {
+        RenderedReplacement::Replace(rendered) => {
             if rendered.trim().is_empty() {
                 tracing::warn!(
                     hook_name = %hook_name,
@@ -117,61 +98,44 @@ fn post_tool_use_model_output(
                 None,
             )
         }
-        RenderedReplacement::Rejected { reason } => (None, Some(Rejection { run_index, reason })),
+        RenderedReplacement::Rejected(reason) => (
+            None,
+            Some(RejectedReplacement {
+                hook_name,
+                run_index,
+                reason,
+            }),
+        ),
     }
 }
 
 enum RenderedReplacement {
-    Replace { hook_name: String, rendered: String },
-    Rejected { reason: String },
+    Replace(String),
+    Rejected(String),
 }
 
 fn post_tool_use_rendered_replacement(
     replacement: OutputReplacement,
     output: &ToolsToolOutput,
 ) -> RenderedReplacement {
-    let OutputReplacement {
-        hook_name, value, ..
-    } = replacement;
-
-    if matches!(output, ToolsToolOutput::MCP(_)) {
-        let rendered = match value {
-            serde_json::Value::String(s) => s,
-            other => other.to_string(),
-        };
-        return RenderedReplacement::Replace {
-            hook_name,
-            rendered: clip_text(&rendered, MAX_HOOK_OUTPUT_REPLACEMENT_CHARS),
-        };
-    }
-
-    match serde_json::from_value::<ToolsToolOutput>(value) {
-        Ok(candidate) if std::mem::discriminant(&candidate) == std::mem::discriminant(output) => {
-            RenderedReplacement::Replace {
-                hook_name,
-                rendered: clip_text(
-                    &candidate.to_prompt_format(),
-                    MAX_HOOK_OUTPUT_REPLACEMENT_CHARS,
+    match replacement_kind(output) {
+        ReplacementKind::Mcp => RenderedReplacement::Replace(replacement.mcp_output_text()),
+        ReplacementKind::Builtin => {
+            match serde_json::from_value::<ToolsToolOutput>(replacement.value) {
+                Ok(candidate)
+                    if std::mem::discriminant(&candidate) == std::mem::discriminant(output) =>
+                {
+                    RenderedReplacement::Replace(clip_text(
+                        &candidate.to_prompt_format(),
+                        MAX_HOOK_OUTPUT_REPLACEMENT_CHARS,
+                    ))
+                }
+                Ok(_) => RenderedReplacement::Rejected(
+                    "updatedToolOutput does not match the tool's output shape".to_string(),
                 ),
-            }
-        }
-        Ok(_) => {
-            tracing::warn!(
-                hook_name = %hook_name,
-                "post_tool_use updatedToolOutput does not match the tool's output shape; keeping original"
-            );
-            RenderedReplacement::Rejected {
-                reason: "updatedToolOutput does not match the tool's output shape".to_string(),
-            }
-        }
-        Err(err) => {
-            tracing::warn!(
-                hook_name = %hook_name,
-                %err,
-                "post_tool_use updatedToolOutput failed to parse; keeping original"
-            );
-            RenderedReplacement::Rejected {
-                reason: format!("updatedToolOutput failed to parse: {err}"),
+                Err(err) => RenderedReplacement::Rejected(format!(
+                    "updatedToolOutput failed to parse: {err}"
+                )),
             }
         }
     }

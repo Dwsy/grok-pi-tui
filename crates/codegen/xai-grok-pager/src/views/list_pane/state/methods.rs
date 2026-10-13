@@ -52,10 +52,6 @@ impl ListPaneState {
         }
     }
 
-    // =======================================================================
-    // Public accessors
-    // =======================================================================
-
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
     }
@@ -268,15 +264,20 @@ impl ListPaneState {
         // Draw a visible cursor (REVERSED cell at cursor position).
         // Also store the screen position so the caller can set the terminal hardware cursor via Frame::set_cursor_position()
         if area.width > 0 && area.height > 0 {
-            let text_before_cursor = &self.input_textarea.text()[..self.input_textarea.cursor()];
+            let text = self.input_textarea.text();
+            let text_before_cursor = text.get(..self.input_textarea.cursor()).unwrap_or(text);
             let cursor_line = text_before_cursor.chars().filter(|c| *c == '\n').count();
             let last_line_start = text_before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
-            let cursor_col = text_before_cursor[last_line_start..]
+            let cursor_col = text_before_cursor
+                .get(last_line_start..)
+                .unwrap_or("")
                 .width()
                 .min(area.width as usize - 1) as u16;
             let x = area.x + cursor_col;
             let y = (area.y + cursor_line as u16).min(area.y + area.height - 1);
-            buf[(x, y)].modifier.insert(Modifier::REVERSED);
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.modifier.insert(Modifier::REVERSED);
+            }
             self.input_cursor_screen_pos = Some((x, y));
         }
     }
@@ -291,10 +292,6 @@ impl ListPaneState {
             None
         }
     }
-
-    // =======================================================================
-    // Visual select mode
-    // =======================================================================
 
     /// Enter visual selection mode, anchored at the current selection. If in follow mode, exits follow
     /// first (placing a cursor), then enters visual. No-op if visual select is disabled.
@@ -327,10 +324,6 @@ impl ListPaneState {
             self.exit_visual_mode();
         }
     }
-
-    // =======================================================================
-    // Clipboard (copy)
-    // =======================================================================
 
     /// Replace the clipboard provider (e.g. with a system clipboard).
     pub fn set_clipboard_provider(&mut self, provider: Box<dyn ClipboardProvider>) {
@@ -405,10 +398,6 @@ impl ListPaneState {
         true
     }
 
-    // =======================================================================
-    // Scrollbar interaction
-    // =======================================================================
-
     /// Set scroll offset to a specific value and select the nearest item at viewport center. The thumb
     /// therefore lands exactly where the user clicked.
     pub fn set_scroll_offset_and_center<T: ListItem>(&mut self, offset: usize, items: &[T]) {
@@ -462,10 +451,6 @@ impl ListPaneState {
         }
     }
 
-    // =======================================================================
-    // Wrap mode
-    // =======================================================================
-
     /// Toggle wrap mode between NoWrap and Wrap.
     ///
     /// Records a scroll anchor so that `prepare_layout` will keep the selected item's top line at the same screen-y position (fold/unfold effect).
@@ -488,10 +473,6 @@ impl ListPaneState {
         // Wrap mode change forces full rebuild on next prepare_layout.
     }
 
-    // =======================================================================
-    // Filter
-    // =======================================================================
-
     /// Set or clear the matcher (filter or search).
     ///
     /// Caller should call `prepare_layout` afterward to recompute match indices and layout.
@@ -504,10 +485,6 @@ impl ListPaneState {
     pub fn set_filter(&mut self, matcher: Option<ListMatcher>) {
         self.set_matcher(matcher);
     }
-
-    // =======================================================================
-    // Match navigation (n/N)
-    // =======================================================================
 
     /// Jump to the next match after the current selection. In Filter mode, moves to the next filtered
     /// item. In Search mode, moves to the next matching item (all items visible). Wraps around at the
@@ -570,9 +547,7 @@ impl ListPaneState {
         }
     }
 
-    // =======================================================================
     // prepare_layout: the ONE generic entry point
-    // =======================================================================
 
     /// Recompute layout, resolve the stable-ID selection to indices, and clamp scroll. Uses dirty
     /// tracking to avoid redundant work. Append only (same width, no filter change, count grew, Wrap
@@ -585,7 +560,6 @@ impl ListPaneState {
             viewport_height
         };
 
-        // -- Build visible-item index map (filter) ----------------------------
         let filter_changed = self.filter_dirty;
         if filter_changed {
             self.filter_dirty = false;
@@ -621,10 +595,10 @@ impl ListPaneState {
             None => items.len(),
         };
 
-        let to_physical = |vi: usize| -> usize {
+        let to_physical = |vi: usize| -> Option<usize> {
             match &vis {
-                Some(v) => v[vi],
-                None => vi,
+                Some(v) => v.get(vi).copied(),
+                None => Some(vi),
             }
         };
 
@@ -654,15 +628,16 @@ impl ListPaneState {
             } else if items.len() > self.height_cache.len() {
                 // Incremental extend: new items appended at the same width
                 let old_len = self.height_cache.len();
-                self.height_cache.extend(
-                    items[old_len..]
-                        .iter()
-                        .map(|item| item.desired_height(effective_width)),
-                );
+                if let Some(new_items) = items.get(old_len..) {
+                    self.height_cache.extend(
+                        new_items
+                            .iter()
+                            .map(|item| item.desired_height(effective_width)),
+                    );
+                }
             }
         }
 
-        // -- Decide whether to skip or incrementally update the layout --------
         let (width_same, mode_same, count_grew, old_count) = match self.last_stamp {
             Some(s) => (
                 s.width == effective_width,
@@ -685,7 +660,11 @@ impl ListPaneState {
             self.layout = match self.wrap_mode {
                 WrapMode::NoWrap => ListLayoutCache::fixed(vis_count),
                 WrapMode::Wrap => {
-                    let heights = (0..vis_count).map(|vi| self.height_cache[to_physical(vi)]);
+                    let heights = (0..vis_count).map(|vi| {
+                        to_physical(vi)
+                            .and_then(|pi| self.height_cache.get(pi).copied())
+                            .unwrap_or(1)
+                    });
                     ListLayoutCache::from_heights(effective_width, heights)
                 }
             };
@@ -696,8 +675,11 @@ impl ListPaneState {
                     self.layout = ListLayoutCache::fixed(vis_count);
                 }
                 WrapMode::Wrap => {
-                    let new_heights =
-                        (old_count..vis_count).map(|vi| self.height_cache[to_physical(vi)]);
+                    let new_heights = (old_count..vis_count).map(|vi| {
+                        to_physical(vi)
+                            .and_then(|pi| self.height_cache.get(pi).copied())
+                            .unwrap_or(1)
+                    });
                     self.layout.extend_heights(new_heights);
                 }
             }
@@ -724,7 +706,11 @@ impl ListPaneState {
                 self.height_cache_width = effective_width;
 
                 // Rebuild layout with corrected heights.
-                let heights = (0..vis_count).map(|vi| self.height_cache[to_physical(vi)]);
+                let heights = (0..vis_count).map(|vi| {
+                    to_physical(vi)
+                        .and_then(|pi| self.height_cache.get(pi).copied())
+                        .unwrap_or(1)
+                });
                 self.layout = ListLayoutCache::from_heights(effective_width, heights);
             }
         }
@@ -736,27 +722,36 @@ impl ListPaneState {
             wrap: self.wrap_mode,
         });
 
-        // -- Resolve selected_id to selected_index ----------------------------
-        self.selected_index = self
-            .selected_id
-            .and_then(|sid| (0..vis_count).find(|&vi| items[to_physical(vi)].stable_id() == sid));
+        self.selected_index = self.selected_id.and_then(|sid| {
+            (0..vis_count).find(|&vi| {
+                to_physical(vi)
+                    .and_then(|pi| items.get(pi))
+                    .is_some_and(|item| item.stable_id() == sid)
+            })
+        });
 
         // If the selected ID is gone, clear selection.
         if self.selected_id.is_some() && self.selected_index.is_none() {
             self.selected_id = None;
         }
 
-        // -- Visual mode: sync multi_selected_ids from anchor and cursor ------
         if self.visual_mode
             && let (Some(anchor), Some(cursor)) = (self.visual_anchor_id, self.selected_id)
         {
             self.multi_selected_ids = Some((anchor, cursor));
         }
 
-        // -- Resolve multi_selected_ids to multi_range ------------------------
         self.multi_range = self.multi_selected_ids.and_then(|(a, b)| {
-            let a_idx = (0..vis_count).find(|&vi| items[to_physical(vi)].stable_id() == a);
-            let b_idx = (0..vis_count).find(|&vi| items[to_physical(vi)].stable_id() == b);
+            let a_idx = (0..vis_count).find(|&vi| {
+                to_physical(vi)
+                    .and_then(|pi| items.get(pi))
+                    .is_some_and(|item| item.stable_id() == a)
+            });
+            let b_idx = (0..vis_count).find(|&vi| {
+                to_physical(vi)
+                    .and_then(|pi| items.get(pi))
+                    .is_some_and(|item| item.stable_id() == b)
+            });
             match (a_idx, b_idx) {
                 (Some(a), Some(b)) => {
                     let lo = a.min(b);
@@ -767,7 +762,6 @@ impl ListPaneState {
             }
         });
 
-        // -- Apply scroll anchor (wrap toggle y-stability) --------------------
         // If a scroll anchor was set (e.g. by cycle_wrap_mode), adjust scroll_offset so the selected item appears at the recorded screen-y.
         if let Some(desired_screen_y) = self.scroll_anchor.take()
             && let Some(vi) = self.selected_index
@@ -776,7 +770,6 @@ impl ListPaneState {
             self.scroll_offset = new_item_y.saturating_sub(desired_screen_y);
         }
 
-        // -- Follow mode: auto-scroll to bottom, no cursor ----------------------
         if self.follow_mode {
             let total = self.layout.total_height();
             let vp = self.viewport_height as usize;
@@ -786,14 +779,15 @@ impl ListPaneState {
             self.selected_index = None;
         }
 
-        // -- Auto-select if nothing selected (NAV mode only) --------------------
         // A list with items but no selection feels broken (no highlight, j/k do nothing visible). Auto-select the first selectable item.
         // In follow mode, selection is always None, so skip this block
         if !self.follow_mode && self.selected_index.is_none() && vis_count > 0 {
             for vi in 0..vis_count {
-                if items[to_physical(vi)].is_selectable() {
+                if let Some(item) = to_physical(vi).and_then(|pi| items.get(pi))
+                    && item.is_selectable()
+                {
                     self.selected_index = Some(vi);
-                    self.selected_id = Some(items[to_physical(vi)].stable_id());
+                    self.selected_id = Some(item.stable_id());
                     break;
                 }
             }
@@ -802,10 +796,8 @@ impl ListPaneState {
         // Store the vis map for the renderer; must come after auto-select (whose `to_physical` closure borrows `vis`)
         self.vis_map = vis;
 
-        // -- Clamp scroll -------------------------------------------------------
         self.clamp_scroll();
 
-        // -- Keep selection visible after eviction --------------------------------
         // Only when items SHRINK (eviction from the front), which shifts indices and can push the selection off-screen
         // NOT on append (which just extends below); that would fight the user's click/scroll position via the margin
         let items_shrunk = vis_count < old_count;
@@ -813,10 +805,6 @@ impl ListPaneState {
             self.ensure_selected_visible();
         }
     }
-
-    // =======================================================================
-    // Scroll
-    // =======================================================================
 
     /// Scroll down by `n` visual lines (viewport only, no follow logic). This is a low-level primitive.
     /// Higher-level methods (`half_page_down`, `scroll_lines`, etc.) call this and then handle
@@ -849,7 +837,6 @@ impl ListPaneState {
     fn scroll_keeping_screen_y<T: ListItem>(&mut self, delta: isize, items: &[T]) {
         let is_down = delta > 0;
 
-        // -- Handle FOLLOW mode -----------------------------------------------
         if self.follow_mode {
             if is_down {
                 return; // no-op: already at the bottom
@@ -858,7 +845,6 @@ impl ListPaneState {
             self.exit_follow(items);
         }
 
-        // -- NAV mode scroll --------------------------------------------------
         if !is_down {
             self.reset_edge_state();
         }
@@ -893,7 +879,6 @@ impl ListPaneState {
             self.select_nearest_at_y(target_y, items);
         }
 
-        // -- One-past logic for downward scrolls ------------------------------
         // Suppressed in visual mode (don't snap to follow mid-selection).
         if self.config.follow_enabled && !self.visual_mode && is_down && self.is_at_bottom() {
             if self.at_content_edge {
@@ -1000,7 +985,6 @@ impl ListPaneState {
         // Mouse wheel exits visual mode (the mouse is a single-select interaction)
         self.clear_visual_if_active();
 
-        // -- Handle FOLLOW mode -----------------------------------------------
         if self.follow_mode {
             if is_down {
                 return; // no-op: already at the bottom
@@ -1044,7 +1028,6 @@ impl ListPaneState {
             self.select_nearest_at_y(target_y, items);
         }
 
-        // -- Overscroll counter for mouse wheel -------------------------------
         // Suppressed in visual mode.
         if self.config.follow_enabled && !self.visual_mode && is_down && self.is_at_bottom() {
             let scroll_amount = lines.unsigned_abs().min(u8::MAX as u32) as u8;
@@ -1113,10 +1096,6 @@ impl ListPaneState {
         total <= vp || self.scroll_offset >= total.saturating_sub(vp)
     }
 
-    // =======================================================================
-    // Follow and NAV transitions
-    // =======================================================================
-
     /// Engage follow mode: jump viewport to bottom, hide cursor.
     ///
     /// No-op when `follow_enabled` is false in config.
@@ -1164,10 +1143,6 @@ impl ListPaneState {
         self.at_content_edge = false;
         self.overscroll_ticks = 0;
     }
-
-    // =======================================================================
-    // Selection
-    // =======================================================================
 
     /// Select the next selectable item (downward): `j`/`↓`. In FOLLOW: no-op (already at the bottom,
     /// nowhere to go down). In NAV: move down. If it can't move (already at the last selectable),
@@ -1348,10 +1323,6 @@ impl ListPaneState {
         self.ensure_selected_visible();
     }
 
-    // =======================================================================
-    // Visible range (for rendering)
-    // =======================================================================
-
     /// Return the range of visible-item indices that overlap the viewport. For `FixedHeight`, this is
     /// `scroll_offset .. scroll_offset + viewport_height` clamped to `0..item_count`. For `Variable`,
     /// uses `item_at_y` for the top and then walks forward.
@@ -1389,10 +1360,6 @@ impl ListPaneState {
         (self.scroll_offset - first_y) as u16
     }
 
-    // =======================================================================
-    // Keyboard input
-    // =======================================================================
-
     /// Paste into the active input bar. Returns `false` when no editor is open.
     pub fn handle_paste<T: ListItem>(&mut self, text: &str, items: &[T]) -> bool {
         let Some(mode) = self.input_mode else {
@@ -1422,7 +1389,6 @@ impl ListPaneState {
         event: &crossterm::event::KeyEvent,
         items: &[T],
     ) -> bool {
-        // -- Input bar active: intercept Enter/Esc, route typing to textarea --
         if let Some(mode) = self.input_mode {
             // GotoLine mode has its own Enter/Esc/text handling.
             if mode == InputBarMode::GotoLine {
@@ -1534,8 +1500,6 @@ impl ListPaneState {
             }
             return true; // always consume when input bar is open
         }
-
-        // -- Normal mode: check for search/filter/follow keys first -----------
 
         // '/' opens the search bar (clears visual mode)
         if self.config.search_enabled && key!('/').matches(event) {
@@ -1738,10 +1702,6 @@ impl ListPaneState {
         false
     }
 
-    // =======================================================================
-    // Input bar lifecycle
-    // =======================================================================
-
     /// Open the input bar in the given mode.
     fn open_input<T: ListItem>(&mut self, mode: InputBarMode, items: &[T]) {
         self.input_mode = Some(mode);
@@ -1792,8 +1752,6 @@ impl ListPaneState {
     pub fn clear_input_and_matcher(&mut self) {
         self.cancel_input();
     }
-
-    // ── Goto-line mode ────────────────────────────────────────────────
 
     /// Open the goto-line input bar. Saves a snapshot for cancel/restore.
     fn open_goto_line<T: ListItem>(&mut self, items: &[T]) {
@@ -1883,12 +1841,16 @@ impl ListPaneState {
                         self.visual_mode = snap.visual_mode;
                         self.visual_anchor_id = snap.visual_anchor_id;
                     }
-                    self.selected_id = Some(items[idx].stable_id());
+                    if let Some(item) = items.get(idx) {
+                        self.selected_id = Some(item.stable_id());
+                    }
                     self.selected_index = None;
                 } else {
                     // Just jump (no visual).
                     self.exit_visual_mode();
-                    self.selected_id = Some(items[idx].stable_id());
+                    if let Some(item) = items.get(idx) {
+                        self.selected_id = Some(item.stable_id());
+                    }
                     self.selected_index = None;
                 }
                 center_on(self, idx);
@@ -1899,8 +1861,12 @@ impl ListPaneState {
                 let end_idx = end_idx.max(start_idx);
 
                 self.visual_mode = true;
-                self.visual_anchor_id = Some(items[start_idx].stable_id());
-                self.selected_id = Some(items[end_idx].stable_id());
+                if let Some(item) = items.get(start_idx) {
+                    self.visual_anchor_id = Some(item.stable_id());
+                }
+                if let Some(item) = items.get(end_idx) {
+                    self.selected_id = Some(item.stable_id());
+                }
                 self.selected_index = None;
                 // Center on the end of the range (the part the user is actively typing).
                 center_on(self, end_idx);
@@ -1999,12 +1965,11 @@ impl ListPaneState {
             if !already_matches && let Some(ref mut m) = self.matcher {
                 // Find nearest match at or after current position.
                 let pos = m.match_indices.partition_point(|&mi| mi < current_pi);
-                let target = if pos < m.match_indices.len() {
-                    Some(m.match_indices[pos])
-                } else {
-                    // Wrap to first match.
-                    m.match_indices.first().copied()
-                };
+                let target = m
+                    .match_indices
+                    .get(pos)
+                    .copied()
+                    .or_else(|| m.match_indices.first().copied());
                 if let Some(pi) = target {
                     m.current_match = Some(m.match_indices.binary_search(&pi).unwrap_or(0));
                     self.jump_to_physical(pi, items);
@@ -2048,10 +2013,6 @@ impl ListPaneState {
             false
         }
     }
-
-    // =======================================================================
-    // Mouse event handling
-    // =======================================================================
 
     /// Handle a mouse event within this pane's area. `pane_area` is the screen `Rect` where the pane
     /// was rendered (used to compute the relative row for item click-to-select). Returns `true` if the

@@ -382,18 +382,22 @@ mod tests {
     fn sample_wire_frames_parse_byte_exactly() {
         match peek_doom_loop(SAMPLE_CHECK_EVENT_DATA) {
             DoomLoopPeek::CheckEvent(signals) => {
-                assert_eq!(signals.len(), 1);
-                assert_eq!(signals[0].kind, DoomLoopSignalKind::TailRepetition(4));
-                assert_eq!(signals[0].channel, "response");
-                assert_eq!(signals[0].raw, "tail_repetition:4@response");
+                let [signal] = signals.as_slice() else {
+                    panic!("expected one signal: {signals:?}");
+                };
+                assert_eq!(signal.kind, DoomLoopSignalKind::TailRepetition(4));
+                assert_eq!(signal.channel, "response");
+                assert_eq!(signal.raw, "tail_repetition:4@response");
             }
             other => panic!("expected CheckEvent, got {other:?}"),
         }
         match peek_doom_loop(SAMPLE_CHECK_EVENT_DATA_CUMULATIVE) {
             DoomLoopPeek::CheckEvent(signals) => {
-                assert_eq!(signals.len(), 2);
-                assert_eq!(signals[0].raw, "tail_repetition:4@response");
-                assert_eq!(signals[1].kind, DoomLoopSignalKind::TailRepetition(2));
+                let [first, second] = signals.as_slice() else {
+                    panic!("expected two signals: {signals:?}");
+                };
+                assert_eq!(first.raw, "tail_repetition:4@response");
+                assert_eq!(second.kind, DoomLoopSignalKind::TailRepetition(2));
             }
             other => panic!("expected CheckEvent, got {other:?}"),
         }
@@ -404,9 +408,11 @@ mod tests {
         let data = r#"{"type":"response.doom_loop_check","doom_loop_check":{"triggers":["tail_repetition:8@thinking","low_logprob@thinking"]}}"#;
         match peek_doom_loop(data) {
             DoomLoopPeek::CheckEvent(signals) => {
-                assert_eq!(signals.len(), 2);
-                assert_eq!(signals[0].kind, DoomLoopSignalKind::TailRepetition(8));
-                assert_eq!(signals[1].kind, DoomLoopSignalKind::LowLogprob);
+                let [first, second] = signals.as_slice() else {
+                    panic!("expected two signals: {signals:?}");
+                };
+                assert_eq!(first.kind, DoomLoopSignalKind::TailRepetition(8));
+                assert_eq!(second.kind, DoomLoopSignalKind::LowLogprob);
             }
             other => panic!("expected CheckEvent, got {other:?}"),
         }
@@ -435,8 +441,10 @@ mod tests {
         let data = r#"{"type":"response.doom_loop_check","doom_loop_check":{"triggers":[7,"tail_repetition:8@thinking",null]}}"#;
         match peek_doom_loop(data) {
             DoomLoopPeek::CheckEvent(signals) => {
-                assert_eq!(signals.len(), 1);
-                assert_eq!(signals[0].raw, "tail_repetition:8@thinking");
+                let [signal] = signals.as_slice() else {
+                    panic!("expected one signal: {signals:?}");
+                };
+                assert_eq!(signal.raw, "tail_repetition:8@thinking");
             }
             other => panic!("expected CheckEvent, got {other:?}"),
         }
@@ -447,8 +455,10 @@ mod tests {
         let data = r#"{"type":"response.completed","response":{"id":"r1","doom_loop_check":{"triggers":["tail_repetition:16@thinking"]}}}"#;
         match peek_doom_loop(data) {
             DoomLoopPeek::ResponseField(signals) => {
-                assert_eq!(signals.len(), 1);
-                assert_eq!(signals[0].kind, DoomLoopSignalKind::TailRepetition(16));
+                let [signal] = signals.as_slice() else {
+                    panic!("expected one signal: {signals:?}");
+                };
+                assert_eq!(signal.kind, DoomLoopSignalKind::TailRepetition(16));
             }
             other => panic!("expected ResponseField, got {other:?}"),
         }

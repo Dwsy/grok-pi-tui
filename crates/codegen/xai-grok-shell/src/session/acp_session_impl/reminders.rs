@@ -868,7 +868,10 @@ impl SessionActor {
         for t in tasks.into_iter().filter(|t| !t.completed) {
             let task = ResumeTask {
                 task_id: t.task_id,
-                command: t.display_command.unwrap_or(t.command),
+                description: crate::session::resume_status::resume_task_description(
+                    t.description,
+                    t.display_command.as_deref(),
+                ),
             };
             match t.kind {
                 TaskKind::Monitor => monitors.push(task),

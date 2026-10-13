@@ -136,15 +136,12 @@ pub(super) enum RecoveryRecordV1 {
     Claim(RecoveryClaim),
 }
 impl RecoveryRecordV1 {
-    fn event(&self) -> u8 {
-        match self {
-            Self::RunReserved(_) => 0,
-            Self::Outcome(_) => 1,
-            Self::Claim(_) => 2,
-        }
-    }
     pub(super) fn limits(&self) -> (usize, usize) {
-        RECOVERY_ROW_BYTES[usize::from(self.event())]
+        match self {
+            Self::RunReserved(_) => RECOVERY_ROW_BYTES[0],
+            Self::Outcome(_) => RECOVERY_ROW_BYTES[1],
+            Self::Claim(_) => RECOVERY_ROW_BYTES[2],
+        }
     }
 }
 

@@ -3,6 +3,13 @@
 
 use super::*;
 use futures_util::stream;
+
+fn nth<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected item {i}, got {} items", xs.len());
+    };
+    x
+}
 use std::pin::pin;
 use xai_grok_sampling_types::messages::{
     ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse, MessagesUsage,
@@ -53,6 +60,36 @@ fn block_stop(index: u32) -> MessageStreamEvent {
     MessageStreamEvent::ContentBlockStop { index }
 }
 
+/// The event sequence for one thinking block: start, one text delta, one signature delta, stop.
+fn thinking_block(
+    index: u32,
+    text: &str,
+    sig: &str,
+) -> Vec<Result<MessageStreamEvent, SamplingError>> {
+    vec![
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index,
+            content_block: ContentBlock::Thinking {
+                thinking: String::new(),
+                signature: String::new(),
+            },
+        }),
+        Ok(MessageStreamEvent::ContentBlockDelta {
+            index,
+            delta: StreamDelta::ThinkingDelta {
+                thinking: text.into(),
+            },
+        }),
+        Ok(MessageStreamEvent::ContentBlockDelta {
+            index,
+            delta: StreamDelta::SignatureDelta {
+                signature: sig.into(),
+            },
+        }),
+        Ok(block_stop(index)),
+    ]
+}
+
 fn message_delta_with_stop(stop: messages::StopReason) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
@@ -99,13 +136,28 @@ async fn collect(s: impl Stream<Item = SamplingEvent>) -> Vec<SamplingEvent> {
     out
 }
 
+/// The tokens the stream emitted on one channel, in order.
+fn channel_tokens(evs: &[SamplingEvent], channel: SamplingChannel) -> Vec<&str> {
+    evs.iter()
+        .filter_map(|e| match e {
+            SamplingEvent::ChannelToken {
+                channel: c, text, ..
+            } if *c == channel => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn empty_stream_yields_started_then_completed() {
     let raw = stream::iter(Vec::<Result<MessageStreamEvent, SamplingError>>::new()).boxed();
     let events = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
     assert_eq!(events.len(), 2);
-    assert!(matches!(events[0], SamplingEvent::StreamStarted { .. }));
-    assert!(matches!(events[1], SamplingEvent::Completed { .. }));
+    assert!(matches!(
+        nth(&events, 0),
+        SamplingEvent::StreamStarted { .. }
+    ));
+    assert!(matches!(nth(&events, 1), SamplingEvent::Completed { .. }));
 }
 
 #[tokio::test]
@@ -122,17 +174,7 @@ async fn text_block_assembles_into_completed_response() {
     let raw = stream::iter(events).boxed();
     let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
 
-    let text_tokens: Vec<&str> = evs
-        .iter()
-        .filter_map(|e| match e {
-            SamplingEvent::ChannelToken {
-                channel: SamplingChannel::Text,
-                text,
-                ..
-            } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
+    let text_tokens = channel_tokens(&evs, SamplingChannel::Text);
     assert_eq!(text_tokens, vec!["Hello, ", "world!"]);
 
     match evs.last().unwrap() {
@@ -184,17 +226,7 @@ async fn thinking_block_emits_reasoning_channel_and_preserved_in_response() {
     let raw = stream::iter(events).boxed();
     let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
 
-    let reasoning_tokens: Vec<&str> = evs
-        .iter()
-        .filter_map(|e| match e {
-            SamplingEvent::ChannelToken {
-                channel: SamplingChannel::Reasoning,
-                text,
-                ..
-            } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
+    let reasoning_tokens = channel_tokens(&evs, SamplingChannel::Reasoning);
     assert_eq!(reasoning_tokens, vec!["let me think..."]);
 
     match evs.last().unwrap() {
@@ -203,7 +235,10 @@ async fn thinking_block_emits_reasoning_channel_and_preserved_in_response() {
                 .reasoning_items()
                 .next()
                 .expect("reasoning sibling preserved");
-            let rs::SummaryPart::SummaryText(t) = &r.summary[0];
+            let Some(part) = r.summary.first() else {
+                panic!("expected a summary part");
+            };
+            let rs::SummaryPart::SummaryText(t) = part;
             assert_eq!(t.text, "let me think...");
             assert_eq!(r.encrypted_content.as_deref(), Some("abc123"));
         }
@@ -215,30 +250,6 @@ async fn thinking_block_emits_reasoning_channel_and_preserved_in_response() {
 /// The event fires at the block's stop, so per-index signatures reach the headless reducer instead of collapsing to one.
 #[tokio::test]
 async fn multiple_thinking_blocks_emit_per_block_signatures_in_order() {
-    let thinking_block = |index: u32, text: &str, sig: &str| {
-        vec![
-            Ok(MessageStreamEvent::ContentBlockStart {
-                index,
-                content_block: ContentBlock::Thinking {
-                    thinking: String::new(),
-                    signature: String::new(),
-                },
-            }),
-            Ok(MessageStreamEvent::ContentBlockDelta {
-                index,
-                delta: StreamDelta::ThinkingDelta {
-                    thinking: text.into(),
-                },
-            }),
-            Ok(MessageStreamEvent::ContentBlockDelta {
-                index,
-                delta: StreamDelta::SignatureDelta {
-                    signature: sig.into(),
-                },
-            }),
-            Ok(block_stop(index)),
-        ]
-    };
     let mut events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![Ok(message_start())];
     events.extend(thinking_block(0, "first", "sig-1"));
     events.push(Ok(text_block_start(1)));
@@ -262,6 +273,139 @@ async fn multiple_thinking_blocks_emit_per_block_signatures_in_order() {
         vec!["sig-1", "sig-2"],
         "each thinking block emits its own signature in order"
     );
+}
+
+/// A base64 signature whose readable header names the block kind.
+/// Real Anthropic Messages API signatures carry "thinking" or "narration" there.
+fn signature_with_kind(kind: &[u8]) -> String {
+    use base64::Engine as _;
+    let mut bytes = vec![
+        0x08, 0x04, 0x12, 0xf3, 0x06, 0x0a, 0x11, 0x08, 0x11, 0x18, 0x02, 0x38,
+    ];
+    bytes.extend_from_slice(&[0x01, 0x42, kind.len().try_into().expect("kind fits u8")]);
+    bytes.extend_from_slice(kind);
+    // A fake ciphertext tail. `signature_marks_narration` decodes only the first 48 chars
+    bytes.extend_from_slice(&[0xab; 40]);
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// A narration-signed thinking block re-emits its full text on the Narration channel at its stop.
+/// A "thinking"-signed block never reaches the Narration channel.
+#[tokio::test]
+async fn narration_signed_thinking_block_reemits_on_narration_channel() {
+    let mut events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![Ok(message_start())];
+    events.extend(thinking_block(
+        0,
+        "internal reasoning",
+        &signature_with_kind(b"thinking"),
+    ));
+    events.extend(thinking_block(
+        1,
+        "Found the bug; fixing auth.py next.",
+        &signature_with_kind(b"narration"),
+    ));
+    // An empty narration-signed block must emit nothing on the Narration channel
+    events.extend(thinking_block(2, "", &signature_with_kind(b"narration")));
+    events.push(Ok(text_block_start(3)));
+    events.push(Ok(text_delta(3, "final answer")));
+    events.push(Ok(block_stop(3)));
+    events.push(Ok(MessageStreamEvent::MessageStop));
+
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    let narration_tokens = channel_tokens(&evs, SamplingChannel::Narration);
+    assert_eq!(
+        narration_tokens,
+        vec!["Found the bug; fixing auth.py next."]
+    );
+
+    // Both non-empty blocks still stream on the Reasoning channel
+    let reasoning_tokens = channel_tokens(&evs, SamplingChannel::Reasoning);
+    assert_eq!(
+        reasoning_tokens,
+        vec!["internal reasoning", "Found the bug; fixing auth.py next."]
+    );
+
+    match evs.last().expect("stream yields events") {
+        SamplingEvent::Completed { response, .. } => {
+            // Narration stays out of the assistant text. On the wire it is a thinking block
+            assert_eq!(response.assistant_text(), "final answer");
+            // Every thinking block survives into passback in order; narration must not evict the reasoning block
+            let summaries: Vec<String> = response
+                .reasoning_items()
+                .map(|r| {
+                    r.summary
+                        .iter()
+                        .map(|rs::SummaryPart::SummaryText(t)| t.text.as_str())
+                        .collect()
+                })
+                .collect();
+            assert_eq!(
+                summaries,
+                vec![
+                    "internal reasoning",
+                    "Found the bug; fixing auth.py next.",
+                    ""
+                ]
+            );
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+/// The first `SignatureDelta` replaces a start-seeded signature (a gateway sending both must not
+/// double it into passback); later deltas append so a split signature survives whole.
+#[tokio::test]
+async fn start_seeded_signature_is_replaced_then_deltas_append() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(MessageStreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlock::Thinking {
+                thinking: String::new(),
+                signature: "seeded".into(),
+            },
+        }),
+        Ok(MessageStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: StreamDelta::SignatureDelta {
+                signature: "part-a".into(),
+            },
+        }),
+        Ok(MessageStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: StreamDelta::SignatureDelta {
+                signature: "part-b".into(),
+            },
+        }),
+        Ok(block_stop(0)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    let sigs: Vec<&str> = evs
+        .iter()
+        .filter_map(|e| match e {
+            SamplingEvent::ReasoningCompleted { signature, .. } => Some(signature.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sigs, vec!["part-apart-b"]);
+}
+
+#[test]
+fn signature_kind_header_classifies_narration() {
+    assert!(!signature_marks_narration(""));
+    assert!(!signature_marks_narration("abc123"));
+    assert!(!signature_marks_narration("!!!not-base64!!!"));
+    assert!(!signature_marks_narration(&signature_with_kind(
+        b"thinking"
+    )));
+    assert!(signature_marks_narration(&signature_with_kind(
+        b"narration"
+    )));
 }
 
 #[tokio::test]
@@ -319,20 +463,20 @@ async fn tool_use_block_assembles_into_tool_call() {
         })
         .collect();
     assert_eq!(deltas.len(), 3);
-    assert_eq!(deltas[0].0, 0);
-    assert_eq!(deltas[0].1.as_deref(), Some("call_xyz"));
-    assert_eq!(deltas[0].2.as_deref(), Some("do_thing"));
-    assert_eq!(deltas[0].3, None);
-    assert_eq!(deltas[1].3.as_deref(), Some("{\"x\":"));
-    assert_eq!(deltas[2].3.as_deref(), Some("1}"));
+    assert_eq!(nth(&deltas, 0).0, 0);
+    assert_eq!(nth(&deltas, 0).1.as_deref(), Some("call_xyz"));
+    assert_eq!(nth(&deltas, 0).2.as_deref(), Some("do_thing"));
+    assert_eq!(nth(&deltas, 0).3, None);
+    assert_eq!(nth(&deltas, 1).3.as_deref(), Some("{\"x\":"));
+    assert_eq!(nth(&deltas, 2).3.as_deref(), Some("1}"));
 
     match evs.last().unwrap() {
         SamplingEvent::Completed { response, .. } => {
             let calls = response.tool_calls();
             assert_eq!(calls.len(), 1);
-            assert_eq!(calls[0].id.as_ref(), "call_xyz");
-            assert_eq!(calls[0].name, "do_thing");
-            assert_eq!(calls[0].arguments.as_ref(), "{\"x\":1}");
+            assert_eq!(nth(calls, 0).id.as_ref(), "call_xyz");
+            assert_eq!(nth(calls, 0).name, "do_thing");
+            assert_eq!(nth(calls, 0).arguments.as_ref(), "{\"x\":1}");
             assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
         }
         other => panic!("expected Completed, got {other:?}"),
@@ -514,7 +658,10 @@ async fn max_tokens_tool_use_without_arg_deltas_collects_empty_arguments() {
         SamplingEvent::Completed { response, .. } => {
             assert_eq!(response.stop_reason, Some(StopReason::Length));
             assert_eq!(response.tool_calls().len(), 1);
-            assert_eq!(response.tool_calls()[0].arguments.as_ref(), "");
+            let Some(call) = response.tool_calls().first() else {
+                panic!("expected a tool call");
+            };
+            assert_eq!(call.arguments.as_ref(), "");
         }
         other => panic!("expected Completed(Length), got {other:?}"),
     }
@@ -669,8 +816,8 @@ async fn model_metadata_yielded_after_stream_started() {
     ))
     .await;
 
-    assert!(matches!(evs[0], SamplingEvent::StreamStarted { .. }));
-    assert!(matches!(evs[1], SamplingEvent::ModelMetadata { .. }));
+    assert!(matches!(nth(&evs, 0), SamplingEvent::StreamStarted { .. }));
+    assert!(matches!(nth(&evs, 1), SamplingEvent::ModelMetadata { .. }));
 }
 
 #[test]

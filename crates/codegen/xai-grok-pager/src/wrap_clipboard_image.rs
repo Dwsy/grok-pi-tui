@@ -281,7 +281,8 @@ mod tests {
     #[test]
     fn request_osc_matches_body() {
         let osc = request_osc_bytes();
-        assert_eq!(&osc[2..osc.len() - 1], REQUEST_BODY);
+        let inner = osc.len().checked_sub(1).and_then(|end| osc.get(2..end));
+        assert_eq!(inner, Some(REQUEST_BODY));
         assert_eq!(osc.first().copied(), Some(0x1b));
         assert_eq!(osc.get(1).copied(), Some(b']'));
         assert_eq!(osc.last().copied(), Some(0x07));

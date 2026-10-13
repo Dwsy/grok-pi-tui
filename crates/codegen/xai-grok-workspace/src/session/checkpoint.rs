@@ -142,7 +142,9 @@ impl WorkspaceSession {
             HashMap::new();
         let mut turn_index: HashMap<usize, HashSet<HunkId>> = HashMap::new();
         for idx in prompts {
-            let delta = &store[&idx];
+            let Some(delta) = store.get(&idx) else {
+                continue;
+            };
             for (path, snap) in &delta.file_states {
                 file_states.insert(path.clone(), snap.clone());
             }

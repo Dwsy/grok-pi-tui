@@ -818,7 +818,10 @@ mod tests {
             .iter()
             .position(|a| a == "--visibility")
             .expect("--visibility present");
-        assert_eq!(argv[i + 1], "owner");
+        let Some(value) = argv.get(i + 1) else {
+            panic!("expected visibility value after --visibility: {argv:?}");
+        };
+        assert_eq!(value, "owner");
     }
 
     #[test]

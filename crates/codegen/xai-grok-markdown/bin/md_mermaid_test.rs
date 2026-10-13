@@ -10,6 +10,8 @@
 //!   n            — next sample          (when unfocused)
 //!   q / ^C / ^D  — quit                 (when unfocused)
 
+#![deny(clippy::indexing_slicing)]
+
 use std::io::{self, stdout};
 use std::time::Duration;
 
@@ -86,9 +88,10 @@ impl App {
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(70);
         let mut textarea = TextArea::new();
-        textarea.set_text(SAMPLES[sample]);
+        let src = SAMPLES.get(sample).copied().unwrap_or("");
+        textarea.set_text(src);
         textarea.show_scrollbar = false;
-        let source = SAMPLES[sample].to_string();
+        let source = src.to_string();
         let lines = render_full(&source, width);
         Self {
             textarea,
@@ -117,7 +120,9 @@ impl App {
 
     fn next_sample(&mut self) {
         self.sample = (self.sample + 1) % SAMPLES.len();
-        self.textarea.set_text(SAMPLES[self.sample]);
+        if let Some(&src) = SAMPLES.get(self.sample) {
+            self.textarea.set_text(src);
+        }
         self.rerender();
     }
 }
@@ -204,6 +209,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         Constraint::Length(render_height),
     ])
     .split(size);
+    let [header_area, textarea_chunk, panel_area] = &*chunks else {
+        return;
+    };
 
     let focus_indicator = if app.textarea_focused {
         Span::styled(
@@ -240,7 +248,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         Line::from(vec![focus_indicator, Span::raw(" "), width_info]),
         Line::from(keys),
     ]);
-    f.render_widget(header, chunks[0]);
+    f.render_widget(header, *header_area);
 
     let border_color = if app.textarea_focused {
         Color::Green
@@ -256,8 +264,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ));
-    let textarea_inner = textarea_block.inner(chunks[1]);
-    f.render_widget(textarea_block, chunks[1]);
+    let textarea_inner = textarea_block.inner(*textarea_chunk);
+    f.render_widget(textarea_block, *textarea_chunk);
     app.textarea_area = textarea_inner;
     (&app.textarea).render_ref(textarea_inner, f.buffer_mut(), &mut app.textarea_state);
     if app.textarea_focused
@@ -269,7 +277,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
 
     let title = format!(" rendered (inner width {}) ", app.render_width);
-    render_panel(f, chunks[2], &title, &app.lines, render_w);
+    render_panel(f, *panel_area, &title, &app.lines, render_w);
 }
 
 fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {

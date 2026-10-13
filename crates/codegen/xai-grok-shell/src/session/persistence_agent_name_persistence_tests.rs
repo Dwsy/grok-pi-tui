@@ -1,26 +1,115 @@
 use super::*;
 
-#[test]
-fn summary_round_trips_agent_name_through_json() {
-    let mut summary = Summary::new(
+fn new_summary() -> Summary {
+    Summary::new(
         &Info {
             id: acp::SessionId::new("test"),
             cwd: "/tmp".into(),
         },
         default_model_id(),
     )
+    .unwrap()
+}
+
+fn inline_definition(name: &str) -> xai_grok_agent::AgentDefinition {
+    xai_grok_agent::AgentDefinition::from_json(&serde_json::json!({
+        "name": name,
+        "description": "A custom profile",
+    }))
+    .unwrap()
+}
+
+#[test]
+fn set_agent_replaces_selection() {
+    let mut summary = new_summary();
+
+    summary.set_agent(PersistedAgent::Inline(Box::new(inline_definition(
+        "custom-profile",
+    ))));
+    assert!(summary.agent_profile().is_some());
+
+    summary.set_agent(PersistedAgent::Named("grok-build-plan".to_string()));
+    assert_eq!(Some("grok-build-plan"), summary.agent_name());
+    assert!(summary.agent_profile().is_none());
+}
+
+#[test]
+fn reasserting_current_agent_name_preserves_inline_profile() {
+    let mut summary = new_summary();
+    summary.set_agent(PersistedAgent::Inline(Box::new(inline_definition(
+        "custom",
+    ))));
+
+    summary.set_agent(PersistedAgent::Named("custom".to_string()));
+
+    assert!(summary.agent_profile().is_some());
+}
+
+#[test]
+fn persisted_agent_from_definition_classifies_inline_vs_named() {
+    let inline = PersistedAgent::from(&inline_definition("custom-profile"));
+    assert!(matches!(&inline, PersistedAgent::Inline(def) if def.name == "custom-profile"));
+
+    let named = PersistedAgent::from(&xai_grok_agent::AgentDefinition::grok_build_plan());
+    assert!(matches!(named, PersistedAgent::Named(_)));
+}
+
+#[test]
+fn inline_profile_survives_json_round_trip() {
+    let def = xai_grok_agent::AgentDefinition::from_json(&serde_json::json!({
+        "name": "custom-profile",
+        "description": "A custom profile",
+        "promptBody": "Custom system instructions.",
+    }))
     .unwrap();
-    summary.agent_name = Some("cursor".into());
+    let mut summary = new_summary();
+    summary.set_agent(PersistedAgent::Inline(Box::new(def)));
 
     let json = serde_json::to_string(&summary).unwrap();
-    let deserialized: Summary = serde_json::from_str(&json).unwrap();
+    assert!(json.contains("agent_name"));
+    assert!(json.contains("agent_profile"));
 
-    assert_eq!(deserialized.agent_name.as_deref(), Some("cursor"));
+    let restored: Summary = serde_json::from_str(&json).unwrap();
+    let profile = restored.agent_profile().expect("inline profile restored");
+    assert_eq!("custom-profile", profile.name);
+    assert_eq!(
+        Some("Custom system instructions."),
+        profile.prompt_body.as_deref()
+    );
+}
+
+#[test]
+fn mismatched_or_bad_agent_profile_falls_back_to_named() {
+    for profile in [
+        serde_json::json!({ "unexpected": "shape" }),
+        serde_json::json!({ "name": "B", "description": "different name" }),
+    ] {
+        let mut value = serde_json::to_value(new_summary()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.insert("agent_name".to_string(), serde_json::json!("A"));
+        object.insert("agent_profile".to_string(), profile);
+
+        let restored: Summary = serde_json::from_value(value).expect("summary still loads");
+        assert_eq!(Some("A"), restored.agent_name());
+        assert!(restored.agent_profile().is_none());
+    }
+}
+
+#[test]
+fn orphan_agent_profile_without_name_loads_as_none() {
+    let mut value = serde_json::to_value(new_summary()).unwrap();
+    value.as_object_mut().unwrap().insert(
+        "agent_profile".to_string(),
+        serde_json::json!({ "name": "orphan", "description": "no matching name key" }),
+    );
+
+    let restored: Summary = serde_json::from_value(value).expect("summary still loads");
+    assert_eq!(None, restored.agent_name());
+    assert!(restored.agent_profile().is_none());
 }
 
 #[test]
 fn summary_deserializes_without_agent_name_backward_compat() {
-    // An old summary.json that lacks agent_name must still deserialize; serde defaults the field to None
     let json = r#"{
             "info": { "id": "old-session", "cwd": "/tmp" },
             "session_summary": "",
@@ -31,72 +120,29 @@ fn summary_deserializes_without_agent_name_backward_compat() {
             "current_model_id": "test-model"
         }"#;
     let summary: Summary = serde_json::from_str(json).unwrap();
-    assert!(
-        summary.agent_name.is_none(),
-        "old summaries without agent_name should deserialize as None"
-    );
+    assert_eq!(None, summary.agent_name());
 }
 
 #[test]
-fn summary_skips_none_agent_name_in_serialized_json() {
-    let summary = Summary::new(
-        &Info {
-            id: acp::SessionId::new("test"),
-            cwd: "/tmp".into(),
-        },
-        default_model_id(),
-    )
-    .unwrap();
-    let json = serde_json::to_string(&summary).unwrap();
-    assert!(
-        !json.contains("agent_name"),
-        "None agent_name should not appear in serialized JSON"
-    );
-}
+fn serialize_omits_agent_name_when_unset_and_includes_it_when_set() {
+    let json = serde_json::to_string(&new_summary()).unwrap();
+    assert!(!json.contains("agent_name"));
 
-#[test]
-fn summary_includes_agent_name_when_set() {
-    let mut summary = Summary::new(
-        &Info {
-            id: acp::SessionId::new("test"),
-            cwd: "/tmp".into(),
-        },
-        default_model_id(),
-    )
-    .unwrap();
-    summary.agent_name = Some("cursor".into());
+    let mut summary = new_summary();
+    summary.set_agent(PersistedAgent::Named("cursor".to_string()));
     let json = serde_json::to_string(&summary).unwrap();
     assert!(json.contains("agent_name"));
     assert!(json.contains("cursor"));
 }
 
 #[test]
-fn summary_round_trips_various_agent_names() {
-    for name in [
-        "cursor",
-        "grok-build",
-        "grok-build-plan",
-        "codex",
-        "browser-use",
-    ] {
-        let mut summary = Summary::new(
-            &Info {
-                id: acp::SessionId::new("test"),
-                cwd: "/tmp".into(),
-            },
-            default_model_id(),
-        )
-        .unwrap();
-        summary.agent_name = Some(name.into());
+fn named_agent_round_trips() {
+    let mut summary = new_summary();
+    summary.set_agent(PersistedAgent::Named("grok-build".to_string()));
 
-        let json = serde_json::to_string(&summary).unwrap();
-        let deserialized: Summary = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            deserialized.agent_name.as_deref(),
-            Some(name),
-            "round-trip failed for agent_name={name}"
-        );
-    }
+    let json = serde_json::to_string(&summary).unwrap();
+    let deserialized: Summary = serde_json::from_str(&json).unwrap();
+    assert_eq!(Some("grok-build"), deserialized.agent_name());
 }
 
 #[test]
@@ -114,7 +160,5 @@ fn summary_with_agent_name_in_full_json() {
             "head_branch": "main"
         }"#;
     let summary: Summary = serde_json::from_str(json).unwrap();
-    assert_eq!(summary.agent_name.as_deref(), Some("cursor"));
-    assert_eq!(summary.current_model_id.0.as_ref(), "cursor-model");
-    assert_eq!(summary.generated_title.as_deref(), Some("Fix editor mode"));
+    assert_eq!(Some("cursor"), summary.agent_name());
 }

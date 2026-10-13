@@ -120,7 +120,7 @@ pub(crate) fn bounded_goal_transcript(items: &[ConversationItem]) -> String {
         let (role, warning) = match item {
             ConversationItem::System(_) => continue,
             ConversationItem::User(user)
-                if user.synthetic_reason == Some(SyntheticReason::AgentMessage) =>
+                if user.synthetic_reason == SyntheticReason::AgentMessage =>
             {
                 (
                     "agent_message",

@@ -1124,13 +1124,22 @@ fn test_update_status_serializes_camel_case_keys() {
 fn test_update_status_field_values_round_trip_through_json() {
     let s = make_status();
     let v = serde_json::to_value(&s).unwrap();
-    assert_eq!(v["currentVersion"], "0.1.150");
-    assert_eq!(v["latestVersion"], "0.1.151");
-    assert_eq!(v["updateAvailable"], true);
-    assert_eq!(v["installer"], "npm");
-    assert_eq!(v["channel"], "stable");
-    assert_eq!(v["autoUpdate"], true);
-    assert!(v["error"].is_null());
+    assert_eq!(
+        v.get("currentVersion").and_then(|x| x.as_str()),
+        Some("0.1.150")
+    );
+    assert_eq!(
+        v.get("latestVersion").and_then(|x| x.as_str()),
+        Some("0.1.151")
+    );
+    assert_eq!(
+        v.get("updateAvailable").and_then(|x| x.as_bool()),
+        Some(true)
+    );
+    assert_eq!(v.get("installer").and_then(|x| x.as_str()), Some("npm"));
+    assert_eq!(v.get("channel").and_then(|x| x.as_str()), Some("stable"));
+    assert_eq!(v.get("autoUpdate").and_then(|x| x.as_bool()), Some(true));
+    assert!(v.get("error").is_none_or(|x| x.is_null()));
 }
 
 #[test]
@@ -1145,11 +1154,14 @@ fn test_update_status_optional_none_serializes_to_null() {
         error: None,
     };
     let v = serde_json::to_value(&s).unwrap();
-    assert!(v["latestVersion"].is_null());
-    assert!(v["installer"].is_null());
-    assert!(v["autoUpdate"].is_null());
-    assert!(v["error"].is_null());
-    assert_eq!(v["updateAvailable"], false);
+    assert!(v.get("latestVersion").is_none_or(|x| x.is_null()));
+    assert!(v.get("installer").is_none_or(|x| x.is_null()));
+    assert!(v.get("autoUpdate").is_none_or(|x| x.is_null()));
+    assert!(v.get("error").is_none_or(|x| x.is_null()));
+    assert_eq!(
+        v.get("updateAvailable").and_then(|x| x.as_bool()),
+        Some(false)
+    );
 }
 // ──────────────────────────────────────────────────────────────────────
 // needs_update — additional edge cases
@@ -2176,7 +2188,13 @@ async fn test_windows_replace_exe_locked_stale_old_does_not_block_update() {
         "dest must be renamed to a unique aside: {asides:?}"
     );
     assert_eq!(
-        std::fs::read_to_string(&asides[0]).unwrap(),
+        std::fs::read_to_string({
+            let Some(aside) = asides.first() else {
+                panic!("aside path: {asides:?}");
+            };
+            aside
+        })
+        .unwrap(),
         "running binary"
     );
 }
@@ -2284,7 +2302,7 @@ async fn download_and_decode_round_trips_each_codec() {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let payload = b"\x7fELF grok binary payload".to_vec();
-    let zst = zstd::encode_all(&payload[..], 3).unwrap();
+    let zst = zstd::encode_all(payload.as_slice(), 3).unwrap();
     let gz = {
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(&payload).unwrap();
@@ -2371,7 +2389,7 @@ async fn download_cli_artifact_prefers_compressed_over_plain() {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let payload = b"\x7fELF grok binary payload".to_vec();
-    let zst = zstd::encode_all(&payload[..], 3).unwrap();
+    let zst = zstd::encode_all(payload.as_slice(), 3).unwrap();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/grok-1.2.3-linux-x86_64.zst"))
@@ -2424,7 +2442,7 @@ fn npm_entry_is_recognized_by_the_binary_location() {
     std::fs::create_dir_all(path_entry.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&native, &path_entry).unwrap();
 
-    let resolved = std::fs::canonicalize(&path_entry).unwrap();
+    let resolved = dunce::canonicalize(&path_entry).unwrap();
     assert!(super::is_under_node_modules(&resolved));
     assert!(!super::is_under_node_modules(&root.join("home/bin/grok")));
 }

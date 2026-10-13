@@ -19,7 +19,7 @@ impl SessionActor {
         self.turn_phases.record_first_token(generation);
     }
 
-    /// Stamp ttfm on the first assistant text; reasoning and tool calls are excluded.
+    /// Stamp ttfm on the first user-visible output (assistant text or narration); reasoning and tool calls are excluded.
     pub(crate) fn record_turn_first_meaningful_output(
         &self,
         request_id: Option<&xai_grok_sampler::RequestId>,
@@ -237,6 +237,26 @@ impl SessionActor {
                         phase: crate::session::events::Phase::StreamingReasoning,
                     });
                     self.send_thought_chunk(text, chunk_index).await;
+                }
+                SamplingChannel::Narration => {
+                    // Not appended to the capture. The capture already recorded these deltas as reasoning
+                    self.record_turn_first_meaningful_output(Some(&request_id));
+
+                    self.emit_event(crate::session::events::Event::PhaseChanged {
+                        phase: crate::session::events::Phase::StreamingText,
+                    });
+                    // A complete block, unlike streaming text deltas: paragraph breaks on both sides keep it
+                    // from gluing onto response text or a sibling narration sharing the message entry
+                    // (markdown rendering collapses the extra blank lines)
+                    self.send_update(
+                        acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                            acp::ContentBlock::Text(acp::TextContent::new(format!(
+                                "\n\n{text}\n\n"
+                            ))),
+                        )),
+                        Some(chunk_index),
+                    )
+                    .await;
                 }
             },
             SamplingEvent::ToolCallDelta {

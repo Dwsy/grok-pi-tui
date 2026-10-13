@@ -23,8 +23,10 @@
 //! sandbox.apply(workspace).expect("sandbox apply failed");
 //! sandbox.install();
 //! ```
+#![deny(clippy::indexing_slicing)]
 mod allow_path;
 pub mod child_net;
+pub mod command;
 mod deny;
 mod hook_write_deny;
 mod logging;
@@ -71,6 +73,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 static SANDBOX: OnceLock<GlobalSandboxState> = OnceLock::new();
 static CONFIGURED_PROFILE: OnceLock<String> = OnceLock::new();
+static CONFINEMENT_ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
 static AUTO_ALLOW_BASH: AtomicBool = AtomicBool::new(false);
 const BWRAP_ENV_VAR: &str = "__GROK_INSIDE_BWRAP";
 pub fn is_inside_bwrap() -> bool {
@@ -117,6 +120,15 @@ pub fn configured_profile_name() -> Option<&'static str> {
 /// paths). A requested-but-unapplied profile already warns the user; keying on the request is the fail-closed choice.
 pub fn requested_confinement_profile() -> Option<&'static str> {
     configured_profile_name().filter(|name| profile_confines(name))
+}
+/// Record the workspace the startup sandbox is scoped to.
+pub fn set_confinement_root(workspace: &Path) {
+    let _ = CONFINEMENT_ROOT.set(workspace.to_path_buf());
+}
+/// The workspace that [`requested_confinement_profile`] confines this process to, or `None` without one.
+pub fn confinement_root() -> Option<&'static Path> {
+    requested_confinement_profile()?;
+    CONFINEMENT_ROOT.get().map(std::path::PathBuf::as_path)
 }
 fn profile_confines(name: &str) -> bool {
     name.parse::<ProfileName>()
@@ -758,7 +770,7 @@ mod tests {
             .collect();
         let has_bind = args
             .windows(3)
-            .any(|w| w[0] == "--ro-bind" && w[2] == missing);
+            .any(|w| matches!(w, [flag, _, path] if flag == "--ro-bind" && path == missing));
         assert!(
             has_bind,
             "should bind-over non-existent deny_read paths, got args: {args:?}"
@@ -815,8 +827,9 @@ mod tests {
             plan.ancestor_rw_binds
         );
         for w in plan.ancestor_rw_binds.windows(2) {
+            let [a, b] = w else { continue };
             assert!(
-                w[0].components().count() <= w[1].components().count(),
+                a.components().count() <= b.components().count(),
                 "ancestors not rootward: {:?}",
                 plan.ancestor_rw_binds
             );
@@ -847,10 +860,14 @@ mod tests {
         let leaf_s = leaf.to_string_lossy().to_string();
         let anc_parent = args
             .windows(3)
-            .position(|w| w[0] == "--bind" && w[1] == parent_s && w[2] == parent_s);
+            .position(|w| {
+                matches!(w, [flag, src, dst] if flag == "--bind" && src == &parent_s && dst == &parent_s)
+            });
         let leaf_pos = args
             .windows(3)
-            .position(|w| w[0] == "--ro-bind" && w[1] == leaf_s && w[2] == leaf_s);
+            .position(|w| {
+                matches!(w, [flag, src, dst] if flag == "--ro-bind" && src == &leaf_s && dst == &leaf_s)
+            });
         assert!(anc_parent.is_some(), "expected RW bind of parent: {args:?}");
         assert!(leaf_pos.is_some(), "expected RO bind of leaf: {args:?}");
         assert!(
@@ -859,9 +876,9 @@ mod tests {
         );
         for anc in &plan.ancestor_rw_binds {
             let a = anc.to_string_lossy().to_string();
-            let pos = args
-                .windows(3)
-                .position(|w| w[0] == "--bind" && w[1] == a && w[2] == a);
+            let pos = args.windows(3).position(
+                |w| matches!(w, [flag, src, dst] if flag == "--bind" && src == &a && dst == &a),
+            );
             assert!(pos.is_some(), "missing RW bind for {a}: {args:?}");
             assert!(pos.unwrap() < leaf_pos.unwrap());
         }
@@ -1075,7 +1092,9 @@ mod tests {
             .to_string();
         let has_dir_bind = args
             .windows(3)
-            .any(|w| w[0] == "--ro-bind" && w[1] == blocked_dir && w[2] == dir_str);
+            .any(|w| {
+                matches!(w, [flag, src, dst] if flag == "--ro-bind" && src == &blocked_dir && dst == &dir_str)
+            });
         assert!(
             has_dir_bind,
             "existing directories should bind over sandbox-blocked-dir, got args: {args:?}"
@@ -1100,7 +1119,7 @@ mod tests {
         let deny_path = ws.join("secret.pem").to_string_lossy().to_string();
         assert!(
             args.windows(3)
-                .any(|w| w[0] == "--ro-bind" && w[2] == deny_path),
+                .any(|w| matches!(w, [flag, _, path] if flag == "--ro-bind" && path == &deny_path)),
             "expected read-deny bind for {deny_path}, got args: {args:?}"
         );
         if Path::new("/data").exists() {

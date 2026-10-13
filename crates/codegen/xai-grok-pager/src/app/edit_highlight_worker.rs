@@ -631,7 +631,10 @@ mod tests {
         {
             let rt = agent.edit_hl.as_ref().expect("runtime");
             assert_eq!(rt.pending.len(), 1, "submit must prune prior entry pending");
-            assert_eq!(rt.pending[0].1, entry_id);
+            let Some((_, pending_id)) = rt.pending.first() else {
+                panic!("expected pending highlight: {:?}", rt.pending);
+            };
+            assert_eq!(*pending_id, entry_id);
         }
 
         // Pump until it settles (the worker has no waker)

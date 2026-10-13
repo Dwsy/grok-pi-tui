@@ -12,7 +12,7 @@ use crate::file_system::{AsyncFsWrapper, LocalFs};
 use crate::hub::{HubConfig, HubHandle};
 use crate::session::file_state::FileStateTracker;
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use xai_computer_hub_mcp_adapter::McpBridgeHandle;
@@ -62,6 +62,9 @@ pub(crate) struct ActiveMcp {
     /// session that is in the configured set but currently runs nothing, so
     /// a later reload can add servers to it.
     pub(crate) servers: HashMap<String, SessionMcpServer>,
+    /// Servers stopped while they stay configured: a reload leaves them
+    /// stopped, and the session's next bind starts them again.
+    pub(crate) stopped: HashSet<String>,
 }
 /// Whether a session takes part in the workspace's configured MCP set. `Uninitialized` is a session that never joined: unbound, an `rpc_only` bind, or a bind whose toolset failed to resolve.
 pub(crate) enum WorkspaceMcpBinding {
@@ -93,10 +96,17 @@ impl WorkspaceMcpBinding {
         if matches!(self, Self::Uninitialized) {
             *self = Self::Active(ActiveMcp {
                 servers: HashMap::new(),
+                stopped: HashSet::new(),
             });
         }
         self.active_mut()
     }
+}
+/// How one of a session's MCP servers fared once its start settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpServerOutcome {
+    Connected,
+    Failed,
 }
 /// Per-session state held in [`WorkspaceShared::sessions`].
 ///
@@ -147,6 +157,8 @@ pub struct WorkspaceSession {
     pub(crate) viewer_ctx: Option<WorkspaceViewerContext>,
     /// Auto-approve (YOLO) state. Seeded from `session.bind` metadata, refreshed by each before-turn hook.
     pub(crate) yolo_mode: std::sync::atomic::AtomicBool,
+    /// The hub approval gate's per-session state (ceiling, folder grants).
+    pub(crate) approval: crate::permission::SessionApproval,
     /// Session-lifetime terminal backend (background-task registry and persistent shell). Its child processes die only via `kill_task`, [`Self::shutdown_terminal_backend`] (`drop_session`/evict), or process exit.
     /// Never adopt an externally owned backend into this field: drop/evict would SIGKILL a backend shared with the shell.
     terminal_backend: crate::config::SessionTerminalBackend,
@@ -172,6 +184,8 @@ pub struct WorkspaceSession {
     path_virtualization: OnceLock<crate::path_virtualization::PathVirtualization>,
     /// Rewritten bind cwd installed on rebind when path virt turns on after the session was first created without `session_root`.
     cwd_override: OnceLock<PathBuf>,
+    /// In-progress `workspace.client_fs_write_file` uploads bound to this session.
+    staged_uploads: crate::file_system::client_fs::StagedUploads,
 }
 struct WorkspaceSessionInner {
     effective_tool_config: Arc<ToolServerConfig>,
@@ -300,6 +314,7 @@ impl WorkspaceSession {
             mcp_native_tool_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
             viewer_ctx,
             yolo_mode: std::sync::atomic::AtomicBool::new(false),
+            approval: crate::permission::SessionApproval::default(),
             system_notifications,
             system_notify_handle,
             #[allow(dead_code)]
@@ -307,7 +322,12 @@ impl WorkspaceSession {
             system_notify_producers: std::sync::Mutex::new(Vec::new()),
             path_virtualization: OnceLock::new(),
             cwd_override: OnceLock::new(),
+            staged_uploads: Default::default(),
         }
+    }
+    /// Staged `client_fs_write_file` uploads owned by this session.
+    pub(crate) fn staged_uploads(&self) -> &crate::file_system::client_fs::StagedUploads {
+        &self.staged_uploads
     }
     pub(crate) fn set_path_virtualization(
         &self,
@@ -391,6 +411,32 @@ impl WorkspaceSession {
     }
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+    /// The server's settled start outcome, or `None` while it is still starting. Never waits: a
+    /// status probe reads past a start that holds the lock and reports it as unsettled.
+    pub fn mcp_server_outcome(&self, name: &str) -> Option<McpServerOutcome> {
+        let state = self.mcp_state.try_lock().ok()?;
+        if state.owned_clients.contains_key(name) {
+            Some(McpServerOutcome::Connected)
+        } else if state.init_failed.contains_key(name) {
+            Some(McpServerOutcome::Failed)
+        } else {
+            None
+        }
+    }
+    /// Settles `name` as a start would, for host-crate tests that read the outcome without a server.
+    #[doc(hidden)]
+    pub async fn settle_mcp_server_for_test(&self, name: &str, outcome: McpServerOutcome) {
+        let mut state = self.mcp_state.lock().await;
+        match outcome {
+            McpServerOutcome::Connected => {
+                state.owned_clients.insert(
+                    name.to_owned(),
+                    Arc::new(xai_grok_mcp::servers::McpClient::stub(name)),
+                );
+            }
+            McpServerOutcome::Failed => state.record_init_failure(name, false, None),
+        }
     }
     pub fn cwd(&self) -> &Path {
         self.cwd_override.get().map_or(&self.cwd, PathBuf::as_path)
@@ -568,8 +614,14 @@ pub struct WorkspaceShared {
     /// See [`crate::config::WorkspaceConfig::confine_fs_to_workspace_root`].
     /// Default `false`; enabled only for remote-sandbox workspace servers.
     pub(crate) confine_fs_to_workspace_root: bool,
+    /// See [`crate::config::WorkspaceConfig::tool_approval`].
+    pub(crate) tool_approval: crate::permission::ToolApprovalGate,
+    /// Which host runs this server (`WorkspaceConfig::host_kind`).
+    pub(crate) host_kind: crate::host_kind::WorkspaceHostKind,
     /// Workspace root directory. Independent of any session; stored here so it survives session creation/deletion.
     pub(crate) root_cwd: std::path::PathBuf,
+    /// See [`crate::config::WorkspaceConfig::sandbox`].
+    pub(crate) sandbox: Option<Arc<crate::sandbox::WorkspaceSandbox>>,
     pub(crate) sessions: RwLock<HashMap<String, Arc<WorkspaceSession>>>,
     pub(crate) session_factory: Arc<dyn SessionContextFactory>,
     /// `Some` iff every admitted session binds a configured set of MCP servers. The contents are hot-swappable through [`WorkspaceHandle::reload_bind_mcp`](crate::handle::WorkspaceHandle::reload_bind_mcp), so a user can add or remove servers without restarting the process.
@@ -589,6 +641,8 @@ pub struct WorkspaceShared {
     /// Live server connection handle. `None` until [`WorkspaceHandle::connect_hub`](crate::handle::WorkspaceHandle::connect_hub) is called (or if no [`HubConfig`] was provided).
     /// Uses `tokio::sync::Mutex` so the guard can be held across the async `HubHandle::connect()` call, preventing TOCTOU races.
     pub(crate) hub_handle: tokio::sync::Mutex<Option<HubHandle>>,
+    pub(crate) queue_stats_sampler:
+        parking_lot::Mutex<Option<crate::upload::QueueStatsSamplerGuard>>,
     /// Remote-origin tool configs (consumer direction), updated by the notification listener.
     pub(crate) hub_tools_snapshot: arc_swap::ArcSwap<Vec<ToolConfig>>,
     /// Server config stashed at construction time for deferred connect.
@@ -674,6 +728,14 @@ impl WorkspaceShared {
     /// `None` in tests and local mode; see [`WorkspaceShared::upload_queue`].
     pub fn upload_queue(&self) -> Option<&std::sync::Arc<xai_file_utils::queue::UploadQueue>> {
         self.upload_queue.as_ref()
+    }
+    /// Whether hub tool calls pass the approval gate; see [`crate::permission::approval_gate_for`].
+    pub fn tool_approval(&self) -> crate::permission::ToolApprovalGate {
+        self.tool_approval
+    }
+    /// The folder's per-command sandbox, when the host built the workspace with one.
+    pub fn sandbox(&self) -> Option<Arc<crate::sandbox::WorkspaceSandbox>> {
+        self.sandbox.clone()
     }
     /// Return the per-session `events.jsonl` writer for `session_id`, opened and cached on first use under `workspace_home/sessions/{session_id}/`.
     /// When `events_enabled` is `false` this returns [`EventWriter::noop()`](xai_grok_session_events::EventWriter::noop).
@@ -886,6 +948,7 @@ impl WorkspaceShared {
                 session.viewer_ctx().cloned(),
                 self.compose_session_notification_handle(session.system_notify_handle()),
                 session.terminal_backend().clone(),
+                crate::session::tool_config::truncation_config_for_host(self.host_kind),
             ) {
                 Ok((effective, toolset)) => {
                     session
@@ -1021,9 +1084,9 @@ mod tests {
             .join("events.jsonl");
         let text = std::fs::read_to_string(&path).unwrap();
         let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
-        assert_eq!(v["type"], "yolo_toggled");
-        assert_eq!(v["enabled"], true);
-        assert!(v["ts"].as_str().is_some());
+        assert_eq!(v.get("type").and_then(|v| v.as_str()), Some("yolo_toggled"));
+        assert_eq!(v.get("enabled"), Some(&serde_json::json!(true)));
+        assert!(v.get("ts").and_then(|v| v.as_str()).is_some());
     }
     #[test]
     fn second_call_reuses_one_cache_entry() {
@@ -1078,9 +1141,18 @@ mod tests {
             2,
             "re-open after restart must append, preserving the earlier line"
         );
-        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(first["tool_name"], "before-restart");
-        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(second["tool_name"], "after-restart");
+        let [first_line, second_line] = lines.as_slice() else {
+            panic!("expected two event lines: {lines:?}");
+        };
+        let first: serde_json::Value = serde_json::from_str(first_line).unwrap();
+        assert_eq!(
+            first.get("tool_name").and_then(|v| v.as_str()),
+            Some("before-restart")
+        );
+        let second: serde_json::Value = serde_json::from_str(second_line).unwrap();
+        assert_eq!(
+            second.get("tool_name").and_then(|v| v.as_str()),
+            Some("after-restart")
+        );
     }
 }

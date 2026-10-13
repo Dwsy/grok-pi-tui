@@ -1,5 +1,8 @@
 use super::*;
 
+pub(super) const MANAGED_HOOKS_ONLY_REFUSAL: &str =
+    "Hooks outside managed policy are disabled by your organization.";
+
 /// Path written (or the session key on auto-trust), never the raw git root.
 fn hooks_trust_key(
     outcome: &xai_grok_workspace::folder_trust::GrantOutcome,
@@ -101,6 +104,26 @@ impl SessionActor {
                 registry
                     .find_by_name(name)
                     .is_some_and(|spec| spec.is_managed_policy())
+            })
+    }
+
+    /// Under `allow_managed_hooks_only`, enabling anything outside managed policy is refused; the one rule for the per-hook and per-source enable.
+    /// Managed hooks pass: the pin never blocks them, so enabling one changes nothing at dispatch.
+    fn refuse_enable_under_managed_only<'a>(
+        &self,
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> Option<xai_hooks_plugins_types::ActionOutcome> {
+        if !self.hook_disabled.borrow().managed_only() {
+            return None;
+        }
+        names
+            .into_iter()
+            .any(|name| !self.is_managed_policy_hook(name))
+            .then(|| xai_hooks_plugins_types::ActionOutcome {
+                status: xai_hooks_plugins_types::OutcomeStatus::ValidationError,
+                message: MANAGED_HOOKS_ONLY_REFUSAL.to_owned(),
+                requires_reload: false,
+                requires_restart: false,
             })
     }
 
@@ -260,6 +283,9 @@ impl SessionActor {
                 }
             }
             HooksAction::Enable { hook_name } => {
+                if let Some(refused) = self.refuse_enable_under_managed_only([hook_name.as_str()]) {
+                    return refused;
+                }
                 match xai_grok_hooks::trust::enable_hook(&hook_name) {
                     Ok(true) => {
                         self.refresh_hook_disabled();
@@ -288,6 +314,12 @@ impl SessionActor {
                 hook_names,
                 disable,
             } => {
+                if !disable
+                    && let Some(refused) =
+                        self.refuse_enable_under_managed_only(hook_names.iter().map(String::as_str))
+                {
+                    return refused;
+                }
                 let mut toggled = 0usize;
                 let mut managed_skipped = 0usize;
                 for name in &hook_names {
@@ -703,58 +735,28 @@ impl SessionActor {
         let cwd = std::path::Path::new(&self.session_info.cwd);
         let is_trusted = crate::agent::folder_trust::resolve_and_record(cwd, None, false);
         // discover_hooks is the single load entry point, so all vendors (compat and native) and custom hook-paths match the session-startup sites
-        let (mut registry, errors) = crate::util::hooks::discover_hooks(
+        let (inputs, disabled) = crate::util::hooks::session_hook_inputs();
+        let (registry, errors) = crate::util::hooks::discover_hooks(
+            &inputs,
             git_root.as_deref(),
             &self.rebuild_spec.compat,
-            is_trusted,
+            xai_grok_hooks::trust::Trust::from_verdict(is_trusted),
         );
         for err in &errors {
             tracing::warn!("hook reload error: {err}");
         }
         *self.hook_load_errors.borrow_mut() = errors.iter().map(|e| e.to_string()).collect();
-        // Re-append plugin hooks from current plugin registry.
         // Clone the Arc out of the RefCell so the borrow is dropped immediately.
         let plugin_registry_snapshot = self.plugin_registry.borrow().clone();
-        if let Some(ref pr) = plugin_registry_snapshot {
-            for plugin in pr.active_plugins() {
-                if let Some(ref hooks_path) = plugin.hooks_path {
-                    let (specs, warnings) =
-                        xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks(
-                            hooks_path,
-                            &plugin.name,
-                            &plugin.root_str(),
-                            &plugin.data_dir_str(),
-                        );
-                    for w in &warnings {
-                        tracing::warn!("{w}");
-                    }
-                    registry.append_specs(specs);
-                }
-                if let Some(ref inline_value) = plugin.inline_hooks {
-                    let (specs, warnings) =
-                        xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks_from_value(
-                            inline_value,
-                            &plugin.name,
-                            &plugin.root_str(),
-                            &plugin.data_dir_str(),
-                        );
-                    for w in &warnings {
-                        tracing::warn!("{w}");
-                    }
-                    registry.append_specs(specs);
-                }
-            }
-        }
-        let hook_count = registry.len();
-        {
-            let mut reg = self.hook_registry.borrow_mut();
-            if registry.is_empty() {
-                *reg = None;
-            } else {
-                *reg = Some(std::sync::Arc::new(registry));
-            }
-        }
-        self.refresh_hook_disabled();
+        let registry = xai_grok_agent::plugins::hooks_adapter::with_plugin_hooks(
+            (!registry.is_empty()).then(|| Arc::new(registry)),
+            xai_grok_agent::plugins::hooks_adapter::PluginHookSource::Registry(
+                plugin_registry_snapshot.as_deref(),
+            ),
+        );
+        let hook_count = registry.as_ref().map_or(0, |registry| registry.len());
+        *self.hook_registry.borrow_mut() = registry;
+        *self.hook_disabled.borrow_mut() = Arc::new(disabled);
         tracing::info!(hook_count, "hooks reloaded mid-session");
 
         // Notify pager about hooks change.
@@ -789,7 +791,7 @@ impl SessionActor {
         xai_grok_telemetry::unified_log::info("reload_plugins_impl: start", Some(sid), None);
 
         // Folder-trust gates repo-local project plugins (hooks/MCP).
-        // Resolve and record the verdict for this cwd before the plugins-config read below, whose project-paths merge reads the gate.
+        // Resolve and record the verdict for this cwd; the plugins-config read below gates project paths on it.
         // commands/list and the fan-out order these the same way, so no gate read ever precedes the site's own resolve.
         let project_trusted =
             crate::agent::folder_trust::resolve_and_record(session_cwd, None, false);
@@ -797,11 +799,19 @@ impl SessionActor {
         let t0 = std::time::Instant::now();
         // Resolve the effective [plugins] config: global, ancestor project configs, and the compat merge
         // Shared with commands/list and the eager fan-out so all paths discover the same plugins for this cwd
-        let plugins_cfg = crate::config::resolve_effective_plugins_config(session_cwd);
+        let discovery_config = xai_grok_workspace::plugins::resolve_effective_plugins_config(
+            xai_grok_workspace::plugins::PluginConfigInputs {
+                effective_config: crate::config::load_effective_config().ok().as_ref(),
+                home: xai_dirs::home_dir().as_deref(),
+                grok_home: xai_grok_config::user_grok_home().as_deref(),
+                cwd: session_cwd,
+                trust: xai_grok_hooks::trust::Trust::from_verdict(project_trusted),
+                claude_import: crate::claude_import::import_marker(),
+            },
+        );
         let config_read_ms = t0.elapsed().as_millis();
 
         let t2 = std::time::Instant::now();
-        let discovery_config = plugins_cfg.to_discovery_config();
         let count = handle.reload(Some(session_cwd), &discovery_config, project_trusted, force);
         let discover_ms = t2.elapsed().as_millis();
 
@@ -866,10 +876,18 @@ impl SessionActor {
             return incoming;
         };
         let session_cwd = std::path::Path::new(&self.session_info.cwd);
-        let disk_cfg =
-            crate::config::resolve_effective_plugins_config(session_cwd).to_discovery_config();
         // Reads the stored verdict only; the session's spawn resolve already recorded this cwd with the real remote
         let project_trusted = crate::agent::folder_trust::project_scope_allowed(session_cwd);
+        let disk_cfg = xai_grok_workspace::plugins::resolve_effective_plugins_config(
+            xai_grok_workspace::plugins::PluginConfigInputs {
+                effective_config: crate::config::load_effective_config().ok().as_ref(),
+                home: xai_dirs::home_dir().as_deref(),
+                grok_home: xai_grok_config::user_grok_home().as_deref(),
+                cwd: session_cwd,
+                trust: xai_grok_hooks::trust::Trust::from_verdict(project_trusted),
+                claude_import: crate::claude_import::import_marker(),
+            },
+        );
         handle.build_for_cwd(session_cwd, &disk_cfg, &dirs, project_trusted)
     }
 
@@ -887,63 +905,33 @@ impl SessionActor {
 
         // Reload hooks in the current session
         let t_hooks = std::time::Instant::now();
-        let mut hooks_reloaded = 0usize;
-        if let Some(ref new_registry) = new_registry_snapshot {
-            let mut new_specs = Vec::new();
-            for plugin in new_registry.active_plugins() {
-                // File-based hooks
-                if let Some(ref hooks_path) = plugin.hooks_path {
-                    let (specs, warnings) =
-                        xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks(
-                            hooks_path,
-                            &plugin.name,
-                            &plugin.root_str(),
-                            &plugin.data_dir_str(),
-                        );
-                    for w in &warnings {
-                        tracing::warn!("{w}");
-                    }
-                    new_specs.extend(specs);
-                }
-                // Inline hooks
-                if let Some(ref inline_value) = plugin.inline_hooks {
-                    let (specs, warnings) =
-                        xai_grok_agent::plugins::hooks_adapter::parse_plugin_hooks_from_value(
-                            inline_value,
-                            &plugin.name,
-                            &plugin.root_str(),
-                            &plugin.data_dir_str(),
-                        );
-                    for w in &warnings {
-                        tracing::warn!("{w}");
-                    }
-                    new_specs.extend(specs);
-                }
+        let new_specs = new_registry_snapshot
+            .as_deref()
+            .map(xai_grok_agent::plugins::hooks_adapter::active_plugin_hook_specs)
+            .unwrap_or_default();
+        let hooks_reloaded = new_specs.len();
+        let current = self.hook_registry.borrow().clone();
+        let base = match current {
+            Some(registry) => Some(registry),
+            None if new_specs.is_empty() => None,
+            None => {
+                // No registry yet: bootstrap config-layer and file hooks the way reload_hooks_impl does
+                // Starting from empty sources instead would let a plugin-first snapshot drop config hooks
+                let git_root =
+                    xai_grok_workspace::session::git::find_git_root_from_path(session_cwd).ok();
+                let is_trusted =
+                    crate::agent::folder_trust::resolve_and_record(session_cwd, None, false);
+                let (registry, _errs) = crate::util::hooks::discover_hooks(
+                    &crate::util::hooks::process_hook_inputs(),
+                    git_root.as_deref(),
+                    &self.rebuild_spec.compat,
+                    xai_grok_hooks::trust::Trust::from_verdict(is_trusted),
+                );
+                (!registry.is_empty()).then(|| Arc::new(registry))
             }
-            hooks_reloaded = new_specs.len();
-            {
-                let mut reg = self.hook_registry.borrow_mut();
-                if let Some(ref mut arc_reg) = *reg {
-                    let hook_reg = Arc::make_mut(arc_reg);
-                    hook_reg.remove_by_prefix("plugin/");
-                    hook_reg.append_specs(new_specs);
-                } else if !new_specs.is_empty() {
-                    // No registry yet: bootstrap config-layer and file hooks the way reload_hooks_impl does
-                    // Starting from empty sources instead would let a plugin-first snapshot drop config hooks
-                    let git_root =
-                        xai_grok_workspace::session::git::find_git_root_from_path(session_cwd).ok();
-                    let is_trusted =
-                        crate::agent::folder_trust::resolve_and_record(session_cwd, None, false);
-                    let (mut new_reg, _errs) = crate::util::hooks::discover_hooks(
-                        git_root.as_deref(),
-                        &self.rebuild_spec.compat,
-                        is_trusted,
-                    );
-                    new_reg.append_specs(new_specs);
-                    *reg = Some(Arc::new(new_reg));
-                }
-            }
-        }
+        };
+        *self.hook_registry.borrow_mut() =
+            xai_grok_agent::plugins::hooks_adapter::replace_plugin_hooks(base, new_specs);
 
         xai_grok_telemetry::unified_log::info(
             "reload_plugins_impl: hooks done",
@@ -958,11 +946,16 @@ impl SessionActor {
         // Unchanged servers stay connected; only added, changed, or removed ones are re-initialized.
         // The order-sensitive `update_configs` would tear everything down instead, because merge order is non-deterministic.
         let t_mcp = std::time::Instant::now();
-        let new_mcp_servers = crate::session::managed_mcp::merge_managed_mcp_servers(
-            self.initial_client_mcp_servers.clone(),
-            session_cwd,
-            new_registry_snapshot.as_deref(),
-            &self.rebuild_spec.compat,
+        let client_seed = self.initial_client_mcp_servers.borrow().clone();
+        let new_mcp_servers = crate::session::agent_mcp::rematerialize_with_agent_overlay(
+            crate::session::agent_mcp::RematerializeParams {
+                initial_client_mcp_servers: client_seed,
+                cwd: session_cwd,
+                parent_cwd: self.startup_hints.parent_cwd.as_deref(),
+                plugin_registry: new_registry_snapshot.as_deref(),
+                compat: &self.rebuild_spec.compat,
+                definition: self.agent.borrow().definition(),
+            },
         );
         let (mcp_change, dispatch_event_tx) = {
             let mut mcp_state = self.mcp_state.lock().await;

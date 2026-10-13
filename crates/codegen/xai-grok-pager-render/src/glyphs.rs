@@ -533,8 +533,8 @@ mod tests {
         assert_eq!(diamond_dotted(), "\u{25C8}");
         assert_eq!(diamond_filled_char(), '\u{25C6}');
         assert_eq!(diamond_hollow_char(), '\u{25C7}');
-        assert_eq!(braille_spinner_frames()[0], "\u{280b}");
-        assert_eq!(dot_spinner_frames()[2], "\u{2e2c}");
+        assert_eq!(braille_spinner_frames().first().copied(), Some("\u{280b}"));
+        assert_eq!(dot_spinner_frames().get(2).copied(), Some("\u{2e2c}"));
         assert_eq!(
             monitor_icon_frames(),
             ["\u{25CB}", "\u{25CE}", "\u{25C9}", "\u{25CE}"]

@@ -66,7 +66,9 @@ enum GitCliFilterPinPlan {
 fn git_cli_verb_index(args: &[&str]) -> Option<usize> {
     let mut i = 0;
     while i < args.len() {
-        let tok = args[i];
+        let Some(tok) = args.get(i).copied() else {
+            break;
+        };
         if tok == "-" || tok == "--" {
             return None;
         }
@@ -130,7 +132,9 @@ fn git_cli_pin_scan_cwd(base: &Path, args: &[&str]) -> Result<PathBuf> {
     let mut cwd = base.to_path_buf();
     let mut i = 0;
     while i < verb_idx {
-        let tok = args[i];
+        let Some(tok) = args.get(i).copied() else {
+            break;
+        };
         if matches!(tok, "--git-dir" | "--work-tree")
             || tok.starts_with("--git-dir=")
             || tok.starts_with("--work-tree=")
@@ -164,9 +168,10 @@ fn git_cli_filter_pin_plan(args: &[&str]) -> GitCliFilterPinPlan {
     let Some(verb_idx) = git_cli_verb_index(args) else {
         return GitCliFilterPinPlan::Refuse;
     };
-    match args[verb_idx] {
-        "status" | "diff" => GitCliFilterPinPlan::NeedPins,
-        _ => GitCliFilterPinPlan::NoPins,
+    match args.get(verb_idx).copied() {
+        Some("status" | "diff") => GitCliFilterPinPlan::NeedPins,
+        Some(_) => GitCliFilterPinPlan::NoPins,
+        None => GitCliFilterPinPlan::Refuse,
     }
 }
 async fn git_cli_content_filter_pins(cwd: &Path, args: &[&str]) -> Result<Option<Vec<String>>> {
@@ -189,11 +194,19 @@ async fn git_cli_content_filter_pins(cwd: &Path, args: &[&str]) -> Result<Option
 fn git_cli_args_with_filter_pins(cmd: &mut Command, args: &[&str], pins: Option<&[String]>) {
     match (pins, git_cli_verb_index(args)) {
         (Some(pins), Some(verb_idx)) => {
-            cmd.args(&args[..verb_idx]);
+            let Some(globals) = args.get(..verb_idx) else {
+                cmd.args(args);
+                return;
+            };
+            let Some(rest) = args.get(verb_idx..) else {
+                cmd.args(args);
+                return;
+            };
+            cmd.args(globals);
             for pin in pins {
                 cmd.args(["-c", pin.as_str()]);
             }
-            cmd.args(&args[verb_idx..]);
+            cmd.args(rest);
         }
         _ => {
             cmd.args(args);
@@ -368,24 +381,36 @@ pub(crate) fn strip_url_credentials(url_str: &str) -> String {
     url_str.to_string()
 }
 /// Scrub credentials from any URL embedded in free-form git output before it is returned to a caller or logged. The token would otherwise leak to the FE and logs.
-pub(crate) fn scrub_git_output(text: &str) -> String {
+pub fn scrub_git_output(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut remaining = text;
     while let Some(pos) = remaining.find("://") {
         let after = pos + "://".len();
-        let auth_end = remaining[after..]
+        let Some(after_scheme) = remaining.get(after..) else {
+            break;
+        };
+        let auth_end = after_scheme
             .find(|c: char| {
                 c == '/' || c == '?' || c == '#' || c == '\'' || c == '"' || c.is_whitespace()
             })
             .map(|e| after + e)
             .unwrap_or(remaining.len());
-        let authority = &remaining[after..auth_end];
-        result.push_str(&remaining[..after]);
+        let Some(authority) = remaining.get(after..auth_end) else {
+            break;
+        };
+        let Some(prefix) = remaining.get(..after) else {
+            break;
+        };
+        result.push_str(prefix);
         match authority.rfind('@') {
-            Some(at) => result.push_str(&authority[at + 1..]),
+            Some(at) => {
+                if let Some(host) = authority.get(at + 1..) {
+                    result.push_str(host);
+                }
+            }
             None => result.push_str(authority),
         }
-        remaining = &remaining[auth_end..];
+        remaining = remaining.get(auth_end..).unwrap_or("");
     }
     result.push_str(remaining);
     result
@@ -408,12 +433,12 @@ pub fn normalize_repo_url(url: &str) -> Option<String> {
 /// Turns `git@host:path` or `host:path` into `host/path`
 fn normalize_scp_url(url: &str) -> Option<String> {
     let after_user = match url.find('@') {
-        Some(pos) => &url[pos + 1..],
+        Some(pos) => url.get(pos + 1..)?,
         None => url,
     };
     let colon = after_user.find(':')?;
-    let host = &after_user[..colon];
-    let path = &after_user[colon + 1..];
+    let host = after_user.get(..colon)?;
+    let path = after_user.get(colon + 1..)?;
     if host.is_empty() || path.is_empty() {
         return None;
     }
@@ -1186,13 +1211,22 @@ fn parse_porcelain_v2(
         if !line.starts_with("1 ") && !is_rename && !is_unmerged {
             continue;
         }
-        let after_prefix = &line[2..];
+        let Some(after_prefix) = line.get(2..) else {
+            continue;
+        };
         if after_prefix.len() < 4 {
             continue;
         }
-        let index_status = after_prefix.as_bytes()[0] as char;
-        let worktree_status = after_prefix.as_bytes()[1] as char;
-        if ignore_submodules && !after_prefix[3..].starts_with('N') {
+        let bytes = after_prefix.as_bytes();
+        let Some(&ib) = bytes.first() else {
+            continue;
+        };
+        let Some(&wb) = bytes.get(1) else {
+            continue;
+        };
+        let index_status = ib as char;
+        let worktree_status = wb as char;
+        if ignore_submodules && !after_prefix.get(3..).is_some_and(|s| s.starts_with('N')) {
             continue;
         }
         let fields_to_skip: usize = if is_unmerged {
@@ -1205,7 +1239,7 @@ fn parse_porcelain_v2(
         let mut field_end = 0;
         let mut fields_found = 0;
         for _ in 0..fields_to_skip {
-            if let Some(pos) = after_prefix[field_end..].find(' ') {
+            if let Some(pos) = after_prefix.get(field_end..).and_then(|s| s.find(' ')) {
                 field_end += pos + 1;
                 fields_found += 1;
             } else {
@@ -1216,17 +1250,24 @@ fn parse_porcelain_v2(
             continue;
         }
         let (path, old_path) = if is_rename {
-            let path_part = &after_prefix[field_end..];
+            let Some(path_part) = after_prefix.get(field_end..) else {
+                continue;
+            };
             if let Some(tab) = path_part.find('\t') {
-                (
-                    path_part[..tab].to_string(),
-                    Some(path_part[tab + 1..].to_string()),
-                )
+                let Some(new_p) = path_part.get(..tab) else {
+                    continue;
+                };
+                let Some(old_p) = path_part.get(tab + 1..) else {
+                    continue;
+                };
+                (new_p.to_string(), Some(old_p.to_string()))
             } else {
                 (path_part.to_string(), None)
             }
         } else {
-            let path_str = &after_prefix[field_end..];
+            let Some(path_str) = after_prefix.get(field_end..) else {
+                continue;
+            };
             if path_str.is_empty() {
                 continue;
             }
@@ -3562,7 +3603,7 @@ pub fn short_sha(sha: &str) -> &str {
     if sha.is_empty() {
         "unknown"
     } else {
-        &sha[..sha.len().min(8)]
+        sha.get(..sha.len().min(8)).unwrap_or(sha)
     }
 }
 /// Depth of a `--restore-code` restoration.

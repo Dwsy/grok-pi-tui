@@ -193,8 +193,9 @@ pub(crate) fn update_index_stats(
         let path_bytes: &gix::bstr::BStr = path_str.as_bytes().into();
 
         // Find the entry in the index
-        if let Ok(entry_index) = index.entry_index_by_path(path_bytes) {
-            let entry = &mut index.entries_mut()[entry_index];
+        if let Ok(entry_index) = index.entry_index_by_path(path_bytes)
+            && let Some(entry) = index.entries_mut().get_mut(entry_index)
+        {
             updated_count += 1;
 
             // Update stat fields from metadata

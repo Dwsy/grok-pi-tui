@@ -107,7 +107,7 @@ async fn first_k_tail_rejects_get_pending_then_failed() {
 
             tokio::time::timeout(
                 std::time::Duration::from_secs(15),
-                actor.execute_tool_calls(batch),
+                actor.execute_tool_calls(batch, None),
             )
             .await
             .expect("execute_tool_calls must not hang")
@@ -143,8 +143,8 @@ async fn first_k_tail_rejects_get_pending_then_failed() {
                     "id {id} needs Pending then Failed, got {for_id:?} from {statuses:?}"
                 );
                 assert_eq!(
-                    for_id[0],
-                    acp::ToolCallStatus::Pending,
+                    at(&for_id, 0),
+                    &acp::ToolCallStatus::Pending,
                     "id {id} first status must be Pending: {for_id:?}"
                 );
                 assert!(
@@ -182,11 +182,11 @@ async fn over_cap_report_classifies_modest_vs_egregious() {
                 .collect();
             let report = actor.media_gen_over_cap(&calls);
             assert_eq!(report.len(), 1);
-            assert_eq!(report[0].name, "image_gen");
-            assert_eq!(report[0].total, over);
-            assert_eq!(report[0].max, DEFAULT_MAX_PARALLEL_IMAGE_GEN);
+            assert_eq!(at(&report, 0).name, "image_gen");
+            assert_eq!(at(&report, 0).total, over);
+            assert_eq!(at(&report, 0).max, DEFAULT_MAX_PARALLEL_IMAGE_GEN);
             assert!(
-                !report[0].is_egregious(),
+                !at(&report, 0).is_egregious(),
                 "max+1 is modest first-K, not a 2x resample"
             );
 
@@ -200,7 +200,7 @@ async fn over_cap_report_classifies_modest_vs_egregious() {
                 .collect();
             let spam_report = actor.media_gen_over_cap(&spam);
             assert_eq!(spam_report.len(), 1);
-            assert!(spam_report[0].is_egregious());
+            assert!(at(&spam_report, 0).is_egregious());
 
             let under: Vec<xai_grok_sampling_types::ToolCall> = (0..DEFAULT_MAX_PARALLEL_IMAGE_GEN)
                 .map(|i| xai_grok_sampling_types::ToolCall {

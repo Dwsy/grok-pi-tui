@@ -1,21 +1,25 @@
 //! Dashboard rows: classification, build, filter, sort.
 use super::state::{DashboardRowId, Filter, RowState};
-use crate::acp::tracker::TurnActivity;
 use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentView;
 use crate::app::roster::{RosterActivity, RosterEntry};
-use crate::app::subagent::{SubagentInfo, format_activity_label, format_subagent_label};
+use crate::views::dashboard::row_activity::{
+    has_live_parent_activity, live_work_badges, top_level_activity, top_level_secondary_line,
+};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
 /// Title prefix for a session that has no name / generated title / prompt yet.
-/// The renderer paints this part in the primary colour and the trailing ` #<id>` suffix in dim gray (see `render::render_row`).
+/// [`RowTitle::render_wide`](crate::views::dashboard::row_title::RowTitle::render_wide) paints the trailing ` #<id>` suffix dimly.
 pub(crate) const NEW_SESSION_LABEL: &str = "New session";
 /// A single row in the dashboard. Built per-frame from `app.agents`.
 #[derive(Debug, Clone)]
 pub struct DashboardRow {
+    /// The row's identity on the dashboard, which a loaded saved session replaces.
     pub id: DashboardRowId,
+    /// Unlike the row id, this stays the same when a saved session is loaded.
+    pub session_id: Option<String>,
     /// Display label (e.g. `"implementer · fix login bug"`).
     pub label: String,
     /// Right-of-label subtitle painted after a ` · ` separator in dim text (e.g. `"xai my-branch-2 worktree"`).
@@ -31,7 +35,7 @@ pub struct DashboardRow {
     pub secondary_line: Option<String>,
     /// Working directory display string (already compacted to `~/...`).
     pub cwd_display: String,
-    /// Raw cwd for downstream filter / grouping consumers.
+    /// Raw location for downstream filter / grouping consumers, the same one `cwd_display` shows.
     pub cwd: PathBuf,
     /// Wall-clock moment of the row's last change. A wall-clock [`SystemTime`]: roster timestamps can
     /// predate this process, even the machine's boot, which an [`Instant`] cannot represent.
@@ -42,22 +46,16 @@ pub struct DashboardRow {
     pub badges: Vec<RowBadge>,
     /// Context window usage percent, when known. Drives the mini gauge.
     pub context_pct: Option<u8>,
-    /// Indent level for nested subagent rendering: 0 for a top-level row, 1 for a subagent under its parent.
-    pub indent: u8,
-    /// Display title for the parent agent, used to scope group headers in `Grouping::Directory` mode where subagents must sort with their parent.
-    pub parent_label: Option<String>,
-    /// True when this row is a "… N more" collapse placeholder.
-    /// The renderer paints it dimmed and the cursor cannot land on it (selectable=false).
-    pub is_more_placeholder: bool,
-    /// Number of rolled-up rows when `is_more_placeholder == true`.
-    pub more_count: usize,
 }
 /// Compact badge rendered next to the label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowBadge {
     Worktree,
     NeedsInput,
-    BgTask,
+    Subagents(usize),
+    Tasks(usize),
+    Watchers(usize),
+    Workflows(usize),
     Pinned,
     Failed,
 }
@@ -66,14 +64,15 @@ impl RowBadge {
         match self {
             Self::Worktree => "worktree",
             Self::NeedsInput => "needs-input",
-            Self::BgTask => "bg",
+            Self::Subagents(_) => "subagents",
+            Self::Tasks(_) => "tasks",
+            Self::Watchers(_) => "watchers",
+            Self::Workflows(_) => "workflows",
             Self::Pinned => "pinned",
             Self::Failed => "failed",
         }
     }
 }
-/// Maximum number of subagents to show per parent before collapsing completed/failed ones into a "… N more" row.
-pub const MAX_VISIBLE_SUBAGENTS: usize = 8;
 /// Process-wide fallback anchor for the age column when an agent lacks both `turn_started_at` and `last_active_at`.
 /// Rare: `AgentView::new` always stamps the latter, but a future caller could omit it.
 /// Initialised lazily on first call so the fallback stays frozen instead of re-anchoring every frame.
@@ -81,24 +80,8 @@ fn fallback_epoch() -> Instant {
     static FALLBACK: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     *FALLBACK.get_or_init(Instant::now)
 }
-/// Iterates `agents` so a stale `AgentId` can never panic. Subagents are appended directly after
-/// their parent, never reordered across parents.
-pub fn build_rows(
-    agents: &IndexMap<AgentId, AgentView>,
-    pinned: &std::collections::BTreeSet<DashboardRowId>,
-    reorder: &[DashboardRowId],
-    grouping: super::state::Grouping,
-    filter: &Filter,
-    home: Option<&str>,
-) -> Vec<DashboardRow> {
-    let mut rows = build_local_rows(agents, pinned, home, true);
-    apply_filter(&mut rows, filter, home);
-    sort_rows(&mut rows, grouping, reorder);
-    rows
-}
 /// It appends "roster-only" rows for leader sessions this client is not locally attached to (the
-/// FleetView dashboard). It does not list subagents as their own rows; only top-level agents and
-/// roster sessions appear (see [`build_local_rows`]).
+/// FleetView dashboard). Only top-level agents and roster sessions appear (see [`build_local_rows`]).
 pub fn build_rows_with_roster(
     agents: &IndexMap<AgentId, AgentView>,
     pinned: &std::collections::BTreeSet<DashboardRowId>,
@@ -108,7 +91,7 @@ pub fn build_rows_with_roster(
     home: Option<&str>,
     roster: &[RosterEntry],
 ) -> Vec<DashboardRow> {
-    let mut rows = build_local_rows(agents, pinned, home, false);
+    let mut rows = build_local_rows(agents, pinned, home);
     append_roster_rows(&mut rows, roster, agents, pinned, home);
     apply_filter(&mut rows, filter, home);
     sort_rows(&mut rows, grouping, reorder);
@@ -245,6 +228,7 @@ fn workspace_member_row(
         id: DashboardRowId::Workspace {
             session_id: session_id.to_owned(),
         },
+        session_id: Some(session_id.to_owned()),
         label,
         subtitle: None,
         state: RowState::Idle,
@@ -266,19 +250,14 @@ fn workspace_member_row(
         pinned,
         badges,
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }
 }
-/// Build the local-agent rows WITHOUT applying filter or sort. Shared by [`build_rows`] and
-/// [`build_rows_with_roster`].
+/// Build the local-agent rows WITHOUT applying filter or sort. [`build_rows_with_roster`] appends
+/// roster rows on top.
 fn build_local_rows(
     agents: &IndexMap<AgentId, AgentView>,
     pinned: &std::collections::BTreeSet<DashboardRowId>,
     home: Option<&str>,
-    include_subagents: bool,
 ) -> Vec<DashboardRow> {
     let mut rows = Vec::new();
     for (id, agent) in agents.iter() {
@@ -286,63 +265,7 @@ fn build_local_rows(
         if is_empty_idle_top_level(agent) && !pinned.contains(&top_id) {
             continue;
         }
-        let row = top_level_row(*id, agent, pinned.contains(&top_id), home);
-        rows.push(row);
-        if !include_subagents {
-            continue;
-        }
-        let mut subagents: Vec<&SubagentInfo> = agent
-            .subagent_sessions
-            .values()
-            .filter(|info| info.attempt.workflow_run_id.is_none())
-            .collect();
-        subagents.sort_by(|a, b| {
-            let a_running = a.is_running();
-            let b_running = b.is_running();
-            match (a_running, b_running) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => b.attempt.started_at.cmp(&a.attempt.started_at),
-            }
-        });
-        let total = subagents.len();
-        let keep = MAX_VISIBLE_SUBAGENTS.min(total);
-        for info in subagents.iter().take(keep) {
-            rows.push(subagent_row(
-                *id,
-                agent,
-                info,
-                pinned.contains(&DashboardRowId::Subagent {
-                    parent: *id,
-                    child_session_id: info.child_session_id.to_string(),
-                }),
-                home,
-            ));
-        }
-        if total > keep {
-            let agent_label = top_level_label(agent);
-            rows.push(DashboardRow {
-                id: DashboardRowId::Subagent {
-                    parent: *id,
-                    child_session_id: format!("__more_{}", id.0),
-                },
-                label: format!("\u{2026} {} more", total - keep),
-                subtitle: None,
-                state: RowState::Idle,
-                activity: None,
-                secondary_line: None,
-                cwd_display: String::new(),
-                cwd: agent.session.cwd.clone(),
-                last_change_at: SystemTime::now(),
-                pinned: false,
-                badges: Vec::new(),
-                context_pct: None,
-                indent: 1,
-                parent_label: Some(agent_label),
-                is_more_placeholder: true,
-                more_count: total - keep,
-            });
-        }
+        rows.push(top_level_row(*id, agent, pinned.contains(&top_id), home));
     }
     rows
 }
@@ -421,10 +344,12 @@ fn append_roster_rows(
         }
         let cwd_display = super::state::compact_cwd(&cwd, home);
         let is_pinned = pinned.contains(&id);
+        let subtitle = None;
         rows.push(DashboardRow {
             id,
+            session_id: Some(entry.session_id.clone()),
             label,
-            subtitle: None,
+            subtitle,
             state,
             activity,
             secondary_line: entry
@@ -440,10 +365,6 @@ fn append_roster_rows(
             pinned: is_pinned,
             badges,
             context_pct: None,
-            indent: 0,
-            parent_label: None,
-            is_more_placeholder: false,
-            more_count: 0,
         });
     }
 }
@@ -454,14 +375,7 @@ pub fn classify_top_level(agent: &AgentView) -> RowState {
     if !agent.permission_queue.is_empty() || agent.question_view.is_some() {
         return RowState::NeedsInput;
     }
-    if !agent.session.state.is_idle()
-        || agent.wake_turn_active()
-        || agent.session.turn_activity().is_some()
-        || !agent.session.pending_prompts.is_empty()
-    {
-        return RowState::Working;
-    }
-    if agent.session.loading_replay {
+    if has_live_parent_activity(agent) {
         return RowState::Working;
     }
     if has_background_work(agent) {
@@ -479,31 +393,9 @@ pub fn has_background_work(agent: &AgentView) -> bool {
         .any(|t| t.status == crate::app::agent::BgTaskStatus::Running)
         || !agent.session.scheduled_tasks.is_empty()
 }
-/// `None` when there's no background work (the caller then falls back to a bare `"Working"`).
-fn background_work_label(agent: &AgentView) -> Option<String> {
-    let w = agent.watchers();
-    crate::views::turn_status::format_still_running([
-        (w.monitors, "monitor"),
-        (w.loops, "loop"),
-        (w.commands, "task"),
-    ])
-}
-/// Classify a subagent.
-///
-/// Subagents never enter `NeedsInput` in v1; they have no way to ask the user for input. A test asserts this.
-pub fn classify_subagent(info: &SubagentInfo) -> RowState {
-    if info.is_finished() {
-        match info.attempt.status.as_deref() {
-            Some("failed") | Some("cancelled") | Some("error") => RowState::Failed,
-            _ => RowState::Completed,
-        }
-    } else {
-        RowState::Working
-    }
-}
 /// Sanitise every string derived from backend / model-controlled content before returning.
 /// The dashboard's renderer paints raw via `set_string`, which preserves embedded escape sequences in the ratatui buffer.
-fn sanitize(s: &str) -> String {
+pub(crate) fn sanitize(s: &str) -> String {
     crate::views::session_title::sanitize_display_text(s).into_owned()
 }
 /// Whether a top-level agent has no real conversation yet. These are the exact conditions under
@@ -574,41 +466,32 @@ fn top_level_row(id: AgentId, agent: &AgentView, pinned: bool, home: Option<&str
     let secondary_line = top_level_secondary_line(agent, state, activity.as_deref());
     let last_change_at = top_level_last_change_at(agent, state);
     let mut badges = Vec::new();
-    if agent.is_worktree {
+    let local_worktree = agent.is_worktree;
+    if local_worktree {
         badges.push(RowBadge::Worktree);
     }
     if state == RowState::NeedsInput {
         badges.push(RowBadge::NeedsInput);
     }
-    if agent
-        .session
-        .bg_tasks
-        .values()
-        .any(|t| t.status == crate::app::agent::BgTaskStatus::Running)
-    {
-        badges.push(RowBadge::BgTask);
-    }
+    badges.extend(live_work_badges(agent));
     if pinned {
         badges.push(RowBadge::Pinned);
     }
-    let cwd_display = super::state::compact_cwd(&agent.session.cwd, home);
+    let cwd_display = super::state::compact_cwd(agent.location_path(), home);
     DashboardRow {
         id: DashboardRowId::TopLevel(id),
+        session_id: agent.session.session_id.as_ref().map(|id| id.0.to_string()),
         label,
         subtitle,
         state,
         activity,
         secondary_line,
         cwd_display,
-        cwd: agent.session.cwd.clone(),
+        cwd: agent.location_path().to_path_buf(),
         last_change_at,
         pinned,
         badges,
         context_pct: agent.context_state.as_ref().map(|c| c.usage_pct),
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }
 }
 /// Wall-clock anchor used by both dashboard rows and workspace metadata sync.
@@ -626,67 +509,6 @@ pub(crate) fn top_level_last_change_at(agent: &AgentView, state: RowState) -> Sy
         | RowState::Blocked => agent.last_active_at.unwrap_or_else(fallback_epoch),
     };
     crate::util::system_time_from_instant(anchor)
-}
-fn subagent_row(
-    parent: AgentId,
-    parent_view: &AgentView,
-    info: &SubagentInfo,
-    pinned: bool,
-    home: Option<&str>,
-) -> DashboardRow {
-    let state = classify_subagent(info);
-    let (label_raw, desc_raw) = format_subagent_label(info);
-    let label = {
-        let label = sanitize(&label_raw);
-        let desc = sanitize(&desc_raw);
-        if desc.trim().is_empty() {
-            label
-        } else {
-            format!("{label} · {desc}")
-        }
-    };
-    let activity = subagent_activity(info, state);
-    let cwd = info
-        .child_cwd
-        .as_deref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| parent_view.session.cwd.clone());
-    let cwd_display = super::state::compact_cwd(&cwd, home);
-    let last_change_at = crate::util::system_time_from_instant(info.attempt.last_progress_at);
-    let mut badges = Vec::new();
-    if info.worktree_path.is_some() {
-        badges.push(RowBadge::Worktree);
-    }
-    if pinned {
-        badges.push(RowBadge::Pinned);
-    }
-    if state == RowState::Failed {
-        badges.push(RowBadge::Failed);
-    }
-    let parent_label = Some(top_level_label(parent_view));
-    let subtitle = subagent_subtitle(info, &cwd);
-    let secondary_line = subagent_secondary_line(info, state, activity.as_deref());
-    DashboardRow {
-        id: DashboardRowId::Subagent {
-            parent,
-            child_session_id: info.child_session_id.to_string(),
-        },
-        label,
-        subtitle,
-        state,
-        activity,
-        secondary_line,
-        cwd_display,
-        cwd,
-        last_change_at,
-        pinned,
-        badges,
-        context_pct: info.attempt.context_usage_pct,
-        indent: 1,
-        parent_label,
-        is_more_placeholder: false,
-        more_count: 0,
-    }
 }
 /// Basename of a directory (the leaf folder name), or `None` for the filesystem root / an empty path.
 fn cwd_basename(cwd: &std::path::Path) -> Option<String> {
@@ -883,33 +705,24 @@ pub fn apply_filter(rows: &mut Vec<DashboardRow>, filter: &Filter, _home: Option
         Filter::Agent(s) | Filter::Substring(s) => Some(s.to_lowercase()),
         _ => None,
     };
-    rows.retain(|r| {
-        if r.is_more_placeholder {
-            return true;
+    rows.retain(|r| match filter {
+        Filter::None => true,
+        Filter::Agent(_) => {
+            let n = needle_lower.as_deref().unwrap_or("");
+            r.label.to_lowercase().contains(n)
         }
-        match filter {
-            Filter::None => true,
-            Filter::Agent(_) => {
-                let n = needle_lower.as_deref().unwrap_or("");
-                r.label.to_lowercase().contains(n)
-                    || r.parent_label
-                        .as_deref()
-                        .is_some_and(|p| p.to_lowercase().contains(n))
+        Filter::State(rs) => r.state == *rs,
+        Filter::Substring(_) => {
+            let n = needle_lower.as_deref().unwrap_or("");
+            if n.is_empty() {
+                return true;
             }
-            Filter::State(rs) => r.state == *rs,
-            Filter::Substring(_) => {
-                let n = needle_lower.as_deref().unwrap_or("");
-                if n.is_empty() {
-                    return true;
-                }
-                r.label.to_lowercase().contains(n) || r.cwd_display.to_lowercase().contains(n)
-            }
+            r.label.to_lowercase().contains(n) || r.cwd_display.to_lowercase().contains(n)
         }
     });
 }
-/// Sort rows in place. `reorder` overrides (Shift+↑/↓) float a row to its declared index INSIDE its
-/// group only, never across groups. In `State` grouping that means within the same state, so the
-/// group can't be split into `Idle → Working → Idle`.
+/// Pinned rows keep manual order across activity and grouping changes.
+/// Unpinned rows reorder only within their state or directory group.
 pub fn sort_rows(
     rows: &mut [DashboardRow],
     grouping: super::state::Grouping,
@@ -922,91 +735,80 @@ pub fn sort_rows(
     }
 }
 fn sort_within_groups(rows: &mut [DashboardRow], reorder: &[DashboardRowId]) {
-    let clusters = build_clusters(rows);
-    let mut indexed: Vec<(usize, usize, ClusterKey)> = clusters
+    let mut keyed: Vec<(RowKey, DashboardRow)> = rows
         .iter()
-        .map(|(start, end)| {
-            let parent = &rows[*start];
-            (
-                *start,
-                *end,
-                ClusterKey {
-                    pinned: parent.pinned,
-                    state: parent.state.group_priority(),
-                    last_change_at: parent.last_change_at,
-                    reorder_idx: reorder.iter().position(|r| *r == parent.id),
-                    id: parent.id.clone(),
-                },
-            )
+        .cloned()
+        .map(|row| {
+            let key = row_key(&row, reorder);
+            (key, row)
         })
         .collect();
-    indexed.sort_by(|a, b| sort_cluster_key(&a.2, &b.2, true));
-    let snapshot: Vec<DashboardRow> = rows.to_vec();
-    let mut write = 0usize;
-    for (start, end, _) in &indexed {
-        for src in snapshot.iter().take(*end).skip(*start) {
-            rows[write] = src.clone();
-            write += 1;
-        }
+    keyed.sort_by(|(left, _), (right, _)| sort_row_key(left, right, true));
+    for (slot, (_, row)) in rows.iter_mut().zip(keyed) {
+        *slot = row;
     }
 }
 fn sort_within_directory_groups(rows: &mut [DashboardRow], reorder: &[DashboardRowId]) {
-    let clusters = build_clusters(rows);
-    let mut indexed: Vec<(usize, usize, (String, ClusterKey))> = clusters
+    let mut keyed: Vec<(String, RowKey, DashboardRow)> = rows
         .iter()
-        .map(|(start, end)| {
-            let parent = &rows[*start];
-            let key = ClusterKey {
-                pinned: parent.pinned,
-                state: parent.state.group_priority(),
-                last_change_at: parent.last_change_at,
-                reorder_idx: reorder.iter().position(|r| *r == parent.id),
-                id: parent.id.clone(),
-            };
-            (*start, *end, (parent.cwd_display.clone(), key))
+        .cloned()
+        .map(|row| {
+            let cwd = row.cwd_display.clone();
+            let key = row_key(&row, reorder);
+            (cwd, key, row)
         })
         .collect();
-    indexed.sort_by(|a, b| match a.2.0.cmp(&b.2.0) {
-        std::cmp::Ordering::Equal => sort_cluster_key(&a.2.1, &b.2.1, false),
-        other => other,
-    });
-    let snapshot: Vec<DashboardRow> = rows.to_vec();
-    let mut write = 0usize;
-    for (start, end, _) in &indexed {
-        for src in snapshot.iter().take(*end).skip(*start) {
-            rows[write] = src.clone();
-            write += 1;
+    keyed.sort_by(|(left_cwd, left, _), (right_cwd, right, _)| {
+        if left.pinned || right.pinned {
+            return sort_row_key(left, right, false);
         }
+        left_cwd
+            .cmp(right_cwd)
+            .then_with(|| sort_row_key(left, right, false))
+    });
+    for (slot, (_, _, row)) in rows.iter_mut().zip(keyed) {
+        *slot = row;
+    }
+}
+fn row_key(row: &DashboardRow, reorder: &[DashboardRowId]) -> RowKey {
+    RowKey {
+        pinned: row.pinned,
+        state: row.state.group_priority(),
+        last_change_at: row.last_change_at,
+        reorder_idx: reorder.iter().position(|id| *id == row.id),
+        session_id: row.session_id.clone(),
+        id: row.id.clone(),
     }
 }
 #[derive(Debug, Clone)]
-struct ClusterKey {
+struct RowKey {
     pinned: bool,
     state: u8,
     last_change_at: SystemTime,
     reorder_idx: Option<usize>,
-    /// Final tiebreak: when every other field is equal, fall back to the parent row's id so the order is deterministic across rebuilds.
+    session_id: Option<String>,
+    /// Final tiebreak: when every other field is equal, fall back to the row id so the order is deterministic across rebuilds.
     /// This avoids relying on `sort_by`'s stable-on-equal pass-through.
     id: DashboardRowId,
 }
-/// Compare two cluster sort keys. State grouping (`true`): state is the grouping primitive and the
-/// primary sort key, so a reorder may only float a row within its state group.
-fn sort_cluster_key(
-    a: &ClusterKey,
-    b: &ClusterKey,
-    state_before_reorder: bool,
-) -> std::cmp::Ordering {
+/// `state_before_reorder` restricts manual ordering of unpinned rows to the same state.
+fn sort_row_key(a: &RowKey, b: &RowKey, state_before_reorder: bool) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     if a.pinned != b.pinned {
         return b.pinned.cmp(&a.pinned);
     }
-    let by_reorder = |a: &ClusterKey, b: &ClusterKey| match (a.reorder_idx, b.reorder_idx) {
+    let by_reorder = |a: &RowKey, b: &RowKey| match (a.reorder_idx, b.reorder_idx) {
         (Some(x), Some(y)) => x.cmp(&y),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     };
-    let by_state = |a: &ClusterKey, b: &ClusterKey| b.state.cmp(&a.state);
+    if a.pinned {
+        return by_reorder(a, b)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+            .then_with(|| a.id.cmp(&b.id));
+    }
+    let by_state = |a: &RowKey, b: &RowKey| b.state.cmp(&a.state);
     if state_before_reorder {
         if a.state != b.state {
             return by_state(a, b);
@@ -1028,27 +830,17 @@ fn sort_cluster_key(
         .cmp(&a.last_change_at)
         .then_with(|| a.id.cmp(&b.id))
 }
-/// Identify `(start, end)` ranges of clustered rows: each cluster is one top-level row followed by zero or more subagents.
-fn build_clusters(rows: &[DashboardRow]) -> Vec<(usize, usize)> {
-    let mut clusters = Vec::new();
-    let mut i = 0;
-    while i < rows.len() {
-        let start = i;
-        i += 1;
-        while i < rows.len() && rows[i].indent > 0 {
-            i += 1;
-        }
-        clusters.push((start, i));
-    }
-    clusters
-}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::agent_test_fixtures::{running_bg_task, scheduled_loop};
     use crate::app::workspace_test_fixtures::snapshot as workspace_snapshot;
     use agent_client_protocol as acp;
-    use std::sync::Arc;
     use std::time::{Duration, UNIX_EPOCH};
+    fn nth(rows: &[DashboardRow], i: usize) -> &DashboardRow {
+        rows.get(i)
+            .unwrap_or_else(|| panic!("expected row {i}, got {rows:?}"))
+    }
     /// Row tests render the model and summary and sort by a realistic timestamp.
     fn workspace_member(
         session_id: &str,
@@ -1099,8 +891,8 @@ mod tests {
         )]);
         let rows = workspace_rows(&agents, &snapshot);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, DashboardRowId::TopLevel(AgentId(7)));
-        assert_eq!(rows[0].label, "Live title");
+        assert_eq!(nth(&rows, 0).id, DashboardRowId::TopLevel(AgentId(7)));
+        assert_eq!(nth(&rows, 0).label, "Live title");
     }
     #[test]
     fn provisional_dispatch_row_shows_before_session_id_binds() {
@@ -1113,7 +905,7 @@ mod tests {
         let snapshot = workspace_snapshot(vec![workspace_member("other", "Other", None)]);
         let rows = workspace_rows_with_provisional(&agents, Some(&snapshot), &[AgentId(3)]);
         assert_eq!(rows.len(), 2);
-        let row = &rows[0];
+        let row = &nth(&rows, 0);
         assert_eq!(row.id, DashboardRowId::TopLevel(AgentId(3)));
         assert_eq!(row.state, RowState::Working);
         assert_eq!(row.label, "fix the login bug before lunch");
@@ -1129,8 +921,11 @@ mod tests {
         let agents = IndexMap::from([(AgentId(4), creating)]);
         let rows = workspace_rows_with_provisional(&agents, None, &[AgentId(4)]);
         assert_eq!(rows.len(), 1, "live rows render before the snapshot loads");
-        assert_eq!(rows[0].state, RowState::Working);
-        assert_eq!(rows[0].activity.as_deref(), Some("Creating worktree…"));
+        assert_eq!(nth(&rows, 0).state, RowState::Working);
+        assert_eq!(
+            nth(&rows, 0).activity.as_deref(),
+            Some("Creating worktree…")
+        );
     }
     #[test]
     fn empty_idle_provisional_agent_stays_hidden() {
@@ -1156,16 +951,16 @@ mod tests {
         let snapshot = workspace_snapshot(vec![old_idle, working_member, fresh_idle]);
         let rows = workspace_rows(&agents, &snapshot);
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].id, DashboardRowId::TopLevel(AgentId(7)));
-        assert_eq!(rows[0].state, RowState::Working);
+        assert_eq!(nth(&rows, 0).id, DashboardRowId::TopLevel(AgentId(7)));
+        assert_eq!(nth(&rows, 0).state, RowState::Working);
         assert_eq!(
-            rows[1].id,
+            nth(&rows, 1).id,
             DashboardRowId::Workspace {
                 session_id: "fresh-idle".into()
             }
         );
         assert_eq!(
-            rows[2].id,
+            nth(&rows, 2).id,
             DashboardRowId::Workspace {
                 session_id: "old-idle".into()
             }
@@ -1182,12 +977,12 @@ mod tests {
         let rows = workspace_rows(&IndexMap::new(), &snapshot);
         assert_eq!(rows.len(), 1);
         assert_eq!(
-            rows[0].id,
+            nth(&rows, 0).id,
             DashboardRowId::Workspace {
                 session_id: "shared".to_owned()
             }
         );
-        assert_eq!(rows[0].label, "Build");
+        assert_eq!(nth(&rows, 0).label, "Build");
     }
     #[test]
     fn workspace_rows_hide_empty_startup_members_like_v1() {
@@ -1226,166 +1021,29 @@ mod tests {
         let rows = workspace_rows(&IndexMap::new(), &snapshot);
         assert_eq!(rows.len(), 2);
         assert_eq!(
-            rows[0].id,
+            nth(&rows, 0).id,
             DashboardRowId::Workspace {
                 session_id: "first".to_owned()
             }
         );
-        assert_eq!(rows[0].state, RowState::Idle);
-        assert_eq!(rows[0].secondary_line.as_deref(), Some("First summary"));
+        assert_eq!(nth(&rows, 0).state, RowState::Idle);
         assert_eq!(
-            rows[1].id,
+            nth(&rows, 0).secondary_line.as_deref(),
+            Some("First summary")
+        );
+        assert_eq!(
+            nth(&rows, 1).id,
             DashboardRowId::Workspace {
                 session_id: "second".to_owned()
             }
         );
-        assert_eq!(rows[1].secondary_line.as_deref(), Some("grok-test"));
-        assert!(rows[1].badges.contains(&RowBadge::Worktree));
+        assert_eq!(nth(&rows, 1).secondary_line.as_deref(), Some("grok-test"));
+        assert!(nth(&rows, 1).badges.contains(&RowBadge::Worktree));
     }
-    fn make_subagent(child_id: &str, finished: bool, status: Option<&str>) -> SubagentInfo {
-        let now = Instant::now();
-        let mut info = SubagentInfo {
-            subagent_id: Arc::from(format!("sa-{child_id}")),
-            child_session_id: Arc::from(child_id),
-            description: Arc::from("test task"),
-            subagent_type: Arc::from("explore"),
-            attempt: crate::app::subagent::SubagentAttemptInfo {
-                lifecycle: crate::app::subagent::SubagentLifecycleState::running_legacy_for_test(),
-                persona: None,
-                role: None,
-                model: None,
-                context_source: None,
-                resumed_from: None,
-                capability_mode: None,
-                workflow_run_id: None,
-                context_normalized: false,
-                parent_prompt_id: None,
-                started_at: now,
-                last_progress_at: now,
-                status: status.map(Arc::from),
-                error: None,
-                duration_ms: None,
-                tool_calls: None,
-                turns: None,
-                turn_count: None,
-                tool_call_count: None,
-                tokens_used: None,
-                context_window_tokens: None,
-                context_usage_pct: None,
-                tools_used: Vec::new(),
-                error_count: None,
-                activity_label: None,
-                is_background: false,
-                pending_kill: false,
-                kill_requested_at: None,
-                scrollback_entry_id: None,
-                terminal_entry_id: None,
-            },
-            completed_attempt_tokens: 0,
-            sealed_attempt_tokens: Default::default(),
-            prompt: None,
-            child_cwd: None,
-            worktree_path: None,
-            transcript: Default::default(),
-        };
-        info.set_finished_for_test(finished);
-        info
-    }
-    #[test]
-    fn classify_subagent_running() {
-        let info = make_subagent("a", false, None);
-        assert_eq!(classify_subagent(&info), RowState::Working);
-    }
-    #[test]
-    fn full_tree_excludes_workflow_owned_subagent_rows() {
-        let mut agents = IndexMap::new();
-        let mut agent = crate::app::agent_view::test_fixtures::make_agent();
-        let mut workflow_child = make_subagent("workflow-child", false, None);
-        workflow_child.attempt.workflow_run_id = Some(Arc::from("wf_1"));
-        agent
-            .subagent_sessions
-            .insert("workflow-child".into(), workflow_child);
-        agents.insert(AgentId(0), agent);
-        let rows = build_rows(
-            &agents,
-            &Default::default(),
-            &[],
-            super::super::state::Grouping::State,
-            &Filter::default(),
-            None,
-        );
-        assert!(
-            rows.iter()
-                .all(|row| !matches!(row.id, DashboardRowId::Subagent { .. }))
-        );
-    }
-    #[test]
-    fn classify_subagent_completed() {
-        let info = make_subagent("a", true, Some("completed"));
-        assert_eq!(classify_subagent(&info), RowState::Completed);
-    }
-    #[test]
-    fn classify_subagent_failed() {
-        let info = make_subagent("a", true, Some("failed"));
-        assert_eq!(classify_subagent(&info), RowState::Failed);
-    }
-    #[test]
-    fn classify_subagent_cancelled() {
-        let info = make_subagent("a", true, Some("cancelled"));
-        assert_eq!(classify_subagent(&info), RowState::Failed);
-    }
-    #[test]
-    fn subagent_activity_prefers_live_label_over_tool_reconstruction() {
-        let mut info = make_subagent("a", false, None);
-        info.attempt.tools_used = vec![Arc::from("bash")];
-        info.attempt.activity_label = Some("Running: cargo build".into());
-        assert_eq!(
-            subagent_activity(&info, RowState::Working).as_deref(),
-            Some("Running: cargo build")
-        );
-        info.attempt.activity_label = None;
-        assert_eq!(
-            subagent_activity(&info, RowState::Working).as_deref(),
-            Some("Running: bash")
-        );
-    }
-    /// Subagent rows never reach `NeedsInput` in v1.
-    #[test]
-    fn subagent_classifier_never_emits_needs_input() {
-        for finished in [false, true] {
-            for status in [None, Some("completed"), Some("failed"), Some("cancelled")] {
-                let info = make_subagent("a", finished, status);
-                let state = classify_subagent(&info);
-                assert_ne!(
-                    state,
-                    RowState::NeedsInput,
-                    "finished={finished} status={status:?}"
-                );
-            }
-        }
-    }
-    #[test]
-    fn cluster_keeps_subagents_with_parent() {
-        let rows = vec![
-            make_row("a", 0, RowState::Working),
-            make_row("a:1", 1, RowState::Working),
-            make_row("a:2", 1, RowState::Idle),
-            make_row("b", 0, RowState::Idle),
-            make_row("b:1", 1, RowState::Working),
-        ];
-        let clusters = build_clusters(&rows);
-        assert_eq!(clusters, vec![(0, 3), (3, 5)]);
-    }
-    fn make_row(label: &str, indent: u8, state: RowState) -> DashboardRow {
+    fn make_row(label: &str, state: RowState) -> DashboardRow {
         DashboardRow {
-            id: if indent == 0 {
-                DashboardRowId::TopLevel(AgentId(label.len()))
-            } else {
-                DashboardRowId::Subagent {
-                    parent: AgentId(0),
-                    child_session_id: label.to_string(),
-                }
-            },
+            id: DashboardRowId::TopLevel(AgentId(label.len())),
+            session_id: None,
             label: label.to_string(),
             subtitle: None,
             state,
@@ -1397,15 +1055,12 @@ mod tests {
             pinned: false,
             badges: Vec::new(),
             context_pct: None,
-            indent,
-            parent_label: None,
-            is_more_placeholder: false,
-            more_count: 0,
         }
     }
-    fn make_row_with_id(id: DashboardRowId, indent: u8, state: RowState) -> DashboardRow {
+    fn make_row_with_id(id: DashboardRowId, state: RowState) -> DashboardRow {
         DashboardRow {
             id,
+            session_id: None,
             label: "row".to_string(),
             subtitle: None,
             state,
@@ -1417,10 +1072,6 @@ mod tests {
             pinned: false,
             badges: Vec::new(),
             context_pct: None,
-            indent,
-            parent_label: None,
-            is_more_placeholder: false,
-            more_count: 0,
         }
     }
     /// Sort: pinned floats above non-pinned regardless of state.
@@ -1430,36 +1081,32 @@ mod tests {
             DashboardRow {
                 pinned: false,
                 state: RowState::Working,
-                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), 0, RowState::Working)
+                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), RowState::Working)
             },
             DashboardRow {
                 pinned: true,
                 state: RowState::Idle,
-                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), 0, RowState::Idle)
+                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), RowState::Idle)
             },
         ];
         sort_rows(&mut rows, super::super::state::Grouping::State, &[]);
-        assert!(rows[0].pinned);
-        assert!(!rows[1].pinned);
+        assert!(nth(&rows, 0).pinned);
+        assert!(!nth(&rows, 1).pinned);
     }
     #[test]
     fn sort_state_priority_within_group() {
         let mut rows = vec![
-            make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), 0, RowState::Idle),
-            make_row_with_id(
-                DashboardRowId::TopLevel(AgentId(2)),
-                0,
-                RowState::NeedsInput,
-            ),
-            make_row_with_id(DashboardRowId::TopLevel(AgentId(3)), 0, RowState::Working),
+            make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), RowState::Idle),
+            make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), RowState::NeedsInput),
+            make_row_with_id(DashboardRowId::TopLevel(AgentId(3)), RowState::Working),
         ];
         sort_rows(&mut rows, super::super::state::Grouping::State, &[]);
-        assert_eq!(rows[0].state, RowState::NeedsInput);
-        assert_eq!(rows[1].state, RowState::Working);
-        assert_eq!(rows[2].state, RowState::Idle);
+        assert_eq!(nth(&rows, 0).state, RowState::NeedsInput);
+        assert_eq!(nth(&rows, 1).state, RowState::Working);
+        assert_eq!(nth(&rows, 2).state, RowState::Idle);
     }
     /// Renamed from `sort_deterministic_with_equal_keys`. The original name implied a tiebreak
-    /// guarantee that `sort_cluster_key` does NOT provide; documents the actual behavioural contract:
+    /// guarantee that `sort_row_key` does NOT provide; documents the actual behavioural contract:
     /// idempotent on identical inputs.
     #[test]
     fn sort_is_idempotent_for_identical_inputs() {
@@ -1467,11 +1114,11 @@ mod tests {
         let mut rows1 = vec![
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), 0, RowState::Idle)
+                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), RowState::Idle)
             },
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), 0, RowState::Idle)
+                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), RowState::Idle)
             },
         ];
         let mut rows2 = rows1.clone();
@@ -1492,82 +1139,76 @@ mod tests {
         let mut forward = vec![
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(id1.clone(), 0, RowState::Idle)
+                ..make_row_with_id(id1.clone(), RowState::Idle)
             },
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(id2.clone(), 0, RowState::Idle)
+                ..make_row_with_id(id2.clone(), RowState::Idle)
             },
         ];
         let mut reverse = vec![
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(id2.clone(), 0, RowState::Idle)
+                ..make_row_with_id(id2.clone(), RowState::Idle)
             },
             DashboardRow {
                 last_change_at: now,
-                ..make_row_with_id(id1.clone(), 0, RowState::Idle)
+                ..make_row_with_id(id1.clone(), RowState::Idle)
             },
         ];
         sort_rows(&mut forward, super::super::state::Grouping::State, &[]);
         sort_rows(&mut reverse, super::super::state::Grouping::State, &[]);
-        assert_eq!(forward[0].id, id1, "forward: id1 must sort first");
-        assert_eq!(forward[1].id, id2, "forward: id2 must sort second");
-        assert_eq!(reverse[0].id, id1, "reverse: id1 must sort first");
-        assert_eq!(reverse[1].id, id2, "reverse: id2 must sort second");
+        assert_eq!(nth(&forward, 0).id, id1, "forward: id1 must sort first");
+        assert_eq!(nth(&forward, 1).id, id2, "forward: id2 must sort second");
+        assert_eq!(nth(&reverse, 0).id, id1, "reverse: id1 must sort first");
+        assert_eq!(nth(&reverse, 1).id, id2, "reverse: id2 must sort second");
     }
     #[test]
     fn filter_substring_label_match() {
         let mut rows = vec![
             DashboardRow {
                 label: "fix login bug".to_string(),
-                ..make_row("a", 0, RowState::Working)
+                ..make_row("a", RowState::Working)
             },
             DashboardRow {
                 label: "investigate cache".to_string(),
-                ..make_row("b", 0, RowState::Working)
+                ..make_row("b", RowState::Working)
             },
         ];
         apply_filter(&mut rows, &Filter::Substring("login".into()), None);
         assert_eq!(rows.len(), 1);
     }
     #[test]
-    fn filter_agent_matches_label_and_parent() {
+    fn filter_agent_matches_label() {
         let mut rows = vec![
             DashboardRow {
                 label: "implementer".to_string(),
-                parent_label: None,
-                ..make_row("a", 0, RowState::Working)
-            },
-            DashboardRow {
-                label: "explore".to_string(),
-                parent_label: Some("implementer".to_string()),
-                ..make_row("a:1", 1, RowState::Working)
+                ..make_row("a", RowState::Working)
             },
             DashboardRow {
                 label: "other".to_string(),
-                parent_label: None,
-                ..make_row("b", 0, RowState::Working)
+                ..make_row("b", RowState::Working)
             },
         ];
         apply_filter(&mut rows, &Filter::Agent("implementer".into()), None);
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(nth(&rows, 0).label, "implementer");
     }
     #[test]
     fn filter_state_matches_exact() {
         let mut rows = vec![
             DashboardRow {
                 state: RowState::NeedsInput,
-                ..make_row("a", 0, RowState::NeedsInput)
+                ..make_row("a", RowState::NeedsInput)
             },
             DashboardRow {
                 state: RowState::Idle,
-                ..make_row("b", 0, RowState::Idle)
+                ..make_row("b", RowState::Idle)
             },
         ];
         apply_filter(&mut rows, &Filter::State(RowState::Idle), None);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].state, RowState::Idle);
+        assert_eq!(nth(&rows, 0).state, RowState::Idle);
     }
     /// Sort: explicit reorderings (Shift+↑/↓) float a row to its declared position WITHIN its state group.
     /// Two Working rows: the older one (id2) is reordered above the more-recent one (id1).
@@ -1580,11 +1221,11 @@ mod tests {
         let mut rows = vec![
             DashboardRow {
                 last_change_at: newer, // recency would put id1 first
-                ..make_row_with_id(id1.clone(), 0, RowState::Working)
+                ..make_row_with_id(id1.clone(), RowState::Working)
             },
             DashboardRow {
                 last_change_at: older,
-                ..make_row_with_id(id2.clone(), 0, RowState::Working)
+                ..make_row_with_id(id2.clone(), RowState::Working)
             },
         ];
         sort_rows(
@@ -1592,8 +1233,8 @@ mod tests {
             super::super::state::Grouping::State,
             std::slice::from_ref(&id2),
         );
-        assert_eq!(rows[0].id, id2, "reorder must float id2 to the top");
-        assert_eq!(rows[1].id, id1);
+        assert_eq!(nth(&rows, 0).id, id2, "reorder must float id2 to the top");
+        assert_eq!(nth(&rows, 1).id, id1);
     }
     /// Regression: reordering must NOT split a state group. The renderer would otherwise emit `Idle →
     /// Working → Idle` headers. The reorder only floats the Idle row WITHIN the Idle group.
@@ -1604,10 +1245,10 @@ mod tests {
         let w2 = DashboardRowId::TopLevel(AgentId(3));
         let i2 = DashboardRowId::TopLevel(AgentId(4));
         let mut rows = vec![
-            make_row_with_id(w1, 0, RowState::Working),
-            make_row_with_id(i1.clone(), 0, RowState::Idle),
-            make_row_with_id(w2, 0, RowState::Working),
-            make_row_with_id(i2.clone(), 0, RowState::Idle),
+            make_row_with_id(w1, RowState::Working),
+            make_row_with_id(i1.clone(), RowState::Idle),
+            make_row_with_id(w2, RowState::Working),
+            make_row_with_id(i2.clone(), RowState::Idle),
         ];
         sort_rows(
             &mut rows,
@@ -1632,55 +1273,177 @@ mod tests {
             .collect();
         assert_eq!(idle_order, vec![i1, i2], "reorder must order within Idle");
     }
-    /// Sort: when both rows are pinned, ordering falls back to the secondary key (state).
     #[test]
-    fn sort_two_pinned_rows_order_by_state() {
-        let mut rows = vec![
-            DashboardRow {
-                pinned: true,
-                state: RowState::Idle,
-                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(1)), 0, RowState::Idle)
-            },
-            DashboardRow {
-                pinned: true,
-                state: RowState::Working,
-                ..make_row_with_id(DashboardRowId::TopLevel(AgentId(2)), 0, RowState::Working)
-            },
+    fn pinned_manual_order_survives_activity_changes() {
+        for grouping in [
+            super::super::state::Grouping::State,
+            super::super::state::Grouping::Directory,
+        ] {
+            let first = DashboardRowId::TopLevel(AgentId(2));
+            let second = DashboardRowId::TopLevel(AgentId(1));
+            let reorder = vec![first.clone(), second.clone()];
+            let mut rows = vec![
+                DashboardRow {
+                    pinned: true,
+                    cwd_display: "/z".to_owned(),
+                    last_change_at: UNIX_EPOCH,
+                    ..make_row_with_id(first, RowState::Idle)
+                },
+                DashboardRow {
+                    pinned: true,
+                    cwd_display: "/a".to_owned(),
+                    last_change_at: UNIX_EPOCH,
+                    ..make_row_with_id(second, RowState::Idle)
+                },
+            ];
+            for state in [
+                RowState::Idle,
+                RowState::Working,
+                RowState::NeedsInput,
+                RowState::Idle,
+            ] {
+                let row = rows.last_mut().expect("second pinned row");
+                row.state = state;
+                row.last_change_at += Duration::from_secs(60);
+                sort_rows(&mut rows, grouping, &reorder);
+                assert_eq!(
+                    reorder,
+                    rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+    #[test]
+    fn unranked_pins_use_session_id_then_row_id() {
+        let cases = [
+            (None, None, [1, 2]),
+            (None, Some("a"), [1, 2]),
+            (Some("a"), None, [2, 1]),
+            (Some("b"), Some("a"), [2, 1]),
         ];
-        sort_rows(&mut rows, super::super::state::Grouping::State, &[]);
-        assert!(rows[0].pinned);
-        assert_eq!(rows[0].state, RowState::Working);
+        for grouping in [
+            super::super::state::Grouping::State,
+            super::super::state::Grouping::Directory,
+        ] {
+            for (first_session, second_session, expected) in cases {
+                let mut rows = [(2, second_session), (1, first_session)]
+                    .into_iter()
+                    .map(|(id, session_id)| DashboardRow {
+                        pinned: true,
+                        session_id: session_id.map(str::to_owned),
+                        last_change_at: UNIX_EPOCH,
+                        ..make_row_with_id(DashboardRowId::TopLevel(AgentId(id)), RowState::Idle)
+                    })
+                    .collect::<Vec<_>>();
+                sort_rows(&mut rows, grouping, &[]);
+                assert_eq!(
+                    expected
+                        .map(|id| DashboardRowId::TopLevel(AgentId(id)))
+                        .as_slice(),
+                    rows.into_iter()
+                        .map(|row| row.id)
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                    "{grouping:?}: {first_session:?}, {second_session:?}",
+                );
+            }
+        }
+    }
+    #[test]
+    fn pinned_session_order_survives_roster_activity_changes() {
+        let mut local = crate::app::agent_view::test_fixtures::make_agent();
+        local.session.session_id = Some(acp::SessionId::new("z-local"));
+        local.display_name = Some("Local".to_owned());
+        let agents = IndexMap::from([(AgentId(1), local)]);
+        let roster_id = DashboardRowId::Roster {
+            session_id: "a-roster".to_owned(),
+        };
+        let local_id = DashboardRowId::TopLevel(AgentId(1));
+        let pinned = std::collections::BTreeSet::from([local_id.clone(), roster_id.clone()]);
+        let mut roster = roster_entry("a-roster", 1_000);
+        for grouping in [
+            super::super::state::Grouping::State,
+            super::super::state::Grouping::Directory,
+        ] {
+            for activity in [RosterActivity::Working, RosterActivity::Dormant] {
+                roster.activity = activity;
+                roster.last_change_unix_ms += 1_000;
+                let rows = build_rows_with_roster(
+                    &agents,
+                    &pinned,
+                    &[],
+                    grouping,
+                    &Filter::None,
+                    None,
+                    std::slice::from_ref(&roster),
+                );
+                assert_eq!(
+                    vec![roster_id.clone(), local_id.clone()],
+                    rows.into_iter().map(|row| row.id).collect::<Vec<_>>(),
+                );
+            }
+        }
+    }
+    #[test]
+    fn pinned_workspace_order_survives_session_loading() {
+        for grouping in [
+            xai_grok_dashboard_store::Grouping::State,
+            xai_grok_dashboard_store::Grouping::Directory,
+        ] {
+            for manual_order in [false, true] {
+                let mut a = workspace_member("a", "A", None);
+                let mut z = workspace_member("z", "Z", None);
+                a.pin_rank = Some(1024);
+                z.pin_rank = Some(1024);
+                a.cwd = Some("/z".to_owned());
+                z.cwd = Some("/a".to_owned());
+                if manual_order {
+                    a.order_rank = Some(2048);
+                    z.order_rank = Some(1024);
+                }
+                let mut snapshot = workspace_snapshot(vec![a, z]);
+                snapshot.grouping = grouping.clone();
+                let expected = if manual_order {
+                    vec!["z", "a"]
+                } else {
+                    vec!["a", "z"]
+                };
+                let mut agents = IndexMap::new();
+                for loaded in [false, true, false] {
+                    if loaded {
+                        let mut agent = crate::app::agent_view::test_fixtures::make_agent();
+                        agent.session.session_id = Some(acp::SessionId::new("z"));
+                        agent.session.cwd = PathBuf::from("/a");
+                        agent.session.enqueue_prompt("work".to_owned());
+                        agents.insert(AgentId(1), agent);
+                    } else {
+                        agents.clear();
+                    }
+                    let rows = workspace_rows(&agents, &snapshot);
+                    assert_eq!(
+                        expected,
+                        rows.iter()
+                            .map(|row| row.session_id.as_deref().expect("saved session"))
+                            .collect::<Vec<_>>(),
+                    );
+                    assert_eq!(
+                        loaded,
+                        rows.iter()
+                            .any(|row| matches!(row.id, DashboardRowId::TopLevel(_)))
+                    );
+                }
+            }
+        }
     }
     /// Filter: agent prefix with empty needle keeps everything (treated as `Filter::None` upstream by `Filter::from_value`).
     #[test]
     fn filter_agent_with_empty_string_does_not_hide_rows() {
         let mut rows = vec![
-            make_row("a", 0, RowState::Working),
-            make_row("b", 0, RowState::Idle),
+            make_row("a", RowState::Working),
+            make_row("b", RowState::Idle),
         ];
         apply_filter(&mut rows, &Filter::Agent(String::new()), None);
         assert_eq!(rows.len(), 2);
-    }
-    /// More-placeholder rows survive filtering.
-    #[test]
-    fn filter_keeps_more_placeholders() {
-        let mut rows = vec![
-            DashboardRow {
-                label: "real row".to_string(),
-                ..make_row("a", 1, RowState::Idle)
-            },
-            DashboardRow {
-                label: "… 3 more".to_string(),
-                is_more_placeholder: true,
-                ..make_row("b", 1, RowState::Idle)
-            },
-        ];
-        apply_filter(
-            &mut rows,
-            &Filter::Substring("nothing matches".into()),
-            None,
-        );
-        assert!(rows.iter().any(|r| r.is_more_placeholder));
     }
     fn roster_entry(session_id: &str, last_change_unix_ms: i64) -> RosterEntry {
         use crate::app::roster::RosterOrigin;
@@ -1689,6 +1452,7 @@ mod tests {
             title: Some(format!("title {session_id}")),
             cwd: "/repo".to_string(),
             is_worktree: false,
+            session_kind: None,
             model_id: None,
             yolo: false,
             activity: RosterActivity::Dormant,
@@ -1715,7 +1479,7 @@ mod tests {
             None,
         );
         assert_eq!(rows.len(), 1);
-        rows[0].last_change_at.elapsed().unwrap_or_default()
+        nth(&rows, 0).last_change_at.elapsed().unwrap_or_default()
     }
     /// A roster entry touched a while ago must NOT render as "just now".
     /// Its `last_change_at` is derived from `last_change_unix_ms`, so the age reflects the real wall-clock age.
@@ -1749,13 +1513,13 @@ mod tests {
         );
         sort_rows(&mut rows, super::super::state::Grouping::State, &[]);
         assert_eq!(
-            rows[0].id,
+            nth(&rows, 0).id,
             DashboardRowId::Roster {
                 session_id: "sess-new".to_string()
             }
         );
         assert_eq!(
-            rows[1].id,
+            nth(&rows, 1).id,
             DashboardRowId::Roster {
                 session_id: "sess-old".to_string()
             }
@@ -1855,7 +1619,7 @@ mod tests {
         };
         let rows = collect_roster(&[entry], &empty);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].secondary_line.as_deref(), Some("grok-4.5"));
+        assert_eq!(nth(&rows, 0).secondary_line.as_deref(), Some("grok-4.5"));
     }
     /// The last-turn summary wins the secondary line over the model id.
     #[test]
@@ -1869,7 +1633,7 @@ mod tests {
         let rows = collect_roster(&[entry], &empty);
         assert_eq!(rows.len(), 1);
         assert_eq!(
-            rows[0].secondary_line.as_deref(),
+            nth(&rows, 0).secondary_line.as_deref(),
             Some("Fixed the roster merge")
         );
     }
@@ -1886,7 +1650,7 @@ mod tests {
             &empty,
         );
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].secondary_line, None);
+        assert_eq!(nth(&rows, 0).secondary_line, None);
     }
     /// Build a minimal idle local agent with an empty scrollback (no replayed messages) and an optional current model.
     /// It mirrors a session listed on the dashboard that the user hasn't opened yet.
@@ -2003,10 +1767,10 @@ mod tests {
         agent.current_branch = None;
         assert_eq!(top_level_subtitle(&agent).as_deref(), Some("bar"));
     }
-    /// The `[bg]` badge reflects RUNNING background tasks only.
+    /// Task counts reflect running background commands only.
     /// `bg_tasks` retains finished (`Done` / `Failed`) tasks for the tasks-pane history, and those must not pin a stale badge on the row forever.
     #[test]
-    fn bg_badge_only_for_running_tasks() {
+    fn task_chip_only_for_running_tasks() {
         use crate::app::agent::{BgTaskState, BgTaskStatus};
         let make_task = |status: BgTaskStatus| BgTaskState {
             task_id: "t1".into(),
@@ -2041,46 +1805,10 @@ mod tests {
                 .insert("t1".into(), make_task(status));
             let row = top_level_row(AgentId(0), &agent, false, None);
             assert_eq!(
-                row.badges.contains(&RowBadge::BgTask),
+                row.badges.contains(&RowBadge::Tasks(1)),
                 expect_badge,
                 "status={status:?} badge expectation",
             );
-        }
-    }
-    /// A running background task (`run_terminal_command background=true`).
-    fn running_bg_task(task_id: &str, is_monitor: bool) -> crate::app::agent::BgTaskState {
-        crate::app::agent::BgTaskState {
-            task_id: task_id.into(),
-            tool_call_id: String::new(),
-            command: "sleep 99".into(),
-            description: None,
-            cwd: String::new(),
-            output_file: String::new(),
-            status: crate::app::agent::BgTaskStatus::Running,
-            start_time: std::time::SystemTime::now(),
-            end_time: None,
-            exit_code: None,
-            signal: None,
-            stdout: String::new(),
-            stdout_line_count: 0,
-            truncated: false,
-            pending_kill: false,
-            kill_requested_at: None,
-            scrollback_entry_id: None,
-            is_monitor,
-            restored_from_replay: false,
-        }
-    }
-    /// An active scheduled `/loop` task.
-    fn scheduled_loop(task_id: &str) -> crate::app::agent::ScheduledTaskInfo {
-        crate::app::agent::ScheduledTaskInfo {
-            task_id: task_id.into(),
-            prompt: "check things".into(),
-            human_schedule: "every 5m".into(),
-            created_at: std::time::Instant::now(),
-            next_fire_at: None,
-            tag: "loop".into(),
-            last_subagent_id: None,
         }
     }
     /// A turn-idle agent with a RUNNING background task is `Working`, not `Idle`.
@@ -2104,9 +1832,9 @@ mod tests {
             );
         }
     }
-    /// A running `monitor` (a bg task with `is_monitor`) keeps the agent `Working`, and the activity line names it.
+    /// A running monitor keeps the agent Working without implying a live parent turn.
     #[test]
-    fn running_monitor_classifies_as_working_with_label() {
+    fn running_monitor_classifies_as_working_with_chip() {
         let mut agent = make_idle_agent_with_model(None);
         agent
             .session
@@ -2114,11 +1842,12 @@ mod tests {
             .insert("m1".into(), running_bg_task("m1", true));
         assert_eq!(classify_top_level(&agent), RowState::Working);
         let row = top_level_row(AgentId(0), &agent, false, None);
-        assert_eq!(row.activity.as_deref(), Some("1 monitor still running"));
+        assert_eq!(vec![RowBadge::Watchers(1)], row.badges);
+        assert_eq!(None, row.activity);
     }
-    /// An active scheduled `/loop` keeps the agent `Working` even with a fully idle turn, labelled as a loop.
+    /// A scheduled loop keeps its watcher chip between fires.
     #[test]
-    fn scheduled_loop_classifies_as_working_with_label() {
+    fn scheduled_loop_classifies_as_working_with_chip() {
         let mut agent = make_idle_agent_with_model(None);
         agent
             .session
@@ -2126,11 +1855,12 @@ mod tests {
             .insert("l1".into(), scheduled_loop("l1"));
         assert_eq!(classify_top_level(&agent), RowState::Working);
         let row = top_level_row(AgentId(0), &agent, false, None);
-        assert_eq!(row.activity.as_deref(), Some("1 loop still running"));
+        assert_eq!(vec![RowBadge::Watchers(1)], row.badges);
+        assert_eq!(None, row.activity);
     }
-    /// The background-work label lists every non-zero kind (monitors, then loops, then plain tasks) with correct singular/plural nouns.
+    /// Monitors and loops share a watcher count; commands remain separate.
     #[test]
-    fn background_work_label_lists_all_kinds() {
+    fn live_work_badges_group_watchers_apart_from_tasks() {
         let mut agent = make_idle_agent_with_model(None);
         agent
             .session
@@ -2150,15 +1880,11 @@ mod tests {
             .insert("l1".into(), scheduled_loop("l1"));
         assert_eq!(classify_top_level(&agent), RowState::Working);
         let row = top_level_row(AgentId(0), &agent, false, None);
-        assert_eq!(
-            row.activity.as_deref(),
-            Some("1 monitor · 1 loop · 2 tasks still running"),
-        );
+        assert_eq!(vec![RowBadge::Tasks(2), RowBadge::Watchers(2)], row.badges);
     }
-    /// The background-work label is the LAST activity fallback.
-    /// A more specific Working signal (here, replay loading) still wins over "… still running", so a real turn is never masked by it.
+    /// Replay loading remains live activity while background work is present.
     #[test]
-    fn specific_working_activity_wins_over_background_label() {
+    fn loading_activity_remains_live_with_background_work() {
         let mut agent = make_idle_agent_with_model(None);
         agent.session.loading_replay = true;
         agent
@@ -2170,7 +1896,7 @@ mod tests {
         assert_eq!(
             row.activity.as_deref(),
             Some("Loading…"),
-            "loading-replay activity must win over the background label",
+            "replay loading must keep its activity",
         );
     }
     /// Roster-only idle / dormant sessions classify as `Inactive`, the dedicated section for sessions
@@ -2189,7 +1915,7 @@ mod tests {
         ] {
             let rows = collect_roster(&[roster_entry_with("m", Some("Task"), activity)], &empty);
             assert_eq!(rows.len(), 1, "activity={activity:?}");
-            assert_eq!(rows[0].state, expected, "activity={activity:?}");
+            assert_eq!(nth(&rows, 0).state, expected, "activity={activity:?}");
         }
     }
     /// In state grouping, `Inactive` sorts below `Idle`: not loaded here, so less immediately actionable.
@@ -2197,10 +1923,10 @@ mod tests {
     #[test]
     fn sort_rows_places_inactive_between_idle_and_done() {
         let mut rows = vec![
-            make_row("done", 0, RowState::Completed),
-            make_row("inactive", 0, RowState::Inactive),
-            make_row("idle", 0, RowState::Idle),
-            make_row("failed", 0, RowState::Failed),
+            make_row("done", RowState::Completed),
+            make_row("inactive", RowState::Inactive),
+            make_row("idle", RowState::Idle),
+            make_row("failed", RowState::Failed),
         ];
         sort_rows(&mut rows, super::super::state::Grouping::State, &[]);
         let order: Vec<RowState> = rows.iter().map(|r| r.state).collect();
@@ -2253,8 +1979,8 @@ mod tests {
         stored.order_rank = Some(9);
         let snapshot = workspace_snapshot(vec![stored]);
         let rows = workspace_rows(&IndexMap::new(), &snapshot);
-        assert!(rows[0].pinned);
-        assert!(rows[0].badges.contains(&RowBadge::Pinned));
+        assert!(nth(&rows, 0).pinned);
+        assert!(nth(&rows, 0).badges.contains(&RowBadge::Pinned));
         let agent_id = AgentId(9);
         let mut agent = crate::app::agent_view::test_fixtures::make_agent();
         agent.session.session_id = Some(acp::SessionId::new("saved"));
@@ -2262,6 +1988,6 @@ mod tests {
         let agents = IndexMap::from([(agent_id, agent)]);
         let rows = workspace_rows(&agents, &snapshot);
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].pinned);
+        assert!(nth(&rows, 0).pinned);
     }
 }

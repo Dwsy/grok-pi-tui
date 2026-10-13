@@ -49,6 +49,8 @@
 //! That codegen step is **not** implemented yet; it will land alongside the `xai-grok-workspace-grpc` crate.
 //! The Rust types defined here are the source of truth.
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod binding;
 pub mod chunks;
 pub mod error;
@@ -59,6 +61,98 @@ pub mod request;
 pub mod requests;
 pub mod rpc;
 pub mod types;
+
+/// StartSession env whose value is the dest-less `grok-files` remount
+/// command (knobs included). The bind hook applies dest from `session_root`
+/// (conversation / parent id) per bind. Absent / empty keeps the no-op hook.
+pub const ARTIFACTS_BIND_REMOUNT_ENV: &str = "GROK_ARTIFACTS_BIND_REMOUNT";
+
+/// `grok-files mount` flag naming the token file the worker re-reads per
+/// request.
+pub const GROK_FILES_JWT_FILE_FLAG: &str = "--jwt-file";
+
+/// Path of the Files token scoped to one conversation. The
+/// `/workspace/<conversation_id>` remount reads it, so each mount
+/// authenticates as its own conversation. Every caller derives it from the
+/// same id (the remount dest's last path segment).
+pub fn grok_files_conversation_jwt_path(conversation_id: &str) -> String {
+    format!("/etc/secrets/terminal.{conversation_id}.jwt")
+}
+
+/// Append the conversation token file to a remount command. Kept as one
+/// function so `mount_at` and the bind hook emit the same argv.
+pub fn with_grok_files_jwt_file(mount_command: &str, jwt_file: &str) -> String {
+    format!("{mount_command} {GROK_FILES_JWT_FILE_FLAG} {jwt_file}")
+}
+
+/// Flags whose next token is a value, not a dest path. `command_at` and
+/// the bind hook must share this list so remount dest cannot
+/// drift (boolean long flags must not be treated as value-taking).
+pub fn grok_files_opt_takes_value(flag: &str) -> bool {
+    flag == GROK_FILES_JWT_FILE_FLAG
+        || matches!(
+            flag,
+            "--content-cache"
+                | "--content-cache-max"
+                | "--ttl"
+                | "--deny-delete"
+                | "--occ"
+                | "--occ-conflict-policy"
+                | "--revalidate"
+                | "--revalidate-interval"
+                | "--entry-ttl"
+                | "--revalidate-exclude-prefix"
+                | "--n-threads"
+        )
+}
+
+/// Replace the dest positional (or insert after `/`) so a remount command
+/// targets `dest` instead of any dest baked into `mount_command`.
+pub fn rewrite_grok_files_mount_dest(mount_command: &str, dest: &str) -> String {
+    let tokens: Vec<&str> = mount_command.split_whitespace().collect();
+    if tokens.is_empty() {
+        return format!("grok-files mount / {dest}");
+    }
+
+    let mut skip_next = false;
+    let mut dest_idx = None;
+    let mut source_idx = None;
+    for (i, tok) in tokens.iter().enumerate() {
+        // argv[0] is the binary; an absolute path there is not the mount dest.
+        if i == 0 {
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if let Some(rest) = tok.strip_prefix("--") {
+            if !rest.contains('=') && grok_files_opt_takes_value(tok) {
+                skip_next = true;
+            }
+            continue;
+        }
+        if tok.starts_with('-') && *tok != "-" {
+            continue;
+        }
+        if *tok == "/" {
+            source_idx = Some(i);
+        } else if tok.starts_with('/') {
+            dest_idx = Some(i);
+        }
+    }
+
+    let mut out = tokens;
+    if let Some(slot) = dest_idx.and_then(|i| out.get_mut(i)) {
+        *slot = dest;
+        return out.join(" ");
+    }
+    if let Some(i) = source_idx {
+        out.insert(i + 1, dest);
+        return out.join(" ");
+    }
+    format!("{mount_command} {dest}")
+}
 
 /// MCP tool name delimiter: server names are qualified as `"server__tool"`.
 /// Lives here so the permission-validation and MCP transport layers can share it without dragging the full workspace or rmcp into each other.
@@ -86,3 +180,57 @@ pub use crate::types::{
     RipgrepArgs, RipgrepStats, SkillInfo, ToolCallResult, ToolDef, ToolOutputChunk, ToolProgress,
     ToolServerConfig, UserAnswer, UserQuestion, UserQuestionOption, VcsKind,
 };
+
+#[cfg(test)]
+mod grok_files_mount_dest_tests {
+    use super::{
+        grok_files_conversation_jwt_path, rewrite_grok_files_mount_dest, with_grok_files_jwt_file,
+    };
+
+    #[test]
+    fn rewrites_existing_dest() {
+        assert_eq!(
+            rewrite_grok_files_mount_dest("grok-files mount / /data", "/workspace/conv-a"),
+            "grok-files mount / /workspace/conv-a"
+        );
+    }
+
+    #[test]
+    fn boolean_long_flags_are_not_value_taking() {
+        assert_eq!(
+            rewrite_grok_files_mount_dest(
+                "custom-mnt mount --foreground / /data",
+                "/workspace/conv-abc"
+            ),
+            "custom-mnt mount --foreground / /workspace/conv-abc"
+        );
+    }
+
+    #[test]
+    fn inserts_dest_after_source_when_missing() {
+        assert_eq!(
+            rewrite_grok_files_mount_dest("grok-files mount / --n-threads 4", "/workspace/conv-a"),
+            "grok-files mount / /workspace/conv-a --n-threads 4"
+        );
+    }
+
+    #[test]
+    fn absolute_binary_is_not_treated_as_dest() {
+        assert_eq!(
+            rewrite_grok_files_mount_dest("/usr/bin/grok-files mount /", "/workspace/conv-a"),
+            "/usr/bin/grok-files mount / /workspace/conv-a"
+        );
+    }
+
+    #[test]
+    fn jwt_file_value_is_not_treated_as_dest() {
+        let installed = with_grok_files_jwt_file(
+            "grok-files mount / /data",
+            &grok_files_conversation_jwt_path("conv-a"),
+        );
+        assert_eq!(
+            "grok-files mount / /workspace/conv-b --jwt-file /etc/secrets/terminal.conv-a.jwt",
+            rewrite_grok_files_mount_dest(&installed, "/workspace/conv-b")
+        );
+    }
+}

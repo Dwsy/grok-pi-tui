@@ -141,6 +141,10 @@ impl crate::types::tool_metadata::ToolMetadata for CodexGrepFilesTool {
         ToolNamespace::Codex
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("path")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }
@@ -329,7 +333,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
-        assert!(results[0].contains("match.rs"));
+        assert!(results.first().is_some_and(|r| r.contains("match.rs")));
     }
 
     #[tokio::test]
@@ -345,7 +349,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
-        assert!(results[0].contains("alpha.rs"));
+        assert!(results.first().is_some_and(|r| r.contains("alpha.rs")));
     }
 
     #[tokio::test]

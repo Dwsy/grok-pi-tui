@@ -307,7 +307,9 @@ async fn paced_wait_notifies_the_client_with_a_retrying_state() {
                 .collect();
 
             assert_eq!(retrying.len(), 1, "one paced wait must notify exactly once");
-            let (attempt, max_retries, reason) = &retrying[0];
+            let Some((attempt, max_retries, reason)) = retrying.first() else {
+                panic!("expected one retrying notification: {retrying:?}");
+            };
             assert_eq!(*attempt, 1);
             assert_eq!(*max_retries, 8, "default subagent attempt budget");
             assert!(
@@ -376,7 +378,9 @@ async fn exhausted_subagent_budget_notifies_exhausted_with_the_attempts_taken() 
                 .collect();
 
             assert_eq!(exhausted.len(), 1, "one terminal exhaustion notification");
-            let (attempts, is_rate_limited) = exhausted[0];
+            let Some(&(attempts, is_rate_limited)) = exhausted.first() else {
+                panic!("expected one exhausted notification: {exhausted:?}");
+            };
             assert_eq!(
                 attempts,
                 RateLimitWaitConfig::DEFAULT_MAX_ATTEMPTS,

@@ -201,7 +201,7 @@ pub(crate) fn header_level(line: &str) -> Option<usize> {
     }
     let level = trimmed.chars().take_while(|&c| c == '#').count();
     // The hashes must be followed by a space or end of line to count as a header
-    let rest = &trimmed[level..];
+    let rest = trimmed.get(level..)?;
     if rest.is_empty() || rest.starts_with(' ') {
         Some(level)
     } else {
@@ -211,11 +211,11 @@ pub(crate) fn header_level(line: &str) -> Option<usize> {
 
 /// Format header stack into a context string like `"## Section > ### Subsection"`.
 fn format_header_context(stack: &[(usize, String)]) -> String {
-    if stack.len() <= 1 {
-        return String::new();
-    }
     // The last entry is the current section's own header, not an ancestor
-    stack[..stack.len() - 1]
+    let Some((_, ancestors)) = stack.split_last() else {
+        return String::new();
+    };
+    ancestors
         .iter()
         .map(|(_, text)| text.trim().to_string())
         .collect::<Vec<_>>()
@@ -263,9 +263,9 @@ mod tests {
         let content = "# Title\n\nSome text here.";
         let chunks = chunk_markdown(content, &default_config());
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].text, content);
-        assert_eq!(chunks[0].start_line, 0);
-        assert_eq!(chunks[0].end_line, 3);
+        assert_eq!(chunks.first().expect("chunk 0").text, content);
+        assert_eq!(chunks.first().expect("chunk 0").start_line, 0);
+        assert_eq!(chunks.first().expect("chunk 0").end_line, 3);
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
             "should split into at least 2 chunks, got {}",
             chunks.len()
         );
-        assert!(chunks[0].text.contains("Section 1"));
+        assert!(chunks.first().expect("chunk 0").text.contains("Section 1"));
         assert!(chunks.last().unwrap().text.contains("Section 2"));
     }
 
@@ -336,8 +336,8 @@ mod tests {
         let content = "line 0\nline 1\nline 2\nline 3\nline 4";
         let chunks = chunk_markdown(content, &default_config());
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].start_line, 0);
-        assert_eq!(chunks[0].end_line, 5);
+        assert_eq!(chunks.first().expect("chunk 0").start_line, 0);
+        assert_eq!(chunks.first().expect("chunk 0").end_line, 5);
     }
 
     #[test]
@@ -346,7 +346,7 @@ mod tests {
             "## Code\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\nSome text.";
         let chunks = chunk_markdown(content, &default_config());
         assert_eq!(chunks.len(), 1);
-        assert!(chunks[0].text.contains("```rust"));
-        assert!(chunks[0].text.contains("fn main()"));
+        assert!(chunks.first().expect("chunk 0").text.contains("```rust"));
+        assert!(chunks.first().expect("chunk 0").text.contains("fn main()"));
     }
 }

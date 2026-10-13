@@ -12,6 +12,7 @@ use xai_grok_pager::app::PagerTerminal;
 use xai_grok_pager::app::app_view::{ActiveView, AppView};
 use xai_grok_pager::appearance::AppearanceConfig;
 use xai_grok_pager::minimal_api;
+use xai_grok_pager::minimal_reprint;
 use xai_grok_pager::render::Renderable;
 use xai_grok_pager::scrollback::block::RenderBlock;
 use xai_grok_pager::scrollback::blocks::ToolCallBlock;
@@ -218,7 +219,7 @@ pub(crate) fn minimal_renderer<'a>(
 /// Diffs always commit in full, so an uncapped multi-thousand-line `Edit` would allocate one huge `Buffer` and
 /// writer-thread send burst. When the block is taller than `max_rows`, only the top `max_rows - 1` content rows are
 /// committed.
-fn insert_committed(
+pub(crate) fn insert_committed(
     terminal: &mut PagerTerminal,
     renderer: EntryRenderer<'_>,
     width: u16,
@@ -234,11 +235,20 @@ fn insert_committed(
     } else {
         full_h
     };
+    // Off-screen paint then wrap-aware emit: a dense `insert_before` grid turns pads and soft wraps into hard breaks.
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width,
+        height: commit_h,
+    };
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    paint_committed(&mut buf, &renderer, width, full_h, footer_style);
+    let wraps = commit_wrap_flags(&renderer, buf.area.height, full_h);
+    let rows = super::full_view::buffer_to_semantic_rows(&buf, &wraps);
     // Propagated (not swallowed): the caller must NOT mark the entry committed when the terminal write failed
     // Print-once means a marked-but-unprinted block can never be emitted again
-    terminal.insert_before(commit_h, move |buf| {
-        paint_committed(buf, renderer, width, full_h, footer_style);
-    })?;
+    terminal.insert_before_rows(&rows)?;
     insert_gap(terminal);
     Ok(())
 }
@@ -257,7 +267,7 @@ pub(super) fn insert_gap(terminal: &mut PagerTerminal) {
 /// Extracted from [`insert_committed`] so the cap is unit-testable without a live terminal.
 fn paint_committed(
     buf: &mut ratatui::buffer::Buffer,
-    renderer: EntryRenderer<'_>,
+    renderer: &EntryRenderer<'_>,
     width: u16,
     full_h: u16,
     footer_style: Style,
@@ -287,6 +297,22 @@ fn paint_committed(
         let text = format!("\u{2026} {hidden} more lines \u{00b7} /transcript to view");
         buf.set_span(buf.area.x, y, &Span::styled(text, style), width);
     }
+    super::full_view::trim_trailing_pads(buf);
+}
+
+/// Renderer joiners for the painted commit. A cap footer is not a wrap continuation.
+fn commit_wrap_flags(renderer: &EntryRenderer<'_>, height: u16, full_h: u16) -> Vec<bool> {
+    let mut wraps = renderer.row_soft_wraps(height);
+    if height > 0 && height < full_h {
+        let last = usize::from(height) - 1;
+        if let Some(flag) = wraps.get_mut(last) {
+            *flag = false;
+        }
+        if let Some(flag) = last.checked_sub(1).and_then(|i| wraps.get_mut(i)) {
+            *flag = false;
+        }
+    }
+    wraps
 }
 
 /// Commit the active agent's newly-finalized blocks into native scrollback. Minimal has no separate history pane,
@@ -301,10 +327,10 @@ pub fn commit_active(app: &mut AppView, terminal: &mut PagerTerminal) {
     let Some(agent) = app.agents.get_mut(&id) else {
         return;
     };
-    // Hold commits while a centered fullscreen app-modal (settings) is open
+    // Hold commits while a band-owning modal (settings, palette, feedback form) is open
     // It takes the whole live region, so an `insert_before` underneath it would scroll the popup
     // Deferred commits flush on the next frame after it closes
-    if super::overlay::app_modal_active(agent) {
+    if super::overlay::is_live_region_modal_active(agent) {
         return;
     }
     // The sizing pass and this commit pass must judge committability against the same marks. Syncing here would let a
@@ -326,7 +352,7 @@ pub fn commit_active(app: &mut AppView, terminal: &mut PagerTerminal) {
 
     // Drive the ONE frontier walk (`commit_leading_run`, also what the unit tests exercise) with the production per-entry work
     // The per-entry work finalizes, stamps the print-once display mode, prints, then remembers folded blocks for Ctrl+E
-    commit_leading_run(sb, turn_running, |sb, i| {
+    let committed = commit_leading_run(sb, turn_running, |sb, i| {
         // If the turn is idle but this entry still carries a stale `is_running` flag, finalize it first
         // It then renders in its finished form (e.g. "Thought for Xs", not an animated "Thinking…").
         if let Some(id) = sb.get(i).filter(|e| e.is_running).map(|e| e.id) {
@@ -364,6 +390,9 @@ pub fn commit_active(app: &mut AppView, terminal: &mut PagerTerminal) {
         e.set_display_mode(mode);
         j += 1;
     }
+    if committed > 0 {
+        minimal_reprint::record_minimal_rows_printed(app, width);
+    }
 }
 
 /// Committed terminal text cannot be mutated in place, so "expanding" a folded block is an honest re-print of the
@@ -384,17 +413,18 @@ pub fn expand_pending(app: &mut AppView, terminal: &mut PagerTerminal) {
     let appearance = committed_appearance(&app.appearance);
     // Guards: a missing active agent must leave the IDs queued, so confirm it exists before consuming the queue below.
     // The queue take needs `&mut app`, which can't overlap the agent borrow, hence the check-then-reborrow. An
-    // `insert_before` would scroll the popup and the user wouldn't see the re-print.
+    // `insert_before` would scroll the popup or the feedback form and the user wouldn't see the re-print.
     match app.agents.get(&id) {
-        Some(agent) if !super::overlay::app_modal_active(agent) => {}
+        Some(agent) if !super::overlay::is_live_region_modal_active(agent) => {}
         _ => return,
     }
     let theme = Theme::current();
     let footer_style = theme.dim();
     // Consume the expand queue only after every guard above has passed
-    // A non-agent active view, a 0-width (probe) frame, or an open app-modal must leave the IDs queued for a later frame
+    // A non-agent active view, a 0-width (probe) frame, or an open band-owning modal must leave the IDs queued for a later frame
     let ids = minimal_api::take_minimal_pending_expand(app);
     let mut requeue: Vec<EntryId> = Vec::new();
+    let mut is_printed = false;
     {
         let Some(agent) = app.agents.get_mut(&id) else {
             // Can't happen (existence checked just above, nothing in between can remove the agent)
@@ -420,11 +450,15 @@ pub fn expand_pending(app: &mut AppView, terminal: &mut PagerTerminal) {
                     requeue.extend(iter);
                     break;
                 }
+                is_printed = true;
             }
         }
     }
     if !requeue.is_empty() {
         minimal_api::requeue_minimal_pending_expand(app, requeue);
+    }
+    if is_printed {
+        minimal_reprint::record_minimal_rows_printed(app, width);
     }
 }
 

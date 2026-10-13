@@ -130,7 +130,11 @@ fn applicable_fix_listing_uses_report_metadata_and_planner_availability() {
     );
 
     let mut manual_only = report;
-    manual_only.findings[0].automatic_remediation = None;
+    if let Some(finding) = manual_only.findings.get_mut(0) {
+        finding.automatic_remediation = None;
+    } else {
+        panic!("expected finding: {:?}", manual_only.findings);
+    }
     assert!(
         applicable_automatic_fixes_with(&manual_only, &local, |_| {
             Err(FixError::HomeUnavailable)
@@ -453,7 +457,9 @@ fn tmux_managed_items_coexist_and_each_apply_is_one_transaction() {
 fn tmux_scanner_handles_server_scopes_separators_prefixes_and_native_blocks() {
     let path = Path::new("/tmp/tmux.conf");
     for spec in [&TMUX_CLIPBOARD_SPEC, &TMUX_EXTENDED_KEYS_SPEC] {
-        let healthy = spec.healthy_values[0];
+        let Some(&healthy) = spec.healthy_values.first() else {
+            panic!("expected healthy value: {:?}", spec.healthy_values);
+        };
         for assignment in [
             format!("set {} {healthy}\n", spec.option),
             format!("set -s {} {healthy}\n", spec.option),

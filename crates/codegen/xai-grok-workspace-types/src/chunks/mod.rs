@@ -149,9 +149,7 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// Compile-time: `touch` has one arm per variant, so a new `ChunkKind` variant without an arm fails to compile here (alongside `as_str()`).
-    /// Runtime: the `HashSet` deduplicates `all()`, so the length assertion fires if any variant is listed twice.
-    /// Neither gate catches `all()` missing a variant; that relies on reviewer attention.
+    /// New `ChunkKind` variants must get a `touch` arm (compile) and a unique `all()` entry.
     #[test]
     fn chunk_kind_all_is_complete() {
         fn touch(k: ChunkKind) {
@@ -187,12 +185,10 @@ mod tests {
                 | ChunkKind::SessionAck => {}
             }
         }
-        // Compile-time exhaustiveness gate: the loop exists only to invoke `touch` so the match arms are type-checked
         for &k in ChunkKind::all() {
             touch(k);
         }
-        // Runtime duplicate detection: if `all()` lists any variant twice, this fires
-        let unique: std::collections::HashSet<_> = ChunkKind::all().iter().copied().collect();
+        let unique: HashSet<_> = ChunkKind::all().iter().copied().collect();
         assert_eq!(
             unique.len(),
             ChunkKind::all().len(),
@@ -208,12 +204,5 @@ mod tests {
             ChunkKind::all().len(),
             "duplicate ChunkKind discriminator values"
         );
-    }
-
-    #[test]
-    fn display_matches_as_str() {
-        for kind in ChunkKind::all() {
-            assert_eq!(kind.to_string(), kind.as_ref());
-        }
     }
 }

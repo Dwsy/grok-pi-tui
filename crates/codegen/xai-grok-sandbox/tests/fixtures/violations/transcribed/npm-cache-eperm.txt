@@ -1,0 +1,5 @@
+npm error code EPERM
+npm error syscall mkdir
+npm error path /opt/ws-fixture/dev/.npm/_cacache
+npm error errno -1
+npm error Error: EPERM: operation not permitted, mkdir '/opt/ws-fixture/dev/.npm/_cacache'

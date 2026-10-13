@@ -66,6 +66,8 @@ pub struct LoadedPlugin {
     pub has_inline_lsp_only: bool,
     /// Inline hooks JSON from manifest (when hooks are defined inline, not file-based).
     pub inline_hooks: Option<serde_json::Value>,
+    /// Parsed hook specs from the hooks file and inline hooks. Empty unless the plugin is enabled and trusted.
+    pub hook_specs: Vec<xai_grok_hooks::config::HookSpec>,
     /// Inline MCP servers JSON from manifest (when defined inline, not file-based).
     pub inline_mcp_servers: Option<serde_json::Value>,
     /// Inline LSP servers JSON from manifest (when defined inline, not file-based).
@@ -172,7 +174,7 @@ impl PluginRegistry {
                 .any(|e| e == &dp.id.0 || e == &dp.manifest.name);
             let enabled = !is_disabled(&dp, disabled) && explicitly_enabled;
 
-            let loaded = LoadedPlugin {
+            let mut loaded = LoadedPlugin {
                 name: name.clone(),
                 id: dp.id,
                 root: dp.root,
@@ -201,10 +203,14 @@ impl PluginRegistry {
                 lsp_server_count,
                 has_inline_lsp_only,
                 inline_hooks,
+                hook_specs: Vec::new(),
                 inline_mcp_servers,
                 inline_lsp_servers,
                 conflict: dp.conflict,
             };
+            if loaded.enabled && loaded.trusted {
+                loaded.hook_specs = super::hooks_adapter::load_plugin_hook_specs(&loaded);
+            }
 
             // Track MCP server ownership for enabled and trusted plugins
             if loaded.enabled && loaded.trusted {
@@ -345,6 +351,12 @@ impl SharedPluginRegistryHandle {
                     .with_session_plugin_dirs(session_plugin_dirs.to_vec()),
             ))
         }
+    }
+
+    /// Replace the shared "latest" registry with one built elsewhere (e.g. on a blocking thread via
+    /// [`Self::refresh_and_build_for_cwd`]), so the decision to publish can stay with the caller.
+    pub fn publish(&self, registry: Option<std::sync::Arc<PluginRegistry>>) {
+        *self.inner.write().unwrap() = registry;
     }
 
     /// Re-copy trusted / user-home local installs, then [`Self::build_for_cwd`].
@@ -568,12 +580,16 @@ fn is_disabled(dp: &DiscoveredPlugin, disabled: &[String]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::discovery::PluginId;
     use super::super::manifest::PluginManifest;
     use super::*;
 
-    fn make_discovered(name: &str, scope: PluginScope, trusted: bool) -> DiscoveredPlugin {
+    pub(crate) fn make_discovered(
+        name: &str,
+        scope: PluginScope,
+        trusted: bool,
+    ) -> DiscoveredPlugin {
         let root = PathBuf::from(format!("/tmp/test-plugins/{name}"));
         DiscoveredPlugin {
             manifest: PluginManifest {
@@ -737,7 +753,10 @@ mod tests {
         assert_eq!(reg.len(), 2);
         let active = reg.active_plugins();
         assert_eq!(active.len(), 1);
-        assert_eq!(active[0].name, "enabled-plugin");
+        assert_eq!(
+            active.first().map(|p| p.name.as_str()),
+            Some("enabled-plugin")
+        );
 
         let disabled = reg.get("disabled-plugin").unwrap();
         assert!(!disabled.enabled);
@@ -816,9 +835,12 @@ mod tests {
 
         let reg = PluginRegistry::from_discovered(plugins, &[], &[]);
         let list = reg.list();
-        assert_eq!(list[0].name, "alpha"); // CliOverride = 0
-        assert_eq!(list[1].name, "beta"); // Project = 1
-        assert_eq!(list[2].name, "zebra"); // User = 2
+        let [alpha, beta, zebra, ..] = list.as_slice() else {
+            panic!("expected three plugins: {list:?}");
+        };
+        assert_eq!(alpha.name, "alpha"); // CliOverride = 0
+        assert_eq!(beta.name, "beta"); // Project = 1
+        assert_eq!(zebra.name, "zebra"); // User = 2
     }
 
     #[test]
@@ -892,11 +914,14 @@ mod tests {
 
         let active = reg.active_plugins();
         assert_eq!(active.len(), 1);
-        assert_eq!(active[0].name, "good-plugin");
+        assert_eq!(active.first().map(|p| p.name.as_str()), Some("good-plugin"));
 
         let enabled = reg.enabled_plugins();
         assert_eq!(enabled.len(), 1);
-        assert_eq!(enabled[0].name, "good-plugin");
+        assert_eq!(
+            enabled.first().map(|p| p.name.as_str()),
+            Some("good-plugin")
+        );
 
         let bad = reg.get("bad-plugin").unwrap();
         assert!(!bad.enabled);
@@ -914,7 +939,7 @@ mod tests {
 
         let enabled = reg.enabled_plugins();
         assert_eq!(enabled.len(), 1);
-        assert_eq!(enabled[0].name, "listed");
+        assert_eq!(enabled.first().map(|p| p.name.as_str()), Some("listed"));
 
         assert!(!reg.get("unlisted").unwrap().enabled);
     }
@@ -934,7 +959,10 @@ mod tests {
 
         let enabled = reg.enabled_plugins();
         assert_eq!(enabled.len(), 1);
-        assert_eq!(enabled[0].name, "enabled-trusted");
+        assert_eq!(
+            enabled.first().map(|p| p.name.as_str()),
+            Some("enabled-trusted")
+        );
     }
 
     #[test]
@@ -982,7 +1010,7 @@ mod tests {
 
         let active = reg.active_plugins();
         assert_eq!(active.len(), 1);
-        assert_eq!(active[0].name, "beta");
+        assert_eq!(active.first().map(|p| p.name.as_str()), Some("beta"));
     }
 
     #[test]

@@ -1,0 +1,93 @@
+{
+  "tool_call_id": "tc-0192c1a0",
+  "tool_name": "run_terminal_command",
+  "description": "Grok's command was blocked by the sandbox",
+  "scope": "write",
+  "tool_approval_policy": "grants_allowed",
+  "schema_version": 1,
+  "kind": "sandbox_violation",
+  "bash_command": "cargo build",
+  "blocked": {
+    "kind": "fs_write",
+    "path": "/opt/ws-fixture/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.0/build.rs"
+  },
+  "disposition": {
+    "kind": "grantable"
+  },
+  "proposed_grant": {
+    "subject": {
+      "kind": "build_caches"
+    }
+  },
+  "proposal_confirm": true,
+  "offered_scopes": [
+    "call",
+    "session",
+    "workspace"
+  ],
+  "offered_expiries": [
+    {
+      "kind": "ttl",
+      "seconds": 3600
+    },
+    {
+      "kind": "ttl",
+      "seconds": 86400
+    },
+    {
+      "kind": "ttl",
+      "seconds": 604800
+    }
+  ],
+  "replay": "rerun",
+  "exit_code": 101,
+  "stderr_snippet": "error: failed to unpack package `serde v1.0.0`\n\nCaused by:\n  failed to create directory `/opt/ws-fixture/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.0`\n\nCaused by:\n  Operation not permitted (os error 1)",
+  "deadline_unix": 1800000600,
+  "backend": "seatbelt",
+  "reduced_sandbox": false,
+  "sandbox_mode": "enforce",
+  "sandbox_violation": {
+    "schema_version": 1,
+    "kind": "sandbox_violation",
+    "bash_command": "cargo build",
+    "blocked": {
+      "kind": "fs_write",
+      "path": "/opt/ws-fixture/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.0/build.rs"
+    },
+    "disposition": {
+      "kind": "grantable"
+    },
+    "proposed_grant": {
+      "subject": {
+        "kind": "build_caches"
+      }
+    },
+    "proposal_confirm": true,
+    "offered_scopes": [
+      "call",
+      "session",
+      "workspace"
+    ],
+    "offered_expiries": [
+      {
+        "kind": "ttl",
+        "seconds": 3600
+      },
+      {
+        "kind": "ttl",
+        "seconds": 86400
+      },
+      {
+        "kind": "ttl",
+        "seconds": 604800
+      }
+    ],
+    "replay": "rerun",
+    "exit_code": 101,
+    "stderr_snippet": "error: failed to unpack package `serde v1.0.0`\n\nCaused by:\n  failed to create directory `/opt/ws-fixture/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.0`\n\nCaused by:\n  Operation not permitted (os error 1)",
+    "deadline_unix": 1800000600,
+    "backend": "seatbelt",
+    "reduced_sandbox": false,
+    "sandbox_mode": "enforce"
+  }
+}

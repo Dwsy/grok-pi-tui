@@ -133,7 +133,6 @@ use crate::views::plan_approval_view::{PlanApprovalViewState, PlanComment};
 use crate::views::prompt_widget::{PromptWidget, StashedPrompt};
 use crate::views::question_view::QuestionViewState;
 use crate::views::queue_pane::QueuePane;
-use crate::views::subagent_catalog_pane::SubagentCatalogPane;
 use crate::views::tasks_pane::TasksPane;
 use crate::views::todo_pane::TodoPane;
 use ratatui::buffer::Buffer;
@@ -143,8 +142,10 @@ use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
+mod child_action_filter;
 mod cta;
 mod elicitation;
+pub(crate) use elicitation::UnansweredElicitation;
 mod input;
 pub(crate) use input::ExternalPromptEditorAccess;
 mod fork_picker;
@@ -152,13 +153,22 @@ mod interactions;
 mod jump;
 mod key_owner;
 pub(crate) use key_owner::{BlockingCard, EscStep, KeyOwner};
+mod kept_plan;
 mod links;
 mod media;
 mod modals;
 mod notices;
+pub(crate) use notices::ImagesDroppedBy;
 mod panes;
 mod paste;
+pub(crate) use kept_plan::KeptPlan;
 mod plan;
+#[cfg(test)]
+pub(crate) use plan::MAX_KEPT_PLAN_FILE_BYTES;
+pub(crate) use plan::{
+    BUILD_IN_FLIGHT_ABANDON_NOTICE, BUILD_IN_FLIGHT_REVISE_NOTICE, LEAVE_PLAN_REVISE_NOTICE,
+    PostTurnPlanCommit, capped_kept_plan_body,
+};
 mod prompt;
 mod prompt_stash;
 pub(in crate::app) use prompt_stash::prompt_history_text;
@@ -166,13 +176,21 @@ pub use prompt_stash::{PromptStashEntry, StashCause};
 mod queue;
 mod render;
 mod review;
-pub use render::AppRenderParams;
+pub use render::{AppRenderParams, OverlayHeader};
 #[cfg(test)]
 mod dock_input_tests;
+#[cfg(test)]
+mod header_tests;
+#[cfg(test)]
+mod model_notice_tests;
 mod rewind;
+mod role;
+pub(crate) use role::{AgentRole, ChildLink, ComposerRoute, ViewSurface};
 mod selection;
 mod session;
+mod session_mode;
 mod shell_completion;
+mod subagent_takeover;
 #[cfg(test)]
 mod task_icon_mouse_tests;
 #[cfg(test)]
@@ -195,49 +213,11 @@ pub(super) fn active_contexts_for_pane(pane: ActivePane) -> Vec<crate::actions::
 ///
 /// This will grow as we add more panes (tasks, review files, etc.).
 pub type AgentPane = ActivePane;
-/// MCP server initialization progress, received from the shell.
+/// MCP server initialization progress, received from the shell (`x.ai/mcp/init_progress`).
 #[derive(Debug, Clone)]
 pub struct McpInitProgress {
     pub total: u32,
     pub connected: u32,
-    pub started_at: Instant,
-}
-impl McpInitProgress {
-    /// Max age for a `total == 0` seed before it auto-expires.
-    pub const SEED_EXPIRE: std::time::Duration = std::time::Duration::from_secs(30);
-    /// Whether the progress indicator should be visible in the UI.
-    /// `total > 0` (real servers): always visible until
-    /// `total == 0` (seed / 0-server): visible for at most
-    pub fn is_visible(&self) -> bool {
-        self.total > 0 || self.started_at.elapsed() < Self::SEED_EXPIRE
-    }
-}
-#[cfg(test)]
-mod mcp_init_progress_tests {
-    use super::McpInitProgress;
-    #[test]
-    fn is_visible_requires_servers_or_fresh_seed() {
-        let real = McpInitProgress {
-            total: 3,
-            connected: 1,
-            started_at: std::time::Instant::now(),
-        };
-        assert!(real.is_visible(), "real progress must be visible");
-        let fresh = McpInitProgress {
-            total: 0,
-            connected: 0,
-            started_at: std::time::Instant::now(),
-        };
-        assert!(fresh.is_visible(), "fresh seed must be visible");
-        let expired = McpInitProgress {
-            total: 0,
-            connected: 0,
-            started_at: std::time::Instant::now()
-                - McpInitProgress::SEED_EXPIRE
-                - std::time::Duration::from_secs(1),
-        };
-        assert!(!expired.is_visible(), "expired seed must not be visible");
-    }
 }
 /// Current voice record-dot pulse: `(filled, brightness)`.
 /// A smooth sine "breathing" on a fixed ~0.7s wall-clock period (not the animation tick), so the dot animates like a studio recording light and never speeds up or syncs with streaming-text redraws. `filled` picks the FISHEYE/BULLSEYE glyph; `brightness` (0.4–1.0) fades the red color.
@@ -262,6 +242,7 @@ pub(crate) enum DockKillId {
     Subagent(String),
     Task(String),
     Loop(String),
+    Workflow(String),
 }
 impl DockKillId {
     pub(crate) fn from_action(action: &Action) -> Option<Self> {
@@ -269,6 +250,10 @@ impl DockKillId {
             Action::KillSubagent(id) => Some(Self::Subagent(id.clone())),
             Action::KillBgTask(id) => Some(Self::Task(id.clone())),
             Action::CancelScheduledTask(id) => Some(Self::Loop(id.clone())),
+            Action::SendSlashCommandPreservingDraft(cmd) => cmd
+                .strip_prefix("/workflow stop ")
+                .filter(|name| !name.is_empty())
+                .map(|name| Self::Workflow(name.to_owned())),
             _ => None,
         }
     }
@@ -288,7 +273,7 @@ pub struct PrivacyBannerState {
     pub(crate) active: bool,
     /// `[Opt in]` (opt in; ack only after ACP success).
     pub(crate) hit_opt_in: HitArea,
-    /// `[Opt out]` (ack now; record the decline).
+    /// `[Opt out]` (write the decline; ack only after ACP success).
     pub(crate) hit_opt_out: HitArea,
     /// "Terms" link (opens the terms of service).
     pub(crate) hit_terms: HitArea,
@@ -765,7 +750,6 @@ pub struct AgentView {
     pub tip_typing_dismissed: bool,
     pub todo: TodoPane,
     pub tasks: TasksPane,
-    pub catalog: SubagentCatalogPane,
     pub queue: QueuePane,
     /// Per-agent mirror of the server-authoritative shared prompt queue
     /// (`AppView::shared_prompt_queues[sid]`), kept in sync by `handle_queue_changed` and the immediate-send path. The queue pane renders the union of this and the local `pending_prompts`; the edit handlers read it to route remove/reorder by origin. Empty unless a plain prompt was queued server-side while a turn was running.
@@ -822,13 +806,23 @@ pub struct AgentView {
     pub(crate) failed_wake_marker_for: Option<String>,
     /// Wake prompts whose terminals landed; a late delta for one must not revive the stop affordance (see `note_streaming_wake_turn`). Cleared at replay-window entry; a queue broadcast naming one as running again removes that entry.
     pub(crate) finished_wake_prompts: std::collections::HashSet<String>,
+    /// Child prompt ids whose terminal marker was already applied.
+    pub(crate) ended_child_prompt_ids: std::collections::HashSet<String>,
+    /// Child prompt ids left for a newer turn. Not yet marked: the terminal still pushes a marker.
+    pub(crate) superseded_child_prompt_ids: std::collections::HashSet<String>,
+    /// `turnStartMs` of a child turn that ended with no prompt id. `None` if that turn had no start.
+    pub(crate) unidentified_child_turn_closed_ms: Option<i64>,
+    /// Prompt id that start belonged to. `None` when the closed turn had no id.
+    pub(crate) unidentified_child_turn_closed_prompt: Option<String>,
     /// The wake turn currently streaming, if any. See [`RunningWakeTurn`].
     pub(crate) running_wake_turn: Option<RunningWakeTurn>,
     pub active_pane: AgentPane,
     pub dock_cursor: usize,
+    pub dock_workflows_expanded: bool,
     pub dock_subagents_expanded: bool,
     pub dock_tasks_expanded: bool,
     pub dock_watchers_expanded: bool,
+    pub dock_workflows_show_all: bool,
     pub dock_subagents_show_all: bool,
     pub dock_tasks_show_all: bool,
     pub dock_watchers_show_all: bool,
@@ -849,6 +843,8 @@ pub struct AgentView {
     pub dock_on: bool,
     /// Last frame: dock painted (`dock_on` and ≥1 non-empty section).
     pub dock_shown: bool,
+    /// Sticky: Ctrl+G hid the dock; paint stays off until the next Ctrl+G.
+    pub dock_hidden: bool,
     /// Current mode of the prompt widget (normal vs editing a queued prompt).
     pub prompt_mode: PromptMode,
     /// Current special prompt input mode (Normal/Bash/Remember).
@@ -951,6 +947,12 @@ pub struct AgentView {
     /// IDs of interjections this client sent and already rendered locally
     /// (optimistic echo). The shell broadcasts `x.ai/session/interjection` to every attached pane; when our own broadcast echoes back carrying an id in this set, `handle_interjection` drops it (we already showed it) and removes the id. Other panes (which lack the id) render it. This is the queue's optimistic-echo and reconcile-by-id pattern, applied so the originator gets instant feedback AND viewers stay in sync.
     pub self_interjection_ids: std::collections::HashSet<String>,
+    /// Optimistic interjection scrollback rows, keyed by `interjection_id`.
+    /// Failed sends remove these entries by id so retry cannot drop the wrong identical follow-up.
+    pub interjection_painted_blocks: std::collections::HashMap<String, crate::scrollback::EntryId>,
+    /// Original images for a painted interjection, restored if the send fails.
+    pub interjection_retry_images:
+        std::collections::HashMap<String, Vec<crate::prompt_images::PastedImage>>,
     /// Local wall-clock time when the most recent turn finished
     /// (success, failure, or cancellation). Used by the dashboard modal to display "Nm ago" idle markers. Initialised to the agent-creation time in [`AgentView::new`] so newly-created agents that have never run a turn still show a sensible relative time.
     pub last_active_at: Option<Instant>,
@@ -1076,7 +1078,6 @@ pub struct AgentView {
     pub hit_todo_close: HitArea,
     pub hit_bg_close: HitArea,
     pub hit_subagent_close: HitArea,
-    pub hit_catalog_close: HitArea,
     pub hit_bg_status: HitArea,
     pub hit_goal_status: HitArea,
     pub hit_goal_close: HitArea,
@@ -1091,6 +1092,12 @@ pub struct AgentView {
     pub hit_response_top_indicator: HitArea,
     /// CWD / worktree path in the status bar (click to copy).
     pub hit_cwd: HitArea,
+    /// `[Dashboard]` on the header row: opens the dashboard, or returns to it when this view is the dashboard's session overlay.
+    pub hit_dashboard: HitArea,
+    /// `‹` of the header's `‹ i/n ›` switcher; painted only inside the dashboard overlay with more than one agent to cycle.
+    pub hit_overlay_prev: HitArea,
+    /// `›` of the same switcher.
+    pub hit_overlay_next: HitArea,
     /// Cancel button in turn status line (`[stop]`).
     pub hit_cancel_button: HitArea,
     /// Still-running watcher cue on the turn-status row (click opens the tasks pane, same as `Ctrl+G`).
@@ -1313,6 +1320,12 @@ pub struct AgentView {
     /// The cycle logic uses `plan_mode_pending.unwrap_or(plan_mode_active)`
     /// so rapid Plan-shortcut presses advance correctly without waiting for ACP.
     pub(crate) plan_mode_pending: Option<bool>,
+    /// Modes from the session response, in ring order. Empty means Shift+Tab stays on the plan/permission cycle.
+    pub(crate) available_modes: Vec<agent_client_protocol::SessionMode>,
+    /// Last confirmed mode. Plan surfaces still read `plan_mode_active`; this covers the rest.
+    pub(crate) session_mode: xai_grok_tools::types::SessionMode,
+    /// Optimistic Shift+Tab pick over `available_modes`, cleared like `plan_mode_pending`.
+    pub(crate) session_mode_pending: Option<xai_grok_tools::types::SessionMode>,
     /// Session mode to apply once this agent's ACP session exists. Set when the agent is spawned from the dashboard with `/plan` active (the session does not exist yet, so the mode can't be sent immediately).
     /// Consumed in the `SessionCreated` / `WorktreeSessionCreated` handlers, mirroring `AgentSession.deferred_model_switch`.
     pub(crate) deferred_session_mode: Option<xai_grok_tools::types::SessionMode>,
@@ -1328,13 +1341,23 @@ pub struct AgentView {
     /// Kept beside `in_dashboard_overlay` so the shortcuts bar and cheatsheet
     /// derive Ctrl+X copy from the same readiness state.
     pub(crate) workspace_dashboard_enabled: bool,
+    /// A parent's resolved `Ctrl+X` label while this view is its subagent's fullscreen takeover; `None` when this view
+    /// speaks for itself.
+    pub(crate) overlay_stop_label: Option<&'static str>,
     /// Whether that overlay's cycle order holds more than one agent, i.e.
-    /// whether the header shows its `[‹]`/`[›]` chips. Updated every frame by `draw` beside [`Self::in_dashboard_overlay`], and read from the same place: the shortcuts bar builds the pane's hints once for both the bar and the cheatsheet, neither of which can see `draw`'s arguments.
+    /// whether the header shows its `‹ i/n ›` switcher. Updated every frame by `draw` beside [`Self::in_dashboard_overlay`], and read from the same place: the shortcuts bar builds the pane's hints once for both the bar and the cheatsheet, neither of which can see `draw`'s arguments.
     pub(crate) overlay_can_cycle: bool,
     /// MCP server init progress. Set when the shell starts connecting
     /// MCP servers, cleared when `x.ai/mcp_initialized` arrives.
-    /// Shown in the turn status line while the agent is idle.
+    /// Renders as the top-bar MCP chip (`views::agent_status::mcp_status_line`).
     pub(crate) mcp_init_progress: Option<McpInitProgress>,
+    /// Set when a session create or fork is dispatched. Cleared when the id binds or the create fails.
+    /// Renders "Starting session…" in the turn-status row.
+    pub(crate) session_starting_since: Option<Instant>,
+    /// Latest `session/new` setup step from `x.ai/session/setup`; names the stuck step on a timeout. Cleared on bind/fail.
+    pub(crate) session_new_phase: Option<xai_grok_shell::agent::SessionSetupPhase>,
+    /// The create's `_meta.sessionId`, held until `SessionCreated` binds it, so setup phases route here. Cleared on bind/fail.
+    pub(crate) pending_session_id: Option<agent_client_protocol::SessionId>,
     /// Last synced ACP command generation. When this differs from `session.available_commands_generation`, `sync_acp_commands()`
     /// is called on the prompt. Starts at 0 so bootstrap (generation 1)
     /// triggers an initial sync.
@@ -1361,7 +1384,15 @@ pub struct AgentView {
     /// Active plan approval view (from `exit_plan_mode` ext_method). When `Some`,
     /// the prompt area shows the plan approval overlay and input is modal.
     pub(crate) plan_approval_view: Option<PlanApprovalViewState>,
-    pub(crate) latest_inline_plan_content: Option<String>,
+    /// Waiting CreatePlan keep. Set by `PlanKept` (or grok-shell inline preview).
+    pub(crate) kept_plan: KeptPlan,
+    /// Post-turn approve/build. Only backends that implement `ExecutePlan` turn this on.
+    pub(crate) post_turn_plan_review: bool,
+    /// Prompt id of a post-turn `ExecutePlan` that has been dispatched but not yet settled.
+    /// The keep is forgotten when Default is confirmed; this id still matches the `PromptResponse`.
+    pub(crate) execute_plan: Option<String>,
+    /// Intent recorded at dispatch so Default confirm is not a two-boolean oracle.
+    pub(crate) pending_post_turn_commit: Option<PostTurnPlanCommit>,
     pub(crate) plan_comments: Vec<PlanComment>,
     /// Monotonic counter for casual plan comment IDs.
     pub(crate) plan_next_comment_id: u64,
@@ -1388,6 +1419,7 @@ pub struct AgentView {
     pub(crate) cancel_trigger_hint: Option<crate::app::actions::CancelTrigger>,
     pub(crate) rewind_state: Option<crate::views::rewind::RewindState>,
     pub(crate) rewind_points: Option<Vec<crate::views::rewind::RewindPointInfo>>,
+    /// `/jump` picker overlay (pure client-side turn navigation).
     pub(crate) jump_state: Option<crate::views::jump::JumpState>,
     /// Session / turn code-review modal (file list + patch preview).
     pub(crate) review_state: Option<crate::views::review::ReviewState>,
@@ -1416,7 +1448,8 @@ pub struct AgentView {
     pub subagent_sessions: HashMap<String, SubagentInfo>,
     /// Child subagent views. Keyed by child_session_id.
     /// Created eagerly on SubagentSpawned so updates are tracked from the start.
-    pub subagent_views: HashMap<String, Box<AgentView>>,
+    /// Insert only through [`Self::insert_subagent_view`], which stamps the child's role.
+    pub(super) subagent_views: HashMap<String, Box<AgentView>>,
     /// Currently open subagent view (child_session_id). When Some, the scrollback area is replaced by the subagent's framed view.
     /// scrollback area is replaced by the subagent's framed view.
     pub active_subagent: Option<String>,
@@ -1426,6 +1459,8 @@ pub struct AgentView {
     /// - Demote-to-background remains disabled for nested child execution
     /// - Shortcuts bar shows subagent-specific navigation hints
     pub is_subagent_view: bool,
+    /// Root of its session, or a child mirrored under a parent's takeover; every child-specific gate derives from it.
+    role: AgentRole,
     /// Hit area for the [✗] close button in the subagent frame title bar.
     pub hit_subagent_frame_close: HitArea,
     /// Whether the `/share` slash command is available (mirrors
@@ -1459,6 +1494,8 @@ pub struct AgentView {
     /// Set by `dispatch_fork_resolved`; stores the parent session id and worktree flag so the banner can be formatted with the child's session id (not known until `SessionLoaded`). `None` for non-fork sessions.
     /// Cleared on all failure paths: `SessionLoadFailed`, `WorktreeSessionFailed` (non-orphan branch), and `ForkSessionFailed`.
     pub(crate) pending_fork_banner: Option<PendingForkBanner>,
+    /// Set when `session/load` failed, so this tab has no session and a plain prompt is refused with a notice.
+    pub(crate) load_failed: bool,
     /// Entry ID of the "Loading session ..." placeholder block pushed by `dispatch_load_session_inner`. Cleared by the `SessionLoaded`
     /// handler so the placeholder doesn't linger on screen when the loaded session has no replay content.
     pub(crate) loading_placeholder_id: Option<EntryId>,
@@ -1522,6 +1559,7 @@ pub struct AgentView {
     /// User blocks painted at send-now dispatch, keyed by prompt id; the turn-start adoption consumes an entry to reuse its block. The flag marks an edit-interject override (fresher than the mirror text the adoption captures). Cleared on session reload.
     pub(crate) send_now_painted_blocks:
         std::collections::HashMap<String, (crate::scrollback::EntryId, bool)>,
+    pub(crate) send_now_echo_pending: std::collections::HashMap<String, String>,
     /// Cached official-marketplace candidates for the plugin CTA, populated on session start independently of the Extensions modal.
     /// session start independently of the Extensions modal.
     pub plugin_cta: PluginCtaState,
@@ -1864,14 +1902,15 @@ fn render_char_buttons<const N: usize>(
 ) -> [Rect; N] {
     let mut areas = [Rect::default(); N];
     let mut x = right_x;
-    for i in (0..N).rev() {
-        let (sym, hovered) = buttons[i];
+    for (i, &(sym, hovered)) in buttons.iter().enumerate().rev() {
         let style = if hovered { hover_style } else { base_style };
         if let Some(cell) = buf.cell_mut((x, y)) {
             cell.set_symbol(sym);
             cell.set_style(style);
         }
-        areas[i] = Rect::new(x, y, 1, 1);
+        if let Some(area) = areas.get_mut(i) {
+            *area = Rect::new(x, y, 1, 1);
+        }
         x = x.saturating_sub(1 + gap);
     }
     areas
@@ -2124,7 +2163,7 @@ pub(crate) mod test_fixtures {
     use crate::app::prompt_queue::QueueEntryWire;
     use crate::scrollback::state::ScrollbackState;
     use agent_client_protocol as acp;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     pub(crate) fn make_followup_permission_state()
     -> crate::views::permission_view::PermissionViewState {
         let (response_tx, _rx) = tokio::sync::oneshot::channel();
@@ -2553,9 +2592,38 @@ pub(crate) mod test_fixtures {
             ScrollbackState::new(),
         )
     }
+    impl AgentView {
+        /// Insert `child` the way a spawn does, linked (unaddressable) to this view's own session id.
+        pub(crate) fn insert_test_child(&mut self, child_sid: String, child: Box<AgentView>) {
+            let parent_sid = self
+                .session
+                .session_id
+                .clone()
+                .unwrap_or_else(|| acp::SessionId::new("parent"));
+            self.insert_subagent_view_with_link(
+                child_sid,
+                child,
+                super::ChildLink::unaddressable(parent_sid),
+            );
+        }
+    }
+    /// An idle parent with one idle child inserted under `child_sid`.
+    pub(crate) fn parent_with_child(child_sid: &str) -> AgentView {
+        let mut parent = make_agent();
+        parent.insert_test_child(child_sid.to_owned(), Box::new(make_agent()));
+        parent
+    }
     /// Interject chord for non–VS Code family tests (`Ctrl+Enter`).
     pub fn force_interject_key() -> KeyEvent {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+    }
+    /// A `Ctrl+<c>` key press as an input event.
+    pub fn ctrl(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+    /// An unmodified key press as an input event.
+    pub fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
     /// Interject chord for VS Code family tests (Ctrl+Enter; Ctrl+L is model picker).
     pub fn vscode_interject_key() -> KeyEvent {
@@ -2817,7 +2885,14 @@ pub(crate) mod test_fixtures {
             1,
             "run list restored on failed reload"
         );
-        assert_eq!(agent.workflow_runs[0].run_id, "wf-1");
+        assert_eq!(
+            agent
+                .workflow_runs
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .run_id,
+            "wf-1"
+        );
         assert_eq!(
             agent.workflow_run_revisions.get("wf-1").copied(),
             Some(4),
@@ -3260,13 +3335,22 @@ pub(crate) mod test_fixtures {
         agent.follow_up_chips =
             crate::views::agent::render_follow_ups(area, &mut buf, &theme, &suggestions, None);
         assert_eq!(agent.follow_up_chips.len(), 2, "both chips fit");
-        let r = agent.follow_up_chips[1];
+        let r = agent
+            .follow_up_chips
+            .get(1)
+            .unwrap_or_else(|| panic!("missing index"));
         let idx = agent
             .follow_up_chip_at(r.x + 1, r.y)
             .expect("click inside a chip hits it");
         assert_eq!(idx, 1);
         assert_eq!(
-            agent.follow_ups.as_ref().unwrap().suggestions[idx],
+            agent
+                .follow_ups
+                .as_ref()
+                .unwrap()
+                .suggestions
+                .get(idx)
+                .unwrap_or_else(|| panic!("missing index")),
             "Second"
         );
         assert_eq!(agent.follow_up_chip_at(area.width - 1, 0), None);
@@ -3301,7 +3385,7 @@ pub(crate) mod test_fixtures {
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn test_agent_view(session_id: Option<&str>, cwd: std::path::PathBuf) -> AgentView {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    AgentView::new(
+    let mut agent = AgentView::new(
         crate::app::agent::AgentSession {
             id: crate::app::agent::AgentId(0),
             acp_tx: tx,
@@ -3341,7 +3425,9 @@ pub(crate) fn test_agent_view(session_id: Option<&str>, cwd: std::path::PathBuf)
             created_via_new: false,
         },
         crate::scrollback::state::ScrollbackState::new(),
-    )
+    );
+    agent.post_turn_plan_review = true;
+    agent
 }
 #[cfg(test)]
 mod dropdown_chrome_tests {
@@ -3434,10 +3520,6 @@ mod prompt_input_mode_tests {
     use crate::app::actions::Action;
     use crate::theme::Theme;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    #[test]
-    fn default_is_normal() {
-        assert_eq!(PromptInputMode::default(), PromptInputMode::Normal);
-    }
     #[test]
     fn accent_color_returns_expected_for_each_variant() {
         let theme = Theme::current();

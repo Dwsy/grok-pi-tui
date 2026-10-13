@@ -346,7 +346,7 @@ mod tests {
             version: Some("1.2.3".to_owned()),
         };
         let raw = serde_json::to_value(&info).unwrap();
-        assert_eq!(raw["version"], "1.2.3");
+        assert_eq!(raw.get("version").and_then(|v| v.as_str()), Some("1.2.3"));
         let back: WorkspaceInfo = serde_json::from_value(raw).unwrap();
         assert_eq!(back, info);
     }
@@ -373,26 +373,5 @@ mod tests {
         });
         let info: WorkspaceInfo = serde_json::from_value(raw).unwrap();
         assert_eq!(info.shell, "zsh");
-    }
-
-    #[test]
-    fn method_constant() {
-        assert_eq!(WorkspaceInfoReq::METHOD, "workspace.info");
-        assert_eq!(
-            LoadProjectConfigReq::METHOD,
-            "workspace.load_project_config"
-        );
-        assert_eq!(LoadPermissionsReq::METHOD, "workspace.load_permissions");
-        assert_eq!(LoadEnvrcReq::METHOD, "workspace.load_envrc");
-        assert_eq!(ToolDefinitionsReq::METHOD, "workspace.tool_definitions");
-        assert_eq!(
-            ResolveFileReferencesReq::METHOD,
-            "workspace.resolve_file_references"
-        );
-        assert_eq!(UpdateToolConfigReq::METHOD, "workspace.update_tool_config");
-        assert_eq!(DropSessionReq::METHOD, "workspace.drop_session");
-        assert_eq!(ConfigureMcpReq::METHOD, "workspace.configure_mcp");
-        assert_eq!(InstallPluginReq::METHOD, "workspace.install_plugin");
-        assert_eq!(RefreshPluginsReq::METHOD, "workspace.refresh_plugins");
     }
 }

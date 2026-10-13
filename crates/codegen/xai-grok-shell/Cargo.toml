@@ -1,7 +1,7 @@
 [package]
 license = "Apache-2.0"
 name = "xai-grok-shell"
-version = "1.0.24"
+version = "1.0.45"
 edition.workspace = true
 
 [features]
@@ -9,8 +9,15 @@ default = []
 dhat-heap = ["dep:dhat"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
-# it via `required-features`. Forwards `xai-grok-login/test-support` for downstream test builds.
-test-support = ["xai-grok-login/test-support"]
+# it via `required-features`. Forwards login, sampler, and workspace
+# `test-support` so downstream test builds see those crates' test seams
+# (`isolated_spawn_e2e` uses `WorkspaceOps::for_test`).
+test-support = [
+    "xai-grok-cloud-config/test-support",
+    "xai-grok-login/test-support",
+    "xai-grok-sampler/test-support",
+    "xai-grok-workspace/test-support",
+]
 test-util = []
 # Local Computer Hub workspace_server (own/attach + crash-restart). Requires
 local-workspace = []
@@ -43,8 +50,6 @@ ignore = { workspace = true }
 jsonschema = { workspace = true }
 futures = { workspace = true }
 glob = { workspace = true }
-globset = { workspace = true }
-kanal = "0.1"
 regex = { workspace = true }
 # rmcp 2.1 + reqwest 0.13 are quarantined inside `xai-grok-mcp`. The remaining
 # MCP code in this crate (extensions/mcp.rs, mcp_doctor.rs) reaches rmcp model
@@ -113,7 +118,6 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
 moka = { workspace = true, features = ["future"] }
 dhat = { workspace = true, optional = true }
 base64 = { workspace = true }
-hmac = { workspace = true }
 sha2 = { workspace = true }
 strum = { workspace = true }
 xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
@@ -137,6 +141,8 @@ xai-chat-state = { path = "../xai-chat-state" }
 xai-compaction-transcript = { workspace = true }
 xai-grok-compaction = { path = "../../common/xai-grok-compaction" }
 xai-grok-extra-ca = { workspace = true }
+# Leader lock: bounded flock polling behind the machine-local acquire slot.
+xai-grok-file-lock = { workspace = true }
 xai-grok-sampler = { path = "../xai-grok-sampler" }
 # Session FTS search; owns this crate's only rusqlite/bundled-SQLite use.
 xai-grok-session-search = { workspace = true }
@@ -151,7 +157,9 @@ xai-grok-foreign-sessions = { workspace = true }
 xai-grok-subagent-resolution = { path = "../xai-grok-subagent-resolution" }
 xai-grok-agent = { path = "../xai-grok-agent" }
 xai-grok-bundle = { workspace = true }
+xai-grok-cloud-config = { workspace = true }
 xai-grok-config = { workspace = true }
+xai-grok-external-agent-migration = { workspace = true }
 xai-grok-feedback = { workspace = true }
 xai-grok-config-types = { workspace = true }
 xai-grok-env = { workspace = true }
@@ -203,6 +211,7 @@ criterion = { workspace = true }
 ctor = { workspace = true }
 filetime = { workspace = true }
 pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 tempfile = { workspace = true }
 # `extensions::bundle` tests build archives with `bundle::test_helpers`, which
 # is `#[cfg(test)]`-only inside xai-grok-bundle without this feature.
@@ -211,7 +220,8 @@ xai-grok-memory = { workspace = true, features = ["test-support"] }
 # sandbox-enforce: keep tests running against the enforcing sandbox build.
 xai-grok-workspace = { workspace = true, features = ["test-support", "sandbox-enforce"] }
 xai-grok-config = { workspace = true, features = [] }
-ring = { workspace = true }
+# Shell tests call the test-only functions in `xai_grok_cloud_config::settings_get`.
+xai-grok-cloud-config = { workspace = true, features = ["test-support"] }
 tar = { workspace = true }
 flate2 = { workspace = true }
 semver = { workspace = true }
@@ -222,6 +232,8 @@ xai-grok-shell-base = { workspace = true, features = ["test-support"] }
 # Exposes the login crate's `#[cfg(test)]`-only auth-provider helpers
 # (`test_counting_provider`, `test_backdate_provider_mint`) to shell tests.
 xai-grok-login = { workspace = true, features = ["test-support"] }
+# Exposes sampler's `notify_on_submit` mock to lib tests via feature unification.
+xai-grok-sampler = { path = "../xai-grok-sampler", features = ["test-support"] }
 xai-grok-test-support = { workspace = true, features = [] }
 xai-test-utils = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]` (paused virtual
@@ -266,11 +278,66 @@ name = "test_startup_prefetch_policy"
 required-features = ["test-support"]
 
 [[test]]
+name = "test_startup_prefetch_repair_overlap"
+required-features = ["test-support"]
+
+[[test]]
 name = "test_startup_prefetch_repair_skip"
 required-features = ["test-support"]
 
 [[test]]
+name = "mcp_toggle_gateway_persist"
+required-features = ["test-support"]
+
+[[test]]
+name = "plugins_action_policy_gate"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_create_hook_deferral"
+required-features = ["test-support"]
+
+[[test]]
+name = "plugins_action_uninstall_data"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_create_subphase_timers"
+required-features = ["test-support"]
+
+[[test]]
+name = "sessions_active_gauge"
+required-features = ["test-support"]
+[[test]]
+name = "spawn_actor_timers"
+required-features = ["test-support"]
+
+[[test]]
+name = "subagent_bootstrap_regression"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_image_strip_recovery"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_boot_current_thread"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_startup_settings_unpersisted_session"
+required-features = ["test-support"]
+
+[[test]]
 name = "test_startup_prefetch_shared"
+required-features = ["test-support"]
+
+[[test]]
+name = "tool_call_trace"
+required-features = ["test-support"]
+
+[[test]]
+name = "tool_call_trace_off"
 required-features = ["test-support"]
 
 [lints]

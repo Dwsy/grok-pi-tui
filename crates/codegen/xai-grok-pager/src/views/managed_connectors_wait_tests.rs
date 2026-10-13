@@ -99,7 +99,7 @@ fn short_overlay_drops_spacers_before_the_copy_button_and_url() {
     let painted = (0..area.height)
         .map(|y| {
             (0..area.width)
-                .map(|x| buf[(x, y)].symbol())
+                .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
                 .collect::<String>()
                 .trim()
                 .to_owned()
@@ -117,7 +117,12 @@ fn short_overlay_drops_spacers_before_the_copy_button_and_url() {
     let mut buf = Buffer::empty(tall);
     render_managed_connectors_wait(&mut buf, tall, &mut wait, &theme);
     let painted_rows: Vec<u16> = (0..tall.height)
-        .filter(|&y| (0..tall.width).any(|x| !buf[(x, y)].symbol().trim().is_empty()))
+        .filter(|&y| {
+            (0..tall.width).any(|x| {
+                buf.cell((x, y))
+                    .is_some_and(|c| !c.symbol().trim().is_empty())
+            })
+        })
         .collect();
     assert_eq!(painted_rows, [2, 4, 6, 7, 8]);
     assert_eq!(wait.copy_rect.map(|r| r.y), Some(6));

@@ -105,6 +105,10 @@ impl crate::types::tool_metadata::ToolMetadata for ReadTool {
         ToolNamespace::OpenCode
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("filePath")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }
@@ -302,9 +306,13 @@ impl xai_tool_runtime::Tool for ReadTool {
 
             // Truncate long lines.
             let line = if line_text.len() > MAX_LINE_LENGTH {
+                let mut n = MAX_LINE_LENGTH;
+                while n > 0 && !line_text.is_char_boundary(n) {
+                    n -= 1;
+                }
                 format!(
                     "{}... (line truncated to {} chars)",
-                    &line_text[..MAX_LINE_LENGTH],
+                    line_text.get(..n).unwrap_or(""),
                     MAX_LINE_LENGTH
                 )
             } else {
@@ -1331,7 +1339,9 @@ mod tests {
                 assert!(
                     fc.content.starts_with("<path>"),
                     "Output should start with '<path>', got: {}",
-                    &fc.content[..fc.content.len().min(50)],
+                    fc.content
+                        .get(..fc.content.len().min(50))
+                        .unwrap_or(fc.content.as_str()),
                 );
                 assert!(
                     fc.content.contains("<type>file</type>"),
@@ -1344,7 +1354,9 @@ mod tests {
                 assert!(
                     fc.content.ends_with("</content>"),
                     "Output should end with '</content>', got tail: {}",
-                    &fc.content[fc.content.len().saturating_sub(30)..],
+                    fc.content
+                        .get(fc.content.len().saturating_sub(30)..)
+                        .unwrap_or(fc.content.as_str()),
                 );
                 // Verify line number format: "N: content".
                 assert!(

@@ -1,33 +1,10 @@
-//! `/feedback`: open feedback review or ask the model to help with a report.
-
-use agent_client_protocol as acp;
+//! `/feedback`: send a report inline or open the feedback modal.
 
 use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
 
-/// User text after `/feedback `, or `None` when this is not an inline feedback prompt.
-#[must_use]
-pub(crate) fn inline_feedback_user_text(text: &str) -> Option<&str> {
-    let user_text = text.strip_prefix("/feedback ")?.trim();
-    if user_text.is_empty() {
-        None
-    } else {
-        Some(user_text)
-    }
-}
-
-/// Skill text the model sees after `/feedback <text>` has already saved a local draft.
-#[must_use]
-pub(crate) fn feedback_skill_instruction(user_text: &str, draft_id: &str) -> String {
-    format!(
-        "The user invoked `/feedback` with this report:\n\n{user_text}\n\n\
-         A feedback draft has been created (id: {draft_id}). Call `send_feedback` with that `draft_id` to taxonomize it. Do not create a second draft. Do not claim it was sent."
-    )
-}
-
-/// `/feedback <text>` becomes a model turn. Bare `/feedback` opens the feedback modal in the full
-/// TUI; in minimal mode it routes to the dispatcher's visible refusal (minimal has no modal renderer,
-/// so no state is ever set).
+/// Bare `/feedback` opens the feedback modal in every screen mode; `/feedback <text>` sends immediately,
+/// without a model turn and without waiting on the prompt queue.
 pub struct FeedbackCommand;
 
 impl SlashCommand for FeedbackCommand {
@@ -39,19 +16,8 @@ impl SlashCommand for FeedbackCommand {
         arg_placeholder: "[feedback text]",
     }
 
-    fn submission_refusal(
-        &self,
-        args: &str,
-        is_minimal: bool,
-        voice_owns_prompt: bool,
-    ) -> Option<&'static str> {
-        if !args.trim().is_empty() {
-            None
-        } else if is_minimal {
-            Some(
-                "Use `/feedback <text>` in minimal mode, or run without --minimal to open the feedback form.",
-            )
-        } else if voice_owns_prompt {
+    fn submission_refusal(&self, args: &str, voice_owns_prompt: bool) -> Option<&'static str> {
+        if args.trim().is_empty() && voice_owns_prompt {
             Some("Stop voice input before opening the feedback form")
         } else {
             None
@@ -59,24 +25,20 @@ impl SlashCommand for FeedbackCommand {
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
-        // Prompt dispatch removes live image elements before passing these arguments.
+        // Prompt dispatch removes live image elements before passing these arguments and
+        // attaches the composer images to the action it gets back.
         let user_text = args.trim();
-        let result = if user_text.is_empty() {
-            CommandResult::Action(Action::OpenFeedbackModal(Default::default()))
+        let (action, result) = if user_text.is_empty() {
+            ("open_empty", Action::OpenFeedbackModal(Default::default()))
         } else {
-            // Dispatch saves the draft and rewrites this block with the real id before inject.
-            let instruction = feedback_skill_instruction(user_text, "pending");
-            CommandResult::InjectSkill {
-                display_text: format!("/feedback {user_text}"),
-                prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(instruction))],
-                display_as_skill: true,
-                scheduled_task_preview: None,
-            }
-        };
-        let action = match &result {
-            CommandResult::Action(Action::OpenFeedbackModal(_)) => "open_empty",
-            CommandResult::InjectSkill { .. } => "inject_skill",
-            _ => "other",
+            (
+                "send_inline",
+                Action::SendFeedback {
+                    text: user_text.to_owned(),
+                    images: Default::default(),
+                    trace: None,
+                },
+            )
         };
         crate::unified_log::info(
             "feedback.command",
@@ -87,7 +49,7 @@ impl SlashCommand for FeedbackCommand {
                 "action": action,
             })),
         );
-        result
+        CommandResult::Action(result)
     }
 }
 
@@ -131,36 +93,21 @@ mod tests {
     }
 
     #[test]
-    fn inline_text_injects_feedback_skill() {
+    fn inline_text_sends_immediately() {
         let models = ModelState::default();
         let mut ctx = make_ctx(&models);
 
-        let result = FeedbackCommand.run(&mut ctx, "  todo is chopped  ");
-        assert!(
-            !matches!(&result, CommandResult::Action(Action::SendFeedback { .. })),
-            "inline text must not send feedback immediately"
-        );
-        match result {
-            CommandResult::InjectSkill {
-                display_text,
-                prompt_blocks,
-                display_as_skill,
-                scheduled_task_preview,
-            } => {
-                assert_eq!(display_text, "/feedback todo is chopped");
-                assert!(display_as_skill);
-                assert!(scheduled_task_preview.is_none());
-                let [acp::ContentBlock::Text(prompt)] = &prompt_blocks[..] else {
-                    panic!("expected one text prompt block, got {prompt_blocks:?}");
-                };
-                assert!(prompt.text.contains("todo is chopped"));
-                assert!(!prompt.text.contains("todo is chopped\""));
-                assert!(prompt.text.contains("send_feedback"));
-                assert!(prompt.text.contains("draft_id"));
-                assert!(prompt.text.contains("pending"));
-                assert!(!prompt.text.contains("Do not draft"));
+        match FeedbackCommand.run(&mut ctx, "  todo is chopped  ") {
+            CommandResult::Action(Action::SendFeedback {
+                text,
+                images,
+                trace,
+            }) => {
+                assert_eq!("todo is chopped", text);
+                assert!(images.is_empty(), "images attach at dispatch, not here");
+                assert_eq!(None, trace);
             }
-            other => panic!("inline text must inject a skill, got {other:?}"),
+            other => panic!("inline text must send immediately, got {other:?}"),
         }
     }
 }

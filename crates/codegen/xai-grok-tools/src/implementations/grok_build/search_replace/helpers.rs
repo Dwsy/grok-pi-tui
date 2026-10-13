@@ -31,13 +31,19 @@ pub(crate) fn render_snippet(
     let snippet_end = (end_line + context_size).min(total_lines_count.saturating_sub(1));
 
     let before_context = if snippet_start < start_line {
-        lines[snippet_start..start_line].join("")
+        match lines.get(snippet_start..start_line) {
+            Some(slice) => slice.join(""),
+            None => String::new(),
+        }
     } else {
         String::new()
     };
 
     let after_context = if end_line < snippet_end {
-        lines[(end_line + 1)..=snippet_end].join("")
+        match lines.get((end_line + 1)..=snippet_end) {
+            Some(slice) => slice.join(""),
+            None => String::new(),
+        }
     } else {
         String::new()
     };
@@ -62,7 +68,10 @@ pub(crate) struct LineRange {
 
 /// Compute the line range of the inserted text in the text
 pub(crate) fn compute_line_range(text: &str, start_pos: usize, inserted_text: &str) -> LineRange {
-    let start_line = text[..start_pos].matches('\n').count();
+    let start_line = text
+        .get(..start_pos)
+        .map(|prefix| prefix.matches('\n').count())
+        .unwrap_or(0);
     let lines_in_inserted = inserted_text.split_inclusive('\n').count().max(1);
     let end_line = start_line + lines_in_inserted - 1;
     LineRange {
@@ -83,13 +92,19 @@ pub(crate) fn replace_using_positions(
     let mut last_end: usize = 0;
 
     for &pos in match_positions {
-        new_text.push_str(&text[last_end..pos]);
+        let Some(chunk) = text.get(last_end..pos) else {
+            return (text.to_owned(), Vec::new());
+        };
+        new_text.push_str(chunk);
         new_positions.push(new_text.len());
         new_text.push_str(new_string);
         last_end = pos + old_string.len();
     }
 
-    new_text.push_str(&text[last_end..]);
+    match text.get(last_end..) {
+        Some(tail) => new_text.push_str(tail),
+        None => return (text.to_owned(), Vec::new()),
+    }
     (new_text, new_positions)
 }
 
@@ -108,11 +123,12 @@ pub(crate) fn build_edit_details(
         let line_range_new = compute_line_range(new_text, start_pos, new_string);
         // Extract the leading text on the line before the match starts.
         // This is the text between the last '\n' before start_pos and start_pos itself.
-        let line_start = new_text[..start_pos]
-            .rfind('\n')
+        let line_start = new_text
+            .get(..start_pos)
+            .and_then(|prefix| prefix.rfind('\n'))
             .map(|i| i + 1)
             .unwrap_or(0);
-        let line_prefix = new_text[line_start..start_pos].to_owned();
+        let line_prefix = new_text.get(line_start..start_pos).unwrap_or("").to_owned();
 
         details.push(SearchReplaceEditDetail {
             old_string: old_string.to_owned(),
@@ -177,8 +193,14 @@ pub(crate) fn find_normalized_match_positions(text: &str, pattern: &str) -> Norm
 
     for (norm_start, _) in norm_text.match_indices(&norm_pattern) {
         let norm_end = norm_start + norm_pattern.len();
-        let orig_start = offset_map[norm_start];
-        let orig_end = offset_map[norm_end];
+        let Some(&orig_start) = offset_map.get(norm_start) else {
+            had_rejected_candidates = true;
+            continue;
+        };
+        let Some(&orig_end) = offset_map.get(norm_end) else {
+            had_rejected_candidates = true;
+            continue;
+        };
 
         // Reject zero-length or inverted spans.
         if orig_end <= orig_start {
@@ -186,7 +208,10 @@ pub(crate) fn find_normalized_match_positions(text: &str, pattern: &str) -> Norm
             continue;
         }
 
-        let orig_slice = &text[orig_start..orig_end];
+        let Some(orig_slice) = text.get(orig_start..orig_end) else {
+            had_rejected_candidates = true;
+            continue;
+        };
 
         // Roundtrip validation: the normalized original slice must exactly
         // equal the normalized pattern.  This catches partial-expansion
@@ -214,8 +239,11 @@ pub(crate) fn find_normalized_match_positions(text: &str, pattern: &str) -> Norm
 
     // Reject overlapping remapped spans (fail closed on ambiguity).
     for window in validated.windows(2) {
-        let end_of_prev = window[0].original_start + window[0].original_len;
-        if end_of_prev > window[1].original_start {
+        let [prev, next] = window else {
+            continue;
+        };
+        let end_of_prev = prev.original_start + prev.original_len;
+        if end_of_prev > next.original_start {
             return NormalizedMatchResult::Ambiguous;
         }
     }
@@ -236,13 +264,19 @@ pub(crate) fn replace_normalized_matches(
     let mut last_end: usize = 0;
 
     for m in matches {
-        result.push_str(&text[last_end..m.original_start]);
+        let Some(chunk) = text.get(last_end..m.original_start) else {
+            return (text.to_owned(), Vec::new());
+        };
+        result.push_str(chunk);
         new_positions.push(result.len());
         result.push_str(new_string);
         last_end = m.original_start + m.original_len;
     }
 
-    result.push_str(&text[last_end..]);
+    match text.get(last_end..) {
+        Some(tail) => result.push_str(tail),
+        None => return (text.to_owned(), Vec::new()),
+    }
     (result, new_positions)
 }
 
@@ -368,11 +402,12 @@ mod tests {
     fn normalized_match_smart_quotes() {
         let text = "say \u{201C}hello\u{201D} world";
         let matches = unwrap_matches(find_normalized_match_positions(text, "\"hello\""));
-        assert_eq!(matches.len(), 1);
-        let m = &matches[0];
+        let Some(m) = matches.first() else {
+            panic!("expected one match: {matches:?}");
+        };
         assert_eq!(
-            &text[m.original_start..m.original_start + m.original_len],
-            "\u{201C}hello\u{201D}"
+            text.get(m.original_start..m.original_start + m.original_len),
+            Some("\u{201C}hello\u{201D}")
         );
     }
 
@@ -408,9 +443,11 @@ mod tests {
     #[test]
     fn normalized_match_pure_ascii_still_works() {
         let matches = unwrap_matches(find_normalized_match_positions("hello world", "hello"));
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].original_start, 0);
-        assert_eq!(matches[0].original_len, 5);
+        let Some(m) = matches.first() else {
+            panic!("expected one match: {matches:?}");
+        };
+        assert_eq!(m.original_start, 0);
+        assert_eq!(m.original_len, 5);
     }
 
     #[test]
@@ -463,10 +500,12 @@ mod tests {
     fn full_expansion_em_dash_accepted() {
         let text = "a\u{2014}b";
         let matches = unwrap_matches(find_normalized_match_positions(text, "--"));
-        assert_eq!(matches.len(), 1);
+        let Some(m) = matches.first() else {
+            panic!("expected one match: {matches:?}");
+        };
         assert_eq!(
-            &text[matches[0].original_start..matches[0].original_start + matches[0].original_len],
-            "\u{2014}"
+            text.get(m.original_start..m.original_start + m.original_len),
+            Some("\u{2014}")
         );
     }
 

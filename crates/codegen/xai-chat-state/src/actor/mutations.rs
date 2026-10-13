@@ -1,8 +1,10 @@
 //! Mutation handlers for the ChatStateActor.
 
+use std::collections::HashMap;
+
 use xai_grok_sampling_types::{
     ContentPart, ConversationItem, DanglingToolCallReason, dedup_duplicate_tool_results,
-    repair_dangling_tool_calls,
+    repair_dangling_tool_calls_with, synthetic_dangling_result_text,
 };
 
 use super::ChatStateActor;
@@ -90,6 +92,14 @@ impl ChatStateActor {
         &mut self,
         reason: DanglingToolCallReason,
     ) {
+        self.ensure_conversation_integrity_answering(reason, HashMap::new());
+    }
+
+    fn ensure_conversation_integrity_answering(
+        &mut self,
+        reason: DanglingToolCallReason,
+        mut answers: HashMap<String, String>,
+    ) {
         self.rewrite_history(HistoryRewrite::IntegrityRepair, |conversation| {
             let deduped = dedup_duplicate_tool_results(conversation);
             if deduped > 0 {
@@ -98,7 +108,11 @@ impl ChatStateActor {
                     "Removed duplicate tool results in conversation"
                 );
             }
-            let repaired = repair_dangling_tool_calls(conversation, reason);
+            let repaired = repair_dangling_tool_calls_with(conversation, |id, name| {
+                answers
+                    .remove(id)
+                    .unwrap_or_else(|| synthetic_dangling_result_text(name, reason))
+            });
             if repaired > 0 || deduped > 0 {
                 tracing::info!(
                     repaired_count = repaired,
@@ -107,15 +121,26 @@ impl ChatStateActor {
             }
             repaired + deduped
         });
+        if !answers.is_empty() {
+            tracing::debug!(
+                leftover = answers.len(),
+                "answers for tool calls that already had a result were not written"
+            );
+        }
     }
 
     /// Repair dangling tool calls after a harness-initiated halt so the on-disk tail is clean.
     /// The next push repairs the same way lazily as a backstop.
-    pub(super) fn repair_dangling_after_harness_halt(&mut self, class: &'static str) {
+    pub(super) fn repair_dangling_after_harness_halt(
+        &mut self,
+        class: &'static str,
+        answers: HashMap<String, String>,
+    ) {
         self.pop_stranded_continue_reminder();
-        self.ensure_conversation_integrity_with_reason(DanglingToolCallReason::HarnessHalted {
-            class,
-        });
+        self.ensure_conversation_integrity_answering(
+            DanglingToolCallReason::HarnessHalted { class },
+            answers,
+        );
     }
 
     /// Drop a trailing continue reminder whose continuation will never sample.
@@ -126,7 +151,7 @@ impl ChatStateActor {
             self.state.conversation.last(),
             Some(xai_grok_sampling_types::ConversationItem::User(u))
                 if u.synthetic_reason
-                    == Some(xai_grok_sampling_types::SyntheticReason::LengthContinue)
+                    == xai_grok_sampling_types::SyntheticReason::LengthContinue
         ) {
             return;
         }
@@ -136,7 +161,7 @@ impl ChatStateActor {
                 conversation.last(),
                 Some(xai_grok_sampling_types::ConversationItem::User(u))
                     if u.synthetic_reason
-                        == Some(xai_grok_sampling_types::SyntheticReason::LengthContinue)
+                        == xai_grok_sampling_types::SyntheticReason::LengthContinue
             ) {
                 conversation.pop();
                 stranded += 1;
@@ -279,16 +304,14 @@ impl ChatStateActor {
             if matches!(
                 &item,
                 ConversationItem::User(u)
-                    if u.synthetic_reason.as_ref().is_none_or(|r| r.starts_prompt_turn())
+                    if u.synthetic_reason.starts_prompt_turn()
                         || matches!(
                             u.synthetic_reason,
-                            Some(
-                                R::AutoRecovery
-                                    | R::StopHookFeedback
-                                    | R::GoalSummary
-                                    | R::WorkingDirectorySwitch
-                                    | R::Interjection
-                            )
+                            R::AutoRecovery
+                                | R::StopHookFeedback
+                                | R::GoalSummary
+                                | R::WorkingDirectorySwitch
+                                | R::Interjection
                         )
             ) {
                 self.pop_stranded_continue_reminder();
@@ -342,8 +365,8 @@ impl ChatStateActor {
             let mut turn_from_end: usize = 0;
             let mut seen_first_user = false;
 
-            for i in (0..conversation.len()).rev() {
-                if matches!(&conversation[i], ConversationItem::User(_)) {
+            for item in conversation.iter_mut().rev() {
+                if matches!(item, ConversationItem::User(_)) {
                     if seen_first_user {
                         turn_from_end += 1;
                     }
@@ -351,7 +374,7 @@ impl ChatStateActor {
                     continue;
                 }
 
-                let ConversationItem::ToolResult(tr) = &mut conversation[i] else {
+                let ConversationItem::ToolResult(tr) = item else {
                     continue;
                 };
 

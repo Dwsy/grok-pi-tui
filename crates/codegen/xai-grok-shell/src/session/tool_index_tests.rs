@@ -87,7 +87,10 @@ fn search_create_linear_issue() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(linear_tools()));
     let snap = index.search_snapshot("create linear issue", 3);
     assert!(!snap.results.is_empty());
-    assert_eq!(snap.results[0].tool_name, "linear__save_issue");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("linear__save_issue")
+    );
     assert!(snap.is_ready);
 }
 
@@ -96,7 +99,10 @@ fn search_read_slack_thread() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(linear_tools()));
     let snap = index.search_snapshot("read slack thread", 3);
     assert!(!snap.results.is_empty());
-    assert_eq!(snap.results[0].tool_name, "demo-mcp__readSlackThread");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("demo-mcp__readSlackThread")
+    );
 }
 
 #[test]
@@ -104,7 +110,10 @@ fn search_list_issues() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(linear_tools()));
     let snap = index.search_snapshot("list my issues", 3);
     assert!(!snap.results.is_empty());
-    assert_eq!(snap.results[0].tool_name, "linear__list_issues");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("linear__list_issues")
+    );
 }
 
 #[test]
@@ -229,8 +238,8 @@ fn search_underscore_joined_identifier_components() {
     let snap_exact = index.search_snapshot("query_prometheus_range", 3);
     assert_eq!(snap_exact.results.len(), 1);
     assert_eq!(
-        snap_exact.results[0].tool_name,
-        "grok_com_chronosphere__query_prometheus_range"
+        snap_exact.results.first().map(|r| r.tool_name.as_str()),
+        Some("grok_com_chronosphere__query_prometheus_range")
     );
 }
 
@@ -253,10 +262,22 @@ fn gateway_tool_with_canonical_connector_tool_name_appears_in_results() {
 
     let snap = index.search_snapshot("grafana dashboards", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "grafana__search_dashboards");
-    assert_eq!(snap.results[0].server_name, "grafana");
-    assert_eq!(snap.results[0].parameters, vec!["query"]);
-    assert_eq!(snap.results[0].input_schema, schema);
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana__search_dashboards")
+    );
+    assert_eq!(
+        snap.results.first().map(|r| r.server_name.as_str()),
+        Some("grafana")
+    );
+    assert_eq!(
+        snap.results.first().map(|r| r.parameters.clone()),
+        Some(vec!["query".to_string()])
+    );
+    assert_eq!(
+        snap.results.first().map(|r| r.input_schema.clone()),
+        Some(schema)
+    );
 }
 
 #[test]
@@ -272,8 +293,14 @@ fn gateway_exact_canonical_name_match_returns_tool() {
 
     let snap = index.search_snapshot("slack__search", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "slack__search");
-    assert_eq!(snap.results[0].server_name, "slack");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("slack__search")
+    );
+    assert_eq!(
+        snap.results.first().map(|r| r.server_name.as_str()),
+        Some("slack")
+    );
 }
 
 #[test]
@@ -281,8 +308,14 @@ fn local_mcp_tool_indexing_still_uses_qualified_name() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(linear_tools()));
     let snap = index.search_snapshot("linear__save_issue", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "linear__save_issue");
-    assert_eq!(snap.results[0].server_name, "linear");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("linear__save_issue")
+    );
+    assert_eq!(
+        snap.results.first().map(|r| r.server_name.as_str()),
+        Some("linear")
+    );
 }
 
 #[test]
@@ -317,9 +350,12 @@ fn list_server_summaries_groups_gateway_tools_by_connector_id() {
     }]));
     let summaries = index.list_server_summaries();
     assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].name, "grafana");
-    assert_eq!(summaries[0].tool_count, 1);
-    assert_eq!(summaries[0].tool_names, vec!["search_dashboards"]);
+    assert_eq!(summaries.first().map(|s| s.name.as_str()), Some("grafana"));
+    assert_eq!(summaries.first().map(|s| s.tool_count), Some(1));
+    assert_eq!(
+        summaries.first().map(|s| s.tool_names.clone()),
+        Some(vec!["search_dashboards".to_string()])
+    );
 }
 
 #[test]
@@ -391,9 +427,15 @@ fn list_server_summaries_shows_server_with_zero_tools() {
     let index = Bm25ToolSearchIndex::new(make_snapshot_with_servers(vec![], servers));
     let summaries = index.list_server_summaries();
     assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].name, "empty_server");
-    assert_eq!(summaries[0].tool_count, 0);
-    assert_eq!(summaries[0].description.as_deref(), Some("No tools yet"));
+    assert_eq!(
+        summaries.first().map(|s| s.name.as_str()),
+        Some("empty_server")
+    );
+    assert_eq!(summaries.first().map(|s| s.tool_count), Some(0));
+    assert_eq!(
+        summaries.first().and_then(|s| s.description.as_deref()),
+        Some("No tools yet")
+    );
 }
 
 // -- exact match tests --
@@ -424,8 +466,8 @@ fn search_exact_qualified_name() {
     let snap = index.search_snapshot("grafana_observability_ui__SearchDashboards", 5);
     assert_eq!(snap.results.len(), 1);
     assert_eq!(
-        snap.results[0].tool_name,
-        "grafana_observability_ui__SearchDashboards"
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana_observability_ui__SearchDashboards")
     );
 }
 
@@ -454,8 +496,8 @@ fn search_exact_bare_tool_name() {
     let snap = index.search_snapshot("SearchDashboards", 5);
     assert_eq!(snap.results.len(), 1);
     assert_eq!(
-        snap.results[0].tool_name,
-        "grafana_observability_ui__SearchDashboards"
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana_observability_ui__SearchDashboards")
     );
 }
 
@@ -474,8 +516,8 @@ fn search_exact_match_case_insensitive() {
     let snap = index.search_snapshot("searchdashboards", 5);
     assert_eq!(snap.results.len(), 1);
     assert_eq!(
-        snap.results[0].tool_name,
-        "grafana_observability_ui__SearchDashboards"
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana_observability_ui__SearchDashboards")
     );
 }
 
@@ -506,7 +548,10 @@ fn search_exact_bare_name_ambiguous_returns_first_match() {
     // Bare name "fetch" returns server_a (first in the Vec) and silently ignores server_b
     let snap = index.search_snapshot("fetch", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "server_a__fetch");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("server_a__fetch")
+    );
     // server_b__fetch is never returned; the model can't discover it without knowing the qualified name
 }
 
@@ -646,7 +691,10 @@ fn e2e_exact_qualified_name_grafana() {
 
     let snap = index.search_snapshot("grafana-ai__SearchDashboards", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "grafana-ai__SearchDashboards");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__SearchDashboards")
+    );
 }
 
 #[test]
@@ -655,7 +703,10 @@ fn e2e_exact_bare_tool_name_grafana() {
 
     let snap = index.search_snapshot("SearchDashboards", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "grafana-ai__SearchDashboards");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__SearchDashboards")
+    );
 }
 
 #[test]
@@ -683,7 +734,8 @@ fn e2e_exact_match_other_grafana_tools() {
             "query {query:?} should return exactly 1 result"
         );
         assert_eq!(
-            snap.results[0].tool_name, expected,
+            snap.results.first().map(|r| r.tool_name.as_str()),
+            Some(expected),
             "query {query:?} should match {expected:?}"
         );
     }
@@ -695,11 +747,17 @@ fn e2e_exact_match_mattermost() {
 
     let snap = index.search_snapshot("mattermost__SearchPosts", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "mattermost__SearchPosts");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("mattermost__SearchPosts")
+    );
 
     let snap = index.search_snapshot("SearchPosts", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "mattermost__SearchPosts");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("mattermost__SearchPosts")
+    );
 }
 
 #[test]
@@ -709,7 +767,10 @@ fn e2e_exact_match_case_insensitive_grafana() {
     // Model might lowercase the qualified name
     let snap = index.search_snapshot("grafana-ai__searchdashboards", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "grafana-ai__SearchDashboards");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__SearchDashboards")
+    );
 }
 
 #[test]
@@ -722,7 +783,8 @@ fn e2e_fuzzy_search_dashboards() {
         "fuzzy 'search dashboards' should return results"
     );
     assert_eq!(
-        snap.results[0].tool_name, "grafana-ai__SearchDashboards",
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__SearchDashboards"),
         "'search dashboards' should rank SearchDashboards first"
     );
 }
@@ -737,7 +799,8 @@ fn e2e_fuzzy_grafana_alert() {
         "fuzzy 'delete alert rule' should return results"
     );
     assert_eq!(
-        snap.results[0].tool_name, "grafana-ai__DeleteAlertRule",
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__DeleteAlertRule"),
         "'delete alert rule' should rank DeleteAlertRule first"
     );
 }
@@ -752,7 +815,8 @@ fn e2e_fuzzy_datasources() {
         "fuzzy 'list datasources prometheus' should return results"
     );
     assert_eq!(
-        snap.results[0].tool_name, "grafana-ai__ListDatasources",
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__ListDatasources"),
         "'list datasources prometheus' should rank ListDatasources first"
     );
 }
@@ -1066,7 +1130,10 @@ fn fmt_exact_simple_snake() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("linear__save_issue", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "linear__save_issue");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("linear__save_issue")
+    );
 }
 
 #[test]
@@ -1074,7 +1141,10 @@ fn fmt_exact_simple_camel() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("linear__getIssueDetails", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "linear__getIssueDetails");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("linear__getIssueDetails")
+    );
 }
 
 #[test]
@@ -1082,7 +1152,10 @@ fn fmt_exact_kebab_pascal() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("grafana-ai__SearchDashboards", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "grafana-ai__SearchDashboards");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__SearchDashboards")
+    );
 }
 
 #[test]
@@ -1091,8 +1164,8 @@ fn fmt_exact_snake_server_snake_tool() {
     let snap = index.search_snapshot("grok_com_slack__slack_send_message", 5);
     assert_eq!(snap.results.len(), 1);
     assert_eq!(
-        snap.results[0].tool_name,
-        "grok_com_slack__slack_send_message"
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grok_com_slack__slack_send_message")
     );
 }
 
@@ -1102,8 +1175,8 @@ fn fmt_exact_snake_server_pascal_tool() {
     let snap = index.search_snapshot("grok_com_chronosphere__QueryPrometheusRange", 5);
     assert_eq!(snap.results.len(), 1);
     assert_eq!(
-        snap.results[0].tool_name,
-        "grok_com_chronosphere__QueryPrometheusRange"
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grok_com_chronosphere__QueryPrometheusRange")
     );
 }
 
@@ -1112,7 +1185,10 @@ fn fmt_exact_simple_kebab_tool() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("notion__notion-search", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "notion__notion-search");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("notion__notion-search")
+    );
 }
 
 #[test]
@@ -1120,7 +1196,10 @@ fn fmt_exact_simple_single_word() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("jira__fetch", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "jira__fetch");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("jira__fetch")
+    );
 }
 
 #[test]
@@ -1128,7 +1207,10 @@ fn fmt_exact_kebab_server_snake_tool() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("my-server__get_user_info", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "my-server__get_user_info");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("my-server__get_user_info")
+    );
 }
 
 #[test]
@@ -1136,7 +1218,10 @@ fn fmt_exact_kebab_server_camel_tool() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("my-server__listProjects", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "my-server__listProjects");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("my-server__listProjects")
+    );
 }
 
 // ── Exact match: bare tool names ────────────────────────────────
@@ -1146,7 +1231,10 @@ fn fmt_bare_snake_case() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("save_issue", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "linear__save_issue");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("linear__save_issue")
+    );
 }
 
 #[test]
@@ -1154,7 +1242,10 @@ fn fmt_bare_camel_case() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("getIssueDetails", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "linear__getIssueDetails");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("linear__getIssueDetails")
+    );
 }
 
 #[test]
@@ -1162,7 +1253,10 @@ fn fmt_bare_pascal_case() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("SearchDashboards", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "grafana-ai__SearchDashboards");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__SearchDashboards")
+    );
 }
 
 #[test]
@@ -1170,7 +1264,10 @@ fn fmt_bare_kebab_case() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("notion-search", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "notion__notion-search");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("notion__notion-search")
+    );
 }
 
 #[test]
@@ -1178,7 +1275,10 @@ fn fmt_bare_single_word() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("fetch", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "jira__fetch");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("jira__fetch")
+    );
 }
 
 // ── Exact match: case insensitivity across formats ──────────────
@@ -1188,7 +1288,10 @@ fn fmt_case_insensitive_qualified_kebab_pascal() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("GRAFANA-AI__SEARCHDASHBOARDS", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "grafana-ai__SearchDashboards");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__SearchDashboards")
+    );
 }
 
 #[test]
@@ -1197,8 +1300,8 @@ fn fmt_case_insensitive_qualified_snake_snake() {
     let snap = index.search_snapshot("GROK_COM_SLACK__SLACK_SEND_MESSAGE", 5);
     assert_eq!(snap.results.len(), 1);
     assert_eq!(
-        snap.results[0].tool_name,
-        "grok_com_slack__slack_send_message"
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grok_com_slack__slack_send_message")
     );
 }
 
@@ -1207,7 +1310,10 @@ fn fmt_case_insensitive_bare_camel() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("getissuedetails", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "linear__getIssueDetails");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("linear__getIssueDetails")
+    );
 }
 
 // ── Whitespace handling ─────────────────────────────────────────
@@ -1217,7 +1323,10 @@ fn fmt_leading_trailing_whitespace() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("  SearchDashboards  ", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "grafana-ai__SearchDashboards");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__SearchDashboards")
+    );
 }
 
 #[test]
@@ -1225,7 +1334,10 @@ fn fmt_whitespace_qualified() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("  linear__save_issue  ", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "linear__save_issue");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("linear__save_issue")
+    );
 }
 
 // ── Server name alone should NOT exact match ────────────────────
@@ -1237,7 +1349,7 @@ fn fmt_server_name_only_falls_through() {
     let snap = index.search_snapshot("linear", 5);
     // BM25 may return multiple tools from the linear server
     assert!(
-        snap.results.len() != 1 || snap.results[0].tool_name != "linear",
+        !matches!(snap.results.as_slice(), [r] if r.tool_name == "linear"),
         "server name alone should not be an exact tool match"
     );
 }
@@ -1276,7 +1388,9 @@ fn fmt_wrong_server_prefix_falls_through() {
     let snap = index.search_snapshot("slack__SearchDashboards", 5);
     // Not an exact match, so results.len() > 1 or different ordering is fine
     assert!(
-        snap.results.is_empty() || snap.results[0].tool_name != "slack__SearchDashboards",
+        snap.results
+            .first()
+            .is_none_or(|r| r.tool_name != "slack__SearchDashboards"),
         "hallucinated qualified name should not exact match"
     );
 }
@@ -1286,7 +1400,9 @@ fn fmt_wrong_tool_name_falls_through() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(mcp_format_tools()));
     let snap = index.search_snapshot("linear__create_issue", 5);
     assert!(
-        snap.results.is_empty() || snap.results[0].tool_name != "linear__create_issue",
+        snap.results
+            .first()
+            .is_none_or(|r| r.tool_name != "linear__create_issue"),
         "nonexistent tool should not exact match"
     );
 }
@@ -1720,8 +1836,8 @@ fn haystack_exact_qualified_name() {
     let snap = index.search_snapshot("grok_com_slack__slack_search_public", 5);
     assert_eq!(snap.results.len(), 1);
     assert_eq!(
-        snap.results[0].tool_name,
-        "grok_com_slack__slack_search_public"
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grok_com_slack__slack_search_public")
     );
 }
 
@@ -1731,8 +1847,8 @@ fn haystack_exact_bare_name() {
     let snap = index.search_snapshot("slack_search_public", 5);
     assert_eq!(snap.results.len(), 1);
     assert_eq!(
-        snap.results[0].tool_name,
-        "grok_com_slack__slack_search_public"
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grok_com_slack__slack_search_public")
     );
 }
 
@@ -1741,7 +1857,10 @@ fn haystack_exact_notion_kebab() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(production_haystack()));
     let snap = index.search_snapshot("notion-search", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "notion__notion-search");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("notion__notion-search")
+    );
 }
 
 #[test]
@@ -1749,7 +1868,10 @@ fn haystack_exact_grafana_pascal() {
     let index = Bm25ToolSearchIndex::new(make_snapshot(production_haystack()));
     let snap = index.search_snapshot("SearchDashboards", 5);
     assert_eq!(snap.results.len(), 1);
-    assert_eq!(snap.results[0].tool_name, "grafana-ai__SearchDashboards");
+    assert_eq!(
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grafana-ai__SearchDashboards")
+    );
 }
 
 // ── Needle-in-haystack: BM25 fuzzy queries ──────────────────────
@@ -1973,8 +2095,8 @@ fn haystack_underscore_joined_natural_query() {
     let snap = index.search_snapshot("slack_send_message", 5);
     // Exact match on bare tool name catches this
     assert_eq!(
-        snap.results[0].tool_name,
-        "grok_com_slack__slack_send_message"
+        snap.results.first().map(|r| r.tool_name.as_str()),
+        Some("grok_com_slack__slack_send_message")
     );
 }
 

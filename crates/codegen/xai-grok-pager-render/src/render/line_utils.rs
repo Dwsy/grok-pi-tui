@@ -4,6 +4,7 @@ use unicode_width::UnicodeWidthStr;
 
 pub use super::tool_paths::{path_basename, path_for_tool_header, shorten_path};
 pub use crate::util::byte_offset_at_width;
+pub use xai_tty_utils::is_unsafe_display_char;
 
 /// Clone a borrowed ratatui `Line` into an owned `'static` line.
 pub fn line_to_static(line: &Line<'_>) -> Line<'static> {
@@ -26,21 +27,6 @@ pub fn push_owned_lines(src: &[Line<'_>], out: &mut Vec<Line<'static>>) {
     for l in src {
         out.push(line_to_static(l));
     }
-}
-
-/// True for a character unsafe to render from untrusted or server-supplied text.
-/// C0/C1 controls can inject terminal escapes; the bidi-control and zero-width format characters enable Trojan-Source spoofing.
-/// Every place that scrubs untrusted text (chip labels, toast error scrub, the settings editor input) calls this so the set never drifts.
-pub fn is_unsafe_display_char(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{061C}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{206F}'
-            | '\u{FEFF}'
-        )
 }
 
 /// Polyfill for nightly-only [`str::floor_char_boundary`].
@@ -167,7 +153,10 @@ pub fn fit_line_to_width<'a>(line: Line<'a>, width: usize) -> Line<'a> {
 
 /// Take the first `n` display columns from a string.
 fn take_width(s: &str, n: usize) -> String {
-    s[..byte_offset_at_width(s, n)].to_string()
+    let Some(prefix) = s.get(..byte_offset_at_width(s, n)) else {
+        return String::new();
+    };
+    prefix.to_owned()
 }
 
 /// Fit `(type, description, activity, meta)` in `avail`. Drop description first, then meta, then truncate activity, then type.
@@ -222,25 +211,6 @@ pub fn cascade_truncate(
 mod tests {
     use super::*;
 
-    #[test]
-    fn is_unsafe_display_char_covers_controls_and_bidi_format() {
-        // Safe: ordinary printable text (incl. legitimate RTL letters).
-        for c in ['a', ' ', '/', '\u{00e9}', '\u{05d0}'] {
-            assert!(!is_unsafe_display_char(c), "{c:?} must be safe");
-        }
-        // Unsafe: C0/C1 controls plus the full bidi-control and zero-width set
-        for c in [
-            '\u{1b}', '\n', '\t', '\u{061C}', '\u{200B}', '\u{200F}', '\u{202E}', '\u{2066}',
-            '\u{2069}', '\u{206F}', '\u{FEFF}',
-        ] {
-            assert!(
-                is_unsafe_display_char(c),
-                "{:#06x} must be unsafe",
-                c as u32
-            );
-        }
-    }
-
     // ── truncate_line tests ─────────────────────────────────────────
 
     #[test]
@@ -248,8 +218,11 @@ mod tests {
         let line = Line::from(vec![Span::raw("Hello "), Span::raw("world")]);
         let result = truncate_line(line, 20);
         assert_eq!(result.spans.len(), 2);
-        assert_eq!(result.spans[0].content.as_ref(), "Hello ");
-        assert_eq!(result.spans[1].content.as_ref(), "world");
+        let [a, b] = result.spans.as_slice() else {
+            panic!("expected two spans: {:?}", result.spans);
+        };
+        assert_eq!(a.content.as_ref(), "Hello ");
+        assert_eq!(b.content.as_ref(), "world");
     }
 
     #[test]
@@ -370,9 +343,11 @@ mod tests {
         let line = Line::from(vec![Span::styled("hi", bold)]);
         let out = fit_line_to_width(line, 5);
         assert_eq!(line_text(&out).width(), 5);
+        let Some(span) = out.spans.first() else {
+            panic!("expected a span: {:?}", out.spans);
+        };
         assert!(
-            out.spans[0]
-                .style
+            span.style
                 .add_modifier
                 .contains(ratatui::style::Modifier::BOLD)
         );

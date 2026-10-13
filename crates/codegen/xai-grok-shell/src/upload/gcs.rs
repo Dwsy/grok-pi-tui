@@ -62,7 +62,7 @@ impl StorageConfig for TraceExportConfigWithAuth {
                 am.clone(),
                 deployment_key.clone(),
                 alpha_test_key.clone(),
-                std::sync::Arc::new(crate::managed_config::resolve_deployment_id),
+                std::sync::Arc::new(xai_grok_cloud_config::managed_config::resolve_deployment_id),
             ),
         ))
     }

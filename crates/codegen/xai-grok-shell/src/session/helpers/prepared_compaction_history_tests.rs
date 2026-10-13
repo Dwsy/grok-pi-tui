@@ -1,4 +1,5 @@
 use super::*;
+use xai_chat_state::image_budget::IMAGE_COMPACT_TRIGGER_BYTES;
 use xai_grok_sampling_types::ContentPart;
 
 fn data_image(bytes: usize) -> ContentPart {
@@ -11,11 +12,11 @@ fn data_image(bytes: usize) -> ContentPart {
 #[test]
 fn reserved_tool_headroom_triggers_small_history_once() {
     let source = vec![ConversationItem::user_with_parts(vec![data_image(500)])];
-    let unreserved = build_compaction_chat_history(source.clone(), None, true, 0);
+    let unreserved = build_compaction_chat_history(source.clone(), None, true, None, 0);
     let effective_trigger = unreserved.image_budget.body_bytes.saturating_sub(1);
     let reserved_bytes = IMAGE_COMPACT_TRIGGER_BYTES.saturating_sub(effective_trigger);
     let reserved_tokens = u64::try_from(reserved_bytes.div_ceil(4)).unwrap();
-    let prepared = build_compaction_chat_history(source, None, true, reserved_tokens);
+    let prepared = build_compaction_chat_history(source, None, true, None, reserved_tokens);
 
     assert!(!unreserved.image_budget.needs_image_compaction);
     assert!(prepared.image_budget.needs_image_compaction);
@@ -27,7 +28,7 @@ fn reserved_tool_headroom_triggers_small_history_once() {
 
     let expected_items = serde_json::to_value(&prepared.items).unwrap();
     let expected_budget = prepared.image_budget;
-    let final_boundary = CompactionHistoryInput::from(prepared).prepare(u64::MAX);
+    let final_boundary = CompactionHistoryInput::from(prepared).prepare(None, u64::MAX);
     assert_eq!(final_boundary.image_budget, expected_budget);
     assert_eq!(
         serde_json::to_value(final_boundary.items).unwrap(),
@@ -44,15 +45,15 @@ fn compaction_summary_input_projects_agent_message_once_and_keeps_source_raw() {
     let source = vec![ConversationItem::agent_message(&raw)];
     let source_serialized = serde_json::to_vec(&source).unwrap();
 
-    let prepared = build_compaction_chat_history(source.clone(), None, true, 0);
-    let final_boundary = CompactionHistoryInput::from(prepared).prepare(0);
+    let prepared = build_compaction_chat_history(source.clone(), None, true, None, 0);
+    let final_boundary = CompactionHistoryInput::from(prepared).prepare(None, 0);
 
     assert_eq!(
-        final_boundary.items[0].text_content(),
-        format!(
+        final_boundary.items.first().map(|i| i.text_content()),
+        Some(format!(
             "{}\n{raw}",
             xai_chat_state::compaction_utils::AGENT_MESSAGE_MODEL_LABEL
-        )
+        ))
     );
     assert_eq!(serde_json::to_vec(&source).unwrap(), source_serialized);
 }
@@ -65,10 +66,15 @@ fn prepared_image_only_agent_history_cannot_be_projected_again() {
     };
     image_only.content = vec![data_image(100)];
 
-    let prepared =
-        build_compaction_chat_history(vec![ConversationItem::User(image_only)], None, true, 0);
-    let final_boundary = CompactionHistoryInput::from(prepared).prepare(0);
-    let ConversationItem::User(user) = &final_boundary.items[0] else {
+    let prepared = build_compaction_chat_history(
+        vec![ConversationItem::User(image_only)],
+        None,
+        true,
+        None,
+        0,
+    );
+    let final_boundary = CompactionHistoryInput::from(prepared).prepare(None, 0);
+    let Some(ConversationItem::User(user)) = final_boundary.items.first() else {
         panic!("prepared agent message must stay a user item");
     };
     assert!(matches!(
@@ -87,11 +93,11 @@ fn no_image_history_preserves_non_agent_message_prefix_before_prompt() {
         ConversationItem::tool_result("call-1", "tool text"),
     ];
     let source_serialized = serde_json::to_value(&source).unwrap();
-    let request = build_compaction_chat_history(source.clone(), None, true, 0);
+    let request = build_compaction_chat_history(source.clone(), None, true, None, 0);
 
     assert_eq!(request.image_budget.inline_images, 0);
     assert_eq!(
-        serde_json::to_value(&request.items[..source.len()]).unwrap(),
+        serde_json::to_value(request.items.get(..source.len()).unwrap_or(&[])).unwrap(),
         source_serialized
     );
 }

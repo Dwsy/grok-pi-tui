@@ -19,12 +19,15 @@ async fn minimal_slash_dropdown_dismisses_with_esc() {
         .expect("slash dropdown open above the prompt");
 
     harness.inject_keys(keys::ESC).expect("press esc");
-    harness.update(Duration::from_millis(400));
+    harness
+        .wait_for_text_absent("Switch the active model", Duration::from_secs(10))
+        .expect("slash dropdown dismissed after Esc");
 
+    harness.update(Duration::from_millis(200));
     let screen = harness.screen_contents();
     assert!(
         !screen.contains("Switch the active model"),
-        "Esc must dismiss the slash dropdown\nscreen:\n{screen}"
+        "Esc must keep the slash dropdown closed\nscreen:\n{screen}"
     );
     // Dismiss only: Esc must not fall through to the idle clear or open rewind
     assert!(

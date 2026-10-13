@@ -594,27 +594,16 @@ fn fork_summary(
         worktree_label: target_worktree_identity
             .as_ref()
             .map(|identity| identity.label.clone()),
-        agent_name: source.agent_name,
+        agent: source.agent.clone(),
         sandbox_profile: source.sandbox_profile,
         reasoning_effort: source.reasoning_effort,
-        // Full forks keep the parent's last turn
-        // Partial forks (`target_prompt_index`) may drop that turn, so clear the summary rather than showing work not in the child conversation
-        last_turn_summary: if options.target_prompt_index.is_some() {
-            None
-        } else {
-            source.last_turn_summary
-        },
-        last_turn_summary_prompt_id: if options.target_prompt_index.is_some() {
-            None
-        } else {
-            source.last_turn_summary_prompt_id
-        },
-        // A recap describes the parent's whole session; a partial fork may not contain that work, so clear it there and keep it for full forks
-        last_recap: if options.target_prompt_index.is_some() {
-            None
-        } else {
-            source.last_recap
-        },
+        context_window: source.context_window,
+        last_turn_summary: inherit_for_full_fork(options, source.last_turn_summary),
+        last_turn_summary_prompt_id: inherit_for_full_fork(
+            options,
+            source.last_turn_summary_prompt_id,
+        ),
+        last_recap: inherit_for_full_fork(options, source.last_recap),
     };
     if options.session_kind.is_none()
         && let Some(identity) = &target_worktree_identity
@@ -626,6 +615,16 @@ fn fork_summary(
         }
     }
     summary
+}
+
+/// Full forks keep the parent's turn-derived fields (last turn summary, its prompt id, the recap).
+/// Partial forks (`target_prompt_index`) may drop the work they describe, so clear them rather than showing work not in the child conversation.
+fn inherit_for_full_fork(options: &CopySessionOptions, value: Option<String>) -> Option<String> {
+    if options.target_prompt_index.is_some() {
+        None
+    } else {
+        value
+    }
 }
 
 /// Remove `announced_failed_servers` from a copied `announcement_state.json`, preserving every other field (including ones this build doesn't know).

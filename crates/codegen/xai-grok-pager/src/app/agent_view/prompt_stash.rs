@@ -1,11 +1,13 @@
 //! One composer draft set aside for later, stashed by Ctrl+S / Alt+S or by a double-Esc clear.
 //! The chord on an empty composer brings it back, and a chord stash also returns on its own after the next prompt is sent.
+//! Ctrl+Z pressed right after the stash pops it.
 //!
 //! `prompt.rs` routes the chord here; `dispatch::prompt` calls the post-send restore.
 
 use super::{AgentView, PromptInputMode, PromptMode};
 use crate::app::app_view::InputOutcome;
 use crate::views::prompt_widget::StashedPrompt;
+use crossterm::event::KeyEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StashCause {
@@ -21,6 +23,7 @@ pub struct PromptStashEntry {
     pub prompt: StashedPrompt,
     pub input_mode: PromptInputMode,
     pub cause: StashCause,
+    pub undo_armed: bool,
 }
 
 impl PromptStashEntry {
@@ -67,13 +70,13 @@ impl AgentView {
             prompt: self.prompt.stash(),
             input_mode: self.prompt_input_mode,
             cause,
+            undo_armed: true,
         };
         self.prompt.set_text("");
         // Or undo puts the draft back while the slot still holds it, and the next send restores a second copy over the top
         self.prompt.clear_history();
 
         // A second stash discards the draft in the slot
-        // The history does not hold it: `Ctrl+S` was the only way back
         self.prompt_stash = Some(entry);
 
         self.note_stash_change_in_minimal(
@@ -163,6 +166,27 @@ impl AgentView {
         InputOutcome::Changed
     }
 
+    /// Ctrl+Z as the first key after a stash pops the slot; `None` leaves the key to the widget.
+    pub(super) fn pop_stash_on_undo_key(&mut self, key: &KeyEvent) -> Option<InputOutcome> {
+        // A bracketed paste lands without a key press
+        let composer_untouched = self.prompt.text().is_empty() && self.prompt.images.is_empty();
+        if !crate::input::key::is_undo_key(key)
+            || self.paste_probe_in_flight > 0
+            || !composer_untouched
+        {
+            return None;
+        }
+
+        match self.handle_stash_prompt_key() {
+            InputOutcome::Unchanged => None,
+            outcome => {
+                // The restore pushed a checkpoint; a held Ctrl+Z must stop here
+                self.prompt.clear_history();
+                Some(outcome)
+            }
+        }
+    }
+
     /// Minimal mode draws no prompt border and never renders toasts, so a scrollback line is the only surface left.
     fn note_stash_change_in_minimal(&mut self, text: &str) {
         if self.is_minimal_mode() {
@@ -181,6 +205,7 @@ impl AgentView {
     fn restore_stash_entry(&mut self, entry: PromptStashEntry) {
         self.prompt_input_mode = entry.input_mode;
         self.prompt.restore(entry.prompt);
+        self.prompt.set_cursor(self.prompt.text().len());
         self.prompt.refresh_slash(&self.session.models);
     }
 }
@@ -258,7 +283,11 @@ mod tests {
             );
             assert_eq!(agent.prompt.text(), "half-typed thought");
             assert!(agent.prompt_stash.is_none());
-            assert_eq!(agent.prompt.cursor(), 4, "cursor returns to where it was");
+            assert_eq!(
+                agent.prompt.cursor(),
+                agent.prompt.text().len(),
+                "cursor is at the end of the restored draft"
+            );
         }
     }
 
@@ -388,21 +417,38 @@ mod tests {
         assert!(agent.prompt_stash.is_some());
     }
 
-    /// Undo would otherwise put the text back while the slot still holds it, and the next send restores the prompt just sent.
+    fn undo_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL)
+    }
+
     #[test]
-    fn undo_cannot_resurrect_a_stashed_draft() {
+    fn undo_right_after_the_stash_pops_it() {
         let mut agent = test_fixtures::make_agent();
         agent.prompt.set_text("a draft worth keeping");
-        agent.stash_prompt_draft(StashCause::Chord);
+        agent.handle_prompt_key_for_test(&chords()[0]);
 
-        let undone = agent.prompt.textarea.undo();
+        agent.handle_prompt_key_for_test(&undo_key());
 
-        assert!(!undone, "the stash left an undo step behind");
+        assert_eq!(agent.prompt.text(), "a draft worth keeping");
+        assert!(agent.prompt_stash.is_none());
+
+        agent.prompt.set_text("");
+        agent.auto_restore_stash_after_send();
         assert_eq!(agent.prompt.text(), "");
-        assert!(
-            agent.prompt_stash.is_some(),
-            "the slot still owns the draft"
-        );
+    }
+
+    #[test]
+    fn key_between_the_stash_and_undo_disarms_the_pop() {
+        let mut agent = test_fixtures::make_agent();
+        agent.prompt.set_text("parked draft");
+        agent.handle_prompt_key_for_test(&chords()[0]);
+        agent.handle_prompt_key_for_test(&KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+
+        agent.handle_prompt_key_for_test(&undo_key());
+        agent.handle_prompt_key_for_test(&undo_key());
+
+        assert_eq!(agent.prompt.text(), "");
+        assert!(agent.prompt_stash.is_some());
     }
 
     /// The live chord refuses to stash a queued-row edit, so the deferred chord has to refuse it too.

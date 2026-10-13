@@ -170,9 +170,21 @@ fn same_head_and_base_fetches_once() {
     assert_eq!(outcome, EnsureCommitsOutcome::Fetched);
     let fetches = git.fetches.lock().expect("fetches lock");
     assert_eq!(fetches.len(), 1);
-    assert_eq!(fetches[0].0, HEAD);
+    assert_eq!(
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .0,
+        HEAD
+    );
     // Identical oids do not reserve a second fetch slice.
-    assert_timeout_about(fetches[0].1, RESTORE_FETCH_BUDGET);
+    assert_timeout_about(
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .1,
+        RESTORE_FETCH_BUDGET,
+    );
 }
 
 #[test]
@@ -257,8 +269,8 @@ fn origin_fetch_spec_maps_local_tracking_names() {
         ("abc1234", None),
         ("ABC1234", None),
         ("aaaaaaaa", None),
-        (&HEAD[..7], None),
-        (&HEAD[..39], None),
+        (HEAD.get(..7).unwrap_or(HEAD), None),
+        (HEAD.get(..39).unwrap_or(HEAD), None),
     ];
     for (value, expected) in cases {
         assert_eq!(
@@ -333,26 +345,56 @@ fn both_missing_head_timeout_reserves_base_slice() {
     assert_eq!(outcome, EnsureCommitsOutcome::Fetched);
     let fetches = git.fetches.lock().expect("fetches lock");
     assert_eq!(fetches.len(), 2);
-    assert_eq!(fetches[0].0, HEAD);
-    assert_eq!(fetches[1].0, BASE);
+    assert_eq!(
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .0,
+        HEAD
+    );
+    assert_eq!(
+        fetches
+            .get(1)
+            .unwrap_or_else(|| panic!("expected fetch 1"))
+            .0,
+        BASE
+    );
     assert_timeout_about(
-        fetches[0].1,
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .1,
         RESTORE_FETCH_BUDGET
             .saturating_sub(RESTORE_FETCH_BASE_RESERVE)
             .saturating_sub(RESTORE_FETCH_TEARDOWN_RESERVE),
     );
     assert!(
-        fetches[0].1 + RESTORE_FETCH_TEARDOWN_RESERVE + RESTORE_FETCH_BASE_RESERVE
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .1
+            + RESTORE_FETCH_TEARDOWN_RESERVE
+            + RESTORE_FETCH_BASE_RESERVE
             <= RESTORE_FETCH_BUDGET,
         "head timeout {:?} + teardown {:?} must leave base reserve {:?}",
-        fetches[0].1,
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .1,
         RESTORE_FETCH_TEARDOWN_RESERVE,
         RESTORE_FETCH_BASE_RESERVE,
     );
     assert!(
-        fetches[1].1 >= RESTORE_FETCH_BASE_RESERVE,
+        fetches
+            .get(1)
+            .unwrap_or_else(|| panic!("expected fetch 1"))
+            .1
+            >= RESTORE_FETCH_BASE_RESERVE,
         "base timeout {:?} should keep at least the reserve",
-        fetches[1].1
+        fetches
+            .get(1)
+            .unwrap_or_else(|| panic!("expected fetch 1"))
+            .1
     );
 }
 
@@ -364,8 +406,20 @@ fn head_fetch_uses_full_budget_when_base_already_present() {
     assert_eq!(outcome, EnsureCommitsOutcome::Fetched);
     let fetches = git.fetches.lock().expect("fetches lock");
     assert_eq!(fetches.len(), 1);
-    assert_eq!(fetches[0].0, HEAD);
-    assert_timeout_about(fetches[0].1, RESTORE_FETCH_BUDGET);
+    assert_eq!(
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .0,
+        HEAD
+    );
+    assert_timeout_about(
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .1,
+        RESTORE_FETCH_BUDGET,
+    );
 }
 
 #[test]
@@ -377,8 +431,20 @@ fn head_fetch_uses_full_budget_when_base_is_not_an_oid() {
     assert_eq!(outcome, EnsureCommitsOutcome::Fetched);
     let fetches = git.fetches.lock().expect("fetches lock");
     assert_eq!(fetches.len(), 1);
-    assert_eq!(fetches[0].0, HEAD);
-    assert_timeout_about(fetches[0].1, RESTORE_FETCH_BUDGET);
+    assert_eq!(
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .0,
+        HEAD
+    );
+    assert_timeout_about(
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .1,
+        RESTORE_FETCH_BUDGET,
+    );
 }
 
 #[test]
@@ -395,11 +461,29 @@ fn low_remaining_budget_skips_head_to_reserve_base_fetch() {
     assert!(err.to_string().contains("budget exhausted"), "got: {err}");
     let fetches = git.fetches.lock().expect("fetches lock");
     assert_eq!(fetches.len(), 1, "only base should be fetched: {fetches:?}");
-    assert_eq!(fetches[0].0, BASE);
+    assert_eq!(
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .0,
+        BASE
+    );
     assert!(
-        fetches[0].1 > Duration::ZERO && fetches[0].1 <= Duration::from_secs(5),
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .1
+            > Duration::ZERO
+            && fetches
+                .first()
+                .unwrap_or_else(|| panic!("expected fetch 0"))
+                .1
+                <= Duration::from_secs(5),
         "base timeout {:?}",
-        fetches[0].1
+        fetches
+            .first()
+            .unwrap_or_else(|| panic!("expected fetch 0"))
+            .1
     );
 }
 

@@ -303,7 +303,7 @@ fn shorten_path(path: &str) -> &str {
     if let Some(rest) = path.strip_prefix(&memory_prefix) {
         let rest = rest.strip_prefix('/').unwrap_or(rest);
         if let Some(after_slash) = rest.find('/') {
-            return &rest[after_slash + 1..];
+            return rest.get(after_slash + 1..).unwrap_or(rest);
         }
         return rest;
     }
@@ -332,25 +332,34 @@ pub fn parse_memory_results(output: &str) -> Vec<MemoryResult> {
 
         // Line 0: "1 (score: 0.72, source: global)"
         if let Some(first) = lines.first() {
-            if let Some(score_start) = first.find("score: ") {
-                let after = &first[score_start + 7..];
-                if let Some(end) = after.find(',') {
-                    score = after[..end].parse().unwrap_or(0.0);
-                }
+            if let Some(score_start) = first.find("score: ")
+                && let Some(after) = first.get(score_start + 7..)
+                && let Some(end) = after.find(',')
+                && let Some(score_str) = after.get(..end)
+            {
+                score = score_str.parse().unwrap_or(0.0);
             }
-            if let Some(src_start) = first.find("source: ") {
-                let after = &first[src_start + 8..];
+            if let Some(src_start) = first.find("source: ")
+                && let Some(after) = first.get(src_start + 8..)
+            {
                 let end = after.find(')').unwrap_or(after.len());
-                source = after[..end].to_string();
+                if let Some(src) = after.get(..end) {
+                    source = src.to_string();
+                }
             }
         }
 
         // Line 1: "**File:** /path (lines 10-25)"
-        for line in &lines[1..] {
+        for line in lines.iter().skip(1) {
             if let Some(rest) = line.strip_prefix("**File:** ") {
                 if let Some(paren) = rest.find(" (lines ") {
-                    path = rest[..paren].to_string();
-                    let range_str = &rest[paren + 8..];
+                    let Some(path_str) = rest.get(..paren) else {
+                        continue;
+                    };
+                    path = path_str.to_string();
+                    let Some(range_str) = rest.get(paren + 8..) else {
+                        continue;
+                    };
                     let range_str = range_str.trim_end_matches(')');
                     if let Some((s, e)) = range_str.split_once('-') {
                         start_line = s.parse().unwrap_or(0);
@@ -364,11 +373,12 @@ pub fn parse_memory_results(output: &str) -> Vec<MemoryResult> {
 
         // Extract snippet between ``` markers
         let full = section;
-        if let Some(code_start) = full.find("```\n") {
-            let after_start = &full[code_start + 4..];
-            if let Some(code_end) = after_start.find("\n```") {
-                snippet = after_start[..code_end].to_string();
-            }
+        if let Some(code_start) = full.find("```\n")
+            && let Some(after_start) = full.get(code_start + 4..)
+            && let Some(code_end) = after_start.find("\n```")
+            && let Some(body) = after_start.get(..code_end)
+        {
+            snippet = body.to_string();
         }
 
         if !path.is_empty() || !snippet.is_empty() {
@@ -403,12 +413,15 @@ mod tests {
 "#;
         let results = parse_memory_results(output);
         assert_eq!(results.len(), 1);
-        assert!((results[0].score - 0.72).abs() < 0.01);
-        assert_eq!(results[0].source, "global");
-        assert_eq!(results[0].path, "/root/.grok/memory/MEMORY.md");
-        assert_eq!(results[0].start_line, 0);
-        assert_eq!(results[0].end_line, 10);
-        assert!(results[0].snippet.contains("graphite"));
+        let Some(r0) = results.first() else {
+            panic!("expected one result: {results:?}");
+        };
+        assert!((r0.score - 0.72).abs() < 0.01);
+        assert_eq!(r0.source, "global");
+        assert_eq!(r0.path, "/root/.grok/memory/MEMORY.md");
+        assert_eq!(r0.start_line, 0);
+        assert_eq!(r0.end_line, 10);
+        assert!(r0.snippet.contains("graphite"));
     }
 
     #[test]
@@ -429,10 +442,13 @@ session content
 "#;
         let results = parse_memory_results(output);
         assert_eq!(results.len(), 2);
-        assert!((results[0].score - 0.85).abs() < 0.01);
-        assert_eq!(results[0].source, "workspace");
-        assert!((results[1].score - 0.42).abs() < 0.01);
-        assert_eq!(results[1].source, "session");
+        let [r0, r1] = results.as_slice() else {
+            panic!("expected two results: {results:?}");
+        };
+        assert!((r0.score - 0.85).abs() < 0.01);
+        assert_eq!(r0.source, "workspace");
+        assert!((r1.score - 0.42).abs() < 0.01);
+        assert_eq!(r1.source, "session");
     }
 
     #[test]

@@ -350,7 +350,7 @@ fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
     for delimiter in ["\n---\n", "\n---\r\n", "\r\n---\r\n", "\r\n---\n"] {
         if let Some(index) = rest.find(delimiter) {
             let body_start = index + delimiter.len();
-            return Some((&rest[..index], &rest[body_start..]));
+            return Some((rest.get(..index)?, rest.get(body_start..)?));
         }
     }
 
@@ -478,6 +478,7 @@ mod tests {
         ));
         resources.insert(Params(ReadFileParams {
             cursor_rules_on_read: true,
+            ..Default::default()
         }));
         resources.into_shared()
     }
@@ -671,7 +672,11 @@ mod tests {
         append_new_rules(&mut rules, second);
 
         assert_eq!(rules.len(), 1, "repeated scans should dedupe by rule path");
-        assert!(rules[0].body.contains("Use Rust rules."));
+        assert!(
+            rules
+                .first()
+                .is_some_and(|r| r.body.contains("Use Rust rules."))
+        );
     }
 
     #[tokio::test]

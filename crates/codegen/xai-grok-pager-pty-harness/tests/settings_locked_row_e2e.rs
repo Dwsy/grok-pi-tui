@@ -3,11 +3,14 @@
 //!
 //! - ZDR team (`team_blocked_reasons` = `BLOCKED_REASON_NO_LOGS`): the value column shows exactly `ZDR` (no Opt in / Opt out) and no `›` chevron.
 //!   Expanding the row shows only "Your team has Zero Data Retention."
-//! - Team non-admin (`team_role` = `MEMBER`): the value shows `Opt out · Admin Managed` and no chevron.
+//! - Team member the server says cannot administer the team (`can_administer_team` = `false`): the value shows `Opt out · Admin Managed` and no chevron.
 //!   Expanding shows only "Managed by your team admin."
+//! - Team member with an unknown capability (`canAdministerTeam: null`): the row stays editable (`Opt out` with the chevron).
+//!   An absent key reads the same `None` (unit-tested), so only `null` runs here.
 //!
-//! Both accounts also suppress the welcome privacy banner even with `GROK_PRIVACY_NOTICE_ROLLOUT=1`.
+//! All three accounts suppress the welcome privacy banner even with `GROK_PRIVACY_NOTICE_ROLLOUT=1`.
 //! That is asserted on the authenticated welcome screen before opening settings.
+//! Team name and role are seeded on every account so the lock cannot be keying on them.
 //! Row/input details are unit-tested in `xai-grok-pager` (`views/settings_modal/tests.rs`, `locked_coding_*`).
 //! This suite covers the auth-to-render pipeline.
 //!
@@ -21,8 +24,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use xai_grok_pager_pty_harness::{
-    ContentController, EnvOp, PtyHarness, keys, pager_binary, seed_fake_oauth_team_member,
-    seed_fake_oauth_zdr_team,
+    ContentController, EnvOp, MockCanAdministerTeam, PtyHarness, keys, oauth_credential_ops,
+    pager_binary, seed_fake_oauth_team_member_can_administer, seed_fake_oauth_zdr_team,
 };
 
 const ROWS: u16 = 50;
@@ -51,14 +54,26 @@ async fn team_member_sees_admin_managed_row_and_no_banner() {
     run_team_member().await.expect("team-member locked-row e2e");
 }
 
-/// Rollout on so a plain opted-out user would see the banner. Fake API key removed so team OAuth is active.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // opt-in: spawns the real pager binary in a PTY (CI runs with --ignored)
+async fn team_member_with_unknown_capability_sees_no_banner_and_editable_row() {
+    run_unknown_capability()
+        .await
+        .expect("unknown-capability e2e");
+}
+
+/// With the rollout flag on, a plain opted-out user would see the banner.
+/// `oauth_credential_ops` makes the seeded team OAuth entry the active auth.
 /// ZDR access must be enabled or the blocked welcome never reaches settings. Lock and suppression key off `is_zdr`.
-fn locked_row_env_ops() -> [EnvOp<'static>; 3] {
-    [
+/// The seeded team principal would otherwise start a managed-config fetch the mock does not serve.
+fn locked_row_env_ops() -> Vec<EnvOp<'static>> {
+    let mut ops = vec![
         EnvOp::set("GROK_PRIVACY_NOTICE_ROLLOUT", "1"),
         EnvOp::set("GROK_ZDR_ACCESS_ENABLED", "1"),
-        EnvOp::remove("XAI_API_KEY"),
-    ]
+        EnvOp::set("GROK_MANAGED_CONFIG", "0"),
+    ];
+    ops.extend(oauth_credential_ops());
+    ops
 }
 
 async fn run_zdr() -> Result<()> {
@@ -112,7 +127,14 @@ async fn run_team_member() -> Result<()> {
     let content = ContentController::start()
         .await
         .context("start mock server")?;
-    seed_fake_oauth_team_member(&content, "pty-team-user");
+    content
+        .server()
+        .set_user_can_administer_team(MockCanAdministerTeam::Denied);
+    seed_fake_oauth_team_member_can_administer(
+        &content,
+        "pty-team-user",
+        MockCanAdministerTeam::Denied,
+    );
 
     let mut pager = launch(&content).context("launch pager")?;
     assert_no_banner_on_welcome(&mut pager)?;
@@ -145,6 +167,36 @@ async fn run_team_member() -> Result<()> {
     assert!(
         !pager.contains_text("Zero Data Retention"),
         "team-managed expansion rendered the ZDR reason:\n{}",
+        pager.screen_contents()
+    );
+    Ok(())
+}
+
+async fn run_unknown_capability() -> Result<()> {
+    let content = ContentController::start()
+        .await
+        .context("start mock server")?;
+    content
+        .server()
+        .set_user_can_administer_team(MockCanAdministerTeam::Unresolved);
+    seed_fake_oauth_team_member_can_administer(
+        &content,
+        "pty-team-unknown",
+        MockCanAdministerTeam::Unresolved,
+    );
+
+    let mut pager = launch(&content).context("launch pager")?;
+    assert_no_banner_on_welcome(&mut pager)?;
+
+    let line = open_settings_and_grab_row_line(&mut pager)?;
+    assert!(
+        line.contains("Opt out") && !line.contains("Admin Managed") && !line.contains("ZDR"),
+        "unknown capability must leave the row editable: {line:?}\nscreen:\n{}",
+        pager.screen_contents()
+    );
+    assert!(
+        line.contains(CHEVRON),
+        "editable row must keep the `{CHEVRON}` enter affordance: {line:?}\nscreen:\n{}",
         pager.screen_contents()
     );
     Ok(())

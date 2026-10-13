@@ -40,13 +40,16 @@
     }
 
     #[test]
-    fn mcp_args_lines_empty_for_missing_or_null_input() {
+    fn mcp_args_lines_empty_for_missing_null_or_empty_input() {
         for raw in [
             serde_json::json!({"variant": "UseTool", "tool_name": "t"}),
             serde_json::json!({"variant": "UseTool", "tool_name": "t", "tool_input": null}),
+            serde_json::json!({"variant": "UseTool", "tool_name": "t", "tool_input": {}}),
+            serde_json::json!({"variant": "MCPTool", "tool_name": "t", "tool_input": {}}),
+            serde_json::json!({"variant": "UseTool", "tool_name": "t", "tool_input": []}),
         ] {
-            let req = permission_req_with_raw_input(Some(raw));
-            assert!(mcp_args_lines(&req).is_empty());
+            let req = permission_req_with_raw_input(Some(raw.clone()));
+            assert!(mcp_args_lines(&req).is_empty(), "expected no lines for {raw}");
         }
     }
 
@@ -299,8 +302,35 @@
         }
     }
 
+    fn workflow_run_snapshot(
+        run_id: &str,
+        status: &str,
+    ) -> crate::views::workflows::WorkflowRunSnapshot {
+        crate::views::workflows::WorkflowRunSnapshot {
+            run_id: run_id.to_owned(),
+            name: "deep-research".to_owned(),
+            objective: "obj".to_owned(),
+            status: status.to_owned(),
+            management_available: true,
+            builtin: false,
+            phases: Vec::new(),
+            current_phase: None,
+            agents: Vec::new(),
+            agent_budget: None,
+            agents_used: 0,
+            agents_reserved: 0,
+            agents_remaining: None,
+            agent_usage_incomplete: false,
+            active_agents: 0,
+            elapsed_ms: 1_000,
+            received_at: std::time::Instant::now(),
+            pause_message: None,
+            result_summary: None,
+        }
+    }
+
     #[test]
-    fn recap_idle_allows_monitors_but_not_subagents_or_turn_wait() {
+    fn recap_idle_requires_no_wake_source_and_no_turn_wait() {
         let mut agent = make_agent(Some("s1"));
         agent.scrollback.push_block(
             crate::scrollback::block::RenderBlock::agent_message("done"),
@@ -312,9 +342,10 @@
 
         agent.session.bg_tasks.insert("mon".into(), running_bg_task(true));
         assert!(
-            !should_drop_late_auto_recap(true, false, &agent),
-            "running monitors must not block recap"
+            should_drop_late_auto_recap(true, false, &agent),
+            "a running monitor can wake a turn"
         );
+        agent.session.bg_tasks.remove("mon");
 
         agent
             .session
@@ -325,6 +356,53 @@
             "non-monitor bg task is not idle"
         );
         agent.session.bg_tasks.remove("bash");
+
+        agent.session.scheduled_tasks.insert(
+            "loop-1".into(),
+            crate::app::agent::ScheduledTaskInfo {
+                task_id: "loop-1".into(),
+                prompt: "babysit prs".into(),
+                human_schedule: "every 1h".into(),
+                created_at: std::time::Instant::now(),
+                next_fire_at: None,
+                tag: "loop".into(),
+                last_subagent_id: None,
+            },
+        );
+        assert!(
+            should_drop_late_auto_recap(true, false, &agent),
+            "a scheduled /loop can wake a turn"
+        );
+        agent.session.scheduled_tasks.clear();
+
+        agent
+            .workflow_runs
+            .push(workflow_run_snapshot("wf-1", "active"));
+        assert!(
+            should_drop_late_auto_recap(true, false, &agent),
+            "an active workflow run can wake a turn"
+        );
+        agent.workflow_runs = vec![workflow_run_snapshot("wf-1", "complete")];
+        assert!(
+            !should_drop_late_auto_recap(true, false, &agent),
+            "a finished workflow run cannot"
+        );
+        agent.workflow_runs.clear();
+
+        agent.goal_state = Some(crate::app::agent::GoalDisplayState::test_stub());
+        assert!(
+            should_drop_late_auto_recap(true, false, &agent),
+            "an active goal queues its own continuation turns"
+        );
+        agent.goal_state = Some(crate::app::agent::GoalDisplayState {
+            status: crate::app::agent::GoalDisplayStatus::UserPaused,
+            ..crate::app::agent::GoalDisplayState::test_stub()
+        });
+        assert!(
+            !should_drop_late_auto_recap(true, false, &agent),
+            "a paused goal needs the user to resume it"
+        );
+        agent.goal_state = None;
 
         agent
             .subagent_sessions
@@ -393,7 +471,8 @@
         );
         agent.scrollback.push_block(crate::scrollback::block::RenderBlock::session_event(
             crate::scrollback::blocks::SessionEvent::TurnCancelled {
-                elapsed: std::time::Duration::from_secs(1),
+                elapsed: Some(std::time::Duration::from_secs(1)),
+                cause: crate::scrollback::blocks::CancelledBy::User,
             },
         ));
         assert!(
@@ -472,7 +551,7 @@
         let (msg, _rx) = make_permission_message("sess-1");
         handle(msg, &mut app);
 
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert_eq!(agent.permission_queue.len(), 1);
         assert_eq!(agent.active_pane, AgentPane::Prompt);
         assert_eq!(agent.permission_stashed_pane, Some(AgentPane::Scrollback));
@@ -491,7 +570,7 @@
         let (msg, _rx) = make_permission_message("sess-1");
         handle(msg, &mut app);
 
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert_eq!(agent.permission_queue.len(), 1);
         assert_eq!(agent.active_pane, AgentPane::Prompt);
         assert!(agent.permission_stashed_pane.is_none());
@@ -511,7 +590,7 @@
             let (msg, _rx) = make_permission_message("sess-1");
             handle(msg, &mut app);
 
-            let agent = &app.agents[&AgentId(0)];
+            let agent = test_agent(&app, AgentId(0));
             assert_eq!(agent.permission_queue.len(), 1, "pane={pane:?}");
             assert_eq!(agent.active_pane, pane);
             assert!(agent.permission_stashed_pane.is_none(), "pane={pane:?}");
@@ -538,7 +617,7 @@
         let (msg2, _rx2) = make_permission_message("sess-1");
         handle(msg2, &mut app);
 
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert_eq!(agent.permission_queue.len(), 2);
         assert_eq!(agent.active_pane, AgentPane::Scrollback);
         assert_eq!(agent.permission_stashed_pane, Some(AgentPane::Scrollback));
@@ -560,7 +639,7 @@
         let (msg, _rx) = make_permission_message("sess-1");
         handle(msg, &mut app);
         {
-            let agent = &app.agents[&AgentId(0)];
+            let agent = test_agent(&app, AgentId(0));
             assert_eq!(agent.active_pane, AgentPane::Prompt);
             assert_eq!(agent.permission_stashed_pane, Some(AgentPane::Scrollback));
         }
@@ -570,7 +649,7 @@
             &mut app,
         );
 
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert!(agent.permission_queue.is_empty());
         assert_eq!(agent.active_pane, AgentPane::Scrollback);
         assert!(agent.permission_stashed_pane.is_none());

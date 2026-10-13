@@ -379,39 +379,15 @@ pub fn test_sampler_config(
     SamplerConfig {
         api_key: Some("test-api-key".to_string()),
         base_url: base_url.to_string(),
-        mtls_cert_dir: None,
         model: "test-model".to_string(),
         max_completion_tokens: Some(1000),
         temperature: Some(0.7),
-        top_p: None,
         api_backend,
-        auth_scheme: Default::default(),
         extra_headers: extra_headers
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
-        extra_response_includes: Vec::new(),
-        query_params: Default::default(),
-        env_http_headers: Default::default(),
         context_window: 256_000,
-        client_version: None,
-        force_http1: false,
-        max_retries: None,
-        rate_limit_retry_threshold: None,
-        stream_tool_calls: false,
-        idle_timeout_secs: None,
-        client_identifier: None,
-        reasoning_effort: None,
-        deployment_id: None,
-        user_id: None,
-        conversation_group_id: None,
-        origin_client: None,
-        attribution_callback: None,
-        bearer_resolver: None,
-        supports_backend_search: false,
-        compactions_remaining: None,
-        compaction_at_tokens: None,
-        doom_loop_recovery: None,
-        header_injector: None,
+        ..Default::default()
     }
 }

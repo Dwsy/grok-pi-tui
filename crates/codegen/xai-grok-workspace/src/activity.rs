@@ -2386,14 +2386,38 @@ mod tests {
 
         let events = read_events(&dir);
         assert_eq!(events.len(), 2, "expected ToolStarted + ToolCompleted");
-        assert_eq!(events[0]["type"], "tool_started");
-        assert_eq!(events[0]["tool_name"], "read_file");
-        assert_eq!(events[1]["type"], "tool_completed");
-        assert_eq!(events[1]["tool_name"], "read_file");
-        assert_eq!(events[1]["outcome"], "success");
-        assert_eq!(events[1]["source"], "workspace");
+        let [started, completed] = events.as_slice() else {
+            panic!("expected ToolStarted + ToolCompleted: {events:?}");
+        };
+        assert_eq!(
+            started.get("type").and_then(|v| v.as_str()),
+            Some("tool_started")
+        );
+        assert_eq!(
+            started.get("tool_name").and_then(|v| v.as_str()),
+            Some("read_file")
+        );
+        assert_eq!(
+            completed.get("type").and_then(|v| v.as_str()),
+            Some("tool_completed")
+        );
+        assert_eq!(
+            completed.get("tool_name").and_then(|v| v.as_str()),
+            Some("read_file")
+        );
+        assert_eq!(
+            completed.get("outcome").and_then(|v| v.as_str()),
+            Some("success")
+        );
+        assert_eq!(
+            completed.get("source").and_then(|v| v.as_str()),
+            Some("workspace")
+        );
         assert!(
-            events[1]["duration_ms"].as_u64().is_some(),
+            completed
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .is_some(),
             "ToolCompleted must carry a duration_ms"
         );
     }
@@ -2405,8 +2429,20 @@ mod tests {
         t.tool_call_completed("c1", Some("sess-a"), ToolOutcome::Error);
 
         let events = read_events(&dir);
-        assert_eq!(events[1]["type"], "tool_completed");
-        assert_eq!(events[1]["outcome"], "error");
+        assert_eq!(
+            events
+                .get(1)
+                .and_then(|e| e.get("type"))
+                .and_then(|v| v.as_str()),
+            Some("tool_completed")
+        );
+        assert_eq!(
+            events
+                .get(1)
+                .and_then(|e| e.get("outcome"))
+                .and_then(|v| v.as_str()),
+            Some("error")
+        );
     }
 
     #[test]
@@ -2417,8 +2453,14 @@ mod tests {
 
         let events = read_events(&dir);
         let last = events.last().unwrap();
-        assert_eq!(last["type"], "tool_completed");
-        assert_eq!(last["outcome"], "cancelled");
+        assert_eq!(
+            last.get("type").and_then(|v| v.as_str()),
+            Some("tool_completed")
+        );
+        assert_eq!(
+            last.get("outcome").and_then(|v| v.as_str()),
+            Some("cancelled")
+        );
     }
 
     #[test]

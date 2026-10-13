@@ -183,25 +183,7 @@ pub enum ListDirOutput {
     /// Generic / unclassified error
     Error(String),
 }
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct GrepLineMatch {
-    pub line_number: usize,
-    pub content: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct GrepFileMatch {
-    pub path: String,
-    pub matches: Vec<GrepLineMatch>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct GrepSearchOutput {
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-    pub exit_code: i32,
-    pub match_count: usize,
-    #[serde(default)]
-    pub file_matches: Vec<GrepFileMatch>,
-}
+pub use xai_tool_types::{GrepFileMatch, GrepLineMatch, GrepSearchOutput};
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FileContent {
     /// content here is the model friendly output which will always be present since even
@@ -468,18 +450,7 @@ pub struct BackgroundTaskStarted {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct WebSearchOutput {
-    pub query: String,
-    pub content: String,
-    pub citations: Vec<String>,
-    pub allowed_domains: Option<Vec<String>>,
-    /// When set, `to_prompt_format()` returns this text directly instead of
-    /// wrapping `content` with the default header. Used by the compat adapter
-    /// to produce the exact `Title: / Content: / ---` schema.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub pre_formatted: Option<String>,
-}
+pub use xai_tool_types::WebSearchOutput;
 #[derive(Debug, Clone)]
 pub struct WebFetchSourceArtifact {
     /// Session artifact containing the complete converted response.
@@ -883,15 +854,6 @@ impl ToolOutput {
             }) => {
                 let ask = &tool_hints.ask_user;
                 let exit = &tool_hints.exit_plan;
-                let task_hint = if tool_hints.task.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "\n     You can use the {} tool with subagent_type=\"explore\" to \
-                         parallelize codebase exploration without filling your context window.",
-                        tool_hints.task
-                    )
-                };
                 let plan_status = match plan_file_seed {
                     PlanFileSeedStatus::Empty => {
                         format!(
@@ -921,7 +883,7 @@ impl ToolOutput {
                     "{message}\n\n\
                      {plan_status}\n\n\
                      In plan mode, you should:\n\
-                     1. Thoroughly explore the codebase to understand existing patterns{task_hint}\n\
+                     1. Thoroughly explore the codebase to understand existing patterns\n\
                      2. Identify similar features, codebase architecture, and understand trade-offs\n\
                      3. Use {ask} if you need to clarify the approach\n\
                      4. Design a concrete implementation strategy\n\
@@ -1284,7 +1246,6 @@ impl xai_tool_runtime::ToolOutput for BashOutput {
         })
     }
 }
-impl xai_tool_runtime::ToolOutput for GrepSearchOutput {}
 impl xai_tool_runtime::ToolOutput for ReadFileOutput {}
 impl xai_tool_runtime::ToolOutput for ListDirOutput {}
 impl xai_tool_runtime::ToolOutput for SearchReplaceOutput {
@@ -1298,7 +1259,6 @@ impl xai_tool_runtime::ToolOutput for SearchReplaceOutput {
     }
 }
 impl xai_tool_runtime::ToolOutput for TodoWriteOutput {}
-impl xai_tool_runtime::ToolOutput for WebSearchOutput {}
 impl xai_tool_runtime::ToolOutput for WebFetchOutput {}
 impl xai_tool_runtime::ToolOutput for SkillOutput {}
 impl xai_tool_runtime::ToolOutput for ApplyPatchOutput {}
@@ -1328,6 +1288,13 @@ mod tests {
             (NotFoundOrNotOwned, true),
             (NotActiveOrFinalizing, true),
             (Saturated { max_in_flight: 8 }, true),
+            (
+                QuotaExceeded {
+                    kind: crate::implementations::grok_build::task::types::ActiveAgentMessageQuotaKind::AttemptOutbound,
+                    limit: 32,
+                },
+                true,
+            ),
             (AdmissionUncertain, false),
             (NotAcceptedBeforeDeadline, true),
             (Unsupported, true),
@@ -1378,8 +1345,14 @@ mod tests {
         );
         let back: MCPOutput = serde_json::from_value(v).unwrap();
         assert_eq!(back.extracted_images.len(), 1);
-        assert_eq!(back.extracted_images[0].data, payload);
-        assert_eq!(back.extracted_images[0].mime_type, "image/png");
+        assert_eq!(
+            back.extracted_images.first().map(|i| i.data.as_str()),
+            Some(payload.as_str())
+        );
+        assert_eq!(
+            back.extracted_images.first().map(|i| i.mime_type.as_str()),
+            Some("image/png")
+        );
     }
     #[test]
     fn tool_output_mcp_extracted_images_survive_hub_roundtrip() {
@@ -1400,7 +1373,10 @@ mod tests {
             panic!("expected MCP");
         };
         assert_eq!(mcp.extracted_images.len(), 1);
-        assert_eq!(mcp.extracted_images[0].data, payload);
+        assert_eq!(
+            mcp.extracted_images.first().map(|i| i.data.as_str()),
+            Some(payload.as_str())
+        );
     }
     #[test]
     fn file_content_extracted_images_survive_hub_json_roundtrip() {
@@ -1422,7 +1398,10 @@ mod tests {
         assert!(v.get("extracted_images").is_some());
         let back: FileContent = serde_json::from_value(v).unwrap();
         assert_eq!(back.extracted_images.len(), 1);
-        assert_eq!(back.extracted_images[0].data, payload);
+        assert_eq!(
+            back.extracted_images.first().map(|i| i.data.as_str()),
+            Some(payload.as_str())
+        );
     }
     #[test]
     fn empty_extracted_images_omitted_from_json() {
@@ -1453,8 +1432,14 @@ mod tests {
             panic!("expected FileContent");
         };
         assert_eq!(fc.extracted_images.len(), 1);
-        assert_eq!(fc.extracted_images[0].data, payload);
-        assert_eq!(fc.extracted_images[0].mime_type, "image/png");
+        assert_eq!(
+            fc.extracted_images.first().map(|i| i.data.as_str()),
+            Some(payload.as_str())
+        );
+        assert_eq!(
+            fc.extracted_images.first().map(|i| i.mime_type.as_str()),
+            Some("image/png")
+        );
     }
     fn empty_file_content(offset: Option<usize>, total_lines: usize) -> FileContent {
         FileContent {
@@ -1547,7 +1532,11 @@ mod tests {
             consumed_completion_task_id: Some("task-abc".into()),
         };
         let json = serde_json::to_value(&text).unwrap();
-        assert_eq!(json["consumed_completion_task_id"], "task-abc");
+        assert_eq!(
+            json.get("consumed_completion_task_id")
+                .and_then(|v| v.as_str()),
+            Some("task-abc")
+        );
         let round_trip: TextOutput = serde_json::from_value(json).unwrap();
         assert_eq!(
             round_trip.consumed_completion_task_id.as_deref(),
@@ -1593,15 +1582,30 @@ mod tests {
         for (output, ty, path, filename, session_folder, message) in cases {
             let prompt_json: serde_json::Value =
                 serde_json::from_str(&output.to_prompt_format()).unwrap();
-            assert_eq!(prompt_json["path"], path);
-            assert_eq!(prompt_json["filename"], filename);
-            assert_eq!(prompt_json["session_folder"], session_folder);
-            assert_eq!(prompt_json["message"], message);
+            assert_eq!(prompt_json.get("path").and_then(|v| v.as_str()), Some(path));
+            assert_eq!(
+                prompt_json.get("filename").and_then(|v| v.as_str()),
+                Some(filename)
+            );
+            assert_eq!(
+                prompt_json.get("session_folder").and_then(|v| v.as_str()),
+                Some(session_folder)
+            );
+            assert_eq!(
+                prompt_json.get("message").and_then(|v| v.as_str()),
+                Some(message)
+            );
             let json = to_json(output);
-            assert_eq!(json["type"], ty);
-            assert_eq!(json["path"], path);
-            assert_eq!(json["filename"], filename);
-            assert_eq!(json["session_folder"], session_folder);
+            assert_eq!(json.get("type").and_then(|v| v.as_str()), Some(ty));
+            assert_eq!(json.get("path").and_then(|v| v.as_str()), Some(path));
+            assert_eq!(
+                json.get("filename").and_then(|v| v.as_str()),
+                Some(filename)
+            );
+            assert_eq!(
+                json.get("session_folder").and_then(|v| v.as_str()),
+                Some(session_folder)
+            );
             let (ToolOutput::ImageGen(m)
             | ToolOutput::ImageToVideo(m)
             | ToolOutput::ReferenceToVideo(m)
@@ -1621,7 +1625,7 @@ mod tests {
         let prompt = output.to_prompt_format();
         assert!(prompt.contains(url), "prompt must include the upload URL");
         let json = to_json(output);
-        assert_eq!(json["uploaded_url"], url);
+        assert_eq!(json.get("uploaded_url").and_then(|v| v.as_str()), Some(url));
         assert!(
             json.get("path").is_some(),
             "path field must be present (empty for uploaded)"
@@ -1842,7 +1846,10 @@ mod tests {
             }
             .into(),
         );
-        assert_eq!(json["type"], "ApplyPatch");
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("ApplyPatch")
+        );
         assert!(json.get("Success").is_some(), "missing Success key: {json}");
         for key in ["ParseError", "ApplicationError", "EmptyPatch"] {
             assert!(
@@ -1861,10 +1868,16 @@ mod tests {
             })
             .into(),
         );
-        assert_eq!(json["type"], "KillTask");
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("KillTask"));
         assert!(json.get("Result").is_some(), "missing Result key: {json}");
-        assert_eq!(json["Result"]["task_id"], "task-1");
-        assert_eq!(json["Result"]["outcome"], "killed");
+        assert_eq!(
+            json.pointer("/Result/task_id").and_then(|v| v.as_str()),
+            Some("task-1")
+        );
+        assert_eq!(
+            json.pointer("/Result/outcome").and_then(|v| v.as_str()),
+            Some("killed")
+        );
     }
     #[test]
     fn kill_task_not_found_json() {
@@ -1910,10 +1923,19 @@ mod tests {
             })
             .into(),
         );
-        assert_eq!(json["type"], "TaskOutput");
+        assert_eq!(
+            json.get("type").and_then(|v| v.as_str()),
+            Some("TaskOutput")
+        );
         assert!(json.get("Result").is_some(), "missing Result key: {json}");
-        assert_eq!(json["Result"]["task_id"], "task-1");
-        assert_eq!(json["Result"]["status"], "running");
+        assert_eq!(
+            json.pointer("/Result/task_id").and_then(|v| v.as_str()),
+            Some("task-1")
+        );
+        assert_eq!(
+            json.pointer("/Result/status").and_then(|v| v.as_str()),
+            Some("running")
+        );
     }
     /// The single-task detail view is duration-only: absolute `started` /
     /// `ended` instants stay on the wire struct but must not reach the prompt.
@@ -2034,7 +2056,11 @@ mod tests {
             })
             .into(),
         );
-        assert_eq!(json["Result"]["raw_output_bytes"], 11);
+        assert_eq!(
+            json.pointer("/Result/raw_output_bytes")
+                .and_then(|v| v.as_u64()),
+            Some(11)
+        );
     }
     #[test]
     fn task_output_not_found_json() {
@@ -2076,17 +2102,26 @@ mod tests {
             })
             .into(),
         );
-        assert_eq!(json["type"], "Todo");
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("Todo"));
         assert!(
             json.get("TodosUpdated").is_some(),
             "missing TodosUpdated key: {json}"
         );
         assert_eq!(
-            json["TodosUpdated"]["summary_for_prompt"],
-            "- [pending] 1: Task A\n"
+            json.pointer("/TodosUpdated/summary_for_prompt")
+                .and_then(|v| v.as_str()),
+            Some("- [pending] 1: Task A\n")
         );
-        assert_eq!(json["TodosUpdated"]["todos"][0]["content"], "Task A");
-        assert_eq!(json["TodosUpdated"]["todos"][0]["status"], "pending");
+        assert_eq!(
+            json.pointer("/TodosUpdated/todos/0/content")
+                .and_then(|v| v.as_str()),
+            Some("Task A")
+        );
+        assert_eq!(
+            json.pointer("/TodosUpdated/todos/0/status")
+                .and_then(|v| v.as_str()),
+            Some("pending")
+        );
     }
     #[test]
     fn todo_write_duplicate_id_json() {
@@ -2130,9 +2165,12 @@ mod tests {
             TodoWriteOutput::TodosUpdated(s) => {
                 assert_eq!(s.summary_for_prompt, "summary");
                 assert_eq!(s.todos.len(), 1);
-                assert_eq!(s.todos[0].content, "task");
-                assert_eq!(s.todos[0].status, TodoStatus::InProgress);
-                assert_eq!(s.todos[0].priority, TodoPriority::High);
+                let Some(todo) = s.todos.first() else {
+                    panic!("expected a todo: {:?}", s.todos);
+                };
+                assert_eq!(todo.content, "task");
+                assert_eq!(todo.status, TodoStatus::InProgress);
+                assert_eq!(todo.priority, TodoPriority::High);
             }
             other => panic!("expected TodosUpdated, got {other:?}"),
         }
@@ -2165,8 +2203,8 @@ mod tests {
             "resume_from hint with correct ID"
         );
         assert!(
-            rendered.contains("subagent_type: explore"),
-            "subagent_type visible"
+            !rendered.contains("subagent_type"),
+            "completion text must not advertise subagent_type"
         );
         assert!(
             rendered.contains("<subagent_result>"),
@@ -2240,9 +2278,15 @@ mod tests {
             persona_hint: Some("implementer".into()),
         };
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["resume_from_hint"], "sub-abc-123");
-        assert_eq!(json["persona_hint"], "implementer");
-        assert_eq!(json["subagent_id"], json["resume_from_hint"]);
+        assert_eq!(
+            json.get("resume_from_hint").and_then(|v| v.as_str()),
+            Some("sub-abc-123")
+        );
+        assert_eq!(
+            json.get("persona_hint").and_then(|v| v.as_str()),
+            Some("implementer")
+        );
+        assert_eq!(json.get("subagent_id"), json.get("resume_from_hint"));
     }
     #[test]
     fn enter_plan_mode_tool_hints_default() {
@@ -2259,9 +2303,15 @@ mod tests {
             task: "task".into(),
         };
         let json = serde_json::to_value(&hints).unwrap();
-        assert_eq!(json["ask_user"], "AskUser");
-        assert_eq!(json["exit_plan"], "FinishPlan");
-        assert_eq!(json["task"], "task");
+        assert_eq!(
+            json.get("ask_user").and_then(|v| v.as_str()),
+            Some("AskUser")
+        );
+        assert_eq!(
+            json.get("exit_plan").and_then(|v| v.as_str()),
+            Some("FinishPlan")
+        );
+        assert_eq!(json.get("task").and_then(|v| v.as_str()), Some("task"));
         let deserialized: EnterPlanModeToolHints = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.ask_user, "AskUser");
         assert_eq!(deserialized.exit_plan, "FinishPlan");
@@ -2306,8 +2356,8 @@ mod tests {
             plan_file_seed: PlanFileSeedStatus::Empty,
         });
         let prompt = output.to_prompt_format();
-        assert!(prompt.contains("delegate-xyz"));
-        assert!(prompt.contains("subagent_type"));
+        assert!(!prompt.contains("delegate-xyz"));
+        assert!(!prompt.contains("subagent_type"));
     }
     #[test]
     fn enter_plan_mode_prompt_format_with_custom_tool_names() {
@@ -2340,10 +2390,26 @@ mod tests {
             plan_file_seed: PlanFileSeedStatus::Empty,
         };
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["Entered"]["tool_hints"]["ask_user"], "AskUser");
-        assert_eq!(json["Entered"]["tool_hints"]["exit_plan"], "FinishPlan");
-        assert_eq!(json["Entered"]["tool_hints"]["task"], "delegate");
-        assert_eq!(json["Entered"]["plan_file_seed"], "empty");
+        assert_eq!(
+            json.pointer("/Entered/tool_hints/ask_user")
+                .and_then(|v| v.as_str()),
+            Some("AskUser")
+        );
+        assert_eq!(
+            json.pointer("/Entered/tool_hints/exit_plan")
+                .and_then(|v| v.as_str()),
+            Some("FinishPlan")
+        );
+        assert_eq!(
+            json.pointer("/Entered/tool_hints/task")
+                .and_then(|v| v.as_str()),
+            Some("delegate")
+        );
+        assert_eq!(
+            json.pointer("/Entered/plan_file_seed")
+                .and_then(|v| v.as_str()),
+            Some("empty")
+        );
         let deserialized: EnterPlanModeOutput = serde_json::from_value(json).unwrap();
         match deserialized {
             EnterPlanModeOutput::Entered {
@@ -2486,8 +2552,8 @@ mod tests {
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(
-            json["Entered"]["plan_file_seed"],
-            json!({ "missing": "not_a_file" })
+            json.pointer("/Entered/plan_file_seed"),
+            Some(&json!({ "missing": "not_a_file" }))
         );
         let back: EnterPlanModeOutput = serde_json::from_value(json).unwrap();
         let EnterPlanModeOutput::Entered { plan_file_seed, .. } = back;
@@ -2511,7 +2577,10 @@ mod tests {
             persona_hint: None,
         };
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["resume_from_hint"], "sub-xyz");
+        assert_eq!(
+            json.get("resume_from_hint").and_then(|v| v.as_str()),
+            Some("sub-xyz")
+        );
         assert!(
             json.get("persona_hint").is_none(),
             "persona_hint should be absent when None"
@@ -2560,17 +2629,35 @@ mod tests {
         let pdf = make_pdf_page_images(&[1, 3], 20, 8192);
         let output = ToolOutput::ReadFile(ReadFileOutput::PdfPageImages(pdf));
         let json = to_json(output);
-        assert_eq!(json["type"], "ReadFile");
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("ReadFile"));
         assert!(
             json.get("PdfPageImages").is_some(),
             "missing PdfPageImages key: {json}"
         );
-        let inner = &json["PdfPageImages"];
-        assert_eq!(inner["total_pages"], 20);
-        assert_eq!(inner["file_size"], 8192);
-        assert_eq!(inner["pages"].as_array().unwrap().len(), 2);
-        assert_eq!(inner["pages"][0]["page_number"], 1);
-        assert_eq!(inner["pages"][1]["page_number"], 3);
+        let Some(inner) = json.get("PdfPageImages") else {
+            panic!("missing PdfPageImages key: {json}");
+        };
+        assert_eq!(inner.get("total_pages").and_then(|v| v.as_u64()), Some(20));
+        assert_eq!(inner.get("file_size").and_then(|v| v.as_u64()), Some(8192));
+        assert_eq!(
+            inner
+                .get("pages")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(2)
+        );
+        assert_eq!(
+            inner
+                .pointer("/pages/0/page_number")
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            inner
+                .pointer("/pages/1/page_number")
+                .and_then(|v| v.as_u64()),
+            Some(3)
+        );
     }
     fn sample_bash(exit_code: i32, output: &[u8], timed_out: bool) -> BashOutput {
         BashOutput {

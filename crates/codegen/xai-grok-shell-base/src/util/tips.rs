@@ -46,7 +46,7 @@ pub fn pick_and_advance(tips: &[String], grok_home: &Path) -> Option<String> {
         return None;
     }
     let cursor = load_cursor(grok_home);
-    let tip = tips[cursor as usize % tips.len()].clone();
+    let tip = tips.get(cursor as usize % tips.len())?.clone();
     save_cursor(grok_home, cursor + 1);
     Some(tip)
 }

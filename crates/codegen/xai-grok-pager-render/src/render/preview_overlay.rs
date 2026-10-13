@@ -435,14 +435,24 @@ mod tests {
     }
 
     fn row_to_string(buf: &Buffer, y: u16) -> String {
-        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+        (0..buf.area.width)
+            .map(|x| {
+                let Some(cell) = buf.cell((x, y)) else {
+                    panic!("missing cell ({x},{y})");
+                };
+                cell.symbol()
+            })
+            .collect()
     }
 
     /// Assert the box's bottom border row keeps both rounded corners.
     fn assert_corners(buf: &Buffer, rect: Rect) {
         let y = rect.y + rect.height - 1;
-        assert_eq!(buf[(rect.x, y)].symbol(), "╰");
-        assert_eq!(buf[(rect.x + rect.width - 1, y)].symbol(), "╯");
+        assert_eq!(buf.cell((rect.x, y)).map(|c| c.symbol()), Some("╰"));
+        assert_eq!(
+            buf.cell((rect.x + rect.width - 1, y)).map(|c| c.symbol()),
+            Some("╯")
+        );
     }
 
     #[test]
@@ -506,7 +516,7 @@ mod tests {
         // Every cell between the corners is a border dash.
         let y = rect.y + rect.height - 1;
         for x in rect.x + 1..rect.x + rect.width - 1 {
-            assert_eq!(buf[(x, y)].symbol(), "─", "col {x}");
+            assert_eq!(buf.cell((x, y)).map(|c| c.symbol()), Some("─"), "col {x}");
         }
     }
 
@@ -550,7 +560,7 @@ mod tests {
         .unwrap();
         let y = rect.y + rect.height - 1;
         for x in rect.x + 1..rect.x + rect.width - 1 {
-            assert_eq!(buf[(x, y)].symbol(), "─", "col {x}");
+            assert_eq!(buf.cell((x, y)).map(|c| c.symbol()), Some("─"), "col {x}");
         }
         assert_corners(&buf, rect);
     }
@@ -559,7 +569,10 @@ mod tests {
         let mut s = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                s.push_str(buf[(x, y)].symbol());
+                let Some(cell) = buf.cell((x, y)) else {
+                    panic!("missing cell ({x},{y})");
+                };
+                s.push_str(cell.symbol());
             }
             s.push('\n');
         }

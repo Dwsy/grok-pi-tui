@@ -195,11 +195,8 @@ impl AgentView {
             return InputOutcome::Changed;
         }
         if key!('x').matches(key) {
-            if in_plan_approval {
+            if in_plan_approval || self.is_plan_viewer() {
                 return self.delete_plan_comment_at_cursor();
-            }
-            if self.is_plan_viewer() {
-                return self.delete_casual_plan_comment_at_cursor();
             }
             self.confirm_line_viewer(false);
             return InputOutcome::Changed;
@@ -412,6 +409,7 @@ impl AgentView {
         let approve_area = viewer.plan_ref().and_then(|p| p.approve_button_area);
         let comment_btn_area = viewer.plan_ref().and_then(|p| p.comment_button_area);
         let copy_btn_area = viewer.plan_ref().and_then(|p| p.copy_button_area);
+        let close_hit = viewer.comment_close_button_at(mouse.column, mouse.row);
         // Cached `is_plan_viewer()` so we don't need to call self while the line_viewer is mutably borrowed below
         let is_plan_preview =
             viewer.kind == crate::views::file_search::line_viewer::LineViewerKind::PlanPreview;
@@ -467,6 +465,10 @@ impl AgentView {
                         v.fullscreen = !v.fullscreen;
                     }
                     return InputOutcome::Changed;
+                }
+                // A click on the `[✗]` close button must not fall through to click-to-comment edit mode
+                if let Some(comment_id) = close_hit {
+                    return self.delete_plan_comment_by_id(comment_id);
                 }
                 if abandon_area.is_some_and(|a| a.contains((mouse.column, mouse.row).into())) {
                     return self.abandon_plan();
@@ -619,6 +621,22 @@ impl AgentView {
                 if copy_btn_hover != prev_copy_btn {
                     viewer.plan_mut().copy_hovered = copy_btn_hover;
                     changed = true;
+                }
+                if is_plan_preview {
+                    let hovered_comment = popup_area
+                        .filter(|area| area.contains((mouse.column, mouse.row).into()))
+                        .and_then(|area| viewer.comment_id_at_screen_row(mouse.row, area));
+                    let prev_hovered = viewer.plan_ref().and_then(|p| p.hovered_comment_id);
+                    if hovered_comment != prev_hovered {
+                        viewer.plan_mut().hovered_comment_id = hovered_comment;
+                        changed = true;
+                    }
+                    let close_hover = close_hit.is_some();
+                    let prev_close = viewer.plan_ref().is_some_and(|p| p.close_button_hovered);
+                    if close_hover != prev_close {
+                        viewer.plan_mut().close_button_hovered = close_hover;
+                        changed = true;
+                    }
                 }
                 if self.plan_approval_view.is_some()
                     && let Some(area) = popup_area

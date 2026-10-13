@@ -4,6 +4,8 @@
 //! The shared [`EventWriter`] appends entries to the file as JSON lines.
 //! The per-session [`EventTracker`] keeps the state for the running turn and derives the events from it.
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod log;
 pub mod tracker;
 pub mod types;

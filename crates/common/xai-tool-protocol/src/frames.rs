@@ -345,9 +345,53 @@ pub struct ServerInfo {
     /// from old hubs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_ms: Option<u64>,
+    /// What hosts the server, as the hub resolved it from the minter of the
+    /// server's serve credential — never from the `host_kind` the server
+    /// declared in `metadata`, which a process anywhere can spell as it
+    /// likes. A picker groups and labels on this and falls back to the
+    /// declared value only when it is absent (a hub before this field, or a
+    /// minter the hub does not know). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_kind: Option<HostKind>,
 }
 
-/// Well-known `host_kind` values. Readers tolerate unknown strings and fall
+/// What hosts a tool server, resolved by the hub from the *minter* of its
+/// serve credential at upgrade — never from the client-declared `host_kind`
+/// in registration `metadata`. Bind-time policy keys on it, and
+/// `servers.list` carries it as [`ServerInfo::host_kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostKind {
+    /// The user's own device (the daemon the desktop runs on the hub's mint).
+    Desktop,
+    /// A container the organisation runs, on its own minter's credential.
+    Container,
+    /// A sandbox guest, on the sandbox service's credential.
+    Sandbox,
+}
+
+impl HostKind {
+    pub const ALL: [HostKind; 3] = [HostKind::Desktop, HostKind::Container, HostKind::Sandbox];
+
+    /// The serde wire spelling, so metric labels join against `servers.list`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Container => "container",
+            Self::Sandbox => "sandbox",
+        }
+    }
+}
+
+impl std::fmt::Display for HostKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Well-known values of the `host_kind` a server *declares* in its
+/// registration `metadata` (display only; the hub's own resolution is
+/// [`ServerInfo::host_kind`]). Readers tolerate unknown strings and fall
 /// back to a plain per-server row.
 pub const HOST_KIND_DESKTOP: &str = "desktop";
 pub const HOST_KIND_DAEMON: &str = "daemon";
@@ -897,11 +941,12 @@ pub struct UnsubscribeAck {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HookFrame {
     pub session_id: SessionId,
-    /// Omit for session-wide hooks (broadcast); required for call-scoped
-    /// hooks like `Cancel`.
+    /// The tool server that receives the hook.
+    /// `None` sends it to every tool server bound to the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_id: Option<ToolId>,
-    /// Required for call-scoped hooks (`Cancel`); optional otherwise.
+    /// The running call a `Cancel` ends.
+    /// [`HookEvent::Cancel`] documents a `Cancel` with no `call_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<ToolCallId>,
     /// Correlation id for a request/response hook. The requester mints it and
@@ -1030,8 +1075,9 @@ pub struct ToolsChanged {
 /// Lifecycle status of a tool server connection.
 ///
 /// `starting` → `ready` → `busy` ↔ `ready` → `draining` → `shutting_down`.
-/// `disconnected` is hub-only: set during disconnect cleanup, never sent
-/// by the tool server itself.
+/// `disconnected` is set by the hub during disconnect cleanup, and sent by a
+/// tool server tearing down gracefully (`push_disconnect_status`) — the hub
+/// accepts it only for the sender's own connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolServerLifecycleStatus {
@@ -1347,6 +1393,13 @@ mod tests {
 
     fn sid() -> SessionId {
         SessionId::new("test-session").expect("valid")
+    }
+
+    #[test]
+    fn host_kind_as_str_is_the_wire_spelling() {
+        for kind in HostKind::ALL {
+            assert_eq!(json!(kind.as_str()), serde_json::to_value(kind).unwrap());
+        }
     }
 
     fn tid() -> ToolId {

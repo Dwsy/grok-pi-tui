@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resp.bytes()?.to_vec()
     };
 
-    let gz = flate2::read::GzDecoder::new(&bytes[..]);
+    let gz = flate2::read::GzDecoder::new(bytes.as_slice());
     let mut ar = tar::Archive::new(gz);
     let mut found = false;
     for entry in ar.entries()? {

@@ -44,8 +44,16 @@
 //! Every line is forwarded through `normalize_json_line` — see the
 //! crate-private `normalize` module for the contract and its scope.
 
+use std::io;
 use std::io::BufRead;
+use std::io::Read;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
+use std::task::ready;
 
+use tokio::io::AsyncRead;
+use tokio::io::ReadBuf;
 use tokio::sync::mpsc;
 
 use crate::normalize::normalize_json_line;
@@ -80,6 +88,76 @@ pub fn spawn_stdin_line_reader() -> mpsc::Receiver<Vec<u8>> {
         })
         .expect("failed to spawn acp-stdin reader thread");
     rx
+}
+
+/// Channel depth for chunks of a byte stream, with the same backpressure as lines.
+const STDIN_CHUNK_CHANNEL_DEPTH: usize = 64;
+
+const STDIN_CHUNK_BYTES: usize = 8 * 1024;
+
+/// Stdin for a byte-framed transport, such as `Content-Length` JSON-RPC, read on a dedicated thread.
+/// Sole stdin consumer, isolated on Windows as in [`spawn_stdin_line_reader`].
+pub fn spawn_stdin_byte_reader() -> io::Result<ThreadReader> {
+    #[cfg(windows)]
+    if let Some(file) = isolate_process_stdin() {
+        return read_on_thread(file);
+    }
+    read_on_thread(std::io::stdin())
+}
+
+/// Bytes a dedicated thread reads with blocking I/O, delivered as they arrive.
+pub struct ThreadReader {
+    chunks: mpsc::Receiver<io::Result<Vec<u8>>>,
+    unread: Vec<u8>,
+}
+
+fn read_on_thread(mut reader: impl Read + Send + 'static) -> io::Result<ThreadReader> {
+    let (tx, chunks) = mpsc::channel(STDIN_CHUNK_CHANNEL_DEPTH);
+    std::thread::Builder::new()
+        .name("stdin-bytes".to_string())
+        .spawn(move || {
+            loop {
+                let mut chunk = vec![0; STDIN_CHUNK_BYTES];
+                let read = match reader.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => Ok(read),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => Err(error),
+                };
+                let failed = read.is_err();
+                let chunk = read.map(|read| {
+                    chunk.truncate(read);
+                    chunk
+                });
+                if tx.blocking_send(chunk).is_err() || failed {
+                    break;
+                }
+            }
+        })?;
+    Ok(ThreadReader {
+        chunks,
+        unread: Vec::new(),
+    })
+}
+
+impl AsyncRead for ThreadReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if this.unread.is_empty() {
+            match ready!(this.chunks.poll_recv(cx)) {
+                Some(Ok(chunk)) => this.unread = chunk,
+                Some(Err(error)) => return Poll::Ready(Err(error)),
+                None => return Poll::Ready(Ok(())),
+            }
+        }
+        let count = buf.remaining().min(this.unread.len());
+        buf.put_slice(this.unread.drain(..count).as_slice());
+        Poll::Ready(Ok(()))
+    }
 }
 
 /// Read `\n`-delimited lines from `reader` and forward each on `tx` via [`normalize_json_line`].
@@ -185,3 +263,7 @@ fn isolate_process_stdin() -> Option<std::fs::File> {
         Some(std::fs::File::from_raw_handle(duplicate as _))
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "stdin_reader_tests.rs"]
+mod tests;

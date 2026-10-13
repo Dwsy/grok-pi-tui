@@ -425,8 +425,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outs.len(), 2);
-        assert_eq!(outs[0].merge_sha, "sha-a");
-        assert_eq!(outs[1].merge_sha, "sha-b");
+        let [a_out, b_out] = outs.as_slice() else {
+            panic!("expected two publish outputs: {outs:?}");
+        };
+        assert_eq!(a_out.merge_sha, "sha-a");
+        assert_eq!(b_out.merge_sha, "sha-b");
         assert_eq!(a.calls.lock().unwrap().committed, vec!["pub".to_owned()]);
         assert!(b.calls.lock().unwrap().committed.is_empty());
         // Dry-run (push=false) then publish (push=true) per repo.

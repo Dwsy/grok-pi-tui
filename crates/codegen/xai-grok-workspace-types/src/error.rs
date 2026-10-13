@@ -252,8 +252,7 @@ mod tests {
             expected: "GitStatus".into(),
             got: ChunkKind::Ack,
         };
-        // ChunkKind::Ack's Display is `"Ack"` (not `"Ack"` from Debug, but they happen to coincide)
-        // Guard against a {got:?} regression by asserting the rendered string
+        // Display, not Debug: a `{got:?}` format would still pass today because they coincide.
         assert_eq!(
             err.to_string(),
             "protocol mismatch: expected GitStatus, got Ack"
@@ -262,7 +261,6 @@ mod tests {
 
     #[test]
     fn is_retryable_only_for_transient_io_remote_timeout() {
-        // Retryable.
         assert!(WorkspaceError::Timeout { elapsed_ms: 1 }.is_retryable());
         assert!(WorkspaceError::Remote("x".into()).is_retryable());
         for kind in [
@@ -288,7 +286,6 @@ mod tests {
                 "expected {kind:?} to be retryable"
             );
         }
-        // Non-retryable IO kinds.
         for kind in [
             IoKind::NotFound,
             IoKind::PermissionDenied,
@@ -313,7 +310,6 @@ mod tests {
                 "expected {kind:?} to be non-retryable"
             );
         }
-        // Non-retryable domain errors.
         assert!(!WorkspaceError::Cancelled.is_retryable());
         assert!(!WorkspaceError::Permission { reason: "x".into() }.is_retryable());
         assert!(!WorkspaceError::EmptyStream.is_retryable());
@@ -334,7 +330,6 @@ mod tests {
 
     #[test]
     fn io_kind_from_round_trips_for_every_std_kind() {
-        // Exercise the From impl on every std::io::ErrorKind we mirror, ensuring no kind silently collapses to Other
         use std::io::ErrorKind as K;
         let cases: &[(K, IoKind)] = &[
             (K::NotFound, IoKind::NotFound),

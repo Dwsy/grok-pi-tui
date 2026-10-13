@@ -198,7 +198,7 @@
     fn announcements_update_fans_slash_gate_to_live_subagent_views() {
         let mut app = make_app_with_parent_and_child("parent-sess", "child-sess");
         assert!(
-            !app.agents[&AgentId(0)].subagent_views["child-sess"]
+            !test_subagent(test_agent(&app, AgentId(0)), "child-sess")
                 .prompt
                 .slash_controller
                 .has_session_announcements(),
@@ -214,13 +214,13 @@
             None,
         );
 
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert!(
             agent.prompt.slash_controller.has_session_announcements(),
             "parent gate open"
         );
         assert!(
-            agent.subagent_views["child-sess"]
+            test_subagent(agent, "child-sess")
                 .prompt
                 .slash_controller
                 .has_session_announcements(),

@@ -2,11 +2,6 @@
 #[allow(unused_imports)]
 use super::common::*;
 
-/// Ctrl+\ (OpenDashboard).
-/// crossterm maps the raw 0x1c byte to Ctrl+4, so the universal dashboard chord must be sent as kitty CSI-u: code 92 (`\`), modifier 5 (Ctrl).
-/// Mirrors `CTRL_ENTER` / `CTRL_SEMICOLON` in common.
-const CTRL_BACKSLASH: &[u8] = b"\x1b[92;5u";
-
 /// Attach the (only) agent row as a session overlay from the dashboard list.
 fn attach_overlay(h: &mut PtyHarness) {
     for _ in 0..3 {

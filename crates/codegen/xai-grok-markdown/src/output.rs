@@ -144,7 +144,7 @@ pub(crate) fn build_code_block_spans(
             "metas must be processed in ascending body order",
         );
         while cursor_pos < pos {
-            if bytes[cursor_pos] == b'\n' {
+            if bytes.get(cursor_pos) == Some(&b'\n') {
                 cursor_newlines += 1;
             }
             cursor_pos += 1;
@@ -194,17 +194,37 @@ mod code_block_span_tests {
 
     /// Plain text of the rendered body lines a span points at.
     fn body_lines(lines: &[Line<'static>], span: &CodeBlockSpan) -> Vec<String> {
-        lines_text(&lines[span.output_line_range.clone()])
+        let Some(slice) = lines.get(span.output_line_range.clone()) else {
+            panic!(
+                "output_line_range {:?} out of bounds for {} lines",
+                span.output_line_range,
+                lines.len()
+            );
+        };
+        lines_text(slice)
     }
 
     /// Source bytes a span's `source_byte_range` selects.
     fn body_source<'a>(src: &'a str, span: &CodeBlockSpan) -> &'a str {
-        &src[span.source_byte_range.clone()]
+        let Some(s) = src.get(span.source_byte_range.clone()) else {
+            panic!(
+                "source_byte_range {:?} is out of bounds or not a char boundary",
+                span.source_byte_range
+            );
+        };
+        s
     }
 
     fn blocks(src: &str, pretty: bool) -> (Vec<Line<'static>>, Vec<CodeBlockSpan>) {
         let (out, _) = render_markdown_ratatui_full(src, STYLE, pretty, None);
         (out.lines, out.code_blocks)
+    }
+
+    fn cb_at(cbs: &[CodeBlockSpan], i: usize) -> &CodeBlockSpan {
+        let Some(cb) = cbs.get(i) else {
+            panic!("expected code block {i}, got {cbs:?}");
+        };
+        cb
     }
 
     #[test]
@@ -215,16 +235,19 @@ mod code_block_span_tests {
         for pretty in [true, false] {
             let (lines, cbs) = blocks(src, pretty);
             assert_eq!(cbs.len(), 1, "pretty={pretty}");
-            assert_eq!(cbs[0].info, "text");
+            assert_eq!(cb_at(&cbs, 0).info, "text");
             // Body line range excludes the delimiter fences in both modes.
             assert_eq!(
-                body_lines(&lines, &cbs[0]),
+                body_lines(&lines, cb_at(&cbs, 0)),
                 vec!["flowchart TD", "  A --> B"],
                 "pretty={pretty}",
             );
             // Byte range and clean body are mode-independent; for a top-level fence both equal the verbatim fence body
-            assert_eq!(body_source(src, &cbs[0]), "flowchart TD\n  A --> B\n");
-            assert_eq!(cbs[0].body, "flowchart TD\n  A --> B\n");
+            assert_eq!(
+                body_source(src, cb_at(&cbs, 0)),
+                "flowchart TD\n  A --> B\n"
+            );
+            assert_eq!(cb_at(&cbs, 0).body, "flowchart TD\n  A --> B\n");
         }
     }
 
@@ -253,14 +276,14 @@ mod code_block_span_tests {
         for pretty in [true, false] {
             let (lines, cbs) = blocks(src, pretty);
             assert_eq!(cbs.len(), 2, "pretty={pretty}");
-            assert_eq!(cbs[0].info, "rust");
-            assert_eq!(cbs[1].info, "text");
-            assert_eq!(body_source(src, &cbs[0]), "fn a() {}\n");
-            assert_eq!(body_source(src, &cbs[1]), "A-->B\n");
-            assert_eq!(body_lines(&lines, &cbs[0]), vec!["fn a() {}"]);
-            assert_eq!(body_lines(&lines, &cbs[1]), vec!["A-->B"]);
+            assert_eq!(cb_at(&cbs, 0).info, "rust");
+            assert_eq!(cb_at(&cbs, 1).info, "text");
+            assert_eq!(body_source(src, cb_at(&cbs, 0)), "fn a() {}\n");
+            assert_eq!(body_source(src, cb_at(&cbs, 1)), "A-->B\n");
+            assert_eq!(body_lines(&lines, cb_at(&cbs, 0)), vec!["fn a() {}"]);
+            assert_eq!(body_lines(&lines, cb_at(&cbs, 1)), vec!["A-->B"]);
             // Document order implies disjoint, increasing line ranges
-            assert!(cbs[0].output_line_range.end <= cbs[1].output_line_range.start);
+            assert!(cb_at(&cbs, 0).output_line_range.end <= cb_at(&cbs, 1).output_line_range.start);
         }
     }
 
@@ -271,16 +294,20 @@ mod code_block_span_tests {
         for pretty in [true, false] {
             let (_lines, cbs) = blocks(src, pretty);
             assert_eq!(cbs.len(), 1, "pretty={pretty}");
-            assert_eq!(cbs[0].info, "mermaid");
+            assert_eq!(cb_at(&cbs, 0).info, "mermaid");
             // `body` is the clean, de-prefixed source: the list base indent is stripped but inner relative indentation is preserved
-            assert_eq!(cbs[0].body, "flowchart TD\n  A --> B\n", "pretty={pretty}");
+            assert_eq!(
+                cb_at(&cbs, 0).body,
+                "flowchart TD\n  A --> B\n",
+                "pretty={pretty}"
+            );
             // The raw byte range, by contrast, also strips the per-line base indent here (pulldown's text-event range starts after it)
             assert_eq!(
-                body_source(src, &cbs[0]),
+                body_source(src, cb_at(&cbs, 0)),
                 "flowchart TD\n    A --> B\n",
                 "pretty={pretty}",
             );
-            assert!(!cbs[0].output_line_range.is_empty());
+            assert!(!cb_at(&cbs, 0).output_line_range.is_empty());
         }
     }
 
@@ -292,8 +319,12 @@ mod code_block_span_tests {
         for pretty in [true, false] {
             let (_lines, cbs) = blocks(src, pretty);
             assert_eq!(cbs.len(), 1, "pretty={pretty}");
-            assert_eq!(cbs[0].info, "mermaid");
-            assert_eq!(cbs[0].body, "flowchart TD\n  A --> B\n", "pretty={pretty}");
+            assert_eq!(cb_at(&cbs, 0).info, "mermaid");
+            assert_eq!(
+                cb_at(&cbs, 0).body,
+                "flowchart TD\n  A --> B\n",
+                "pretty={pretty}"
+            );
         }
     }
 
@@ -323,15 +354,15 @@ mod code_block_span_tests {
         // Pretty: both fence lines are hidden, so there are no output lines and the empty anchor lands at 0..0 (exact, not merely is_empty())
         let (_, cbs) = blocks(src, true);
         assert_eq!(cbs.len(), 1);
-        assert_eq!(cbs[0].info, "mermaid");
-        assert_eq!(cbs[0].output_line_range, 0..0);
-        assert_eq!(body_source(src, &cbs[0]), "");
-        assert_eq!(cbs[0].body, "");
+        assert_eq!(cb_at(&cbs, 0).info, "mermaid");
+        assert_eq!(cb_at(&cbs, 0).output_line_range, 0..0);
+        assert_eq!(body_source(src, cb_at(&cbs, 0)), "");
+        assert_eq!(cb_at(&cbs, 0).body, "");
         // Raw: both fence lines are shown, so the empty body is anchored between them at 1..1
         let (_, cbs_raw) = blocks(src, false);
         assert_eq!(cbs_raw.len(), 1);
-        assert_eq!(cbs_raw[0].output_line_range, 1..1);
-        assert_eq!(cbs_raw[0].body, "");
+        assert_eq!(cb_at(&cbs_raw, 0).output_line_range, 1..1);
+        assert_eq!(cb_at(&cbs_raw, 0).body, "");
     }
 
     #[test]
@@ -339,8 +370,8 @@ mod code_block_span_tests {
         let src = "```\nplain code\n```\n";
         let (lines, cbs) = blocks(src, true);
         assert_eq!(cbs.len(), 1);
-        assert_eq!(cbs[0].info, "");
-        assert_eq!(body_lines(&lines, &cbs[0]), vec!["plain code"]);
+        assert_eq!(cb_at(&cbs, 0).info, "");
+        assert_eq!(body_lines(&lines, cb_at(&cbs, 0)), vec!["plain code"]);
     }
 
     #[test]
@@ -349,8 +380,8 @@ mod code_block_span_tests {
         for src in ["~~~text\nA-->B\n~~~\n", "```text\nfoo\n```"] {
             let (lines, cbs) = blocks(src, true);
             assert_eq!(cbs.len(), 1, "{src:?}");
-            assert_eq!(cbs[0].info, "text");
-            assert_eq!(body_lines(&lines, &cbs[0]).len(), 1);
+            assert_eq!(cb_at(&cbs, 0).info, "text");
+            assert_eq!(body_lines(&lines, cb_at(&cbs, 0)).len(), 1);
         }
     }
 
@@ -359,9 +390,9 @@ mod code_block_span_tests {
         let src = "```text\nfoo\n\nbar\n```\n";
         let (lines, cbs) = blocks(src, true);
         assert_eq!(cbs.len(), 1);
-        assert_eq!(body_lines(&lines, &cbs[0]), vec!["foo", "", "bar"]);
-        assert_eq!(body_source(src, &cbs[0]), "foo\n\nbar\n");
-        assert_eq!(cbs[0].body, "foo\n\nbar\n");
+        assert_eq!(body_lines(&lines, cb_at(&cbs, 0)), vec!["foo", "", "bar"]);
+        assert_eq!(body_source(src, cb_at(&cbs, 0)), "foo\n\nbar\n");
+        assert_eq!(cb_at(&cbs, 0).body, "foo\n\nbar\n");
     }
 
     #[test]
@@ -371,10 +402,10 @@ mod code_block_span_tests {
         let src = "```text\r\nA-->B\r\n```\r\n";
         let (lines, cbs) = blocks(src, true);
         assert_eq!(cbs.len(), 1);
-        assert_eq!(cbs[0].body, "A-->B\n");
-        assert_eq!(body_source(src, &cbs[0]), "A-->B\r\n");
+        assert_eq!(cb_at(&cbs, 0).body, "A-->B\n");
+        assert_eq!(body_source(src, cb_at(&cbs, 0)), "A-->B\r\n");
         // One rendered body line (the renderer keeps the raw `\r`; `body` is the normalized text)
-        assert_eq!(body_lines(&lines, &cbs[0]).len(), 1);
+        assert_eq!(body_lines(&lines, cb_at(&cbs, 0)).len(), 1);
     }
 
     #[test]
@@ -384,14 +415,14 @@ mod code_block_span_tests {
         let (lines, cbs) = blocks(src, true);
         assert_eq!(cbs.len(), 1);
         assert_eq!(
-            cbs[0].body,
+            cb_at(&cbs, 0).body,
             "A --> \u{65e5}\u{672c}\u{8a9e}\nC --> \u{1f980}\n"
         );
         assert_eq!(
-            body_source(src, &cbs[0]),
+            body_source(src, cb_at(&cbs, 0)),
             "A --> \u{65e5}\u{672c}\u{8a9e}\nC --> \u{1f980}\n",
         );
-        assert_eq!(body_lines(&lines, &cbs[0]).len(), 2);
+        assert_eq!(body_lines(&lines, cb_at(&cbs, 0)).len(), 2);
     }
 
     #[test]
@@ -400,8 +431,8 @@ mod code_block_span_tests {
         let src = "````mermaid\n```\ninner\n```\n````\n";
         let (_lines, cbs) = blocks(src, true);
         assert_eq!(cbs.len(), 1);
-        assert_eq!(cbs[0].info, "mermaid");
-        assert_eq!(cbs[0].body, "```\ninner\n```\n");
+        assert_eq!(cb_at(&cbs, 0).info, "mermaid");
+        assert_eq!(cb_at(&cbs, 0).body, "```\ninner\n```\n");
     }
 
     #[test]
@@ -410,7 +441,7 @@ mod code_block_span_tests {
         let src = "```mermaid\n\tA --> B\n```\n";
         let (_lines, cbs) = blocks(src, true);
         assert_eq!(cbs.len(), 1);
-        assert_eq!(cbs[0].body, "\tA --> B\n");
+        assert_eq!(cb_at(&cbs, 0).body, "\tA --> B\n");
     }
 
     #[test]
@@ -419,12 +450,16 @@ mod code_block_span_tests {
         let src = "```text\nflowchart TD\n  A --> B\n  B --> C\n```\n";
         for pretty in [true, false] {
             let (lines, cbs) = blocks(src, pretty);
-            let joined = body_lines(&lines, &cbs[0]).join("\n");
+            let joined = body_lines(&lines, cb_at(&cbs, 0)).join("\n");
             assert_eq!(
                 joined, "flowchart TD\n  A --> B\n  B --> C",
                 "pretty={pretty}"
             );
-            assert_eq!(format!("{joined}\n"), cbs[0].body, "pretty={pretty}");
+            assert_eq!(
+                format!("{joined}\n"),
+                cb_at(&cbs, 0).body,
+                "pretty={pretty}"
+            );
         }
     }
 
@@ -436,12 +471,12 @@ mod code_block_span_tests {
         let src = "```mermaid\nflowchart TD\n  A --> B\n```\n";
         let (lines, cbs) = blocks(src, true);
         assert_eq!(cbs.len(), 1);
-        assert_eq!(cbs[0].info, "mermaid");
+        assert_eq!(cb_at(&cbs, 0).info, "mermaid");
         // `body` is the verbatim diagram source, independent of rendering.
-        assert_eq!(cbs[0].body, "flowchart TD\n  A --> B\n");
+        assert_eq!(cb_at(&cbs, 0).body, "flowchart TD\n  A --> B\n");
         // The fence is rendered inline: the spanned output lines are the diagram art, not the verbatim source
-        assert!(!cbs[0].output_line_range.is_empty());
-        let rendered = body_lines(&lines, &cbs[0]).join("\n");
+        assert!(!cb_at(&cbs, 0).output_line_range.is_empty());
+        let rendered = body_lines(&lines, cb_at(&cbs, 0)).join("\n");
         assert_ne!(rendered, "flowchart TD\n  A --> B");
     }
 
@@ -521,7 +556,10 @@ mod code_block_span_tests {
                 while end < bytes.len() && !full.is_char_boundary(end) {
                     end += 1;
                 }
-                renderer.push_and_render(&full[pos..end], None);
+                let Some(chunk) = full.get(pos..end) else {
+                    break;
+                };
+                renderer.push_and_render(chunk, None);
                 pos = end;
             }
             let view = renderer.finish(None);

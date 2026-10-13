@@ -12,14 +12,19 @@ fn messages_groups_thinking_and_coalesced_text() {
     let msg = r
         .flush_assistant(Some("end_turn"))
         .expect("assistant message");
-    assert_eq!(msg["type"], "assistant");
-    assert_eq!(msg["message"]["stop_reason"], "end_turn");
-    assert_eq!(msg["session_id"], "sess-1");
-    let blocks = msg["message"]["content"].as_array().unwrap();
-    assert_eq!(blocks[0]["type"], "thinking");
-    assert_eq!(blocks[0]["thinking"], "mulling");
-    assert_eq!(blocks[1]["type"], "text");
-    assert_eq!(blocks[1]["text"], "Hello world");
+    assert_eq!(msg_type(&msg), Some("assistant"));
+    assert_eq!(json_str(&msg, "/message/stop_reason"), Some("end_turn"));
+    assert_eq!(json_str(&msg, "/session_id"), Some("sess-1"));
+    let Some(blocks) = msg.pointer("/message/content").and_then(Value::as_array) else {
+        panic!("assistant content array: {msg:?}");
+    };
+    let [thinking, text, ..] = blocks.as_slice() else {
+        panic!("expected thinking then text: {blocks:?}");
+    };
+    assert_eq!(json_str(thinking, "/type"), Some("thinking"));
+    assert_eq!(json_str(thinking, "/thinking"), Some("mulling"));
+    assert_eq!(json_str(text, "/type"), Some("text"));
+    assert_eq!(json_str(text, "/text"), Some("Hello world"));
 }
 
 #[test]
@@ -44,13 +49,26 @@ fn messages_response_completed_stamps_assistant_frame() {
         .is_empty()
     );
     let msg = r.flush_assistant(Some("stop")).expect("assistant message");
-    assert_eq!(msg["message"]["id"], "msg_real");
-    assert_eq!(msg["message"]["stop_reason"], "end_turn");
-    assert_eq!(msg["message"]["usage"]["input_tokens"], 12);
-    assert_eq!(msg["message"]["usage"]["output_tokens"], 7);
-    let blocks = msg["message"]["content"].as_array().unwrap();
-    assert_eq!(blocks[0]["type"], "thinking");
-    assert_eq!(blocks[0]["signature"], "sig-abc");
+    assert_eq!(json_str(&msg, "/message/id"), Some("msg_real"));
+    assert_eq!(json_str(&msg, "/message/stop_reason"), Some("end_turn"));
+    assert_eq!(
+        msg.pointer("/message/usage/input_tokens")
+            .and_then(Value::as_u64),
+        Some(12)
+    );
+    assert_eq!(
+        msg.pointer("/message/usage/output_tokens")
+            .and_then(Value::as_u64),
+        Some(7)
+    );
+    let Some(blocks) = msg.pointer("/message/content").and_then(Value::as_array) else {
+        panic!("assistant content array: {msg:?}");
+    };
+    let Some(thinking) = blocks.first() else {
+        panic!("expected thinking block: {blocks:?}");
+    };
+    assert_eq!(json_str(thinking, "/type"), Some("thinking"));
+    assert_eq!(json_str(thinking, "/signature"), Some("sig-abc"));
 }
 
 #[test]
@@ -69,14 +87,19 @@ fn messages_multiple_thinking_blocks_stamp_signature_on_last_only() {
     let msg = r
         .flush_assistant(Some("end_turn"))
         .expect("assistant message");
-    let blocks = msg["message"]["content"].as_array().unwrap();
-    assert_eq!(blocks[0]["type"], "thinking");
-    assert_eq!(blocks[0]["thinking"], "first think");
-    assert_eq!(blocks[0]["signature"], "");
-    assert_eq!(blocks[1]["type"], "text");
-    assert_eq!(blocks[2]["type"], "thinking");
-    assert_eq!(blocks[2]["thinking"], "second think");
-    assert_eq!(blocks[2]["signature"], "sig-final");
+    let Some(blocks) = msg.pointer("/message/content").and_then(Value::as_array) else {
+        panic!("assistant content array: {msg:?}");
+    };
+    let [first, text, second, ..] = blocks.as_slice() else {
+        panic!("expected thinking, text, thinking: {blocks:?}");
+    };
+    assert_eq!(json_str(first, "/type"), Some("thinking"));
+    assert_eq!(json_str(first, "/thinking"), Some("first think"));
+    assert_eq!(json_str(first, "/signature"), Some(""));
+    assert_eq!(json_str(text, "/type"), Some("text"));
+    assert_eq!(json_str(second, "/type"), Some("thinking"));
+    assert_eq!(json_str(second, "/thinking"), Some("second think"));
+    assert_eq!(json_str(second, "/signature"), Some("sig-final"));
 }
 
 #[test]
@@ -92,13 +115,18 @@ fn messages_response_completed_consumed_per_response() {
         "completed",
         json!("done"),
     )));
-    let assistant = out.iter().find(|m| m["type"] == "assistant").unwrap();
-    assert_eq!(assistant["message"]["id"], "msg_a");
-    assert_eq!(assistant["message"]["stop_reason"], "tool_use");
+    let Some(assistant) = out.iter().find(|m| msg_type(m) == Some("assistant")) else {
+        panic!("expected assistant frame: {out:?}");
+    };
+    assert_eq!(json_str(assistant, "/message/id"), Some("msg_a"));
+    assert_eq!(
+        json_str(assistant, "/message/stop_reason"),
+        Some("tool_use")
+    );
     r.reduce(StreamEvent::AgentMessage("next".into()));
     let msg = r.flush_assistant(Some("end_turn")).expect("assistant");
-    assert_eq!(msg["message"]["id"], "msg_0");
-    assert_eq!(msg["message"]["stop_reason"], "end_turn");
+    assert_eq!(json_str(&msg, "/message/id"), Some("msg_0"));
+    assert_eq!(json_str(&msg, "/message/stop_reason"), Some("end_turn"));
 }
 
 #[test]
@@ -111,12 +139,17 @@ fn messages_signature_only_thinking_block_kept_in_frame() {
     let msg = r
         .flush_assistant(Some("end_turn"))
         .expect("assistant frame");
-    let blocks = msg["message"]["content"].as_array().unwrap();
-    assert_eq!(blocks[0]["type"], "thinking");
-    assert_eq!(blocks[0]["thinking"], "");
-    assert_eq!(blocks[0]["signature"], "sig-only");
-    assert_eq!(blocks[1]["type"], "text");
-    assert_eq!(blocks[1]["text"], "answer");
+    let Some(blocks) = msg.pointer("/message/content").and_then(Value::as_array) else {
+        panic!("assistant content array: {msg:?}");
+    };
+    let [thinking, text, ..] = blocks.as_slice() else {
+        panic!("expected thinking then text: {blocks:?}");
+    };
+    assert_eq!(json_str(thinking, "/type"), Some("thinking"));
+    assert_eq!(json_str(thinking, "/thinking"), Some(""));
+    assert_eq!(json_str(thinking, "/signature"), Some("sig-only"));
+    assert_eq!(json_str(text, "/type"), Some("text"));
+    assert_eq!(json_str(text, "/text"), Some("answer"));
 }
 
 #[test]
@@ -128,11 +161,15 @@ fn messages_pure_signature_only_response_emits_thinking_block() {
     let msg = r
         .flush_assistant(Some("end_turn"))
         .expect("assistant frame");
-    let blocks = msg["message"]["content"].as_array().unwrap();
-    assert_eq!(blocks.len(), 1);
-    assert_eq!(blocks[0]["type"], "thinking");
-    assert_eq!(blocks[0]["thinking"], "");
-    assert_eq!(blocks[0]["signature"], "sig-only");
+    let Some(blocks) = msg.pointer("/message/content").and_then(Value::as_array) else {
+        panic!("assistant content array: {msg:?}");
+    };
+    let [thinking] = blocks.as_slice() else {
+        panic!("expected one thinking block: {blocks:?}");
+    };
+    assert_eq!(json_str(thinking, "/type"), Some("thinking"));
+    assert_eq!(json_str(thinking, "/thinking"), Some(""));
+    assert_eq!(json_str(thinking, "/signature"), Some("sig-only"));
 }
 
 #[test]
@@ -152,12 +189,17 @@ fn messages_per_response_model_reflects_mid_session_switch() {
     out.extend(r.reduce(StreamEvent::AgentMessage("from B".into())));
     out.extend(r.reduce(response_completed("msg_b", "end_turn")));
     out.extend(r.finish(&end_turn()));
-    let frames: Vec<&Value> = out.iter().filter(|m| m["type"] == "assistant").collect();
-    assert_eq!(frames.len(), 2, "one frame per response: {out:?}");
-    assert_eq!(frames[0]["message"]["id"], "msg_a");
-    assert_eq!(frames[0]["message"]["model"], "grok-4");
-    assert_eq!(frames[1]["message"]["id"], "msg_b");
-    assert_eq!(frames[1]["message"]["model"], "grok-4-fast");
+    let frames: Vec<&Value> = out
+        .iter()
+        .filter(|m| msg_type(m) == Some("assistant"))
+        .collect();
+    let [a, b] = frames.as_slice() else {
+        panic!("one frame per response: {out:?}");
+    };
+    assert_eq!(json_str(a, "/message/id"), Some("msg_a"));
+    assert_eq!(json_str(a, "/message/model"), Some("grok-4"));
+    assert_eq!(json_str(b, "/message/id"), Some("msg_b"));
+    assert_eq!(json_str(b, "/message/model"), Some("grok-4-fast"));
 }
 
 #[test]
@@ -182,14 +224,19 @@ fn messages_per_block_thinking_signatures_kept() {
     let msg = r
         .flush_assistant(Some("end_turn"))
         .expect("assistant message");
-    let blocks = msg["message"]["content"].as_array().unwrap();
-    assert_eq!(blocks[0]["type"], "thinking");
-    assert_eq!(blocks[0]["thinking"], "first think");
-    assert_eq!(blocks[0]["signature"], "sig-1");
-    assert_eq!(blocks[1]["type"], "text");
-    assert_eq!(blocks[2]["type"], "thinking");
-    assert_eq!(blocks[2]["thinking"], "second think");
-    assert_eq!(blocks[2]["signature"], "sig-2");
+    let Some(blocks) = msg.pointer("/message/content").and_then(Value::as_array) else {
+        panic!("assistant content array: {msg:?}");
+    };
+    let [first, text, second, ..] = blocks.as_slice() else {
+        panic!("expected thinking, text, thinking: {blocks:?}");
+    };
+    assert_eq!(json_str(first, "/type"), Some("thinking"));
+    assert_eq!(json_str(first, "/thinking"), Some("first think"));
+    assert_eq!(json_str(first, "/signature"), Some("sig-1"));
+    assert_eq!(json_str(text, "/type"), Some("text"));
+    assert_eq!(json_str(second, "/type"), Some("thinking"));
+    assert_eq!(json_str(second, "/thinking"), Some("second think"));
+    assert_eq!(json_str(second, "/signature"), Some("sig-2"));
 }
 
 #[test]
@@ -206,8 +253,11 @@ fn messages_assistant_frame_carries_stop_sequence() {
     let msg = r
         .flush_assistant(Some("end_turn"))
         .expect("assistant frame");
-    assert_eq!(msg["message"]["stop_reason"], "stop_sequence");
-    assert_eq!(msg["message"]["stop_sequence"], "<END>");
+    assert_eq!(
+        json_str(&msg, "/message/stop_reason"),
+        Some("stop_sequence")
+    );
+    assert_eq!(json_str(&msg, "/message/stop_sequence"), Some("<END>"));
 }
 
 #[test]
@@ -216,20 +266,18 @@ fn messages_consecutive_text_responses_split_into_frames() {
     r.reduce(StreamEvent::AgentMessage("first".into()));
     r.reduce(response_completed("msg_a", "end_turn"));
     let out = r.reduce(StreamEvent::AgentMessage("second".into()));
-    let a = out
-        .iter()
-        .find(|m| m["type"] == "assistant")
-        .expect("frame A flushed on new content");
-    assert_eq!(a["message"]["id"], "msg_a");
-    assert_eq!(a["message"]["content"][0]["text"], "first");
+    let Some(a) = out.iter().find(|m| msg_type(m) == Some("assistant")) else {
+        panic!("frame A flushed on new content: {out:?}");
+    };
+    assert_eq!(json_str(a, "/message/id"), Some("msg_a"));
+    assert_eq!(json_str(a, "/message/content/0/text"), Some("first"));
     r.reduce(response_completed("msg_b", "end_turn"));
     let out2 = r.finish(&turn_end("end_turn", "second"));
-    let b = out2
-        .iter()
-        .find(|m| m["type"] == "assistant")
-        .expect("frame B flushed at finish");
-    assert_eq!(b["message"]["id"], "msg_b");
-    assert_eq!(b["message"]["content"][0]["text"], "second");
+    let Some(b) = out2.iter().find(|m| msg_type(m) == Some("assistant")) else {
+        panic!("frame B flushed at finish: {out2:?}");
+    };
+    assert_eq!(json_str(b, "/message/id"), Some("msg_b"));
+    assert_eq!(json_str(b, "/message/content/0/text"), Some("second"));
 }
 
 #[test]
@@ -242,20 +290,29 @@ fn messages_duplicate_response_started_does_not_merge_content() {
     out.extend(r.reduce(StreamEvent::AgentMessage("B".into())));
     out.extend(r.reduce(response_completed("msg_b", "end_turn")));
     out.extend(r.finish(&end_turn()));
-    let frames: Vec<&Value> = out.iter().filter(|m| m["type"] == "assistant").collect();
-    assert_eq!(frames.len(), 2, "A flushed before B opens: {out:?}");
-    assert_eq!(frames[0]["message"]["id"], "msg_a");
-    assert_eq!(frames[0]["message"]["content"][0]["text"], "A");
+    let frames: Vec<&Value> = out
+        .iter()
+        .filter(|m| msg_type(m) == Some("assistant"))
+        .collect();
+    let [a, b] = frames.as_slice() else {
+        panic!("A flushed before B opens: {out:?}");
+    };
+    assert_eq!(json_str(a, "/message/id"), Some("msg_a"));
+    assert_eq!(json_str(a, "/message/content/0/text"), Some("A"));
     assert_eq!(
-        frames[0]["message"]["content"].as_array().unwrap().len(),
-        1,
+        a.pointer("/message/content")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1),
         "A did not absorb B's content"
     );
-    assert_eq!(frames[1]["message"]["id"], "msg_b");
-    assert_eq!(frames[1]["message"]["content"][0]["text"], "B");
+    assert_eq!(json_str(b, "/message/id"), Some("msg_b"));
+    assert_eq!(json_str(b, "/message/content/0/text"), Some("B"));
     assert_eq!(
-        frames[1]["message"]["content"].as_array().unwrap().len(),
-        1,
+        b.pointer("/message/content")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1),
         "B did not absorb A's content"
     );
 }
@@ -273,21 +330,26 @@ fn messages_signature_only_restart_does_not_leak_signature() {
     out.extend(r.reduce(StreamEvent::AgentMessage("B".into())));
     out.extend(r.reduce(response_completed("msg_b", "end_turn")));
     out.extend(r.finish(&end_turn()));
-    let frames: Vec<&Value> = out.iter().filter(|m| m["type"] == "assistant").collect();
-    assert_eq!(frames.len(), 2, "{out:?}");
-    assert_eq!(frames[0]["message"]["id"], "msg_a");
-    assert_eq!(frames[0]["message"]["content"][0]["type"], "thinking");
-    assert_eq!(frames[0]["message"]["content"][0]["signature"], "sig-a");
-    assert_eq!(frames[1]["message"]["id"], "msg_b");
-    assert_eq!(frames[1]["message"]["content"][0]["type"], "text");
+    let frames: Vec<&Value> = out
+        .iter()
+        .filter(|m| msg_type(m) == Some("assistant"))
+        .collect();
+    let [a, b] = frames.as_slice() else {
+        panic!("expected two assistant frames: {out:?}");
+    };
+    assert_eq!(json_str(a, "/message/id"), Some("msg_a"));
+    assert_eq!(json_str(a, "/message/content/0/type"), Some("thinking"));
+    assert_eq!(json_str(a, "/message/content/0/signature"), Some("sig-a"));
+    assert_eq!(json_str(b, "/message/id"), Some("msg_b"));
+    assert_eq!(json_str(b, "/message/content/0/type"), Some("text"));
+    let Some(b_blocks) = b.pointer("/message/content").and_then(Value::as_array) else {
+        panic!("B content array: {b:?}");
+    };
     assert!(
-        frames[1]["message"]["content"]
-            .as_array()
-            .unwrap()
+        b_blocks
             .iter()
-            .all(|b| b["type"] != "thinking"),
-        "no thinking block leaked into B: {:?}",
-        frames[1]
+            .all(|block| json_str(block, "/type") != Some("thinking")),
+        "no thinking block leaked into B: {b:?}"
     );
 }
 
@@ -300,12 +362,17 @@ fn messages_content_before_late_response_started_flushes_first() {
     out.extend(r.reduce(StreamEvent::AgentMessage("late".into())));
     out.extend(r.reduce(response_completed("msg_b", "end_turn")));
     out.extend(r.finish(&end_turn()));
-    let frames: Vec<&Value> = out.iter().filter(|m| m["type"] == "assistant").collect();
-    assert_eq!(frames.len(), 2, "early content is its own frame: {out:?}");
-    assert_eq!(frames[0]["message"]["content"][0]["text"], "early");
-    assert_eq!(frames[0]["message"]["id"], "msg_0");
-    assert_eq!(frames[1]["message"]["id"], "msg_b");
-    assert_eq!(frames[1]["message"]["content"][0]["text"], "late");
+    let frames: Vec<&Value> = out
+        .iter()
+        .filter(|m| msg_type(m) == Some("assistant"))
+        .collect();
+    let [early, late] = frames.as_slice() else {
+        panic!("early content is its own frame: {out:?}");
+    };
+    assert_eq!(json_str(early, "/message/content/0/text"), Some("early"));
+    assert_eq!(json_str(early, "/message/id"), Some("msg_0"));
+    assert_eq!(json_str(late, "/message/id"), Some("msg_b"));
+    assert_eq!(json_str(late, "/message/content/0/text"), Some("late"));
 }
 
 #[test]
@@ -321,18 +388,18 @@ fn messages_consecutive_signature_blocks_keep_own_signature() {
     let msg = r
         .flush_assistant(Some("end_turn"))
         .expect("assistant frame");
-    let blocks = msg["message"]["content"].as_array().unwrap();
-    assert_eq!(
-        blocks.len(),
-        2,
-        "two thinking blocks, not collapsed: {blocks:?}"
-    );
-    assert_eq!(blocks[0]["type"], "thinking");
-    assert_eq!(blocks[0]["thinking"], "first");
-    assert_eq!(blocks[0]["signature"], "sig-1");
-    assert_eq!(blocks[1]["type"], "thinking");
-    assert_eq!(blocks[1]["thinking"], "");
-    assert_eq!(blocks[1]["signature"], "sig-2");
+    let Some(blocks) = msg.pointer("/message/content").and_then(Value::as_array) else {
+        panic!("assistant content array: {msg:?}");
+    };
+    let [first, second] = blocks.as_slice() else {
+        panic!("two thinking blocks, not collapsed: {blocks:?}");
+    };
+    assert_eq!(json_str(first, "/type"), Some("thinking"));
+    assert_eq!(json_str(first, "/thinking"), Some("first"));
+    assert_eq!(json_str(first, "/signature"), Some("sig-1"));
+    assert_eq!(json_str(second, "/type"), Some("thinking"));
+    assert_eq!(json_str(second, "/thinking"), Some(""));
+    assert_eq!(json_str(second, "/signature"), Some("sig-2"));
 }
 
 #[test]
@@ -342,11 +409,21 @@ fn messages_compact_completed_maps_to_system_boundary() {
     let out = r.reduce(StreamEvent::Lifecycle(Lifecycle::CompactCompleted {
         pre_tokens: 1234,
     }));
-    let boundary = out.last().unwrap();
-    assert_eq!(boundary["type"], "system");
-    assert_eq!(boundary["subtype"], "compact_boundary");
-    assert_eq!(boundary["compact_metadata"]["trigger"], "auto");
-    assert_eq!(boundary["compact_metadata"]["pre_tokens"], 1234);
+    let Some(boundary) = out.last() else {
+        panic!("expected compact boundary: {out:?}");
+    };
+    assert_eq!(msg_type(boundary), Some("system"));
+    assert_eq!(json_str(boundary, "/subtype"), Some("compact_boundary"));
+    assert_eq!(
+        json_str(boundary, "/compact_metadata/trigger"),
+        Some("auto")
+    );
+    assert_eq!(
+        boundary
+            .pointer("/compact_metadata/pre_tokens")
+            .and_then(Value::as_u64),
+        Some(1234)
+    );
 }
 
 #[test]
@@ -369,19 +446,21 @@ fn messages_late_response_completed_for_flushed_response_is_dropped() {
         stop_sequence: None,
     }));
     out.extend(r.finish(&end_turn()));
-    let assistants: Vec<_> = out.iter().filter(|m| m["type"] == "assistant").collect();
-    assert_eq!(
-        assistants.len(),
-        2,
-        "A flushed at B's start, B flushed at finish"
-    );
-    assert_eq!(assistants[0]["message"]["id"], "msg_a");
-    assert_eq!(assistants[0]["message"]["content"][0]["text"], "a-text");
-    let b = assistants[1];
-    assert_eq!(b["message"]["id"], "msg_b");
-    assert_eq!(b["message"]["content"][0]["text"], "b-text");
+    let assistants: Vec<_> = out
+        .iter()
+        .filter(|m| msg_type(m) == Some("assistant"))
+        .collect();
+    let [a, b] = assistants.as_slice() else {
+        panic!("A flushed at B's start, B flushed at finish: {out:?}");
+    };
+    assert_eq!(json_str(a, "/message/id"), Some("msg_a"));
+    assert_eq!(json_str(a, "/message/content/0/text"), Some("a-text"));
+    assert_eq!(json_str(b, "/message/id"), Some("msg_b"));
+    assert_eq!(json_str(b, "/message/content/0/text"), Some("b-text"));
     assert_ne!(
-        b["message"]["usage"]["input_tokens"], 99,
+        b.pointer("/message/usage/input_tokens")
+            .and_then(Value::as_u64),
+        Some(99),
         "A's late usage must not land on B"
     );
 }

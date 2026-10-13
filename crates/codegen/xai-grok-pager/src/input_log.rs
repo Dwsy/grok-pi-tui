@@ -29,7 +29,6 @@ pub enum ActivePaneSnapshot {
     Todo,
     Queue,
     Tasks,
-    Catalog,
     Other,
 }
 /// Copy-friendly snapshot of the input outcome. No heap allocation.
@@ -243,13 +242,19 @@ mod tests {
         }
         let entries = buf.snapshot_entries();
         assert_eq!(entries.len(), 5);
-        assert_eq!(entries[0].ts_ms, 0);
+        let Some(first) = entries.first() else {
+            panic!("expected ring entries: {entries:?}");
+        };
+        assert_eq!(first.ts_ms, 0);
         for w in entries.windows(2) {
-            assert!(w[1].ts_ms >= w[0].ts_ms);
+            let [a, b] = w else {
+                continue;
+            };
+            assert!(b.ts_ms >= a.ts_ms);
         }
-        assert_eq!(entries[0].key, "Char");
-        assert_eq!(entries[0].mods, format!("{:?}", KeyModifiers::NONE));
-        assert_eq!(entries[0].pane, "Prompt");
+        assert_eq!(first.key, "Char");
+        assert_eq!(first.mods, format!("{:?}", KeyModifiers::NONE));
+        assert_eq!(first.pane, "Prompt");
     }
     #[test]
     fn ring_buffer_capacity() {
@@ -260,7 +265,7 @@ mod tests {
         assert_eq!(buf.entry_count(), DEFAULT_CAPACITY);
         let entries = buf.snapshot_entries();
         assert_eq!(entries.len(), DEFAULT_CAPACITY);
-        assert_eq!(entries[0].key, "Backspace");
+        assert_eq!(entries.first().map(|e| e.key.as_str()), Some("Backspace"));
     }
     #[test]
     fn ring_buffer_empty() {

@@ -1,3 +1,5 @@
+#![deny(clippy::indexing_slicing)]
+
 mod channel;
 mod common;
 mod gateway;
@@ -24,6 +26,8 @@ pub use self::{
 };
 
 pub use self::line_reader::LineBufferedRead;
+pub use self::stdin_reader::ThreadReader;
+pub use self::stdin_reader::spawn_stdin_byte_reader;
 pub use self::stdin_reader::spawn_stdin_line_reader;
 
 #[doc(hidden)]

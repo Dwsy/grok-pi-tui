@@ -56,8 +56,8 @@ fn warm_medians_exclude_the_first_uncontrolled_sample() {
             },
         })
         .collect::<Vec<_>>();
-    let warm_medians = median_phases(&samples[1..]);
-    assert_eq!(samples[0].durations_ms.create, 0.0);
+    let warm_medians = median_phases(samples.get(1..).unwrap_or(&[]));
+    assert_eq!(samples.first().map(|s| s.durations_ms.create), Some(0.0));
     assert_eq!(warm_medians.create, 3.0);
     assert_eq!(warm_medians.remove_cleanup, 8.0);
 }
@@ -118,10 +118,16 @@ fn report_schema_is_versioned_and_keeps_skip_reason() {
         }],
     };
     let value = serde_json::to_value(report).unwrap();
-    assert_eq!(value["schema_version"], SCHEMA_VERSION);
-    assert_eq!(value["cases"][0]["support"]["status"], "skipped");
-    assert_eq!(value["cases"][0]["support"]["reason"], "missing /dev/fuse");
-    assert_eq!(value["provenance"]["source"], REDACTED_PATH);
+    let at = |path: &str| {
+        value
+            .pointer(path)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
+    assert_eq!(at("/schema_version"), SCHEMA_VERSION);
+    assert_eq!(at("/cases/0/support/status"), "skipped");
+    assert_eq!(at("/cases/0/support/reason"), "missing /dev/fuse");
+    assert_eq!(at("/provenance/source"), REDACTED_PATH);
 }
 
 #[test]
@@ -1098,11 +1104,11 @@ fn provenance_digest_and_blob_match_are_stable() {
     };
     assert_eq!(report.harness_repo_commit, "a".repeat(40));
     assert_eq!(report.harness_repo_tree, "b".repeat(40));
-    assert!(report.harness_inputs[0].matches_head);
-    assert_eq!(
-        report.harness_inputs[0].head_sha256.as_ref(),
-        Some(&report.harness_inputs[0].sha256)
-    );
+    let Some(input) = report.harness_inputs.first() else {
+        panic!("expected harness input: {:?}", report.harness_inputs);
+    };
+    assert!(input.matches_head);
+    assert_eq!(input.head_sha256.as_ref(), Some(&input.sha256));
     assert_eq!(report.harness_executable_sha256.len(), 64);
 }
 
@@ -1145,9 +1151,15 @@ fn provenance_paths_and_first_semantics_are_redacted_and_truthful() {
         "/secret/source".into(),
         "--output=/secret/result.json".into(),
     ]);
-    assert_eq!(argv[0], "worktree-lifecycle-bench");
-    assert_eq!(argv[2], REDACTED_PATH);
-    assert_eq!(argv[3], "--output=<redacted-path>");
+    assert_eq!(
+        argv.first().map(String::as_str),
+        Some("worktree-lifecycle-bench")
+    );
+    assert_eq!(argv.get(2).map(String::as_str), Some(REDACTED_PATH));
+    assert_eq!(
+        argv.get(3).map(String::as_str),
+        Some("--output=<redacted-path>")
+    );
 
     let samples = [("first", "preexisting_uncontrolled"), ("warm", "reused")];
     assert_eq!(samples[0], ("first", "preexisting_uncontrolled"));

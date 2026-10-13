@@ -770,8 +770,11 @@ mod tests {
             );
             let pushes = mock.pushes();
             assert_eq!(pushes.len(), 1);
-            assert_eq!(pushes[0].reason, McpServerStatusReason::Disabled);
-            assert_eq!(pushes[0].status, McpServerStatus::Unavailable);
+            let Some(first) = pushes.first() else {
+                panic!("expected one push: {pushes:?}");
+            };
+            assert_eq!(first.reason, McpServerStatusReason::Disabled);
+            assert_eq!(first.status, McpServerStatus::Unavailable);
         })
         .await;
     }
@@ -799,7 +802,10 @@ mod tests {
             assert_eq!(mock.respawn_call_count(), 0);
             let pushes = mock.pushes();
             assert_eq!(pushes.len(), 1);
-            assert_eq!(pushes[0].reason, McpServerStatusReason::Disabled);
+            assert_eq!(
+                pushes.first().map(|p| p.reason),
+                Some(McpServerStatusReason::Disabled)
+            );
         })
         .await;
     }
@@ -949,9 +955,12 @@ mod tests {
                 1,
                 "exactly one push per successful restart; got {pushes:?}"
             );
-            assert_eq!(pushes[0].reason, McpServerStatusReason::RestartSucceeded);
-            assert_ne!(pushes[0].reason, McpServerStatusReason::Initialized);
-            assert_eq!(pushes[0].status, McpServerStatus::Ready);
+            let Some(first) = pushes.first() else {
+                panic!("expected one push: {pushes:?}");
+            };
+            assert_eq!(first.reason, McpServerStatusReason::RestartSucceeded);
+            assert_ne!(first.reason, McpServerStatusReason::Initialized);
+            assert_eq!(first.status, McpServerStatus::Ready);
         })
         .await;
     }
@@ -1019,25 +1028,23 @@ mod tests {
             }
             // Per-attempt details encode their attempt index.
             assert!(
-                pushes[0]
-                    .detail
-                    .as_deref()
-                    .map(|s| s.starts_with("attempt 1 of 3"))
-                    .unwrap_or(false),
+                pushes
+                    .first()
+                    .and_then(|p| p.detail.as_deref())
+                    .is_some_and(|s| s.starts_with("attempt 1 of 3")),
                 "first push detail: {:?}",
-                pushes[0].detail,
+                pushes.first().and_then(|p| p.detail.as_ref()),
             );
             assert!(
-                pushes[2]
-                    .detail
-                    .as_deref()
-                    .map(|s| s.starts_with("attempt 3 of 3"))
-                    .unwrap_or(false),
+                pushes
+                    .get(2)
+                    .and_then(|p| p.detail.as_deref())
+                    .is_some_and(|s| s.starts_with("attempt 3 of 3")),
                 "third push detail: {:?}",
-                pushes[2].detail,
+                pushes.get(2).and_then(|p| p.detail.as_ref()),
             );
             assert_eq!(
-                pushes[3].detail.as_deref(),
+                pushes.get(3).and_then(|p| p.detail.as_deref()),
                 Some("exhausted after 3 attempts"),
             );
         })

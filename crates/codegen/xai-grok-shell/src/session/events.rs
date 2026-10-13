@@ -305,6 +305,31 @@ impl GoalPlannerFailClosedReason {
             Self::FileWriteFailed => GOAL_PLANNER_FAIL_CLOSED_FILE_WRITE_FAILED,
         }
     }
+
+    /// Every variant of this enum, used by the wire-string pin test.
+    /// Adding a variant is a compile error until it is listed here (and given an `as_const_str` arm).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "exhaustiveness guard, exercised only by tests")
+    )]
+    pub(crate) const fn all() -> &'static [Self] {
+        const fn _assert_exhaustive(r: GoalPlannerFailClosedReason) {
+            match r {
+                GoalPlannerFailClosedReason::Transport => (),
+                GoalPlannerFailClosedReason::Runtime => (),
+                GoalPlannerFailClosedReason::Aborted => (),
+                GoalPlannerFailClosedReason::MissingPlan => (),
+                GoalPlannerFailClosedReason::FileWriteFailed => (),
+            }
+        }
+        &[
+            Self::Transport,
+            Self::Runtime,
+            Self::Aborted,
+            Self::MissingPlan,
+            Self::FileWriteFailed,
+        ]
+    }
 }
 
 // ── GoalStrategist discriminator vocabulary ───────────────────────────.
@@ -567,6 +592,7 @@ impl From<crate::session::goal_tracker::GoalPauseReason> for GoalPauseReasonTele
             GoalPauseReason::NoProgress => Self::NoProgress,
             GoalPauseReason::Verification => Self::Verification,
             GoalPauseReason::Infra => Self::Infra,
+            GoalPauseReason::Planner => Self::Planner,
         }
     }
 }
@@ -620,6 +646,10 @@ mod tests {
         assert!(matches!(
             GoalPauseReasonTelemetry::from(GoalPauseReason::Infra),
             GoalPauseReasonTelemetry::Infra
+        ));
+        assert!(matches!(
+            GoalPauseReasonTelemetry::from(GoalPauseReason::Planner),
+            GoalPauseReasonTelemetry::Planner
         ));
     }
 
@@ -836,6 +866,31 @@ mod tests {
             GoalRoleModelFailOpenReason::all().len(),
             "every fail-open reason must map to a distinct wire string",
         );
+    }
+
+    #[test]
+    fn goal_planner_fail_closed_reason_wire_strings() {
+        // Pins every wire string dashboards group by; `aborted` keeps its spelling for telemetry compat
+        use GoalPlannerFailClosedReason as R;
+        let expected = [
+            (R::Transport, "transport"),
+            (R::Runtime, "runtime"),
+            (R::Aborted, "aborted"),
+            (R::MissingPlan, "missing_plan_file"),
+            (R::FileWriteFailed, "file_write_failed"),
+        ];
+        assert_eq!(
+            R::all().len(),
+            expected.len(),
+            "GoalPlannerFailClosedReason::all() and the pinned table drifted",
+        );
+        for (variant, literal) in expected {
+            assert!(
+                R::all().contains(&variant),
+                "{variant:?} missing from all()"
+            );
+            assert_eq!(variant.as_const_str(), literal, "{variant:?} drifted");
+        }
     }
 
     #[test]

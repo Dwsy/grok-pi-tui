@@ -2,8 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-// ── Grok state directory ────────────────────────────────────────────────────
-
 /// Grok state directory (`$GROK_HOME` or `~/.grok`).
 pub(crate) fn grok_home() -> PathBuf {
     xai_grok_config::grok_home()
@@ -15,8 +13,6 @@ pub(crate) fn grok_home() -> PathBuf {
 pub(crate) fn sandbox_events_log_path() -> PathBuf {
     grok_home().join("sessions").join("sandbox-events.jsonl")
 }
-
-// ── Device files & directories ──────────────────────────────────────────────
 
 /// Device files that need write access for normal tool operation. These are individual files (use `allow_file`, not
 /// `allow_path`). Directory nodes under `/dev` belong in [`DEVICE_DIRS`].
@@ -36,8 +32,6 @@ pub(crate) const DEVICE_DIRS: &[&str] = &[
     "/dev/pts", // PTY slaves (Linux)
     "/dev/fd",  // fd table (symlink to /proc/self/fd on Linux; a directory)
 ];
-
-// ── Temporary directories ───────────────────────────────────────────────────
 
 /// Temporary directories that need write access.
 ///
@@ -66,8 +60,6 @@ pub(crate) fn temp_writable_paths() -> Vec<PathBuf> {
 
     paths
 }
-
-// ── Essential writable paths ────────────────────────────────────────────────
 
 /// Writable directory paths for the workspace profile (full `grok_home()` and temp).
 /// Device files are handled separately via `allow_file` in `to_capability_set_with_config`.

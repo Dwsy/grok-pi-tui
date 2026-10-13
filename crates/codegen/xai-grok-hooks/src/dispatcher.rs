@@ -1,6 +1,8 @@
+use tracing::Instrument;
+
 use crate::config::HookSpec;
 use crate::discovery::HookRegistry;
-use crate::event::{HookEventEnvelope, HookEventName};
+use crate::event::{HookEventEnvelope, HookEventName, MAX_HOOK_FEEDBACK_CHARS, clip_text};
 use crate::result::{HookDecision, HookRunResult, PromptDecision};
 use crate::runner::{self, GateKind, HookRunnerResult, RunContext};
 use crate::trust::DisabledHooks;
@@ -18,9 +20,8 @@ fn dispatch_span(event: HookEventName, hook_count: usize) -> tracing::Span {
     )
 }
 
-/// The one per-spec disable rule: a user-disabled spec is skipped unless it is managed policy, which cannot be disabled.
-pub(crate) fn is_disabled(spec: &HookSpec, disabled: &DisabledHooks) -> bool {
-    (!spec.enabled || disabled.contains(&spec.name)) && !spec.is_managed_policy()
+fn hook_run_span(spec: &HookSpec, event: HookEventName) -> tracing::Span {
+    tracing::info_span!("hook.run", hook_name = %spec.name, hook_event = %event)
 }
 
 fn eligible_or_record_skip(
@@ -29,8 +30,8 @@ fn eligible_or_record_skip(
     results: &mut Vec<HookRunResult>,
     disabled: &DisabledHooks,
 ) -> bool {
-    if is_disabled(spec, disabled) {
-        tracing::info!(hook_name = %spec.name, "hook skipped (disabled)");
+    if let Some(reason) = disabled.skip_reason(spec) {
+        tracing::info!(hook_name = %spec.name, skip_reason = ?reason, "hook skipped");
         results.push(HookRunResult::Skipped {
             hook_name: spec.name.clone(),
         });
@@ -50,7 +51,7 @@ pub fn runnable_count(
     registry
         .hooks_for_canonical(envelope.hook_event_name)
         .into_iter()
-        .filter(|spec| !is_disabled(spec, ctx.disabled()))
+        .filter(|spec| !ctx.disabled().blocks(spec))
         .filter(|spec| crate::matcher::matcher_allows(spec.matcher.as_ref(), match_value))
         .count()
 }
@@ -110,169 +111,168 @@ async fn dispatch_sequential_gate(
     }
 
     let span = dispatch_span(event, hooks.len());
-    let _enter = span.enter();
+    async {
+        let match_value = envelope.payload.match_value().map(str::to_string);
+        let mut run_results = Vec::new();
+        let mut updated_input: Option<InputRewrite> = None;
+        let mut additional_context: Vec<AdditionalContext> = Vec::new();
+        let mut pending_ask: Option<PendingAsk> = None;
+        let mut deferring_hook: Option<String> = None;
 
-    let match_value = envelope.payload.match_value().map(str::to_string);
-    let mut run_results = Vec::new();
-    let mut updated_input: Option<InputRewrite> = None;
-    let mut additional_context: Vec<AdditionalContext> = Vec::new();
-    let mut pending_ask: Option<PendingAsk> = None;
-    let mut deferring_hook: Option<String> = None;
+        for spec in hooks {
+            if !eligible_or_record_skip(
+                spec,
+                match_value.as_deref(),
+                &mut run_results,
+                ctx.disabled(),
+            ) {
+                continue;
+            }
 
-    for spec in hooks {
-        if !eligible_or_record_skip(
-            spec,
-            match_value.as_deref(),
-            &mut run_results,
-            ctx.disabled(),
-        ) {
-            continue;
-        }
+            let hook_span = hook_run_span(spec, event);
+            let (result, elapsed, http_info, system_message) =
+                runner::run_hook(spec, envelope, ctx, gate)
+                    .instrument(hook_span.clone())
+                    .await;
+            let _in_hook = hook_span.enter();
 
-        let _hook_span = tracing::info_span!(
-            "hook.run",
-            hook_name = %spec.name,
-            hook_event = %event,
-        )
-        .entered();
-
-        let (result, elapsed, http_info, system_message) =
-            runner::run_hook(spec, envelope, ctx, gate).await;
-
-        match result {
-            HookRunnerResult::Deny { reason, .. } | HookRunnerResult::Block { reason, .. } => {
-                tracing::info!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    reason = %reason,
-                    "gate hook blocked"
-                );
-                run_results.push(HookRunResult::Blocked {
-                    hook_name: spec.name.clone(),
-                    detail: format!("{block_verb}: {reason}"),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
-                record_dispatch_counts(&span, &run_results);
-                return SequentialGateOutcome {
-                    block: Some(GateBlock {
+            match result {
+                HookRunnerResult::Deny { reason, .. } | HookRunnerResult::Block { reason, .. } => {
+                    tracing::info!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        reason = %reason,
+                        "gate hook blocked"
+                    );
+                    run_results.push(HookRunResult::Blocked {
                         hook_name: spec.name.clone(),
-                        reason,
-                    }),
-                    pending_ask: None,
-                    deferring_hook: None,
-                    updated_input: None,
-                    additional_context: Vec::new(),
-                    results: run_results,
-                };
-            }
-            HookRunnerResult::Allow {
-                updated_input: hook_updated_input,
-                additional_context: hook_additional_context,
-            } => {
-                tracing::info!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    updated_input = hook_updated_input.is_some(),
-                    additional_context = hook_additional_context.is_some(),
-                    "hook allowed"
-                );
-                if let Some(rewrite) = hook_updated_input {
-                    record_rewrite(&mut updated_input, &spec.name, rewrite);
+                        detail: format!("{block_verb}: {reason}"),
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
+                    record_dispatch_counts(&span, &run_results);
+                    return SequentialGateOutcome {
+                        block: Some(GateBlock {
+                            hook_name: spec.name.clone(),
+                            reason,
+                        }),
+                        pending_ask: None,
+                        deferring_hook: None,
+                        updated_input: None,
+                        additional_context: Vec::new(),
+                        results: run_results,
+                    };
                 }
-                if let Some(text) = hook_additional_context {
-                    record_additional_context(&mut additional_context, &spec.name, text);
+                HookRunnerResult::Allow {
+                    updated_input: hook_updated_input,
+                    additional_context: hook_additional_context,
+                } => {
+                    tracing::info!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        updated_input = hook_updated_input.is_some(),
+                        additional_context = hook_additional_context.is_some(),
+                        "hook allowed"
+                    );
+                    if let Some(rewrite) = hook_updated_input {
+                        record_rewrite(&mut updated_input, &spec.name, rewrite);
+                    }
+                    if let Some(text) = hook_additional_context {
+                        record_additional_context(&mut additional_context, &spec.name, text);
+                    }
+                    run_results.push(HookRunResult::Success {
+                        hook_name: spec.name.clone(),
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
                 }
-                run_results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
-            }
-            HookRunnerResult::Ask {
-                reason,
-                updated_input: hook_updated_input,
-                additional_context: hook_additional_context,
-            } => {
-                tracing::info!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    updated_input = hook_updated_input.is_some(),
-                    additional_context = hook_additional_context.is_some(),
-                    "hook asked"
-                );
-                if let Some(rewrite) = hook_updated_input {
-                    record_rewrite(&mut updated_input, &spec.name, rewrite);
+                HookRunnerResult::Ask {
+                    reason,
+                    updated_input: hook_updated_input,
+                    additional_context: hook_additional_context,
+                } => {
+                    tracing::info!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        updated_input = hook_updated_input.is_some(),
+                        additional_context = hook_additional_context.is_some(),
+                        "hook asked"
+                    );
+                    if let Some(rewrite) = hook_updated_input {
+                        record_rewrite(&mut updated_input, &spec.name, rewrite);
+                    }
+                    if let Some(text) = hook_additional_context {
+                        record_additional_context(&mut additional_context, &spec.name, text);
+                    }
+                    record_ask(&mut pending_ask, &spec.name, reason);
+                    run_results.push(HookRunResult::Success {
+                        hook_name: spec.name.clone(),
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
                 }
-                if let Some(text) = hook_additional_context {
-                    record_additional_context(&mut additional_context, &spec.name, text);
+                HookRunnerResult::Defer => {
+                    tracing::info!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        "hook deferred"
+                    );
+                    deferring_hook = Some(spec.name.clone());
+                    run_results.push(HookRunResult::Success {
+                        hook_name: spec.name.clone(),
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
                 }
-                record_ask(&mut pending_ask, &spec.name, reason);
-                run_results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
-            }
-            HookRunnerResult::Defer => {
-                tracing::info!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    "hook deferred"
-                );
-                deferring_hook = Some(spec.name.clone());
-                run_results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
-            }
-            HookRunnerResult::Failed(err) => {
-                tracing::warn!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    hook_failure = %err,
-                    "gate hook failed; ignoring (fail-open)"
-                );
-                run_results.push(HookRunResult::Failed {
-                    hook_name: spec.name.clone(),
-                    error: err,
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
-            }
-            HookRunnerResult::Success
-            | HookRunnerResult::Stop(_)
-            | HookRunnerResult::PostToolUse { .. } => {
-                tracing::info!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    "hook completed"
-                );
-                run_results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
+                HookRunnerResult::Failed(err) => {
+                    tracing::warn!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        hook_failure = %err,
+                        "gate hook failed; ignoring (fail-open)"
+                    );
+                    run_results.push(HookRunResult::Failed {
+                        hook_name: spec.name.clone(),
+                        error: err,
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
+                }
+                HookRunnerResult::Success
+                | HookRunnerResult::Stop(_)
+                | HookRunnerResult::PostToolUse { .. } => {
+                    tracing::info!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        "hook completed"
+                    );
+                    run_results.push(HookRunResult::Success {
+                        hook_name: spec.name.clone(),
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
+                }
             }
         }
-    }
 
-    record_dispatch_counts(&span, &run_results);
-    SequentialGateOutcome {
-        block: None,
-        pending_ask,
-        deferring_hook,
-        updated_input,
-        additional_context,
-        results: run_results,
+        record_dispatch_counts(&span, &run_results);
+        SequentialGateOutcome {
+            block: None,
+            pending_ask,
+            deferring_hook,
+            updated_input,
+            additional_context,
+            results: run_results,
+        }
     }
+    .instrument(span.clone())
+    .await
 }
 
 struct PendingAsk {
@@ -397,6 +397,25 @@ impl StopDispatchResult {
             && (!self.blocks.is_empty() || !self.additional_context.is_empty())
     }
 
+    pub fn feedback(&self) -> String {
+        use std::fmt::Write as _;
+        let clip = |text: &str| clip_text(text, MAX_HOOK_FEEDBACK_CHARS);
+        let mut feedback = String::new();
+        if !self.blocks.is_empty() {
+            feedback.push_str("Stop hook feedback:\n");
+            for block in &self.blocks {
+                let _ = writeln!(feedback, "- {}", clip(&block.reason));
+            }
+        }
+        for context in &self.additional_context {
+            if !feedback.is_empty() {
+                feedback.push('\n');
+            }
+            feedback.push_str(&clip(context));
+        }
+        feedback
+    }
+
     pub fn absorb(&mut self, hook_name: &str, signals: StopSignals) {
         if let Some(reason) = signals.stop_reason
             && self.prevent_continuation.is_none()
@@ -468,105 +487,104 @@ pub async fn dispatch_stop(
     }
 
     let span = dispatch_span(event, hooks.len());
-    let _enter = span.enter();
+    async {
+        let mut out = StopDispatchResult::default();
+        let match_value = envelope.payload.match_value().map(str::to_string);
 
-    let mut out = StopDispatchResult::default();
-    let match_value = envelope.payload.match_value().map(str::to_string);
+        for spec in hooks {
+            if !eligible_or_record_skip(
+                spec,
+                match_value.as_deref(),
+                &mut out.results,
+                ctx.disabled(),
+            ) {
+                continue;
+            }
 
-    for spec in hooks {
-        if !eligible_or_record_skip(
-            spec,
-            match_value.as_deref(),
-            &mut out.results,
-            ctx.disabled(),
-        ) {
-            continue;
-        }
+            let hook_span = hook_run_span(spec, event);
+            let (result, elapsed, http_info, system_message) =
+                runner::run_hook(spec, envelope, ctx, GateKind::Stop)
+                    .instrument(hook_span.clone())
+                    .await;
+            let _in_hook = hook_span.enter();
 
-        let _hook_span = tracing::info_span!(
-            "hook.run",
-            hook_name = %spec.name,
-            hook_event = %event,
-        )
-        .entered();
-
-        let (result, elapsed, http_info, system_message) =
-            runner::run_hook(spec, envelope, ctx, GateKind::Stop).await;
-
-        match result {
-            HookRunnerResult::Stop(outcome) => {
-                tracing::info!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    block = outcome.block_reason.is_some(),
-                    additional_context = outcome.additional_context.is_some(),
-                    prevent_continuation = outcome.force_stop.is_some(),
-                    "stop hook completed"
-                );
-                match stop_outcome_detail(&outcome) {
-                    Some(detail) => {
-                        out.results.push(HookRunResult::Blocked {
+            match result {
+                HookRunnerResult::Stop(outcome) => {
+                    tracing::info!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        block = outcome.block_reason.is_some(),
+                        additional_context = outcome.additional_context.is_some(),
+                        prevent_continuation = outcome.force_stop.is_some(),
+                        "stop hook completed"
+                    );
+                    match stop_outcome_detail(&outcome) {
+                        Some(detail) => {
+                            out.results.push(HookRunResult::Blocked {
+                                hook_name: spec.name.clone(),
+                                detail,
+                                elapsed,
+                                http_info,
+                                system_message,
+                            });
+                        }
+                        None => out.results.push(HookRunResult::Success {
                             hook_name: spec.name.clone(),
-                            detail,
                             elapsed,
                             http_info,
                             system_message,
-                        });
+                        }),
                     }
-                    None => out.results.push(HookRunResult::Success {
+                    out.absorb(
+                        &spec.name,
+                        StopSignals {
+                            block_reason: outcome.block_reason,
+                            stop_reason: outcome.force_stop.map(|force| {
+                                force
+                                    .reason
+                                    .unwrap_or_else(|| "stopped by hook".to_string())
+                            }),
+                            additional_context: outcome.additional_context,
+                        },
+                    );
+                }
+                HookRunnerResult::Failed(err) => {
+                    tracing::warn!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        hook_failure = %err,
+                        "stop hook failed; ignoring (fail-open)"
+                    );
+                    out.results.push(HookRunResult::Failed {
+                        hook_name: spec.name.clone(),
+                        error: err,
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
+                }
+                HookRunnerResult::Success
+                | HookRunnerResult::Allow { .. }
+                | HookRunnerResult::Ask { .. }
+                | HookRunnerResult::Defer
+                | HookRunnerResult::Deny { .. }
+                | HookRunnerResult::Block { .. }
+                | HookRunnerResult::PostToolUse { .. } => {
+                    out.results.push(HookRunResult::Success {
                         hook_name: spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    }),
+                    });
                 }
-                out.absorb(
-                    &spec.name,
-                    StopSignals {
-                        block_reason: outcome.block_reason,
-                        stop_reason: outcome.force_stop.map(|force| {
-                            force
-                                .reason
-                                .unwrap_or_else(|| "stopped by hook".to_string())
-                        }),
-                        additional_context: outcome.additional_context,
-                    },
-                );
-            }
-            HookRunnerResult::Failed(err) => {
-                tracing::warn!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    hook_failure = %err,
-                    "stop hook failed; ignoring (fail-open)"
-                );
-                out.results.push(HookRunResult::Failed {
-                    hook_name: spec.name.clone(),
-                    error: err,
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
-            }
-            HookRunnerResult::Success
-            | HookRunnerResult::Allow { .. }
-            | HookRunnerResult::Ask { .. }
-            | HookRunnerResult::Defer
-            | HookRunnerResult::Deny { .. }
-            | HookRunnerResult::Block { .. }
-            | HookRunnerResult::PostToolUse { .. } => {
-                out.results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
             }
         }
-    }
 
-    record_dispatch_counts(&span, &out.results);
-    out
+        record_dispatch_counts(&span, &out.results);
+        out
+    }
+    .instrument(span.clone())
+    .await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -581,6 +599,19 @@ pub use crate::result::{OutputReplacement, ReplacementKind};
 pub struct SelectedReplacement {
     pub replacement: OutputReplacement,
     pub run_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedReplacement {
+    pub hook_name: String,
+    pub run_index: usize,
+    pub reason: String,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ReplacementChoice {
+    pub chosen: Option<SelectedReplacement>,
+    pub rejected: Option<RejectedReplacement>,
 }
 
 #[derive(Debug, Default)]
@@ -638,6 +669,45 @@ impl PostToolUseResult {
         self.additional_context.extend(additional_context);
     }
 
+    /// An MCP tool takes either kind of replacement, and the later hook run wins.
+    /// A built-in tool rejects an MCP replacement.
+    #[must_use]
+    pub fn take_replacement(&mut self, tool_kind: ReplacementKind) -> ReplacementChoice {
+        let builtin = self.builtin_replacement.take();
+        let mcp = self.mcp_replacement.take();
+        match tool_kind {
+            ReplacementKind::Mcp => ReplacementChoice {
+                chosen: Self::latest_replacement(builtin, mcp),
+                rejected: None,
+            },
+            ReplacementKind::Builtin => ReplacementChoice {
+                chosen: builtin,
+                rejected: mcp.map(|mcp| RejectedReplacement {
+                    reason: format!(
+                        "{} does not match the tool's kind",
+                        mcp.replacement.wire_field()
+                    ),
+                    hook_name: mcp.replacement.hook_name,
+                    run_index: mcp.run_index,
+                }),
+            },
+        }
+    }
+
+    fn latest_replacement(
+        builtin: Option<SelectedReplacement>,
+        mcp: Option<SelectedReplacement>,
+    ) -> Option<SelectedReplacement> {
+        match (builtin, mcp) {
+            (Some(builtin), Some(mcp)) => Some(if mcp.run_index > builtin.run_index {
+                mcp
+            } else {
+                builtin
+            }),
+            (builtin, mcp) => builtin.or(mcp),
+        }
+    }
+
     fn set_replacement(&mut self, replacement: OutputReplacement, run_index: usize) {
         let slot = match replacement.kind {
             ReplacementKind::Builtin => &mut self.builtin_replacement,
@@ -675,93 +745,92 @@ pub async fn dispatch_post_tool_use(
     }
 
     let span = dispatch_span(event, hooks.len());
-    let _enter = span.enter();
+    async {
+        let mut out = PostToolUseResult::default();
+        let match_value = envelope.payload.match_value().map(str::to_string);
 
-    let mut out = PostToolUseResult::default();
-    let match_value = envelope.payload.match_value().map(str::to_string);
+        for spec in hooks {
+            if !eligible_or_record_skip(
+                spec,
+                match_value.as_deref(),
+                &mut out.results,
+                ctx.disabled(),
+            ) {
+                continue;
+            }
 
-    for spec in hooks {
-        if !eligible_or_record_skip(
-            spec,
-            match_value.as_deref(),
-            &mut out.results,
-            ctx.disabled(),
-        ) {
-            continue;
-        }
+            let hook_span = hook_run_span(spec, event);
+            let (result, elapsed, http_info, system_message) =
+                runner::run_hook(spec, envelope, ctx, gate)
+                    .instrument(hook_span.clone())
+                    .await;
+            let _in_hook = hook_span.enter();
 
-        let _hook_span = tracing::info_span!(
-            "hook.run",
-            hook_name = %spec.name,
-            hook_event = %event,
-        )
-        .entered();
-
-        let (result, elapsed, http_info, system_message) =
-            runner::run_hook(spec, envelope, ctx, gate).await;
-
-        match result {
-            HookRunnerResult::PostToolUse { outcome, failure } => {
-                tracing::info!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    block = outcome.block_reason.is_some(),
-                    additional_context = outcome.additional_context.is_some(),
-                    output_replacement = outcome.output_replacement.is_some(),
-                    "post_tool_use hook completed"
-                );
-                out.results.push(match failure {
-                    Some(error) => HookRunResult::Failed {
+            match result {
+                HookRunnerResult::PostToolUse { outcome, failure } => {
+                    tracing::info!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        block = outcome.block_reason.is_some(),
+                        additional_context = outcome.additional_context.is_some(),
+                        output_replacement = outcome.output_replacement.is_some(),
+                        "post_tool_use hook completed"
+                    );
+                    out.results.push(match failure {
+                        Some(error) => HookRunResult::Failed {
+                            hook_name: spec.name.clone(),
+                            error,
+                            elapsed,
+                            http_info,
+                            system_message,
+                        },
+                        None => HookRunResult::Success {
+                            hook_name: spec.name.clone(),
+                            elapsed,
+                            http_info,
+                            system_message,
+                        },
+                    });
+                    let run_index = out.results.len() - 1;
+                    out.absorb(&spec.name, run_index, outcome);
+                }
+                HookRunnerResult::Failed(err) => {
+                    tracing::warn!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        hook_failure = %err,
+                        "post_tool_use hook failed; ignoring (fail-open)"
+                    );
+                    out.results.push(HookRunResult::Failed {
                         hook_name: spec.name.clone(),
-                        error,
+                        error: err,
                         elapsed,
                         http_info,
                         system_message,
-                    },
-                    None => HookRunResult::Success {
+                    });
+                }
+                HookRunnerResult::Success
+                | HookRunnerResult::Allow { .. }
+                | HookRunnerResult::Ask { .. }
+                | HookRunnerResult::Defer
+                | HookRunnerResult::Deny { .. }
+                | HookRunnerResult::Block { .. }
+                | HookRunnerResult::Stop(_) => {
+                    out.results.push(HookRunResult::Success {
                         hook_name: spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    },
-                });
-                let run_index = out.results.len() - 1;
-                out.absorb(&spec.name, run_index, outcome);
-            }
-            HookRunnerResult::Failed(err) => {
-                tracing::warn!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    hook_failure = %err,
-                    "post_tool_use hook failed; ignoring (fail-open)"
-                );
-                out.results.push(HookRunResult::Failed {
-                    hook_name: spec.name.clone(),
-                    error: err,
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
-            }
-            HookRunnerResult::Success
-            | HookRunnerResult::Allow { .. }
-            | HookRunnerResult::Ask { .. }
-            | HookRunnerResult::Defer
-            | HookRunnerResult::Deny { .. }
-            | HookRunnerResult::Block { .. }
-            | HookRunnerResult::Stop(_) => {
-                out.results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
+                    });
+                }
             }
         }
+
+        record_dispatch_counts(&span, &out.results);
+        out
     }
-
-    record_dispatch_counts(&span, &out.results);
-    out
+    .instrument(span.clone())
+    .await
 }
 
 #[derive(Debug, Default)]
@@ -785,89 +854,88 @@ pub async fn dispatch_post_tool_use_failure(
     }
 
     let span = dispatch_span(event, hooks.len());
-    let _enter = span.enter();
+    async {
+        let mut out = PostToolUseFailureResult::default();
+        let match_value = envelope.payload.match_value().map(str::to_string);
 
-    let mut out = PostToolUseFailureResult::default();
-    let match_value = envelope.payload.match_value().map(str::to_string);
+        for spec in hooks {
+            if !eligible_or_record_skip(
+                spec,
+                match_value.as_deref(),
+                &mut out.results,
+                ctx.disabled(),
+            ) {
+                continue;
+            }
 
-    for spec in hooks {
-        if !eligible_or_record_skip(
-            spec,
-            match_value.as_deref(),
-            &mut out.results,
-            ctx.disabled(),
-        ) {
-            continue;
-        }
+            let hook_span = hook_run_span(spec, event);
+            let (result, elapsed, http_info, system_message) =
+                runner::run_hook(spec, envelope, ctx, GateKind::PostTool)
+                    .instrument(hook_span.clone())
+                    .await;
+            let _in_hook = hook_span.enter();
 
-        let _hook_span = tracing::info_span!(
-            "hook.run",
-            hook_name = %spec.name,
-            hook_event = %event,
-        )
-        .entered();
-
-        let (result, elapsed, http_info, system_message) =
-            runner::run_hook(spec, envelope, ctx, GateKind::PostTool).await;
-
-        match result {
-            HookRunnerResult::PostToolUse { outcome, failure } => {
-                if let Some(text) = outcome.additional_context {
-                    out.additional_context.push(AdditionalContext {
-                        hook_name: spec.name.clone(),
-                        text,
+            match result {
+                HookRunnerResult::PostToolUse { outcome, failure } => {
+                    if let Some(text) = outcome.additional_context {
+                        out.additional_context.push(AdditionalContext {
+                            hook_name: spec.name.clone(),
+                            text,
+                        });
+                    }
+                    out.results.push(match failure {
+                        Some(error) => HookRunResult::Failed {
+                            hook_name: spec.name.clone(),
+                            error,
+                            elapsed,
+                            http_info,
+                            system_message,
+                        },
+                        None => HookRunResult::Success {
+                            hook_name: spec.name.clone(),
+                            elapsed,
+                            http_info,
+                            system_message,
+                        },
                     });
                 }
-                out.results.push(match failure {
-                    Some(error) => HookRunResult::Failed {
+                HookRunnerResult::Failed(err) => {
+                    tracing::warn!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        hook_failure = %err,
+                        "post_tool_use_failure hook failed; ignoring (fail-open)"
+                    );
+                    out.results.push(HookRunResult::Failed {
                         hook_name: spec.name.clone(),
-                        error,
+                        error: err,
                         elapsed,
                         http_info,
                         system_message,
-                    },
-                    None => HookRunResult::Success {
+                    });
+                }
+                HookRunnerResult::Success
+                | HookRunnerResult::Allow { .. }
+                | HookRunnerResult::Ask { .. }
+                | HookRunnerResult::Defer
+                | HookRunnerResult::Deny { .. }
+                | HookRunnerResult::Block { .. }
+                | HookRunnerResult::Stop(_) => {
+                    out.results.push(HookRunResult::Success {
                         hook_name: spec.name.clone(),
                         elapsed,
                         http_info,
                         system_message,
-                    },
-                });
-            }
-            HookRunnerResult::Failed(err) => {
-                tracing::warn!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    hook_failure = %err,
-                    "post_tool_use_failure hook failed; ignoring (fail-open)"
-                );
-                out.results.push(HookRunResult::Failed {
-                    hook_name: spec.name.clone(),
-                    error: err,
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
-            }
-            HookRunnerResult::Success
-            | HookRunnerResult::Allow { .. }
-            | HookRunnerResult::Ask { .. }
-            | HookRunnerResult::Defer
-            | HookRunnerResult::Deny { .. }
-            | HookRunnerResult::Block { .. }
-            | HookRunnerResult::Stop(_) => {
-                out.results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
+                    });
+                }
             }
         }
-    }
 
-    record_dispatch_counts(&span, &out.results);
-    out
+        record_dispatch_counts(&span, &out.results);
+        out
+    }
+    .instrument(span.clone())
+    .await
 }
 
 pub async fn dispatch_non_blocking(
@@ -886,87 +954,86 @@ pub async fn dispatch_non_blocking(
     }
 
     let span = dispatch_span(event, hooks.len());
-    let _enter = span.enter();
+    async {
+        let match_value = envelope.payload.match_value().map(str::to_string);
+        let mut results = Vec::with_capacity(hooks.len());
 
-    let match_value = envelope.payload.match_value().map(str::to_string);
-    let mut results = Vec::with_capacity(hooks.len());
-
-    for spec in hooks {
-        if !eligible_or_record_skip(spec, match_value.as_deref(), &mut results, ctx.disabled()) {
-            continue;
-        }
-
-        let _hook_span = tracing::info_span!(
-            "hook.run",
-            hook_name = %spec.name,
-            hook_event = %event,
-        )
-        .entered();
-
-        let (result, elapsed, http_info, system_message) =
-            runner::run_hook(spec, envelope, ctx, GateKind::Observe).await;
-
-        match result {
-            HookRunnerResult::Success => {
-                tracing::info!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    "hook completed"
-                );
-                results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
+        for spec in hooks {
+            if !eligible_or_record_skip(spec, match_value.as_deref(), &mut results, ctx.disabled())
+            {
+                continue;
             }
-            HookRunnerResult::Failed(err) => {
-                tracing::warn!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    hook_failure = %err,
-                    "hook failed"
-                );
-                results.push(HookRunResult::Failed {
-                    hook_name: spec.name.clone(),
-                    error: err,
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
-            }
-            HookRunnerResult::Allow { .. }
-            | HookRunnerResult::Ask { .. }
-            | HookRunnerResult::Defer
-            | HookRunnerResult::Deny { .. }
-            | HookRunnerResult::Block { .. } => {
-                tracing::info!(
-                    hook_name = %spec.name,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    "hook completed"
-                );
-                results.push(HookRunResult::Success {
-                    hook_name: spec.name.clone(),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
-            }
-            HookRunnerResult::Stop(_) | HookRunnerResult::PostToolUse { .. } => {
-                results.push(HookRunResult::Failed {
-                    hook_name: spec.name.clone(),
-                    error: "a gate hook result routed to the observe dispatch".to_string(),
-                    elapsed,
-                    http_info,
-                    system_message,
-                });
+
+            let hook_span = hook_run_span(spec, event);
+            let (result, elapsed, http_info, system_message) =
+                runner::run_hook(spec, envelope, ctx, GateKind::Observe)
+                    .instrument(hook_span.clone())
+                    .await;
+            let _in_hook = hook_span.enter();
+
+            match result {
+                HookRunnerResult::Success => {
+                    tracing::info!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        "hook completed"
+                    );
+                    results.push(HookRunResult::Success {
+                        hook_name: spec.name.clone(),
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
+                }
+                HookRunnerResult::Failed(err) => {
+                    tracing::warn!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        hook_failure = %err,
+                        "hook failed"
+                    );
+                    results.push(HookRunResult::Failed {
+                        hook_name: spec.name.clone(),
+                        error: err,
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
+                }
+                HookRunnerResult::Allow { .. }
+                | HookRunnerResult::Ask { .. }
+                | HookRunnerResult::Defer
+                | HookRunnerResult::Deny { .. }
+                | HookRunnerResult::Block { .. } => {
+                    tracing::info!(
+                        hook_name = %spec.name,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        "hook completed"
+                    );
+                    results.push(HookRunResult::Success {
+                        hook_name: spec.name.clone(),
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
+                }
+                HookRunnerResult::Stop(_) | HookRunnerResult::PostToolUse { .. } => {
+                    results.push(HookRunResult::Failed {
+                        hook_name: spec.name.clone(),
+                        error: "a gate hook result routed to the observe dispatch".to_string(),
+                        elapsed,
+                        http_info,
+                        system_message,
+                    });
+                }
             }
         }
+
+        record_dispatch_counts(&span, &results);
+        results
     }
-
-    record_dispatch_counts(&span, &results);
-
-    results
+    .instrument(span.clone())
+    .await
 }
 
 fn record_dispatch_counts(span: &tracing::Span, results: &[HookRunResult]) {
@@ -1007,6 +1074,7 @@ pub fn hub_hook_kind(event: HookEventName) -> Option<String> {
 mod tests {
     use super::*;
     use crate::config::HookSpec;
+    use crate::event::MAX_HOOK_OUTPUT_REPLACEMENT_CHARS;
     use crate::event::{HookEventEnvelope, HookEventName, HookPayload};
     use crate::matcher::HookMatcher;
     use std::collections::HashMap;
@@ -1158,7 +1226,10 @@ mod tests {
         .await;
         assert_eq!(result.decision, HookDecision::Allow);
         let rewrite = result.updated_input.expect("updatedInput carried");
-        assert_eq!(rewrite.input["command"], "two");
+        assert_eq!(
+            rewrite.input.get("command").and_then(|v| v.as_str()),
+            Some("two")
+        );
         assert_eq!(rewrite.hook_name, "second");
     }
 
@@ -1239,7 +1310,10 @@ mod tests {
         let rewrite = result
             .updated_input
             .expect("the earlier rewrite must survive a later failure");
-        assert_eq!(rewrite.input["command"], "one");
+        assert_eq!(
+            rewrite.input.get("command").and_then(|v| v.as_str()),
+            Some("one")
+        );
         assert_eq!(rewrite.hook_name, "rewriter");
     }
 
@@ -1315,7 +1389,10 @@ mod tests {
         .await;
         assert!(matches!(result.decision, HookDecision::Ask { .. }));
         let rewrite = result.updated_input.expect("ask carries updatedInput");
-        assert_eq!(rewrite.input["command"], "safe");
+        assert_eq!(
+            rewrite.input.get("command").and_then(|v| v.as_str()),
+            Some("safe")
+        );
     }
 
     #[tokio::test]
@@ -1457,11 +1534,14 @@ mod tests {
         .await;
         assert_eq!(result.decision, HookDecision::Allow);
         assert!(matches!(
-            &result.results[0],
+            result.results.first().unwrap_or_else(|| panic!("expected results item 0")),
             HookRunResult::Success { system_message: Some(msg), .. } if msg == "heads up"
         ));
         assert!(matches!(
-            &result.results[1],
+            result
+                .results
+                .get(1)
+                .unwrap_or_else(|| panic!("expected results item 1")),
             HookRunResult::Success {
                 system_message: None,
                 ..
@@ -1509,7 +1589,7 @@ mod tests {
             ref other => panic!("expected Block, got {other:?}"),
         }
         assert!(
-            matches!(result.results[0], HookRunResult::Blocked { .. }),
+            matches!(result.results.first(), Some(HookRunResult::Blocked { .. })),
             "a block must record HookRunResult::Blocked for telemetry"
         );
     }
@@ -1542,7 +1622,10 @@ mod tests {
         let registry = registry_from_specs(vec![spec]);
         let result = dispatch_prompt_gate(&registry, &prompt_submit_envelope(), &run_ctx()).await;
         assert_eq!(result.decision, PromptDecision::Allow);
-        assert!(matches!(result.results[0], HookRunResult::Failed { .. }));
+        assert!(matches!(
+            result.results.first(),
+            Some(HookRunResult::Failed { .. })
+        ));
     }
 
     #[tokio::test]
@@ -1551,7 +1634,10 @@ mod tests {
         let registry = registry_from_specs(vec![spec]);
         let result = dispatch_prompt_gate(&registry, &prompt_submit_envelope(), &run_ctx()).await;
         assert_eq!(result.decision, PromptDecision::Allow);
-        assert!(matches!(result.results[0], HookRunResult::Success { .. }));
+        assert!(matches!(
+            result.results.first(),
+            Some(HookRunResult::Success { .. })
+        ));
     }
 
     #[tokio::test]
@@ -1661,7 +1747,7 @@ mod tests {
         );
         assert_eq!(result.results.len(), 1);
         assert!(
-            matches!(&result.results[0], HookRunResult::Failed { hook_name, .. } if hook_name == "crasher"),
+            matches!(result.results.first(), Some(HookRunResult::Failed { hook_name, .. }) if hook_name == "crasher"),
             "the failure must still appear in run_results for UI scrollback, got {:?}",
             result.results
         );
@@ -1691,10 +1777,10 @@ mod tests {
         }
         assert_eq!(result.results.len(), 2);
         assert!(
-            matches!(&result.results[1], HookRunResult::Blocked { detail, .. }
+            matches!(result.results.get(1), Some(HookRunResult::Blocked { detail, .. })
                 if detail == "denied: nope"),
             "a deny is the hook's decision, not a failure: {:?}",
-            result.results[1]
+            result.results.get(1)
         );
     }
 
@@ -1769,6 +1855,45 @@ mod tests {
         assert_eq!(prevent.reason, "stop now");
     }
 
+    #[test]
+    fn stop_feedback_lists_blocks_then_appends_context() {
+        let cases: [(&[&str], &[&str], &str); 3] = [
+            (
+                &["first", "second"],
+                &[],
+                "Stop hook feedback:\n- first\n- second\n",
+            ),
+            (
+                &["fix tests"],
+                &["note"],
+                "Stop hook feedback:\n- fix tests\n\nnote",
+            ),
+            (&[], &["only context"], "only context"),
+        ];
+
+        for (reasons, additional_context, expected) in cases {
+            let result = StopDispatchResult {
+                blocks: reasons
+                    .iter()
+                    .map(|reason| StopBlock {
+                        hook_name: "h".into(),
+                        reason: (*reason).into(),
+                    })
+                    .collect(),
+                additional_context: additional_context
+                    .iter()
+                    .map(|text| (*text).into())
+                    .collect(),
+                ..StopDispatchResult::default()
+            };
+            assert_eq!(
+                expected,
+                result.feedback(),
+                "{reasons:?} {additional_context:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn stop_collects_all_blocks() {
         let registry = registry_from_specs(vec![
@@ -1830,7 +1955,10 @@ mod tests {
             dispatch_stop(&registry, HookEventName::Stop, &stop_envelope(), &run_ctx()).await;
         assert!(result.wants_continuation());
         assert_eq!(result.blocks.len(), 1);
-        assert_eq!(result.blocks[0].reason, "fix the build");
+        assert_eq!(
+            result.blocks.first().map(|b| b.reason.as_str()),
+            Some("fix the build")
+        );
         assert_eq!(result.additional_context, ["note"]);
     }
 
@@ -1866,9 +1994,9 @@ mod tests {
             "timeout must not block the stop"
         );
         assert!(
-            matches!(&result.results[0], HookRunResult::Failed { .. }),
+            matches!(result.results.first(), Some(HookRunResult::Failed { .. })),
             "the timeout is recorded as a failure, got {:?}",
-            result.results[0]
+            result.results.first()
         );
     }
 
@@ -1958,7 +2086,10 @@ mod tests {
         )
         .await;
         assert_eq!(result.blocks.len(), 1, "only the matching spec runs");
-        assert_eq!(result.blocks[0].reason, "from explorer");
+        assert_eq!(
+            result.blocks.first().map(|b| b.reason.as_str()),
+            Some("from explorer")
+        );
     }
 
     #[tokio::test]
@@ -1977,8 +2108,18 @@ mod tests {
         )
         .await;
         assert_eq!(results.len(), 2);
-        assert!(matches!(results[0], HookRunResult::Failed { .. }));
-        assert!(matches!(results[1], HookRunResult::Success { .. }));
+        assert!(matches!(
+            results
+                .first()
+                .unwrap_or_else(|| panic!("expected results item 0: {results:?}")),
+            HookRunResult::Failed { .. }
+        ));
+        assert!(matches!(
+            results
+                .get(1)
+                .unwrap_or_else(|| panic!("expected results item 1: {results:?}")),
+            HookRunResult::Success { .. }
+        ));
     }
 
     #[test]
@@ -2124,9 +2265,107 @@ mod tests {
             .builtin_replacement
             .as_ref()
             .expect("the later same-kind write wins the built-in slot");
-        assert_eq!(selected.replacement.value["command"], "second");
+        assert_eq!(
+            selected
+                .replacement
+                .value
+                .get("command")
+                .and_then(|v| v.as_str()),
+            Some("second")
+        );
         assert_eq!(selected.run_index, 1);
         assert!(result.mcp_replacement.is_none());
+    }
+
+    #[test]
+    fn tool_kind_decides_which_replacement_its_output_takes() {
+        let replacement = |kind: ReplacementKind, run_index: usize| SelectedReplacement {
+            replacement: OutputReplacement {
+                kind,
+                hook_name: format!("{kind:?}"),
+                value: serde_json::json!("replaced"),
+            },
+            run_index,
+        };
+        let rejected = RejectedReplacement {
+            hook_name: "Mcp".to_owned(),
+            run_index: 1,
+            reason: "updatedMCPToolOutput does not match the tool's kind".to_owned(),
+        };
+        let cases = [
+            (
+                ReplacementKind::Mcp,
+                0,
+                ReplacementChoice {
+                    chosen: Some(replacement(ReplacementKind::Mcp, 1)),
+                    rejected: None,
+                },
+            ),
+            (
+                ReplacementKind::Mcp,
+                2,
+                ReplacementChoice {
+                    chosen: Some(replacement(ReplacementKind::Builtin, 2)),
+                    rejected: None,
+                },
+            ),
+            (
+                ReplacementKind::Builtin,
+                0,
+                ReplacementChoice {
+                    chosen: Some(replacement(ReplacementKind::Builtin, 0)),
+                    rejected: Some(rejected),
+                },
+            ),
+        ];
+
+        for (tool_kind, builtin_run, expected) in cases {
+            let mut result = PostToolUseResult {
+                builtin_replacement: Some(replacement(ReplacementKind::Builtin, builtin_run)),
+                mcp_replacement: Some(replacement(ReplacementKind::Mcp, 1)),
+                ..PostToolUseResult::default()
+            };
+            assert_eq!(
+                expected,
+                result.take_replacement(tool_kind),
+                "{tool_kind:?} with the built-in replacement from run {builtin_run}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_output_replacement_is_clipped_and_keeps_structure_that_fits() {
+        let cap = MAX_HOOK_OUTPUT_REPLACEMENT_CHARS;
+        let structured = serde_json::json!({ "content": [{ "type": "text", "text": "replaced" }] });
+        let clipped_text = format!("{}… [+10 chars]", "x".repeat(cap));
+        let clipped_json = format!("{{\"text\":\"{}… [+11 chars]", "x".repeat(cap - 9));
+        let cases = [
+            (
+                serde_json::json!("x".repeat(cap + 10)),
+                serde_json::json!(clipped_text),
+                clipped_text,
+            ),
+            (
+                structured.clone(),
+                structured.clone(),
+                structured.to_string(),
+            ),
+            (
+                serde_json::json!({ "text": "x".repeat(cap) }),
+                serde_json::json!(clipped_json),
+                clipped_json,
+            ),
+        ];
+
+        for (value, expected, expected_text) in cases {
+            let replacement = OutputReplacement {
+                kind: ReplacementKind::Mcp,
+                hook_name: "hook".to_owned(),
+                value,
+            };
+            assert_eq!(expected, replacement.clone().mcp_output());
+            assert_eq!(expected_text, replacement.mcp_output_text());
+        }
     }
 
     #[test]
@@ -2181,10 +2420,13 @@ mod tests {
 
     #[test]
     fn disabled_hooks_file_cannot_skip_managed_policy_hook() {
-        let disabled = crate::trust::DisabledHooks::from_names([
-            "requirements/system:pre_tool_use[0].hooks[0]".to_string(),
-            "global/user-hook".to_string(),
-        ]);
+        let disabled = crate::trust::DisabledHooks::new(
+            [
+                "requirements/system:pre_tool_use[0].hooks[0]".to_string(),
+                "global/user-hook".to_string(),
+            ],
+            false,
+        );
 
         let mut results = Vec::new();
         let mut managed = make_command_spec(
@@ -2205,15 +2447,54 @@ mod tests {
             !eligible_or_record_skip(&user, None, &mut results, &disabled),
             "a user hook with the same disabled-hooks treatment must be filtered"
         );
-        assert!(matches!(results[0], HookRunResult::Skipped { .. }));
-
-        assert!(
-            !crate::trust::hook_disabled_for_display_with(&managed, &disabled),
-            "managed-policy hooks must never display as disabled"
-        );
-        assert!(crate::trust::hook_disabled_for_display_with(
-            &user, &disabled
+        assert!(matches!(
+            results
+                .first()
+                .unwrap_or_else(|| panic!("expected results item 0: {results:?}")),
+            HookRunResult::Skipped { .. }
         ));
+    }
+
+    /// Under `allow_managed_hooks_only` every non-managed hook is skipped, whatever the disabled-hooks file says, and managed policy still runs.
+    #[test]
+    fn managed_only_lockdown_skips_every_non_managed_hook() {
+        use crate::config::HookProvenance;
+        use crate::trust::{DisabledHooks, HookSkipReason};
+        let lockdown = DisabledHooks::new([], true);
+
+        for layer in [HookProvenance::SystemManaged, HookProvenance::Requirements] {
+            let mut managed = make_command_spec("managed", None, true, "echo ok");
+            managed.layer = layer;
+            assert_eq!(lockdown.skip_reason(&managed), None, "{layer:?}");
+        }
+
+        for layer in [
+            HookProvenance::Managed,
+            HookProvenance::UserRequirements,
+            HookProvenance::User,
+            HookProvenance::File,
+            HookProvenance::Plugin,
+            HookProvenance::Unknown,
+        ] {
+            let mut spec = make_command_spec("non-managed", None, true, "echo ok");
+            spec.layer = layer;
+            assert_eq!(
+                lockdown.skip_reason(&spec),
+                Some(HookSkipReason::ManagedOnly),
+                "{layer:?}"
+            );
+        }
+
+        // The lockdown outranks a user disable as the reported reason; without it the user reason stands.
+        let user_disabled = make_command_spec("global/off", None, false, "echo ok");
+        assert_eq!(
+            lockdown.skip_reason(&user_disabled),
+            Some(HookSkipReason::ManagedOnly)
+        );
+        assert_eq!(
+            DisabledHooks::new([], false).skip_reason(&user_disabled),
+            Some(HookSkipReason::UserDisabled)
+        );
     }
 
     #[tokio::test]
@@ -2259,19 +2540,28 @@ mod tests {
             make_command_spec("e", None, true, "true"),
             managed,
         ]);
-        let ctx = RunContext {
-            disabled: std::sync::Arc::new(DisabledHooks::from_names(["e".to_string()])),
-            ..run_ctx()
-        };
-        // read_file: a, b, managed (flagged disabled but exempt); d is disabled, e is in the snapshot, c misses the matcher
-        for (tool, expected) in [("read_file", 3), ("grep", 2)] {
+        // read_file: a, b, managed (flagged disabled but exempt); d is disabled, e is in the snapshot, c misses the matcher.
+        // Under the managed-only lockdown only the managed hook is left.
+        for (managed_only, tool, expected) in [
+            (false, "read_file", 3),
+            (false, "grep", 2),
+            (true, "read_file", 1),
+        ] {
+            let ctx = RunContext {
+                disabled: std::sync::Arc::new(DisabledHooks::new(["e".to_string()], managed_only)),
+                ..run_ctx()
+            };
             let envelope = pre_tool_use_envelope(tool);
             let count = runnable_count(&registry, &envelope, &ctx);
-            assert_eq!(count, expected, "{tool}");
+            assert_eq!(count, expected, "{tool} managed_only={managed_only}");
             let result = dispatch_pre_tool_use(&registry, &envelope, &ctx).await;
-            assert_eq!(count, ran(&result.results), "{tool}");
+            assert_eq!(
+                count,
+                ran(&result.results),
+                "{tool} managed_only={managed_only}"
+            );
         }
-        assert_eq!(runnable_count(&registry, &stop_envelope(), &ctx), 0);
+        assert_eq!(runnable_count(&registry, &stop_envelope(), &run_ctx()), 0);
     }
 
     /// Non-tool events match on their own payload field, so a count that ignored the payload would over-announce.
@@ -2293,5 +2583,95 @@ mod tests {
                     .await;
             assert_eq!(count, ran(&results), "{source}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_suspended_dispatch_leaves_no_span_entered() {
+        static ENABLE_SPANS: std::sync::Once = std::sync::Once::new();
+        ENABLE_SPANS.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+        });
+        let registry = registry_from_specs(
+            [
+                HookEventName::PreToolUse,
+                HookEventName::Stop,
+                HookEventName::PostToolUse,
+                HookEventName::PostToolUseFailure,
+                HookEventName::SessionStart,
+            ]
+            .into_iter()
+            .map(|event| HookSpec {
+                event,
+                ..make_command_spec(&event.to_string(), None, true, "sleep 5")
+            })
+            .collect(),
+        );
+        let pre_tool_use = pre_tool_use_envelope("run_terminal_cmd");
+        let stop = stop_envelope();
+        let post_tool_use = post_tool_use_envelope("run_terminal_cmd");
+        let post_tool_use_failure = HookEventEnvelope {
+            hook_event_name: HookEventName::PostToolUseFailure,
+            payload: HookPayload::PostToolUseFailure {
+                tool_name: "run_terminal_cmd".into(),
+                tool_use_id: "tu-1".into(),
+                tool_input: serde_json::json!({"command": "ls"}),
+                tool_input_truncated: false,
+                error: "exit 1".into(),
+                duration_ms: None,
+                is_interrupt: false,
+                subagent_type: None,
+            },
+            ..post_tool_use_envelope("run_terminal_cmd")
+        };
+        let session_start = session_start_envelope();
+        let ctx = run_ctx();
+        for (name, (suspended, entered)) in [
+            (
+                "gate",
+                poll_until_suspended(dispatch_pre_tool_use(&registry, &pre_tool_use, &ctx)).await,
+            ),
+            (
+                "stop",
+                poll_until_suspended(dispatch_stop(&registry, HookEventName::Stop, &stop, &ctx))
+                    .await,
+            ),
+            (
+                "post_tool_use",
+                poll_until_suspended(dispatch_post_tool_use(&registry, &post_tool_use, &ctx)).await,
+            ),
+            (
+                "post_tool_use_failure",
+                poll_until_suspended(dispatch_post_tool_use_failure(
+                    &registry,
+                    &post_tool_use_failure,
+                    &ctx,
+                ))
+                .await,
+            ),
+            (
+                "non_blocking",
+                poll_until_suspended(dispatch_non_blocking(
+                    &registry,
+                    HookEventName::SessionStart,
+                    &session_start,
+                    &ctx,
+                ))
+                .await,
+            ),
+        ] {
+            assert!(suspended, "{name}");
+            assert_eq!(None, entered, "{name}");
+        }
+    }
+
+    async fn poll_until_suspended(
+        dispatch: impl std::future::Future,
+    ) -> (bool, Option<tracing::span::Id>) {
+        let mut dispatch = std::pin::pin!(dispatch);
+        std::future::poll_fn(|cx| {
+            let suspended = dispatch.as_mut().poll(cx).is_pending();
+            std::task::Poll::Ready((suspended, tracing::Span::current().id()))
+        })
+        .await
     }
 }

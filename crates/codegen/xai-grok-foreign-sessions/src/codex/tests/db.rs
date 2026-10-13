@@ -247,7 +247,10 @@ fn recent_database_row_decode_error_is_incomplete() {
     );
     let full = scan_in_home(root.path(), &cwd, now);
     assert_eq!(full.len(), 1);
-    assert_eq!(full[0].native_id, older_id.to_string());
+    let Some(first) = full.first() else {
+        panic!("expected one session: {full:?}");
+    };
+    assert_eq!(first.native_id, older_id.to_string());
 }
 
 #[test]
@@ -489,10 +492,13 @@ fn highest_database_filters_sources_paths_cwd_and_millis() {
             .collect::<Vec<_>>(),
         vec!["fallback title", "compressed", "chatgpt"]
     );
-    assert_eq!(sessions[0].updated_at, updated);
-    assert_eq!(sessions[0].source, ForeignSessionSource::CodexVsCode);
-    assert_eq!(sessions[1].source, ForeignSessionSource::CodexAtlas);
-    assert_eq!(sessions[2].source, ForeignSessionSource::CodexChatGpt);
+    let [first, second, third] = sessions.as_slice() else {
+        panic!("expected three sessions: {sessions:?}");
+    };
+    assert_eq!(first.updated_at, updated);
+    assert_eq!(first.source, ForeignSessionSource::CodexVsCode);
+    assert_eq!(second.source, ForeignSessionSource::CodexAtlas);
+    assert_eq!(third.source, ForeignSessionSource::CodexChatGpt);
 }
 
 #[test]
@@ -524,8 +530,11 @@ fn empty_newer_database_uses_older_nonempty_generation() {
     let sessions = scan_in_home(root.path(), &cwd, now);
 
     assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].native_id, id.to_string());
-    assert_eq!(sessions[0].title, "older nonempty generation");
+    let Some(session) = sessions.first() else {
+        panic!("expected one session: {sessions:?}");
+    };
+    assert_eq!(session.native_id, id.to_string());
+    assert_eq!(session.title, "older nonempty generation");
 }
 
 #[test]
@@ -566,8 +575,11 @@ fn empty_databases_fall_back_to_rollout_files() {
     let sessions = scan_in_home(root.path(), &cwd, now);
 
     assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].native_id, id.to_string());
-    assert_eq!(sessions[0].title, "rollout fallback");
+    let Some(session) = sessions.first() else {
+        panic!("expected one session: {sessions:?}");
+    };
+    assert_eq!(session.native_id, id.to_string());
+    assert_eq!(session.title, "rollout fallback");
 }
 
 #[test]
@@ -629,7 +641,10 @@ fn database_window_qualifies_past_invalid_rows() {
     drop(connection);
     let found = scan_in_home(root.path(), &cwd, now);
     assert_eq!(found.len(), 1);
-    assert_eq!(found[0].title, "valid after window");
+    assert_eq!(
+        found.first().map(|s| s.title.as_str()),
+        Some("valid after window")
+    );
 }
 
 #[test]
@@ -695,7 +710,10 @@ fn database_window_normalizes_units_and_filters_future_rows_before_limit() {
     drop(connection);
     let found = scan_in_home(root.path(), &cwd, now);
     assert_eq!(found.len(), 1);
-    assert_eq!(found[0].title, "newer seconds row");
+    assert_eq!(
+        found.first().map(|s| s.title.as_str()),
+        Some("newer seconds row")
+    );
 }
 
 #[test]
@@ -753,7 +771,10 @@ fn each_required_sql_predicate_protects_the_candidate_window() {
         drop(connection);
         let found = scan_in_home(root.path(), &cwd, now);
         assert_eq!(found.len(), 1, "required predicate case {case}");
-        assert_eq!(found[0].native_id, valid_id.to_string());
+        let Some(session) = found.first() else {
+            panic!("expected one session: {found:?}");
+        };
+        assert_eq!(session.native_id, valid_id.to_string());
     }
 }
 

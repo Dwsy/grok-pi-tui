@@ -314,7 +314,7 @@ mod tests {
         let mut pc = 0usize;
         let mut a = 0u32;
         for _ in 0..filter.len().saturating_mul(2) {
-            let insn = &filter[pc];
+            let Some(insn) = filter.get(pc) else { break };
             let op = insn.code as u32;
             if op == (BPF_LD | BPF_W | BPF_ABS) {
                 a = match insn.k {

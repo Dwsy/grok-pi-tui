@@ -561,3 +561,50 @@
         }
     }
 
+    #[test]
+    fn subagent_shutdown_drops_its_loop_from_the_rendered_task_list() {
+        use xai_grok_tools::notification::ScheduledTaskRemovedReason;
+        let mut app = make_app_with_agent("sess-1");
+        {
+            let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+            agent.session.scheduled_tasks.insert(
+                "parent-loop".into(),
+                crate::app::agent::ScheduledTaskInfo {
+                    task_id: "parent-loop".into(),
+                    prompt: "keep the parent loop".into(),
+                    human_schedule: "every 1 hour".into(),
+                    created_at: Instant::now(),
+                    next_fire_at: Some("2026-01-01T00:00:00Z".into()),
+                    tag: "loop".into(),
+                    last_subagent_id: None,
+                },
+            );
+            agent.session.scheduled_tasks.insert(
+                "sub-loop".into(),
+                crate::app::agent::ScheduledTaskInfo {
+                    task_id: "sub-loop".into(),
+                    prompt: "subagent babysits the build".into(),
+                    human_schedule: "every 5 minutes".into(),
+                    created_at: Instant::now(),
+                    next_fire_at: Some("2026-01-01T00:05:00Z".into()),
+                    tag: "loop".into(),
+                    last_subagent_id: Some("sub-1".into()),
+                },
+            );
+        }
+
+        let notif = make_deleted_ext_notif_with_reason(
+            "sess-1",
+            "sub-loop",
+            ScheduledTaskRemovedReason::Shutdown,
+            false,
+        );
+        assert!(handle_scheduled_task_deleted(&notif, &mut app));
+
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        assert_eq!(
+            "Task (1):\n  scheduledloop \u{00b7} every 1 hour \u{00b7} keep the parent loop",
+            crate::app::status_blocks::tasks_block_text(agent)
+        );
+    }
+

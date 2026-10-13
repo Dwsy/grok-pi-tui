@@ -9,27 +9,19 @@ use super::{ExtResult, parse_params};
 use crate::agent::MvpAgent;
 use crate::session::SessionCommand;
 
+pub const INTERJECT_METHOD: &str = "x.ai/interject";
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct InterjectRequest {
-    session_id: String,
-    text: String,
+pub struct InterjectRequest {
+    pub session_id: String,
+    pub text: String,
     #[serde(default)]
-    interjection_id: Option<String>,
+    pub interjection_id: Option<String>,
     /// Optional structured blocks (text and images) from image-capable clients.
     /// Absent means the legacy text-only wire shape (empty after default).
     #[serde(default)]
-    content: Vec<acp::ContentBlock>,
-}
-
-/// Split a `content` array into the model-safe text and the image blocks. The Text block (when present and non-empty) is the client's REWRITTEN text.
-/// The rewrite strips failed-orphan placeholders and drops `[Image #N: <path>]` paths. It must win over the raw `text` param, which exists for legacy clients and display.
-fn split_content(content: Vec<acp::ContentBlock>) -> (Option<String>, Vec<acp::ImageContent>) {
-    let text_override = content.iter().find_map(|block| match block {
-        acp::ContentBlock::Text(tb) if !tb.text.trim().is_empty() => Some(tb.text.clone()),
-        _ => None,
-    });
-    (text_override, crate::session::image_blocks(content))
+    pub content: Vec<acp::ContentBlock>,
 }
 
 /// Handle `x.ai/interject`: queue a mid-turn user interjection.
@@ -44,7 +36,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         );
     };
 
-    let (text_override, images) = split_content(req.content);
+    let (text_override, images) = super::content::split_content(req.content);
     let _ = session.cmd_tx.send(SessionCommand::Interject {
         text: text_override.unwrap_or(req.text),
         id: req.interjection_id,
@@ -71,7 +63,7 @@ mod tests {
         .expect("legacy params must parse");
         assert_eq!(req.text, "steer left");
         assert_eq!(req.interjection_id.as_deref(), Some("i1"));
-        let (text_override, images) = split_content(req.content);
+        let (text_override, images) = super::super::content::split_content(req.content);
         assert_eq!(text_override, None);
         assert!(images.is_empty());
     }
@@ -89,15 +81,18 @@ mod tests {
             ],
         }))
         .expect("content params must parse");
-        let (text_override, images) = split_content(req.content);
+        let (text_override, images) = super::super::content::split_content(req.content);
         assert_eq!(
             text_override.as_deref(),
             Some("look at [Image #1]"),
             "rewritten block text must win over the raw text param"
         );
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].mime_type, "image/png");
-        assert_eq!(images[0].data, "aGVsbG8=");
+        let Some(image) = images.first() else {
+            panic!("expected one image: {images:?}");
+        };
+        assert_eq!(image.mime_type, "image/png");
+        assert_eq!(image.data, "aGVsbG8=");
     }
 
     /// Garbage `content` fails the whole parse (strict, like other params) instead of silently dropping attachments.

@@ -741,7 +741,10 @@ mod tests {
         assert!(result.content.contains("Full content saved to:"));
         assert!(result.content.contains("ReadAsset"));
         let footer_start = result.content.rfind(RECOVERY_FOOTER_PREFIX).unwrap();
-        assert!(result.content[footer_start..].starts_with(&format!(
+        let Some(footer) = result.content.get(footer_start..) else {
+            panic!("footer_start not a char boundary: {footer_start}");
+        };
+        assert!(footer.starts_with(&format!(
             "{RECOVERY_FOOTER_PREFIX} showing first {footer_start} of "
         )));
     }

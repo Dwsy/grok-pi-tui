@@ -33,6 +33,8 @@
 //! Linux logind's `InhibitDelayMaxSec` defaults to 5 s — or the OS proceeds to
 //! sleep anyway. `DidWake` handlers must stay cheap and non-blocking.
 
+#![deny(clippy::indexing_slicing)]
+
 /// A system power transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerEvent {

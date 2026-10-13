@@ -5,6 +5,8 @@
 //! process-wide clients owned by `xai_grok_sampler::shared_http`. TLS policy
 //! (backend pin, roots, provider) lives in `xai_grok_extra_ca`.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::sync::OnceLock;
 
 use xai_grok_workspace::permission::ClientType;

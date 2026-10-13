@@ -116,6 +116,14 @@ mod tests {
     use super::*;
     use toml::Value as TomlValue;
     #[test]
+    fn default_upload_wait_does_not_hold_the_prompt_response() {
+        let (wait_for_uploads, _) = load_upload_wait_config_sync();
+        assert!(
+            !wait_for_uploads,
+            "the default turn-end upload mode holds the prompt response"
+        );
+    }
+    #[test]
     fn test_models_default_parsing() {
         let toml_str = r#"
 [models]

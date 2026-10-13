@@ -162,8 +162,8 @@ pub fn enforce_login_principal(
     {
         return Ok(());
     }
-    let expected = if allowed.len() == 1 {
-        format!("team {}", allowed[0])
+    let expected = if let [id] = allowed {
+        format!("team {id}")
     } else {
         format!("one of teams: {}", allowed.join(", "))
     };
@@ -195,6 +195,7 @@ pub(super) struct OidcUserInfo {
     pub(super) user_blocked_reason: Option<String>,
     pub(super) team_blocked_reasons: Vec<String>,
     pub(super) coding_data_retention_opt_out: bool,
+    pub(super) can_administer_team: Option<bool>,
 }
 pub(super) fn build_grok_auth(
     tokens: TokenResponse,
@@ -223,6 +224,7 @@ pub(super) fn build_grok_auth(
         user_blocked_reason: user_info.user_blocked_reason,
         team_blocked_reasons: user_info.team_blocked_reasons,
         coding_data_retention_opt_out: user_info.coding_data_retention_opt_out,
+        can_administer_team: user_info.can_administer_team,
         has_grok_code_access: None,
         refresh_token: tokens.refresh_token,
         expires_at: tokens.expires_in.map(|s| now + Duration::seconds(s as i64)),
@@ -680,6 +682,7 @@ pub(super) async fn validate_and_extract_user_info(
         user_blocked_reason: None,
         team_blocked_reasons: vec![],
         coding_data_retention_opt_out: crate::default_coding_data_retention_opt_out(),
+        can_administer_team: None,
     })
 }
 pub(super) async fn extract_user_info(
@@ -711,6 +714,7 @@ pub(super) async fn extract_user_info(
             user_blocked_reason: None,
             team_blocked_reasons: vec![],
             coding_data_retention_opt_out: crate::default_coding_data_retention_opt_out(),
+            can_administer_team: None,
         });
     }
     let token = id_token.ok_or_else(|| anyhow::Error::new(OidcError::MissingIdToken))?;

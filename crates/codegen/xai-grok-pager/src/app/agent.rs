@@ -106,10 +106,13 @@ impl QueuedPrompt {
 /// A command that is sent to the agent and tracked in the state machine.
 ///
 /// These are distinct from UI-local slash commands (like `/theme`, `/help`) which execute immediately without going through the queue or agent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentCommand {
     /// `/compact`: compact conversation history.
     Compact,
+    /// Cross-family model switch compact (lossy summary while the `/model` RPC is in flight).
+    /// Idle, so it would otherwise have no turn-status loader; this command owns the spinner.
+    SwitchModelCompact,
     /// Creating a git worktree (from the welcome screen `w` action).
     CreateWorktree,
     /// Resuming a session in a worktree (worktree + code restore).
@@ -119,27 +122,41 @@ pub enum AgentCommand {
     /// Forking the current session into a peer (no-worktree path).
     /// Drives the spinner shown on the placeholder agent while the `x.ai/session/fork` request is in flight.
     ForkSession,
+    /// `/flush`: capture this session's memory now.
+    MemoryFlush,
+    /// `/dream`: consolidate memory now.
+    MemoryDream,
 }
 impl AgentCommand {
     /// Human-readable label for the status line (e.g., "Compacting").
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Compact => "Compacting",
+            Self::SwitchModelCompact => "Switching model",
             Self::CreateWorktree => "Creating worktree",
             Self::RestoreWorktree => "Restoring session in worktree",
             Self::RestoreCode => "Restoring code",
             Self::ForkSession => "Forking session",
+            Self::MemoryFlush => "Flushing memory",
+            Self::MemoryDream => "Consolidating memory",
         }
     }
     /// The raw command text (e.g., "/compact").
     pub fn command_text(&self) -> &'static str {
         match self {
             Self::Compact => "/compact",
+            Self::SwitchModelCompact => "/model",
             Self::CreateWorktree => "worktree",
             Self::RestoreWorktree => "worktree",
             Self::RestoreCode => "restore",
             Self::ForkSession => "fork",
+            Self::MemoryFlush => "/flush",
+            Self::MemoryDream => "/dream",
         }
+    }
+    /// Manual `/compact` or the idle family-switch compact that reuses the same cancel/status path.
+    pub fn is_compact(&self) -> bool {
+        matches!(self, Self::Compact | Self::SwitchModelCompact)
     }
 }
 /// Maximum in-memory stdout per background task (10 MB).
@@ -216,7 +233,12 @@ impl BgTaskState {
         } else {
             let end =
                 crate::render::line_utils::floor_char_boundary(&new_stdout, BG_TASK_MAX_STDOUT);
-            self.stdout = new_stdout[..end].to_string();
+            let Some(head) = new_stdout.get(..end) else {
+                self.stdout = new_stdout;
+                self.stdout_line_count = self.stdout.lines().count();
+                return;
+            };
+            self.stdout = head.to_string();
             self.truncated = true;
         }
         self.stdout_line_count = self.stdout.lines().count();
@@ -235,8 +257,10 @@ impl BgTaskState {
             while start < self.stdout.len() && !self.stdout.is_char_boundary(start) {
                 start += 1;
             }
-            self.stdout = self.stdout[start..].to_string();
-            self.truncated = true;
+            if let Some(tail) = self.stdout.get(start..) {
+                self.stdout = tail.to_string();
+                self.truncated = true;
+            }
         }
         self.stdout_line_count = self.stdout.lines().count();
     }
@@ -282,7 +306,9 @@ impl BgTaskState {
                 &snapshot.output,
                 BG_TASK_MAX_STDOUT,
             );
-            tombstone.set_stdout(snapshot.output[..end].to_string());
+            if let Some(head) = snapshot.output.get(..end) {
+                tombstone.set_stdout(head.to_string());
+            }
             if end < snapshot.output.len() {
                 tombstone.truncated = true;
             }
@@ -579,13 +605,22 @@ impl AgentState {
     pub fn is_turn_running(&self) -> bool {
         matches!(self, Self::TurnRunning)
     }
-    /// Manual `/compact` is in flight (stoppable via session/cancel).
+    /// Manual `/compact` or family-switch compact is in flight (stoppable via session/cancel).
     pub fn is_compact_running(&self) -> bool {
         matches!(
             self,
+            Self::CommandRunning { command, .. } if command.is_compact()
+        )
+    }
+    /// Family-switch compact (started from `AutoCompactStarted`, finished from its completed/failed/cancelled follow-up).
+    pub fn is_switch_model_compact(&self) -> bool {
+        matches!(
+            self,
             Self::CommandRunning {
-                command: AgentCommand::Compact,
+                command: AgentCommand::SwitchModelCompact,
                 ..
+            } | Self::CommandCancelling {
+                command: AgentCommand::SwitchModelCompact,
             }
         )
     }
@@ -800,11 +835,24 @@ impl AgentSession {
     /// The shell's own session directory derivation from the bound session id and this session's cwd.
     /// `None` until a session id is bound; never touches the filesystem or scans other sessions.
     pub fn local_session_dir(&self) -> Option<PathBuf> {
-        let info = xai_grok_shell::session::info::Info {
+        Some(xai_grok_shell::session::persistence::session_dir(
+            &self.local_session_info()?,
+        ))
+    }
+    /// Create `local_session_dir` with owner-only permissions when it is missing, then return it.
+    /// Not every backend writes to it before the first feedback draft.
+    pub fn ensure_local_session_dir(&self) -> Option<std::io::Result<PathBuf>> {
+        Some(
+            xai_grok_shell::session::persistence::ensure_owner_only_session_dir(
+                &self.local_session_info()?,
+            ),
+        )
+    }
+    fn local_session_info(&self) -> Option<xai_grok_shell::session::info::Info> {
+        Some(xai_grok_shell::session::info::Info {
             id: self.session_id.clone()?,
             cwd: self.cwd.to_string_lossy().to_string(),
-        };
-        Some(xai_grok_shell::session::persistence::session_dir(&info))
+        })
     }
     /// Process an ACP session update. Returns true if scrollback was modified.
     pub fn handle_update(
@@ -826,6 +874,7 @@ impl AgentSession {
         self.tracker.expect_user_echo();
         self.state = AgentState::TurnRunning;
         self.in_flight_prompt = None;
+        self.models.set_served_model_name(None);
     }
     /// Finish the current turn: cleanup tracker, set state to Idle.
     ///
@@ -899,16 +948,12 @@ impl AgentSession {
     pub fn finish_command(&mut self) {
         self.state = AgentState::Idle;
     }
-    /// Mark an in-flight `/compact` as cancelling (waiting for CompactComplete).
+    /// Mark an in-flight compact as cancelling (waiting for CompactComplete / AutoCompactCancelled).
     pub fn cancel_compact_command(&mut self) {
-        if let AgentState::CommandRunning {
-            command: AgentCommand::Compact,
-            ..
-        } = &self.state
+        if let AgentState::CommandRunning { command, .. } = &self.state
+            && command.is_compact()
         {
-            self.state = AgentState::CommandCancelling {
-                command: AgentCommand::Compact,
-            };
+            self.state = AgentState::CommandCancelling { command: *command };
         }
     }
     /// Push a prompt onto the back of the queue. Returns the assigned ID.
@@ -1339,11 +1384,35 @@ mod tests {
         let id_b = s.enqueue_prompt("b".into());
         let id_c = s.enqueue_prompt("c".into());
         s.swap_prompt_up(id_b);
-        assert_eq!(s.pending_prompts[0].id, id_b);
-        assert_eq!(s.pending_prompts[1].id, id_a);
-        assert_eq!(s.pending_prompts[2].id, id_c);
+        assert_eq!(
+            s.pending_prompts
+                .front()
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_b
+        );
+        assert_eq!(
+            s.pending_prompts
+                .get(1)
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_a
+        );
+        assert_eq!(
+            s.pending_prompts
+                .get(2)
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_c
+        );
         s.swap_prompt_up(id_b);
-        assert_eq!(s.pending_prompts[0].id, id_b);
+        assert_eq!(
+            s.pending_prompts
+                .front()
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_b
+        );
     }
     #[test]
     fn swap_prompt_down() {
@@ -1352,11 +1421,35 @@ mod tests {
         let id_b = s.enqueue_prompt("b".into());
         let id_c = s.enqueue_prompt("c".into());
         s.swap_prompt_down(id_b);
-        assert_eq!(s.pending_prompts[0].id, id_a);
-        assert_eq!(s.pending_prompts[1].id, id_c);
-        assert_eq!(s.pending_prompts[2].id, id_b);
+        assert_eq!(
+            s.pending_prompts
+                .front()
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_a
+        );
+        assert_eq!(
+            s.pending_prompts
+                .get(1)
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_c
+        );
+        assert_eq!(
+            s.pending_prompts
+                .get(2)
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_b
+        );
         s.swap_prompt_down(id_b);
-        assert_eq!(s.pending_prompts[2].id, id_b);
+        assert_eq!(
+            s.pending_prompts
+                .get(2)
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_b
+        );
     }
     #[test]
     fn ids_never_reuse_after_drain() {
@@ -1402,10 +1495,34 @@ mod tests {
         let id_p = s.enqueue_prompt("prompt".into());
         let id_b = s.enqueue_bash_command("ls".into());
         s.swap_prompt_up(id_b);
-        assert_eq!(s.pending_prompts[0].id, id_b);
-        assert_eq!(s.pending_prompts[0].kind, QueueEntryKind::BashCommand);
-        assert_eq!(s.pending_prompts[1].id, id_p);
-        assert_eq!(s.pending_prompts[1].kind, QueueEntryKind::Prompt);
+        assert_eq!(
+            s.pending_prompts
+                .front()
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_b
+        );
+        assert_eq!(
+            s.pending_prompts
+                .front()
+                .unwrap_or_else(|| panic!("missing index"))
+                .kind,
+            QueueEntryKind::BashCommand
+        );
+        assert_eq!(
+            s.pending_prompts
+                .get(1)
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_p
+        );
+        assert_eq!(
+            s.pending_prompts
+                .get(1)
+                .unwrap_or_else(|| panic!("missing index"))
+                .kind,
+            QueueEntryKind::Prompt
+        );
     }
     /// `wire_matches_display` splits interjectable rows from client-expanded payloads (`/imagine`, `/loop`) that must run as their own turn.
     /// Interjectable rows have no payload, or a raw skill slash payload equal to the display text.
@@ -1538,10 +1655,34 @@ mod tests {
             ..QueuedPrompt::plain(id_skill, "/commit", QueueEntryKind::Prompt)
         });
         s.swap_prompt_up(id_skill);
-        assert_eq!(s.pending_prompts[0].id, id_skill);
-        assert!(s.pending_prompts[0].wire_blocks.is_some());
-        assert_eq!(s.pending_prompts[1].id, id_normal);
-        assert!(s.pending_prompts[1].wire_blocks.is_none());
+        assert_eq!(
+            s.pending_prompts
+                .front()
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_skill
+        );
+        assert!(
+            s.pending_prompts
+                .front()
+                .unwrap_or_else(|| panic!("missing index"))
+                .wire_blocks
+                .is_some()
+        );
+        assert_eq!(
+            s.pending_prompts
+                .get(1)
+                .unwrap_or_else(|| panic!("missing index"))
+                .id,
+            id_normal
+        );
+        assert!(
+            s.pending_prompts
+                .get(1)
+                .unwrap_or_else(|| panic!("missing index"))
+                .wire_blocks
+                .is_none()
+        );
     }
     #[test]
     fn mixed_queue_with_wire_blocks_drains_fifo() {
@@ -1636,7 +1777,11 @@ mod tests {
         s.enqueue_prompt("first".into());
         s.enqueue_prompt("second".into());
         s.enqueue_prompt("third".into());
-        let second_id = s.pending_prompts[1].id;
+        let second_id = s
+            .pending_prompts
+            .get(1)
+            .unwrap_or_else(|| panic!("missing index"))
+            .id;
         let merged = s.dequeue_combined_prompt(Some(second_id)).unwrap();
         assert_eq!(
             merged.text, "first",
@@ -1660,7 +1805,11 @@ mod tests {
         s.enqueue_prompt("first".into());
         s.enqueue_prompt("second".into());
         s.enqueue_prompt("third".into());
-        let third_id = s.pending_prompts[2].id;
+        let third_id = s
+            .pending_prompts
+            .get(2)
+            .unwrap_or_else(|| panic!("missing index"))
+            .id;
         let merged = s.dequeue_combined_prompt(Some(third_id)).unwrap();
         assert_eq!(merged.text, "first\n\nsecond");
         assert_eq!(s.queue_len(), 1, "only the edited row stays queued");
@@ -1715,9 +1864,23 @@ mod tests {
         let merged = s.dequeue_combined_prompt(None).unwrap();
         assert_eq!(merged.text, "first\n\nsecond!");
         assert_eq!(merged.chip_elements.len(), 2);
-        assert_eq!(merged.chip_elements[0].range, 0..5);
-        assert_eq!(merged.chip_elements[1].range, 9..13);
-        assert_eq!(&merged.text[9..13], "cond");
+        assert_eq!(
+            merged
+                .chip_elements
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .range,
+            0..5
+        );
+        assert_eq!(
+            merged
+                .chip_elements
+                .get(1)
+                .unwrap_or_else(|| panic!("missing index"))
+                .range,
+            9..13
+        );
+        assert_eq!(merged.text.get(9..13), Some("cond"));
     }
     /// An image-bearing follower must not be folded in.
     /// Merging two image sets would require renumbering `[Image #N]` placeholders, which the merge does not do.

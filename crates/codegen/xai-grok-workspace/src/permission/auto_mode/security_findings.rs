@@ -13,6 +13,8 @@ pub enum ClassifierSecurityFinding {
     FailClosedPolicy,
     /// Shell structure the parser could not decompose to check.
     UnparseableShell,
+    /// Argument values depend on shell expansion.
+    UnresolvedArgument,
     /// Nested/opaque shell execution (`bash -c "$X"`, `eval …`).
     OpaqueShell,
     /// Execution callback or ambient Git-config exec risk.
@@ -35,6 +37,7 @@ impl ClassifierSecurityFinding {
     pub const ALL: &'static [Self] = &[
         Self::FailClosedPolicy,
         Self::UnparseableShell,
+        Self::UnresolvedArgument,
         Self::OpaqueShell,
         Self::ExecOrAmbientGit,
         Self::EnvInjection,
@@ -50,6 +53,7 @@ impl ClassifierSecurityFinding {
         match self {
             Self::FailClosedPolicy => "fail_closed_policy",
             Self::UnparseableShell => "unparseable_shell",
+            Self::UnresolvedArgument => "unresolved_argument",
             Self::OpaqueShell => "opaque_shell",
             Self::ExecOrAmbientGit => "exec_or_ambient_git",
             Self::EnvInjection => "env_injection",
@@ -68,6 +72,7 @@ impl ClassifierSecurityFinding {
                 "permission policy could not determine whether a rule applies"
             }
             Self::UnparseableShell => "shell structure could not be fully parsed",
+            Self::UnresolvedArgument => "argument values depend on shell expansion",
             Self::OpaqueShell => "invokes a nested or dynamically supplied shell command",
             Self::ExecOrAmbientGit => {
                 "may run code via an execution callback or ambient Git configuration"

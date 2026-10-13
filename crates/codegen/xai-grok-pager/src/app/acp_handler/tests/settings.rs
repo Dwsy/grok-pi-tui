@@ -22,7 +22,7 @@
             "remote kill switch disarms voice mode"
         );
         assert!(
-            !app.voice_state.pending_cold_start(),
+            !app.voice_state.is_pending_cold_start(),
             "queued lazy spawn must be dropped"
         );
     }
@@ -253,7 +253,7 @@
             ))
         };
         assert_eq!(
-            app.agents[&AgentId(0)].scrollback.get_by_id(id).unwrap().display_mode,
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.get_by_id(id).unwrap().display_mode,
             DisplayMode::Expanded,
             "flag off materializes expanded"
         );
@@ -268,7 +268,7 @@
             return;
         }
         assert_eq!(
-            app.agents[&AgentId(0)].scrollback.get_by_id(id).unwrap().display_mode,
+            app.agents.get(&AgentId(0)).unwrap_or_else(|| panic!("missing map entry")).scrollback.get_by_id(id).unwrap().display_mode,
             DisplayMode::Collapsed,
             "remote enable must collapse the on-default Edit row"
         );
@@ -294,7 +294,7 @@
             sb.set_selected(Some(0));
             assert!(sb.toggle_group_expansion());
             sb.prepare_layout(80, 40);
-            let info = sb.get_cached_entry_layouts().unwrap()[0];
+            let info = sb.get_cached_entry_layouts().unwrap().first().unwrap_or_else(|| panic!("missing index"));
             assert!(info.group_collapse_header, "expanded verb slot armed");
         }
 
@@ -309,7 +309,7 @@
         }
         let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
         sb.prepare_layout(80, 40);
-        let info = sb.get_cached_entry_layouts().unwrap()[0];
+        let info = sb.get_cached_entry_layouts().unwrap().first().unwrap_or_else(|| panic!("missing index"));
         assert!(
             !info.group_collapse_header,
             "remote flip must drop the stale expansion"
@@ -355,7 +355,7 @@
     #[test]
     fn auto_gate_killswitch_notifies_agents_to_leave_auto() {
         // The kill-switch must tell live sessions to leave Auto, else the agent keeps classifier-approving while the UI shows "Ask"
-        // The notification is CLIENT-scoped, so exactly ONE fires regardless of how many tabs were in auto
+        // Every live Auto tab receives its own notification
         // It omits `yolo_mode` so a sibling always-approve tab is preserved
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = AppView::new(tx, ModelState::default(), Vec::new(), crate::render::draw::EscapeWriter::disconnected());
@@ -381,11 +381,11 @@
         assert!(!app.auto_mode_gate, "gate must be off after kill-switch");
         // Sibling always-approve is untouched: the kill-switch clears only auto
         assert!(
-            app.agents[&AgentId(2)].session.is_yolo(),
+            app.agents.get(&AgentId(2)).unwrap_or_else(|| panic!("missing map entry")).session.is_yolo(),
             "sibling always-approve must stay yolo after the auto kill-switch"
         );
 
-        let mut leave_auto_notifs = 0;
+        let mut notified_sessions = Vec::new();
         while let Ok(msg) = rx.try_recv() {
             if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = msg {
                 if args.request.method.as_ref() != "x.ai/yolo_mode_changed" {
@@ -393,18 +393,33 @@
                 }
                 let params: serde_json::Value =
                     serde_json::from_str(args.request.params.get()).unwrap();
-                assert_eq!(params["auto_mode"], serde_json::json!(false));
-                assert_eq!(params["permission_mode"], serde_json::json!("ask"));
+                assert_eq!(
+                    params.get("auto_mode").cloned(),
+                    Some(serde_json::json!(false))
+                );
+                assert_eq!(
+                    params.get("permission_mode").cloned(),
+                    Some(serde_json::json!("ask"))
+                );
                 assert!(
                     params.get("yolo_mode").is_none(),
                     "yolo_mode must be omitted so a sibling always-approve session is preserved"
                 );
-                leave_auto_notifs += 1;
+                notified_sessions.push(
+                    params
+                        .get("sessionId")
+                        .and_then(serde_json::Value::as_str)
+                        .expect("notification names its session")
+                        .to_owned(),
+                );
             }
         }
+        notified_sessions.sort();
+
         assert_eq!(
-            leave_auto_notifs, 1,
-            "exactly one client-scoped leave-auto notification, regardless of agent count"
+            notified_sessions,
+            vec!["sess-0".to_owned(), "sess-1".to_owned()],
+            "each auto session receives one targeted leave-auto notification"
         );
     }
 
@@ -664,4 +679,27 @@
             Some("ask"),
             "gated-off Auto must display as Ask"
         );
+    }
+
+    #[test]
+    fn subagent_model_inheritance_remote_tier_follows_presence_not_value() {
+        let mut app = make_app_with_agent("sess-smi-remote");
+        app.subagent_model_inheritance.other_tiers.remote = Some(true);
+        let push = |params: serde_json::Value| {
+            acp::ExtNotification::new(
+                "x.ai/settings/update",
+                serde_json::value::to_raw_value(&params).unwrap().into(),
+            )
+        };
+
+        // An older shell, or one without settings yet, omits the key; the seeded tier must survive.
+        let _ = handle_ext_notification(&push(serde_json::json!({})), &mut app);
+        assert_eq!(Some(true), app.subagent_model_inheritance.other_tiers.remote);
+
+        let _ = handle_ext_notification(&push(serde_json::json!({ "subagent_model_inheritance_enabled": false })), &mut app);
+        assert_eq!(Some(false), app.subagent_model_inheritance.other_tiers.remote);
+
+        // The shell sends null once fetched settings lack the value.
+        let _ = handle_ext_notification(&push(serde_json::json!({ "subagent_model_inheritance_enabled": null })), &mut app);
+        assert_eq!(None, app.subagent_model_inheritance.other_tiers.remote);
     }

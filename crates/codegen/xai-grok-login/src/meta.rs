@@ -17,9 +17,12 @@ pub struct AuthMeta {
     pub email: Option<String>,
     #[serde(default)]
     pub auth_mode: Option<String>,
-    /// Team principal UUID when the session is a team login (`None` for personal).
+    /// Team id from the token: the team principal's id, or a personal account's billing team.
     #[serde(default)]
     pub team_id: Option<String>,
+    /// `GrokAuth::is_team_principal`: the credential carries team context, so `/user` can resolve `can_administer_team`.
+    #[serde(default)]
+    pub is_team_principal: bool,
     #[serde(default)]
     pub team_name: Option<String>,
     #[serde(default)]
@@ -29,6 +32,8 @@ pub struct AuthMeta {
     /// Defaults to opted-out (safer) until auth meta is populated.
     #[serde(default = "crate::default_coding_data_retention_opt_out")]
     pub coding_data_retention_opt_out: bool,
+    #[serde(default)]
+    pub can_administer_team: Option<bool>,
     #[serde(default)]
     pub show_resolved_model: Option<bool>,
     /// `Some` means the user is blocked; `None` means the user has access.
@@ -40,6 +45,9 @@ pub struct AuthMeta {
     /// Whether `/feedback` may offer a one-shot trace upload; it lives on auth meta so it refreshes with auth changes.
     #[serde(default)]
     pub feedback_trace_offer: bool,
+    /// Whether the agent's backend handles billing itself.
+    #[serde(default)]
+    pub backend_billed: bool,
 }
 
 impl Default for AuthMeta {
@@ -48,14 +56,17 @@ impl Default for AuthMeta {
             email: None,
             auth_mode: None,
             team_id: None,
+            is_team_principal: false,
             team_name: None,
             is_zdr: false,
             team_role: None,
             coding_data_retention_opt_out: crate::default_coding_data_retention_opt_out(),
+            can_administer_team: None,
             show_resolved_model: None,
             gate: None,
             subscription_tier: None,
             feedback_trace_offer: false,
+            backend_billed: false,
         }
     }
 }

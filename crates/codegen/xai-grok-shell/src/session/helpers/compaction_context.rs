@@ -290,6 +290,7 @@ mod tests {
             scheduled_loops: vec![],
             workflows: vec![],
             workflow_tool_name: None,
+            images: Default::default(),
         }
     }
 
@@ -339,6 +340,7 @@ mod tests {
             scheduled_loops: vec![],
             workflows: vec![],
             workflow_tool_name: None,
+            images: Default::default(),
         };
         let result = to_system_reminder_sync(&ctx, &[], &[], None, None, None);
         let text = result.expect("should produce a reminder");
@@ -374,6 +376,7 @@ mod tests {
             scheduled_loops: vec![],
             workflows: vec![],
             workflow_tool_name: None,
+            images: Default::default(),
         };
         let text = to_system_reminder_sync(&ctx, &[], &[], None, None, None)
             .expect("should produce a reminder");
@@ -414,6 +417,7 @@ mod tests {
             scheduled_loops: vec![],
             workflows: vec![],
             workflow_tool_name: None,
+            images: Default::default(),
         }
     }
 
@@ -498,6 +502,7 @@ mod tests {
             scheduled_loops: vec![],
             workflows: vec![],
             workflow_tool_name: None,
+            images: Default::default(),
         };
         let skills = [xai_grok_tools::implementations::skills::types::SkillInfo {
             name: "commit".into(),
@@ -552,21 +557,73 @@ mod tests {
                 elapsed_ms: 12_000,
             }],
             workflow_tool_name: Some("workflow".into()),
+            images: Default::default(),
         };
         let text = to_system_reminder_sync(&ctx, &[], &[], None, None, None)
             .expect("should produce a reminder");
         let bg = text.find("## Running Background Tasks").expect("bg");
+        let Some(bg_section) = text.get(bg..) else {
+            panic!("bg heading offset is not a char boundary: {text}");
+        };
         assert!(
-            text[bg..].contains("- \"01a046ad3877\": `monitor job`"),
+            bg_section.contains("- \"01a046ad3877\": `monitor job`"),
             "got:\n{text}"
         );
-        assert!(text[bg..].contains("run id `wf-1`"), "got:\n{text}");
+        assert!(bg_section.contains("run id `wf-1`"), "got:\n{text}");
         assert!(!text.contains("## Scheduled Loops"), "got:\n{text}");
         assert!(text.contains("## Running Workflows"), "got:\n{text}");
         assert!(!text.contains("## Active Workflows"), "got:\n{text}");
         assert!(
             text.contains("Use `workflow` to inspect or resume"),
             "got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn missing_tool_name_still_renders_the_running_task() {
+        let ctx = CompactionStateContext {
+            running_tasks: vec![BackgroundTaskSummary {
+                task_id: "task-1".into(),
+                command: "cargo test".into(),
+                status: "running".into(),
+                tool_name: None,
+            }],
+            ..ctx_with_todos(vec![])
+        };
+        let text = to_system_reminder_sync(&ctx, &[], &[], None, None, None)
+            .expect("a missing tool name must still produce the reminder");
+        assert_eq!(
+            text,
+            "<system-reminder>\n## Running Background Tasks\nThese tasks are still running:\n- \"task-1\": `cargo test` (running)\n</system-reminder>"
+        );
+    }
+
+    #[test]
+    fn reminder_omits_a_sibling_session_id() {
+        let ctx = CompactionStateContext {
+            running_tasks: vec![BackgroundTaskSummary {
+                task_id: "task-1".into(),
+                command: "cargo test".into(),
+                status: "running".into(),
+                tool_name: Some("run_terminal_command".into()),
+            }],
+            running_subagents: vec![RunningSubagentSummary {
+                subagent_id: "child-1".into(),
+                subagent_type: "explore".into(),
+                description: "find files".into(),
+                elapsed_ms: 5_000,
+            }],
+            ..ctx_with_todos(vec![])
+        };
+        let names = SubagentToolNames {
+            poll: "get_task_output".into(),
+            cancel: "kill_task".into(),
+        };
+        let text =
+            to_system_reminder_sync(&ctx, &[], &[], Some(&names), None, None).expect("reminder");
+        assert_eq!(
+            text,
+            "<system-reminder>\n## Running Background Tasks\nThese tasks are still running:\n- \"task-1\": `cargo test` (running, run_terminal_command)\n\n## Running Subagents\nThese subagents were launched before this compaction and are still running. Use `get_task_output` with the subagent_id to check their status or retrieve results. Use `kill_task` with the subagent_id to cancel a subagent.\n- \"child-1\": `find files` (running for 5s, explore)\n</system-reminder>"
         );
     }
 

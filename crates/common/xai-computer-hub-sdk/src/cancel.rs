@@ -127,6 +127,19 @@ impl CancelRegistry {
         cancelled
     }
 
+    /// Cancel every live call; the registry stays open and its tombstones
+    /// stay put. A call registered after this returns is not cancelled.
+    /// Returns how many tokens were not already cancelled.
+    pub(crate) fn cancel_live(&self) -> u64 {
+        let mut cancelled = 0;
+        self.map.retain(|_, token| {
+            cancelled += u64::from(!token.is_cancelled());
+            token.cancel();
+            false
+        });
+        cancelled
+    }
+
     #[cfg(test)]
     pub(crate) fn live_count(&self) -> usize {
         self.map.len()
@@ -230,6 +243,37 @@ mod tests {
         }
         // Idempotent: a second teardown cancels nothing.
         assert_eq!(reg.cancel_all(), 0);
+    }
+
+    fn register_fresh(reg: &CancelRegistry) -> CancellationToken {
+        let token = CancellationToken::new();
+        reg.register(cid(), &token);
+        token
+    }
+
+    #[test]
+    fn cancel_live_cancels_every_live_token_and_stays_open() {
+        let reg = CancelRegistry::default();
+        let first = register_fresh(&reg);
+        let second = register_fresh(&reg);
+        reg.cancel(&cid()); // This cancel leaves a tombstone
+
+        // This call starts cancelled and stays in the map
+        let pre_cancelled = cid();
+        reg.cancel(&pre_cancelled);
+        reg.register(pre_cancelled, &CancellationToken::new());
+
+        assert_eq!(reg.cancel_live(), 2, "the pre-cancelled call was not live");
+        assert!(
+            first.is_cancelled() && second.is_cancelled(),
+            "both calls end"
+        );
+        assert_eq!(reg.live_count(), 0);
+        assert_eq!(reg.pending_count(), 1, "tombstones are not touched");
+        assert_eq!(reg.cancel_live(), 0, "nothing live means nothing cancelled");
+
+        // The registry stays open for later calls
+        assert!(!register_fresh(&reg).is_cancelled());
     }
 
     #[test]

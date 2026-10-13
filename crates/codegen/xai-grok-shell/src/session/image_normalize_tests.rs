@@ -1,6 +1,12 @@
 use super::*;
 use image::DynamicImage;
 use image::codecs::jpeg::JpegEncoder;
+fn at<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
 fn fresh_cache() -> NormalizeCache {
     let cache = NormalizeCache::with_capacity(64 * 1024 * 1024);
     cache.set_enabled(true);
@@ -343,9 +349,9 @@ async fn normalize_images_filters_bad_and_keeps_good() {
     assert!(result.re_encode_fallbacks.is_empty());
     assert_eq!(result.dropped.len(), 1, "bad image must surface as dropped");
     assert!(
-        result.dropped[0].contains("Image 2"),
+        at(&result.dropped, 0).contains("Image 2"),
         "drop note must name the per-call index, got: {}",
-        result.dropped[0]
+        at(&result.dropped, 0)
     );
 }
 /// Wide raster so `resize(max_side, max_side)` must not equal a square output.
@@ -495,7 +501,10 @@ async fn crc_corrupt_png_fails_integrity_check() {
         .windows(4)
         .position(|w| w == tag)
         .expect("IDAT chunk present");
-    bytes[pos + 12] ^= 0xFF;
+    let Some(crc_byte) = bytes.get_mut(pos + 12) else {
+        panic!("IDAT crc byte out of range at {pos}");
+    };
+    *crc_byte ^= 0xFF;
     let img = ImageContent::new(
         base64::engine::general_purpose::STANDARD.encode(&bytes),
         "image/png",
@@ -708,7 +717,10 @@ async fn above_api_ceiling_is_rejected_by_normalize() {
         .windows(2)
         .position(|w| w == [0xFF, 0xC0])
         .expect("baseline SOF0 present");
-    jpeg[sof + 5..sof + 9].copy_from_slice(&[0x40, 0x00, 0x40, 0x00]);
+    let Some(dims) = jpeg.get_mut(sof + 5..sof + 9) else {
+        panic!("SOF dimension bytes out of range at {sof}");
+    };
+    dims.copy_from_slice(&[0x40, 0x00, 0x40, 0x00]);
     let img = ImageContent::new(
         base64::engine::general_purpose::STANDARD.encode(&jpeg),
         "image/jpeg",
@@ -737,7 +749,10 @@ fn persisted_image_reject_reason_pixel_ceiling() {
         .windows(2)
         .position(|w| w == [0xFF, 0xC0])
         .expect("baseline SOF0 present");
-    jpeg[sof + 5..sof + 9].copy_from_slice(&[0x40, 0x00, 0x40, 0x00]);
+    let Some(dims) = jpeg.get_mut(sof + 5..sof + 9) else {
+        panic!("SOF dimension bytes out of range at {sof}");
+    };
+    dims.copy_from_slice(&[0x40, 0x00, 0x40, 0x00]);
     assert!(
         persisted_image_reject_reason(&jpeg).is_some_and(|r| r.contains("above pixel ceiling")),
     );
@@ -807,7 +822,10 @@ async fn normalize_images_collects_dropped_notes() {
     let mut bytes = make_test_png(32, 32);
     let tag = b"IDAT";
     let pos = bytes.windows(4).position(|w| w == tag).unwrap();
-    bytes[pos + 12] ^= 0xFF;
+    let Some(crc_byte) = bytes.get_mut(pos + 12) else {
+        panic!("IDAT crc byte out of range at {pos}");
+    };
+    *crc_byte ^= 0xFF;
     let bad = ImageContent::new(
         base64::engine::general_purpose::STANDARD.encode(&bytes),
         "image/png",
@@ -817,7 +835,10 @@ async fn normalize_images_collects_dropped_notes() {
     let result = normalize_images_in(vec![good, bad], false, &cache).await;
     assert_eq!(result.images.len(), 1, "good image preserved");
     assert_eq!(result.dropped.len(), 1, "one drop note");
-    assert!(result.dropped[0].contains("Image 2"), "drop names index");
+    assert!(
+        at(&result.dropped, 0).contains("Image 2"),
+        "drop names index"
+    );
 }
 #[test]
 fn dropped_to_envelope_returns_none_for_empty() {
@@ -830,7 +851,7 @@ fn dropped_to_envelope_emits_notice_and_notes() {
     let (notice, returned) = dropped_to_envelope(notes.clone(), false).unwrap();
     assert!(notice.contains("<system-reminder>"));
     assert!(notice.contains("<image_dropped_notice>"));
-    assert!(notice.contains(&notes[0]));
+    assert!(notice.contains(at(&notes, 0).as_str()));
     assert_eq!(returned, notes);
 }
 #[test]
@@ -1019,9 +1040,9 @@ async fn normalize_images_in_collects_re_encode_fallback_note() {
         "one fallback note per oversized image"
     );
     assert!(
-        result.re_encode_fallbacks[0].contains("Image 1"),
+        at(&result.re_encode_fallbacks, 0).contains("Image 1"),
         "fallback note must name the per-call index, got: {}",
-        result.re_encode_fallbacks[0],
+        at(&result.re_encode_fallbacks, 0),
     );
 }
 #[tokio::test]
@@ -1033,14 +1054,14 @@ async fn sub_8x8_image_is_rejected() {
     assert_eq!(result.images.len(), 1, "only the >=8x8 image proceeds");
     assert_eq!(result.dropped.len(), 1);
     assert!(
-        result.dropped[0].contains("4×3") && result.dropped[0].contains("8×8"),
+        at(&result.dropped, 0).contains("4×3") && at(&result.dropped, 0).contains("8×8"),
         "dropped note must mention the offending dims and the min: {}",
-        result.dropped[0]
+        at(&result.dropped, 0)
     );
     assert!(
-        result.dropped[0].contains("too small"),
+        at(&result.dropped, 0).contains("too small"),
         "dropped: {}",
-        result.dropped[0]
+        at(&result.dropped, 0)
     );
 }
 /// Boundary: 8×8 clears the per-side floor but not the API's 512-total-pixel floor (64 px would 400 server-side).
@@ -1052,9 +1073,9 @@ async fn exactly_8x8_is_rejected_by_total_pixel_floor() {
     assert!(result.images.is_empty());
     assert_eq!(result.dropped.len(), 1);
     assert!(
-        result.dropped[0].contains("total pixels"),
+        at(&result.dropped, 0).contains("total pixels"),
         "dropped: {}",
-        result.dropped[0]
+        at(&result.dropped, 0)
     );
 }
 /// One dimension below the 8px side floor is enough to reject.
@@ -1065,5 +1086,5 @@ async fn seven_by_eight_is_rejected() {
     let result = normalize_images_in(vec![img], false, &cache).await;
     assert!(result.images.is_empty());
     assert_eq!(result.dropped.len(), 1);
-    assert!(result.dropped[0].contains("7×8"));
+    assert!(at(&result.dropped, 0).contains("7×8"));
 }

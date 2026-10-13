@@ -353,8 +353,12 @@ pub(crate) fn is_markdown_file_path(path: &Path) -> bool {
     let bytes = name.as_bytes();
     MARKDOWN_SUFFIXES.iter().any(|suffix| {
         let suffix = suffix.as_bytes();
-        bytes.len() >= suffix.len()
-            && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+        let Some(start) = bytes.len().checked_sub(suffix.len()) else {
+            return false;
+        };
+        bytes
+            .get(start..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
     })
 }
 /// An empty pre-seeded plan file (created by enter_plan_mode) reports false so the reminder still tells the model to write its plan.

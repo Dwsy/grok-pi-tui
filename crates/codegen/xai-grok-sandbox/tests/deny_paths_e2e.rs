@@ -14,6 +14,7 @@ const CONTROLS_ENV: &str = "SANDBOX_E2E_CONTROLS";
 const POSTLAUNCH_ENV: &str = "SANDBOX_E2E_POSTLAUNCH";
 /// Set when the spoof parent leaves `/data` on a read-only ancestor mount.
 /// The subprocess then knows exact-mountpoint verification must reject the forgery.
+#[cfg(target_os = "linux")]
 const DATA_STAGED_ENV: &str = "SANDBOX_E2E_DATA_STAGED";
 const MARKER: &str = "deny-paths-e2e-marker-9f3c1a";
 const REQUIRE_ENV: &str = "SANDBOX_E2E_REQUIRE_ENFORCEMENT";

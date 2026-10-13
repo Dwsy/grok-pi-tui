@@ -281,10 +281,13 @@ pub fn render_subagent_system_prompt(
     context.render_with_renderer(renderer)
 }
 /// Render project instructions as the child's prepended user message.
+///
+/// `paths` is the parent's `[paths]` config, so the child sees the same configured rules.
 pub async fn render_subagent_initial_user_message(
     definition: &AgentDefinition,
     working_directory: &Path,
     compat: CompatConfig,
+    paths: &xai_grok_agent::prompt::paths::PathsConfig,
     project_trusted: bool,
 ) -> Option<String> {
     if !definition.agents_md {
@@ -293,6 +296,7 @@ pub async fn render_subagent_initial_user_message(
     let agents_md_files = xai_grok_agent::prompt::agents_md::read_agents_config_with_paths(
         &working_directory.to_string_lossy(),
         compat,
+        paths,
         project_trusted,
     )
     .await;
@@ -498,6 +502,7 @@ mod tests {
             &definition,
             cwd.path(),
             CompatConfig::default(),
+            &xai_grok_agent::prompt::paths::PathsConfig::default(),
             true,
         )
         .await

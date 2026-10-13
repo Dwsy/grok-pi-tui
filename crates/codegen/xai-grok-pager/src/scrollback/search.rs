@@ -107,7 +107,10 @@ fn scan_matches(entries: &[IndexedEntry], matcher: &TextMatcher) -> Vec<Scrollba
             if m.start() == m.end() {
                 continue;
             }
-            line += entry.text[counted_to..m.start()].matches('\n').count();
+            line += entry
+                .text
+                .get(counted_to..m.start())
+                .map_or(0, |chunk| chunk.matches('\n').count());
             counted_to = m.start();
             matches.push(ScrollbackMatch {
                 entry_id: entry.id,
@@ -118,10 +121,6 @@ fn scan_matches(entries: &[IndexedEntry], matcher: &TextMatcher) -> Vec<Scrollba
     }
     matches
 }
-
-// ---------------------------------------------------------------------------
-// Background search daemon
-// ---------------------------------------------------------------------------
 
 /// Latest scan results published by the daemon for the UI thread to pick up.
 ///
@@ -486,12 +485,15 @@ mod tests {
         let matches = index.find(&substring("foo"));
 
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].entry_id, first);
-        assert_eq!(matches[0].line_in_entry, 0);
-        assert_eq!(matches[0].byte_range, 0..3);
-        assert_eq!(matches[1].entry_id, second);
-        assert_eq!(matches[1].line_in_entry, 0);
-        assert_eq!(matches[1].byte_range, 4..7);
+        let [a, b] = matches.as_slice() else {
+            panic!("expected two matches: {matches:?}");
+        };
+        assert_eq!(a.entry_id, first);
+        assert_eq!(a.line_in_entry, 0);
+        assert_eq!(a.byte_range, 0..3);
+        assert_eq!(b.entry_id, second);
+        assert_eq!(b.line_in_entry, 0);
+        assert_eq!(b.byte_range, 4..7);
     }
 
     #[test]
@@ -504,9 +506,12 @@ mod tests {
         let matches = index.find(&substring("bravo"));
 
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].entry_id, id);
-        assert_eq!(matches[0].line_in_entry, 1);
-        assert_eq!(matches[1].line_in_entry, 3);
+        let [a, b] = matches.as_slice() else {
+            panic!("expected two matches: {matches:?}");
+        };
+        assert_eq!(a.entry_id, id);
+        assert_eq!(a.line_in_entry, 1);
+        assert_eq!(b.line_in_entry, 3);
     }
 
     #[test]
@@ -522,7 +527,7 @@ mod tests {
         let matches = index.find(&substring("is really important"));
 
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].entry_id, id);
+        assert_eq!(matches.first().map(|m| m.entry_id), Some(id));
     }
 
     #[test]
@@ -795,7 +800,12 @@ mod tests {
         let cursor_byte = search.query().len() - 1;
         let _ = search.editor.set_cursor_byte(cursor_byte);
         let viewport = search.query_viewport(10);
-        let visible = &search.query()[viewport.visible_byte_range];
+        let Some(visible) = search.query().get(viewport.visible_byte_range.clone()) else {
+            panic!(
+                "visible_byte_range out of bounds: {:?}",
+                viewport.visible_byte_range
+            );
+        };
         assert!(visible.contains('中'));
         assert!(visible.contains("e\u{301}"));
         assert!(visible.contains(grapheme));

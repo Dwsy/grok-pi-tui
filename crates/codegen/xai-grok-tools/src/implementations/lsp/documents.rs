@@ -156,7 +156,11 @@ pub fn end_position(text: &str) -> Position {
         }
     }
     // LSP character offsets are UTF-16 code units.
-    let character = text[last_line_start..].encode_utf16().count() as u32;
+    let character = text
+        .get(last_line_start..)
+        .unwrap_or("")
+        .encode_utf16()
+        .count() as u32;
     Position { line, character }
 }
 

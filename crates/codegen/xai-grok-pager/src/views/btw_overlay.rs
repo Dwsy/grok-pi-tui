@@ -240,7 +240,6 @@ pub fn render_btw_panel(
     };
     let border_style = Style::default().fg(border_color).bg(bg);
 
-    // ── Clear area and draw rounded border ──
     Clear.render(area, buf);
     buf.set_style(area, Style::default().bg(bg));
     Block::default()
@@ -291,7 +290,6 @@ pub fn render_btw_panel(
         hint_x = (area.x + area.width).saturating_sub(1 + hint_w);
     }
 
-    // ── Title in top border: " /btw <question> " ──
     // Reserve the hint's columns so a long question truncates instead of hiding the hint
     // The title may use everything left of `hint_x`, minus its own two padding spaces
     let question = state.question();
@@ -324,7 +322,6 @@ pub fn render_btw_panel(
     let title_render_w = (title_text.width() as u16).min(hint_x.saturating_sub(title_x));
     buf.set_line(title_x, area.y, &title_line, title_render_w);
 
-    // ── Render the hint (always visible; its space was reserved above) ──
     if hint_w > 0 && hint_x >= title_x {
         let is_hovered = hit_close.as_ref().is_some_and(|h| h.hovered);
         let hint_style = if is_hovered {
@@ -350,13 +347,12 @@ pub fn render_btw_panel(
         hit.clear();
     }
 
-    // ── Body (between borders) ──
     let body_y = area.y + 1;
     match state {
         BtwOverlayState::Loading { .. } => {
             let frames = crate::glyphs::braille_spinner_frames();
             let frame_idx = ((tick / SPINNER_DIVISOR) % frames.len() as u64) as usize;
-            let spinner = frames[frame_idx];
+            let spinner = frames.get(frame_idx).copied().unwrap_or("");
             let loading_style = Style::default().fg(theme.gray).bg(bg);
             let line = Line::from(vec![
                 Span::styled(format!("{spinner} "), loading_style),
@@ -376,7 +372,9 @@ pub fn render_btw_panel(
             let end = (content_skip + max_body).min(total);
             let visible_count = end.saturating_sub(content_skip);
             for (row, idx) in (content_skip..end).enumerate() {
-                let bl = &block_output.lines[idx];
+                let Some(bl) = block_output.lines.get(idx) else {
+                    continue;
+                };
                 // Content paints bidi-aware (when rtl_bidi is on) so the shared selection code, which maps visual columns, agrees with the drawn cells
                 // This matches scrollback/list content
                 buf.set_line_safe_bidi(
@@ -575,7 +573,9 @@ mod tests {
         );
         let model = render_with_model(&state, 40, 8);
         assert!(!model.ranges.is_empty(), "should have selectable ranges");
-        let range = &model.ranges[0];
+        let Some(range) = model.ranges.first() else {
+            panic!("should have selectable ranges: {model:?}");
+        };
         assert_eq!(range.entry_idx, BTW_OVERLAY_ENTRY_IDX);
         assert_eq!(range.range_id, BTW_OVERLAY_RANGE_ID);
         assert!(!range.lines.is_empty());
@@ -715,8 +715,22 @@ mod tests {
         let model_2 = render_with_model(&state_2, 40, 6);
         assert!(!model_0.ranges.is_empty());
         assert!(!model_2.ranges.is_empty());
-        assert_eq!(model_0.ranges[0].lines[0].block_line_idx, 0);
-        assert_eq!(model_2.ranges[0].lines[0].block_line_idx, 2);
+        assert_eq!(
+            model_0
+                .ranges
+                .first()
+                .and_then(|r| r.lines.first())
+                .map(|l| l.block_line_idx),
+            Some(0)
+        );
+        assert_eq!(
+            model_2
+                .ranges
+                .first()
+                .and_then(|r| r.lines.first())
+                .map(|l| l.block_line_idx),
+            Some(2)
+        );
     }
 
     #[test]
@@ -724,11 +738,16 @@ mod tests {
         let response = hard_break_lines(20);
         let state = done_with_scroll(&response, 8);
         let model = state.full_selection_model(40);
-        assert_eq!(model.ranges.len(), 1);
-        assert_eq!(model.ranges[0].lines.len(), 20);
-        assert_eq!(model.ranges[0].lines[0].block_line_idx, 0);
-        assert_eq!(model.ranges[0].lines[19].block_line_idx, 19);
-        assert_eq!(model.ranges[0].lines[19].text, "line19");
+        let [range] = model.ranges.as_slice() else {
+            panic!("expected one range: {:?}", model.ranges);
+        };
+        assert_eq!(range.lines.len(), 20);
+        assert_eq!(range.lines.first().map(|l| l.block_line_idx), Some(0));
+        let Some(last) = range.lines.get(19) else {
+            panic!("expected 20 lines: {:?}", range.lines);
+        };
+        assert_eq!(last.block_line_idx, 19);
+        assert_eq!(last.text, "line19");
     }
 
     #[test]

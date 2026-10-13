@@ -399,7 +399,9 @@ async fn relay_sync_task(
                         // We iterate by index so that on send failure the remaining items stay in `pending` instead of being consumed by drain
                         let mut sent_count = 0;
                         while sent_count < pending.len() {
-                            let notification = &pending[sent_count];
+                            let Some(notification) = pending.get(sent_count) else {
+                                break;
+                            };
                             // The {sessionId}-{counter} format matches the agent's event IDs
                             let event_id = resolve_event_id(notification);
 
@@ -774,7 +776,10 @@ mod tests {
                 "agentType": AgentType::Tui,
             }
         });
-        assert_eq!(json["_meta"]["agentType"].as_str(), Some("tui"));
+        assert_eq!(
+            json.pointer("/_meta/agentType").and_then(|v| v.as_str()),
+            Some("tui")
+        );
     }
 
     #[test]
@@ -932,12 +937,10 @@ mod tests {
 
         // Verify strictly increasing (the global counter is shared across parallel tests, so gaps are expected; only monotonicity matters)
         for window in counters.windows(2) {
+            let [a, b] = window else { continue };
             assert!(
-                window[1] > window[0],
-                "counters not monotonically increasing: {} -> {} (ids: {:?})",
-                window[0],
-                window[1],
-                ids
+                *b > *a,
+                "counters not monotonically increasing: {a} -> {b} (ids: {ids:?})",
             );
         }
     }
@@ -979,11 +982,29 @@ mod tests {
             serde_json::from_str(&response_str).expect("response should be valid JSON");
 
         // Verify response structure
-        assert_eq!(response["jsonrpc"], "2.0");
-        assert_eq!(response["id"], 1);
-        assert_eq!(response["result"]["protocolVersion"], "1");
-        assert_eq!(response["result"]["_meta"]["sessionId"], "test-session");
-        assert_eq!(response["result"]["_meta"]["agentType"], "tui");
+        assert_eq!(
+            response.get("jsonrpc").and_then(|v| v.as_str()),
+            Some("2.0")
+        );
+        assert_eq!(response.get("id"), Some(&serde_json::json!(1)));
+        assert_eq!(
+            response
+                .pointer("/result/protocolVersion")
+                .and_then(|v| v.as_str()),
+            Some("1")
+        );
+        assert_eq!(
+            response
+                .pointer("/result/_meta/sessionId")
+                .and_then(|v| v.as_str()),
+            Some("test-session")
+        );
+        assert_eq!(
+            response
+                .pointer("/result/_meta/agentType")
+                .and_then(|v| v.as_str()),
+            Some("tui")
+        );
     }
 
     #[test]

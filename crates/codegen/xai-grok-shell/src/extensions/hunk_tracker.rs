@@ -602,18 +602,21 @@ mod tests {
         let files = compute_file_summaries(&hunks, &no_staged);
 
         assert_eq!(files.len(), 2);
-        assert_eq!(files[0].path, PathBuf::from("/repo/a.txt"));
-        assert_eq!(files[1].path, PathBuf::from("/repo/b.txt"));
+        let [a, b] = files.as_slice() else {
+            panic!("expected two file summaries: {files:?}");
+        };
+        assert_eq!(a.path, PathBuf::from("/repo/a.txt"));
+        assert_eq!(b.path, PathBuf::from("/repo/b.txt"));
 
-        assert_eq!(files[0].hunk_count, 2);
-        assert_eq!(files[0].additions, 4);
-        assert_eq!(files[0].deletions, 2);
-        assert!(files[0].is_agent_file);
+        assert_eq!(a.hunk_count, 2);
+        assert_eq!(a.additions, 4);
+        assert_eq!(a.deletions, 2);
+        assert!(a.is_agent_file);
 
-        assert_eq!(files[1].hunk_count, 1);
-        assert_eq!(files[1].additions, 0);
-        assert_eq!(files[1].deletions, 1);
-        assert!(!files[1].is_agent_file);
+        assert_eq!(b.hunk_count, 1);
+        assert_eq!(b.additions, 0);
+        assert_eq!(b.deletions, 1);
+        assert!(!b.is_agent_file);
     }
 
     #[test]
@@ -647,7 +650,10 @@ mod tests {
         let files = compute_file_summaries(&hunks, &no_staged);
 
         assert_eq!(files.len(), 1);
-        assert!(!files[0].is_agent_file);
+        let Some(file) = files.first() else {
+            panic!("expected one file summary: {files:?}");
+        };
+        assert!(!file.is_agent_file);
     }
 
     #[test]
@@ -664,8 +670,11 @@ mod tests {
         let files = compute_file_summaries(&hunks, &no_staged);
 
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].additions, 0);
-        assert_eq!(files[0].deletions, 3);
+        let Some(file) = files.first() else {
+            panic!("expected one file summary: {files:?}");
+        };
+        assert_eq!(file.additions, 0);
+        assert_eq!(file.deletions, 3);
     }
 
     #[test]
@@ -691,10 +700,13 @@ mod tests {
         let files = compute_file_summaries(&hunks, &staged);
 
         assert_eq!(files.len(), 2);
+        let [a, b] = files.as_slice() else {
+            panic!("expected two file summaries: {files:?}");
+        };
         // a.txt is staged
-        assert!(files[0].staged);
+        assert!(a.staged);
         // b.txt is not staged
-        assert!(!files[1].staged);
+        assert!(!b.staged);
     }
 
     // ========================================================================= GetHunksResponse Serialization Tests ========================================================================= These tests verify the ACP get-hunks response serializes the explicit status fields (baseline, current) alongside the legacy fields
@@ -891,7 +903,9 @@ mod tests {
         let files = json.get("files").unwrap().as_array().unwrap();
         assert_eq!(files.len(), 1);
 
-        let f = &files[0];
+        let Some(f) = files.first() else {
+            panic!("expected one serialized file: {files:?}");
+        };
         assert_eq!(f.get("path").unwrap().as_str().unwrap(), "/repo/foo.txt");
         assert!(f.get("isAgentFile").unwrap().as_bool().unwrap());
         assert!(!f.get("staged").unwrap().as_bool().unwrap());
@@ -929,7 +943,13 @@ mod tests {
         };
 
         let json = serde_json::to_value(&response).unwrap();
-        let f = &json.get("files").unwrap().as_array().unwrap()[0];
+        let Some(f) = json
+            .get("files")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+        else {
+            panic!("expected one serialized file: {json:?}");
+        };
 
         assert!(f.get("staged").unwrap().as_bool().unwrap());
 
@@ -955,7 +975,13 @@ mod tests {
         };
 
         let json = serde_json::to_value(&response).unwrap();
-        let f = &json.get("files").unwrap().as_array().unwrap()[0];
+        let Some(f) = json
+            .get("files")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+        else {
+            panic!("expected one serialized file: {json:?}");
+        };
 
         let baseline = f.get("baseline").unwrap();
         assert_eq!(baseline.get("status").unwrap().as_str().unwrap(), "binary");
@@ -1005,12 +1031,15 @@ mod tests {
         let files = json.get("files").unwrap().as_array().unwrap();
         assert_eq!(files.len(), 2);
 
+        let [first, second] = files.as_slice() else {
+            panic!("expected two serialized files: {files:?}");
+        };
         // First file: agent, staged
-        assert!(files[0].get("isAgentFile").unwrap().as_bool().unwrap());
-        assert!(files[0].get("staged").unwrap().as_bool().unwrap());
+        assert!(first.get("isAgentFile").unwrap().as_bool().unwrap());
+        assert!(first.get("staged").unwrap().as_bool().unwrap());
 
         // Second file: not agent, not staged
-        assert!(!files[1].get("isAgentFile").unwrap().as_bool().unwrap());
-        assert!(!files[1].get("staged").unwrap().as_bool().unwrap());
+        assert!(!second.get("isAgentFile").unwrap().as_bool().unwrap());
+        assert!(!second.get("staged").unwrap().as_bool().unwrap());
     }
 }

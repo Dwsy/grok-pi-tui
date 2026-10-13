@@ -1,4 +1,5 @@
 use super::*;
+use xai_grok_tools::implementations::grok_build::SEND_SUBAGENT_MESSAGE_TOOL_NAME;
 
 fn tool(name: &str, description: Option<&str>, parameters: serde_json::Value) -> ToolSpec {
     ToolSpec {
@@ -28,28 +29,59 @@ fn specs() -> Vec<ToolSpec> {
     ]
 }
 
+/// The child bridge as the projection sees it: anything it does not register (parent-only tools) is unknown.
 fn kind_for_name(name: &str) -> Option<ToolKind> {
-    (name == "relay_to_subagent").then_some(ToolKind::ActiveAgentMessage)
+    match name {
+        "read_file" => Some(ToolKind::Read),
+        "grep" => Some(ToolKind::Search),
+        "relay_to_subagent" => Some(ToolKind::ActiveAgentMessage),
+        _ => None,
+    }
 }
 
 #[test]
 fn rebuilt_projection_removes_renamed_active_message_tool() {
-    let projected = child_safe_tool_specs(specs(), ChildToolProjection::Rebuilt, kind_for_name);
+    let projected = child_safe_tool_specs(
+        specs(),
+        ChildToolProjection::Rebuilt,
+        ChildMessagingGrant::Ungranted,
+        kind_for_name,
+    );
 
-    assert_eq!(projected.len(), 2);
-    assert_eq!(projected[0].name, "read_file");
-    assert_eq!(projected[0].description.as_deref(), Some("read"));
-    assert_eq!(projected[1].name, "grep");
+    let [read, grep] = projected.as_slice() else {
+        panic!("expected two projected tools: {projected:?}");
+    };
+    assert_eq!(read.name, "read_file");
+    assert_eq!(read.description.as_deref(), Some("read"));
+    assert_eq!(grep.name, "grep");
     assert_eq!(
-        projected[1].parameters,
+        grep.parameters,
         serde_json::json!({"type": "object", "required": ["pattern"]})
+    );
+}
+
+#[test]
+fn granted_projection_keeps_only_child_resolvable_tools() {
+    let parent = specs();
+    let projected = child_safe_tool_specs(
+        parent,
+        ChildToolProjection::VerbatimMirror,
+        ChildMessagingGrant::Granted,
+        kind_for_name,
+    );
+    assert_eq!(
+        projected
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["read_file", "relay_to_subagent", "grep"]
     );
 }
 
 #[test]
 fn verbatim_mirror_projection_strips_root_only_keeps_ordinary_byte_identical() {
     // Ordinary tools pass through unchanged, so the child's specs serialize to the parent's exact bytes and the radix cache stays aligned
-    // The ActiveAgentMessage tool exists only at the root, so even the mirror drops it: by kind when renamed, by canonical name with no kind known
+    // The active-message tool exists only at the root, so even the mirror drops it: by kind when renamed, as unresolvable when the child never registered it
     let parent = vec![
         tool(
             "read_file",
@@ -76,9 +108,13 @@ fn verbatim_mirror_projection_strips_root_only_keeps_ordinary_byte_identical() {
     let projected = child_safe_tool_specs(
         parent.clone(),
         ChildToolProjection::VerbatimMirror,
+        ChildMessagingGrant::Ungranted,
         kind_for_name,
     );
-    let expected = vec![parent[0].clone(), parent[3].clone()];
+    let [first, _, _, last] = parent.as_slice() else {
+        panic!("expected four parent tools: {parent:?}");
+    };
+    let expected = vec![first.clone(), last.clone()];
 
     assert_eq!(
         projected
@@ -91,71 +127,39 @@ fn verbatim_mirror_projection_strips_root_only_keeps_ordinary_byte_identical() {
         serde_json::to_vec(&projected).unwrap(),
         serde_json::to_vec(&expected).unwrap()
     );
-
-    // With the kind lookup returning None, only the canonical-name check is left to drop the tool
-    let name_only = child_safe_tool_specs(
-        vec![
-            tool("read_file", Some("read"), serde_json::json!({})),
-            tool(
-                SEND_SUBAGENT_MESSAGE_TOOL_NAME,
-                Some("canonical"),
-                serde_json::json!({}),
-            ),
-        ],
-        ChildToolProjection::VerbatimMirror,
-        |_| None,
-    );
-    assert_eq!(
-        name_only
-            .iter()
-            .map(|t| t.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["read_file"]
-    );
 }
 
 #[test]
-fn verbatim_mirror_path_strips_ask_user_and_active_message() {
-    // Runs the same two steps as production spawn: child_safe_tool_specs, then strip_ask_user_question_tool
+fn verbatim_mirror_drops_parent_only_tools_the_child_cannot_resolve() {
+    // Plan mode and ask-user exist only in the parent's bridge; the mirror must not advertise tools the child cannot run
     let parent = vec![
-        tool(
-            "read_file",
-            Some("read"),
-            serde_json::json!({"type": "object"}),
-        ),
-        tool(
-            "ask_user_question",
-            Some("ask"),
-            serde_json::json!({"type": "object"}),
-        ),
-        tool(
-            SEND_SUBAGENT_MESSAGE_TOOL_NAME,
-            Some("message"),
-            serde_json::json!({"type": "object"}),
-        ),
-        tool(
-            "relay_to_subagent",
-            Some("renamed"),
-            serde_json::json!({"type": "object"}),
-        ),
-        tool(
-            "grep",
-            None,
-            serde_json::json!({"type": "object", "required": ["pattern"]}),
-        ),
+        tool("read_file", Some("read"), serde_json::json!({})),
+        tool("enter_plan_mode", Some("plan"), serde_json::json!({})),
+        tool("exit_plan_mode", Some("plan"), serde_json::json!({})),
+        tool("ask_user_question", Some("ask"), serde_json::json!({})),
+        tool("grep", None, serde_json::json!({})),
     ];
 
-    let mut tools =
-        child_safe_tool_specs(parent, ChildToolProjection::VerbatimMirror, kind_for_name);
-    crate::agent::subagent::strip_ask_user_question_tool(&mut tools);
+    let projected = child_safe_tool_specs(
+        parent.clone(),
+        ChildToolProjection::VerbatimMirror,
+        ChildMessagingGrant::Ungranted,
+        kind_for_name,
+    );
 
     assert_eq!(
-        tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        projected
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["read_file", "grep"]
     );
-    assert!(tools.iter().all(|t| {
-        t.name != "ask_user_question"
-            && t.name != SEND_SUBAGENT_MESSAGE_TOOL_NAME
-            && t.name != "relay_to_subagent"
-    }));
+    assert_eq!(
+        serde_json::to_vec(&projected).unwrap(),
+        serde_json::to_vec(&[
+            parent.first().expect("parent tool 0").clone(),
+            parent.get(4).expect("parent tool 4").clone(),
+        ])
+        .unwrap()
+    );
 }

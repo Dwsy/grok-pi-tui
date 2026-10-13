@@ -152,20 +152,53 @@ mod tests {
             next_page_token: Some("tok2".into()),
         };
         let value = serde_json::to_value(success_response(page)).unwrap();
-        assert_eq!(value["workspaces"][0]["id"], "ws_1");
-        assert_eq!(value["workspaces"][0]["name"], "Research");
-        assert_eq!(value["workspaces"][0]["kind"], "WORKSPACE_KIND_IMAGINE");
-        assert_eq!(value["workspaces"][0]["createTime"], "2026-06-18T17:30:00Z");
-        assert_eq!(value["nextPageToken"], "tok2");
+        let Some(ws) = value
+            .get("workspaces")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+        else {
+            panic!("expected one workspace: {value:?}");
+        };
+        assert_eq!(ws.get("id").and_then(|v| v.as_str()), Some("ws_1"));
+        assert_eq!(ws.get("name").and_then(|v| v.as_str()), Some("Research"));
+        assert_eq!(
+            ws.get("kind").and_then(|v| v.as_str()),
+            Some("WORKSPACE_KIND_IMAGINE")
+        );
+        assert_eq!(
+            ws.get("createTime").and_then(|v| v.as_str()),
+            Some("2026-06-18T17:30:00Z")
+        );
+        assert_eq!(
+            value.get("nextPageToken").and_then(|v| v.as_str()),
+            Some("tok2")
+        );
         assert!(value.get("_meta").is_none());
     }
 
     #[test]
     fn degraded_response_carries_partial_reason() {
         let value = serde_json::to_value(degraded_response("no_oauth")).unwrap();
-        assert_eq!(value["workspaces"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            value
+                .get("workspaces")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(0)
+        );
         assert!(value.get("nextPageToken").is_none());
-        assert_eq!(value["_meta"]["x.ai/partial"]["workspaces"], true);
-        assert_eq!(value["_meta"]["x.ai/partial"]["reason"], "no_oauth");
+        let partial = value.get("_meta").and_then(|m| m.get("x.ai/partial"));
+        assert_eq!(
+            partial
+                .and_then(|p| p.get("workspaces"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            partial
+                .and_then(|p| p.get("reason"))
+                .and_then(|v| v.as_str()),
+            Some("no_oauth")
+        );
     }
 }

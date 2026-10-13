@@ -10,6 +10,7 @@ use xai_grok_telemetry::events::{
 };
 
 use crate::app::prompt_ack::{AckSignal, PromptAckDeadlines, queue_changed_acks};
+use crate::app::{CancelMeta, cancel_notification_meta};
 
 /// Bounds the rewind cancel and the final `x.ai/log` flush after an unacknowledged prompt: a wedged in-process
 /// shell holds the dispatch lock its `cancel()` also needs (see `test_hooks::park_forever_if_blackholed`).
@@ -91,11 +92,10 @@ pub(super) async fn abort_unacknowledged_prompt(
     });
     // A prompt that lands late is trimmed shell-side instead of running unobserved
     let cancel = acp::CancelNotification::new(session_id.clone()).meta(Some(
-        crate::app::cancel_notification_meta(
-            /* cancel_subagents */ false,
-            /* trigger */ None,
-            Some(prompt_id),
-        ),
+        cancel_notification_meta(&CancelMeta {
+            rewind_prompt_id: Some(prompt_id),
+            ..CancelMeta::default()
+        }),
     ));
     match tokio::time::timeout(HEADLESS_ABORT_SEND_TIMEOUT, acp_send(cancel, acp_tx)).await {
         Ok(Ok(())) => {}

@@ -1,11 +1,13 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
 use super::shell_token::{CurrentToken, build_insert_token, parse_current_token};
-use super::{RankedSuggestion, SuggestContext, SuggestionSource, splice_token_into_line};
+use super::{
+    RankedSuggestion, RefreshGuard, SuggestContext, SuggestionSource, splice_token_into_line,
+};
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
 const MAX_RESULTS: usize = 10;
@@ -56,10 +58,10 @@ fn filter_executables(
 
     let mut results: Vec<RankedSuggestion> = Vec::new();
     let mut truncated = false;
-    for exe in executables[start..]
-        .iter()
-        .take_while(|exe| exe.starts_with(prefix))
-    {
+    let Some(tail) = executables.get(start..) else {
+        return results;
+    };
+    for exe in tail.iter().take_while(|exe| exe.starts_with(prefix)) {
         if results.len() == MAX_RESULTS {
             // An uncapped match remains: the set is not exhaustive.
             truncated = true;
@@ -111,14 +113,11 @@ async fn get_or_refresh_path_cache() -> Arc<PathCacheInner> {
         return current;
     }
 
-    if PATH_REFRESHING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
+    let Some(_refreshing) = RefreshGuard::try_acquire(&PATH_REFRESHING) else {
         return current;
-    }
+    };
 
-    let result = match tokio::task::spawn_blocking(scan_path_dirs).await {
+    match tokio::task::spawn_blocking(scan_path_dirs).await {
         Ok(executables) => {
             let new = Arc::new(PathCacheInner {
                 executables,
@@ -129,10 +128,7 @@ async fn get_or_refresh_path_cache() -> Arc<PathCacheInner> {
             new
         }
         Err(_) => current,
-    };
-
-    PATH_REFRESHING.store(false, Ordering::Release);
-    result
+    }
 }
 
 fn scan_path_dirs() -> Vec<String> {
@@ -253,7 +249,10 @@ mod tests {
         ];
         let results = filter_executables(&tok("gr"), (0, 2), &exes);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].insert_text, "grep");
+        assert_eq!(
+            results.first().map(|r| r.insert_text.as_str()),
+            Some("grep")
+        );
     }
 
     #[test]
@@ -274,9 +273,12 @@ mod tests {
     fn filter_path_suggestions_are_not_ghost() {
         let exes = vec!["git".into()];
         let results = filter_executables(&tok("g"), (0, 1), &exes);
-        assert!(!results[0].is_ghost_candidate);
-        assert_eq!(results[0].source, SuggestionSource::Path);
-        assert_eq!(results[0].priority, 0);
+        let Some(r) = results.first() else {
+            panic!("expected one result: {results:?}");
+        };
+        assert!(!r.is_ghost_candidate);
+        assert_eq!(r.source, SuggestionSource::Path);
+        assert_eq!(r.priority, 0);
     }
 
     /// Capped sets mark every row truncated so the pager keeps dropdown-only behavior (an unshown match could disprove an LCP).
@@ -299,8 +301,11 @@ mod tests {
         let t = extract_command_token("ls | gr").unwrap();
         let exes = vec!["grep".into()];
         let results = filter_executables(&t, (t.start, 7), &exes);
-        assert_eq!(results[0].replace_range, Some((5, 7)));
-        assert_eq!(results[0].insert_text, "grep");
+        let Some(r) = results.first() else {
+            panic!("expected one result: {results:?}");
+        };
+        assert_eq!(r.replace_range, Some((5, 7)));
+        assert_eq!(r.insert_text, "grep");
     }
 
     /// Metacharacter executable names insert as ONE word: accepting `zz;echo PWNED` must never put a second command on the line.
@@ -308,8 +313,11 @@ mod tests {
     fn filter_escapes_metacharacter_executable_names() {
         let exes = vec!["zz;echo PWNED".into()];
         let results = filter_executables(&tok("zz"), (0, 2), &exes);
-        assert_eq!(results[0].display, "zz;echo PWNED");
-        assert_eq!(results[0].insert_text, "zz\\;echo\\ PWNED");
+        let Some(r) = results.first() else {
+            panic!("expected one result: {results:?}");
+        };
+        assert_eq!(r.display, "zz;echo PWNED");
+        assert_eq!(r.insert_text, "zz\\;echo\\ PWNED");
     }
 
     /// A quoted command prefix completes inside its quote style.
@@ -317,7 +325,10 @@ mod tests {
     fn filter_requotes_quoted_command_prefix() {
         let exes = vec!["grep".into()];
         let results = filter_executables(&tok("\"gr"), (0, 3), &exes);
-        assert_eq!(results[0].insert_text, "\"grep\"");
+        assert_eq!(
+            results.first().map(|r| r.insert_text.as_str()),
+            Some("\"grep\"")
+        );
     }
 
     // --- scan_path_from ---

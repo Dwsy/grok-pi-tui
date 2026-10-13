@@ -9,8 +9,8 @@ Three files configure Grok Build, and they are written by different people.
 | File | Who writes it | Where it lives | Use it to |
 | --- | --- | --- | --- |
 | `config.toml` | The developer | `~/.grok/config.toml`, and `.grok/config.toml` in a project | Set personal defaults. Anything here can be changed by the person using the machine. |
-| `managed_config.toml` | You, through the console or a deployment tool | `/etc/grok/managed_config.toml` | Ship a starting point to a fleet. A developer's own file overrides it. |
-| `requirements.toml` | You, signed | `/etc/grok/requirements.toml`, or macOS device management | Set values a developer cannot change. Keys marked `pin` below hold against every other file, the environment, and the command line. |
+| `managed_config.toml` | You, through the console or a deployment tool | `/etc/grok/managed_config.toml`, or `$GROK_HOME/managed_config.toml` | Ship a starting point to a fleet. A developer's own file overrides it. |
+| `requirements.toml` | You, signed | `/etc/grok/requirements.toml`, macOS device management, or `$GROK_HOME/requirements.toml` | Set values a developer cannot change. Keys marked `pin` below hold against every other file, the environment, and the command line. |
 
 Choose `managed_config.toml` for defaults you want people to be able to adjust, and `requirements.toml` for the ones you do not.
 
@@ -52,7 +52,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
 | `auth` | `table` | `yes` | `user` | Alias of `[grok_com_config]`; every `grok_com_config.*` key also works as `auth.*`. |
-| `auth.auth_provider_command` | `string` | `yes` | `user` | External auth binary; stdout is the token. Also GROK_AUTH_PROVIDER_COMMAND; also valid as `grok_com_config.auth_provider_command`. |
+| `auth.auth_provider_command` | `string` | `yes` | `user` | External auth binary; stdout is the token. With `endpoints.models_base_url` or `models_list_url` set, that endpoint's list decides which models are offered. Also GROK_AUTH_PROVIDER_COMMAND; also valid as `grok_com_config.auth_provider_command`. |
 | `auth.auth_provider_label` | `string` | `yes` | `user` | Login button label for an external auth provider. Also GROK_AUTH_PROVIDER_LABEL; also valid as `grok_com_config.auth_provider_label`. |
 | `auth.auth_token_ttl` | `number` | `yes` | `user` | Token TTL in seconds for providers that return a bare token. Also GROK_AUTH_TOKEN_TTL; also valid as `grok_com_config.auth_token_ttl`. |
 | `auth.disable_api_key_auth` | `boolean` | `pin` | `user` | Refuse API-key auth so only the deployment IdP can log in. Also GROK_DISABLE_API_KEY_AUTH; also valid as `grok_com_config.disable_api_key_auth`. |
@@ -98,7 +98,8 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | --- | --- | --- | --- | --- |
 | `cli.auto_update` | `boolean` | `pin` | `user` | Check for CLI updates on launch. Also GROK_DISABLE_AUTOUPDATER to suppress. |
 | `cli.channel` | `stable / alpha` | `pin` | `user` | Release channel preference. |
-| `cli.grove_worktree` | `boolean` or `grove` / `grove-fuse` / `grove-nfs` / `nfs` / `copy` / `true` / `false` / `1` / `0` / `on` / `off` | `yes` | `user` | Session / `-w` Grove vs copy. Default copy. Distinct from creation-mode `cli.worktree_type`. Also `GROK_WORKTREE_TYPE`. Layer order: request → env → local → remote-true; then kill last: remote `grove_worktree = false` → copy (`remote_kill`); missing remote settings → copy (`remote_unavailable`). Does not enable `grok clone`. |
+| `cli.grove` | `boolean` or `grove` / `grove-fuse` / `grove-nfs` / `nfs` / `all` / `copy` / `true` / `false` / `1` / `0` / `on` / `off` | `yes` | `user` | Convenience that turns **both** `grok clone` and session / `-w` Grove on when the specific knobs are unset. Also `GROK_GROVE`. `false` / `copy` / `off` means enable-all is off (fall through); it does not force both surfaces off. `[cli] grove_worktree` and `GROK_WORKTREE_TYPE` still win for worktrees; `GROK_CLONE` still wins for clone. Remote `grove_worktree = false` still kills worktrees only. |
+| `cli.grove_worktree` | `boolean` or `grove` / `grove-fuse` / `grove-nfs` / `nfs` / `copy` / `true` / `false` / `1` / `0` / `on` / `off` | `yes` | `user` | Session / `-w` Grove vs copy. Default copy. Distinct from creation-mode `cli.worktree_type`. Also `GROK_WORKTREE_TYPE`. Layer order: request → env → local → enable-all (`GROK_GROVE` / `[cli] grove`) → remote-true; then kill last: remote `grove_worktree = false` → copy (`remote_kill`). Missing remote settings are not a kill: local/env/request/enable-all still apply. Does not enable `grok clone`. |
 | `cli.installer` | `string` | `—` | `user` | Which installer last set up this CLI, used to pick the update path. |
 | `cli.maximum_version` | `string` | `pin` | `user` | Highest CLI version that still runs without a hard block. Also GROK_MAXIMUM_VERSION. |
 | `cli.minimum_version` | `string` | `pin` | `user` | Lowest CLI version that still runs without a hard block. Also GROK_MINIMUM_VERSION. |
@@ -180,8 +181,8 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `endpoints.deployment_key` | `string` | `pin` | `user` | Management key for enterprise deployments. Also GROK_DEPLOYMENT_KEY. |
 | `endpoints.feedback_base_url` | `string` | `yes` | `user` | Where feedback submissions go. Also GROK_FEEDBACK_BASE_URL. |
 | `endpoints.managed_config_url` | `string` | `yes` | `user` | Override managed config endpoint. Also GROK_MANAGED_CONFIG_URL. |
-| `endpoints.models_base_url` | `string` | `pin` | `user` | Custom inference base URL. Also GROK_MODELS_BASE_URL. |
-| `endpoints.models_list_url` | `string` | `pin` | `user` | Override model-list URL. Also GROK_MODELS_LIST_URL. Alias `models_endpoint`. |
+| `endpoints.models_base_url` | `string` | `pin` | `user` | Custom inference base URL. With `auth_provider_command` set, `{models_base_url}/models` decides which models are offered. Also GROK_MODELS_BASE_URL. |
+| `endpoints.models_list_url` | `string` | `pin` | `user` | Override model-list URL. With `auth_provider_command` set, this list decides which models are offered. Also GROK_MODELS_LIST_URL. Alias `models_endpoint`. |
 | `endpoints.trace_upload_bucket` | `string` | `yes` | `user` | Direct gs:// or s3:// bucket for traces; bypasses the proxy. Also GROK_TRACE_UPLOAD_BUCKET. |
 | `endpoints.trace_upload_credentials` | `string` | `yes` | `user` | Inline GCS service-account JSON or AWS credentials for that bucket; wins over `trace_upload_credentials_file` and has no environment variable. |
 | `endpoints.trace_upload_credentials_file` | `string (path)` | `yes` | `user` | Path to a GCS service-account JSON or AWS credentials file for that bucket. Also GROK_TRACE_UPLOAD_CREDENTIALS_FILE. |
@@ -208,6 +209,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `features.dock` | `boolean` | `pin` | `user` | Enable or disable `dock`. Default false. Also `GROK_DOCK`. |
 | `features.feedback` | `boolean` | `pin` | `user` | Enable or disable `feedback`. Default true. Also `GROK_FEEDBACK_ENABLED`. |
 | `features.feedback_trace_card` | `boolean` | `pin` | `user` | Show a trace-upload consent question after `/feedback`. Default false. Also `GROK_FEEDBACK_TRACE_CARD`. |
+| `features.file_acceleration` | `boolean` | `pin` | `user` | Hand local sessions' file systems to a file accelerator when the build installs one. Default false. Also `GROK_FILE_ACCELERATION`. |
 | `features.image_edit_model_override` | `string` | `yes` | `user` | Imagine model id for image_edit. |
 | `features.image_gen` | `boolean` | `pin` | `user` | Enable image_gen / `/imagine`. |
 | `features.image_gen_model_override` | `string` | `yes` | `user` | Imagine model id for image_gen. Empty defers to the remotely configured default. |
@@ -220,9 +222,9 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `features.non_git_warning` | `boolean` | `yes` | `user` | Show a blocking warning when Grok starts outside a Git repository. |
 | `features.remember_mode` | `boolean` | `—` | `—` | Remember the last permission mode across sessions. Read from user `config.toml` only. |
 | `features.remote_fetch` | `boolean` | `pin` | `fleet` | Pin remote model-catalog and asset fetch. Managed wins over the user file when both set. |
-| `features.repo_status_in_system_prompt` | `boolean` | `pin` | `user` | Enable or disable `repo_status_in_system_prompt`. Default true. Also `GROK_REPO_STATUS_IN_SYSTEM_PROMPT`. |
 | `features.session_recap` | `boolean` | `pin` | `user` | Enable or disable `session_recap`. Default true. Also `GROK_SESSION_RECAP`. |
 | `features.session_search` | `boolean` | `pin` | `user` | Enable or disable `session_search`. Default true. Also `GROK_SESSION_SEARCH`. |
+| `features.subagent_model_inheritance` | `boolean` | `pin` | `user` | Hide the subagent `model` argument when every model you can pick is an xAI model, so subagents inherit the parent's model. Default false. Also `GROK_SUBAGENT_MODEL_INHERITANCE`. Read when a session starts; changing it requires a restart. |
 | `features.subagent_worktree_snapshot` | `boolean` | `pin` | `user` | Enable or disable `subagent_worktree_snapshot`. Default false. Also `GROK_SUBAGENT_WORKTREE_SNAPSHOT`. |
 | `features.support_permission` | `boolean` | `yes` | `user` | Allow the agent to ask permission for tool executions. |
 | `features.telemetry` | `boolean / session_metrics / off` | `pin` | `user` | Product telemetry mode. Enterprise default is off. |
@@ -244,6 +246,12 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `feedback.user.email` | `string[]` | `yes` | `user` | Sources for the feedback author email (`git_email` or a literal). |
 | `feedback.user.name` | `string[]` | `yes` | `user` | Sources for the feedback author name (`os_user` or a literal). |
 
+### `file_acceleration`
+
+| Key | Type / Values | Requirements | Managed | Details |
+| --- | --- | --- | --- | --- |
+| `file_acceleration.routes` | `string` | `yes` | `user` | Route override passed unparsed to the installed file accelerator; empty is unset. Also `GROK_FILE_ACCELERATION_ROUTES`. |
+
 ### `goal`
 
 | Key | Type / Values | Requirements | Managed | Details |
@@ -255,7 +263,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
 | `grok_com_config` | `table` | `yes` | `user` | Grok.com websocket and OAuth/OIDC settings. `[auth]` is an alias. |
-| `grok_com_config.auth_provider_command` | `string` | `yes` | `user` | External auth binary; stdout is the token. Also GROK_AUTH_PROVIDER_COMMAND. |
+| `grok_com_config.auth_provider_command` | `string` | `yes` | `user` | External auth binary; stdout is the token. With `endpoints.models_base_url` or `models_list_url` set, that endpoint's list decides which models are offered. Also GROK_AUTH_PROVIDER_COMMAND. |
 | `grok_com_config.auth_provider_label` | `string` | `yes` | `user` | Login button label for an external auth provider. Also GROK_AUTH_PROVIDER_LABEL. |
 | `grok_com_config.auth_token_ttl` | `number` | `yes` | `user` | Token TTL in seconds for providers that return a bare token. Also GROK_AUTH_TOKEN_TTL. |
 | `grok_com_config.disable_api_key_auth` | `boolean` | `pin` | `user` | Refuse API-key auth so only the deployment IdP can log in. Also GROK_DISABLE_API_KEY_AUTH. |
@@ -300,6 +308,14 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `hooks.<event>[].hooks[].type` | `command` | `yes` | `user` | Hook handler type. Command hooks are supported. |
 | `hooks.<event>[].matcher` | `string` | `yes` | `user` | Tool-name matcher for this hook group. |
 
+### `long_reasoning_reminder`
+
+| Key | Type / Values | Requirements | Managed | Details |
+| --- | --- | --- | --- | --- |
+| `long_reasoning_reminder.enabled` | `boolean` | `yes` | `user` | Inject a mid-turn reminder to reason briefly after a model call with long hidden reasoning. Default false. Also `GROK_LONG_REASONING_REMINDER` (a bool word, or a JSON object in this table's shape). |
+| `long_reasoning_reminder.tokens` | `integer` | `yes` | `user` | Reasoning tokens in one model call that count as long. Default 1000, clamped to 100–200000. Also `tokens` in the `GROK_LONG_REASONING_REMINDER` JSON object. |
+| `long_reasoning_reminder.delay` | `integer` | `yes` | `user` | Model calls to wait after the long call before the reminder. Default 1, clamped to 0–10. Also `delay` in the `GROK_LONG_REASONING_REMINDER` JSON object. |
+
 ### `managed_mcps`
 
 | Key | Type / Values | Requirements | Managed | Details |
@@ -326,6 +342,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | --- | --- | --- | --- | --- |
 | `mcp_servers.<name>.args` | `string[]` | `yes` | `user` | `[mcp_servers.<name>]` `args` on a stdio or HTTP MCP server. |
 | `mcp_servers.<name>.bearer_token_env_var` | `string` | `yes` | `user` | `[mcp_servers.<name>]` `bearer_token_env_var` on a stdio or HTTP MCP server. |
+| `mcp_servers.<name>.bearer_token_file` | `string` | `yes` | `user` | `[mcp_servers.<name>]` `bearer_token_file` on an HTTP MCP server: absolute or `~/` path to a bearer token, re-read on every request. |
 | `mcp_servers.<name>.command` | `string` | `yes` | `user` | `[mcp_servers.<name>]` `command` on a stdio or HTTP MCP server. |
 | `mcp_servers.<name>.cwd` | `string` | `yes` | `user` | `[mcp_servers.<name>]` `cwd` on a stdio or HTTP MCP server. |
 | `mcp_servers.<name>.enabled` | `boolean` | `yes` | `user` | `[mcp_servers.<name>]` `enabled` on a stdio or HTTP MCP server. |
@@ -347,8 +364,21 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
-| `memory.enabled` | `boolean` | `pin` | `user` | Cross-session memory master switch. Also GROK_MEMORY. |
-| `memory.mode` | `"legacy"`, `"v2"` | — | `user` | Selects the persistent-memory implementation for new sessions. Default: `"legacy"`. `"v2"` is experimental; its legacy search, flush, and Dream paths are disabled. |
+| `memory.enabled` | `boolean` | `pin` | `user` | Legacy memory switch. Also `GROK_MEMORY`; superseded when the v2 gate is enabled. |
+| `memory_v2.enabled` | `boolean` | `pin` | `user` | Primary memory-v2 switch. When true, v2 takes precedence over legacy `memory.enabled`. When false or absent, legacy enablement is resolved normally. Default: `false`. |
+| `memory_v2.rollout` | `"off"`, `"record_only"`, `"shadow"`, `"active"` | — | `user` | Advanced staged-rollout control for new v2 sessions. Default: `"active"` after enabling v2. Most users should leave this unset. |
+| `memory_v2.capture_status_enabled` | `boolean` | — | `user` | Shows memory-v2 capture lifecycle messages in the UI for debugging. Successful captures are expandable and include generated content plus links to committed observation files. Telemetry and debug logs are always recorded. Default: `false`. |
+| `memory_v2.capture_enabled` | `boolean` | — | `user` | Enables memory-v2 extraction and observation capture. Default: `true`. |
+| `memory_v2.automatic_dream_enabled` | `boolean` | — | `user` | Enables event-driven memory-v2 Dream. Default: `true`. |
+| `memory_v2.manual_dream_enabled` | `boolean` | — | `user` | Enables explicitly requested memory-v2 Dream. Default: `true`. |
+| `memory_v2.batch_dream_enabled` | `boolean` | — | `user` | Runs active memory-v2 Dream as batch Dream, which folds notes into topics in batches with the full topic catalog; a local value wins over remote `memory_v2.batch_dream_enabled`, then defaults to `false`. |
+| `memory_v2.batch_dream_max_run_secs` | `number` | — | `user` | Caps one batch Dream run in seconds, default `1800`, clamped to `60`–`3600`; unfinished notes stay in the inbox. A local value wins over remote `memory_v2.batch_dream_max_run_secs`. |
+| `memory_v2.batch_dream_max_calls_per_batch` | `number` | — | `user` | Caps model calls per batch Dream batch, default `6`, clamped to `2`–`16`. A local value wins over remote `memory_v2.batch_dream_max_calls_per_batch`. |
+| `memory_v2.batch_dream_max_batch_note_bytes` | `number` | — | `user` | Caps note bytes in one batch Dream batch, default `98304`, clamped to `16384`–`262144`. A local value wins over remote `memory_v2.batch_dream_max_batch_note_bytes`. |
+| `memory_v2.compact_index_enabled` | `boolean` | — | `user` | Injects a titles-only memory index into the system prompt (no topic descriptions, no pending observations) so more topics fit the 8 KiB budget; titled entries are ordered by how often the agent has read each topic, and the on-disk `MEMORY.md` is rendered the same way. A local value wins over the remote `memory_v2.compact_index_enabled`. Default: `false`. |
+| `memory_v2.file_writes_enabled` | `boolean` | — | `user` | Enables all memory-v2 file mutation; `false` fails closed before scaffold creation. Default: `true`. |
+| `memory_v2.archived_retention_days` | `number` | — | `user` | Retains archived memory-v2 observation files for this many days. Default: `30`. |
+| `memory_v2.job_retention_days` | `number` | — | `user` | Retains terminal memory-v2 capture-job metadata for this many days. Default: `14`. |
 
 ### `model`
 
@@ -372,22 +402,25 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `model.<id>.hidden` | `boolean` | `yes` | `user` | Hide this model from the picker. Still usable via `-m`. |
 | `model.<id>.inference_idle_timeout_secs` | `number` | `yes` | `user` | Idle timeout for streaming inference on this model. |
 | `model.<id>.max_completion_tokens` | `number` | `yes` | `user` | Per-model max completion tokens. |
+| `model.<id>.max_request_bytes` | `number` | `yes` | `user` | Provider request-body cap that inline images are evicted to stay under. Unset inherits the `[model_providers.<id>]` value, then the `api_backend` default: 30 MB for `messages`, 50 MiB otherwise. |
 | `model.<id>.max_retries` | `number` | `yes` | `user` | Inference retries for this model. |
 | `model.<id>.model` | `string` | `yes` | `user` | Model id sent to the API. |
 | `model.<id>.model_family` | `string` | `yes` | `user` | Family id used for compaction and capability grouping. |
 | `model.<id>.model_provider` | `string` | `yes` | `user` | Named `[model_providers.<name>]` provider id for this model. |
 | `model.<id>.mtls_cert_dir` | `string` | `yes` | `user` | Directory containing the model endpoint's mTLS identity as `client.crt` and `client.key`, or `tls.crt` and `tls.key`; configuration is rejected unless the same model has one HTTPS `base_url` and no `api_base_url`, and requests do not follow redirects. |
 | `model.<id>.name` | `string` | `yes` | `user` | Label shown in the model picker. |
+| `model.<id>.notice` | `table` (`severity` = `info / warning / critical`, `text`, `label`) | `yes` | `user` | Message shown above the prompt while this model is selected, cleared for this model by a blank `text`. |
 | `model.<id>.query_params` | `map<string,string>` | `yes` | `user` | Extra query parameters on this model's requests. |
 | `model.<id>.rate_limit_retry_threshold` | `number` | `yes` | `user` | Total-attempt ceiling for rate-limited requests, capped by the resolved `max_retries`; when configured, it disables the separate subagent 429 wait loop. |
 | `model.<id>.reasoning_effort` | `string` | `yes` | `user` | Deprecated per-model effort; prefer `reasoning_efforts`. |
-| `model.<id>.reasoning_efforts` | `array of tables` | `yes` | `user` | Allowed reasoning-effort values for this model. |
+| `model.<id>.reasoning_efforts` | `array of tables` | `yes` | `user` | Allowed reasoning-effort values for this model. When omitted, the menu comes from the endpoint's `/v1/models` row (`reasoning_efforts`, or `capabilities.reasoning_effort` when that is absent). |
+| `model.<id>.reasoning_summary` | `none / auto / concise / detailed` | `yes` | `user` | Responses API `reasoning.summary` for this model; default `concise`. `none` omits the field for endpoints that reject it (e.g. AWS Bedrock Mantle). |
 | `model.<id>.show_model_fingerprint` | `boolean` | `yes` | `user` | Show the provider model fingerprint in the UI when present. |
 | `model.<id>.stream_tool_calls` | `boolean` | `yes` | `user` | Per-model tool-call streaming request shape. |
 | `model.<id>.subagent_rate_limit_max_attempts` | `number` | `yes` | `user` | Maximum subagent 429 wait-loop attempts when `rate_limit_retry_threshold` is unset; default 8, maximum 32, and `0` disables the wait loop. |
 | `model.<id>.supported_in_api` | `boolean` | `yes` | `user` | Whether this catalog entry is offered as a public API model. |
 | `model.<id>.supports_backend_search` | `boolean` | `yes` | `user` | Whether the endpoint supports Grok-hosted server-side search tools. |
-| `model.<id>.supports_reasoning_effort` | `boolean` | `yes` | `user` | Deprecated; prefer `reasoning_efforts`. |
+| `model.<id>.supports_reasoning_effort` | `boolean` | `yes` | `user` | Deprecated; prefer `reasoning_efforts`. An explicit `false` keeps the model out of any menu it would otherwise inherit from the endpoint or from a same-model catalog entry. |
 | `model.<id>.system_prompt_label` | `string` | `yes` | `user` | Per-model system-prompt identity label. |
 | `model.<id>.temperature` | `number` | `yes` | `user` | Per-model sampling temperature. |
 | `model.<id>.top_p` | `number` | `yes` | `user` | Per-model top_p. |
@@ -404,7 +437,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
 | `models.agent_type` | `string` | `yes` | `user` | Fallback agent_type for models without a per-model override. |
-| `models.allowed_models` | `string[]` | `pin` | `user` | Glob allowlist for the model picker, default, and `-m`. Empty means no restriction. |
+| `models.allowed_models` | `string[]` | `pin` | `user` | Glob allowlist for the model picker, default, and `-m`, ignored outside `requirements.toml` when `auth_provider_command` and a custom models endpoint are set. Empty means no restriction. |
 | `models.default` | `string` | `pin` | `user` | Model used for new sessions. Also `GROK_DEFAULT_MODEL`, `--model`, `-m`. |
 | `models.default_reasoning_effort` | `string` | `yes` | `user` | Default reasoning effort for the default model when the model supports it. |
 | `models.disabled_models` | `string[]` | `yes` | `user` | Remove these model IDs from the catalog. Wins over `hidden_models`. |
@@ -433,8 +466,8 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
-| `paths.extra_rule_dirs` | `string[]` | `yes` | `user` | More rule directories (each contains `*.md`). |
-| `paths.extra_skill_dirs` | `string[]` | `yes` | `user` | More skill directories (each contains `<skill>/SKILL.md`). |
+| `paths.extra_rule_dirs` | `string[]` | `yes` | `user` | More rule directories (absolute or `~/…`; each contains `*.md`), loaded after the home rules. |
+| `paths.extra_skill_dirs` | `string[]` | `yes` | `user` | Records `/import-claude` skill directories that skill injection ignores in favor of `[skills] paths`. |
 
 ### `permission`
 
@@ -500,13 +533,13 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
-| `storage` | `table` | `yes` | `user` | Local session storage cleanup policy. |
+| `storage.cleanup_ttl_days` | `integer` | `yes` | `user` | Days a session may stay idle before its folder is deleted; media and terminal logs older than this are pruned from live sessions; unset or `0` disables cleanup. |
 
 ### `subagents`
 
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
-| `subagents.enabled` | `boolean` | `pin` | `user` | Subagent / task tool master switch. Also GROK_SUBAGENTS. |
+| `subagents.enabled` | `boolean` | `pin` | `user` | Subagent / task tool master switch, default true even when other `subagents.*` keys are set. Also GROK_SUBAGENTS or `--no-subagents`. |
 | `subagents.limit_behavior` | `queue / fail` | `yes` | `user` | What to do when the concurrent subagent cap is hit. |
 | `subagents.max_concurrent` | `integer` | `yes` | `user` | Max concurrent subagents. |
 | `subagents.max_depth` | `integer` | `yes` | `user` | Max nested subagent depth (clamped ≥1). |
@@ -582,6 +615,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `ui.combine_queued_prompts` | `boolean` | `yes` | `user` | Merge consecutive plain follow-ups into one turn. |
 | `ui.compact_mode` | `boolean` | `yes` | `user` | Denser message padding. Also `/compact-mode`. |
 | `ui.confirm_before_rewind` | `boolean` | `yes` | `user` | Ask before rewinding conversation history. |
+| `ui.dashboard_preview` | `boolean` | `yes` | `user` | The dashboard preview and reply panel appear by default (Appearance in `/settings`). |
 | `ui.contextual_hints.image_input` | `boolean` | `yes` | `user` | Clipboard image paste tip when the model accepts images. |
 | `ui.contextual_hints.plan_mode` | `boolean` | `yes` | `user` | Suggest plan mode (Shift+Tab) for planning-style prompts. |
 | `ui.contextual_hints.send_now` | `boolean` | `yes` | `user` | After queuing a mid-turn follow-up, Enter on an empty prompt sends now. |
@@ -677,6 +711,10 @@ These keys exist only in `requirements.toml`:
 | `fail_closed` | `boolean` | `false` | Refuse to start when signed requirements or version_overrides cannot be applied; default false. |
 | `features.image_edit` | `boolean` | — | Pin image_edit availability. Requirements only; a user-file entry is unrecognized and unset leaves the remotely configured default. |
 | `ui.disable_bypass_permissions_mode` | `boolean` | — | Lock always-approve off. The lock is enforced only from a requirements layer; true in user or managed files is ignored. |
+
+Policy pins such as `allow_managed_hooks_only` (see [Hooks](10-hooks.md#allow-only-managed-hooks)) and the MCP and marketplace lists (see [Plugins](09-plugins.md#restrict-which-mcp-servers-can-run)) are accepted in `requirements.toml` and `managed_config.toml` alike and only ever tighten.
+
+`[[hooks.<Event>]]` tables are accepted in every config file. Hooks from the signed requirements cache and the root-owned `/etc/grok` files are enforced; see [Hooks](10-hooks.md#enforced-hooks).
 
 ## What happens when a setting is refused
 

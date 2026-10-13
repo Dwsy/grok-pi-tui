@@ -1,12 +1,17 @@
 use std::time::Duration;
 
 use super::*;
+use crate::leader::protocol::read_message;
 use tempfile::TempDir;
 
 /// Parse a raw payload for the parse-once helper APIs.
 /// Panics on invalid JSON: the routing loop parses once up front, so non-JSON payloads never reach the helpers (they forward or drop verbatim).
 fn pv(payload: &str) -> serde_json::Value {
     serde_json::from_str(payload).expect("test payload must be valid JSON")
+}
+
+fn j<'a>(v: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
+    v.pointer(path).unwrap_or(&serde_json::Value::Null)
 }
 
 /// The relaunch drain must wait on the `AgentActivity` signal, because relay-driven turns never set the IPC `agent_busy` flag.
@@ -208,6 +213,57 @@ async fn workspace_start_errors_when_cancelled_before_auth() {
         "unexpected error: {}",
         err.message
     );
+}
+
+/// A hub-less exposure never arms a metric pump, and every teardown path (pause, a second pause,
+/// stop) drains without hanging and leaves the slot empty. The pump itself has no test
+/// constructor, so a real drain-once assertion is out of reach here.
+#[tokio::test]
+async fn hubless_workspace_exposure_arms_no_metric_pump_and_tears_down_cleanly() {
+    let handle = xai_grok_workspace::WorkspaceHandle::for_test();
+    assert!(arm_metric_donation(&handle).await.is_none());
+
+    let state = default_test_control_state(Path::new("/tmp/grok-ws-metric-test.sock"));
+    state
+        .workspace
+        .exposure
+        .store(Some(Arc::new(WorkspaceExposure {
+            handle,
+            hub_url: "wss://hub.example/v1/tools".to_owned(),
+            cwd: PathBuf::from("/repo"),
+            started_at: Instant::now(),
+            paused: AtomicBool::new(false),
+            metric_donation: Mutex::new(None),
+        })));
+
+    for _ in 0..2 {
+        let payload = tokio::time::timeout(
+            Duration::from_secs(5),
+            handle_workspace_pause(state.clone()),
+        )
+        .await
+        .expect("pause drains promptly")
+        .unwrap();
+        assert!(matches!(
+            payload,
+            ControlPayload::WorkspaceStatus {
+                state: ref s, ..
+            } if s == "paused"
+        ));
+        let exposure = state.workspace.exposure.load_full().unwrap();
+        assert!(exposure.metric_donation.lock().is_none());
+    }
+
+    let payload =
+        tokio::time::timeout(Duration::from_secs(5), handle_workspace_stop(state.clone()))
+            .await
+            .expect("stop drains promptly")
+            .unwrap();
+    assert!(matches!(
+        payload,
+        ControlPayload::WorkspaceStatus { state: ref s, .. } if s == "none"
+    ));
+    assert!(state.workspace.exposure.load().is_none());
 }
 
 async fn setup_test_server(
@@ -720,11 +776,12 @@ async fn initialize_gets_client_identifier_injected() {
     let received = acp_rx.recv().await.unwrap();
     let json: serde_json::Value = serde_json::from_str(&received).unwrap();
     assert_eq!(
-        json["params"]["_meta"]["clientIdentifier"], "grok-tui",
+        j(&json, "/params/_meta/clientIdentifier"),
+        "grok-tui",
         "Leader should inject clientIdentifier from IPC registration"
     );
     // Injection leaves the rest of the message intact (the id is now namespaced)
-    assert_eq!(json["method"], "initialize");
+    assert_eq!(j(&json, "/method"), "initialize");
 
     cancel.cancel();
 }
@@ -765,7 +822,8 @@ async fn initialize_preserves_existing_client_identifier() {
     let received = acp_rx.recv().await.unwrap();
     let json: serde_json::Value = serde_json::from_str(&received).unwrap();
     assert_eq!(
-        json["params"]["_meta"]["clientIdentifier"], "grok-web",
+        j(&json, "/params/_meta/clientIdentifier"),
+        "grok-web",
         "Leader should not override existing clientIdentifier"
     );
 
@@ -781,8 +839,8 @@ fn rewrite_request_id_rewrites_requests() {
 
     assert_eq!(original_id, serde_json::json!(42));
     assert_eq!(namespaced_id, "123|42");
-    assert_eq!(json["id"], "123|42");
-    assert_eq!(json["method"], "test");
+    assert_eq!(j(&json, "/id"), "123|42");
+    assert_eq!(j(&json, "/method"), "test");
 }
 
 #[test]
@@ -916,7 +974,7 @@ fn session_load_request_id_matches_response_id_for_buffer_flush() {
     let (stored_ns_id, _orig) = rewrite_request_id(&mut req, client).unwrap();
     assert_eq!(stored_ns_id, "3|7");
     // The rewritten payload carries exactly the namespaced id the loop stores.
-    assert_eq!(req["id"], stored_ns_id.as_str());
+    assert_eq!(j(&req, "/id"), stored_ns_id.as_str());
 
     // The agent echoes the namespaced id verbatim on the response
     // `parse_response_id` recovers (client, namespaced id) and restores the original id in place
@@ -926,7 +984,7 @@ fn session_load_request_id_matches_response_id_for_buffer_flush() {
     let (parsed_client, raw_response_id) = parse_response_id(&mut response).unwrap();
     assert_eq!(parsed_client, client);
     assert_eq!(raw_response_id, stored_ns_id);
-    assert_eq!(response["id"], serde_json::json!(7));
+    assert_eq!(j(&response, "/id"), &serde_json::json!(7));
 }
 
 #[test]
@@ -1147,7 +1205,7 @@ fn rewrite_request_id_handles_string_ids() {
     assert_eq!(original_id, serde_json::json!("abc-123"));
     // String IDs get JSON-serialized with quotes: "abc-123" becomes "\"abc-123\""
     assert_eq!(namespaced_id, "456|\"abc-123\"");
-    assert_eq!(json["id"], "456|\"abc-123\"");
+    assert_eq!(j(&json, "/id"), "456|\"abc-123\"");
 }
 
 #[test]
@@ -1170,7 +1228,7 @@ fn inject_capabilities_adds_yolo_mode_to_session_new() {
         ClientId(1)
     ));
 
-    assert_eq!(json["params"]["_meta"]["yoloMode"], true);
+    assert_eq!(j(&json, "/params/_meta/yoloMode"), true);
 }
 
 /// Leader capabilities.auto_mode seeds `_meta.autoMode` on session/new (the real ConnectFlags.default_auto_mode entry path).
@@ -1194,8 +1252,8 @@ fn inject_capabilities_adds_auto_mode_to_session_new() {
         "",
         ClientId(1)
     ));
-    assert_eq!(json["params"]["_meta"]["autoMode"], true);
-    assert!(json["params"]["_meta"].get("yoloMode").is_none());
+    assert_eq!(j(&json, "/params/_meta/autoMode"), true);
+    assert!(j(&json, "/params/_meta").get("yoloMode").is_none());
 }
 
 /// session/load also receives autoMode (reconnect path).
@@ -1217,7 +1275,7 @@ fn inject_capabilities_adds_auto_mode_to_session_load() {
         "grok-tui",
         ClientId(1)
     ));
-    assert_eq!(json["params"]["_meta"]["autoMode"], true);
+    assert_eq!(j(&json, "/params/_meta/autoMode"), true);
 }
 
 #[test]
@@ -1238,7 +1296,7 @@ fn inject_capabilities_adds_auto_mode_to_session_resume() {
         "grok-tui",
         ClientId(1)
     ));
-    assert_eq!(json["params"]["_meta"]["autoMode"], true);
+    assert_eq!(j(&json, "/params/_meta/autoMode"), true);
 }
 
 /// Yolo suppresses autoMode injection even when auto_mode capability is set.
@@ -1260,9 +1318,9 @@ fn inject_capabilities_yolo_suppresses_auto_mode() {
         "",
         ClientId(1)
     ));
-    assert_eq!(json["params"]["_meta"]["yoloMode"], true);
+    assert_eq!(j(&json, "/params/_meta/yoloMode"), true);
     assert!(
-        json["params"]["_meta"].get("autoMode").is_none(),
+        j(&json, "/params/_meta").get("autoMode").is_none(),
         "yolo must not also inject autoMode"
     );
 }
@@ -1286,8 +1344,8 @@ fn inject_capabilities_preserves_explicit_auto_over_stale_yolo() {
         "grok-tui",
         ClientId(1)
     ));
-    assert_eq!(json["params"]["_meta"]["yoloMode"], false);
-    assert_eq!(json["params"]["_meta"]["autoMode"], true);
+    assert_eq!(j(&json, "/params/_meta/yoloMode"), false);
+    assert_eq!(j(&json, "/params/_meta/autoMode"), true);
 }
 
 #[test]
@@ -1305,7 +1363,7 @@ fn inject_capabilities_skips_non_session_new() {
         "",
         ClientId(1)
     ));
-    assert!(json["params"].get("_meta").is_none());
+    assert!(j(&json, "/params").get("_meta").is_none());
 }
 
 #[test]
@@ -1350,8 +1408,8 @@ fn inject_capabilities_adds_status_line_when_it_is_the_only_capability() {
         ClientId(1)
     ));
     assert_eq!(
-        json["params"]["_meta"][xai_grok_status_line::CLIENT_STATUS_LINE_META],
-        true,
+        j(&json, "/params/_meta").get(xai_grok_status_line::CLIENT_STATUS_LINE_META),
+        Some(&serde_json::Value::Bool(true)),
         "a status-line client that states nothing else must still get its own capability, \
          not the process-wide initialize one"
     );
@@ -1377,7 +1435,7 @@ fn inject_capabilities_omits_user_message_echo_when_false() {
         ClientId(1)
     ));
     assert!(
-        json["params"]["_meta"]
+        j(&json, "/params/_meta")
             .get(crate::session::CLIENT_USER_MESSAGE_ECHO_META)
             .is_none(),
         "grok agent (echo false) must not inject clientUserMessageEcho=false over initialize"
@@ -1403,8 +1461,8 @@ fn inject_capabilities_adds_user_message_echo_when_it_is_the_only_capability() {
         ClientId(1)
     ));
     assert_eq!(
-        json["params"]["_meta"][crate::session::CLIENT_USER_MESSAGE_ECHO_META],
-        true,
+        j(&json, "/params/_meta").get(crate::session::CLIENT_USER_MESSAGE_ECHO_META),
+        Some(&serde_json::Value::Bool(true)),
         "a pager that states nothing else must still get live user-message echo, \
          not the process-wide initialize default"
     );
@@ -1430,8 +1488,8 @@ fn inject_capabilities_preserves_existing_meta() {
         ClientId(1)
     ));
 
-    assert_eq!(json["params"]["_meta"]["foo"], "bar");
-    assert_eq!(json["params"]["_meta"]["yoloMode"], true);
+    assert_eq!(j(&json, "/params/_meta/foo"), "bar");
+    assert_eq!(j(&json, "/params/_meta/yoloMode"), true);
 }
 
 #[test]
@@ -1454,8 +1512,8 @@ fn inject_capabilities_adds_default_model_to_session_new() {
         ClientId(1)
     ));
 
-    assert_eq!(json["params"]["_meta"]["modelId"], "grok-3-fast");
-    assert!(json["params"]["_meta"].get("yoloMode").is_none());
+    assert_eq!(j(&json, "/params/_meta/modelId"), "grok-3-fast");
+    assert!(j(&json, "/params/_meta").get("yoloMode").is_none());
 }
 
 #[test]
@@ -1478,8 +1536,8 @@ fn inject_capabilities_adds_both_yolo_and_model() {
         ClientId(1)
     ));
 
-    assert_eq!(json["params"]["_meta"]["yoloMode"], true);
-    assert_eq!(json["params"]["_meta"]["modelId"], "grok-3-fast");
+    assert_eq!(j(&json, "/params/_meta/yoloMode"), true);
+    assert_eq!(j(&json, "/params/_meta/modelId"), "grok-3-fast");
 }
 
 #[test]
@@ -1497,7 +1555,7 @@ fn inject_capabilities_does_not_override_existing_model_id() {
     let mut json = pv(&payload);
     inject_session_request_context(&mut json, &caps, "", ClientId(1));
 
-    assert_eq!(json["params"]["_meta"]["modelId"], "custom-model");
+    assert_eq!(j(&json, "/params/_meta/modelId"), "custom-model");
 }
 
 #[test]
@@ -1663,7 +1721,7 @@ fn patch_initialize_response_patches_current_model_id() {
     let default_model = Some("grok-3-fast".to_string());
     assert!(patch_initialize_response_model(&mut json, &default_model));
     assert_eq!(
-        json["result"]["meta"]["modelState"]["currentModelId"],
+        j(&json, "/result/meta/modelState/currentModelId"),
         "grok-3-fast"
     );
 }
@@ -1675,13 +1733,13 @@ fn patch_initialize_response_preserves_other_fields() {
     );
     let default_model = Some("grok-3-fast".to_string());
     assert!(patch_initialize_response_model(&mut json, &default_model));
-    assert_eq!(json["result"]["meta"]["grokShell"], true);
+    assert_eq!(j(&json, "/result/meta/grokShell"), true);
     assert_eq!(
-        json["result"]["meta"]["modelState"]["currentModelId"],
+        j(&json, "/result/meta/modelState/currentModelId"),
         "grok-3-fast"
     );
     assert_eq!(
-        json["result"]["meta"]["modelState"]["availableModels"]
+        j(&json, "/result/meta/modelState/availableModels")
             .as_array()
             .unwrap()
             .len(),
@@ -1923,8 +1981,8 @@ fn inject_capabilities_skips_empty_model_with_yolo_mode() {
         ClientId(1)
     ));
 
-    assert_eq!(json["params"]["_meta"]["yoloMode"], true);
-    assert!(json["params"]["_meta"].get("modelId").is_none());
+    assert_eq!(j(&json, "/params/_meta/yoloMode"), true);
+    assert!(j(&json, "/params/_meta").get("modelId").is_none());
 }
 
 #[test]
@@ -1966,7 +2024,7 @@ fn inject_capabilities_adds_client_identifier_to_session_new() {
         ClientId(1),
     ));
     assert_eq!(
-        json["params"]["_meta"]["clientIdentifier"],
+        j(&json, "/params/_meta/clientIdentifier"),
         "grok-code-extension"
     );
 }
@@ -1981,7 +2039,7 @@ fn inject_capabilities_does_not_override_existing_client_identifier() {
 
     let mut json = pv(&payload);
     inject_session_request_context(&mut json, &caps, "grok-tui", ClientId(1));
-    assert_eq!(json["params"]["_meta"]["clientIdentifier"], "custom-client");
+    assert_eq!(j(&json, "/params/_meta/clientIdentifier"), "custom-client");
 }
 
 #[test]
@@ -2000,12 +2058,12 @@ fn inject_capabilities_adds_client_identifier_to_session_load() {
         ClientId(1),
     ));
     assert_eq!(
-        json["params"]["_meta"]["clientIdentifier"],
+        j(&json, "/params/_meta/clientIdentifier"),
         "grok-code-extension"
     );
     // session/load gets neither yoloMode nor modelId injected
-    assert!(json["params"]["_meta"].get("yoloMode").is_none());
-    assert!(json["params"]["_meta"].get("modelId").is_none());
+    assert!(j(&json, "/params/_meta").get("yoloMode").is_none());
+    assert!(j(&json, "/params/_meta").get("modelId").is_none());
 }
 
 #[test]
@@ -2020,7 +2078,7 @@ fn inject_capabilities_adds_leader_client_id_to_session_load() {
     inject_session_request_context(&mut json, &caps, "grok-tui", ClientId(42));
     // The unique ClientId is stamped so the agent can echo it onto replay notifications for leader unicast routing
     assert_eq!(
-        json["params"]["_meta"]["x.ai/leaderClientId"].as_u64(),
+        j(&json, "/params/_meta/x.ai~1leaderClientId").as_u64(),
         Some(42)
     );
 }
@@ -2037,7 +2095,7 @@ fn inject_capabilities_does_not_override_existing_leader_client_id() {
     inject_session_request_context(&mut json, &caps, "grok-tui", ClientId(42));
     // An explicit value already present is respected (mirrors the clientIdentifier guard)
     assert_eq!(
-        json["params"]["_meta"]["x.ai/leaderClientId"].as_u64(),
+        j(&json, "/params/_meta/x.ai~1leaderClientId").as_u64(),
         Some(7)
     );
 }
@@ -2072,8 +2130,8 @@ fn inject_yolo_notification_adds_client_identifier() {
     assert!(inject_client_identity_into_yolo_notification(
         &mut json, "grok-tui"
     ));
-    assert_eq!(json["params"]["clientIdentifier"], "grok-tui");
-    assert_eq!(json["params"]["yolo_mode"], true);
+    assert_eq!(j(&json, "/params/clientIdentifier"), "grok-tui");
+    assert_eq!(j(&json, "/params/yolo_mode"), true);
 }
 
 #[test]
@@ -2095,7 +2153,7 @@ fn inject_client_identity_adds_identifier_to_initialize() {
     let (mutated, was_initialize) = inject_client_identity_into_initialize(&mut json, "grok-tui");
     assert!(was_initialize, "should have detected an initialize message");
     assert!(mutated, "should have injected the identifier");
-    assert_eq!(json["params"]["_meta"]["clientIdentifier"], "grok-tui");
+    assert_eq!(j(&json, "/params/_meta/clientIdentifier"), "grok-tui");
 }
 
 #[test]
@@ -2107,7 +2165,7 @@ fn inject_client_identity_does_not_override_existing() {
     let (mutated, was_initialize) = inject_client_identity_into_initialize(&mut json, "grok-tui");
     assert!(was_initialize, "should have detected an initialize message");
     assert!(!mutated, "existing identifier means nothing was injected");
-    assert_eq!(json["params"]["_meta"]["clientIdentifier"], "grok-web");
+    assert_eq!(j(&json, "/params/_meta/clientIdentifier"), "grok-web");
 }
 
 #[test]
@@ -2149,9 +2207,9 @@ fn inject_client_identity_preserves_existing_meta() {
         inject_client_identity_into_initialize(&mut json, "grok-code-extension");
     assert!(was_initialize, "should have detected an initialize message");
     assert!(mutated);
-    assert_eq!(json["params"]["_meta"]["foo"], "bar");
+    assert_eq!(j(&json, "/params/_meta/foo"), "bar");
     assert_eq!(
-        json["params"]["_meta"]["clientIdentifier"],
+        j(&json, "/params/_meta/clientIdentifier"),
         "grok-code-extension"
     );
 }
@@ -2163,11 +2221,11 @@ fn version_mismatch_notification_contains_correct_fields() {
     let payload = make_version_mismatch_notification("0.1.157", "0.1.150")
         .expect("should produce notification");
     let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-    assert_eq!(json["method"], "x.ai/leader/version_mismatch");
-    assert_eq!(json["params"]["clientVersion"], "0.1.157");
-    assert_eq!(json["params"]["leaderVersion"], "0.1.150");
+    assert_eq!(j(&json, "/method"), "x.ai/leader/version_mismatch");
+    assert_eq!(j(&json, "/params/clientVersion"), "0.1.157");
+    assert_eq!(j(&json, "/params/leaderVersion"), "0.1.150");
     assert!(
-        json["params"]["message"]
+        j(&json, "/params/message")
             .as_str()
             .unwrap_or("")
             .contains("0.1.157"),
@@ -2230,10 +2288,12 @@ async fn model_injected_after_set_model(response: Option<serde_json::Value>) -> 
     let forwarded = acp_rx.recv().await.unwrap();
 
     if let Some(mut response) = response {
-        let forwarded_id =
-            serde_json::from_str::<serde_json::Value>(&forwarded).unwrap()["id"].clone();
-        response["jsonrpc"] = serde_json::json!("2.0");
-        response["id"] = forwarded_id;
+        let parsed: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
+        let forwarded_id = j(&parsed, "/id").clone();
+        if let Some(obj) = response.as_object_mut() {
+            obj.insert("jsonrpc".into(), serde_json::json!("2.0"));
+            obj.insert("id".into(), forwarded_id);
+        }
         response_tx.send(response.to_string()).unwrap();
         let _: ServerMessage = read_message(&mut reader).await.unwrap();
     }
@@ -2253,7 +2313,7 @@ async fn model_injected_after_set_model(response: Option<serde_json::Value>) -> 
 
     let forwarded = acp_rx.recv().await.unwrap();
     let json: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
-    json["params"]["_meta"]["modelId"]
+    j(&json, "/params/_meta/modelId")
         .as_str()
         .unwrap_or_default()
         .to_string()
@@ -2537,7 +2597,8 @@ async fn fallback_routing_forwards_notifications_but_drops_responses() {
         ServerMessage::Acp { payload } => {
             let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
             assert_eq!(
-                json["method"], "agent/progress",
+                j(&json, "/method"),
+                "agent/progress",
                 "Should receive the notification, not the relay response"
             );
         }
@@ -2585,8 +2646,8 @@ async fn relay_session_notification_not_forwarded_to_ipc_client() {
     match msg {
         ServerMessage::Acp { payload } => {
             let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-            assert_eq!(json["method"], "agent/progress");
-            assert!(json["params"].get("sessionId").is_none());
+            assert_eq!(j(&json, "/method"), "agent/progress");
+            assert!(j(&json, "/params").get("sessionId").is_none());
         }
         other => panic!("Expected Acp message, got {:?}", other),
     }
@@ -2648,7 +2709,7 @@ async fn dead_client_session_notification_not_leaked_to_other_client() {
     match msg {
         ServerMessage::Acp { payload } => {
             let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-            assert_eq!(json["method"], "agent/progress");
+            assert_eq!(j(&json, "/method"), "agent/progress");
         }
         other => panic!("Expected Acp message, got {:?}", other),
     }
@@ -2700,7 +2761,7 @@ async fn ext_notification_with_nested_session_id_routes_correctly() {
     match msg {
         ServerMessage::Acp { payload } => {
             let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-            assert_eq!(json["method"], "_x.ai/session_notification");
+            assert_eq!(j(&json, "/method"), "_x.ai/session_notification");
         }
         other => panic!("Expected Acp message, got {:?}", other),
     }
@@ -2871,7 +2932,7 @@ async fn agent_busy_cleared_when_response_received() {
     // Read the forwarded request and extract the namespaced ID
     let forwarded = handle.acp_rx.recv().await.unwrap();
     let json: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
-    let namespaced_id = json["id"].as_str().unwrap().to_string();
+    let namespaced_id = j(&json, "/id").as_str().unwrap().to_string();
 
     assert!(handle.agent_busy.load(Ordering::Relaxed));
 
@@ -2939,14 +3000,10 @@ async fn agent_busy_tracks_multiple_pending_requests() {
     // Read both forwarded requests
     let fwd1 = handle.acp_rx.recv().await.unwrap();
     let fwd2 = handle.acp_rx.recv().await.unwrap();
-    let id1 = serde_json::from_str::<serde_json::Value>(&fwd1).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let id2 = serde_json::from_str::<serde_json::Value>(&fwd2).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let parsed1: serde_json::Value = serde_json::from_str(&fwd1).unwrap();
+    let id1 = j(&parsed1, "/id").as_str().unwrap().to_string();
+    let parsed2: serde_json::Value = serde_json::from_str(&fwd2).unwrap();
+    let id2 = j(&parsed2, "/id").as_str().unwrap().to_string();
 
     assert!(handle.agent_busy.load(Ordering::Relaxed));
 
@@ -3050,7 +3107,7 @@ async fn agent_busy_clears_when_client_disconnects_mid_request() {
         // Read the forwarded request to get the namespaced ID
         let forwarded = acp_rx.recv().await.unwrap();
         let json: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
-        let id = json["id"].as_str().unwrap().to_string();
+        let id = j(&json, "/id").as_str().unwrap().to_string();
 
         assert!(
             agent_busy.load(Ordering::Relaxed),
@@ -3219,10 +3276,12 @@ async fn evict_sessions_notification_on_disconnect() {
     let json: serde_json::Value =
         serde_json::from_str(&eviction_msg).expect("should be valid JSON");
     assert_eq!(
-        json["method"].as_str().and_then(|m| m.strip_prefix('_')),
+        j(&json, "/method")
+            .as_str()
+            .and_then(|m| m.strip_prefix('_')),
         Some(InternalMethod::EvictSessions.name()),
     );
-    let session_ids = json["params"]["sessionIds"]
+    let session_ids = j(&json, "/params/sessionIds")
         .as_array()
         .expect("sessionIds should be an array");
     assert!(
@@ -4373,6 +4432,130 @@ async fn roster_changed_broadcasts_to_all_clients() {
     cancel.cancel();
 }
 
+/// The `RosterListMerge` seam through a real leader: the leader namespaces client A's list id,
+/// the merge records that namespaced id off the forwarded request and extends the matching
+/// (fake) agent response, and the leader routes the merged response back to A only, with A's
+/// original id restored. The synthesized `changed` line then reaches both clients.
+#[tokio::test]
+async fn roster_merge_round_trips_namespaced_ids_and_broadcasts_changes() {
+    use crate::agent::roster::{RosterActivity, RosterEntry, RosterListResponse, RosterOrigin};
+    use crate::leader::roster_merge::{ExternalRoster, RosterListMerge, changed_notification};
+    use crate::session::ExtMethodResult;
+
+    let temp = TempDir::new().unwrap();
+    let (sock_path, cancel, response_tx, mut acp_rx) =
+        setup_persistent_server_with_agent(&temp).await;
+    let (mut reader_a, mut writer_a) = connect_and_register(&sock_path, "client-a").await;
+    let (mut reader_b, _writer_b) = connect_and_register(&sock_path, "client-b").await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let cursor_row = RosterEntry {
+        session_id: "cursor-worker:bc-1".to_owned(),
+        title: Some("External agent bc-1".to_owned()),
+        cwd: "/home/u/.grok/worktrees/proj/cursor-bc-1".to_owned(),
+        is_worktree: true,
+        session_kind: Some("cursor-worker".to_owned()),
+        model_id: None,
+        reasoning_effort: None,
+        yolo: false,
+        activity: RosterActivity::Idle,
+        last_turn_summary: None,
+        resident: false,
+        last_change_unix_ms: 1,
+        origin: RosterOrigin::Local,
+    };
+    let roster = ExternalRoster::new();
+    roster.replace(vec![cursor_row.clone()]);
+    let merge = RosterListMerge::new(roster);
+
+    write_message(
+        &mut writer_a,
+        &ClientMessage::Acp {
+            payload: r#"{"jsonrpc":"2.0","id":41,"method":"_x.ai/sessions/list","params":{}}"#
+                .to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // The fake agent does what `run_leader`'s bridges do around the real agent.
+    let forwarded = tokio::time::timeout(Duration::from_secs(1), acp_rx.recv())
+        .await
+        .expect("forwarded list request")
+        .expect("agent channel open");
+    merge.observe_inbound(&forwarded);
+    let forwarded_json: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
+    let namespaced_id = forwarded_json
+        .get("id")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    assert!(
+        namespaced_id.as_str().is_some_and(|id| id.ends_with("|41")),
+        "leader namespaces the client id: {namespaced_id}"
+    );
+    let live = RosterEntry {
+        session_id: "live".to_owned(),
+        session_kind: None,
+        resident: true,
+        ..cursor_row.clone()
+    };
+    let body: serde_json::Value = serde_json::from_str(
+        ExtMethodResult::success(RosterListResponse {
+            sessions: vec![live],
+        })
+        .to_ext_response()
+        .unwrap()
+        .0
+        .get(),
+    )
+    .unwrap();
+    let reply =
+        serde_json::json!({"jsonrpc": "2.0", "id": namespaced_id, "result": body}).to_string();
+    let merged = merge.filter_outbound(&reply).into_owned();
+    assert_ne!(
+        reply, merged,
+        "the pending id matched and rows were appended"
+    );
+    response_tx.send(merged).unwrap();
+
+    let got_a = next_acp_payload(&mut reader_a)
+        .await
+        .expect("client A gets its answer");
+    let got_a: serde_json::Value = serde_json::from_str(&got_a).unwrap();
+    assert_eq!(
+        Some(&serde_json::json!(41)),
+        got_a.get("id"),
+        "original id restored"
+    );
+    let ids: Vec<&str> = got_a
+        .pointer("/result/result/sessions")
+        .and_then(serde_json::Value::as_array)
+        .unwrap()
+        .iter()
+        .map(|s| s["sessionId"].as_str().unwrap())
+        .collect();
+    assert_eq!(vec!["live", "cursor-worker:bc-1"], ids);
+    assert!(
+        next_acp_payload(&mut reader_b).await.is_none(),
+        "client B never asked and must not receive A's response"
+    );
+
+    response_tx
+        .send(changed_notification(vec![cursor_row], Vec::new()))
+        .unwrap();
+    for (name, reader) in [("A", &mut reader_a), ("B", &mut reader_b)] {
+        let got = next_acp_payload(reader).await;
+        assert!(
+            got.as_deref().is_some_and(
+                |p| p.contains("_x.ai/sessions/changed") && p.contains("cursor-worker:bc-1")
+            ),
+            "client {name} must receive the synthesized roster broadcast, got {got:?}"
+        );
+    }
+
+    cancel.cancel();
+}
+
 /// `x.ai/models/update` is a machine-wide catalog notification with no sessionId. It must broadcast to every registered client, not just the last-active one.
 /// Every model picker then refreshes after a config.toml / models_cache.json hot-reload. Uses the production wire form: agent ext notifications arrive `_`-prefixed (`_x.ai/models/update`).
 #[tokio::test]
@@ -4492,8 +4675,8 @@ fn inject_capabilities_sets_code_nav_enabled_true() {
     let mut json = pv(payload);
     inject_session_request_context(&mut json, &caps, "grok-web", ClientId(1));
     assert_eq!(
-        json["params"]["_meta"]["codeNavEnabled"],
-        serde_json::json!(true),
+        j(&json, "/params/_meta/codeNavEnabled"),
+        &serde_json::json!(true),
         "leader must inject codeNavEnabled=true for code-nav-capable client"
     );
 }
@@ -4513,8 +4696,8 @@ fn inject_capabilities_sets_code_nav_enabled_false() {
     let mut json = pv(payload);
     inject_session_request_context(&mut json, &caps, "grok-tui", ClientId(1));
     assert_eq!(
-        json["params"]["_meta"]["codeNavEnabled"],
-        serde_json::json!(false),
+        j(&json, "/params/_meta/codeNavEnabled"),
+        &serde_json::json!(false),
         "leader must inject codeNavEnabled=false for client without code-nav capability"
     );
 }
@@ -4533,8 +4716,8 @@ fn inject_capabilities_injects_code_nav_into_session_load() {
     let mut json = pv(payload);
     inject_session_request_context(&mut json, &caps, "grok-web", ClientId(1));
     assert_eq!(
-        json["params"]["_meta"]["codeNavEnabled"],
-        serde_json::json!(true),
+        j(&json, "/params/_meta/codeNavEnabled"),
+        &serde_json::json!(true),
         "leader must inject codeNavEnabled into session/load for reconnect isolation"
     );
 }
@@ -4560,12 +4743,12 @@ fn inject_capabilities_two_clients_stay_isolated() {
     inject_session_request_context(&mut tui_json, &tui_caps, "grok-tui", ClientId(2));
 
     assert_eq!(
-        web_json["params"]["_meta"]["codeNavEnabled"],
-        serde_json::json!(true)
+        j(&web_json, "/params/_meta/codeNavEnabled"),
+        &serde_json::json!(true)
     );
     assert_eq!(
-        tui_json["params"]["_meta"]["codeNavEnabled"],
-        serde_json::json!(false)
+        j(&tui_json, "/params/_meta/codeNavEnabled"),
+        &serde_json::json!(false)
     );
 }
 
@@ -4592,29 +4775,29 @@ fn inject_capabilities_terminal_and_fs_per_client() {
     inject_session_request_context(&mut tui_json, &tui_caps, "grok-tui", ClientId(2));
 
     assert_eq!(
-        web_json["params"]["_meta"]["clientTerminal"],
-        serde_json::json!(true)
+        j(&web_json, "/params/_meta/clientTerminal"),
+        &serde_json::json!(true)
     );
     assert_eq!(
-        web_json["params"]["_meta"]["clientFsRead"],
-        serde_json::json!(true)
+        j(&web_json, "/params/_meta/clientFsRead"),
+        &serde_json::json!(true)
     );
     assert_eq!(
-        web_json["params"]["_meta"]["clientFsWrite"],
-        serde_json::json!(true)
+        j(&web_json, "/params/_meta/clientFsWrite"),
+        &serde_json::json!(true)
     );
 
     assert_eq!(
-        tui_json["params"]["_meta"]["clientTerminal"],
-        serde_json::json!(false)
+        j(&tui_json, "/params/_meta/clientTerminal"),
+        &serde_json::json!(false)
     );
     assert_eq!(
-        tui_json["params"]["_meta"]["clientFsRead"],
-        serde_json::json!(false)
+        j(&tui_json, "/params/_meta/clientFsRead"),
+        &serde_json::json!(false)
     );
     assert_eq!(
-        tui_json["params"]["_meta"]["clientFsWrite"],
-        serde_json::json!(false)
+        j(&tui_json, "/params/_meta/clientFsWrite"),
+        &serde_json::json!(false)
     );
 }
 
@@ -4632,16 +4815,16 @@ fn inject_capabilities_terminal_into_session_load() {
     inject_session_request_context(&mut json, &caps, "grok-web", ClientId(1));
 
     assert_eq!(
-        json["params"]["_meta"]["clientTerminal"],
-        serde_json::json!(true)
+        j(&json, "/params/_meta/clientTerminal"),
+        &serde_json::json!(true)
     );
     assert_eq!(
-        json["params"]["_meta"]["clientFsRead"],
-        serde_json::json!(false)
+        j(&json, "/params/_meta/clientFsRead"),
+        &serde_json::json!(false)
     );
     assert_eq!(
-        json["params"]["_meta"]["clientFsWrite"],
-        serde_json::json!(false)
+        j(&json, "/params/_meta/clientFsWrite"),
+        &serde_json::json!(false)
     );
 }
 
@@ -4684,7 +4867,7 @@ async fn subagent_child_session_routed_after_spawned() {
     match msg {
         ServerMessage::Acp { payload } => {
             let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-            assert_eq!(json["params"]["sessionId"], "child-123");
+            assert_eq!(j(&json, "/params/sessionId"), "child-123");
         }
         other => panic!("Expected Acp, got {:?}", other),
     }

@@ -382,7 +382,9 @@ pub fn capture_pcm_for_duration(
             Ok(0) => break,
             Ok(n) => {
                 chunks += 1;
-                pcm.extend_from_slice(&buf[..n]);
+                if let Some(read) = buf.get(..n) {
+                    pcm.extend_from_slice(read);
+                }
             }
             Err(_) => break,
         }
@@ -407,10 +409,10 @@ mod tests {
         assert!(args.contains(&"raw".to_string()));
         // mono
         let c = args.iter().position(|a| a == "-c").unwrap();
-        assert_eq!(args[c + 1], "1");
+        assert_eq!(args.get(c + 1).map(String::as_str), Some("1"));
         // rate
         let r = args.iter().position(|a| a == "-r").unwrap();
-        assert_eq!(args[r + 1], "16000");
+        assert_eq!(args.get(r + 1).map(String::as_str), Some("16000"));
         // stdout target
         assert_eq!(args.last().unwrap(), "-");
     }
@@ -428,11 +430,11 @@ mod tests {
         // (WAV before PipeWire 1.6, which cannot be written to a pipe; AU with a header on 1.6 and later.)
         assert!(pw.contains(&"--raw".to_string()));
         let r = pw.iter().position(|a| a == "--rate").unwrap();
-        assert_eq!(pw[r + 1], "48000");
+        assert_eq!(pw.get(r + 1).map(String::as_str), Some("48000"));
         let f = pw.iter().position(|a| a == "--format").unwrap();
-        assert_eq!(pw[f + 1], "s16");
+        assert_eq!(pw.get(f + 1).map(String::as_str), Some("s16"));
         let c = pw.iter().position(|a| a == "--channels").unwrap();
-        assert_eq!(pw[c + 1], "1");
+        assert_eq!(pw.get(c + 1).map(String::as_str), Some("1"));
         assert_eq!(pw.last().unwrap(), "-"); // stdout target
     }
 

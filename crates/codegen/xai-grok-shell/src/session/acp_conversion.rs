@@ -338,10 +338,9 @@ pub(crate) fn acp_tool_update(
             .meta(tool_meta.and_then(|v| serde_json::from_value(v).ok())),
         ),
         ToolOutput::BackgroundTaskStarted(bg) => {
-            let short_id = if bg.task_id.len() > 8 {
-                &bg.task_id[..8]
-            } else {
-                &bg.task_id
+            let short_id = match bg.task_id.get(..8) {
+                Some(id) => id,
+                None => bg.task_id.as_str(),
             };
             let title = maybe_rewrite(rewriter, format!("[bg] {} ({})", bg.command, short_id));
             Some(acp::ToolCallUpdate::new(
@@ -358,10 +357,9 @@ pub(crate) fn acp_tool_update(
         ToolOutput::TaskOutput(task_output) => {
             let (status, title) = match task_output {
                 TaskOutputOutput::Result(r) => {
-                    let short_id = if r.task_id.len() > 8 {
-                        &r.task_id[..8]
-                    } else {
-                        &r.task_id
+                    let short_id = match r.task_id.get(..8) {
+                        Some(id) => id,
+                        None => r.task_id.as_str(),
                     };
                     (
                         acp::ToolCallStatus::Completed,
@@ -387,10 +385,9 @@ pub(crate) fn acp_tool_update(
         ToolOutput::KillTask(kill_output) => {
             let (status, title) = match kill_output {
                 KillTaskOutput::Result(r) => {
-                    let short_id = if r.task_id.len() > 8 {
-                        &r.task_id[..8]
-                    } else {
-                        &r.task_id
+                    let short_id = match r.task_id.get(..8) {
+                        Some(id) => id,
+                        None => r.task_id.as_str(),
                     };
                     (
                         acp::ToolCallStatus::Completed,
@@ -691,16 +688,28 @@ fn build_apply_patch_edit_details(
                 }
             }
 
-            let old_string = old_lines[region_start..old_end].join("\n");
-            let new_string = new_lines[region_start..new_end].join("\n");
+            let old_string = old_lines
+                .get(region_start..old_end)
+                .unwrap_or(&[])
+                .join("\n");
+            let new_string = new_lines
+                .get(region_start..new_end)
+                .unwrap_or(&[])
+                .join("\n");
 
             // Context before: up to CONTEXT_LINES lines before the change.
             let ctx_before_start = region_start.saturating_sub(CONTEXT_LINES);
-            let context_before = old_lines[ctx_before_start..region_start].join("\n");
+            let context_before = old_lines
+                .get(ctx_before_start..region_start)
+                .unwrap_or(&[])
+                .join("\n");
 
             // Context after: up to CONTEXT_LINES lines after the change.
             let ctx_after_end = (old_end + CONTEXT_LINES).min(old_lines.len());
-            let context_after = old_lines[old_end..ctx_after_end].join("\n");
+            let context_after = old_lines
+                .get(old_end..ctx_after_end)
+                .unwrap_or(&[])
+                .join("\n");
 
             details.push(SearchReplaceEditDetail {
                 old_string,
@@ -754,6 +763,13 @@ mod tests {
             (NotFoundOrNotOwned, acp::ToolCallStatus::Failed),
             (NotActiveOrFinalizing, acp::ToolCallStatus::Failed),
             (Saturated { max_in_flight: 8 }, acp::ToolCallStatus::Failed),
+            (
+                QuotaExceeded {
+                    kind: xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageQuotaKind::AttemptOutbound,
+                    limit: 32,
+                },
+                acp::ToolCallStatus::Failed,
+            ),
             (AdmissionUncertain, acp::ToolCallStatus::Completed),
             (NotAcceptedBeforeDeadline, acp::ToolCallStatus::Failed),
             (Unsupported, acp::ToolCallStatus::Failed),
@@ -855,21 +871,27 @@ mod tests {
             })
             .collect();
 
+        let [completed, cancelled, in_progress] = entries.as_slice() else {
+            panic!("expected three plan entries: {entries:?}");
+        };
         // Completed item: unchanged, medium priority preserved
-        assert_eq!(entries[0].status, acp::PlanEntryStatus::Completed);
-        assert_eq!(entries[0].priority, acp::PlanEntryPriority::Medium);
-        assert!(entries[0].meta.is_none());
+        assert_eq!(completed.status, acp::PlanEntryStatus::Completed);
+        assert_eq!(completed.priority, acp::PlanEntryPriority::Medium);
+        assert!(completed.meta.is_none());
 
         // Cancelled item: Completed with cancelled marker, LOW priority preserved
-        assert_eq!(entries[1].status, acp::PlanEntryStatus::Completed);
-        assert_eq!(entries[1].priority, acp::PlanEntryPriority::Low);
-        assert_eq!(entries[1].meta.as_ref().unwrap()["cancelled"], true);
+        assert_eq!(cancelled.status, acp::PlanEntryStatus::Completed);
+        assert_eq!(cancelled.priority, acp::PlanEntryPriority::Low);
+        assert_eq!(
+            cancelled.meta.as_ref().and_then(|m| m.get("cancelled")),
+            Some(&serde_json::Value::Bool(true))
+        );
 
         // In-progress item: overridden to Completed, HIGH priority preserved
-        assert_eq!(entries[2].status, acp::PlanEntryStatus::Completed);
-        assert_eq!(entries[2].priority, acp::PlanEntryPriority::High);
+        assert_eq!(in_progress.status, acp::PlanEntryStatus::Completed);
+        assert_eq!(in_progress.priority, acp::PlanEntryPriority::High);
         // No cancelled marker (it was in_progress, not cancelled)
-        assert!(entries[2].meta.is_none());
+        assert!(in_progress.meta.is_none());
     }
 
     #[test]
@@ -899,9 +921,11 @@ mod tests {
             state: xai_grok_tools::implementations::grok_build::todo::TodoState::default(),
         }));
         let plan = acp_plan_update(&output).unwrap();
-        assert_eq!(plan.entries.len(), 1);
-        assert_eq!(plan.entries[0].content, "Task 1");
-        assert_eq!(plan.entries[0].status, acp::PlanEntryStatus::Completed);
+        let [entry] = plan.entries.as_slice() else {
+            panic!("expected one plan entry: {:?}", plan.entries);
+        };
+        assert_eq!(entry.content, "Task 1");
+        assert_eq!(entry.status, acp::PlanEntryStatus::Completed);
     }
 
     #[test]
@@ -960,8 +984,10 @@ mod tests {
         assert_eq!(update.fields.status, Some(acp::ToolCallStatus::Completed));
 
         let content = update.fields.content.as_ref().expect("should have content");
-        assert_eq!(content.len(), 1);
-        match &content[0] {
+        let [first] = content.as_slice() else {
+            panic!("expected one content block: {content:?}");
+        };
+        match first {
             acp::ToolCallContent::Content(acp::Content {
                 content: acp::ContentBlock::Text(tc),
                 ..
@@ -1084,7 +1110,10 @@ mod tests {
         )));
         let update = acp_tool_update(&output, "tc-1", None, None).expect("update");
         let content = update.fields.content.expect("content");
-        let text = match &content[0] {
+        let [first] = content.as_slice() else {
+            panic!("expected one content block: {content:?}");
+        };
+        let text = match first {
             acp::ToolCallContent::Content(acp::Content {
                 content: acp::ContentBlock::Text(t),
                 ..
@@ -1092,16 +1121,33 @@ mod tests {
             other => panic!("expected text content, got {other:?}"),
         };
         let prompt_json: serde_json::Value = serde_json::from_str(&text).expect("prompt json");
-        assert_eq!(prompt_json["path"], "/tmp/session/videos/3.mp4");
-        assert_eq!(prompt_json["filename"], "3.mp4");
-        assert_eq!(prompt_json["session_folder"], "videos");
         assert_eq!(
-            prompt_json["message"],
-            "Video generated and saved to /tmp/session/videos/3.mp4. Do not read or re-display it, and do not describe how it appears to the user."
+            prompt_json.get("path").and_then(|v| v.as_str()),
+            Some("/tmp/session/videos/3.mp4")
+        );
+        assert_eq!(
+            prompt_json.get("filename").and_then(|v| v.as_str()),
+            Some("3.mp4")
+        );
+        assert_eq!(
+            prompt_json.get("session_folder").and_then(|v| v.as_str()),
+            Some("videos")
+        );
+        assert_eq!(
+            prompt_json.get("message").and_then(|v| v.as_str()),
+            Some(
+                "Video generated and saved to /tmp/session/videos/3.mp4. Do not read or re-display it, and do not describe how it appears to the user."
+            )
         );
         let raw = update.fields.raw_output.expect("raw_output");
-        assert_eq!(raw["type"], "ImageToVideo");
-        assert_eq!(raw["path"], "/tmp/session/videos/3.mp4");
+        assert_eq!(
+            raw.get("type").and_then(|v| v.as_str()),
+            Some("ImageToVideo")
+        );
+        assert_eq!(
+            raw.get("path").and_then(|v| v.as_str()),
+            Some("/tmp/session/videos/3.mp4")
+        );
     }
 
     #[test]
@@ -1182,8 +1228,10 @@ mod tests {
         ));
         let update = acp_tool_update(&output, "call-1", Some(&rw), None).unwrap();
         let content = update.fields.content.unwrap();
-        assert_eq!(content.len(), 1);
-        match &content[0] {
+        let [first] = content.as_slice() else {
+            panic!("expected one content block: {content:?}");
+        };
+        match first {
             acp::ToolCallContent::Diff(diff) => {
                 assert_eq!(diff.path, PathBuf::from("/testbed/myproject/src/lib.rs"));
             }
@@ -1251,7 +1299,10 @@ mod tests {
             "status": "running",
         });
         let rewritten = rw.rewrite_json(value);
-        let output_file = rewritten["output_file"].as_str().unwrap();
+        let output_file = rewritten
+            .get("output_file")
+            .and_then(|v| v.as_str())
+            .unwrap();
         assert!(
             !output_file.contains("ab-123"),
             "rewrite_json must handle URL-encoded paths: {output_file}"

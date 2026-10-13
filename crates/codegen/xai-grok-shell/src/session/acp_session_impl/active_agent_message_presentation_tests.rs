@@ -6,6 +6,7 @@ fn pending_title_is_content_free() {
     let input = SendSubagentMessageInput {
         subagent_id: "sub-1".into(),
         text: text.into(),
+        delivery: None,
         queue: false,
     };
 

@@ -37,7 +37,9 @@ impl crate::types::tool_metadata::ToolMetadata for WaitTasksTool {
         static DESC: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
             xai_tool_types::build_wait_tasks_description(&xai_tool_types::WaitTasksToolNaming {
                 background_retrieval_tool: "get_task_output",
-                bash_background_param: Some("is_background"),
+                // The bash tool has no `is_background` parameter
+                bash_background_param: None,
+                bash_block_param: Some("block_until_ms"),
                 subagent_background_param: Some("run_in_background"),
             })
         });
@@ -94,6 +96,7 @@ fn wait_tasks_description(
             .tool_for_kind(ToolKind::BackgroundTaskAction)
             .unwrap_or("get_task_output"),
         bash_background_param: renderer.param_for_kind(ToolKind::Execute, "is_background"),
+        bash_block_param: renderer.param_for_kind(ToolKind::Execute, "block_until_ms"),
         subagent_background_param: renderer.param_for_kind(ToolKind::Task, "run_in_background"),
     })
 }
@@ -234,10 +237,7 @@ impl xai_tool_runtime::Tool for WaitTasksTool {
             initial.results
         };
 
-        let completed_count = results
-            .iter()
-            .filter(|r| super::is_terminal_status(&r.status))
-            .count();
+        let completed_count = results.iter().filter(|r| r.is_terminal()).count();
         let total = results.len();
         let summary = format!("{completed_count}/{total} tasks completed (wait_any)");
 

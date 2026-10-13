@@ -9,6 +9,7 @@ use agent_client_protocol::{self as acp, Agent as _};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use xai_grok_shell::waterfall;
+use xai_grok_test_support::mock_server::LogEntry;
 use xai_grok_test_support::{
     InferenceEndpoint, InferenceRequestMatcher, MockInferenceServer, ResourceSnapshot, RssSampler,
     ScriptedResponse, SseEvent,
@@ -33,6 +34,105 @@ pub fn chat_chunk(delta: Value, finish_reason: Value) -> SseEvent {
 
 pub fn probe_id(n: usize, i: usize) -> String {
     format!("swp-{n}-{i:03}")
+}
+
+/// One scripted `spawn_subagent` call; `task_id` injects the child's session id.
+pub struct SpawnProbe<'a> {
+    pub subagent_type: &'a str,
+    pub description: &'a str,
+    pub prompt: &'a str,
+    pub task_id: &'a str,
+    pub background: bool,
+}
+
+/// One assistant response spawning a single child under an injected id; the script speaks wire names
+/// (`spawn_subagent`, `background`).
+pub fn spawn_probe_sse(probe: &SpawnProbe<'_>) -> ScriptedResponse {
+    let args = json!({
+        "description": probe.description,
+        "prompt": probe.prompt,
+        "subagent_type": probe.subagent_type,
+        "background": probe.background,
+        "task_id": probe.task_id,
+    });
+    ScriptedResponse::sse(vec![
+        chat_chunk(
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "call_probe",
+                    "type": "function",
+                    "function": { "name": "spawn_subagent", "arguments": args.to_string() }
+                }]
+            }),
+            Value::Null,
+        ),
+        chat_chunk(json!({}), json!("tool_calls")),
+        SseEvent::data("[DONE]"),
+    ])
+}
+
+/// Title and other side queries hit the same path without `x-grok-turn-idx`.
+pub fn is_foreground(entry: &LogEntry) -> bool {
+    entry.method == "POST"
+        && entry.path.contains("chat/completions")
+        && entry
+            .header("x-grok-turn-idx")
+            .is_some_and(|v| !v.trim().is_empty())
+}
+
+pub fn messages(body: &Value) -> &[Value] {
+    body["messages"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+}
+
+pub fn message_text(message: &Value) -> String {
+    match &message["content"] {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => other.to_string(),
+    }
+}
+
+/// A prompt turn ends in the user message carrying that prompt; follow-ups end in a `tool` message.
+pub fn ends_with_user_prompt(body: &Value, prompt: &str) -> bool {
+    messages(body)
+        .last()
+        .is_some_and(|message| message["role"] == "user" && message_text(message).contains(prompt))
+}
+
+/// Only the child's own turn carries its prompt as a user message; the parent sees it inside tool-call arguments.
+pub fn has_user_prompt(body: &Value, prompt: &str) -> bool {
+    messages(body)
+        .iter()
+        .any(|message| message["role"] == "user" && message_text(message).contains(prompt))
+}
+
+/// The one foreground chat-completions body satisfying `matches`; anything else is a test-scripting mistake.
+pub fn single_request(mock: &MockInferenceServer, matches: impl Fn(&Value) -> bool) -> Value {
+    let bodies: Vec<Value> = mock
+        .requests()
+        .into_iter()
+        .filter(is_foreground)
+        .filter_map(|entry| entry.body)
+        .filter(matches)
+        .collect();
+    let [body] = <[Value; 1]>::try_from(bodies).unwrap_or_else(|bodies| {
+        panic!(
+            "expected exactly one matching request, got {}\n{}",
+            bodies.len(),
+            mock.request_log_summary()
+        )
+    });
+    body
 }
 
 /// One assistant response with N parallel task calls, one delta chunk per call; the script speaks wire names (`spawn_subagent`, `background`).

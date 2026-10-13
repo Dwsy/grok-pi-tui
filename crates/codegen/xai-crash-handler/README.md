@@ -1,14 +1,14 @@
 # xai-crash-handler
 
-Crash handler for SIGBUS/SIGSEGV with best-effort backtrace capture.
+Crash handler for SIGBUS/SIGSEGV/SIGABRT (Unix) plus Windows SEH, with best-effort backtrace capture.
 
 ## How it works
 
-`install()` registers a `sigaction` handler. On crash it writes a binary blob (`GCRX` format) to `crash_dir/last-crash.bin` and restores the terminal via pre-computed escape sequences. The handler uses only async-signal-safe operations for file I/O, terminal restore, and re-raise.
+On crash, `install()` writes a binary blob (`GCRX` format) to `crash_dir/last-crash.bin` and restores the terminal with pre-computed escape sequences. The handler uses only async-signal-safe operations for file I/O, terminal restore, and re-raise.
 
-On next launch, `check_previous_crash()` reads the blob, resolves IPs to symbols via `backtrace`, writes `last-crash-report.txt`, and archives it (keeping the last 5 reports).
+On next launch, `check_previous_crash()` reads the blob, resolves IPs to symbols with `backtrace`, writes `last-crash-report.txt`, and archives it (keeping the last 5 reports).
 
-No-ops on non-unix platforms. On musl-based Linux (release builds), the handler still records signal/address/version but skips frame capture since musl does not provide `backtrace()`.
+Unix `install()` uses `sigaction` for SIGBUS, SIGSEGV, and SIGABRT (`panic = "abort"`). Windows uses `SetUnhandledExceptionFilter`; `abort()` on Windows is not captured.
 
 ## Limitations
 

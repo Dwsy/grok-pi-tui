@@ -22,7 +22,7 @@ impl FileMetadata {
 const PDF_MAGIC: &[u8; 5] = b"%PDF-";
 
 pub(crate) fn is_pdf_magic(bytes: &[u8]) -> bool {
-    bytes.len() >= 5 && bytes[..5] == *PDF_MAGIC
+    bytes.get(..5) == Some(PDF_MAGIC.as_slice())
 }
 
 /// Infer file metadata (MIME type, extension) from raw bytes using magic-byte inspection.
@@ -87,11 +87,11 @@ fn skip_complete_png_chunks(bytes: &[u8]) -> &[u8] {
         let Some(header_end) = i.checked_add(8) else {
             break;
         };
-        let Some(header) = bytes.get(i..header_end) else {
+        let Some(&[l0, l1, l2, l3, t0, t1, t2, t3]) = bytes.get(i..header_end) else {
             break;
         };
-        let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
-        let is_iend = &header[4..8] == b"IEND";
+        let len = u32::from_be_bytes([l0, l1, l2, l3]) as usize;
+        let is_iend = [t0, t1, t2, t3] == *b"IEND";
         let Some(chunk_end) = header_end.checked_add(4).and_then(|n| n.checked_add(len)) else {
             break;
         };
@@ -112,13 +112,15 @@ fn skip_complete_png_chunks(bytes: &[u8]) -> &[u8] {
 pub fn extract_svg_text(bytes: &[u8]) -> Option<String> {
     let suffix = skip_complete_png_chunks(bytes);
     if let Some(xml) = find_ignore_ascii_case(suffix, b"<?xml") {
-        let text = std::str::from_utf8(&suffix[xml..]).ok()?;
+        let text = std::str::from_utf8(suffix.get(xml..)?).ok()?;
         if text.contains("<svg") || text.contains("<SVG") {
             return Some(text.to_owned());
         }
     }
     let svg = find_ignore_ascii_case(suffix, b"<svg")?;
-    std::str::from_utf8(&suffix[svg..]).ok().map(str::to_owned)
+    std::str::from_utf8(suffix.get(svg..)?)
+        .ok()
+        .map(str::to_owned)
 }
 
 fn find_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {

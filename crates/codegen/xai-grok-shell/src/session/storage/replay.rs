@@ -511,7 +511,9 @@ pub fn prepare_replay_lines<'a>(contents: &'a str, cursor: Option<&str>) -> Prep
     let cursor_pos = cursor
         .and_then(|id| filtered.iter().rposition(|l| line_has_event_id(l, id)))
         .filter(|&pos| {
-            let bounded = filtered[pos + 1..]
+            let bounded = filtered
+                .get(pos + 1..)
+                .unwrap_or(&[])
                 .iter()
                 .all(|l| line_is_dropped_on_replay(l) || line_event_id(l).is_some());
             if !bounded {

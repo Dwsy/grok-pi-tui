@@ -1,4 +1,4 @@
-//! Shared cache-aligned request building for recap-style auxiliary model calls (recap, turn summary).
+//! Shared cache-aligned request building for recap-style auxiliary model calls (recap, title refresh).
 //! `/btw` reuses the request skeleton.
 
 use super::*;
@@ -132,7 +132,7 @@ impl SessionActor {
         }
     }
 
-    /// Prepare the shared pieces of a recap-style side-call (recap and turn summary): the sampling client and the config both need.
+    /// Prepare the shared pieces of a recap-style side-call (recap and title refresh): the sampling client and the config both need.
     /// Recap-style side-calls preserve reasoning so their conversation prefix stays byte-identical to the parent turn.
     /// Messages strips reasoning only when the matching effort cannot emit a top-level thinking configuration.
     pub(crate) async fn prepare_side_call(&self) -> Result<SideCallSetup, acp::Error> {
@@ -153,32 +153,6 @@ impl SessionActor {
             context_window,
             model,
             reasoning_effort,
-        })
-    }
-
-    /// Build the cache-aligned request for a recap-style side-call via [`Self::parent_cached_request`].
-    /// Uses the main turn's tool and hosted-tool specs and matching reasoning effort so the prompt-cache prefix stays warm.
-    /// The instructions keep outputs short and the clean helpers cap length as a safety net, so an explicit token cap isn't needed.
-    pub(crate) async fn side_call_request(
-        &self,
-        setup: &SideCallSetup,
-        items: Vec<ConversationItem>,
-        x_grok_conv_id: String,
-        x_grok_req_id: String,
-    ) -> ConversationRequest {
-        let tool_defs = self.prepare_tool_definitions().await;
-        let tools = self.turn_base_tool_specs(&tool_defs);
-        // Mirror the main turn's hosted tools (overrides folded in) so a side-call can't search past the active cutoff.
-        let hosted_tools = self.hosted_tools_for_turn();
-        self.parent_cached_request(AuxCall {
-            items,
-            tools,
-            hosted_tools,
-            model: setup.model.clone(),
-            reasoning_effort: setup.reasoning_effort,
-            backend: setup.client.api_backend(),
-            conv_id: x_grok_conv_id,
-            req_id: x_grok_req_id,
         })
     }
 

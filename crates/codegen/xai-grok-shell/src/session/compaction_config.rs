@@ -166,6 +166,8 @@ pub(crate) struct CompactionConfig {
     pub auto_compact_suppressed: AtomicU8,
     /// Locks the context window when `GROK_DEBUG_CONTEXT_WINDOW` is set.
     pub context_window_override: Option<std::num::NonZeroU64>,
+    /// Shared with `SessionHandle::context_window_selection`.
+    pub context_window_selection: Arc<AtomicU64>,
     pub count: AtomicU64,
     /// Set at turn end; consumed at next turn start for model-switch compaction.
     /// `Cell` because `SessionActor` is `!Send`.

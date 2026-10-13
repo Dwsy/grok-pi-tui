@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::permission::{
     bash_command_splitting::{BashCommandHighlights, primary_command_from_script},
-    manager::web_fetch_deny_key_from_url,
+    grants::web_fetch_deny_key_from_url,
     types::{AccessKind, ClientType, HOOK_ASK_META_KEY, HookAsk},
 };
 use agent_client_protocol::{self as acp, Client as _};
@@ -564,7 +564,9 @@ impl AcpPrompter {
     ) -> IndexMap<acp::PermissionOptionId, acp::PermissionOption> {
         match access {
             AccessKind::Edit(_) => self.edit_options.clone(),
-            AccessKind::AgentMessage { .. } => self.agent_message_options.clone(),
+            AccessKind::AgentMessage { .. } | AccessKind::Tool(_) => {
+                self.agent_message_options.clone()
+            }
             AccessKind::Bash(bash_command) => {
                 // For GrokTUI clients, use the fancy interactive options with term selection
                 // For generic clients (web, etc.), use simpler options that work without special UI handling
@@ -578,7 +580,7 @@ impl AcpPrompter {
                         // Offer allow only when accepting it can stop this script from prompting again; deny stays because deny prefixes bind unconditionally
                         let primary_command = primary_command_from_script(bash_command);
                         if let Some(primary_command) = &primary_command
-                            && crate::permission::manager::always_allow_row_is_effective(
+                            && crate::permission::grants::always_allow_row_is_effective(
                                 bash_command,
                             )
                         {
@@ -754,6 +756,8 @@ impl AcpPrompter {
                     access,
                     tool_call_update.tool_call_id.0.as_ref(),
                     hook_ask,
+                    // The manager records "always" answers in its own store.
+                    xai_tool_runtime::ToolApprovalPolicy::GrantsAllowed,
                 )
                 .await
             }
@@ -844,6 +848,7 @@ pub fn tool_name_for_access(access: &AccessKind) -> String {
         AccessKind::AgentMessage { .. } => {
             xai_grok_tools::implementations::grok_build::SEND_SUBAGENT_MESSAGE_TOOL_NAME.to_owned()
         }
+        AccessKind::Tool(name) => name.clone(),
     }
 }
 
@@ -1807,9 +1812,7 @@ mod tests {
         assert_eq!(mcp_titleize_segment(""), "");
     }
 
-    // ------------------------------------------------------------------
     // "Enable always-approve mode" option (prepended for TUI/Pager/Desktop)
-    // ------------------------------------------------------------------
 
     fn enable_always_approve_id() -> acp::PermissionOptionId {
         acp::PermissionOptionId::new(ENABLE_ALWAYS_APPROVE_OPTION_ID)
@@ -2094,13 +2097,31 @@ mod tests {
             2,
             "expected PermissionRequested + PermissionResolved"
         );
-        assert_eq!(lines[0]["type"], "permission_requested");
-        assert_eq!(lines[0]["tool_name"], "run_terminal_command");
-        assert_eq!(lines[1]["type"], "permission_resolved");
-        assert_eq!(lines[1]["tool_name"], "run_terminal_command");
-        assert_eq!(lines[1]["decision"], "deny");
+        let [requested, resolved] = lines.as_slice() else {
+            panic!("expected two event lines: {lines:?}");
+        };
+        assert_eq!(
+            requested.get("type").and_then(|v| v.as_str()),
+            Some("permission_requested")
+        );
+        assert_eq!(
+            requested.get("tool_name").and_then(|v| v.as_str()),
+            Some("run_terminal_command")
+        );
+        assert_eq!(
+            resolved.get("type").and_then(|v| v.as_str()),
+            Some("permission_resolved")
+        );
+        assert_eq!(
+            resolved.get("tool_name").and_then(|v| v.as_str()),
+            Some("run_terminal_command")
+        );
+        assert_eq!(
+            resolved.get("decision").and_then(|v| v.as_str()),
+            Some("deny")
+        );
         assert!(
-            lines[1]["wait_ms"].as_u64().is_some(),
+            resolved.get("wait_ms").and_then(|v| v.as_u64()).is_some(),
             "PermissionResolved must carry wait_ms"
         );
     }

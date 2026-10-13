@@ -1,24 +1,37 @@
-use pretty_assertions::assert_eq;
-
 use super::*;
 use crate::test_util::make_worktree_record as make_record;
-
+use pretty_assertions::assert_eq;
+#[test]
+fn clean_flags_require_yes_and_conflict() {
+    use clap::Parser;
+    for args in [
+        ["grok", "du", "--clean", ""],
+        ["grok", "du", "--clean-orphaned", ""],
+        ["grok", "du", "--yes", ""],
+        ["grok", "du", "--clean", "--clean-orphaned"],
+    ] {
+        let args = args.into_iter().filter(|arg| !arg.is_empty());
+        assert!(crate::app::cli::PagerArgs::try_parse_from(args).is_err());
+    }
+    assert!(crate::app::cli::PagerArgs::try_parse_from(["grok", "du", "--clean", "--yes"]).is_ok());
+    assert!(
+        crate::app::cli::PagerArgs::try_parse_from(["grok", "du", "--clean-orphaned", "--yes"])
+            .is_ok()
+    );
+}
 fn render_report(report: &DiskUsageReport, now: i64) -> String {
     let mut out = Vec::new();
     display::print_report(report, now, &mut out).unwrap();
     String::from_utf8(out).unwrap()
 }
-
 fn measured(path: &Path) -> Option<u64> {
     physical_dir_size(path, Volume::of(path)).measure.bytes()
 }
-
 fn modified(path: &Path) -> Option<i64> {
     physical_dir_size(path, Volume::of(path))
         .measure
         .last_modified()
 }
-
 fn untracked_row(bytes: u64) -> WorktreeUsage {
     WorktreeUsage {
         bytes: Some(bytes),
@@ -28,14 +41,12 @@ fn untracked_row(bytes: u64) -> WorktreeUsage {
         path: "/wt-home/worktrees/xai/wt-1".into(),
     }
 }
-
 fn tracked_row(bytes: u64, rec: TrackedRow) -> WorktreeUsage {
     WorktreeUsage {
         registration: Registration::Tracked(rec),
         ..untracked_row(bytes)
     }
 }
-
 fn record(id: &str, created_at: i64) -> TrackedRow {
     TrackedRow {
         id: id.into(),
@@ -47,7 +58,6 @@ fn record(id: &str, created_at: i64) -> TrackedRow {
         git_ref: None,
     }
 }
-
 fn worktrees_report(worktrees: Vec<WorktreeUsage>, total_bytes: u64) -> DiskUsageReport {
     DiskUsageReport {
         grok_home: "/wt-home".into(),
@@ -61,7 +71,6 @@ fn worktrees_report(worktrees: Vec<WorktreeUsage>, total_bytes: u64) -> DiskUsag
         ..DiskUsageReport::default()
     }
 }
-
 #[test]
 fn collect_report_joins_registry_and_flags_untracked() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -78,15 +87,12 @@ fn collect_report_joins_registry_and_flags_untracked() {
     std::fs::write(external.join("huge.bin"), vec![b'x'; 131_072]).unwrap();
     std::fs::create_dir_all(home.join("sessions")).unwrap();
     std::fs::write(home.join("sessions/log.jsonl"), vec![b'x'; 4096]).unwrap();
-
     let db = WorktreeDb::open(&home).unwrap();
     db.register(&make_record("wt-tracked", &tracked, "my-feature"))
         .unwrap();
     db.register(&make_record("wt-external", &external, "elsewhere"))
         .unwrap();
-
     let report = collect_report(&home).unwrap();
-
     assert_eq!(
         report.top_level_dirs,
         vec![
@@ -110,7 +116,6 @@ fn collect_report_joins_registry_and_flags_untracked() {
         report.registry_path
     );
     assert_eq!(report.worktrees_outside_managed_roots, 1);
-
     assert_eq!(
         report.worktrees,
         vec![
@@ -133,7 +138,6 @@ fn collect_report_joins_registry_and_flags_untracked() {
         ]
     );
 }
-
 #[cfg(unix)]
 #[test]
 fn record_registered_via_symlinked_home_joins_as_one_row() {
@@ -145,7 +149,6 @@ fn record_registered_via_symlinked_home_joins_as_one_row() {
     std::fs::write(wt.join("f.bin"), vec![b'x'; 4096]).unwrap();
     let link_home = base.join("link-home");
     std::os::unix::fs::symlink(&real_home, &link_home).unwrap();
-
     let db = WorktreeDb::open(&real_home).unwrap();
     db.register(&make_record(
         "wt-a",
@@ -153,17 +156,16 @@ fn record_registered_via_symlinked_home_joins_as_one_row() {
         "via-link",
     ))
     .unwrap();
-
     let report = collect_report(&real_home).unwrap();
-    assert_eq!(
-        report.worktrees.len(),
-        1,
-        "a record stored under a symlinked home must not also appear as untracked"
-    );
-    assert!(report.worktrees[0].is_tracked());
-    assert_eq!(report.worktrees[0].label(), "via-link");
+    let [wt] = report.worktrees.as_slice() else {
+        panic!(
+            "a record stored under a symlinked home must not also appear as untracked: {:?}",
+            report.worktrees
+        );
+    };
+    assert!(wt.is_tracked());
+    assert_eq!(wt.label(), "via-link");
 }
-
 #[cfg(unix)]
 #[test]
 fn duplicate_discovered_dirs_size_once() {
@@ -173,17 +175,16 @@ fn duplicate_discovered_dirs_size_once() {
     std::fs::create_dir_all(&wt).unwrap();
     std::fs::write(wt.join("f.bin"), vec![b'x'; 4096]).unwrap();
     std::os::unix::fs::symlink(&wt, home.join("worktrees/xai/wt-alias")).unwrap();
-
     let report = collect_report(&home).unwrap();
-    assert_eq!(
-        report.worktrees.len(),
-        1,
-        "two discovered entries canonicalizing to one dir must yield one row"
-    );
-    assert!(!report.worktrees[0].is_tracked());
-    assert_eq!(report.worktrees[0].bytes, measured(&wt));
+    let [row] = report.worktrees.as_slice() else {
+        panic!(
+            "two discovered entries canonicalizing to one dir must yield one row: {:?}",
+            report.worktrees
+        );
+    };
+    assert!(!row.is_tracked());
+    assert_eq!(row.bytes, measured(&wt));
 }
-
 #[cfg(unix)]
 #[test]
 fn escape_symlink_is_counted_not_sized() {
@@ -195,7 +196,6 @@ fn escape_symlink_is_counted_not_sized() {
     std::fs::create_dir_all(&external).unwrap();
     std::fs::write(external.join("huge.bin"), vec![b'x'; 65536]).unwrap();
     std::os::unix::fs::symlink(&external, home.join("worktrees/xai/escape")).unwrap();
-
     let report = collect_report(&home).unwrap();
     assert!(
         report.worktrees.is_empty(),
@@ -203,7 +203,6 @@ fn escape_symlink_is_counted_not_sized() {
     );
     assert_eq!(report.worktrees_outside_managed_roots, 1);
 }
-
 #[cfg(unix)]
 #[test]
 fn top_level_symlink_costs_its_own_inode_not_the_target() {
@@ -215,9 +214,7 @@ fn top_level_symlink_costs_its_own_inode_not_the_target() {
     std::fs::write(&external, vec![b'x'; 1 << 20]).unwrap();
     let link = home.join("huge.bin");
     std::os::unix::fs::symlink(&external, &link).unwrap();
-
     let report = collect_report(&home).unwrap();
-
     let link_bytes = physical_file_size(&std::fs::symlink_metadata(&link).unwrap());
     let target_bytes = physical_file_size(&std::fs::metadata(&external).unwrap());
     assert!(
@@ -235,7 +232,6 @@ fn top_level_symlink_costs_its_own_inode_not_the_target() {
     );
     assert_eq!(report.skips.skipped_entries, 0);
 }
-
 #[test]
 fn record_at_missing_path_is_omitted() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -248,14 +244,12 @@ fn record_at_missing_path_is_omitted() {
         "gone",
     ))
     .unwrap();
-
     let report = collect_report(&home).unwrap();
     assert_eq!(report.registry, RegistryState::Read);
     assert!(report.worktrees.is_empty());
     assert_eq!(report.worktrees_outside_managed_roots, 0);
     assert_eq!(report.skips.skipped_entries, 0);
 }
-
 #[test]
 fn registry_absent_reports_untracked_rows() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -263,7 +257,6 @@ fn registry_absent_reports_untracked_rows() {
     let wt = home.join("worktrees/xai/wt-a");
     std::fs::create_dir_all(&wt).unwrap();
     std::fs::write(wt.join("f.bin"), vec![b'x'; 4096]).unwrap();
-
     let dir_names = |path: &Path| -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(path)
             .unwrap()
@@ -276,10 +269,11 @@ fn registry_absent_reports_untracked_rows() {
     let report = collect_report(&home).unwrap();
     assert_eq!(dir_names(&home), before, "collecting must not create files");
     assert_eq!(report.registry, RegistryState::Absent);
-    assert_eq!(report.worktrees.len(), 1);
-    assert!(!report.worktrees[0].is_tracked());
+    let [wt] = report.worktrees.as_slice() else {
+        panic!("expected one untracked worktree: {:?}", report.worktrees);
+    };
+    assert!(!wt.is_tracked());
 }
-
 #[test]
 fn corrupt_registry_degrades_to_untracked_rows() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -292,19 +286,18 @@ fn corrupt_registry_degrades_to_untracked_rows() {
         b"garbage, not an sqlite header",
     )
     .unwrap();
-
     let report = collect_report(&home).unwrap();
     assert_eq!(report.registry, RegistryState::Corrupt);
     assert!(!report.top_level_dirs.is_empty());
-    assert_eq!(report.worktrees.len(), 1);
-    assert!(!report.worktrees[0].is_tracked());
+    let [wt] = report.worktrees.as_slice() else {
+        panic!("expected one untracked worktree: {:?}", report.worktrees);
+    };
+    assert!(!wt.is_tracked());
     assert_eq!(
-        serde_json::to_value(&report).unwrap()["registry"],
-        "corrupt"
+        serde_json::to_value(&report).unwrap().get("registry"),
+        Some(&serde_json::json!("corrupt"))
     );
 }
-
-// The fallback must not re-measure an excluded row against its own volume: that printed bytes the total did not hold
 #[cfg(unix)]
 #[test]
 fn a_row_off_the_anchor_reports_no_size() {
@@ -314,9 +307,7 @@ fn a_row_off_the_anchor_reports_no_size() {
     std::fs::write(wt.join("payload.bin"), vec![b'x'; 65536]).unwrap();
     let elsewhere = Volume::of(&wt).other_device_for_test();
     let mut issues = WalkIssues::default();
-
     let size = row_size(&wt, &HashMap::new(), &mut issues, elsewhere);
-
     assert_eq!(size, Measure::Elsewhere);
     assert_eq!(size.bytes(), None, "no row prints bytes no total holds");
     assert_eq!(issues.other_filesystems, 1);
@@ -325,8 +316,6 @@ fn a_row_off_the_anchor_reports_no_size() {
         "the bytes are there to measure: the anchor is the only reason the row has none"
     );
 }
-
-// A swapped arm shipped silently once. Only `Corrupt` advises deleting.
 #[test]
 fn every_open_outcome_maps_to_its_state() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -339,11 +328,9 @@ fn every_open_outcome_maps_to_its_state() {
         "lbl",
     ))
     .unwrap();
-
     let opened = classify(WorktreeDb::open_read_only(&home));
     assert_eq!(opened.0, RegistryState::Read);
     assert_eq!(opened.1.len(), 1, "a readable registry yields its records");
-
     let cases = [
         (
             RegistryOpen::Absent { path: path.clone() },
@@ -371,8 +358,6 @@ fn every_open_outcome_maps_to_its_state() {
         assert_eq!(reported, path, "every state names the file");
     }
 }
-
-// Deleting a registry that is merely unopenable loses every label, creation time, and session id in it
 #[test]
 fn unopenable_registry_is_not_reported_as_corrupt() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -381,9 +366,7 @@ fn unopenable_registry_is_not_reported_as_corrupt() {
     std::fs::create_dir_all(&wt).unwrap();
     std::fs::write(wt.join("f.bin"), vec![b'x'; 4096]).unwrap();
     std::fs::create_dir_all(WorktreeDb::resolve_db_path(&home)).unwrap();
-
     let report = collect_report(&home).unwrap();
-
     assert_eq!(report.registry, RegistryState::Unopenable);
     let text = render_report(&report, 0);
     assert!(text.contains("could not be opened"), "{text}");
@@ -392,8 +375,6 @@ fn unopenable_registry_is_not_reported_as_corrupt() {
         "an unopenable registry must never be proposed for deletion: {text}"
     );
 }
-
-// A column showing only creation prints 40d beside a `--max-age 7d` hint for a worktree gc will not touch
 #[test]
 fn age_column_reads_what_gc_reads() {
     const DAY: i64 = 86_400;
@@ -412,8 +393,6 @@ fn age_column_reads_what_gc_reads() {
         "the column must not overstate staleness against gc: {text}"
     );
 }
-
-// Four hand-copied assignments; swapping two of them kept CI green.
 #[test]
 fn walk_issues_convert_to_report_counters() {
     let issues = WalkIssues {
@@ -432,8 +411,6 @@ fn walk_issues_convert_to_report_counters() {
         "each counter keeps its name, and skipped_entries is the sum of the two failures"
     );
 }
-
-// Flipping Busy to Corrupt puts "damaged, remove it" in front of a user whose registry is only busy
 #[test]
 fn sqlite_failure_kinds_map_to_states() {
     let cases = [
@@ -445,9 +422,6 @@ fn sqlite_failure_kinds_map_to_states() {
         assert_eq!(state_for(kind), want, "{kind:?}");
     }
 }
-
-// A read-only WAL open leaves sidecars, so sizing runs first
-// Only their absence from the total proves the ordering
 #[test]
 fn the_registry_open_lands_after_sizing() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -470,9 +444,7 @@ fn the_registry_open_lands_after_sizing() {
         sidecars.iter().all(|p| !p.exists()),
         "a closed connection checkpoints its sidecars away"
     );
-
     let report = collect_report(&home).unwrap();
-
     let db_bytes = physical_file_size(&std::fs::symlink_metadata(&db_path).unwrap());
     assert_eq!(
         report.root_files_bytes, db_bytes,
@@ -483,7 +455,6 @@ fn the_registry_open_lands_after_sizing() {
         "the read-only open does leave a sidecar, which is why sizing goes first"
     );
 }
-
 #[test]
 fn worktrees_dominate_at_half_of_total() {
     struct Case {
@@ -538,7 +509,6 @@ fn worktrees_dominate_at_half_of_total() {
         assert_eq!(report.worktrees_dominate(), case.dominate, "{}", case.name);
     }
 }
-
 #[test]
 fn json_shape_is_frozen() {
     let report = DiskUsageReport {
@@ -552,6 +522,9 @@ fn json_shape_is_frozen() {
             bytes: Some(90),
         }],
         root_files_bytes: 10,
+        redirections_bytes: 0,
+        orphaned_redirections: Vec::new(),
+        unattributed_redirect_dirs: Vec::new(),
         skips: SkipCounts::default(),
         unfollowed_dir_symlinks: 0,
         worktrees_outside_managed_roots: 0,
@@ -583,13 +556,16 @@ fn json_shape_is_frozen() {
     assert_eq!(
         serde_json::to_value(&report).unwrap(),
         serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "grok_home": "/home/user/.grok",
             "total_bytes": 100,
             "volume_capacity_bytes": 1_000,
             "volume_available_bytes": 600,
             "top_level_dirs": [{ "name": "worktrees", "bytes": 90 }],
             "root_files_bytes": 10,
+            "redirections_bytes": 0,
+            "orphaned_redirections": [],
+            "unattributed_redirect_dirs": [],
             "skipped_entries": 0,
             "unreadable_dirs": 0,
             "unstatable_entries": 0,
@@ -630,9 +606,10 @@ fn json_shape_is_frozen() {
             ],
         })
     );
-
-    // Serialize is hand-written, and `to_value` would not see a reshuffle.
-    let pretty = serde_json::to_string_pretty(&report.worktrees[0]).unwrap();
+    let Some(first) = report.worktrees.first() else {
+        panic!("frozen fixture includes a tracked worktree");
+    };
+    let pretty = serde_json::to_string_pretty(first).unwrap();
     let keys: Vec<&str> = pretty
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"')?.split('"').next())
@@ -655,24 +632,82 @@ fn json_shape_is_frozen() {
         ]
     );
 }
-
+#[test]
+fn missing_home_prints_unreadable_directory_skip() {
+    const UNREADABLE_DIRECTORY: &str = "  1 directory could not be read; what is under it may be missing from the total. RUST_LOG=debug names it.";
+    let render = |report: &DiskUsageReport| {
+        let mut out = Vec::new();
+        display::print_missing_home_report(report, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let skipped = DiskUsageReport {
+        grok_home: "/nonexistent/.grok".into(),
+        skips: SkipCounts {
+            unreadable_dirs: 1,
+            ..SkipCounts::default()
+        },
+        ..DiskUsageReport::default()
+    };
+    let text = render(&skipped);
+    assert_eq!(
+        Some(UNREADABLE_DIRECTORY),
+        text.lines().find(|line| *line == UNREADABLE_DIRECTORY)
+    );
+    assert!(text.starts_with("Nothing on disk yet at "), "{text}");
+    assert!(!text.contains("Disk usage for"), "{text}");
+    assert!(!text.contains("Worktrees"), "{text}");
+    let clean = DiskUsageReport {
+        grok_home: "/nonexistent/.grok".into(),
+        ..DiskUsageReport::default()
+    };
+    let text = render(&clean);
+    assert_eq!(
+        None,
+        text.lines().find(|line| *line == UNREADABLE_DIRECTORY)
+    );
+    assert!(!text.contains("could not be read"), "{text}");
+    assert!(!text.contains("Disk usage for"), "{text}");
+    assert!(!text.contains("Worktrees"), "{text}");
+    let short = DiskUsageReport {
+        grok_home: "/nonexistent/.grok".into(),
+        redirections_bytes: 4096,
+        skips: SkipCounts {
+            unreadable_dirs: 1,
+            ..SkipCounts::default()
+        },
+        ..DiskUsageReport::default()
+    };
+    let text = render(&short);
+    assert_eq!(
+        Some(UNREADABLE_DIRECTORY),
+        text.lines().find(|line| *line == UNREADABLE_DIRECTORY)
+    );
+    assert!(
+        text.find("Redirections").is_some_and(|at| text
+            .find(UNREADABLE_DIRECTORY)
+            .is_some_and(|skip| at < skip)),
+        "{text}"
+    );
+    assert!(text.contains(&crate::util::format_bytes(4096)), "{text}");
+    assert!(!text.contains("Disk usage for"), "{text}");
+    assert!(!text.contains("Worktrees"), "{text}");
+}
 #[test]
 fn missing_home_json_is_valid_and_empty() {
     let mut out = Vec::new();
     write_report(
         &empty_report(Path::new("/nonexistent/.grok")),
-        /*json*/ true,
+        true,
         &mut out,
     )
     .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(json["schema_version"], 1);
-    assert_eq!(json["registry"], "absent");
-    assert_eq!(json["registry_path"], "");
-    assert_eq!(json["total_bytes"], 0);
-    assert_eq!(json["worktrees"], serde_json::json!([]));
+    assert_eq!(json.get("schema_version"), Some(&serde_json::json!(2)));
+    assert_eq!(json.get("registry"), Some(&serde_json::json!("absent")));
+    assert_eq!(json.get("registry_path"), Some(&serde_json::json!("")));
+    assert_eq!(json.get("total_bytes"), Some(&serde_json::json!(0)));
+    assert_eq!(json.get("worktrees"), Some(&serde_json::json!([])));
 }
-
 #[test]
 fn print_report_truncates_long_labels_and_keeps_columns_aligned() {
     let long_label = "a".repeat(30);
@@ -714,15 +749,16 @@ fn print_report_truncates_long_labels_and_keeps_columns_aligned() {
         ..DiskUsageReport::default()
     };
     let text = render_report(&report, 1_000_000_000);
-
-    assert!(text.contains(&format!("{}…", &long_label[..23])));
+    let Some(truncated) = long_label.get(..23) else {
+        panic!("label is 30 ASCII 'a's");
+    };
+    assert!(text.contains(&format!("{truncated}…")));
     assert!(!text.contains(&long_label));
     assert!(text.contains("session (dead)"));
     assert!(text.contains("untracked (session)"));
     assert!(text.contains("组件更新"));
     crate::test_util::assert_path_column_aligned(&text, "worktrees/xai/wt-");
 }
-
 #[test]
 fn every_skip_counter_renders_singular_and_plural() {
     struct Case {
@@ -781,7 +817,6 @@ fn every_skip_counter_renders_singular_and_plural() {
         );
     }
 }
-
 #[test]
 fn print_report_renders_registry_notices() {
     struct Case {
@@ -868,14 +903,11 @@ fn print_report_renders_registry_notices() {
         }
     }
 }
-
-// Bare `gc` reclaims nothing: without `--max-age` the age pass is off, and the pass only walks registry records
 #[test]
 fn reclaim_hint_names_a_sequence_that_frees_space() {
     const AGE: &str = "run `grok worktree gc --max-age 7d --dry-run`";
     const RM: &str = "Remove one with `grok worktree rm --dry-run <path>`";
     let tracked = tracked_row(60, record("wt-1", 0));
-
     let text = render_report(&worktrees_report(vec![tracked], 100), 0);
     assert!(text.contains(AGE), "{text}");
     assert!(!text.contains(RM), "{text}");
@@ -883,12 +915,10 @@ fn reclaim_hint_names_a_sequence_that_frees_space() {
         text.contains("keeps a worktree whose work it cannot find elsewhere"),
         "the hint must say what gc will refuse to reclaim: {text}"
     );
-
     let text = render_report(&worktrees_report(vec![untracked_row(60)], 100), 0);
     assert!(text.contains(RM), "{text}");
     assert!(!text.contains(AGE), "{text}");
 }
-
 #[cfg(unix)]
 #[test]
 fn clone_note_states_the_double_count_only_when_the_volume_proves_it() {
@@ -935,7 +965,6 @@ fn clone_note_states_the_double_count_only_when_the_volume_proves_it() {
         assert!(text.contains(case.expected), "{}: {text}", case.name);
         assert!(!text.contains(case.absent), "{}: {text}", case.name);
     }
-
     let mut excluded = worktrees_report(vec![untracked_row(900)], 1_500);
     excluded.volume_capacity_bytes = Some(1_000);
     excluded.volume_available_bytes = Some(600);
@@ -949,7 +978,6 @@ fn clone_note_states_the_double_count_only_when_the_volume_proves_it() {
         "{text}"
     );
 }
-
 #[cfg(unix)]
 #[test]
 fn symlinked_worktrees_dir_is_surfaced_not_silently_dropped() {
@@ -963,18 +991,18 @@ fn symlinked_worktrees_dir_is_surfaced_not_silently_dropped() {
     std::fs::write(wt.join(".git"), "gitdir: /repo/.git/worktrees/wt-a\n").unwrap();
     std::fs::write(wt.join("big.bin"), vec![b'x'; 1 << 20]).unwrap();
     std::os::unix::fs::symlink(&elsewhere, home.join(WORKTREES_DIR)).unwrap();
-
     let report = collect_report(&home).unwrap();
-
     assert_eq!(report.unfollowed_dir_symlinks, 1);
     assert!(
         report.top_level_dirs.is_empty(),
         "a symlinked worktrees dir is not a dir entry, so it never reaches the breakdown: {:?}",
         report.top_level_dirs
     );
-    assert_eq!(report.worktrees.len(), 1);
+    let [wt] = report.worktrees.as_slice() else {
+        panic!("expected the escaped worktree row: {:?}", report.worktrees);
+    };
     assert!(
-        report.worktrees[0].bytes.unwrap() > report.total_bytes,
+        wt.bytes.is_some_and(|bytes| bytes > report.total_bytes),
         "the row must outsize a total that never walked the target"
     );
     assert!(
@@ -982,11 +1010,9 @@ fn symlinked_worktrees_dir_is_surfaced_not_silently_dropped() {
         "the omission must be stated, not left to the arithmetic"
     );
 }
-
 #[cfg(unix)]
 #[test]
 #[serial_test::serial(GROK_HOME)]
-// Serial keys are independent locks, so a test setting both must hold both
 #[serial_test::serial(HOME)]
 fn symlinked_default_home_keeps_home_label() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -996,7 +1022,6 @@ fn symlinked_default_home_keeps_home_label() {
     std::fs::create_dir_all(&real_grok).unwrap();
     std::os::unix::fs::symlink(&real_grok, fake_home.join(".grok")).unwrap();
     let _home = crate::test_util::EnvVarGuard::set("HOME", &fake_home);
-
     let resolved = dunce::canonicalize(&fake_home).unwrap().join(".grok");
     let canonical = dunce::canonicalize(&resolved).unwrap();
     assert_ne!(canonical, resolved, "the symlink must actually resolve");

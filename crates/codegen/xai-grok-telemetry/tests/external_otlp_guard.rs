@@ -2,37 +2,26 @@
 //!
 //! The internal trace firehose can resolve its endpoint and headers from the deprecated `OTEL_EXPORTER_OTLP_*` fallback.
 //! When it does, the shell sets `internal_pipeline_consumed_otel_vars = true` and `external::init` MUST refuse to activate.
-//! Otherwise the standard vars could point both the internally-authed firehose and the customer collector at one endpoint, leaking xAI credentials.
-//! Here we prove the refusal end-to-end: even with a fully valid double opt-in pointed at a live collector, nothing is exported.
+//! Otherwise the standard vars could point both the internally-authed firehose and the customer server at one endpoint, leaking xAI credentials.
+//! Here we prove the refusal end-to-end: even with a fully valid double opt-in pointed at a live server, nothing is exported.
 
-mod otlp_collector;
+use std::time::Duration;
 
-use otlp_collector as col;
 use xai_grok_telemetry::external;
+use xai_grok_test_support::{MockOtelServer, OtelExport};
 
-#[test]
-fn refuses_to_activate_when_internal_consumed_standard_vars() {
-    let collected = col::Collected::default();
-    let endpoint = col::start_collector(collected.clone());
+#[tokio::test]
+async fn refuses_to_activate_when_internal_consumed_standard_vars() {
+    let server = MockOtelServer::start().await.unwrap();
 
-    let mut cfg = external::ExternalOtelConfig::resolve_with(
-        |name| match name {
-            "GROK_EXTERNAL_OTEL" => Some("1".into()),
-            "OTEL_LOGS_EXPORTER" | "OTEL_METRICS_EXPORTER" => Some("otlp".into()),
-            "OTEL_EXPORTER_OTLP_ENDPOINT" => Some(endpoint.clone()),
-            "OTEL_METRIC_EXPORT_INTERVAL" => Some("100".into()),
-            "OTEL_BLRP_SCHEDULE_DELAY" => Some("100".into()),
-            _ => None,
-        },
-        None,
-    )
-    .expect("config resolves (the refusal happens at init, not resolution)");
+    let env = server.exporter_env();
+    let mut cfg = external::ExternalOtelConfig::resolve_with(|name| env.get(name).cloned(), None)
+        .expect("config resolves (the refusal happens at init, not resolution)");
     cfg.client = external::config::ExternalClientInfo {
         service_version: "0.0.0-test".into(),
         client_version: "0.0.0-test".into(),
         app_entrypoint: "cli".into(),
     };
-    // This is the flag the shell sets when the internal firehose consumed the standard OTEL_* vars via the deprecated fallback
     cfg.internal_pipeline_consumed_otel_vars = true;
 
     external::init(Some(cfg));
@@ -41,7 +30,6 @@ fn refuses_to_activate_when_internal_consumed_standard_vars() {
         "external stream MUST refuse to activate to prevent credential leakage"
     );
 
-    // Emit through the real funnel; with the stream inert this must be a no-op.
     xai_grok_telemetry::log_event(xai_grok_telemetry::events::SessionNew {
         session_id: "sess-guard".into(),
         client_identifier: None,
@@ -49,20 +37,16 @@ fn refuses_to_activate_when_internal_consumed_standard_vars() {
         is_git_repo: true,
         permission_mode: xai_grok_telemetry::enums::PermissionMode::Ask,
     });
-    external::flush();
+    tokio::task::spawn_blocking(external::flush).await.unwrap();
 
-    // Give any (erroneously constructed) exporter ample time to phone home.
-    std::thread::sleep(std::time::Duration::from_millis(600));
-    assert_eq!(
-        collected.logs_len(),
-        0,
-        "no logs may be exported when refused"
-    );
-    assert_eq!(
-        collected.metrics_len(),
-        0,
-        "no metrics may be exported when refused"
-    );
+    server
+        .recorder()
+        .wait_for_silence(Duration::from_millis(600), |events| !events.is_empty())
+        .await
+        .expect("nothing may be exported when refused");
+    assert_eq!(Vec::<OtelExport>::new(), server.recorder().exports());
 
-    external::shutdown();
+    tokio::task::spawn_blocking(external::shutdown)
+        .await
+        .unwrap();
 }

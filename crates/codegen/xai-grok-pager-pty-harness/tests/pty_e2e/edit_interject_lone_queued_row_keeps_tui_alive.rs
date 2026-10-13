@@ -95,7 +95,7 @@ async fn edit_interject_lone_queued_row_keeps_tui_alive() {
     // well, so the probe below never echoes.
     harness
         .inject_keys(b" ")
-        .expect("focus prompt from scrollback");
+        .expect("type into the already-focused composer");
     harness.update(Duration::from_millis(200));
     harness
         .inject_keys(b"liveness-probe-xyz")

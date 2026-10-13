@@ -2771,17 +2771,26 @@ async fn update_writes_disk_before_user_enrichment() {
 /// Without it an interleaved enrichment write can resurrect the older `refresh_token`, re-opening the `invalid_grant` race.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn enrichment_task_preserves_interleaved_token_rotation() {
+    let release = Arc::new(tokio::sync::Notify::new());
+    let hits = Arc::new(AtomicU32::new(0));
+    let release_for_handler = Arc::clone(&release);
+    let hits_for_handler = Arc::clone(&hits);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let app = axum::Router::new().route(
         "/user",
-        axum::routing::get(|| async {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            axum::Json(serde_json::json!({
-                "userId": "stable-user",
-                "email": "user@corp.com",
-                "teamId": "team-alpha",
-            }))
+        axum::routing::get(move || {
+            let r = Arc::clone(&release_for_handler);
+            let h = Arc::clone(&hits_for_handler);
+            async move {
+                h.fetch_add(1, Ordering::SeqCst);
+                r.notified().await;
+                axum::Json(serde_json::json!({
+                    "userId": "stable-user",
+                    "email": "user@corp.com",
+                    "teamId": "team-alpha",
+                }))
+            }
         }),
     );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -2804,9 +2813,22 @@ async fn enrichment_task_preserves_interleaved_token_rotation() {
     };
     mgr.update(auth_v1).await.unwrap();
     mgr.update(auth_v2).await.unwrap();
+    let mut seen = 0;
+    for _ in 0..50 {
+        seen = hits.load(Ordering::SeqCst);
+        if seen >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        seen, 2,
+        "both enrichment /user calls must be in flight before release, got {seen}"
+    );
+    release.notify_waiters();
     let auth_path = dir.path().join("auth.json");
     let mut final_state = None;
-    for _ in 0..30 {
+    for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let store = read_auth_json(&auth_path).unwrap();
         let entry = store.values().next().unwrap().clone();
@@ -2815,7 +2837,17 @@ async fn enrichment_task_preserves_interleaved_token_rotation() {
             break;
         }
     }
-    let final_state = final_state.expect("v2 + enrichment must land within 3s");
+    let Some(final_state) = final_state else {
+        let store = read_auth_json(&auth_path).unwrap();
+        let entry = store.values().next().cloned();
+        panic!(
+            "v2 + enrichment must land within 5s; disk key={:?} refresh={:?} team={:?} hits={}",
+            entry.as_ref().map(|e| e.key.as_str()),
+            entry.as_ref().and_then(|e| e.refresh_token.as_deref()),
+            entry.as_ref().and_then(|e| e.team_id.as_deref()),
+            hits.load(Ordering::SeqCst),
+        );
+    };
     assert_eq!(
         final_state.refresh_token.as_deref(),
         Some("rt-v2"),
@@ -2949,19 +2981,29 @@ async fn enrichment_overlays_team_login_placeholder_user_id() {
         team_id: Some("team-xyz".into()),
         ..make_auth(Some(Utc::now() + Duration::hours(1)), Utc::now())
     };
+    let mut changes = mgr.login_changes();
+    let before = changes.snapshot().generation;
     mgr.update(team_login).await.unwrap();
+    assert_eq!(
+        before + 1,
+        changes.snapshot().generation,
+        "the update itself is one login change"
+    );
     let auth_path = dir.path().join("auth.json");
     let mut enriched = None;
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let store = read_auth_json(&auth_path).unwrap();
-        let entry = store.values().next().expect("entry exists").clone();
-        if entry.email.is_some() {
-            enriched = Some(entry);
+        if mgr.current().is_some_and(|live| live.email.is_some()) {
+            let store = read_auth_json(&auth_path).expect("auth.json readable");
+            enriched = Some(store.values().next().expect("entry exists").clone());
             break;
         }
     }
     let enriched = enriched.expect("enrichment must overlay onto Team login");
+    assert!(
+        !changes.has_changed(),
+        "the overlay rewrites user_id without changing the login"
+    );
     assert_eq!(
         enriched.user_id, "real-user-id",
         "team_id placeholder must be replaced by real user_id from /user"
@@ -3020,6 +3062,7 @@ fn apply_user_info_enrichment_preserves_token_fields() {
         user_blocked_reason: None,
         team_blocked_reasons: None,
         coding_data_retention_opt_out: None,
+        can_administer_team: None,
         subscription_tier: None,
     };
     apply_user_info_enrichment(&mut disk, user_info);
@@ -3036,6 +3079,30 @@ fn apply_user_info_enrichment_preserves_token_fields() {
     assert_eq!(disk.team_id.as_deref(), Some("new-team"));
     assert_eq!(disk.team_name.as_deref(), Some("New Team"));
     assert_eq!(disk.first_name.as_deref(), Some("New"));
+}
+#[test]
+fn apply_user_info_enrichment_overwrites_can_administer_team() {
+    for (on_disk, from_server) in [
+        (Some(true), Some(false)),
+        (Some(false), Some(true)),
+        (Some(true), None),
+        (None, Some(false)),
+    ] {
+        let mut disk = GrokAuth {
+            can_administer_team: on_disk,
+            ..GrokAuth::test_default()
+        };
+        let user_info: UserInfo = serde_json::from_value(serde_json::json!({
+            "userId": "u",
+            "canAdministerTeam": from_server,
+        }))
+        .unwrap();
+        apply_user_info_enrichment(&mut disk, user_info);
+        assert_eq!(
+            from_server, disk.can_administer_team,
+            "{on_disk:?} -> {from_server:?}"
+        );
+    }
 }
 /// Regression: async provider calls must drive `auth()` so tool requests get refreshed tokens.
 #[tokio::test]
@@ -3060,7 +3127,7 @@ async fn current_api_key_async_drives_refresh_chain() {
         call_count: call_count.clone(),
         delay: StdDuration::from_millis(0),
     }));
-    let provider = super::SharedAuthKeyProvider(mgr.clone());
+    let provider = crate::side_call_bearer::SharedAuthKeyProvider(mgr.clone());
     assert_eq!(provider.current_api_key().as_deref(), Some("expired-oidc"));
     let key = provider.current_api_key_async().await;
     assert_eq!(key.as_deref(), Some("fresh-token"));
@@ -3471,6 +3538,14 @@ fn new_clears_wrong_team_token_loaded_from_disk() {
         !dir.path().join("auth.json").exists(),
         "wrong-team auth.json must be cleared so the next launch re-logs in"
     );
+    assert_eq!(
+        LoginSnapshot {
+            login: Login::SignedOut,
+            generation: 0
+        },
+        mgr.login_changes().snapshot(),
+        "a wrong-team login is never published"
+    );
 }
 /// A matching-team session on disk is loaded normally (no false positive).
 #[test]
@@ -3485,6 +3560,14 @@ fn new_keeps_matching_team_token_loaded_from_disk() {
     let mgr = Arc::new(AuthManager::new(dir.path(), cfg));
     assert_eq!(mgr.current().map(|a| a.key), Some(tok.key));
     assert!(dir.path().join("auth.json").exists());
+    assert_eq!(
+        LoginSnapshot {
+            login: Login::Account("user-1".into()),
+            generation: 0
+        },
+        mgr.login_changes().snapshot(),
+        "the login loaded from disk is the first snapshot"
+    );
 }
 /// `auth()` (the wire-bound chokepoint used by pager / MCP / `try_ensure_fresh_auth`) rejects and clears a wrong-team cached token.
 #[tokio::test]
@@ -3575,6 +3658,11 @@ fn force_reload_clears_wrong_team_token() {
     assert!(
         !dir.path().join("auth.json").exists(),
         "force_reload must clear auth.json on a pin violation"
+    );
+    assert_eq!(
+        0,
+        mgr.login_changes().snapshot().generation,
+        "a wrong-team login is never published"
     );
 }
 /// A real incident in miniature: a live in-memory OIDC session (RT present, no permanent_failure) while `auth.json` transiently reads as missing.
@@ -3726,6 +3814,11 @@ async fn cached_api_key_session_rejected_when_api_key_auth_disabled() {
         matches!(mgr.auth().await, Err(AuthError::ApiKeyAuthDisabled)),
         "auth() must reject a cached api-key session under the kill switch"
     );
+    assert_eq!(
+        0,
+        mgr.login_changes().snapshot().generation,
+        "a hidden api-key session is never published"
+    );
     let dir2 = tempfile::tempdir().unwrap();
     let mgr2 = Arc::new(AuthManager::new(dir2.path(), GrokComConfig::default()));
     mgr2.hot_swap(api_key_session());
@@ -3733,6 +3826,14 @@ async fn cached_api_key_session_rejected_when_api_key_auth_disabled() {
         mgr2.current().map(|a| a.key),
         Some("xai-cached-key".to_string()),
         "api-key session must work normally when the switch is off"
+    );
+    assert_eq!(
+        LoginSnapshot {
+            login: Login::Opaque,
+            generation: 1
+        },
+        mgr2.login_changes().snapshot(),
+        "an honored api-key session is the login"
     );
 }
 #[tokio::test]
@@ -3746,7 +3847,7 @@ async fn shared_api_key_provider_resolves_live_bearer() {
         ..GrokAuth::test_default()
     };
     mgr.hot_swap(auth);
-    let provider = shared_api_key_provider(mgr.clone());
+    let provider = crate::shared_api_key_provider(mgr.clone());
     assert_eq!(
         provider.current_api_key(),
         Some("shared-provider-token".to_string()),
@@ -3777,7 +3878,7 @@ async fn shared_api_key_provider_static_fallthrough() {
     use xai_grok_test_support::EnvGuard;
     let dir = tempfile::tempdir().unwrap();
     let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
-    let provider = shared_api_key_provider(mgr.clone());
+    let provider = crate::shared_api_key_provider(mgr.clone());
     {
         let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
         let _key = EnvGuard::set("XAI_API_KEY", "env-only-key");
@@ -3824,7 +3925,9 @@ async fn shared_api_key_provider_kill_switch_blocks_static() {
         },
     ));
     assert_eq!(
-        shared_api_key_provider(mgr).current_api_key_async().await,
+        crate::shared_api_key_provider(mgr)
+            .current_api_key_async()
+            .await,
         None
     );
 }
@@ -3842,7 +3945,9 @@ async fn shared_api_key_provider_oidc_preferred_blocks_static() {
         },
     ));
     assert_eq!(
-        shared_api_key_provider(mgr).current_api_key_async().await,
+        crate::shared_api_key_provider(mgr)
+            .current_api_key_async()
+            .await,
         None
     );
 }
@@ -3868,7 +3973,7 @@ async fn shared_api_key_provider_api_key_preferred_skips_session() {
         ..GrokAuth::test_default()
     });
     assert_eq!(
-        shared_api_key_provider(mgr)
+        crate::shared_api_key_provider(mgr)
             .current_api_key_async()
             .await
             .as_deref(),
@@ -3891,7 +3996,7 @@ async fn shared_api_key_provider_sync_falls_through_when_session_expired() {
         expires_at: Some(Utc::now() - Duration::hours(1)),
         ..GrokAuth::test_default()
     });
-    let provider = shared_api_key_provider(mgr);
+    let provider = crate::shared_api_key_provider(mgr);
     assert_eq!(
         provider.current_api_key().as_deref(),
         Some("static-after-expiry"),
@@ -3919,7 +4024,7 @@ async fn shared_api_key_provider_sync_buffered_session_beats_static() {
         expires_at: Some(Utc::now() + Duration::minutes(2)),
         ..GrokAuth::test_default()
     });
-    let provider = super::SharedAuthKeyProvider(mgr);
+    let provider = crate::side_call_bearer::SharedAuthKeyProvider(mgr);
     assert_eq!(provider.current_api_key().as_deref(), Some("buffered-oidc"));
 }
 /// Auth.json create, rewrite (including same-length, caught by the inode in the memo stamp), and logout must all invalidate the disk static-key memo.
@@ -3932,7 +4037,7 @@ async fn shared_api_key_provider_disk_memo_follows_rewrites() {
     let _auth_path = EnvGuard::unset("GROK_AUTH_PATH");
     let dir = tempfile::tempdir().unwrap();
     let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
-    let provider = shared_api_key_provider(mgr);
+    let provider = crate::shared_api_key_provider(mgr);
     assert_eq!(provider.current_api_key_async().await, None);
     for key in ["first-key", "fresh-key", "second-key-rotated"] {
         crate::store_api_key(dir.path(), key).unwrap();
@@ -3950,7 +4055,7 @@ async fn process_key_precedence() {
     let _auth_path = EnvGuard::unset("GROK_AUTH_PATH");
     let dir = tempfile::tempdir().unwrap();
     let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
-    let provider = shared_api_key_provider(mgr.clone());
+    let provider = crate::shared_api_key_provider(mgr.clone());
     assert_eq!(provider.current_api_key_async().await, None);
     crate::store_api_key(dir.path(), "disk").unwrap();
     assert_eq!(
@@ -3984,7 +4089,7 @@ async fn process_key_precedence() {
     ));
     blocked.set_process_static_api_key(Some("ignored".into()));
     assert_eq!(
-        shared_api_key_provider(blocked)
+        crate::shared_api_key_provider(blocked)
             .current_api_key_async()
             .await,
         None
@@ -4740,4 +4845,221 @@ fn proactive_failure_backoff_shape() {
         huge <= BACKOFF_INTERVAL + std::time::Duration::from_secs(3),
         "backoff must cap at BACKOFF_INTERVAL (+jitter), got {huge:?}"
     );
+}
+/// Spawned `/user` enrichment and `hydrate_can_administer_team` have their own tests.
+#[test]
+fn hot_swap_publishes_a_new_bearer_and_not_a_profile_rewrite() {
+    let (_dir, mgr) = watched_manager();
+    let mut subscriber = Subscriber::new(&mgr);
+    assert_eq!(
+        LoginSnapshot {
+            login: Login::SignedOut,
+            generation: 0
+        },
+        subscriber.last,
+        "fresh manager"
+    );
+    mgr.hot_swap(login_with_key("k1"));
+    subscriber.published("login", Login::Opaque);
+    mgr.hot_swap(GrokAuth {
+        user_id: "test-user-as-known-to-the-proxy".into(),
+        email: Some("a@example.com".into()),
+        first_name: Some("A".into()),
+        team_id: Some("team".into()),
+        ..login_with_key("k1")
+    });
+    subscriber.unchanged("enrichment rewrite");
+    mgr.hot_swap(login_with_key("k2"));
+    subscriber.published("bearer rotation", Login::Opaque);
+    mgr.hot_swap(expired_oidc());
+    subscriber.published("expired login", Login::Opaque);
+}
+#[tokio::test]
+async fn save_and_update_publish_a_new_bearer_and_not_the_same_login() {
+    let (_dir, mgr) = watched_manager();
+    let mut subscriber = Subscriber::new(&mgr);
+    mgr.save_without_enrichment(login_with_key("k3"))
+        .await
+        .expect("save k3");
+    subscriber.published("save_without_enrichment: new bearer", Login::Opaque);
+    mgr.save_without_enrichment(login_with_key("k3"))
+        .await
+        .expect("save k3 again");
+    subscriber.unchanged("save_without_enrichment: same login");
+    mgr.update(login_with_key("k4"))
+        .await
+        .expect("update to k4");
+    subscriber.published("update: new bearer", Login::Opaque);
+}
+#[test]
+fn clear_in_memory_publishes_the_sign_out_once() {
+    let (_dir, mgr) = watched_manager();
+    mgr.hot_swap(login_with_key("k1"));
+    let mut subscriber = Subscriber::new(&mgr);
+    mgr.clear_in_memory();
+    subscriber.published("clear_in_memory", Login::SignedOut);
+    mgr.clear_in_memory();
+    subscriber.unchanged("clear_in_memory: already signed out");
+}
+#[tokio::test]
+async fn clear_publishes_the_sign_out() {
+    let (_dir, mgr) = watched_manager();
+    mgr.save_without_enrichment(login_with_key("k1"))
+        .await
+        .expect("save k1");
+    let mut subscriber = Subscriber::new(&mgr);
+    mgr.clear().expect("clear");
+    subscriber.published("clear", Login::SignedOut);
+}
+#[tokio::test]
+async fn force_reload_publishes_the_disk_login_once_and_the_scope_removal() {
+    let (_dir, mgr) = watched_manager();
+    mgr.save_without_enrichment(login_with_key("k4"))
+        .await
+        .expect("save k4");
+    mgr.clear_in_memory();
+    let mut subscriber = Subscriber::new(&mgr);
+    mgr.force_reload_from_disk();
+    subscriber.published("disk login adopted", Login::Opaque);
+    mgr.force_reload_from_disk();
+    subscriber.unchanged("same disk login");
+    let mut store = read_auth_json(mgr.auth_json_path()).expect("auth.json readable");
+    store.remove(&ActiveAuthBackend::default().scope_key(&GrokComConfig::default()));
+    store.insert("other-scope".into(), login_with_key("other"));
+    write_auth_json(mgr.auth_json_path(), &store).expect("auth.json writable");
+    mgr.force_reload_from_disk();
+    subscriber.published("scope absent", Login::SignedOut);
+}
+#[tokio::test]
+async fn force_reload_keeps_the_login_through_a_disk_anomaly() {
+    let (_dir, mgr) = watched_manager();
+    mgr.save_without_enrichment(login_with_key("k5"))
+        .await
+        .expect("save k5");
+    std::fs::remove_file(mgr.auth_json_path()).expect("auth.json removable");
+    let mut subscriber = Subscriber::new(&mgr);
+    mgr.force_reload_from_disk_with(1, StdDuration::ZERO);
+    subscriber.unchanged("disk anomaly retains");
+}
+#[tokio::test]
+async fn refresh_chain_publishes_the_minted_bearer() {
+    let (_dir, mgr) = watched_manager();
+    mgr.hot_swap(expired_oidc());
+    mgr.set_refresher(Arc::new(CountingRefresher {
+        call_count: Arc::new(AtomicU32::new(0)),
+        delay: StdDuration::ZERO,
+    }));
+    let mut subscriber = Subscriber::new(&mgr);
+    mgr.refresh_chain(TokenType::OidcSession, RefreshReason::PreRequest)
+        .await
+        .expect("the refresher mints a bearer");
+    subscriber.published("minted bearer", Login::Opaque);
+}
+#[tokio::test]
+async fn refresh_chain_publishes_the_sign_out_when_the_refresh_token_is_rejected() {
+    let (_dir, mgr) = watched_manager();
+    mgr.hot_swap(expired_oidc());
+    mgr.set_refresher(Arc::new(FailingRefresher {
+        call_count: Arc::new(AtomicU32::new(0)),
+    }));
+    let mut subscriber = Subscriber::new(&mgr);
+    let rejected = mgr
+        .refresh_chain(TokenType::OidcSession, RefreshReason::ServerRejected)
+        .await;
+    assert!(
+        matches!(
+            rejected,
+            Err(AuthError::Refresh(RefreshTokenError::Permanent(_)))
+        ),
+        "{rejected:?}"
+    );
+    subscriber.published("refresh token rejected", Login::SignedOut);
+}
+/// Writers racing on `hot_swap` take their generation under the `inner` guard and publish after releasing it.
+/// A subscriber therefore sees generations climb, one per write, and the last snapshot names the login in memory.
+#[tokio::test]
+async fn racing_writers_publish_generations_in_write_order() {
+    const WRITERS: u64 = 16;
+    const WRITES_PER_WRITER: u64 = 2000;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    let mut changes = mgr.login_changes();
+    let mut last = changes.snapshot();
+    assert_eq!(0, last.generation);
+    let writers: Vec<_> = (0..WRITERS)
+        .map(|writer| {
+            let mgr = Arc::clone(&mgr);
+            std::thread::spawn(move || {
+                for i in 0..WRITES_PER_WRITER {
+                    let bearer =
+                        crate::jwt::build_test_jwt(&format!(r#"{{"sub":"w{writer}-{i}"}}"#));
+                    mgr.hot_swap(login_with_key(&bearer));
+                }
+            })
+        })
+        .collect();
+    let total = WRITERS * WRITES_PER_WRITER;
+    while last.generation < total {
+        tokio::time::timeout(StdDuration::from_secs(30), changes.changed())
+            .await
+            .expect("the final generation is published")
+            .expect("manager alive");
+        let next = changes.snapshot();
+        assert!(
+            next.generation > last.generation,
+            "{next:?} published after {last:?}"
+        );
+        last = next;
+    }
+    for writer in writers {
+        writer.join().expect("writer thread");
+    }
+    assert_eq!(total, last.generation);
+    let in_memory = mgr.current().expect("the last write is in memory");
+    let subject = crate::parse_jwt_subject(&in_memory.key).expect("test bearer carries a sub");
+    assert_eq!(Login::Account(subject), last.login);
+}
+/// A logged-in OIDC account with bearer `key`.
+fn login_with_key(key: &str) -> GrokAuth {
+    GrokAuth {
+        key: key.into(),
+        auth_mode: AuthMode::Oidc,
+        refresh_token: Some("rt".into()),
+        expires_at: Some(Utc::now() + Duration::hours(1)),
+        ..GrokAuth::test_default()
+    }
+}
+/// A manager on an empty temp dir whose `/user` enrichment fails fast.
+fn watched_manager() -> (tempfile::TempDir, Arc<AuthManager>) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mgr = AuthManager::new(dir.path(), GrokComConfig::default())
+        .with_proxy_base_url("http://127.0.0.1:1");
+    (dir, Arc::new(mgr))
+}
+/// One subscriber to `login_changes()` and the last snapshot it saw. Subscribe after setup, so only the writes that follow are asserted.
+struct Subscriber {
+    changes: LoginChanges,
+    last: LoginSnapshot,
+}
+impl Subscriber {
+    fn new(mgr: &AuthManager) -> Self {
+        let mut changes = mgr.login_changes();
+        let last = changes.snapshot();
+        Subscriber { changes, last }
+    }
+    /// The last write published `login` as the next generation.
+    fn published(&mut self, label: &str, login: Login) {
+        assert!(self.changes.has_changed(), "{label}: subscriber wake");
+        let expected = LoginSnapshot {
+            login,
+            generation: self.last.generation + 1,
+        };
+        assert_eq!(expected, self.changes.snapshot(), "{label}");
+        self.last = expected;
+    }
+    /// The last write published nothing.
+    fn unchanged(&mut self, label: &str) {
+        assert!(!self.changes.has_changed(), "{label}: subscriber wake");
+        assert_eq!(self.last, self.changes.snapshot(), "{label}");
+    }
 }

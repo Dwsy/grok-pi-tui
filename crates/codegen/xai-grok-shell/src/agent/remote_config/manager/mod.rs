@@ -9,12 +9,16 @@ use parking_lot::RwLock;
 use agent_client_protocol as acp;
 
 use super::{
-    HttpModelsEndpoint, ModelFetchAuth, ModelsCacheManager, ModelsCacheScope, ModelsEndpoint,
-    allowlist_matches_nothing, available_models, is_campaign_only_flip, resolve_catalog_key,
-    resolve_default_model, resolve_model_catalog, task_model_error_for_catalog,
-    validate_selectable,
+    CatalogSource, HttpModelsEndpoint, ModelFetchAuth, ModelsCacheManager, ModelsCacheScope,
+    ModelsEndpoint, allowlist_excludes_all_message, allowlist_matches_nothing, available_models,
+    fallback_model_id, is_campaign_only_flip, models_endpoint_empty_message, models_fetch_enabled,
+    resolve_catalog_key, resolve_default_model, resolve_model_catalog, resolve_models_cache_scope,
+    task_model_error_for_catalog, validate_selectable,
 };
 use crate::agent::config::{self, ModelEntry, resolve_credentials, sampling_config_for_model};
+use crate::agent::remote_config::task_model_policy::{
+    CatalogAuthority, EligibleTaskModel, TaskModelCatalogSnapshot,
+};
 use crate::sampling::SamplerConfig as SamplingConfig;
 use xai_grok_login::{AuthManager, GrokAuth, GrokComConfig};
 use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
@@ -241,7 +245,7 @@ impl ModelsManager {
         *self.inner.model_switch_watch.borrow()
     }
 
-    /// Falls back to bundled default if no models available.
+    /// With no models available, the current model is [`fallback_model_id`].
     pub(crate) fn from_config(
         cfg: &config::Config,
         prefetched_models: Option<IndexMap<String, ModelEntry>>,
@@ -252,7 +256,7 @@ impl ModelsManager {
             .current_or_expired()
             .is_some_and(|a| a.is_session_auth());
         let fetch_auth = ModelFetchAuth::resolve(&cfg.endpoints, has_session);
-        let scope = ModelsCacheScope::resolve(
+        let scope = resolve_models_cache_scope(
             &cfg.endpoints,
             fetch_auth,
             auth_manager.current_or_expired().as_ref(),
@@ -395,6 +399,14 @@ impl ModelsManager {
         self.inner.cfg.read().endpoints.clone()
     }
 
+    /// [`models_fetch_enabled`] for this manager's endpoints and current login.
+    pub(crate) fn is_models_fetch_enabled(&self) -> bool {
+        models_fetch_enabled(
+            &self.inner.cfg.read().endpoints,
+            self.inner.auth_manager.current_or_expired().as_ref(),
+        )
+    }
+
     /// Does the current credential grant access to OAuth-only models?
     fn is_session_auth(&self) -> bool {
         self.inner
@@ -403,20 +415,10 @@ impl ModelsManager {
             .is_some_and(|a| a.is_session_auth())
     }
 
-    /// ACP-visible (non-hidden) projection of the catalog.
+    /// The picker projection of the catalog (`ModelInfo::is_picker_eligible`) in ACP wire form.
     pub fn available(&self) -> IndexMap<acp::ModelId, acp::ModelInfo> {
-        let snapshot = {
-            let cat = self.inner.catalog.read();
-            let models = &cat.models;
-            models.clone()
-        };
-
-        let selectable: IndexMap<_, _> = snapshot
-            .into_iter()
-            .filter(|(_, e)| e.info.user_selectable)
-            .collect();
-
-        available_models(&selectable, self.is_session_auth())
+        let is_session_auth = self.is_session_auth();
+        available_models(&self.inner.catalog.read().models, is_session_auth)
     }
 
     pub(crate) fn task_model_error(&self, requested: &str) -> Option<String> {
@@ -424,6 +426,31 @@ impl ModelsManager {
         let cat = self.inner.catalog.read();
         let models = &cat.models;
         task_model_error_for_catalog(requested, models, is_session_auth)
+    }
+
+    /// One lock read, so ids, families, and the fetch state come from one catalog generation.
+    pub(crate) fn task_model_catalog_snapshot(
+        &self,
+        remote_fetch_enabled: bool,
+    ) -> TaskModelCatalogSnapshot {
+        let is_session_auth = self.is_session_auth();
+        let cat = self.inner.catalog.read();
+        TaskModelCatalogSnapshot {
+            eligible: cat
+                .models
+                .iter()
+                .filter(|(_, e)| e.info.is_picker_eligible(is_session_auth))
+                .map(|(id, e)| EligibleTaskModel {
+                    id: id.clone(),
+                    model_family: e.info.model_family.clone(),
+                })
+                .collect(),
+            authority: if cat.has_fetched_real_catalog || !remote_fetch_enabled {
+                CatalogAuthority::Complete
+            } else {
+                CatalogAuthority::Provisional
+            },
+        }
     }
 
     pub fn current_model_id(&self) -> acp::ModelId {
@@ -470,6 +497,15 @@ impl ModelsManager {
         self.inner.catalog.write().models.insert(id.into(), entry);
     }
 
+    #[cfg(test)]
+    pub(crate) fn settle_first_catalog_for_tests(&self, ready: bool) {
+        self.inner.catalog_progress.send_replace(if ready {
+            CatalogProgress::Ready
+        } else {
+            CatalogProgress::Failed
+        });
+    }
+
     pub(crate) fn current_reasoning_effort(&self) -> Option<ReasoningEffort> {
         *self.inner.current_reasoning_effort.read()
     }
@@ -484,6 +520,26 @@ impl ModelsManager {
         let models = &cat.models;
         let key = resolve_catalog_key(models, &acp::ModelId::new(model_id))?;
         models.get(key.0.as_ref()).map(f)
+    }
+
+    /// Whether `model_id` is served by the same endpoint, backend, and session auth as a config already built for another model.
+    /// Only then can a request swap in `model_id` without rebuilding the client.
+    pub(crate) fn model_shares_route(
+        &self,
+        model_id: &str,
+        base_url: &str,
+        api_backend: &xai_grok_sampling_types::ApiBackend,
+    ) -> bool {
+        let base_url = base_url.trim_end_matches('/');
+        self.with_catalog_entry(model_id, |e| {
+            !e.has_own_credentials()
+                && e.info().api_backend == *api_backend
+                && (e.info().base_url.trim_end_matches('/') == base_url
+                    || e.api_base_url
+                        .as_deref()
+                        .is_some_and(|u| u.trim_end_matches('/') == base_url))
+        })
+        .unwrap_or(false)
     }
 
     pub(crate) fn model_supports_reasoning_effort(&self, model_id: &str) -> bool {
@@ -530,6 +586,15 @@ impl ModelsManager {
         options.iter().any(|option| option.value == effort)
     }
 
+    pub(crate) fn model_supports_context_window(
+        &self,
+        model_id: &str,
+        window: std::num::NonZeroU64,
+    ) -> bool {
+        self.with_catalog_entry(model_id, |e| e.info().supports_context_window(window))
+            .unwrap_or(false)
+    }
+
     pub(crate) fn model_supports_backend_search(&self, model_id: &str) -> bool {
         self.inner
             .catalog
@@ -574,11 +639,17 @@ impl ModelsManager {
         self.inner.cfg.read().prompt_suggest_model_pin.clone()
     }
 
+    /// The catalog key `model_id` resolves to, as a config key or a routing slug.
+    pub(crate) fn catalog_key(&self, model_id: &str) -> Option<acp::ModelId> {
+        resolve_catalog_key(
+            &self.inner.catalog.read().models,
+            &acp::ModelId::new(model_id),
+        )
+    }
+
     /// Whether `model_id` resolves in the current catalog, as a config key or a routing slug.
     pub(crate) fn model_in_catalog(&self, model_id: &str) -> bool {
-        let cat = self.inner.catalog.read();
-        let models = &cat.models;
-        resolve_catalog_key(models, &acp::ModelId::new(model_id)).is_some()
+        self.catalog_key(model_id).is_some()
     }
 
     #[cfg(test)]
@@ -592,12 +663,7 @@ impl ModelsManager {
     }
 
     /// Wait, bounded by one auth refresh plus one fetch, for the first fetch outcome; never triggers a fetch.
-    pub(crate) async fn wait_for_first_catalog(&self) {
-        self.wait_for_first_catalog_inner(crate::util::config::resolve_remote_fetch_enabled())
-            .await;
-    }
-
-    async fn wait_for_first_catalog_inner(&self, remote_fetch_enabled: bool) -> bool {
+    pub(crate) async fn wait_for_first_catalog(&self, remote_fetch_enabled: bool) -> bool {
         const BUDGET: std::time::Duration = crate::http::STARTUP_AUTH_REFRESH_TIMEOUT
             .saturating_add(crate::http::STARTUP_FETCH_TIMEOUT);
         let mut progress = self.inner.catalog_progress.subscribe();
@@ -682,7 +748,7 @@ impl ModelsManager {
             return;
         }
 
-        let remote_fetch_enabled = crate::util::config::resolve_remote_fetch_enabled();
+        let remote_fetch_enabled = self.is_models_fetch_enabled();
         self.fetch_and_apply_inner(remote_fetch_enabled).await;
 
         let needs_bundled_fallback = {
@@ -860,7 +926,7 @@ impl ModelsManager {
 
     /// One-shot background catalog refresh after readiness; no-op when a fresh disk cache already loaded a real catalog.
     pub fn spawn_background_refresh(&self) {
-        self.spawn_background_refresh_inner(crate::util::config::resolve_remote_fetch_enabled());
+        self.spawn_background_refresh_inner(self.is_models_fetch_enabled());
     }
 
     fn spawn_background_refresh_inner(&self, remote_fetch_enabled: bool) {
@@ -888,7 +954,7 @@ impl ModelsManager {
         tokio::spawn(async move {
             loop {
                 notify.notified().await;
-                if !crate::util::config::resolve_remote_fetch_enabled() {
+                if !mgr.is_models_fetch_enabled() {
                     tracing::debug!(
                         "model catalog: auth refresh watcher skipped (remote_fetch disabled)"
                     );
@@ -963,8 +1029,9 @@ impl ModelsManager {
         {
             Some(m) => m,
             None => {
-                tracing::warn!("no models available in catalog; defaulting to bundled model");
-                let default_id = crate::models::default_model().to_string();
+                let current = Some(current_model_id.0.as_ref()).filter(|id| !id.is_empty());
+                let default_id = fallback_model_id(&config, current);
+                tracing::warn!(model = %default_id, "no models available in catalog; using the fallback model id");
                 fallback = ModelEntry::fallback(&default_id, &config.endpoints);
                 &fallback
             }
@@ -979,7 +1046,7 @@ impl ModelsManager {
             credentials,
             config.endpoints.alpha_test_key.clone(),
             config.client_version.clone(),
-            crate::managed_config::resolve_deployment_id(
+            xai_grok_cloud_config::managed_config::resolve_deployment_id(
                 config.endpoints.deployment_key.as_deref(),
             ),
             None,
@@ -991,7 +1058,7 @@ impl ModelsManager {
     fn cache_scope(&self) -> ModelsCacheScope {
         let endpoints = self.inner.cfg.read().endpoints.clone();
         let fetch_auth = *self.inner.fetch_auth.read();
-        ModelsCacheScope::resolve(
+        resolve_models_cache_scope(
             &endpoints,
             fetch_auth,
             self.inner.auth_manager.current_or_expired().as_ref(),
@@ -1022,10 +1089,7 @@ impl ModelsManager {
     }
 
     fn spawn_fetch(&self, new_etag: Option<String>) {
-        self.spawn_fetch_inner(
-            new_etag,
-            crate::util::config::resolve_remote_fetch_enabled(),
-        );
+        self.spawn_fetch_inner(new_etag, self.is_models_fetch_enabled());
     }
 
     fn spawn_fetch_inner(&self, new_etag: Option<String>, remote_fetch_enabled: bool) {
@@ -1077,7 +1141,7 @@ impl ModelsManager {
     }
 
     async fn fetch_and_apply(&self) {
-        self.fetch_and_apply_inner(crate::util::config::resolve_remote_fetch_enabled())
+        self.fetch_and_apply_inner(self.is_models_fetch_enabled())
             .await
     }
 
@@ -1228,6 +1292,36 @@ impl ModelsManager {
 
     pub fn allowlist_excludes_all(&self) -> bool {
         self.inner.catalog.read().allowlist_excludes_all
+    }
+
+    /// The message that stops a prompt because no model can serve it, or `None`.
+    pub(crate) async fn prompt_block_message(&self) -> Option<String> {
+        if CatalogSource::for_config(&self.inner.cfg.read()) == CatalogSource::Standard {
+            return self
+                .allowlist_excludes_all()
+                .then(|| allowlist_excludes_all_message(&self.inner.cfg.read()));
+        }
+        self.models_endpoint_block_message(|| self.is_models_fetch_enabled())
+            .await
+    }
+
+    /// External auth with a models endpoint fails closed.
+    /// It waits for a first fetch that is still running, then blocks an empty catalog or one `allowed_models` excludes entirely.
+    /// `remote_fetch_enabled` loads config, so it runs only while a fetch is pending or the catalog is empty.
+    async fn models_endpoint_block_message(
+        &self,
+        remote_fetch_enabled: impl Fn() -> bool,
+    ) -> Option<String> {
+        if *self.inner.catalog_progress.borrow() == CatalogProgress::Pending {
+            self.wait_for_first_catalog(remote_fetch_enabled()).await;
+        }
+        let empty = self.inner.catalog.read().models.is_empty();
+        let cfg = self.inner.cfg.read();
+        if empty {
+            return Some(models_endpoint_empty_message(&cfg, remote_fetch_enabled()));
+        }
+        allowlist_matches_nothing(&cfg, &self.inner.catalog.read().models)
+            .then(|| allowlist_excludes_all_message(&cfg))
     }
 
     /// Re-pick the default when the current model is gone or unselectable; auth visibility never evicts an explicit user pick.

@@ -121,8 +121,17 @@ mod tests {
     #[cfg(unix)]
     fn the_log_shape_carries_rlimits_and_parallelism() {
         let v = ProcessLimits::read().to_json();
-        assert!(v["nofile"].is_array(), "nofile missing: {v}");
-        assert!(v["nproc"].is_array(), "nproc missing: {v}");
-        assert!(v["available_parallelism"].is_u64(), "parallelism: {v}");
+        assert!(
+            v.get("nofile").is_some_and(|x| x.is_array()),
+            "nofile missing: {v}"
+        );
+        assert!(
+            v.get("nproc").is_some_and(|x| x.is_array()),
+            "nproc missing: {v}"
+        );
+        assert!(
+            v.get("available_parallelism").is_some_and(|x| x.is_u64()),
+            "parallelism: {v}"
+        );
     }
 }

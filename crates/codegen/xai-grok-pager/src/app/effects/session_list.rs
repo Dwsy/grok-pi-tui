@@ -1,31 +1,26 @@
 //! One parser serves the resume picker ([`super::Effect::FetchSessionList`]) and the dashboard's
 //! non-leader idle-session fallback ([`super::Effect::FetchDashboardSessions`]), so both surfaces
 //! label rows identically.
-
-use std::collections::HashSet;
-
-use agent_client_protocol as acp;
-use serde_json::Value;
-use xai_grok_shell::session::resolve_local_session_ids_any_cwd;
-use xai_grok_shell::session::unified_list::ListScope;
-use xai_grok_tools::implementations::skills::skill::extract_skill_display_text;
-
 use super::helpers::extract_first_user_prompt;
 use crate::app::app_view::SessionPickerEntry;
 use crate::app::foreign_sessions::is_foreign_picker_source;
 use crate::app::roster::{RosterActivity, RosterEntry, RosterOrigin};
 use crate::views::session_picker::repo_name_from_cwd;
 use crate::views::session_picker_surface::SessionPickerHost;
-
+use agent_client_protocol as acp;
+use serde_json::Value;
+use std::collections::HashSet;
+use xai_grok_shell::session::resolve_local_session_ids_any_cwd;
+use xai_grok_shell::session::unified_list::ListScope;
+use xai_grok_tools::implementations::skills::skill::extract_skill_display_text;
 /// Which rows the local-storage lookup applies to; the store is walked at most once either way.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum LocalPresence {
     /// `remote` rows found on disk become `local`; everything else keeps the shell's label.
     Relabel,
-    /// Only rows found on disk survive, labelled `local`. Conversation and foreign rows never qualify.
+    /// Rows needing local storage must exist on disk; daemon rows stay available. Conversation and foreign rows never qualify.
     Require,
 }
-
 impl LocalPresence {
     /// The dashboard picker only shows sessions on this machine; the other pickers keep remote rows.
     pub(super) fn for_host(host: SessionPickerHost) -> Self {
@@ -35,7 +30,6 @@ impl LocalPresence {
         }
     }
 }
-
 /// Degraded conversations lane on `x.ai/session/list`, parsed from the response's `_meta["x.ai/partial"]` envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationsPartial {
@@ -43,7 +37,6 @@ pub enum ConversationsPartial {
     Timeout,
     Error,
 }
-
 impl ConversationsPartial {
     pub(crate) fn picker_notice(self) -> &'static str {
         match self {
@@ -52,7 +45,6 @@ impl ConversationsPartial {
         }
     }
 }
-
 /// `x.ai/session/list` answers arrive either as a JSON-RPC envelope (`result` or `error`) or as the bare list payload.
 pub(super) fn read_session_list_response(raw: &str) -> Result<Value, String> {
     let mut wrapper: Value = serde_json::from_str(raw).unwrap_or_default();
@@ -64,7 +56,6 @@ pub(super) fn read_session_list_response(raw: &str) -> Result<Value, String> {
         .map(Value::take)
         .unwrap_or(wrapper))
 }
-
 /// `None` when the conversations lane completed (or was skipped); unknown reasons degrade to [`ConversationsPartial::Error`].
 pub(super) fn parse_session_list_partial(payload: &Value) -> Option<ConversationsPartial> {
     let partial = payload.get("_meta")?.get("x.ai/partial")?;
@@ -77,7 +68,6 @@ pub(super) fn parse_session_list_partial(payload: &Value) -> Option<Conversation
         _ => ConversationsPartial::Error,
     })
 }
-
 pub(super) fn parse_session_list_scope(payload: &Value) -> ListScope {
     match payload
         .get("_meta")
@@ -89,7 +79,6 @@ pub(super) fn parse_session_list_scope(payload: &Value) -> ListScope {
         _ => ListScope::Cwd,
     }
 }
-
 /// The storage walk and the `chat_history.jsonl` reads belong on the blocking pool.
 pub(super) async fn parse_session_picker_entries_blocking(
     payload: Value,
@@ -103,7 +92,6 @@ pub(super) async fn parse_session_picker_entries_blocking(
     .await
     .map_err(|error| format!("session list parse task failed: {error}"))?
 }
-
 /// Sessions older than 30 days, and sessions with no usable user prompt (empty `summary` after fallbacks), are dropped.
 ///
 /// `resolve_local` receives the candidate ids for `presence` and returns the subset that exists on disk; each call is a full `~/.grok/sessions` walk.
@@ -116,9 +104,7 @@ fn parse_session_picker_entries_with(
         Some(Value::Array(entries)) => entries,
         _ => Vec::new(),
     };
-
     let cutoff = chrono::Utc::now() - chrono::Duration::days(30);
-
     let mut parsed: Vec<SessionPickerEntry> = entries
         .into_iter()
         .filter_map(|v| {
@@ -143,7 +129,6 @@ fn parse_session_picker_entries_with(
                 .and_then(|s| s.get("kind"))
                 .and_then(Value::as_str)
                 == Some("chat");
-
             let parsed_updated: Option<chrono::DateTime<chrono::Utc>> = v
                 .get("updatedAt")
                 .or_else(|| v.get("updated_at"))
@@ -154,7 +139,6 @@ fn parse_session_picker_entries_with(
                 .or_else(|| v.get("created_at"))
                 .and_then(Value::as_str)
                 .and_then(|s| s.parse().ok());
-
             let updated_at: chrono::DateTime<chrono::Utc> = match parsed_updated {
                 Some(ts) => {
                     if !is_conversation && ts < cutoff {
@@ -169,9 +153,6 @@ fn parse_session_picker_entries_with(
                     parsed_created.unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH)
                 }
             };
-
-            // Prefer first_prompt for skill display: it has the complete XML including <command-args>
-            // The LLM-generated summary can be a truncated clean string like "/implement" (no XML, no args)
             let display = if let Some(ref fp) = first_prompt {
                 if let Some(d) = extract_skill_display_text(fp) {
                     d
@@ -194,7 +175,6 @@ fn parse_session_picker_entries_with(
                 };
                 extract_first_user_prompt(&info).unwrap_or_default()
             };
-
             let created_at: chrono::DateTime<chrono::Utc> = parsed_created.unwrap_or(updated_at);
             let cwd_str = v
                 .get("cwd")
@@ -225,7 +205,6 @@ fn parse_session_picker_entries_with(
                 .or_else(|| v.get("last_active_at"))
                 .and_then(Value::as_str)
                 .and_then(|s| s.parse().ok());
-
             let branch = v.get("branch").and_then(Value::as_str).map(String::from);
             let worktree_label = v
                 .get("worktreeLabel")
@@ -248,7 +227,6 @@ fn parse_session_picker_entries_with(
                 .and_then(Value::as_str)
                 .map(String::from);
             let repo_name = repo_name_from_cwd(&cwd_str);
-
             Some(SessionPickerEntry {
                 id,
                 summary: display,
@@ -276,8 +254,6 @@ fn parse_session_picker_entries_with(
             })
         })
         .filter_map(|mut e| {
-            // A Build row with no prompt is one the user opened but never typed into; listing it in `/resume` is noise
-            // Conversation rows stay: new grok.com chats have no title until server-side titling runs
             if e.summary.is_empty() {
                 if e.source == "conversation" {
                     e.summary = "Untitled".to_owned();
@@ -288,7 +264,6 @@ fn parse_session_picker_entries_with(
             Some(e)
         })
         .collect();
-
     let resolve_local = |ids: &[&str]| {
         resolve_local(ids).map_err(|error| {
             tracing::warn!(%error, ?presence, "session list local-session resolution failed");
@@ -296,7 +271,6 @@ fn parse_session_picker_entries_with(
         })
     };
     match presence {
-        // The shell labels a row `remote` when it is absent from the cwd buckets it scanned, so a session stored under another cwd is still local
         LocalPresence::Relabel => {
             let remote_ids: Vec<&str> = parsed
                 .iter()
@@ -306,11 +280,9 @@ fn parse_session_picker_entries_with(
             if remote_ids.is_empty() {
                 return Ok(parsed);
             }
-            // The shell's labels are still usable without the disk check, so the list degrades instead of failing
             let Ok(local_ids) = resolve_local(&remote_ids) else {
                 return Ok(parsed);
             };
-            // A conversation row can share an id with a Build row; only the rows that supplied the ids may flip
             for e in parsed
                 .iter_mut()
                 .filter(|e| e.source == "remote" && local_ids.contains(&e.id))
@@ -321,21 +293,33 @@ fn parse_session_picker_entries_with(
         }
         LocalPresence::Require => {
             parsed.retain(|e| e.source != "conversation" && !is_foreign_picker_source(&e.source));
-            if parsed.is_empty() {
-                return Ok(parsed);
-            }
-            let candidate_ids: Vec<&str> = parsed.iter().map(|e| e.id.as_str()).collect();
-            let local_ids = resolve_local(&candidate_ids)
-                .map_err(|error| format!("couldn't resolve local sessions: {error}"))?;
-            parsed.retain(|e| local_ids.contains(&e.id));
-            for e in &mut parsed {
-                e.source = "local".to_owned();
+            let candidate_ids: Vec<&str> = parsed
+                .iter()
+                .filter(|e| !crate::app::is_daemon_session_row(&e.source))
+                .map(|e| e.id.as_str())
+                .collect();
+            if !candidate_ids.is_empty() {
+                let local_ids = match resolve_local(&candidate_ids) {
+                    Ok(local_ids) => local_ids,
+                    Err(error) => {
+                        return Err(format!("couldn't resolve local sessions: {error}"));
+                    }
+                };
+                parsed.retain_mut(|e| {
+                    if crate::app::is_daemon_session_row(&e.source) {
+                        return true;
+                    }
+                    if !local_ids.contains(&e.id) {
+                        return false;
+                    }
+                    e.source = "local".to_owned();
+                    true
+                });
             }
             Ok(parsed)
         }
     }
 }
-
 /// Local on-disk sessions have no live activity signal, so they map to [`RosterActivity::Dormant`] and render in the dashboard's **Inactive** group.
 pub(super) fn session_picker_entry_to_roster(e: SessionPickerEntry) -> RosterEntry {
     let last_change = e.last_active_at.unwrap_or(e.updated_at);
@@ -344,6 +328,7 @@ pub(super) fn session_picker_entry_to_roster(e: SessionPickerEntry) -> RosterEnt
         title: Some(e.summary).filter(|s| !s.trim().is_empty()),
         cwd: e.cwd,
         is_worktree: e.worktree_label.is_some(),
+        session_kind: None,
         model_id: e.model_id,
         yolo: false,
         activity: RosterActivity::Dormant,
@@ -356,7 +341,6 @@ pub(super) fn session_picker_entry_to_roster(e: SessionPickerEntry) -> RosterEnt
         },
     }
 }
-
 #[cfg(test)]
 #[path = "session_list_tests.rs"]
 mod tests;

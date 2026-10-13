@@ -16,9 +16,9 @@ use xai_grok_tools::registry::types::{
     FinalizedToolset, ToolConfig, ToolRegistryBuilder, ToolServerConfig,
 };
 use xai_grok_tools::types::tool::ToolKind;
-/// Entry point for session creation: runs [`resolve_session_toolset_rebuild`] around a fresh factory-built terminal backend.
-/// The backend lives for the session; it is returned so the caller can store it on the session being created.
-/// Session-less resolves (the `__template__` catalog resolve in `connect_hub`) also use this entry and drop the returned backend with the toolset.
+/// Test helper: same as [`resolve_session_toolset_for_host`] with a default truncation config.
+/// Production binds go through `resolve_session_toolset_for_host` so a sandbox host can cap polls.
+#[cfg(test)]
 pub(crate) fn resolve_session_toolset(
     effective_tool_config: ToolServerConfig,
     capability_mode: CapabilityMode,
@@ -52,8 +52,61 @@ pub(crate) fn resolve_session_toolset(
         viewer_ctx,
         notification_handle,
         terminal_backend.backend().clone(),
+        xai_grok_tools::types::context::TruncationConfig::default(),
     )?;
     Ok((effective, toolset, terminal_backend))
+}
+/// Same as [`resolve_session_toolset`], but a sandbox host caps task-output polls at 5k.
+/// Chat computer sessions are sandbox hosts. A CLI or desktop daemon keeps the 40k fallback.
+pub(crate) fn resolve_session_toolset_for_host(
+    effective_tool_config: ToolServerConfig,
+    capability_mode: CapabilityMode,
+    mcp_snapshot: &[ToolConfig],
+    hub_snapshot: &[ToolConfig],
+    cwd: PathBuf,
+    session_env: Arc<HashMap<String, String>>,
+    session_id: &str,
+    factory: &dyn SessionContextFactory,
+    local_registry: Option<xai_computer_hub_sdk::LocalRegistry>,
+    lsp: Option<std::sync::Arc<dyn xai_grok_tools::implementations::lsp::LspBackend>>,
+    viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+    notification_handle: Option<xai_grok_tools::notification::types::ToolNotificationHandle>,
+    host_kind: crate::host_kind::WorkspaceHostKind,
+) -> WorkspaceResult<(
+    ToolServerConfig,
+    Arc<FinalizedToolset>,
+    crate::config::SessionTerminalBackend,
+)> {
+    let terminal_backend = factory.build_terminal_backend();
+    let (effective, toolset) = resolve_session_toolset_rebuild(
+        effective_tool_config,
+        capability_mode,
+        mcp_snapshot,
+        hub_snapshot,
+        cwd,
+        session_env,
+        session_id,
+        factory,
+        local_registry,
+        lsp,
+        viewer_ctx,
+        notification_handle,
+        terminal_backend.backend().clone(),
+        truncation_config_for_host(host_kind),
+    )?;
+    Ok((effective, toolset, terminal_backend))
+}
+/// `get_task_output` and `get_terminal_command_output` both look up this name.
+pub(crate) fn truncation_config_for_host(
+    host_kind: crate::host_kind::WorkspaceHostKind,
+) -> xai_grok_tools::types::context::TruncationConfig {
+    let mut truncation = xai_grok_tools::types::context::TruncationConfig::default();
+    if host_kind == crate::host_kind::WorkspaceHostKind::Sandbox {
+        truncation
+            .per_tool_max_output_bytes
+            .insert("get_command_or_subagent_output".to_string(), 5_000);
+    }
+    truncation
 }
 /// Toolset rebuild around an existing session-owned terminal backend. The backend is required so a resolve cannot orphan shell state by building a fresh one.
 /// Returns the unmodified baseline config; the finalized set is MCP/hub merge plus capability filter. External `kind: None` drops outside `All`; known baseline ids are backfilled first.
@@ -71,6 +124,7 @@ pub(crate) fn resolve_session_toolset_rebuild(
     viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
     notification_handle: Option<xai_grok_tools::notification::types::ToolNotificationHandle>,
     terminal_backend: Arc<dyn xai_grok_tools::computer::types::TerminalBackend>,
+    truncation: xai_grok_tools::types::context::TruncationConfig,
 ) -> WorkspaceResult<(ToolServerConfig, Arc<FinalizedToolset>)> {
     let mut builder = factory.registry_builder();
     if let Some(lr) = local_registry {
@@ -103,12 +157,7 @@ pub(crate) fn resolve_session_toolset_rebuild(
         ctx.notification_handle = handle;
     }
     let toolset = builder
-        .finalize_with_trunc_config(
-            finalize_config,
-            ctx,
-            xai_grok_tools::types::context::TruncationConfig::default(),
-            viewer_ctx,
-        )
+        .finalize_with_trunc_config(finalize_config, ctx, truncation, viewer_ctx)
         .map_err(|errs| {
             let summary: Vec<String> = errs.iter().map(|e| e.summary()).collect();
             WorkspaceError::Finalize(summary.join("; "))
@@ -254,7 +303,9 @@ fn sanitize_session_id(session_id: &str) -> String {
     if modified {
         let digest = xai_file_utils::sha256_hex(session_id.as_bytes());
         safe.push('-');
-        safe.push_str(&digest[..8]);
+        if let Some(prefix) = digest.get(..8) {
+            safe.push_str(prefix);
+        }
     }
     safe
 }
@@ -264,11 +315,26 @@ fn ensure_session_dir(root: &std::path::Path, session_id: &str) -> (PathBuf, std
     let created = std::fs::create_dir_all(&dir);
     (dir, created)
 }
+/// The session folder (`/tmp/sessions/<sanitized_id>`) as a 0700 `TMPDIR`
+/// private to one session.
+pub(crate) fn ensure_private_session_tmp_dir(session_id: &str) -> std::io::Result<PathBuf> {
+    let (dir, created) = ensure_session_dir(std::path::Path::new("/tmp"), session_id);
+    created?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
 /// Serializes tests (across modules) that mutate the process-global `GROK_WORKSPACE_TOOL_STATE_ENABLED`.
 /// Aliased to the crate-wide [`crate::ENV_TEST_LOCK`] so ALL env-mutating tests share ONE lock.
 /// The hazard is the global `environ` array, not the variable's value.
 #[cfg(test)]
 pub(crate) use crate::ENV_TEST_LOCK as TOOL_STATE_ENV_LOCK;
+/// Every tool id this binary's registry knows. Built once: a `ToolRegistryBuilder` is not free and binds consult it.
+static REGISTRY_TOOL_IDS: std::sync::LazyLock<Arc<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| Arc::new(ToolRegistryBuilder::new().known_tool_ids()));
 /// Gen tools enable only with an [`AuthProvider`] and API base URL; otherwise they stay `Disabled`.
 /// `state_path` is `<home>/sessions/<session_id>/` only when set; `session_folder` is `/tmp/sessions/…`, not the project cwd.
 /// The persistent-shell backend is built once per session and reused on every context build.
@@ -278,6 +344,12 @@ pub struct WorkspaceSessionContextFactory {
     /// Resolved `$GROK_WORKSPACE_HOME` when tool-state persistence is enabled; `None` disables it.
     /// Resolved once by the caller so the factory performs no per-build env reads.
     tool_state_home: Option<PathBuf>,
+    /// The ids a pinned bind may name and this factory will serve.
+    served_tool_ids: Arc<std::collections::HashSet<String>>,
+    /// The per-command sandbox seam (`xai_grok_tools::sandbox_launch`): handed to the terminal
+    /// backend and stored in `Resources` so every shell spawn goes through it. `None` runs
+    /// commands unwrapped.
+    sandbox_launch: Option<xai_grok_tools::sandbox_launch::SandboxLaunchHook>,
 }
 impl Default for WorkspaceSessionContextFactory {
     fn default() -> Self {
@@ -290,6 +362,8 @@ impl WorkspaceSessionContextFactory {
             auth: None,
             api_base_url: None,
             tool_state_home: None,
+            served_tool_ids: REGISTRY_TOOL_IDS.clone(),
+            sandbox_launch: None,
         }
     }
     /// Factory with auth: gen tools use the provider's live token.
@@ -298,12 +372,37 @@ impl WorkspaceSessionContextFactory {
             auth: Some(auth),
             api_base_url: Some(api_base_url),
             tool_state_home: None,
+            served_tool_ids: REGISTRY_TOOL_IDS.clone(),
+            sandbox_launch: None,
+        }
+    }
+    /// Factory for a host whose credential only serves the hub. Sessions get no credential, and the
+    /// tools that would call the API with one are not served even when a bind pins them: they come
+    /// back to the binder as `unserved_tool_ids` instead of registering without a client.
+    pub fn hub_only() -> Self {
+        let api_backed = xai_grok_agent::api_backed_tool_ids();
+        let served = REGISTRY_TOOL_IDS
+            .iter()
+            .filter(|id| !api_backed.contains(*id))
+            .cloned()
+            .collect();
+        WorkspaceSessionContextFactory {
+            served_tool_ids: Arc::new(served),
+            ..WorkspaceSessionContextFactory::new()
         }
     }
     /// Enable session-keyed tool-state persistence rooted at `home` (`$GROK_WORKSPACE_HOME`).
     /// Callers should only invoke this when [`tool_state_enabled`] is `true`.
     pub fn with_tool_state_home(mut self, home: PathBuf) -> Self {
         self.tool_state_home = Some(home);
+        self
+    }
+    /// Route every shell spawn of the sessions this factory builds through `hook`.
+    pub fn with_sandbox_launch(
+        mut self,
+        hook: xai_grok_tools::sandbox_launch::SandboxLaunchHook,
+    ) -> Self {
+        self.sandbox_launch = Some(hook);
         self
     }
     /// `<tool_state_home>/sessions/<sanitized_id>/tool_state.json`, or empty when persistence is disabled or dir creation fails.
@@ -365,7 +464,7 @@ impl SessionContextFactory for WorkspaceSessionContextFactory {
                         let headers = build_proxy_headers(url);
                         (
                             ImageGenConfig::Enabled {
-                                api_key: token.clone(),
+                                api_key: Some(token.clone()),
                                 base_url: url.clone(),
                                 extra_headers: headers.clone(),
                                 image_gen_enabled: true,
@@ -375,7 +474,7 @@ impl SessionContextFactory for WorkspaceSessionContextFactory {
                                 tier_restricted: false,
                             },
                             VideoGenConfig::Enabled {
-                                api_key: token.clone(),
+                                api_key: Some(token.clone()),
                                 base_url: url.clone(),
                                 extra_headers: headers.clone(),
                                 zdr_video_output_s3: None,
@@ -435,17 +534,24 @@ impl SessionContextFactory for WorkspaceSessionContextFactory {
         }
     }
     fn build_terminal_backend(&self) -> crate::config::SessionTerminalBackend {
-        crate::config::SessionTerminalBackend::local(
-            xai_grok_tools::computer::local::LocalTerminalBackend::new(),
-        )
+        let backend = match &self.sandbox_launch {
+            Some(hook) => {
+                xai_grok_tools::computer::local::LocalTerminalBackend::new_with_sandbox_launch(
+                    hook.shared(),
+                )
+            }
+            None => xai_grok_tools::computer::local::LocalTerminalBackend::new(),
+        };
+        crate::config::SessionTerminalBackend::local(backend)
     }
     fn registry_builder(&self) -> ToolRegistryBuilder {
-        ToolRegistryBuilder::new()
+        match &self.sandbox_launch {
+            Some(hook) => ToolRegistryBuilder::new().with_sandbox_launch(hook.clone()),
+            None => ToolRegistryBuilder::new(),
+        }
     }
     fn known_tool_ids(&self) -> Arc<std::collections::HashSet<String>> {
-        static IDS: std::sync::LazyLock<Arc<std::collections::HashSet<String>>> =
-            std::sync::LazyLock::new(|| Arc::new(ToolRegistryBuilder::new().known_tool_ids()));
-        IDS.clone()
+        self.served_tool_ids.clone()
     }
 }
 /// Build extra headers for API calls routed through the chat proxy.
@@ -507,6 +613,7 @@ pub mod test_support {
     pub struct TestSessionContextFactory {
         pub temp: TempDir,
         tool_state: bool,
+        sandbox_launch: Option<xai_grok_tools::sandbox_launch::SandboxLaunchHook>,
     }
     impl Default for TestSessionContextFactory {
         fn default() -> Self {
@@ -518,6 +625,7 @@ pub mod test_support {
             Self {
                 temp: TempDir::new().expect("create temp dir"),
                 tool_state: true,
+                sandbox_launch: None,
             }
         }
         /// Matches production, where `GROK_WORKSPACE_TOOL_STATE_ENABLED` is unset and the real factory returns an empty path.
@@ -526,6 +634,15 @@ pub mod test_support {
                 tool_state: false,
                 ..Self::new()
             }
+        }
+        /// Route every shell spawn through `hook`, as the production factory does for a served
+        /// folder's `WorkspaceSandbox`.
+        pub fn with_sandbox_launch(
+            mut self,
+            hook: xai_grok_tools::sandbox_launch::SandboxLaunchHook,
+        ) -> Self {
+            self.sandbox_launch = Some(hook);
+            self
         }
     }
     impl SessionContextFactory for TestSessionContextFactory {
@@ -571,10 +688,17 @@ pub mod test_support {
             }
         }
         fn build_terminal_backend(&self) -> crate::config::SessionTerminalBackend {
-            crate::config::SessionTerminalBackend::local(LocalTerminalBackend::new())
+            let backend = match &self.sandbox_launch {
+                Some(hook) => LocalTerminalBackend::new_with_sandbox_launch(hook.shared()),
+                None => LocalTerminalBackend::new(),
+            };
+            crate::config::SessionTerminalBackend::local(backend)
         }
         fn registry_builder(&self) -> ToolRegistryBuilder {
-            ToolRegistryBuilder::new()
+            match &self.sandbox_launch {
+                Some(hook) => ToolRegistryBuilder::new().with_sandbox_launch(hook.clone()),
+                None => ToolRegistryBuilder::new(),
+            }
         }
     }
     /// `ToolConfig` builder helper.
@@ -615,6 +739,65 @@ mod tests {
     }
     fn empty_env() -> Arc<HashMap<String, String>> {
         Arc::new(HashMap::new())
+    }
+    #[tokio::test]
+    async fn sandbox_host_caps_task_output_polls_at_5k() {
+        use xai_grok_tools::types::resources::TruncationCfg;
+        let factory = factory_for_test();
+        let (_eff, toolset, _backend) = resolve_session_toolset_for_host(
+            test_support::baseline_config(),
+            CapabilityMode::ReadWrite,
+            &[],
+            &[],
+            PathBuf::from("/tmp"),
+            empty_env(),
+            "sandbox-cap",
+            factory.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            crate::host_kind::WorkspaceHostKind::Sandbox,
+        )
+        .unwrap();
+        let resources = toolset.resources.lock().await;
+        let cap = resources
+            .get::<TruncationCfg>()
+            .expect("sandbox sessions install TruncationCfg")
+            .0
+            .per_tool_max_output_bytes
+            .get("get_command_or_subagent_output")
+            .copied();
+        assert_eq!(cap, Some(5_000));
+    }
+    #[tokio::test]
+    async fn daemon_host_does_not_cap_task_output_polls() {
+        use xai_grok_tools::types::resources::TruncationCfg;
+        let factory = factory_for_test();
+        let (_eff, toolset, _backend) = resolve_session_toolset_for_host(
+            test_support::baseline_config(),
+            CapabilityMode::ReadWrite,
+            &[],
+            &[],
+            PathBuf::from("/tmp"),
+            empty_env(),
+            "daemon-cap",
+            factory.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            crate::host_kind::WorkspaceHostKind::Daemon,
+        )
+        .unwrap();
+        let resources = toolset.resources.lock().await;
+        let caps = resources
+            .get::<TruncationCfg>()
+            .expect("finalize installs TruncationCfg")
+            .0
+            .per_tool_max_output_bytes
+            .clone();
+        assert_eq!(HashMap::new(), caps);
     }
     #[tokio::test]
     async fn resolve_session_toolset_empty_mcp_snapshot_is_noop_for_baseline() {

@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum HookEvent {
-    /// Cancel an in-flight call. The owning `tool_call_id` travels in the
-    /// enclosing `hook` frame.
+    /// Ends the running call named by `call_id` on the enclosing `HookFrame`.
+    /// A `Cancel` with neither `call_id` nor `tool_id` ends every running call in the session.
+    /// A `Cancel` with a `tool_id` but no `call_id` ends nothing.
     Cancel,
     Pause,
     Resume,

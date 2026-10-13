@@ -29,18 +29,23 @@ members = [
     "crates/codegen/xai-grok-announcements",
     "crates/codegen/xai-grok-auth",
     "crates/codegen/xai-grok-bundle",
+    "crates/codegen/xai-grok-cloud-config",
     "crates/codegen/xai-grok-config",
     "crates/codegen/xai-grok-config-types",
     "crates/codegen/xai-grok-dashboard-store",
     "crates/codegen/xai-grok-diag-server",
+    "crates/codegen/xai-grok-egress-proxy",
     "crates/codegen/xai-grok-env",
+    "crates/codegen/xai-grok-external-agent-migration",
     "crates/codegen/xai-grok-extra-ca",
     "crates/codegen/xai-grok-feedback",
+    "crates/codegen/xai-grok-file-lock",
     "crates/codegen/xai-grok-foreign-sessions",
     "crates/codegen/xai-grok-gboom",
     "crates/codegen/xai-grok-hooks",
     "crates/codegen/xai-grok-http",
     "crates/codegen/xai-grok-image",
+    "crates/codegen/xai-grok-lifecycle",
     "crates/codegen/xai-grok-login",
     "crates/codegen/xai-grok-markdown",
     "crates/codegen/xai-grok-markdown-core",
@@ -56,6 +61,7 @@ members = [
     "crates/codegen/xai-grok-pager-pty-harness",
     "crates/codegen/xai-grok-pager-render",
     "crates/codegen/xai-grok-paths",
+    "crates/codegen/xai-grok-permission-rules",
     "crates/codegen/xai-grok-plugin-marketplace",
     "crates/codegen/xai-grok-sampler",
     "crates/codegen/xai-grok-sampling-types",
@@ -140,6 +146,7 @@ backon = { version = "1.6" }
 backtrace = "0.3"
 base64 = "0.22"
 blake3 = "1"
+bstr = "1"
 bytes = { version = "1", features = ["serde"] }
 camino = "1.1.10"
 chrono = "0.4"
@@ -186,6 +193,7 @@ htmd = "0.5.4"
 html-escape = "0.2"
 http = "1"
 http-body-util = "0.1"
+httparse = "1"
 humantime-serde = "1"
 ignore = "0.4"
 image = { version = "0.25.10", default-features = false }
@@ -245,6 +253,7 @@ resvg = { version = "0.47", default-features = false, features = ["text"] }
 rhai = { version = "1.25", features = ["serde"] }
 ring = "0.17"
 rsa = "0.9"
+rstest = "0.25"
 runfiles = "0.1"
 rustc-hash = "2"
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
@@ -267,17 +276,18 @@ siphasher = "1"
 smallvec = "1"
 strip-ansi-escapes = "0.2.1"
 strum = { version = "0.27", features = ["derive"] }
+subtle = "2"
 supports-color = "3.0"
-syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+syntect = { version = "5.3", default-features = false, features = ["default-onig"] }
 tar = "0.4"
 tempfile = "3"
 terminput = "0.3"
 termwiz = { version = "0.23", default-features = false }
 textwrap = "0.16"
 thiserror = "2"
-tikv-jemalloc-ctl = "0.6"
-tikv-jemalloc-sys = "0.6"
-tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
+tikv-jemalloc-ctl = "0.7"
+tikv-jemalloc-sys = "0.7"
+tikv-jemallocator = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 time = "0.3"
 tiny-skia = "0.12"
 tokio = { version = "1", features = ["full"] }
@@ -295,9 +305,10 @@ tower-http = "0.6"
 tracing = "0.1"
 tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "smallvec", "tracing-log", "std", "ansi"] }
+tree-sitter = "0.26"
 ts-rs = "12.0"
 tui-scrollbar = "0.2"
-two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
+two-face = { version = "0.4", default-features = false, features = ["syntect-onig"] }
 unicode-bidi = "0.3"
 unicode-bidi-mirroring = "0.4"
 unicode-normalization = "0.1"
@@ -331,16 +342,20 @@ xai-grok-agent = { path = "crates/codegen/xai-grok-agent" }
 xai-grok-announcements = { path = "crates/codegen/xai-grok-announcements" }
 xai-grok-auth = { path = "crates/codegen/xai-grok-auth" }
 xai-grok-bundle = { path = "crates/codegen/xai-grok-bundle" }
+xai-grok-cloud-config = { path = "crates/codegen/xai-grok-cloud-config" }
 xai-grok-config = { path = "crates/codegen/xai-grok-config" }
 xai-grok-config-types = { path = "crates/codegen/xai-grok-config-types" }
 xai-grok-dashboard-store = { path = "crates/codegen/xai-grok-dashboard-store" }
 xai-grok-diag-server = { path = "crates/codegen/xai-grok-diag-server" }
 xai-grok-env = { path = "crates/codegen/xai-grok-env" }
+xai-grok-external-agent-migration = { path = "crates/codegen/xai-grok-external-agent-migration" }
 xai-grok-extra-ca = { path = "crates/codegen/xai-grok-extra-ca" }
 xai-grok-feedback = { path = "crates/codegen/xai-grok-feedback" }
+xai-grok-file-lock = { path = "crates/codegen/xai-grok-file-lock" }
 xai-grok-foreign-sessions = { path = "crates/codegen/xai-grok-foreign-sessions" }
 xai-grok-http = { path = "crates/codegen/xai-grok-http" }
 xai-grok-image = { path = "crates/codegen/xai-grok-image" }
+xai-grok-lifecycle = { path = "crates/codegen/xai-grok-lifecycle" }
 xai-grok-login = { path = "crates/codegen/xai-grok-login" }
 xai-grok-markdown = { path = "crates/codegen/xai-grok-markdown" }
 xai-grok-markdown-core = { path = "crates/codegen/xai-grok-markdown-core" }
@@ -349,17 +364,17 @@ xai-grok-memory = { path = "crates/codegen/xai-grok-memory" }
 xai-grok-mermaid = { path = "crates/codegen/xai-grok-mermaid" }
 xai-grok-models = { path = "crates/codegen/xai-grok-models" }
 xai-grok-otel = { path = "crates/codegen/xai-grok-otel" }
+xai-grok-permission-rules = { path = "crates/codegen/xai-grok-permission-rules" }
 xai-grok-sampler = { path = "crates/codegen/xai-grok-sampler" }
 xai-grok-secrets = { path = "crates/codegen/xai-grok-secrets" }
 xai-grok-session-events = { path = "crates/codegen/xai-grok-session-events" }
 xai-grok-session-search = { path = "crates/codegen/xai-grok-session-search" }
 xai-grok-shared = { path = "crates/codegen/xai-grok-shared" }
-xai-grok-shell = { path = "crates/codegen/xai-grok-shell" }
 xai-grok-shell-base = { path = "crates/codegen/xai-grok-shell-base" }
 xai-grok-shell-session-support = { path = "crates/codegen/xai-grok-shell-session-support" }
 xai-grok-shell-terminal = { path = "crates/codegen/xai-grok-shell-terminal" }
 xai-grok-status-line = { path = "crates/codegen/xai-grok-status-line" }
-xai-grok-telemetry = { path = "crates/codegen/xai-grok-telemetry" }
+xai-grok-telemetry = { path = "crates/codegen/xai-grok-telemetry", default-features = false }
 xai-grok-test-support = { path = "crates/codegen/xai-grok-test-support" }
 xai-grok-tools = { path = "crates/codegen/xai-grok-tools" }
 xai-grok-tools-api = { path = "crates/codegen/xai-grok-tools-api" }

@@ -52,11 +52,15 @@ async fn usage_categories_include_skills_and_mcp_with_counts() {
             install_mcp_servers(&actor);
             let rows = actor.usage_categories().await;
             assert_eq!(rows.len(), 2, "{rows:?}");
-            let skills = &rows[0];
+            let Some(skills) = rows.first() else {
+                panic!("expected Skills row: {rows:?}");
+            };
             assert_eq!(skills.label, "Skills");
             assert_eq!(skills.detail.as_deref(), Some("2 skills"));
             assert!(skills.tokens > 0);
-            let mcp = &rows[1];
+            let Some(mcp) = rows.get(1) else {
+                panic!("expected MCP row: {rows:?}");
+            };
             assert_eq!(mcp.label, "MCP servers");
             assert_eq!(mcp.detail.as_deref(), Some("1 server"));
             assert!(mcp.tokens > 0);
@@ -82,11 +86,13 @@ async fn usage_categories_include_agents_md_with_count() {
                         file_name: "AGENTS.md".into(),
                         file_path: "/repo/AGENTS.md".into(),
                         content: "# Root\nUse rustfmt.".into(),
+                        source: Default::default(),
                     },
                     xai_grok_agent::prompt::agents_md::AgentConfigFile {
                         file_name: "AGENTS.md".into(),
                         file_path: "/repo/crates/AGENTS.md".into(),
                         content: "# Crate\nPrefer unit tests.".into(),
+                        source: Default::default(),
                     },
                 ],
                 ..Default::default()
@@ -161,7 +167,7 @@ async fn baseline_reminder_lists_workflows_under_skills() {
                         item,
                         ConversationItem::User(u)
                             if u.synthetic_reason
-                                == Some(xai_grok_sampling_types::SyntheticReason::SystemReminder)
+                                == xai_grok_sampling_types::SyntheticReason::SystemReminder
                     )
                     .then(|| item.text_content())
                 })
@@ -200,7 +206,7 @@ async fn baseline_reminder_lists_workflows_when_there_are_no_skills() {
                         item,
                         ConversationItem::User(u)
                             if u.synthetic_reason
-                                == Some(xai_grok_sampling_types::SyntheticReason::SystemReminder)
+                                == xai_grok_sampling_types::SyntheticReason::SystemReminder
                     )
                     .then(|| item.text_content())
                 })
@@ -232,7 +238,7 @@ async fn subagent_session_does_not_list_workflows() {
                         item,
                         ConversationItem::User(u)
                             if u.synthetic_reason
-                                == Some(xai_grok_sampling_types::SyntheticReason::SystemReminder)
+                                == xai_grok_sampling_types::SyntheticReason::SystemReminder
                     )
                     .then(|| item.text_content())
                 })

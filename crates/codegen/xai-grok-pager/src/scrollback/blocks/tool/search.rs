@@ -397,7 +397,18 @@ impl BlockContent for SearchToolCallBlock {
 
                 let has_results = !self.file_matches.is_empty() || !self.file_paths.is_empty();
 
-                if has_results {
+                if let Some(ref error) = self.error {
+                    lines.push(Line::from("").into());
+                    for line in error.lines() {
+                        lines.push(
+                            Line::from(Span::styled(
+                                format!("  {line}"),
+                                theme.fg(theme.accent_error),
+                            ))
+                            .into(),
+                        );
+                    }
+                } else if has_results {
                     lines.push(Line::from("").into());
                 } else if self.match_count == 0 {
                     // No results: show a hint
@@ -451,9 +462,9 @@ impl BlockContent for SearchToolCallBlock {
                     for path in &self.file_paths {
                         let line = if is_count {
                             // Count mode: "path:N", split at the last ':'; the path part in path color, ":N" in normal fg
-                            if let Some(colon_pos) = path.rfind(':') {
-                                let file_part = &path[..colon_pos];
-                                let count_part = &path[colon_pos..]; // includes ':'
+                            if let Some((file_part, count_part)) =
+                                path.rfind(':').and_then(|pos| path.split_at_checked(pos))
+                            {
                                 Line::from(vec![
                                     Span::styled(
                                         format!("{indent}{file_part}"),
@@ -508,9 +519,9 @@ impl BlockContent for SearchToolCallBlock {
         false
     }
 
+    // Always foldable: a no-result block still shows the metadata and the hint, a failed one its reason
     fn is_foldable(&self) -> bool {
-        // Always foldable: expanding a no-result block still shows the metadata and the "(no results)" hint
-        self.error.is_none()
+        true
     }
 
     fn default_display_mode(&self) -> DisplayMode {

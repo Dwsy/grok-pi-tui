@@ -263,13 +263,17 @@ mod tests {
             "nextPageToken": "tok2"
         });
         let wire: ListConversationsResponseWire = serde_json::from_value(json).unwrap();
-        assert_eq!(wire.conversations.len(), 1);
-        let c = &wire.conversations[0];
+        let [c] = wire.conversations.as_slice() else {
+            panic!("expected one conversation: {:?}", wire.conversations);
+        };
         assert_eq!(c.conversation_id, "conv_abc");
         assert_eq!(c.title, "Compare GPU vendors");
         assert!(c.starred);
         assert_eq!(c.modify_time.as_deref(), Some("2026-06-18T18:02:00Z"));
-        assert_eq!(c.workspaces[0].workspace_id, "ws_9f3a");
+        let [ws, ..] = c.workspaces.as_slice() else {
+            panic!("expected one workspace: {:?}", c.workspaces);
+        };
+        assert_eq!(ws.workspace_id, "ws_9f3a");
         assert_eq!(wire.next_page_token.as_deref(), Some("tok2"));
     }
 
@@ -277,7 +281,9 @@ mod tests {
     fn missing_fields_default_gracefully() {
         let json = serde_json::json!({ "conversations": [{ "conversationId": "c1" }] });
         let wire: ListConversationsResponseWire = serde_json::from_value(json).unwrap();
-        let c = &wire.conversations[0];
+        let [c, ..] = wire.conversations.as_slice() else {
+            panic!("expected one conversation: {:?}", wire.conversations);
+        };
         assert_eq!(c.conversation_id, "c1");
         assert!(c.title.is_empty());
         assert!(c.modify_time.is_none());

@@ -3,12 +3,16 @@ license = "Apache-2.0"
 name = "xai-grok-config"
 version = "0.1.0"
 edition.workspace = true
-description = "Shared config loading for Grok — grok_home, effective config (requirements > user > managed), TOML merge"
+description = "Grok config: grok_home, effective config (requirements over user over managed), TOML merge, service endpoints, remote settings, and vendor compat"
 
 [dependencies]
+agent-client-protocol = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
 dunce = { workspace = true }
+fs2 = { workspace = true }
+indexmap = { workspace = true }
 # Shared signed deployment-config envelope contract with the cli-chat-proxy signer.
 prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" }
 ring = { workspace = true }
@@ -20,6 +24,7 @@ strum = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
+ts-rs = { workspace = true, optional = true }
 urlencoding = { workspace = true }
 which = { workspace = true }
 xai-dirs = { workspace = true }
@@ -36,6 +41,9 @@ core-foundation = { workspace = true }
 tempfile = { workspace = true }
 
 [features]
+default-bazel = []
+# TS bindings for the announcement types only; see xai-grok-announcements/generate.sh.
+ts = ["dep:ts-rs"]
 
 [lints]
 workspace = true

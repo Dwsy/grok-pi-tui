@@ -5,9 +5,81 @@
 //! at the SDK boundary so consumers can match on a single enum without
 //! re-deriving the numeric/string code mapping.
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 use xai_tool_protocol::{IdError, JsonRpcError, ToolCallId, ToolErrorWire};
+
+/// The most of an unknown code that is kept as spelled (the same cap as the IdP body excerpt in
+/// the daemon's `cause`): the 403 body is a stranger's bytes, and the code reaches the user's
+/// message, the daemon's last log line and its stop marker, each of which is one line.
+pub const MAX_REFUSAL_CODE_LEN: usize = 500;
+
+/// The policy the hub named when it refused an upgrade: the `code` of its 403 body. A code this
+/// build does not know is kept as it was spelled — collapsed to one line and cut at
+/// [`MAX_REFUSAL_CODE_LEN`] — so a newer hub's policy still reaches the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalCode {
+    LocalAccessDisabled,
+    XaiInternalGate,
+    MissingScope,
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl<'de> Deserialize<'de> for RefusalCode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::parse(&String::deserialize(deserializer)?))
+    }
+}
+
+impl RefusalCode {
+    fn parse(code: &str) -> Self {
+        match code {
+            "local_access_disabled" => Self::LocalAccessDisabled,
+            "xai_internal_gate" => Self::XaiInternalGate,
+            "missing_scope" => Self::MissingScope,
+            unknown => Self::Unknown(bounded_one_line(unknown)),
+        }
+    }
+
+    /// The code as the hub spelled it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::LocalAccessDisabled => "local_access_disabled",
+            Self::XaiInternalGate => "xai_internal_gate",
+            Self::MissingScope => "missing_scope",
+            Self::Unknown(code) => code,
+        }
+    }
+}
+
+impl std::fmt::Display for RefusalCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Whitespace runs (newlines included) become one space; past [`MAX_REFUSAL_CODE_LEN`] characters
+/// the rest is an ellipsis.
+fn bounded_one_line(code: &str) -> String {
+    let one_line = code.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= MAX_REFUSAL_CODE_LEN {
+        return one_line;
+    }
+    one_line
+        .chars()
+        .take(MAX_REFUSAL_CODE_LEN)
+        .chain(['…'])
+        .collect()
+}
+
+#[derive(Deserialize)]
+struct RefusalBody {
+    code: RefusalCode,
+}
 
 /// Errors surfaced by the client SDK.
 #[derive(Debug, Error)]
@@ -29,9 +101,13 @@ pub enum ClientError {
     /// Server rejected the WebSocket upgrade with an HTTP auth status
     /// (401/403). Non-retryable: replaying the same credential is
     /// rejected identically, so the reconnect loop classifies this as
-    /// fatal instead of retrying forever.
+    /// fatal instead of retrying forever. `refusal` is the policy a 403
+    /// body names, when it names one.
     #[error("handshake auth failed: HTTP {status}")]
-    HandshakeAuthFailed { status: u16 },
+    HandshakeAuthFailed {
+        status: u16,
+        refusal: Option<RefusalCode>,
+    },
 
     /// `register_tool` / `register_session` ack reported a conflict
     /// (cross-connection contention or an already-bound entry the
@@ -181,12 +257,17 @@ impl ClientError {
     /// ([`Self::HandshakeAuthFailed`]); every other failure stays a
     /// transport [`Self::NetworkError`] via the blanket `From` impl. The
     /// distinction must be made here, before `From` collapses the typed
-    /// `Http` response status into an opaque string.
+    /// `Http` response (status and body) into an opaque string.
     pub(crate) fn from_handshake_error(err: tokio_tungstenite::tungstenite::Error) -> Self {
         if let tokio_tungstenite::tungstenite::Error::Http(resp) = &err {
             let status = resp.status().as_u16();
             if status == 401 || status == 403 {
-                return Self::HandshakeAuthFailed { status };
+                let refusal = resp
+                    .body()
+                    .as_deref()
+                    .and_then(|body| serde_json::from_slice::<RefusalBody>(body).ok())
+                    .map(|body| body.code);
+                return Self::HandshakeAuthFailed { status, refusal };
             }
         }
         Self::from(err)
@@ -222,9 +303,16 @@ mod tests {
     }
 
     fn http_upgrade_error(status: u16) -> tokio_tungstenite::tungstenite::Error {
+        http_upgrade_error_with_body(status, None)
+    }
+
+    fn http_upgrade_error_with_body(
+        status: u16,
+        body: Option<&str>,
+    ) -> tokio_tungstenite::tungstenite::Error {
         let resp = tokio_tungstenite::tungstenite::http::Response::builder()
             .status(status)
-            .body(None::<Vec<u8>>)
+            .body(body.map(|body| body.as_bytes().to_vec()))
             .expect("response builds");
         tokio_tungstenite::tungstenite::Error::Http(Box::new(resp))
     }
@@ -233,10 +321,89 @@ mod tests {
     fn handshake_401_and_403_map_to_handshake_auth_failed() {
         for status in [401u16, 403] {
             match ClientError::from_handshake_error(http_upgrade_error(status)) {
-                ClientError::HandshakeAuthFailed { status: got } => assert_eq!(got, status),
+                ClientError::HandshakeAuthFailed {
+                    status: got,
+                    refusal: None,
+                } => assert_eq!(got, status),
                 other => panic!("expected HandshakeAuthFailed for {status}; got {other:?}"),
             }
         }
+    }
+
+    /// The hub names the policy behind a 403 as `{"code": ...}`; an older hub's text body, or a
+    /// code this SDK does not know, is a refusal with no code.
+    #[test]
+    fn handshake_403_carries_the_refusal_code_the_body_names() {
+        let refusal = |body: Option<&str>| match ClientError::from_handshake_error(
+            http_upgrade_error_with_body(403, body),
+        ) {
+            ClientError::HandshakeAuthFailed { refusal, .. } => refusal,
+            other => panic!("expected HandshakeAuthFailed; got {other:?}"),
+        };
+        assert_eq!(
+            refusal(Some(
+                r#"{"code":"local_access_disabled","reason":"tool servers need the serve scope"}"#
+            )),
+            Some(RefusalCode::LocalAccessDisabled)
+        );
+        assert_eq!(
+            refusal(Some(r#"{"code":"xai_internal_gate"}"#)),
+            Some(RefusalCode::XaiInternalGate)
+        );
+        assert_eq!(
+            refusal(Some(r#"{"code":"missing_scope"}"#)),
+            Some(RefusalCode::MissingScope)
+        );
+        assert_eq!(refusal(Some("forbidden")), None);
+        assert_eq!(
+            refusal(Some(r#"{"code":"from_the_future"}"#)),
+            Some(RefusalCode::Unknown("from_the_future".to_owned())),
+            "a code this build does not know is still the hub's word"
+        );
+        assert_eq!(
+            serde_json::to_string(&RefusalCode::Unknown("from_the_future".to_owned())).unwrap(),
+            r#""from_the_future""#
+        );
+        assert_eq!(refusal(None), None);
+        assert_eq!(
+            RefusalCode::LocalAccessDisabled.to_string(),
+            "local_access_disabled"
+        );
+    }
+
+    /// The 403 body is a stranger's bytes, and the code reaches one-line places: the user's
+    /// message, the daemon's last log line, its stop marker. An oversized, multi-line code is kept
+    /// as one line of at most `MAX_REFUSAL_CODE_LEN` characters and an ellipsis.
+    #[test]
+    fn an_unknown_refusal_code_is_bounded_and_one_line() {
+        let oversized = format!(
+            "line one\n\tline two\r\n{}",
+            "x".repeat(MAX_REFUSAL_CODE_LEN * 2)
+        );
+        let body = serde_json::to_string(&json!({ "code": oversized })).unwrap();
+        let ClientError::HandshakeAuthFailed {
+            refusal: Some(RefusalCode::Unknown(code)),
+            ..
+        } = ClientError::from_handshake_error(http_upgrade_error_with_body(403, Some(&body)))
+        else {
+            panic!("expected an unknown refusal code");
+        };
+        assert!(code.starts_with("line one line two xxx"), "{code}");
+        assert!(!code.contains(['\n', '\r', '\t']), "{code}");
+        assert_eq!(code.chars().count(), MAX_REFUSAL_CODE_LEN + 1);
+        assert!(code.ends_with('…'), "{code}");
+        assert_eq!(code.lines().count(), 1);
+
+        // Within the bound, the code is the hub's word to the character; a known code with
+        // stray whitespace around it is still unknown (the hub did not spell it).
+        let short = ClientError::from_handshake_error(http_upgrade_error_with_body(
+            403,
+            Some(r#"{"code":"a_b-c.d"}"#),
+        ));
+        assert!(matches!(
+            short,
+            ClientError::HandshakeAuthFailed { refusal: Some(RefusalCode::Unknown(ref code)), .. } if code == "a_b-c.d"
+        ));
     }
 
     #[test]

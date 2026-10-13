@@ -34,10 +34,29 @@ pub(crate) struct ResumeLoop {
     pub prompt: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ResumeTask {
     pub task_id: String,
-    pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ResumeTask {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            task_id: String,
+            #[serde(default)]
+            command: String,
+            #[serde(default)]
+            description: Option<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(ResumeTask {
+            task_id: raw.task_id,
+            description: resume_task_description(raw.description, Some(raw.command.as_str())),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,15 +137,28 @@ pub(crate) fn load_and_clear(session_dir: &Path) -> ResumeStatusSnapshot {
     merge_legacy_manifest(session_dir, snapshot)
 }
 
+pub(crate) fn resume_task_description(
+    description: Option<String>,
+    display_command: Option<&str>,
+) -> Option<String> {
+    if let Some(desc) = description.filter(|d| !d.trim().is_empty()) {
+        return Some(desc);
+    }
+    display_command
+        .and_then(xai_grok_tools::reminders::monitor_label)
+        .map(str::to_string)
+}
+
 fn merge_legacy_manifest(
     session_dir: &Path,
     mut snapshot: ResumeStatusSnapshot,
 ) -> ResumeStatusSnapshot {
     let entries = crate::terminal::load_and_clear_manifest(session_dir);
     for entry in entries {
+        let description = resume_task_description(None, entry.display_command.as_deref());
         let task = ResumeTask {
             task_id: entry.task_id,
-            command: entry.display_command.unwrap_or(entry.command),
+            description,
         };
         match entry.kind {
             xai_grok_tools::computer::types::TaskKind::Monitor => {
@@ -256,6 +288,21 @@ pub(crate) fn running_subagent_metas(
     out
 }
 
+fn write_resumed_task_line(body: &mut String, item: &ResumeTask) {
+    let desc = item
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    let _ = match desc {
+        Some(desc) => std::fmt::Write::write_fmt(
+            body,
+            format_args!("- \"{}\": {}\n", item.task_id, one_line(desc)),
+        ),
+        None => std::fmt::Write::write_fmt(body, format_args!("- \"{}\"\n", item.task_id)),
+    };
+}
+
 pub(crate) fn format_reminder(snapshot: &ResumeStatusSnapshot) -> Option<String> {
     if snapshot.is_empty() {
         return None;
@@ -280,19 +327,13 @@ pub(crate) fn format_reminder(snapshot: &ResumeStatusSnapshot) -> Option<String>
             "\n## Background commands\nThese background commands were killed when the session stopped:\n",
         );
         for item in &snapshot.background {
-            let _ = std::fmt::Write::write_fmt(
-                &mut body,
-                format_args!("- \"{}\": `{}`\n", item.task_id, one_line(&item.command)),
-            );
+            write_resumed_task_line(&mut body, item);
         }
     }
     if !snapshot.monitors.is_empty() {
         body.push_str("\n## Monitors\nThese monitors were killed when the session stopped:\n");
         for item in &snapshot.monitors {
-            let _ = std::fmt::Write::write_fmt(
-                &mut body,
-                format_args!("- \"{}\": `{}`\n", item.task_id, one_line(&item.command)),
-            );
+            write_resumed_task_line(&mut body, item);
         }
     }
     if !snapshot.subagents.is_empty() {
@@ -369,6 +410,26 @@ mod tests {
     }
 
     #[test]
+    fn load_migrates_monitor_label_out_of_command() {
+        let raw = r#"{"task_id":"mon1","command":"[monitor] app logs"}"#;
+        let task: ResumeTask = serde_json::from_str(raw).unwrap();
+        assert_eq!(task.description.as_deref(), Some("app logs"));
+        let bash: ResumeTask =
+            serde_json::from_str(r#"{"task_id":"bg1","command":"sleep 2 && echo hi"}"#).unwrap();
+        assert!(bash.description.is_none());
+        let blank: ResumeTask = serde_json::from_str(
+            r#"{"task_id":"mon2","command":"[monitor] app logs","description":"  "}"#,
+        )
+        .unwrap();
+        assert_eq!(blank.description.as_deref(), Some("app logs"));
+        let kept: ResumeTask = serde_json::from_str(
+            r#"{"task_id":"bg2","command":"sleep 2","description":"Print smoke marker"}"#,
+        )
+        .unwrap();
+        assert_eq!(kept.description.as_deref(), Some("Print smoke marker"));
+    }
+
+    #[test]
     fn format_covers_each_section() {
         let reminder = format_reminder(&ResumeStatusSnapshot {
             loops: vec![ResumeLoop {
@@ -378,11 +439,11 @@ mod tests {
             }],
             background: vec![ResumeTask {
                 task_id: "bg1".into(),
-                command: "sleep 100".into(),
+                description: Some("Wait for the deploy".into()),
             }],
             monitors: vec![ResumeTask {
                 task_id: "mon1".into(),
-                command: "watch.py".into(),
+                description: None,
             }],
             subagents: vec![ResumeSubagent {
                 subagent_id: "sa1".into(),
@@ -407,6 +468,7 @@ mod tests {
         assert!(reminder.contains("goal was paused"));
         assert!(reminder.contains("loop1"));
         assert!(reminder.contains("bg1"));
+        assert!(reminder.contains("Wait for the deploy"));
         assert!(reminder.contains("mon1"));
         assert!(reminder.contains("sa1"));
         assert!(reminder.contains("wf1"));
@@ -447,7 +509,7 @@ mod tests {
             &ResumeStatusSnapshot {
                 background: vec![ResumeTask {
                     task_id: "bg1".into(),
-                    command: "sleep 1".into(),
+                    description: None,
                 }],
                 ..ResumeStatusSnapshot::default()
             },
@@ -523,9 +585,18 @@ mod tests {
                 objective: "goal".into(),
             }),
         );
-        assert_eq!(snap.loops[0].id, "loop9");
-        assert_eq!(snap.subagents[0].subagent_id, "sa9");
-        assert_eq!(snap.workflows[0].run_id, "wf9");
+        let Some(loop0) = snap.loops.first() else {
+            panic!("expected a loop: {:?}", snap.loops);
+        };
+        assert_eq!(loop0.id, "loop9");
+        let Some(sa0) = snap.subagents.first() else {
+            panic!("expected a subagent: {:?}", snap.subagents);
+        };
+        assert_eq!(sa0.subagent_id, "sa9");
+        let Some(wf0) = snap.workflows.first() else {
+            panic!("expected a workflow: {:?}", snap.workflows);
+        };
+        assert_eq!(wf0.run_id, "wf9");
         assert_eq!(snap.goal.unwrap().objective, "goal");
     }
 

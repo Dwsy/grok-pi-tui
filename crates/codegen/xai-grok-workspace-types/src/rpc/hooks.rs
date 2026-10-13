@@ -131,11 +131,6 @@ impl<'de> Deserialize<'de> for HookEventNameWire {
 mod tests {
     use super::*;
 
-    #[test]
-    fn method_constant() {
-        assert_eq!(HookRegistryReq::METHOD, "workspace.hook_registry");
-    }
-
     /// Mirrors `event_name_deser_all_variants` in xai-grok-hooks; the two lists move together.
     #[test]
     fn hook_event_name_wire_snake_case_round_trip() {
@@ -172,7 +167,7 @@ mod tests {
 
     #[test]
     fn hook_event_name_wire_unknown_round_trips_losslessly() {
-        // A newer server's event must decode (not error) and preserve its raw value so it stays a distinct map key
+        // Unknown names must decode and keep the raw string so they stay distinct map keys.
         let v: HookEventNameWire =
             serde_json::from_value(serde_json::json!("future_event")).unwrap();
         assert_eq!(v, HookEventNameWire::Unknown("future_event".to_string()));
@@ -184,7 +179,6 @@ mod tests {
 
     #[test]
     fn hook_registry_wire_round_trips_server_json() {
-        // A representative server-side `HookRegistry` serialization.
         let json = serde_json::json!({
             "hooks": {
                 "pre_tool_use": [{

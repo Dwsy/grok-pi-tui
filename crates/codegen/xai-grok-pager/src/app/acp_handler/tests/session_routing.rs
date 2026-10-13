@@ -56,8 +56,7 @@
                 .subagent_sessions
                 .insert(child_sid.into(), make_subagent_info(child_sid));
             parent
-                .subagent_views
-                .insert(child_sid.into(), Box::new(make_agent(Some(child_sid))));
+                .insert_test_child(child_sid.into(), Box::new(make_agent(Some(child_sid))));
         }
 
         let affected = handle(
@@ -170,6 +169,22 @@
             app.agents.get(&AgentId(1)).unwrap().scrollback.is_empty(),
             "agent B must not have absorbed a notification for sess-unknown"
         );
+    }
+
+    /// A tab whose load failed has no session id but is not waiting for one, so it takes no stray notification
+    #[test]
+    fn failed_load_tab_takes_no_race_window_notifications() {
+        let mut app = make_app_with_agent("sess-A");
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        agent.session.session_id = None;
+        agent.load_failed = true;
+
+        let _ = handle(
+            make_agent_chunk_message("someone-else", "stray chunk"),
+            &mut app,
+        );
+
+        assert!(app.agents.get(&AgentId(0)).unwrap().scrollback.is_empty());
     }
 
     #[test]

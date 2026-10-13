@@ -402,7 +402,9 @@ fn run_phase1_for_file(
             // Ground truth: determine expected validity based on LineOutcome. An anchor should be Valid if the line is Unchanged
             // or Reindented (whitespace-normalized hashing preserves anchors across indentation changes). Shifted, Modified, and
             // Deleted anchors should all be detected as invalid (Stale or OutOfRange).
-            let outcome = &mutation_result.outcomes[orig_idx];
+            let Some(outcome) = mutation_result.outcomes.get(orig_idx) else {
+                continue;
+            };
             let should_be_valid =
                 matches!(outcome, LineOutcome::Unchanged | LineOutcome::Reindented);
 
@@ -529,15 +531,15 @@ fn run_phase2_for_file(
             }
 
             let probe_idx = step.probe_anchor_idx;
-            if probe_idx >= current_anchors.len() {
+            let Some(current) = current_anchors.get(probe_idx) else {
                 continue;
-            }
+            };
 
             // Snapshot the anchor we want to probe.
             let probe_anchor = ParsedAnchor {
-                line: current_anchors[probe_idx].line,
-                local: current_anchors[probe_idx].local.clone(),
-                context: current_anchors[probe_idx].context.clone(),
+                line: current.line,
+                local: current.local.clone(),
+                context: current.context.clone(),
             };
 
             // Apply the mutation.
@@ -669,8 +671,11 @@ struct Config3 {
         };
         let report = run_benchmark(&corpus, &config);
         assert_eq!(report.schemes.len(), 1);
+        let Some(scheme) = report.schemes.first() else {
+            panic!("expected a scheme: {:?}", report.schemes);
+        };
         assert_eq!(
-            report.schemes[0].false_stale, 0,
+            scheme.false_stale, 0,
             "content_only should have zero false_stale with correct ground truth"
         );
     }
@@ -689,7 +694,9 @@ struct Config3 {
         };
         let report = run_benchmark(&corpus, &config);
         assert_eq!(report.schemes.len(), 2); // A + B
-        let b = &report.schemes[1];
+        let Some(b) = report.schemes.get(1) else {
+            panic!("expected two schemes: {:?}", report.schemes);
+        };
         assert!(
             b.false_stale > 0,
             "chunk scheme should have some false_stale from chunk invalidation"
@@ -710,8 +717,9 @@ struct Config3 {
         let report = run_benchmark(&corpus, &config);
         assert_eq!(report.schemes.len(), 2); // A + B
 
-        let a = &report.schemes[0];
-        let b = &report.schemes[1];
+        let [a, b] = report.schemes.as_slice() else {
+            panic!("expected two schemes: {:?}", report.schemes);
+        };
 
         // B should report at least as many stale results as A.
         let a_stale = a.true_stale + a.false_stale;
@@ -735,7 +743,10 @@ struct Config3 {
         // Repetitive file has identical struct fields ("name: String," etc.)
         // so content-only should show collisions.
         assert!(
-            report.schemes[0].collision_count > 0,
+            report
+                .schemes
+                .first()
+                .is_some_and(|s| s.collision_count > 0),
             "repetitive file should produce collisions"
         );
     }
@@ -812,7 +823,12 @@ struct Config3 {
         };
         let report = run_benchmark(&corpus, &config);
         assert_eq!(report.schemes.len(), 1);
-        assert!(report.schemes[0].label.contains("content_only"));
+        assert!(
+            report
+                .schemes
+                .first()
+                .is_some_and(|s| s.label.contains("content_only"))
+        );
     }
 
     #[test]
@@ -825,7 +841,9 @@ struct Config3 {
             search_radius: DEFAULT_SEARCH_RADIUS,
         };
         let report = run_benchmark(&corpus, &config);
-        let a = &report.schemes[0];
+        let Some(a) = report.schemes.first() else {
+            panic!("expected a scheme: {:?}", report.schemes);
+        };
         // Content-only reads 1 line per validation → avg should be 1.0.
         let avg = a.avg_read_amp_lines();
         assert!(
@@ -844,8 +862,9 @@ struct Config3 {
             search_radius: DEFAULT_SEARCH_RADIUS,
         };
         let report = run_benchmark(&corpus, &config);
-        let a = &report.schemes[0];
-        let b = &report.schemes[1];
+        let [a, b] = report.schemes.as_slice() else {
+            panic!("expected two schemes: {:?}", report.schemes);
+        };
         assert!(
             b.avg_read_amp_lines() > a.avg_read_amp_lines(),
             "chunk read amp ({}) should be > content_only ({})",

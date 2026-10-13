@@ -1,8 +1,10 @@
 //! E2E: the coding-data privacy upsell banner.
 //! It shows on the welcome screen for an opted-out OAuth user under the `privacy_notice_rollout` flag and persists into the agent view.
-//! Both buttons ack it so it is never re-shown.
-//! `[Opt out]` dismisses on the spot, stamping `[privacy].privacy_banner_acked` without waiting on the server.
-//! `[Opt in]` opts the user in through the shell's `PUT /privacy/coding-data-retention` round trip and acks only once that succeeds.
+//! Both buttons write the choice through the shell's `PUT /privacy/coding-data-retention` round trip and stamp
+//! `[privacy].privacy_banner_acked` only once that succeeds. The banner hides as soon as the write is pending, so
+//! hiding and acknowledging are separate steps.
+//! `[Opt out]` runs as a personal account, whose capability `/user` never resolves; `[Opt in]` as a member the server says
+//! can administer the team.
 //!
 //! Drives the real pager binary through a PTY against the shared mock inference server (isolated `$HOME`).
 //! A seeded opted-out OAuth entry is the active auth (`XAI_API_KEY` removed) and the rollout is forced on via `GROK_PRIVACY_NOTICE_ROLLOUT=1`.
@@ -17,8 +19,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use xai_grok_pager_pty_harness::{
-    ContentController, EnvOp, PtyExitPoll, PtyHarness, keys, pager_binary,
-    seed_fake_oauth_coding_data_opted_out,
+    ContentController, EnvOp, MockCanAdministerTeam, PtyExitPoll, PtyHarness, keys,
+    oauth_credential_ops, pager_binary, seed_fake_oauth_coding_data_opted_out,
+    seed_fake_oauth_team_member_can_administer,
 };
 
 const ROWS: u16 = 50;
@@ -40,13 +43,27 @@ async fn privacy_banner_persists_into_agent_view_and_opt_in_shares() {
     run_opt_in().await.expect("privacy banner opt-in e2e");
 }
 
-/// The banner's two preconditions: force the rollout flag on (the env override beats remote settings) and remove the sandbox's fake `XAI_API_KEY`.
-/// Removing the key makes the seeded opted-out OAuth entry the active auth.
-fn banner_env_ops() -> [EnvOp<'static>; 2] {
-    [
+/// The `GROK_PRIVACY_NOTICE_ROLLOUT` env override beats remote settings.
+/// The `[Opt in]` team principal would otherwise start a managed-config fetch the mock does not serve.
+fn banner_env_ops() -> Vec<EnvOp<'static>> {
+    let mut ops = vec![
         EnvOp::set("GROK_PRIVACY_NOTICE_ROLLOUT", "1"),
-        EnvOp::remove("XAI_API_KEY"),
-    ]
+        EnvOp::set("GROK_MANAGED_CONFIG", "0"),
+    ];
+    ops.extend(oauth_credential_ops());
+    ops
+}
+
+/// Disk and mock agree so a `/user` refresh cannot flip the capability.
+fn seed_team_admin_user(content: &ContentController) {
+    content
+        .server()
+        .set_user_can_administer_team(MockCanAdministerTeam::Allowed);
+    seed_fake_oauth_team_member_can_administer(
+        content,
+        "pty-privacy-user",
+        MockCanAdministerTeam::Allowed,
+    );
 }
 
 async fn run_opt_out() -> Result<()> {
@@ -69,7 +86,7 @@ async fn run_opt_out() -> Result<()> {
 
     click_text(&mut pager, OPT_OUT).context("click Opt out")?;
 
-    // Dismissal is local and immediate: it must not wait on the server, and must not detour into settings
+    // The banner hides while the write is pending, and must not detour into settings; the ack below waits on the reply
     pager
         .wait_for_text_absent(BANNER_TITLE, Duration::from_secs(10))
         .context("banner dismissed by [Opt out]")?;
@@ -107,7 +124,7 @@ async fn run_opt_in() -> Result<()> {
         .await
         .context("start mock server")?;
     content.set_response(format!("{ACK} done."));
-    seed_fake_oauth_coding_data_opted_out(&content, "pty-privacy-user");
+    seed_team_admin_user(&content);
 
     let project = tempfile::tempdir().context("project dir")?;
     std::fs::create_dir_all(project.path().join(".git")).context("create .git")?;

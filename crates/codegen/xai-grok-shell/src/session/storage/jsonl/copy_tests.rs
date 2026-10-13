@@ -690,7 +690,10 @@ async fn checkpoint_record_with_non_checkpoint_path_is_not_copied() {
     // The target updates must keep the transformed record (session id rewritten to the fork), not the source file's raw bytes
     let loaded = adapter.load_session(&target_info).await.unwrap();
     assert_eq!(loaded.updates.len(), 1);
-    match &loaded.updates[0] {
+    let Some(update) = loaded.updates.first() else {
+        panic!("expected an update: {:?}", loaded.updates);
+    };
+    match update {
         SessionUpdate::Xai(notification) => {
             assert_eq!(notification.session_id.0.as_ref(), "ckpt-dst");
         }
@@ -857,7 +860,10 @@ async fn copy_session_data_basic() {
     assert!(loaded.summary.forked_at.is_some());
     assert_eq!(loaded.chat_history.len(), 3);
     assert_eq!(loaded.updates.len(), 1);
-    match &loaded.updates[0] {
+    let Some(update) = loaded.updates.first() else {
+        panic!("expected an update: {:?}", loaded.updates);
+    };
+    match update {
         SessionUpdate::Acp(notification) => {
             assert_eq!(
                 notification.session_id.0.as_ref(),
@@ -1007,7 +1013,10 @@ async fn copy_session_data_transforms_xai_updates() {
         .unwrap();
 
     let loaded = adapter.load_session(&target_info).await.unwrap();
-    match &loaded.updates[0] {
+    let Some(update) = loaded.updates.first() else {
+        panic!("expected an update: {:?}", loaded.updates);
+    };
+    match update {
         SessionUpdate::Xai(notification) => {
             assert_eq!(
                 notification.session_id.0.as_ref(),
@@ -1585,7 +1594,7 @@ async fn truncating_fork_drops_later_usage_turns() {
     let copied = adapter.read_usage(&target).await.unwrap().unwrap();
     assert_eq!(copied.session_id, "tgt-usage-trunc");
     assert_eq!(copied.turns.len(), 1);
-    assert_eq!(copied.turns[0].turn_number, 1);
+    assert_eq!(copied.turns.first().map(|t| t.turn_number), Some(1));
     assert_eq!(copied.session.input_tokens, 10);
     let signals = adapter
         .load_session(&target)
@@ -1738,7 +1747,11 @@ async fn fork_truncation_clears_announced_failure_episodes() {
             "{name}: failure episodes must be cleared"
         );
         assert_eq!(
-            copied.mcp_server_fingerprints["srv"].tool_count, 1,
+            copied
+                .mcp_server_fingerprints
+                .get("srv")
+                .map(|s| s.tool_count),
+            Some(1),
             "{name}: fingerprints survive"
         );
         assert!(
@@ -1747,7 +1760,8 @@ async fn fork_truncation_clears_announced_failure_episodes() {
         );
         let raw: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(
-            raw["some_future_field"], true,
+            raw.get("some_future_field"),
+            Some(&serde_json::Value::Bool(true)),
             "{name}: unknown fields survive"
         );
     }

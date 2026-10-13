@@ -313,8 +313,8 @@ impl ChatStateActor {
             ChatStateCommand::FlushHarnessTraceTurn => {
                 self.state.seal_harness_trace_turn();
             }
-            ChatStateCommand::RepairDanglingAfterHarnessHalt { class } => {
-                self.repair_dangling_after_harness_halt(class);
+            ChatStateCommand::RepairDanglingAfterHarnessHalt { class, answers } => {
+                self.repair_dangling_after_harness_halt(class, answers);
             }
             ChatStateCommand::PopStrandedContinueReminder => {
                 self.pop_stranded_continue_reminder();
@@ -374,6 +374,9 @@ impl ChatStateActor {
             }
             ChatStateCommand::GetSamplingConfig { reply } => {
                 let _ = reply.send(self.state.sampling_config.clone());
+            }
+            ChatStateCommand::ApplyTurnRequestPruning { items, reply } => {
+                let _ = reply.send(self.prune_items_for_turn_request(items));
             }
             ChatStateCommand::GetAgentEditedPaths { reply } => {
                 let _ = reply.send(self.state.agent_edited_paths.clone());

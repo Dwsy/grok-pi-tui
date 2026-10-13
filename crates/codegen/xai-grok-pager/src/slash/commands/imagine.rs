@@ -77,10 +77,10 @@ mod tests {
                 assert_eq!(display_text, "/imagine a golden sunset");
                 assert!(!display_as_skill);
                 assert_eq!(prompt_blocks.len(), 1);
-                let text = match &prompt_blocks[0] {
-                    acp::ContentBlock::Text(t) => &t.text,
-                    _ => panic!("expected Text block"),
+                let [acp::ContentBlock::Text(t)] = prompt_blocks.as_slice() else {
+                    panic!("expected Text block, got {prompt_blocks:?}");
                 };
+                let text = &t.text;
                 assert!(text.contains("image_gen"));
                 assert!(text.contains("a golden sunset"));
             }

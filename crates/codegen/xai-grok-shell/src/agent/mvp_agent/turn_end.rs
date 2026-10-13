@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::session_registry_client::RegisterRequest;
+use crate::agent::session_registry_client::RegistryStatusError;
 use crate::agent::session_registry_client::SessionRegistryClient;
 use crate::agent::session_registry_client::UpdateRequest;
 use tracing::Instrument;
@@ -43,10 +44,11 @@ impl TurnResultArgs {
     }
 }
 
-struct RegisterTurnZero {
+struct SessionRegistration {
     model_id: String,
     hostname: String,
     device_id: Option<String>,
+    /// The session's first prompt: built on turn 0 only, and never for a ZDR team.
     first_prompt: Option<String>,
     suppress: bool,
 }
@@ -57,7 +59,7 @@ pub(super) struct RegistryTurnEndArgs {
     turn: i32,
     cwd: String,
     cmd_tx: tokio::sync::mpsc::UnboundedSender<SessionCommand>,
-    register: Option<RegisterTurnZero>,
+    register: Option<SessionRegistration>,
     order: crate::session::handle::RegistryWriteOrder,
     claim: crate::session::handle::RegistryTurnClaim,
     head: GitRead,
@@ -76,8 +78,9 @@ impl MvpAgent {
         head_branch: Option<String>,
     ) -> RegistryTurnEndArgs {
         let client = self.session_registry_client();
-        let register =
-            (turn_number == 0 && client.is_some()).then(|| self.turn_zero_register(prompt));
+        let register = client
+            .is_some()
+            .then(|| self.session_registration(turn_number, prompt));
         RegistryTurnEndArgs {
             client,
             session_id: session_id.to_string(),
@@ -92,16 +95,20 @@ impl MvpAgent {
         }
     }
 
-    fn turn_zero_register(&self, prompt: &[acp::ContentBlock]) -> RegisterTurnZero {
+    fn session_registration(
+        &self,
+        turn_number: u64,
+        prompt: &[acp::ContentBlock],
+    ) -> SessionRegistration {
         let suppress = self
             .auth_manager
             .current_or_expired()
             .is_some_and(|a| a.is_zdr_team());
-        RegisterTurnZero {
+        SessionRegistration {
             model_id: self.models_manager.current_model_id().0.to_string(),
             hostname: gethostname::gethostname().to_string_lossy().to_string(),
             device_id: if suppress { None } else { Some(agent_id()) },
-            first_prompt: if suppress {
+            first_prompt: if suppress || turn_number != 0 {
                 None
             } else {
                 prompt.iter().find_map(|b| {
@@ -227,12 +234,20 @@ fn plan_git_head(
     }
 }
 
-async fn register_session_turn_zero(
+enum RegisterOutcome {
+    Registered,
+    /// The server rejected the request with a 4xx that a retry would get again.
+    Refused,
+    /// Timeout, transport error, 401, throttling, or 5xx: a later turn may still land it.
+    Transient,
+}
+
+async fn register_session(
     client: &SessionRegistryClient,
     session_id: &str,
     cwd: &str,
-    reg: RegisterTurnZero,
-) {
+    reg: SessionRegistration,
+) -> RegisterOutcome {
     let repo_remote_url = git_out(cwd, &["remote", "get-url", "origin"]).await;
     let repo_branch = git_out(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
     let repo_head_at_start = git_out(cwd, &["rev-parse", "HEAD"]).await;
@@ -253,12 +268,24 @@ async fn register_session_turn_zero(
         fork_context_source: None,
         subagent_depth: None,
     };
-    if let Err(e) = bounded_registry(client.register(&reg_req)).await {
-        tracing::warn!(
-            error = %e,
-            "session registry register failed (non-fatal)"
-        );
-    }
+    let outcome = match bounded_registry(client.register(&reg_req)).await {
+        Ok(()) => RegisterOutcome::Registered,
+        Err(e) => {
+            let refused = e
+                .downcast_ref::<RegistryStatusError>()
+                .is_some_and(RegistryStatusError::is_permanent_refusal);
+            tracing::warn!(
+                error = %e,
+                refused,
+                "session registry register failed (non-fatal)"
+            );
+            if refused {
+                RegisterOutcome::Refused
+            } else {
+                RegisterOutcome::Transient
+            }
+        }
+    };
     let info = crate::session::info::Info {
         id: acp::SessionId::new(session_id.to_owned()),
         cwd: cwd.to_owned(),
@@ -297,6 +324,7 @@ async fn register_session_turn_zero(
             );
         }
     }
+    outcome
 }
 
 async fn advance_last_turn(
@@ -355,7 +383,7 @@ struct OrderedTurnWrites {
     cwd: String,
     cmd_tx: tokio::sync::mpsc::UnboundedSender<SessionCommand>,
     order: crate::session::handle::RegistryWriteOrder,
-    register: Option<RegisterTurnZero>,
+    register: Option<SessionRegistration>,
 }
 
 impl OrderedTurnWrites {
@@ -375,7 +403,13 @@ impl OrderedTurnWrites {
         let (Some(client), Some(reg)) = (self.client.as_ref(), self.register.take()) else {
             return;
         };
-        register_session_turn_zero(client, &self.session_id, &self.cwd, reg).await;
+        if !self.order.claim_registration() {
+            return;
+        }
+        match register_session(client, &self.session_id, &self.cwd, reg).await {
+            RegisterOutcome::Registered | RegisterOutcome::Refused => {}
+            RegisterOutcome::Transient => self.order.release_registration(),
+        }
     }
 
     async fn write_last_turn(&self, repo_head_at_end: Option<String>) {
@@ -570,6 +604,7 @@ pub(super) async fn run_detached_turn_end(
 #[cfg(test)]
 mod tests {
     use super::GitRead;
+    use super::acp;
     use super::plan_git_head;
 
     #[test]
@@ -604,5 +639,226 @@ mod tests {
         assert!(futures::poll!(waiting.as_mut()).is_pending());
         drop(running);
         waiting.await;
+    }
+
+    /// Registry double with the server's row rule: an update 404s until a register has created the row.
+    #[derive(Default)]
+    struct RegistryRows {
+        registers: usize,
+        /// Statuses the next registers answer with, in order, before registers start creating the row.
+        register_failures: std::collections::VecDeque<axum::http::StatusCode>,
+        rejected_updates: usize,
+        rows: std::collections::HashMap<String, serde_json::Map<String, serde_json::Value>>,
+    }
+
+    impl RegistryRows {
+        fn row(&self, session_id: &acp::SessionId) -> Option<serde_json::Value> {
+            self.rows
+                .get(&session_id.to_string())
+                .cloned()
+                .map(serde_json::Value::Object)
+        }
+    }
+
+    async fn serve_registry_rows() -> (String, std::sync::Arc<parking_lot::Mutex<RegistryRows>>) {
+        use axum::{Json, Router, extract::Path, http::StatusCode, routing::post};
+
+        let state = std::sync::Arc::new(parking_lot::Mutex::new(RegistryRows::default()));
+        let on_register = state.clone();
+        let on_update = state.clone();
+        let router = Router::new()
+            .route(
+                "/sessions/register",
+                post(move |Json(body): Json<serde_json::Value>| {
+                    let state = on_register.clone();
+                    async move {
+                        let mut registry = state.lock();
+                        registry.registers += 1;
+                        if let Some(status) = registry.register_failures.pop_front() {
+                            return status;
+                        }
+                        let id = body.get("sessionId").and_then(serde_json::Value::as_str);
+                        registry
+                            .rows
+                            .entry(id.unwrap_or_default().to_owned())
+                            .or_default();
+                        StatusCode::OK
+                    }
+                }),
+            )
+            .route(
+                "/sessions/{id}/replicas/update",
+                post(
+                    move |Path(id): Path<String>, Json(body): Json<serde_json::Value>| {
+                        let state = on_update.clone();
+                        async move {
+                            let mut registry = state.lock();
+                            let Some(row) = registry.rows.get_mut(&id) else {
+                                registry.rejected_updates += 1;
+                                return StatusCode::NOT_FOUND;
+                            };
+                            if let serde_json::Value::Object(fields) = body {
+                                row.extend(fields);
+                            }
+                            StatusCode::OK
+                        }
+                    },
+                ),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (format!("http://{addr}"), state)
+    }
+
+    /// A registry-enabled agent and a session handle whose summary path cannot pre-exist: fresh session id, fresh cwd.
+    struct TurnEndHarness {
+        agent: super::MvpAgent,
+        handle: super::SessionHandle,
+        registry: std::sync::Arc<parking_lot::Mutex<RegistryRows>>,
+        _gateway_rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+        _cwd: tempfile::TempDir,
+    }
+
+    impl TurnEndHarness {
+        async fn start() -> TurnEndHarness {
+            let (base_url, registry) = serve_registry_rows().await;
+            let (agent, gateway_rx) =
+                crate::agent::mvp_agent::tests::build_agent_with_auth_and_proxy(
+                    xai_grok_login::GrokAuth {
+                        oidc_issuer: Some(xai_grok_login::XAI_OAUTH2_ISSUER.to_owned()),
+                        ..xai_grok_login::GrokAuth::test_default()
+                    },
+                    base_url,
+                    crate::agent::config::AgentMode::Generic,
+                );
+            agent.cfg.borrow_mut().remote_settings = Some(crate::util::config::RemoteSettings {
+                session_registry_enabled: Some(true),
+                ..crate::util::config::RemoteSettings::default()
+            });
+            let cwd = tempfile::tempdir().unwrap();
+            let mut handle = crate::agent::mvp_agent::tests::make_test_handle("grok", false, None);
+            handle.info = crate::session::info::Info {
+                id: acp::SessionId::new(uuid::Uuid::new_v4().to_string()),
+                cwd: cwd.path().to_string_lossy().into_owned(),
+            };
+            TurnEndHarness {
+                agent,
+                handle,
+                registry,
+                _gateway_rx: gateway_rx,
+                _cwd: cwd,
+            }
+        }
+
+        fn turn_end_args(&self, turn: u64) -> super::RegistryTurnEndArgs {
+            self.agent.build_registry_turn_end_args(
+                &self.handle.info.id,
+                turn,
+                &self.handle,
+                &[acp::ContentBlock::from(format!("prompt of turn {turn}"))],
+                self.handle.registry_write_order.begin_turn_end(),
+                GitRead::Failed,
+                None,
+            )
+        }
+
+        async fn end_turn(&self, turn: u64) {
+            run_turn_end(self.turn_end_args(turn)).await;
+        }
+    }
+
+    async fn run_turn_end(args: super::RegistryTurnEndArgs) {
+        let (archive_confirmed_tx, archive_confirmed_rx) = tokio::sync::oneshot::channel();
+        archive_confirmed_tx.send(true).unwrap();
+        super::run_registry_turn_end(args, archive_confirmed_rx).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restored_child_registers_on_its_first_turn_past_zero() {
+        let harness = TurnEndHarness::start().await;
+
+        harness.end_turn(3).await;
+        harness.end_turn(4).await;
+
+        let registry = harness.registry.lock();
+        assert_eq!(1, registry.registers);
+        assert_eq!(0, registry.rejected_updates);
+        assert_eq!(
+            Some(serde_json::json!({ "lastTurnNumber": 4, "restorableTurnNumber": 4 })),
+            registry.row(&harness.handle.info.id)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_turn_zero_sends_the_first_prompt() {
+        let harness = TurnEndHarness::start().await;
+
+        harness.end_turn(0).await;
+
+        assert_eq!(
+            Some(serde_json::json!({
+                "firstPrompt": "prompt of turn 0",
+                "lastTurnNumber": 0,
+                "restorableTurnNumber": 0,
+            })),
+            harness.registry.lock().row(&harness.handle.info.id)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transient_register_failure_is_retried_on_next_turn() {
+        let harness = TurnEndHarness::start().await;
+        harness
+            .registry
+            .lock()
+            .register_failures
+            .push_back(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+
+        harness.end_turn(3).await;
+        harness.end_turn(4).await;
+
+        let registry = harness.registry.lock();
+        assert_eq!(2, registry.registers);
+        assert_eq!(2, registry.rejected_updates);
+        assert_eq!(
+            Some(serde_json::json!({ "lastTurnNumber": 4, "restorableTurnNumber": 4 })),
+            registry.row(&harness.handle.info.id)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refused_register_is_not_retried() {
+        let harness = TurnEndHarness::start().await;
+        harness
+            .registry
+            .lock()
+            .register_failures
+            .push_back(axum::http::StatusCode::CONFLICT);
+
+        harness.end_turn(3).await;
+        harness.end_turn(4).await;
+
+        let registry = harness.registry.lock();
+        assert_eq!(1, registry.registers);
+        assert_eq!(4, registry.rejected_updates);
+        assert_eq!(None, registry.row(&harness.handle.info.id));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn overlapping_turn_ends_register_once_before_any_update() {
+        let harness = TurnEndHarness::start().await;
+        let fifth = harness.turn_end_args(5);
+        let sixth = harness.turn_end_args(6);
+
+        tokio::join!(run_turn_end(sixth), run_turn_end(fifth));
+
+        let registry = harness.registry.lock();
+        assert_eq!(1, registry.registers);
+        assert_eq!(0, registry.rejected_updates);
+        assert_eq!(
+            Some(serde_json::json!({ "lastTurnNumber": 6, "restorableTurnNumber": 6 })),
+            registry.row(&harness.handle.info.id)
+        );
     }
 }

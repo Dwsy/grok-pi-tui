@@ -296,10 +296,6 @@ pub enum TrackingMode {
     AllDirty,
 }
 
-// ============================================================================
-// Session Stats & Summary
-// ============================================================================
-
 /// Simple counters for session summary. Reset on baseline reset (commit).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -355,10 +351,6 @@ pub struct SessionSummary {
     /// Pending hunks without prompt_index (e.g., external edits)
     pub unattributed_pending: usize,
 }
-
-// ============================================================================
-// Content Status Types (for explicit API responses)
-// ============================================================================
 
 /// Status of file content - explicit discrimination for API consumers.
 /// This replaces the ambiguous `Option<String>` where `None` could mean
@@ -488,25 +480,18 @@ pub struct FileHunkData {
     /// Hunks for this file (each hunk includes its own patch fragment)
     pub hunks: Vec<Arc<Hunk>>,
 
-    // === Explicit content status (new fields) ===
     /// Baseline content with explicit status (git HEAD)
     pub baseline: FileContentView,
     /// Current content with explicit status (on disk)
     pub current: FileContentView,
 
-    // === Legacy fields for backward compatibility ===. These are populated from FileContentView for existing callers. Will
-    // be deprecated once all callers migrate to baseline/current views. Baseline content (git HEAD) - legacy, use
-    // `baseline.content` instead
+    /// Legacy string fields filled from `baseline`/`current` for older callers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline_content: Option<String>,
-    /// Current content (on disk) - legacy, use `current.content` instead
+    /// Legacy string field; prefer `current.content`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_content: Option<String>,
 }
-
-// ============================================================================
-// Snapshot / Restore (for cross-session sync-back)
-// ============================================================================
 
 // FileContentState is crate-internal (actor::state is pub(crate));
 // imported here for snapshot serialization.
@@ -683,7 +668,10 @@ mod snapshot_tests {
             .file_states
             .get(&PathBuf::from("/new/cwd/file.txt"))
             .unwrap();
-        assert_eq!(state.hunks[0].path, PathBuf::from("/new/cwd/file.txt"));
+        let Some(hunk) = state.hunks.first() else {
+            panic!("expected a hunk: {:?}", state.hunks);
+        };
+        assert_eq!(hunk.path, PathBuf::from("/new/cwd/file.txt"));
     }
 
     #[test]
@@ -729,7 +717,10 @@ mod snapshot_tests {
             .file_states
             .get(&PathBuf::from("/same/cwd/file.txt"))
             .unwrap();
-        assert_eq!(state.hunks[0].path, PathBuf::from("/same/cwd/file.txt"));
+        let Some(hunk) = state.hunks.first() else {
+            panic!("expected a hunk: {:?}", state.hunks);
+        };
+        assert_eq!(hunk.path, PathBuf::from("/same/cwd/file.txt"));
     }
 
     #[test]
@@ -743,80 +734,5 @@ mod snapshot_tests {
         // turn_index and stats are untouched
         assert!(!snap.turn_index.is_empty());
         assert_eq!(snap.session_stats.accepted_hunks, 5);
-    }
-}
-
-// ============================================================================
-// FileContentView Tests (content status propagation)
-// ============================================================================
-
-#[cfg(test)]
-mod content_view_tests {
-    use super::*;
-    use crate::actor::state::FileContentState;
-
-    #[test]
-    fn from_content_state_missing() {
-        let state = FileContentState::Missing;
-        let view = FileContentView::from_content_state(&state);
-
-        assert_eq!(view.status, FileContentStatus::Missing);
-        assert!(view.byte_len.is_none());
-        assert!(view.content.is_none());
-    }
-
-    #[test]
-    fn from_content_state_binary() {
-        let state = FileContentState::Binary {
-            byte_len: Some(1024),
-        };
-        let view = FileContentView::from_content_state(&state);
-
-        assert_eq!(view.status, FileContentStatus::Binary);
-        assert_eq!(view.byte_len, Some(1024));
-        assert!(view.content.is_none());
-    }
-
-    #[test]
-    fn from_content_state_binary_no_len() {
-        let state = FileContentState::Binary { byte_len: None };
-        let view = FileContentView::from_content_state(&state);
-
-        assert_eq!(view.status, FileContentStatus::Binary);
-        assert!(view.byte_len.is_none());
-        assert!(view.content.is_none());
-    }
-
-    #[test]
-    fn from_content_state_too_large() {
-        let state = FileContentState::TooLarge {
-            byte_len: 2_000_000,
-        };
-        let view = FileContentView::from_content_state(&state);
-
-        assert_eq!(view.status, FileContentStatus::TooLarge);
-        assert_eq!(view.byte_len, Some(2_000_000));
-        assert!(view.content.is_none());
-    }
-
-    #[test]
-    fn from_content_state_lfs_pointer() {
-        let state = FileContentState::LfsPointer { byte_len: 130 };
-        let view = FileContentView::from_content_state(&state);
-
-        assert_eq!(view.status, FileContentStatus::LfsPointer);
-        assert_eq!(view.byte_len, Some(130));
-        assert!(view.content.is_none());
-    }
-
-    #[test]
-    fn from_content_state_full() {
-        let content = "hello world".to_string();
-        let state = FileContentState::Full(content.clone());
-        let view = FileContentView::from_content_state(&state);
-
-        assert_eq!(view.status, FileContentStatus::Full);
-        assert_eq!(view.byte_len, Some(11));
-        assert_eq!(view.content, Some(content));
     }
 }

@@ -1,5 +1,7 @@
 //! Benchmark binary for index building.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::path::Path;
 use std::time::Instant;
 

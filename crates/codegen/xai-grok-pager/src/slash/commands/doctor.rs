@@ -182,13 +182,21 @@ mod tests {
         assert!(command.suggest_args(&context, "").is_none());
         assert!(command.suggest_args(&context, "   ").is_none());
         assert_eq!(
-            command.suggest_args(&context, "f").unwrap()[0].insert_text,
-            "fix"
+            command
+                .suggest_args(&context, "f")
+                .as_ref()
+                .and_then(|items| items.first())
+                .map(|item| item.insert_text.as_str()),
+            Some("fix")
         );
         for query in ["fix", "fix ", "fix s", "fix ssh", "fix terminal."] {
             assert_eq!(
-                command.suggest_args(&context, query).unwrap()[0].insert_text,
-                "fix ssh-wrap"
+                command
+                    .suggest_args(&context, query)
+                    .as_ref()
+                    .and_then(|items| items.first())
+                    .map(|item| item.insert_text.as_str()),
+                Some("fix ssh-wrap")
             );
         }
         for query in [

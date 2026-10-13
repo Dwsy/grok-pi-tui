@@ -221,8 +221,11 @@ fn findings_have_stable_semantic_ids_and_dispositions() {
         ssh_wrap.automatic_remediation,
         Some(crate::diagnostics::ssh_wrap_automatic_remediation())
     );
+    let Some(first) = report.findings.first() else {
+        panic!("expected tmux-clipboard finding: {:?}", report.findings);
+    };
     assert_eq!(
-        report.findings[0].automatic_remediation,
+        first.automatic_remediation,
         crate::diagnostics::automatic_remediation_for(DiagnosticId::new(
             "terminal",
             "tmux-clipboard"
@@ -387,18 +390,26 @@ fn unavailable_and_error_probe_evidence_is_retained_without_findings() {
         report.facts.clipboard.delivery,
         crate::clipboard::ClipboardDelivery::Confirmed
     );
-    assert_eq!(report.probe_notes.len(), 7);
-    assert_eq!(report.probe_notes[0].probe, "tmux.version");
-    assert_eq!(report.probe_notes[1].probe, "tmux.extended-keys");
-    assert_eq!(report.probe_notes[2].status, ProbeStatus::Error);
-    assert_eq!(
-        report.probe_notes[2].message.as_deref(),
-        Some("server unreachable")
-    );
-    assert_eq!(report.probe_notes[3].status, ProbeStatus::Unsupported);
-    assert_eq!(report.probe_notes[4].probe, "tmux.control-mode");
-    assert_eq!(report.probe_notes[5].probe, "tmux.client-features");
-    assert_eq!(report.probe_notes[6].probe, "wayland.data-control");
+    let [
+        version,
+        extended,
+        err,
+        unsupported,
+        control,
+        features,
+        wayland,
+    ] = report.probe_notes.as_slice()
+    else {
+        panic!("expected 7 probe notes: {:?}", report.probe_notes);
+    };
+    assert_eq!(version.probe, "tmux.version");
+    assert_eq!(extended.probe, "tmux.extended-keys");
+    assert_eq!(err.status, ProbeStatus::Error);
+    assert_eq!(err.message.as_deref(), Some("server unreachable"));
+    assert_eq!(unsupported.status, ProbeStatus::Unsupported);
+    assert_eq!(control.probe, "tmux.control-mode");
+    assert_eq!(features.probe, "tmux.client-features");
+    assert_eq!(wayland.probe, "wayland.data-control");
 }
 
 fn plain_tmux() -> TmuxProbeFacts {

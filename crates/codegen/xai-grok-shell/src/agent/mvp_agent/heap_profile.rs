@@ -5,6 +5,7 @@
 //! It never rewrites `remote_settings` wholesale, never calls `re_resolve_runtime_fields`, and never re-initializes telemetry.
 
 use super::*;
+use crate::agent::config::TraceUploadEndpoints;
 use crate::heap_profile::{SCOPED_KILL_SWITCH_INTERVAL, build_upload_handles};
 
 impl MvpAgent {

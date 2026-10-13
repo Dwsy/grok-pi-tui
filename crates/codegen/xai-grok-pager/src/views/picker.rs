@@ -41,10 +41,6 @@ fn picker_base_bg(bg: Option<Color>, theme: &Theme) -> Color {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 /// A single entry in a picker list: either a section header or a selectable row.
 pub enum PickerEntry<'a> {
     /// Non-selectable section header (rendered as `── label ──`).
@@ -171,10 +167,6 @@ pub fn render_picker_frame(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Scroll computation
-// ---------------------------------------------------------------------------
-
 /// Compute minimal scroll offset to keep `selected` visible in a window of `visible` items out of `total`.
 pub fn compute_scroll_offset(
     selected: usize,
@@ -194,9 +186,6 @@ pub fn compute_scroll_offset(
         centered.min(max_scroll)
     }
 }
-// ---------------------------------------------------------------------------
-// Search bar
-// ---------------------------------------------------------------------------
 
 const SEARCH_BAR_LABEL: &str = " search: ";
 const SEARCH_BAR_TRAILING_GAP: u16 = 1;
@@ -476,7 +465,7 @@ fn render_search_bar_with_label_viewport(
         let cursor_limit = input_width.saturating_sub(1);
         let cursor_col = if let Some(viewport) = viewport {
             if !query.is_empty() {
-                let displayed = &query[viewport.visible_byte_range];
+                let displayed = query.get(viewport.visible_byte_range).unwrap_or("");
                 buf.set_span(
                     input_x,
                     y,
@@ -491,7 +480,7 @@ fn render_search_bar_with_label_viewport(
             while cursor_byte > 0 && !query.is_char_boundary(cursor_byte) {
                 cursor_byte -= 1;
             }
-            let prefix_width = query[..cursor_byte].width();
+            let prefix_width = query.get(..cursor_byte).map(|s| s.width()).unwrap_or(0);
             let (start_byte, cursor_col) = if prefix_width <= cursor_limit {
                 (0, prefix_width)
             } else {
@@ -507,7 +496,7 @@ fn render_search_bar_with_label_viewport(
                 (start_byte, prefix_width - skipped_width)
             };
             if !query.is_empty() {
-                let displayed = truncate_str(&query[start_byte..], cursor_limit);
+                let displayed = truncate_str(query.get(start_byte..).unwrap_or(""), cursor_limit);
                 buf.set_span(
                     input_x,
                     y,
@@ -547,10 +536,6 @@ fn render_search_bar_with_label_viewport(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Divider
-// ---------------------------------------------------------------------------
-
 /// Render a horizontal `─` divider.
 pub fn render_divider(
     buf: &mut Buffer,
@@ -578,10 +563,6 @@ pub fn render_divider(
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tab bar (shared)
-// ---------------------------------------------------------------------------
 
 /// Hit areas returned by [`render_tab_bar`].
 pub struct TabBarHitAreas {
@@ -659,10 +640,6 @@ pub fn render_tab_bar(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Popup frame (shared)
-// ---------------------------------------------------------------------------
-
 /// Configuration for a centered popup frame.
 #[derive(Debug, Clone)]
 pub struct PopupConfig {
@@ -737,10 +714,6 @@ pub fn render_popup_frame(
     Some(inner)
 }
 
-// ---------------------------------------------------------------------------
-// Search bar filter indicator
-// ---------------------------------------------------------------------------
-
 /// Render a right-aligned filter indicator on a search bar row.
 #[allow(clippy::too_many_arguments)]
 pub fn render_filter_indicator(
@@ -791,10 +764,6 @@ pub fn render_filter_indicator(
     Rect::new(start_x, y, total_w, 1)
 }
 
-// ---------------------------------------------------------------------------
-// Picker rows
-// ---------------------------------------------------------------------------
-
 /// Parse `[bracket]` highlight markers in a string into styled spans.
 /// Text inside `[...]` gets `highlight_style`, the rest gets `base_style`.
 /// Brackets are stripped from the output.
@@ -802,13 +771,22 @@ fn parse_highlight_spans<'a>(s: &'a str, base_style: Style, highlight_style: Sty
     let mut spans = Vec::new();
     let mut rest = s;
     while let Some(open) = rest.find('[') {
-        if open > 0 {
-            spans.push(Span::styled(&rest[..open], base_style));
+        let Some((head, after_open)) = rest.split_at_checked(open) else {
+            break;
+        };
+        if !head.is_empty() {
+            spans.push(Span::styled(head, base_style));
         }
-        rest = &rest[open + 1..];
+        let Some(after_bracket) = after_open.strip_prefix('[') else {
+            break;
+        };
+        rest = after_bracket;
         if let Some(close) = rest.find(']') {
-            spans.push(Span::styled(&rest[..close], highlight_style));
-            rest = &rest[close + 1..];
+            let Some((inner, after_close)) = rest.split_at_checked(close) else {
+                break;
+            };
+            spans.push(Span::styled(inner, highlight_style));
+            rest = after_close.strip_prefix(']').unwrap_or(after_close);
         } else {
             // Unmatched '[': render it literally
             spans.push(Span::styled("[", base_style));
@@ -839,7 +817,7 @@ fn render_styled_spans(buf: &mut Buffer, spans: &Line<'_>, x: u16, y: u16, max_w
                 buf.set_span(
                     cx,
                     y,
-                    &Span::styled(&span.content[..end], span.style),
+                    &Span::styled(span.content.get(..end).unwrap_or(""), span.style),
                     avail as u16,
                 );
             }
@@ -1179,18 +1157,20 @@ pub fn render_picker_row(
                 let first_chunk_len = byte_offset_for_width(val, max_val_w);
                 let first_break = if val.width() <= max_val_w {
                     val.len()
-                } else if let Some(pos) = val[..first_chunk_len].rfind(' ') {
+                } else if let Some(pos) = val.get(..first_chunk_len).and_then(|s| s.rfind(' ')) {
                     pos + 1
                 } else {
                     first_chunk_len
                 };
+                let (first_val, mut remaining) =
+                    val.split_at_checked(first_break).unwrap_or((val, ""));
+                remaining = remaining.trim_start();
                 let line = Line::from(vec![
                     Span::styled(label_text, field_label_style),
-                    Span::styled(&val[..first_break], field_value_style),
+                    Span::styled(first_val, field_value_style),
                 ]);
                 buf.set_line(x + indent, fy, &line, width.saturating_sub(indent));
                 // Continuation lines (indented to align with value column).
-                let mut remaining = val[first_break..].trim_start();
                 while !remaining.is_empty() {
                     rows += 1;
                     if rows >= max_rows {
@@ -1200,19 +1180,22 @@ pub fn render_picker_row(
                     let chunk_len = byte_offset_for_width(remaining, max_val_w);
                     let break_at = if remaining.width() <= max_val_w {
                         remaining.len()
-                    } else if let Some(pos) = remaining[..chunk_len].rfind(' ') {
+                    } else if let Some(pos) = remaining.get(..chunk_len).and_then(|s| s.rfind(' '))
+                    {
                         pos + 1
                     } else {
                         chunk_len
                     };
-                    let chunk = &remaining[..break_at];
+                    let Some((chunk, rest)) = remaining.split_at_checked(break_at) else {
+                        break;
+                    };
                     buf.set_span(
                         x + indent + label_col,
                         cy,
                         &Span::styled(chunk, field_value_style),
                         chunk.width() as u16,
                     );
-                    remaining = remaining[break_at..].trim_start();
+                    remaining = rest.trim_start();
                 }
             }
             rows += 1;
@@ -1281,10 +1264,6 @@ pub fn render_picker_entry(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Close button
-// ---------------------------------------------------------------------------
-
 /// Render a `[\u{2717}]` close button right-aligned at `(x..x+width, y)`.
 ///
 /// Returns the `Rect` for mouse hit-testing.
@@ -1318,10 +1297,6 @@ pub fn render_close_button(
     buf.set_span(bx, y, &Span::styled(text, style), w);
     Rect::new(bx, y, w, 1)
 }
-
-// ---------------------------------------------------------------------------
-// Floating frame
-// ---------------------------------------------------------------------------
 
 /// Render the floating popup frame: dim background, rounded border, close button.
 ///
@@ -1378,10 +1353,6 @@ pub fn render_floating_frame(
         close_button,
     })
 }
-
-// ---------------------------------------------------------------------------
-// Bordered frame primitive
-// ---------------------------------------------------------------------------
 
 /// Layout returned by [`render_bordered_frame`].
 pub struct BorderedFrame {
@@ -1462,10 +1433,6 @@ pub fn render_bordered_frame(
     Some(BorderedFrame { title_row, content })
 }
 
-// ---------------------------------------------------------------------------
-// Full-screen frame
-// ---------------------------------------------------------------------------
-
 /// Render a full-screen bordered picker panel using [`render_bordered_frame`]. Fills the title row
 /// with optional title text and a close button. Returns `None` if the area is too small.
 pub fn render_fullscreen_frame(
@@ -1528,10 +1495,6 @@ pub fn render_fullscreen_frame(
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Unified picker: state, config, outcome, render, input
-// ---------------------------------------------------------------------------
 
 /// Persistent picker state; callers own this and pass `&mut` to input. Fields used only by the
 /// `render_picker()` path (welcome screen): `mode`, `close_hovered`, `tab_hit_areas`,
@@ -1994,7 +1957,10 @@ fn render_picker_content_inner(
     // Loading state: animated dot spinner centered in the content area
     if loading {
         let spinner_frames = crate::glyphs::dot_spinner_frames();
-        let frame = spinner_frames[(loading_tick / 4) as usize % spinner_frames.len()];
+        let frame = spinner_frames
+            .get((loading_tick / 4) as usize % spinner_frames.len())
+            .copied()
+            .unwrap_or("");
         let msg = format!("{frame} Loading\u{2026}");
         let msg_style = Style::default().fg(theme.gray);
         let cx = content_area.x + content_area.width.saturating_sub(msg.width() as u16) / 2;
@@ -2064,7 +2030,9 @@ fn render_picker_content_inner(
     let total_visual_rows: usize = entry_heights.iter().sum();
 
     // Find the visual row offset of the selected entry.
-    let selected_visual_row: usize = entry_heights[..state.selected.min(entries.len())]
+    let selected_visual_row: usize = entry_heights
+        .get(..state.selected.min(entries.len()))
+        .unwrap_or(&[])
         .iter()
         .sum();
 
@@ -2244,7 +2212,6 @@ pub fn render_picker(
         raw_content
     };
 
-    // ── Tab bar (optional) ──
     // When tabs are configured, render a tab bar on the first row of the content area and advance the content origin downward
     let mut close_button = frame.close_button;
     let mut tab_rects_out: Vec<Option<Rect>> = vec![];
@@ -2367,7 +2334,6 @@ pub fn render_picker(
         );
     }
 
-    // ── Filter indicator (optional) ──
     let filter_rect_out = if let Some(filter_label) = config.filter_label {
         let key_hint = config.filter_key_hint.unwrap_or("f");
         let rect = render_filter_indicator(
@@ -2585,7 +2551,6 @@ pub fn handle_picker_input(
         if is_non_sel(s) { entry_count - 1 } else { s }
     };
 
-    // ── Mouse handling (hit area based) ──
     if let Event::Mouse(mouse) = ev
         && let Some(ref hit) = state.hit_areas
     {
@@ -2734,7 +2699,6 @@ pub fn handle_picker_input(
         finish_query_edit(state, outcome).unwrap_or(PickerOutcome::Unchanged)
     }
 
-    // ── Key handling ──
     if let Event::Key(key) = ev {
         if key.kind == KeyEventKind::Release {
             return PickerOutcome::Unchanged;
@@ -2757,6 +2721,7 @@ pub fn handle_picker_input(
             if key.code == KeyCode::Esc {
                 let query_changed = config.vim_normal_first && !state.query().is_empty();
                 state.search_active = false;
+                state.selection_hidden = false;
                 // vim_normal_first: Esc leaves search for nav mode and clears the query in one step (mirrors scrollback vim-mode)
                 if config.vim_normal_first {
                     state.clear_query();
@@ -2992,7 +2957,6 @@ pub fn handle_picker_input(
             return PickerOutcome::Changed;
         }
 
-        // ── Custom action keys (checked first; they override built-in expand/copy) ──
         // Only when not in search mode.
         if !state.search_active {
             for &(action_char, _) in config.action_keys {
@@ -3064,7 +3028,6 @@ pub fn handle_picker_input(
             }
         }
 
-        // ── Filter cycling ──
         // 'f' key (not in search mode) toggles the filter.
         if config.filter_label.is_some()
             && !state.search_active
@@ -3132,7 +3095,6 @@ pub fn handle_picker_input(
         return PickerOutcome::Unchanged; // unhandled key, no state change
     }
 
-    // ── Paste ──
     if let Event::Paste(text) = ev {
         return handle_paste(state, text, config);
     }
@@ -3347,13 +3309,17 @@ mod tests {
 
         for x in layout.render_width..width {
             assert_eq!(
-                buffer[(x, 0)].symbol(),
-                "#",
+                buffer.cell((x, 0)).map(|c| c.symbol()),
+                Some("#"),
                 "reserved counter cell {x} was overwritten",
             );
         }
         let cursor_x = (0..layout.render_width)
-            .find(|x| buffer[(*x, 0)].bg == theme.text_primary)
+            .find(|x| {
+                buffer
+                    .cell((*x, 0))
+                    .is_some_and(|c| c.bg == theme.text_primary)
+            })
             .expect("cursor inside search render width");
         assert!(cursor_x < layout.render_width);
     }
@@ -3392,7 +3358,11 @@ mod tests {
                 viewport,
             );
             let cursor_x = (0..width)
-                .find(|x| buffer[(*x, 0)].bg == theme.text_primary)
+                .find(|x| {
+                    buffer
+                        .cell((*x, 0))
+                        .is_some_and(|c| c.bg == theme.text_primary)
+                })
                 .expect("active query keeps a visible caret");
             assert!(cursor_x < width);
 
@@ -3414,7 +3384,11 @@ mod tests {
                 viewport,
             );
             let cursor_x = (0..fit_layout.render_width)
-                .find(|x| fit_buffer[(*x, 0)].bg == theme.text_primary)
+                .find(|x| {
+                    fit_buffer
+                        .cell((*x, 0))
+                        .is_some_and(|c| c.bg == theme.text_primary)
+                })
                 .expect("just-fit counter preserves one caret cell");
             assert!(cursor_x < fit_layout.render_width);
         }
@@ -4023,7 +3997,10 @@ mod tests {
         );
         let viewport = state.query.viewport(3);
         assert_eq!(
-            &state.query()[viewport.visible_byte_range.clone()],
+            state
+                .query()
+                .get(viewport.visible_byte_range.clone())
+                .unwrap_or(""),
             format!("{grapheme}b")
         );
         assert_eq!(viewport.cursor_display_column, 2);

@@ -295,9 +295,10 @@ mod tests {
             LineEditOutcome::CursorChanged
         );
         let viewport = editor.viewport(3);
+        let expected = format!("{grapheme}b");
         assert_eq!(
-            &editor.text()[viewport.visible_byte_range.clone()],
-            format!("{grapheme}b")
+            editor.text().get(viewport.visible_byte_range.clone()),
+            Some(expected.as_str())
         );
         assert_eq!(viewport.cursor_display_column, 2);
     }

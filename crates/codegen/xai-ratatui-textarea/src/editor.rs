@@ -495,7 +495,11 @@ impl EditBuffer {
         cursor_byte: usize,
         cursor_affinity: PostEditCursorAffinity,
     ) -> EditPlan {
-        let removed_text = self.text[replaced_byte_range.clone()].to_owned();
+        let removed_text = self
+            .text
+            .get(replaced_byte_range.clone())
+            .unwrap_or("")
+            .to_owned();
         EditPlan {
             replaced_byte_range,
             replacement,
@@ -604,7 +608,7 @@ impl EditBuffer {
         let mut left_width = 0usize;
         while start > line_start {
             let previous = previous_atomic_boundary(&self.text, start, &atomic_byte_ranges);
-            let grapheme_width = self.text[previous..start].width();
+            let grapheme_width = self.text.get(previous..start).unwrap_or("").width();
             let next_width = left_width.saturating_add(grapheme_width);
             if next_width > left_budget {
                 break;
@@ -617,7 +621,7 @@ impl EditBuffer {
         let mut visible_width = 0usize;
         while end < line_end {
             let next = next_atomic_boundary(&self.text, end, &atomic_byte_ranges);
-            let grapheme_width = self.text[end..next].width();
+            let grapheme_width = self.text.get(end..next).unwrap_or("").width();
             let next_width = visible_width.saturating_add(grapheme_width);
             if next_width > display_width {
                 if end < cursor_byte {
@@ -631,7 +635,7 @@ impl EditBuffer {
 
         SingleLineViewport {
             visible_byte_range: start..end,
-            cursor_display_column: self.text[start..cursor_byte].width(),
+            cursor_display_column: self.text.get(start..cursor_byte).unwrap_or("").width(),
         }
     }
 
@@ -743,7 +747,7 @@ impl EditBuffer {
         (0..cursor_byte)
             .rev()
             .find(|position| {
-                self.text.as_bytes()[*position] == b'\n'
+                self.text.as_bytes().get(*position).copied() == Some(b'\n')
                     && !byte_is_inside_atomic_range(*position, atomic_byte_ranges)
             })
             .map_or(0, |position| position + 1)
@@ -753,11 +757,15 @@ impl EditBuffer {
         let cursor_byte = cursor_byte.min(self.text.len());
         (cursor_byte..self.text.len())
             .find(|position| {
-                self.text.as_bytes()[*position] == b'\n'
+                self.text.as_bytes().get(*position).copied() == Some(b'\n')
                     && !byte_is_inside_atomic_range(*position, atomic_byte_ranges)
             })
             .map_or(self.text.len(), |line_feed| {
-                if line_feed > 0 && self.text.as_bytes()[line_feed - 1] == b'\r' {
+                if line_feed
+                    .checked_sub(1)
+                    .and_then(|i| self.text.as_bytes().get(i).copied())
+                    == Some(b'\r')
+                {
                     line_feed - 1
                 } else {
                     line_feed
@@ -815,7 +823,7 @@ fn atomic_word_class(
             WordStyle::WhitespaceDelimited => Some(WordClass::Word),
         }
     } else {
-        word_class(&text[start..end], style)
+        word_class(text.get(start..end).unwrap_or(""), style)
     }
 }
 

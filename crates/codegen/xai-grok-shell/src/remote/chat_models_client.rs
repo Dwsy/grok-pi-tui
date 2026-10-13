@@ -177,23 +177,26 @@ mod tests {
             "defaultModeId": "auto"
         });
         let resp: ListModesResponse = serde_json::from_value(json).unwrap();
-        assert_eq!(resp.modes.len(), 2);
         assert_eq!(resp.default_mode_id, "auto");
-        let auto = &resp.modes[0];
+        let [auto, heavy] = resp.modes.as_slice() else {
+            panic!("expected two modes: {:?}", resp.modes);
+        };
         assert_eq!(auto.id, "auto");
         assert_eq!(auto.title, "Auto");
         assert_eq!(auto.badge_text.as_deref(), Some("New"));
         assert_eq!(auto.icon_hint, "rocket");
         assert_eq!(auto.tags, vec!["TAG_PRIMARY".to_string()]);
         assert!(auto.is_available());
-        assert!(!resp.modes[1].is_available());
+        assert!(!heavy.is_available());
     }
 
     #[test]
     fn missing_fields_default_gracefully() {
         let json = serde_json::json!({ "modes": [{ "id": "m1" }] });
         let resp: ListModesResponse = serde_json::from_value(json).unwrap();
-        let m = &resp.modes[0];
+        let [m] = resp.modes.as_slice() else {
+            panic!("expected one mode: {:?}", resp.modes);
+        };
         assert_eq!(m.id, "m1");
         assert!(m.title.is_empty());
         assert!(m.description.is_empty());

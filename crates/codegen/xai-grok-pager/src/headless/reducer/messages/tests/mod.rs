@@ -112,9 +112,27 @@ fn builtin_command(name: &str) -> acp::AvailableCommand {
     acp::AvailableCommand::new(name.to_string(), "a builtin".to_string())
 }
 
+fn json_str<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
+    value.pointer(pointer).and_then(Value::as_str)
+}
+
+fn msg_type(value: &Value) -> Option<&str> {
+    value.get("type").and_then(Value::as_str)
+}
+
+fn event_type(value: &Value) -> Option<&str> {
+    json_str(value, "/event/type")
+}
+
+fn delta_type(value: &Value) -> Option<&str> {
+    json_str(value, "/event/delta/type")
+}
+
 fn stream_delta(out: &[Value]) -> &Value {
     out.iter()
-        .find(|m| m["type"] == "stream_event" && m["event"]["type"] == "content_block_delta")
+        .find(|m| {
+            msg_type(m) == Some("stream_event") && event_type(m) == Some("content_block_delta")
+        })
         .expect("a content_block_delta stream_event")
 }
 

@@ -501,6 +501,7 @@ impl Reducer for MessagesReducer {
                 | StreamEvent::ResponseStarted { .. }
                 | StreamEvent::ReasoningCompleted { .. }
                 | StreamEvent::ResponseCompleted { .. }
+                | StreamEvent::TurnUsage { .. }
         );
         if !is_metadata && let Some(init) = self.ensure_init() {
             out.push(init);
@@ -676,6 +677,8 @@ impl Reducer for MessagesReducer {
                     });
                 }
             }
+            // Whole-turn totals are not one model call. Stamping them here would inflate the last assistant message.
+            StreamEvent::TurnUsage { .. } => {}
             StreamEvent::Lifecycle(_) | StreamEvent::Plan(_) => {}
         }
         out

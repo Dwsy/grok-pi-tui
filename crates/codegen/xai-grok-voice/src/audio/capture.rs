@@ -444,8 +444,11 @@ fn resample_mono_i16(samples: &[i16], input_rate: u32, output_rate: u32) -> Vec<
         let src_pos = i as f64 * step;
         let idx = src_pos.floor() as usize;
         let frac = src_pos - idx as f64;
-        let s0 = samples[idx] as f64;
-        let s1 = *samples.get(idx + 1).unwrap_or(&samples[idx]) as f64;
+        let Some(&s0_i) = samples.get(idx) else {
+            break;
+        };
+        let s0 = s0_i as f64;
+        let s1 = samples.get(idx + 1).copied().unwrap_or(s0_i) as f64;
         let sample = s0 + (s1 - s0) * frac;
         let clamped = sample.round().max(i16::MIN as f64).min(i16::MAX as f64);
         output.push(clamped as i16);
@@ -501,7 +504,10 @@ fn parse_child_args(args: &[String]) -> Result<ChildMode, String> {
     let mut rate: u32 = crate::config::DEFAULT_SAMPLE_RATE;
     let mut i = 0;
     while i < args.len() {
-        match args[i].as_str() {
+        let Some(arg) = args.get(i) else {
+            break;
+        };
+        match arg.as_str() {
             "--device-info" => return Ok(ChildMode::DeviceInfo),
             "--rate" => {
                 i += 1;
@@ -634,6 +640,6 @@ mod tests {
         let stereo = [i16::MAX, i16::MIN];
         let mono = frames_to_mono_i16(&stereo, 2);
         assert_eq!(mono.len(), 1);
-        assert_eq!(mono[0], 0);
+        assert_eq!(mono.first().copied(), Some(0));
     }
 }

@@ -50,6 +50,7 @@ struct BackendTestRunner;
 
 impl super::super::coordinator::ChildRunner for BackendTestRunner {
     type Control = BackendTestControl;
+    type RootControl = crate::implementations::grok_build::task::root_control::NoRootControl;
     type CompletionData = ();
     type RunFuture = super::super::coordinator::SendBoxFuture<
         super::super::coordinator::ChildRunOutput<Self::CompletionData>,
@@ -57,7 +58,11 @@ impl super::super::coordinator::ChildRunner for BackendTestRunner {
     type ValidateFuture = super::super::coordinator::SendBoxFuture<SubagentValidateTypeOutcome>;
     type DescribeFuture = super::super::coordinator::SendBoxFuture<SubagentDescribeOutcome>;
 
-    fn run(&self, _: super::super::coordinator::ChildRunRequest<Self::Control>) -> Self::RunFuture {
+    fn run(
+        &self,
+        run: super::super::coordinator::ChildRunRequest<Self::Control>,
+    ) -> Self::RunFuture {
+        debug_assert!(run.agent_message_sender.is_none());
         Box::pin(std::future::pending())
     }
 
@@ -174,6 +179,7 @@ async fn channel_backend_spawn_success() {
         owner: super::super::types::SubagentOwner::Task,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         spawn_root: Default::default(),
+        tool_call_id: None,
     };
 
     let result = backend.spawn(request, None).await.unwrap();
@@ -208,6 +214,7 @@ async fn channel_backend_spawn_closed_channel() {
         owner: super::super::types::SubagentOwner::Task,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         spawn_root: Default::default(),
+        tool_call_id: None,
     };
 
     let err = backend.spawn(request, None).await.unwrap_err();
@@ -288,6 +295,22 @@ async fn channel_backend_query_non_blocking_passes_through() {
 }
 
 #[tokio::test]
+async fn coordinator_exits_after_external_senders_drop() {
+    let (sender, receiver) =
+        super::super::coordinator::SubagentCoordinator::<BackendTestRunner>::channel();
+    let actor = tokio::spawn(
+        super::super::coordinator::SubagentCoordinator::from_channel(
+            receiver,
+            BackendTestRunner,
+            super::super::coordinator::CoordinatorConfig::default(),
+        )
+        .run(),
+    );
+    drop(sender);
+    await_with_timeout(actor).await.unwrap();
+}
+
+#[tokio::test]
 async fn channel_backend_query_not_found() {
     let (tx, mut rx) = mpsc::unbounded_channel::<SubagentEvent>();
     let backend = ChannelBackend::new(tx);
@@ -318,7 +341,11 @@ async fn channel_backend_active_message_binds_parent_and_round_trips() {
         .await
         .expect("active-message ingress closed");
     let super::super::active_message::ActiveMessageIngress { request, permit } = ingress;
-    assert_eq!(request.parent_session_id, "bound-parent");
+    assert!(matches!(
+        request.sender_context,
+        super::super::types::ActiveMessageSenderContext::RootSession { ref session_id }
+            if session_id.as_ref() == "bound-parent"
+    ));
     assert!(matches!(
         request.request.target(),
         crate::implementations::grok_build::task::active_message::ActiveMessageTarget::ChildId(
@@ -340,6 +367,71 @@ async fn channel_backend_active_message_binds_parent_and_round_trips() {
         },
         await_with_timeout(send).await.unwrap()
     );
+}
+
+#[tokio::test]
+async fn inert_targets_do_not_enter_backend_ingress() {
+    let (sender, mut receiver) =
+        super::super::coordinator::SubagentCoordinator::<BackendTestRunner>::channel();
+    let backend = ChannelBackend::for_coordinator_session(sender, "parent");
+    for target in [
+        super::super::types::ActiveMessageTarget::Parent,
+        super::super::types::ActiveMessageTarget::Agent {
+            agent_id: xai_message_delivery_core::AgentId::mint(7),
+        },
+    ] {
+        let request = ActiveAgentMessageRequest::try_from_parts(
+            target,
+            "follow up",
+            super::super::types::ActiveAgentMessageOperation::Queue,
+        )
+        .unwrap();
+        assert_eq!(
+            ActiveAgentMessageOutcome::Unsupported,
+            backend.send_active_message(request).await
+        );
+        assert_eq!(
+            super::super::coordinator::MAX_ACTIVE_MESSAGE_ADMISSIONS,
+            receiver.active_message_available_permits()
+        );
+        assert!(receiver.active_messages.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
+async fn root_capable_backend_maps_agent_target_to_root_sender() {
+    let (sender, mut receiver) =
+        super::super::coordinator::SubagentCoordinator::<BackendTestRunner>::channel();
+    let backend = ChannelBackend::for_coordinator_session(sender, "root").with_root_targets();
+    let send = tokio::spawn(async move {
+        backend
+            .send_active_message(
+                ActiveAgentMessageRequest::try_from_parts(
+                    super::super::types::ActiveMessageTarget::Agent {
+                        agent_id: xai_message_delivery_core::AgentId::mint(7),
+                    },
+                    "follow up",
+                    super::super::types::ActiveAgentMessageOperation::Queue,
+                )
+                .unwrap(),
+            )
+            .await
+    });
+    let ingress = receiver
+        .active_messages
+        .recv()
+        .await
+        .expect("agent ingress");
+    assert!(matches!(
+        ingress.request.sender_context,
+        super::super::types::ActiveMessageSenderContext::RootSession { .. }
+    ));
+    ingress
+        .request
+        .respond_to
+        .send(ActiveAgentMessageOutcome::Unsupported)
+        .unwrap();
+    assert_eq!(send.await.unwrap(), ActiveAgentMessageOutcome::Unsupported);
 }
 
 #[tokio::test]
@@ -479,6 +571,7 @@ async fn workflow_spawn_future_drop_cancels_but_task_drop_does_not() {
             owner,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             spawn_root: Default::default(),
+            tool_call_id: None,
         }
     }
 
@@ -533,6 +626,7 @@ async fn channel_backend_spawn_result_dropped() {
         owner: super::super::types::SubagentOwner::Task,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         spawn_root: Default::default(),
+        tool_call_id: None,
     };
 
     let err = backend.spawn(request, None).await.unwrap_err();

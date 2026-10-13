@@ -1,7 +1,7 @@
 //! Filesystem extension ops (`workspace.fs_*`): the server-proxied backing for the shell's `x.ai/fs/*` ACP extension methods.
 //!
 //! These mirror the pure functions that previously lived only in the shell (`xai-grok-shell/src/session/file_system.rs`).
-//! In proxy mode a `x.ai/fs/*` request executes on the *remote* workspace server instead of the agent host.
+//! In proxy mode a `x.ai/fs/*` request executes on the *remote* workspace server instead of the machine running the agent.
 //! Each request type implements [`WorkspaceOp`]: local sessions run it in-process, proxy sessions route it over the server `workspace_rpc` tool.
 //! The wire output is identical either way.
 
@@ -152,9 +152,7 @@ impl WorkspaceOp for FsDeleteFileReq {
     }
 }
 
-// =========================================================================
 // Pure helpers, ported verbatim from the shell so output is identical
-// =========================================================================
 
 fn list(
     abs_path: &Path,
@@ -242,10 +240,6 @@ fn build_file_entry(bytes: &[u8]) -> FsReadFileData {
     }
 }
 
-// =========================================================================
-// Tests for the pure helpers (no `WorkspaceHandle` required).
-// =========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,8 +301,11 @@ mod tests {
         assert!(names.contains(&"sub"));
         assert!(!data.truncated);
         // Directories sort ahead of files.
-        assert_eq!(data.nodes[0].name, "sub");
-        assert_eq!(data.nodes[0].node_type, "directory");
+        assert_eq!(data.nodes.first().map(|n| n.name.as_str()), Some("sub"));
+        assert_eq!(
+            data.nodes.first().map(|n| n.node_type.as_str()),
+            Some("directory")
+        );
     }
 
     #[test]

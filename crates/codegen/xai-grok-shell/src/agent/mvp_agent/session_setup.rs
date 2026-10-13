@@ -180,6 +180,19 @@ fn session_info_for(session_id: &acp::SessionId, cwd: &AbsPathBuf) -> SessionInf
         cwd: cwd.as_str().to_owned(),
     }
 }
+/// The liveness bump runs on every call, before the sweep and before this session is loaded:
+/// another process's sweep may be judging the dir right now, and it only sees mtimes.
+fn spawn_session_sweep(session_info: &SessionInfo) {
+    use crate::session::persistence;
+    let live_session_dir = persistence::session_dir(session_info);
+    persistence::mark_session_live(&live_session_dir);
+    if persistence::session_sweep_done() {
+        return;
+    }
+    tokio::task::spawn_blocking(move || {
+        persistence::cleanup_stale_sessions(&live_session_dir);
+    });
+}
 fn log_session_started(
     session_id: &acp::SessionId,
     kind: SessionStartKind,
@@ -224,6 +237,7 @@ impl MvpAgent {
         let cwd = AbsPathBuf::new(cwd.to_path_buf())
             .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
         let remote_settings = self.cfg.borrow().remote_settings.clone();
+        self.report_setup_phase(SessionSetupPhase::FolderTrust);
         let (_allowed, trust_scan) =
             folder_trust::gather_and_record(cwd.as_path(), remote_settings.as_ref(), false);
         let (initial_client_mcp_servers, mcp_servers) = self
@@ -268,8 +282,110 @@ impl MvpAgent {
         })
     }
 }
+/// A blocking step in `new_session_inner`, recorded on entry so a timeout can name the stuck step.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr, strum::EnumMessage, strum::EnumString,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum SessionSetupPhase {
+    #[strum(message = "signing you in")]
+    Auth,
+    #[strum(message = "preparing your workspace")]
+    ResolveWorkspace,
+    #[strum(message = "checking whether this folder is trusted")]
+    FolderTrust,
+    #[strum(message = "loading your plugins")]
+    PluginRegistry,
+    #[strum(message = "setting up your tools")]
+    McpMerge,
+    #[cfg(all(feature = "local-workspace", unix))]
+    #[strum(message = "starting your workspace")]
+    LocalWorkspace,
+    #[strum(message = "opening your history")]
+    PersistenceInit,
+    #[strum(message = "starting the agent")]
+    SpawnSessionActor,
+    #[cfg(feature = "local-workspace")]
+    #[strum(message = "waiting for your workspace")]
+    WorkspaceHandshake,
+    #[strum(message = "switching to your model")]
+    ModelSwitch,
+    #[strum(message = "switching you to an available model")]
+    ModelNotAllowed,
+    #[strum(message = "scanning your repository")]
+    GitDiscovery,
+    #[strum(message = "finishing up")]
+    FinalizeResponse,
+    #[strum(message = "applying your tool settings")]
+    ToolOverrides,
+    #[strum(message = "getting your session ready")]
+    ResponseReady,
+}
+/// Wire method for the setup-progress notification, mirroring `x.ai/mcp/init_progress`.
+const SESSION_SETUP_METHOD: &str = "x.ai/session/setup";
+/// Context for the session op currently reporting setup phases.
+struct SessionSetupContext {
+    /// Wire label for the payload's `method`; `session/new` today.
+    method: &'static str,
+    /// Best-known session id for routing: `_meta.sessionId`, then the minted id.
+    session_id: Option<String>,
+}
+tokio::task_local! {
+    /// Present only while `new_session_inner` runs, so `report_setup_phase` stays silent on the
+    /// load/resume paths. Task-local, not thread-local: each request is its own `spawn_local` task.
+    static SESSION_SETUP_CONTEXT: std::cell::RefCell<SessionSetupContext>;
+}
 impl MvpAgent {
+    /// Log a `new_session_inner` step and push it to the client; a no-op off the `session/new` path.
+    pub(super) fn report_setup_phase(&self, phase: SessionSetupPhase) {
+        let Ok((method, session_id)) = SESSION_SETUP_CONTEXT.try_with(|ctx| {
+            let ctx = ctx.borrow();
+            (ctx.method, ctx.session_id.clone())
+        }) else {
+            return;
+        };
+        let name = <&'static str>::from(&phase);
+        let ctx = serde_json::json!({
+            "method": method,
+            "phase": name,
+            "sessionId": session_id.as_deref(),
+        });
+        if let Ok(params) = serde_json::value::to_raw_value(&ctx) {
+            let _ = self
+                .gateway
+                .forward_fire_and_forget(acp::ExtNotification::new(
+                    SESSION_SETUP_METHOD,
+                    params.into(),
+                ));
+        }
+        xai_grok_telemetry::unified_log::info(
+            "session.setup.phase",
+            session_id.as_deref(),
+            Some(ctx),
+        );
+    }
+    /// Scopes `SESSION_SETUP_CONTEXT` to this create so only `session/new` reports phases.
     pub(super) async fn new_session_inner(
+        &self,
+        arguments: acp::NewSessionRequest,
+    ) -> Result<acp::NewSessionResponse, acp::Error> {
+        let client_session_id = arguments
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("sessionId"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        SESSION_SETUP_CONTEXT
+            .scope(
+                std::cell::RefCell::new(SessionSetupContext {
+                    method: "session/new",
+                    session_id: client_session_id,
+                }),
+                self.new_session_inner_impl(arguments),
+            )
+            .await
+    }
+    async fn new_session_inner_impl(
         &self,
         arguments: acp::NewSessionRequest,
     ) -> Result<acp::NewSessionResponse, acp::Error> {
@@ -279,8 +395,10 @@ impl MvpAgent {
         let init = self.initialize_request.get().ok_or_else(|| {
             acp::Error::invalid_params().data("initialize must be called before new_session")
         })?;
+        self.report_setup_phase(SessionSetupPhase::Auth);
         self.seed_client_config_auth_if_available();
         self.spawn_settings_reapply();
+        self.report_setup_phase(SessionSetupPhase::ResolveWorkspace);
         let SessionWorkspace {
             cwd,
             remote_settings,
@@ -307,6 +425,8 @@ impl MvpAgent {
             .as_ref()
             .and_then(|m| m.get("modelId").and_then(|v| v.as_str()))
             .filter(|s| !s.is_empty());
+        #[cfg(all(feature = "local-workspace", unix))]
+        self.report_setup_phase(SessionSetupPhase::LocalWorkspace);
         #[cfg(all(feature = "local-workspace", unix))]
         let pending_local_workspace = self
             .start_own_local_workspace_if_needed(&mut session_meta_for_stamp, cwd.as_path())
@@ -350,6 +470,8 @@ impl MvpAgent {
             }
             None => acp::SessionId::new(uuid::Uuid::now_v7().to_string()),
         };
+        SESSION_SETUP_CONTEXT
+            .with(|ctx| ctx.borrow_mut().session_id = Some(session_id.0.to_string()));
         reject_direct_hub_cloud_meta(arguments.meta.as_ref())?;
         let mut prefetch =
             crate::session::session_create_prefetch::SessionCreatePrefetch::launch_from_meta(
@@ -385,6 +507,7 @@ impl MvpAgent {
                     .map(|s| s.to_string())
             });
         let session_info = session_info_for(&session_id, &cwd);
+        spawn_session_sweep(&session_info);
         let mut model_agent_type: Option<String> = None;
         let mut session_sampling_override: Option<SamplingConfig> = None;
         let mut disallowed_custom: Option<String> = None;
@@ -494,8 +617,9 @@ impl MvpAgent {
                 .unwrap_or_else(|| self.models_manager.current_model_id()),
         };
         let session_model_id = model_id.clone();
-        let persistence = if is_chat_kind {
-            crate::session::persistence::PersistenceHandle::noop()
+        self.report_setup_phase(SessionSetupPhase::PersistenceInit);
+        let (persistence, root_identity) = if is_chat_kind {
+            (crate::session::persistence::PersistenceHandle::noop(), None)
         } else {
             let _timer = crate::instrumentation_timer!("session.persistence_init");
             let registry_title_sync = self.registry_title_sync();
@@ -515,6 +639,7 @@ impl MvpAgent {
                 },
             )
             .await
+            .map(|(persistence, identity)| (persistence, Some(identity)))
             .map_err(|e| crate::session::persistence::io_error_to_acp(&e))?
         };
         self.set_turn_number(&session_id, 0u64);
@@ -525,6 +650,7 @@ impl MvpAgent {
             fs_read: client_fs_read,
             fs_write: client_fs_write,
         } = self.resolve_client_caps(arguments.meta.as_ref(), init);
+        self.report_setup_phase(SessionSetupPhase::SpawnSessionActor);
         let spawn_res = {
             let mut timer = crate::instrumentation_timer!("session.spawn_session_actor");
             timer.with_field("session_id", session_id.0.as_ref());
@@ -545,6 +671,13 @@ impl MvpAgent {
                     initial_client_mcp_servers,
                     mcp_meta_config_map,
                     persistence,
+                    root_identity: root_identity.and_then(|identity| {
+                        super::agent_directory::PendingRootIdentity::parse(
+                            identity,
+                            crate::agent::roster::RosterOrigin::Local,
+                        )
+                    }),
+                    attach_waiter: None,
                     chat_history,
                     rewind_points_file_path: None,
                     initial_total_tokens: 0,
@@ -560,6 +693,7 @@ impl MvpAgent {
                     persisted_workflow_runs: Vec::new(),
                     persisted_announcement_state: None,
                     session_meta: arguments.meta.as_ref(),
+                    persisted_agent_profile: None,
                     prefetch: None,
                     model_agent_type: model_agent_type.as_deref(),
                     session_model_id,
@@ -635,6 +769,7 @@ impl MvpAgent {
             });
         }
         if let Some(model_id) = resolved_custom_model {
+            self.report_setup_phase(SessionSetupPhase::ModelSwitch);
             let switch_effort = match effort_route {
                 NewSessionEffort::Switch(effort) => Some(effort),
                 NewSessionEffort::Spawn(_) | NewSessionEffort::None => None,
@@ -644,6 +779,7 @@ impl MvpAgent {
                     self,
                     acp::SetSessionModelRequest::new(session_id.clone(), acp::ModelId::new(model_id)),
                     crate::agent::handlers::model_switch::SwitchEffort::Set(switch_effort),
+                    crate::agent::handlers::model_switch::SwitchContextWindow::Preserve,
                     crate::agent::handlers::model_switch::ConfigNotice::Skip,
                 )
                 .await
@@ -668,6 +804,7 @@ impl MvpAgent {
             origin_client.clone(),
         );
         if let Some(requested) = disallowed_custom {
+            self.report_setup_phase(SessionSetupPhase::ModelNotAllowed);
             let current = self.models_manager.current_model_id();
             let reason = format!(
                 "\"{requested}\": {}. This session is using \"{}\".",
@@ -683,6 +820,7 @@ impl MvpAgent {
             .await;
         }
         let indexed_roots = self.indexed_roots_for(cwd.as_path());
+        self.report_setup_phase(SessionSetupPhase::GitDiscovery);
         let git_discovery_timer =
             crate::instrumentation_timer!("session.new_session.git_discovery");
         let (git_root, is_git_repo, discovery_failed) =
@@ -722,6 +860,7 @@ impl MvpAgent {
             Some(session_id.0.as_ref()),
             Some(serde_json::json!({"cwd": cwd.as_str()})),
         );
+        self.report_setup_phase(SessionSetupPhase::FinalizeResponse);
         let models = if is_chat_kind {
             chat_new_session_model_state(
                 self.chat_modes.model_state().await,
@@ -730,6 +869,7 @@ impl MvpAgent {
         } else {
             self.model_state(Some(&session_id))
         };
+        self.report_setup_phase(SessionSetupPhase::ToolOverrides);
         let echo_timer = crate::instrumentation_timer!("session.new_session.tool_overrides_echo");
         let applied_tool_overrides = match self.session_handle_waiting_for_load(&session_id).await {
             Some(handle) if resolved_custom_model.is_none() => {
@@ -774,6 +914,7 @@ impl MvpAgent {
             false,
         );
         let config_options = self.acp_config_options(Some(&session_id), &models);
+        self.report_setup_phase(SessionSetupPhase::ResponseReady);
         Ok(acp::NewSessionResponse::new(session_id)
             .models(Some(models))
             .config_options(Some(config_options))
@@ -791,8 +932,12 @@ impl MvpAgent {
         op: AttachOperation,
     ) -> Result<acp::LoadSessionResponse, acp::Error> {
         let attach_started_at = std::time::Instant::now();
-        let _load_guard = self.begin_session_load(&arguments.session_id);
+        let load_guard = self.begin_session_load(&arguments.session_id);
         reject_chat_kind_without_feature(arguments.meta.as_ref())?;
+        let live_cwd = AbsPathBuf::new(arguments.cwd.clone())
+            .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
+        let session_info = session_info_for(&arguments.session_id, &live_cwd);
+        spawn_session_sweep(&session_info);
         self.sweep_dead_sessions();
         if !self.is_resident(&arguments.session_id) {
             self.drain_old_session_thread(&arguments.session_id).await;
@@ -840,11 +985,6 @@ impl MvpAgent {
                 crate::session::worktree_pool::cleanup_stale_pool_worktrees(Some(&root));
             });
         }
-        let session_info = session_info_for(&session_id, &cwd);
-        let current_session_dir = crate::session::persistence::session_dir(&session_info);
-        tokio::task::spawn_blocking(move || {
-            crate::session::persistence::cleanup_stale_sessions(Some(&current_session_dir));
-        });
         let session_exists = self.is_resident(&session_id);
         let no_replay = policy.no_replay;
         if session_exists {
@@ -931,6 +1071,28 @@ impl MvpAgent {
         spawn_sampler_transport_prewarm(&persisted_base_url);
         let restored =
             RestoredSignals::read(persisted_signals.as_ref(), persisted_plan_mode.as_ref());
+        let _persisted_root_identity = match (
+            summary
+                .agent_id
+                .as_deref()
+                .and_then(xai_message_delivery_core::AgentId::parse),
+            summary
+                .attempt_id
+                .as_deref()
+                .and_then(xai_message_delivery_core::AttemptId::parse),
+        ) {
+            (Some(agent_id), Some(attempt_id)) => {
+                Some(super::agent_directory::PendingRootIdentity {
+                    agent_id,
+                    attempt_id,
+                    origin: crate::agent::roster::RosterOrigin::Local,
+                })
+            }
+            _ => {
+                tracing::warn!(session_id = %session_id.0, "persisted session identity was missing or invalid");
+                None
+            }
+        };
         self.set_turn_number(&session_id, summary.next_trace_turn);
         tracing::info!(
             session_id = %session_id.0,
@@ -990,6 +1152,17 @@ impl MvpAgent {
                 .emit_local_background_tasks
                 .store(false, std::sync::atomic::Ordering::Release);
         }
+        let interrupted_turn = if self.is_resident(&session_id) {
+            None
+        } else {
+            self.record_interrupted_turn(
+                &session_id,
+                &summary,
+                updates_file_path.as_deref(),
+                &persistence,
+            )
+            .await
+        };
         let (initial_total_tokens, unfinished_subagents) = self
             .replay_transcript_gate(
                 &session_id,
@@ -1023,6 +1196,18 @@ impl MvpAgent {
                 session_id = %session_id.0,
                 "load_session: spawning new session actor (session not in memory)"
             );
+            let minted_identity = crate::session::persistence::mint_loaded_session_identity(
+                summary.agent_id.as_deref(),
+            );
+            let cold_root_identity = super::agent_directory::PendingRootIdentity::parse(
+                minted_identity.clone(),
+                crate::agent::roster::RosterOrigin::Local,
+            );
+            let _ = persistence.tx.send(
+                crate::session::persistence::PersistenceMsg::SetRemoteAgentId(
+                    minted_identity.agent_id.clone(),
+                ),
+            );
             let mut spawn_timer = crate::instrumentation_timer!("session.spawn");
             spawn_timer.with_field("session_id", session_id.0.as_ref());
             spawn_timer.with_subphase(xai_grok_telemetry::startup::Subphase::SessionSpawn);
@@ -1033,13 +1218,24 @@ impl MvpAgent {
                     self.plugin_registry_handle.clone(),
                     request_meta.as_ref(),
                 );
-            let persisted_agent_name: Option<String> = summary.agent_name.clone().or_else(|| {
-                self.resolve_model_id(&summary.current_model_id)
-                    .ok()
-                    .map(|m| m.info().agent_type.clone())
-            });
-            let persistence_tx = persistence.tx.clone();
-            let won_cold_spawn = self
+            let (restore_profile, restore_model_agent_type): (
+                Option<xai_grok_agent::AgentDefinition>,
+                Option<String>,
+            ) = match summary.persisted_agent() {
+                Some(crate::session::persistence::PersistedAgent::Inline(_)) => {
+                    (summary.agent_profile().cloned(), None)
+                }
+                Some(crate::session::persistence::PersistedAgent::Named(name)) => {
+                    (None, Some(name.clone()))
+                }
+                None => (
+                    None,
+                    self.resolve_model_id(&summary.current_model_id)
+                        .ok()
+                        .map(|m| m.info().agent_type.clone()),
+                ),
+            };
+            let load_is_current = self
                 .spawn_and_register_session(
                     init,
                     SessionSpawnOptions {
@@ -1049,6 +1245,8 @@ impl MvpAgent {
                         initial_client_mcp_servers,
                         mcp_meta_config_map,
                         persistence,
+                        root_identity: cold_root_identity,
+                        attach_waiter: Some(&load_guard.rx),
                         chat_history,
                         rewind_points_file_path,
                         initial_total_tokens,
@@ -1064,7 +1262,8 @@ impl MvpAgent {
                         persisted_workflow_runs,
                         persisted_announcement_state,
                         session_meta: request_meta.as_ref(),
-                        model_agent_type: persisted_agent_name.as_deref(),
+                        persisted_agent_profile: restore_profile,
+                        model_agent_type: restore_model_agent_type.as_deref(),
                         session_model_id: summary.current_model_id.clone(),
                         initial_reasoning_effort: None,
                         session_yolo_mode,
@@ -1080,35 +1279,8 @@ impl MvpAgent {
                     )),
                 )
                 .await?;
-            let agent_id = if won_cold_spawn {
-                crate::session::persistence::persist_cold_spawn_identity(
-                    &summary.info,
-                    summary.agent_id.as_deref(),
-                )
-                .await
-                .map(|identity| Some(identity.agent_id))
-            } else {
-                crate::session::persistence::persisted_agent_id(&summary.info).await
-            };
-            match agent_id {
-                Ok(Some(agent_id)) => {
-                    let resident_tx = self
-                        .resident_handle(&session_id)
-                        .map(|handle| handle.persistence_tx.clone())
-                        .unwrap_or(persistence_tx);
-                    let _ = resident_tx.send(
-                        crate::session::persistence::PersistenceMsg::SetRemoteAgentId(agent_id),
-                    );
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    tracing::warn!(
-                        session_id = %session_id.0,
-                        error = %err,
-                        won_cold_spawn,
-                        "failed to persist identity after cold spawn"
-                    );
-                }
+            if !load_is_current {
+                return Err(acp::Error::invalid_params().data("session load was superseded"));
             }
             self.prewarm_final_model_base_url(
                 &session_id,
@@ -1116,8 +1288,12 @@ impl MvpAgent {
                 origin_client.clone(),
             );
             drop(spawn_timer);
+            if let Some(turn) = interrupted_turn {
+                self.finish_interrupted_turn(&session_id, turn).await;
+            }
             true
         } else {
+            self.await_adopted_identity_stamp(&session_id).await?;
             tracing::info!(
                 session_id = %session_id.0,
                 mcp_server_count = mcp_servers.len(),
@@ -1125,7 +1301,7 @@ impl MvpAgent {
             );
             let attach_hints = explicit_startup_hints(request_meta.as_ref());
             self.with_resident_mut(&session_id, |handle| {
-                handle.initial_client_mcp_servers = initial_client_mcp_servers;
+                handle.initial_client_mcp_servers = initial_client_mcp_servers.clone();
                 if let Some(hints) = attach_hints {
                     let _ =
                         handle
@@ -1139,6 +1315,7 @@ impl MvpAgent {
                     .cmd_tx
                     .send(crate::session::SessionCommand::UpdateMcpServers {
                         mcp_servers,
+                        client_seed: Some(initial_client_mcp_servers),
                         respond_to: tx,
                     });
             });
@@ -1389,6 +1566,69 @@ impl MvpAgent {
         }
         Ok((initial_total_tokens, unfinished_subagents))
     }
+    /// Closes a turn the previous process never finished; the caller finishes it once the actor is up.
+    async fn record_interrupted_turn(
+        &self,
+        session_id: &acp::SessionId,
+        summary: &crate::session::persistence::Summary,
+        updates_file_path: Option<&std::path::Path>,
+        persistence: &crate::session::persistence::PersistenceHandle,
+    ) -> Option<crate::session::interrupted_turn::InterruptedTurn> {
+        let session_dir = updates_file_path?.parent()?;
+        let turn = crate::session::interrupted_turn::detect_interrupted_turn(session_dir, summary)?;
+        tracing::warn!(
+            session_id = %session_id.0,
+            trace_turn = turn.trace_turn,
+            prompt_id = %turn.prompt_id,
+            started_at = ?turn.started_at,
+            "load_session: previous process left a turn unfinished; recording it as interrupted"
+        );
+        xai_grok_telemetry::unified_log::warn(
+            "load_session: interrupted turn recorded",
+            Some(session_id.0.as_ref()),
+            Some(serde_json::json!({
+                "trace_turn": turn.trace_turn,
+                "prompt_id": turn.prompt_id,
+                "started_at": turn.started_at,
+            })),
+        );
+        if let Err(e) = persistence
+            .append_update_durably(turn.turn_completed_update(session_id))
+            .await
+        {
+            tracing::warn!(
+                session_id = %session_id.0,
+                error = %e,
+                "load_session: failed to persist the interrupted-turn marker"
+            );
+        }
+        turn.close_events_turn(session_dir);
+        Some(turn)
+    }
+    /// Uploads the `turn_result.json` the dead process never wrote, so the trace turn is not left with start-of-turn artifacts only.
+    async fn finish_interrupted_turn(
+        &self,
+        session_id: &acp::SessionId,
+        turn: crate::session::interrupted_turn::InterruptedTurn,
+    ) {
+        let Some(handle) = self.resident_handle(session_id) else {
+            return;
+        };
+        let _ = handle
+            .cmd_tx
+            .send(crate::session::SessionCommand::NoteInterruptedTurn { turn: turn.clone() });
+        if let Some(ctx) = self.get_trace_context(&handle.info, turn.trace_turn).await {
+            let result = turn.turn_result();
+            crate::upload::turn::spawn_upload_task("interrupted_turn_result", async move {
+                crate::upload::trace::upload_turn_result(
+                    &ctx,
+                    &result,
+                    crate::upload::turn::UploadWait::Confirm,
+                )
+                .await;
+            });
+        }
+    }
     /// Enqueue a persist+broadcast of the live *local* list before `session/load`
     /// returns. Cold spawn has an empty registry, so this writes `tasks: []` and
     /// supersedes a stale persisted Running snapshot. Not used for gateway-backed
@@ -1496,7 +1736,6 @@ impl MvpAgent {
         }
     }
     /// Model-restore phase: point the actor at the persisted model without writing the global `current_model_id` (shared across leader clients).
-    /// A vanished model falls back within its family, or blocks prompts.
     pub(super) async fn restore_persisted_model(
         &self,
         session_id: &acp::SessionId,
@@ -1504,10 +1743,61 @@ impl MvpAgent {
         initial_reasoning_effort: Option<ReasoningEffort>,
     ) {
         let session_id = session_id.clone();
-        let persisted_model = summary.current_model_id.clone();
+        let catalog_ready = summary.context_window.is_none()
+            || self
+                .models_manager
+                .wait_for_first_catalog(self.models_manager.is_models_fetch_enabled())
+                .await;
+        let model_id = self
+            .resolve_restored_model(&session_id, summary.current_model_id.clone())
+            .await;
+        tracing::debug!(
+            session_id = %session_id.0,
+            final_model_id = %model_id.0,
+            "load_session: resolved final model_id for set_session_model"
+        );
+        {
+            let _timer = crate::instrumentation_timer!("session.restore_model");
+            let restore_effort = initial_reasoning_effort.or(summary.reasoning_effort);
+            let restore_window = if catalog_ready {
+                crate::agent::handlers::model_switch::SwitchContextWindow::Set(
+                    summary.context_window,
+                )
+            } else {
+                if let Some(handle) = self.resident_handle(&session_id) {
+                    handle.context_window_selection.store(
+                        summary.context_window.map_or(0, std::num::NonZeroU64::get),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+                crate::agent::handlers::model_switch::SwitchContextWindow::Preserve
+            };
+            if let Err(err) = crate::agent::handlers::model_switch::apply(
+                self,
+                acp::SetSessionModelRequest::new(session_id.to_owned(), model_id),
+                crate::agent::handlers::model_switch::SwitchEffort::Set(restore_effort),
+                restore_window,
+                crate::agent::handlers::model_switch::ConfigNotice::Skip,
+            )
+            .await
+            {
+                tracing::warn!(
+                    session_id = %session_id.0,
+                    error = ?err,
+                    "load_session: restoring persisted model/effort failed; session keeps spawn defaults"
+                );
+            }
+        }
+    }
+    /// A vanished model falls back within its family, or blocks prompts.
+    async fn resolve_restored_model(
+        &self,
+        session_id: &acp::SessionId,
+        persisted_model: acp::ModelId,
+    ) -> acp::ModelId {
         let models = self.models_manager.models();
         let available = self.models_manager.available();
-        self.session_registry.take_unavailable_model(&session_id);
+        self.session_registry.take_unavailable_model(session_id);
         let resolved_catalog_key = resolve_catalog_key(&models, &persisted_model);
         tracing::debug!(
             session_id = %session_id.0,
@@ -1532,7 +1822,7 @@ impl MvpAgent {
         };
         let selectable_catalog_key =
             selectable_catalog_key_for_persisted(&models, &available, &persisted_model);
-        let model_id = if let Some(catalog_key) = selectable_catalog_key {
+        if let Some(catalog_key) = selectable_catalog_key {
             if catalog_key != persisted_model {
                 tracing::info!(
                     session_id = %session_id.0,
@@ -1575,7 +1865,7 @@ impl MvpAgent {
                 "Model \"{}\" is no longer available for your account.",
                 persisted_model.0,
             );
-            self.send_model_auto_switched(&session_id, &persisted_model, &fallback, &reason)
+            self.send_model_auto_switched(session_id, &persisted_model, &fallback, &reason)
                 .await;
             fallback
         } else {
@@ -1606,34 +1896,11 @@ impl MvpAgent {
                 persisted_model.0,
             );
             let empty_id = acp::ModelId::new(String::new());
-            self.send_model_auto_switched(&session_id, &persisted_model, &empty_id, &reason)
+            self.send_model_auto_switched(session_id, &persisted_model, &empty_id, &reason)
                 .await;
             self.session_registry
-                .set_unavailable_model(&session_id, persisted_model.clone());
+                .set_unavailable_model(session_id, persisted_model.clone());
             fallback
-        };
-        tracing::debug!(
-            session_id = %session_id.0,
-            final_model_id = %model_id.0,
-            "load_session: resolved final model_id for set_session_model"
-        );
-        {
-            let _timer = crate::instrumentation_timer!("session.restore_model");
-            let restore_effort = initial_reasoning_effort.or(summary.reasoning_effort);
-            if let Err(err) = crate::agent::handlers::model_switch::apply(
-                self,
-                acp::SetSessionModelRequest::new(session_id.to_owned(), model_id),
-                crate::agent::handlers::model_switch::SwitchEffort::Set(restore_effort),
-                crate::agent::handlers::model_switch::ConfigNotice::Skip,
-            )
-            .await
-            {
-                tracing::warn!(
-                    session_id = %session_id.0,
-                    error = ?err,
-                    "load_session: restoring persisted model/effort failed; session keeps spawn defaults"
-                );
-            }
         }
     }
     /// Response phase: assemble the attach `_meta`, including the running prompt id a mid-turn loader adopts to pass the `session/update` gate.

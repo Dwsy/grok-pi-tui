@@ -238,7 +238,10 @@ mod tests {
         );
         let entries = changelog.entries.expect("seeded json entries");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].description, "seeded entry");
+        let [entry] = entries.as_slice() else {
+            panic!("expected exactly one entry, got {}", entries.len());
+        };
+        assert_eq!(entry.description, "seeded entry");
     }
 
     #[test]
@@ -279,9 +282,10 @@ mod tests {
         ];
 
         let bullets = bullets_from_entries(&entries, 2);
-        assert_eq!(bullets.len(), 2);
-        assert_eq!(bullets[0], "Added dark mode support");
-        assert_eq!(bullets[1], "Fixed crash on startup");
+        assert_eq!(
+            bullets.as_slice(),
+            ["Added dark mode support", "Fixed crash on startup"]
+        );
     }
 
     #[test]
@@ -312,9 +316,11 @@ mod tests {
         // A missing description field defaults to an empty string, not a parse error
         let json = r#"[{"category":"features"},{"description":"ok"}]"#;
         let entries: Vec<ChangelogEntry> = serde_json::from_str(json).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].description, "");
-        assert_eq!(entries[1].category, "");
-        assert_eq!(entries[1].description, "ok");
+        let [first, second] = entries.as_slice() else {
+            panic!("expected two entries: {entries:?}");
+        };
+        assert_eq!(first.description, "");
+        assert_eq!(second.category, "");
+        assert_eq!(second.description, "ok");
     }
 }

@@ -4,16 +4,6 @@ use super::turn_end_hooks::{cancel_details, cancel_reason_for_completion};
 use super::*;
 use prod_mc_cli_chat_proxy_types::feedback_types;
 
-fn completion_cancel_trigger(result: &PromptTurnResult) -> Option<&str> {
-    match result.as_ref().ok()?.completion_kind {
-        PromptCompletionKind::Cancelled {
-            context: Some(ref ctx),
-            ..
-        } => ctx.trigger.as_deref(),
-        _ => None,
-    }
-}
-
 impl SessionActor {
     /// Emit a cosmetic `Plan` update at turn end to clear stale spinners.
     /// When the model ends the turn without a cleanup `todo_write` call, remaining `in_progress` items keep spinning in the UI.
@@ -282,7 +272,7 @@ impl SessionActor {
                 &prompt_id,
                 TurnEnd::Cancelled {
                     reason,
-                    trigger: completion_cancel_trigger(&result).map(str::to_string),
+                    trigger: ok.completion_kind.cancel_trigger().map(str::to_string),
                     reason_details: cancel_details(&ok.completion_kind),
                     last_assistant_message,
                 },
@@ -367,7 +357,10 @@ impl SessionActor {
                 prompt_id.clone(),
                 &mapped,
                 usage,
-                completion_cancel_trigger(&result),
+                result
+                    .as_ref()
+                    .ok()
+                    .and_then(|ok| ok.completion_kind.cancel_trigger()),
                 cancellation_category.as_deref(),
                 cancellation_context,
                 elapsed_ms,
@@ -404,16 +397,11 @@ impl SessionActor {
     ) {
         let (stop_reason, agent_result, error_kind) =
             crate::sampling::error::prompt_complete_fields(mapped);
-        let mut extra = serde_json::Map::new();
-        if let Some(t) = cancel_trigger {
-            extra.insert("cancelTrigger".to_string(), serde_json::json!(t));
-        }
-        if let Some(c) = cancellation_category {
-            extra.insert("cancellationCategory".to_string(), serde_json::json!(c));
-        }
-        if let Some(ctx) = cancellation_context {
-            extra.insert("cancellationContext".to_string(), ctx);
-        }
+        let extra = crate::session::commands::cancellation_meta(
+            cancel_trigger,
+            cancellation_category,
+            cancellation_context,
+        );
         let extra_meta = (!extra.is_empty()).then_some(extra);
         self.send_xai_notification_with_extra_meta(
             crate::session::turn_completion::build_turn_completed(

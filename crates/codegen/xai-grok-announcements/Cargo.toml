@@ -8,7 +8,7 @@ description = "Shared announcement types, persistence, and formatting for Grok C
 [features]
 # TS bindings generation only (grok-desktop consumes the committed output);
 # off by default so Bazel/CI builds never compile ts-rs. See generate.sh.
-ts = ["dep:ts-rs"]
+ts = ["dep:ts-rs", "xai-grok-config/ts"]
 
 [dependencies]
 chrono = { workspace = true }
@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+xai-grok-config = { workspace = true }
 xai-grok-tools = { workspace = true }
 
 [dev-dependencies]

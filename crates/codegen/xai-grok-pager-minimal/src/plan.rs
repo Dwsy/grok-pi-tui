@@ -129,7 +129,6 @@ pub fn render(
     // header (1) · controls (1) · input (0/1)
     let controls_y = (area.y + area.height).saturating_sub(1 + input_h);
 
-    // ── header ──
     let has_plan = minimal_api::plan_approval_view(agent)
         .map(|p| p.has_plan)
         .unwrap_or(false);
@@ -148,7 +147,6 @@ pub fn render(
         area.width,
     );
 
-    // ── controls hint ──
     let has_content = minimal_api::plan_approval_view(agent)
         .map(|p| !p.comments.is_empty())
         .unwrap_or(false)
@@ -177,7 +175,6 @@ pub fn render(
         area.width,
     );
 
-    // ── feedback input (revise mode) ──
     if input_h > 0 {
         let row = Rect {
             x: area.x,

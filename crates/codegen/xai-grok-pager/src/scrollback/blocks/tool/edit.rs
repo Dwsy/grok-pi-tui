@@ -188,6 +188,15 @@ fn render_diff_hunks_core(
         if i > 0 && !lines.is_empty() && !config.hunk_separator.is_empty() {
             // Add separator between hunks (no background)
             let indent = if config.indent { INDENT } else { "" };
+            let sep_text = match i
+                .checked_sub(1)
+                .and_then(|j| hunks.get(j))
+                .and_then(|prev| hunk_gap_lines(prev, hunk))
+            {
+                Some(1) => format!("{} 1 unchanged line", config.hunk_separator),
+                Some(n) => format!("{} {n} unchanged lines", config.hunk_separator),
+                None => config.hunk_separator.clone(),
+            };
             let sep_line = Line::from(vec![
                 Span::raw(indent),
                 Span::styled(config.hunk_separator.clone(), theme.muted()),
@@ -1087,9 +1096,18 @@ fn split_joiner_by_path(
     let local_start = owned_start - source_start;
     let local_end = owned_end - source_start;
     let mut remainder = String::with_capacity(joiner.len() - (local_end - local_start));
-    remainder.push_str(&joiner[..local_start]);
-    remainder.push_str(&joiner[local_end..]);
-    (remainder, joiner[local_start..local_end].to_owned())
+    let Some(before) = joiner.get(..local_start) else {
+        return (joiner.to_owned(), String::new());
+    };
+    let Some(owned) = joiner.get(local_start..local_end) else {
+        return (joiner.to_owned(), String::new());
+    };
+    let Some(after) = joiner.get(local_end..) else {
+        return (joiner.to_owned(), String::new());
+    };
+    remainder.push_str(before);
+    remainder.push_str(after);
+    (remainder, owned.to_owned())
 }
 
 fn wrap_edit_header(
@@ -1110,11 +1128,11 @@ fn wrap_edit_header(
         .spans
         .get(1)
         .map_or_else(String::new, |span| span.content.to_string());
-    let (wrapped, joiners, path_range, prefix_span) = if !header.spans.is_empty()
-        && prefix_width > 0
+    let (wrapped, joiners, path_range, prefix_span) = if prefix_width > 0
+        && let Some(prefix_span) = header.spans.first().cloned()
     {
-        let prefix_span = header.spans[0].clone();
-        let content_line = Line::from(header.spans[1..].to_vec());
+        let rest: Vec<_> = header.spans.iter().skip(1).cloned().collect();
+        let content_line = Line::from(rest);
         let (wrapped, joiners) = crate::render::wrapping::word_wrap_lines_with_joiners(
             std::iter::once(content_line),
             wrap_width,
@@ -1159,7 +1177,12 @@ fn wrap_edit_header(
 
         let selection_text = path_span_start.map(|start| {
             let mut selected = String::new();
-            for span in &content.spans[start..path_span_end] {
+            for span in content
+                .spans
+                .get(start..path_span_end)
+                .into_iter()
+                .flatten()
+            {
                 selected.push_str(span.content.as_ref());
             }
             selected
@@ -1218,11 +1241,13 @@ fn wrap_edit_header(
         && let Some(previous) = last_path_row.and_then(|index| rows.get_mut(index))
     {
         let suffix_start = source_offset.max(path_range.start) - path_range.start;
-        previous
-            .selection_boundary
-            .get_or_insert_with(EditSelectionBoundary::default)
-            .suffix
-            .push_str(&path_text[suffix_start..]);
+        if let Some(suffix) = path_text.get(suffix_start..) {
+            previous
+                .selection_boundary
+                .get_or_insert_with(EditSelectionBoundary::default)
+                .suffix
+                .push_str(suffix);
+        }
     }
     rows
 }
@@ -1433,8 +1458,7 @@ impl BlockContent for EditToolCallBlock {
     }
 
     fn default_display_mode(&self) -> DisplayMode {
-        // Context-free: the effective expanded default and the untrusted-summary escape live in ScrollbackState's materialize policy
-        // That policy runs in push / replace_tool_block; the pager.toml shape wins over the collapsed_edit_blocks flag
+        // Context-free. Expanded default and the untrusted-summary escape are applied in ScrollbackState push / replace_tool_block.
         DisplayMode::Collapsed
     }
 
@@ -1515,6 +1539,13 @@ mod tests {
             is_selected: false,
             cwd: None,
         }
+    }
+
+    fn nth<'a, T>(xs: &'a [T], i: usize) -> &'a T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected item {i}, got {} items", xs.len());
+        };
+        x
     }
 
     fn make_hunk() -> DiffHunk {
@@ -1679,13 +1710,16 @@ mod tests {
         // Spans: ["Edit ", basename, " +1", "/", "-1"]; path stays span 1 so the collapsed arm's selection/link invariant holds
         // Sole pin of the exact diffstat suffix format
         assert_eq!(header.spans.len(), 5);
-        assert_eq!(header.spans[0].content.as_ref(), "Edit ");
-        assert_eq!(header.spans[1].content.as_ref(), "foo.rs");
-        assert_eq!(header.spans[2].content.as_ref(), " +1");
-        assert_eq!(header.spans[2].style.fg, Some(theme.diff_insert_fg));
-        assert_eq!(header.spans[3].content.as_ref(), "/");
-        assert_eq!(header.spans[4].content.as_ref(), "-1");
-        assert_eq!(header.spans[4].style.fg, Some(theme.diff_delete_fg));
+        let [s0, s1, s2, s3, s4] = header.spans.as_slice() else {
+            panic!("expected 5 header spans: {:?}", header.spans);
+        };
+        assert_eq!(s0.content.as_ref(), "Edit ");
+        assert_eq!(s1.content.as_ref(), "foo.rs");
+        assert_eq!(s2.content.as_ref(), " +1");
+        assert_eq!(s2.style.fg, Some(theme.diff_insert_fg));
+        assert_eq!(s3.content.as_ref(), "/");
+        assert_eq!(s4.content.as_ref(), "-1");
+        assert_eq!(s4.style.fg, Some(theme.diff_delete_fg));
 
         // Trusted multi-region edits show diffstat even when the generic
         // one-line summary is disabled; otherwise users only saw "(N edits)"
@@ -1773,7 +1807,7 @@ mod tests {
         let output = block.output(&ctx);
         assert_eq!(output.lines.len(), 1, "collapsed shows the header only");
         // Exact suffix format is pinned by header_diffstat_spans_use_diff_colors.
-        let text = line_to_string(&output.lines[0].content);
+        let text = line_to_string(&nth(&output.lines, 0).content);
         assert!(text.starts_with("Edit foo.rs"), "header line: {text:?}");
         assert!(!text.contains("let y"), "no diff body while collapsed");
     }
@@ -1817,8 +1851,8 @@ mod tests {
         let mut ctx = test_ctx();
         ctx.mode = DisplayMode::Collapsed;
         let output = block.output(&ctx);
-        let header = &output.lines[0];
-        assert_eq!(header.content.spans[1].content.as_ref(), "foo.rs");
+        let header = nth(&output.lines, 0);
+        assert_eq!(nth(&header.content.spans, 1).content.as_ref(), "foo.rs");
         assert_eq!(derive_selection_text(header), "foo.rs");
         assert!(header.selection_text.is_none());
     }
@@ -1847,18 +1881,22 @@ mod tests {
         ctx.mode = DisplayMode::Collapsed;
         let collapsed = block.output(&ctx);
         assert_eq!(
-            collapsed.lines[0].content.spans[1].content.as_ref(),
+            nth(&nth(&collapsed.lines, 0).content.spans, 1)
+                .content
+                .as_ref(),
             "foo.rs"
         );
-        assert_eq!(collapsed.lines[0].link_target.as_ref(), Some(&target));
+        assert_eq!(nth(&collapsed.lines, 0).link_target.as_ref(), Some(&target));
 
         ctx.mode = DisplayMode::Expanded;
         let expanded = block.output(&ctx);
         assert_eq!(
-            expanded.lines[0].content.spans[1].content.as_ref(),
+            nth(&nth(&expanded.lines, 0).content.spans, 1)
+                .content
+                .as_ref(),
             "src/foo.rs"
         );
-        assert_eq!(expanded.lines[0].link_target.as_ref(), Some(&target));
+        assert_eq!(nth(&expanded.lines, 0).link_target.as_ref(), Some(&target));
     }
 
     #[test]
@@ -1926,11 +1964,11 @@ mod tests {
         let ctx = test_ctx();
         let output = block.output(&ctx);
 
-        assert_eq!(output.lines[0].background, None); // header
-        assert_eq!(output.lines[2].background, None); // equal
-        assert!(output.lines[3].background.is_some()); // delete
-        assert!(output.lines[4].background.is_some()); // insert
-        assert_eq!(output.lines[5].background, None); // equal
+        assert_eq!(nth(&output.lines, 0).background, None); // header
+        assert_eq!(nth(&output.lines, 2).background, None); // equal
+        assert!(nth(&output.lines, 3).background.is_some()); // delete
+        assert!(nth(&output.lines, 4).background.is_some()); // insert
+        assert_eq!(nth(&output.lines, 5).background, None); // equal
 
         // Insert/delete shading is semantic, not a decorative panel
         // It must survive minimal mode's flat rendering (EntryRenderer::flat_background), so it must never be marked `background_is_panel`
@@ -1970,10 +2008,10 @@ mod tests {
         let outputs = render_diff_hunk_highlighted(&hunk, path, &theme, 80, &config);
 
         assert_eq!(outputs.len(), 2);
-        assert_eq!(line_to_string(&outputs[0].line), "  5  old line");
-        assert_eq!(line_to_string(&outputs[1].line), "  5  new line");
-        assert_eq!(outputs[0].content_start_col, 5);
-        assert_eq!(outputs[1].content_start_col, 5);
+        assert_eq!(line_to_string(&nth(&outputs, 0).line), "  5  old line");
+        assert_eq!(line_to_string(&nth(&outputs, 1).line), "  5  new line");
+        assert_eq!(nth(&outputs, 0).content_start_col, 5);
+        assert_eq!(nth(&outputs, 1).content_start_col, 5);
     }
 
     #[test]
@@ -2011,10 +2049,10 @@ mod tests {
         let outputs = render_diff_hunk_highlighted(&hunk, path, &theme, 80, &config);
 
         assert_eq!(outputs.len(), 4);
-        assert_eq!(line_to_string(&outputs[0].line), "  10  context");
-        assert_eq!(line_to_string(&outputs[1].line), "  11  deleted");
-        assert_eq!(line_to_string(&outputs[2].line), "  11  inserted");
-        assert_eq!(line_to_string(&outputs[3].line), "  12  more context");
+        assert_eq!(line_to_string(&nth(&outputs, 0).line), "  10  context");
+        assert_eq!(line_to_string(&nth(&outputs, 1).line), "  11  deleted");
+        assert_eq!(line_to_string(&nth(&outputs, 2).line), "  11  inserted");
+        assert_eq!(line_to_string(&nth(&outputs, 3).line), "  12  more context");
 
         for output in &outputs {
             assert_eq!(output.content_start_col, 6);
@@ -2037,7 +2075,7 @@ mod tests {
         let config_default = DiffRenderConfig::default();
         let outputs = render_diff_hunk_highlighted(&hunk, path, &theme, 80, &config_default);
         // Without indent, gutter is narrower
-        assert_eq!(outputs[0].background, Some(theme.diff_insert_bg));
+        assert_eq!(nth(&outputs, 0).background, Some(theme.diff_insert_bg));
 
         let config_gutter = DiffRenderConfig {
             indent: false,
@@ -2046,8 +2084,8 @@ mod tests {
             ..Default::default()
         };
         let outputs = render_diff_hunk_highlighted(&hunk, path, &theme, 80, &config_gutter);
-        assert_eq!(outputs[0].content_start_col, 0);
-        assert_eq!(outputs[0].background, Some(theme.diff_insert_bg));
+        assert_eq!(nth(&outputs, 0).content_start_col, 0);
+        assert_eq!(nth(&outputs, 0).background, Some(theme.diff_insert_bg));
     }
 
     #[test]
@@ -2066,11 +2104,11 @@ mod tests {
 
         assert!(outputs.len() > 1, "got {} lines", outputs.len());
 
-        let first = line_to_string(&outputs[0].line);
-        assert_eq!(&first[..5], "  1  ");
+        let first = line_to_string(&nth(&outputs, 0).line);
+        assert_eq!(first.get(..5), Some("  1  "));
 
-        let second = line_to_string(&outputs[1].line);
-        assert_eq!(&second[..5], "     ");
+        let second = line_to_string(&nth(&outputs, 1).line);
+        assert_eq!(second.get(..5), Some("     "));
 
         for output in &outputs {
             assert_eq!(output.content_start_col, 5);
@@ -2197,16 +2235,24 @@ mod tests {
             );
 
             // Geometry is unchanged: joiners, content_text partition, painted content after the gutter, background band on every row
-            assert_eq!(narrow[0].joiner, None, "{label}: row 0 joiner");
+            assert_eq!(nth(&narrow, 0).joiner, None, "{label}: row 0 joiner");
             assert!(
-                narrow[1..].iter().all(|o| o.joiner == Some(String::new())),
+                narrow
+                    .get(1..)
+                    .into_iter()
+                    .flatten()
+                    .all(|o| o.joiner == Some(String::new())),
                 "{label}: continuation joiners"
             );
             let joined: String = narrow.iter().map(|o| o.content_text.as_str()).collect();
             assert_eq!(joined, source, "{label}: content_text partition");
             for (i, output) in narrow.iter().enumerate() {
-                let painted: String = output.line.spans[output.gutter_span_count..]
-                    .iter()
+                let painted: String = output
+                    .line
+                    .spans
+                    .get(output.gutter_span_count..)
+                    .into_iter()
+                    .flatten()
                     .map(|s| s.content.as_ref())
                     .collect();
                 assert_eq!(
@@ -2233,8 +2279,20 @@ mod tests {
         map.insert(
             1usize,
             vec![
-                (style_a, fs_source[..split].to_string()),
-                (style_b, fs_source[split..].to_string()),
+                (
+                    style_a,
+                    fs_source
+                        .get(..split)
+                        .unwrap_or_else(|| panic!("split {split} in {fs_source:?}"))
+                        .to_string(),
+                ),
+                (
+                    style_b,
+                    fs_source
+                        .get(split..)
+                        .unwrap_or_else(|| panic!("split {split} in {fs_source:?}"))
+                        .to_string(),
+                ),
             ],
         );
         let hunk = vec![DiffLine {
@@ -2274,9 +2332,14 @@ mod tests {
 
         let outputs = render_diff_hunk_highlighted(&hunk, path, &theme, 30, &config);
         assert_eq!(outputs.len(), 1, "overlong token must stay one row");
-        assert_eq!(outputs[0].joiner, None);
-        assert_eq!(outputs[0].content_text, source);
-        let content = &outputs[0].line.spans[outputs[0].gutter_span_count..];
+        assert_eq!(nth(&outputs, 0).joiner, None);
+        assert_eq!(nth(&outputs, 0).content_text, source);
+        let first = nth(&outputs, 0);
+        let content = first
+            .line
+            .spans
+            .get(first.gutter_span_count..)
+            .unwrap_or(&[]);
         let painted: String = content.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(painted, source);
         assert!(
@@ -2312,8 +2375,8 @@ mod tests {
             project_styles_onto_wrap_segments(&spans, &["hello ".to_string(), "world".to_string()])
                 .expect("exact partition must project");
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0][0].content.as_ref(), "hello ");
-        assert_eq!(rows[1][0].content.as_ref(), "world");
+        assert_eq!(nth(nth(&rows, 0).as_slice(), 0).content.as_ref(), "hello ");
+        assert_eq!(nth(nth(&rows, 1).as_slice(), 0).content.as_ref(), "world");
 
         // Empty mid-spans must be skipped without underflow/panic.
         let with_empty = vec![
@@ -2353,8 +2416,38 @@ mod tests {
         let outputs = render_diff_hunks_highlighted(&[hunk1, hunk2], path, &theme, 80, &config);
 
         assert_eq!(outputs.len(), 3);
-        assert_eq!(line_to_string(&outputs[1].line), "  …");
-        assert_eq!(outputs[1].background, None);
+        assert!(nth(&outputs, 1).is_separator);
+        assert_eq!(
+            line_to_string(&nth(&outputs, 1).line),
+            "  … 8 unchanged lines"
+        );
+        assert_eq!(nth(&outputs, 1).background, None);
+    }
+
+    #[test]
+    fn hunk_separator_singular_gap() {
+        let hunk1 = vec![DiffLine {
+            text: "line1\n".into(),
+            lo: 1,
+            ln: 1,
+            tag: ChangeTag::Equal,
+        }];
+        let hunk2 = vec![DiffLine {
+            text: "line3\n".into(),
+            lo: 3,
+            ln: 3,
+            tag: ChangeTag::Equal,
+        }];
+
+        let theme = Theme::current();
+        let config = DiffRenderConfig::default();
+        let path = Path::new("test.txt");
+        let outputs = render_diff_hunks_highlighted(&[hunk1, hunk2], path, &theme, 80, &config);
+
+        assert_eq!(
+            line_to_string(&nth(&outputs, 1).line),
+            "  … 1 unchanged line"
+        );
     }
 
     #[test]
@@ -2373,11 +2466,11 @@ mod tests {
 
         // Non-monotonic ln (a coalesced later edit above an earlier one): never render a negative/zero count, keep the bare separator
         let outputs = render_diff_hunks_highlighted(&[mk(20), mk(4)], path, &theme, 80, &config);
-        assert_eq!(line_to_string(&outputs[1].line), "  …");
+        assert_eq!(line_to_string(&nth(&outputs, 1).line), "  …");
 
         // Adjacent hunks (no hidden lines) keep the bare separator too.
         let outputs = render_diff_hunks_highlighted(&[mk(5), mk(6)], path, &theme, 80, &config);
-        assert_eq!(line_to_string(&outputs[1].line), "  …");
+        assert_eq!(line_to_string(&nth(&outputs, 1).line), "  …");
 
         // A hunk with no new-file lines (pure deletion) is not computable.
         let pure_delete = vec![DiffLine {
@@ -2388,7 +2481,7 @@ mod tests {
         }];
         let outputs =
             render_diff_hunks_highlighted(&[mk(5), pure_delete], path, &theme, 80, &config);
-        assert_eq!(line_to_string(&outputs[1].line), "  …");
+        assert_eq!(line_to_string(&nth(&outputs, 1).line), "  …");
     }
 
     #[test]
@@ -2503,6 +2596,77 @@ mod tests {
         let path = Path::new("test.txt");
         let outputs = render_diff_hunks_highlighted(&[hunk1, hunk2], path, &theme, 80, &config);
         insta::assert_snapshot!("diff_multiple_hunks", diff_outputs_to_string(&outputs));
+    }
+
+    #[test]
+    fn snapshot_diff_merged_hunks_gap_markers() {
+        // Shape of a coalesced block: hunks from consecutive same-file edits appended in completion order, monotonically increasing
+        // Every separator therefore carries a computable gap count
+        let hunk1 = vec![
+            DiffLine {
+                text: "fn one() {\n".into(),
+                lo: 3,
+                ln: 3,
+                tag: ChangeTag::Equal,
+            },
+            DiffLine {
+                text: "old_one();\n".into(),
+                lo: 4,
+                ln: 0,
+                tag: ChangeTag::Delete,
+            },
+            DiffLine {
+                text: "new_one();\n".into(),
+                lo: 0,
+                ln: 4,
+                tag: ChangeTag::Insert,
+            },
+        ];
+        let hunk2 = vec![
+            DiffLine {
+                text: "ctx_two();\n".into(),
+                lo: 12,
+                ln: 12,
+                tag: ChangeTag::Equal,
+            },
+            DiffLine {
+                text: "add_two();\n".into(),
+                lo: 0,
+                ln: 13,
+                tag: ChangeTag::Insert,
+            },
+        ];
+        let hunk3 = vec![
+            DiffLine {
+                text: "ctx_three();\n".into(),
+                lo: 19,
+                ln: 20,
+                tag: ChangeTag::Equal,
+            },
+            DiffLine {
+                text: "add_three();\n".into(),
+                lo: 0,
+                ln: 21,
+                tag: ChangeTag::Insert,
+            },
+        ];
+
+        let theme = Theme::current();
+        let config = DiffRenderConfig::default();
+        let path = Path::new("test.txt");
+        let outputs =
+            render_diff_hunks_highlighted(&[hunk1, hunk2, hunk3], path, &theme, 80, &config);
+        insta::assert_snapshot!(
+            "diff_merged_hunks_gap_markers",
+            diff_outputs_to_string(&outputs)
+        );
+    }
+
+    fn dual_config() -> DiffRenderConfig {
+        DiffRenderConfig {
+            dual_line_numbers: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -2660,7 +2824,7 @@ mod tests {
         assert_eq!(outputs.len(), 3);
 
         // Line 2's tab expands with the default tab_width of 4
-        let line2 = line_to_string(&outputs[1].line);
+        let line2 = line_to_string(&nth(&outputs, 1).line);
         assert!(
             !line2.contains('\t'),
             "tab character should be expanded, got: {:?}",
@@ -2673,12 +2837,11 @@ mod tests {
         );
 
         assert!(
-            !outputs[1].content_text.contains('\t'),
+            !nth(&outputs, 1).content_text.contains('\t'),
             "content_text should also have tabs expanded",
         );
     }
 
-    // ── Edit syntax-highlight harness (triple-quote spill) ──
     // Asserts use **raw syntect RGB** (not ratatui FG after quantize)
     // Under `NO_COLOR` quantize maps every RGB to Reset, which would make keyword vs string asserts tautological / false
 
@@ -2776,7 +2939,7 @@ class ProcessQueueItem(BaseModel):
         let path = Path::new("probe.rs");
         let lines = hunk_only_raw_styles(path, &["let x = \"hello\";"]);
         assert_eq!(lines.len(), 1);
-        let styles = &lines[0];
+        let styles = nth(&lines, 0);
         let let_rgb = styles
             .iter()
             .find(|(_, t)| t.contains("let"))
@@ -2820,8 +2983,12 @@ class ProcessQueueItem(BaseModel):
             ];
             let rows = render_diff_hunk_highlighted(&hunk, path, &theme, 120, &config);
             let insert = rows.last().expect("insert row");
-            insert.line.spans[insert.gutter_span_count..]
-                .iter()
+            insert
+                .line
+                .spans
+                .get(insert.gutter_span_count..)
+                .into_iter()
+                .flatten()
                 .map(|span| {
                     (
                         span.style.fg.unwrap_or(ratatui::style::Color::Reset),
@@ -2850,7 +3017,7 @@ class ProcessQueueItem(BaseModel):
         let all: Vec<&str> = file.lines().collect();
         let start = close_ln - 1; // 0-based
         let mut hunk = DiffHunk::new();
-        for (i, line) in all[start..].iter().enumerate() {
+        for (i, line) in all.get(start..).into_iter().flatten().enumerate() {
             let ln = start + i + 1; // 1-based
             hunk.push(DiffLine {
                 text: format!("{line}\n"),
@@ -2859,8 +3026,10 @@ class ProcessQueueItem(BaseModel):
                 tag: ChangeTag::Equal,
             });
         }
-        let field_offset = all[start..]
-            .iter()
+        let field_offset = all
+            .get(start..)
+            .into_iter()
+            .flatten()
             .position(|l| l.contains("notes") || l.contains("category_id"))
             .expect("field line in hunk");
         (file, hunk, start + field_offset + 1) // 1-based field ln
@@ -2872,20 +3041,27 @@ class ProcessQueueItem(BaseModel):
         let _guard = pin_groknight_syntect();
         let path = Path::new("queue_item.py");
         let (file, hunk, field_ln) = fixture_python_close_hunk();
-        let close_ln = hunk[0].ln;
+        let close_ln = nth(&hunk, 0).ln;
         let hunk_lines: Vec<&str> = hunk.iter().map(|l| l.text.trim_end_matches('\n')).collect();
         let field_offset = field_ln - close_ln;
 
         let full = full_file_raw_styles(path, &file);
         let cold = hunk_only_raw_styles(path, &hunk_lines);
-        let field_full = &full[field_ln - 1];
-        let close_full = &full[close_ln - 1];
+        let Some(field_i) = field_ln.checked_sub(1) else {
+            panic!("field_ln {field_ln}");
+        };
+        let Some(close_i) = close_ln.checked_sub(1) else {
+            panic!("close_ln {close_ln}");
+        };
+        let field_full = nth(&full, field_i);
+        let close_full = nth(&full, close_i);
         assert_ne!(
             field_full, close_full,
             "full-file HL must not paint field line like the docstring closer"
         );
         assert_ne!(
-            cold[field_offset], *field_full,
+            nth(&cold, field_offset),
+            field_full,
             "cold hunk-only must still spill vs full-file on field line"
         );
 
@@ -2916,7 +3092,7 @@ class ProcessQueueItem(BaseModel):
         );
 
         // Paint uses hunk text (not a disk rewrite).
-        let field_hunk_text = hunk_lines[field_offset].to_string();
+        let field_hunk_text = nth(&hunk_lines, field_offset).to_string();
         let mut block = EditToolCallBlock::new("queue_item.py", vec![hunk]);
         block.highlight = EditHighlightPhase::FileScoped {
             by_new_line: Arc::new(map),
@@ -3038,7 +3214,7 @@ class ProcessQueueItem(BaseModel):
         let config = DiffRenderConfig::default();
         let outputs = render_diff_hunks_with_styles(&[hunk], path, &map, &theme, 80, &config);
         assert_eq!(outputs.len(), 3);
-        let line2 = line_to_string(&outputs[1].line);
+        let line2 = line_to_string(&nth(&outputs, 1).line);
         assert!(
             !line2.contains('\t'),
             "FileScoped must expand tabs, got: {line2:?}"
@@ -3055,7 +3231,7 @@ class ProcessQueueItem(BaseModel):
         let _guard = pin_groknight_syntect();
         let path = Path::new("queue_item.py");
         let (file, hunk, field_ln) = fixture_python_close_hunk();
-        let close_ln = hunk[0].ln;
+        let close_ln = nth(&hunk, 0).ln;
         let hunk_lines: Vec<&str> = hunk.iter().map(|l| l.text.trim_end_matches('\n')).collect();
         let field_offset = field_ln - close_ln;
 
@@ -3063,8 +3239,14 @@ class ProcessQueueItem(BaseModel):
         let full = full_file_raw_styles(path, &file);
 
         // Full-file: field line is not painted like the closing """ string line.
-        let close_styles = &full[close_ln - 1];
-        let field_full = &full[field_ln - 1];
+        let Some(close_i) = close_ln.checked_sub(1) else {
+            panic!("close_ln {close_ln}");
+        };
+        let Some(field_i) = field_ln.checked_sub(1) else {
+            panic!("field_ln {field_ln}");
+        };
+        let close_styles = nth(&full, close_i);
+        let field_full = nth(&full, field_i);
         assert_ne!(
             field_full, close_styles,
             "full-file HL must not paint field line like the docstring closer; \
@@ -3072,7 +3254,8 @@ class ProcessQueueItem(BaseModel):
         );
 
         assert_ne!(
-            cold[field_offset], *field_full,
+            nth(&cold, field_offset),
+            field_full,
             "expected cold-start mismatch (hunk-only string spill vs full-file); \
              if equal, the bug may already be fixed or the fixture no longer triggers"
         );

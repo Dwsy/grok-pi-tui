@@ -1,13 +1,24 @@
 //! Voice mode enable, toggle, and stop dispatchers.
 
 use crate::app::actions::Effect;
-use crate::app::app_view::{ActiveView, AppView, VoiceState, VoiceTarget};
+use crate::app::app_view::{ActiveView, AppView, VoiceTarget};
 
-/// Promote live interim into the bound prompt, then hard-reset (no trailing final).
-/// Returns the promoted fragment and its caret for callers that captured text earlier.
+/// A press while a clip is outstanding has nothing else on screen to explain why it did nothing, or how to get out.
+pub(crate) const TRANSCRIBING_TOAST: &str =
+    "Voice: still transcribing the last recording… (Esc to discard)";
+
+/// Shown a partial: hard-reset, a trailing final would repeat it. Still owes its final (a clip with no partial yet):
+/// release but keep the target so the one final lands as the next draft. Returns the promoted fragment for callers
+/// that captured text earlier. A submit that then switches view (dashboard dispatch with attach, create-with-detail,
+/// peek reply with attach) leaves the kept target off-screen and `enforce_voice_session_bound` abandons the clip on
+/// the next tick: the new agent is not known until it is spawned, so there is no prompt to retarget to.
 pub(super) fn voice_stop_on_submit(app: &mut AppView) -> Option<crate::voice::VoiceInterimCommit> {
     let interim = crate::voice::commit_interim_into_prompt(app);
-    app.voice_reset();
+    if app.voice_state.owes_final() {
+        app.voice_stop_keeping_final();
+    } else {
+        app.voice_reset();
+    }
     interim
 }
 
@@ -77,7 +88,16 @@ fn open_voice_tier_upsell(app: &mut AppView) -> Vec<Effect> {
 /// A build without audio capture (only the Bazel test build; every shipped binary compiles `audio` in)
 /// The matching Ctrl+Space release (see [`dispatch_voice_stop`]) then ends *this* session and only this one.
 pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) -> Vec<Effect> {
+    // `/voice` is hidden where the build withholds voice; the chord still arrives here.
+    if super::ctx::refuse_withheld(app, xai_grok_config::Capability::Voice) {
+        return vec![];
+    }
     if !app.voice_mode_enabled {
+        return vec![];
+    }
+    // A new press would abort the clip reader and lose the recording; its final (or error) ends the wait
+    if app.voice_state.blocks_new_capture() {
+        app.show_toast(TRANSCRIBING_TOAST);
         return vec![];
     }
     // Tier gate: free / X Basic personal users can't use voice (the server zero-limits these tiers)
@@ -107,14 +127,11 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) -> 
         if !app.voice_listening() {
             app.voice_begin_recording(target, from_hold);
         }
-    } else if !app.voice_state.pending_cold_start() {
+    } else if !app.voice_state.is_pending_cold_start() {
         // Pipeline still spawning. Queue a cold-start, but only if one isn't already pending.
         // A second toggle/press must re-affirm the first start, not clobber its hold-ownership or its bound target
         // Hold-ownership decides whether a Ctrl+Space release cancels the start
-        app.voice_state = VoiceState::ColdStart {
-            hold: from_hold,
-            target,
-        };
+        app.voice_queue_cold_start(target, from_hold);
     }
     effects
 }
@@ -123,6 +140,10 @@ pub(super) fn dispatch_enable_voice_mode(app: &mut AppView, from_hold: bool) -> 
 /// While recording this stops; otherwise it starts, enabling voice mode and spawning the pipeline if needed, exactly like `/voice`.
 /// Running `/voice` first is not required.
 pub(super) fn dispatch_voice_toggle(app: &mut AppView) -> Vec<Effect> {
+    if app.voice_state.blocks_new_capture() {
+        app.show_toast(TRANSCRIBING_TOAST);
+        return vec![];
+    }
     if app.voice_listening() {
         // Stop always succeeds, even if the remote flag or `/voice` mode flipped mid-recording
         app.voice_stop_keeping_final();

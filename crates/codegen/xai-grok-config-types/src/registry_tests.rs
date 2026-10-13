@@ -68,15 +68,16 @@ fn registered_settings() {
                 ("GROK_SUBAGENT_WORKTREE_SNAPSHOT", false),
             ),
             (
+                "subagent_model_inheritance",
+                ("GROK_SUBAGENT_MODEL_INHERITANCE", false),
+            ),
+            (
                 "active_agent_messages",
                 ("GROK_ACTIVE_AGENT_MESSAGES", false),
             ),
-            (
-                "repo_status_in_system_prompt",
-                ("GROK_REPO_STATUS_IN_SYSTEM_PROMPT", true),
-            ),
             ("dock", ("GROK_DOCK", false)),
             ("terminal_theme", ("GROK_TERMINAL_THEME", false)),
+            ("file_acceleration", ("GROK_FILE_ACCELERATION", false)),
         ]),
     );
 }
@@ -105,12 +106,13 @@ fn every_registered_feature_reads_its_own_remote_setting() {
             Feature::SubagentWorktreeSnapshot => {
                 settings.subagent_worktree_snapshot_enabled = Some(value)
             }
-            Feature::ActiveAgentMessages => settings.active_agent_messages_enabled = Some(value),
-            Feature::RepoStatusInSystemPrompt => {
-                settings.repo_status_in_system_prompt = Some(value)
+            Feature::SubagentModelInheritance => {
+                settings.subagent_model_inheritance_enabled = Some(value)
             }
+            Feature::ActiveAgentMessages => settings.active_agent_messages_enabled = Some(value),
             Feature::Dock => settings.dock_enabled = Some(value),
             Feature::TerminalTheme => settings.terminal_theme_enabled = Some(value),
+            Feature::FileAcceleration => settings.file_acceleration_enabled = Some(value),
             // The one row with no remote tier, stated as such rather than as a projection that reads nothing
             Feature::BackendTools => {
                 assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
@@ -226,5 +228,85 @@ fn off_reason_names_the_setting_that_turned_it_off() {
             .off_reason(FeatureSources::default())
             .as_deref(),
         Some("the default"),
+    );
+}
+
+/// The config tier splits around the user file: a managed layer applies only without a user key, the overlay and an
+/// active campaign beat one (even when the campaign repeats the user's value), and a requirements pin is the pin, not a layer.
+#[test]
+fn config_layers_split_the_config_tier_around_the_user_file() {
+    let doc = |value: bool| -> toml::Value {
+        toml::from_str(&format!("[features]\nsubagent_model_inheritance = {value}")).unwrap()
+    };
+    let feature = Feature::SubagentModelInheritance;
+    let mut layers = ConfigLayers {
+        system_managed: doc(true),
+        ..ConfigLayers::default()
+    };
+
+    let split = feature.config_layers(&layers, &[]);
+    assert_eq!(
+        (split.pin, split.user, split.above_user),
+        (None, None, None)
+    );
+    assert_eq!(
+        split.below_user,
+        Some(FeatureLayerValue {
+            layer: FeatureConfigLayer::SystemManaged,
+            value: true,
+        })
+    );
+    assert_eq!(split.merged(), Some(true));
+
+    layers.user = doc(false);
+    let split = feature.config_layers(&layers, &[]);
+    assert_eq!((split.user, split.merged()), (Some(false), Some(false)));
+    assert_eq!(split.above_user, None);
+
+    let campaign = CampaignEntry {
+        id: "campaign".to_owned(),
+        patch: doc(false).as_table().cloned().unwrap(),
+    };
+    let split = feature.config_layers(&layers, std::slice::from_ref(&campaign));
+    assert_eq!(
+        split.above_user,
+        Some(FeatureLayerValue {
+            layer: FeatureConfigLayer::Campaign,
+            value: false,
+        }),
+        "a campaign that repeats the user's value still decides the key"
+    );
+
+    layers.env_overlay = Some(doc(true));
+    let split = feature.config_layers(&layers, std::slice::from_ref(&campaign));
+    assert_eq!(
+        split.above_user,
+        Some(FeatureLayerValue {
+            layer: FeatureConfigLayer::Overlay,
+            value: true,
+        })
+    );
+
+    layers.user_requirements = Some(doc(true));
+    let split = feature.config_layers(&layers, &[]);
+    assert_eq!(split.pin, Some(true));
+}
+
+#[test]
+fn a_withheld_capability_turns_its_feature_off_over_every_source() {
+    let on = || FeatureSources {
+        pin: Some(true),
+        env: Some(true),
+        config: Some(true),
+        remote: Some(true),
+    };
+    let withheld =
+        Feature::VoiceMode.resolve_as(Distribution::withholding(&[Capability::Voice]), on());
+    assert!(!withheld.value);
+    assert_eq!(ConfigSource::Default, withheld.source);
+    assert!(
+        Feature::VoiceMode
+            .resolve_as(Distribution::STOCK, on())
+            .value
     );
 }

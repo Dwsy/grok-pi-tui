@@ -113,9 +113,15 @@ mod tests {
             conn_id: "conn-2".to_string(),
         });
         inject_routing_meta(&mut params, &target);
-        assert_eq!(params["_meta"]["targetClientId"]["instanceId"], "inst-1");
-        assert_eq!(params["_meta"]["targetClientId"]["connId"], "conn-2");
-        assert_eq!(params["terminalId"], "abc");
+        assert_eq!(
+            params.pointer("/_meta/targetClientId/instanceId"),
+            Some(&serde_json::json!("inst-1"))
+        );
+        assert_eq!(
+            params.pointer("/_meta/targetClientId/connId"),
+            Some(&serde_json::json!("conn-2"))
+        );
+        assert_eq!(params.get("terminalId"), Some(&serde_json::json!("abc")));
     }
 
     #[test]
@@ -129,8 +135,14 @@ mod tests {
             conn_id: "conn-2".to_string(),
         });
         inject_routing_meta(&mut params, &target);
-        assert_eq!(params["_meta"]["eventId"], "evt-1");
-        assert_eq!(params["_meta"]["targetClientId"]["instanceId"], "inst-1");
+        assert_eq!(
+            params.pointer("/_meta/eventId"),
+            Some(&serde_json::json!("evt-1"))
+        );
+        assert_eq!(
+            params.pointer("/_meta/targetClientId/instanceId"),
+            Some(&serde_json::json!("inst-1"))
+        );
     }
 
     #[test]

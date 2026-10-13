@@ -7,7 +7,7 @@ use crate::{
     RemoteSettings,
     flags::{BoolFlag, ConfigSource, Resolved},
 };
-use xai_grok_config::env_bool;
+use xai_grok_config::{CampaignEntry, Capability, ConfigLayers, Distribution, env_bool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::EnumIter)]
 pub enum Feature {
@@ -43,13 +43,16 @@ pub enum Feature {
     AutoWake,
     /// Save a finished subagent's working copy into the repo as a git ref, restored on resume.
     SubagentWorktreeSnapshot,
+    /// Hide the subagent `model` argument when every eligible catalog entry is an xAI model.
+    SubagentModelInheritance,
     /// Send model-authored follow-ups to an owned active descendant.
     ActiveAgentMessages,
-    RepoStatusInSystemPrompt,
     /// Consolidated panel dock above the prompt (Subagents / Tasks / Watchers / Queued).
     Dock,
     /// The terminal-native `terminal` color theme (staged rollout).
     TerminalTheme,
+    /// Hand local sessions' file systems to an installed file accelerator.
+    FileAcceleration,
 }
 
 /// How one feature is written on each surface it can be set from.
@@ -62,6 +65,9 @@ pub struct FeatureSpec {
     pub default_enabled: bool,
     /// `None` where the key has no remote tier, so adding one is a deliberate edit.
     pub remote: Option<fn(&RemoteSettings) -> Option<bool>>,
+    /// The distribution capability the feature needs, where it reaches a service of its own. Every
+    /// row names one or `None`, so a new service is a deliberate choice.
+    pub capability: Option<Capability>,
     // No managed tier: `config` is the loader's merge, where a user's config.toml already beats managed_config.toml
 }
 
@@ -85,6 +91,59 @@ impl FeatureSources {
     }
 }
 
+/// A layer of the config tier other than the user `config.toml`, lowest first; the user file sits between `Managed`
+/// and `Campaign` in the effective merge, and the overlay is re-applied over campaign patches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureConfigLayer {
+    SystemManaged,
+    Managed,
+    Campaign,
+    Overlay,
+}
+
+impl FeatureConfigLayer {
+    /// Names the layer for the user.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SystemManaged => "the system managed_config.toml",
+            Self::Managed => "managed_config.toml",
+            Self::Campaign => "an active campaign",
+            Self::Overlay => "the GROK_CONFIG overlay",
+        }
+    }
+}
+
+/// A `[features]` key as one layer of the effective merge sets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureLayerValue {
+    pub layer: FeatureConfigLayer,
+    pub value: bool,
+}
+
+/// The config tier of one feature split around the user `config.toml`, the one layer a settings surface can write.
+/// `merged` is what `Config` latches; the split tells a writer whether its key would decide anything.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FeatureConfigLayers {
+    /// The requirements pin (MDM, then system, then user), read from the same layers. It is the pin tier, not part of `merged`.
+    pub pin: Option<bool>,
+    /// The user `config.toml` key.
+    pub user: Option<bool>,
+    /// Beats a user write: the `GROK_CONFIG` overlay, or a campaign patch.
+    pub above_user: Option<FeatureLayerValue>,
+    /// Applies only while no user key exists: `managed_config.toml`, then the system managed config.
+    pub below_user: Option<FeatureLayerValue>,
+}
+
+impl FeatureConfigLayers {
+    /// The config tier as `Feature::resolve` sees it.
+    pub fn merged(&self) -> Option<bool> {
+        self.above_user
+            .map(|layer| layer.value)
+            .or(self.user)
+            .or(self.below_user.map(|layer| layer.value))
+    }
+}
+
 pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::SessionSearch,
@@ -93,6 +152,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_SESSION_SEARCH",
         default_enabled: true,
         remote: Some(|settings| settings.session_search),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::LspTools,
@@ -101,6 +161,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_LSP_TOOLS",
         default_enabled: false,
         remote: Some(|settings| settings.lsp_tools_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::WebFetch,
@@ -109,6 +170,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_WEB_FETCH",
         default_enabled: false,
         remote: Some(|settings| settings.web_fetch_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::SessionRecap,
@@ -117,6 +179,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_SESSION_RECAP",
         default_enabled: true,
         remote: Some(|settings| settings.session_recap),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::AskUserQuestion,
@@ -125,6 +188,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_ASK_USER_QUESTION",
         default_enabled: true,
         remote: Some(|settings| settings.ask_user_question_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::VoiceMode,
@@ -133,6 +197,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_VOICE_MODE",
         default_enabled: true,
         remote: Some(|settings| settings.voice_mode_enabled),
+        capability: Some(Capability::Voice),
     },
     FeatureSpec {
         id: Feature::WriteFile,
@@ -141,6 +206,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_WRITE_FILE",
         default_enabled: true,
         remote: Some(|settings| settings.write_file_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::Feedback,
@@ -149,6 +215,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_FEEDBACK_ENABLED",
         default_enabled: true,
         remote: Some(|settings| settings.feedback_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::FeedbackTraceCard,
@@ -157,6 +224,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_FEEDBACK_TRACE_CARD",
         default_enabled: false,
         remote: Some(|settings| settings.feedback_trace_card_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::TurnSummary,
@@ -165,6 +233,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_TURN_SUMMARY",
         default_enabled: true,
         remote: Some(|settings| settings.turn_summary),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::CancelRewind,
@@ -173,6 +242,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_CANCEL_REWIND",
         default_enabled: true,
         remote: Some(|settings| settings.cancel_rewind_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::CompactionVerbatimInput,
@@ -181,6 +251,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_COMPACTION_VERBATIM_INPUT",
         default_enabled: true,
         remote: Some(|settings| settings.compaction_verbatim_input),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::TwoPassCompaction,
@@ -189,6 +260,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_TWO_PASS_COMPACTION",
         default_enabled: true,
         remote: Some(|settings| settings.two_pass_compaction_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::BackendTools,
@@ -198,6 +270,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_BACKEND_SEARCH",
         default_enabled: true,
         remote: None,
+        capability: None,
     },
     FeatureSpec {
         id: Feature::AutoWake,
@@ -206,6 +279,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_AUTO_WAKE",
         default_enabled: true,
         remote: Some(|settings| settings.auto_wake_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::SubagentWorktreeSnapshot,
@@ -214,6 +288,16 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_SUBAGENT_WORKTREE_SNAPSHOT",
         default_enabled: false,
         remote: Some(|settings| settings.subagent_worktree_snapshot_enabled),
+        capability: None,
+    },
+    FeatureSpec {
+        id: Feature::SubagentModelInheritance,
+        key: "subagent_model_inheritance",
+        path: "features.subagent_model_inheritance",
+        env: "GROK_SUBAGENT_MODEL_INHERITANCE",
+        default_enabled: false,
+        remote: Some(|settings| settings.subagent_model_inheritance_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::ActiveAgentMessages,
@@ -222,14 +306,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_ACTIVE_AGENT_MESSAGES",
         default_enabled: false,
         remote: Some(|settings| settings.active_agent_messages_enabled),
-    },
-    FeatureSpec {
-        id: Feature::RepoStatusInSystemPrompt,
-        key: "repo_status_in_system_prompt",
-        path: "features.repo_status_in_system_prompt",
-        env: "GROK_REPO_STATUS_IN_SYSTEM_PROMPT",
-        default_enabled: true,
-        remote: Some(|settings| settings.repo_status_in_system_prompt),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::Dock,
@@ -238,6 +315,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_DOCK",
         default_enabled: false,
         remote: Some(|settings| settings.dock_enabled),
+        capability: None,
     },
     FeatureSpec {
         id: Feature::TerminalTheme,
@@ -246,6 +324,16 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_TERMINAL_THEME",
         default_enabled: false,
         remote: Some(|settings| settings.terminal_theme_enabled),
+        capability: None,
+    },
+    FeatureSpec {
+        id: Feature::FileAcceleration,
+        key: "file_acceleration",
+        path: "features.file_acceleration",
+        env: "GROK_FILE_ACCELERATION",
+        default_enabled: false,
+        remote: Some(|settings| settings.file_acceleration_enabled),
+        capability: None,
     },
 ];
 
@@ -275,14 +363,24 @@ impl Feature {
         read(settings?)
     }
 
-    /// Reads like `off (a requirements.toml pin)`. It resolves rather than taking a resolution, so a reason cannot name another feature's tiers.
+    pub fn default_enabled(self) -> bool {
+        self.spec().default_enabled
+    }
+
+    /// Reads like `off (a requirements.toml pin)`; `None` while the feature is on.
     pub fn off_reason(self, sources: FeatureSources) -> Option<String> {
         let resolved = self.resolve(sources);
         if resolved.value {
             return None;
         }
+        Some(self.source_label(resolved.source))
+    }
+
+    /// Names a tier for the user: `a requirements.toml pin or an MDM policy`, `the GROK_X environment variable`, …
+    /// `source` is where this feature's own resolution came from; the label spells this feature's key and variable.
+    pub fn source_label(self, source: ConfigSource) -> String {
         let spec = self.spec();
-        Some(match resolved.source {
+        match source {
             ConfigSource::Requirement => "a requirements.toml pin or an MDM policy".to_owned(),
             ConfigSource::Env => format!("the {} environment variable", spec.env),
             // The tier is the merged document, but only a file can be opened.
@@ -299,11 +397,66 @@ impl Feature {
             ConfigSource::Default => "the default".to_owned(),
             // Not reachable either: no registered key has a flag to name.
             ConfigSource::Cli => "a command line override".to_owned(),
-        })
+        }
     }
 
-    /// Pin, then environment, then config, then remote, then the default.
+    /// Split this feature's config tier around the user `config.toml`. `active_campaigns` are the patches the effective
+    /// merge applied, highest priority first; every layer is read from its own document, so a campaign that repeats a
+    /// lower layer's value still shows above the user. A requirements pin is reported as `pin`, not as a config layer.
+    pub fn config_layers(
+        self,
+        layers: &ConfigLayers,
+        active_campaigns: &[CampaignEntry],
+    ) -> FeatureConfigLayers {
+        let key_in = |document: &toml::Value| -> Option<bool> {
+            document.get("features")?.get(self.key())?.as_bool()
+        };
+        let layer_value = |layer: FeatureConfigLayer, document: &toml::Value| {
+            key_in(document).map(|value| FeatureLayerValue { layer, value })
+        };
+        let pin = [
+            &layers.mdm_requirements,
+            &layers.system_requirements,
+            &layers.user_requirements,
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(key_in);
+        let user = key_in(&layers.user);
+        let below_user = layer_value(FeatureConfigLayer::Managed, &layers.managed)
+            .or_else(|| layer_value(FeatureConfigLayer::SystemManaged, &layers.system_managed));
+        let campaign = active_campaigns
+            .iter()
+            .find_map(|entry| entry.patch.get("features")?.get(self.key())?.as_bool())
+            .map(|value| FeatureLayerValue {
+                layer: FeatureConfigLayer::Campaign,
+                value,
+            });
+        let above_user = layers
+            .env_overlay
+            .as_ref()
+            .and_then(|overlay| layer_value(FeatureConfigLayer::Overlay, overlay))
+            .or(campaign);
+        FeatureConfigLayers {
+            pin,
+            user,
+            above_user,
+            below_user,
+        }
+    }
+
+    /// Pin, then environment, then config, then remote, then the default. A feature the build's
+    /// distribution withholds is off whatever they say.
     pub fn resolve(self, sources: FeatureSources) -> Resolved<bool> {
+        self.resolve_as(Distribution::current(), sources)
+    }
+
+    fn resolve_as(self, distribution: Distribution, sources: FeatureSources) -> Resolved<bool> {
+        if let Some(capability) = self.spec().capability
+            && !distribution.allows(capability)
+        {
+            return Resolved::new(false, ConfigSource::Default);
+        }
         let spec = self.spec();
         BoolFlag::env_value(sources.env)
             .requirement(sources.pin)

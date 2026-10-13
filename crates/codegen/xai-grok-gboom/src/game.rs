@@ -79,7 +79,10 @@ impl Map {
         if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 {
             return 1;
         }
-        self.cells[y as usize * self.w + x as usize]
+        self.cells
+            .get(y as usize * self.w + x as usize)
+            .copied()
+            .unwrap_or(1)
     }
 
     #[inline]
@@ -298,7 +301,7 @@ pub(super) struct Game {
 impl Game {
     pub fn new() -> Self {
         let h = MAP_ART.len();
-        let w = MAP_ART[0].len();
+        let w = MAP_ART.first().map_or(0, |r| r.len());
         let mut cells = vec![0u8; w * h];
         let mut player_start = (1.5f32, 1.5f32);
         let mut imps = Vec::new();
@@ -307,7 +310,11 @@ impl Game {
             for (x, ch) in row.bytes().enumerate() {
                 let center = (x as f32 + 0.5, y as f32 + 0.5);
                 match ch {
-                    b'1'..=b'4' => cells[y * w + x] = ch - b'0',
+                    b'1'..=b'4' => {
+                        if let Some(slot) = cells.get_mut(y * w + x) {
+                            *slot = ch - b'0';
+                        }
+                    }
                     b'P' => player_start = center,
                     b'I' => imps.push(Imp {
                         x: center.0,
@@ -368,16 +375,20 @@ impl Game {
     /// In release-aware mode the control latches until [`Game::release`]; otherwise it stays held for [`HOLD_WINDOW`] seconds.
     /// Velocity is applied in `step`.
     pub fn press(&mut self, control: Control) {
-        self.hold[control as usize] = if self.release_aware {
-            f32::INFINITY
-        } else {
-            HOLD_WINDOW
-        };
+        if let Some(slot) = self.hold.get_mut(control as usize) {
+            *slot = if self.release_aware {
+                f32::INFINITY
+            } else {
+                HOLD_WINDOW
+            };
+        }
     }
 
     /// Register a key-release for `control` (release-aware mode only).
     pub fn release(&mut self, control: Control) {
-        self.hold[control as usize] = 0.0;
+        if let Some(slot) = self.hold.get_mut(control as usize) {
+            *slot = 0.0;
+        }
     }
 
     /// Un-latch every control.
@@ -414,7 +425,7 @@ impl Game {
         for h in &mut self.hold {
             *h = (*h - dt).max(0.0);
         }
-        let held = |c: Control| self.hold[c as usize] > 0.0;
+        let held = |c: Control| self.hold.get(c as usize).is_some_and(|&t| t > 0.0);
         let axis = |pos: Control, neg: Control| (held(pos) as i32 - held(neg) as i32) as f32;
 
         // Steady target velocities from the held controls
@@ -499,9 +510,10 @@ impl Game {
         self.player.fire_cooldown = FIRE_COOLDOWN;
         self.player.muzzle = MUZZLE_TIME;
 
-        if let Some(i) = self.target_in_crosshair() {
+        if let Some(i) = self.target_in_crosshair()
+            && let Some(imp) = self.imps.get_mut(i)
+        {
             let damage = PISTOL_DAMAGE + (self.rng.next_f32() * 7.0) as i32;
-            let imp = &mut self.imps[i];
             imp.hp -= damage;
             if imp.hp <= 0 {
                 imp.state = ImpState::Dying { t: IMP_DEATH_TIME };
@@ -517,10 +529,10 @@ impl Game {
         let mut player_damage = 0;
 
         for i in 0..self.imps.len() {
-            let (ix, iy, state) = {
-                let imp = &self.imps[i];
-                (imp.x, imp.y, imp.state)
+            let Some(imp) = self.imps.get(i) else {
+                continue;
             };
+            let (ix, iy, state) = (imp.x, imp.y, imp.state);
             // Corpses never act; skip the distance sqrt for them (late game is mostly corpses)
             if matches!(state, ImpState::Dead) {
                 continue;
@@ -529,19 +541,25 @@ impl Game {
 
             match state {
                 ImpState::Idle => {
-                    if dist < IMP_SIGHT_RANGE && self.map.los(ix, iy, px, py) {
-                        self.imps[i].state = ImpState::Chasing;
+                    if dist < IMP_SIGHT_RANGE
+                        && self.map.los(ix, iy, px, py)
+                        && let Some(imp) = self.imps.get_mut(i)
+                    {
+                        imp.state = ImpState::Chasing;
                     }
                 }
                 ImpState::Chasing => {
-                    self.imps[i].attack_cooldown = (self.imps[i].attack_cooldown - dt).max(0.0);
+                    let Some(imp) = self.imps.get_mut(i) else {
+                        continue;
+                    };
+                    imp.attack_cooldown = (imp.attack_cooldown - dt).max(0.0);
                     if dist < IMP_MELEE_RANGE {
-                        if self.imps[i].attack_cooldown <= 0.0 {
-                            self.imps[i].state = ImpState::Attacking { t: IMP_WINDUP };
+                        if imp.attack_cooldown <= 0.0 {
+                            imp.state = ImpState::Attacking { t: IMP_WINDUP };
                         }
                     } else {
                         // The walk cycle only advances while actually moving, so an imp waiting out its attack cooldown doesn't march in place
-                        self.imps[i].anim += dt;
+                        imp.anim += dt;
                         self.chase_step(i, px, py, dist, dt);
                     }
                 }
@@ -549,31 +567,36 @@ impl Game {
                     let t = t - dt;
                     if t <= 0.0 {
                         // Bite lands if the player is still close.
-                        let imp = &mut self.imps[i];
-                        imp.state = ImpState::Chasing;
-                        imp.attack_cooldown = IMP_ATTACK_COOLDOWN;
+                        if let Some(imp) = self.imps.get_mut(i) {
+                            imp.state = ImpState::Chasing;
+                            imp.attack_cooldown = IMP_ATTACK_COOLDOWN;
+                        }
                         if dist < IMP_MELEE_RANGE * 1.25 {
                             player_damage += IMP_BITE_DAMAGE + (self.rng.next_f32() * 5.0) as i32;
                         }
-                    } else {
-                        self.imps[i].state = ImpState::Attacking { t };
+                    } else if let Some(imp) = self.imps.get_mut(i) {
+                        imp.state = ImpState::Attacking { t };
                     }
                 }
                 ImpState::Pain { t } => {
                     let t = t - dt;
-                    self.imps[i].state = if t <= 0.0 {
-                        ImpState::Chasing
-                    } else {
-                        ImpState::Pain { t }
-                    };
+                    if let Some(imp) = self.imps.get_mut(i) {
+                        imp.state = if t <= 0.0 {
+                            ImpState::Chasing
+                        } else {
+                            ImpState::Pain { t }
+                        };
+                    }
                 }
                 ImpState::Dying { t } => {
                     let t = t - dt;
-                    self.imps[i].state = if t <= 0.0 {
-                        ImpState::Dead
-                    } else {
-                        ImpState::Dying { t }
-                    };
+                    if let Some(imp) = self.imps.get_mut(i) {
+                        imp.state = if t <= 0.0 {
+                            ImpState::Dead
+                        } else {
+                            ImpState::Dying { t }
+                        };
+                    }
                 }
                 ImpState::Dead => {}
             }
@@ -587,7 +610,10 @@ impl Game {
 
     /// Move imp `i` toward the player with wall sliding and a small separation force from other live imps.
     fn chase_step(&mut self, i: usize, px: f32, py: f32, dist: f32, dt: f32) {
-        let (ix, iy) = (self.imps[i].x, self.imps[i].y);
+        let Some(imp) = self.imps.get(i) else {
+            return;
+        };
+        let (ix, iy) = (imp.x, imp.y);
         let mut mx = (px - ix) / dist;
         let mut my = (py - iy) / dist;
 
@@ -608,7 +634,9 @@ impl Game {
         let step = IMP_SPEED * dt;
         let (sx, sy) = (mx / mag * step, my / mag * step);
 
-        let imp = &mut self.imps[i];
+        let Some(imp) = self.imps.get_mut(i) else {
+            return;
+        };
         if !self.map.blocked(imp.x + sx, imp.y, IMP_RADIUS) {
             imp.x += sx;
         }
@@ -634,16 +662,20 @@ mod tests {
         let mut reachable = vec![false; w * h];
         let mut stack = vec![start];
         while let Some((x, y)) = stack.pop() {
-            if game.map.solid(x, y) || reachable[y as usize * w + x as usize] {
+            let idx = y as usize * w + x as usize;
+            if game.map.solid(x, y) || reachable.get(idx) != Some(&false) {
                 continue;
             }
-            reachable[y as usize * w + x as usize] = true;
+            if let Some(slot) = reachable.get_mut(idx) {
+                *slot = true;
+            }
             stack.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]);
         }
         for imp in &game.imps {
             let (ix, iy) = (imp.x.floor() as usize, imp.y.floor() as usize);
-            assert!(
-                reachable[iy * w + ix],
+            assert_eq!(
+                reachable.get(iy * w + ix).copied(),
+                Some(true),
                 "imp spawn at ({ix}, {iy}) unreachable from player start"
             );
         }
@@ -693,24 +725,33 @@ mod tests {
         // Plant a target two tiles in front of the player, clear LOS.
         let (dx, dy) = game.player.dir();
         let (tx, ty) = (game.player.x + dx * 2.0, game.player.y + dy * 2.0);
-        game.imps[0].x = tx;
-        game.imps[0].y = ty;
-        game.imps[0].state = ImpState::Idle;
+        let Some(imp) = game.imps.first_mut() else {
+            panic!("expected at least one imp");
+        };
+        imp.x = tx;
+        imp.y = ty;
+        imp.state = ImpState::Idle;
 
-        let hp_before = game.imps[0].hp;
+        let hp_before = game.imps.first().expect("expected at least one imp").hp;
         game.queue_fire();
         game.step(0.016);
-        assert!(game.imps[0].hp < hp_before, "first shot must connect");
+        assert!(
+            game.imps.first().expect("imp still present").hp < hp_before,
+            "first shot must connect"
+        );
 
         for _ in 0..20 {
             game.step(FIRE_COOLDOWN + 0.01); // let cooldown lapse
             game.queue_fire();
             game.step(0.016);
-            if !game.imps[0].alive() {
+            if !game.imps.first().is_some_and(|i| i.alive()) {
                 break;
             }
         }
-        assert!(!game.imps[0].alive(), "imp should die after repeated hits");
+        assert!(
+            game.imps.first().is_some_and(|i| !i.alive()),
+            "imp should die after repeated hits"
+        );
         assert_eq!(game.kills, 1);
     }
 
@@ -718,16 +759,19 @@ mod tests {
     fn fire_respects_cooldown() {
         let mut game = Game::new();
         let (dx, dy) = game.player.dir();
-        game.imps[0].x = game.player.x + dx * 2.0;
-        game.imps[0].y = game.player.y + dy * 2.0;
+        let Some(imp) = game.imps.first_mut() else {
+            panic!("expected at least one imp");
+        };
+        imp.x = game.player.x + dx * 2.0;
+        imp.y = game.player.y + dy * 2.0;
 
         game.queue_fire();
         game.step(0.016);
-        let hp_after_first = game.imps[0].hp;
+        let hp_after_first = game.imps.first().map(|i| i.hp);
         // Immediate second shot is swallowed by the cooldown.
         game.queue_fire();
         game.step(0.016);
-        assert_eq!(game.imps[0].hp, hp_after_first);
+        assert_eq!(game.imps.first().map(|i| i.hp), hp_after_first);
     }
 
     #[test]
@@ -735,9 +779,12 @@ mod tests {
         let mut game = Game::new();
         // Keep only one imp and put it right next to the player.
         game.imps.truncate(1);
-        game.imps[0].x = game.player.x + 1.5;
-        game.imps[0].y = game.player.y;
-        game.imps[0].state = ImpState::Idle;
+        let Some(imp) = game.imps.first_mut() else {
+            panic!("expected at least one imp");
+        };
+        imp.x = game.player.x + 1.5;
+        imp.y = game.player.y;
+        imp.state = ImpState::Idle;
 
         let mut bitten = false;
         for _ in 0..400 {

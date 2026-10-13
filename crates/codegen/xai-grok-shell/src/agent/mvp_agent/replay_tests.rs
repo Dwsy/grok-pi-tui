@@ -71,8 +71,16 @@ fn recorded_completion(output: String) -> Value {
         meta: None,
     };
     let mut record = serde_json::to_value(&notification).expect("serialize");
-    record["update"]["task_snapshot"]["a_field_from_another_build"] =
-        Value::String("keep me".to_string());
+    if let Some(snap) = record
+        .get_mut("update")
+        .and_then(|u| u.get_mut("task_snapshot"))
+        .and_then(|s| s.as_object_mut())
+    {
+        snap.insert(
+            "a_field_from_another_build".into(),
+            Value::String("keep me".to_string()),
+        );
+    }
     record
 }
 
@@ -109,7 +117,16 @@ async fn a_marked_replay_is_fitted_after_its_metadata_is_added() {
 async fn replay_drops_a_completion_nothing_can_shrink() {
     let (agent, mut rx) = build_agent_with_gateway();
     let mut record = recorded_completion(String::new());
-    record["update"]["task_snapshot"]["task_id"] = Value::String("t".repeat(2 * FRAME_MAX_BYTES));
+    if let Some(snap) = record
+        .get_mut("update")
+        .and_then(|u| u.get_mut("task_snapshot"))
+        .and_then(|s| s.as_object_mut())
+    {
+        snap.insert(
+            "task_id".into(),
+            Value::String("t".repeat(2 * FRAME_MAX_BYTES)),
+        );
+    }
     let line = replay_line(&record);
 
     agent.forward_raw_replay_line(

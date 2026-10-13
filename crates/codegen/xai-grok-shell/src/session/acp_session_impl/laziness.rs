@@ -402,22 +402,14 @@ impl SessionActor {
         let runtime_state = format_runtime_state_line(backing_task_count, turn_elapsed_seconds);
 
         let items = vec![
-            ConversationItem::System(xai_grok_sampling_types::SystemItem {
-                content: std::sync::Arc::<str>::from(LAZINESS_CLASSIFIER_PROMPT),
-            }),
-            ConversationItem::User(xai_grok_sampling_types::UserItem {
-                content: vec![xai_grok_sampling_types::ContentPart::Text {
-                    text: std::sync::Arc::<str>::from(format!(
-                        "{LAZINESS_USER_PREAMBLE}\
-                         === BEGIN TRANSCRIPT ===\n\
-                         {runtime_state}\
-                         {transcript_text}\
-                         === END TRANSCRIPT ===\n"
-                    )),
-                }],
-                synthetic_reason: None,
-                ..Default::default()
-            }),
+            ConversationItem::system(LAZINESS_CLASSIFIER_PROMPT),
+            ConversationItem::user(format!(
+                "{LAZINESS_USER_PREAMBLE}\
+                 === BEGIN TRANSCRIPT ===\n\
+                 {runtime_state}\
+                 {transcript_text}\
+                 === END TRANSCRIPT ===\n"
+            )),
         ];
 
         // Telemetry attribution headers match `run_memory_flush`

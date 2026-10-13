@@ -514,7 +514,10 @@ pub(super) fn default_actions(
             description: "Cycle thinking level",
             // All Shift+Tab encodings — see `input::key::shift_tab_keys()`.
             default_key: crate::input::key::shift_tab_keys()[0],
-            alt_keys: crate::input::key::shift_tab_keys()[1..].to_vec(),
+            alt_keys: crate::input::key::shift_tab_keys()
+                .get(1..)
+                .map(<[_]>::to_vec)
+                .unwrap_or_else(Vec::new),
             category: Category::GettingStarted,
             context: When::PromptFocused,
             hint_priority: None,
@@ -735,7 +738,7 @@ pub(super) fn default_actions(
         ActionDef {
             id: ActionId::StashPrompt,
             label: "stash",
-            description: "Stash / pop prompt draft",
+            description: "Stash / pop prompt",
             default_key: key!('s', CONTROL),
             // The escape hatch for terminals that swallow Ctrl+S as XOFF.
             alt_keys: vec![key!('s', ALT)],
@@ -745,7 +748,7 @@ pub(super) fn default_actions(
             hint_key_display: None,
             requires_confirmation: false,
             long_help: Some(
-                "Stash your current prompt as a draft.\nCtrl+S sets the draft aside and clears the composer. Ctrl+S on an empty composer restores it. The draft also restores by itself after you send your next prompt. Use Alt+S if your terminal swallows Ctrl+S.\nOne draft at a time: a new stash replaces the old one.",
+                "Stash your current prompt as a draft.\nCtrl+S sets the draft aside and clears the composer. Ctrl+S on an empty composer pops the draft back (unstash), as does Ctrl+Z pressed right after the stash. The draft also restores by itself after you send your next prompt. Use Alt+S if your terminal swallows Ctrl+S.\nOne draft at a time: a new stash replaces the old one.",
             ),
         },
         ActionDef {
@@ -998,7 +1001,7 @@ pub(super) fn default_actions(
             hint_key_display: None,
             requires_confirmation: false,
             long_help: Some(
-                "On a busy top-level row, Ctrl+X cancels the running turn. Once the row is idle, press Ctrl+X again within 2s to permanently delete the session.\nOn a subagent row, Ctrl+X kills the subagent.",
+                "On a busy top-level row, Ctrl+X cancels the running turn.\nOnce the row is idle, press Ctrl+X again within 2s to permanently delete the session.",
             ),
         },
         ActionDef {

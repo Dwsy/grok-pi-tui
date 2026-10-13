@@ -5,6 +5,12 @@ use crate::theme::cache::pin_theme;
 use pretty_assertions::assert_eq;
 use ratatui::style::Color;
 
+fn at<T: Copy>(xs: &[T], i: usize) -> T {
+    xs.get(i)
+        .copied()
+        .unwrap_or_else(|| panic!("index {i} out of bounds, len={}", xs.len()))
+}
+
 /// After the first `prepare_layout`, subsequent `push_block` calls should EXTEND the layout cache instead of nuking it.
 /// This prevents the O(N) full rebuild that caused subagent fullscreen scrolling to drop to 0 FPS during streaming.
 #[test]
@@ -70,9 +76,9 @@ fn test_push_extends_virtual_y_correctly() {
     let (prev_start, prev_height, prev_gap) = {
         let cache = state.layout_cache.as_ref().unwrap();
         (
-            cache.virtual_y[0],
-            cache.entries[0].height,
-            cache.entries[0].gap_after,
+            at(&cache.virtual_y, 0),
+            at(&cache.entries, 0).height,
+            at(&cache.entries, 0).gap_after,
         )
     };
 
@@ -80,12 +86,12 @@ fn test_push_extends_virtual_y_correctly() {
 
     let cache = state.layout_cache.as_ref().unwrap();
     // Index 1 should start exactly where the previous entry's content ended, plus the (possibly recomputed) gap
-    let expected_y = prev_start + prev_height as usize + cache.entries[0].gap_after as usize;
-    assert_eq!(cache.virtual_y[1], expected_y);
+    let expected_y = prev_start + prev_height as usize + at(&cache.entries, 0).gap_after as usize;
+    assert_eq!(at(&cache.virtual_y, 1), expected_y);
 
     // Sanity: extending shouldn't have shifted the previous entry's start.
-    assert_eq!(cache.virtual_y[0], prev_start);
-    assert_eq!(cache.entries[0].height, prev_height);
+    assert_eq!(at(&cache.virtual_y, 0), prev_start);
+    assert_eq!(at(&cache.entries, 0).height, prev_height);
     // gap_after of the previous entry MAY change (e.g. from 1 to 0 for two groupable collapsed blocks), so we don't assert it's still prev_gap.
     let _ = prev_gap;
 }
@@ -108,10 +114,10 @@ fn test_push_user_prompt_appends_prompt_descriptor() {
 
     let cache = state.layout_cache.as_ref().unwrap();
     assert_eq!(cache.prompt_descriptors.len(), 1);
-    let pd = &cache.prompt_descriptors[0];
+    let pd = &at(&cache.prompt_descriptors, 0);
     let prompt_idx = state.index_of_id(prompt_id).unwrap();
     assert_eq!(pd.entry_idx, prompt_idx);
-    assert_eq!(pd.y_virtual, cache.virtual_y[prompt_idx]);
+    assert_eq!(pd.y_virtual, at(&cache.virtual_y, prompt_idx));
 }
 
 /// A collapsed turn marker keeps its blank row against collapsed tool and subagent rows on both sides.
@@ -360,10 +366,10 @@ fn test_hit_test_no_scroll_no_header() {
         .collect();
 
     // With no-vpad prompt (height 1) and stub blocks (height 1), and ENTRY_GAP=1:
-    //   virtual_y[0]=0, virtual_y[1]=2, virtual_y[2]=4
+    //   at(&virtual_y, 0)=0, at(&virtual_y, 1)=2, at(&virtual_y, 2)=4
     let virtual_y: Vec<usize> = state.layout_cache.as_ref().unwrap().virtual_y.clone();
 
-    // Entry 0 (prompt) at virtual_y[0]
+    // Entry 0 (prompt) at at(&virtual_y, 0)
     assert_eq!(
         state.entry_index_at_screen_row(0, area),
         Some(0),
@@ -371,7 +377,7 @@ fn test_hit_test_no_scroll_no_header() {
     );
 
     // Find where entry 1 starts on screen
-    let entry1_screen_row = virtual_y[1] as u16;
+    let entry1_screen_row = at(&virtual_y, 1) as u16;
     assert_eq!(
         state.entry_index_at_screen_row(entry1_screen_row, area),
         Some(1),
@@ -379,7 +385,7 @@ fn test_hit_test_no_scroll_no_header() {
     );
 
     // Gap between entry 0 and entry 1
-    let gap_row = heights[0]; // right after entry 0 ends
+    let gap_row = at(&heights, 0); // right after entry 0 ends
     assert_eq!(
         state.entry_index_at_screen_row(gap_row, area),
         None,
@@ -535,10 +541,10 @@ fn lazy_resumed_pinned_prompt_collapses_to_real_height() {
     // The pinned prompt was never measured (it sits above the viewport), so its seeded truncated height is the 6-row MAX
     // The collapsed sticky header must still match the prompt's real height (1 row), proving the seed no longer leaks empty padding rows
     assert!(
-        !cache.measured[pinned.entry_idx],
+        !at(&cache.measured, pinned.entry_idx),
         "precondition: pinned prompt must be unmeasured (lazy seed in play)"
     );
-    let full_height = cache.entries[pinned.entry_idx].height;
+    let full_height = at(&cache.entries, pinned.entry_idx).height;
     assert!(
         pinned.visible_height() <= full_height,
         "sticky header ({}) must not exceed the prompt's full height ({full_height})",
@@ -562,14 +568,17 @@ fn laid_out_count(state: &ScrollbackState) -> usize {
 }
 
 fn measured_at(state: &ScrollbackState, idx: usize) -> bool {
-    state.layout_cache.as_ref().unwrap().measured[idx]
+    at(&state.layout_cache.as_ref().unwrap().measured, idx)
 }
 
 /// Recompute total height directly from the layout cache (mix of estimated and exact heights) to assert internal consistency with `total_height`.
 fn cache_total(state: &ScrollbackState) -> u32 {
     let cache = state.layout_cache.as_ref().unwrap();
     let range = state.visible_entry_range();
-    cache.entries[range]
+    cache
+        .entries
+        .get(range)
+        .unwrap_or_else(|| panic!("entries range out of bounds"))
         .iter()
         .map(|e| e.height as u32 + e.gap_after as u32)
         .sum()
@@ -740,7 +749,7 @@ fn lazy_resume_scroll_up_lands_on_prewarmed_exact_entries() {
 
     let top = state.first_visible_entry().unwrap();
     assert!(
-        before[top],
+        at(&before, top),
         "one page-up lands inside the pre-warmed region (entry {top} was exact before the scroll)"
     );
 }
@@ -891,9 +900,9 @@ fn lazy_scroll_to_bottom_is_exact() {
     );
     // The last entry's bottom edge plus its trailing gap equals the total height
     let cache = state.layout_cache.as_ref().unwrap();
-    let last_bottom = cache.virtual_y[last] + cache.entries[last].height as usize;
+    let last_bottom = at(&cache.virtual_y, last) + at(&cache.entries, last).height as usize;
     assert_eq!(
-        last_bottom + cache.entries[last].gap_after as usize,
+        last_bottom + at(&cache.entries, last).gap_after as usize,
         total,
         "last entry ends at the content bottom (only the trailing gap follows)"
     );
@@ -951,8 +960,8 @@ fn lazy_width_change_re_estimates_then_measures_viewport() {
 fn screen_row_of(state: &ScrollbackState, idx: usize) -> i64 {
     let cache = state.layout_cache.as_ref().unwrap();
     let range = state.visible_entry_range();
-    let base_y = cache.virtual_y[range.start] as i64;
-    cache.virtual_y[idx] as i64 - base_y - state.scroll_offset as i64
+    let base_y = at(&cache.virtual_y, range.start) as i64;
+    at(&cache.virtual_y, idx) as i64 - base_y - state.scroll_offset as i64
 }
 
 /// Independent total-height oracle: the sum of exact `desired_height` plus structural gap over the visible range.
@@ -961,7 +970,7 @@ fn exact_total_oracle(state: &ScrollbackState, width: u16) -> u32 {
     let range = state.visible_entry_range();
     let cache = state.layout_cache.as_ref().unwrap();
     range
-        .map(|i| exact_height(state, i, width) as u32 + cache.entries[i].gap_after as u32)
+        .map(|i| exact_height(state, i, width) as u32 + at(&cache.entries, i).gap_after as u32)
         .sum()
 }
 
@@ -1043,7 +1052,7 @@ fn assert_resize_keeps_anchor_at_top(from_width: u16, to_width: u16) {
     let top = {
         let range = state.visible_entry_range();
         let vy = state.get_cached_virtual_y().unwrap();
-        vy[anchor] - vy[range.start]
+        at(vy, anchor) - at(vy, range.start)
     };
     state.set_scroll_offset(top);
     state.prepare_layout(from_width, height); // settle the "before" layout
@@ -1190,7 +1199,7 @@ fn growing_entry_above_manual_viewport_keeps_marker_at_screen_row_zero() {
         "precondition: upstream streaming entry must stay exactly measured after park"
     );
     let height_before = state.get_cached_entry_height(stream_idx).unwrap();
-    let marker_vy_before = state.get_cached_virtual_y().unwrap()[marker_idx];
+    let marker_vy_before = at(state.get_cached_virtual_y().unwrap(), marker_idx);
     let scroll_before = state.scroll_offset();
 
     for i in 0..20 {
@@ -1213,7 +1222,7 @@ fn growing_entry_above_manual_viewport_keeps_marker_at_screen_row_zero() {
     let marker_idx = state
         .index_of_id(marker_id)
         .expect("marker EntryId must survive growth");
-    let marker_vy_after = state.get_cached_virtual_y().unwrap()[marker_idx];
+    let marker_vy_after = at(state.get_cached_virtual_y().unwrap(), marker_idx);
     let row = screen_row_of(&state, marker_idx);
     assert_eq!(
         row,
@@ -1259,7 +1268,7 @@ fn removing_entry_above_manual_viewport_keeps_marker_at_screen_row_zero() {
     );
 
     let marker_idx = state.index_of_id(marker_id).unwrap();
-    let prefix_before = state.get_cached_virtual_y().unwrap()[marker_idx];
+    let prefix_before = at(state.get_cached_virtual_y().unwrap(), marker_idx);
     let scroll_before = state.scroll_offset();
     assert!(
         prefix_before > 0,
@@ -1279,7 +1288,7 @@ fn removing_entry_above_manual_viewport_keeps_marker_at_screen_row_zero() {
     let marker_idx = state
         .index_of_id(marker_id)
         .expect("marker EntryId must survive removal");
-    let prefix_after = state.get_cached_virtual_y().unwrap()[marker_idx];
+    let prefix_after = at(state.get_cached_virtual_y().unwrap(), marker_idx);
     assert!(
         prefix_before > prefix_after,
         "precondition: real prefix height must be removed \
@@ -1401,7 +1410,7 @@ fn growth_below_gap_parked_viewport_keeps_gap_row_at_top() {
     let gap_top = {
         let range = state.visible_entry_range();
         let vy = state.get_cached_virtual_y().unwrap();
-        (vy[below_idx] - vy[range.start]) - 1
+        (at(vy, below_idx) - at(vy, range.start)) - 1
     };
     state.set_scroll_offset(gap_top);
     state.prepare_layout(W, H);
@@ -1538,7 +1547,7 @@ fn removing_top_entry_and_successor_pins_first_later_survivor() {
 fn entry_at_top(state: &ScrollbackState) -> usize {
     let range = state.visible_entry_range();
     let vy = state.get_cached_virtual_y().unwrap();
-    let top = vy[range.start] + state.scroll_offset();
+    let top = at(vy, range.start) + state.scroll_offset();
     vy.partition_point(|&y| y <= top).saturating_sub(1)
 }
 
@@ -1600,7 +1609,7 @@ fn resize_anchors_gap_row_to_entry_above() {
     let gap_top = {
         let range = state.visible_entry_range();
         let vy = state.get_cached_virtual_y().unwrap();
-        (vy[anchor + 1] - vy[range.start]) - 1
+        (at(vy, anchor + 1) - at(vy, range.start)) - 1
     };
     state.set_scroll_offset(gap_top);
     state.prepare_layout(80, height);
@@ -1646,7 +1655,7 @@ fn lazy_measurement_window_boundaries_are_exact() {
     let stride = state.get_cached_entry_height(199).unwrap() as usize + 1;
     let top_idx = 100usize;
 
-    // Put entry `top_idx` exactly at the viewport top (virtual_y[k] = k*stride).
+    // Put entry `top_idx` exactly at the viewport top (at(&virtual_y, k) = k*stride).
     state.set_scroll_offset(top_idx * stride);
     state.prepare_layout(80, viewport as u16);
 
@@ -1828,7 +1837,7 @@ fn goto_bottom_reaches_end_past_u16_max_rows_gb3236() {
     // The last entry's painted rows overlap the viewport (it is on screen).
     let virtual_y = state.get_cached_virtual_y().expect("layout cache");
     let last = state.len() - 1;
-    let last_top = virtual_y[last];
+    let last_top = at(virtual_y, last);
     let last_height = state.get_cached_entry_height(last).expect("cached height") as usize;
     let viewport_bottom = scroll_offset + viewport_height as usize;
     assert!(
@@ -2046,7 +2055,7 @@ fn lazy_ensure_selected_visible_measure_is_bounded() {
 
     let after = &state.layout_cache.as_ref().unwrap().measured;
     let newly: Vec<usize> = (0..after.len())
-        .filter(|&i| after[i] && !before[i])
+        .filter(|&i| at(after, i) && !at(&before, i))
         .collect();
 
     let lo = selected.saturating_sub(vp as usize);
@@ -2253,7 +2262,9 @@ fn compute_paint_window_truncation_header_extends_through_run_end() {
     // The header is NOT a verb header; the gate must fire on `is_group_header` alone. The hidden rows sit past the window bottom.
     let rows = [(3, 1), (1, 0), (0, 0), (0, 0), (1, 0), (1, 1)];
     let (vy, mut layouts) = window_fixture(&rows, &[]);
-    layouts[1].group_header_count = 2;
+    if let Some(slot) = layouts.get_mut(1) {
+        slot.group_header_count = 2;
+    }
     // vy = [0, 4, 5, 5, 5, 6]; rows 0..5 end right after the header row.
     let (range, _) = compute_paint_window(&vy, &layouts, 0..6, 0, 5, |i| {
         assert_eq!(i, 1, "run_end is only consulted for the header");
@@ -2286,15 +2297,18 @@ fn paint_window_extends_through_offscreen_verb_group_members() {
     state.prepare_layout(80, 24);
 
     let layouts = state.get_cached_entry_layouts().unwrap();
-    assert!(layouts[header].verb_group_header, "run folded to a header");
+    assert!(
+        at(layouts, header).verb_group_header,
+        "run folded to a header"
+    );
     let virtual_y = state.get_cached_virtual_y().unwrap();
     // Header row on the viewport's last row: all members are off-screen.
-    let scroll = virtual_y[header] + 1 - 24;
+    let scroll = at(virtual_y, header) + 1 - 24;
     let (range, content_y0) = state.paint_window(0..state.len(), scroll, 24);
     assert!(
         range.start > 0 && range.contains(&header),
         "window starts mid-history and includes the header: {range:?}"
     );
-    assert_eq!(content_y0, virtual_y[range.start]);
+    assert_eq!(content_y0, at(virtual_y, range.start));
     assert_eq!(range.end, header + 50);
 }

@@ -8,13 +8,15 @@
 //! State is transported via extra file descriptors (fd 3 for input, fd 4 for output)
 //! so that dump traffic never pollutes stdout/stderr.
 
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use std::collections::HashMap;
 use std::time::Duration;
 
+use base64::Engine as _;
 use command_fds::FdMapping;
 use nix::libc;
 use tokio::io::AsyncReadExt;
@@ -271,6 +273,7 @@ impl ShellState {
         shell: ShellKind,
         cwd: &Path,
         shell_env_policy: Option<&crate::util::ShellEnvironmentPolicy>,
+        sandbox_hook: Option<&dyn crate::sandbox_launch::SandboxLaunch>,
     ) -> Result<Self, crate::computer::types::ComputerError> {
         let dump_script = shell.dump_script();
         let dump_fn = shell.dump_function_name();
@@ -288,14 +291,7 @@ impl ShellState {
         // risk a deadlock if the user's rc files write >64KB to stderr (fills the pipe buffer,
         // child blocks on write, parent blocks on stdout read).
         let mut cmd = tokio::process::Command::new(shell.binary_path());
-        cmd.args(&args)
-            .current_dir(cwd)
-            .stdin(xai_tty_utils::null_stdio())
-            .stdout(Stdio::piped())
-            .stderr(xai_tty_utils::null_stdio())
-            .kill_on_drop(true);
-        crate::util::detach_command(&mut cmd);
-        xai_grok_sandbox::child_net::restrict_child_network(&mut cmd);
+        cmd.args(&args).current_dir(cwd);
         // Apply the policy before the `export -p` snapshot so the replayed state is already filtered; otherwise the restore would undo it. No-op
         // unless set. SECURITY: this filters the base env only. Variables an rc file exports during login are captured in the replay snapshot and are
         // not re-filtered by `exclude`/`include_only` on the persistent backend, so warn when a policy is active.
@@ -307,6 +303,9 @@ impl ShellState {
         }
         crate::util::apply_shell_environment_policy(&mut cmd, shell_env_policy);
         cmd.envs(crate::util::pager_env());
+        let call = crate::sandbox_launch::CallId::shell_init("shell-state");
+        crate::sandbox_launch::prepare(sandbox_hook, &mut cmd, &call)?;
+        crate::sandbox_launch::wire_prepared(&mut cmd, xai_tty_utils::null_stdio());
         #[allow(clippy::disallowed_methods)] // one-shot init run, waited on here
         let mut child = cmd.spawn().map_err(|e| {
             crate::computer::types::ComputerError::io(format!(
@@ -558,12 +557,13 @@ fn parse_dump(shell: ShellKind, raw: &str) -> Option<(PathBuf, String)> {
     }
 
     // Strip markers
-    let without_markers = &raw[start_line.len()..raw.len() - end_line.len()];
+    let end = raw.len().checked_sub(end_line.len())?;
+    let without_markers = raw.get(start_line.len()..end)?;
 
     // First line is $PWD
     let newline_pos = without_markers.find('\n')?;
-    let cwd = &without_markers[..newline_pos];
-    let rest = &without_markers[newline_pos..]; // includes the leading \n
+    let cwd = without_markers.get(..newline_pos)?;
+    let rest = without_markers.get(newline_pos..)?; // includes the leading \n
 
     Some((PathBuf::from(cwd), rest.to_string()))
 }
@@ -573,8 +573,210 @@ fn parse_dump(shell: ShellKind, raw: &str) -> Option<(PathBuf, String)> {
 fn parse_after_marker<'a>(output: &'a str, marker: &str) -> &'a str {
     let needle = format!("{marker}\n");
     match output.find(&needle) {
-        Some(idx) => &output[idx + needle.len()..],
+        Some(idx) => output.get(idx + needle.len()..).unwrap_or(""),
         None => output,
+    }
+}
+
+/// The variables `snapshot` exports when it is replayed: its `export -p` (bash) or `typeset -xp`
+/// (zsh) block, decoded and read back. A name exported without a value is left out, and so is
+/// every command this does not read in full: nothing is guessed.
+pub fn snapshot_exports(snapshot: &str) -> Vec<(OsString, OsString)> {
+    let header = "grok_snap_ENV_VARS_B64=$(command base64 -d <<'GROK_SNAP_EOF_ENV_VARS_B64'";
+    let Some(payload) = snapshot.lines().skip_while(|line| *line != header).nth(1) else {
+        return Vec::new();
+    };
+    let Ok(script) = base64::engine::general_purpose::STANDARD.decode(payload.trim()) else {
+        return Vec::new();
+    };
+    shell_commands(&script)
+        .into_iter()
+        .flatten()
+        .flat_map(exported_assignments)
+        .collect()
+}
+
+/// `declare`/`typeset`/`export` assignments among a command's words. Arrays and tied parameters
+/// (`-a`, `-A`, `-T`) are not environment variables.
+fn exported_assignments(words: Vec<Vec<u8>>) -> Vec<(OsString, OsString)> {
+    let Some((verb, args)) = words.split_first() else {
+        return Vec::new();
+    };
+    if !matches!(verb.as_slice(), b"declare" | b"typeset" | b"export") {
+        return Vec::new();
+    }
+    let mut assignments = Vec::new();
+    for arg in args {
+        if arg.first() == Some(&b'-') {
+            if arg.iter().any(|b| matches!(b, b'a' | b'A' | b'T')) {
+                return Vec::new();
+            }
+            continue;
+        }
+        let Some(eq) = arg.iter().position(|&b| b == b'=') else {
+            continue;
+        };
+        let (name, value) = arg.split_at(eq);
+        let is_name = name.split_first().is_some_and(|(first, rest)| {
+            (first.is_ascii_alphabetic() || *first == b'_')
+                && rest.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        });
+        if is_name {
+            assignments.push((
+                OsString::from_vec(name.to_vec()),
+                OsString::from_vec(value.get(1..).unwrap_or_default().to_vec()),
+            ));
+        }
+    }
+    assignments
+}
+
+/// `script` as shell commands (split at unquoted newlines and `;`), each a list of words with
+/// their quoting removed: `'…'`, `"…"`, `$'…'` and a backslash outside quotes. `None` for a
+/// command that needs more than quote removal (an expansion, a subshell, a redirection); an
+/// unterminated quote ends the read.
+fn shell_commands(script: &[u8]) -> Vec<Option<Vec<Vec<u8>>>> {
+    let mut rest = script;
+    let mut commands = Vec::new();
+    let mut words = Some(Vec::new());
+    let mut word: Option<Vec<u8>> = None;
+    while let Some((&byte, tail)) = rest.split_first() {
+        rest = tail;
+        match byte {
+            b' ' | b'\t' => end_word(&mut word, &mut words),
+            b'\n' | b';' => {
+                end_word(&mut word, &mut words);
+                if words.as_ref().is_none_or(|words| !words.is_empty()) {
+                    commands.push(words.replace(Vec::new()));
+                }
+            }
+            b'\\' => {
+                if let Some((&escaped, tail)) = rest.split_first() {
+                    rest = tail;
+                    if escaped != b'\n' {
+                        word.get_or_insert_with(Vec::new).push(escaped);
+                    }
+                }
+            }
+            b'\'' => {
+                let Some(end) = rest.iter().position(|&b| b == b'\'') else {
+                    return commands;
+                };
+                let (quoted, tail) = rest.split_at(end);
+                word.get_or_insert_with(Vec::new).extend_from_slice(quoted);
+                rest = tail.get(1..).unwrap_or_default();
+            }
+            b'"' | b'$' if byte == b'"' || rest.first() == Some(&b'\'') => {
+                let quoted = word.get_or_insert_with(Vec::new);
+                let read = if byte == b'"' {
+                    double_quoted(rest, quoted)
+                } else {
+                    ansi_c_quoted(rest.get(1..).unwrap_or_default(), quoted)
+                };
+                let Some((tail, readable)) = read else {
+                    return commands;
+                };
+                rest = tail;
+                if !readable {
+                    words = None;
+                }
+            }
+            b'$' | b'`' | b'(' | b')' | b'|' | b'&' | b'<' | b'>' => words = None,
+            other => word.get_or_insert_with(Vec::new).push(other),
+        }
+    }
+    end_word(&mut word, &mut words);
+    if words.as_ref().is_none_or(|words| !words.is_empty()) {
+        commands.push(words);
+    }
+    commands
+}
+
+fn end_word(word: &mut Option<Vec<u8>>, words: &mut Option<Vec<Vec<u8>>>) {
+    if let (Some(word), Some(words)) = (word.take(), words.as_mut()) {
+        words.push(word);
+    }
+}
+
+/// The rest of a `"…"` word into `word`: what follows the closing quote (`None` when there is
+/// none) and whether the word is its text alone. A backslash escapes only `$`, `` ` ``, `"`, `\`
+/// and a newline, as in the shell; an unescaped `$` or `` ` `` is an expansion, not text.
+fn double_quoted<'a>(mut rest: &'a [u8], word: &mut Vec<u8>) -> Option<(&'a [u8], bool)> {
+    let mut readable = true;
+    loop {
+        let (&byte, tail) = rest.split_first()?;
+        rest = tail;
+        match byte {
+            b'"' => return Some((rest, readable)),
+            b'\\' => {
+                let (&escaped, tail) = rest.split_first()?;
+                rest = tail;
+                match escaped {
+                    b'$' | b'`' | b'"' | b'\\' => word.push(escaped),
+                    b'\n' => {}
+                    other => word.extend_from_slice(&[b'\\', other]),
+                }
+            }
+            b'$' | b'`' => readable = false,
+            other => word.push(other),
+        }
+    }
+}
+
+/// The rest of a `$'…'` word into `word` with its escapes decoded: what follows the closing quote
+/// (`None` when there is none) and whether every escape was one this decodes. `\u`, `\c` and the
+/// like are not, and leave the command unread rather than wrong.
+fn ansi_c_quoted<'a>(mut rest: &'a [u8], word: &mut Vec<u8>) -> Option<(&'a [u8], bool)> {
+    let mut readable = true;
+    loop {
+        let (&byte, tail) = rest.split_first()?;
+        rest = tail;
+        if byte == b'\'' {
+            return Some((rest, readable));
+        }
+        if byte != b'\\' {
+            word.push(byte);
+            continue;
+        }
+        let (&escaped, tail) = rest.split_first()?;
+        rest = tail;
+        let decoded = match escaped {
+            b'n' => Some(b'\n'),
+            b't' => Some(b'\t'),
+            b'r' => Some(b'\r'),
+            b'a' => Some(0x07),
+            b'b' => Some(0x08),
+            b'e' | b'E' => Some(0x1b),
+            b'f' => Some(0x0c),
+            b'v' => Some(0x0b),
+            b'\\' | b'\'' | b'"' | b'?' => Some(escaped),
+            b'0'..=b'7' | b'x' => {
+                let (radix, lead) = if escaped == b'x' {
+                    (16, String::new())
+                } else {
+                    (8, char::from(escaped).to_string())
+                };
+                let digits = rest
+                    .iter()
+                    .take_while(|b| char::from(**b).is_digit(radix))
+                    .take(2)
+                    .count();
+                let (more, tail) = rest.split_at(digits);
+                rest = tail;
+                let text: String = lead
+                    .chars()
+                    .chain(more.iter().map(|b| char::from(*b)))
+                    .collect();
+                u32::from_str_radix(&text, radix)
+                    .ok()
+                    .and_then(|value| u8::try_from(value).ok())
+            }
+            _ => None,
+        };
+        match decoded {
+            Some(decoded) => word.push(decoded),
+            None => readable = false,
+        }
     }
 }
 
@@ -618,7 +820,8 @@ pub async fn read_dump_from_pipe(fd: OwnedFd) -> std::io::Result<String> {
                     // expected path when no bg subprocess was spawned).
                     break;
                 }
-                buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                let Some(read) = chunk.get(..n) else { break };
+                buf.push_str(&String::from_utf8_lossy(read));
                 // Either marker suffices; we accept whichever shell the
                 // child happens to be (bash vs zsh).
                 if buf.contains(BASH_STATE_END_MARKER) || buf.contains(ZSH_STATE_END_MARKER) {
@@ -646,9 +849,14 @@ pub async fn read_dump_from_pipe(fd: OwnedFd) -> std::io::Result<String> {
 // Tests
 // ============================================================================
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "shell_state_cli_facing_unchanged_tests.rs"]
+mod cli_facing_unchanged_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
 
     #[test]
     fn shell_env_overrides_marks_agent_terminal() {
@@ -793,6 +1001,87 @@ mod tests {
         assert_eq!(state.snapshot, "old stuff");
     }
 
+    /// A snapshot as the dump script writes one, with `script` as its `export -p` block.
+    fn snapshot_with_exports(script: &str) -> String {
+        let payload = base64::engine::general_purpose::STANDARD.encode(script);
+        format!(
+            "\ngrok_snap_ENV_VARS_B64=$(command base64 -d <<'GROK_SNAP_EOF_ENV_VARS_B64'\n\
+             {payload}\nGROK_SNAP_EOF_ENV_VARS_B64\n)\neval \"$grok_snap_ENV_VARS_B64\"\n"
+        )
+    }
+
+    fn utf8_exports(snapshot: &str) -> Vec<(String, String)> {
+        snapshot_exports(snapshot)
+            .into_iter()
+            .map(|(name, value)| (name.into_string().unwrap(), value.into_string().unwrap()))
+            .collect()
+    }
+
+    /// The exports a snapshot replays read back through the quoting both shells print: bash's
+    /// `declare -x NAME="…"` with its backslash escapes and a multi-line value, zsh's bare,
+    /// `'…'` and `$'…'` words. A name with no value, a tied parameter and a word needing an
+    /// expansion are left out rather than guessed.
+    #[test]
+    fn snapshot_exports_read_back_both_shells_quoting() {
+        let bash = "declare -x PYTHONUSERBASE=\"/opt/py user\"\n\
+                    declare -x ESCAPED=\"a\\\"b\\$c\\\\d\\`e\"\n\
+                    declare -x MULTI=\"one\ntwo\"\n\
+                    declare -x OLDPWD\n\
+                    declare -rx READONLY=\"r\"\n";
+        let zsh = "export XDG_DATA_HOME=/opt/share\n\
+                   export QUOTED='it'\\''s'\n\
+                   export ANSI=$'tab\\there\\041'\n\
+                   typeset -x EMPTY=''\n\
+                   export -T PATHLIKE pathlike=( /a /b )\n\
+                   export EXPANDS=\"$HOME\"\n";
+        let expected: Vec<(String, String)> = [
+            ("PYTHONUSERBASE", "/opt/py user"),
+            ("ESCAPED", "a\"b$c\\d`e"),
+            ("MULTI", "one\ntwo"),
+            ("READONLY", "r"),
+            ("XDG_DATA_HOME", "/opt/share"),
+            ("QUOTED", "it's"),
+            ("ANSI", "tab\there!"),
+            ("EMPTY", ""),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect();
+        assert_eq!(
+            expected,
+            utf8_exports(&snapshot_with_exports(&format!("{bash}{zsh}")))
+        );
+        assert!(snapshot_exports("# no exports block\n").is_empty());
+    }
+
+    /// A real dump from each shell reads back to the value the shell exported, whatever quoting
+    /// the value needs.
+    #[tokio::test]
+    async fn snapshot_exports_read_back_a_real_dump() {
+        let value = "/opt/py user/it's \"q\" $HOME `x` \\ tab\there";
+        let policy = crate::util::ShellEnvironmentPolicy {
+            set: HashMap::from([("PYTHONUSERBASE".to_owned(), value.to_owned())]),
+            ..Default::default()
+        };
+        let cwd = std::env::current_dir().unwrap();
+        for (shell, available) in [
+            (ShellKind::Bash, bash_available()),
+            (ShellKind::Zsh, zsh_available()),
+        ] {
+            if !available {
+                continue;
+            }
+            let state = ShellState::init(shell, &cwd, Some(&policy), None)
+                .await
+                .unwrap();
+            let exports = utf8_exports(&state.snapshot);
+            assert!(
+                exports.contains(&("PYTHONUSERBASE".to_owned(), value.to_owned())),
+                "{shell:?}: {exports:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_init_bash() {
         // Integration test: actually runs bash and captures state.
@@ -801,13 +1090,18 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
         assert!(state.cwd.is_absolute());
         // The snapshot should contain at least some env var exports
         assert!(
             state.snapshot.contains("grok_snap_") || state.snapshot.is_empty(),
             "snapshot should contain encoded blocks or be empty: {:?}",
-            &state.snapshot[..state.snapshot.len().min(200)]
+            state
+                .snapshot
+                .get(..state.snapshot.len().min(200))
+                .unwrap_or(state.snapshot.as_str())
         );
     }
 
@@ -820,7 +1114,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
 
         // Run "export GROK_TEST_VAR=hello" and capture the new state
         let prep = state
@@ -869,7 +1165,7 @@ mod tests {
         assert!(
             state.update_from_dump(&dump),
             "dump should have valid markers, got: {:?}",
-            &dump[..dump.len().min(500)]
+            dump.get(..dump.len().min(500)).unwrap_or(dump.as_str())
         );
         // The snapshot contains base64-encoded env vars, so the variable name
         // won't appear in plaintext. Verify the dump was valid and non-empty.
@@ -928,7 +1224,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
 
         // cd to /tmp (macOS resolves to /private/tmp via symlink)
         let (code, _) = run_command(&mut state, "cd /tmp").await;
@@ -951,7 +1249,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
 
         // Export a variable
         let (code, _) = run_command(&mut state, "export MY_TEST_VAR=persistent_value").await;
@@ -970,7 +1270,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
 
         let (code, _) = run_command(&mut state, "export GPG_TTY=/grok-sentinel-tty").await;
         assert_eq!(code, 0);
@@ -990,7 +1292,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Zsh, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Zsh, &cwd, None, None)
+            .await
+            .unwrap();
 
         let (code, _) = run_command(&mut state, "export GPG_TTY=/grok-sentinel-tty").await;
         assert_eq!(code, 0);
@@ -1010,7 +1314,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Zsh, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Zsh, &cwd, None, None)
+            .await
+            .unwrap();
 
         let prep = state
             .prepare_command(
@@ -1055,7 +1361,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
 
         // Define a function
         let (code, _) = run_command(&mut state, "greet() { echo \"hello $1\"; }").await;
@@ -1080,7 +1388,9 @@ mod tests {
         std::fs::write(&probe, "echo \"SOURCED_ARGC=$#\"\n").unwrap();
 
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
 
         let (code, stdout) = run_command(
             &mut state,
@@ -1104,7 +1414,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
 
         // Turn on allexport; the option is captured by the dump and replayed
         // into every subsequent command's shell.
@@ -1138,7 +1450,9 @@ mod tests {
         std::fs::write(&probe, "echo \"SOURCED_ARGC=$#\"\n").unwrap();
 
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Zsh, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Zsh, &cwd, None, None)
+            .await
+            .unwrap();
 
         let (code, stdout) = run_command(
             &mut state,
@@ -1159,7 +1473,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
 
         // Define an alias
         let (code, _) = run_command(&mut state, "alias ll='ls -la'").await;
@@ -1186,7 +1502,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
 
         let prep = state.prepare_command("true", None, shadows, None).unwrap();
         // Shadows enabled → the self-resolving find/grep functions are always
@@ -1225,7 +1543,9 @@ mod tests {
             return;
         }
         let cwd = std::env::current_dir().unwrap();
-        let mut state = ShellState::init(ShellKind::Bash, &cwd, None).await.unwrap();
+        let mut state = ShellState::init(ShellKind::Bash, &cwd, None, None)
+            .await
+            .unwrap();
 
         // Set up some state
         let (_, _) = run_command(&mut state, "export SURVIVE_TEST=yes").await;

@@ -1966,9 +1966,15 @@ fn create_read_at_stream(
             let read_start = std::time::Instant::now();
             // Positional read; doesn't move the file cursor.
             #[cfg(unix)]
-            let read_result = file.read_at(&mut buf[..to_read], current_offset);
+            let read_result = match buf.get_mut(..to_read) {
+                Some(dst) => file.read_at(dst, current_offset),
+                None => break,
+            };
             #[cfg(windows)]
-            let read_result = file.seek_read(&mut buf[..to_read], current_offset);
+            let read_result = match buf.get_mut(..to_read) {
+                Some(dst) => file.seek_read(dst, current_offset),
+                None => break,
+            };
             match read_result {
                 Ok(0) => break, // EOF
                 Ok(n) => {
@@ -1976,7 +1982,7 @@ fn create_read_at_stream(
                     let send_start = std::time::Instant::now();
                     // Send the chunk - if receiver is dropped, stop reading
                     if tx
-                        .blocking_send(Ok(Bytes::copy_from_slice(&buf[..n])))
+                        .blocking_send(Ok(Bytes::copy_from_slice(buf.get(..n).unwrap_or(&[]))))
                         .is_err()
                     {
                         break;
@@ -2274,7 +2280,7 @@ mod batch_check_exists_tests {
         let router = Router::new().route(
             "/v1/storage/batch_exists",
             post(|body: axum::Json<serde_json::Value>| async move {
-                let paths = body["paths"].as_array().unwrap();
+                let paths = body.get("paths").and_then(|p| p.as_array()).unwrap();
                 let exists: Vec<&serde_json::Value> = paths
                     .iter()
                     .filter(|p| p.as_str().unwrap().contains("exists"))
@@ -2345,7 +2351,11 @@ mod batch_check_exists_tests {
         let router = Router::new().route(
             "/v1/storage/batch_exists",
             post(|body: axum::Json<serde_json::Value>| async move {
-                let paths = body["paths"].as_array().unwrap().clone();
+                let paths = body
+                    .get("paths")
+                    .and_then(|p| p.as_array())
+                    .unwrap()
+                    .clone();
                 axum::Json(serde_json::json!({ "exists": [], "missing": paths })).into_response()
             }),
         );
@@ -2450,9 +2460,14 @@ mod batch_check_exists_tests {
 
         let bodies = captured.lock().unwrap();
         assert_eq!(bodies.len(), 2, "two requests captured");
-        assert_eq!(bodies[0], r#"{"paths":["a","b"]}"#, "&[String] wire format");
         assert_eq!(
-            bodies[0], bodies[1],
+            bodies.first().map(String::as_str),
+            Some(r#"{"paths":["a","b"]}"#),
+            "&[String] wire format"
+        );
+        assert_eq!(
+            bodies.first(),
+            bodies.get(1),
             "&[String] and &[&str] must produce byte-identical bodies"
         );
     }
@@ -2649,9 +2664,12 @@ mod batch_upload_tests {
             .expect("should return Some on success");
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].path, "data/hello.txt");
-        assert_eq!(results[0].status, BatchUploadStatus::Ok);
-        assert_eq!(results[0].size, Some(11));
+        let Some(first) = results.first() else {
+            panic!("expected one result: {results:?}");
+        };
+        assert_eq!(first.path, "data/hello.txt");
+        assert_eq!(first.status, BatchUploadStatus::Ok);
+        assert_eq!(first.size, Some(11));
     }
 
     #[tokio::test]
@@ -2699,7 +2717,10 @@ mod batch_upload_tests {
             .await
             .expect("empty content_type should default, not panic");
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].status, BatchUploadStatus::Ok);
+        assert_eq!(
+            results.first().map(|r| &r.status),
+            Some(&BatchUploadStatus::Ok)
+        );
     }
 
     #[tokio::test]
@@ -2725,12 +2746,15 @@ mod batch_upload_tests {
             .expect("should return Some");
 
         assert_eq!(results.len(), 3);
-        assert_eq!(results[0].status, BatchUploadStatus::Ok);
-        assert_eq!(results[0].size, Some(3));
-        assert_eq!(results[1].status, BatchUploadStatus::Error);
-        assert_eq!(results[1].error.as_deref(), Some("gcs timeout"));
-        assert_eq!(results[2].status, BatchUploadStatus::Skipped);
-        assert_eq!(results[2].size, Some(99));
+        let [ok, err, skipped] = results.as_slice() else {
+            panic!("expected three results: {results:?}");
+        };
+        assert_eq!(ok.status, BatchUploadStatus::Ok);
+        assert_eq!(ok.size, Some(3));
+        assert_eq!(err.status, BatchUploadStatus::Error);
+        assert_eq!(err.error.as_deref(), Some("gcs timeout"));
+        assert_eq!(skipped.status, BatchUploadStatus::Skipped);
+        assert_eq!(skipped.size, Some(99));
     }
 
     /// Integration test: verify the client's multipart form is correctly parsed
@@ -2793,9 +2817,12 @@ mod batch_upload_tests {
             .expect("should parse paths with slashes");
 
         assert_eq!(results.len(), 3);
-        assert_eq!(results[0].path, "changes_dedup/v2/blobs/sha1_abc123");
-        assert_eq!(results[1].path, "changes_dedup/v2/patches/sha256_def456");
-        assert_eq!(results[2].path, "simple_name");
+        let [a, b, c] = results.as_slice() else {
+            panic!("expected three results: {results:?}");
+        };
+        assert_eq!(a.path, "changes_dedup/v2/blobs/sha1_abc123");
+        assert_eq!(b.path, "changes_dedup/v2/patches/sha256_def456");
+        assert_eq!(c.path, "simple_name");
         assert!(results.iter().all(|r| r.status == BatchUploadStatus::Ok));
     }
 
@@ -2962,11 +2989,14 @@ mod batch_upload_json_tests {
                     );
                     let req = parse_batch_json_body(&headers, &body);
                     assert_eq!(req.files.len(), 1);
-                    assert_eq!(req.files[0].path, "data/hello.txt");
+                    let Some(file) = req.files.first() else {
+                        panic!("expected one file: {:?}", req.files);
+                    };
+                    assert_eq!(file.path, "data/hello.txt");
 
                     use base64::Engine;
                     let decoded = base64::engine::general_purpose::STANDARD
-                        .decode(&req.files[0].data)
+                        .decode(&file.data)
                         .unwrap();
                     assert_eq!(decoded, b"hello world");
 
@@ -2991,9 +3021,12 @@ mod batch_upload_json_tests {
             .expect("should return Some on success");
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].path, "data/hello.txt");
-        assert_eq!(results[0].status, BatchUploadStatus::Ok);
-        assert_eq!(results[0].size, Some(11));
+        let Some(first) = results.first() else {
+            panic!("expected one result: {results:?}");
+        };
+        assert_eq!(first.path, "data/hello.txt");
+        assert_eq!(first.status, BatchUploadStatus::Ok);
+        assert_eq!(first.size, Some(11));
     }
 
     #[tokio::test]

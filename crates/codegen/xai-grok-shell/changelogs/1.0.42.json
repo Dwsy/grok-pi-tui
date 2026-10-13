@@ -1,0 +1,62 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Bracketed pastes** that did not come from the clipboard no longer attach leftover images (e.g. from IME commits).",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "`grok -p` now exits cleanly with the documented code when interrupted and performs session cleanup instead of being killed.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Pressing Ctrl+C twice while writing a plan comment now cancels the comment instead of getting stuck.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`grok --minimal`** now reprints history correctly after terminal resize and keeps the prompt/status rows anchored.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Restoring a stashed draft** now places the cursor at the end so continued typing appends correctly.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**`grok update`** on WinGet installs now prints the `winget upgrade` command and exits without writing files.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "Footer and `/usage` now display the model actually served on smart-auto turns.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Inline images are re-uploaded after a full repaint so they no longer appear blank in terminals that drop image data on ESC[2J.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "Plugin hooks now run on a fresh session without requiring an explicit reload.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**New `grok worktree create` command** creates a managed worktree without launching an interactive session.",
+    "breaking_change": false
+  },
+  {
+    "category": "fixes",
+    "description": "**Fixed plugin auto-update detection** when marketplace URLs differ only by .git suffix or host case.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Auto permission mode** now appears as Auto-review everywhere in the UI.",
+    "breaking_change": false
+  }
+]

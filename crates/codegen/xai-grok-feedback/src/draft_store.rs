@@ -810,8 +810,11 @@ fn split_legacy_text(text: String) -> (String, String) {
     };
     let trimmed_line = line.trim();
     let title = title_prefix(trimmed_line);
-    let line_remainder = trimmed_line[title.len()..].trim_start();
-    let following_lines = text[start + line.len()..].trim_start_matches(['\r', '\n']);
+    let line_remainder = trimmed_line.get(title.len()..).unwrap_or("").trim_start();
+    let following_lines = text
+        .get(start + line.len()..)
+        .unwrap_or("")
+        .trim_start_matches(['\r', '\n']);
     let details = match (line_remainder.is_empty(), following_lines.is_empty()) {
         (false, false) => format!("{line_remainder}\n{following_lines}"),
         (false, true) => line_remainder.to_owned(),

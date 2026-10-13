@@ -454,7 +454,12 @@ fn replay_inherited_updates(
                     .handle_update(update, &meta, &mut child_view.scrollback);
             }
             ReplayedUpdate::Xai(update) => {
+                // Same window as `session/load`: historical xAI events must not start live commands
+                // (family-switch compact) or defer compact outcomes to a turn that never comes.
+                let was_loading = child_view.session.loading_replay;
+                child_view.session.loading_replay = true;
                 crate::app::acp_handler::apply_child_view_session_event(child_view, &update, false);
+                child_view.session.loading_replay = was_loading;
             }
         }
     });
@@ -845,8 +850,7 @@ pub(crate) fn evict_finished_child_view(
 }
 
 /// Finalize a finished child view: end the turn and append the `TurnCompleted` footer.
-/// Idempotent on the *trailing* footer: a re-finalized child must not get a second completed line.
-/// An earlier turn's `TurnCompleted` deeper in the transcript must not suppress a later turn's footer.
+/// Idempotent on a trailing turn-terminal marker. An earlier marker must not suppress a later footer.
 pub(crate) fn finalize_finished_child_view(
     child_view: &mut crate::app::agent_view::AgentView,
     elapsed: std::time::Duration,
@@ -857,17 +861,20 @@ pub(crate) fn finalize_finished_child_view(
         .finish_turn(&mut child_view.scrollback);
     // finish_turn only reaches entries the tracker saw live; entries left running by a from-disk replay would otherwise animate forever
     child_view.scrollback.finish_all_running();
-    let already_has_trailing_completed_footer = child_view.scrollback.last().is_some_and(|e| {
+    let already_has_trailing_terminal = child_view.scrollback.last().is_some_and(|e| {
         matches!(
             &e.block,
             crate::scrollback::block::RenderBlock::SessionEvent(seb)
                 if matches!(
                     seb.event,
                     crate::scrollback::blocks::SessionEvent::TurnCompleted { .. }
+                        | crate::scrollback::blocks::SessionEvent::TurnCancelled { .. }
+                        | crate::scrollback::blocks::SessionEvent::TurnFailed { .. }
+                        | crate::scrollback::blocks::SessionEvent::TurnBlockedByHook { .. }
                 )
         )
     });
-    if already_has_trailing_completed_footer {
+    if already_has_trailing_terminal {
         return;
     }
     child_view
@@ -902,13 +909,6 @@ fn dedup_persona_role<'a, 'b>(
     }
 }
 
-pub(crate) fn format_type_label(subagent_type: &str) -> &str {
-    match subagent_type {
-        "general-purpose" => "general",
-        other => other,
-    }
-}
-
 pub(crate) fn format_context_badge(info: &SubagentInfo) -> &str {
     match info.attempt.context_source.as_deref() {
         Some("resumed") => "resumed",
@@ -922,12 +922,31 @@ pub(crate) fn parse_tag_prefix(description: &str) -> (Option<&str>, &str) {
     if let Some(rest) = description.strip_prefix('[')
         && let Some(close) = rest.find(']')
     {
-        let tag = rest[..close].trim();
+        let Some(tag) = rest.get(..close) else {
+            return (None, description);
+        };
+        let tag = tag.trim();
         if !tag.is_empty() {
-            return (Some(tag), rest[close + 1..].trim_start());
+            let after = rest.get(close + 1..).map_or("", |s| s.trim_start());
+            return (Some(tag), after);
         }
     }
     (None, description)
+}
+
+/// `format_subagent_label`'s label, then the description in curly quotes when there is one, as the `Subagent`
+/// scrollback row quotes it. Clamped by `clamp_activity_subject` (first line, 40 chars) rather than by width:
+/// the label is fixed at spawn for rows built later, which have no width to truncate against.
+pub(crate) fn subagent_display_label(info: &SubagentInfo) -> String {
+    let (label, description) = format_subagent_label(info);
+    if description.trim().is_empty() {
+        label
+    } else {
+        format!(
+            "{label} \u{201c}{}\u{201d}",
+            crate::acp::tracker::clamp_activity_subject(&description)
+        )
+    }
 }
 
 /// Single consolidated label and display description for a subagent row.
@@ -951,12 +970,10 @@ pub(crate) fn format_subagent_label(info: &SubagentInfo) -> (String, String) {
         .filter(|s| !s.is_empty())
     {
         r.to_string()
-    } else if info.subagent_type.as_ref() != "general-purpose" {
-        format_type_label(&info.subagent_type).to_string()
     } else if let Some(tag) = tag {
         tag.to_string()
     } else {
-        "general".to_string()
+        "subagent".to_string()
     };
 
     // Iterating handles uppercase mappings that span several codepoints (`ß` becomes `SS`)

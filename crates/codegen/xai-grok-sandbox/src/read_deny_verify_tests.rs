@@ -30,6 +30,27 @@ fn profile() -> ProfileName {
     ProfileName::Custom("readdeny".to_string())
 }
 
+#[cfg(all(feature = "enforce", target_os = "linux"))]
+#[test]
+fn mode_000_path_status_stays_a_deny() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("grok-mode000-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("key");
+    std::fs::write(&path, b"x").unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    let status = match path_status(&path) {
+        Ok(status) => status,
+        Err(_) => panic!("mode 000 path status is a deny, not a bubblewrap spoof"),
+    };
+    assert_eq!(0, status.mode & PERMISSION_MASK);
+    let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn readable_deny_path_fails_verification() {
     if skip_if_host_hook_write_deny_unresolvable() {

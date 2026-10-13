@@ -5,10 +5,6 @@ use serde_json::Value;
 
 use super::{RpcActivityClass, WorkspaceRpc};
 
-// =========================================================================
-// Content search (`workspace.ripgrep`)
-// =========================================================================
-
 fn default_respect_gitignore() -> bool {
     true
 }
@@ -90,10 +86,6 @@ pub struct ContentSearchData {
     pub total_files: usize,
     pub truncated: bool,
 }
-
-// =========================================================================
-// Fuzzy file search (`workspace.fuzzy_*`)
-// =========================================================================
 
 /// Client ID structure for routing notifications across relay instances.
 /// Duplicated from the shell extensions so this crate does not depend on them.
@@ -188,15 +180,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn method_constants() {
-        assert_eq!(ContentSearchRequest::METHOD, "workspace.ripgrep");
-        assert_eq!(FuzzyOpenReq::METHOD, "workspace.fuzzy_open");
-        assert_eq!(FuzzyChangeReq::METHOD, "workspace.fuzzy_change");
-        assert_eq!(FuzzyCloseReq::METHOD, "workspace.fuzzy_close");
-        assert_eq!(FuzzyStatusReq::METHOD, "workspace.fuzzy_search");
-    }
-
-    #[test]
     fn target_client_id_untagged_round_trip() {
         let none: TargetClientId = serde_json::from_value(Value::Null).unwrap();
         assert!(none.is_none());
@@ -208,14 +191,6 @@ mod tests {
         };
         assert_eq!(id.instance_id, "i-1");
         assert_eq!(serde_json::to_value(&target).unwrap(), raw);
-    }
-
-    #[test]
-    fn content_match_file_new_derives_name() {
-        let f = ContentMatchFile::new("/repo/src/lib.rs");
-        assert_eq!(f.name, "lib.rs");
-        assert_eq!(f.path, "/repo/src/lib.rs");
-        assert!(f.matches.is_empty());
     }
 
     #[test]

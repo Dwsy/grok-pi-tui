@@ -22,6 +22,19 @@ impl SessionMatch {
     }
 }
 
+/// The session and scrollback that own the task rows for `session_id`.
+/// A subagent's `session_id` returns its child view.
+pub(crate) fn task_view_by_session_id<'a>(
+    app: &'a mut AppView,
+    session_id: &str,
+) -> Option<(
+    &'a mut AgentSession,
+    &'a mut crate::scrollback::state::ScrollbackState,
+)> {
+    let (matched, _, agent) = resolve_notif_agent(app, &acp::SessionId::new(session_id))?;
+    resolve_target_view(agent, matched, session_id)
+}
+
 /// Resolve the agent that owns a notification's `session_id` and whether the active view is affected.
 ///
 /// Convenience wrapper around `find_session_match`, `is_matched_agent_active`, and `agents.get_mut()`, used by the bg-task notification handlers.
@@ -62,6 +75,18 @@ pub(super) fn mcp_target_agent<'a>(
             Some((matches!(app.active_view, ActiveView::Agent(_)), agent))
         }
     }
+}
+
+/// The in-flight create a setup-phase notification targets, matched only by `pending_session_id`
+/// (not the bound id, so a late phase can't re-stain a live session; no active-view fallback).
+pub(super) fn setup_phase_target_agent<'a>(
+    app: &'a mut AppView,
+    session_id: &str,
+) -> Option<&'a mut AgentView> {
+    let sid = acp::SessionId::new(session_id);
+    app.agents
+        .values_mut()
+        .find(|agent| agent.pending_session_id.as_ref() == Some(&sid))
 }
 
 /// Given a matched session and the owning agent, borrow the correct `(session, scrollback)` pair.
@@ -109,11 +134,12 @@ pub(super) fn find_session_match(
         return Some(SessionMatch::Child(id));
     }
     // Pass 3: race-window fallback for notifications that arrive before the root session_id has been assigned
-    // Only the active agent is eligible, and only when its `session_id` is still `None`
+    // Only the active agent is eligible, only while its `session_id` is still `None`, and never after its load failed
     // Otherwise we would misroute a stranger's notification to whichever agent happens to be foregrounded
     if let ActiveView::Agent(active_id) = app.active_view
         && let Some(agent) = app.agents.get(&active_id)
         && agent.session.session_id.is_none()
+        && !agent.load_failed
     {
         return Some(SessionMatch::Root(active_id));
     }
@@ -121,6 +147,7 @@ pub(super) fn find_session_match(
         && let Some(id) = app.home_session_agent
         && let Some(agent) = app.agents.get(&id)
         && agent.session.session_id.is_none()
+        && !agent.load_failed
     {
         return Some(SessionMatch::Root(id));
     }

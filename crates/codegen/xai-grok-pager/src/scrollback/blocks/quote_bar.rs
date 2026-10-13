@@ -90,13 +90,18 @@ fn rendered_quote_prefix_len(line: &Line<'_>, bar_style: Style) -> Option<usize>
 fn split_spans_at(line: &mut Line<'static>, byte_offset: usize) -> usize {
     let mut acc = 0usize;
     for i in 0..line.spans.len() {
-        let end = acc + line.spans[i].content.len();
+        let Some(span) = line.spans.get(i) else { break };
+        let end = acc + span.content.len();
         if end == byte_offset {
             return i + 1;
         }
         if end > byte_offset {
-            let local = byte_offset - acc;
-            let span = &mut line.spans[i];
+            let Some(local) = byte_offset.checked_sub(acc) else {
+                return line.spans.len();
+            };
+            let Some(span) = line.spans.get_mut(i) else {
+                break;
+            };
             let tail: Cow<'static, str> = match &mut span.content {
                 Cow::Borrowed(s) => {
                     let (head, tail) = s.split_at(local);
@@ -239,8 +244,8 @@ mod tests {
             Selectable::Spans(2..3)
         );
         // The glued " text" span was split so the prefix ends on a boundary.
-        assert_eq!(line.spans[1].content.as_ref(), " ");
-        assert_eq!(line.spans[2].content.as_ref(), "text");
+        assert_eq!(line.spans.get(1).map(|s| s.content.as_ref()), Some(" "));
+        assert_eq!(line.spans.get(2).map(|s| s.content.as_ref()), Some("text"));
     }
 
     #[test]
@@ -326,7 +331,9 @@ mod tests {
         assert_eq!(out.lines.len(), 3, "quote renders as three rows");
 
         // The bar-only middle row keeps an (empty) selectable range so it stays in the selection model and contributes its newline
-        let mid = &out.lines[1];
+        let Some(mid) = out.lines.get(1) else {
+            panic!("expected a middle quote row: {out:?}");
+        };
         assert_eq!(line_plain_text(&mid.content), "│");
         assert!(
             matches!(&mid.selectable, Selectable::Spans(r) if r.is_empty()),

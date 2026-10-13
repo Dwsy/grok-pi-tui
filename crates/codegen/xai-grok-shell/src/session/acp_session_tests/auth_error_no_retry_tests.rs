@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use crate::session::SwitchContextWindow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
@@ -1489,7 +1490,7 @@ async fn model_switch_preserves_existing_conversation_group() {
             let mut incoming = actor.reconstruct_full_config().await;
             incoming.conversation_group_id = None;
             actor
-                .handle_set_session_model(incoming, false, false, false, true, 85)
+                .handle_set_session_model(config_only_model_switch(incoming))
                 .await
                 .expect("model switch succeeds");
 
@@ -1547,40 +1548,14 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
             let cfg = xai_grok_sampler::SamplerConfig {
                 api_key: Some("byok-key".to_string()),
                 base_url: "https://third-party.example/v1".to_string(),
-                mtls_cert_dir: None,
                 model: model.clone(),
-                max_completion_tokens: None,
-                temperature: None,
-                top_p: None,
-                api_backend: crate::sampling::ApiBackend::ChatCompletions,
-                auth_scheme: Default::default(),
-                extra_headers: Default::default(),
-                extra_response_includes: Vec::new(),
-                query_params: Default::default(),
-                env_http_headers: Default::default(),
                 context_window: 256_000,
-                client_version: None,
-                force_http1: false,
                 max_retries: Some(6),
                 rate_limit_retry_threshold: Some(4),
-                stream_tool_calls: false,
-                idle_timeout_secs: None,
-                client_identifier: None,
-                reasoning_effort: None,
-                deployment_id: None,
-                user_id: None,
-                conversation_group_id: None,
-                origin_client: None,
-                attribution_callback: None,
-                bearer_resolver: None,
-                supports_backend_search: false,
-                compactions_remaining: None,
-                compaction_at_tokens: None,
-                doom_loop_recovery: None,
-                header_injector: None,
+                ..Default::default()
             };
             let _ = actor
-                .handle_set_session_model(cfg, false, false, false, true, 85)
+                .handle_set_session_model(config_only_model_switch(cfg))
                 .await;
 
             let expected_max_retries = xai_grok_sampler::resolve_max_retries(Some(6));
@@ -1653,40 +1628,12 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
             let cfg = xai_grok_sampler::SamplerConfig {
                 api_key: Some("session-jwt".to_string()),
                 base_url: "https://api.x.ai/v1".to_string(),
-                mtls_cert_dir: None,
                 model,
-                max_completion_tokens: None,
-                temperature: None,
-                top_p: None,
-                api_backend: crate::sampling::ApiBackend::ChatCompletions,
-                auth_scheme: Default::default(),
-                extra_headers: Default::default(),
-                extra_response_includes: Vec::new(),
-                query_params: Default::default(),
-                env_http_headers: Default::default(),
                 context_window: 256_000,
-                client_version: None,
-                force_http1: false,
-                max_retries: None,
-                rate_limit_retry_threshold: None,
-                stream_tool_calls: false,
-                idle_timeout_secs: None,
-                client_identifier: None,
-                reasoning_effort: None,
-                deployment_id: None,
-                user_id: None,
-                conversation_group_id: None,
-                origin_client: None,
-                attribution_callback: None,
-                bearer_resolver: None,
-                supports_backend_search: false,
-                compactions_remaining: None,
-                compaction_at_tokens: None,
-                doom_loop_recovery: None,
-                header_injector: None,
+                ..Default::default()
             };
             let _ = actor
-                .handle_set_session_model(cfg, false, false, false, true, 85)
+                .handle_set_session_model(config_only_model_switch(cfg))
                 .await;
 
             let creds = actor.chat_state_handle.get_credentials().await;
@@ -1701,6 +1648,23 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
 }
 
 /// Arm 4c: a 401 on a provider-backed model re-mints once and resubmits.
+/// A model switch that changes only the sampler config; everything else stays at the test default.
+fn config_only_model_switch(
+    sampling_config: xai_grok_sampler::SamplerConfig,
+) -> crate::session::SessionModelSwitch {
+    crate::session::SessionModelSwitch {
+        sampling_config,
+        use_concise: false,
+        is_family_switch: false,
+        apply_prompt_override: false,
+        skip_prompt_rewrite: true,
+        auto_compact_threshold_percent: 85,
+        system_prompt_label: xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
+        context_window_selection: SwitchContextWindow::Set(None),
+        supported_context_windows: Vec::new(),
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn sampler_401_on_provider_model_remints_and_resubmits() {
     let local = tokio::task::LocalSet::new();

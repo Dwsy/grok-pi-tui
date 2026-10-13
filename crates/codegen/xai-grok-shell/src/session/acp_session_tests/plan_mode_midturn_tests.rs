@@ -49,7 +49,10 @@ async fn midturn_plan_toggle_activates_and_buffers_reminder() {
             actor.flush_pending_skill_reminders().await;
             let conv = actor.chat_state_handle.get_conversation().await;
             assert_eq!(conv.len(), 1);
-            let text = conv[0].text_content();
+            let Some(item) = conv.first() else {
+                panic!("expected reminder in conversation: {conv:?}");
+            };
+            let text = item.text_content();
             assert!(
                 text.contains("<system-reminder>"),
                 "reminder must be system-reminder wrapped: {text}"

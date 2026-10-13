@@ -7,6 +7,7 @@ use crate::app::app_view::{ActiveView, AppView};
 use crate::app::dispatch::ctx::{SwitchCause, show_welcome, switch_to_agent};
 use crate::app::dispatch::task_result::unregister_session_effect;
 use crate::scrollback::block::RenderBlock;
+use agent_client_protocol as acp;
 /// Removes the agent and clears `forked_from` pointers to it on surviving agents.
 pub(in crate::app::dispatch) fn remove_agent_and_cleanup(app: &mut AppView, agent_id: AgentId) {
     let identity_rebind = super::super::dashboard::WorkspaceIdentityRebind::capture(app);
@@ -27,6 +28,35 @@ pub(in crate::app::dispatch) fn remove_agent_and_cleanup(app: &mut AppView, agen
         crate::memory_release::release_retained_memory("agent-close");
     }
     identity_rebind.apply(app);
+}
+/// Minimal has no dashboard: `/new` replaces the visible session. A leftover prior
+/// AgentView makes a later `/resume` of it focus-only (no `LoadSession`; GB-4877).
+/// Each dropped view that already has a session id must leave the crash-recovery registry.
+#[must_use]
+pub(in crate::app::dispatch) fn drop_other_agents_in_minimal(
+    app: &mut AppView,
+    keep: AgentId,
+) -> Vec<Effect> {
+    if !app.screen_mode.is_minimal() {
+        return vec![];
+    }
+    let stale: Vec<_> = app
+        .agents
+        .iter()
+        .filter(|(id, _)| **id != keep)
+        .map(|(id, agent)| (*id, agent.session.session_id.clone()))
+        .collect();
+    let mut effects = Vec::new();
+    for (id, session_id) in stale {
+        effects.extend(quiesce_session_effect(session_id.as_ref()));
+        effects.extend(unregister_session_effect(session_id));
+        remove_agent_and_cleanup(app, id);
+    }
+    effects
+}
+/// A closed tab's session is left as it is.
+fn quiesce_session_effect(_session_id: Option<&acp::SessionId>) -> Vec<Effect> {
+    Vec::new()
 }
 /// Close (drop from this pager's in-memory list) the given agent.
 /// Refuse to close the only alive agent (toast "Cannot close the only session -- use /home to exit").
@@ -55,11 +85,12 @@ pub(in crate::app::dispatch) fn dispatch_sessions_confirm_close(
             show_welcome(app);
         }
     }
-    let effects = unregister_session_effect(
-        app.agents
-            .get(&closed_id)
-            .and_then(|a| a.session.session_id.clone()),
-    );
+    let session_id = app
+        .agents
+        .get(&closed_id)
+        .and_then(|agent| agent.session.session_id.clone());
+    let mut effects = quiesce_session_effect(session_id.as_ref());
+    effects.extend(unregister_session_effect(session_id));
     remove_agent_and_cleanup(app, closed_id);
     effects
 }

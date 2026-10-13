@@ -191,7 +191,7 @@ mod tests {
             )],
             false,
         );
-        assert_eq!(ledger.by_model["b"].input_tokens, 5);
+        assert_eq!(ledger.by_model.get("b").map(|m| m.input_tokens), Some(5));
         assert_eq!(ledger.main_loop_model_calls, 3);
         assert_eq!(ledger.totals.model_calls, 4);
         assert!(!ledger.incomplete);

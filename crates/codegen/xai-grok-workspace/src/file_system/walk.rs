@@ -143,10 +143,6 @@ pub(super) fn build_glob_overrides(
     })
 }
 
-// =========================================================================
-// Paginated listing
-// =========================================================================
-
 /// One listed node in neutral form (no wire serialization). Consumers map this to their own node shape.
 pub struct ListedEntry {
     /// File name (final path component).
@@ -240,9 +236,7 @@ pub fn list_directory_paged(abs_dir: &Path, opts: ListOptions<'_>, max_collect: 
     }
 }
 
-// =========================================================================
 // Ranged, binary-safe reads
-// =========================================================================
 
 /// A read chunk in the requested transfer encoding.
 pub enum ChunkPayload {
@@ -267,15 +261,16 @@ pub fn encode_chunk(bytes: Vec<u8>, encoding: FsReadEncoding) -> (ChunkPayload, 
 
 /// Read only `[offset, offset + length)` of `abs` (no hashing).
 pub async fn read_range(abs: &Path, offset: u64, length: u64) -> std::io::Result<Vec<u8>> {
-    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    use xai_grok_tools::util::file_reader::{FileReadMode, FileReadOptions, read_file};
 
-    let mut f = tokio::fs::File::open(abs).await?;
-    if offset > 0 {
-        f.seek(std::io::SeekFrom::Start(offset)).await?;
-    }
-    let mut chunk = Vec::new();
-    f.take(length).read_to_end(&mut chunk).await?;
-    Ok(chunk)
+    read_file(
+        abs,
+        FileReadOptions {
+            mode: FileReadMode::Range { offset, length },
+            require_regular_file: false,
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

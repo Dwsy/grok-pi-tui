@@ -10,12 +10,18 @@ pub fn compute_percentiles(sorted: &[u64]) -> (u64, u64, u64, u64, u64) {
     let len = sorted.len();
     assert!(len > 0, "Cannot compute percentiles from empty slice");
 
-    let p50 = sorted[len / 2];
+    let Some(&p50) = sorted.get(len / 2) else {
+        return (0, 0, 0, 0, 0);
+    };
     let p99_idx = ((len as f64 * 0.99).ceil() as usize)
         .saturating_sub(1)
         .min(len - 1);
-    let p99 = sorted[p99_idx];
-    let max = sorted[len - 1];
+    let Some(&p99) = sorted.get(p99_idx) else {
+        return (0, 0, 0, 0, 0);
+    };
+    let Some(&max) = sorted.last() else {
+        return (0, 0, 0, 0, 0);
+    };
     let sum: u64 = sorted.iter().sum();
     let mean = sum / len as u64;
 
@@ -73,11 +79,20 @@ impl InferenceLatencyStats {
             };
         }
 
-        let ttfb = chunk_timestamps[0].duration_since(stream_start);
+        let Some(first) = chunk_timestamps.first() else {
+            return Self {
+                time_to_last_byte_ms: ttlb,
+                ..Default::default()
+            };
+        };
+        let ttfb = first.duration_since(stream_start);
 
         let intervals: Vec<u64> = chunk_timestamps
             .windows(2)
-            .map(|w| w[1].duration_since(w[0]).as_millis() as u64)
+            .map(|w| match w {
+                [a, b] => b.duration_since(*a).as_millis() as u64,
+                _ => 0,
+            })
             .collect();
 
         let (itl_p50, itl_p99, itl_max, itl_mean) = if intervals.is_empty() {

@@ -100,7 +100,7 @@ fn non_empty_str(s: Option<&str>) -> Option<&str> {
 fn strip_scheme<'a>(s: &'a str, scheme: &str) -> Option<&'a str> {
     s.get(..scheme.len())
         .filter(|p| p.eq_ignore_ascii_case(scheme))
-        .map(|_| &s[scheme.len()..])
+        .and_then(|_| s.get(scheme.len()..))
 }
 
 fn ws_url(api_base: &str, path: &str) -> Result<String, VoiceError> {

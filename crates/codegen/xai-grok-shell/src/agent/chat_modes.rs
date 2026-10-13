@@ -298,13 +298,15 @@ mod tests {
             default_mode_id: "auto".to_owned(),
         };
         let state = modes_to_model_state(&resp);
-        let info = &state.available_models[0];
+        let Some(info) = state.available_models.first() else {
+            panic!("expected a model: {:?}", state.available_models);
+        };
         assert_eq!(info.name, "Auto");
         assert_eq!(info.description.as_deref(), Some("Picks the best model"));
         let meta = info.meta.as_ref().unwrap();
-        assert_eq!(meta["badgeText"], serde_json::json!("New"));
-        assert_eq!(meta["iconHint"], serde_json::json!("rocket"));
-        assert_eq!(meta["tags"], serde_json::json!(["TAG_PRIMARY"]));
+        assert_eq!(meta.get("badgeText"), Some(&serde_json::json!("New")));
+        assert_eq!(meta.get("iconHint"), Some(&serde_json::json!("rocket")));
+        assert_eq!(meta.get("tags"), Some(&serde_json::json!(["TAG_PRIMARY"])));
     }
     #[test]
     fn name_falls_back_to_id_when_title_blank() {
@@ -315,6 +317,9 @@ mod tests {
             default_mode_id: String::new(),
         };
         let state = modes_to_model_state(&resp);
-        assert_eq!(state.available_models[0].name, "grok-4.5");
+        assert_eq!(
+            state.available_models.first().map(|m| m.name.as_str()),
+            Some("grok-4.5")
+        );
     }
 }

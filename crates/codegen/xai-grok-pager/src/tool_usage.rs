@@ -14,10 +14,6 @@ use crate::scrollback::blocks::tool::ToolCallBlock;
 use crate::scrollback::state::ScrollbackState;
 use crate::theme::Theme;
 
-// ---------------------------------------------------------------------------
-// ToolCategory: categories derived from ToolCallBlock variants only
-// ---------------------------------------------------------------------------
-
 /// Block category for stats aggregation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ToolCategory {
@@ -114,9 +110,7 @@ impl ToolCategory {
     }
 }
 
-// ---------------------------------------------------------------------------
 // BlockStatus: status dimension (not category)
-// ---------------------------------------------------------------------------
 
 /// Status of a tool block at aggregation time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -140,10 +134,6 @@ pub struct LineageEntry {
     pub duration_ms: Option<i64>,
     pub running: bool,
 }
-
-// ---------------------------------------------------------------------------
-// CategoryStats: per-category aggregation
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default)]
 pub struct CategoryStats {
@@ -187,17 +177,13 @@ impl CategoryStats {
             format!("{}ms", ms)
         } else if secs < 60 {
             format!("{}.{:03}s", secs, ms)
+        } else if secs < 3600 {
+            format!("{}m {}s", secs / 60, secs % 60)
         } else {
-            let mins = secs / 60;
-            let secs = secs % 60;
-            format!("{}m {}s", mins, secs)
+            crate::views::dock::fmt_elapsed(secs as u64)
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// StatsScope: aggregation scope
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StatsScope {
@@ -207,10 +193,6 @@ pub enum StatsScope {
     /// The turn returned by `ScrollbackState::current_turn()`, with fallback to the latest turn if no current turn exists.
     SelectedTurn,
 }
-
-// ---------------------------------------------------------------------------
-// ToolUsageStats: full aggregation
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct ToolUsageStats {
@@ -420,16 +402,6 @@ mod tests {
     use crate::scrollback::state::ScrollbackState;
 
     #[test]
-    fn test_tool_category_labels() {
-        assert_eq!(ToolCategory::Execute.label(), "Execute");
-        assert_eq!(ToolCategory::Read.label(), "Read");
-        assert_eq!(ToolCategory::Edit.label(), "Edit");
-        assert_eq!(ToolCategory::Search.label(), "Search");
-        assert_eq!(ToolCategory::ListDir.label(), "ListDir");
-        assert_eq!(ToolCategory::Other.label(), "Other");
-    }
-
-    #[test]
     fn test_category_stats_percent() {
         let stats = CategoryStats {
             count: 10,
@@ -447,8 +419,13 @@ mod tests {
                 crate::scrollback::blocks::tool::SentMessagePresentation::Unconfirmed {
                     reason: "delivery could not be confirmed".into(),
                 },
-                Some("sub-1".into()),
-                Some("follow up".into()),
+                Some(crate::scrollback::blocks::tool::SentMessageInput {
+                    target: crate::scrollback::blocks::tool::SentMessageTarget::Unresolved {
+                        subagent_id: "sub-1".into(),
+                    },
+                    delivery: Some(crate::scrollback::blocks::tool::SentMessageDelivery::Steer),
+                    text: "follow up".into(),
+                }),
             ),
         )));
 

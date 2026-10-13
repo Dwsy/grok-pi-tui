@@ -257,15 +257,30 @@ pub fn record_auth_401(
         // String fields
         // tracing flattens Option<&str> via Display, so we pre-collapse `None` to "" for both prefix fields and for session_id
         // Downstream queries should treat "" as absent
-        sent_key_prefix = payload["sent_key_prefix"].as_str().unwrap_or(""),
-        current_key_prefix = payload["current_key_prefix"].as_str().unwrap_or(""),
+        sent_key_prefix = payload
+            .get("sent_key_prefix")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+        current_key_prefix = payload
+            .get("current_key_prefix")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
         consumer = consumer,
         session_id = session_id.unwrap_or(""),
         // Numeric fields. The sentinel values from `compute_attribution_payload` (-1, 0) carry through unchanged.
-        mint_age_seconds = payload["mint_age_seconds"].as_i64().unwrap_or(-1),
-        expires_at_seconds_from_now = payload["expires_at_seconds_from_now"].as_i64().unwrap_or(0),
+        mint_age_seconds = payload
+            .get("mint_age_seconds")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1),
+        expires_at_seconds_from_now = payload
+            .get("expires_at_seconds_from_now")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
         // Boolean; the field stale-vs-live splits key on
-        is_stale_snapshot = payload["is_stale_snapshot"].as_bool().unwrap_or(false),
+        is_stale_snapshot = payload
+            .get("is_stale_snapshot")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     )
     .entered();
 

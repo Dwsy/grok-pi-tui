@@ -112,11 +112,29 @@ mod tests {
             running_combined_texts: None,
         };
         let json = serde_json::to_value(&original).unwrap();
-        assert_eq!(json["sessionId"], "sess-42");
-        assert_eq!(json["entries"][0]["lastEditor"], "bob");
-        assert_eq!(json["runningPromptId"], "p0");
-        assert!(json["entries"][1].get("owner").is_none());
-        assert!(json["entries"][1].get("lastEditor").is_none());
+        assert_eq!(
+            json.get("sessionId").and_then(|v| v.as_str()),
+            Some("sess-42")
+        );
+        let Some(entries) = json.get("entries").and_then(|v| v.as_array()) else {
+            panic!("expected entries array: {json}");
+        };
+        let Some(first) = entries.first() else {
+            panic!("expected first entry: {entries:?}");
+        };
+        assert_eq!(
+            first.get("lastEditor").and_then(|v| v.as_str()),
+            Some("bob")
+        );
+        assert_eq!(
+            json.get("runningPromptId").and_then(|v| v.as_str()),
+            Some("p0")
+        );
+        let Some(second) = entries.get(1) else {
+            panic!("expected second entry: {entries:?}");
+        };
+        assert!(second.get("owner").is_none());
+        assert!(second.get("lastEditor").is_none());
         let round: QueueChanged = serde_json::from_value(json).unwrap();
         assert_eq!(round, original);
     }
@@ -172,11 +190,14 @@ mod tests {
             "entries": [{"id": "p1"}]
         });
         let parsed: QueueChanged = serde_json::from_value(sparse).unwrap();
-        assert_eq!(parsed.entries[0].version, 0);
-        assert_eq!(parsed.entries[0].kind, "");
-        assert_eq!(parsed.entries[0].text, "");
-        assert_eq!(parsed.entries[0].position, 0);
-        assert!(parsed.entries[0].owner.is_none());
+        let Some(entry) = parsed.entries.first() else {
+            panic!("expected one entry: {:?}", parsed.entries);
+        };
+        assert_eq!(entry.version, 0);
+        assert_eq!(entry.kind, "");
+        assert_eq!(entry.text, "");
+        assert_eq!(entry.position, 0);
+        assert!(entry.owner.is_none());
         assert!(parsed.running_prompt_id.is_none());
     }
 
@@ -203,7 +224,10 @@ mod tests {
             running_combined_texts: Some(vec!["a".into(), "b".into()]),
         };
         let json = serde_json::to_value(&original).unwrap();
-        assert_eq!(json["runningCombinedTexts"], serde_json::json!(["a", "b"]));
+        assert_eq!(
+            json.get("runningCombinedTexts"),
+            Some(&serde_json::json!(["a", "b"]))
+        );
         let round: QueueChanged = serde_json::from_value(json).unwrap();
         assert_eq!(round, original);
     }

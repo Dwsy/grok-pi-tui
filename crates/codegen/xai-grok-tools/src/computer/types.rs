@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use crate::computer::content_search::{ContentSearchJob, ContentSearchRequest};
 use crate::notification::types::ToolNotificationHandle;
 
 // ============================================================================
@@ -52,6 +53,24 @@ impl From<std::io::Error> for ComputerError {
 pub trait AsyncFileSystem: Send + Sync {
     async fn read_file(&self, path: &Path) -> Result<Vec<u8>, ComputerError>;
 
+    fn supports_bounded_read(&self) -> bool {
+        false
+    }
+
+    /// Read a complete regular file without acquiring more than `max_bytes + 1` bytes.
+    /// Unsupported backends must not fall back to an unbounded read.
+    async fn read_file_bounded(
+        &self,
+        path: &Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ComputerError> {
+        let _ = (path, max_bytes);
+        Err(ComputerError::io_with_kind(
+            "bounded file reads are not supported by this backend",
+            std::io::ErrorKind::Unsupported,
+        ))
+    }
+
     async fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), ComputerError>;
 
     async fn delete_file(&self, path: &Path) -> Result<(), ComputerError>;
@@ -65,6 +84,15 @@ pub trait AsyncFileSystem: Send + Sync {
             "file_exists is not supported by this backend",
             std::io::ErrorKind::Unsupported,
         ))
+    }
+
+    /// Offer to answer a grep content search instead of `rg`. `None` declines and
+    /// must not do any I/O. The grep tool runs the returned job first and runs
+    /// `rg` when the job fails. A served result must be exactly what `rg` reports
+    /// for the same request (see [`crate::computer::content_search`]).
+    fn offer_content_search(&self, request: &ContentSearchRequest) -> Option<ContentSearchJob> {
+        let _ = request;
+        None
     }
 }
 
@@ -167,6 +195,9 @@ pub struct BackgroundHandle {
     /// captured.
     pub pid: Option<u32>,
 }
+
+/// The `signal` of a task that was lost, not failed. The pager finalizes it without a failed block
+pub const SESSION_RESTART_SIGNAL: &str = "session_restart";
 
 /// Full snapshot of a task's state.
 /// Used by both local and ACP backends.

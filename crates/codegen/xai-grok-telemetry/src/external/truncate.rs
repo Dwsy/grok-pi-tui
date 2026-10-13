@@ -35,7 +35,7 @@ fn truncate_to(s: &str, max_bytes: usize) -> Option<String> {
         return None;
     }
     let idx = floor_char_boundary(s, max_bytes);
-    Some(format!("{}{TRUNCATION_MARKER}", &s[..idx]))
+    Some(format!("{}{TRUNCATION_MARKER}", s.get(..idx).unwrap_or("")))
 }
 
 /// Standard truncation for attribute values.
@@ -83,7 +83,7 @@ pub fn reduce_tool_input(value: &serde_json::Value) -> String {
     // Over budget even after structural reduction: clamp the serialized text.
     // The result may not be valid JSON, but it is bounded and marked.
     let idx = floor_char_boundary(&serialized, MAX_TOOL_INPUT_JSON_BYTES);
-    format!("{}{TRUNCATION_MARKER}", &serialized[..idx])
+    format!("{}{TRUNCATION_MARKER}", serialized.get(..idx).unwrap_or(""))
 }
 
 fn reduce_json(value: &serde_json::Value, depth: usize) -> serde_json::Value {
@@ -161,7 +161,10 @@ mod tests {
         let out = reduce_tool_input(&v);
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         // Depth 0 is the root object and depth 1 is a's object, so b's value sits at depth 2 and collapses
-        assert_eq!(parsed["a"]["b"], serde_json::json!("{object:1}"));
+        assert_eq!(
+            parsed.get("a").and_then(|a| a.get("b")),
+            Some(&serde_json::json!("{object:1}"))
+        );
     }
 
     #[test]

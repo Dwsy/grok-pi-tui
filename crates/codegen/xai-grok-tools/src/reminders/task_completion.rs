@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use xai_tool_types::KillTaskOutput;
 use xai_tool_types::SubagentCompletedOutput;
-use xai_tool_types::TaskOutputOutput;
+use xai_tool_types::{TaskOutputOutput, TaskOutputResult};
 /// Default tool name used in auto-wake completion messages.
 pub const DEFAULT_TASK_OUTPUT_TOOL: &str = "get_task_output";
 /// UI/Stop kill with no live waiter: tell the model not to relaunch the task.
@@ -121,6 +121,29 @@ crate::register_resource!(
     "ReportedTaskCompletions",
     ReportedTaskCompletions
 );
+pub fn monitor_label(display_command: &str) -> Option<&str> {
+    display_command
+        .strip_prefix("[monitor] ")
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+}
+fn task_description_label(task: &TaskSnapshot) -> Option<&str> {
+    let from_field = task
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    if from_field.is_some() {
+        return from_field;
+    }
+    task.display_command.as_deref().and_then(monitor_label)
+}
+fn duration_line(description: Option<&str>, duration_secs: f64) -> String {
+    match description {
+        Some(desc) => format!("Description: {desc} | Duration: {duration_secs:.1}s"),
+        None => format!("Duration: {duration_secs:.1}s"),
+    }
+}
 /// Format a model-facing message from a [`TaskSnapshot`]. `task_output_name` controls the pointer-vs-inline rendering of the output section
 /// (see [`render_completion_output_delivery`]). When the inline branch fires and `read_tool_name` is set, the output is truncated and followed
 /// by a footer pointing the model at `task.output_file` so the full log is still recoverable from disk.
@@ -129,7 +152,6 @@ pub fn format_bash_completion(
     task_output_name: Option<&str>,
     read_tool_name: Option<&str>,
 ) -> String {
-    let command = task.display_command.as_deref().unwrap_or(&task.command);
     let duration_secs = task.duration_secs();
     let status_str = match task.signal.as_deref() {
         Some(sig) => format!("terminated by signal {sig}"),
@@ -142,11 +164,12 @@ pub fn format_bash_completion(
         }
     };
     let notice = user_killed_notice(task);
+    let identity = duration_line(task_description_label(task), duration_secs);
     let mut msg = format!(
         "Background task \"{}\" completed ({}).\n\
-         Command: {} | Duration: {:.1}s\n\
+         {identity}\n\
          {notice}",
-        task.task_id, status_str, command, duration_secs,
+        task.task_id, status_str,
     );
     if task.signal.is_some() && duration_secs < 1.0 {
         msg.push_str(
@@ -184,23 +207,15 @@ pub fn format_monitor_completion(task: &TaskSnapshot, task_output_name: Option<&
             None => "ended".to_string(),
         },
     };
-    let description = task
-        .display_command
-        .as_deref()
-        .and_then(|d| d.strip_prefix("[monitor] "))
-        .unwrap_or("monitor");
     let tool = task_output_name.unwrap_or(DEFAULT_TASK_OUTPUT_TOOL);
     let notice = user_killed_notice(task);
+    let identity = duration_line(task_description_label(task), task.duration_secs());
     format!(
         "Monitor \"{id}\" ended: [monitor ended: {reason}].\n\
-         Description: {description}\n\
-         Command: {cmd}\n\
-         Duration: {dur:.1}s\n\
+         {identity}\n\
          Use {tool}(\"{id}\") for full output.\n\
          {notice}",
         id = task.task_id,
-        cmd = task.command,
-        dur = task.duration_secs(),
     )
 }
 /// Warn the model about other background tasks that are still running.
@@ -210,13 +225,15 @@ fn format_running_tasks_warning(running: &[&TaskSnapshot], kill_task_name: Optio
     let label = if n == 1 { "task is" } else { "tasks are" };
     let mut buf = format!("Note: {n} other background {label} still running:\n");
     for task in running {
-        let cmd = task.display_command.as_deref().unwrap_or(&task.command);
+        let suffix = task_description_label(task)
+            .map(|desc| format!(": {desc}"))
+            .unwrap_or_default();
         let _ = writeln!(
             buf,
-            "- \"{}\" (running for {:.0}s): {}",
+            "- \"{}\" (running for {:.0}s){}",
             task.task_id,
             task.duration_secs(),
-            cmd,
+            suffix,
         );
     }
     let kill_name = kill_task_name.unwrap_or("kill_command_or_subagent");
@@ -232,10 +249,12 @@ fn format_running_tasks_warning(running: &[&TaskSnapshot], kill_task_name: Optio
 fn split_wrapped_monitor_event(event_text: &str) -> Option<(&str, &str)> {
     let rest = event_text.strip_prefix("<monitor-event description=\"")?;
     let open_end = rest.find(">\n")?;
-    let open_tag = &rest[..open_end];
+    let open_tag = rest.get(..open_end)?;
     let desc_end = open_tag.rfind("\" task_id=\"")?;
-    let description = &open_tag[..desc_end];
-    let inner = rest[open_end + 2..].strip_suffix("\n</monitor-event>")?;
+    let description = open_tag.get(..desc_end)?;
+    let inner = rest
+        .get(open_end + 2..)?
+        .strip_suffix("\n</monitor-event>")?;
     Some((description, inner))
 }
 /// Format drained [`MonitorEventNotification`]s for the turn loop's hidden synthetic user message. Model-facing only —
@@ -604,7 +623,10 @@ fn task_text_agent_id(text: &str) -> Option<&str> {
     let end = after
         .find(|c: char| c.is_whitespace())
         .unwrap_or(after.len());
-    if end == 0 { None } else { Some(&after[..end]) }
+    if end == 0 { None } else { after.get(..end) }
+}
+fn wait_result_consumed(r: &TaskOutputResult) -> bool {
+    r.is_terminal() && r.status != "cancelled"
 }
 pub fn consumed_completion_ids(output: &ToolOutput) -> Vec<&str> {
     let mut ids = Vec::new();
@@ -614,15 +636,13 @@ pub fn consumed_completion_ids(output: &ToolOutput) -> Vec<&str> {
         ids.push(uuid);
     }
     match output {
-        ToolOutput::TaskOutput(TaskOutputOutput::Result(r)) if r.status == "completed" => {
+        ToolOutput::TaskOutput(TaskOutputOutput::Result(r)) if wait_result_consumed(r) => {
             ids.push(r.task_id.as_str());
         }
         ToolOutput::TaskOutput(TaskOutputOutput::Result(_)) => {}
         ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(mr)) => {
-            for r in &mr.results {
-                if r.status == "completed" {
-                    ids.push(r.task_id.as_str());
-                }
+            for r in mr.results.iter().filter(|r| wait_result_consumed(r)) {
+                ids.push(r.task_id.as_str());
             }
         }
         ToolOutput::TaskOutput(TaskOutputOutput::TaskNotFound(_)) => {}
@@ -852,6 +872,60 @@ mod tests {
         });
         assert!(consumed_completion_ids(&output).is_empty());
     }
+    fn task_result(id: &str, status: &str, exit_code: Option<i32>) -> TaskOutputResult {
+        TaskOutputResult {
+            task_id: id.into(),
+            command: "echo test".into(),
+            status: status.into(),
+            exit_code,
+            started: String::new(),
+            ended: None,
+            duration_secs: 0.0,
+            output: String::new(),
+            output_file: String::new(),
+            truncated: false,
+            truncation_hint: String::new(),
+            raw_output_bytes: 0,
+        }
+    }
+    #[test]
+    fn consumed_completion_ids_counts_finished_statuses_only() {
+        for (status, exit_code) in [
+            ("completed", Some(0)),
+            ("failed", Some(1)),
+            ("timed_out", None),
+        ] {
+            let output = ToolOutput::TaskOutput(TaskOutputOutput::Result(task_result(
+                "t1", status, exit_code,
+            )));
+            assert_eq!(
+                consumed_completion_ids(&output),
+                vec!["t1"],
+                "{status} result should count as consumed"
+            );
+        }
+        for status in ["running", "cancelled"] {
+            let output =
+                ToolOutput::TaskOutput(TaskOutputOutput::Result(task_result("t1", status, None)));
+            assert!(
+                consumed_completion_ids(&output).is_empty(),
+                "{status} result must not count as consumed"
+            );
+        }
+    }
+    #[test]
+    fn consumed_completion_ids_multi_result_mixed_statuses() {
+        let output = ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(MultiTaskOutputResult {
+            mode: "wait_all".into(),
+            results: vec![
+                task_result("ok", "completed", Some(0)),
+                task_result("bad", "failed", Some(1)),
+                task_result("slow", "running", None),
+            ],
+            summary: "2/3 tasks completed (wait_all)".into(),
+        }));
+        assert_eq!(consumed_completion_ids(&output), vec!["ok", "bad"]);
+    }
     #[test]
     fn format_bash_completion_basic() {
         let task = TaskSnapshot {
@@ -879,7 +953,19 @@ mod tests {
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
         assert!(msg.contains("abc-123"));
         assert!(msg.contains("exit code: 0"));
-        assert!(msg.contains("cargo test"));
+        assert!(msg.contains("Duration:"));
+        assert!(
+            !msg.contains("Description:"),
+            "missing label must omit the line: {msg}"
+        );
+        assert!(
+            !msg.contains("cargo test"),
+            "must not echo the command: {msg}"
+        );
+        assert!(
+            !msg.contains("Command:"),
+            "must not echo the command: {msg}"
+        );
         assert!(msg.contains("get_command_or_subagent_output(\"abc-123\")"));
         assert!(
             !msg.contains("killed by the user"),
@@ -951,8 +1037,12 @@ mod tests {
             msg.contains("[monitor ended: exited (code 0)]"),
             "expected ended wording: {msg}"
         );
-        assert!(msg.contains("app logs"), "description: {msg}");
-        assert!(msg.contains("tail -f /var/log/app"), "command: {msg}");
+        assert!(msg.contains("Description: app logs"), "description: {msg}");
+        assert!(!msg.contains("tail -f"), "must not echo the command: {msg}");
+        assert!(
+            !msg.contains("Command:"),
+            "must not echo the command: {msg}"
+        );
         assert!(
             msg.contains("get_command_or_subagent_output(\"mon-1\")"),
             "poll tool pointer: {msg}"
@@ -1026,7 +1116,7 @@ mod tests {
         );
     }
     #[test]
-    fn format_bash_completion_prefers_display_command() {
+    fn format_bash_completion_uses_description_not_command() {
         let task = TaskSnapshot {
             task_id: "t1".into(),
             command: "unshare --mount -- cargo test".into(),
@@ -1045,13 +1135,21 @@ mod tests {
             explicitly_killed: false,
             kill_result_delivered: false,
             owner_session_id: None,
-            description: None,
+            description: Some("Run the crate tests".into()),
             is_backgrounded: false,
             output_total_bytes: 0,
         };
         let msg = format_bash_completion(&task, Some("get_command_or_subagent_output"), None);
-        assert!(msg.contains("cargo test"));
-        assert!(!msg.contains("unshare"));
+        assert!(msg.contains("Description: Run the crate tests"), "{msg}");
+        assert!(
+            !msg.contains("cargo test"),
+            "must not echo the command: {msg}"
+        );
+        assert!(!msg.contains("unshare"), "must not echo the command: {msg}");
+        assert!(
+            !msg.contains("Command:"),
+            "must not echo the command: {msg}"
+        );
     }
     #[test]
     fn format_bash_completion_unknown_exit_code() {
@@ -1598,7 +1696,7 @@ mod tests {
             .collect_reminders(shared, &output)
             .await;
         assert_eq!(reminders.len(), 1);
-        assert!(reminders[0].contains("visible"));
+        assert!(reminders.first().is_some_and(|r| r.contains("visible")));
     }
     #[tokio::test]
     async fn not_suppressed_for_unrelated_output() {
@@ -1611,7 +1709,7 @@ mod tests {
             1,
             "unrelated tool output should not suppress reminder"
         );
-        assert!(r[0].contains("t1"));
+        assert!(r.first().is_some_and(|s| s.contains("t1")));
     }
     #[tokio::test]
     async fn dedup_across_calls() {
@@ -1682,6 +1780,7 @@ mod tests {
             owner: SubagentOwner::Task,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             spawn_root: Default::default(),
+            tool_call_id: None,
         }
     }
     fn test_result(id: &str, success: bool) -> SubagentResult {
@@ -1706,12 +1805,17 @@ mod tests {
     fn inlined_child_text(msg: &str) -> &str {
         let open = "\n=== Output ===\n";
         let start = msg.find(open).expect("output section") + open.len();
-        let rest = &msg[start..];
+        let Some(rest) = msg.get(start..) else {
+            panic!("output section");
+        };
         let end = rest
             .find("\n[output truncated:")
             .or_else(|| rest.find("\n\n<subagent_meta>"))
             .expect("marker or meta");
-        &rest[..end]
+        let Some(text) = rest.get(..end) else {
+            panic!("marker or meta");
+        };
+        text
     }
     #[tokio::test]
     async fn subagent_completion_surfaced() {
@@ -1733,11 +1837,10 @@ mod tests {
               === Output ===\n\
               output for sub-1\n\
               \n\
-              <subagent_meta>id=sub-1, type=general-purpose, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
+              <subagent_meta>id=sub-1, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
               \n\
               <subagent_result>\n\
               subagent_id: sub-1\n\
-              subagent_type: general-purpose\n\
               To continue this subagent's conversation, use resume_from=\"sub-1\".\n\
               </subagent_result>"
             ]
@@ -1880,10 +1983,12 @@ mod tests {
         let reminder = TaskCompletionReminder;
         let output = ToolOutput::Dynamic(serde_json::Value::Null.into());
         let r = reminder.collect_reminders(shared, &output).await;
-        assert_eq!(r.len(), 2);
-        assert!(r[0].contains("bash-1"));
-        assert!(r[1].contains("sub-1"));
-        assert!(r[1].contains("with failure"));
+        let [bash, sub] = r.as_slice() else {
+            panic!("expected bash + subagent reminders: {r:?}");
+        };
+        assert!(bash.contains("bash-1"));
+        assert!(sub.contains("sub-1"));
+        assert!(sub.contains("with failure"));
     }
     #[tokio::test]
     async fn warns_about_running_tasks_on_bg_launch() {
@@ -1896,12 +2001,15 @@ mod tests {
             2,
             "expected completion + running warning, got: {r:?}"
         );
-        assert!(r[0].contains("done-1"), "first should be the completion");
+        let [done, running] = r.as_slice() else {
+            panic!("expected completion + running warning, got: {r:?}");
+        };
+        assert!(done.contains("done-1"), "first should be the completion");
         assert!(
-            r[1].contains("old-bg"),
+            running.contains("old-bg"),
             "second should warn about old-bg still running"
         );
-        assert!(r[1].contains("Consider killing"));
+        assert!(running.contains("Consider killing"));
     }
     #[tokio::test]
     async fn no_warning_when_no_other_running_tasks() {
@@ -1910,7 +2018,7 @@ mod tests {
         let output = ToolOutput::BackgroundTaskStarted(make_bg_started("new-bg"));
         let r = reminder.collect_reminders(shared, &output).await;
         assert_eq!(r.len(), 1);
-        assert!(r[0].contains("done-1"));
+        assert!(r.first().is_some_and(|s| s.contains("done-1")));
     }
     #[test]
     fn format_subagent_completion_success_with_poll_tool() {
@@ -1928,11 +2036,10 @@ mod tests {
              === Output ===\n\
              output for sub-abc\n\
              \n\
-             <subagent_meta>id=sub-abc, type=general-purpose, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
+             <subagent_meta>id=sub-abc, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
              \n\
              <subagent_result>\n\
              subagent_id: sub-abc\n\
-             subagent_type: general-purpose\n\
              To continue this subagent's conversation, use resume_from=\"sub-abc\".\n\
              </subagent_result>"
         );
@@ -2066,11 +2173,10 @@ mod tests {
                  [output truncated: 4000 of 50000 bytes shown]\n\
                  Use get_task_output(\"sub-loop\") to see the full output.\n\
                  \n\
-                 <subagent_meta>id=sub-loop, type=general-purpose, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
+                 <subagent_meta>id=sub-loop, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
                  \n\
                  <subagent_result>\n\
                  subagent_id: sub-loop\n\
-                 subagent_type: general-purpose\n\
                  To continue this subagent's conversation, use resume_from=\"sub-loop\".\n\
                  </subagent_result>\n\
                  \n\
@@ -2232,11 +2338,10 @@ mod tests {
              === Output ===\n\
              the answer for a\n\
              \n\
-             <subagent_meta>id=a, type=explore, tool_calls=2, turns=2, duration_ms=1000</subagent_meta>\n\
+             <subagent_meta>id=a, tool_calls=2, turns=2, duration_ms=1000</subagent_meta>\n\
              \n\
              <subagent_result>\n\
              subagent_id: a\n\
-             subagent_type: explore\n\
              To continue this subagent's conversation, use resume_from=\"a\".\n\
              </subagent_result>\n\
              \n\
@@ -2274,11 +2379,10 @@ mod tests {
              === Output ===\n\
              output for sub-loop\n\
              \n\
-             <subagent_meta>id=sub-loop, type=general-purpose, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
+             <subagent_meta>id=sub-loop, tool_calls=3, turns=2, duration_ms=5000</subagent_meta>\n\
              \n\
              <subagent_result>\n\
              subagent_id: sub-loop\n\
-             subagent_type: general-purpose\n\
              To continue this subagent's conversation, use resume_from=\"sub-loop\".\n\
              </subagent_result>\n\
              \n\
@@ -2329,7 +2433,7 @@ mod tests {
         let output = ToolOutput::Dynamic(serde_json::Value::Null.into());
         let r = reminder.collect_reminders(shared.clone(), &output).await;
         assert_eq!(r.len(), 1, "reserved ID should suppress reminder");
-        assert!(r[0].contains("t2"));
+        assert!(r.first().is_some_and(|s| s.contains("t2")));
         let res = shared.lock().await;
         assert!(
             res.get::<TaskCompletionReservations>()
@@ -2375,7 +2479,7 @@ mod tests {
         reservations.release("reserved");
         let reminders = reminder.collect_reminders(shared.clone(), &output).await;
         assert_eq!(reminders.len(), 1);
-        assert!(reminders[0].contains("reserved"));
+        assert!(reminders.first().is_some_and(|s| s.contains("reserved")));
         assert!(
             shared
                 .lock()
@@ -2404,7 +2508,11 @@ mod tests {
             1,
             "only the subagent completion may surface: {reminders:?}"
         );
-        assert!(reminders[0].contains("sub-reserved"));
+        assert!(
+            reminders
+                .first()
+                .is_some_and(|s| s.contains("sub-reserved"))
+        );
         let res = shared.lock().await;
         let reported = res
             .get::<State<ReportedTaskCompletions>>()
@@ -2480,7 +2588,10 @@ mod tests {
         assert_eq!(shared_buffer.len(), 1, "foreign event must remain buffered");
         let foreign = drain_owned(&shared_buffer, Some("session-A"));
         assert_eq!(foreign.len(), 1);
-        assert_eq!(foreign[0].task_id, "foreign-1");
+        assert_eq!(
+            foreign.first().map(|e| e.task_id.as_str()),
+            Some("foreign-1")
+        );
         assert!(shared_buffer.is_empty());
     }
     /// Single event => lean `<monitor-event>` form; multiple => count-led

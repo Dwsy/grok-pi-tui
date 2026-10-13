@@ -447,7 +447,10 @@ mod tests {
             .map(|e| e.unwrap().path())
             .collect();
         assert_eq!(entries.len(), 1, "exactly one dump file");
-        assert!(entries[0].starts_with(&mcp_dir), "dump stayed inside mcp/");
+        assert!(
+            entries.first().is_some_and(|p| p.starts_with(&mcp_dir)),
+            "dump stayed inside mcp/"
+        );
     }
 
     #[tokio::test]
@@ -503,9 +506,12 @@ mod tests {
             panic!("expected MCP");
         };
         assert_eq!(mcp.extracted_images.len(), 1);
-        assert_eq!(mcp.extracted_images[0].mime_type, "image/png");
-        assert_eq!(mcp.extracted_images[0].data, payload);
-        assert_eq!(mcp.extracted_images[0].data.len(), 100_000);
+        let Some(img) = mcp.extracted_images.first() else {
+            panic!("expected extracted image");
+        };
+        assert_eq!(img.mime_type, "image/png");
+        assert_eq!(img.data, payload);
+        assert_eq!(img.data.len(), 100_000);
 
         let MCPOutputDetails::OkayOutput(text) = mcp.output() else {
             panic!("expected OkayOutput");
@@ -581,8 +587,11 @@ mod tests {
             panic!("expected MCP");
         };
         assert_eq!(mcp.extracted_images.len(), 1);
-        assert_eq!(mcp.extracted_images[0].mime_type, "image/jpeg");
-        assert_eq!(mcp.extracted_images[0].data, payload);
+        let Some(img) = mcp.extracted_images.first() else {
+            panic!("expected extracted image");
+        };
+        assert_eq!(img.mime_type, "image/jpeg");
+        assert_eq!(img.data, payload);
 
         let MCPOutputDetails::OkayOutput(text) = mcp.output() else {
             panic!("expected OkayOutput");
@@ -617,10 +626,13 @@ mod tests {
             panic!("expected MCP");
         };
         assert_eq!(mcp.extracted_images.len(), 2);
-        assert_eq!(mcp.extracted_images[0].mime_type, "image/png");
-        assert_eq!(mcp.extracted_images[0].data, p1);
-        assert_eq!(mcp.extracted_images[1].mime_type, "image/jpeg");
-        assert_eq!(mcp.extracted_images[1].data, p2);
+        let [png, jpeg] = mcp.extracted_images.as_slice() else {
+            panic!("expected two extracted images: {:?}", mcp.extracted_images);
+        };
+        assert_eq!(png.mime_type, "image/png");
+        assert_eq!(png.data, p1);
+        assert_eq!(jpeg.mime_type, "image/jpeg");
+        assert_eq!(jpeg.data, p2);
 
         let MCPOutputDetails::OkayOutput(text) = mcp.output() else {
             panic!("expected OkayOutput");
@@ -664,8 +676,11 @@ mod tests {
         };
         assert!(mcp.is_error);
         assert_eq!(mcp.extracted_images.len(), 1);
-        assert_eq!(mcp.extracted_images[0].mime_type, "image/png");
-        assert_eq!(mcp.extracted_images[0].data, payload);
+        let Some(img) = mcp.extracted_images.first() else {
+            panic!("expected extracted image");
+        };
+        assert_eq!(img.mime_type, "image/png");
+        assert_eq!(img.data, payload);
 
         let MCPOutputDetails::Error(text) = mcp.output() else {
             panic!("expected Error");

@@ -943,6 +943,14 @@ pub fn color_support_warning(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn nth<T>(xs: &[T], i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected index {i}, len {}", xs.len());
+        };
+        x
+    }
+
     use crate::terminal::{
         ByobuBackend, MultiplexerKind, TerminalContext, TerminalName, TmuxClientMeta,
     };
@@ -1109,8 +1117,6 @@ mod tests {
         )
     }
 
-    // -- Test context builders ------------------------------------------------
-
     fn plain_terminal_ctx() -> TerminalContext {
         TerminalContext {
             brand: TerminalName::Ghostty,
@@ -1175,10 +1181,6 @@ mod tests {
             ..Default::default()
         }
     }
-
-    // =====================================================================
-    // diagnose_clipboard_from_values: pure clipboard logic
-    // =====================================================================
 
     fn clipboard_input(brand: TerminalName) -> ClipboardDiagnosticsInput<'static> {
         ClipboardDiagnosticsInput {
@@ -1347,9 +1349,9 @@ mod tests {
     fn clipboard_off_is_flagged() {
         let w = diagnose_clipboard_from_values(Some("off"), true, Some("on"), "~/.tmux.conf");
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::Clipboard);
-        assert_eq!(w[0].fix.as_deref(), Some("set -g set-clipboard on"));
-        assert_eq!(w[0].config_path.as_deref(), Some("~/.tmux.conf"));
+        assert_eq!(nth(&w, 0).category, WarningCategory::Clipboard);
+        assert_eq!(nth(&w, 0).fix.as_deref(), Some("set -g set-clipboard on"));
+        assert_eq!(nth(&w, 0).config_path.as_deref(), Some("~/.tmux.conf"));
     }
 
     #[test]
@@ -1366,8 +1368,11 @@ mod tests {
     fn dcs_passthrough_off_is_flagged() {
         let w = diagnose_clipboard_from_values(Some("on"), true, Some("off"), "~/.tmux.conf");
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::DcsPassthrough);
-        assert_eq!(w[0].fix.as_deref(), Some("set -wg allow-passthrough on"));
+        assert_eq!(nth(&w, 0).category, WarningCategory::DcsPassthrough);
+        assert_eq!(
+            nth(&w, 0).fix.as_deref(),
+            Some("set -wg allow-passthrough on")
+        );
     }
 
     #[test]
@@ -1390,15 +1395,15 @@ mod tests {
     fn clipboard_both_bad_produces_two_warnings() {
         let w = diagnose_clipboard_from_values(Some("off"), true, Some("off"), "~/.tmux.conf");
         assert_eq!(w.len(), 2);
-        assert_eq!(w[0].category, WarningCategory::Clipboard);
-        assert_eq!(w[1].category, WarningCategory::DcsPassthrough);
+        assert_eq!(nth(&w, 0).category, WarningCategory::Clipboard);
+        assert_eq!(nth(&w, 1).category, WarningCategory::DcsPassthrough);
     }
 
     #[test]
     fn clipboard_both_bad_old_tmux_produces_one_warning() {
         let w = diagnose_clipboard_from_values(Some("off"), false, None, "~/.tmux.conf");
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::Clipboard);
+        assert_eq!(nth(&w, 0).category, WarningCategory::Clipboard);
     }
 
     #[test]
@@ -1406,12 +1411,11 @@ mod tests {
         let w =
             diagnose_clipboard_from_values(Some("off"), true, Some("on"), "~/.byobu/.tmux.conf");
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].config_path.as_deref(), Some("~/.byobu/.tmux.conf"));
+        assert_eq!(
+            nth(&w, 0).config_path.as_deref(),
+            Some("~/.byobu/.tmux.conf")
+        );
     }
-
-    // =====================================================================
-    // diagnose_wayland_data_control: pure Wayland clipboard logic
-    // =====================================================================
 
     #[test]
     fn wayland_no_data_control_warns() {
@@ -1444,12 +1448,6 @@ mod tests {
         assert!(diagnose_wayland_data_control(false, true, true).is_none());
     }
 
-    // =====================================================================
-    // collect_startup_warnings: full integration
-    // =====================================================================
-
-    // -- Plain terminal: no warnings ------------------------------------------
-
     #[test]
     fn plain_terminal_no_warnings() {
         let ctx = plain_terminal_ctx();
@@ -1457,8 +1455,6 @@ mod tests {
         let w = collect_startup_warnings(&ctx, &query, false, true);
         assert!(w.is_empty(), "Plain terminal should produce no warnings");
     }
-
-    // -- Healthy tmux: no warnings --------------------------------------------
 
     #[test]
     fn healthy_tmux_fullscreen_no_warnings() {
@@ -1476,8 +1472,6 @@ mod tests {
         assert!(w.is_empty(), "Healthy tmux inline should be quiet");
     }
 
-    // -- tmux clipboard misconfiguration --------------------------------------
-
     #[test]
     fn tmux_clipboard_off_warns() {
         let ctx = plain_tmux_ctx();
@@ -1487,8 +1481,8 @@ mod tests {
         };
         let w = collect_startup_warnings(&ctx, &query, false, true);
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::Clipboard);
-        assert_eq!(w[0].config_path.as_deref(), Some("~/.tmux.conf"));
+        assert_eq!(nth(&w, 0).category, WarningCategory::Clipboard);
+        assert_eq!(nth(&w, 0).config_path.as_deref(), Some("~/.tmux.conf"));
     }
 
     #[test]
@@ -1500,8 +1494,8 @@ mod tests {
         };
         let w = collect_startup_warnings(&ctx, &query, false, true);
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::DcsPassthrough);
-        assert_eq!(w[0].config_path.as_deref(), Some("~/.tmux.conf"));
+        assert_eq!(nth(&w, 0).category, WarningCategory::DcsPassthrough);
+        assert_eq!(nth(&w, 0).config_path.as_deref(), Some("~/.tmux.conf"));
     }
 
     #[test]
@@ -1514,11 +1508,9 @@ mod tests {
         };
         let w = collect_startup_warnings(&ctx, &query, false, true);
         assert_eq!(w.len(), 2);
-        assert_eq!(w[0].category, WarningCategory::Clipboard);
-        assert_eq!(w[1].category, WarningCategory::DcsPassthrough);
+        assert_eq!(nth(&w, 0).category, WarningCategory::Clipboard);
+        assert_eq!(nth(&w, 1).category, WarningCategory::DcsPassthrough);
     }
-
-    // -- tmux control mode ----------------------------------------------------
 
     #[test]
     fn tmux_control_mode_inline_warns_degraded() {
@@ -1527,9 +1519,9 @@ mod tests {
         // control_mode=true and fullscreen_active=false produce the degraded inline message
         let w = collect_startup_warnings(&ctx, &query, true, false);
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::ControlMode);
+        assert_eq!(nth(&w, 0).category, WarningCategory::ControlMode);
         assert!(
-            w[0].message.contains("inline mode"),
+            nth(&w, 0).message.contains("inline mode"),
             "Inline control-mode should mention degraded inline mode"
         );
     }
@@ -1541,13 +1533,13 @@ mod tests {
         // control_mode=true and fullscreen_active=true produce the "fullscreen unreliable" message
         let w = collect_startup_warnings(&ctx, &query, true, true);
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::ControlMode);
+        assert_eq!(nth(&w, 0).category, WarningCategory::ControlMode);
         assert!(
-            w[0].message.contains("unreliable"),
+            nth(&w, 0).message.contains("unreliable"),
             "Fullscreen control-mode should warn about unreliable fullscreen"
         );
         assert!(
-            !w[0].message.contains("inline mode"),
+            !nth(&w, 0).message.contains("inline mode"),
             "Fullscreen control-mode should NOT mention degraded inline mode"
         );
     }
@@ -1564,8 +1556,6 @@ mod tests {
         assert!(categories.contains(&WarningCategory::ControlMode));
         assert!(categories.contains(&WarningCategory::Clipboard));
     }
-
-    // -- Byobu-on-tmux -------------------------------------------------------
 
     #[test]
     fn byobu_tmux_healthy_no_warnings() {
@@ -1584,11 +1574,12 @@ mod tests {
         };
         let w = collect_startup_warnings(&ctx, &query, false, true);
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::Clipboard);
-        assert_eq!(w[0].config_path.as_deref(), Some("~/.byobu/.tmux.conf"));
+        assert_eq!(nth(&w, 0).category, WarningCategory::Clipboard);
+        assert_eq!(
+            nth(&w, 0).config_path.as_deref(),
+            Some("~/.byobu/.tmux.conf")
+        );
     }
-
-    // -- Byobu-on-screen ------------------------------------------------------
 
     #[test]
     fn byobu_screen_warns_best_effort() {
@@ -1596,8 +1587,11 @@ mod tests {
         let query = FakeTmuxQuery::healthy_modern();
         let w = collect_startup_warnings(&ctx, &query, false, true);
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::ByobuScreen);
-        assert!(w[0].fix.is_none(), "Byobu-screen has no actionable fix");
+        assert_eq!(nth(&w, 0).category, WarningCategory::ByobuScreen);
+        assert!(
+            nth(&w, 0).fix.is_none(),
+            "Byobu-screen has no actionable fix"
+        );
     }
 
     #[test]
@@ -1611,10 +1605,8 @@ mod tests {
         let w = collect_startup_warnings(&ctx, &query, false, true);
         // Only the ByobuScreen warning, no clipboard/DCS warnings.
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::ByobuScreen);
+        assert_eq!(nth(&w, 0).category, WarningCategory::ByobuScreen);
     }
-
-    // -- Plain screen (no Byobu) ----------------------------------------------
 
     #[test]
     fn plain_screen_no_warnings() {
@@ -1627,8 +1619,6 @@ mod tests {
         );
     }
 
-    // -- Zellij ---------------------------------------------------------------
-
     #[test]
     fn zellij_no_warnings() {
         let ctx = zellij_ctx();
@@ -1640,15 +1630,16 @@ mod tests {
         );
     }
 
-    // -- Apple Terminal (unsupported OSC 52) ----------------------------------
-
     #[test]
     fn apple_terminal_ssh_warns() {
         let query = FakeTmuxQuery::healthy_modern();
         let warnings = collect_startup_warnings(&apple_terminal_ctx(true), &query, false, true);
         assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].category, WarningCategory::UnsupportedTerminal);
-        assert!(warnings[0].fix.is_none());
+        assert_eq!(
+            nth(&warnings, 0).category,
+            WarningCategory::UnsupportedTerminal
+        );
+        assert!(nth(&warnings, 0).fix.is_none());
     }
 
     #[test]
@@ -1657,8 +1648,6 @@ mod tests {
         let warnings = collect_startup_warnings(&apple_terminal_ctx(false), &query, false, true);
         assert!(warnings.is_empty());
     }
-
-    // -- Multi-warning coalescing ---------------------------------------------
 
     #[test]
     fn tmux_control_mode_with_all_issues() {
@@ -1674,8 +1663,6 @@ mod tests {
         assert!(categories.contains(&WarningCategory::Clipboard));
         assert!(categories.contains(&WarningCategory::DcsPassthrough));
     }
-
-    // -- Query unavailable: tmux server unreachable ---------------------------
 
     #[test]
     fn tmux_query_unavailable_produces_no_clipboard_warnings() {
@@ -1696,7 +1683,7 @@ mod tests {
         let query = FakeTmuxQuery::unavailable();
         let w = collect_startup_warnings(&ctx, &query, true, false);
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::ControlMode);
+        assert_eq!(nth(&w, 0).category, WarningCategory::ControlMode);
     }
 
     #[test]
@@ -1721,28 +1708,20 @@ mod tests {
         assert!(w.is_empty());
     }
 
-    // =====================================================================
-    // Extended diagnostic matrix (final hardening)
-    // =====================================================================
-
-    // -- Non-standard option values trigger warnings --------------------------
-
     #[test]
     fn clipboard_disabled_string_is_flagged() {
         // Some tmux configurations return "disabled" instead of "off".
         let w = diagnose_clipboard_from_values(Some("disabled"), true, Some("on"), "~/.tmux.conf");
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::Clipboard);
+        assert_eq!(nth(&w, 0).category, WarningCategory::Clipboard);
     }
 
     #[test]
     fn passthrough_disabled_string_is_flagged() {
         let w = diagnose_clipboard_from_values(Some("on"), true, Some("disabled"), "~/.tmux.conf");
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::DcsPassthrough);
+        assert_eq!(nth(&w, 0).category, WarningCategory::DcsPassthrough);
     }
-
-    // -- Zellij produces no tmux-specific warnings ----------------------------
 
     #[test]
     fn zellij_fullscreen_active_no_warnings() {
@@ -1772,8 +1751,6 @@ mod tests {
         );
     }
 
-    // -- Plain terminal with bad tmux options: no warnings --------------------
-
     #[test]
     fn plain_terminal_with_bad_tmux_options_still_quiet() {
         let ctx = plain_terminal_ctx();
@@ -1789,8 +1766,6 @@ mod tests {
         );
     }
 
-    // -- Plain screen with bad tmux options: no warnings ----------------------
-
     #[test]
     fn plain_screen_with_bad_tmux_options_no_warnings() {
         let ctx = plain_screen_ctx();
@@ -1804,8 +1779,6 @@ mod tests {
             "Plain screen should not produce tmux-specific warnings"
         );
     }
-
-    // -- WezTerm without the Kitty keyboard protocol ---------------------------
 
     fn wezterm_ctx() -> TerminalContext {
         TerminalContext {
@@ -1924,8 +1897,6 @@ mod tests {
         assert!(wezterm_kitty_keyboard_warning(&ctx, false, Some("WezTerm 20240203")).is_none());
     }
 
-    // -- assemble_startup_warnings: banner ordering ----------------------------
-
     fn clipboard_banner() -> crate::startup::StartupWarning {
         crate::startup::ActionableStartupWarning::new(
             crate::startup::WarningSeverity::Warning,
@@ -1942,18 +1913,18 @@ mod tests {
         let out = assemble_startup_warnings(Some(&w), None, None, vec![clipboard_banner()]);
         assert_eq!(out.len(), 2);
         assert!(
-            out[0].message.contains("WezTerm"),
+            nth(&out, 0).message.contains("WezTerm"),
             "WezTerm banner must be first, got: {}",
-            out[0].message
+            nth(&out, 0).message
         );
-        assert!(out[1].message.contains("Clipboard"));
+        assert!(nth(&out, 1).message.contains("Clipboard"));
     }
 
     #[test]
     fn no_wezterm_warning_leaves_summarized_untouched() {
         let out = assemble_startup_warnings(None, None, None, vec![clipboard_banner()]);
         assert_eq!(out.len(), 1);
-        assert!(out[0].message.contains("Clipboard"));
+        assert!(nth(&out, 0).message.contains("Clipboard"));
     }
 
     #[test]
@@ -1963,11 +1934,11 @@ mod tests {
         let out = assemble_startup_warnings(None, Some(&w), None, vec![clipboard_banner()]);
         assert_eq!(out.len(), 2);
         assert!(
-            out[0].message.contains("focused"),
+            nth(&out, 0).message.contains("focused"),
             "Wayland banner must be first, got: {}",
-            out[0].message
+            nth(&out, 0).message
         );
-        assert!(out[1].message.contains("Clipboard"));
+        assert!(nth(&out, 1).message.contains("Clipboard"));
     }
 
     #[test]
@@ -1976,9 +1947,9 @@ mod tests {
         let way = diagnose_wayland_data_control(true, false, true).unwrap();
         let out = assemble_startup_warnings(Some(&wez), Some(&way), None, vec![clipboard_banner()]);
         assert_eq!(out.len(), 3);
-        assert!(out[0].message.contains("WezTerm"));
-        assert!(out[1].message.contains("focused"));
-        assert!(out[2].message.contains("Clipboard"));
+        assert!(nth(&out, 0).message.contains("WezTerm"));
+        assert!(nth(&out, 1).message.contains("focused"));
+        assert!(nth(&out, 2).message.contains("Clipboard"));
     }
 
     #[test]
@@ -2076,16 +2047,14 @@ mod tests {
 
         let out = assemble_startup_warnings(None, None, Some(&sandbox), vec![]);
         assert_eq!(out.len(), 1);
-        assert!(out[0].message.contains("sandbox settings"));
+        assert!(nth(&out, 0).message.contains("sandbox settings"));
 
         let wez = wezterm_kitty_keyboard_warning(&wezterm_ctx(), false, None).unwrap();
         let out = assemble_startup_warnings(Some(&wez), None, Some(&sandbox), vec![]);
         assert_eq!(out.len(), 2);
-        assert!(out[0].message.contains("WezTerm"));
-        assert!(out[1].message.contains("sandbox settings"));
+        assert!(nth(&out, 0).message.contains("WezTerm"));
+        assert!(nth(&out, 1).message.contains("sandbox settings"));
     }
-
-    // -- ssh_wrap_hint: `grok wrap ssh` recommendation --------------------------
 
     #[test]
     fn ssh_wrap_hint_fires_over_plain_ssh() {
@@ -2123,8 +2092,6 @@ mod tests {
         assert!(ssh_wrap_hint(true, false, true).is_none());
     }
 
-    // -- Warning ordering ------------------------------------------------------
-
     #[test]
     fn control_mode_warning_comes_before_clipboard() {
         let ctx = plain_tmux_ctx();
@@ -2134,11 +2101,9 @@ mod tests {
         };
         let w = collect_startup_warnings(&ctx, &query, true, false);
         assert_eq!(w.len(), 2);
-        assert_eq!(w[0].category, WarningCategory::ControlMode);
-        assert_eq!(w[1].category, WarningCategory::Clipboard);
+        assert_eq!(nth(&w, 0).category, WarningCategory::ControlMode);
+        assert_eq!(nth(&w, 1).category, WarningCategory::Clipboard);
     }
-
-    // -- Byobu-tmux DCS passthrough uses Byobu config path --------------------
 
     #[test]
     fn byobu_tmux_dcs_passthrough_uses_byobu_config_path() {
@@ -2149,11 +2114,12 @@ mod tests {
         };
         let w = collect_startup_warnings(&ctx, &query, false, true);
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::DcsPassthrough);
-        assert_eq!(w[0].config_path.as_deref(), Some("~/.byobu/.tmux.conf"));
+        assert_eq!(nth(&w, 0).category, WarningCategory::DcsPassthrough);
+        assert_eq!(
+            nth(&w, 0).config_path.as_deref(),
+            Some("~/.byobu/.tmux.conf")
+        );
     }
-
-    // -- Byobu-screen ignores control mode flag (no tmux to be in control mode)
 
     #[test]
     fn byobu_screen_ignores_control_mode_flag() {
@@ -2162,10 +2128,8 @@ mod tests {
         // Even with control_mode=true, Byobu-screen produces only the ByobuScreen warning
         let w = collect_startup_warnings(&ctx, &query, true, true);
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::ByobuScreen);
+        assert_eq!(nth(&w, 0).category, WarningCategory::ByobuScreen);
     }
-
-    // -- Byobu-tmux with all issues: complete coalesced set -------------------
 
     #[test]
     fn byobu_tmux_all_issues_fullscreen() {
@@ -2185,8 +2149,6 @@ mod tests {
             assert_eq!(warning.config_path.as_deref(), Some("~/.byobu/.tmux.conf"));
         }
     }
-
-    // -- tmux extended-keys off warning ---------------------------------------
 
     fn extended_keys_ctx(base: TerminalContext, val: Option<&str>) -> TerminalContext {
         TerminalContext {
@@ -2249,8 +2211,6 @@ mod tests {
         assert_no_extended_keys_warning(Some("on"));
         assert_no_extended_keys_warning(Some("always"));
     }
-
-    // -- summarize_warnings allow-list -----------------------------------------
 
     #[test]
     fn summarize_warnings_surfaces_extended_keys_off() {
@@ -2321,10 +2281,6 @@ mod tests {
         assert!(summarize_warnings(&warnings, false).is_none());
     }
 
-    // =====================================================================
-    // collect_notification_warnings
-    // =====================================================================
-
     use crate::notifications::protocol::NotificationProtocol;
     use crate::notifications::{NotificationCondition, NotificationMethod};
 
@@ -2344,8 +2300,11 @@ mod tests {
             &query,
         );
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::NotificationProtocolFallback);
-        assert!(w[0].message.contains("terminal bell"));
+        assert_eq!(
+            nth(&w, 0).category,
+            WarningCategory::NotificationProtocolFallback
+        );
+        assert!(nth(&w, 0).message.contains("terminal bell"));
     }
 
     #[test]
@@ -2376,19 +2335,26 @@ mod tests {
             ]
         );
         assert!(
-            findings[0]
+            nth(&findings, 0)
                 .note
                 .as_deref()
                 .is_some_and(|note| note.contains("bell"))
         );
-        assert!(findings[1].remediation.as_ref().is_some_and(|remediation| {
-            remediation.fix.contains("condition = \"always\"")
-                && remediation.config_path.as_deref()
-                    == Some(
-                        crate::util::display_user_grok_path(xai_grok_config::USER_CONFIG_FILENAME)
-                            .as_str(),
-                    )
-        }));
+        assert!(
+            nth(&findings, 1)
+                .remediation
+                .as_ref()
+                .is_some_and(|remediation| {
+                    remediation.fix.contains("condition = \"always\"")
+                        && remediation.config_path.as_deref()
+                            == Some(
+                                crate::util::display_user_grok_path(
+                                    xai_grok_config::USER_CONFIG_FILENAME,
+                                )
+                                .as_str(),
+                            )
+                })
+        );
     }
 
     #[test]
@@ -2562,9 +2528,12 @@ mod tests {
             &query,
         );
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].category, WarningCategory::DcsPassthrough);
-        assert!(w[0].message.contains("notification"));
-        assert_eq!(w[0].fix.as_deref(), Some("set -wg allow-passthrough on"));
+        assert_eq!(nth(&w, 0).category, WarningCategory::DcsPassthrough);
+        assert!(nth(&w, 0).message.contains("notification"));
+        assert_eq!(
+            nth(&w, 0).fix.as_deref(),
+            Some("set -wg allow-passthrough on")
+        );
     }
 
     #[test]
@@ -2605,9 +2574,9 @@ mod tests {
             .filter(|finding| finding.id == DiagnosticId::new("terminal", "dcs-passthrough"))
             .collect::<Vec<_>>();
         assert_eq!(dcs.len(), 1);
-        assert!(dcs[0].message.contains("notifications are blocked"));
+        assert!(nth(&dcs, 0).message.contains("notifications are blocked"));
         assert!(
-            dcs[0]
+            nth(&dcs, 0)
                 .note
                 .as_deref()
                 .is_some_and(|note| note.contains("notifications are also blocked"))
@@ -2664,8 +2633,14 @@ mod tests {
             .filter(|w| w.category == WarningCategory::FocusTrackingUnavailable)
             .collect();
         assert_eq!(focus_warnings.len(), 1);
-        assert!(focus_warnings[0].message.contains("focus changes"));
-        assert!(focus_warnings[0].fix.as_deref().unwrap().contains("always"));
+        assert!(nth(&focus_warnings, 0).message.contains("focus changes"));
+        assert!(
+            nth(&focus_warnings, 0)
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("always")
+        );
     }
 
     #[test]
@@ -2770,7 +2745,10 @@ mod tests {
             &query,
         );
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].config_path.as_deref(), Some("~/.byobu/.tmux.conf"));
+        assert_eq!(
+            nth(&w, 0).config_path.as_deref(),
+            Some("~/.byobu/.tmux.conf")
+        );
     }
 
     #[test]
@@ -2823,8 +2801,6 @@ mod tests {
         assert!(!supports_focus_tracking(TerminalName::Unknown));
         assert!(!supports_focus_tracking(TerminalName::Otty));
     }
-
-    // -- Color / theme rows and LimitedColorSupport warnings ------------------
 
     #[test]
     fn color_support_warning_none_on_truecolor() {

@@ -3,6 +3,7 @@
 //! Parses the `_meta` JSON from `SessionNotification` into a struct with typed fields.
 //! All fields are `Option`, so parsing degrades gracefully when grok-shell hasn't been updated or meta is absent.
 
+use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 
 /// Parsed fields from `SessionNotification._meta`.
@@ -49,6 +50,14 @@ impl ReplayMetaStamp {
     pub fn replayed() -> serde_json::Value {
         serde_json::to_value(Self { is_replay: true }).expect("serialize replay meta stamp")
     }
+
+    /// The replay stamp as an ACP `Meta`.
+    pub fn replayed_meta() -> acp::Meta {
+        Self::replayed()
+            .as_object()
+            .cloned()
+            .expect("replay meta stamp is an object")
+    }
 }
 
 /// User-prompt content-block `_meta` keys (`TextContent.meta`). Shared by the producers (`dispatch/queue.rs` drain,
@@ -78,6 +87,8 @@ pub mod user_message_chunk_meta {
     pub const HIDE_FROM_SCROLLBACK: &str = "hideFromScrollback";
     /// When true, the chunk is a persisted mid-turn interjection; replay renders its `displayText` as an interjection block.
     pub const INTERJECTION: &str = xai_grok_shell::session::storage::INTERJECTION_META_KEY;
+    /// Daemon `UserMessage.message_id`. An interjection stamps this with its injection id.
+    pub const MESSAGE_ID: &str = "messageId";
 }
 
 /// Extract the numeric counter from an `eventId` (`"{sessionId}-{counter}"`).

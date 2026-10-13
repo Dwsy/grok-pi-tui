@@ -20,29 +20,8 @@ const MAX_TITLE_CHARS: usize = 60;
 /// id). Centralised so every place that shows a session name agrees on the same precedence.
 /// Trimming and truncation happen in this single place to avoid drift.
 pub fn entry_title(agent: &AgentView) -> String {
-    if let Some(name) = agent.display_name.as_deref() {
-        let trimmed = name.trim();
-        if !trimmed.is_empty() {
-            return truncate_title(&sanitize_display_text(trimmed));
-        }
-    }
-    if let Some(title) = agent.generated_session_title.as_deref() {
-        let trimmed = title.trim();
-        if !trimmed.is_empty() {
-            let clean =
-                xai_grok_tools::implementations::skills::skill::extract_skill_display_text(trimmed);
-            let text = clean.as_deref().unwrap_or(trimmed);
-            return truncate_title(&sanitize_display_text(text));
-        }
-    }
-    if let Some(text) = first_user_prompt_text(agent) {
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            let clean =
-                xai_grok_tools::implementations::skills::skill::extract_skill_display_text(trimmed);
-            let display = clean.as_deref().unwrap_or(trimmed);
-            return truncate_title(&sanitize_display_text(display));
-        }
+    if let Some(title) = named_title(agent) {
+        return title;
     }
     match agent.session.session_id.as_ref() {
         Some(sid) => {
@@ -51,6 +30,39 @@ pub fn entry_title(agent: &AgentView) -> String {
         }
         None => "loading...".to_string(),
     }
+}
+
+/// The first three tiers of [`entry_title`] — a title the user or model actually gave the session — or `None` for a session that
+/// has only its id. Surfaces that should show nothing rather than `session abc12345` (the header row) read this.
+pub fn named_title(agent: &AgentView) -> Option<String> {
+    // Only model- and prompt-derived text may be a skill invocation to unwrap; a user-chosen name is not
+    agent
+        .display_name
+        .as_deref()
+        .and_then(|name| clean_title(name, false))
+        .or_else(|| {
+            agent
+                .generated_session_title
+                .as_deref()
+                .and_then(|title| clean_title(title, true))
+        })
+        .or_else(|| first_user_prompt_text(agent).and_then(|text| clean_title(&text, true)))
+}
+
+/// Trim, optionally unwrap a skill invocation, sanitise, and cap one title source; `None` when it is blank.
+fn clean_title(raw: &str, unwrap_skill: bool) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let unwrapped = unwrap_skill
+        .then(|| {
+            xai_grok_tools::implementations::skills::skill::extract_skill_display_text(trimmed)
+        })
+        .flatten();
+    Some(truncate_title(&sanitize_display_text(
+        unwrapped.as_deref().unwrap_or(trimmed),
+    )))
 }
 
 /// Real session title for rename prefill / `/rename` ghost-prefill. Deliberately not
@@ -192,8 +204,6 @@ pub(crate) fn format_relative_time(elapsed: Duration) -> String {
 mod tests {
     use super::*;
 
-    // ── sanitize_display_text ───────────────────────────────────────
-
     #[test]
     fn sanitize_passes_through_clean_ascii_unchanged_no_alloc() {
         let s = "session foo bar";
@@ -270,8 +280,6 @@ mod tests {
         assert!(matches!(out, Cow::Borrowed(_)));
     }
 
-    // ── rename_source_title ─────────────────────────────────────────
-
     #[test]
     fn rename_source_title_prefers_display_name() {
         let mut agent =
@@ -311,8 +319,6 @@ mod tests {
         );
     }
 
-    // ── truncate_title ──────────────────────────────────────────────
-
     #[test]
     fn truncate_title_keeps_short_strings() {
         assert_eq!(truncate_title("hello"), "hello");
@@ -336,8 +342,6 @@ mod tests {
         assert!(out.ends_with("..."));
         assert_eq!(out.chars().count(), MAX_TITLE_CHARS + 3);
     }
-
-    // ── format_relative_time ────────────────────────────────────────
 
     #[test]
     fn format_relative_time_sub_second_is_now() {

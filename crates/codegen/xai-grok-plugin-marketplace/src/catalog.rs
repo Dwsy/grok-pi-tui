@@ -102,6 +102,13 @@ pub fn load_catalog(marketplace_root: &Path) -> Option<PluginCatalog> {
 mod tests {
     use super::*;
 
+    fn nth<T>(xs: &[T], i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected item {i}, got {} items", xs.len());
+        };
+        x
+    }
+
     fn write_catalog(dir: &Path, subdir: &str, content: &str) {
         let d = dir.join(subdir);
         std::fs::create_dir_all(&d).unwrap();
@@ -131,13 +138,13 @@ mod tests {
         let catalog = load_catalog(dir.path()).unwrap();
         let components = catalog.components_for("superpowers", None).unwrap();
         assert_eq!(components.skills.len(), 1);
-        assert_eq!(components.skills[0].name, "brainstorming");
+        assert_eq!(nth(&components.skills, 0).name, "brainstorming");
         assert_eq!(
-            components.skills[0].description.as_deref(),
+            nth(&components.skills, 0).description.as_deref(),
             Some("Structured ideation")
         );
-        assert_eq!(components.commands[0].name, "/brainstorm");
-        assert_eq!(components.hooks[0].name, "PreToolUse");
+        assert_eq!(nth(&components.commands, 0).name, "/brainstorm");
+        assert_eq!(nth(&components.hooks, 0).name, "PreToolUse");
         assert!(components.agents.is_empty());
     }
 
@@ -210,10 +217,10 @@ mod tests {
             }"#,
         );
         let catalog = load_catalog(dir.path()).unwrap();
-        assert_eq!(
-            catalog.components_for("p", None).unwrap().skills[0].name,
-            "s"
-        );
+        let Some(skill) = catalog.components_for("p", None).unwrap().skills.first() else {
+            panic!("expected a skill");
+        };
+        assert_eq!(skill.name, "s");
     }
 
     #[test]
@@ -231,8 +238,11 @@ mod tests {
         );
         let catalog = load_catalog(dir.path()).unwrap();
         let components = catalog.components_for("p", None).unwrap();
-        assert_eq!(components.skills[0].name, "a[31mb");
-        assert_eq!(components.skills[0].description.as_deref(), Some("xy"));
+        assert_eq!(nth(&components.skills, 0).name, "a[31mb");
+        assert_eq!(
+            nth(&components.skills, 0).description.as_deref(),
+            Some("xy")
+        );
     }
 
     #[test]

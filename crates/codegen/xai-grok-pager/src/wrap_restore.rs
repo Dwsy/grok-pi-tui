@@ -115,8 +115,12 @@ impl ModeTracker {
         if seq.len() < 3 {
             return;
         }
-        let final_byte = seq[seq.len() - 1];
-        let body = &seq[2..seq.len() - 1];
+        let Some((&final_byte, rest)) = seq.split_last() else {
+            return;
+        };
+        let Some(body) = rest.get(2..) else {
+            return;
+        };
         match final_byte {
             // DECSET/DECRST only; ANSI SM/RM (no `?`) is untracked.
             b'h' | b'l' => {
@@ -140,7 +144,11 @@ impl ModeTracker {
                 Some(b'<') => {
                     // Zero also means the default (1): under the common CSI zero-means-default convention a terminal may pop one entry for `<0u`
                     // Over-counting depth here risks the destructive extra pop at exit
-                    let n = parse_decimal(&body[1..]).filter(|&n| n > 0).unwrap_or(1);
+                    let n = body
+                        .get(1..)
+                        .and_then(parse_decimal)
+                        .filter(|&n| n > 0)
+                        .unwrap_or(1);
                     let _ = self.kitty_depth.fetch_update(
                         Ordering::SeqCst,
                         Ordering::SeqCst,
@@ -436,7 +444,10 @@ mod tests {
                 // Show-cursor clears the inverted hidden-cursor latch
                 b"\x1b[?25h" => b"\x1b[?25l".to_vec(),
                 seq if seq.starts_with(b"\x1b[?") && seq.ends_with(b"l") => {
-                    let mut enable = seq[..seq.len() - 1].to_vec();
+                    let mut enable = match seq.split_last() {
+                        Some((_, prefix)) => prefix.to_vec(),
+                        None => seq.to_vec(),
+                    };
                     enable.push(b'h');
                     enable
                 }
@@ -456,11 +467,13 @@ mod tests {
             .map(|element| position_of(&out, element))
             .collect();
         for (window, pair) in elements.windows(2).zip(positions.windows(2)) {
+            let [prev, next] = window else { continue };
+            let [left, right] = pair else { continue };
             assert!(
-                pair[0] < pair[1],
+                left < right,
                 "{:?} must precede {:?} to match RESTORE_SEQ, got {:?}",
-                String::from_utf8_lossy(&window[0]),
-                String::from_utf8_lossy(&window[1]),
+                String::from_utf8_lossy(prev),
+                String::from_utf8_lossy(next),
                 String::from_utf8_lossy(&out)
             );
         }

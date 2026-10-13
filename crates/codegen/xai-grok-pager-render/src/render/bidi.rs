@@ -167,7 +167,7 @@ pub(crate) fn visual_line_with_level(
 
     let para_level = level.unwrap_or_else(|| paragraph_level(&flat));
     let prefix = chrome_prefix_len(&flat);
-    let body = &flat[prefix..];
+    let body = flat.get(prefix..)?;
 
     // Controls-only LTR: rebuild the cleaned line without reordering.
     if body.is_empty() || !needs_bidi(body) {
@@ -184,7 +184,8 @@ pub(crate) fn visual_line_with_level(
 
     let mut out_spans: Vec<Span<'static>> = Vec::new();
     if prefix > 0 {
-        append_graphemes_styled(&flat[..prefix], 0, &span_bounds, &mut out_spans, false);
+        let head = flat.get(..prefix)?;
+        append_graphemes_styled(head, 0, &span_bounds, &mut out_spans, false);
     }
     append_reordered_body(body, prefix, &span_bounds, &mut out_spans, para_level);
 
@@ -214,12 +215,15 @@ pub fn logical_slice_for_visual_cols(text: &str, vis_start: usize, vis_end: usiz
         return slice_display_cols(text, vis_start, vis_end);
     }
     let prefix = chrome_prefix_len(text);
-    let prefix_cols = str_cells(&text[..prefix]);
+    let Some(head) = text.get(..prefix) else {
+        return slice_display_cols(text, vis_start, vis_end);
+    };
+    let prefix_cols = str_cells(head);
     let mut out = String::new();
 
     if vis_start < prefix_cols {
         out.push_str(&slice_display_cols(
-            &text[..prefix],
+            head,
             vis_start,
             vis_end.min(prefix_cols),
         ));
@@ -228,7 +232,9 @@ pub fn logical_slice_for_visual_cols(text: &str, vis_start: usize, vis_end: usiz
         return out;
     }
 
-    let body = &text[prefix..];
+    let Some(body) = text.get(prefix..) else {
+        return out;
+    };
     let body_vs = vis_start.saturating_sub(prefix_cols);
     let body_ve = vis_end.saturating_sub(prefix_cols);
     if body_vs >= body_ve {
@@ -245,12 +251,19 @@ pub fn logical_slice_for_visual_cols(text: &str, vis_start: usize, vis_end: usiz
     let mut vis_col_of = vec![0usize; graphemes.len()];
     let mut vcol = 0usize;
     for &gi in &visual_order {
-        vis_col_of[gi] = vcol;
-        vcol += UnicodeWidthStr::width(graphemes[gi]);
+        if let Some(slot) = vis_col_of.get_mut(gi) {
+            *slot = vcol;
+        }
+        vcol += match graphemes.get(gi) {
+            Some(g) => UnicodeWidthStr::width(*g),
+            None => 0,
+        };
     }
     for (gi, g) in graphemes.iter().enumerate() {
         let w = UnicodeWidthStr::width(*g);
-        let vc = vis_col_of[gi];
+        let Some(&vc) = vis_col_of.get(gi) else {
+            continue;
+        };
         if w == 0 {
             continue;
         }
@@ -278,8 +291,13 @@ pub fn visual_col_to_logical_col(text: &str, visual_col: usize) -> usize {
         return visual_col;
     }
     let prefix = chrome_prefix_len(text);
-    let prefix_cols = str_cells(&text[..prefix]);
-    let body = &text[prefix..];
+    let Some(head) = text.get(..prefix) else {
+        return visual_col.min(str_cells(text));
+    };
+    let prefix_cols = str_cells(head);
+    let Some(body) = text.get(prefix..) else {
+        return visual_col.min(prefix_cols);
+    };
     // Chrome is painted logically (not reordered), so columns there are 1:1.
     if visual_col < prefix_cols || !needs_bidi(body) {
         return visual_col.min(prefix_cols + str_cells(body));
@@ -292,17 +310,26 @@ pub fn visual_col_to_logical_col(text: &str, visual_col: usize) -> usize {
     let mut logical_col_of = vec![0usize; graphemes.len()];
     let mut lc = 0usize;
     for (gi, g) in graphemes.iter().enumerate() {
-        logical_col_of[gi] = lc;
+        if let Some(slot) = logical_col_of.get_mut(gi) {
+            *slot = lc;
+        }
         lc += UnicodeWidthStr::width(*g);
     }
     let mut vcol = 0usize;
     for &gi in &order {
-        let w = UnicodeWidthStr::width(graphemes[gi]);
+        let Some(g) = graphemes.get(gi) else {
+            continue;
+        };
+        let w = UnicodeWidthStr::width(*g);
         if w == 0 {
             continue;
         }
         if body_vis < vcol + w {
-            return prefix_cols + logical_col_of[gi];
+            return prefix_cols
+                + match logical_col_of.get(gi) {
+                    Some(&c) => c,
+                    None => 0,
+                };
         }
         vcol += w;
     }
@@ -331,12 +358,17 @@ pub fn logical_cols_to_visual(
         return vec![(logical_start, logical_end)];
     }
     let prefix = chrome_prefix_len(text);
-    let prefix_cols = str_cells(&text[..prefix]);
+    let Some(head) = text.get(..prefix) else {
+        return vec![(logical_start, logical_end)];
+    };
+    let prefix_cols = str_cells(head);
     if logical_end <= prefix_cols {
         return vec![(logical_start, logical_end)];
     }
 
-    let body = &text[prefix..];
+    let Some(body) = text.get(prefix..) else {
+        return vec![(logical_start, logical_end)];
+    };
     if !needs_bidi(body) {
         return vec![(logical_start, logical_end)];
     }
@@ -386,7 +418,10 @@ fn chrome_prefix_len(text: &str) -> usize {
     // Peel the blockquote bar, then a single list marker on the remainder (`│ • …`, `│ 1. …`), so both stay left-anchored.
     // If only the bar were peeled, the marker would join the reordered body and move under RTL, and the region map would disagree with paint
     let bq = blockquote_prefix_len(text);
-    bq + marker_prefix_len(&text[bq..])
+    match text.get(bq..) {
+        Some(rest) => bq + marker_prefix_len(rest),
+        None => bq,
+    }
 }
 
 fn marker_prefix_len(text: &str) -> usize {
@@ -410,10 +445,14 @@ fn marker_prefix_len(text: &str) -> usize {
     {
         let bytes = text.as_bytes();
         let mut i = 0usize;
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
+        while i < bytes.len() && bytes.get(i).is_some_and(|b| b.is_ascii_digit()) {
             i += 1;
         }
-        if i > 0 && i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1] == b' ' {
+        if i > 0
+            && i + 1 < bytes.len()
+            && bytes.get(i) == Some(&b'.')
+            && bytes.get(i + 1) == Some(&b' ')
+        {
             return i + 2;
         }
     }
@@ -445,8 +484,13 @@ fn reorder_body(body: &str, level: Level) -> String {
     for para in &bidi.paragraphs {
         let (levels, runs) = bidi.visual_runs(para, para.range.clone());
         for run in runs {
-            let slice = &body[run.clone()];
-            if levels[run.start].is_rtl() {
+            let Some(slice) = body.get(run.clone()) else {
+                continue;
+            };
+            let Some(level) = levels.get(run.start) else {
+                continue;
+            };
+            if level.is_rtl() {
                 for g in slice.graphemes(true).collect::<Vec<_>>().into_iter().rev() {
                     out.push_str(&mirror_grapheme(g));
                 }
@@ -469,9 +513,14 @@ fn append_reordered_body(
     for para in &bidi.paragraphs {
         let (levels, runs) = bidi.visual_runs(para, para.range.clone());
         for run in runs {
-            let slice = &body[run.clone()];
+            let Some(slice) = body.get(run.clone()) else {
+                continue;
+            };
             let abs = body_byte_base + run.start;
-            let rtl = levels[run.start].is_rtl();
+            let Some(level) = levels.get(run.start) else {
+                continue;
+            };
+            let rtl = level.is_rtl();
             append_graphemes_styled(slice, abs, span_bounds, out, rtl);
         }
     }
@@ -527,7 +576,10 @@ fn style_at(byte: usize, span_bounds: &[(Range<usize>, Style)]) -> Style {
             std::cmp::Ordering::Equal
         }
     }) {
-        Ok(i) => span_bounds[i].1,
+        Ok(i) => match span_bounds.get(i) {
+            Some((_, style)) => *style,
+            None => Style::default(),
+        },
         Err(_) => Style::default(),
     }
 }
@@ -551,7 +603,7 @@ fn visual_grapheme_order(body: &str, level: Level) -> Vec<usize> {
                 .filter(|(_, b)| **b >= run.start && **b < run.end)
                 .map(|(i, _)| i)
                 .collect();
-            if levels[run.start].is_rtl() {
+            if levels.get(run.start).is_some_and(|level| level.is_rtl()) {
                 idxs.reverse();
             }
             order.extend(idxs);
@@ -578,7 +630,9 @@ fn body_logical_cols_to_visual(
     let mut selected = Vec::new();
     let mut vcol = 0usize;
     for &gi in &order {
-        let (lc, width) = logical_meta[gi];
+        let Some(&(lc, width)) = logical_meta.get(gi) else {
+            continue;
+        };
         if width > 0 && lc < logical_end && lc + width > logical_start {
             selected.push((vcol, vcol + width));
         }
@@ -619,8 +673,13 @@ fn merge_adjacent_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)>
     }
     ranges.sort_by_key(|(s, _)| *s);
     let mut merged = Vec::with_capacity(ranges.len());
-    let (mut cs, mut ce) = ranges[0];
-    for &(s, e) in &ranges[1..] {
+    let Some(&(mut cs, mut ce)) = ranges.first() else {
+        return ranges;
+    };
+    let Some(rest) = ranges.get(1..) else {
+        return ranges;
+    };
+    for &(s, e) in rest {
         if s <= ce {
             ce = ce.max(e);
         } else {
@@ -797,7 +856,10 @@ mod tests {
             let visual = visual_line(&line).expect("reorder");
             let flat: String = visual.spans.iter().map(|s| s.content.to_string()).collect();
             assert_eq!(flat, format!("Hi {AR_V}"));
-            assert_eq!(visual.spans[0].style.fg, Some(Color::Red));
+            let Some(span) = visual.spans.first() else {
+                panic!("expected a span: {:?}", visual.spans);
+            };
+            assert_eq!(span.style.fg, Some(Color::Red));
         });
     }
 
@@ -812,9 +874,14 @@ mod tests {
             // Map the Arabic logical span; painted cells at those visual cols match AR_V.
             let ranges = logical_cols_to_visual(&logical, 3, 7);
             assert_eq!(ranges, vec![(3, 7)]);
-            let (vs, ve) = ranges[0];
+            let Some(&(vs, ve)) = ranges.first() else {
+                panic!("expected a visual range: {ranges:?}");
+            };
             let painted_chars: Vec<char> = painted.chars().collect();
-            let cell_slice: String = painted_chars[vs..ve].iter().collect();
+            let cell_slice: String = match painted_chars.get(vs..ve) {
+                Some(slice) => slice.iter().collect(),
+                None => panic!("visual range {vs}..{ve} out of painted cells"),
+            };
             assert_eq!(cell_slice, AR_V);
 
             // Drag over visual Arabic cells copies logical Arabic.

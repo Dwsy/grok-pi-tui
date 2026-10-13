@@ -1,0 +1,1 @@
+mkdir: /opt/ws-fixture/homedir/w1-scratch/ws/.grok: Operation not permitted

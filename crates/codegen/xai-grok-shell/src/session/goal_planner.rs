@@ -20,8 +20,6 @@ use xai_grok_tools::implementations::grok_build::task::types::{
 /// The subagent_type stays fixed so the role keeps a capable toolset on whichever harness is chosen.
 /// The three role spawners and the parent-side `describe_subagent_type` probe all read it, so the gated/probed toolset matches the spawned one.
 pub(crate) const GOAL_ROLE_SUBAGENT_TYPE: &str = "general-purpose";
-pub(crate) const GOAL_ROLE_AWAIT_BUDGET_EXCEEDED: &str =
-    "goal role subagent exceeded foreground wait budget";
 
 /// The planner is aborting regardless, so this is a bound on cleanup, not a correctness gate.
 const GOAL_PLANNER_CANCEL_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -67,27 +65,24 @@ pub(crate) struct RoleRenderedPrompt {
 }
 
 /// Implemented by both `goal_planner::SpawnError` and `goal_classifier::SpawnError` (structurally identical).
-/// That lets the generic wrapper exclude cancellations from the retry without coupling to one concrete error type.
+/// That lets the generic wrapper exclude non-retryable errors without coupling to one concrete error type.
 pub(crate) trait RetryableSpawnError {
-    /// `true` when this error is a cancellation (user / turn abort).
-    /// A cancelled explicit-pair spawn must propagate WITHOUT a fail-open retry.
-    /// For example the planner still pauses as `Aborted` rather than silently re-running on the current model.
-    fn is_cancelled(&self) -> bool;
+    /// `true` when the explicit-pair fail-open retry may re-run the spawn on the current model.
+    /// A cancellation (user / turn abort) must propagate as-is so the planner pauses as `Aborted` instead of silently re-running.
+    fn is_retryable(&self) -> bool;
 }
 
 impl RetryableSpawnError for SpawnError {
-    fn is_cancelled(&self) -> bool {
-        matches!(
-            self,
-            SpawnError::Runtime {
-                cancelled: true,
-                ..
-            } | SpawnError::Interrupted
-        )
+    fn is_retryable(&self) -> bool {
+        match self {
+            SpawnError::Transport(_) => true,
+            SpawnError::Runtime { cancelled, .. } => !cancelled,
+            SpawnError::Interrupted => false,
+        }
     }
 }
 
-/// If that returns a NON-cancellation `Err`, the wrapper emits `GoalRoleModelFailOpen { reason: spawn_failed }`.
+/// If that returns a retryable `Err`, the wrapper emits `GoalRoleModelFailOpen { reason: spawn_failed }`.
 /// A cancellation propagates as-is (no retry), so a bad configured pair can never change the failure behavior.
 /// The second arg is the harness override (`None` inherits the session harness), NOT a subagent type.
 pub(crate) async fn spawn_with_fail_open_retry<E, F, Fut>(
@@ -115,7 +110,7 @@ where
     .await;
     let should_retry = match &first {
         Ok(_) => false,
-        Err(e) => !e.is_cancelled(),
+        Err(e) => e.is_retryable(),
     };
     if !should_retry {
         return first;
@@ -300,11 +295,13 @@ impl ChannelSpawner {
             run_in_background: false,
             // Harness-internal: never surface to the model's idle reminder.
             surface_completion: false,
-            await_to_completion: false,
+            // Goal roles are never auto-backgrounded: the planner runs until it finishes or the user interrupts.
+            await_to_completion: true,
             fork_context: true,
             owner: SubagentOwner::Task,
             cancel_token: self.cancel_token.clone(),
             spawn_root: Default::default(),
+            tool_call_id: None,
         };
         let backend = ChannelBackend::new(self.event_tx.clone());
         let cancel = self.cancel_token.clone();
@@ -322,14 +319,10 @@ impl ChannelSpawner {
                 result.map_err(|error| SpawnError::Transport(error.to_string()))?
             }
         };
+        // Unreachable with `await_to_completion`; `cancelled: true` keeps the fail-open retry from spawning beside the orphan.
         if result.backgrounded {
-            let _ = tokio::time::timeout(
-                GOAL_PLANNER_CANCEL_ACK_TIMEOUT,
-                backend.cancel(&result.subagent_id),
-            )
-            .await;
             return Err(SpawnError::Runtime {
-                message: GOAL_ROLE_AWAIT_BUDGET_EXCEEDED.to_owned(),
+                message: "engine bug: goal role subagent was auto-backgrounded despite await_to_completion".into(),
                 cancelled: true,
             });
         }
@@ -583,6 +576,10 @@ mod tests {
             !request.surface_completion,
             "planner subagent must not surface to the idle reminder"
         );
+        assert!(
+            request.await_to_completion,
+            "planner subagent must never be auto-backgrounded"
+        );
         let _ = request.result_tx.send(SubagentResult::default());
         handle.await.unwrap();
         assert_eq!(wait_depth.depth(), 0);
@@ -714,8 +711,7 @@ mod tests {
         assert!(matches!(outcome, GoalPlannerOutcome::Planned { .. }));
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2, "{log:?}");
-        assert_eq!(log[0], "fired");
-        assert_eq!(log[1], "completed");
+        assert_eq!(log.as_slice(), ["fired", "completed"]);
         let _ = std::fs::remove_file(&plan_file);
     }
 
@@ -1052,6 +1048,27 @@ mod tests {
             effective_role_model_id(None, "parent-model"),
             "parent-model"
         );
+    }
+
+    /// A miss here silently re-runs a cancelled explicit-pair spawn on the current model.
+    #[test]
+    fn spawn_error_is_retryable_truth_table() {
+        assert!(SpawnError::Transport(String::new()).is_retryable());
+        assert!(
+            SpawnError::Runtime {
+                message: String::new(),
+                cancelled: false,
+            }
+            .is_retryable()
+        );
+        assert!(
+            !SpawnError::Runtime {
+                message: String::new(),
+                cancelled: true,
+            }
+            .is_retryable()
+        );
+        assert!(!SpawnError::Interrupted.is_retryable());
     }
 
     #[test]

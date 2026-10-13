@@ -30,6 +30,7 @@ use xai_grok_config::shell::AmpersandSemantics;
 
 use crate::DEFAULT_TOOL_OUTPUT_CHARS;
 use crate::computer::types::{ComputerError, TerminalRunRequest};
+use crate::implementations::editor_infra::DEFAULT_BLOCK_UNTIL_MS;
 use crate::notification::types::{
     BashExecutionBackgrounded, BashExecutionComplete, BashExecutionFailed, BashExecutionTimeout,
     BashNotificationBase, BashOutputChunk, PerCallNotificationSink, ToolNotification,
@@ -150,6 +151,10 @@ pub struct BashParams {
     /// waits to `ms`. Model `block_until_ms: 0` (immediate background) is never clamped.
     #[serde(default)]
     pub max_block_until_ms: Option<u64>,
+    /// Foreground wait in ms when the model omits `block_until_ms` under the `current` contract.
+    /// `None` means [`DEFAULT_BLOCK_UNTIL_MS`] (30s). The two-knob versions ignore this and use [`Self::timeout_secs`].
+    #[serde(default)]
+    pub default_block_until_ms: Option<u64>,
     /// Allow a background `&` operator in foreground commands (default `true`). Defaults `true` at the struct level so
     /// hosts that reuse `BashParams` without a client config resolver keep the `&` rejection off (toolsets that disable
     /// backgrounding still reject `&` via the `enabled_background` coupling in `should_reject_background_op`).
@@ -173,6 +178,7 @@ impl Default for BashParams {
             auto_background_on_timeout: false,
             foreground_block_budget_ms: None,
             max_block_until_ms: None,
+            default_block_until_ms: None,
             allow_background_operator: true,
             surface_bg_completion_reminders: true,
         }
@@ -219,7 +225,8 @@ pub struct BashToolInput {
     pub command: String,
 
     /// Optional timeout in milliseconds (max 300000). Default: 120000 (2 minutes), enforced for
-    /// foreground commands only. Background semantics live in the tool-description usage notes.
+    /// foreground commands only. 0 runs the command in the background and returns a task id.
+    /// Background semantics live in the tool-description usage notes.
     /// keep in sync with the rustdoc above
     #[schemars(
         description = "Optional timeout in milliseconds (max 300000). Default: 120000 (2 minutes), enforced for foreground commands only.",
@@ -252,6 +259,18 @@ pub struct BashToolInput {
         deserialize_with = "crate::types::schema::deserialize_lenient_bool"
     )]
     pub is_background: bool,
+
+    /// Foreground wait in ms under the `current` contract. `0` starts the command in the background at once.
+    /// It overrides `is_background` and `timeout`. The two-knob versions ignore it.
+    #[schemars(
+        description = "How long to block and wait for the command to complete before moving it to background (in milliseconds). Defaults to 30000ms. Set to 0 to immediately run the command in the background. The timer includes the shell startup time."
+    )]
+    #[serde(
+        default,
+        deserialize_with = "crate::types::schema::deserialize_lenient_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub block_until_ms: Option<u64>,
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -428,12 +447,23 @@ fn auto_backgrounded_summary(label: &str, wait_ms: u64) -> String {
     )
 }
 
+/// The auto-background summary for the `current` contract. It names the block parameter the model set.
+fn block_expired_summary(label: &str, wait_ms: u64, block_param: &str, task_id: &str) -> String {
+    let wait_secs = millis_as_secs_label(wait_ms);
+    format!(
+        "Command \"{label}\" is still running after {wait_secs}s ({block_param}) and has been moved to the background as task {task_id}."
+    )
+}
+
 /// Internal version discriminant for run_terminal_cmd. Use `from_contract()` instead of raw string
 /// comparisons against `ctx.contract_version`. If additional version-sensitive schema or validation
 /// behavior accumulates, consider promoting to a full `versions/` module structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BashVersion {
+    /// One wait knob, `block_until_ms`. `is_background` and `timeout` are still accepted but not advertised.
     Current,
+    /// The `current` contract as it was before `block_until_ms` replaced `is_background` and `timeout`.
+    PreBlockUntilMs,
     Legacy0_4_10,
 }
 
@@ -441,12 +471,18 @@ impl BashVersion {
     pub(crate) fn from_contract(v: Option<&str>) -> Self {
         match v {
             Some("legacy-0.4.10") => Self::Legacy0_4_10,
+            Some("pre-block-until-ms") => Self::PreBlockUntilMs,
             _ => Self::Current,
         }
     }
 
     pub(crate) fn is_legacy(self) -> bool {
         self == Self::Legacy0_4_10
+    }
+
+    /// Whether this version uses the single `block_until_ms` knob for its schema, description, and auto-background.
+    pub(crate) fn single_knob(self) -> bool {
+        self == Self::Current
     }
 }
 
@@ -563,70 +599,74 @@ fn ends_with_wait_builtin(command: &str) -> bool {
 /// position_after_delimiter_token)`, or `None` if the `<<` is not followed by a valid delimiter word. This only parses the operator on the
 /// command line (e.g. `<< 'EOF'`). The heredoc *body* is consumed separately by `skip_heredoc_body`.
 fn parse_heredoc_start(chars: &[char], start: usize) -> Option<(String, bool, usize)> {
-    let len = chars.len();
     let mut i = start + 2; // skip `<<`
 
     // `<<-` strips leading tabs from the body and the closing delimiter.
-    let strip_tabs = i < len && chars[i] == '-';
+    let strip_tabs = chars.get(i).copied() == Some('-');
     if strip_tabs {
         i += 1;
     }
 
     // Skip horizontal whitespace (not newlines).
-    while i < len && (chars[i] == ' ' || chars[i] == '\t') {
+    while matches!(chars.get(i).copied(), Some(' ' | '\t')) {
         i += 1;
     }
 
-    if i >= len || chars[i] == '\n' {
-        return None; // no delimiter
-    }
-
-    let delimiter: String;
-    if chars[i] == '\'' {
-        // Single-quoted delimiter: << 'WORD'
-        i += 1;
-        let d_start = i;
-        while i < len && chars[i] != '\'' {
+    match chars.get(i).copied() {
+        None | Some('\n') => None, // no delimiter
+        Some('\'') => {
+            // Single-quoted delimiter: << 'WORD'
             i += 1;
+            let d_start = i;
+            while chars.get(i).is_some_and(|c| *c != '\'') {
+                i += 1;
+            }
+            chars.get(i)?;
+            let delimiter: String = chars.get(d_start..i)?.iter().collect();
+            i += 1; // skip closing quote
+            if delimiter.is_empty() {
+                return None;
+            }
+            Some((delimiter, strip_tabs, i))
         }
-        if i >= len {
-            return None; // unclosed quote
-        }
-        delimiter = chars[d_start..i].iter().collect();
-        i += 1; // skip closing quote
-    } else if chars[i] == '"' {
-        // Double-quoted delimiter: << "WORD"
-        i += 1;
-        let d_start = i;
-        while i < len && chars[i] != '"' {
+        Some('"') => {
+            // Double-quoted delimiter: << "WORD"
             i += 1;
-        }
-        if i >= len {
-            return None;
-        }
-        delimiter = chars[d_start..i].iter().collect();
-        i += 1;
-    } else {
-        // Unquoted (or backslash-escaped) delimiter: << WORD
-        let d_start = i;
-        while i < len
-            && !chars[i].is_whitespace()
-            && !matches!(chars[i], ';' | '&' | '|' | '(' | ')' | '<' | '>')
-        {
+            let d_start = i;
+            while chars.get(i).is_some_and(|c| *c != '"') {
+                i += 1;
+            }
+            chars.get(i)?;
+            let delimiter: String = chars.get(d_start..i)?.iter().collect();
             i += 1;
+            if delimiter.is_empty() {
+                return None;
+            }
+            Some((delimiter, strip_tabs, i))
         }
-        if i == d_start {
-            return None;
+        Some(_) => {
+            // Unquoted (or backslash-escaped) delimiter: << WORD
+            let d_start = i;
+            while chars.get(i).is_some_and(|c| {
+                !c.is_whitespace() && !matches!(*c, ';' | '&' | '|' | '(' | ')' | '<' | '>')
+            }) {
+                i += 1;
+            }
+            if i == d_start {
+                return None;
+            }
+            // Strip backslashes (they quote individual chars in unquoted delimiters).
+            let delimiter: String = chars
+                .get(d_start..i)?
+                .iter()
+                .filter(|&&c| c != '\\')
+                .collect();
+            if delimiter.is_empty() {
+                return None;
+            }
+            Some((delimiter, strip_tabs, i))
         }
-        // Strip backslashes (they quote individual chars in unquoted delimiters).
-        delimiter = chars[d_start..i].iter().filter(|&&c| c != '\\').collect();
     }
-
-    if delimiter.is_empty() {
-        return None;
-    }
-
-    Some((delimiter, strip_tabs, i))
 }
 
 /// Skip past a heredoc body that starts at `chars[start]`. Scans lines until one matches `delimiter` (for `<<-`, after
@@ -638,10 +678,10 @@ fn skip_heredoc_body(chars: &[char], start: usize, delimiter: &str, strip_tabs: 
 
     while i < len {
         let line_start = i;
-        while i < len && chars[i] != '\n' {
+        while chars.get(i).is_some_and(|c| *c != '\n') {
             i += 1;
         }
-        let line: String = chars[line_start..i].iter().collect();
+        let line: String = chars.get(line_start..i).unwrap_or(&[]).iter().collect();
 
         let check = if strip_tabs {
             line.trim_start_matches('\t')
@@ -676,7 +716,9 @@ fn contains_background_operator(command: &str) -> bool {
     let mut pending_heredocs: Vec<(String, bool)> = Vec::new();
 
     while i < len {
-        let ch = chars[i];
+        let Some(&ch) = chars.get(i) else {
+            break;
+        };
 
         // ── Backslash escape (honoured everywhere except inside single quotes) ──
         if ch == '\\' && !in_single_quote {
@@ -709,9 +751,8 @@ fn contains_background_operator(command: &str) -> bool {
         if ch == '<'
             && !in_single_quote
             && !in_double_quote
-            && i + 1 < len
-            && chars[i + 1] == '<'
-            && !(i + 2 < len && chars[i + 2] == '<')
+            && chars.get(i + 1).copied() == Some('<')
+            && chars.get(i + 2).copied() != Some('<')
             && let Some((delim, strip_tabs, after)) = parse_heredoc_start(&chars, i)
         {
             pending_heredocs.push((delim, strip_tabs));
@@ -722,16 +763,16 @@ fn contains_background_operator(command: &str) -> bool {
         // Only inspect `&` outside of any quoting context.
         if ch == '&' && !in_single_quote && !in_double_quote {
             // `&&` — logical AND, skip both characters.
-            if i + 1 < len && chars[i + 1] == '&' {
+            if chars.get(i + 1).copied() == Some('&') {
                 i += 2;
                 continue;
             }
 
             // `&>` / `&>>` — redirect stdout+stderr.
-            if i + 1 < len && chars[i + 1] == '>' {
+            if chars.get(i + 1).copied() == Some('>') {
                 i += 2;
                 // Skip an extra `>` for `&>>`.
-                if i < len && chars[i] == '>' {
+                if chars.get(i).copied() == Some('>') {
                     i += 1;
                 }
                 continue;
@@ -740,7 +781,10 @@ fn contains_background_operator(command: &str) -> bool {
             // `>&` or `<&` — the `&` is part of a fd-duplication redirect.
             // Look at the immediately preceding character (no whitespace allowed
             // between `>` / `<` and `&` for these to be valid redirects).
-            if i > 0 && (chars[i - 1] == '>' || chars[i - 1] == '<') {
+            if i.checked_sub(1)
+                .and_then(|j| chars.get(j).copied())
+                .is_some_and(|prev| prev == '>' || prev == '<')
+            {
                 i += 1;
                 continue;
             }
@@ -816,9 +860,15 @@ fn self_matching_pkill_pattern(command: &str) -> Option<SelfMatchingPkill> {
         // because all statement-boundary parsing already treats `\n` as a separator.
         let m = caps.get(0).expect("group 0 always present");
         let mut rest = String::with_capacity(command.len());
-        rest.push_str(&command[..m.start()]);
+        let Some(before) = command.get(..m.start()) else {
+            continue;
+        };
+        let Some(after) = command.get(m.end()..) else {
+            continue;
+        };
+        rest.push_str(before);
         rest.push('\n');
-        rest.push_str(&command[m.end()..]);
+        rest.push_str(after);
 
         // Resolve the matched command word as a static slice so callers
         // get a `&'static str` rather than borrowing the input command.
@@ -909,7 +959,9 @@ fn is_bare_echo(command: &str) -> bool {
         return false;
     }
     // Word boundary check.
-    let after_prefix = &t[4..];
+    let Some(after_prefix) = t.get(4..) else {
+        return false;
+    };
     if !after_prefix.is_empty() && !after_prefix.starts_with(char::is_whitespace) {
         return false;
     }
@@ -926,8 +978,10 @@ fn is_bare_echo(command: &str) -> bool {
         if flag_part.is_empty() || flag_part == "-" {
             break;
         }
-        rest = &rest[flag_part.len()..];
-        rest = rest.trim_start();
+        let Some(next) = rest.get(flag_part.len()..) else {
+            break;
+        };
+        rest = next.trim_start();
     }
 
     is_simple_narration_tail(rest)
@@ -941,7 +995,9 @@ fn is_bare_printf(command: &str) -> bool {
     if !t.starts_with("printf") {
         return false;
     }
-    let after_prefix = &t[6..];
+    let Some(after_prefix) = t.get(6..) else {
+        return false;
+    };
     if !after_prefix.is_empty() && !after_prefix.starts_with(char::is_whitespace) {
         return false;
     }
@@ -1137,6 +1193,69 @@ impl BashTool {
         params.enabled_background
     }
 
+    /// The foreground wait in ms when the model omits `block_until_ms` under the `current` contract.
+    pub(crate) fn effective_default_block_until_ms(params: &BashParams) -> u64 {
+        params
+            .default_block_until_ms
+            .unwrap_or(DEFAULT_BLOCK_UNTIL_MS)
+            .min(Self::block_until_ceiling_ms(params))
+    }
+
+    /// The largest positive `block_until_ms` allowed, in ms. An operator `max_block_until_ms` or `max_timeout_secs` caps it.
+    /// Without either, the cap is the background cap. The block never kills the command.
+    fn block_until_ceiling_ms(params: &BashParams) -> u64 {
+        let cap = ABSOLUTE_MAX_TIMEOUT_MS;
+        let cap = match params.max_block_until_ms {
+            Some(ms) if ms > 0 => cap.min(ms),
+            _ => cap,
+        };
+        if Self::max_timeout_configured(params) {
+            cap.min(Self::effective_max_timeout_ms(params))
+        } else {
+            cap
+        }
+    }
+
+    /// The block for one call, in ms. `block_until_ms` takes precedence over `is_background` and `timeout`.
+    /// Positive values are clamped to the ceiling.
+    fn resolve_block_until_ms(input: &BashToolInput, params: &BashParams) -> u64 {
+        let requested = match (input.block_until_ms, input.is_background, input.timeout) {
+            (Some(block), _, _) => block,
+            (None, true, _) => 0,
+            (None, false, Some(timeout)) => timeout,
+            (None, false, None) => Self::effective_default_block_until_ms(params),
+        };
+        if requested == 0 {
+            0
+        } else {
+            requested.min(Self::block_until_ceiling_ms(params))
+        }
+    }
+
+    /// Sets the params the `current` contract needs. The command moves to the background exactly at the block, with no short budget.
+    /// The foreground kill ceiling rises to the background cap unless an operator set one.
+    fn apply_single_knob_params(params: &mut BashParams) {
+        params.auto_background_on_timeout = true;
+        params.foreground_block_budget_ms = Some(0);
+        if !Self::max_timeout_configured(params) {
+            params.max_timeout_secs = Some(ABSOLUTE_MAX_TIMEOUT_MS as f64 / 1000.0);
+        }
+    }
+
+    /// Converts `block_until_ms` into the internal `is_background` and `timeout` pair.
+    /// The command then moves to the background exactly at the block.
+    fn fold_single_knob_into_legacy_knobs(input: &mut BashToolInput, params: &mut BashParams) {
+        let block_ms = Self::resolve_block_until_ms(input, params);
+        Self::apply_single_knob_params(params);
+        if block_ms == 0 {
+            input.is_background = true;
+            input.timeout = None;
+        } else {
+            input.is_background = false;
+            input.timeout = Some(block_ms);
+        }
+    }
+
     fn auto_background_on_timeout_enabled(params: &BashParams) -> bool {
         params.auto_background_on_timeout && Self::background_enabled(params)
     }
@@ -1220,18 +1339,49 @@ impl BashTool {
         ))
     }
 
+    /// The client-facing name for one of this tool's params, looked up by its schema property key.
+    /// This reads the param map directly. A template render of a missing key returns an empty `Ok`.
+    async fn execute_param_name(resources: &SharedResources, canonical: &str) -> String {
+        let res = resources.lock().await;
+        res.get::<TemplateRenderer>()
+            .and_then(|r| r.param_for_kind(ToolKind::Execute, canonical))
+            .unwrap_or(canonical)
+            .to_string()
+    }
+
+    /// The setting the model uses to request the background. It is `block_until_ms=0` under `current` and `is_background=true` otherwise.
+    async fn background_setting_hint(resources: &SharedResources, single_knob: bool) -> String {
+        let (canonical, value) = if single_knob {
+            ("block_until_ms", "0")
+        } else {
+            ("is_background", "true")
+        };
+        let name = Self::execute_param_name(resources, canonical).await;
+        format!("{name}={value}")
+    }
+
     /// Model-facing input schema. `timeout_param_name` is the client-facing
     /// timeout field (canonical or alias) — must match the remapped key.
     fn exported_input_schema(
         input_schema: &serde_json::Value,
         params: &BashParams,
         timeout_param_name: &str,
+        version: BashVersion,
     ) -> serde_json::Value {
         let background_enabled = Self::background_enabled(params);
         let auto_bg = Self::auto_background_on_timeout_enabled(params);
+        let single_knob = version.single_knob() && background_enabled;
         let mut schema = input_schema.clone();
         if let Some(obj) = schema.as_object_mut() {
             if let Some(props) = obj.get_mut("properties").and_then(|p| p.as_object_mut()) {
+                if single_knob {
+                    // Input still accepts both. Only the two-knob versions advertise them
+                    props.remove("is_background");
+                    props.remove("timeout");
+                    Self::apply_single_knob_property_copy(props, params);
+                } else {
+                    props.remove("block_until_ms");
+                }
                 if !background_enabled {
                     props.remove("is_background");
                 }
@@ -1276,16 +1426,41 @@ impl BashTool {
         schema
     }
 
+    /// Writes the `block_until_ms` property description with the configured default.
+    /// An operator cap becomes a JSON Schema `maximum`.
+    fn apply_single_knob_property_copy(
+        props: &mut serde_json::Map<String, serde_json::Value>,
+        params: &BashParams,
+    ) {
+        if let Some(block) = props
+            .get_mut("block_until_ms")
+            .and_then(|b| b.as_object_mut())
+        {
+            let default_ms = Self::effective_default_block_until_ms(params);
+            block.insert(
+                "description".to_string(),
+                serde_json::json!(format!(
+                    "How long to block and wait for the command to complete before moving it to background (in milliseconds). Defaults to {default_ms}ms. Set to 0 to immediately run the command in the background. The timer includes the shell startup time."
+                )),
+            );
+            let cap = Self::block_until_ceiling_ms(params);
+            if cap < ABSOLUTE_MAX_TIMEOUT_MS {
+                block.insert("maximum".to_string(), serde_json::json!(cap));
+            }
+        }
+    }
+
     fn rendered_description(
         description_override: Option<&str>,
         renderer: &TemplateRenderer,
         params: &BashParams,
+        version: BashVersion,
     ) -> String {
         let background_enabled = Self::background_enabled(params);
         let auto_bg = Self::auto_background_on_timeout_enabled(params);
         let raw_desc = match description_override {
             Some(desc) => desc,
-            None => Self::default_description_template(background_enabled),
+            None => Self::description_template_for(version, background_enabled),
         };
         let fg_budget_disabled = auto_bg && matches!(params.foreground_block_budget_ms, Some(0));
         let mut extras = serde_json::json!({
@@ -1295,16 +1470,21 @@ impl BashTool {
             "max_timeout_configured": Self::max_timeout_configured(params),
             "fg_budget_disabled": fg_budget_disabled,
             "background_cap_hours": background_cap_hours(),
+            "max_block_until_ms": Self::block_until_ceiling_ms(params),
         });
         if auto_bg
             && !fg_budget_disabled
             && let Some(wait_ms) = Self::advertised_fg_budget_ms(params)
+            && let Some(obj) = extras.as_object_mut()
         {
-            extras["fg_budget_secs"] = if wait_ms.is_multiple_of(1000) {
-                serde_json::json!(wait_ms / 1000)
-            } else {
-                serde_json::json!(wait_ms as f64 / 1000.0)
-            };
+            obj.insert(
+                "fg_budget_secs".to_owned(),
+                if wait_ms.is_multiple_of(1000) {
+                    serde_json::json!(wait_ms / 1000)
+                } else {
+                    serde_json::json!(wait_ms as f64 / 1000.0)
+                },
+            );
         }
         renderer
             .render_with_extra(raw_desc, &extras)
@@ -1313,15 +1493,35 @@ impl BashTool {
             })
     }
 
-    fn default_description_template(background_enabled: bool) -> &'static str {
-        if background_enabled {
-            Self::default_description_template_enabled()
-        } else {
-            Self::default_description_template_disabled()
+    fn description_template_for(version: BashVersion, background_enabled: bool) -> &'static str {
+        match (version.single_knob(), background_enabled) {
+            (true, true) => Self::single_knob_description_template_enabled(),
+            (true, false) => Self::two_knob_description_template_disabled(),
+            (false, true) => Self::two_knob_description_template_enabled(),
+            (false, false) => Self::two_knob_description_template_disabled(),
         }
     }
 
-    fn default_description_template_enabled() -> &'static str {
+    /// The `current` template. It is the two-knob enabled template with `block_until_ms` in place of `is_background` and `timeout`.
+    /// The kill-at-timeout sentences are gone. Under `current` the foreground command is never killed.
+    fn single_knob_description_template_enabled() -> &'static str {
+        r#"Run a ${%- if is_windows %} shell command${%- else %} bash command${%- endif %} and return its output.
+
+Usage notes:
+  - You can specify an optional ${{ params.execute.block_until_ms }} in milliseconds (up to ${{ max_block_until_ms | default(36000000) }}ms). A foreground command still running at ${{ params.execute.block_until_ms }} is moved to the background instead of killed; once backgrounded it runs until it exits (background cap ${{ background_cap_hours }}h). You will receive a task id; wait for it with ${{ tools.by_kind.background_task_action }}. `${{ params.execute.block_until_ms }}: 0` runs the command in the background immediately.
+  - Background commands run until they exit${%- if tools.by_kind.kill_task_action %}, until you stop them with ${{ tools.by_kind.kill_task_action }},${%- endif %} or until the ${{ background_cap_hours }}h background cap.${%- if tools.by_kind.kill_task_action %} ${{ tools.by_kind.kill_task_action }}${%- else %} Stopping a command${%- endif %}${%- if is_windows %} terminates the child's Job Object, killing every descendant process immediately.${%- else %} sends SIGTERM to the process group, then SIGKILL after ~1s; processes that did not detach via `setsid` / `nohup` are killed with it.${%- endif %}
+  - If the output exceeds {max_output_bytes} characters, the middle is truncated (you keep the beginning and end) and the result includes the path to a log file with the full output, which you can read or search.
+  - Set `${{ params.execute.block_until_ms }}` to 0 to run the command in the background (e.g., dev servers, long builds): it returns a task id immediately and keeps running in the background.${%- if system_reminders_enabled %} You are notified when it completes, so you can keep working; only poll it with ${{ tools.by_kind.background_task_action }} when it needs close monitoring (long-running jobs that can hang or degrade before finishing), and poll later if you end up blocked on the result.${%- elif tools.by_kind.background_task_action %} Use ${{ tools.by_kind.background_task_action }} to monitor it or wait for it to finish.${%- endif %}${%- if has_unix_utilities %} You do not need to use '&' at the end of the command when using this parameter.${%- endif %}
+${%- if shell_uses_semicolon %}
+  - '&&' is not supported in this shell; chain sequential commands with ';'.
+${%- endif %}
+${%- if not has_unix_utilities %}
+  - The Unix utilities `grep`, `head`, `tail`, `sed`, `awk`, and `find` are NOT available in this shell. Use the dedicated tools instead.
+${%- endif %}"#
+    }
+
+    /// The `is_background` and `timeout` template for `pre-block-until-ms` and older versions.
+    fn two_knob_description_template_enabled() -> &'static str {
         r#"Run a ${%- if is_windows %} shell command${%- else %} bash command${%- endif %} and return its output.
 
 Usage notes:
@@ -1337,7 +1537,7 @@ ${%- if not has_unix_utilities %}
 ${%- endif %}"#
     }
 
-    fn default_description_template_disabled() -> &'static str {
+    fn two_knob_description_template_disabled() -> &'static str {
         r#"Run a ${%- if is_windows %} shell command${%- else %} bash command${%- endif %} and return its output.
 
 Usage notes:
@@ -1352,18 +1552,19 @@ ${%- if not has_unix_utilities %}
 ${%- endif %}"#
     }
 
+    /// `bg_setting` is the setting the model uses to request the background, such as `block_until_ms=0`.
     fn background_operator_validation_message(
         is_legacy: bool,
         background_enabled: bool,
-        param_name: &str,
+        bg_setting: &str,
     ) -> String {
         match (background_enabled, is_legacy) {
             (true, true) => format!(
-                "Command must not end with '&'. Remove the '&' and set {}=true to run the command in the background.",
-                param_name
+                "Command must not end with '&'. Remove the '&' and set {} to run the command in the background.",
+                bg_setting
             ),
             (true, false) => {
-                format!("Remove the background '&' from your command and set {}=true instead.", param_name)
+                format!("Remove the background '&' from your command and set {} instead.", bg_setting)
             }
             (false, true) => {
                 "Command must not end with '&' because background execution is disabled. Remove the '&' and run the command in the foreground."
@@ -1380,7 +1581,7 @@ ${%- endif %}"#
     /// the call operator and never triggers this.
     fn powershell_background_operator_message(
         background_enabled: bool,
-        param_name: &str,
+        bg_setting: &str,
         trailing_is_syntax_error: bool,
     ) -> String {
         let effect = if trailing_is_syntax_error {
@@ -1389,7 +1590,7 @@ ${%- endif %}"#
             "starts a background job"
         };
         if background_enabled {
-            format!("Trailing '&' {effect}. Set {param_name}=true instead.")
+            format!("Trailing '&' {effect}. Set {bg_setting} instead.")
         } else {
             format!("Trailing '&' {effect}. Background execution is disabled; remove it.")
         }
@@ -1417,7 +1618,7 @@ impl crate::types::tool_metadata::ToolMetadata for BashTool {
     }
 
     fn description_template(&self) -> &str {
-        Self::default_description_template_enabled()
+        Self::single_knob_description_template_enabled()
     }
 
     fn emitted_notifications(&self) -> &'static [&'static str] {
@@ -1429,6 +1630,21 @@ impl crate::types::tool_metadata::ToolMetadata for BashTool {
             "BashOutputChunk",
             "TaskCompleted",
         ]
+    }
+
+    fn advertised_input_schema(
+        &self,
+        contract_version: Option<&str>,
+        input_schema: &serde_json::Value,
+        effective_params: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        let params: BashParams = serde_json::from_value(effective_params.clone()).ok()?;
+        Some(Self::exported_input_schema(
+            input_schema,
+            &params,
+            "timeout",
+            BashVersion::from_contract(contract_version),
+        ))
     }
 
     fn versioned_definition(
@@ -1443,7 +1659,9 @@ impl crate::types::tool_metadata::ToolMetadata for BashTool {
     ) -> ToolDefinition {
         let params: BashParams =
             serde_json::from_value(effective_params.clone()).unwrap_or_default();
-        let description = Self::rendered_description(description_override, renderer, &params);
+        let version = BashVersion::from_contract(contract_version);
+        let description =
+            Self::rendered_description(description_override, renderer, &params, version);
         // Only this tool's param_map renames schema property keys — do not fall back to kind-wide
         // renderer aliases (another Execute tool's override could advertise e.g. max_wait while
         // this schema still exposes timeout).
@@ -1452,13 +1670,12 @@ impl crate::types::tool_metadata::ToolMetadata for BashTool {
             .map(String::as_str)
             .unwrap_or("timeout");
         let exported_schema =
-            Self::exported_input_schema(input_schema, &params, timeout_param_name);
+            Self::exported_input_schema(input_schema, &params, timeout_param_name, version);
         let remapped_schema = if param_map.is_empty() {
             exported_schema
         } else {
             crate::util::remap::remap_schema_properties(&exported_schema, param_map)
         };
-        let _ = contract_version;
         ToolDefinition::function(client_name, Some(&description), remapped_schema)
     }
 
@@ -1688,8 +1905,22 @@ impl xai_tool_runtime::Tool for BashTool {
             .cloned()
             .unwrap_or_default();
 
-        let config_timeout = Duration::from_millis(Self::effective_default_timeout_ms(&params));
         let background_enabled = Self::background_enabled(&params);
+        let version = BashVersion::from_contract(
+            crate::types::tool_metadata::behavior_version(&ctx).as_deref(),
+        );
+
+        // With backgrounding disabled the legacy `timeout` contract still applies. There is no background to move the command to
+        let single_knob = version.single_knob() && background_enabled;
+        let mut params = params;
+        let mut input = input;
+        if single_knob {
+            Self::fold_single_knob_into_legacy_knobs(&mut input, &mut params);
+            tracing::Span::current().record("is_background", input.is_background);
+        }
+        let params = params;
+
+        let config_timeout = Duration::from_millis(Self::effective_default_timeout_ms(&params));
 
         let config_output_byte_limit = params
             .output_byte_limit
@@ -1707,9 +1938,6 @@ impl xai_tool_runtime::Tool for BashTool {
             .unwrap_or(config_output_byte_limit);
 
         // --- Validate: reject commands that use `&` as a background operator ---
-        let version = BashVersion::from_contract(
-            crate::types::tool_metadata::behavior_version(&ctx).as_deref(),
-        );
         let is_legacy = version.is_legacy();
         // `&` means different things per shell, so detection and remediation are shell-specific: bash/POSIX backgrounds with a
         // bare `&`; PowerShell backgrounds only with a trailing `&` (a leading `&` is the call operator); cmd.exe uses `&` as
@@ -1723,27 +1951,18 @@ impl xai_tool_runtime::Tool for BashTool {
             &input.command,
             is_legacy,
         ) {
-            // `is_background` is the canonical param key (the input-schema property name).
-            // Presence-aware lookup (not a template render): a missing entry renders as empty-`Ok`,
-            // so a `Result` fallback never fires.
-            let bg_param_name = {
-                let res = resources.lock().await;
-                res.get::<TemplateRenderer>()
-                    .and_then(|r| r.param_for_kind(ToolKind::Execute, "is_background"))
-                    .unwrap_or("is_background")
-                    .to_string()
-            };
+            let bg_setting = Self::background_setting_hint(&resources, single_knob).await;
             let message = match violation {
                 BackgroundOpViolation::Bash => Self::background_operator_validation_message(
                     is_legacy,
                     background_enabled,
-                    &bg_param_name,
+                    &bg_setting,
                 ),
                 BackgroundOpViolation::PowerShell {
                     trailing_is_syntax_error,
                 } => Self::powershell_background_operator_message(
                     background_enabled,
-                    &bg_param_name,
+                    &bg_setting,
                     trailing_is_syntax_error,
                 ),
             };
@@ -1954,10 +2173,14 @@ impl xai_tool_runtime::Tool for BashTool {
                     } else {
                         desc
                     };
-                    auto_backgrounded_summary(
-                        label,
-                        Self::resolved_auto_bg_wait_ms(&params, timeout),
-                    )
+                    let wait_ms = Self::resolved_auto_bg_wait_ms(&params, timeout);
+                    if single_knob {
+                        let block_param =
+                            Self::execute_param_name(&resources, "block_until_ms").await;
+                        block_expired_summary(label, wait_ms, &block_param, tool_call_id.as_str())
+                    } else {
+                        auto_backgrounded_summary(label, wait_ms)
+                    }
                 } else {
                     format!(
                         "User moved command \"{}\" to background. Process is still running.",
@@ -2068,7 +2291,9 @@ mod tests {
     #[test]
     fn bash_timeout_schema_defaults_to_120s() {
         let schema = serde_json::to_value(schemars::schema_for!(BashToolInput)).unwrap();
-        let timeout = &schema["properties"]["timeout"];
+        let Some(timeout) = schema.get("properties").and_then(|p| p.get("timeout")) else {
+            panic!("schema missing properties.timeout: {schema}");
+        };
         assert_eq!(
             timeout.get("default"),
             Some(&serde_json::json!(120_000)),
@@ -2209,6 +2434,8 @@ mod tests {
         bg_error: Option<String>,
         /// Captured background request for assertions.
         captured_bg_request: CapturedRequest,
+        /// Captured foreground request for assertions.
+        captured_fg_request: CapturedRequest,
     }
 
     impl MockTerminal {
@@ -2228,6 +2455,7 @@ mod tests {
                 bg_output_file: PathBuf::from("/tmp/bg.log"),
                 bg_error: None,
                 captured_bg_request: CapturedRequest::default(),
+                captured_fg_request: CapturedRequest::default(),
             }
         }
 
@@ -2247,6 +2475,7 @@ mod tests {
                 bg_output_file: PathBuf::from("/tmp/bg.log"),
                 bg_error: None,
                 captured_bg_request: CapturedRequest::default(),
+                captured_fg_request: CapturedRequest::default(),
             }
         }
 
@@ -2257,6 +2486,7 @@ mod tests {
                 bg_output_file: PathBuf::new(),
                 bg_error: Some("command failed".to_string()),
                 captured_bg_request: CapturedRequest::default(),
+                captured_fg_request: CapturedRequest::default(),
             }
         }
 
@@ -2276,6 +2506,7 @@ mod tests {
                 bg_output_file: PathBuf::from(format!("/tmp/{}.log", task_id)),
                 bg_error: None,
                 captured_bg_request: CapturedRequest::default(),
+                captured_fg_request: CapturedRequest::default(),
             }
         }
 
@@ -2285,14 +2516,22 @@ mod tests {
             mock.captured_bg_request = captured.clone();
             (mock, captured)
         }
+
+        fn success_capturing(output: &str, exit_code: i32) -> (Self, CapturedRequest) {
+            let captured = CapturedRequest::default();
+            let mut mock = Self::success(output, exit_code);
+            mock.captured_fg_request = captured.clone();
+            (mock, captured)
+        }
     }
 
     #[async_trait::async_trait]
     impl TerminalBackend for MockTerminal {
         async fn run(
             &self,
-            _request: TerminalRunRequest,
+            request: TerminalRunRequest,
         ) -> Result<TerminalRunResult, ComputerError> {
+            *self.captured_fg_request.lock().unwrap() = Some(request);
             self.foreground_result.clone()
         }
 
@@ -2384,6 +2623,7 @@ mod tests {
             timeout: None,
             description: "test".to_string(),
             is_background: false,
+            block_until_ms: None,
         }
     }
 
@@ -2393,7 +2633,21 @@ mod tests {
             timeout: None,
             description: "test".to_string(),
             is_background: true,
+            block_until_ms: None,
         }
+    }
+
+    /// A `test_ctx` with a contract version set. `None` means `current`.
+    fn versioned_ctx(
+        resources: crate::types::resources::SharedResources,
+        version: Option<&str>,
+    ) -> xai_tool_runtime::ToolCallContext {
+        let mut ctx = test_ctx(resources);
+        if let Some(v) = version {
+            ctx.extensions
+                .insert(xai_tool_runtime::BehaviorVersion(v.to_string()));
+        }
+        ctx
     }
 
     // ─── Streaming (BashTool::execute) test scaffolding ─── `test_ctx` stamps
@@ -2442,12 +2696,19 @@ mod tests {
         match p {
             xai_tool_runtime::ToolProgress::Custom { subkind, payload } => {
                 assert_eq!(subkind, "bash_output_chunk", "unexpected subkind");
-                (
-                    payload["delta"].as_str().unwrap().to_owned(),
-                    payload["total_bytes"].as_u64().unwrap() as usize,
-                    payload["truncated"].as_bool().unwrap(),
-                    payload["gap"].as_bool().unwrap(),
-                )
+                let Some(delta) = payload.get("delta").and_then(|v| v.as_str()) else {
+                    panic!("payload missing delta: {payload}");
+                };
+                let Some(total_bytes) = payload.get("total_bytes").and_then(|v| v.as_u64()) else {
+                    panic!("payload missing total_bytes: {payload}");
+                };
+                let Some(truncated) = payload.get("truncated").and_then(|v| v.as_bool()) else {
+                    panic!("payload missing truncated: {payload}");
+                };
+                let Some(gap) = payload.get("gap").and_then(|v| v.as_bool()) else {
+                    panic!("payload missing gap: {payload}");
+                };
+                (delta.to_owned(), total_bytes as usize, truncated, gap)
             }
             other => panic!("expected Custom progress, got {other:?}"),
         }
@@ -2500,6 +2761,37 @@ mod tests {
         assert_eq!(last, 100);
     }
 
+    #[test]
+    fn streaming_progress_input_returns_a_progress_event() {
+        fn chunk(output: &[u8], total: usize) -> BashOutputChunk {
+            BashOutputChunk {
+                base: BashNotificationBase {
+                    tool_call_id: "t".into(),
+                    command: "c".into(),
+                    output: output.to_vec(),
+                    total_bytes: total,
+                    truncated: false,
+                    cwd: PathBuf::from("/"),
+                },
+            }
+        }
+
+        let spec = BASH_CAPABILITIES
+            .streaming
+            .as_ref()
+            .expect("streaming spec");
+        let mut last = 0usize;
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            bash_output_chunk_progress(spec, &chunk(b"hello", 5), &mut last)
+        }));
+        let progress = caught.expect("streaming progress panicked");
+        let event = progress.expect("streaming progress returned no event");
+        assert_eq!(
+            ("hello".to_owned(), 5, false, false),
+            read_chunk_progress(&event)
+        );
+    }
+
     /// A single tick whose delta exceeds [`MAX_PROGRESS_DELTA_BYTES`] is cut to the cap (on a UTF-8
     /// char boundary, never splitting a multi-byte sequence) and the remainder is deferred to the
     /// next tick (append is lossless); `total_bytes` still reflects the full count.
@@ -2527,7 +2819,9 @@ mod tests {
         match p {
             xai_tool_runtime::ToolProgress::Custom { subkind, payload } => {
                 assert_eq!(subkind, "bash_output_chunk");
-                let delta = payload["delta"].as_str().unwrap();
+                let Some(delta) = payload.get("delta").and_then(|v| v.as_str()) else {
+                    panic!("payload missing delta: {payload}");
+                };
                 // Capped: never larger than the per-frame limit.
                 assert!(
                     delta.len() <= MAX_PROGRESS_DELTA_BYTES,
@@ -2538,11 +2832,14 @@ mod tests {
                 // char from a split `€`). With `€` being 3 bytes, the cap (16384) is not a
                 // boundary, so we back off below it.
                 assert!(delta.len() < MAX_PROGRESS_DELTA_BYTES);
-                assert_eq!(delta, &payload_str[..delta.len()]);
+                assert_eq!(Some(delta), payload_str.get(..delta.len()));
                 // Append defers rather than drops: the over-cap remainder is
                 // held back for the next tick.
                 // total_bytes still reflects the true monotonic count.
-                assert_eq!(payload["total_bytes"].as_u64().unwrap() as usize, total);
+                assert_eq!(
+                    payload.get("total_bytes").and_then(|v| v.as_u64()),
+                    Some(total as u64)
+                );
                 // `last` advanced only past the emitted bytes (deferral), so
                 // subsequent ticks re-slice the held remainder.
                 assert_eq!(last, delta.len());
@@ -2553,13 +2850,19 @@ mod tests {
         // Drain the deferred remainder: repeated calls with the same chunk
         // pace it out in capped frames until the full payload is surfaced.
         let mut reassembled = String::new();
-        reassembled.push_str(&payload_str[..last]);
+        let Some(prefix) = payload_str.get(..last) else {
+            panic!("last not a char boundary: {last}");
+        };
+        reassembled.push_str(prefix);
         while last < total {
             let p = bash_output_chunk_progress(spec, &chunk, &mut last).unwrap();
             let xai_tool_runtime::ToolProgress::Custom { payload, .. } = p else {
                 panic!("expected Custom progress");
             };
-            let delta = payload["delta"].as_str().unwrap().to_owned();
+            let Some(delta) = payload.get("delta").and_then(|v| v.as_str()) else {
+                panic!("payload missing delta: {payload}");
+            };
+            let delta = delta.to_owned();
             assert!(delta.len() <= MAX_PROGRESS_DELTA_BYTES);
             reassembled.push_str(&delta);
         }
@@ -2706,11 +3009,14 @@ mod tests {
 
         // total_bytes is strictly increasing (keyed off the monotonic counter).
         for w in deltas.windows(2) {
+            let [prev, next] = w else {
+                continue;
+            };
             assert!(
-                w[1].0 > w[0].0,
+                next.0 > prev.0,
                 "total_bytes must strictly increase: {} !> {}",
-                w[1].0,
-                w[0].0
+                next.0,
+                prev.0
             );
         }
 
@@ -2921,6 +3227,141 @@ mod tests {
         }
     }
 
+    /// Under `current` a legacy `timeout: 0` starts the command in the background at once.
+    /// The host's `auto_background_on_timeout` settings do not matter.
+    #[tokio::test]
+    async fn foreground_timeout_zero_runs_in_background() {
+        for params in [
+            BashParams::default(),
+            BashParams {
+                auto_background_on_timeout: true,
+                ..BashParams::default()
+            },
+            BashParams {
+                auto_background_on_timeout: true,
+                foreground_block_budget_ms: Some(0),
+                ..BashParams::default()
+            },
+        ] {
+            let (mock, captured) = MockTerminal::background_ok_capturing("bg-zero");
+            let resources = make_resources_with_params(mock, params);
+
+            let result = xai_tool_runtime::Tool::run(
+                &BashTool,
+                test_ctx(resources.into_shared()),
+                BashToolInput {
+                    timeout: Some(0),
+                    ..make_input("npx next start -p 3456")
+                },
+            )
+            .await
+            .unwrap();
+
+            match result {
+                BashToolOutput::Background(bg) => {
+                    assert_eq!(bg.task_id, "bg-zero");
+                    assert_eq!(bg.status, "running");
+                }
+                BashToolOutput::Foreground(_) => {
+                    panic!("timeout: 0 must not run in the foreground")
+                }
+            }
+            let request = captured.lock().unwrap().take().expect("background request");
+            assert_eq!(request.timeout, Duration::MAX);
+            assert!(!request.auto_background_on_timeout);
+        }
+    }
+
+    #[tokio::test]
+    async fn foreground_timeout_zero_uses_default_when_background_disabled() {
+        let (mock, captured) = MockTerminal::success_capturing("ok\n", 0);
+        let resources = make_resources_with_params(
+            mock,
+            BashParams {
+                enabled_background: false,
+                ..BashParams::default()
+            },
+        );
+
+        let result = xai_tool_runtime::Tool::run(
+            &BashTool,
+            test_ctx(resources.into_shared()),
+            BashToolInput {
+                timeout: Some(0),
+                ..make_input("echo ok")
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(result, BashToolOutput::Foreground(_)));
+        let request = captured.lock().unwrap().take().expect("foreground request");
+        assert_eq!(request.timeout, DEFAULT_TIMEOUT);
+    }
+
+    #[test]
+    fn bash_version_from_contract() {
+        assert_eq!(BashVersion::from_contract(None), BashVersion::Current);
+        assert_eq!(
+            BashVersion::from_contract(Some("current")),
+            BashVersion::Current
+        );
+        assert_eq!(
+            BashVersion::from_contract(Some("pre-block-until-ms")),
+            BashVersion::PreBlockUntilMs
+        );
+        assert_eq!(
+            BashVersion::from_contract(Some("legacy-0.4.10")),
+            BashVersion::Legacy0_4_10
+        );
+        assert_eq!(
+            BashVersion::from_contract(Some("unknown-version")),
+            BashVersion::Current,
+            "unknown versions fall back to current"
+        );
+        assert!(BashVersion::Current.single_knob());
+        assert!(!BashVersion::PreBlockUntilMs.single_knob());
+        assert!(!BashVersion::Legacy0_4_10.single_knob());
+        assert!(!BashVersion::PreBlockUntilMs.is_legacy());
+        assert!(BashVersion::Legacy0_4_10.is_legacy());
+    }
+
+    /// Under the two-knob versions an omitted or `0` timeout uses the default kill timeout. A positive timeout is the kill timeout.
+    /// Auto-background stays off.
+    #[tokio::test]
+    async fn foreground_timeouts_unchanged_under_two_knob_versions() {
+        for version in ["pre-block-until-ms", "legacy-0.4.10"] {
+            for (timeout, expected) in [
+                (None, DEFAULT_TIMEOUT),
+                (Some(0), DEFAULT_TIMEOUT),
+                (Some(5_000), Duration::from_millis(5_000)),
+            ] {
+                let (mock, captured) = MockTerminal::success_capturing("ok\n", 0);
+                let resources = make_resources(mock);
+
+                let result = xai_tool_runtime::Tool::run(
+                    &BashTool,
+                    versioned_ctx(resources.into_shared(), Some(version)),
+                    BashToolInput {
+                        timeout,
+                        ..make_input("echo ok")
+                    },
+                )
+                .await
+                .unwrap();
+
+                assert!(
+                    matches!(result, BashToolOutput::Foreground(_)),
+                    "{version}: timeout {timeout:?} must stay in the foreground"
+                );
+                let request = captured.lock().unwrap().take().expect("foreground request");
+                assert_eq!(request.timeout, expected, "{version}: timeout {timeout:?}");
+                assert!(!request.auto_background_on_timeout, "{version}");
+                assert_eq!(request.foreground_block_budget, None, "{version}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn background_injects_python_unbuffered() {
         let (mock, captured) = MockTerminal::background_ok_capturing("bg-env");
@@ -3064,29 +3505,34 @@ mod tests {
         );
     }
 
-    /// Enabled-background `&` rejection must name the real param resolved from the template
-    /// (`is_background`), never a blank "set =true". Regression: the template previously used the
-    /// non-existent `params.execute.background` key, which resolved to "".
+    /// The `&` rejection names the setting from the template.
+    /// That is `block_until_ms=0` under `current` and `is_background=true` under the two-knob versions.
     #[cfg(unix)]
     #[tokio::test]
-    async fn background_operator_rejection_names_is_background_param() {
-        let resources = make_resources_reject_bg_op(MockTerminal::success("", 0));
-        let tool = BashTool;
-        let result = xai_tool_runtime::Tool::run(
-            &tool,
-            test_ctx(resources.into_shared()),
-            make_input("sleep 10 &"),
-        )
-        .await;
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("is_background=true"),
-            "rejection must name the real param: {err}"
-        );
-        assert!(
-            !err.contains(" =true"),
-            "rejection must never render a blank param: {err}"
-        );
+    async fn background_operator_rejection_names_background_setting() {
+        for (version, expected) in [
+            (None, "block_until_ms=0"),
+            (Some("pre-block-until-ms"), "is_background=true"),
+        ] {
+            let resources = make_resources_reject_bg_op(MockTerminal::success("", 0));
+
+            let result = xai_tool_runtime::Tool::run(
+                &BashTool,
+                versioned_ctx(resources.into_shared(), version),
+                make_input("sleep 10 &"),
+            )
+            .await;
+
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains(expected),
+                "{version:?}: rejection must name the real setting {expected}: {err}"
+            );
+            assert!(
+                !err.contains(" =true") && !err.contains(" =0"),
+                "{version:?}: rejection must never render a blank param: {err}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -3723,6 +4169,15 @@ mod tests {
             BashTool::resolve_effective_timeout(input, is_bg, DEFAULT_TIMEOUT, max_ms)
         }
 
+        #[tokio::test(start_paused = true)]
+        async fn one_second_timeout_fires_before_five_second_command() {
+            let timeout =
+                BashTool::resolve_effective_timeout(None, false, Duration::from_secs(1), u64::MAX);
+            let started = tokio::time::Instant::now();
+            tokio::time::sleep(timeout).await;
+            assert_eq!(Duration::from_secs(1), started.elapsed());
+        }
+
         #[test]
         fn foreground_zero_uses_default() {
             assert_eq!(resolve(Some(0), false, None), DEFAULT_TIMEOUT);
@@ -3875,6 +4330,7 @@ mod tests {
     }
 
     // ─── FG block budget + schema description unit tests ───
+    // These test the two-knob versions. `single_knob_tests` covers the `current` contract
 
     mod foreground_block_budget_tests {
         use super::*;
@@ -3909,15 +4365,27 @@ mod tests {
         }
 
         fn timeout_desc(params: &BashParams) -> String {
+            timeout_desc_for(params, BashVersion::PreBlockUntilMs)
+        }
+
+        fn timeout_desc_for(params: &BashParams, version: BashVersion) -> String {
             let _g = env_lock();
-            let schema = BashTool::exported_input_schema(&base_schema(), params, "timeout");
-            schema["properties"]["timeout"]["description"]
-                .as_str()
+            let schema =
+                BashTool::exported_input_schema(&base_schema(), params, "timeout", version);
+            schema
+                .get("properties")
+                .and_then(|p| p.get("timeout"))
+                .and_then(|t| t.get("description"))
+                .and_then(|d| d.as_str())
                 .expect("timeout description")
                 .to_string()
         }
 
         fn tool_desc(params: &BashParams) -> String {
+            tool_desc_for(params, BashVersion::PreBlockUntilMs)
+        }
+
+        fn tool_desc_for(params: &BashParams, version: BashVersion) -> String {
             let _g = env_lock();
             let renderer = TemplateRenderer::new(
                 HashMap::from([
@@ -3935,7 +4403,7 @@ mod tests {
                     ]),
                 )]),
             );
-            BashTool::rendered_description(None, &renderer, params)
+            BashTool::rendered_description(None, &renderer, params, version)
         }
 
         #[test]
@@ -4069,9 +4537,18 @@ mod tests {
                 desc.contains("Default: 30000") || desc.contains("30000"),
                 "default must track config: {desc}"
             );
-            let schema = BashTool::exported_input_schema(&base_schema(), &params, "timeout");
+            let schema = BashTool::exported_input_schema(
+                &base_schema(),
+                &params,
+                "timeout",
+                BashVersion::PreBlockUntilMs,
+            );
             assert_eq!(
-                schema["properties"]["timeout"]["maximum"].as_u64(),
+                schema
+                    .get("properties")
+                    .and_then(|p| p.get("timeout"))
+                    .and_then(|t| t.get("maximum"))
+                    .and_then(|v| v.as_u64()),
                 Some(60_000)
             );
             let auto = BashParams {
@@ -4157,9 +4634,17 @@ mod tests {
                 ..BashParams::default()
             };
             let wait = BashTool::effective_auto_bg_wait_ms(&params);
-            let schema = BashTool::exported_input_schema(&base_schema(), &params, "timeout");
-            let desc = schema["properties"]["timeout"]["description"]
-                .as_str()
+            let schema = BashTool::exported_input_schema(
+                &base_schema(),
+                &params,
+                "timeout",
+                BashVersion::PreBlockUntilMs,
+            );
+            let desc = schema
+                .get("properties")
+                .and_then(|p| p.get("timeout"))
+                .and_then(|t| t.get("description"))
+                .and_then(|d| d.as_str())
                 .expect("timeout description")
                 .to_string();
             match prev {
@@ -4210,11 +4695,18 @@ mod tests {
         fn schema_property_description_tracks_renamed_timeout() {
             let param_map =
                 std::collections::HashMap::from([("timeout".to_string(), "max_wait".to_string())]);
-            let exported =
-                BashTool::exported_input_schema(&base_schema(), &BashParams::default(), "max_wait");
+            let exported = BashTool::exported_input_schema(
+                &base_schema(),
+                &BashParams::default(),
+                "max_wait",
+                BashVersion::PreBlockUntilMs,
+            );
             let remapped = crate::util::remap::remap_schema_properties(&exported, &param_map);
-            let desc = remapped["properties"]["max_wait"]["description"]
-                .as_str()
+            let desc = remapped
+                .get("properties")
+                .and_then(|p| p.get("max_wait"))
+                .and_then(|t| t.get("description"))
+                .and_then(|d| d.as_str())
                 .expect("max_wait description");
             assert!(
                 desc.contains("max_wait"),
@@ -4244,7 +4736,7 @@ mod tests {
             );
             let def = ToolMetadata::versioned_definition(
                 &BashTool,
-                None,
+                Some("pre-block-until-ms"),
                 "run_terminal_cmd",
                 None,
                 &renderer,
@@ -4261,8 +4753,10 @@ mod tests {
                 props.get("timeout").is_some() && props.get("max_wait").is_none(),
                 "empty param_map must keep schema key timeout, got: {props}"
             );
-            let desc = props["timeout"]["description"]
-                .as_str()
+            let desc = props
+                .get("timeout")
+                .and_then(|t| t.get("description"))
+                .and_then(|d| d.as_str())
                 .expect("timeout description");
             assert!(
                 desc.contains("timeout"),
@@ -4333,6 +4827,57 @@ mod tests {
             );
         }
 
+        /// The two-knob description keeps its wording from before `block_until_ms` existed.
+        #[test]
+        fn two_knob_copy_is_frozen() {
+            for version in [BashVersion::PreBlockUntilMs, BashVersion::Legacy0_4_10] {
+                for params in [
+                    BashParams::default(),
+                    BashParams {
+                        auto_background_on_timeout: true,
+                        ..BashParams::default()
+                    },
+                ] {
+                    let desc = tool_desc_for(&params, version);
+                    assert!(
+                        !desc.contains("runs the command in the background immediately")
+                            && !desc.contains("`timeout: 0` runs the command in the background"),
+                        "{version:?}: frozen copy must not claim timeout 0 backgrounds: {desc}"
+                    );
+                    if !params.auto_background_on_timeout {
+                        assert!(
+                            desc.contains("will timeout after")
+                                && !desc.contains("are killed after"),
+                            "{version:?}: frozen copy keeps the original default-timeout wording: {desc}"
+                        );
+                    }
+                    assert!(
+                        desc.contains("`timeout: 0` in `is_background: true` mode disables"),
+                        "{version:?}: frozen copy keeps the is_background-scoped sentence: {desc}"
+                    );
+
+                    let prop = timeout_desc_for(&params, version);
+                    assert!(
+                        !prop.contains("0 runs the command in the background"),
+                        "{version:?}: frozen property copy must not claim timeout 0 backgrounds: {prop}"
+                    );
+                }
+
+                assert!(
+                    timeout_desc_for(&BashParams::default(), version)
+                        .ends_with("enforced for foreground commands only."),
+                    "{version:?}: frozen property copy keeps the original wording"
+                );
+
+                let disabled = BashParams {
+                    enabled_background: false,
+                    ..BashParams::default()
+                };
+                assert!(!tool_desc_for(&disabled, version).contains("background"));
+                assert!(!timeout_desc_for(&disabled, version).contains("background"));
+            }
+        }
+
         #[test]
         fn serde_accepts_foreground_block_budget_ms() {
             let p: BashParams = serde_json::from_str(
@@ -4343,6 +4888,674 @@ mod tests {
             // Omitted → None (server default)
             let p2: BashParams = serde_json::from_str(r#"{"enabled_background":true}"#).unwrap();
             assert!(p2.foreground_block_budget_ms.is_none());
+        }
+    }
+
+    // ─── Single-knob `current` contract (`block_until_ms`) ───
+
+    mod single_knob_tests {
+        use super::*;
+
+        fn block_input(command: &str, block_until_ms: Option<u64>) -> BashToolInput {
+            BashToolInput {
+                block_until_ms,
+                ..make_input(command)
+            }
+        }
+
+        /// A renderer set up the way the registry does it, with every bash param and the task tools.
+        fn renderer(system_reminders_enabled: bool) -> TemplateRenderer {
+            TemplateRenderer::new(
+                HashMap::from([
+                    (ToolKind::Execute, "run_terminal_cmd".to_string()),
+                    (
+                        ToolKind::BackgroundTaskAction,
+                        "get_task_output".to_string(),
+                    ),
+                    (ToolKind::KillTaskAction, "kill_task".to_string()),
+                ]),
+                HashMap::from([(
+                    ToolKind::Execute,
+                    HashMap::from(
+                        [
+                            "command",
+                            "timeout",
+                            "description",
+                            "is_background",
+                            "block_until_ms",
+                        ]
+                        .map(|p| (p.to_string(), p.to_string())),
+                    ),
+                )]),
+            )
+            .with_system_reminders_enabled(system_reminders_enabled)
+        }
+
+        fn schema() -> serde_json::Value {
+            serde_json::to_value(schemars::schema_for!(BashToolInput)).unwrap()
+        }
+
+        fn property_names(schema: &serde_json::Value) -> Vec<String> {
+            let mut names: Vec<String> = schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .expect("properties")
+                .keys()
+                .cloned()
+                .collect();
+            names.sort();
+            names
+        }
+
+        fn property_desc(schema: &serde_json::Value, name: &str) -> String {
+            schema
+                .get("properties")
+                .and_then(|p| p.get(name))
+                .and_then(|p| p.get("description"))
+                .and_then(|d| d.as_str())
+                .unwrap_or_else(|| panic!("{name} description"))
+                .to_string()
+        }
+
+        /// The internal schema keeps every knob.
+        /// The exported `current` schema advertises only `command`, `description`, and `block_until_ms`.
+        #[test]
+        fn current_schema_exposes_only_the_single_knob() {
+            assert_eq!(
+                property_names(&schema()),
+                [
+                    "block_until_ms",
+                    "command",
+                    "description",
+                    "is_background",
+                    "timeout"
+                ]
+            );
+
+            let exported = BashTool::exported_input_schema(
+                &schema(),
+                &BashParams::default(),
+                "timeout",
+                BashVersion::Current,
+            );
+
+            assert_eq!(
+                property_names(&exported),
+                ["block_until_ms", "command", "description"]
+            );
+            assert_eq!(
+                exported.get("required"),
+                Some(&serde_json::json!(["command", "description"]))
+            );
+            assert_eq!(
+                property_desc(&exported, "command"),
+                "The bash command to run."
+            );
+            assert_eq!(
+                property_desc(&exported, "description"),
+                "One sentence explanation as to why this command needs to be run and how it contributes to the goal."
+            );
+            assert_eq!(
+                property_desc(&exported, "block_until_ms"),
+                "How long to block and wait for the command to complete before moving it to background (in milliseconds). Defaults to 30000ms. Set to 0 to immediately run the command in the background. The timer includes the shell startup time."
+            );
+            assert!(
+                exported
+                    .pointer("/properties/block_until_ms/maximum")
+                    .is_none(),
+                "no operator cap → no schema maximum"
+            );
+        }
+
+        #[test]
+        fn current_schema_tracks_configured_default_and_cap() {
+            let params = BashParams {
+                default_block_until_ms: Some(10_000),
+                max_block_until_ms: Some(60_000),
+                ..BashParams::default()
+            };
+            let exported = BashTool::exported_input_schema(
+                &schema(),
+                &params,
+                "timeout",
+                BashVersion::Current,
+            );
+
+            assert!(property_desc(&exported, "block_until_ms").contains("Defaults to 10000ms."));
+            assert_eq!(
+                exported.pointer("/properties/block_until_ms/maximum"),
+                Some(&serde_json::json!(60_000))
+            );
+
+            // An operator foreground ceiling also bounds the block.
+            let capped = BashParams {
+                max_timeout_secs: Some(300.0),
+                ..BashParams::default()
+            };
+            let exported = BashTool::exported_input_schema(
+                &schema(),
+                &capped,
+                "timeout",
+                BashVersion::Current,
+            );
+
+            assert_eq!(
+                exported.pointer("/properties/block_until_ms/maximum"),
+                Some(&serde_json::json!(300_000))
+            );
+        }
+
+        /// With backgrounding disabled the schema keeps `timeout` and does not advertise `block_until_ms`.
+        #[test]
+        fn current_schema_without_background_keeps_legacy_timeout() {
+            let params = BashParams {
+                enabled_background: false,
+                ..BashParams::default()
+            };
+            let exported = BashTool::exported_input_schema(
+                &schema(),
+                &params,
+                "timeout",
+                BashVersion::Current,
+            );
+
+            assert_eq!(
+                property_names(&exported),
+                ["command", "description", "timeout"]
+            );
+            assert_eq!(
+                property_desc(&exported, "timeout"),
+                "Optional timeout in milliseconds (max 300000). Default: 120000."
+            );
+        }
+
+        /// The two-knob versions never advertise `block_until_ms`.
+        #[test]
+        fn pinned_schemas_hide_block_until_ms() {
+            for version in [BashVersion::PreBlockUntilMs, BashVersion::Legacy0_4_10] {
+                let exported = BashTool::exported_input_schema(
+                    &schema(),
+                    &BashParams::default(),
+                    "timeout",
+                    version,
+                );
+                assert_eq!(
+                    property_names(&exported),
+                    ["command", "description", "is_background", "timeout"],
+                    "{version:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn block_until_ms_accepts_string_or_integer() {
+            let parse = |json: &str| -> BashToolInput { serde_json::from_str(json).unwrap() };
+
+            assert_eq!(
+                parse(r#"{"command":"x","description":"d","block_until_ms":45000}"#).block_until_ms,
+                Some(45_000)
+            );
+            assert_eq!(
+                parse(r#"{"command":"x","description":"d","block_until_ms":"45000"}"#)
+                    .block_until_ms,
+                Some(45_000)
+            );
+            assert_eq!(
+                parse(r#"{"command":"x","description":"d","block_until_ms":0}"#).block_until_ms,
+                Some(0)
+            );
+            assert_eq!(
+                parse(r#"{"command":"x","description":"d"}"#).block_until_ms,
+                None
+            );
+        }
+
+        #[test]
+        fn resolve_block_precedence_and_clamp() {
+            let params = BashParams::default();
+            let resolve = |block, is_background, timeout| {
+                BashTool::resolve_block_until_ms(
+                    &BashToolInput {
+                        block_until_ms: block,
+                        is_background,
+                        timeout,
+                        ..make_input("x")
+                    },
+                    &params,
+                )
+            };
+
+            // `block_until_ms` takes precedence over the legacy knobs
+            assert_eq!(resolve(Some(5_000), true, Some(9_000)), 5_000);
+            assert_eq!(resolve(Some(0), false, Some(9_000)), 0);
+            // A legacy `is_background: true` means a zero block. A legacy `timeout` is the block
+            assert_eq!(resolve(None, true, Some(9_000)), 0);
+            assert_eq!(resolve(None, false, Some(9_000)), 9_000);
+            // An omitted block uses the configured default of 30s
+            assert_eq!(resolve(None, false, None), DEFAULT_BLOCK_UNTIL_MS);
+            // Positive values clamp to the background cap, not the 5-minute foreground ceiling
+            assert_eq!(
+                resolve(None, false, Some(u64::MAX)),
+                ABSOLUTE_MAX_TIMEOUT_MS
+            );
+            assert_eq!(resolve(Some(3_600_000), false, None), 3_600_000);
+
+            let capped = BashParams {
+                max_block_until_ms: Some(1_000),
+                default_block_until_ms: Some(5_000),
+                ..BashParams::default()
+            };
+            assert_eq!(
+                BashTool::resolve_block_until_ms(&block_input("x", None), &capped),
+                1_000
+            );
+            assert_eq!(
+                BashTool::resolve_block_until_ms(&block_input("x", Some(0)), &capped),
+                0
+            );
+        }
+
+        /// `block_until_ms: 0`, `is_background: true`, and `timeout: 0` each start the command in the background with no time limit.
+        #[tokio::test]
+        async fn block_zero_runs_in_background() {
+            for input in [
+                block_input("npm run dev", Some(0)),
+                make_bg_input("npm run dev"),
+                BashToolInput {
+                    timeout: Some(0),
+                    ..make_input("npm run dev")
+                },
+            ] {
+                let (mock, captured) = MockTerminal::background_ok_capturing("bg-7");
+                let resources = make_resources(mock);
+
+                let result = xai_tool_runtime::Tool::run(
+                    &BashTool,
+                    test_ctx(resources.into_shared()),
+                    input,
+                )
+                .await
+                .unwrap();
+
+                let BashToolOutput::Background(bg) = result else {
+                    panic!("expected a background start");
+                };
+                assert_eq!(bg.task_id, "bg-7");
+                assert_eq!(bg.summary, "Background task bg-7 started");
+                let request = captured.lock().unwrap().take().expect("background request");
+                assert_eq!(request.timeout, Duration::MAX);
+                assert!(!request.auto_background_on_timeout);
+            }
+        }
+
+        /// A positive block runs the command in the foreground and moves it to the background exactly at the block.
+        /// The internal `timeout` equals the block. There is no short budget. The ceiling is the background cap.
+        #[tokio::test]
+        async fn positive_block_waits_then_auto_backgrounds_at_the_block() {
+            for (input, expected_ms) in [
+                (block_input("cargo build", Some(45_000)), 45_000),
+                (
+                    BashToolInput {
+                        timeout: Some(5_000),
+                        ..make_input("cargo build")
+                    },
+                    5_000,
+                ),
+                (block_input("cargo build", None), DEFAULT_BLOCK_UNTIL_MS),
+                (block_input("cargo build", Some(3_600_000)), 3_600_000),
+            ] {
+                // These params would shorten or kill the wait under the two-knob versions. `current` ignores them
+                let (mock, captured) = MockTerminal::success_capturing("ok\n", 0);
+                let resources = make_resources_with_params(
+                    mock,
+                    BashParams {
+                        auto_background_on_timeout: false,
+                        foreground_block_budget_ms: Some(500),
+                        ..BashParams::default()
+                    },
+                );
+
+                let result = xai_tool_runtime::Tool::run(
+                    &BashTool,
+                    test_ctx(resources.into_shared()),
+                    input,
+                )
+                .await
+                .unwrap();
+
+                assert!(matches!(result, BashToolOutput::Foreground(_)));
+                let request = captured.lock().unwrap().take().expect("foreground request");
+                assert_eq!(request.timeout, Duration::from_millis(expected_ms));
+                assert!(request.auto_background_on_timeout);
+                assert_eq!(request.foreground_block_budget, Some(Duration::MAX));
+            }
+        }
+
+        #[tokio::test]
+        async fn omitted_block_uses_configured_default() {
+            let (mock, captured) = MockTerminal::success_capturing("ok\n", 0);
+            let resources = make_resources_with_params(
+                mock,
+                BashParams {
+                    default_block_until_ms: Some(2_000),
+                    ..BashParams::default()
+                },
+            );
+
+            xai_tool_runtime::Tool::run(
+                &BashTool,
+                test_ctx(resources.into_shared()),
+                block_input("make", None),
+            )
+            .await
+            .unwrap();
+
+            let request = captured.lock().unwrap().take().expect("foreground request");
+            assert_eq!(request.timeout, Duration::from_millis(2_000));
+        }
+
+        /// When the terminal reports the block expired, the summary reports the block as the wait, not the 15s short budget.
+        #[tokio::test]
+        async fn expired_block_reports_the_block_as_the_wait() {
+            let mut mock = MockTerminal::success("Compiling foo v0.1.0\n", 0);
+            if let Ok(r) = mock.foreground_result.as_mut() {
+                r.signal = Some("auto_backgrounded".to_string());
+                r.exit_code = None;
+                r.pid = Some(4242);
+            }
+            let resources = make_resources_with_params(
+                mock,
+                BashParams {
+                    foreground_block_budget_ms: Some(500),
+                    ..BashParams::default()
+                },
+            );
+            let ctx = crate::types::tool_metadata::test_ctx_with_call_id(
+                resources.into_shared(),
+                "call-9",
+            );
+
+            let result = xai_tool_runtime::Tool::run(
+                &BashTool,
+                ctx,
+                BashToolInput {
+                    description: "build the crate".to_string(),
+                    ..block_input("cargo build", Some(45_000))
+                },
+            )
+            .await
+            .unwrap();
+
+            let BashToolOutput::Background(bg) = result else {
+                panic!("expected the expired block to surface as a background task");
+            };
+            assert_eq!(bg.task_id, "call-9");
+            assert_eq!(bg.pid, Some(4242));
+            assert_eq!(
+                bg.summary,
+                "Command \"build the crate\" is still running after 45s (block_until_ms) and has been moved to the background as task call-9."
+            );
+            assert!(bg.retrieval_hint.contains("get_task_output"));
+        }
+
+        /// With backgrounding disabled `block_until_ms` is ignored. The legacy `timeout` contract applies.
+        #[tokio::test]
+        async fn block_ignored_when_background_disabled() {
+            let (mock, captured) = MockTerminal::success_capturing("ok\n", 0);
+            let resources = make_resources_with_params(
+                mock,
+                BashParams {
+                    enabled_background: false,
+                    ..BashParams::default()
+                },
+            );
+
+            let result = xai_tool_runtime::Tool::run(
+                &BashTool,
+                test_ctx(resources.into_shared()),
+                block_input("echo ok", Some(1_000)),
+            )
+            .await
+            .unwrap();
+
+            assert!(matches!(result, BashToolOutput::Foreground(_)));
+            let request = captured.lock().unwrap().take().expect("foreground request");
+            assert_eq!(request.timeout, DEFAULT_TIMEOUT);
+            assert!(!request.auto_background_on_timeout);
+        }
+
+        /// The two-knob versions ignore `block_until_ms`.
+        #[tokio::test]
+        async fn pinned_versions_ignore_block_until_ms() {
+            for version in ["pre-block-until-ms", "legacy-0.4.10"] {
+                let (mock, captured) = MockTerminal::success_capturing("ok\n", 0);
+                let resources = make_resources(mock);
+
+                let result = xai_tool_runtime::Tool::run(
+                    &BashTool,
+                    versioned_ctx(resources.into_shared(), Some(version)),
+                    block_input("echo ok", Some(0)),
+                )
+                .await
+                .unwrap();
+
+                assert!(
+                    matches!(result, BashToolOutput::Foreground(_)),
+                    "{version}: block_until_ms must not background under a pinned version"
+                );
+                let request = captured.lock().unwrap().take().expect("foreground request");
+                assert_eq!(request.timeout, DEFAULT_TIMEOUT, "{version}");
+                assert!(!request.auto_background_on_timeout, "{version}");
+            }
+        }
+
+        // ─── Description copy ───
+
+        fn desc(params: &BashParams, reminders: bool) -> String {
+            BashTool::rendered_description(None, &renderer(reminders), params, BashVersion::Current)
+        }
+
+        const CURRENT_DESCRIPTION_PRODUCT: &str = "Run a bash command and return its output.\n\nUsage notes:\n  - You can specify an optional block_until_ms in milliseconds (up to 36000000ms). A foreground command still running at block_until_ms is moved to the background instead of killed; once backgrounded it runs until it exits (background cap 10h). You will receive a task id; wait for it with get_task_output. `block_until_ms: 0` runs the command in the background immediately.\n  - Background commands run until they exit, until you stop them with kill_task, or until the 10h background cap. kill_task sends SIGTERM to the process group, then SIGKILL after ~1s; processes that did not detach via `setsid` / `nohup` are killed with it.\n  - If the output exceeds {max_output_bytes} characters, the middle is truncated (you keep the beginning and end) and the result includes the path to a log file with the full output, which you can read or search.\n  - Set `block_until_ms` to 0 to run the command in the background (e.g., dev servers, long builds): it returns a task id immediately and keeps running in the background. You are notified when it completes, so you can keep working; only poll it with get_task_output when it needs close monitoring (long-running jobs that can hang or degrade before finishing), and poll later if you end up blocked on the result. You do not need to use '&' at the end of the command when using this parameter.";
+
+        /// The `current` description is the two-knob text with `block_until_ms` in place of `timeout` and `is_background`.
+        /// The kill-at-timeout sentences are gone. Nothing else changed.
+        #[cfg(unix)]
+        #[test]
+        fn current_description_is_the_two_knob_text_with_minimal_edits() {
+            let out = desc(&BashParams::default(), true);
+            assert_eq!(out, CURRENT_DESCRIPTION_PRODUCT);
+            for retired in [
+                "is_background",
+                "timeout:",
+                "killed at timeout",
+                "will timeout after",
+                "not bounded by the default",
+            ] {
+                assert!(!out.contains(retired), "{retired:?} must not appear: {out}");
+            }
+
+            // With system reminders off only the notification sentence differs
+            let off = desc(&BashParams::default(), false);
+            assert_eq!(
+                off,
+                CURRENT_DESCRIPTION_PRODUCT.replace(
+                    " You are notified when it completes, so you can keep working; only poll it with get_task_output when it needs close monitoring (long-running jobs that can hang or degrade before finishing), and poll later if you end up blocked on the result.",
+                    " Use get_task_output to monitor it or wait for it to finish."
+                )
+            );
+        }
+
+        /// The `up to` figure is the block ceiling, an operator cap or the background cap.
+        /// It is not the old 5-minute foreground kill ceiling.
+        #[test]
+        fn current_description_advertises_the_block_ceiling() {
+            let out = desc(
+                &BashParams {
+                    max_block_until_ms: Some(60_000),
+                    ..BashParams::default()
+                },
+                true,
+            );
+            assert!(out.contains("(up to 60000ms)"), "{out}");
+            assert!(!out.contains("300000"), "{out}");
+        }
+
+        /// With backgrounding disabled `current` renders the two-knob disabled template.
+        #[test]
+        fn current_description_background_disabled_is_unchanged() {
+            let params = BashParams {
+                enabled_background: false,
+                timeout_secs: Some(60.0),
+                ..BashParams::default()
+            };
+            assert_eq!(
+                desc(&params, true),
+                BashTool::rendered_description(
+                    None,
+                    &renderer(true),
+                    &params,
+                    BashVersion::PreBlockUntilMs
+                )
+            );
+        }
+
+        #[test]
+        fn current_description_tracks_renamed_block_param() {
+            let renamed = TemplateRenderer::new(
+                HashMap::from([
+                    (ToolKind::Execute, "run_terminal_command".to_string()),
+                    (
+                        ToolKind::BackgroundTaskAction,
+                        "get_command_or_subagent_output".to_string(),
+                    ),
+                    (
+                        ToolKind::KillTaskAction,
+                        "kill_command_or_subagent".to_string(),
+                    ),
+                ]),
+                HashMap::from([(
+                    ToolKind::Execute,
+                    HashMap::from([("block_until_ms".to_string(), "wait_ms".to_string())]),
+                )]),
+            );
+            let out = BashTool::rendered_description(
+                None,
+                &renamed,
+                &BashParams::default(),
+                BashVersion::Current,
+            );
+
+            assert!(
+                out.contains("optional wait_ms in milliseconds")
+                    && out.contains("`wait_ms: 0` runs the command")
+                    && out.contains("Set `wait_ms` to 0"),
+                "{out}"
+            );
+            assert!(
+                out.contains("wait for it with get_command_or_subagent_output")
+                    && out.contains("stop them with kill_command_or_subagent")
+                    && out.contains("kill_command_or_subagent sends SIGTERM"),
+                "{out}"
+            );
+            assert!(!out.contains("block_until_ms"), "{out}");
+        }
+
+        /// On Windows the `current` template takes the same branches as the two-knob template.
+        #[test]
+        fn current_description_windows_branches() {
+            let template = BashTool::single_knob_description_template_enabled();
+            let extras = |has_unix: bool| {
+                serde_json::json!({
+                    "background_cap_hours": background_cap_hours(),
+                    "max_block_until_ms": ABSOLUTE_MAX_TIMEOUT_MS,
+                    "is_windows": true,
+                    "shell_uses_semicolon": !has_unix,
+                    "has_unix_utilities": has_unix,
+                })
+            };
+
+            let pwsh = renderer(true)
+                .render_with_extra(template, &extras(false))
+                .unwrap();
+            assert!(
+                pwsh.starts_with("Run a shell command and return its output."),
+                "{pwsh}"
+            );
+            assert!(pwsh.contains("terminates the child's Job Object"), "{pwsh}");
+            assert!(!pwsh.contains("SIGTERM"), "{pwsh}");
+            assert!(!pwsh.contains("You do not need to use '&'"), "{pwsh}");
+            assert!(
+                pwsh.contains(
+                    "  - '&&' is not supported in this shell; chain sequential commands with ';'."
+                ),
+                "{pwsh}"
+            );
+            assert!(pwsh.contains("are NOT available in this shell"), "{pwsh}");
+
+            let git_bash = renderer(true)
+                .render_with_extra(template, &extras(true))
+                .unwrap();
+            assert!(
+                git_bash.contains("You do not need to use '&'"),
+                "{git_bash}"
+            );
+            assert!(!git_bash.contains("'&&' is not supported"), "{git_bash}");
+        }
+
+        /// `current` and `pre-block-until-ms` produce different schemas and descriptions from the same internal schema.
+        /// This goes through `versioned_definition`, the way the registry calls it.
+        #[test]
+        fn versioned_definition_switches_on_contract_version() {
+            use crate::types::tool_metadata::ToolMetadata;
+            let build = |version: Option<&str>| {
+                ToolMetadata::versioned_definition(
+                    &BashTool,
+                    version,
+                    "run_terminal_cmd",
+                    None,
+                    &renderer(true),
+                    &HashMap::new(),
+                    &schema(),
+                    &serde_json::json!({}),
+                )
+            };
+
+            let current = build(None);
+            assert_eq!(
+                property_names(&current.function.parameters),
+                ["block_until_ms", "command", "description"]
+            );
+            let current_desc = current.function.description.as_deref().unwrap();
+            assert!(
+                current_desc.contains("block_until_ms") && !current_desc.contains("is_background"),
+                "{current_desc}"
+            );
+
+            let pinned = build(Some("pre-block-until-ms"));
+            assert_eq!(
+                property_names(&pinned.function.parameters),
+                ["command", "description", "is_background", "timeout"]
+            );
+            assert!(
+                pinned
+                    .function
+                    .description
+                    .as_deref()
+                    .unwrap()
+                    .contains("Usage notes:")
+            );
+        }
+
+        #[test]
+        fn serde_accepts_default_block_until_ms() {
+            let p: BashParams = serde_json::from_str(
+                r#"{"enabled_background":true,"default_block_until_ms":5000}"#,
+            )
+            .unwrap();
+            assert_eq!(p.default_block_until_ms, Some(5_000));
+
+            let p2: BashParams = serde_json::from_str(r#"{"enabled_background":true}"#).unwrap();
+            assert_eq!(p2.default_block_until_ms, None);
         }
     }
 
@@ -4546,17 +5759,20 @@ mod tests {
         #[test]
         fn message_is_edition_specific() {
             let pwsh =
-                BashTool::powershell_background_operator_message(true, "is_background", false);
+                BashTool::powershell_background_operator_message(true, "is_background=true", false);
             assert!(pwsh.contains("starts a background job"));
-            assert!(pwsh.contains("is_background=true"));
+            assert!(pwsh.contains("Set is_background=true instead."));
 
             let ps51 =
-                BashTool::powershell_background_operator_message(true, "is_background", true);
+                BashTool::powershell_background_operator_message(true, "block_until_ms=0", true);
             assert!(ps51.contains("Windows PowerShell 5.1"));
-            assert!(ps51.contains("is_background=true"));
+            assert!(ps51.contains("Set block_until_ms=0 instead."));
 
-            let disabled =
-                BashTool::powershell_background_operator_message(false, "is_background", false);
+            let disabled = BashTool::powershell_background_operator_message(
+                false,
+                "is_background=true",
+                false,
+            );
             assert!(disabled.contains("disabled"));
             assert!(!disabled.contains("is_background=true"));
         }
@@ -4869,7 +6085,7 @@ mod tests {
                 "has_unix_utilities": true,
             });
             let out = renderer
-                .render_with_extra(BashTool::default_description_template_enabled(), &extras)
+                .render_with_extra(BashTool::two_knob_description_template_enabled(), &extras)
                 .unwrap();
             assert!(
                 out.contains("max_wait") && out.contains("`max_wait: 0`"),
@@ -4883,14 +6099,14 @@ mod tests {
 
         #[test]
         fn unix_shell_omits_utility_and_chaining_notes() {
-            let unix = render(BashTool::default_description_template_enabled(), true);
-            let pwsh = render(BashTool::default_description_template_enabled(), false);
+            let unix = render(BashTool::two_knob_description_template_enabled(), true);
+            let pwsh = render(BashTool::two_knob_description_template_enabled(), false);
             assert_ne!(unix, pwsh);
         }
 
         #[test]
         fn timeout_and_ampersand_text_branch_on_shell() {
-            let enabled = BashTool::default_description_template_enabled();
+            let enabled = BashTool::two_knob_description_template_enabled();
             let unix = render_flags(enabled, false, true);
             let pwsh = render_flags(enabled, true, false);
             let git_bash = render_flags(enabled, true, true);
@@ -4900,8 +6116,8 @@ mod tests {
 
         #[test]
         fn disabled_template_also_branches_on_shell() {
-            let unix = render(BashTool::default_description_template_disabled(), true);
-            let pwsh = render(BashTool::default_description_template_disabled(), false);
+            let unix = render(BashTool::two_knob_description_template_disabled(), true);
+            let pwsh = render(BashTool::two_knob_description_template_disabled(), false);
             assert_ne!(unix, pwsh);
         }
     }

@@ -1,5 +1,7 @@
 //! Shared feedback taxonomy, structured metadata helpers, durable local draft storage, and the capped session trace archive.
 
+#![deny(clippy::indexing_slicing)]
+
 mod draft_images;
 mod draft_store;
 mod feedback_archive;

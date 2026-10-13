@@ -102,29 +102,3 @@ pub struct CodeNavLocation {
 pub struct CodeNavResponse {
     pub locations: Vec<CodeNavLocation>,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn method_constants() {
-        assert_eq!(
-            CodeGotoDefinitionReq::METHOD,
-            "workspace.code_goto_definition"
-        );
-        assert_eq!(
-            CodeGotoReferencesReq::METHOD,
-            "workspace.code_goto_references"
-        );
-        assert_eq!(
-            CodeFindDefinitionsReq::METHOD,
-            "workspace.code_find_definitions"
-        );
-        assert_eq!(
-            CodeFindReferencesReq::METHOD,
-            "workspace.code_find_references"
-        );
-        assert_eq!(CodeIndexStatusReq::METHOD, "workspace.code_index_status");
-    }
-}

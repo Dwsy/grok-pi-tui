@@ -206,8 +206,11 @@ fn launch_name_suggests_budget_and_effort_flags() {
     let items = WorkflowCommand
         .suggest_args(&ctx, "audit ")
         .expect("launch flags");
-    assert_eq!(items[0].display, "--agent-budget");
-    assert_eq!(items[0].insert_text, "audit --agent-budget ");
+    let Some(first) = items.first() else {
+        panic!("expected launch flag items: {items:?}");
+    };
+    assert_eq!(first.display, "--agent-budget");
+    assert_eq!(first.insert_text, "audit --agent-budget ");
     let effort = items
         .iter()
         .find(|item| item.display == "--effort xhigh")
@@ -219,38 +222,39 @@ fn launch_name_suggests_budget_and_effort_flags() {
     for (query, expected) in [
         (
             "audit -",
-            &[
+            [
                 "--agent-budget",
                 "--effort xhigh",
                 "--effort high",
                 "--effort low",
-            ][..],
+            ]
+            .as_slice(),
         ),
         (
             "audit --e",
-            &["--effort xhigh", "--effort high", "--effort low"][..],
+            ["--effort xhigh", "--effort high", "--effort low"].as_slice(),
         ),
-        ("audit --agent", &["--agent-budget"][..]),
-        ("audit --agent-budget", &["--agent-budget"][..]),
+        ("audit --agent", ["--agent-budget"].as_slice()),
+        ("audit --agent-budget", ["--agent-budget"].as_slice()),
         (
             "audit --effort",
-            &["--effort xhigh", "--effort high", "--effort low"][..],
+            ["--effort xhigh", "--effort high", "--effort low"].as_slice(),
         ),
         (
             "audit --effort ",
-            &["--effort xhigh", "--effort high", "--effort low"][..],
+            ["--effort xhigh", "--effort high", "--effort low"].as_slice(),
         ),
         (
             "audit --effort x",
-            &["--effort xhigh", "--effort high", "--effort low"][..],
+            ["--effort xhigh", "--effort high", "--effort low"].as_slice(),
         ),
         (
             "audit --effort deep",
-            &["--effort xhigh", "--effort high", "--effort low"][..],
+            ["--effort xhigh", "--effort high", "--effort low"].as_slice(),
         ),
         (
             "audit --effort Deep",
-            &["--effort xhigh", "--effort high", "--effort low"][..],
+            ["--effort xhigh", "--effort high", "--effort low"].as_slice(),
         ),
     ] {
         let items = WorkflowCommand
@@ -289,22 +293,22 @@ fn registered_launch_flag_specs_drive_remaining_suggestions() {
     for (query, expected, insert_text) in [
         (
             "demo --agent-budget 5 ",
-            &["--effort xhigh", "--effort high", "--effort low"][..],
+            ["--effort xhigh", "--effort high", "--effort low"].as_slice(),
             "demo --agent-budget 5 --effort xhigh ",
         ),
         (
             "demo --agent-budget=5 ",
-            &["--effort xhigh", "--effort high", "--effort low"][..],
+            ["--effort xhigh", "--effort high", "--effort low"].as_slice(),
             "demo --agent-budget=5 --effort xhigh ",
         ),
         (
             "demo --effort low ",
-            &["--agent-budget"][..],
+            ["--agent-budget"].as_slice(),
             "demo --effort low --agent-budget ",
         ),
         (
             "demo --effort=low ",
-            &["--agent-budget"][..],
+            ["--agent-budget"].as_slice(),
             "demo --effort=low --agent-budget ",
         ),
     ] {
@@ -319,15 +323,19 @@ fn registered_launch_flag_specs_drive_remaining_suggestions() {
             expected,
             "query: {query:?}"
         );
-        assert_eq!(items[0].insert_text, insert_text, "query: {query:?}");
+        assert_eq!(
+            items.first().map(|item| item.insert_text.as_str()),
+            Some(insert_text),
+            "query: {query:?}"
+        );
     }
 
     for (query, expected) in [
         (
             "demo --agent-budget 5 --e",
-            &["--effort xhigh", "--effort high", "--effort low"][..],
+            ["--effort xhigh", "--effort high", "--effort low"].as_slice(),
         ),
-        ("demo --effort low --a", &["--agent-budget"][..]),
+        ("demo --effort low --a", ["--agent-budget"].as_slice()),
     ] {
         let items = WorkflowCommand
             .suggest_args(&ctx, query)
@@ -406,7 +414,11 @@ fn exact_effort_values_advance_only_after_trailing_whitespace() {
             .suggest_args(&ctx, query)
             .expect("trailing whitespace advances to remaining flags");
         assert_eq!(items.len(), 1, "query: {query:?}");
-        assert_eq!(items[0].display, "--agent-budget", "query: {query:?}");
+        assert_eq!(
+            items.first().map(|item| item.display.as_str()),
+            Some("--agent-budget"),
+            "query: {query:?}"
+        );
     }
 }
 
@@ -442,8 +454,11 @@ fn manage_op_suggests_stoppable_run_names() {
         .expect("stoppable runs");
     let displays: Vec<&str> = items.iter().map(|i| i.display.as_str()).collect();
     assert_eq!(displays, ["demo-2"]);
-    assert_eq!(items[0].insert_text, "stop demo-2");
-    assert_eq!(items[0].match_text, "stop demo-2");
+    let Some(first) = items.first() else {
+        panic!("expected stoppable run items: {items:?}");
+    };
+    assert_eq!(first.insert_text, "stop demo-2");
+    assert_eq!(first.match_text, "stop demo-2");
 
     let spaced = WorkflowCommand
         .suggest_args(&ctx, "stop demo")
@@ -658,59 +673,82 @@ fn args_phase_lists_saved_workflows_from_acp_catalog() {
         displays,
         ["demo", "runs", "pause", "resume", "stop", "save"]
     );
-    assert_eq!(snapshot.matches[0].insert_text, "demo ");
+    assert_eq!(
+        snapshot.matches.first().map(|m| m.insert_text.as_str()),
+        Some("demo ")
+    );
 
     for (text, expected) in [
         (
             "/workflow demo ",
-            &[
+            [
                 "--agent-budget",
                 "--effort high",
                 "--effort low",
                 "--effort xhigh",
-            ][..],
+            ]
+            .as_slice(),
         ),
         (
             "/workflow demo -",
-            &[
+            [
                 "--agent-budget",
                 "--effort high",
                 "--effort low",
                 "--effort xhigh",
-            ][..],
+            ]
+            .as_slice(),
         ),
         (
             "/workflow demo --e",
-            &["--effort high", "--effort low", "--effort xhigh"][..],
+            ["--effort high", "--effort low", "--effort xhigh"].as_slice(),
         ),
-        ("/workflow demo --agent", &["--agent-budget"][..]),
-        ("/workflow demo --agent-budget", &["--agent-budget"][..]),
+        ("/workflow demo --agent", ["--agent-budget"].as_slice()),
+        (
+            "/workflow demo --agent-budget",
+            ["--agent-budget"].as_slice(),
+        ),
         (
             "/workflow demo --effort",
-            &["--effort high", "--effort low", "--effort xhigh"][..],
+            ["--effort high", "--effort low", "--effort xhigh"].as_slice(),
         ),
         (
             "/workflow demo --effort ",
-            &["--effort high", "--effort low", "--effort xhigh"][..],
+            ["--effort high", "--effort low", "--effort xhigh"].as_slice(),
         ),
-        ("/workflow demo --effort x", &["--effort xhigh"][..]),
-        ("/workflow demo --effort deep", &["--effort xhigh"][..]),
-        ("/workflow demo --effort Deep", &["--effort xhigh"][..]),
+        ("/workflow demo --effort x", ["--effort xhigh"].as_slice()),
+        (
+            "/workflow demo --effort deep",
+            ["--effort xhigh"].as_slice(),
+        ),
+        (
+            "/workflow demo --effort Deep",
+            ["--effort xhigh"].as_slice(),
+        ),
         (
             "/workflow demo --agent-budget 5 ",
-            &["--effort high", "--effort low", "--effort xhigh"][..],
+            ["--effort high", "--effort low", "--effort xhigh"].as_slice(),
         ),
         (
             "/workflow demo --agent-budget=5 ",
-            &["--effort high", "--effort low", "--effort xhigh"][..],
+            ["--effort high", "--effort low", "--effort xhigh"].as_slice(),
         ),
         (
             "/workflow demo --agent-budget 5 --e",
-            &["--effort high", "--effort low", "--effort xhigh"][..],
+            ["--effort high", "--effort low", "--effort xhigh"].as_slice(),
         ),
-        ("/workflow demo --effort low ", &["--agent-budget"][..]),
-        ("/workflow demo --effort=low ", &["--agent-budget"][..]),
-        ("/workflow demo --effort low --a", &["--agent-budget"][..]),
+        (
+            "/workflow demo --effort low ",
+            ["--agent-budget"].as_slice(),
+        ),
+        (
+            "/workflow demo --effort=low ",
+            ["--agent-budget"].as_slice(),
+        ),
+        (
+            "/workflow demo --effort low --a",
+            ["--agent-budget"].as_slice(),
+        ),
     ] {
         ctrl.refresh(&state, text, text.len(), &models);
         let launch_snapshot = state.snapshot();
@@ -830,7 +868,10 @@ fn resume_prefix_keeps_matching_run_names_open() {
         .map(|m| m.display.as_str())
         .collect();
     assert_eq!(displays, ["demo"], "typed prefix must keep the picker open");
-    assert_eq!(snapshot.matches[0].insert_text, "resume demo");
+    assert_eq!(
+        snapshot.matches.first().map(|m| m.insert_text.as_str()),
+        Some("resume demo")
+    );
 }
 
 #[test]

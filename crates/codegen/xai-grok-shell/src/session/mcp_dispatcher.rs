@@ -728,9 +728,9 @@ mod tests {
                     xai_grok_mcp::wire::MCP_ELICIT_COMPLETE
                 );
                 let v: serde_json::Value = serde_json::from_str(args.request.params.get()).unwrap();
-                assert_eq!(v["sessionId"], "sess-1");
-                assert_eq!(v["elicitationId"], "e-1");
-                assert_eq!(v["serverName"], "github");
+                assert_eq!(v.get("sessionId"), Some(&serde_json::json!("sess-1")));
+                assert_eq!(v.get("elicitationId"), Some(&serde_json::json!("e-1")));
+                assert_eq!(v.get("serverName"), Some(&serde_json::json!("github")));
 
                 dispatcher.abort();
             })
@@ -803,7 +803,10 @@ mod tests {
         assert_eq!(added_payload.status, McpServerStatus::Initializing);
         assert_eq!(added_payload.reason, McpServerStatusReason::ConfigAdded);
         let added_json = serde_json::to_value(&added_payload).unwrap();
-        assert_eq!(added_json["reason"], "config_added");
+        assert_eq!(
+            added_json.get("reason"),
+            Some(&serde_json::json!("config_added"))
+        );
 
         let removed_key = ("server_y".to_string(), McpClientEventKind::ConfigRemoved);
         let removed_ev = McpClientEvent::ConfigRemoved {
@@ -814,7 +817,10 @@ mod tests {
         assert_eq!(removed_payload.status, McpServerStatus::Unavailable);
         assert_eq!(removed_payload.reason, McpServerStatusReason::ConfigRemoved);
         let removed_json = serde_json::to_value(&removed_payload).unwrap();
-        assert_eq!(removed_json["reason"], "config_removed");
+        assert_eq!(
+            removed_json.get("reason"),
+            Some(&serde_json::json!("config_removed"))
+        );
     }
 
     #[test]
@@ -913,7 +919,7 @@ mod tests {
         assert_ne!(payload.reason, McpServerStatusReason::RestartSucceeded);
         // Wire-level check: serializes to `"initialized"`.
         let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["reason"], "initialized");
+        assert_eq!(json.get("reason"), Some(&serde_json::json!("initialized")));
     }
 
     #[test]

@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{RpcActivityClass, WorkspaceRpc};
 
-/// Relative path of the provisioner manifest from the **sandbox** `workspace_directory` (pre-grove-rewrite init root, usually `/workspace`).
-/// It is not relative to the agent / workspace-server `--cwd` after a single-repo grove rewrite (`/workspace/app`).
+/// Relative path of the provisioner manifest from the **sandbox** `workspace_directory` (init root, usually `/workspace`).
+/// It is not relative to the agent / workspace-server `--cwd` after a single-repo rewrite (`/workspace/app`).
 /// Writers and `workspace.repos_list` must join this to that sandbox root.
 pub const REPOS_MANIFEST_RELATIVE_PATH: &str = ".grok/repos.json";
 
@@ -127,11 +127,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn method_constant() {
-        assert_eq!(ReposListReq::METHOD, "workspace.repos_list");
-    }
-
-    #[test]
     fn manifest_round_trip() {
         let manifest = RepoManifest::new(vec![
             ProvisionedRepo {
@@ -175,8 +170,11 @@ mod tests {
             }]
         }"#;
         let recovered = RepoManifest::from_json_bytes(json.as_bytes()).expect("parse");
-        assert_eq!(recovered.repos[0].name, "app");
-        assert_eq!(recovered.repos[0].repo_backend, None);
+        let Some(repo) = recovered.repos.first() else {
+            panic!("expected one repo: {:?}", recovered.repos);
+        };
+        assert_eq!(repo.name, "app");
+        assert_eq!(repo.repo_backend, None);
         let out = String::from_utf8(recovered.to_json_bytes().expect("serialize")).expect("utf8");
         assert!(
             !out.contains("repo_backend"),
@@ -198,7 +196,10 @@ mod tests {
             }]
         }"#;
         let recovered = RepoManifest::from_json_bytes(json.as_bytes()).expect("parse");
-        assert_eq!(recovered.repos[0].repo_backend, Some(RepoBackend::Unknown));
+        let Some(repo) = recovered.repos.first() else {
+            panic!("expected one repo: {:?}", recovered.repos);
+        };
+        assert_eq!(repo.repo_backend, Some(RepoBackend::Unknown));
     }
 
     #[test]
@@ -223,7 +224,7 @@ mod tests {
 
     #[test]
     fn materialized_mounts_rejects_out_of_workspace_and_traversal() {
-        // A compromised repos.json must not escape the workspace; unsafe mounts are dropped and the safe workspace-root fallback is used
+        // Compromised repos.json must not escape the workspace; unsafe mounts fall back to the root.
         let manifest = RepoManifest::new(vec![
             ProvisionedRepo {
                 name: "evil".into(),

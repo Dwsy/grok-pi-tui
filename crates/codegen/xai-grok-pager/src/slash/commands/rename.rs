@@ -136,8 +136,11 @@ mod tests {
             .suggest_args(&ctx, "")
             .expect("should ghost-prefill");
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].insert_text, "Fix Login Bug");
-        assert_eq!(items[0].display, "Fix Login Bug");
+        let Some(item) = items.first() else {
+            panic!("expected a prefill item: {items:?}");
+        };
+        assert_eq!(item.insert_text, "Fix Login Bug");
+        assert_eq!(item.display, "Fix Login Bug");
     }
 
     #[test]
@@ -155,14 +158,31 @@ mod tests {
         ctrl.refresh(&state, "/rename ", 8, &models);
         let snap = state.snapshot();
         assert_eq!(snap.matches.len(), 1);
-        assert_eq!(snap.matches[0].insert_text, "Fix Login Bug");
+        assert_eq!(
+            snap.matches.first().map(|m| m.insert_text.as_str()),
+            Some("Fix Login Bug")
+        );
 
         // A title change alone does not rebuild the snapshot (render used to stop at set_current_title)
         // A refresh after the update is what offers the new ghost while `/rename ` is already open
         ctrl.set_current_title(Some("Late Title".into()));
-        assert_eq!(state.snapshot().matches[0].insert_text, "Fix Login Bug");
+        assert_eq!(
+            state
+                .snapshot()
+                .matches
+                .first()
+                .map(|m| m.insert_text.as_str()),
+            Some("Fix Login Bug")
+        );
         ctrl.refresh(&state, "/rename ", 8, &models);
-        assert_eq!(state.snapshot().matches[0].insert_text, "Late Title");
+        assert_eq!(
+            state
+                .snapshot()
+                .matches
+                .first()
+                .map(|m| m.insert_text.as_str()),
+            Some("Late Title")
+        );
 
         ctrl.set_current_title(Some("   ".into()));
         assert!(ctrl.current_title().is_none());
@@ -191,7 +211,10 @@ mod tests {
         let items = RenameCommand
             .suggest_args(&ctx, "  ")
             .expect("whitespace-only query is still empty-args");
-        assert_eq!(items[0].insert_text, "Fix Login Bug");
+        assert_eq!(
+            items.first().map(|item| item.insert_text.as_str()),
+            Some("Fix Login Bug")
+        );
     }
 
     #[test]
@@ -350,7 +373,10 @@ mod tests {
         let items = RenameCommand
             .suggest_args(&ctx, "")
             .expect("empty query still prefills");
-        assert_eq!(items[0].insert_text, "Fix Login Bug");
+        assert_eq!(
+            items.first().map(|item| item.insert_text.as_str()),
+            Some("Fix Login Bug")
+        );
 
         assert!(
             RenameCommand.suggest_args(&ctx, "Fix").is_none(),

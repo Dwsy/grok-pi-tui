@@ -122,11 +122,7 @@ pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
                 resp.results.iter().map(|r| r.session_id.as_str()).collect();
 
             for hit in &resp.results {
-                let title = if hit.title.is_empty() {
-                    "(untitled)"
-                } else {
-                    &hit.title
-                };
+                let title = summary_or_untitled(&hit.title);
                 let time = chrono::DateTime::from_timestamp(hit.updated_at_unix, 0)
                     .map(|dt| {
                         dt.with_timezone(&chrono::Local)
@@ -153,11 +149,7 @@ pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
                 if local_ids.contains(r.session_id.as_str()) {
                     continue;
                 }
-                let title = if r.summary.is_empty() {
-                    "(untitled)"
-                } else {
-                    &r.summary
-                };
+                let title = summary_or_untitled(&r.summary);
                 let time = chrono::DateTime::parse_from_rfc3339(&r.updated_at)
                     .map(|dt| {
                         dt.with_timezone(&chrono::Local)
@@ -210,6 +202,15 @@ pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
     Ok(())
 }
 
+/// The placeholder every session listing shows for a blank title
+pub(crate) fn summary_or_untitled(title: &str) -> &str {
+    if title.trim().is_empty() {
+        "(untitled)"
+    } else {
+        title
+    }
+}
+
 /// Print sessions grouped by worktree label, preserving the original table format with a `Label: <label>` header before each group.
 fn print_sessions_grouped(sessions: &[MergedSession]) {
     if sessions.is_empty() {
@@ -250,8 +251,14 @@ fn print_sessions_grouped(sessions: &[MergedSession]) {
                 "(no summary)"
             };
             let truncated: String = summary.chars().take(50).collect();
-            let created = &s.created_at[..s.created_at.len().min(10)];
-            let updated = &s.updated_at[..s.updated_at.len().min(10)];
+            let created = s
+                .created_at
+                .get(..s.created_at.len().min(10))
+                .unwrap_or(s.created_at.as_str());
+            let updated = s
+                .updated_at
+                .get(..s.updated_at.len().min(10))
+                .unwrap_or(s.updated_at.as_str());
             println!(
                 "{}  {}  {}  {}  {}",
                 s.session_id, created, updated, s.source, truncated

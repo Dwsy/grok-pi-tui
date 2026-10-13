@@ -156,7 +156,11 @@ fn plain_directory_under_worktrees_dir_does_not_inherit_enclosing_repo() {
     let fixture = locked_worktrees_fixture(&temp);
     xai_test_utils::git::init_git_repo(&fixture.root);
     std::fs::write(fixture.root.join("tracked.txt"), "x").unwrap();
-    xai_test_utils::git::git_commit_all(&fixture.root, "initial");
+    // grok-home sits inside this repo. `git add .` races a sibling that opens
+    // worktrees.db at the process-global GROK_HOME: sqlite unlinks
+    // worktrees.db-shm between readdir and stat.
+    xai_test_utils::git::run_git(&fixture.root, &["add", "tracked.txt"]);
+    xai_test_utils::git::run_git(&fixture.root, &["commit", "-m", "initial"]);
     let not_a_repo = fixture.worktrees.join("repo").join("deleted-worktree");
     std::fs::create_dir_all(&not_a_repo).unwrap();
 

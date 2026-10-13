@@ -2,13 +2,14 @@
 //! It deliberately does **not** alias `xai_grok_sampling_types::SamplingConfig`.
 //! Aliasing would pull transitive dependencies on shell-specific types (`xai-grok-tools`, etc.) into the sampler crate.
 
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use xai_grok_sampling_types::{
     ApiBackend, CompactionAtTokens, CompactionsRemaining, ConversationGroupId,
-    DoomLoopRecoveryPolicy, ReasoningEffort,
+    DoomLoopRecoveryPolicy, ReasoningEffort, ReasoningSummary,
 };
 
 use crate::attribution::SharedAttributionCallback;
@@ -20,6 +21,15 @@ pub enum AuthScheme {
     #[default]
     Bearer,
     XApiKey,
+}
+
+/// Set by the shell: `Zstd` only toward the cli-chat-proxy that advertised it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RequestCompression {
+    #[default]
+    None,
+    Zstd,
 }
 
 /// All knobs that control a single sampling request.
@@ -38,6 +48,8 @@ pub struct SamplerConfig {
     pub api_backend: ApiBackend,
     #[serde(default)]
     pub auth_scheme: AuthScheme,
+    #[serde(default)]
+    pub request_compression: RequestCompression,
     /// Extra request headers applied verbatim. The sampler never inspects the URL to derive headers.
     /// Callers (the session) inject proxy auth and other access headers here before constructing the config.
     pub extra_headers: IndexMap<String, String>,
@@ -53,6 +65,9 @@ pub struct SamplerConfig {
     /// Total context window size in tokens.
     /// The sampler does not enforce it; the session uses it for compaction decisions.
     pub context_window: u64,
+    /// Provider request-body cap, already defaulted from `api_backend` by model resolution; `None` budgets to 50 MiB.
+    #[serde(default)]
+    pub max_request_bytes: Option<NonZeroU64>,
     pub force_http1: bool,
     pub max_retries: Option<u32>,
     /// Total-attempt ceiling for rate-limited requests.
@@ -64,6 +79,9 @@ pub struct SamplerConfig {
 
     // Reasoning effort
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Overrides the Responses API `reasoning.summary` the request builder sets; `None` leaves it as built.
+    #[serde(default)]
+    pub reasoning_summary: Option<ReasoningSummary>,
 
     // Client identity
     pub origin_client: Option<OriginClientInfo>,
@@ -119,17 +137,20 @@ impl Default for SamplerConfig {
             top_p: None,
             api_backend: ApiBackend::default(),
             auth_scheme: AuthScheme::default(),
+            request_compression: RequestCompression::default(),
             extra_headers: IndexMap::new(),
             extra_response_includes: Vec::new(),
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: 0,
+            max_request_bytes: None,
             force_http1: false,
             max_retries: None,
             rate_limit_retry_threshold: None,
             stream_tool_calls: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
+            reasoning_summary: None,
             origin_client: None,
             client_identifier: None,
             deployment_id: None,
@@ -163,9 +184,13 @@ pub trait BearerResolver: Send + Sync + std::fmt::Debug {
 
 pub type SharedBearerResolver = std::sync::Arc<dyn BearerResolver>;
 
-/// Per-request header injection (e.g. OTel `traceparent`).
+/// Host trace hooks for the per-attempt HTTP span; the sampler has no OpenTelemetry dependency.
 pub trait HeaderInjector: Send + Sync + std::fmt::Debug {
     fn inject(&self, headers: &mut reqwest::header::HeaderMap);
+
+    /// Runs right after each streaming HTTP span is created and before it has children.
+    /// Default: no-op.
+    fn set_span_parent(&self, _span: &tracing::Span, _traceparent: &str) {}
 }
 
 pub type SharedHeaderInjector = std::sync::Arc<dyn HeaderInjector>;

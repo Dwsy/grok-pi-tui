@@ -112,6 +112,10 @@ define_methods! {
     /// metrics. Donor service.name must be hub-allowlisted. No envelope
     /// `session_id` — metrics are process-aggregate.
     MetricsDonate => "metrics.donate",
+    /// A token-bound tool server presents its refreshed bearer on the live
+    /// socket so the hub moves the socket's expiry deadline instead of
+    /// closing it. Optional: advertised in `hello_ack.capabilities`.
+    AuthRefresh => "auth.refresh",
 
     // service → tool_server
     ToolCallRequest => "tool_call_request",
@@ -167,6 +171,9 @@ define_methods! {
     BotUnsubscribe => "bot.unsubscribe",
     /// Record a conversation → agents index. Does not route by conversation.
     BotBindConversation => "bot.bindConversation",
+    /// Report whether this connection has the agent on screen, so the
+    /// harness can hold that agent's turn-finished push.
+    BotPresence => "bot.presence",
     /// Hub → client event notification (not a client-callable verb).
     BotEvent => "bot.event",
 }

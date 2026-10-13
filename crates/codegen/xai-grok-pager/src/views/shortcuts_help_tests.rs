@@ -234,6 +234,35 @@ fn filter_matches_against_key_display() {
     );
 }
 
+/// Each query word matches on its own against every field, including the long help.
+#[test]
+fn filter_finds_stash_by_natural_queries() {
+    let registry = crate::actions::ActionRegistry::defaults();
+    let entries = build_entries(&[When::PromptFocused], &registry, false);
+    let stash_row = |filtered: &[usize]| {
+        filtered.iter().any(|&i| {
+            matches!(
+                entries.get(i),
+                Some(ShortcutsHelpEntry::Hint {
+                    action_id: Some(ActionId::StashPrompt),
+                    ..
+                })
+            )
+        })
+    };
+
+    for query in ["pop stash", "stash pop", "pop a stash", "unstash"] {
+        let filtered = filter_entries(&entries, query, false, &no_collapsed());
+        assert!(stash_row(&filtered), "{query:?} must find the stash row");
+    }
+
+    let filtered = filter_entries(&entries, "stash zzz", false, &no_collapsed());
+    assert!(
+        !stash_row(&filtered),
+        "a word matching nothing must exclude the row",
+    );
+}
+
 #[test]
 fn filter_keeps_both_headers_when_both_sections_match() {
     let entries = vec![
@@ -955,8 +984,6 @@ fn initial_state_selects_first_hint_not_header() {
     assert_eq!(state.selected, 1, "selected should land on first Hint");
 }
 
-// ── handle_input tests ───────────────────────────────────────
-
 fn make_key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
     crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
 }
@@ -1104,7 +1131,7 @@ fn click_from_search_opens_detail_and_clears_query() {
     let filtered = filter_entries(&entries, state.query(), false, &no_collapsed());
     let hint_pos = filtered
         .iter()
-        .position(|&i| matches!(entries[i], ShortcutsHelpEntry::Hint { .. }))
+        .position(|&i| matches!(entries.get(i), Some(ShortcutsHelpEntry::Hint { .. })))
         .expect("hint present in the filtered view");
     state.hit_areas = Some(PickerHitAreas {
         close_button: Rect::default(),
@@ -1408,10 +1435,10 @@ fn render_detail_body_spaces_paragraphs_with_blank_line() {
         first + 2,
         "paragraphs must be separated by exactly one blank row, rows: {rows:?}"
     );
+    let blank = rows.get(first + 1);
     assert!(
-        rows[first + 1].is_empty(),
-        "the row between paragraphs must be blank, got {:?}",
-        rows[first + 1]
+        blank.is_some_and(|r| r.is_empty()),
+        "the row between paragraphs must be blank, got {blank:?}"
     );
 }
 
@@ -1435,7 +1462,9 @@ fn enter_on_search_pseudo_row_opens_detail() {
         })
         .expect("vim-mode entries include the `/`-search pseudo-row");
     assert_eq!(
-        detail_from_entry(&entries[idx])
+        entries
+            .get(idx)
+            .and_then(detail_from_entry)
             .and_then(|m| match m {
                 ShortcutsHelpMode::Detail { body, .. } => Some(body),
                 _ => None,
@@ -1478,7 +1507,9 @@ fn enter_on_paste_pseudo_row_opens_detail() {
         })
         .expect("paste pseudo-row with long_help");
     assert_eq!(
-        detail_from_entry(&entries[idx])
+        entries
+            .get(idx)
+            .and_then(detail_from_entry)
             .and_then(|m| match m {
                 ShortcutsHelpMode::Detail { body, .. } => Some(body),
                 _ => None,
@@ -1738,8 +1769,6 @@ fn vim_i_enters_search_and_printables_type_afterward() {
     assert_eq!(type_j, ShortcutsHelpOutcome::Changed);
     assert_eq!(state.query(), "j", "printables must type in active search");
 }
-
-// ── vim_mode tests ───────────────────────────────────────────
 
 #[test]
 fn vim_mode_jk_navigate_without_starting_search() {
@@ -2162,7 +2191,7 @@ fn vim_l_expands_and_h_collapses_paste() {
         })
         .expect("paste pseudo-row with long_help");
     let key_id = ExpandKey::Pseudo("paste");
-    assert_eq!(expand_key(&entries[paste_idx]), Some(key_id));
+    assert_eq!(entries.get(paste_idx).and_then(expand_key), Some(key_id));
     let mut state = build_initial_picker_state(&entries);
     state.selected = paste_idx;
     let mut mode = ShortcutsHelpMode::Browse;
@@ -2240,7 +2269,10 @@ fn handle_modal_key_left_collapses_expanded_hint() {
     let entries = build_entries(&all_contexts(), &registry, true);
     let mut state = build_initial_picker_state(&entries);
     state.selected = 1;
-    let key_id = expand_key(&entries[1]).expect("row 1 is expandable");
+    let key_id = entries
+        .get(1)
+        .and_then(expand_key)
+        .expect("row 1 is expandable");
     let expanded = std::collections::HashSet::from([key_id]);
     let mut window = crate::views::modal_window::ModalWindowState::default();
     let key = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
@@ -2351,14 +2383,16 @@ fn cheatsheet_rows_inline_help_joins_newlines_with_spaces() {
     ];
     let rows = CheatsheetRows::build(&entries, "", false, &no_collapsed());
     let help = rows.help_refs();
+    let Some(inline) = help.get(1) else {
+        panic!("expected help for row 1: {help:?}");
+    };
     assert_eq!(
-        help[1], "First line. Second line.",
+        *inline, "First line. Second line.",
         "inline help must join newlines with spaces"
     );
     assert!(
-        !help[1].contains('\n'),
-        "collapsible help must not contain newlines, got {:?}",
-        help[1]
+        !inline.contains('\n'),
+        "collapsible help must not contain newlines, got {inline:?}"
     );
 }
 
@@ -2386,14 +2420,15 @@ fn inline_expand_with_no_help_renders_no_description_line() {
     let rows = CheatsheetRows::build(&entries, "", false, &no_collapsed());
     let help = rows.help_refs();
     assert_eq!(
-        help[1], "",
+        help.get(1).copied(),
+        Some(""),
         "a hint with no help source has empty inline help"
     );
     let mut state = build_initial_picker_state(&entries);
     state.selected = 1;
     let expanded = std::collections::HashSet::from([ExpandKey::Action(ActionId::Quit)]);
     let picker_entries = rows.picker_entries(&state, &expanded, &help);
-    let PickerEntry::Row(row) = &picker_entries[1] else {
+    let Some(PickerEntry::Row(row)) = picker_entries.get(1) else {
         panic!("row 1 must be a hint row");
     };
     assert!(row.expanded, "row is expanded");

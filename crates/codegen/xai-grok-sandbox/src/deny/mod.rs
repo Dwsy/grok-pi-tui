@@ -9,7 +9,8 @@ use nono::CapabilitySet;
 use std::path::{Path, PathBuf};
 
 // Glob deny entries (detection, macOS regex translation, Linux launch-time expansion) live in a submodule; re-exported so call sites use `deny::…`
-#[cfg(all(feature = "enforce", unix))]
+// The per-command Seatbelt backend needs the macOS translation without `nono`, so the module also builds on macOS when `enforce` is off.
+#[cfg(any(all(feature = "enforce", unix), target_os = "macos"))]
 mod glob;
 
 /// Whether a raw config entry is a glob pattern rather than an exact path.
@@ -20,6 +21,10 @@ pub(crate) fn is_glob(entry: &str) -> bool {
 }
 #[cfg(all(feature = "enforce", target_os = "linux"))]
 pub(crate) use glob::{DENY_GLOB_CAPS, expand_deny_globs};
+#[cfg(target_os = "macos")]
+pub(crate) use glob::{
+    anchored_glob_regex, seatbelt_regex_filter, split_glob_root, validate_deny_glob,
+};
 #[cfg(all(feature = "enforce", unix))]
 pub(crate) use glob::{apply_deny_globs_to_capability_set, partition_deny_entries};
 
@@ -366,8 +371,11 @@ mod tests {
         let ws = PathBuf::from("/tmp/project");
         let deny = vec![PathBuf::from(".env"), PathBuf::from("/etc/shadow")];
         let resolved = resolve_deny_paths(&ws, &deny);
-        assert_eq!(resolved[0], PathBuf::from("/tmp/project/.env"));
-        assert_eq!(resolved[1], PathBuf::from("/etc/shadow"));
+        let [rel, abs] = resolved.as_slice() else {
+            panic!("expected two resolved paths: {resolved:?}");
+        };
+        assert_eq!(rel, &PathBuf::from("/tmp/project/.env"));
+        assert_eq!(abs, &PathBuf::from("/etc/shadow"));
     }
 
     #[test]

@@ -1,6 +1,8 @@
 //! Cache-aware byte budgeting for inline images on owned request histories.
 
-use xai_grok_sampling_types::{ContentPart, ConversationItem};
+use std::num::NonZeroU64;
+
+use xai_grok_sampling_types::{ApiBackend, ContentPart, ConversationItem};
 
 /// Replaces an inline image evicted to keep the request body under the proxy's 50 MB limit.
 /// Phrased so the model treats the image as gone — a silent strip otherwise induces hallucination.
@@ -11,9 +13,11 @@ const IMAGE_COMPACT_PLACEHOLDER: &str = "[An earlier image was removed to keep t
 /// result content itself.
 const TOOL_IMAGE_COMPACT_NOTE: &str = "[One or more images from this tool result were removed to keep the request within its size limit and are no longer visible. Do not describe or reason about their contents from memory.]";
 
-/// Hard request-body ceiling enforced by the inference proxy (nginx `proxy-body-size`).
+/// Hard request-body ceiling enforced by the inference proxy; the budget for a config that never passed model resolution.
 /// Larger bodies are rejected with HTTP 413 or a connection reset. Inline image `data:` URLs dominate.
-const MAX_REQUEST_BYTES: usize = 50 * 1024 * 1024;
+const MAX_REQUEST_BYTES: usize = ApiBackend::ChatCompletions
+    .default_max_request_bytes()
+    .get() as usize;
 
 /// Evict old images once the serialized body reaches this size (3 MB below the hard ceiling).
 /// Headroom covers uncounted tool definitions and the request envelope.
@@ -107,14 +111,34 @@ pub struct BudgetedConversation {
     pub outcome: ImageBudgetOutcome,
 }
 
-/// Applies the production 47 MiB trigger and 25 MiB reclaim target.
+const TRIGGER_HEADROOM_BYTES: usize = MAX_REQUEST_BYTES - IMAGE_COMPACT_TRIGGER_BYTES;
+
+/// Below this cap the reclaim mark would meet the trigger, so smaller caps are raised to it.
+const MIN_REQUEST_BYTES: usize = 4 * TRIGGER_HEADROOM_BYTES;
+
+/// Trigger and reclaim target for a provider request-body cap.
+/// Model resolution fills the cap from `api_backend` when unset, so `None` only reaches here from a config that skipped it and gets the 50 MiB proxy default.
+pub fn image_budget_limits(max_request_bytes: Option<NonZeroU64>) -> (usize, usize) {
+    let Some(max_request_bytes) = max_request_bytes else {
+        return (
+            IMAGE_COMPACT_TRIGGER_BYTES,
+            IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
+        );
+    };
+    let cap = usize::try_from(max_request_bytes.get())
+        .unwrap_or(usize::MAX)
+        .max(MIN_REQUEST_BYTES);
+    (cap - TRIGGER_HEADROOM_BYTES, cap / 2)
+}
+
+/// Applies the trigger and reclaim target derived from `max_request_bytes`.
 #[must_use]
-pub fn apply_image_budget(items: Vec<ConversationItem>) -> BudgetedConversation {
-    apply_image_budget_with_limits(
-        items,
-        IMAGE_COMPACT_TRIGGER_BYTES,
-        IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
-    )
+pub fn apply_image_budget(
+    items: Vec<ConversationItem>,
+    max_request_bytes: Option<NonZeroU64>,
+) -> BudgetedConversation {
+    let (trigger_bytes, reclaim_target_bytes) = image_budget_limits(max_request_bytes);
+    apply_image_budget_with_limits(items, trigger_bytes, reclaim_target_bytes)
 }
 
 /// Applies an explicit high-water trigger and low-water reclaim target.
@@ -256,15 +280,19 @@ fn evict_images_to_budget(
         }
         match location {
             ImageLocation::User { item, part } => {
-                let ConversationItem::User(user) = &mut conversation[item] else {
-                    unreachable!("image location must retain its item variant")
+                let Some(ConversationItem::User(user)) = conversation.get_mut(item) else {
+                    continue;
                 };
-                user.content[part] = placeholder.clone();
+                let Some(slot) = user.content.get_mut(part) else {
+                    continue;
+                };
+                *slot = placeholder.clone();
                 running = running.saturating_sub(image_bytes.saturating_sub(placeholder_bytes));
             }
             ImageLocation::ToolResult { item } => {
-                let ConversationItem::ToolResult(tool_result) = &mut conversation[item] else {
-                    unreachable!("image location must retain its item variant")
+                let Some(ConversationItem::ToolResult(tool_result)) = conversation.get_mut(item)
+                else {
+                    continue;
                 };
                 let image_index = tool_result
                     .images
@@ -346,14 +374,17 @@ mod tests {
 
     fn expected_after_three_evictions() -> Vec<ConversationItem> {
         let mut expected = mixed_history();
-        let ConversationItem::User(user) = &mut expected[0] else {
-            unreachable!()
+        let Some(ConversationItem::User(user)) = expected.get_mut(0) else {
+            panic!("expected user item: {expected:?}");
         };
-        user.content[1] = ContentPart::Text {
+        let Some(slot) = user.content.get_mut(1) else {
+            panic!("expected image part: {:?}", user.content);
+        };
+        *slot = ContentPart::Text {
             text: IMAGE_COMPACT_PLACEHOLDER.into(),
         };
-        let ConversationItem::ToolResult(tool_result) = &mut expected[2] else {
-            unreachable!()
+        let Some(ConversationItem::ToolResult(tool_result)) = expected.get_mut(2) else {
+            panic!("expected tool result: {expected:?}");
         };
         tool_result.images.remove(1);
         tool_result.images.remove(1);
@@ -381,10 +412,50 @@ mod tests {
     }
 
     #[test]
+    fn limits_follow_the_request_cap() {
+        assert_eq!(
+            image_budget_limits(None),
+            (
+                IMAGE_COMPACT_TRIGGER_BYTES,
+                IMAGE_COMPACT_RECLAIM_TARGET_BYTES
+            )
+        );
+        assert_eq!(
+            image_budget_limits(NonZeroU64::new(30_000_000)),
+            (30_000_000 - TRIGGER_HEADROOM_BYTES, 15_000_000)
+        );
+        assert_eq!(
+            image_budget_limits(NonZeroU64::new(1)),
+            image_budget_limits(NonZeroU64::new(MIN_REQUEST_BYTES as u64))
+        );
+    }
+
+    #[test]
+    fn backend_defaults_scale_the_limits() {
+        assert_eq!(
+            image_budget_limits(None),
+            image_budget_limits(Some(
+                ApiBackend::ChatCompletions.default_max_request_bytes()
+            )),
+            "the resolved proxy default matches the unresolved fallback"
+        );
+        assert_eq!(
+            image_budget_limits(Some(ApiBackend::Responses.default_max_request_bytes())),
+            image_budget_limits(Some(
+                ApiBackend::ChatCompletions.default_max_request_bytes()
+            ))
+        );
+        assert_eq!(
+            (30_000_000 - TRIGGER_HEADROOM_BYTES, 15_000_000),
+            image_budget_limits(Some(ApiBackend::Messages.default_max_request_bytes()))
+        );
+    }
+
+    #[test]
     fn below_trigger_preserves_complete_history() {
         let history = mixed_history();
         let expected = serde_json::to_value(&history).unwrap();
-        let budgeted = apply_image_budget(history);
+        let budgeted = apply_image_budget(history, None);
         assert_eq!(
             budgeted.outcome,
             ImageBudgetOutcome {
@@ -423,8 +494,8 @@ mod tests {
             budgeted.outcome.body_bytes_after,
             serde_json::to_vec(&budgeted.items).unwrap().len()
         );
-        let ConversationItem::ToolResult(tool_result) = &budgeted.items[2] else {
-            unreachable!()
+        let Some(ConversationItem::ToolResult(tool_result)) = budgeted.items.get(2) else {
+            panic!("expected tool result: {:?}", budgeted.items);
         };
         assert_eq!(tool_result.tool_call_id, "call-1");
         assert_eq!(
@@ -436,13 +507,13 @@ mod tests {
             1
         );
         assert!(
-            matches!(&tool_result.images[..], [ContentPart::Text { text }, ContentPart::Image { url }] if text.as_ref() == "metadata" && url.contains('C'))
+            matches!(tool_result.images.as_slice(), [ContentPart::Text { text }, ContentPart::Image { url }] if text.as_ref() == "metadata" && url.contains('C'))
         );
         assert!(
-            matches!(&budgeted.items[3], ConversationItem::User(user) if matches!(user.content.first(), Some(ContentPart::Image { url }) if url.contains('N')))
+            matches!(budgeted.items.get(3), Some(ConversationItem::User(user)) if matches!(user.content.first(), Some(ContentPart::Image { url }) if url.contains('N')))
         );
         assert!(
-            matches!(&budgeted.items[5], ConversationItem::ToolResult(result) if matches!(result.images.first(), Some(ContentPart::Image { url }) if url.contains('Z')))
+            matches!(budgeted.items.get(5), Some(ConversationItem::ToolResult(result)) if matches!(result.images.first(), Some(ContentPart::Image { url }) if url.contains('Z')))
         );
     }
 
@@ -480,7 +551,7 @@ mod tests {
                 )])
             })
             .collect();
-        let budgeted = apply_image_budget(history);
+        let budgeted = apply_image_budget(history, None);
 
         assert!(budgeted.outcome.body_bytes >= IMAGE_COMPACT_TRIGGER_BYTES);
         assert!(budgeted.outcome.body_bytes_after <= IMAGE_COMPACT_RECLAIM_TARGET_BYTES);

@@ -22,6 +22,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+fn at<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
+
 use tokio::sync::Mutex as TokioMutex;
 use xai_grok_mcp::servers::{McpClient, McpClientEvent, McpState};
 
@@ -268,8 +275,11 @@ async fn e2e_crash_recovers_drops_client_then_restart_succeeds() {
                 1,
                 "exactly one push on success; got {pushes:?}"
             );
-            assert_eq!(pushes[0].reason, McpServerStatusReason::RestartSucceeded);
-            assert_eq!(pushes[0].status, McpServerStatus::Ready);
+            assert_eq!(
+                at(&pushes, 0).reason,
+                McpServerStatusReason::RestartSucceeded
+            );
+            assert_eq!(at(&pushes, 0).status, McpServerStatus::Ready);
             assert!(
                 !shutdown.lock().unwrap().is_shutting_down("svr"),
                 "a crash is NOT an intentional teardown",
@@ -339,13 +349,13 @@ async fn e2e_crash_permanently_dead_exhausts_after_three_attempts() {
             for (i, expected_err) in ["reset 1", "reset 2", "reset 3"].iter().enumerate() {
                 let want = format!("attempt {} of 3: {expected_err}", i + 1);
                 assert_eq!(
-                    pushes[i].detail.as_deref(),
+                    at(&pushes, i).detail.as_deref(),
                     Some(want.as_str()),
                     "push[{i}] detail",
                 );
             }
             assert_eq!(
-                pushes[3].detail.as_deref(),
+                at(&pushes, 3).detail.as_deref(),
                 Some("exhausted after 3 attempts"),
             );
 
@@ -405,7 +415,10 @@ async fn e2e_handshake_failed_schedules_restart_without_dropping_client() {
             assert_eq!(assert_actions.respawn_calls(), vec!["svr".to_string()]);
             let pushes = assert_actions.pushes();
             assert_eq!(pushes.len(), 1);
-            assert_eq!(pushes[0].reason, McpServerStatusReason::RestartSucceeded);
+            assert_eq!(
+                at(&pushes, 0).reason,
+                McpServerStatusReason::RestartSucceeded
+            );
 
             dispatcher.abort();
         })
@@ -654,11 +667,11 @@ async fn e2e_server_disabled_mid_backoff_emits_disabled_no_respawn() {
             let pushes = assert_actions.pushes();
             assert_eq!(pushes.len(), 1, "exactly one terminal push; got {pushes:?}");
             assert_eq!(
-                pushes[0].reason,
+                at(&pushes, 0).reason,
                 McpServerStatusReason::Disabled,
                 "mid-backoff disable surfaces as Disabled, not RestartFailed",
             );
-            assert_eq!(pushes[0].status, McpServerStatus::Unavailable);
+            assert_eq!(at(&pushes, 0).status, McpServerStatus::Unavailable);
 
             dispatcher.abort();
         })
@@ -718,7 +731,10 @@ async fn e2e_burst_transport_closed_coalesces_to_single_restart() {
                 1,
                 "coalesced burst yields exactly one restart push; got {pushes:?}",
             );
-            assert_eq!(pushes[0].reason, McpServerStatusReason::RestartSucceeded);
+            assert_eq!(
+                at(&pushes, 0).reason,
+                McpServerStatusReason::RestartSucceeded
+            );
 
             dispatcher.abort();
         })
@@ -863,14 +879,14 @@ async fn e2e_intermittently_healthy_recovers_after_transient_failure() {
             );
             let pushes = assert_actions.pushes();
             assert_eq!(pushes.len(), 2, "one failure + one success; got {pushes:?}");
-            assert_eq!(pushes[0].reason, McpServerStatusReason::RestartFailed);
+            assert_eq!(at(&pushes, 0).reason, McpServerStatusReason::RestartFailed);
             assert!(
-                matches!(pushes[0].detail.as_deref(), Some(s) if s.starts_with("attempt 1 of 3")),
+                matches!(at(&pushes, 0).detail.as_deref(), Some(s) if s.starts_with("attempt 1 of 3")),
                 "first push records the transient attempt-1 failure: {:?}",
-                pushes[0].detail,
+                at(&pushes, 0).detail,
             );
-            assert_eq!(pushes[1].reason, McpServerStatusReason::RestartSucceeded);
-            assert_eq!(pushes[1].status, McpServerStatus::Ready);
+            assert_eq!(at(&pushes, 1).reason, McpServerStatusReason::RestartSucceeded);
+            assert_eq!(at(&pushes, 1).status, McpServerStatus::Ready);
             assert_eq!(
                 assert_actions.pushes_with_reason(McpServerStatusReason::RestartFailed),
                 1,

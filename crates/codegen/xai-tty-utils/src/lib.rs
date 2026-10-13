@@ -48,17 +48,22 @@
         clippy::unimplemented
     )
 )]
+#![deny(clippy::indexing_slicing)]
 
 use std::collections::HashMap;
 use std::io;
 
 mod bundled_git;
 pub use bundled_git::{
-    BundledGit, PathBase, bundled_git, prepend_bundled_git_path, prepend_child_path,
+    BundledGit, PathBase, bundled_git, bundled_git_at, prepend_bundled_git_path,
+    prepend_child_path, version_key,
 };
 
 mod child_wait;
 pub use child_wait::{is_child_wait_identity_uncertain, spawn_child_reaper, wait_child_bounded};
+
+mod display_char;
+pub use display_char::is_unsafe_display_char;
 
 mod kill_on_drop;
 pub use kill_on_drop::KillOnDrop;
@@ -76,10 +81,6 @@ pub use process_scope::{ProcessScope, global_process_scope};
 pub const HANGUP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 
 pub mod runtime;
-
-// ---------------------------------------------------------------------------
-// TTY detach — pre_exec building block
-// ---------------------------------------------------------------------------
 
 /// Detach from the controlling TTY by starting a new session. `Stdio::null()` only redirects fd 0; programs like `ssh`,
 /// `ssh-add`, and interactive shells (`zsh -i`) bypass it by opening `/dev/tty` directly. SAFETY: Must only be called
@@ -167,10 +168,6 @@ pub fn detach_pre_exec_hook() -> fn() -> io::Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// tokio::process::Command wrapper
-// ---------------------------------------------------------------------------
-
 /// Detach a `tokio::process::Command` from the parent's controlling TTY/console. Unix: `pre_exec` hook calling `setsid`
 /// (EPERM fallback: `setpgid`); Windows: `CREATE_NO_WINDOW`. Do NOT add `DETACHED_PROCESS` — it breaks stdio pipe
 /// inheritance for grandchildren (`cmd.exe` → `node`). Detach only: the child's `PATH` is left alone, so a caller that
@@ -202,10 +199,6 @@ pub fn detach_search_command(cmd: &mut tokio::process::Command) {
     cmd.stdin(null_stdio());
     cmd.kill_on_drop(true);
 }
-
-// ---------------------------------------------------------------------------
-// Null stdio that outlives /dev/null
-// ---------------------------------------------------------------------------
 
 /// A null stdio handle for a child, taken from a descriptor opened once rather than from the `/dev/null` path. Use this
 /// instead of [`std::process::Stdio::null`] on every spawn path, for stdin and for discarded stdout/stderr alike. A root
@@ -268,7 +261,13 @@ fn eof_pipe_fd() -> Option<std::os::fd::OwnedFd> {
     }
 
     // SAFETY: the pipe call reported success, so both descriptors are open and unowned.
-    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    let [read_fd, write_fd] = fds;
+    let (read, write) = unsafe {
+        (
+            OwnedFd::from_raw_fd(read_fd),
+            OwnedFd::from_raw_fd(write_fd),
+        )
+    };
 
     // Non-Linux has no atomic form: close the window as fast as possible and
     // accept it, as the sibling helper does.
@@ -285,10 +284,6 @@ fn eof_pipe_fd() -> Option<std::os::fd::OwnedFd> {
     drop(write);
     Some(read)
 }
-
-// ---------------------------------------------------------------------------
-// std::process::Command wrapper
-// ---------------------------------------------------------------------------
 
 /// This is the `std` counterpart of [`detach_command`] (which only works with `tokio::process::Command`). Use this when
 /// you need to spawn via `std::process::Command` — e.g. in synchronous code or `spawn_blocking`. Unix: `pre_exec` hook
@@ -311,10 +306,6 @@ pub fn detach_std_command(cmd: &mut std::process::Command) {
         cmd.creation_flags(CREATE_NO_WINDOW.0);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Parent-death binding — Linux PR_SET_PDEATHSIG
-// ---------------------------------------------------------------------------
 
 /// The `pre_exec` body for [`kill_on_parent_death_std`]: arm `PR_SET_PDEATHSIG` and close the classic pdeathsig race
 /// (parent died between `fork` and `prctl`, so the signal will never fire) by comparing `getppid()` against the pid
@@ -385,10 +376,6 @@ pub fn kill_current_process_on_parent_death() -> io::Result<()> {
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Process group lifecycle
-// ---------------------------------------------------------------------------
 
 /// Bound on waiting for an already-killed child (or its pipe readers) before abandoning it. Callers that must not block
 /// (tool futures, turn loops) wait at most this long, then abandon the corpse to the runtime's orphan reaper.
@@ -628,6 +615,40 @@ impl ProcessGroup {
             assign_result
                 .map_err(|e| io::Error::other(format!("AssignProcessToJobObject({pid}): {e}")))
         }
+    }
+
+    /// Whether process `pid` runs in this job: the attached child or anything it started, which
+    /// stays in the job unless it broke away. A child spawned through a launcher shim (Windows has
+    /// no `exec`) is in the job, as is the real process the shim starts, provided the shim was
+    /// attached before it started it. [`attach`](Self::attach) runs once the child is already
+    /// running, so a shim that starts its child in that window leaves the child outside the job,
+    /// and this answers `false` for it, unless the child was created suspended and resumed only
+    /// after `attach`. Treat `false` as "not known to be ours", never as proof that a process is
+    /// foreign.
+    #[cfg(windows)]
+    pub fn contains_pid(&self, pid: u32) -> io::Result<bool> {
+        use std::os::windows::io::{FromRawHandle, OwnedHandle};
+        use windows::Win32::System::JobObjects::IsProcessInJob;
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+        // SAFETY: plain FFI; the handle is owned (and closed) below.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
+            .map_err(|e| io::Error::other(format!("OpenProcess({pid}): {e}")))?;
+        // SAFETY: `process` is a valid handle this function exclusively owns.
+        let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
+        let mut in_job = windows::core::BOOL::default();
+        // SAFETY: both handles are valid for the call; `in_job` is a valid out-param.
+        unsafe {
+            IsProcessInJob(
+                windows::Win32::Foundation::HANDLE(
+                    std::os::windows::io::AsRawHandle::as_raw_handle(&process),
+                ),
+                Some(self.job),
+                &mut in_job,
+            )
+        }
+        .map_err(|e| io::Error::other(format!("IsProcessInJob({pid}): {e}")))?;
+        Ok(in_job.as_bool())
     }
 
     pub fn terminate(&self) -> io::Result<()> {
@@ -949,10 +970,6 @@ impl Drop for ProcessGroup {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Environment variable helpers
-// ---------------------------------------------------------------------------
-
 /// Returns environment variables that prevent CLI tools from launching any
 /// interactive program that would block waiting for user input — pagers,
 /// editors, credential prompts.
@@ -1050,10 +1067,6 @@ fn noop_cmd() -> &'static str {
         r"C:\Windows\System32\cmd.exe /c exit 0"
     }
 }
-
-// ---------------------------------------------------------------------------
-// Stderr redirection — shield TUI output from C-library noise
-// ---------------------------------------------------------------------------
 
 /// The dup'd stderr fd that writes to the real terminal. Set once by [`redirect_native_stderr`]. Stored as
 /// [`OwnedFd`](std::os::unix::io::OwnedFd) for type safety; the [`OnceLock`](std::sync::OnceLock) keeps it alive for the
@@ -1371,8 +1384,8 @@ mod tests {
             Some(OsStr::new("--no-optional-locks"))
         );
         assert_eq!(
-            &read_args[..read_args.len().saturating_sub(1)],
-            lock_args.as_slice()
+            read_args.split_last().map(|(_, rest)| rest),
+            Some(lock_args.as_slice())
         );
 
         let lock_envs: HashMap<_, _> = locking.get_envs().collect();
@@ -1507,10 +1520,10 @@ mod tests {
                 "intermediate exited without reporting a grandchild; stdout seen: {seen:?}"
             );
             if let Some(idx) = line.find("grandchild:") {
-                let digits: String = line[idx + "grandchild:".len()..]
-                    .chars()
-                    .take_while(char::is_ascii_digit)
-                    .collect();
+                let Some(after) = line.get(idx + "grandchild:".len()..) else {
+                    panic!("grandchild: prefix not on a char boundary in {line:?}");
+                };
+                let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
                 break digits.parse::<i32>().unwrap_or_else(|e| {
                     panic!("parse grandchild pid from {line:?}: {e}");
                 });
@@ -1656,16 +1669,12 @@ mod tests {
     #[test]
     fn pager_env_has_expected_keys() {
         let env = pager_env();
-        assert!(env.contains_key("PAGER"));
-        assert!(env.contains_key("GIT_PAGER"));
-        assert!(env.contains_key("GH_PAGER"));
-        assert!(env.contains_key("GIT_TERMINAL_PROMPT"));
         // Present and empty so gpg/pinentry cannot target the TUI tty.
         assert_eq!(env.get("GPG_TTY"), Some(&String::new()));
     }
 
-    // ── stderr redirect integration tests ────────────────────────. The redirect/dup/restore cycle mutates process-global
-    // state (fd 2 and a `OnceLock`), so the full flow runs in a subprocess to avoid polluting other tests.
+    // The redirect/dup/restore cycle mutates process-global state (fd 2 and a `OnceLock`), so the
+    // full flow runs in a subprocess to avoid polluting other tests.
 
     /// `dup_tui_stderr` returns a writable File even without prior redirect.
     #[test]

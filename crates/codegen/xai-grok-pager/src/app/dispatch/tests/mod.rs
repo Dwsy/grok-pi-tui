@@ -4,6 +4,8 @@ mod billing;
 mod cta_e2e;
 mod dashboard;
 mod jump;
+mod mid_text_btw;
+mod mid_text_goal;
 mod modes;
 mod notes;
 mod permissions;
@@ -20,6 +22,7 @@ mod task_result;
 mod transcript;
 mod turn;
 mod voice;
+mod voice_clip;
 use super::billing::{
     CreditLimitUpsellMode, credit_limit_upsell_mode, is_max_tier, open_credit_limit_upsell,
     open_free_usage_upsell,
@@ -52,7 +55,9 @@ use super::session::lifecycle::{dispatch_new_session_inner, drain_startup_action
 use super::session::load::{dispatch_load_session_with_restore, reanchor_grouped_selection};
 use super::session::modal::{
     dispatch_rename_session, dispatch_reset_session_title, dispatch_sessions_confirm_close,
+    drop_other_agents_in_minimal,
 };
+use super::settings::handle_feature_override_persisted;
 use super::settings::setters::set_default_model_inner;
 use super::settings::ui::{action_for_reset, apply_setting_rollback};
 use super::status::scrub_error_for_toast;
@@ -61,14 +66,14 @@ use super::*;
 use crate::acp::model_state::ModelState;
 use crate::acp::tracker::AcpUpdateTracker;
 use crate::app::actions::{
-    Action, Effect, SubagentKillOutcome, SwitchModelError, TaskResult, WorkspaceMutation,
-    WorkspaceWriteCompletion,
+    Action, Effect, ModelChoice, SubagentKillOutcome, SwitchModelError, TaskResult,
+    WorkspaceMutation, WorkspaceWriteCompletion,
 };
 use crate::app::agent::{AgentId, AgentSession, AgentState};
 use crate::app::agent_view::{ActivePane, AgentView, PromptMode};
 use crate::app::app_view::{
-    ActiveView, AppView, AuthMode, AuthState, TrustState, VoiceState, VoiceTarget,
-    WelcomeAnnouncementState,
+    ActiveView, AppView, AuthMode, AuthState, Partial, PendingCodingDataWrite, TrustState,
+    VoiceState, VoiceTarget, WelcomeAnnouncementState,
 };
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::{SessionEvent, ToolCallBlock};
@@ -128,6 +133,7 @@ fn test_app() -> AppView {
         require_plan_approval: false,
         plan_mode: false,
         chat_mode: false,
+        post_turn_plan_review: false,
         #[cfg(feature = "local-workspace")]
         welcome_workspace_mode: crate::views::welcome::WelcomeWorkspaceMode::Sandbox,
         #[cfg(feature = "local-workspace")]
@@ -162,6 +168,7 @@ fn test_app() -> AppView {
             "Grok".to_string(),
         ))],
         auth_state: AuthState::Done,
+        logout_pending: false,
         trust_state: TrustState::Done,
         consent_state: crate::app::consent::ConsentState::Done,
         account_email: None,
@@ -179,18 +186,23 @@ fn test_app() -> AppView {
         auth_clipboard_delivery: None,
         auth_clipboard_feedback_generation: 0,
         team_id: None,
+        is_team_principal: false,
         team_name: None,
         is_zdr: false,
         team_role: None,
+        can_administer_team: None,
         coding_data_retention_opt_out: false,
         privacy_notice_rollout: false,
         privacy_banner_reshow_days: None,
         privacy_banner_acked: None,
-        privacy_banner_opt_in_inflight: false,
+        coding_data_pending_write: None,
         coding_data_write_seq: 0,
         show_tips: None,
         auto_update: None,
         ask_user_question_timeout_enabled: None,
+        subagent_model_inheritance: crate::settings::FeatureOverrideState::new(
+            xai_grok_shell::agent::config::Feature::SubagentModelInheritance,
+        ),
         zdr_access_enabled: false,
         usage_billing_redirect_url: None,
         access_gate_shown_logged: false,
@@ -240,6 +252,8 @@ fn test_app() -> AppView {
         #[cfg(feature = "local-workspace")]
         welcome_on_workspace_mode: false,
         welcome_toast: None,
+        dispatch_depth: 0,
+        pending_image_notices: Vec::new(),
         welcome_on_privacy_banner: false,
         welcome_on_upgrade_cta: false,
         auth_show_raw_url: false,
@@ -292,6 +306,7 @@ fn test_app() -> AppView {
         workspace_dashboard_enabled: false,
         usage_visible: true,
         has_external_auth_provider: false,
+        backend_billed: false,
         tier_restricted_commands: Vec::new(),
         leader_mode: true,
         credit_balance: None,
@@ -316,9 +331,13 @@ fn test_app() -> AppView {
         keyboard_normalizer: crate::input::KeyboardNormalizer::from_terminal_context(),
         has_claude_import: false,
         voice_mode_enabled: false,
+        distribution: xai_grok_config::Distribution::STOCK,
         voice_ui_active: false,
         voice_config: xai_grok_voice::VoiceConfig::default(),
         voice_auth: None,
+        voice_session: xai_grok_voice::VoiceSessionId::default(),
+        voice_trailing_final: None,
+        voice_clip_deadline: None,
         voice_cmd_tx: None,
         voice_state: VoiceState::Idle,
         external_ui: crate::app::app_view::ExternalUiState::default(),
@@ -372,6 +391,12 @@ pub(super) fn make_test_agent_session(app: &AppView, id: AgentId, sid: &str) -> 
         created_via_new: false,
     }
 }
+pub(super) fn test_agent_mut(app: &mut AppView, id: AgentId) -> &mut AgentView {
+    let Some(agent) = app.agents.get_mut(&id) else {
+        panic!("agent {id:?} is not registered");
+    };
+    agent
+}
 pub(super) fn test_app_with_agent() -> AppView {
     let mut app = test_app();
     let id = AgentId(0);
@@ -382,6 +407,12 @@ pub(super) fn test_app_with_agent() -> AppView {
     app.next_agent_id = 1;
     switch_to_agent(&mut app, id, SwitchCause::New);
     app
+}
+pub(super) fn test_agent(app: &AppView, id: AgentId) -> &AgentView {
+    match app.agents.get(&id) {
+        Some(agent) => agent,
+        None => panic!("missing agent {id:?}"),
+    }
 }
 /// Give a test agent a generated title so the dashboard renders it.
 /// The dashboard hides sessions with no real turn (`views::dashboard::row::is_empty_top_level`).
@@ -585,7 +616,7 @@ pub(super) fn last_system_text(app: &AppView, id: AgentId) -> String {
 /// Like [`last_system_text`] but takes an offset from the end.
 /// `offset = 0` is the last entry, `offset = 1` is second-to-last, etc.
 fn system_text_from_end(app: &AppView, id: AgentId, offset: usize) -> String {
-    let sb = &app.agents[&id].scrollback;
+    let sb = &test_agent(app, id).scrollback;
     let idx = sb.len() - 1 - offset;
     let entry = sb.get(idx).expect("scrollback index out of bounds");
     match &entry.block {
@@ -728,7 +759,7 @@ fn set_forked_from(app: &mut AppView, child: AgentId, parent: AgentId) {
         agent.session.forked_from = Some(parent);
     }
 }
-fn make_bg_task(task_id: &str) -> crate::app::agent::BgTaskState {
+pub(super) fn make_bg_task(task_id: &str) -> crate::app::agent::BgTaskState {
     crate::app::agent::BgTaskState {
         task_id: task_id.into(),
         tool_call_id: String::new(),
@@ -754,7 +785,10 @@ fn make_bg_task(task_id: &str) -> crate::app::agent::BgTaskState {
 /// Set up a two-agent app: agent 0 is active with "sess-A", agent 1 is inactive with "sess-B" and a bg task.
 fn two_agent_app_with_bg_task() -> AppView {
     let mut app = test_app_with_agent();
-    app.agents[&AgentId(0)].session.session_id = Some(acp::SessionId::new("sess-A"));
+    let Some(agent) = app.agents.get_mut(&AgentId(0)) else {
+        panic!("missing agent AgentId(0)");
+    };
+    agent.session.session_id = Some(acp::SessionId::new("sess-A"));
     let id1 = AgentId(1);
     let mut agent1 = AgentView::new(
         AgentSession {
@@ -982,7 +1016,7 @@ const POLICY_WARNING: &str =
     xai_grok_workspace::permission::resolution::YoloPinReason::DisableBypassPermissionsMode
         .message();
 fn agent_toast(app: &AppView) -> Option<String> {
-    app.agents[&AgentId(0)]
+    test_agent(app, AgentId(0))
         .toast
         .as_ref()
         .map(|(s, _)| s.clone())

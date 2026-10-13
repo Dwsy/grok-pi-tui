@@ -1,5 +1,7 @@
 //! Installed grok CLI version, kept in sync with the shipping binaries.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::sync::OnceLock;
 
 use semver::Version;

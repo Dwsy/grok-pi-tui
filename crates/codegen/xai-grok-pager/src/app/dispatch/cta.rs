@@ -133,7 +133,9 @@ pub(super) fn plugin_cta_phase_for(
     let Some(idx) = match_plugin_keyword(prompt_text, &cands) else {
         return CtaPhase::Hidden;
     };
-    let entry = &candidates[idx];
+    let Some(entry) = candidates.get(idx) else {
+        return CtaPhase::Hidden;
+    };
     if is_dismissed(&entry.name) {
         return CtaPhase::Hidden;
     }

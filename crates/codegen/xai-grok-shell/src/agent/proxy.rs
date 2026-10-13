@@ -81,7 +81,13 @@ fn is_host_bypassed(host: &str, no_proxy: &str) -> bool {
         } else {
             host_lower.len() > entry.len()
                 && host_lower.ends_with(entry.as_str())
-                && host_lower.as_bytes()[host_lower.len() - entry.len() - 1] == b'.'
+                && host_lower
+                    .len()
+                    .checked_sub(entry.len())
+                    .and_then(|i| i.checked_sub(1))
+                    .and_then(|i| host_lower.as_bytes().get(i))
+                    .copied()
+                    == Some(b'.')
         };
         if matches_suffix {
             return true;
@@ -437,18 +443,27 @@ mod tests {
             let mut buf = vec![0u8; 4096];
             let mut total = 0;
             loop {
-                let n = stream.read(&mut buf[total..]).await.unwrap();
+                let Some(rest) = buf.get_mut(total..) else {
+                    return;
+                };
+                let n = stream.read(rest).await.unwrap();
                 if n == 0 {
                     return;
                 }
                 total += n;
-                let so_far = std::str::from_utf8(&buf[..total]).unwrap_or("");
+                let Some(head) = buf.get(..total) else {
+                    return;
+                };
+                let so_far = std::str::from_utf8(head).unwrap_or("");
                 if so_far.contains("\r\n\r\n") {
                     break;
                 }
             }
 
-            let request = std::str::from_utf8(&buf[..total]).unwrap().to_string();
+            let Some(head) = buf.get(..total) else {
+                return;
+            };
+            let request = std::str::from_utf8(head).unwrap().to_string();
             assert!(
                 request.contains("CONNECT ") && request.contains(" HTTP/1.1"),
                 "Expected CONNECT request, got: {request}"
@@ -464,7 +479,10 @@ mod tests {
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                if stream.write_all(&echo_buf[..n]).await.is_err() {
+                let Some(written) = echo_buf.get(..n) else {
+                    break;
+                };
+                if stream.write_all(written).await.is_err() {
                     break;
                 }
             }

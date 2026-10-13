@@ -245,6 +245,14 @@ fn decode_session_notification(method: &str, params: &str) -> ExtEvent {
             #[serde(default)]
             path: Option<String>,
         },
+        MemoryCaptureActivity {
+            activity: String,
+            from_turn: u32,
+            through_turn: u32,
+            attempt: u32,
+            #[serde(default)]
+            detail: Option<String>,
+        },
         SubagentSpawned {
             subagent_id: String,
             #[serde(default)]
@@ -287,6 +295,9 @@ fn decode_session_notification(method: &str, params: &str) -> ExtEvent {
             signature: Option<String>,
             #[serde(default)]
             stop_sequence: Option<String>,
+        },
+        TurnUsage {
+            usage: xai_grok_shell::extensions::notification::ResponseUsage,
         },
         #[serde(other)]
         Other,
@@ -340,6 +351,19 @@ fn decode_session_notification(method: &str, params: &str) -> ExtEvent {
         XaiUpdate::MemoryFlushCompleted { result, path } => {
             ExtEvent::Lifecycle(Lifecycle::MemoryFlushCompleted { result, path })
         }
+        XaiUpdate::MemoryCaptureActivity {
+            activity,
+            from_turn,
+            through_turn,
+            attempt,
+            detail,
+        } => ExtEvent::Lifecycle(Lifecycle::MemoryCaptureActivity {
+            activity,
+            from_turn,
+            through_turn,
+            attempt,
+            detail,
+        }),
         XaiUpdate::SubagentSpawned {
             subagent_id,
             attempt_id,
@@ -393,6 +417,9 @@ fn decode_session_notification(method: &str, params: &str) -> ExtEvent {
             signature,
             stop_sequence,
         })),
+        XaiUpdate::TurnUsage { usage } => {
+            ExtEvent::Stream(Box::new(StreamEvent::TurnUsage { usage }))
+        }
         // A task_backgrounded or task_completed tag arriving here belongs on its dedicated method; log loudly
         // Any other unknown tag stays a clean ignore
         XaiUpdate::Other => {

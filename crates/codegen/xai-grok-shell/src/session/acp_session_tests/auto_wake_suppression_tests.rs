@@ -173,7 +173,13 @@ fn pending_notification_cap_keeps_newest_entries() {
         );
     }
     assert_eq!(state.pending_notifications.len(), MAX_PENDING_NOTIFICATIONS);
-    assert_eq!(state.pending_notifications[0].source.task_id(), "task-3");
+    assert_eq!(
+        state
+            .pending_notifications
+            .first()
+            .map(|n| n.source.task_id()),
+        Some("task-3")
+    );
     let newest = format!("task-{}", MAX_PENDING_NOTIFICATIONS + 2);
     assert_eq!(
         state.pending_notifications.last().unwrap().source.task_id(),
@@ -254,91 +260,6 @@ async fn drain_batches_monitor_notifications_into_formatted_block() {
                 1,
                 "one separator between the batch and the bash block: {text}"
             );
-        })
-        .await;
-}
-#[tokio::test(flavor = "current_thread")]
-async fn cancel_barrier_rejects_task_completion_wake_without_reporting_it() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
-            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
-            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
-            let reservations = actor
-                .tool_context
-                .task_completion_reservations
-                .clone()
-                .expect("completion reservations");
-            reservations.reserve("bg-suppressed".to_string());
-            actor.state.lock().await.notifications_suppressed = true;
-            let gate = actor
-                .tool_context
-                .task_wake_suppressed
-                .clone()
-                .expect("task-wake gate");
-            gate.set(true);
-            let resources = actor
-                .agent
-                .borrow()
-                .tool_bridge()
-                .clone()
-                .shared_resources()
-                .await;
-            {
-                let mut resources = resources.lock().await;
-                resources.insert(reservations.clone());
-                resources.insert(gate.clone());
-            }
-            let origin = crate::session::PromptOrigin::TaskCompleted {
-                task_id: "bg-suppressed".to_string(),
-            };
-            let (admission, response_rx) = task_wake_admission(
-                "bg-suppressed",
-                NotificationSource::BashTaskCompleted {
-                    task_id: "bg-suppressed".to_string(),
-                },
-            );
-            assert!(
-                actor
-                    .admit_task_completion_wake(&origin, admission)
-                    .await
-                    .is_none()
-            );
-            assert_eq!(response_rx.await, Ok(false));
-            assert!(gate.get());
-            let state = actor.state.lock().await;
-            assert!(state.running_task.is_none());
-            assert!(state.pending_inputs.is_empty());
-            assert!(matches!(
-                state.pending_notifications.as_slice(),
-                [PendingNotification {
-                    source: NotificationSource::BashTaskCompleted { task_id },
-                    ..
-                }] if task_id == "bg-suppressed"
-            ));
-            drop(state);
-            assert!(reservations.contains("bg-suppressed"));
-            let res = resources.lock().await;
-            assert!(
-                res.get::<xai_grok_tools::types::resources::State<
-                    xai_grok_tools::reminders::task_completion::ReportedTaskCompletions,
-                >>()
-                .is_none(),
-                "declined admission must not report before user re-engagement"
-            );
-            drop(res);
-            let reminder = xai_grok_tools::reminders::TaskCompletionReminder;
-            let reminders = xai_grok_tools::types::tool::Reminder::collect_reminders(
-                &reminder,
-                resources,
-                &ToolOutput::Dynamic(serde_json::Value::Null.into()),
-            )
-            .await;
-            assert!(reminders.is_empty());
-            assert!(reservations.contains("bg-suppressed"));
-            reservations.release("bg-suppressed");
         })
         .await;
 }
@@ -882,6 +803,82 @@ async fn task_output_completed_drops_matching_pending_input() {
         })
         .await;
 }
+#[tokio::test(flavor = "current_thread")]
+async fn task_output_failed_drops_matching_pending_input() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            {
+                let mut state = actor.state.lock().await;
+                state
+                    .pending_inputs
+                    .push_back(task_completed_input("bg-failed"));
+                state
+                    .pending_inputs
+                    .push_back(task_completed_input("bg-running"));
+            }
+            let output =
+                ToolOutput::TaskOutput(TaskOutputOutput::MultiResult(MultiTaskOutputResult {
+                    mode: "wait_all".into(),
+                    results: vec![
+                        task_output_result("bg-failed", "failed"),
+                        task_output_result("bg-running", "running"),
+                    ],
+                    summary: String::new(),
+                }));
+            let consumed = consumed_completion_ids(&output);
+            assert_eq!(consumed, vec!["bg-failed"]);
+            actor
+                .drop_pending_items_for_consumed_completions(&consumed)
+                .await;
+            let state = actor.state.lock().await;
+            let remaining_ids: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(remaining_ids, vec!["task-completed-bg-running"]);
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn interrupted_wait_placeholder_keeps_pending_input() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor
+                .state
+                .lock()
+                .await
+                .pending_inputs
+                .push_back(task_completed_input("bg-still-running"));
+            let output = ToolOutput::TaskOutput(TaskOutputOutput::Result(task_output_result(
+                "bg-still-running",
+                "cancelled",
+            )));
+            let consumed = consumed_completion_ids(&output);
+            assert!(consumed.is_empty());
+            actor
+                .drop_pending_items_for_consumed_completions(&consumed)
+                .await;
+            let state = actor.state.lock().await;
+            let remaining_ids: Vec<&str> = state
+                .pending_inputs
+                .iter()
+                .map(|i| i.prompt_id.as_str())
+                .collect();
+            assert_eq!(remaining_ids, vec!["task-completed-bg-still-running"]);
+        })
+        .await;
+}
 /// An auto-wake turn polls its own task's output, so the consumed id matches the front `task-completed-{id}` entry, which IS the in-flight turn.
 /// (`maybe_start_running_task` promotes the front without popping it.).
 /// Deleting it shifts whatever is queued behind (a real user prompt) to index 0, which the next interactive cancel resolves as Cancelled.
@@ -1359,6 +1356,7 @@ async fn handle_bridge_tool_success_runs_consumed_completion_sweep() {
                     effective_tool_name: "get_task_output",
                     drained: DrainedToolSuccess::new(result),
                     concatenated_json_count: 0,
+                    coercion_note: None,
                     model_id: "test-model",
                     tool_parsed_args: &parsed_args,
                     model_output_override: None,
@@ -1595,11 +1593,13 @@ async fn wake_turn_digest_coalesces_unreported_siblings() {
                 matches!(
                     mentions.as_slice(),
                     [ConversationItem::User(u)]
-                        if u.synthetic_reason == Some(SyntheticReason::SubagentCompleted)
+                        if u.synthetic_reason == SyntheticReason::SubagentCompleted
                 ),
                 "only the wake turn may name the children: {mentions:?}"
             );
-            let digest = mentions[0].text_content();
+            let Some(digest) = mentions.first().map(|m| m.text_content()) else {
+                panic!("only the wake turn may name the children: {mentions:?}");
+            };
             assert!(
                 digest.contains("While you were idle"),
                 "the wake turn's message must be the digest: {digest}"
@@ -1723,7 +1723,7 @@ async fn preempted_wake_is_redelivered_by_next_between_turn_drain() {
                 matches!(
                     digests.as_slice(),
                     [ConversationItem::User(u)]
-                        if u.synthetic_reason == Some(SyntheticReason::SystemReminder)
+                        if u.synthetic_reason == SyntheticReason::SystemReminder
                 ),
                 "the dropped wake must be redelivered as exactly one digest: {digests:?}"
             );
@@ -1826,13 +1826,13 @@ async fn wake_missing_from_buffer_falls_back_to_injected_body() {
                 matches!(
                     mentions.as_slice(),
                     [ConversationItem::User(u)]
-                        if u.synthetic_reason == Some(SyntheticReason::SubagentCompleted)
+                        if u.synthetic_reason == SyntheticReason::SubagentCompleted
                 ),
                 "the wake turn carries exactly one message: {mentions:?}"
             );
             assert_eq!(
-                mentions[0].text_content(),
-                wake_body("sa-evicted"),
+                mentions.first().map(|m| m.text_content()).as_deref(),
+                Some(wake_body("sa-evicted")).as_deref(),
                 "without a buffered copy the injected body is what the model sees"
             );
             assert!(already_reported(&actor, "sa-evicted").await);

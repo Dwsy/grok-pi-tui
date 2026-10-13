@@ -305,6 +305,14 @@ mod tests {
     use std::sync::OnceLock;
 
     use super::*;
+
+    fn nth<T>(xs: &[T], i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected index {i}, len {}", xs.len());
+        };
+        x
+    }
+
     use crossterm::event::{KeyEvent, KeyEventState};
 
     fn test_instant() -> Instant {
@@ -380,10 +388,10 @@ mod tests {
         let output = filter.resolve_dead_hold();
 
         assert_eq!(output.len(), 2);
-        assert_eq!(output[0].event, press(KeyCode::Esc).event);
-        assert_eq!(output[0].arrived_at, start);
-        assert_eq!(output[1].event, Event::Resize(80, 24));
-        assert_eq!(output[1].arrived_at, resize_at);
+        assert_eq!(nth(&output, 0).event, press(KeyCode::Esc).event);
+        assert_eq!(nth(&output, 0).arrived_at, start);
+        assert_eq!(nth(&output, 1).event, Event::Resize(80, 24));
+        assert_eq!(nth(&output, 1).arrived_at, resize_at);
     }
 
     #[test]
@@ -405,8 +413,8 @@ mod tests {
         let output = filter.resolve_dead_hold();
 
         assert_eq!(output.len(), 1);
-        assert_eq!(output[0].event, Event::Resize(80, 24));
-        assert_eq!(output[0].arrived_at, resize_at);
+        assert_eq!(nth(&output, 0).event, Event::Resize(80, 24));
+        assert_eq!(nth(&output, 0).arrived_at, resize_at);
     }
 
     #[test]
@@ -425,8 +433,8 @@ mod tests {
         let output = filter.filter(events);
 
         assert_eq!(output.len(), 1);
-        assert_eq!(output[0].event, Event::Resize(80, 24));
-        assert_eq!(output[0].arrived_at, start);
+        assert_eq!(nth(&output, 0).event, Event::Resize(80, 24));
+        assert_eq!(nth(&output, 0).arrived_at, start);
         assert_eq!(filter.take_completed().as_deref(), Some("x"));
     }
 
@@ -462,7 +470,7 @@ mod tests {
     #[test]
     fn xt_filter_flush_returns_held_events() {
         let mut f = XtversionFilter::with_armed(true);
-        let prefix = dcs_reply_events("x")[..2].to_vec();
+        let prefix: Vec<_> = dcs_reply_events("x").into_iter().take(2).collect();
         assert!(f.filter(prefix.clone()).is_empty());
         assert!(f.holding());
         assert_eq!(f.resolve_dead_hold(), prefix);
@@ -472,7 +480,7 @@ mod tests {
     #[test]
     fn xt_filter_non_reply_keys_flush_partial() {
         let mut f = XtversionFilter::with_armed(true);
-        let mut evs = dcs_reply_events("x")[..2].to_vec();
+        let mut evs: Vec<_> = dcs_reply_events("x").into_iter().take(2).collect();
         evs.push(press(KeyCode::Enter));
         let out = f.filter(evs.clone());
         assert_eq!(out, evs);
@@ -581,10 +589,10 @@ mod tests {
 
         let out = f.filter(b.to_vec());
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].event, Event::Resize(80, 24));
-        assert_eq!(out[0].arrived_at, resize_at);
-        assert_eq!(out[1].event, Event::FocusGained);
-        assert_eq!(out[1].arrived_at, focus_at);
+        assert_eq!(nth(&out, 0).event, Event::Resize(80, 24));
+        assert_eq!(nth(&out, 0).arrived_at, resize_at);
+        assert_eq!(nth(&out, 1).event, Event::FocusGained);
+        assert_eq!(nth(&out, 1).arrived_at, focus_at);
         assert_eq!(f.take_completed().as_deref(), Some("kitty 0.35.2"));
     }
 }

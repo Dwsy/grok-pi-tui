@@ -1,0 +1,1 @@
+bash: /opt/ws-fixture/homedir/w1-nested-x: Operation not permitted

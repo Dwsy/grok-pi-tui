@@ -69,11 +69,23 @@ async fn list_sessions_repairs_untagged_worktree_summary_in_rows_and_on_disk() {
     let listed = adapter.list_sessions(None).await.unwrap();
 
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].session_kind.as_deref(), Some("worktree"));
-    assert_eq!(listed[0].worktree_label.as_deref(), Some("fix-bug"));
+    assert_eq!(
+        listed.first().and_then(|x| x.session_kind.as_deref()),
+        Some("worktree")
+    );
+    assert_eq!(
+        listed.first().and_then(|x| x.worktree_label.as_deref()),
+        Some("fix-bug")
+    );
     let rows = crate::session::merge::merge(Vec::new(), listed, None, &[], 20);
-    assert_eq!(rows[0].session_kind.as_deref(), Some("worktree"));
-    assert_eq!(rows[0].worktree_label.as_deref(), Some("fix-bug"));
+    assert_eq!(
+        rows.first().and_then(|x| x.session_kind.as_deref()),
+        Some("worktree")
+    );
+    assert_eq!(
+        rows.first().and_then(|x| x.worktree_label.as_deref()),
+        Some("fix-bug")
+    );
     let on_disk = read_summary_from(&session_dir);
     assert_eq!(on_disk.session_kind.as_deref(), Some("worktree"));
     assert_eq!(on_disk.worktree_label.as_deref(), Some("fix-bug"));
@@ -105,15 +117,29 @@ async fn list_sessions_fills_missing_label_on_kinded_fork_without_changing_kind(
     let listed = adapter.list_sessions(None).await.unwrap();
 
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].session_kind.as_deref(), Some("fork"));
-    assert_eq!(listed[0].worktree_label.as_deref(), Some("fix-bug"));
     assert_eq!(
-        listed[0].source_workspace_dir.as_deref(),
+        listed.first().and_then(|x| x.session_kind.as_deref()),
+        Some("fork")
+    );
+    assert_eq!(
+        listed.first().and_then(|x| x.worktree_label.as_deref()),
+        Some("fix-bug")
+    );
+    assert_eq!(
+        listed
+            .first()
+            .and_then(|x| x.source_workspace_dir.as_deref()),
         Some("/home/user/repo")
     );
     let rows = crate::session::merge::merge(Vec::new(), listed, None, &[], 20);
-    assert_eq!(rows[0].session_kind.as_deref(), Some("fork"));
-    assert_eq!(rows[0].worktree_label.as_deref(), Some("fix-bug"));
+    assert_eq!(
+        rows.first().and_then(|x| x.session_kind.as_deref()),
+        Some("fork")
+    );
+    assert_eq!(
+        rows.first().and_then(|x| x.worktree_label.as_deref()),
+        Some("fix-bug")
+    );
     let on_disk = read_summary_from(&session_dir);
     assert_eq!(on_disk.session_kind.as_deref(), Some("fork"));
     assert_eq!(on_disk.worktree_label.as_deref(), Some("fix-bug"));
@@ -149,8 +175,14 @@ async fn list_sessions_leaves_kinded_labeled_worktree_summary_untouched() {
     let listed = adapter.list_sessions(None).await.unwrap();
 
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].session_kind.as_deref(), Some("fork"));
-    assert_eq!(listed[0].worktree_label.as_deref(), Some("existing"));
+    assert_eq!(
+        listed.first().and_then(|x| x.session_kind.as_deref()),
+        Some("fork")
+    );
+    assert_eq!(
+        listed.first().and_then(|x| x.worktree_label.as_deref()),
+        Some("existing")
+    );
     assert_eq!(
         std::fs::read(session_dir.join("summary.json")).unwrap(),
         bytes_before
@@ -176,8 +208,8 @@ async fn list_sessions_leaves_untagged_summary_outside_worktrees_untouched() {
     let listed = adapter.list_sessions(None).await.unwrap();
 
     assert_eq!(listed.len(), 1);
-    assert!(listed[0].session_kind.is_none());
-    assert!(listed[0].worktree_label.is_none());
+    assert!(listed.first().is_some_and(|x| x.session_kind.is_none()));
+    assert!(listed.first().is_some_and(|x| x.worktree_label.is_none()));
     assert_eq!(
         std::fs::read(session_dir.join("summary.json")).unwrap(),
         bytes_before
@@ -362,10 +394,18 @@ async fn list_sessions_recent_fills_missing_label_on_kinded_fork_without_changin
     let listed = adapter.list_sessions_recent(10).await.unwrap();
 
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].session_kind.as_deref(), Some("fork"));
-    assert_eq!(listed[0].worktree_label.as_deref(), Some("fix-bug"));
     assert_eq!(
-        listed[0].source_workspace_dir.as_deref(),
+        listed.first().and_then(|x| x.session_kind.as_deref()),
+        Some("fork")
+    );
+    assert_eq!(
+        listed.first().and_then(|x| x.worktree_label.as_deref()),
+        Some("fix-bug")
+    );
+    assert_eq!(
+        listed
+            .first()
+            .and_then(|x| x.source_workspace_dir.as_deref()),
         Some("/home/user/repo")
     );
     let on_disk = read_summary_from(&session_dir);
@@ -391,8 +431,14 @@ async fn list_sessions_recent_repairs_untagged_worktree_summary_in_rows_and_on_d
     let listed = adapter.list_sessions_recent(10).await.unwrap();
 
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].session_kind.as_deref(), Some("worktree"));
-    assert_eq!(listed[0].worktree_label.as_deref(), Some("fix-bug"));
+    assert_eq!(
+        listed.first().and_then(|x| x.session_kind.as_deref()),
+        Some("worktree")
+    );
+    assert_eq!(
+        listed.first().and_then(|x| x.worktree_label.as_deref()),
+        Some("fix-bug")
+    );
     let on_disk = read_summary_from(&session_dir);
     assert_eq!(on_disk.session_kind.as_deref(), Some("worktree"));
     assert_eq!(on_disk.worktree_label.as_deref(), Some("fix-bug"));
@@ -438,5 +484,8 @@ async fn list_sessions_heal_does_not_evict_recent_sessions_from_mtime_window() {
 
     let window = adapter.list_sessions_recent(1).await.unwrap();
     assert_eq!(window.len(), 1);
-    assert_eq!(window[0].info.id.0.to_string(), "recent-untagged");
+    assert_eq!(
+        window.first().map(|w| w.info.id.0.to_string()).as_deref(),
+        Some("recent-untagged")
+    );
 }

@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use tracing_subscriber::registry::LookupSpan;
 
+mod redact;
+
 pub use xai_grok_otel::config::{OtelClientInfo, OtelExporterConfig, OtelLayerConfig};
 
 pub fn build_otel_layer<S>(
@@ -22,6 +24,7 @@ where
         config,
         mode,
         Arc::new(crate::client::is_session_metrics_enabled),
+        Arc::new(redact::redact_batch),
     )
 }
 

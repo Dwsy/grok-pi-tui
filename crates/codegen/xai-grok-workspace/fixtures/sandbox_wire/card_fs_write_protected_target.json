@@ -1,0 +1,49 @@
+{
+  "tool_call_id": "tc-0192c1a0",
+  "tool_name": "run_terminal_command",
+  "description": "Grok's command was blocked by the sandbox",
+  "scope": "write",
+  "tool_approval_policy": "grants_allowed",
+  "schema_version": 1,
+  "kind": "sandbox_violation",
+  "bash_command": "npm ci",
+  "blocked": {
+    "kind": "fs_write",
+    "path": "/opt/ws-fixture/u/proj/.git/hooks/pre-commit"
+  },
+  "disposition": {
+    "kind": "informational",
+    "reason": "protected_target"
+  },
+  "proposal_confirm": false,
+  "offered_scopes": [],
+  "offered_expiries": [],
+  "replay": "rerun",
+  "exit_code": 1,
+  "stderr_snippet": "Permission denied",
+  "backend": "seatbelt",
+  "reduced_sandbox": false,
+  "sandbox_mode": "enforce",
+  "sandbox_violation": {
+    "schema_version": 1,
+    "kind": "sandbox_violation",
+    "bash_command": "npm ci",
+    "blocked": {
+      "kind": "fs_write",
+      "path": "/opt/ws-fixture/u/proj/.git/hooks/pre-commit"
+    },
+    "disposition": {
+      "kind": "informational",
+      "reason": "protected_target"
+    },
+    "proposal_confirm": false,
+    "offered_scopes": [],
+    "offered_expiries": [],
+    "replay": "rerun",
+    "exit_code": 1,
+    "stderr_snippet": "Permission denied",
+    "backend": "seatbelt",
+    "reduced_sandbox": false,
+    "sandbox_mode": "enforce"
+  }
+}

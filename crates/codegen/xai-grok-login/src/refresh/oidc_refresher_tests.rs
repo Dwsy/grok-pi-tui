@@ -90,6 +90,7 @@ async fn oidc_refresher_e2e_full_refresh_cycle() {
         expires_at: Some(Utc::now() - Duration::hours(1)),
         oidc_issuer: Some(base_url.clone()),
         oidc_client_id: Some("test-client".into()),
+        can_administer_team: Some(false),
         ..GrokAuth::test_default()
     };
     mgr.hot_swap(expired);
@@ -107,6 +108,7 @@ async fn oidc_refresher_e2e_full_refresh_cycle() {
     assert_eq!(new_auth.user_id, "user-42");
     assert_eq!(new_auth.oidc_issuer.as_deref(), Some(base_url.as_str()));
     assert!(new_auth.expires_at.is_some());
+    assert_eq!(new_auth.can_administer_team, Some(false));
 
     server.abort();
 }

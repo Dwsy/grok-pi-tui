@@ -615,15 +615,40 @@ mod tests {
         ] {
             assert!(value.get(field).is_some(), "missing legacy field: {field}");
         }
-        assert_eq!(value["sessionId"], "s1");
-        assert_eq!(value["source"], "local");
-        assert_eq!(value["numMessages"], 7);
-        assert_eq!(value["title"], "a summary");
-        assert_eq!(value["_meta"]["x.ai/session"]["kind"], "build");
-        assert_eq!(value["gitRootDir"], "/Users/me/xai");
-        assert_eq!(value["gitRemotes"][0], "git@github.com:example/repo.git");
-        assert_eq!(value["sourceWorkspaceDir"], "/Users/me/xai-src");
-        assert_eq!(value["sessionKind"], "worktree");
+        assert_eq!(value.get("sessionId").and_then(|v| v.as_str()), Some("s1"));
+        assert_eq!(value.get("source").and_then(|v| v.as_str()), Some("local"));
+        assert_eq!(value.get("numMessages").and_then(|v| v.as_u64()), Some(7));
+        assert_eq!(
+            value.get("title").and_then(|v| v.as_str()),
+            Some("a summary")
+        );
+        assert_eq!(
+            value
+                .get("_meta")
+                .and_then(|m| m.get("x.ai/session"))
+                .and_then(|s| s.get("kind"))
+                .and_then(|v| v.as_str()),
+            Some("build")
+        );
+        assert_eq!(
+            value.get("gitRootDir").and_then(|v| v.as_str()),
+            Some("/Users/me/xai")
+        );
+        assert_eq!(
+            value
+                .get("gitRemotes")
+                .and_then(|r| r.get(0))
+                .and_then(|v| v.as_str()),
+            Some("git@github.com:example/repo.git")
+        );
+        assert_eq!(
+            value.get("sourceWorkspaceDir").and_then(|v| v.as_str()),
+            Some("/Users/me/xai-src")
+        );
+        assert_eq!(
+            value.get("sessionKind").and_then(|v| v.as_str()),
+            Some("worktree")
+        );
     }
     #[test]
     fn facets_carry_kind_and_cwd() {
@@ -641,10 +666,23 @@ mod tests {
     fn bare_session_info_is_minimal_plus_meta() {
         let value =
             serde_json::to_value(row("s1", "2026-06-18T20:10:00Z").into_session_info()).unwrap();
-        assert_eq!(value["sessionId"], "s1");
-        assert_eq!(value["cwd"], "/Users/me/xai");
-        assert_eq!(value["title"], "a summary");
-        assert_eq!(value["_meta"]["x.ai/session"]["kind"], "build");
+        assert_eq!(value.get("sessionId").and_then(|v| v.as_str()), Some("s1"));
+        assert_eq!(
+            value.get("cwd").and_then(|v| v.as_str()),
+            Some("/Users/me/xai")
+        );
+        assert_eq!(
+            value.get("title").and_then(|v| v.as_str()),
+            Some("a summary")
+        );
+        assert_eq!(
+            value
+                .get("_meta")
+                .and_then(|m| m.get("x.ai/session"))
+                .and_then(|s| s.get("kind"))
+                .and_then(|v| v.as_str()),
+            Some("build")
+        );
         assert!(value.get("summary").is_none());
         assert!(value.get("source").is_none());
     }
@@ -1050,8 +1088,8 @@ mod tests {
             }))
             .expect("serialize");
             assert_eq!(
-                value["_meta"]["x.ai/partial"],
-                serde_json::json!({ "conversations": true, "reason": wire })
+                value.get("_meta").and_then(|m| m.get("x.ai/partial")),
+                Some(&serde_json::json!({ "conversations": true, "reason": wire }))
             );
         }
         let healthy = serde_json::to_value(ext_list_response(UnifiedListResult {
@@ -1063,8 +1101,8 @@ mod tests {
         }))
         .expect("serialize");
         assert_eq!(
-            healthy["_meta"]["x.ai/partial"],
-            serde_json::json!({ "conversations": false })
+            healthy.get("_meta").and_then(|m| m.get("x.ai/partial")),
+            Some(&serde_json::json!({ "conversations": false }))
         );
     }
     /// Receive-side wire pin: a field rename would silently drop the pager's `allowRelax`.
@@ -1195,7 +1233,10 @@ mod tests {
         )
         .expect("Include keeps the pair, proving the fixture would leak");
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].legacy.session_id, "h1");
+        assert_eq!(
+            rows.first().map(|r| r.legacy.session_id.as_str()),
+            Some("h1")
+        );
     }
     #[tokio::test]
     async fn policy_emptied_cwd_lane_does_not_relax() {
@@ -1258,9 +1299,17 @@ mod tests {
         };
         let with =
             serde_json::to_value(ext_list_response(result(ListScope::Repo))).expect("serialize");
-        assert_eq!(with["_meta"]["x.ai/listScope"], serde_json::json!("repo"));
+        assert_eq!(
+            with.get("_meta").and_then(|m| m.get("x.ai/listScope")),
+            Some(&serde_json::json!("repo"))
+        );
         let without =
             serde_json::to_value(ext_list_response(result(ListScope::Cwd))).expect("serialize");
-        assert!(without["_meta"].get("x.ai/listScope").is_none());
+        assert!(
+            without
+                .get("_meta")
+                .and_then(|m| m.get("x.ai/listScope"))
+                .is_none()
+        );
     }
 }

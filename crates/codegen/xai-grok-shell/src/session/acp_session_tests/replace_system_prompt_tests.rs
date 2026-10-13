@@ -42,8 +42,8 @@ async fn handle_replace_system_prompt_replaces_head_and_preserves_turns() {
             let conv = actor.chat_state_handle.get_conversation().await;
             assert_eq!(head_text(&conv).as_deref(), Some("client override"));
             assert_eq!(conv.len(), 3, "must not wipe user/assistant turns");
-            assert!(matches!(conv[1], ConversationItem::User(_)));
-            assert!(matches!(conv[2], ConversationItem::Assistant(_)));
+            assert!(matches!(conv.get(1), Some(ConversationItem::User(_))));
+            assert!(matches!(conv.get(2), Some(ConversationItem::Assistant(_))));
         })
         .await;
 }

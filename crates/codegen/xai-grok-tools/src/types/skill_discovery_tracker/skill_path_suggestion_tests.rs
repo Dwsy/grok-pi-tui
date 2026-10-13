@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::implementations::skills::types::SkillInfo;
+use crate::implementations::skills::types::{SkillInfo, SkillScope};
 
 use super::SkillManager;
 
@@ -10,6 +10,28 @@ fn skill(name: &str, path: &str) -> SkillInfo {
         path: path.to_owned(),
         ..SkillInfo::default()
     }
+}
+
+#[test]
+fn registered_scope_matches_the_directory_and_not_a_name_prefix() {
+    let mut info = skill(
+        "secret-skill-name",
+        "/opt/repo/.grok/skills/secret-skill-name/SKILL.md",
+    );
+    info.scope = SkillScope::Bundled;
+    let manager = seeded_manager(vec![info]);
+    assert_eq!(
+        manager.registered_scope(Path::new(
+            "/opt/repo/.grok/skills/secret-skill-name/references/guide.md"
+        )),
+        Some(SkillScope::Bundled)
+    );
+    assert_eq!(
+        manager.registered_scope(Path::new(
+            "/opt/repo/.grok/skills/secret-skill-name-extra/SKILL.md"
+        )),
+        None
+    );
 }
 
 fn seeded_manager(skills: Vec<SkillInfo>) -> SkillManager {

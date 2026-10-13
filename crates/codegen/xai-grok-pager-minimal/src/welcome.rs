@@ -13,7 +13,11 @@ use ratatui::widgets::{Block, BorderType, Borders, Widget};
 use xai_grok_pager::app::PagerTerminal;
 use xai_grok_pager::app::app_view::{ActiveView, AppView};
 use xai_grok_pager::minimal_api;
+use xai_grok_pager::minimal_reprint;
 use xai_grok_pager::theme::Theme;
+
+/// Narrowest viewport the bordered card fits in.
+pub(crate) const MIN_CARD_WIDTH: u16 = 8;
 
 /// Commit the welcome card when one is pending (set at session start / `/new`).
 ///
@@ -22,14 +26,23 @@ pub fn maybe_commit_welcome(app: &mut AppView, terminal: &mut PagerTerminal) {
     if !minimal_api::minimal_welcome_pending(app) {
         return;
     }
-    let width = terminal.viewport_area().width;
     // Too narrow to draw a bordered card: leave the flag set and retry next frame (e.g. during an initial 0-width probe).
-    if width < 8 {
+    if terminal.viewport_area().width < MIN_CARD_WIDTH {
         return;
     }
-    // The pending flag is cleared only after the `insert_before` at the bottom succeeds; a failed frame retries next draw
-    // Clearing it up front would silently drop the card whenever the insert fails
+    // A failed insert keeps the flag set for a retry next frame
+    if print_welcome_card(app, terminal).is_ok() {
+        minimal_api::set_minimal_welcome_pending(app, false);
+        minimal_reprint::record_minimal_rows_printed(app, terminal.viewport_area().width);
+    }
+}
 
+/// Print the card at the top of the screen, followed by the block gap.
+pub(crate) fn print_welcome_card(
+    app: &AppView,
+    terminal: &mut PagerTerminal,
+) -> std::io::Result<()> {
+    let width = terminal.viewport_area().width;
     // Reset the live viewport to the top of the screen and clear what's visible, so the card commits at row 0 and the app "owns" the window
     // The viewport is not bottom-pinned, so subsequent commits flow downward from here
     // Pre-existing native scrollback is untouched; scrolling up still shows whatever was there before
@@ -40,7 +53,7 @@ pub fn maybe_commit_welcome(app: &mut AppView, terminal: &mut PagerTerminal) {
         width,
         height: live_h,
     });
-    let _ = terminal.clear();
+    terminal.clear()?;
 
     let theme = Theme::current();
     let (title, version) = xai_grok_pager::views::welcome::external_welcome_brand()
@@ -121,11 +134,8 @@ pub fn maybe_commit_welcome(app: &mut AppView, terminal: &mut PagerTerminal) {
             y += 1;
         }
     });
-    if inserted.is_err() {
-        // Terminal write failed: keep the flag pending so the card retries on the next frame instead of being dropped forever
-        return;
-    }
-    minimal_api::set_minimal_welcome_pending(app, false);
+    inserted?;
     // A trailing gap, matching every committed block, separates the first conversation block from the card
     super::commit::insert_gap(terminal);
+    Ok(())
 }

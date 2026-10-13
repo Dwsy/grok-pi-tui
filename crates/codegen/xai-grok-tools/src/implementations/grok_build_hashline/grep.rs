@@ -53,11 +53,14 @@ pub(crate) async fn inject_anchors(
     let (prefix, body, suffix) = match (stdout.find(">\n"), stdout.rfind("\n</workspace_result>")) {
         (Some(start), Some(end)) => {
             let body_start = start + 2;
-            (
-                &stdout[..body_start],
-                &stdout[body_start..end],
-                &stdout[end..],
-            )
+            match (
+                stdout.get(..body_start),
+                stdout.get(body_start..end),
+                stdout.get(end..),
+            ) {
+                (Some(prefix), Some(body), Some(suffix)) => (prefix, body, suffix),
+                _ => return stdout_bytes.to_vec(),
+            }
         }
         _ => return stdout_bytes.to_vec(),
     };
@@ -85,7 +88,10 @@ pub(crate) async fn inject_anchors(
             && let Some(anchors) = get_or_generate(&mut file_anchors, file_path, scheme, fs).await
             && line_num.saturating_sub(1) < anchors.len()
         {
-            let a = &anchors[line_num - 1];
+            let Some(a) = line_num.checked_sub(1).and_then(|i| anchors.get(i)) else {
+                result.push_str(line);
+                continue;
+            };
             let suffix_str = match &a.context {
                 Some(ctx) => format!("{}:{ctx}", a.local),
                 None => a.local.clone(),
@@ -115,18 +121,18 @@ pub(crate) async fn inject_anchors(
 fn parse_rg_line(line: &str) -> Option<(usize, char, &str)> {
     let bytes = line.as_bytes();
     let mut idx = 0;
-    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+    while bytes.get(idx).is_some_and(|b| b.is_ascii_digit()) {
         idx += 1;
     }
     if idx == 0 || idx >= bytes.len() {
         return None;
     }
-    let sep = bytes[idx] as char;
+    let sep = *bytes.get(idx)? as char;
     if sep != ':' && sep != '-' {
         return None;
     }
-    let num: usize = line[..idx].parse().ok()?;
-    Some((num, sep, &line[idx + 1..]))
+    let num: usize = line.get(..idx)?.parse().ok()?;
+    Some((num, sep, line.get(idx + 1..)?))
 }
 
 const DESCRIPTION: &str = r#"Search file contents with anchor-annotated results${%- if tools.by_kind.edit %} for use with ${{ tools.by_kind.edit }}${%- endif %}.
@@ -157,6 +163,10 @@ impl crate::types::tool_metadata::ToolMetadata for HashlineGrepTool {
 
     fn tool_namespace(&self) -> ToolNamespace {
         ToolNamespace::GrokBuildHashline
+    }
+
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("path")
     }
 
     fn description_template(&self) -> &str {

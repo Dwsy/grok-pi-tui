@@ -7,22 +7,37 @@ use pretty_assertions::assert_eq;
 fn messages_partial_deltas_emitted_when_enabled() {
     let mut r = messages(true);
     let out = r.reduce(StreamEvent::AgentMessage("hi".into()));
-    let start = out
+    let Some(start) = out.iter().find(|m| event_type(m) == Some("message_start")) else {
+        panic!("message_start: {out:?}");
+    };
+    assert!(
+        start
+            .pointer("/event/message/model")
+            .is_some_and(Value::is_string)
+    );
+    assert!(
+        start
+            .pointer("/event/message/usage")
+            .is_some_and(Value::is_object)
+    );
+    let Some(block_start) = out
         .iter()
-        .find(|m| m["event"]["type"] == "message_start")
-        .expect("message_start");
-    assert!(start["event"]["message"]["model"].is_string());
-    assert!(start["event"]["message"]["usage"].is_object());
-    let block_start = out
-        .iter()
-        .find(|m| m["event"]["type"] == "content_block_start")
-        .expect("content_block_start");
-    assert_eq!(block_start["event"]["content_block"]["type"], "text");
-    assert_eq!(block_start["event"]["content_block"]["text"], "");
+        .find(|m| event_type(m) == Some("content_block_start"))
+    else {
+        panic!("content_block_start: {out:?}");
+    };
+    assert_eq!(
+        json_str(block_start, "/event/content_block/type"),
+        Some("text")
+    );
+    assert_eq!(json_str(block_start, "/event/content_block/text"), Some(""));
     let delta = stream_delta(&out);
-    assert_eq!(delta["event"]["index"], 0);
-    assert_eq!(delta["event"]["delta"]["type"], "text_delta");
-    assert_eq!(delta["event"]["delta"]["text"], "hi");
+    assert_eq!(
+        delta.pointer("/event/index").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(delta_type(delta), Some("text_delta"));
+    assert_eq!(json_str(delta, "/event/delta/text"), Some("hi"));
 }
 
 #[test]
@@ -41,14 +56,26 @@ fn messages_partial_framing_closes_with_stop_reason_and_usage() {
         stop_sequence: None,
     });
     let out = r.reduce(StreamEvent::AgentMessage("more".into()));
-    let delta = out
-        .iter()
-        .find(|m| m["event"]["type"] == "message_delta")
-        .expect("message_delta closes the prior message");
-    assert_eq!(delta["event"]["delta"]["stop_reason"], "end_turn");
-    assert_eq!(delta["event"]["usage"]["output_tokens"], 7);
-    assert_eq!(delta["event"]["usage"]["input_tokens"], 3);
-    assert!(out.iter().any(|m| m["event"]["type"] == "message_stop"));
+    let Some(delta) = out.iter().find(|m| event_type(m) == Some("message_delta")) else {
+        panic!("message_delta closes the prior message: {out:?}");
+    };
+    assert_eq!(
+        json_str(delta, "/event/delta/stop_reason"),
+        Some("end_turn")
+    );
+    assert_eq!(
+        delta
+            .pointer("/event/usage/output_tokens")
+            .and_then(Value::as_u64),
+        Some(7)
+    );
+    assert_eq!(
+        delta
+            .pointer("/event/usage/input_tokens")
+            .and_then(Value::as_u64),
+        Some(3)
+    );
+    assert!(out.iter().any(|m| event_type(m) == Some("message_stop")));
 }
 
 #[test]
@@ -56,17 +83,16 @@ fn messages_partial_tool_use_framed() {
     let mut r = messages(true);
     r.reduce(StreamEvent::AgentMessage("run".into()));
     let out = r.reduce(StreamEvent::ToolCall(tool_call_ev()));
-    let start = out
-        .iter()
-        .find(|m| {
-            m["event"]["type"] == "content_block_start"
-                && m["event"]["content_block"]["type"] == "tool_use"
-        })
-        .expect("tool_use content_block_start");
-    assert_eq!(start["event"]["content_block"]["name"], "bash");
+    let Some(start) = out.iter().find(|m| {
+        event_type(m) == Some("content_block_start")
+            && json_str(m, "/event/content_block/type") == Some("tool_use")
+    }) else {
+        panic!("tool_use content_block_start: {out:?}");
+    };
+    assert_eq!(json_str(start, "/event/content_block/name"), Some("bash"));
     assert!(
         out.iter()
-            .any(|m| m["event"]["delta"]["type"] == "input_json_delta")
+            .any(|m| delta_type(m) == Some("input_json_delta"))
     );
 }
 
@@ -79,26 +105,43 @@ fn messages_partial_tool_flush_without_pending_agrees_on_stop_reason() {
         "completed",
         json!("done"),
     )));
-    let delta = out
-        .iter()
-        .find(|m| m["event"]["type"] == "message_delta")
-        .expect("message_delta");
-    let assistant = out
-        .iter()
-        .find(|m| m["type"] == "assistant")
-        .expect("frame");
-    assert_eq!(delta["event"]["delta"]["stop_reason"], "tool_use");
-    assert_eq!(assistant["message"]["stop_reason"], "tool_use");
+    let Some(delta) = out.iter().find(|m| event_type(m) == Some("message_delta")) else {
+        panic!("message_delta: {out:?}");
+    };
+    let Some(assistant) = out.iter().find(|m| msg_type(m) == Some("assistant")) else {
+        panic!("frame: {out:?}");
+    };
+    assert_eq!(
+        json_str(delta, "/event/delta/stop_reason"),
+        Some("tool_use")
+    );
+    assert_eq!(
+        json_str(assistant, "/message/stop_reason"),
+        Some("tool_use")
+    );
 }
 
 #[test]
 fn messages_partial_delta_index_tracks_block() {
     let mut r = messages(true);
     let t = r.reduce(StreamEvent::AgentThought("mull".into()));
-    assert_eq!(stream_delta(&t)["event"]["index"], 0);
+    assert_eq!(
+        stream_delta(&t)
+            .pointer("/event/index")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
     let x = r.reduce(StreamEvent::AgentMessage("hi".into()));
-    assert_eq!(stream_delta(&x)["event"]["index"], 1);
-    assert!(x.iter().any(|m| m["event"]["type"] == "content_block_stop"));
+    assert_eq!(
+        stream_delta(&x)
+            .pointer("/event/index")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert!(
+        x.iter()
+            .any(|m| event_type(m) == Some("content_block_stop"))
+    );
 }
 
 #[test]
@@ -114,20 +157,19 @@ fn messages_partial_thinking_then_text_defers_signature_to_frame() {
         signature: Some("sig-xyz".into()),
         stop_sequence: None,
     }));
-    assert!(
-        !out.iter()
-            .any(|m| m["event"]["delta"]["type"] == "signature_delta")
-    );
-    let start = out
-        .iter()
-        .find(|m| m["event"]["type"] == "message_start")
-        .expect("message_start");
-    assert_eq!(start["event"]["message"]["id"], "msg_0");
+    assert!(!out.iter().any(|m| delta_type(m) == Some("signature_delta")));
+    let Some(start) = out.iter().find(|m| event_type(m) == Some("message_start")) else {
+        panic!("message_start: {out:?}");
+    };
+    assert_eq!(json_str(start, "/event/message/id"), Some("msg_0"));
     let frame = r
         .flush_assistant(Some("end_turn"))
         .expect("assistant frame");
-    assert_eq!(frame["message"]["id"], "msg_real");
-    assert_eq!(frame["message"]["content"][0]["signature"], "sig-xyz");
+    assert_eq!(json_str(&frame, "/message/id"), Some("msg_real"));
+    assert_eq!(
+        json_str(&frame, "/message/content/0/signature"),
+        Some("sig-xyz")
+    );
 }
 
 #[test]
@@ -154,38 +196,61 @@ fn messages_partial_response_started_emits_real_id_and_input_usage() {
         stop_sequence: None,
     }));
 
-    let start = out
-        .iter()
-        .find(|m| m["event"]["type"] == "message_start")
-        .expect("message_start");
-    assert_eq!(start["event"]["message"]["id"], "msg_real");
-    assert_eq!(start["event"]["message"]["usage"]["input_tokens"], 42);
+    let Some(start) = out.iter().find(|m| event_type(m) == Some("message_start")) else {
+        panic!("message_start: {out:?}");
+    };
+    assert_eq!(json_str(start, "/event/message/id"), Some("msg_real"));
     assert_eq!(
-        start["event"]["message"]["usage"]["cache_read_input_tokens"],
-        100
+        start
+            .pointer("/event/message/usage/input_tokens")
+            .and_then(Value::as_u64),
+        Some(42)
     );
     assert_eq!(
-        start["event"]["message"]["usage"]["cache_creation_input_tokens"],
-        20
+        start
+            .pointer("/event/message/usage/cache_read_input_tokens")
+            .and_then(Value::as_u64),
+        Some(100)
     );
-    assert_eq!(start["event"]["message"]["usage"]["output_tokens"], 0);
+    assert_eq!(
+        start
+            .pointer("/event/message/usage/cache_creation_input_tokens")
+            .and_then(Value::as_u64),
+        Some(20)
+    );
+    assert_eq!(
+        start
+            .pointer("/event/message/usage/output_tokens")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
 
-    let sig = out
+    let Some(sig) = out
         .iter()
-        .position(|m| m["event"]["delta"]["type"] == "signature_delta")
-        .expect("signature_delta emitted in order");
-    assert_eq!(out[sig]["event"]["delta"]["signature"], "sig-xyz");
-    let stop = out
+        .position(|m| delta_type(m) == Some("signature_delta"))
+    else {
+        panic!("signature_delta emitted in order: {out:?}");
+    };
+    let Some(sig_msg) = out.get(sig) else {
+        panic!("signature_delta at {sig}: {out:?}");
+    };
+    assert_eq!(json_str(sig_msg, "/event/delta/signature"), Some("sig-xyz"));
+    let Some(stop) = out
         .iter()
-        .position(|m| m["event"]["type"] == "content_block_stop")
-        .expect("content_block_stop");
+        .position(|m| event_type(m) == Some("content_block_stop"))
+    else {
+        panic!("content_block_stop: {out:?}");
+    };
     assert!(sig < stop, "signature_delta precedes content_block_stop");
 
     let frame = r
         .flush_assistant(Some("end_turn"))
         .expect("assistant frame");
-    assert_eq!(frame["message"]["id"], "msg_real");
-    assert_eq!(frame["message"]["content"][0]["signature"], "sig-xyz");
+    assert_eq!(json_str(&frame, "/message/id"), Some("msg_real"));
+    assert_eq!(
+        json_str(&frame, "/message/content/0/signature"),
+        Some("sig-xyz")
+    );
 }
 
 #[test]
@@ -204,23 +269,42 @@ fn messages_partial_response_started_ids_do_not_leak_across_responses() {
     out.extend(r.reduce(StreamEvent::AgentMessage("two".into())));
     let starts: Vec<&Value> = out
         .iter()
-        .filter(|m| m["event"]["type"] == "message_start")
+        .filter(|m| event_type(m) == Some("message_start"))
         .collect();
-    assert_eq!(starts[0]["event"]["message"]["id"], "msg_real");
-    assert_eq!(starts[0]["event"]["message"]["usage"]["input_tokens"], 9);
+    let [first, second] = starts.as_slice() else {
+        panic!("expected two message_start events: {out:?}");
+    };
+    assert_eq!(json_str(first, "/event/message/id"), Some("msg_real"));
     assert_eq!(
-        starts[0]["event"]["message"]["usage"]["cache_read_input_tokens"],
-        5
-    );
-    assert_eq!(starts[1]["event"]["message"]["id"], "msg_0");
-    assert_eq!(starts[1]["event"]["message"]["usage"]["input_tokens"], 0);
-    assert_eq!(
-        starts[1]["event"]["message"]["usage"]["cache_read_input_tokens"],
-        0
+        first
+            .pointer("/event/message/usage/input_tokens")
+            .and_then(Value::as_u64),
+        Some(9)
     );
     assert_eq!(
-        starts[1]["event"]["message"]["usage"]["cache_creation_input_tokens"],
-        0
+        first
+            .pointer("/event/message/usage/cache_read_input_tokens")
+            .and_then(Value::as_u64),
+        Some(5)
+    );
+    assert_eq!(json_str(second, "/event/message/id"), Some("msg_0"));
+    assert_eq!(
+        second
+            .pointer("/event/message/usage/input_tokens")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        second
+            .pointer("/event/message/usage/cache_read_input_tokens")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        second
+            .pointer("/event/message/usage/cache_creation_input_tokens")
+            .and_then(Value::as_u64),
+        Some(0)
     );
 }
 
@@ -236,15 +320,25 @@ fn messages_partial_thinking_terminal_emits_signature_delta() {
         stop_sequence: None,
     });
     let out = r.reduce(StreamEvent::AgentMessage("answer".into()));
-    let sig = out
+    let Some(sig) = out
         .iter()
-        .position(|m| m["event"]["delta"]["type"] == "signature_delta")
-        .expect("signature_delta emitted");
-    assert_eq!(out[sig]["event"]["delta"]["signature"], "sig-term");
-    let stop = out
+        .position(|m| delta_type(m) == Some("signature_delta"))
+    else {
+        panic!("signature_delta emitted: {out:?}");
+    };
+    let Some(sig_msg) = out.get(sig) else {
+        panic!("signature_delta at {sig}: {out:?}");
+    };
+    assert_eq!(
+        json_str(sig_msg, "/event/delta/signature"),
+        Some("sig-term")
+    );
+    let Some(stop) = out
         .iter()
-        .position(|m| m["event"]["type"] == "content_block_stop")
-        .expect("content_block_stop");
+        .position(|m| event_type(m) == Some("content_block_stop"))
+    else {
+        panic!("content_block_stop: {out:?}");
+    };
     assert!(sig < stop, "signature_delta precedes content_block_stop");
 }
 
@@ -255,10 +349,10 @@ fn messages_partial_message_start_ids_are_unique() {
     out.extend(r.reduce(StreamEvent::AgentMessage("one".into())));
     out.extend(r.reduce(response_completed("msg_a", "end_turn")));
     out.extend(r.reduce(StreamEvent::AgentMessage("two".into())));
-    let ids: Vec<String> = out
+    let ids: Vec<&str> = out
         .iter()
-        .filter(|m| m["event"]["type"] == "message_start")
-        .map(|m| m["event"]["message"]["id"].as_str().unwrap().to_string())
+        .filter(|m| event_type(m) == Some("message_start"))
+        .map(|m| json_str(m, "/event/message/id").expect("message_start id"))
         .collect();
     assert_eq!(ids, vec!["msg_0", "msg_1"]);
 }
@@ -274,32 +368,49 @@ fn messages_partial_signature_only_thinking_block_emits_framing() {
     out.extend(r.reduce(StreamEvent::AgentMessage("answer".into())));
     out.extend(r.reduce(response_completed("msg_a", "end_turn")));
     out.extend(r.finish(&end_turn()));
-    let cb_start = out
+    let Some(cb_start) = out.iter().position(|m| {
+        event_type(m) == Some("content_block_start")
+            && json_str(m, "/event/content_block/type") == Some("thinking")
+    }) else {
+        panic!("thinking content_block_start: {out:?}");
+    };
+    let Some(sig) = out
         .iter()
-        .position(|m| {
-            m["event"]["type"] == "content_block_start"
-                && m["event"]["content_block"]["type"] == "thinking"
-        })
-        .expect("thinking content_block_start");
-    let sig = out
-        .iter()
-        .position(|m| m["event"]["delta"]["type"] == "signature_delta")
-        .expect("signature_delta");
-    assert_eq!(out[cb_start]["event"]["index"], 0);
-    assert_eq!(out[sig]["event"]["delta"]["signature"], "sig-only");
+        .position(|m| delta_type(m) == Some("signature_delta"))
+    else {
+        panic!("signature_delta: {out:?}");
+    };
+    let Some(start_msg) = out.get(cb_start) else {
+        panic!("content_block_start at {cb_start}: {out:?}");
+    };
+    let Some(sig_msg) = out.get(sig) else {
+        panic!("signature_delta at {sig}: {out:?}");
+    };
+    assert_eq!(
+        start_msg.pointer("/event/index").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        json_str(sig_msg, "/event/delta/signature"),
+        Some("sig-only")
+    );
     assert!(
         cb_start < sig,
         "content_block_start precedes signature_delta"
     );
-    let frame = out
-        .iter()
-        .find(|m| m["type"] == "assistant")
-        .expect("frame");
-    let blocks = frame["message"]["content"].as_array().unwrap();
-    assert_eq!(blocks[0]["type"], "thinking");
-    assert_eq!(blocks[0]["signature"], "sig-only");
-    assert_eq!(blocks[1]["type"], "text");
-    assert_eq!(blocks[1]["text"], "answer");
+    let Some(frame) = out.iter().find(|m| msg_type(m) == Some("assistant")) else {
+        panic!("frame: {out:?}");
+    };
+    let Some(blocks) = frame.pointer("/message/content").and_then(Value::as_array) else {
+        panic!("assistant content array: {frame:?}");
+    };
+    let [thinking, text, ..] = blocks.as_slice() else {
+        panic!("expected thinking then text: {blocks:?}");
+    };
+    assert_eq!(json_str(thinking, "/type"), Some("thinking"));
+    assert_eq!(json_str(thinking, "/signature"), Some("sig-only"));
+    assert_eq!(json_str(text, "/type"), Some("text"));
+    assert_eq!(json_str(text, "/text"), Some("answer"));
 }
 
 #[test]
@@ -318,8 +429,8 @@ fn messages_partial_per_block_signature_deltas() {
     out.extend(r.finish(&end_turn()));
     let sigs: Vec<&str> = out
         .iter()
-        .filter(|m| m["event"]["delta"]["type"] == "signature_delta")
-        .map(|m| m["event"]["delta"]["signature"].as_str().unwrap())
+        .filter(|m| delta_type(m) == Some("signature_delta"))
+        .map(|m| json_str(m, "/event/delta/signature").expect("signature_delta signature"))
         .collect();
     assert_eq!(sigs, vec!["sig-1", "sig-2"], "each block keeps its own sig");
 }
@@ -340,21 +451,27 @@ fn messages_partial_empty_response_still_frames_message() {
         stop_sequence: None,
     });
     let out = r.finish(&end_turn());
-    let start = out
-        .iter()
-        .find(|m| m["event"]["type"] == "message_start")
-        .expect("message_start for the empty response");
-    assert!(out.iter().any(|m| m["event"]["type"] == "message_delta"));
-    assert!(out.iter().any(|m| m["event"]["type"] == "message_stop"));
+    let Some(start) = out.iter().find(|m| event_type(m) == Some("message_start")) else {
+        panic!("message_start for the empty response: {out:?}");
+    };
+    assert!(out.iter().any(|m| event_type(m) == Some("message_delta")));
+    assert!(out.iter().any(|m| event_type(m) == Some("message_stop")));
     assert!(
-        !out.iter().any(|m| m["event"]["type"]
-            .as_str()
-            .is_some_and(|t| t.starts_with("content_block"))),
+        !out.iter()
+            .any(|m| event_type(m).is_some_and(|t| t.starts_with("content_block"))),
         "no content_block_* events: {out:?}"
     );
-    assert!(out.iter().all(|m| m["type"] != "assistant"), "{out:?}");
-    assert_eq!(start["event"]["message"]["id"], "msg_empty");
-    assert_eq!(start["event"]["message"]["usage"]["input_tokens"], 5);
+    assert!(
+        out.iter().all(|m| msg_type(m) != Some("assistant")),
+        "{out:?}"
+    );
+    assert_eq!(json_str(start, "/event/message/id"), Some("msg_empty"));
+    assert_eq!(
+        start
+            .pointer("/event/message/usage/input_tokens")
+            .and_then(Value::as_u64),
+        Some(5)
+    );
 }
 
 #[test]
@@ -377,13 +494,23 @@ fn messages_partial_empty_then_real_response_do_not_cross_attribute() {
     out.extend(r.reduce(StreamEvent::AgentMessage("real".into())));
     let starts: Vec<&Value> = out
         .iter()
-        .filter(|m| m["event"]["type"] == "message_start")
+        .filter(|m| event_type(m) == Some("message_start"))
         .collect();
-    assert_eq!(starts.len(), 2, "one envelope per response: {out:?}");
-    assert_eq!(starts[0]["event"]["message"]["id"], "msg_a");
-    assert_eq!(starts[0]["event"]["message"]["usage"]["input_tokens"], 11);
-    assert_eq!(starts[1]["event"]["message"]["id"], "msg_b");
-    assert_eq!(starts[1]["event"]["message"]["usage"]["input_tokens"], 22);
+    let [a, b] = starts.as_slice() else {
+        panic!("one envelope per response: {out:?}");
+    };
+    assert_eq!(json_str(a, "/event/message/id"), Some("msg_a"));
+    assert_eq!(
+        a.pointer("/event/message/usage/input_tokens")
+            .and_then(Value::as_u64),
+        Some(11)
+    );
+    assert_eq!(json_str(b, "/event/message/id"), Some("msg_b"));
+    assert_eq!(
+        b.pointer("/event/message/usage/input_tokens")
+            .and_then(Value::as_u64),
+        Some(22)
+    );
 }
 
 #[test]
@@ -398,20 +525,24 @@ fn messages_partial_message_delta_carries_stop_sequence() {
         stop_sequence: Some("<END>".into()),
     });
     let out = r.reduce(StreamEvent::AgentMessage("more".into()));
-    let delta = out
-        .iter()
-        .find(|m| m["event"]["type"] == "message_delta")
-        .expect("message_delta closes the prior message");
-    assert_eq!(delta["event"]["delta"]["stop_reason"], "stop_sequence");
-    assert_eq!(delta["event"]["delta"]["stop_sequence"], "<END>");
-    let assistant = out
-        .iter()
-        .find(|m| m["type"] == "assistant")
-        .expect("assistant frame");
-    assert_eq!(assistant["message"]["stop_sequence"], "<END>");
-    let start = out.iter().find(|m| m["event"]["type"] == "message_start");
-    if let Some(start) = start {
-        assert!(start["event"]["message"]["stop_sequence"].is_null());
+    let Some(delta) = out.iter().find(|m| event_type(m) == Some("message_delta")) else {
+        panic!("message_delta closes the prior message: {out:?}");
+    };
+    assert_eq!(
+        json_str(delta, "/event/delta/stop_reason"),
+        Some("stop_sequence")
+    );
+    assert_eq!(json_str(delta, "/event/delta/stop_sequence"), Some("<END>"));
+    let Some(assistant) = out.iter().find(|m| msg_type(m) == Some("assistant")) else {
+        panic!("assistant frame: {out:?}");
+    };
+    assert_eq!(json_str(assistant, "/message/stop_sequence"), Some("<END>"));
+    if let Some(start) = out.iter().find(|m| event_type(m) == Some("message_start")) {
+        assert!(
+            start
+                .pointer("/event/message/stop_sequence")
+                .is_none_or(Value::is_null)
+        );
     }
 }
 
@@ -429,16 +560,19 @@ fn messages_partial_consecutive_signature_blocks_keep_own_signature() {
     out.extend(r.finish(&end_turn()));
     let sigs: Vec<&str> = out
         .iter()
-        .filter(|m| m["event"]["delta"]["type"] == "signature_delta")
-        .map(|m| m["event"]["delta"]["signature"].as_str().unwrap())
+        .filter(|m| delta_type(m) == Some("signature_delta"))
+        .map(|m| json_str(m, "/event/delta/signature").expect("signature_delta signature"))
         .collect();
     assert_eq!(sigs, vec!["sig-1", "sig-2"], "{out:?}");
-    let frame = out
-        .iter()
-        .find(|m| m["type"] == "assistant")
-        .expect("assistant frame");
-    let blocks = frame["message"]["content"].as_array().unwrap();
-    assert_eq!(blocks.len(), 2, "{blocks:?}");
-    assert_eq!(blocks[0]["signature"], "sig-1");
-    assert_eq!(blocks[1]["signature"], "sig-2");
+    let Some(frame) = out.iter().find(|m| msg_type(m) == Some("assistant")) else {
+        panic!("assistant frame: {out:?}");
+    };
+    let Some(blocks) = frame.pointer("/message/content").and_then(Value::as_array) else {
+        panic!("assistant content array: {frame:?}");
+    };
+    let [first, second] = blocks.as_slice() else {
+        panic!("expected two thinking blocks: {blocks:?}");
+    };
+    assert_eq!(json_str(first, "/signature"), Some("sig-1"));
+    assert_eq!(json_str(second, "/signature"), Some("sig-2"));
 }

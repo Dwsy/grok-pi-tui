@@ -112,7 +112,8 @@ fn residual_backlog_flushes_on_16ms_cadence_slots() {
     );
     // The synthetic clock makes the deadline chain exact: consecutive residual flushes land exactly one REDRAW_CADENCE apart, never a 33ms slot
     for pair in flushes.windows(2) {
-        let spacing = pair[1].0.duration_since(pair[0].0);
+        let [a, b] = pair else { continue };
+        let spacing = b.0.duration_since(a.0);
         assert_eq!(
             spacing, REDRAW_CADENCE,
             "residual flushes must be 16ms apart, got {spacing:?}"
@@ -1356,52 +1357,82 @@ fn scroll_log_records_flood_flushes_and_capped_finalize_drop() {
     );
 
     // Ordering: stream_start first, finalize last, only flushes between.
-    assert_eq!(records[0]["evt"], "stream_start");
-    assert_eq!(records[0]["trigger"], "event");
-    assert_eq!(records[0]["events_total"], 0);
+    let Some(start) = records.first() else {
+        panic!("expected records: {records:?}");
+    };
+    assert_eq!(
+        start.get("evt").and_then(|v| v.as_str()),
+        Some("stream_start")
+    );
+    assert_eq!(start.get("trigger").and_then(|v| v.as_str()), Some("event"));
+    assert_eq!(start.get("events_total"), Some(&serde_json::json!(0)));
     // Config echo rides stream_start only, matching the synthetic config.
-    assert_eq!(records[0]["mode"], "trackpad");
-    assert_eq!(records[0]["ept"], 3);
-    assert_eq!(records[0]["wheel_lpt"], 3);
-    assert_eq!(records[0]["trackpad_lpt"], 3);
-    assert_eq!(records[0]["invert"], false);
-    assert_eq!(records[0]["speed"], 1.0);
-    assert_eq!(records[0]["viewport_height"], 0);
+    assert_eq!(start.get("mode").and_then(|v| v.as_str()), Some("trackpad"));
+    assert_eq!(start.get("ept"), Some(&serde_json::json!(3)));
+    assert_eq!(start.get("wheel_lpt"), Some(&serde_json::json!(3)));
+    assert_eq!(start.get("trackpad_lpt"), Some(&serde_json::json!(3)));
+    assert_eq!(start.get("invert"), Some(&serde_json::json!(false)));
+    assert_eq!(start.get("speed"), Some(&serde_json::json!(1.0)));
+    assert_eq!(start.get("viewport_height"), Some(&serde_json::json!(0)));
     let last = records.last().expect("nonempty");
-    assert!(records[1].get("ept").is_none(), "flushes skip the echo");
+    assert!(
+        records.get(1).is_some_and(|r| r.get("ept").is_none()),
+        "flushes skip the echo"
+    );
     assert!(last.get("mode").is_none(), "finalize skips the echo");
-    assert_eq!(last["evt"], "finalize");
-    assert_eq!(last["trigger"], "finalize");
-    for flush in &records[1..records.len() - 1] {
-        assert_eq!(flush["evt"], "flush");
+    assert_eq!(last.get("evt").and_then(|v| v.as_str()), Some("finalize"));
+    assert_eq!(
+        last.get("trigger").and_then(|v| v.as_str()),
+        Some("finalize")
+    );
+    let mid = records
+        .len()
+        .checked_sub(1)
+        .and_then(|end| records.get(1..end))
+        .unwrap_or(&[]);
+    for flush in mid {
+        assert_eq!(flush.get("evt").and_then(|v| v.as_str()), Some("flush"));
         // In-burst flushes ride the event path; the post-gap drain flushes ride the tick path (they replace the old finalize burst)
+        let trigger = flush.get("trigger").and_then(|v| v.as_str());
         assert!(
-            flush["trigger"] == "event" || flush["trigger"] == "tick",
+            trigger == Some("event") || trigger == Some("tick"),
             "unexpected flush trigger: {flush}"
         );
-        assert_ne!(flush["flushed"], 0, "zero-delta flushes are not logged");
+        assert!(
+            flush
+                .get("flushed")
+                .and_then(|v| v.as_i64())
+                .is_some_and(|n| n != 0),
+            "zero-delta flushes are not logged"
+        );
     }
-    let drain_flushes: Vec<i64> = records[1..records.len() - 1]
+    let drain_flushes: Vec<i64> = mid
         .iter()
-        .filter(|r| r["trigger"] == "tick")
-        .map(|r| r["flushed"].as_i64().expect("flushed"))
+        .filter(|r| r.get("trigger").and_then(|v| v.as_str()) == Some("tick"))
+        .map(|r| r.get("flushed").and_then(|v| v.as_i64()).expect("flushed"))
         .collect();
     assert!(
         !drain_flushes.is_empty(),
         "the starved flood must drain over tick flushes before finalizing"
     );
     assert!(
-        drain_flushes.windows(2).all(|w| w[0] >= w[1]),
+        drain_flushes
+            .windows(2)
+            .all(|w| matches!(w, [a, b] if a >= b)),
         "drain flushes must decelerate (non-increasing), got {drain_flushes:?}"
     );
 
     // ts_ms is the synthetic timeline: monotone, finalize at the tick's exact offset
     let ts: Vec<f64> = records
         .iter()
-        .map(|r| r["ts_ms"].as_f64().expect("ts_ms is a number"))
+        .map(|r| {
+            r.get("ts_ms")
+                .and_then(|v| v.as_f64())
+                .expect("ts_ms is a number")
+        })
         .collect();
     assert!(
-        ts.windows(2).all(|w| w[0] <= w[1]),
+        ts.windows(2).all(|w| matches!(w, [a, b] if a <= b)),
         "ts_ms monotone: {ts:?}"
     );
     let expected_ms = final_at.duration_since(base).as_secs_f64() * 1000.0;
@@ -1409,12 +1440,27 @@ fn scroll_log_records_flood_flushes_and_capped_finalize_drop() {
 
     // Finalize consistency: the finalize flushes nothing because the drain already ran dry or the coast budget wrote the rest off
     // `dropped` is exactly the whole-line backlog the budget declined
-    let cap = last["cap"].as_i64().expect("cap");
-    let flushed = last["flushed"].as_i64().expect("flushed");
-    let dropped = last["dropped"].as_i64().expect("dropped");
-    let backlog_after = last["backlog_after"].as_i64().expect("backlog_after");
-    let desired = last["desired"].as_f64().expect("desired");
-    let applied_total = last["applied_total"].as_i64().expect("applied_total");
+    let cap = last.get("cap").and_then(|v| v.as_i64()).expect("cap");
+    let flushed = last
+        .get("flushed")
+        .and_then(|v| v.as_i64())
+        .expect("flushed");
+    let dropped = last
+        .get("dropped")
+        .and_then(|v| v.as_i64())
+        .expect("dropped");
+    let backlog_after = last
+        .get("backlog_after")
+        .and_then(|v| v.as_i64())
+        .expect("backlog_after");
+    let desired = last
+        .get("desired")
+        .and_then(|v| v.as_f64())
+        .expect("desired");
+    let applied_total = last
+        .get("applied_total")
+        .and_then(|v| v.as_i64())
+        .expect("applied_total");
     assert_eq!(cap, 6, "unstamped viewport floors the cap");
     assert_eq!(
         flushed, 0,
@@ -1426,20 +1472,31 @@ fn scroll_log_records_flood_flushes_and_capped_finalize_drop() {
     );
     assert_eq!(dropped, backlog_after);
     assert_eq!(dropped, desired.trunc() as i64 - applied_total);
-    assert_eq!(last["kind"], "trackpad");
-    assert_eq!(last["events_total"], 50);
+    assert_eq!(last.get("kind").and_then(|v| v.as_str()), Some("trackpad"));
+    assert_eq!(last.get("events_total"), Some(&serde_json::json!(50)));
 
     // Per-stream event accounting: since-flush counts partition the total.
     let since_sum: u64 = records
         .iter()
-        .map(|r| r["events_since_flush"].as_u64().expect("count"))
+        .map(|r| {
+            r.get("events_since_flush")
+                .and_then(|v| v.as_u64())
+                .expect("count")
+        })
         .sum();
     assert_eq!(since_sum, 50);
     assert!(
-        records[0].get("ms_since_prev_flush").is_none(),
+        records
+            .first()
+            .is_some_and(|r| r.get("ms_since_prev_flush").is_none()),
         "no flush precedes the first record"
     );
-    assert!(last["ms_since_prev_flush"].as_f64().expect("spacing") > 0.0);
+    assert!(
+        last.get("ms_since_prev_flush")
+            .and_then(|v| v.as_f64())
+            .expect("spacing")
+            > 0.0
+    );
 }
 
 /// Hardcoded JSON keys, not shared with the serializer, so a rename cannot update both sides silently. No harness dependency.
@@ -1509,7 +1566,11 @@ fn scroll_log_wire_format_matches_harness_required_field_set() {
         .collect();
     let evts: Vec<&str> = records
         .iter()
-        .map(|r| r["evt"].as_str().expect("evt is a string"))
+        .map(|r| {
+            r.get("evt")
+                .and_then(|v| v.as_str())
+                .expect("evt is a string")
+        })
         .collect();
     for expected in ["stream_start", "flush", "finalize"] {
         assert!(
@@ -1520,7 +1581,7 @@ fn scroll_log_wire_format_matches_harness_required_field_set() {
 
     for record in &records {
         let obj = record.as_object().expect("records are flat JSON objects");
-        let evt = record["evt"].as_str().expect("evt");
+        let evt = record.get("evt").and_then(|v| v.as_str()).expect("evt");
 
         // Every record carries the full harness-required key set
         for key in REQUIRED_KEYS {
@@ -1543,13 +1604,13 @@ fn scroll_log_wire_format_matches_harness_required_field_set() {
             "cap",
         ] {
             assert!(
-                record[key].is_number(),
+                record.get(key).is_some_and(|v| v.is_number()),
                 "{evt} key {key} must be a JSON number: {record}"
             );
         }
         for key in ["evt", "trigger", "kind"] {
             assert!(
-                record[key].is_string(),
+                record.get(key).is_some_and(|v| v.is_string()),
                 "{evt} key {key} must be a JSON string: {record}"
             );
         }
@@ -1689,7 +1750,7 @@ fn real_session_glide_ends_without_finalize_burst_or_drop() {
         "post-input motion must fit one cap, got {tail:?}"
     );
     assert!(
-        tail.windows(2).all(|w| w[0] >= w[1]),
+        tail.windows(2).all(|w| matches!(w, [a, b] if a >= b)),
         "post-input flushes must decelerate (non-increasing), got {tail:?}"
     );
 
@@ -1697,11 +1758,16 @@ fn real_session_glide_ends_without_finalize_burst_or_drop() {
     let raw = std::fs::read_to_string(&path).expect("finalize flushed the log");
     let last: serde_json::Value =
         serde_json::from_str(raw.lines().last().expect("nonempty")).expect("parses");
-    assert_eq!(last["evt"], "finalize");
-    assert_eq!(last["dropped"], 0, "the 47-line drop class must be gone");
+    assert_eq!(last.get("evt").and_then(|v| v.as_str()), Some("finalize"));
     assert_eq!(
-        last["flushed"], 0,
+        last.get("dropped"),
+        Some(&serde_json::json!(0)),
+        "the 47-line drop class must be gone"
+    );
+    assert_eq!(
+        last.get("flushed"),
+        Some(&serde_json::json!(0)),
         "the finalize no longer bursts a catch-up flush"
     );
-    assert_eq!(last["events_total"], 54);
+    assert_eq!(last.get("events_total"), Some(&serde_json::json!(54)));
 }

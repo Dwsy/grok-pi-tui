@@ -104,10 +104,10 @@ mod tests {
         };
         let value = serde_json::to_value(&w).unwrap();
         assert!(
-            value["output"].is_string(),
+            value.get("output").is_some_and(|v| v.is_string()),
             "expected base64 string, got {value:?}"
         );
-        assert_eq!(value["output"], json!("aGVsbG8="));
+        assert_eq!(value.get("output"), Some(&json!("aGVsbG8=")));
     }
 
     #[test]
@@ -135,7 +135,7 @@ mod tests {
     fn vec_empty_round_trips() {
         let w = Wrapper { output: vec![] };
         let value = serde_json::to_value(&w).unwrap();
-        assert_eq!(value["output"], json!(""));
+        assert_eq!(value.get("output"), Some(&json!("")));
         let back: Wrapper = serde_json::from_value(value).unwrap();
         assert_eq!(back.output, Vec::<u8>::new());
     }

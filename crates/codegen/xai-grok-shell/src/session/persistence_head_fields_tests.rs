@@ -108,12 +108,15 @@ fn summary_relocation_metadata_round_trips() {
 
     let serialized = serde_json::to_value(&summary).unwrap();
     assert_eq!(
-        serialized["pending_cwd_switch_reminder"]["destination_cwd"],
-        "/new"
+        serialized
+            .get("pending_cwd_switch_reminder")
+            .and_then(|v| v.get("destination_cwd")),
+        Some(&serde_json::json!("/new"))
     );
     assert!(
-        serialized["pending_cwd_switch_reminder"]
-            .get("cwd")
+        serialized
+            .get("pending_cwd_switch_reminder")
+            .and_then(|v| v.get("cwd"))
             .is_none()
     );
     let back: Summary = serde_json::from_value(serialized).unwrap();

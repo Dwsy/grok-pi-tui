@@ -60,10 +60,7 @@ fn paths_equal_for_display(a: &Path, b: &Path) -> bool {
 /// Absolute-shaped for peel: leading `/`, `X:` drive, or `\\` UNC.
 fn is_absolute_shaped_path_token(s: &str) -> bool {
     let bytes = s.as_bytes();
-    if bytes.is_empty() {
-        return false;
-    }
-    if bytes[0] == b'/' {
+    if bytes.first() == Some(&b'/') {
         return true;
     }
     is_windows_shaped_str(s)
@@ -71,10 +68,8 @@ fn is_absolute_shaped_path_token(s: &str) -> bool {
 
 fn is_windows_shaped_str(s: &str) -> bool {
     let bytes = s.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        return true;
-    }
-    bytes.len() >= 2 && bytes[0] == b'\\' && bytes[1] == b'\\'
+    matches!(bytes, [a, b, ..] if a.is_ascii_alphabetic() && *b == b':')
+        || bytes.starts_with(br"\\")
 }
 
 /// Split on `/` or `\`, drop empty segments (trailing sep / root markers).
@@ -92,7 +87,7 @@ fn trim_wrapping_parens(s: &str) -> Option<&str> {
     if !t.starts_with('(') || !t.ends_with(')') || t.len() < 2 {
         return None;
     }
-    let inner = &t[1..t.len() - 1];
+    let inner = t.get(1..t.len() - 1)?;
     if inner.contains('(') || inner.contains(')') {
         return None;
     }
@@ -177,7 +172,7 @@ fn take_shell_word(s: &str) -> Option<(&str, &str)> {
     if end == 0 {
         return None;
     }
-    Some((&s[..end], &s[end..]))
+    Some((s.get(..end)?, s.get(end..)?))
 }
 
 /// Path token: quoted string or unquoted until whitespace / separator start.
@@ -187,15 +182,14 @@ fn take_path_token(s: &str) -> Option<(&str, &str)> {
         return None;
     }
     let bytes = s.as_bytes();
-    match bytes[0] {
-        b'\'' | b'"' => {
-            let quote = bytes[0];
+    match bytes.first().copied() {
+        Some(quote @ (b'\'' | b'"')) => {
             let mut i = 1;
             while i < bytes.len() {
-                if bytes[i] == quote {
-                    return Some((&s[..=i], &s[i + 1..]));
+                if bytes.get(i) == Some(&quote) {
+                    return Some((s.get(..=i)?, s.get(i + 1..)?));
                 }
-                if bytes[i] == b'\\' && quote == b'"' && i + 1 < bytes.len() {
+                if bytes.get(i) == Some(&b'\\') && quote == b'"' && i + 1 < bytes.len() {
                     i += 2;
                     continue;
                 }
@@ -203,7 +197,7 @@ fn take_path_token(s: &str) -> Option<(&str, &str)> {
             }
             None
         }
-        _ => {
+        Some(_) => {
             let mut end = 0;
             let chars: Vec<(usize, char)> = s.char_indices().collect();
             for (idx, (byte_i, ch)) in chars.iter().enumerate() {
@@ -220,8 +214,9 @@ fn take_path_token(s: &str) -> Option<(&str, &str)> {
             if end == 0 {
                 return None;
             }
-            Some((&s[..end], &s[end..]))
+            Some((s.get(..end)?, s.get(end..)?))
         }
+        None => None,
     }
 }
 
@@ -229,10 +224,13 @@ fn unquote_path_token(token: &str) -> Option<&str> {
     let t = token.trim();
     if t.len() >= 2 {
         let b = t.as_bytes();
-        if (b[0] == b'\'' && b[t.len() - 1] == b'\'') || (b[0] == b'"' && b[t.len() - 1] == b'"') {
-            return Some(&t[1..t.len() - 1]);
+        if matches!(
+            (b.first().copied(), b.last().copied()),
+            (Some(b'\''), Some(b'\'')) | (Some(b'"'), Some(b'"'))
+        ) {
+            return t.get(1..t.len() - 1);
         }
-        if b[0] == b'\'' || b[0] == b'"' {
+        if matches!(b.first(), Some(&b'\'') | Some(&b'"')) {
             return None;
         }
     }

@@ -1,0 +1,10 @@
+{
+  "outcome": "approve",
+  "tool_call_id": "tc-0192c1a0",
+  "scope": {
+    "kind": "build_caches"
+  },
+  "duration": {
+    "kind": "workspace"
+  }
+}

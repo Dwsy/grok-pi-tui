@@ -238,8 +238,8 @@ wave_rows = 32     # Rows per wave cycle for accent animation
 [scrollback.blocks.edit]
 indent = true                   # Indent diff content
 vpad = false                    # Vertical padding around diffs
-# expanded_by_default = true    # Unset: follows [ui] collapsed_edit_blocks in config.toml
-                                # (flag on = collapsed one-liner); uncomment to pin either shape
+# expanded_by_default = true    # Unset follows Collapsed edit blocks. When that setting is on,
+                                # edits start collapsed even if this line is true.
 hunk_separator = "…"            # Separator between hunks ("…", "───", "⋯", or "" for none)
 dual_line_numbers = false       # Two-column line numbers (old + new, like GitHub)
 # line_summary = false          # Show +N/-M in the collapsed header; unset follows the same flag

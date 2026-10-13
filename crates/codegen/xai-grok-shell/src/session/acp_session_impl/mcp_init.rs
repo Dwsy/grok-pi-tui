@@ -626,9 +626,7 @@ async fn run_handshake(
         Err(error) => {
             // Login can only rebuild HTTP clients; other transports keep init_failed.
             let needs_auth = client.has_auth()
-                || (client.is_http()
-                    && !client.has_configured_auth_header()
-                    && error.is_auth_rejection());
+                || (client.is_http() && !client.has_configured_auth() && error.is_auth_rejection());
             tracing::warn!(
                 server = server.as_str(),
                 elapsed_ms = start.elapsed().as_millis() as u64,

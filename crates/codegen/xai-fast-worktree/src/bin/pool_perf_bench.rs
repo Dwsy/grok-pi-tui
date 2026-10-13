@@ -14,6 +14,8 @@
 //! Usage:
 //!   cargo run --release --bin pool-perf-bench -- [--source /path/to/repo] [--iterations 3]
 
+#![deny(clippy::indexing_slicing)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -517,11 +519,14 @@ fn compute_summary(iterations: &[IterationResult]) -> BenchmarkSummary {
     }
 
     // Collect all unique phase names in order from the first iteration
-    let phase_names: Vec<String> = iterations[0]
-        .phases
-        .iter()
-        .map(|p| p.name.clone())
-        .collect();
+    let Some(first) = iterations.first() else {
+        return BenchmarkSummary {
+            phase_averages: vec![],
+            total_avg_ms: 0.0,
+            bottleneck: ("(none)".into(), 0.0),
+        };
+    };
+    let phase_names: Vec<String> = first.phases.iter().map(|p| p.name.clone()).collect();
 
     let mut phase_averages = Vec::new();
     let mut max_phase = ("(none)".to_string(), 0.0f64);
@@ -587,7 +592,10 @@ fn print_summary(result: &BenchmarkResult) {
     println!("╠══════════════════════════════════════════════════════════════════╣");
     println!(
         "║ Source: {:<55} ║",
-        &result.source[..result.source.len().min(55)]
+        result
+            .source
+            .get(..result.source.len().min(55))
+            .unwrap_or(result.source.as_str())
     );
     println!("║ Tracked files: {:<48} ║", result.tracked_files);
     println!(

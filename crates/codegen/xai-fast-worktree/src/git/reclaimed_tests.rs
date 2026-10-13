@@ -96,12 +96,11 @@ fn only_the_tip_of_a_discarded_chain_is_named() {
     let names = reclaimed_names(&fixture.source);
     let prefix = format!("{RECLAIMED}/chain/");
     let suffix = format!("/{tip}");
+    let mid = names
+        .strip_prefix(prefix.as_str())
+        .and_then(|s| s.strip_suffix(suffix.as_str()));
     assert!(
-        names.starts_with(&prefix)
-            && names.ends_with(&suffix)
-            && names[prefix.len()..names.len() - suffix.len()]
-                .parse::<i64>()
-                .is_ok(),
+        mid.is_some_and(|m| m.parse::<i64>().is_ok()),
         "name must be {RECLAIMED}/chain/<reclaim-unix-ts>/{tip}, got {names:?}"
     );
 }

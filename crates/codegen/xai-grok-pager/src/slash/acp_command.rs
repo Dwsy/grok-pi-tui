@@ -12,6 +12,13 @@ use super::command::{
     AppCtx, ArgItem, CommandExecCtx, CommandProvenance, CommandResult, SlashCommand,
 };
 
+/// The `_meta` keys that mark an ACP command as a skill: its scope and `SKILL.md` path.
+pub(crate) const SKILL_SCOPE_META_KEY: &str = "scope";
+pub(crate) const SKILL_PATH_META_KEY: &str = "path";
+
+/// The `_meta` key naming the plugin a skill comes from.
+pub(crate) const SKILL_PLUGIN_META_KEY: &str = "pluginName";
+
 /// Identity of a skill as advertised in ACP `_meta`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillIdentity {
@@ -45,8 +52,8 @@ impl SkillMeta {
         let Some(m) = meta else {
             return SkillMeta::Absent;
         };
-        let path_val = m.get("path");
-        let scope_val = m.get("scope");
+        let path_val = m.get(SKILL_PATH_META_KEY);
+        let scope_val = m.get(SKILL_SCOPE_META_KEY);
         if path_val.is_none() && scope_val.is_none() {
             return SkillMeta::Absent;
         }
@@ -57,7 +64,7 @@ impl SkillMeta {
             (Some(path), Some(scope)) => SkillMeta::Skill(SkillIdentity {
                 path: path.to_string(),
                 scope,
-                plugin_name: trimmed_string_field(m, "pluginName"),
+                plugin_name: trimmed_string_field(m, SKILL_PLUGIN_META_KEY),
             }),
             (_, None) if scope_val.is_some_and(|v| v.is_string()) => SkillMeta::Foreign,
             _ => SkillMeta::Malformed,
@@ -504,7 +511,7 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(display_text, expected, "/{name} {args}");
-                    let [acp::ContentBlock::Text(block)] = &prompt_blocks[..] else {
+                    let [acp::ContentBlock::Text(block)] = prompt_blocks.as_slice() else {
                         panic!("/{name}: expected a single Text block, got {prompt_blocks:?}");
                     };
                     assert_eq!(block.text, expected, "/{name} {args}");

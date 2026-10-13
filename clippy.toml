@@ -6,6 +6,12 @@
 # TODO: remove after https://github.com/hyperium/tonic/issues/2253 fixed.
 large-error-threshold = 256
 
+# Tests may index and slice freely; an out-of-range index there is just a failing test.
+# Production crates opt in with #![deny(clippy::indexing_slicing)] at the crate root.
+# Like the bans below, this applies to `cargo clippy` only; the Bazel lint aspect
+# reads the repo-root config, so inline #[cfg(test)] modules must not index in CI.
+allow-indexing-slicing-in-tests = true
+
 # Ban raw canonicalize: on Windows it returns verbatim `\\?\C:\...` paths that
 # break external tools, leak into prompts, and poison path-equality keys.
 # `dunce::canonicalize` keeps the verbatim form for paths it cannot simplify
@@ -44,6 +50,6 @@ disallowed-methods = [
     # which would otherwise warn that the banned path is unreachable.
     { path = "dirs::home_dir", reason = "home-anchored paths resolve via xai_dirs::home_dir so all sites agree; Node-based tools use os.homedir, which matches it, not the known-folder API", allow-invalid = true },
     { path = "std::process::Command::spawn", reason = "an unenrolled child outlives its session; use xai_tty_utils::ProcessScope::enroll" },
-    { path = "tokio::process::Command::spawn", reason = "an unenrolled child outlives its session; use xai_tty_utils::ProcessScope::enroll" },
-    { path = "portable_pty::SlavePty::spawn_command", reason = "an unenrolled pty child outlives its session; enroll the shell with xai_tty_utils::ProcessScope::enroll_terminal_pid" },
+    { path = "tokio::process::Command::spawn", reason = "an unenrolled child outlives its session; use xai_tty_utils::ProcessScope::enroll", allow-invalid = true },
+    { path = "portable_pty::SlavePty::spawn_command", reason = "an unenrolled pty child outlives its session; enroll the shell with xai_tty_utils::ProcessScope::enroll_terminal_pid", allow-invalid = true },
 ]

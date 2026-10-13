@@ -1,0 +1,1 @@
+could not write config file .git/config: Operation not permitted

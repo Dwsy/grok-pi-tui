@@ -21,10 +21,14 @@ mod campaign_remote_settings_nudge_and_dismiss;
 mod critical_announcement_session_banner_pty;
 #[path = "pty_e2e/dashboard_overlay_tab_esc_backout_and_ctrl_backslash.rs"]
 mod dashboard_overlay_tab_esc_backout_and_ctrl_backslash;
+#[path = "pty_e2e/dashboard_preview_setting.rs"]
+mod dashboard_preview_setting;
 #[path = "pty_e2e/extensions_modal_copy_hints_pty.rs"]
 mod extensions_modal_copy_hints_pty;
 #[path = "pty_e2e/extensions_modal_workflows_tab_pty.rs"]
 mod extensions_modal_workflows_tab_pty;
+#[path = "pty_e2e/feedback_draft_send_pty.rs"]
+mod feedback_draft_send_pty;
 #[path = "pty_e2e/feedback_modal_pty.rs"]
 mod feedback_modal_pty;
 #[path = "pty_e2e/iterm_readline_editing.rs"]
@@ -37,6 +41,8 @@ mod reasoning_efforts_fallback_menu_matches_builtin;
 mod reasoning_efforts_from_config_toml_menu;
 #[path = "pty_e2e/reasoning_efforts_menu_renders_and_remaps_on_wire.rs"]
 mod reasoning_efforts_menu_renders_and_remaps_on_wire;
+#[path = "pty_e2e/reasoning_efforts_model_menu_opens_on_default.rs"]
+mod reasoning_efforts_model_menu_opens_on_default;
 #[path = "pty_e2e/reverse_agent_type_mismatch_cursor_to_default.rs"]
 mod reverse_agent_type_mismatch_cursor_to_default;
 #[path = "pty_e2e/same_agent_type_switch_no_modal.rs"]

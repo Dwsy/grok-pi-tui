@@ -201,10 +201,22 @@ mod tests {
         assert_eq!(row.legacy.cwd, "");
 
         let ext = serde_json::to_value(row.clone().into_ext_superset()).unwrap();
-        assert_eq!(ext["sessionId"], "conv_abc123");
-        assert_eq!(ext["cwd"], "");
-        assert_eq!(ext["source"], "conversation");
-        assert_eq!(ext["_meta"]["x.ai/session"]["kind"], "chat");
+        assert_eq!(
+            ext.get("sessionId").and_then(|v| v.as_str()),
+            Some("conv_abc123")
+        );
+        assert_eq!(ext.get("cwd").and_then(|v| v.as_str()), Some(""));
+        assert_eq!(
+            ext.get("source").and_then(|v| v.as_str()),
+            Some("conversation")
+        );
+        assert_eq!(
+            ext.get("_meta")
+                .and_then(|m| m.get("x.ai/session"))
+                .and_then(|s| s.get("kind"))
+                .and_then(|v| v.as_str()),
+            Some("chat")
+        );
         // Chat rows have no local git enrichment (fields omitted).
         assert!(ext.get("gitRootDir").is_none());
         assert!(ext.get("gitRemotes").is_none());
@@ -212,7 +224,10 @@ mod tests {
         assert!(ext.get("sessionKind").is_none());
 
         let bare = serde_json::to_value(row.into_session_info()).unwrap();
-        assert_eq!(bare["sessionId"], "conv_abc123");
+        assert_eq!(
+            bare.get("sessionId").and_then(|v| v.as_str()),
+            Some("conv_abc123")
+        );
     }
 
     #[test]

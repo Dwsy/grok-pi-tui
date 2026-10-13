@@ -11,7 +11,7 @@ use crate::appearance::ScrollMode;
 use crate::appearance::TextSelection;
 use crate::appearance::permission_cursor::DefaultSelectedPermission;
 
-use xai_grok_shell::agent::config::UiConfig;
+use xai_grok_shell::agent::config::{Feature, UiConfig};
 use xai_grok_shell::util::config::DISPLAY_REFRESH_DEFAULT_AUTO_CADENCE_ENABLED;
 use xai_grok_tools::implementations::grok_build::ask_user_question;
 
@@ -146,7 +146,7 @@ const PERMISSION_MODE_CHOICES: &[EnumChoice] = &[
     },
     EnumChoice {
         canonical: "auto",
-        display: "Auto",
+        display: "Auto-review",
         description: "LLM classifier approves safe tools; dangerous actions may still prompt or deny.",
     },
     EnumChoice {
@@ -682,6 +682,21 @@ pub fn default_settings() -> Vec<SettingMeta> {
             external_only: false,
         },
         SettingMeta {
+            key: "dashboard_preview",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shared,
+            label: "Dashboard preview",
+            description: "Show the selected session's preview and reply panel in the dashboard. \
+                          Turn off to give the session list more space. Open a session to reply \
+                          or answer permissions when the preview is off.",
+            keywords: &["dashboard", "peek", "preview", "prompt", "reply", "panel"],
+            kind: SettingKind::Bool {
+                default: ui_default.dashboard_preview_enabled(),
+            },
+            restart_required: false,
+            hidden_in_minimal: true,
+        },
+        SettingMeta {
             key: "page_flip_on_send",
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shared,
@@ -836,7 +851,6 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: false,
         },
-        // --- theme and auto themes -------------------------------------------
         SettingMeta {
             key: "theme",
             category: SettingCategory::Appearance,
@@ -932,7 +946,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             label: "Permission mode",
             description: "Default uses the agent's built-in behavior; \
                           Ask prompts for each tool action; \
-                          Auto uses an LLM classifier for risky tools; \
+                          Auto-review uses an LLM classifier for risky tools; \
                           Always approve grants all permissions automatically.",
             keywords: &[
                 "permission",
@@ -942,6 +956,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "always",
                 "ask",
                 "auto",
+                "review",
                 "classifier",
                 "tool",
                 "danger",
@@ -964,7 +979,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             label: "Remember tool approvals",
             description: "Show \"Always allow\" options in permission prompts so you can stop \
                           being re-asked about a specific command or tool. Applies in ask and \
-                          auto; Always-approve still skips all prompts. Restart required.",
+                          Auto-review; Always-approve still skips all prompts. Restart required.",
             keywords: &[
                 "permission",
                 "approve",
@@ -1017,6 +1032,41 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
             external_only: false,
+        },
+        // SHELL-owned `[features].subagent_model_inheritance`, a registry feature row rather than a `[ui]` key
+        // `restart_required` because each agent latches the mode when it is built; the row's value is the next-start resolution
+        // Each `\n` starts a new line in the expanded detail (a Bool row never reaches the single-line sub-pane header)
+        SettingMeta {
+            key: "subagent_model_inheritance",
+            category: SettingCategory::Models,
+            owner: SettingOwner::Shell,
+            label: "Subagent model inheritance",
+            description: "On: Grok cannot set models for subagents\n\
+                          Off: Grok may choose a different model for a subagent. Takes effect \
+                          after restart.\n\
+                          NOTE: This setting only applies when all models are xAI \
+                          \"model_family\". You likely don't need to configure this setting.",
+            keywords: &[
+                "subagent",
+                "subagents",
+                "subagent model",
+                "same model",
+                "model",
+                "parent",
+                "inherit",
+                "inheritance",
+                "picker",
+                "argument",
+                "task",
+                "spawn",
+                "xai",
+                "features",
+            ],
+            kind: SettingKind::Bool {
+                default: Feature::SubagentModelInheritance.default_enabled(),
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
         },
         // SHARED. `u16` in UiConfig, widened to `i64` for registry.
         // Width changes apply on the next render frame.

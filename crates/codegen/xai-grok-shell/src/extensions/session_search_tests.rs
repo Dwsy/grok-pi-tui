@@ -22,7 +22,7 @@ fn fetch_from(
         let start = offset.min(rows.len());
         let end = (start + page_size).min(rows.len());
         std::future::ready(Ok(ClassifiedPage {
-            hits: rows[start..end].to_vec(),
+            hits: rows.get(start..end).unwrap_or(&[]).to_vec(),
             has_more: end < rows.len(),
             bootstrapping: false,
         }))
@@ -49,7 +49,10 @@ fn fetch_with_bootstrap_states(
     move |offset, _batch| {
         let end = (offset + 1).min(rows.len());
         std::future::ready(Ok(ClassifiedPage {
-            hits: rows[offset.min(rows.len())..end].to_vec(),
+            hits: rows
+                .get(offset.min(rows.len())..end)
+                .unwrap_or(&[])
+                .to_vec(),
             has_more: end < rows.len(),
             bootstrapping: offset > 0,
         }))

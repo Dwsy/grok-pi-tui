@@ -86,16 +86,23 @@ fn contains_whole_word_ci(haystack: &str, needle: &str) -> bool {
     let is_word = |b: u8| b.is_ascii_alphanumeric() || b >= 0x80;
     let last_start = hay.len() - need.len();
     for start in 0..=last_start {
-        let matches = hay[start..start + need.len()]
+        let Some(window) = hay.get(start..start + need.len()) else {
+            continue;
+        };
+        let matches = window
             .iter()
             .zip(need)
             .all(|(h, n)| h.to_ascii_lowercase() == *n);
         if !matches {
             continue;
         }
-        let before_ok = start == 0 || !is_word(hay[start - 1]);
+        let before_ok = start == 0
+            || start
+                .checked_sub(1)
+                .and_then(|j| hay.get(j))
+                .is_none_or(|b| !is_word(*b));
         let end = start + need.len();
-        let after_ok = end >= hay.len() || !is_word(hay[end]);
+        let after_ok = hay.get(end).is_none_or(|b| !is_word(*b));
         if before_ok && after_ok {
             return true;
         }

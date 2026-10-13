@@ -37,8 +37,6 @@ use xai_ratatui_textarea::ElementId;
 /// Stable ids for mermaid affordance rows (above source lines and comments).
 const MERMAID_AFFORDANCE_ID_BASE: u64 = 2_000_000;
 
-// ── Line item ───────────────────────────────────────────────────────────
-
 /// A single source line for the line viewer.
 #[derive(Clone)]
 pub struct SourceLine {
@@ -272,8 +270,6 @@ impl ListItem for SourceLine {
     }
 }
 
-// ── Comment lines ─────────────────────────────────────────────────────
-
 /// An inline review comment displayed between source lines.
 pub struct CommentLine {
     pub comment_id: u64,
@@ -420,8 +416,6 @@ impl ListItem for CommentLine {
     }
 }
 
-// ── Mermaid affordance row ────────────────────────────────────────────
-
 /// Blank reserved row under a Mermaid diagram; buttons are painted by the
 /// draw loop (same pattern as scrollback).
 pub struct MermaidAffordanceLine {
@@ -508,8 +502,6 @@ impl ListItem for MermaidAffordanceLine {
         }
     }
 }
-
-// ── Plan viewer item ──────────────────────────────────────────────────
 
 /// Source line, review comment, or Mermaid affordance row.
 pub enum PlanViewerItem {
@@ -624,8 +616,6 @@ impl ListItem for PlanViewerItem {
     }
 }
 
-// ── Viewer state ────────────────────────────────────────────────────────
-
 /// What kind of content the line viewer is showing. Replaces string-based type sniffing
 /// (`title_override == Some("plan.md")`) with a typed enum. Plan-specific behavior (commenting,
 /// approval, double-click, shortcuts) dispatches via `match` rather than string comparison.
@@ -657,6 +647,9 @@ pub struct PlanViewerExtras {
     pub gutter_drag_end: Option<usize>,
     pub gutter_hovered_line: Option<usize>,
     pub active_commenting_range: Option<std::ops::Range<usize>>,
+    pub comment_close_areas: Vec<(u64, Rect)>,
+    pub hovered_comment_id: Option<u64>,
+    pub close_button_hovered: bool,
 }
 
 /// Double-click detection threshold in milliseconds.
@@ -835,7 +828,9 @@ impl LineViewerState {
 
         if start_idx < self.lines.len() {
             // Select the start line.
-            let start_id = self.lines[start_idx].stable_id();
+            let Some(start_id) = self.lines.get(start_idx).map(|line| line.stable_id()) else {
+                return;
+            };
             self.list_state.select_by_id(start_id);
 
             // Enter visual mode and extend to end line.
@@ -843,8 +838,9 @@ impl LineViewerState {
                 self.list_state.enter_visual_mode(&self.lines);
                 // Move selection to the end of the range.
                 let end_line_idx = (end_idx - 1).min(self.lines.len() - 1);
-                let end_id = self.lines[end_line_idx].stable_id();
-                self.list_state.select_by_id(end_id);
+                if let Some(end_id) = self.lines.get(end_line_idx).map(|line| line.stable_id()) {
+                    self.list_state.select_by_id(end_id);
+                }
             }
 
             // Store the range for scroll centering on first render.
@@ -979,6 +975,14 @@ impl LineViewerState {
     }
 
     pub fn source_line_at_screen_row(&self, row: u16, content_area: Rect) -> Option<usize> {
+        self.item_at_screen_row(row, content_area)?.line_number()
+    }
+
+    pub fn comment_id_at_screen_row(&self, row: u16, content_area: Rect) -> Option<u64> {
+        self.item_at_screen_row(row, content_area)?.comment_id()
+    }
+
+    fn item_at_screen_row(&self, row: u16, content_area: Rect) -> Option<&PlanViewerItem> {
         if row < content_area.y || row >= content_area.y + content_area.height {
             return None;
         }
@@ -986,7 +990,22 @@ impl LineViewerState {
         let vy = self.list_state.scroll_offset() + ry;
         let vi = self.list_state.layout().item_at_y(vy)?;
         let pi = self.list_state.to_physical(vi);
-        self.lines.get(pi)?.line_number()
+        self.lines.get(pi)
+    }
+
+    pub fn selected_comment_id(&self) -> Option<u64> {
+        let vi = self.list_state.selected_index()?;
+        let pi = self.list_state.to_physical(vi);
+        self.lines.get(pi)?.comment_id()
+    }
+
+    /// The comment whose `[✗]` button, as drawn in the last render, contains the given screen position.
+    pub fn comment_close_button_at(&self, col: u16, row: u16) -> Option<u64> {
+        self.plan_ref()?
+            .comment_close_areas
+            .iter()
+            .find(|(_, area)| area.contains((col, row).into()))
+            .map(|&(id, _)| id)
     }
 
     /// Prepare the layout for rendering (must be called each frame).
@@ -1066,20 +1085,33 @@ impl LineViewerState {
             src.commented = commented_lines.contains(&ln);
             items.push(PlanViewerItem::Source(Box::new(src)));
 
-            while mermaid_i < self.mermaid_after.len() && self.mermaid_after[mermaid_i].0 == src_idx
+            while mermaid_i < self.mermaid_after.len()
+                && self
+                    .mermaid_after
+                    .get(mermaid_i)
+                    .is_some_and(|m| m.0 == src_idx)
             {
+                let Some(diagram) = self.mermaid_after.get(mermaid_i).map(|m| m.1.clone()) else {
+                    break;
+                };
                 items.push(PlanViewerItem::MermaidAffordance(
                     MermaidAffordanceLine::new(
                         MERMAID_AFFORDANCE_ID_BASE + mermaid_i as u64,
-                        self.mermaid_after[mermaid_i].1.clone(),
+                        diagram,
                         max_digits,
                     ),
                 ));
                 mermaid_i += 1;
             }
 
-            while comment_idx < sorted.len() && sorted[comment_idx].line_range.end == ln + 1 {
-                let c = sorted[comment_idx];
+            while comment_idx < sorted.len()
+                && sorted
+                    .get(comment_idx)
+                    .is_some_and(|c| c.line_range.end == ln + 1)
+            {
+                let Some(c) = sorted.get(comment_idx).copied() else {
+                    break;
+                };
                 let item_id = comment_id_base + c.id;
                 items.push(PlanViewerItem::Comment(CommentLine::new(
                     c.id,
@@ -1092,7 +1124,7 @@ impl LineViewerState {
             }
         }
 
-        for c in &sorted[comment_idx..] {
+        for c in sorted.get(comment_idx..).unwrap_or(&[]) {
             let item_id = comment_id_base + c.id;
             items.push(PlanViewerItem::Comment(CommentLine::new(
                 c.id,
@@ -1148,8 +1180,6 @@ impl LineViewerState {
         }
     }
 }
-
-// ── Syntax highlighting ─────────────────────────────────────────────────
 
 /// Build syntax-highlighted source lines from file content.
 fn build_source_lines(path: &Path, content: &str) -> Vec<SourceLine> {
@@ -1364,8 +1394,6 @@ fn digit_count(n: usize) -> usize {
         ((n as f64).log10().floor() as usize) + 1
     }
 }
-
-// ── Rendering helpers ───────────────────────────────────────────────────
 
 /// Band for the active commenting / gutter-drag line range: a subtle 15% `accent_plan` tint over the canvas on RGB themes.
 /// Profile palettes (terminal theme, Reset canvas) cannot express a dim yellow tint, so the band is the solid named `accent_plan` with forced Black text — readable on both polarities.
@@ -1603,6 +1631,9 @@ pub fn render_line_viewer(
     viewer.last_popup_area = Some(content_area);
     viewer.last_modal_area = Some(inner);
 
+    // 7a. Per-comment `[✗]` delete buttons.
+    render_comment_close_buttons(buf, content_area, viewer, theme);
+
     // 7b. Line range highlight: active drag or commenting range.
     if let Some(plan) = viewer.plan_ref() {
         let highlight_range =
@@ -1819,6 +1850,61 @@ pub fn render_line_viewer(
     }
 }
 
+/// Draws the `[✗]` delete button on the hovered or selected comment row.
+/// The button rects are saved in `comment_close_areas` for mouse hit-testing.
+fn render_comment_close_buttons(
+    buf: &mut Buffer,
+    content_area: Rect,
+    viewer: &mut LineViewerState,
+    theme: &Theme,
+) {
+    if viewer.kind != LineViewerKind::PlanPreview {
+        return;
+    }
+
+    let hovered = viewer.plan_ref().and_then(|p| p.hovered_comment_id);
+    let close_hovered = viewer.plan_ref().is_some_and(|p| p.close_button_hovered);
+    let selected = viewer.selected_comment_id();
+
+    let label = crate::glyphs::ballot_x_button();
+    let label_w = label.chars().count() as u16;
+    let x_right = content_area.x + content_area.width.saturating_sub(SCROLLBAR_TOTAL_COLS);
+    let fits = x_right > content_area.x + label_w + 1;
+
+    let mut close_areas: Vec<(u64, Rect)> = Vec::new();
+    if fits && (hovered.is_some() || selected.is_some()) {
+        let x = x_right - label_w - 1;
+
+        // Only the first screen row of a wrapped comment gets the button
+        let mut prev_row_id: Option<u64> = None;
+
+        for row in content_area.y..content_area.y + content_area.height {
+            let Some(cid) = viewer.comment_id_at_screen_row(row, content_area) else {
+                prev_row_id = None;
+                continue;
+            };
+
+            let first_row = prev_row_id != Some(cid);
+            prev_row_id = Some(cid);
+
+            if !first_row || (Some(cid) != hovered && Some(cid) != selected) {
+                continue;
+            }
+
+            let style = if close_hovered && hovered == Some(cid) {
+                Style::default().fg(theme.accent_error)
+            } else {
+                Style::default().fg(theme.gray)
+            };
+
+            buf.set_span(x, row, &Span::styled(label, style), label_w);
+            close_areas.push((cid, Rect::new(x, row, label_w, 1)));
+        }
+    }
+
+    viewer.plan_mut().comment_close_areas = close_areas;
+}
+
 pub use crate::render::color::dim_area;
 
 #[cfg(test)]
@@ -1930,7 +2016,9 @@ mod tests {
         let area = *buf.area();
         let mut row = String::new();
         for x in area.left()..area.right() {
-            row.push_str(buf[(x, y)].symbol());
+            if let Some(cell) = buf.cell((x, y)) {
+                row.push_str(cell.symbol());
+            }
         }
         row
     }
@@ -1964,7 +2052,9 @@ mod tests {
     #[test]
     fn markdown_source_blank_line_renders_as_numbered_empty_row() {
         let built = build_markdown_lines("# Plan\n\n- First", Some(80));
-        let blank = &built.source_lines[1];
+        let Some(blank) = built.source_lines.get(1) else {
+            panic!("expected a blank source line");
+        };
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
 
         blank.render(Rect::new(0, 0, 20, 1), &mut buf, false, true);
@@ -1982,8 +2072,11 @@ mod tests {
         cache::set_render_mermaid(RenderMermaid::On);
         let built = build_markdown_lines(MD, Some(80));
         assert_eq!(built.mermaid_after.len(), 1);
-        assert!(built.mermaid_after[0].1.contains("A --> B"));
-        assert!(built.mermaid_after[0].0 < built.source_lines.len());
+        let Some(first) = built.mermaid_after.first() else {
+            panic!("expected a mermaid affordance: {:?}", built.mermaid_after);
+        };
+        assert!(first.1.contains("A --> B"));
+        assert!(first.0 < built.source_lines.len());
 
         let mut viewer =
             LineViewerState::open_markdown_content("plan.md", MD.to_owned(), None).unwrap();
@@ -1998,8 +2091,11 @@ mod tests {
         );
         let placements = viewer.diagram_affordance_placements(Rect::new(0, 0, 100, 40));
         assert_eq!(placements.len(), 1);
-        assert_eq!(placements[0].screen_rect.height, 1);
-        assert!(placements[0].screen_rect.width > 0);
+        let Some(placement) = placements.first() else {
+            panic!("expected a placement: {placements:?}");
+        };
+        assert_eq!(placement.screen_rect.height, 1);
+        assert!(placement.screen_rect.width > 0);
 
         cache::set_render_mermaid(RenderMermaid::Off);
         assert!(build_markdown_lines(MD, Some(80)).mermaid_after.is_empty());
@@ -2041,7 +2137,10 @@ mod tests {
 
         assert_eq!(viewer.selected_line_range(), Some(4..5));
         assert_eq!(viewer.line_range_suffix(), Some(":4".to_owned()));
-        assert_eq!(source_line(&viewer.lines[3]).plain_text, "");
+        let Some(line) = viewer.lines.get(3) else {
+            panic!("expected line 4");
+        };
+        assert_eq!(source_line(line).plain_text, "");
     }
 
     #[test]
@@ -2061,7 +2160,10 @@ mod tests {
             .iter()
             .map(|item| {
                 let s = source_line(item);
-                (s.line_number, line_text(&s.rendered_lines[0]))
+                (
+                    s.line_number,
+                    s.rendered_lines.first().map(line_text).unwrap_or_default(),
+                )
             })
             .collect();
         assert_eq!(

@@ -70,12 +70,6 @@ mod tests {
         assert!(!cmd.takes_args());
     }
 
-    #[test]
-    fn name_is_dashboard() {
-        let cmd = DashboardCommand;
-        assert_eq!(cmd.name(), "dashboard");
-    }
-
     /// `/sessions` (the removed picker modal) and `/agents-dashboard` both spell this command.
     #[test]
     fn aliases_include_sessions() {

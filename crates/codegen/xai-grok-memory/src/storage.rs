@@ -197,7 +197,9 @@ impl MemoryStorage {
     ) -> std::io::Result<PathBuf> {
         self.require_legacy("daily session logs")?;
         let sessions_dir = self.sessions_dir();
-        let sid8 = &session_id[..session_id.len().min(8)];
+        let sid8 = session_id
+            .get(..session_id.len().min(8))
+            .unwrap_or(session_id);
         let filename = format!("{date}-{slug}-{sid8}.md");
         let path = sessions_dir.join(&filename);
 
@@ -675,8 +677,8 @@ pub fn normalize_memory_content(raw: &str) -> String {
 
         // Multi-line: promote the first line to a heading if it's short enough
         Some(pos) => {
-            let first_line = trimmed[..pos].trim();
-            let rest = trimmed[pos..].trim();
+            let first_line = trimmed.get(..pos).unwrap_or("").trim();
+            let rest = trimmed.get(pos..).unwrap_or("").trim();
 
             if first_line.len() <= 80 {
                 format!("## {first_line}\n\n{rest}")
@@ -740,7 +742,8 @@ fn compute_workspace_hash(cwd: &Path) -> String {
 
     let slug = if slug.is_empty() { "workspace" } else { &slug };
     let hash = blake3::hash(hash_input.as_bytes());
-    let hash8 = &hash.to_hex()[..8];
+    let hex = hash.to_hex();
+    let hash8 = hex.get(..8).unwrap_or(&*hex);
 
     format!("{slug}-{hash8}")
 }
@@ -760,8 +763,11 @@ pub(crate) fn extract_repo_identity(cwd: &Path) -> Option<String> {
 fn normalize_remote_url(url: &str) -> Option<String> {
     let path = if let Some(colon_pos) = url.find(':') {
         // SSH format: git@github.com:org/repo.git
-        if url[..colon_pos].contains('@') && !url[..colon_pos].contains('/') {
-            &url[colon_pos + 1..]
+        if url
+            .get(..colon_pos)
+            .is_some_and(|h| h.contains('@') && !h.contains('/'))
+        {
+            url.get(colon_pos + 1..)?
         } else {
             // HTTPS/SSH-with-scheme: https://github.com/org/repo.git
             url.split("//")
@@ -860,13 +866,16 @@ mod tests {
         );
         // Format: {slug}-{8 hex chars}
         let parts: Vec<&str> = name.rsplitn(2, '-').collect();
+        let Some(suffix) = parts.first() else {
+            panic!("expected hash suffix: {name}");
+        };
         assert_eq!(
-            parts[0].len(),
+            suffix.len(),
             8,
             "hash suffix should be 8 hex chars, got: {name}"
         );
         assert!(
-            parts[0].chars().all(|c| c.is_ascii_hexdigit()),
+            suffix.chars().all(|c| c.is_ascii_hexdigit()),
             "hash suffix should be hex, got: {name}"
         );
     }
@@ -1026,9 +1035,12 @@ mod tests {
         assert_eq!(files.len(), 3);
 
         // Global MEMORY.md comes first
-        assert!(files[0].ends_with("MEMORY.md"));
+        let Some(first) = files.first() else {
+            panic!("expected listed memory files: {files:?}");
+        };
+        assert!(first.ends_with("MEMORY.md"));
         assert!(
-            files[0]
+            first
                 .parent()
                 .unwrap()
                 .file_name()
@@ -1525,7 +1537,11 @@ mod tests {
         // Should still produce a valid slug-hash format
         assert!(hash.contains('-'), "should have slug-hash format: {hash}");
         let parts: Vec<&str> = hash.rsplitn(2, '-').collect();
-        assert_eq!(parts[0].len(), 8, "hash suffix should be 8 hex chars");
+        assert_eq!(
+            parts.first().map_or(0, |p| p.len()),
+            8,
+            "hash suffix should be 8 hex chars"
+        );
     }
 
     // -----------------------------------------------------------------------

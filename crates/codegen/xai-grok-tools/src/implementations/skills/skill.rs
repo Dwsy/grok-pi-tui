@@ -3,7 +3,11 @@
 //! Skills are user-defined prompts stored as Markdown files that can be invoked
 //! by the user via slash commands (e.g., /commit) or by the model via this tool.
 
+use crate::implementations::grok_build::read_file::{
+    READ_FILE_MAX_BYTES, READ_FILE_MAX_TOKENS, exceeds_read_cap,
+};
 use crate::implementations::skills::types::SkillInfo;
+use crate::util::truncate::floor_char_boundary;
 
 /// Input for the Skill tool
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -33,9 +37,6 @@ pub struct SkillOutput {
     pub error: Option<String>,
 }
 
-// Old `SkillToolImpl` + `impl Tool` deleted.
-// New implementation is in `grok_build/skill/`.
-
 /// Build the formatted skill message shown to the model. Canonical formatter for skill content injection. Used by the
 /// skill tool (invocation path), TUI slash commands, the pager, and agent definition preloading — every path that
 /// surfaces a skill to the model routes through this function so the presentation stays consistent.
@@ -55,6 +56,31 @@ pub fn build_skill_block(name: &str, args: &str, content: &str) -> String {
     } else {
         format!("<skill name=\"{name}\" args=\"{args}\">\n{content}\n</skill>")
     }
+}
+
+/// Cap a skill body at `READ_FILE_MAX_TOKENS`: cut at the last line boundary that fits (char
+/// boundary when the body is a single oversized line, which can split a `$…` token) and append a
+/// note pointing at offset/limit for the rest; head plus note stays under the cap. Call before
+/// `apply_substitutions` so the `**ARGUMENTS:**` suffix lands after the cut.
+pub fn cap_skill_body(body: &mut String) -> bool {
+    if !exceeds_read_cap(body) {
+        return false;
+    }
+    let note = format!(
+        "[Skill body truncated at the {READ_FILE_MAX_TOKENS}-token cap. Read the rest of the \
+         skill file with the file read tool using a line offset and limit.]"
+    );
+    let budget = READ_FILE_MAX_BYTES.saturating_sub(note.len() + 2);
+    let end = floor_char_boundary(body, budget);
+    let cut = body
+        .get(..end)
+        .and_then(|head| head.rfind('\n'))
+        .filter(|&i| i > 0)
+        .unwrap_or(end);
+    body.truncate(cut);
+    body.push_str("\n\n");
+    body.push_str(&note);
+    true
 }
 
 /// A skill reference for the `<skills_referenced>` index inside
@@ -134,9 +160,9 @@ pub fn extract_skill_display_text(text: &str) -> Option<String> {
             Some(s) => s + cmd_open.len(),
             None => break 'cmd None,
         };
-        text[start..]
-            .find(cmd_close)
-            .map(|rel| &text[start..start + rel])
+        text.get(start..)
+            .and_then(|rest| rest.find(cmd_close))
+            .and_then(|rel| text.get(start..start + rel))
     };
 
     if let Some(cmd) = command.filter(|c| !c.is_empty()) {
@@ -149,8 +175,8 @@ pub fn extract_skill_display_text(text: &str) -> Option<String> {
 
     // Fallback: derive "/NAME" from <command-name>NAME</command-name>.
     let inner = text.find(name_open)? + name_open.len();
-    let end = inner + text[inner..].find(name_close)?;
-    let name = &text[inner..end];
+    let end = inner + text.get(inner..)?.find(name_close)?;
+    let name = text.get(inner..end)?;
     if name.is_empty() {
         return None;
     }
@@ -168,10 +194,11 @@ fn extract_command_args(text: &str) -> Option<&str> {
     let open = "<command-args>";
     let close = "</command-args>";
     let start = text.find(open)? + open.len();
-    let end = text[start..]
-        .find(close)
+    let end = text
+        .get(start..)
+        .and_then(|rest| rest.find(close))
         .map_or(text.len(), |rel| start + rel);
-    let args = text[start..end].trim();
+    let args = text.get(start..end)?.trim();
     if args.is_empty() { None } else { Some(args) }
 }
 
@@ -234,8 +261,8 @@ pub fn apply_substitutions(content: &mut String, args: Option<&str>, ctx: &Subst
         let mut result = String::with_capacity(content.len());
         let mut rest = content.as_str();
         while let Some(pos) = rest.find(&pattern) {
-            result.push_str(&rest[..pos]);
-            let after = &rest[pos + pat_len..];
+            result.push_str(rest.get(..pos).unwrap_or(""));
+            let after = rest.get(pos + pat_len..).unwrap_or("");
             // Only substitute if the next character is NOT a digit
             // (to avoid turning "$100" into replacement + "00").
             if after.starts_with(|c: char| c.is_ascii_digit()) {
@@ -355,7 +382,9 @@ pub fn resolve_skill_internal_links(body: &str, skill_dir: &std::path::Path) -> 
 
         match link_type {
             LinkType::Inline => {
-                let event_src = &body[event_range.clone()];
+                let Some(event_src) = body.get(event_range.clone()) else {
+                    continue;
+                };
                 if let Some(rel) = event_src.rfind(url_str) {
                     let start = event_range.start + rel;
                     edits.push((start..start + url_str.len(), resolved_str));
@@ -363,7 +392,9 @@ pub fn resolve_skill_internal_links(body: &str, skill_dir: &std::path::Path) -> 
             }
             LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut => {
                 if let Some(def_span) = ref_def_spans.get(id) {
-                    let def_src = &body[def_span.clone()];
+                    let Some(def_src) = body.get(def_span.clone()) else {
+                        continue;
+                    };
                     if let Some(rel) = def_src.rfind(url_str) {
                         let start = def_span.start + rel;
                         if !edits.iter().any(|(r, _)| r.start == start) {
@@ -402,7 +433,9 @@ pub fn extract_skill_body(content: &str) -> String {
         && let Some(closing_idx) = rest.find("\n---")
     {
         // Return everything after the closing ---
-        let after_frontmatter = &rest[closing_idx + 4..];
+        let Some(after_frontmatter) = rest.get(closing_idx + 4..) else {
+            return content.to_string();
+        };
         return after_frontmatter.trim_start().to_string();
     }
 
@@ -412,7 +445,7 @@ pub fn extract_skill_body(content: &str) -> String {
 
 /// Load skill content from its file, stripping YAML frontmatter. Public entrypoint for the shell
 /// crate to load skill content at prompt-assembly time (the new zero-round-trip path). The private
-/// `load_skill_content` in `grok_build/skill/mod.rs` is a duplicate of this.
+/// `load_skill_content` in `opencode/skill/mod.rs` is a duplicate of this.
 pub async fn load_skill_content(skill: &SkillInfo) -> Result<String, String> {
     // Producers strip frontmatter before setting `body`. Re-strip would drop a
     // leading Markdown HR (`---`) and skip link resolution for disk skills.
@@ -427,7 +460,19 @@ pub async fn load_skill_content(skill: &SkillInfo) -> Result<String, String> {
         ));
     }
     let path = std::path::Path::new(&skill.path);
-    match tokio::fs::read_to_string(path).await {
+    match crate::util::file_reader::read_file(
+        path,
+        crate::util::file_reader::FileReadOptions::default(),
+    )
+    .await
+    .and_then(|bytes| {
+        String::from_utf8(bytes).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            )
+        })
+    }) {
         Ok(content) => {
             let body = extract_skill_body(&content);
             Ok(match path.parent() {
@@ -442,9 +487,20 @@ pub async fn load_skill_content(skill: &SkillInfo) -> Result<String, String> {
 /// Load skill body into SkillInfo.
 pub async fn load_skill_with_body(skill: &SkillInfo) -> Result<SkillInfo, String> {
     let path = std::path::Path::new(&skill.path);
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|e| format!("Failed to read {}: {}", skill.path, e))?;
+    let content = crate::util::file_reader::read_file(
+        path,
+        crate::util::file_reader::FileReadOptions::default(),
+    )
+    .await
+    .and_then(|bytes| {
+        String::from_utf8(bytes).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            )
+        })
+    })
+    .map_err(|e| format!("Failed to read {}: {}", skill.path, e))?;
     let body = extract_skill_body(&content);
     let body = match path.parent() {
         Some(skill_dir) => resolve_skill_internal_links(&body, skill_dir),
@@ -489,6 +545,38 @@ It has multiple lines."#;
         assert_eq!(body, content);
     }
 
+    #[test]
+    fn cap_skill_body_leaves_body_under_cap_untouched() {
+        let mut body = "# Small skill\n\nDo the thing.".to_owned();
+        assert!(!cap_skill_body(&mut body));
+        assert_eq!("# Small skill\n\nDo the thing.", body);
+    }
+
+    #[test]
+    fn cap_skill_body_cuts_on_line_boundary_under_cap() {
+        let mut body = (1..=1100)
+            .map(|n| format!("{n:05} {}", "x".repeat(194)))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(cap_skill_body(&mut body));
+        assert!(!exceeds_read_cap(&body));
+        assert!(!body.contains("01100 "));
+        assert!(body.contains("offset"));
+        let (head, _) = body.rsplit_once("\n\n").expect("note separator");
+        let last_line = head.rsplit('\n').next().expect("head has a line");
+        assert_eq!(200, last_line.len());
+    }
+
+    #[test]
+    fn cap_skill_body_single_long_line_falls_back_to_char_cut() {
+        let mut body = "é".repeat(60_000);
+
+        assert!(cap_skill_body(&mut body));
+        assert!(!exceeds_read_cap(&body));
+        assert!(body.starts_with("éé"));
+    }
+
     #[tokio::test]
     async fn load_skill_content_trusts_preloaded_body_with_leading_hr() {
         let skill = SkillInfo {
@@ -516,6 +604,7 @@ It has multiple lines."#;
             when_to_use: None,
             has_user_specified_description: true,
             paths: None,
+            origin: None,
             enabled: true,
             body: Some("---\n\nParagraph after a markdown HR.".to_string()),
         };
@@ -550,6 +639,7 @@ It has multiple lines."#;
             when_to_use: None,
             has_user_specified_description: true,
             paths: None,
+            origin: None,
             enabled: true,
             body: None,
         };
@@ -585,6 +675,7 @@ It has multiple lines."#;
             when_to_use: None,
             has_user_specified_description: false,
             paths: None,
+            origin: None,
             enabled: true,
             body: None,
         };
@@ -615,6 +706,7 @@ It has multiple lines."#;
             when_to_use: None,
             has_user_specified_description: false,
             paths: None,
+            origin: None,
             enabled: true,
             body: None,
         };
@@ -648,6 +740,7 @@ It has multiple lines."#;
             when_to_use: None,
             has_user_specified_description: false,
             paths: None,
+            origin: None,
             enabled: true,
             body: None,
         };
@@ -687,6 +780,7 @@ It has multiple lines."#;
             when_to_use: None,
             has_user_specified_description: false,
             paths: None,
+            origin: None,
             enabled: true,
             body: None,
         };

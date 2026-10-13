@@ -156,9 +156,11 @@ struct Graph {
 impl Graph {
     fn node_index(&mut self, id: &str, label: Option<&str>, shape: Shape) -> Option<usize> {
         if let Some(&i) = self.index.get(id) {
-            if let Some(label) = label {
-                self.nodes[i].label = label.to_string();
-                self.nodes[i].shape = shape;
+            if let Some(label) = label
+                && let Some(node) = self.nodes.get_mut(i)
+            {
+                node.label = label.to_string();
+                node.shape = shape;
             }
             return Some(i);
         }
@@ -175,7 +177,9 @@ impl Graph {
 
     fn node_label(&mut self, id: &str, label: &str) -> Option<usize> {
         if let Some(&i) = self.index.get(id) {
-            self.nodes[i].label = label.to_string();
+            if let Some(node) = self.nodes.get_mut(i) {
+                node.label = label.to_string();
+            }
             return Some(i);
         }
         self.node_index(id, Some(label), Shape::Round)
@@ -218,14 +222,17 @@ fn parse_graph(src: &str) -> Option<Graph> {
     };
 
     let mut stack: Vec<usize> = Vec::new();
-    for st in &statements[1..] {
+    for st in statements.iter().skip(1) {
         let first_word = st.split_whitespace().next().unwrap_or("");
         match first_word.to_ascii_lowercase().as_str() {
             "subgraph" => {
                 if graph.groups.len() >= MAX_GROUPS || stack.len() >= MAX_GROUP_DEPTH {
                     return None;
                 }
-                let (id, label) = parse_subgraph_decl(st["subgraph".len()..].trim());
+                let Some(rest) = st.get("subgraph".len()..) else {
+                    continue;
+                };
+                let (id, label) = parse_subgraph_decl(rest.trim());
                 graph.groups.push(Group {
                     id,
                     label,
@@ -262,8 +269,12 @@ fn parse_subgraph_decl(rest: &str) -> (String, String) {
         return (label.to_string(), decode_html_entities(label));
     }
     if let Some(open) = rest.find('[') {
-        let id = rest[..open].trim();
-        let label = rest[open + 1..].trim_end_matches(']').trim();
+        let Some(id) = rest.get(..open).map(str::trim) else {
+            return (rest.to_string(), rest.to_string());
+        };
+        let Some(label) = rest.get(open + 1..).map(|s| s.trim_end_matches(']').trim()) else {
+            return (rest.to_string(), rest.to_string());
+        };
         let label = clean_label(label);
         if !id.is_empty() && !label.is_empty() {
             return (id.to_string(), label);
@@ -373,7 +384,7 @@ fn parse_node_group(
 }
 
 fn skip_spaces(chars: &[char], mut i: usize) -> usize {
-    while i < chars.len() && (chars[i] == ' ' || chars[i] == '\t') {
+    while chars.get(i).is_some_and(|&c| c == ' ' || c == '\t') {
         i += 1;
     }
     i
@@ -386,13 +397,13 @@ fn is_id_char(c: char) -> bool {
 fn parse_node(chars: &[char], start: usize, graph: &mut Graph) -> Option<(usize, usize)> {
     let mut i = skip_spaces(chars, start);
     let id_start = i;
-    while i < chars.len() && is_id_char(chars[i]) {
+    while chars.get(i).copied().is_some_and(is_id_char) {
         i += 1;
     }
     if i == id_start {
         return None;
     }
-    let id: String = chars[id_start..i].iter().collect();
+    let id: String = chars.get(id_start..i)?.iter().collect();
 
     let (shape, label, after) = match chars.get(i) {
         Some('[') => {
@@ -448,14 +459,20 @@ fn read_shape(
     };
     let mut in_quotes = false;
     while i < chars.len() {
-        let c = chars[i];
+        let Some(&c) = chars.get(i) else {
+            break;
+        };
         if quoted && c == '"' {
             in_quotes = !in_quotes;
             text.push(c);
             i += 1;
             continue;
         }
-        if !in_quotes && chars[i..].starts_with(closer.as_slice()) {
+        if !in_quotes
+            && chars
+                .get(i..)
+                .is_some_and(|s| s.starts_with(closer.as_slice()))
+        {
             let label = clean_label(&text);
             return (Some(shape), Some(label), i + closer.len());
         }
@@ -499,16 +516,19 @@ fn decode_html_entities(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] != '&' {
-            out.push(chars[i]);
+        let Some(&c) = chars.get(i) else {
+            break;
+        };
+        if c != '&' {
+            out.push(c);
             i += 1;
             continue;
         }
         // Scan window (includes the terminating `;`) so a stray `&` or over-long run stays literal.
         let hi = (i + 1 + ENTITY_LOOKAHEAD).min(chars.len());
-        let semi = (i + 1..hi).find(|&j| chars[j] == ';');
+        let semi = (i + 1..hi).find(|&j| chars.get(j) == Some(&';'));
         let decoded = semi.and_then(|j| {
-            let body: String = chars[i + 1..j].iter().collect();
+            let body: String = chars.get(i + 1..j)?.iter().collect();
             decode_entity_body(&body).map(|c| (c, j))
         });
         match decoded {
@@ -553,7 +573,9 @@ fn strip_markdown(s: &str) -> String {
     for (i, &c) in chars.iter().enumerate() {
         if (c == '*' || c == '_')
             && !(i > 0
-                && chars[i - 1].is_alphanumeric()
+                && i.checked_sub(1)
+                    .and_then(|j| chars.get(j))
+                    .is_some_and(|p| p.is_alphanumeric())
                 && chars.get(i + 1).is_some_and(|n| n.is_alphanumeric()))
         {
             continue;
@@ -573,7 +595,7 @@ fn strip_html_tags(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '<'
+        if chars.get(i) == Some(&'<')
             && let Some((name, end)) = html_tag_at(&chars, i)
         {
             let lower = name.to_ascii_lowercase();
@@ -587,7 +609,10 @@ fn strip_html_tags(s: &str) -> String {
                 continue;
             }
         }
-        out.push(chars[i]);
+        let Some(&c) = chars.get(i) else {
+            break;
+        };
+        out.push(c);
         i += 1;
     }
     out
@@ -599,15 +624,15 @@ fn html_tag_at(chars: &[char], start: usize) -> Option<(String, usize)> {
         i += 1;
     }
     let name_start = i;
-    while i < chars.len() && chars[i].is_ascii_alphanumeric() {
+    while chars.get(i).is_some_and(|c| c.is_ascii_alphanumeric()) {
         i += 1;
     }
     if i == name_start {
         return None;
     }
-    let name: String = chars[name_start..i].iter().collect();
-    while i < chars.len() && chars[i] != '>' {
-        if chars[i] == '<' {
+    let name: String = chars.get(name_start..i)?.iter().collect();
+    while chars.get(i).is_some_and(|&c| c != '>') {
+        if chars.get(i) == Some(&'<') {
             return None;
         }
         i += 1;
@@ -637,13 +662,16 @@ fn parse_link(
         i += 1;
     }
     let op_start = i;
-    while i < chars.len() && matches!(chars[i], '-' | '.' | '=' | '<' | '>') {
+    while chars
+        .get(i)
+        .is_some_and(|c| matches!(c, '-' | '.' | '=' | '<' | '>'))
+    {
         i += 1;
     }
     if i == op_start {
         return None;
     }
-    let op1: String = chars[op_start..i].iter().collect();
+    let op1: String = chars.get(op_start..i)?.iter().collect();
     if left == Head::None && op1.starts_with('<') {
         left = Head::Arrow;
     }
@@ -663,10 +691,10 @@ fn parse_link(
     if chars.get(i) == Some(&'|') {
         i += 1;
         let l_start = i;
-        while i < chars.len() && chars[i] != '|' {
+        while chars.get(i).is_some_and(|&c| c != '|') {
             i += 1;
         }
-        let label = clean_label(&chars[l_start..i].iter().collect::<String>());
+        let label = clean_label(&chars.get(l_start..i)?.iter().collect::<String>());
         if chars.get(i) == Some(&'|') {
             i += 1;
         }
@@ -676,16 +704,21 @@ fn parse_link(
     if right == Head::None {
         let text_start = skip_spaces(chars, i);
         let mut j = text_start;
-        while j < chars.len() && !is_link_char(chars[j]) {
+        while j < chars.len() && chars.get(j).is_some_and(|&c| !is_link_char(c)) {
             j += 1;
         }
-        if j < chars.len() && j > text_start && matches!(chars[j], '-' | '.' | '=' | '>') {
-            let text: String = chars[text_start..j].iter().collect();
+        if j < chars.len()
+            && j > text_start
+            && chars
+                .get(j)
+                .is_some_and(|c| matches!(c, '-' | '.' | '=' | '>'))
+        {
+            let text: String = chars.get(text_start..j)?.iter().collect();
             let op2_start = j;
-            while j < chars.len() && is_link_char(chars[j]) {
+            while j < chars.len() && chars.get(j).copied().is_some_and(is_link_char) {
                 j += 1;
             }
-            let op2: String = chars[op2_start..j].iter().collect();
+            let op2: String = chars.get(op2_start..j)?.iter().collect();
             right = if op2.contains('>') {
                 Head::Arrow
             } else if let Some((head, nj)) = trailing_head(chars, j) {
@@ -757,7 +790,7 @@ fn parse_state(src: &str) -> Option<Graph> {
     };
 
     let mut in_note = false;
-    for st in &statements[1..] {
+    for st in statements.iter().skip(1) {
         if in_note {
             if st.eq_ignore_ascii_case("end note") {
                 in_note = false;
@@ -807,7 +840,7 @@ fn parse_state(src: &str) -> Option<Graph> {
 }
 
 fn parse_state_decl(st: &str, graph: &mut Graph) -> Option<()> {
-    let rest = st["state".len()..].trim().trim_end_matches('{').trim();
+    let rest = st.get("state".len()..)?.trim().trim_end_matches('{').trim();
     if rest.is_empty() {
         return Some(());
     }
@@ -825,11 +858,11 @@ fn parse_state_decl(st: &str, graph: &mut Graph) -> Option<()> {
     let mut id = rest;
     let mut stereotyped = false;
     if let Some(pos) = rest.find("<<") {
-        let stereo = rest[pos + 2..].trim_end_matches(">>").trim();
+        let stereo = rest.get(pos + 2..)?.trim_end_matches(">>").trim();
         if stereo == "choice" {
             shape = Shape::Diamond;
         }
-        id = rest[..pos].trim();
+        id = rest.get(..pos)?.trim();
         stereotyped = true;
     }
     if id.is_empty() || id.contains(char::is_whitespace) {
@@ -860,7 +893,7 @@ fn parse_transition(st: &str, graph: &mut Graph) -> Option<()> {
             }
         };
         let (to_part, tail) = match rhs.split_once("-->") {
-            Some((t, _)) => (t, &rhs[t.len()..]),
+            Some((t, _)) => (t, rhs.get(t.len()..)?),
             None => (rhs, ""),
         };
         let (to_part, label) = match to_part.split_once(':') {
@@ -972,12 +1005,12 @@ fn parse_class(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
     let mut infos: Vec<ClassInfo> = Vec::new();
     let mut cur_class: Option<usize> = None;
 
-    for st in &statements[1..] {
+    for st in statements.iter().skip(1) {
         if let Some(ci) = cur_class {
             if st == "}" {
                 cur_class = None;
-            } else {
-                push_member(&mut infos[ci], st);
+            } else if let Some(info) = infos.get_mut(ci) {
+                push_member(info, st);
             }
             continue;
         }
@@ -1001,7 +1034,10 @@ fn parse_class(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
             "note" | "callback" | "click" | "link" | "style" | "cssclass" | "classdef"
             | "namespace" | "}" => continue,
             "class" => {
-                let rest = st["class".len()..].trim();
+                let Some(rest) = st.get("class".len()..) else {
+                    continue;
+                };
+                let rest = rest.trim();
                 let (name, open) = match rest.strip_suffix('{') {
                     Some(n) => (n.trim(), true),
                     None => (rest, false),
@@ -1026,7 +1062,9 @@ fn parse_class(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
             }
             let idx = graph.node_index(name, None, Shape::Rect)?;
             sync_infos(&graph, &mut infos);
-            infos[idx].annotation = Some(ann.trim().to_string());
+            if let Some(info) = infos.get_mut(idx) {
+                info.annotation = Some(ann.trim().to_string());
+            }
             continue;
         }
         if let Some((from, to, head_from, head_to, line, label)) = parse_class_relation(st) {
@@ -1055,7 +1093,9 @@ fn parse_class(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
             }
             let idx = graph.node_index(id, None, Shape::Rect)?;
             sync_infos(&graph, &mut infos);
-            push_member(&mut infos[idx], member);
+            if let Some(info) = infos.get_mut(idx) {
+                push_member(info, member);
+            }
             continue;
         }
         return None;
@@ -1101,8 +1141,18 @@ fn parse_class_relation(
     let mut found: Option<(usize, &str, Head, Head, LineKind)> = None;
     'outer: for pos in 0..chars.len() {
         for &(op, hf, ht, line) in CLASS_OPS {
-            if st[char_byte(st, pos)..].starts_with(op) {
-                if op.starts_with('o') && pos > 0 && is_id_char(chars[pos - 1]) {
+            if st
+                .get(char_byte(st, pos)..)
+                .is_some_and(|s| s.starts_with(op))
+            {
+                if op.starts_with('o')
+                    && pos > 0
+                    && pos
+                        .checked_sub(1)
+                        .and_then(|j| chars.get(j))
+                        .copied()
+                        .is_some_and(is_id_char)
+                {
                     continue;
                 }
                 if op.ends_with('o')
@@ -1118,8 +1168,8 @@ fn parse_class_relation(
         }
     }
     let (pos, op, head_from, head_to, line) = found?;
-    let lhs = st[..char_byte(st, pos)].trim();
-    let rhs = st[char_byte(st, pos) + op.len()..].trim();
+    let lhs = st.get(..char_byte(st, pos))?.trim();
+    let rhs = st.get(char_byte(st, pos) + op.len()..)?.trim();
 
     let (lhs, card_from) = strip_cardinality_suffix(lhs);
     let (rhs, card_to) = strip_cardinality_prefix(rhs);
@@ -1164,7 +1214,13 @@ fn strip_cardinality_suffix(s: &str) -> (&str, String) {
     if let Some(rest) = t.strip_suffix('"')
         && let Some(q) = rest.rfind('"')
     {
-        return (rest[..q].trim_end(), rest[q + 1..].to_string());
+        let Some(left) = rest.get(..q) else {
+            return (t, String::new());
+        };
+        let Some(right) = rest.get(q + 1..) else {
+            return (t, String::new());
+        };
+        return (left.trim_end(), right.to_string());
     }
     (t, String::new())
 }
@@ -1174,7 +1230,13 @@ fn strip_cardinality_prefix(s: &str) -> (&str, String) {
     if let Some(rest) = t.strip_prefix('"')
         && let Some(q) = rest.find('"')
     {
-        return (rest[q + 1..].trim_start(), rest[..q].to_string());
+        let Some(right) = rest.get(q + 1..) else {
+            return (t, String::new());
+        };
+        let Some(left) = rest.get(..q) else {
+            return (t, String::new());
+        };
+        return (right.trim_start(), left.to_string());
     }
     (t, String::new())
 }
@@ -1220,12 +1282,12 @@ fn parse_er(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
     let mut infos: Vec<ClassInfo> = Vec::new();
     let mut cur_entity: Option<usize> = None;
 
-    for st in &statements[1..] {
+    for st in statements.iter().skip(1) {
         if let Some(ei) = cur_entity {
             if st == "}" {
                 cur_entity = None;
-            } else {
-                push_er_attribute(&mut infos[ei], st);
+            } else if let Some(info) = infos.get_mut(ei) {
+                push_er_attribute(info, st);
             }
             continue;
         }
@@ -1281,8 +1343,8 @@ fn parse_er(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
 
 fn er_entity(graph: &mut Graph, infos: &mut Vec<ClassInfo>, token: &str) -> Option<usize> {
     let idx = if let Some(open) = token.find('[') {
-        let id = &token[..open];
-        let label = clean_label(token[open + 1..].trim_end_matches(']'));
+        let id = token.get(..open)?;
+        let label = clean_label(token.get(open + 1..)?.trim_end_matches(']'));
         if id.is_empty() || label.is_empty() {
             return None;
         }
@@ -1307,12 +1369,12 @@ fn parse_er_op(tok: &str) -> Option<(&'static str, &'static str, LineKind)> {
     if !tok.is_ascii() || tok.len() != 6 {
         return None;
     }
-    let line = match &tok[2..4] {
+    let line = match tok.get(2..4)? {
         "--" => LineKind::Solid,
         ".." => LineKind::Dotted,
         _ => return None,
     };
-    Some((er_card(&tok[..2])?, er_card(&tok[4..6])?, line))
+    Some((er_card(tok.get(..2)?)?, er_card(tok.get(4..6)?)?, line))
 }
 
 fn er_card(tok: &str) -> Option<&'static str> {
@@ -1429,8 +1491,12 @@ impl Canvas {
             return;
         }
         let i = self.idx(x, y);
-        self.ch[i] = c;
-        self.cls[i] = cls;
+        if let Some(ch) = self.ch.get_mut(i) {
+            *ch = c;
+        }
+        if let Some(cl) = self.cls.get_mut(i) {
+            *cl = cls;
+        }
     }
 
     fn add_bits(&mut self, x: usize, y: usize, bits: u8) {
@@ -1438,13 +1504,19 @@ impl Canvas {
             return;
         }
         let i = self.idx(x, y);
-        if self.occupied[i] {
+        if self.occupied.get(i) == Some(&true) {
             return;
         }
-        self.mask[i] |= bits;
-        self.style[i] |= self.cur_style;
-        if self.cls[i] != Cls::Border {
-            self.cls[i] = Cls::Edge;
+        if let Some(mask) = self.mask.get_mut(i) {
+            *mask |= bits;
+        }
+        if let Some(style) = self.style.get_mut(i) {
+            *style |= self.cur_style;
+        }
+        if let Some(cls) = self.cls.get_mut(i)
+            && *cls != Cls::Border
+        {
+            *cls = Cls::Edge;
         }
     }
 
@@ -1457,10 +1529,27 @@ impl Canvas {
                 }
                 let si = sub.idx(sx, sy);
                 let di = self.idx(x, y);
-                self.ch[di] = sub.ch[si];
-                self.cls[di] = sub.cls[si];
-                self.style[di] = sub.style[si];
-                self.occupied[di] = true;
+                let Some(&ch) = sub.ch.get(si) else {
+                    continue;
+                };
+                let Some(&cls) = sub.cls.get(si) else {
+                    continue;
+                };
+                let Some(&style) = sub.style.get(si) else {
+                    continue;
+                };
+                if let Some(dch) = self.ch.get_mut(di) {
+                    *dch = ch;
+                }
+                if let Some(dcl) = self.cls.get_mut(di) {
+                    *dcl = cls;
+                }
+                if let Some(dst) = self.style.get_mut(di) {
+                    *dst = style;
+                }
+                if let Some(occ) = self.occupied.get_mut(di) {
+                    *occ = true;
+                }
             }
         }
     }
@@ -1470,9 +1559,13 @@ impl Canvas {
             return;
         }
         let i = self.idx(x, y);
-        self.mask[i] |= bits;
-        if self.cls[i] != Cls::Border {
-            self.cls[i] = Cls::Edge;
+        if let Some(mask) = self.mask.get_mut(i) {
+            *mask |= bits;
+        }
+        if let Some(cls) = self.cls.get_mut(i)
+            && *cls != Cls::Border
+        {
+            *cls = Cls::Edge;
         }
     }
 
@@ -1506,13 +1599,19 @@ impl Canvas {
 
     fn finalize_mask(&mut self) {
         for i in 0..self.ch.len() {
-            if self.mask[i] != 0 && self.ch[i] == ' ' {
-                let c = mask_char(self.mask[i]);
-                self.ch[i] = match self.style[i] {
-                    STY_DOT => dotted_char(c),
-                    STY_THICK => thick_char(c),
+            let Some(&mask) = self.mask.get(i) else {
+                continue;
+            };
+            if mask != 0 && self.ch.get(i) == Some(&' ') {
+                let c = mask_char(mask);
+                let drawn = match self.style.get(i).copied() {
+                    Some(STY_DOT) => dotted_char(c),
+                    Some(STY_THICK) => thick_char(c),
                     _ => c,
                 };
+                if let Some(ch) = self.ch.get_mut(i) {
+                    *ch = drawn;
+                }
             }
         }
     }
@@ -1550,14 +1649,18 @@ impl Canvas {
         for y in 0..self.h {
             let mut x = 0;
             while x < self.w {
-                let cls = self.cls[self.idx(x, y)];
+                let Some(&cls) = self.cls.get(self.idx(x, y)) else {
+                    break;
+                };
                 if cls == Cls::Text || cls == Cls::EdgeLabel {
                     let start = self.idx(x, y);
-                    while x < self.w && self.cls[self.idx(x, y)] == cls {
+                    while x < self.w && self.cls.get(self.idx(x, y)) == Some(&cls) {
                         x += 1;
                     }
                     let end = self.idx(x, y);
-                    self.ch[start..end].reverse();
+                    if let Some(run) = self.ch.get_mut(start..end) {
+                        run.reverse();
+                    }
                 } else {
                     x += 1;
                 }
@@ -1571,7 +1674,9 @@ impl Canvas {
         for y in 0..self.h {
             let mut last = self.w;
             for x in (0..self.w).rev() {
-                let c = self.ch[self.idx(x, y)];
+                let Some(&c) = self.ch.get(self.idx(x, y)) else {
+                    continue;
+                };
                 if c != ' ' && c != CONT {
                     last = x + 1;
                     break;
@@ -1583,11 +1688,15 @@ impl Canvas {
             let mut run_cls = Cls::Empty;
             for x in 0..last {
                 let i = self.idx(x, y);
-                let c = self.ch[i];
+                let Some(&c) = self.ch.get(i) else {
+                    continue;
+                };
                 if c == CONT {
                     continue;
                 }
-                let cls = self.cls[i];
+                let Some(&cls) = self.cls.get(i) else {
+                    continue;
+                };
                 plain_row.push(c);
                 if cls != run_cls && !run.is_empty() {
                     spans.push(Span::styled(
@@ -1771,7 +1880,9 @@ fn layout_canvas(
 
     let mut by_rank: Vec<Vec<usize>> = vec![Vec::new(); max_rank + 1];
     for (idx, &r) in ranks.iter().enumerate() {
-        by_rank[r].push(idx);
+        if let Some(row) = by_rank.get_mut(r) {
+            row.push(idx);
+        }
     }
     order_ranks(&mut by_rank, &graph.edges, &ranks);
 
@@ -1780,10 +1891,13 @@ fn layout_canvas(
         .iter()
         .map(|node| wrap_label(&node.label, WRAP_WIDTH, MAX_LINES))
         .collect();
-    let mut box_w: Vec<usize> = (0..n)
-        .map(|i| match &extras[i] {
+    let mut box_w: Vec<usize> = extras
+        .iter()
+        .zip(graph.nodes.iter())
+        .zip(wrapped.iter())
+        .map(|((extra, node), wrap)| match extra {
             NodeExtra::Frame(sub) => {
-                let title_w = fit_label(&graph.nodes[i].label, WRAP_WIDTH).width();
+                let title_w = fit_label(&node.label, WRAP_WIDTH).width();
                 (sub.w + 2).max(title_w + 4)
             }
             NodeExtra::Compartments(sections) => {
@@ -1798,25 +1912,20 @@ fn layout_canvas(
                     + 2
             }
             NodeExtra::Plain => {
-                wrapped[i]
-                    .iter()
-                    .map(|l| l.width())
-                    .max()
-                    .unwrap_or(1)
-                    .max(1)
-                    + 2 * PAD
-                    + 2
+                wrap.iter().map(|l| l.width()).max().unwrap_or(1).max(1) + 2 * PAD + 2
             }
         })
         .collect();
-    let box_h: Vec<usize> = (0..n)
-        .map(|i| match &extras[i] {
+    let box_h: Vec<usize> = extras
+        .iter()
+        .zip(wrapped.iter())
+        .map(|(extra, wrap)| match extra {
             NodeExtra::Frame(sub) => sub.h + 2,
             NodeExtra::Compartments(sections) => {
                 let filled = sections.iter().filter(|s| !s.is_empty()).count();
                 sections.iter().map(|s| s.len()).sum::<usize>() + filled.saturating_sub(1) + 2
             }
-            NodeExtra::Plain => wrapped[i].len() + 2,
+            NodeExtra::Plain => wrap.len() + 2,
         })
         .collect();
 
@@ -1824,28 +1933,27 @@ fn layout_canvas(
     let mut self_label_w = vec![0usize; n];
     for e in &graph.edges {
         if e.from == e.to {
-            extra_h[e.from] = 2;
-            if let Some(l) = &e.label {
-                self_label_w[e.from] = self_label_w[e.from].max(l.width().min(MAX_LABEL));
+            if let Some(h) = extra_h.get_mut(e.from) {
+                *h = 2;
+            }
+            if let Some(l) = &e.label
+                && let Some(w) = self_label_w.get_mut(e.from)
+            {
+                *w = (*w).max(l.width().min(MAX_LABEL));
             }
         }
     }
-    for i in 0..n {
-        if extra_h[i] > 0 {
-            box_w[i] = box_w[i].max(7);
+    for (w, &h) in box_w.iter_mut().zip(&extra_h) {
+        if h > 0 {
+            *w = (*w).max(7);
         }
     }
-    let lay_w: Vec<usize> = (0..n)
-        .map(|i| {
-            box_w[i]
-                + if self_label_w[i] > 0 {
-                    2 * (self_label_w[i] + 3)
-                } else {
-                    0
-                }
-        })
+    let lay_w: Vec<usize> = box_w
+        .iter()
+        .zip(&self_label_w)
+        .map(|(&w, &sl)| w + if sl > 0 { 2 * (sl + 3) } else { 0 })
         .collect();
-    let lay_h: Vec<usize> = (0..n).map(|i| box_h[i] + extra_h[i]).collect();
+    let lay_h: Vec<usize> = box_h.iter().zip(&extra_h).map(|(&h, &e)| h + e).collect();
     let sizes = NodeSizes {
         box_w,
         box_h,
@@ -1886,20 +1994,27 @@ fn layout_canvas(
     }
 
     let mut canvas = Canvas::new(canvas_w, canvas_h);
-    for idx in 0..n {
-        match &extras[idx] {
+    for (idx, extra) in extras.iter().enumerate() {
+        let Some(p) = placed.get(idx) else {
+            continue;
+        };
+        match extra {
             NodeExtra::Frame(sub) => {
-                draw_frame(&mut canvas, &placed[idx], &graph.nodes[idx].label, sub)
+                let Some(node) = graph.nodes.get(idx) else {
+                    continue;
+                };
+                draw_frame(&mut canvas, p, &node.label, sub)
             }
-            NodeExtra::Compartments(sections) => {
-                draw_class_box(&mut canvas, &placed[idx], sections)
+            NodeExtra::Compartments(sections) => draw_class_box(&mut canvas, p, sections),
+            NodeExtra::Plain => {
+                let Some(wrap) = wrapped.get(idx) else {
+                    continue;
+                };
+                let Some(node) = graph.nodes.get(idx) else {
+                    continue;
+                };
+                draw_box(&mut canvas, p, wrap, node.shape)
             }
-            NodeExtra::Plain => draw_box(
-                &mut canvas,
-                &placed[idx],
-                &wrapped[idx],
-                graph.nodes[idx].shape,
-            ),
         }
     }
     for (i, edge) in graph.edges.iter().enumerate() {
@@ -1909,13 +2024,26 @@ fn layout_canvas(
             LineKind::Thick => STY_THICK,
         };
         if edge.from == edge.to {
-            route_self(&mut canvas, &placed[edge.from], edge);
+            if let Some(p) = placed.get(edge.from) {
+                route_self(&mut canvas, p, edge);
+            }
             continue;
         }
-        let (from, to) = (&placed[edge.from], &placed[edge.to]);
+        let (Some(from), Some(to)) = (placed.get(edge.from), placed.get(edge.to)) else {
+            continue;
+        };
         let adjacent = to.rank == from.rank + 1;
-        let bus = plan.band_end[from.rank] + plan.edge_bus[i];
-        let lane = plan.lane_base + plan.edge_lane[i];
+        let Some(&band) = plan.band_end.get(from.rank) else {
+            continue;
+        };
+        let Some(&edge_bus) = plan.edge_bus.get(i) else {
+            continue;
+        };
+        let Some(&edge_lane) = plan.edge_lane.get(i) else {
+            continue;
+        };
+        let bus = band + edge_bus;
+        let lane = plan.lane_base + edge_lane;
         match (vertical, adjacent) {
             (true, true) => route_forward(&mut canvas, from, to, edge, bus),
             (true, false) => route_back(&mut canvas, from, to, edge, lane),
@@ -1951,15 +2079,21 @@ fn render_grouped(
         let mut cur = g;
         while let Some(gi) = cur {
             chain.push(gi);
-            cur = graph.groups[gi].parent;
+            cur = graph.groups.get(gi).and_then(|g| g.parent);
         }
         chain.reverse();
         chain
     };
     let endpoint = |n: usize| -> (Item, Vec<usize>) {
         match proxy.get(&n) {
-            Some(&gi) => (Item::Group(gi), group_chain(graph.groups[gi].parent)),
-            None => (Item::Node(n), group_chain(graph.node_group[n])),
+            Some(&gi) => (
+                Item::Group(gi),
+                group_chain(graph.groups.get(gi).and_then(|g| g.parent)),
+            ),
+            None => (
+                Item::Node(n),
+                group_chain(graph.node_group.get(n).copied().flatten()),
+            ),
         }
     };
 
@@ -1973,22 +2107,18 @@ fn render_grouped(
             .zip(&chain_t)
             .take_while(|(a, b)| a == b)
             .count();
-        let scope = if k == 0 { None } else { Some(chain_f[k - 1]) };
-        let f = if chain_f.len() > k {
-            Item::Group(chain_f[k])
-        } else {
-            item_f
-        };
-        let t = if chain_t.len() > k {
-            Item::Group(chain_t[k])
-        } else {
-            item_t
-        };
-        if let Item::Group(gi) = f {
-            referenced[gi] = true;
+        let scope = k.checked_sub(1).and_then(|j| chain_f.get(j)).copied();
+        let f = chain_f.get(k).copied().map(Item::Group).unwrap_or(item_f);
+        let t = chain_t.get(k).copied().map(Item::Group).unwrap_or(item_t);
+        if let Item::Group(gi) = f
+            && let Some(flag) = referenced.get_mut(gi)
+        {
+            *flag = true;
         }
-        if let Item::Group(gi) = t {
-            referenced[gi] = true;
+        if let Item::Group(gi) = t
+            && let Some(flag) = referenced.get_mut(gi)
+        {
+            *flag = true;
         }
         scope_edges.entry(scope).or_default().push((f, t, ei));
     }
@@ -2002,9 +2132,12 @@ fn render_grouped(
     let mut keep = vec![false; graph.groups.len()];
     for gi in (0..graph.groups.len()).rev() {
         let has_nodes = direct_nodes.get(&Some(gi)).is_some_and(|v| !v.is_empty());
-        let has_children =
-            (0..graph.groups.len()).any(|c| graph.groups[c].parent == Some(gi) && keep[c]);
-        keep[gi] = has_nodes || has_children || referenced[gi];
+        let has_children = (0..graph.groups.len()).any(|c| {
+            graph.groups.get(c).is_some_and(|g| g.parent == Some(gi)) && keep.get(c) == Some(&true)
+        });
+        if let Some(slot) = keep.get_mut(gi) {
+            *slot = has_nodes || has_children || referenced.get(gi) == Some(&true);
+        }
     }
 
     let mut canvas = build_scope(graph, None, &scope_edges, &direct_nodes, &keep, max_width)?;
@@ -2033,7 +2166,9 @@ fn build_scope(
         items.extend(nodes.iter().map(|&n| Item::Node(n)));
     }
     let child_groups: Vec<usize> = (0..graph.groups.len())
-        .filter(|&gi| graph.groups[gi].parent == scope && keep[gi])
+        .filter(|&gi| {
+            graph.groups.get(gi).is_some_and(|g| g.parent == scope) && keep.get(gi) == Some(&true)
+        })
         .collect();
     items.extend(child_groups.iter().map(|&gi| Item::Group(gi)));
 
@@ -2048,16 +2183,22 @@ fn build_scope(
         index_of.insert(*item, nodes.len());
         match item {
             Item::Node(ni) => {
+                let Some(node) = graph.nodes.get(*ni) else {
+                    continue;
+                };
                 nodes.push(Node {
-                    label: graph.nodes[*ni].label.clone(),
-                    shape: graph.nodes[*ni].shape,
+                    label: node.label.clone(),
+                    shape: node.shape,
                 });
                 extras.push(NodeExtra::Plain);
             }
             Item::Group(gi) => {
                 let sub = build_scope(graph, Some(*gi), scope_edges, direct_nodes, keep, None)?;
+                let Some(group) = graph.groups.get(*gi) else {
+                    continue;
+                };
                 nodes.push(Node {
-                    label: graph.groups[*gi].label.clone(),
+                    label: group.label.clone(),
                     shape: Shape::Rect,
                 });
                 extras.push(NodeExtra::Frame(sub));
@@ -2071,7 +2212,9 @@ fn build_scope(
             let (Some(&fi), Some(&ti)) = (index_of.get(f), index_of.get(t)) else {
                 continue;
             };
-            let e = &graph.edges[*ei];
+            let Some(e) = graph.edges.get(*ei) else {
+                continue;
+            };
             edges.push(Edge {
                 from: fi,
                 to: ti,
@@ -2148,17 +2291,23 @@ fn bus_spans_td(
         .iter()
         .enumerate()
         .filter(|(_, e)| {
-            let jogs = if exact {
-                centers[e.from] != centers[e.to]
-            } else {
-                centers[e.from].abs_diff(centers[e.to]) > 1
+            let (Some(&cf), Some(&ct), Some(&rf), Some(&rt)) = (
+                centers.get(e.from),
+                centers.get(e.to),
+                ranks.get(e.from),
+                ranks.get(e.to),
+            ) else {
+                return false;
             };
-            e.from != e.to && ranks[e.from] == r && ranks[e.to] == r + 1 && jogs
+            let jogs = if exact { cf != ct } else { cf.abs_diff(ct) > 1 };
+            e.from != e.to && rf == r && rt == r + 1 && jogs
         })
-        .map(|(i, e)| {
-            let a = centers[e.from].min(centers[e.to]);
-            let b = centers[e.from].max(centers[e.to]);
-            (a, b, e.from, e.to, i)
+        .filter_map(|(i, e)| {
+            let cf = *centers.get(e.from)?;
+            let ct = *centers.get(e.to)?;
+            let a = cf.min(ct);
+            let b = cf.max(ct);
+            Some((a, b, e.from, e.to, i))
         })
         .collect()
 }
@@ -2173,15 +2322,21 @@ fn lane_spans(
         .edges
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.from != e.to && ranks[e.to] != ranks[e.from] + 1)
-        .map(|(i, e)| {
-            let (pf, pt) = (&placed[e.from], &placed[e.to]);
+        .filter(|(_, e)| {
+            e.from != e.to
+                && ranks
+                    .get(e.to)
+                    .zip(ranks.get(e.from))
+                    .is_some_and(|(&rt, &rf)| rt != rf + 1)
+        })
+        .filter_map(|(i, e)| {
+            let (pf, pt) = (placed.get(e.from)?, placed.get(e.to)?);
             let (a, b) = if vertical {
                 (pf.cy.min(pt.cy), pf.cy.max(pt.cy))
             } else {
                 (pf.cx.min(pt.cx), pf.cx.max(pt.cx))
             };
-            (a, b, e.from, e.to, i)
+            Some((a, b, e.from, e.to, i))
         })
         .collect()
 }
@@ -2205,7 +2360,9 @@ fn place_td(
         }
         let (assigned, count) = assign_tracks(&spans);
         for (idx, slot) in assigned {
-            edge_bus[idx] = slot;
+            if let Some(bus) = edge_bus.get_mut(idx) {
+                *bus = slot;
+            }
         }
         *tracks = count;
     }
@@ -2214,39 +2371,76 @@ fn place_td(
         .iter()
         .map(|row| {
             row.iter()
-                .map(|&i| sizes.box_h[i] + sizes.extra_h[i])
+                .filter_map(|&i| {
+                    Some(sizes.box_h.get(i).copied()? + sizes.extra_h.get(i).copied()?)
+                })
                 .max()
                 .unwrap_or(3)
         })
         .collect();
     let mut rank_y = vec![0usize; max_rank + 1];
     for r in 1..=max_rank {
-        let gap = GAP_Y.max(bus_tracks[r - 1] + 1);
-        rank_y[r] = rank_y[r - 1] + rank_h[r - 1] + gap;
+        let Some(prev) = r.checked_sub(1) else {
+            continue;
+        };
+        let Some(&prev_bus) = bus_tracks.get(prev) else {
+            continue;
+        };
+        let Some(&prev_y) = rank_y.get(prev) else {
+            continue;
+        };
+        let Some(&prev_h) = rank_h.get(prev) else {
+            continue;
+        };
+        let gap = GAP_Y.max(prev_bus + 1);
+        if let Some(y) = rank_y.get_mut(r) {
+            *y = prev_y + prev_h + gap;
+        }
     }
-    let canvas_h = rank_y[max_rank] + rank_h[max_rank];
-    let band_end: Vec<usize> = (0..=max_rank).map(|r| rank_y[r] + rank_h[r]).collect();
+    let canvas_h =
+        rank_y.get(max_rank).copied().unwrap_or(0) + rank_h.get(max_rank).copied().unwrap_or(0);
+    let band_end: Vec<usize> = (0..=max_rank)
+        .filter_map(|r| Some(rank_y.get(r).copied()? + rank_h.get(r).copied()?))
+        .collect();
 
     let mut diagram_w = 1;
     for (r, row) in by_rank.iter().enumerate() {
         for &idx in row {
-            let w = sizes.box_w[idx];
-            let h = sizes.box_h[idx];
-            let cx = centers[idx];
-            let x = cx.saturating_sub(w / 2);
-            let y = rank_y[r] + (rank_h[r] - h - sizes.extra_h[idx]) / 2;
-            placed[idx] = Placed {
-                x,
-                y,
-                w,
-                h,
-                cx,
-                cy: y + h / 2,
-                rank: r,
+            let Some(&w) = sizes.box_w.get(idx) else {
+                continue;
             };
+            let Some(&h) = sizes.box_h.get(idx) else {
+                continue;
+            };
+            let Some(&cx) = centers.get(idx) else {
+                continue;
+            };
+            let extra = sizes.extra_h.get(idx).copied().unwrap_or(0);
+            let Some(&ry) = rank_y.get(r) else {
+                continue;
+            };
+            let Some(&rh) = rank_h.get(r) else {
+                continue;
+            };
+            let x = cx.saturating_sub(w / 2);
+            let y = ry + (rh - h - extra) / 2;
+            if let Some(slot) = placed.get_mut(idx) {
+                *slot = Placed {
+                    x,
+                    y,
+                    w,
+                    h,
+                    cx,
+                    cy: y + h / 2,
+                    rank: r,
+                };
+            }
             diagram_w = diagram_w.max(x + w);
-            if sizes.extra_h[idx] > 0 && sizes.self_label_w[idx] > 0 {
-                diagram_w = diagram_w.max(x + w + 2 + sizes.self_label_w[idx]);
+            if extra > 0
+                && let Some(&sl) = sizes.self_label_w.get(idx)
+                && sl > 0
+            {
+                diagram_w = diagram_w.max(x + w + 2 + sl);
             }
         }
     }
@@ -2258,8 +2452,14 @@ fn place_td(
         }
         if let Some(label) = &e.label {
             let lw = label.width().min(MAX_LABEL);
-            if ranks[e.to] == ranks[e.from] + 1 {
-                content_w = content_w.max(placed[e.to].cx + 2 + lw);
+            let adjacent = ranks
+                .get(e.to)
+                .zip(ranks.get(e.from))
+                .is_some_and(|(&rt, &rf)| rt == rf + 1);
+            if adjacent {
+                if let Some(p) = placed.get(e.to) {
+                    content_w = content_w.max(p.cx + 2 + lw);
+                }
             } else {
                 content_w = content_w.max(diagram_w + lw + 1);
             }
@@ -2273,7 +2473,9 @@ fn place_td(
     } else {
         let (assigned, count) = assign_tracks(&lanes);
         for (idx, slot) in assigned {
-            edge_lane[idx] = slot;
+            if let Some(lane) = edge_lane.get_mut(idx) {
+                *lane = slot;
+            }
         }
         (content_w + 1 + count, content_w + 1)
     };
@@ -2297,13 +2499,24 @@ fn place_lr(
 ) -> RoutePlan {
     let col_w: Vec<usize> = by_rank
         .iter()
-        .map(|row| row.iter().map(|&i| sizes.box_w[i]).max().unwrap_or(0))
+        .map(|row| {
+            row.iter()
+                .filter_map(|&i| sizes.box_w.get(i).copied())
+                .max()
+                .unwrap_or(0)
+        })
         .collect();
 
     let max_label = graph
         .edges
         .iter()
-        .filter(|e| e.from == e.to || ranks[e.to] == ranks[e.from] + 1)
+        .filter(|e| {
+            e.from == e.to
+                || ranks
+                    .get(e.to)
+                    .zip(ranks.get(e.from))
+                    .is_some_and(|(&rt, &rf)| rt == rf + 1)
+        })
         .filter_map(|e| e.label.as_ref().map(|l| l.width().min(MAX_LABEL)))
         .max()
         .unwrap_or(0);
@@ -2320,44 +2533,79 @@ fn place_lr(
         }
         let (assigned, count) = assign_tracks(&spans);
         for (idx, slot) in assigned {
-            edge_bus[idx] = slot;
+            if let Some(bus) = edge_bus.get_mut(idx) {
+                *bus = slot;
+            }
         }
         *tracks = count;
     }
 
     let mut rank_x = vec![0usize; max_rank + 1];
     for r in 1..=max_rank {
-        let gap = base_gap.max(bus_tracks[r - 1] + 1);
-        rank_x[r] = rank_x[r - 1] + col_w[r - 1] + gap;
+        let Some(prev) = r.checked_sub(1) else {
+            continue;
+        };
+        let Some(&prev_bus) = bus_tracks.get(prev) else {
+            continue;
+        };
+        let Some(&prev_x) = rank_x.get(prev) else {
+            continue;
+        };
+        let Some(&prev_w) = col_w.get(prev) else {
+            continue;
+        };
+        let gap = base_gap.max(prev_bus + 1);
+        if let Some(x) = rank_x.get_mut(r) {
+            *x = prev_x + prev_w + gap;
+        }
     }
-    let canvas_w = rank_x[max_rank]
-        + col_w[max_rank]
-        + by_rank[max_rank]
-            .iter()
-            .filter(|&&i| sizes.extra_h[i] > 0 && sizes.self_label_w[i] > 0)
-            .map(|&i| 2 + sizes.self_label_w[i])
-            .max()
-            .unwrap_or(0);
-    let band_end: Vec<usize> = (0..=max_rank).map(|r| rank_x[r] + col_w[r]).collect();
+    let extra_right = by_rank
+        .get(max_rank)
+        .into_iter()
+        .flatten()
+        .filter(|&&i| {
+            sizes.extra_h.get(i).copied().unwrap_or(0) > 0
+                && sizes.self_label_w.get(i).copied().unwrap_or(0) > 0
+        })
+        .filter_map(|&i| sizes.self_label_w.get(i).map(|&sl| 2 + sl))
+        .max()
+        .unwrap_or(0);
+    let canvas_w = rank_x.get(max_rank).copied().unwrap_or(0)
+        + col_w.get(max_rank).copied().unwrap_or(0)
+        + extra_right;
+    let band_end: Vec<usize> = (0..=max_rank)
+        .filter_map(|r| Some(rank_x.get(r).copied()? + col_w.get(r).copied()?))
+        .collect();
 
     let mut diagram_h = 1;
     for (r, row) in by_rank.iter().enumerate() {
-        let x = rank_x[r];
+        let Some(&x) = rank_x.get(r) else {
+            continue;
+        };
         for &idx in row {
-            let w = sizes.box_w[idx];
-            let h = sizes.box_h[idx];
-            let cy = centers[idx];
-            let y = cy.saturating_sub((h + sizes.extra_h[idx]) / 2);
-            placed[idx] = Placed {
-                x,
-                y,
-                w,
-                h,
-                cx: x + w / 2,
-                cy: y + h / 2,
-                rank: r,
+            let Some(&w) = sizes.box_w.get(idx) else {
+                continue;
             };
-            diagram_h = diagram_h.max(y + h + sizes.extra_h[idx]);
+            let Some(&h) = sizes.box_h.get(idx) else {
+                continue;
+            };
+            let Some(&cy) = centers.get(idx) else {
+                continue;
+            };
+            let extra = sizes.extra_h.get(idx).copied().unwrap_or(0);
+            let y = cy.saturating_sub((h + extra) / 2);
+            if let Some(slot) = placed.get_mut(idx) {
+                *slot = Placed {
+                    x,
+                    y,
+                    w,
+                    h,
+                    cx: x + w / 2,
+                    cy: y + h / 2,
+                    rank: r,
+                };
+            }
+            diagram_h = diagram_h.max(y + h + extra);
         }
     }
 
@@ -2368,7 +2616,9 @@ fn place_lr(
     } else {
         let (assigned, count) = assign_tracks(&lanes);
         for (idx, slot) in assigned {
-            edge_lane[idx] = slot;
+            if let Some(lane) = edge_lane.get_mut(idx) {
+                *lane = slot;
+            }
         }
         (diagram_h + 1 + count, diagram_h + 1)
     };
@@ -2408,7 +2658,9 @@ fn assign_tracks(spans: &[(usize, usize, usize, usize, usize)]) -> (Vec<(usize, 
                 tracks.len() - 1
             }
         };
-        tracks[slot].push((s, e, f, t));
+        if let Some(track) = tracks.get_mut(slot) {
+            track.push((s, e, f, t));
+        }
         out.push((idx, slot));
     }
     (out, tracks.len())
@@ -2425,9 +2677,18 @@ fn order_ranks(by_rank: &mut [Vec<usize>], edges: &[Edge], ranks: &[usize]) {
     let mut parents: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
     for e in edges {
-        if e.from != e.to && ranks[e.to] > ranks[e.from] {
-            parents[e.to].push(e.from);
-            children[e.from].push(e.to);
+        if e.from != e.to
+            && ranks
+                .get(e.to)
+                .zip(ranks.get(e.from))
+                .is_some_and(|(&rt, &rf)| rt > rf)
+        {
+            if let Some(p) = parents.get_mut(e.to) {
+                p.push(e.from);
+            }
+            if let Some(c) = children.get_mut(e.from) {
+                c.push(e.to);
+            }
         }
     }
 
@@ -2435,7 +2696,9 @@ fn order_ranks(by_rank: &mut [Vec<usize>], edges: &[Edge], ranks: &[usize]) {
     let set_pos = |by_rank: &[Vec<usize>], pos: &mut Vec<usize>| {
         for row in by_rank {
             for (i, &v) in row.iter().enumerate() {
-                pos[v] = i;
+                if let Some(slot) = pos.get_mut(v) {
+                    *slot = i;
+                }
             }
         }
     };
@@ -2452,15 +2715,25 @@ fn order_ranks(by_rank: &mut [Vec<usize>], edges: &[Edge], ranks: &[usize]) {
             for row in by_rank.iter_mut().skip(1) {
                 sort_by_barycenter(row, &parents, &pos);
                 for (i, &v) in row.iter().enumerate() {
-                    pos[v] = i;
+                    if let Some(slot) = pos.get_mut(v) {
+                        *slot = i;
+                    }
                 }
             }
         } else {
-            let last = by_rank.len() - 1;
-            for row in by_rank[..last].iter_mut().rev() {
+            let Some(prefix) = by_rank
+                .len()
+                .checked_sub(1)
+                .and_then(|last| by_rank.get_mut(..last))
+            else {
+                continue;
+            };
+            for row in prefix.iter_mut().rev() {
                 sort_by_barycenter(row, &children, &pos);
                 for (i, &v) in row.iter().enumerate() {
-                    pos[v] = i;
+                    if let Some(slot) = pos.get_mut(v) {
+                        *slot = i;
+                    }
                 }
             }
         }
@@ -2483,10 +2756,14 @@ fn sort_by_barycenter(row: &mut [usize], neigh: &[Vec<usize>], pos: &[usize]) {
     let mut keyed: Vec<(f64, usize)> = row
         .iter()
         .map(|&v| {
-            let key = if neigh[v].is_empty() {
-                pos[v] as f64
-            } else {
-                neigh[v].iter().map(|&u| pos[u] as f64).sum::<f64>() / neigh[v].len() as f64
+            let key = match neigh.get(v) {
+                Some(ns) if !ns.is_empty() => {
+                    ns.iter()
+                        .filter_map(|&u| pos.get(u).map(|&p| p as f64))
+                        .sum::<f64>()
+                        / ns.len() as f64
+                }
+                _ => pos.get(v).copied().unwrap_or(0) as f64,
             };
             (key, v)
         })
@@ -2500,12 +2777,21 @@ fn sort_by_barycenter(row: &mut [usize], neigh: &[Vec<usize>], pos: &[usize]) {
 fn count_crossings(edges: &[Edge], ranks: &[usize], pos: &[usize]) -> usize {
     let adjacent: Vec<(usize, usize, usize)> = edges
         .iter()
-        .filter(|e| e.from != e.to && ranks[e.to] == ranks[e.from] + 1)
-        .map(|e| (ranks[e.from], pos[e.from], pos[e.to]))
+        .filter(|e| {
+            e.from != e.to
+                && ranks
+                    .get(e.to)
+                    .zip(ranks.get(e.from))
+                    .is_some_and(|(&rt, &rf)| rt == rf + 1)
+        })
+        .filter_map(|e| Some((*ranks.get(e.from)?, *pos.get(e.from)?, *pos.get(e.to)?)))
         .collect();
     let mut crossings = 0;
     for (i, a) in adjacent.iter().enumerate() {
-        for b in &adjacent[i + 1..] {
+        let Some(rest) = adjacent.get(i + 1..) else {
+            continue;
+        };
+        for b in rest {
             if a.0 == b.0 && ((a.1 < b.1 && a.2 > b.2) || (a.1 > b.1 && a.2 < b.2)) {
                 crossings += 1;
             }
@@ -2528,9 +2814,18 @@ fn assign_positions(
     let mut parents: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
     for e in edges {
-        if e.from != e.to && ranks[e.to] > ranks[e.from] {
-            parents[e.to].push(e.from);
-            children[e.from].push(e.to);
+        if e.from != e.to
+            && ranks
+                .get(e.to)
+                .zip(ranks.get(e.from))
+                .is_some_and(|(&rt, &rf)| rt > rf)
+        {
+            if let Some(p) = parents.get_mut(e.to) {
+                p.push(e.from);
+            }
+            if let Some(c) = children.get_mut(e.from) {
+                c.push(e.to);
+            }
         }
     }
 
@@ -2538,9 +2833,11 @@ fn assign_positions(
     for row in by_rank {
         let mut x = 0f64;
         for &v in row {
-            let half = size[v] as f64 / 2.0;
+            let half = size.get(v).copied().unwrap_or(0) as f64 / 2.0;
             x += half;
-            pos[v] = x;
+            if let Some(slot) = pos.get_mut(v) {
+                *slot = x;
+            }
             x += half + sep as f64;
         }
     }
@@ -2558,11 +2855,15 @@ fn assign_positions(
     }
 
     let min_left = (0..n)
-        .map(|v| pos[v] - size[v] as f64 / 2.0)
+        .filter_map(|v| Some(*pos.get(v)? - *size.get(v)? as f64 / 2.0))
         .fold(f64::INFINITY, f64::min);
     let min_left = if min_left.is_finite() { min_left } else { 0.0 };
     (0..n)
-        .map(|v| (pos[v] - min_left).round().max(0.0) as usize)
+        .map(|v| {
+            (pos.get(v).copied().unwrap_or(0.0) - min_left)
+                .round()
+                .max(0.0) as usize
+        })
         .collect()
 }
 
@@ -2573,39 +2874,88 @@ fn relax_rank(nodes: &[usize], neigh: &[Vec<usize>], pos: &mut [f64], size: &[us
     }
     let desired: Vec<f64> = nodes
         .iter()
-        .map(|&v| {
-            if neigh[v].is_empty() {
-                pos[v]
-            } else {
-                neigh[v].iter().map(|&u| pos[u]).sum::<f64>() / neigh[v].len() as f64
+        .map(|&v| match neigh.get(v) {
+            Some(ns) if !ns.is_empty() => {
+                ns.iter().filter_map(|&u| pos.get(u).copied()).sum::<f64>() / ns.len() as f64
             }
+            _ => pos.get(v).copied().unwrap_or(0.0),
         })
         .collect();
 
-    let half = |i: usize| size[nodes[i]] as f64 / 2.0;
+    let half = |i: usize| {
+        nodes
+            .get(i)
+            .and_then(|&ni| size.get(ni))
+            .copied()
+            .unwrap_or(0) as f64
+            / 2.0
+    };
     let mut left = vec![0f64; n];
     let mut right = vec![0f64; n];
     for i in 0..n {
-        left[i] = if i == 0 {
-            desired[i]
-        } else {
-            desired[i].max(left[i - 1] + half(i - 1) + sep as f64 + half(i))
+        let Some(&d) = desired.get(i) else {
+            continue;
         };
+        let val = if i == 0 {
+            d
+        } else {
+            match i.checked_sub(1).and_then(|j| left.get(j)).copied() {
+                Some(prev) => d.max(prev + half(i - 1) + sep as f64 + half(i)),
+                None => d,
+            }
+        };
+        if let Some(slot) = left.get_mut(i) {
+            *slot = val;
+        }
     }
     for i in (0..n).rev() {
-        right[i] = if i == n - 1 {
-            desired[i]
-        } else {
-            desired[i].min(right[i + 1] - half(i + 1) - sep as f64 - half(i))
+        let Some(&d) = desired.get(i) else {
+            continue;
         };
+        let val = if i == n - 1 {
+            d
+        } else {
+            match right.get(i + 1).copied() {
+                Some(next) => d.min(next - half(i + 1) - sep as f64 - half(i)),
+                None => d,
+            }
+        };
+        if let Some(slot) = right.get_mut(i) {
+            *slot = val;
+        }
     }
     for i in 0..n {
-        pos[nodes[i]] = (left[i] + right[i]) / 2.0;
+        let Some(&ni) = nodes.get(i) else {
+            continue;
+        };
+        let Some(&l) = left.get(i) else {
+            continue;
+        };
+        let Some(&r) = right.get(i) else {
+            continue;
+        };
+        if let Some(slot) = pos.get_mut(ni) {
+            *slot = (l + r) / 2.0;
+        }
     }
     for i in 1..n {
-        let min_p = pos[nodes[i - 1]] + half(i - 1) + sep as f64 + half(i);
-        if pos[nodes[i]] < min_p {
-            pos[nodes[i]] = min_p;
+        let Some(prev) = i.checked_sub(1) else {
+            continue;
+        };
+        let Some(&prev_n) = nodes.get(prev) else {
+            continue;
+        };
+        let Some(&cur_n) = nodes.get(i) else {
+            continue;
+        };
+        let Some(&prev_p) = pos.get(prev_n) else {
+            continue;
+        };
+        let min_p = prev_p + half(prev) + sep as f64 + half(i);
+        if let Some(slot) = pos.get_mut(cur_n)
+            && *slot < min_p
+        {
+            *slot = min_p;
         }
     }
 }
@@ -2725,7 +3075,9 @@ fn draw_box(canvas: &mut Canvas, p: &Placed, lines: &[String], shape: Shape) {
     for cy in y..=bottom {
         for cx in x..=right {
             let i = canvas.idx(cx, cy);
-            canvas.occupied[i] = true;
+            if let Some(occ) = canvas.occupied.get_mut(i) {
+                *occ = true;
+            }
         }
     }
 
@@ -2920,7 +3272,9 @@ fn place_label(canvas: &mut Canvas, label: &str, row: usize, start_x: usize) {
         }
         let blocked = (0..cw).any(|k| {
             let i = canvas.idx(x + k, row);
-            canvas.ch[i] != ' ' || canvas.mask[i] != 0 || canvas.occupied[i]
+            canvas.ch.get(i).is_some_and(|&c| c != ' ')
+                || canvas.mask.get(i).is_some_and(|&m| m != 0)
+                || canvas.occupied.get(i) == Some(&true)
         });
         if blocked {
             break;
@@ -2939,8 +3293,12 @@ fn compute_ranks(graph: &Graph) -> Vec<usize> {
     let mut indeg = vec![0usize; n];
     for e in &graph.edges {
         if e.from != e.to {
-            children[e.from].push(e.to);
-            indeg[e.to] += 1;
+            if let Some(ch) = children.get_mut(e.from) {
+                ch.push(e.to);
+            }
+            if let Some(d) = indeg.get_mut(e.to) {
+                *d += 1;
+            }
         }
     }
 
@@ -2948,17 +3306,25 @@ fn compute_ranks(graph: &Graph) -> Vec<usize> {
     let mut dag: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut order: Vec<usize> = Vec::with_capacity(n);
 
-    let roots: Vec<usize> = (0..n).filter(|&i| indeg[i] == 0).collect();
+    let roots: Vec<usize> = (0..n).filter(|&i| indeg.get(i) == Some(&0)).collect();
     for start in roots.iter().copied().chain(0..n) {
-        if color[start] == 0 {
+        if color.get(start) == Some(&0) {
             dfs_dag(start, &children, &mut color, &mut dag, &mut order);
         }
     }
 
     let mut rank = vec![0usize; n];
     for &u in order.iter().rev() {
-        for &v in &dag[u] {
-            rank[v] = rank[v].max(rank[u] + 1);
+        let Some(vs) = dag.get(u) else {
+            continue;
+        };
+        for &v in vs {
+            let Some(&ru) = rank.get(u) else {
+                continue;
+            };
+            if let Some(rv) = rank.get_mut(v) {
+                *rv = (*rv).max(ru + 1);
+            }
         }
     }
     rank
@@ -2972,22 +3338,33 @@ fn dfs_dag(
     order: &mut Vec<usize>,
 ) {
     let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
-    color[start] = 1;
+    if let Some(c) = color.get_mut(start) {
+        *c = 1;
+    }
     while let Some(frame) = stack.last_mut() {
         let u = frame.0;
-        if frame.1 < children[u].len() {
-            let v = children[u][frame.1];
+        let kids = children.get(u).map(|c| c.as_slice()).unwrap_or(&[]);
+        if frame.1 < kids.len() {
+            let Some(&v) = kids.get(frame.1) else {
+                break;
+            };
             frame.1 += 1;
-            if color[v] == 1 {
+            if color.get(v) == Some(&1) {
                 continue;
             }
-            dag[u].push(v);
-            if color[v] == 0 {
-                color[v] = 1;
+            if let Some(d) = dag.get_mut(u) {
+                d.push(v);
+            }
+            if color.get(v) == Some(&0) {
+                if let Some(c) = color.get_mut(v) {
+                    *c = 1;
+                }
                 stack.push((v, 0));
             }
         } else {
-            color[u] = 2;
+            if let Some(c) = color.get_mut(u) {
+                *c = 2;
+            }
             order.push(u);
             stack.pop();
         }
@@ -3044,8 +3421,10 @@ struct Sequence {
 impl Sequence {
     fn participant(&mut self, id: &str, label: Option<&str>) -> Option<usize> {
         if let Some(&i) = self.index.get(id) {
-            if let Some(label) = label {
-                self.labels[i] = label.to_string();
+            if let Some(label) = label
+                && let Some(slot) = self.labels.get_mut(i)
+            {
+                *slot = label.to_string();
             }
             return Some(i);
         }
@@ -3081,11 +3460,14 @@ fn parse_sequence(src: &str) -> Option<Sequence> {
     let mut msg_count = 0usize;
     let mut blocks: Vec<bool> = Vec::new();
 
-    for st in &statements[1..] {
+    for st in statements.iter().skip(1) {
         let first = st.split_whitespace().next().unwrap_or("");
         match first.to_ascii_lowercase().as_str() {
             "participant" | "actor" => {
-                let rest = st[first.len()..].trim();
+                let Some(rest) = st.get(first.len()..) else {
+                    continue;
+                };
+                let rest = rest.trim();
                 if rest.is_empty() {
                     return None;
                 }
@@ -3099,7 +3481,10 @@ fn parse_sequence(src: &str) -> Option<Sequence> {
             "activate" | "deactivate" | "create" | "destroy" | "title" | "acctitle"
             | "accdescr" | "links" | "link" | "properties" => {}
             "note" => {
-                let rest = st[first.len()..].trim();
+                let Some(rest) = st.get(first.len()..) else {
+                    continue;
+                };
+                let rest = rest.trim();
                 let (text_part, anchor) = parse_note_anchor(rest, &mut seq)?;
                 if seq.items.len() >= MAX_EDGES {
                     return None;
@@ -3169,12 +3554,13 @@ fn parse_sequence(src: &str) -> Option<Sequence> {
 
 fn parse_note_anchor(rest: &str, seq: &mut Sequence) -> Option<(String, NoteAnchor)> {
     let lower = rest.to_ascii_lowercase();
+    let suffix = |r: &str| rest.len().checked_sub(r.len()).and_then(|s| rest.get(s..));
     let (ids_and_text, kind) = if let Some(r) = lower.strip_prefix("over ") {
-        (&rest[rest.len() - r.len()..], 0u8)
+        (suffix(r)?, 0u8)
     } else if let Some(r) = lower.strip_prefix("left of ") {
-        (&rest[rest.len() - r.len()..], 1)
+        (suffix(r)?, 1)
     } else if let Some(r) = lower.strip_prefix("right of ") {
-        (&rest[rest.len() - r.len()..], 2)
+        (suffix(r)?, 2)
     } else {
         return None;
     };
@@ -3203,7 +3589,7 @@ fn parse_seq_message(
     let mut found: Option<(usize, &str, bool, SeqHead)> = None;
     for (pos, _) in st.char_indices() {
         for &(op, dashed, head) in SEQ_OPS {
-            if st[pos..].starts_with(op) {
+            if st.get(pos..).is_some_and(|s| s.starts_with(op)) {
                 found = Some((pos, op, dashed, head));
                 break;
             }
@@ -3213,11 +3599,12 @@ fn parse_seq_message(
         }
     }
     let (pos, op, dashed, head) = found?;
-    let from_id = st[..pos].trim();
+    let from_id = st.get(..pos)?.trim();
     if from_id.is_empty() {
         return None;
     }
-    let rest = st[pos + op.len()..]
+    let rest = st
+        .get(pos + op.len()..)?
         .trim_start()
         .trim_start_matches(['+', '-']);
     let (to_id, text) = match rest.split_once(':') {
@@ -3232,18 +3619,20 @@ fn parse_seq_message(
     Some((from, to, text, dashed, head))
 }
 
-fn note_geometry(xs: &[usize], anchor: &NoteAnchor, text_w: usize) -> (usize, usize) {
+fn note_geometry(xs: &[usize], anchor: &NoteAnchor, text_w: usize) -> Option<(usize, usize)> {
     match *anchor {
         NoteAnchor::Over(l, r) => {
-            let center = (xs[l] + xs[r]) / 2;
-            let w = (xs[r] - xs[l] + 5).max(text_w + 2 * PAD + 2);
-            (center.saturating_sub(w / 2), w)
+            let &xl = xs.get(l)?;
+            let &xr = xs.get(r)?;
+            let center = (xl + xr) / 2;
+            let w = (xr - xl + 5).max(text_w + 2 * PAD + 2);
+            Some((center.saturating_sub(w / 2), w))
         }
         NoteAnchor::Left(i) => {
             let w = text_w + 2 * PAD + 2;
-            (xs[i].saturating_sub(2 + w - 1), w)
+            Some((xs.get(i)?.saturating_sub(2 + w - 1), w))
         }
-        NoteAnchor::Right(i) => (xs[i] + 2, text_w + 2 * PAD + 2),
+        NoteAnchor::Right(i) => Some((*xs.get(i)? + 2, text_w + 2 * PAD + 2)),
     }
 }
 
@@ -3267,7 +3656,9 @@ fn layout_sequence(
     let item_text_w = |text: &Option<String>| text.as_deref().map(|t| t.width()).unwrap_or(0);
 
     let mut gaps: Vec<usize> = (0..n.saturating_sub(1))
-        .map(|i| SEQ_GAP.max(box_w[i].div_ceil(2) + box_w[i + 1].div_ceil(2) + 1))
+        .filter_map(|i| {
+            Some(SEQ_GAP.max(box_w.get(i)?.div_ceil(2) + box_w.get(i + 1)?.div_ceil(2) + 1))
+        })
         .collect();
 
     let mut reqs: Vec<(usize, usize, usize)> = Vec::new();
@@ -3305,27 +3696,52 @@ fn layout_sequence(
     }
     reqs.sort_by_key(|&(l, r, _)| r - l);
     for (l, r, need) in reqs {
-        let cur: usize = gaps[l..r].iter().sum();
-        if cur < need {
-            gaps[r - 1] += need - cur;
+        let Some(slice) = gaps.get(l..r) else {
+            continue;
+        };
+        let cur: usize = slice.iter().sum();
+        if cur < need
+            && let Some(g) = r.checked_sub(1).and_then(|j| gaps.get_mut(j))
+        {
+            *g += need - cur;
         }
     }
 
     let mut xs = vec![0usize; n];
-    xs[0] = box_w[0] / 2;
+    if let (Some(x0), Some(&w0)) = (xs.first_mut(), box_w.first()) {
+        *x0 = w0 / 2;
+    }
     for i in 1..n {
-        xs[i] = xs[i - 1] + gaps[i - 1];
+        let Some(prev) = i.checked_sub(1) else {
+            continue;
+        };
+        let Some(&xp) = xs.get(prev) else {
+            continue;
+        };
+        let Some(&g) = gaps.get(prev) else {
+            continue;
+        };
+        if let Some(slot) = xs.get_mut(i) {
+            *slot = xp + g;
+        }
     }
 
-    let mut canvas_w = xs[n - 1] + box_w[n - 1].div_ceil(2) + 1;
+    let mut canvas_w = xs
+        .last()
+        .zip(box_w.last())
+        .map(|(&x, &w)| x + w.div_ceil(2) + 1)
+        .unwrap_or(1);
     for item in &seq.items {
         match item {
             SeqItem::Message { from, to, text, .. } if from == to => {
-                canvas_w = canvas_w.max(xs[*from] + 5 + item_text_w(text) + 1);
+                if let Some(&x) = xs.get(*from) {
+                    canvas_w = canvas_w.max(x + 5 + item_text_w(text) + 1);
+                }
             }
             SeqItem::Note { anchor, text } => {
-                let (x, w) = note_geometry(&xs, anchor, text.width());
-                canvas_w = canvas_w.max(x + w + 1);
+                if let Some((x, w)) = note_geometry(&xs, anchor, text.width()) {
+                    canvas_w = canvas_w.max(x + w + 1);
+                }
             }
             SeqItem::Divider { text } => {
                 canvas_w = canvas_w.max(text.width() + 4);
@@ -3366,27 +3782,33 @@ fn layout_sequence(
 
     let mut canvas = Canvas::new(canvas_w, canvas_h);
     for i in 0..n {
+        let Some(&xi) = xs.get(i) else {
+            continue;
+        };
+        let Some(&wi) = box_w.get(i) else {
+            continue;
+        };
+        let Some(label) = labels.get(i) else {
+            continue;
+        };
         for by in [0, bottom_top] {
             let p = Placed {
-                x: xs[i].saturating_sub(box_w[i] / 2),
+                x: xi.saturating_sub(wi / 2),
                 y: by,
-                w: box_w[i],
+                w: wi,
                 h: box_h,
-                cx: xs[i],
+                cx: xi,
                 cy: by + 1,
                 rank: 0,
             };
-            draw_box(
-                &mut canvas,
-                &p,
-                std::slice::from_ref(&labels[i]),
-                Shape::Rect,
-            );
+            draw_box(&mut canvas, &p, std::slice::from_ref(label), Shape::Rect);
         }
     }
     for (item, &r) in seq.items.iter().zip(&rows) {
         if let SeqItem::Note { anchor, text } = item {
-            let (x, w) = note_geometry(&xs, anchor, text.width());
+            let Some((x, w)) = note_geometry(&xs, anchor, text.width()) else {
+                continue;
+            };
             let p = Placed {
                 x,
                 y: r,
@@ -3416,7 +3838,9 @@ fn layout_sequence(
             } => {
                 let line_ch = if *dashed { '╌' } else { '─' };
                 if from == to {
-                    let x = xs[*from];
+                    let Some(&x) = xs.get(*from) else {
+                        continue;
+                    };
                     canvas.junction(x, r, R);
                     canvas.set(x + 1, r, line_ch, Cls::Edge);
                     canvas.set(x + 2, r, line_ch, Cls::Edge);
@@ -3434,7 +3858,9 @@ fn layout_sequence(
                         draw_seq_text(&mut canvas, t, x + 5, r + 1, Cls::Text);
                     }
                 } else {
-                    let (x0, x1) = (xs[*from], xs[*to]);
+                    let (Some(&x0), Some(&x1)) = (xs.get(*from), xs.get(*to)) else {
+                        continue;
+                    };
                     let rightward = x1 > x0;
                     let arrow_row = if text.is_some() { r + 1 } else { r };
                     let (lo, hi) = (x0.min(x1), x0.max(x1));
@@ -3483,7 +3909,9 @@ fn draw_seq_text(canvas: &mut Canvas, text: &str, x: usize, y: usize, cls: Cls) 
         for k in 0..cw {
             if cur + k < canvas.w && y < canvas.h {
                 let i = canvas.idx(cur + k, y);
-                canvas.mask[i] = 0;
+                if let Some(mask) = canvas.mask.get_mut(i) {
+                    *mask = 0;
+                }
             }
             canvas.set(cur + k, y, if k == 0 { c } else { CONT }, cls);
         }
@@ -3637,6 +4065,34 @@ mod tests {
         }
     }
 
+    fn node(g: &Graph, i: usize) -> &Node {
+        let Some(n) = g.nodes.get(i) else {
+            panic!("expected node {i}, have {}", g.nodes.len());
+        };
+        n
+    }
+
+    fn edge(g: &Graph, i: usize) -> &Edge {
+        let Some(e) = g.edges.get(i) else {
+            panic!("expected edge {i}, have {}", g.edges.len());
+        };
+        e
+    }
+
+    fn index_of(g: &Graph, id: &str) -> usize {
+        let Some(&i) = g.index.get(id) else {
+            panic!("missing node id {id:?}");
+        };
+        i
+    }
+
+    fn at<T: Copy + std::fmt::Debug>(xs: &[T], i: usize) -> T {
+        let Some(&v) = xs.get(i) else {
+            panic!("index {i} out of bounds for {xs:?}");
+        };
+        v
+    }
+
     fn plain(src: &str) -> String {
         render(src, &styles(), Some(120))
             .unwrap()
@@ -3649,8 +4105,8 @@ mod tests {
         let g = parse_graph("flowchart LR\n  A[Start] --> B[End]").unwrap();
         assert_eq!(g.nodes.len(), 2);
         assert_eq!(g.edges.len(), 1);
-        assert_eq!(g.nodes[0].label, "Start");
-        assert_eq!(g.nodes[1].label, "End");
+        assert_eq!(node(&g, 0).label, "Start");
+        assert_eq!(node(&g, 1).label, "End");
         assert!(g.dir == Dir::Right);
     }
 
@@ -3662,13 +4118,13 @@ mod tests {
     #[test]
     fn html_tags_are_stripped_from_labels() {
         let g = parse_graph("flowchart TD\n  A[\"<b>Bold</b> and <i>italic</i>\"] --> B").unwrap();
-        assert_eq!(g.nodes[0].label, "Bold and italic");
+        assert_eq!(node(&g, 0).label, "Bold and italic");
     }
 
     #[test]
     fn br_tag_becomes_a_space() {
         let g = parse_graph("flowchart TD\n  A[\"Line1<br/>Line2<br>Line3\"]").unwrap();
-        assert_eq!(g.nodes[0].label, "Line1 Line2 Line3");
+        assert_eq!(node(&g, 0).label, "Line1 Line2 Line3");
     }
 
     #[test]
@@ -3677,31 +4133,31 @@ mod tests {
             "flowchart TD\n  A[\"`**Start** here`\"] --> B[\"`Save to **database**`\"]\n  B --> C[\"`**Done!**`\"]",
         )
         .unwrap();
-        assert_eq!(g.nodes[0].label, "Start here");
-        assert_eq!(g.nodes[1].label, "Save to database");
-        assert_eq!(g.nodes[2].label, "Done!");
+        assert_eq!(node(&g, 0).label, "Start here");
+        assert_eq!(node(&g, 1).label, "Save to database");
+        assert_eq!(node(&g, 2).label, "Done!");
     }
 
     #[test]
     fn markdown_string_preserves_snake_case_and_strips_inline_code() {
         let g = parse_graph("flowchart TD\n  A[\"`_italic_ uses `vocab_size` with __all__`\"]")
             .unwrap();
-        assert_eq!(g.nodes[0].label, "italic uses vocab_size with all");
+        assert_eq!(node(&g, 0).label, "italic uses vocab_size with all");
     }
 
     #[test]
     fn markdown_string_edge_label_is_stripped() {
         let g =
             parse_graph("flowchart TD\n  A -->|\"`**yes**`\"| B\n  A -->|\"`__no__`\"| C").unwrap();
-        assert_eq!(g.edges[0].label.as_deref(), Some("yes"));
-        assert_eq!(g.edges[1].label.as_deref(), Some("no"));
+        assert_eq!(edge(&g, 0).label.as_deref(), Some("yes"));
+        assert_eq!(edge(&g, 1).label.as_deref(), Some("no"));
     }
 
     #[test]
     fn plain_label_keeps_literal_text_and_underscores() {
         // Not a markdown string (no backtick wrapper): Mermaid renders it literally, so brackets, snake_case, and any `*`/`_` must survive
         let g = parse_graph("flowchart TD\n  A[\"[ 464, 3797 ] seq_len d_model\"]").unwrap();
-        assert_eq!(g.nodes[0].label, "[ 464, 3797 ] seq_len d_model");
+        assert_eq!(node(&g, 0).label, "[ 464, 3797 ] seq_len d_model");
     }
 
     #[test]
@@ -3710,13 +4166,13 @@ mod tests {
             "flowchart TD\n  A[\"<code>vocab_size</code> <span style=\\\"color:red\\\">x</span>\"]",
         )
         .unwrap();
-        assert_eq!(g.nodes[0].label, "vocab_size x");
+        assert_eq!(node(&g, 0).label, "vocab_size x");
     }
 
     #[test]
     fn bare_angle_brackets_are_kept() {
         let g = parse_graph("flowchart TD\n  A[\"a < b and c > d\"]").unwrap();
-        assert_eq!(g.nodes[0].label, "a < b and c > d");
+        assert_eq!(node(&g, 0).label, "a < b and c > d");
     }
 
     #[test]
@@ -3727,8 +4183,8 @@ mod tests {
             "flowchart TD\n  A[\"Returns Vec<String>\"] --> B[\"Option<i32> for <id>\"]",
         )
         .unwrap();
-        assert_eq!(g.nodes[0].label, "Returns Vec<String>");
-        assert_eq!(g.nodes[1].label, "Option<i32> for <id>");
+        assert_eq!(node(&g, 0).label, "Returns Vec<String>");
+        assert_eq!(node(&g, 1).label, "Option<i32> for <id>");
     }
 
     #[test]
@@ -3755,11 +4211,11 @@ mod tests {
         let src = "flowchart LR\n  YAML[\"models-config/&lt;model&gt;/&lt;env&gt;.yaml\\nenterprise_api_config:\"]\n  PY[\"model_config_map.py\\nlanguage_model_dict_to_proto()\"]\n  YAML --> PY";
         let g = parse_graph(src).unwrap();
         assert!(
-            g.nodes[0]
+            node(&g, 0)
                 .label
                 .contains("models-config/<model>/<env>.yaml"),
             "{}",
-            g.nodes[0].label
+            node(&g, 0).label
         );
         let art = plain(src);
         assert!(art.contains("<model>") && art.contains("<env>"), "{art}");
@@ -3819,7 +4275,7 @@ mod tests {
         .unwrap();
         assert_eq!(g.nodes.len(), 1, "inner brackets must not split the node");
         assert_eq!(g.edges.len(), 0, "no phantom edges from <br/> + brackets");
-        assert_eq!(g.nodes[0].label, "Token IDs [ 464, 3797 ] indices");
+        assert_eq!(node(&g, 0).label, "Token IDs [ 464, 3797 ] indices");
     }
 
     #[test]
@@ -3827,8 +4283,8 @@ mod tests {
         let g = parse_graph("flowchart TD\n  A[5\" pipe] --> B[24\" display]").unwrap();
         assert_eq!(g.nodes.len(), 2);
         assert_eq!(g.edges.len(), 1);
-        assert_eq!(g.nodes[0].label, "5\" pipe");
-        assert_eq!(g.nodes[1].label, "24\" display");
+        assert_eq!(node(&g, 0).label, "5\" pipe");
+        assert_eq!(node(&g, 1).label, "24\" display");
     }
 
     #[test]
@@ -3837,7 +4293,7 @@ mod tests {
             parse_graph("flowchart TD\n  A[\"Tokenizer (BPE / WordPiece)\"] --> B[Done]").unwrap();
         assert_eq!(g.nodes.len(), 2);
         assert_eq!(g.edges.len(), 1);
-        assert_eq!(g.nodes[0].label, "Tokenizer (BPE / WordPiece)");
+        assert_eq!(node(&g, 0).label, "Tokenizer (BPE / WordPiece)");
     }
 
     #[test]
@@ -3854,10 +4310,10 @@ mod tests {
     fn ranks_ignore_back_edges() {
         let g = parse_graph("graph TD\n A-->B\n B-->C\n C-->A").unwrap();
         let r = compute_ranks(&g);
-        let idx = |id: &str| g.index[id];
-        assert_eq!(r[idx("A")], 0);
-        assert_eq!(r[idx("B")], 1);
-        assert_eq!(r[idx("C")], 2);
+        let idx = |id: &str| index_of(&g, id);
+        assert_eq!(at(&r, idx("A")), 0);
+        assert_eq!(at(&r, idx("B")), 1);
+        assert_eq!(at(&r, idx("C")), 2);
     }
 
     #[test]
@@ -3906,7 +4362,7 @@ mod tests {
         let g = parse_graph("graph TD\n A -- no exit --> B").unwrap();
         assert_eq!(g.nodes.len(), 2);
         assert_eq!(g.edges.len(), 1);
-        assert_eq!(g.edges[0].label.as_deref(), Some("no exit"));
+        assert_eq!(edge(&g, 0).label.as_deref(), Some("no exit"));
     }
 
     #[test]
@@ -3920,7 +4376,7 @@ mod tests {
             .map(|l| l.width())
             .collect();
         assert!(
-            widths.windows(2).all(|w| w[0] == w[1]),
+            widths.windows(2).all(|w| matches!(w, [a, b] if a == b)),
             "box rows must share one width: {widths:?}\n{lines:?}"
         );
         assert!(!lines.iter().any(|l| l.contains(CONT)), "sentinel leaked");
@@ -3955,11 +4411,14 @@ mod tests {
         let lines = wrap_label("mark_filter_restore_context", WRAP_WIDTH, MAX_LINES);
         // The first line ends on an identifier boundary, not a mid-segment slice.
         assert!(
-            lines[0].ends_with('_'),
+            lines.first().is_some_and(|l| l.ends_with('_')),
             "first line must end on a boundary: {lines:?}"
         );
         // Every break (all but the last line) lands on a boundary char.
-        for line in &lines[..lines.len() - 1] {
+        let Some(prefix) = lines.len().checked_sub(1).and_then(|n| lines.get(..n)) else {
+            panic!("expected wrapped lines, got {lines:?}");
+        };
+        for line in prefix {
             assert!(
                 line.ends_with(LABEL_BREAK_CHARS),
                 "line must break on a boundary: {line:?}"
@@ -3994,12 +4453,12 @@ mod tests {
         let lines = wrap_label(&token, WRAP_WIDTH, MAX_LINES);
         // The boundary is taken first ...
         assert!(
-            lines[0].ends_with('_'),
+            lines.first().is_some_and(|l| l.ends_with('_')),
             "first break on boundary: {lines:?}"
         );
         // ... then the long no-boundary tail falls back to a per-char break.
         assert!(
-            lines[1..].iter().any(|l| !l.contains(LABEL_BREAK_CHARS)),
+            lines.iter().skip(1).any(|l| !l.contains(LABEL_BREAK_CHARS)),
             "a later line must be a per-char break: {lines:?}"
         );
         // 43 cols is less than MAX_LINES*WRAP_WIDTH, so it must not truncate; fully lossless
@@ -4099,7 +4558,10 @@ mod tests {
     fn fallback_styled_and_plain_widths_match() {
         let art = render("gantt\n title Plan\n a\n", &styles(), Some(120)).unwrap();
         assert_eq!(art.styled_lines.len(), art.plain_lines.len());
-        let frame_w = art.plain_lines[0].width();
+        let Some(first) = art.plain_lines.first() else {
+            panic!("expected framed lines");
+        };
+        let frame_w = first.width();
         for (styled, plain) in art.styled_lines.iter().zip(&art.plain_lines) {
             let styled_w: usize = styled
                 .spans
@@ -4203,12 +4665,12 @@ mod tests {
     #[test]
     fn reversed_arrow_swaps_edge_direction() {
         let g = parse_graph("graph TD\n A <-- B").unwrap();
-        let idx = |id: &str| g.index[id];
+        let idx = |id: &str| index_of(&g, id);
         assert_eq!(g.edges.len(), 1);
-        assert_eq!(g.edges[0].from, idx("B"));
-        assert_eq!(g.edges[0].to, idx("A"));
-        assert_eq!(g.edges[0].head_to, Head::Arrow);
-        assert_eq!(g.edges[0].head_from, Head::None);
+        assert_eq!(edge(&g, 0).from, idx("B"));
+        assert_eq!(edge(&g, 0).to, idx("A"));
+        assert_eq!(edge(&g, 0).head_to, Head::Arrow);
+        assert_eq!(edge(&g, 0).head_from, Head::None);
         let out = plain("graph TD\n A <-- B");
         let lines: Vec<&str> = out.lines().collect();
         let row = |needle: &str| lines.iter().position(|l| l.contains(needle)).unwrap();
@@ -4219,7 +4681,7 @@ mod tests {
     fn semicolon_and_comment_survive_inside_quoted_label() {
         let g = parse_graph("graph TD\n A[\"wait; 50%% done\"] --> B").unwrap();
         assert_eq!(g.nodes.len(), 2);
-        assert_eq!(g.nodes[0].label, "wait; 50%% done");
+        assert_eq!(node(&g, 0).label, "wait; 50%% done");
     }
 
     #[test]
@@ -4246,7 +4708,9 @@ mod tests {
         let max_rank = *ranks.iter().max().unwrap();
         let mut by_rank: Vec<Vec<usize>> = vec![Vec::new(); max_rank + 1];
         for (idx, &r) in ranks.iter().enumerate() {
-            by_rank[r].push(idx);
+            if let Some(row) = by_rank.get_mut(r) {
+                row.push(idx);
+            }
         }
         order_ranks(&mut by_rank, &g.edges, &ranks);
         (g, ranks, by_rank)
@@ -4258,24 +4722,31 @@ mod tests {
         let mut pos = vec![0usize; g.nodes.len()];
         for row in &by_rank {
             for (i, &v) in row.iter().enumerate() {
-                pos[v] = i;
+                if let Some(slot) = pos.get_mut(v) {
+                    *slot = i;
+                }
             }
         }
         assert_eq!(count_crossings(&g.edges, &ranks, &pos), 0);
-        let idx = |id: &str| g.index[id];
-        assert!(pos[idx("D")] < pos[idx("C")], "D follows parent A leftward");
+        let idx = |id: &str| index_of(&g, id);
+        assert!(
+            at(&pos, idx("D")) < at(&pos, idx("C")),
+            "D follows parent A leftward"
+        );
     }
 
     #[test]
     fn order_ranks_keeps_crossing_free_order() {
         let (g, ranks, by_rank) = ordered_ranks("graph TD\n A --> C\n B --> D");
-        let idx = |id: &str| g.index[id];
-        assert_eq!(by_rank[0], vec![idx("A"), idx("B")]);
-        assert_eq!(by_rank[1], vec![idx("C"), idx("D")]);
+        let idx = |id: &str| index_of(&g, id);
+        assert_eq!(by_rank.first(), Some(&vec![idx("A"), idx("B")]));
+        assert_eq!(by_rank.get(1), Some(&vec![idx("C"), idx("D")]));
         let mut pos = vec![0usize; g.nodes.len()];
         for row in &by_rank {
             for (i, &v) in row.iter().enumerate() {
-                pos[v] = i;
+                if let Some(slot) = pos.get_mut(v) {
+                    *slot = i;
+                }
             }
         }
         assert_eq!(count_crossings(&g.edges, &ranks, &pos), 0);
@@ -4303,7 +4774,9 @@ mod tests {
         let mut pos = vec![0usize; g.nodes.len()];
         for row in &by_rank {
             for (i, &v) in row.iter().enumerate() {
-                pos[v] = i;
+                if let Some(slot) = pos.get_mut(v) {
+                    *slot = i;
+                }
             }
         }
         assert_eq!(
@@ -4375,7 +4848,10 @@ mod tests {
         .unwrap()
         .plain_lines;
         assert!(out.iter().all(|l| l.width() <= 40), "{}", out.join("\n"));
-        for line in &out[1..out.len() - 1] {
+        let Some(mid) = out.len().checked_sub(1).and_then(|n| out.get(1..n)) else {
+            panic!("expected boxed output, got {out:?}");
+        };
+        for line in mid {
             assert!(
                 line.starts_with('│') && line.ends_with('│'),
                 "body rows keep both borders: {line:?}"
@@ -4424,8 +4900,8 @@ mod tests {
     #[test]
     fn class_realization_is_dotted_triangle() {
         let g = parse_class("classDiagram\n IShape <|.. Circle").unwrap().0;
-        assert_eq!(g.edges[0].head_from, Head::Triangle);
-        assert!(g.edges[0].line == LineKind::Dotted);
+        assert_eq!(edge(&g, 0).head_from, Head::Triangle);
+        assert!(edge(&g, 0).line == LineKind::Dotted);
         let out = plain("classDiagram\n IShape <|.. Circle");
         assert!(out.contains('╎') || out.contains('╌'), "{out}");
     }
@@ -4440,8 +4916,8 @@ mod tests {
     #[test]
     fn class_dependency_dotted_arrow() {
         let g = parse_class("classDiagram\n A ..> B").unwrap().0;
-        assert_eq!(g.edges[0].head_to, Head::Arrow);
-        assert!(g.edges[0].line == LineKind::Dotted);
+        assert_eq!(edge(&g, 0).head_to, Head::Arrow);
+        assert!(edge(&g, 0).line == LineKind::Dotted);
     }
 
     #[test]
@@ -4720,7 +5196,7 @@ mod tests {
         let g = parse_graph("graph TD\n A & B --> C & D").unwrap();
         assert_eq!(g.nodes.len(), 4);
         assert_eq!(g.edges.len(), 4);
-        let idx = |id: &str| g.index[id];
+        let idx = |id: &str| index_of(&g, id);
         let has = |f: &str, t: &str| g.edges.iter().any(|e| e.from == idx(f) && e.to == idx(t));
         assert!(has("A", "C") && has("A", "D") && has("B", "C") && has("B", "D"));
         let out = plain("graph TD\n A & B --> C & D");
@@ -4736,7 +5212,7 @@ mod tests {
     #[test]
     fn fan_out_with_reversed_arrow() {
         let g = parse_graph("graph TD\n A & B <-- C").unwrap();
-        let idx = |id: &str| g.index[id];
+        let idx = |id: &str| index_of(&g, id);
         assert_eq!(g.edges.len(), 2);
         assert!(g.edges.iter().all(|e| e.from == idx("C")));
         assert!(g.edges.iter().all(|e| e.head_to == Head::Arrow));
@@ -4748,8 +5224,8 @@ mod tests {
         assert_eq!(g.nodes.len(), 4, "no phantom o/x nodes");
         assert!(!g.index.contains_key("o"));
         assert!(!g.index.contains_key("x"));
-        assert_eq!(g.edges[0].head_to, Head::Circle);
-        assert_eq!(g.edges[1].head_to, Head::Cross);
+        assert_eq!(edge(&g, 0).head_to, Head::Circle);
+        assert_eq!(edge(&g, 1).head_to, Head::Cross);
         let out = plain("graph TD\n A --o B");
         assert!(out.contains('o'), "circle head rendered:\n{out}");
     }
@@ -4757,25 +5233,25 @@ mod tests {
     #[test]
     fn left_endings_decorate_without_reversing() {
         let g = parse_graph("graph TD\n A o-- B\n C x-- D").unwrap();
-        let idx = |id: &str| g.index[id];
-        assert_eq!(g.edges[0].from, idx("A"));
-        assert_eq!(g.edges[0].to, idx("B"));
-        assert_eq!(g.edges[0].head_from, Head::Circle);
-        assert_eq!(g.edges[1].head_from, Head::Cross);
-        assert_eq!(g.edges[0].head_to, Head::None);
+        let idx = |id: &str| index_of(&g, id);
+        assert_eq!(edge(&g, 0).from, idx("A"));
+        assert_eq!(edge(&g, 0).to, idx("B"));
+        assert_eq!(edge(&g, 0).head_from, Head::Circle);
+        assert_eq!(edge(&g, 1).head_from, Head::Cross);
+        assert_eq!(edge(&g, 0).head_to, Head::None);
     }
 
     #[test]
     fn reversed_arrow_with_end_marker_swaps_direction() {
         let g = parse_graph("graph TD\n A <--o B\n C <--x D").unwrap();
-        let idx = |id: &str| g.index[id];
-        assert_eq!(g.edges[0].from, idx("B"));
-        assert_eq!(g.edges[0].to, idx("A"));
-        assert_eq!(g.edges[0].head_to, Head::Arrow);
-        assert_eq!(g.edges[0].head_from, Head::Circle);
-        assert_eq!(g.edges[1].from, idx("D"));
-        assert_eq!(g.edges[1].to, idx("C"));
-        assert_eq!(g.edges[1].head_from, Head::Cross);
+        let idx = |id: &str| index_of(&g, id);
+        assert_eq!(edge(&g, 0).from, idx("B"));
+        assert_eq!(edge(&g, 0).to, idx("A"));
+        assert_eq!(edge(&g, 0).head_to, Head::Arrow);
+        assert_eq!(edge(&g, 0).head_from, Head::Circle);
+        assert_eq!(edge(&g, 1).from, idx("D"));
+        assert_eq!(edge(&g, 1).to, idx("C"));
+        assert_eq!(edge(&g, 1).head_from, Head::Cross);
         let plain_rev = plain("graph TD\n A <--o B");
         let lines: Vec<&str> = plain_rev.lines().collect();
         let row = |needle: &str| lines.iter().position(|l| l.contains(needle)).unwrap();
@@ -4788,10 +5264,10 @@ mod tests {
     #[test]
     fn both_end_markers_parse() {
         let g = parse_graph("graph TD\n A o--o B\n C x--x D").unwrap();
-        assert_eq!(g.edges[0].head_from, Head::Circle);
-        assert_eq!(g.edges[0].head_to, Head::Circle);
-        assert_eq!(g.edges[1].head_from, Head::Cross);
-        assert_eq!(g.edges[1].head_to, Head::Cross);
+        assert_eq!(edge(&g, 0).head_from, Head::Circle);
+        assert_eq!(edge(&g, 0).head_to, Head::Circle);
+        assert_eq!(edge(&g, 1).head_from, Head::Cross);
+        assert_eq!(edge(&g, 1).head_to, Head::Cross);
         assert_eq!(g.nodes.len(), 4);
     }
 
@@ -4869,7 +5345,7 @@ mod tests {
             "stateDiagram-v2\n state c <<choice>>\n A --> c\n c --> B: yes\n c --> D: no",
         )
         .unwrap();
-        assert!(g.nodes[g.index["c"]].shape == Shape::Diamond);
+        assert!(node(&g, index_of(&g, "c")).shape == Shape::Diamond);
         assert_eq!(g.edges.len(), 3);
     }
 
@@ -4945,13 +5421,13 @@ mod tests {
             "stateDiagram-v2\n state c <<choice>>\n c : pick a path\n A --> c\n c --> B",
         )
         .unwrap();
-        assert!(g.nodes[g.index["c"]].shape == Shape::Diamond);
-        assert_eq!(g.nodes[g.index["c"]].label, "pick a path");
+        assert!(node(&g, index_of(&g, "c")).shape == Shape::Diamond);
+        assert_eq!(node(&g, index_of(&g, "c")).label, "pick a path");
         let g2 =
             parse_state("stateDiagram-v2\n state c <<choice>>\n state \"pick\" as c\n A --> c")
                 .unwrap();
-        assert!(g2.nodes[g2.index["c"]].shape == Shape::Diamond);
-        assert_eq!(g2.nodes[g2.index["c"]].label, "pick");
+        assert!(node(&g2, index_of(&g2, "c")).shape == Shape::Diamond);
+        assert_eq!(node(&g2, index_of(&g2, "c")).label, "pick");
     }
 
     #[test]
@@ -4965,7 +5441,7 @@ mod tests {
             !g.nodes.iter().any(|n| n.label.contains("-->")),
             "no node swallows the arrow"
         );
-        let idx = |id: &str| g.index[id];
+        let idx = |id: &str| index_of(&g, id);
         assert!(
             g.edges
                 .iter()
@@ -5168,7 +5644,7 @@ mod tests {
     fn inline_o_word_label_still_parses_as_label() {
         let g = parse_graph("graph TD\n A -- or else --> B").unwrap();
         assert_eq!(g.nodes.len(), 2);
-        assert_eq!(g.edges[0].label.as_deref(), Some("or else"));
+        assert_eq!(edge(&g, 0).label.as_deref(), Some("or else"));
     }
 
     #[test]

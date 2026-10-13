@@ -158,8 +158,11 @@ fn render_url(
             return bottom;
         }
         let x = area.x + col;
-        if x < max_x && y < max_y {
-            buf[(x, y)].set_char(ch).set_style(style);
+        if x < max_x
+            && y < max_y
+            && let Some(cell) = buf.cell_mut((x, y))
+        {
+            cell.set_char(ch).set_style(style);
         }
         col += 1;
     }
@@ -465,7 +468,7 @@ mod tests {
             code: Some("ABCD-EFGH".into()),
         };
         render_auth(&mut buf, area, &theme, &hint);
-        let text = buffer_text(&buf, area);
+        let text = crate::buffer_text(&buf);
         assert!(text.contains("Sign in to Grok"), "header: {text:?}");
         assert!(text.contains("accounts.x.ai/device"), "url: {text:?}");
         assert!(text.contains("ABCD-EFGH"), "device code: {text:?}");
@@ -484,7 +487,7 @@ mod tests {
             workspace: PathBuf::from("/home/agent/project"),
         };
         render_auth(&mut buf, area, &theme, &hint);
-        let text = buffer_text(&buf, area);
+        let text = crate::buffer_text(&buf);
         assert!(
             text.contains("Do you trust the contents of this directory?"),
             "question: {text:?}"
@@ -508,18 +511,5 @@ mod tests {
         let rows = auth_hint_rows(&hint, 40);
         // The 200-char path wraps to 5 rows at width 40, so the total sits well above the fixed rows
         assert!(rows >= 12, "expected room for wrapped path, got {rows}");
-    }
-
-    fn buffer_text(buf: &Buffer, area: Rect) -> String {
-        let mut text = String::new();
-        for y in 0..area.height {
-            for x in 0..area.width {
-                if let Some(c) = buf.cell((x, y)) {
-                    text.push_str(c.symbol());
-                }
-            }
-            text.push('\n');
-        }
-        text
     }
 }

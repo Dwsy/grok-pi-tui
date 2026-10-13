@@ -1,3 +1,5 @@
+#![deny(clippy::indexing_slicing)]
+
 pub mod engine;
 pub mod host;
 pub mod journal;

@@ -212,11 +212,15 @@ impl xai_tool_runtime::Tool for GlobTool {
                     Ok(0) => break,
                     Ok(n) => {
                         if stdout_buf.len() + n <= MAX_STDOUT_BYTES {
-                            stdout_buf.extend_from_slice(&tmp[..n]);
+                            if let Some(chunk) = tmp.get(..n) {
+                                stdout_buf.extend_from_slice(chunk);
+                            }
                         } else {
                             let remaining = MAX_STDOUT_BYTES.saturating_sub(stdout_buf.len());
-                            if remaining > 0 {
-                                stdout_buf.extend_from_slice(&tmp[..remaining]);
+                            if remaining > 0
+                                && let Some(chunk) = tmp.get(..remaining)
+                            {
+                                stdout_buf.extend_from_slice(chunk);
                             }
                             truncated_by_bytes = true;
                             let _ = child.start_kill();

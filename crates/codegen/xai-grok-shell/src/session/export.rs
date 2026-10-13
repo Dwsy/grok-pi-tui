@@ -332,7 +332,7 @@ mod from_summary_tests {
             title_is_manual: Some(true),
         };
         let json = serde_json::to_value(&meta).unwrap();
-        assert_eq!(json["title_is_manual"], true);
+        assert_eq!(json.get("title_is_manual"), Some(&serde_json::json!(true)));
         let back: ExportedMetadata = serde_json::from_value(json).unwrap();
         assert_eq!(back.title_is_manual, Some(true));
         assert_eq!(back.title.as_deref(), Some("Pinned"));

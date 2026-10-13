@@ -25,6 +25,8 @@
 //! - A corrupt or newer-schema file is never deleted, truncated, or quarantined.
 //!   The typed errors ([`StoreError::Unusable`], [`StoreError::NewerSchema`]) leave recovery to the user.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::path::{Path, PathBuf};
 
 mod error;

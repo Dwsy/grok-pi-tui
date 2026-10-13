@@ -20,7 +20,7 @@ pub mod task_completion;
 
 pub use lsp_diagnostics::LspDiagnosticsReminder;
 pub use skill_discovery::SkillDiscoveryReminder;
-pub use task_completion::TaskCompletionReminder;
+pub use task_completion::{TaskCompletionReminder, monitor_label};
 
 /// The default system-reminder tag name (hyphen).
 pub const DEFAULT_REMINDER_TAG: &str = "system-reminder";

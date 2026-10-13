@@ -19,13 +19,13 @@ async fn storage_upload_parks_on_401_and_drains_after_recovery() {
     seed_fake_oauth(&content, "pty-park-e2e");
 
     // Explicit overrides win over the sandbox defaults
-    // Disable only the fake API-key credential so the seeded OAuth entry stays active
-    let overrides = [
-        oauth_credential_ops()[0],
+    // The seeded OAuth entry decides the auth mode
+    let mut overrides = Vec::from(oauth_credential_ops());
+    overrides.extend([
         EnvOp::set("GROK_TRACE_UPLOAD", "true"),
         EnvOp::set("GROK_TELEMETRY_TRACE_UPLOAD", "true"),
         EnvOp::set("GROK_UPLOAD_QUEUE_AUTH_PROBE_SECS", "2"),
-    ];
+    ]);
 
     let binary = pager_binary().expect("resolve pager binary");
     let mut harness = PtyHarness::spawn_with_content_env_ops(

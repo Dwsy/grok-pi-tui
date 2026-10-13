@@ -217,14 +217,17 @@ mod tests {
         ]);
         let lines = todo_panel_lines(&agent, 8, false);
         assert_eq!(lines.len(), 3);
-        assert!(line_text(&lines[0]).contains("done one"));
+        let [done, active, pending] = lines.as_slice() else {
+            panic!("expected 3 todo lines: {lines:?}");
+        };
+        assert!(line_text(done).contains("done one"));
         assert!(
-            line_text(&lines[1]).contains("\u{25b6}"),
+            line_text(active).contains("\u{25b6}"),
             "in-progress row uses the ▶ glyph"
         );
-        assert!(line_text(&lines[1]).contains("active item"));
+        assert!(line_text(active).contains("active item"));
         assert!(
-            line_text(&lines[2]).contains("\u{25a1}"),
+            line_text(pending).contains("\u{25a1}"),
             "pending row uses the □ glyph"
         );
     }
@@ -239,15 +242,18 @@ mod tests {
         );
         let lines = todo_panel_lines(&agent, 4, false);
         assert_eq!(lines.len(), 4, "capped to max_rows");
+        let Some(overflow) = lines.get(3) else {
+            panic!("expected overflow row: {lines:?}");
+        };
         assert!(
-            line_text(&lines[3]).contains("+7 more"),
+            line_text(overflow).contains("+7 more"),
             "got: {:?}",
-            line_text(&lines[3])
+            line_text(overflow)
         );
         assert!(
-            line_text(&lines[3]).contains("ctrl+t"),
+            line_text(overflow).contains("ctrl+t"),
             "overflow row advertises the expand chord: {:?}",
-            line_text(&lines[3])
+            line_text(overflow)
         );
     }
 }

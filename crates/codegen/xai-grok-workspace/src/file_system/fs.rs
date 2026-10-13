@@ -45,10 +45,6 @@ pub fn bytes_to_string(file_bytes: Vec<u8>) -> Result<String, FsError> {
     String::from_utf8(file_bytes).map_err(|e| FsError::Other(e.to_string()))
 }
 
-// ============================================================================
-// AsyncFsWrapper: Generic wrapper that accepts any path type
-// ============================================================================
-
 /// Wrapper around `AsyncFileSystem` that accepts any `ToAbsPath` and resolves it against the filesystem root.
 #[derive(Clone)]
 pub struct AsyncFsWrapper {

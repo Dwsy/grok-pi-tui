@@ -71,7 +71,7 @@ fn wrapper_prefix_in_non_first_content_part_returns_false() {
                     text: format!("{LEGACY_AGENTS_MD_REMINDER_PREFIX} ...").into(),
                 },
             ],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         }),
     ];
@@ -127,11 +127,14 @@ fn site_a_skips_when_helper_returns_true_and_bumps_len_when_inserting() {
         "inherited_prefix_len must bump by 1 when inserting"
     );
     assert_eq!(conv.len(), 2, "conversation must grow by exactly one item");
-    match &conv[1] {
+    let Some(item) = conv.get(1) else {
+        panic!("expected inserted item at index 1: {conv:?}");
+    };
+    match item {
         ConversationItem::User(u) => {
             assert_eq!(
                 u.synthetic_reason,
-                Some(SyntheticReason::ProjectInstructions),
+                SyntheticReason::ProjectInstructions,
                 "inserted item must carry the ProjectInstructions tag"
             );
             assert_eq!(
@@ -283,8 +286,8 @@ fn site_a_still_inserts_agents_md_on_non_fork_spawn() {
         "non-fork spawn must insert one AGENTS.md item"
     );
     assert!(
-        matches!(&conv[1], ConversationItem::User(u)
-            if u.synthetic_reason == Some(SyntheticReason::ProjectInstructions)),
+        matches!(conv.get(1), Some(ConversationItem::User(u))
+            if u.synthetic_reason == SyntheticReason::ProjectInstructions),
         "AGENTS.md must be inserted as a tagged project-instructions item at index 1"
     );
     assert_eq!(

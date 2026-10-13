@@ -590,13 +590,18 @@ mod tests {
 
         let input: AskUserQuestionInput = serde_json::from_value(json).unwrap();
         assert_eq!(input.questions.len(), 1);
-        assert_eq!(input.questions[0].question, "Pick DB?");
-        assert_eq!(input.questions[0].options.len(), 2);
-        assert_eq!(input.questions[0].options[0].label, "Postgres");
-        assert!(input.questions[0].options[0].preview.is_none());
-        assert_eq!(input.questions[0].options[1].label, "SQLite");
-        assert!(input.questions[0].options[1].preview.is_some());
-        assert_eq!(input.questions[0].multi_select, Some(false));
+        let Some(q) = input.questions.first() else {
+            panic!("expected one question: {:?}", input.questions);
+        };
+        assert_eq!(q.question, "Pick DB?");
+        let [opt0, opt1] = q.options.as_slice() else {
+            panic!("expected two options: {:?}", q.options);
+        };
+        assert_eq!(opt0.label, "Postgres");
+        assert!(opt0.preview.is_none());
+        assert_eq!(opt1.label, "SQLite");
+        assert!(opt1.preview.is_some());
+        assert_eq!(q.multi_select, Some(false));
     }
 
     #[test]
@@ -623,7 +628,10 @@ mod tests {
             }]
         });
         let input: AskUserQuestionInput = serde_json::from_value(json).unwrap();
-        assert_eq!(input.questions[0].multi_select, Some(true));
+        let Some(q) = input.questions.first() else {
+            panic!("expected one question: {:?}", input.questions);
+        };
+        assert_eq!(q.multi_select, Some(true));
     }
 
     // ── Migration fallback tests (no UserQuestionSender) ─────────────────

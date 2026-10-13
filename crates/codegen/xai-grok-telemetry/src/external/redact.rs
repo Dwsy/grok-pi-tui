@@ -20,7 +20,7 @@ use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMe
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
 
 use super::config::ContentGates;
-use super::schema::{Gate, external_allowed_keys, gate_for_key};
+use super::schema::{external_allowed_keys, gate_for_key};
 
 /// Shared, tighten-only view of the content gates.
 /// The remote kill switch may force gates off mid-run; the exporters re-read on every export.
@@ -41,15 +41,6 @@ pub(crate) struct ExportHealth {
     pub last_export_error: parking_lot::Mutex<Option<String>>,
 }
 
-fn gate_open(gates: &ContentGates, gate: Gate) -> bool {
-    match gate {
-        Gate::UserPrompts => gates.log_user_prompts,
-        Gate::ToolDetails => gates.log_tool_details,
-        Gate::AssistantResponses => gates.log_assistant_responses,
-        Gate::ToolContent => gates.log_tool_content,
-    }
-}
-
 /// `true` when this record is clean: every attribute key is schema-named and gated keys have their gate open.
 /// String values must carry no secret shapes the emit path should have scrubbed.
 /// The body must be empty: `event.name` is the structured identity, and external records carry no free-text body.
@@ -68,7 +59,7 @@ fn record_is_clean(record: &SdkLogRecord, gates: &ContentGates) -> bool {
             return false;
         }
         if let Some(gate) = gate_for_key(key_str)
-            && !gate_open(gates, gate)
+            && !gate.is_open(gates)
         {
             tracing::debug!(
                 key = key_str,

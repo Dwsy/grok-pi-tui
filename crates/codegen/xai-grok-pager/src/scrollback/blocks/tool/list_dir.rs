@@ -252,8 +252,11 @@ mod tests {
     }
 
     fn header_text(block: &ListDirToolCallBlock) -> String {
-        block.output(&ctx()).lines[0]
-            .content
+        let output = block.output(&ctx());
+        let Some(line) = output.lines.first() else {
+            panic!("expected a header line");
+        };
+        line.content
             .spans
             .iter()
             .map(|s| s.content.as_ref())

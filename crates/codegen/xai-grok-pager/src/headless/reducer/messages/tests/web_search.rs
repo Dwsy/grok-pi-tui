@@ -5,6 +5,11 @@ use pretty_assertions::assert_eq;
 // `acp` binds to the protocol crate here to avoid resolving to the sibling module through `use super::*`.
 use agent_client_protocol as acp;
 
+fn at<'a>(v: &'a Value, path: &str) -> &'a Value {
+    static NULL: Value = Value::Null;
+    v.pointer(path).unwrap_or(&NULL)
+}
+
 #[test]
 fn tool_call_event_classifies_only_backend_web_search() {
     let ws = acp::ToolCall::new(
@@ -70,32 +75,55 @@ fn messages_backend_web_search_inline_single_frame() {
     r.reduce(StreamEvent::AgentMessage("Found it.".into()));
     r.reduce(response_completed("msg_real", "end_turn"));
     let out = r.finish(&end_turn());
-    let assistants: Vec<_> = out.iter().filter(|m| m["type"] == "assistant").collect();
+    let assistants: Vec<_> = out
+        .iter()
+        .filter(|m| at(m, "/type") == "assistant")
+        .collect();
     assert_eq!(
         assistants.len(),
         1,
         "web search stays in one assistant frame"
     );
     assert!(
-        out.iter().all(|m| m["type"] != "user"),
+        out.iter().all(|m| at(m, "/type") != "user"),
         "backend web search is not a client user tool_result"
     );
-    let content = assistants[0]["message"]["content"].as_array().unwrap();
-    assert_eq!(content[0]["type"], "text");
-    assert_eq!(content[0]["text"], "Let me search. ");
-    assert_eq!(content[1]["type"], "server_tool_use");
-    assert_eq!(content[1]["name"], "web_search");
-    assert_eq!(content[1]["id"], "ws1");
-    assert_eq!(content[1]["input"]["query"], "rust async runtime");
-    assert_eq!(content[2]["type"], "web_search_tool_result");
-    assert_eq!(content[2]["tool_use_id"], "ws1");
-    assert_eq!(content[2]["content"][0]["type"], "web_search_result");
-    assert_eq!(content[2]["content"][0]["url"], "https://tokio.rs");
-    assert_eq!(content[2]["content"][0]["title"], "Tokio");
-    assert_eq!(content[2]["content"][1]["url"], "https://async.rs");
-    assert_eq!(content[2]["content"][1]["title"], "https://async.rs");
-    assert_eq!(content[3]["type"], "text");
-    assert_eq!(content[3]["text"], "Found it.");
+    let Some(assistant) = assistants.first() else {
+        panic!("expected one assistant: {assistants:?}");
+    };
+    assert_eq!(at(assistant, "/message/content/0/type"), "text");
+    assert_eq!(at(assistant, "/message/content/0/text"), "Let me search. ");
+    assert_eq!(at(assistant, "/message/content/1/type"), "server_tool_use");
+    assert_eq!(at(assistant, "/message/content/1/name"), "web_search");
+    assert_eq!(at(assistant, "/message/content/1/id"), "ws1");
+    assert_eq!(
+        at(assistant, "/message/content/1/input/query"),
+        "rust async runtime"
+    );
+    assert_eq!(
+        at(assistant, "/message/content/2/type"),
+        "web_search_tool_result"
+    );
+    assert_eq!(at(assistant, "/message/content/2/tool_use_id"), "ws1");
+    assert_eq!(
+        at(assistant, "/message/content/2/content/0/type"),
+        "web_search_result"
+    );
+    assert_eq!(
+        at(assistant, "/message/content/2/content/0/url"),
+        "https://tokio.rs"
+    );
+    assert_eq!(at(assistant, "/message/content/2/content/0/title"), "Tokio");
+    assert_eq!(
+        at(assistant, "/message/content/2/content/1/url"),
+        "https://async.rs"
+    );
+    assert_eq!(
+        at(assistant, "/message/content/2/content/1/title"),
+        "https://async.rs"
+    );
+    assert_eq!(at(assistant, "/message/content/3/type"), "text");
+    assert_eq!(at(assistant, "/message/content/3/text"), "Found it.");
 }
 
 #[test]
@@ -110,19 +138,19 @@ fn messages_backend_web_search_inline_partial() {
     let stu_start = out
         .iter()
         .find(|m| {
-            m["event"]["type"] == "content_block_start"
-                && m["event"]["content_block"]["type"] == "server_tool_use"
+            at(m, "/event/type") == "content_block_start"
+                && at(m, "/event/content_block/type") == "server_tool_use"
         })
         .expect("server_tool_use content_block_start");
-    assert_eq!(stu_start["event"]["index"], 1);
-    assert_eq!(stu_start["event"]["content_block"]["name"], "web_search");
-    assert_eq!(stu_start["event"]["content_block"]["id"], "ws1");
+    assert_eq!(at(stu_start, "/event/index"), 1);
+    assert_eq!(at(stu_start, "/event/content_block/name"), "web_search");
+    assert_eq!(at(stu_start, "/event/content_block/id"), "ws1");
     let ijd = out
         .iter()
-        .find(|m| m["event"]["delta"]["type"] == "input_json_delta")
+        .find(|m| at(m, "/event/delta/type") == "input_json_delta")
         .expect("input_json_delta carrying the query");
     assert!(
-        ijd["event"]["delta"]["partial_json"]
+        at(ijd, "/event/delta/partial_json")
             .as_str()
             .unwrap()
             .contains("rust async runtime")
@@ -131,34 +159,40 @@ fn messages_backend_web_search_inline_partial() {
     let res_start = out
         .iter()
         .find(|m| {
-            m["event"]["type"] == "content_block_start"
-                && m["event"]["content_block"]["type"] == "web_search_tool_result"
+            at(m, "/event/type") == "content_block_start"
+                && at(m, "/event/content_block/type") == "web_search_tool_result"
         })
         .expect("web_search_tool_result content_block_start");
-    assert_eq!(res_start["event"]["index"], 2);
-    assert_eq!(res_start["event"]["content_block"]["tool_use_id"], "ws1");
+    assert_eq!(at(res_start, "/event/index"), 2);
+    assert_eq!(at(res_start, "/event/content_block/tool_use_id"), "ws1");
     assert_eq!(
-        res_start["event"]["content_block"]["content"][0]["url"],
+        at(res_start, "/event/content_block/content/0/url"),
         "https://tokio.rs"
     );
 
     let text_delta = out
         .iter()
         .rev()
-        .find(|m| m["event"]["delta"]["type"] == "text_delta")
+        .find(|m| at(m, "/event/delta/type") == "text_delta")
         .expect("trailing text_delta");
-    assert_eq!(text_delta["event"]["index"], 3);
+    assert_eq!(at(text_delta, "/event/index"), 3);
 
     let fin = r.finish(&end_turn());
-    assert!(fin.iter().all(|m| m["type"] != "user"));
+    assert!(fin.iter().all(|m| at(m, "/type") != "user"));
     let frame = fin
         .iter()
-        .find(|m| m["type"] == "assistant")
+        .find(|m| at(m, "/type") == "assistant")
         .expect("assistant frame");
-    let content = frame["message"]["content"].as_array().unwrap();
+    let content = at(frame, "/message/content").as_array().unwrap();
     assert_eq!(content.len(), 4);
-    assert_eq!(content[1]["type"], "server_tool_use");
-    assert_eq!(content[2]["type"], "web_search_tool_result");
+    let Some(c1) = content.get(1) else {
+        panic!("expected content[1]: {content:?}");
+    };
+    let Some(c2) = content.get(2) else {
+        panic!("expected content[2]: {content:?}");
+    };
+    assert_eq!(at(c1, "/type"), "server_tool_use");
+    assert_eq!(at(c2, "/type"), "web_search_tool_result");
 }
 
 #[test]
@@ -173,24 +207,24 @@ fn messages_backend_web_search_failed_emits_error_not_counted() {
     let out = r.finish(&end_turn());
     let assistant = out
         .iter()
-        .find(|m| m["type"] == "assistant")
+        .find(|m| at(m, "/type") == "assistant")
         .expect("assistant frame");
-    let content = assistant["message"]["content"].as_array().unwrap();
+    let content = at(assistant, "/message/content").as_array().unwrap();
     let stu = content
         .iter()
-        .find(|b| b["type"] == "server_tool_use")
+        .find(|b| at(b, "/type") == "server_tool_use")
         .expect("server_tool_use still paired with the error result");
-    assert_eq!(stu["id"], "ws1");
+    assert_eq!(at(stu, "/id"), "ws1");
     let res = content
         .iter()
-        .find(|b| b["type"] == "web_search_tool_result")
+        .find(|b| at(b, "/type") == "web_search_tool_result")
         .expect("web_search_tool_result");
-    assert_eq!(res["tool_use_id"], "ws1");
-    assert_eq!(res["content"]["type"], "web_search_tool_result_error");
-    assert_eq!(res["content"]["error_code"], "unavailable");
-    assert!(out.iter().all(|m| m["type"] != "user"));
+    assert_eq!(at(res, "/tool_use_id"), "ws1");
+    assert_eq!(at(res, "/content/type"), "web_search_tool_result_error");
+    assert_eq!(at(res, "/content/error_code"), "unavailable");
+    assert!(out.iter().all(|m| at(m, "/type") != "user"));
     let result = out.last().unwrap();
-    assert_eq!(result["usage"]["server_tool_use"]["web_search_requests"], 0);
+    assert_eq!(at(result, "/usage/server_tool_use/web_search_requests"), 0);
 }
 
 #[test]
@@ -201,29 +235,30 @@ fn messages_backend_web_search_non_search_action_uses_generic_split() {
     let out = r.reduce(StreamEvent::ToolCallUpdate(web_search_non_search("ws1")));
     let assistant = out
         .iter()
-        .find(|m| m["type"] == "assistant")
+        .find(|m| at(m, "/type") == "assistant")
         .expect("assistant frame");
-    let content = assistant["message"]["content"].as_array().unwrap();
+    let content = at(assistant, "/message/content").as_array().unwrap();
     assert!(
         content
             .iter()
-            .all(|b| b["type"] != "server_tool_use" && b["type"] != "web_search_tool_result"),
+            .all(|b| at(b, "/type") != "server_tool_use"
+                && at(b, "/type") != "web_search_tool_result"),
         "no fabricated web-search blocks: {content:?}"
     );
     let tu = content
         .iter()
-        .find(|b| b["type"] == "tool_use")
+        .find(|b| at(b, "/type") == "tool_use")
         .expect("generic client tool_use");
-    assert_eq!(tu["id"], "ws1");
-    assert_eq!(tu["name"], "web_search");
+    assert_eq!(at(tu, "/id"), "ws1");
+    assert_eq!(at(tu, "/name"), "web_search");
     let fin = r.finish(&end_turn());
     let user = fin
         .iter()
-        .find(|m| m["type"] == "user")
+        .find(|m| at(m, "/type") == "user")
         .expect("generic user tool_result");
-    assert_eq!(user["message"]["content"][0]["tool_use_id"], "ws1");
+    assert_eq!(at(user, "/message/content/0/tool_use_id"), "ws1");
     let result = fin.last().unwrap();
-    assert_eq!(result["usage"]["server_tool_use"]["web_search_requests"], 0);
+    assert_eq!(at(result, "/usage/server_tool_use/web_search_requests"), 0);
 }
 
 #[test]
@@ -234,24 +269,24 @@ fn messages_unresolved_backend_web_search_flushed_at_turn_end() {
     let out = r.finish(&end_turn());
     let assistant = out
         .iter()
-        .find(|m| m["type"] == "assistant")
+        .find(|m| at(m, "/type") == "assistant")
         .expect("assistant frame carries the reconciled search");
-    let content = assistant["message"]["content"].as_array().unwrap();
+    let content = at(assistant, "/message/content").as_array().unwrap();
     let stu = content
         .iter()
-        .find(|b| b["type"] == "server_tool_use")
+        .find(|b| at(b, "/type") == "server_tool_use")
         .expect("server_tool_use for the observed invocation");
-    assert_eq!(stu["id"], "ws1");
+    assert_eq!(at(stu, "/id"), "ws1");
     let res = content
         .iter()
-        .find(|b| b["type"] == "web_search_tool_result")
+        .find(|b| at(b, "/type") == "web_search_tool_result")
         .expect("paired result");
-    assert_eq!(res["tool_use_id"], "ws1");
-    assert_eq!(res["content"]["type"], "web_search_tool_result_error");
-    assert_eq!(res["content"]["error_code"], "unavailable");
-    assert!(out.iter().all(|m| m["type"] != "user"));
+    assert_eq!(at(res, "/tool_use_id"), "ws1");
+    assert_eq!(at(res, "/content/type"), "web_search_tool_result_error");
+    assert_eq!(at(res, "/content/error_code"), "unavailable");
+    assert!(out.iter().all(|m| at(m, "/type") != "user"));
     let result = out.last().unwrap();
-    assert_eq!(result["usage"]["server_tool_use"]["web_search_requests"], 0);
+    assert_eq!(at(result, "/usage/server_tool_use/web_search_requests"), 0);
 }
 
 #[test]
@@ -262,18 +297,20 @@ fn messages_unresolved_backend_web_search_flushed_partial() {
     let out = r.finish(&end_turn());
     assert!(
         out.iter()
-            .any(|m| m["event"]["type"] == "content_block_start"
-                && m["event"]["content_block"]["type"] == "server_tool_use"),
+            .any(|m| at(m, "/event/type") == "content_block_start"
+                && at(m, "/event/content_block/type") == "server_tool_use"),
         "partial server_tool_use framed: {out:?}"
     );
     let assistant = out
         .iter()
-        .find(|m| m["type"] == "assistant")
+        .find(|m| at(m, "/type") == "assistant")
         .expect("assistant frame");
-    let content = assistant["message"]["content"].as_array().unwrap();
+    let content = at(assistant, "/message/content").as_array().unwrap();
     assert!(
-        content.iter().any(|b| b["type"] == "web_search_tool_result"
-            && b["content"]["type"] == "web_search_tool_result_error"),
+        content
+            .iter()
+            .any(|b| at(b, "/type") == "web_search_tool_result"
+                && at(b, "/content/type") == "web_search_tool_result_error"),
         "error result in frame: {content:?}"
     );
 }
@@ -292,10 +329,10 @@ fn messages_backend_web_searches_ordered_by_invocation_not_id() {
     let out = r.finish(&end_turn());
     let ids: Vec<String> = out
         .iter()
-        .filter(|m| m["type"] == "assistant")
-        .flat_map(|m| m["message"]["content"].as_array().unwrap().clone())
-        .filter(|b| b["type"] == "server_tool_use")
-        .map(|b| b["id"].as_str().unwrap().to_string())
+        .filter(|m| at(m, "/type") == "assistant")
+        .flat_map(|m| at(m, "/message/content").as_array().unwrap().clone())
+        .filter(|b| at(b, "/type") == "server_tool_use")
+        .map(|b| at(&b, "/id").as_str().unwrap().to_string())
         .collect();
     assert_eq!(
         ids,
@@ -314,6 +351,6 @@ fn messages_result_counts_web_search_requests() {
     r.reduce(StreamEvent::ToolCallUpdate(web_search_done("ws2")));
     let out = r.finish(&end_turn());
     let result = out.last().expect("result line");
-    assert_eq!(result["usage"]["server_tool_use"]["web_search_requests"], 2);
-    assert!(result["usage"]["server_tool_use"]["web_fetch_requests"].is_null());
+    assert_eq!(at(result, "/usage/server_tool_use/web_search_requests"), 2);
+    assert!(at(result, "/usage/server_tool_use/web_fetch_requests").is_null());
 }

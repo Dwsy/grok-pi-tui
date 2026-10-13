@@ -1,0 +1,29 @@
+# <grok_home>/sessions/<scope-root>/sandbox_grants.toml (workspace scope) or <grok_home>/sandbox_grants.toml (global).
+# Call and session rows are never written to disk.
+
+[[grant]]
+id = "0192c1a0-0000-7000-8000-000000000001"
+subject = { kind = "fs_write_root", root = "/opt/ws-fixture/s/proj/node_modules" }
+scope = { kind = "workspace", root = "/opt/ws-fixture/s/proj" }
+expires = { kind = "ttl", seconds = 86400 }
+granted_at = 1758400000
+granted_by = "desktop:device-1"
+via = { command = "npm ci", tool_call_id = "tc-1" }
+
+[[grant]]
+id = "0192c1a0-0000-7000-8000-000000000002"
+subject = { kind = "net_host", host = "registry.npmjs.org", port = 443 }
+scope = { kind = "workspace", root = "/opt/ws-fixture/s/proj" }
+expires = { kind = "at", unix = 1758500000 }
+granted_at = 1758400000
+granted_by = "cli"
+
+[[grant]]
+id = "0192c1a0-0000-7000-8000-000000000003"
+subject = { kind = "fs_read", root = "/opt/homebrew" }
+scope = { kind = "global" }
+expires = { kind = "never" }
+decision = "deny"
+granted_at = 1758400000
+granted_by = "hub:sess-1"
+

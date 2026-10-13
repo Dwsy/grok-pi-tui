@@ -156,8 +156,20 @@ mod tests {
         let mut effective =
             parse("[models]\ndefault = \"old-model\"\n[features]\nweb_fetch = false\n");
         apply_active_campaign_patches(&mut effective, &entries);
-        assert_eq!(effective["models"]["default"].as_str(), Some("new-model"));
-        assert_eq!(effective["features"]["web_fetch"].as_bool(), Some(true));
+        assert_eq!(
+            effective
+                .get("models")
+                .and_then(|m| m.get("default"))
+                .and_then(toml::Value::as_str),
+            Some("new-model")
+        );
+        assert_eq!(
+            effective
+                .get("features")
+                .and_then(|f| f.get("web_fetch"))
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
@@ -239,8 +251,15 @@ mod tests {
         }];
         let merged = merge_campaign_entries(&[&req, &remote]);
         assert_eq!(merged.len(), 1);
+        let Some(first) = merged.first() else {
+            panic!("expected one merged campaign: {merged:?}");
+        };
         assert_eq!(
-            merged[0].patch["models"]["default"].as_str(),
+            first
+                .patch
+                .get("models")
+                .and_then(|m| m.get("default"))
+                .and_then(toml::Value::as_str),
             Some("from-req")
         );
     }
@@ -261,7 +280,13 @@ mod tests {
 
         let mut effective = parse("[models]\ndefault = \"user-old\"\n");
         apply_active_campaign_patches(&mut effective, &merged);
-        assert_eq!(effective["models"]["default"].as_str(), Some("from-req"));
+        assert_eq!(
+            effective
+                .get("models")
+                .and_then(|m| m.get("default"))
+                .and_then(toml::Value::as_str),
+            Some("from-req")
+        );
     }
 
     #[test]
@@ -287,8 +312,18 @@ mod tests {
         ];
         let out = build_campaign_entries(taken, "managed");
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].id, "valid");
-        assert_eq!(out[0].patch["models"]["default"].as_str(), Some("kept"));
+        let Some(first) = out.first() else {
+            panic!("expected one campaign: {out:?}");
+        };
+        assert_eq!(first.id, "valid");
+        assert_eq!(
+            first
+                .patch
+                .get("models")
+                .and_then(|m| m.get("default"))
+                .and_then(toml::Value::as_str),
+            Some("kept")
+        );
     }
 
     #[test]
@@ -300,12 +335,14 @@ mod tests {
             let mut layer = parse(src);
             let entries = take_campaign_entries(&mut layer, "user");
             assert_eq!(entries.len(), 1);
-            assert_eq!(entries[0].id, "c1");
+            let Some(first) = entries.first() else {
+                panic!("expected one campaign: {entries:?}");
+            };
+            assert_eq!(first.id, "c1");
             // The id key (either spelling) must be consumed by the meta, never land in the patch
             // A leaked key would deep-merge a junk top-level `id` into every effective config
             assert!(
-                entries[0].patch.get("id").is_none()
-                    && entries[0].patch.get("campaign_id").is_none(),
+                first.patch.get("id").is_none() && first.patch.get("campaign_id").is_none(),
                 "id keys must not leak into the patch: {src}"
             );
         }
@@ -329,7 +366,10 @@ mod tests {
         let effective =
             layers.effective_config_with_campaigns(&[], &std::collections::HashSet::new());
         assert_eq!(
-            effective["models"]["default"].as_str(),
+            effective
+                .get("models")
+                .and_then(|m| m.get("default"))
+                .and_then(toml::Value::as_str),
             Some("pinned"),
             "requirements must beat a campaign for the same field"
         );
@@ -351,10 +391,21 @@ mod tests {
 
         let none = std::collections::HashSet::new();
         let active = layers.effective_config_with_campaigns(&[], &none);
-        assert_eq!(active["models"]["default"].as_str(), Some("new"));
+        assert_eq!(
+            active
+                .get("models")
+                .and_then(|m| m.get("default"))
+                .and_then(toml::Value::as_str),
+            Some("new")
+        );
 
         let dismissed: std::collections::HashSet<_> = ["c1".into()].into_iter().collect();
         let off = layers.effective_config_with_campaigns(&[], &dismissed);
-        assert_eq!(off["models"]["default"].as_str(), Some("user-old"));
+        assert_eq!(
+            off.get("models")
+                .and_then(|m| m.get("default"))
+                .and_then(toml::Value::as_str),
+            Some("user-old")
+        );
     }
 }

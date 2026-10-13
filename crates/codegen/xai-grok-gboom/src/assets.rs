@@ -67,7 +67,9 @@ pub(super) struct Texture {
 impl Texture {
     #[inline]
     pub fn sample(&self, x: usize, y: usize) -> Rgb {
-        self.pixels[(y & (TEX_SIZE - 1)) * TEX_SIZE + (x & (TEX_SIZE - 1))]
+        let idx = (y & (TEX_SIZE - 1)) * TEX_SIZE + (x & (TEX_SIZE - 1));
+        // Textures are always TEX_SIZE²; a missing texel is black.
+        self.pixels.get(idx).copied().unwrap_or([0, 0, 0])
     }
 }
 
@@ -285,7 +287,7 @@ impl Sprite {
     pub fn sample(&self, u: f32, v: f32) -> Option<Rgb> {
         let x = ((u * self.w as f32) as usize).min(self.w - 1);
         let y = ((v * self.h as f32) as usize).min(self.h - 1);
-        self.pixels[y * self.w + x]
+        self.pixels.get(y * self.w + x).copied().flatten()
     }
 }
 

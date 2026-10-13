@@ -415,7 +415,10 @@ mod tests {
             .position(|w| w == [0xFF, 0xC0])
             .expect("baseline SOF0 present");
         // 16384 x 16384 = 268 Mpx, above the 178.9 Mpx ceiling.
-        jpeg[sof + 5..sof + 9].copy_from_slice(&[0x40, 0x00, 0x40, 0x00]);
+        let Some(dims) = jpeg.get_mut(sof + 5..sof + 9) else {
+            panic!("SOF0 dimensions missing at {sof}");
+        };
+        dims.copy_from_slice(&[0x40, 0x00, 0x40, 0x00]);
         let err = compress_image_for_conversation(jpeg, "image/jpeg".into()).unwrap_err();
         match err {
             CompressImageError::PixelLimitExceeded {
@@ -475,7 +478,9 @@ mod tests {
         let tag = b"IDAT";
         let pos = png.windows(4).position(|w| w == tag).unwrap();
         for i in 0..512 {
-            png[pos + 8 + i] ^= 0x5A;
+            if let Some(slot) = png.get_mut(pos + 8 + i) {
+                *slot ^= 0x5A;
+            }
         }
         let err = compress_image_for_conversation(png, "image/png".into()).unwrap_err();
         assert!(

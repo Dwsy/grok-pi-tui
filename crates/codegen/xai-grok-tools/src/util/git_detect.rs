@@ -30,7 +30,9 @@ impl PrRef {
     pub fn find_in(text: &str) -> Option<Self> {
         let mut last = None;
         for (start, _) in text.match_indices("http") {
-            let rest = &text[start..];
+            let Some(rest) = text.get(start..) else {
+                continue;
+            };
             if !rest.starts_with("https://") && !rest.starts_with("http://") {
                 continue;
             }
@@ -39,7 +41,10 @@ impl PrRef {
                     c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '\\' | '`')
                 })
                 .unwrap_or(rest.len());
-            let url = rest[..end].trim_end_matches(['.', ',', ';', ':', ')', ']', '}']);
+            let Some(url) = rest.get(..end) else {
+                continue;
+            };
+            let url = url.trim_end_matches(['.', ',', ';', ':', ')', ']', '}']);
             // rsplit: an owner/repo literally named "pull" must not eat the marker.
             let Some((_, tail)) = url.rsplit_once("/pull/") else {
                 continue;
@@ -50,7 +55,7 @@ impl PrRef {
             };
             let url_len = url.len() - tail.len() + digits.len();
             last = Some(PrRef {
-                url: Some(url[..url_len].to_string()),
+                url: Some(url.get(..url_len).unwrap_or(url).to_string()),
                 number: Some(number),
             });
         }
@@ -65,7 +70,7 @@ fn strip_invocation_prefixes(statement: &str) -> &str {
     let mut rest = statement.trim_start();
     loop {
         let token_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        let token = &rest[..token_end];
+        let token = rest.get(..token_end).unwrap_or("");
         let is_env = token == "env";
         let is_env_unset = token == "-u";
         let is_assignment = token.split_once('=').is_some_and(|(name, _)| {
@@ -74,12 +79,12 @@ fn strip_invocation_prefixes(statement: &str) -> &str {
                 && !name.starts_with(|c: char| c.is_ascii_digit())
         });
         if (is_env || is_env_unset || is_assignment) && token_end < rest.len() {
-            rest = rest[token_end..].trim_start();
+            rest = rest.get(token_end..).unwrap_or("").trim_start();
             // `-u` consumes its NAME argument too.
             if is_env_unset {
                 let name_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
                 if name_end < rest.len() {
-                    rest = rest[name_end..].trim_start();
+                    rest = rest.get(name_end..).unwrap_or("").trim_start();
                 } else {
                     return rest;
                 }
@@ -90,10 +95,10 @@ fn strip_invocation_prefixes(statement: &str) -> &str {
     }
     // Path-invoked binary: keep only the basename token.
     let token_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-    if let Some(slash) = rest[..token_end].rfind('/')
-        && matches!(&rest[slash + 1..token_end], "git" | "gh")
+    if let Some(slash) = rest.get(..token_end).and_then(|t| t.rfind('/'))
+        && matches!(rest.get(slash + 1..token_end), Some("git" | "gh"))
     {
-        rest = &rest[slash + 1..];
+        rest = rest.get(slash + 1..).unwrap_or(rest);
     }
     rest
 }

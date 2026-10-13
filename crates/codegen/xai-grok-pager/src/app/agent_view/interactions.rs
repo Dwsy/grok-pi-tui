@@ -242,12 +242,16 @@ impl AgentView {
                 InputOutcome::Changed
             }
             KeyCode::Enter => {
-                let choice = CancelTurnChoice::ALL[ctv.active_idx];
+                let Some(&choice) = CancelTurnChoice::ALL.get(ctv.active_idx) else {
+                    return InputOutcome::Unchanged;
+                };
                 InputOutcome::Action(Action::CancelTurnChoice(choice))
             }
             KeyCode::Char(c @ '1'..='4') => {
                 let idx = (c as usize) - ('1' as usize);
-                let choice = CancelTurnChoice::ALL[idx];
+                let Some(&choice) = CancelTurnChoice::ALL.get(idx) else {
+                    return InputOutcome::Unchanged;
+                };
                 InputOutcome::Action(Action::CancelTurnChoice(choice))
             }
             _ => InputOutcome::Unchanged,
@@ -286,7 +290,9 @@ impl AgentView {
                     if let Some(ctv) = self.cancel_turn_view.as_mut() {
                         ctv.active_idx = idx;
                     }
-                    let choice = CancelTurnChoice::ALL[idx];
+                    let Some(&choice) = CancelTurnChoice::ALL.get(idx) else {
+                        return InputOutcome::Unchanged;
+                    };
                     return InputOutcome::Action(Action::CancelTurnChoice(choice));
                 }
                 InputOutcome::Unchanged
@@ -1083,7 +1089,9 @@ impl AgentView {
             if ev.is_url_waiting() {
                 return false;
             }
-            if let Some(mut ev) = self.elicitation_view.take() {
+            if let Some(mut ev) = self.take_unanswered_elicitation(
+                crate::app::agent_view::UnansweredElicitation::ClosedElsewhere,
+            ) {
                 let _ = ev.take_response_tx();
                 self.restore_elicitation_prompt(ev.stashed_prompt);
             }
@@ -1105,16 +1113,10 @@ impl AgentView {
             .is_some_and(|pav| pav.tool_call_id == tool_call_id)
         {
             let mut pav = self
-                .plan_approval_view
-                .take()
+                .unmount_plan_review()
                 .expect("plan_approval_view is Some (just checked)");
             pav.send_stale_cancel();
-            self.latest_inline_plan_content = None;
-            self.plan_next_comment_id = pav.next_comment_id;
-            self.prompt.restore(pav.stashed_prompt);
-            self.line_viewer = None;
-            self.casual_commenting_range = None;
-            self.casual_editing_comment_id = None;
+            self.clear_kept_plan();
             return true;
         }
         if let Some(pos) = self
@@ -2042,7 +2044,6 @@ mod question_no_freeform_tests {
     pub(super) fn draw_frame(agent: &mut AgentView) {
         let area = Rect::new(0, 0, 80, 30);
         let reg = ActionRegistry::defaults();
-        let bundle = crate::app::bundle::BundleState::default();
         let mut buf = Buffer::empty(area);
         let mut scratch = crate::scrollback::render::ScratchBuffer::new();
         agent.last_terminal_size = (80, 30);
@@ -2054,8 +2055,7 @@ mod question_no_freeform_tests {
             None,
             false,
             crate::app::agent_view::BannerSlotParams::none(),
-            &bundle,
-            false,
+            &crate::app::bundle::BundleState::default(),
             false,
             &mut Vec::new(),
             crate::app::agent_view::AppRenderParams::default(),
@@ -2099,11 +2099,21 @@ mod question_no_freeform_tests {
                 "row {row}: click below options must not enter InputMode"
             );
             assert!(
-                !state.per_question_freeform_selected[0],
+                !state
+                    .per_question_freeform_selected
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| panic!("missing index")),
                 "row {row}: freeform must not get selected"
             );
             assert!(
-                matches!(state.selections[0], QuestionSelection::Single(None)),
+                matches!(
+                    state
+                        .selections
+                        .first()
+                        .unwrap_or_else(|| panic!("missing index")),
+                    QuestionSelection::Single(None)
+                ),
                 "row {row}: no option may get selected"
             );
             assert_eq!(state.cursor(), 0, "row {row}: cursor must not move");
@@ -2124,11 +2134,26 @@ mod question_no_freeform_tests {
         assert_eq!(state.focus, QuestionFocus::Navigation);
         assert_eq!(state.cursor(), 1, "cursor lands on the last option");
         assert!(
-            matches!(state.selections[0], QuestionSelection::Single(Some(1))),
+            matches!(
+                state
+                    .selections
+                    .first()
+                    .unwrap_or_else(|| panic!("missing index")),
+                QuestionSelection::Single(Some(1))
+            ),
             "click selects the last option, got {:?}",
-            state.selections[0]
+            state
+                .selections
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
         );
-        assert!(!state.per_question_freeform_selected[0]);
+        assert!(
+            !state
+                .per_question_freeform_selected
+                .first()
+                .copied()
+                .unwrap_or_else(|| panic!("missing index"))
+        );
     }
     /// Hovering the rows below the options must not highlight the (nonexistent) freeform row on a `no_freeform` modal.
     #[test]
@@ -2155,7 +2180,13 @@ mod question_no_freeform_tests {
         let state = qv(&agent);
         assert_eq!(state.focus, QuestionFocus::Navigation);
         assert_eq!(state.cursor(), 0, "z must not move the cursor");
-        assert!(!state.per_question_freeform_selected[0]);
+        assert!(
+            !state
+                .per_question_freeform_selected
+                .first()
+                .copied()
+                .unwrap_or_else(|| panic!("missing index"))
+        );
     }
     /// Control group: on a regular modal (freeform present) the sticky freeform row sits one row below the options.
     /// Clicking it still selects freeform and enters InputMode, and `z` still works.
@@ -2174,7 +2205,13 @@ mod question_no_freeform_tests {
                 QuestionFocus::InputMode,
                 "clicking the sticky freeform row enters InputMode"
             );
-            assert!(state.per_question_freeform_selected[0]);
+            assert!(
+                state
+                    .per_question_freeform_selected
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| panic!("missing index"))
+            );
         }
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let _ = agent.handle_question_key(&esc);
@@ -2218,8 +2255,20 @@ mod question_freeform_chip_tests {
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let _ = agent.handle_question_key(&esc);
         assert_eq!(qv(&agent).focus, QuestionFocus::Navigation);
-        assert_eq!(qv(&agent).per_question_freeform[0], PASTE);
-        assert!(qv(&agent).per_question_freeform_selected[0]);
+        assert_eq!(
+            qv(&agent)
+                .per_question_freeform
+                .first()
+                .unwrap_or_else(|| panic!("missing index")),
+            PASTE
+        );
+        assert!(
+            qv(&agent)
+                .per_question_freeform_selected
+                .first()
+                .copied()
+                .unwrap_or_else(|| panic!("missing index"))
+        );
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let _ = agent.handle_question_key(&enter);
         assert_eq!(qv(&agent).focus, QuestionFocus::InputMode);
@@ -2241,7 +2290,16 @@ mod question_freeform_chip_tests {
         let _ = agent.prompt.handle_paste(PASTE);
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         let _ = agent.handle_question_key(&esc);
-        agent.question_view.as_mut().unwrap().per_question_freeform[0] = "peek answer".to_string();
+        let Some(slot) = agent
+            .question_view
+            .as_mut()
+            .unwrap()
+            .per_question_freeform
+            .get_mut(0)
+        else {
+            panic!("missing freeform slot");
+        };
+        *slot = "peek answer".to_string();
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let _ = agent.handle_question_key(&enter);
         assert_eq!(qv(&agent).focus, QuestionFocus::InputMode);
@@ -2455,12 +2513,24 @@ mod question_answer_focus_tests {
         open_two_questions(&mut agent);
         press(&mut agent, KeyCode::Char(' '), KeyModifiers::NONE);
         assert!(
-            matches!(qv(&agent).selections[0], QuestionSelection::Single(Some(0))),
+            matches!(
+                qv(&agent)
+                    .selections
+                    .first()
+                    .unwrap_or_else(|| panic!("missing index")),
+                QuestionSelection::Single(Some(0))
+            ),
             "Space marks the focused answer"
         );
         press(&mut agent, KeyCode::Esc, KeyModifiers::NONE);
         assert!(
-            matches!(qv(&agent).selections[0], QuestionSelection::Single(None)),
+            matches!(
+                qv(&agent)
+                    .selections
+                    .first()
+                    .unwrap_or_else(|| panic!("missing index")),
+                QuestionSelection::Single(None)
+            ),
             "Esc clears the answer"
         );
         assert_eq!(

@@ -14,3 +14,11 @@ fn rustls_client_config_builds_and_is_shared() {
     let b = xai_grok_extra_ca::rustls_client_config();
     assert!(std::sync::Arc::ptr_eq(&a, &b));
 }
+
+#[test]
+fn rustls_client_config_uses_the_process_default_provider() {
+    let config = xai_grok_extra_ca::rustls_client_config();
+    let default =
+        rustls::crypto::CryptoProvider::get_default().expect("ensure installed a default");
+    assert!(std::sync::Arc::ptr_eq(config.crypto_provider(), default));
+}

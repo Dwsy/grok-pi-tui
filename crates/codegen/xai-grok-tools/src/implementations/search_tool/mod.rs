@@ -413,14 +413,17 @@ mod tests {
             panic!("expected search tool output");
         };
         let json: serde_json::Value = serde_json::from_str(&output.content).unwrap();
-        assert_eq!(json["results"][0]["server"], "Grafana");
         assert_eq!(
-            json["results"][0]["tools"][0]["tool_name"],
-            "grafana__search_dashboards"
+            json.pointer("/results/0/server"),
+            Some(&serde_json::json!("Grafana"))
         );
         assert_eq!(
-            json["results"][0]["tools"][0]["input_schema"]["properties"]["query"]["type"],
-            "string"
+            json.pointer("/results/0/tools/0/tool_name"),
+            Some(&serde_json::json!("grafana__search_dashboards"))
+        );
+        assert_eq!(
+            json.pointer("/results/0/tools/0/input_schema/properties/query/type"),
+            Some(&serde_json::json!("string"))
         );
     }
 
@@ -455,11 +458,16 @@ mod tests {
             panic!("expected search tool output");
         };
         let json: serde_json::Value = serde_json::from_str(&output.content).unwrap();
-        assert_eq!(json["status"], "ready");
-        assert_eq!(json["total_hidden_tools"], 0);
-        assert!(json["results"].as_array().unwrap().is_empty());
-        let note = json["note"]
-            .as_str()
+        assert_eq!(json.get("status"), Some(&serde_json::json!("ready")));
+        assert_eq!(json.get("total_hidden_tools"), Some(&serde_json::json!(0)));
+        assert!(
+            json.get("results")
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| a.is_empty())
+        );
+        let note = json
+            .get("note")
+            .and_then(|v| v.as_str())
             .expect("empty ready catalog should set note");
         assert!(
             note.contains("Connect MCP servers") && note.contains("mcpInheritance"),

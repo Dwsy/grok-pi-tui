@@ -101,6 +101,10 @@ impl crate::types::tool_metadata::ToolMetadata for GrepTool {
         ToolNamespace::OpenCode
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("path")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }
@@ -284,9 +288,9 @@ impl xai_tool_runtime::Tool for GrepTool {
         let total_matches = matches.len();
         let truncated = total_matches > RESULT_LIMIT;
         let final_matches = if truncated {
-            &matches[..RESULT_LIMIT]
+            matches.get(..RESULT_LIMIT).unwrap_or(matches.as_slice())
         } else {
-            &matches[..]
+            matches.as_slice()
         };
 
         if final_matches.is_empty() {
@@ -328,7 +332,11 @@ impl xai_tool_runtime::Tool for GrepTool {
                 output_lines.push(format!("{}:", m.path));
             }
             let display_text = if m.line_text.len() > MAX_LINE_LENGTH {
-                format!("{}...", &m.line_text[..MAX_LINE_LENGTH])
+                let mut n = MAX_LINE_LENGTH;
+                while n > 0 && !m.line_text.is_char_boundary(n) {
+                    n -= 1;
+                }
+                format!("{}...", m.line_text.get(..n).unwrap_or(""))
             } else {
                 m.line_text.clone()
             };
@@ -703,7 +711,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.file_matches.len(), 1);
-        let fm = &output.file_matches[0];
+        let Some(fm) = output.file_matches.first() else {
+            panic!("expected file match: {:?}", output.file_matches);
+        };
         assert!(
             fm.path.contains("f.txt"),
             "path should contain f.txt: {}",
@@ -712,11 +722,17 @@ mod tests {
         assert_eq!(fm.matches.len(), 2);
 
         // First match: line 1.
-        assert_eq!(fm.matches[0].line_number, 1);
-        assert!(fm.matches[0].content.contains("target"));
+        let Some(m0) = fm.matches.first() else {
+            panic!("expected line matches: {:?}", fm.matches);
+        };
+        assert_eq!(m0.line_number, 1);
+        assert!(m0.content.contains("target"));
         // Second match: line 3.
-        assert_eq!(fm.matches[1].line_number, 3);
-        assert!(fm.matches[1].content.contains("target"));
+        let Some(m1) = fm.matches.get(1) else {
+            panic!("expected two line matches: {:?}", fm.matches);
+        };
+        assert_eq!(m1.line_number, 3);
+        assert!(m1.content.contains("target"));
     }
 
     // ── missing_cwd_resource ─────────────────────────────────────────
@@ -853,7 +869,7 @@ mod tests {
         );
         // The displayed content after "  Line N: " should be at most 2003 chars (2000 + "...").
         let content_start = match_line.find(": ").unwrap() + 2;
-        let display_content = &match_line[content_start..];
+        let display_content = match_line.get(content_start..).unwrap_or("");
         assert!(
             display_content.len() <= 2003,
             "display content length {} exceeds 2003: {display_content}",
@@ -943,7 +959,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.file_matches.len(), 1);
-        let line_match = &output.file_matches[0].matches[0];
+        let Some(line_match) = output
+            .file_matches
+            .first()
+            .and_then(|fm| fm.matches.first())
+        else {
+            panic!("expected a line match: {:?}", output.file_matches);
+        };
         assert!(
             line_match.content.contains("a | b | c"),
             "pipe chars must survive parsing; got: {}",

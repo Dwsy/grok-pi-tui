@@ -48,7 +48,10 @@ fn omits_segments_whose_data_is_missing_or_rounds_to_zero() {
 fn name_past_its_budget_is_cut_by_painted_columns() {
     let mut ctx = context();
     ctx.session_name = Some("辺".repeat(SESSION_NAME_COLS));
-    let cut = &compose_builtin(&ctx, None, &[StatusLineItem::SessionName])[0].text;
+    let composed = compose_builtin(&ctx, None, &[StatusLineItem::SessionName]);
+    let Some(cut) = composed.first().map(|s| s.text.as_str()) else {
+        panic!("expected a session-name segment: {composed:?}");
+    };
 
     let width = super::super::painted_width(cut);
     assert!(
@@ -76,8 +79,13 @@ fn cost_the_session_does_not_have_omits_its_segment() {
 #[test]
 fn context_segment_warns_near_compaction() {
     let mut ctx = context();
-    let tone =
-        |ctx: &StatusLineContext| compose_builtin(ctx, None, &[StatusLineItem::Context])[0].tone;
+    let tone = |ctx: &StatusLineContext| {
+        let segs = compose_builtin(ctx, None, &[StatusLineItem::Context]);
+        let Some(seg) = segs.first() else {
+            panic!("expected a context segment: {segs:?}");
+        };
+        seg.tone
+    };
 
     ctx.context_window.used_percentage = Some(90);
     assert_eq!(tone(&ctx), SegmentTone::Warn);
@@ -87,4 +95,22 @@ fn context_segment_warns_near_compaction() {
     ctx.context_window.auto_compact_threshold_percent = Some(65);
     ctx.context_window.used_percentage = Some(70);
     assert_eq!(tone(&ctx), SegmentTone::Warn);
+}
+
+fn turn_timer(secs: u64) -> String {
+    compose_builtin(
+        &context(),
+        Some(Duration::from_secs(secs)),
+        &[StatusLineItem::TurnTimer],
+    )
+    .first()
+    .expect("TurnTimer segment")
+    .text
+    .clone()
+}
+
+#[test]
+fn turn_timer_values() {
+    assert_eq!(turn_timer(59), "59s");
+    assert_eq!(turn_timer(194 * 60 + 4), "3h14m");
 }

@@ -5,6 +5,7 @@ use rusqlite::{Connection, params};
 
 use super::{DbStats, ListFilter, WorktreeKind, WorktreeRecord, WorktreeStatus, now_epoch_secs};
 
+// xai-grok-permission-rules/src/worktree.rs copies row_to_record and the get_by_* lookups read-only; keep them in sync
 fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorktreeRecord> {
     let kind_str: String = row.get("kind")?;
     let status_str: String = row.get("status")?;

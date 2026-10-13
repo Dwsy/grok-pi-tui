@@ -542,7 +542,13 @@ where
                             }
                             debug!(bytes = trimmed_end.len(), "received WS text -> agent");
 
-                            if to_agent_tx.send(trimmed_end.to_string()).is_err() {
+                            let mut json = json;
+                            let outbound = if declare_relay_client_capabilities(&mut json) {
+                                json.to_string()
+                            } else {
+                                trimmed_end.to_string()
+                            };
+                            if to_agent_tx.send(outbound).is_err() {
                                 warn!("Failed to forward message to agent - channel closed");
                                 break;
                             }
@@ -681,6 +687,42 @@ where
     Ok(SessionEndReason::Normal {
         authenticated: authenticated.load(std::sync::atomic::Ordering::Relaxed),
     })
+}
+/// Capabilities the relay holds as a client regardless of what its `initialize` says.
+///
+/// The relay is the durable server-side store for every session on this
+/// connection and persists `user_message_chunk` solely from the agent's
+/// notifications — it never re-derives the prompt from `session/prompt`. Since
+/// the live echo became opt-in (`x.ai/userMessageEcho`), a relay whose
+/// `initialize` omits the flag silently loses every user prompt from stored
+/// history. Declaring it here, where the relay's frames enter the agent, makes
+/// persistence independent of the relay build; an explicit value from the relay
+/// is left alone. Returns whether the frame was modified.
+fn declare_relay_client_capabilities(frame: &mut serde_json::Value) -> bool {
+    if frame.get("method").and_then(|m| m.as_str()) != Some("initialize") {
+        return false;
+    }
+    let Some(params) = frame.get_mut("params").and_then(|p| p.as_object_mut()) else {
+        return false;
+    };
+    let caps = params
+        .entry("clientCapabilities")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(caps) = caps.as_object_mut() else {
+        return false;
+    };
+    let meta = caps.entry("_meta").or_insert_with(|| serde_json::json!({}));
+    let Some(meta) = meta.as_object_mut() else {
+        return false;
+    };
+    if meta.contains_key(crate::session::USER_MESSAGE_ECHO_CAPABILITY) {
+        return false;
+    }
+    meta.insert(
+        crate::session::USER_MESSAGE_ECHO_CAPABILITY.to_string(),
+        serde_json::Value::Bool(true),
+    );
+    true
 }
 #[cfg(test)]
 #[path = "relay_tests.rs"]

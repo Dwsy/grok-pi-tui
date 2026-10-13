@@ -1,6 +1,8 @@
 //! Admission and safe-point delivery of messages from an owning parent agent.
 
+use super::parent_interject::ParentInterjectSignal;
 use super::*;
+use crate::session::telemetry::ActiveAgentMessageSafePointTrigger;
 use std::sync::Arc;
 use xai_grok_tools::implementations::grok_build::task::coordinator::ActiveMessageAdmission;
 use xai_grok_tools::implementations::grok_build::task::types::{
@@ -23,10 +25,15 @@ pub(super) struct PendingParentAgentMessage {
     prompt_id: String,
     message_id: String,
     text: Arc<str>,
+    /// Effective operation; a safe-point slot holds `Steer` or `Interject`, which sets drain order.
+    operation: ActiveAgentMessageOperation,
     telemetry: crate::session::telemetry::ActiveAgentMessageAdmissionTelemetry,
 }
 
 type ParentMessageCompletion = oneshot::Sender<crate::session::commands::PromptTurnResult>;
+pub(super) type ParentDeliveryMessage =
+    DeliveryMessage<String, ParentMessageOrigin, PendingParentAgentMessage>;
+type ParentTurnBinding = TurnBinding<String, TurnEpoch>;
 type ParentMessageLifecycle = MessageDeliveryLifecycle<
     String,
     ParentMessageOrigin,
@@ -44,9 +51,9 @@ pub(super) type ParentOwnedDelivery = OwnedDelivery<
     TurnEpoch,
 >;
 
-/// Named bound on live Steer slots waiting for the next safe point.
+/// Named bound on live Steer and Interject slots waiting for the next safe point.
 /// Parent text becomes model-visible in one batch; this keeps that batch finite.
-const MAX_PARENT_STEER_SLOTS: usize = 32;
+const MAX_PARENT_SAFE_POINT_SLOTS: usize = 32;
 
 /// A safe-point delivery commit could not reach a downstream actor;
 /// the slots stay projecting for terminal settlement.
@@ -55,16 +62,86 @@ enum DrainCommitError {
     ChatStateUnavailable,
 }
 
+/// Every slot mutation goes through this impl so the interject signal is recounted from the
+/// lifecycle rather than kept in step by callers.
 #[derive(Default)]
 pub(crate) struct MessageDeliveryState {
     lifecycle: ParentMessageLifecycle,
+    interject_signal: Arc<ParentInterjectSignal>,
 }
 
 impl MessageDeliveryState {
+    pub(super) fn interject_signal(&self) -> Arc<ParentInterjectSignal> {
+        Arc::clone(&self.interject_signal)
+    }
+
+    fn has_slot_for(&self, message: &ActiveAgentMessage) -> bool {
+        self.lifecycle.contains_identity(&message.message_id)
+    }
+
+    fn is_at_slot_cap(&self) -> bool {
+        self.lifecycle.len() >= MAX_PARENT_SAFE_POINT_SLOTS
+    }
+
+    fn sync_interject_signal(&self, running: Option<&ParentTurnBinding>) {
+        let has_pending = running.is_some_and(|binding| {
+            self.lifecycle
+                .pending_messages(binding)
+                .iter()
+                .any(|message| message.content().is_interject())
+        });
+        self.interject_signal.set_pending(has_pending);
+    }
+
+    fn admit_pending(
+        &mut self,
+        binding: &ParentTurnBinding,
+        message: ParentDeliveryMessage,
+        completion: ParentMessageCompletion,
+    ) -> Result<(), ParentDeliveryMessage> {
+        let admitted = self
+            .lifecycle
+            .admit_pending(binding.clone(), message, completion);
+        self.sync_interject_signal(Some(binding));
+        admitted
+    }
+
+    /// Consumes the wait-abort mark in the same step, so an abort noted after this call belongs
+    /// to a later drain and a failed barrier cannot leave it set; only a mark noted for `running`
+    /// counts.
+    fn begin_delivery(
+        &mut self,
+        running: &AgentTask,
+    ) -> (
+        Vec<ParentDeliveryMessage>,
+        ActiveAgentMessageSafePointTrigger,
+    ) {
+        let binding = turn_binding(running);
+        let messages = self.lifecycle.begin_delivery(&binding);
+        self.sync_interject_signal(Some(&binding));
+        let trigger = if self.interject_signal.take_wait_aborted(running.epoch) {
+            ActiveAgentMessageSafePointTrigger::WaitAbort
+        } else {
+            ActiveAgentMessageSafePointTrigger::Natural
+        };
+        (messages, trigger)
+    }
+
+    fn finish_delivery<Error>(
+        &mut self,
+        binding: &ParentTurnBinding,
+        commit: impl FnOnce(&[ParentDeliveryMessage]) -> Result<(), Error>,
+    ) -> Result<Vec<ParentDeliveryMessage>, Error> {
+        self.lifecycle.finish_delivery(binding, commit)
+    }
+
+    /// `running` is the turn still live after the transition, if any; a stale completion for an
+    /// earlier turn must not silence its pending slots or drop its wait-abort mark.
     fn transition(
         &mut self,
         target: TerminalTarget<'_, String, TurnEpoch>,
         cause: TerminalCause,
+        running: Option<&AgentTask>,
     ) -> xai_message_delivery_core::TerminalTransition<
         String,
         ParentMessageOrigin,
@@ -73,7 +150,19 @@ impl MessageDeliveryState {
         String,
         TurnEpoch,
     > {
-        self.lifecycle.transition(target, cause)
+        let ends_running_turn = match &target {
+            TerminalTarget::All => true,
+            TerminalTarget::Turn(binding) => {
+                running.is_none_or(|task| **binding == turn_binding(task))
+            }
+        };
+        let transition = self.lifecycle.transition(target, cause);
+        // The ended turn's mark must not be attributed to the next turn's first drain.
+        if ends_running_turn {
+            self.interject_signal.clear_wait_aborted();
+        }
+        self.sync_interject_signal(running.map(turn_binding).as_ref());
+        transition
     }
 
     #[cfg(test)]
@@ -84,7 +173,7 @@ impl MessageDeliveryState {
 
 impl Drop for MessageDeliveryState {
     fn drop(&mut self) {
-        let transition = self.transition(TerminalTarget::All, TerminalCause::ActorDrop);
+        let transition = self.transition(TerminalTarget::All, TerminalCause::ActorDrop, None);
         let result = Err(acp::Error::internal_error()
             .data("active-message owner dropped before terminal settlement"));
         transition
@@ -99,6 +188,10 @@ impl Drop for MessageDeliveryState {
 }
 
 impl PendingParentAgentMessage {
+    pub(super) fn is_interject(&self) -> bool {
+        self.operation == ActiveAgentMessageOperation::Interject
+    }
+
     fn into_input(
         self,
         origin: ParentMessageOrigin,
@@ -217,10 +310,7 @@ impl SessionActor {
         let (turn_result_tx, turn_result_rx) = oneshot::channel();
         let admitted_at = std::time::Instant::now();
         let mut state = self.state.lock().await;
-        if state
-            .message_delivery
-            .lifecycle
-            .contains_identity(&message.message_id)
+        if state.message_delivery.has_slot_for(&message)
             || contains_queued_identity(&state, &message.message_id)
         {
             let _ = respond_to.send(ActiveMessageAdmission::Rejected);
@@ -228,11 +318,19 @@ impl SessionActor {
         }
         let effective = match (requested, state.running_task.as_ref()) {
             (ActiveAgentMessageOperation::Steer, Some(_)) => ActiveAgentMessageOperation::Steer,
-            (ActiveAgentMessageOperation::Queue | ActiveAgentMessageOperation::Steer, None)
+            (ActiveAgentMessageOperation::Interject, Some(_)) => {
+                ActiveAgentMessageOperation::Interject
+            }
+            (
+                ActiveAgentMessageOperation::Queue
+                | ActiveAgentMessageOperation::Steer
+                | ActiveAgentMessageOperation::Interject,
+                None,
+            )
             | (ActiveAgentMessageOperation::Queue, Some(_)) => ActiveAgentMessageOperation::Queue,
         };
-        if effective == ActiveAgentMessageOperation::Steer
-            && state.message_delivery.lifecycle.len() >= MAX_PARENT_STEER_SLOTS
+        if effective != ActiveAgentMessageOperation::Queue
+            && state.message_delivery.is_at_slot_cap()
         {
             let _ = respond_to.send(ActiveMessageAdmission::Rejected);
             return;
@@ -242,7 +340,7 @@ impl SessionActor {
             parent_telemetry_ctx,
             requested,
             effective,
-            (requested == ActiveAgentMessageOperation::Steer
+            (requested != ActiveAgentMessageOperation::Queue
                 && effective == ActiveAgentMessageOperation::Queue)
                 .then_some(crate::session::telemetry::ActiveAgentMessageFallbackReason::Idle),
         );
@@ -250,6 +348,7 @@ impl SessionActor {
             prompt_id: prompt_id.clone(),
             message_id: message.message_id.clone(),
             text: message.text,
+            operation: effective,
             telemetry: telemetry.clone(),
         };
         let origin = ParentMessageOrigin {
@@ -264,18 +363,17 @@ impl SessionActor {
                     super::prompt_queue::PreparedDelivery(item),
                 );
             }
-            ActiveAgentMessageOperation::Steer => {
+            ActiveAgentMessageOperation::Steer | ActiveAgentMessageOperation::Interject => {
                 let binding = turn_binding(
                     state
                         .running_task
                         .as_ref()
-                        .unwrap_or_else(|| unreachable!("Steer effective only while running")),
+                        .unwrap_or_else(|| unreachable!("slot effective only while running")),
                 );
                 state
                     .message_delivery
-                    .lifecycle
                     .admit_pending(
-                        binding,
+                        &binding,
                         DeliveryMessage::new(message.message_id, origin, content),
                         turn_result_tx,
                     )
@@ -309,20 +407,18 @@ impl SessionActor {
             .as_object()
             .cloned();
         let notification_meta = self.build_notification_meta();
-        let binding = {
+        let (binding, trigger) = {
             let mut state = self.state.lock().await;
-            let Some(binding) = state.running_task.as_ref().map(turn_binding) else {
+            // Reborrow once so `running_task` and `message_delivery` can be borrowed disjointly.
+            let state = &mut *state;
+            let Some(task) = state.running_task.as_ref() else {
                 return false;
             };
-            if state
-                .message_delivery
-                .lifecycle
-                .begin_delivery(&binding)
-                .is_empty()
-            {
+            let (messages, trigger) = state.message_delivery.begin_delivery(task);
+            if messages.is_empty() {
                 return false;
             }
-            binding
+            (turn_binding(task), trigger)
         };
         // The barrier precedes every visible side effect: a dead or cancelled
         // persistence actor skips delivery, and a teardown settlement landing
@@ -347,9 +443,10 @@ impl SessionActor {
         let mut state = self.state.lock().await;
         let committed = state
             .message_delivery
-            .lifecycle
             .finish_delivery(&binding, |messages| {
-                for message in messages {
+                let ordered: Vec<&_> =
+                    super::parent_interject::order_for_delivery(messages).collect();
+                for message in &ordered {
                     let update = acp::SessionUpdate::UserMessageChunk(
                         acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(
                             message.content().text.to_string(),
@@ -366,7 +463,7 @@ impl SessionActor {
                 }
                 self.chat_state_handle
                     .try_push_user_messages_batch(
-                        messages
+                        ordered
                             .iter()
                             .map(|message| {
                                 ConversationItem::agent_message(message.content().text.to_string())
@@ -379,7 +476,7 @@ impl SessionActor {
                     message
                         .content()
                         .telemetry
-                        .record_safe_point_delivery(delivered_at);
+                        .record_safe_point_delivery(delivered_at, trigger);
                 }
                 Ok(())
             });
@@ -408,7 +505,8 @@ impl SessionActor {
         target: TerminalTarget<'_, String, TurnEpoch>,
         cause: TerminalCause,
     ) -> (Vec<ParentOwnedDelivery>, bool) {
-        let transition = state.message_delivery.transition(target, cause);
+        let running = state.running_task.as_ref();
+        let transition = state.message_delivery.transition(target, cause, running);
         let has_fallbacks = !transition.fallbacks.is_empty();
         for owned in transition.fallbacks {
             let fallback_reason = match cause {
@@ -490,4 +588,8 @@ impl SessionActor {
 
 #[cfg(test)]
 #[path = "parent_message_tests.rs"]
-mod tests;
+pub(super) mod tests;
+
+#[cfg(test)]
+#[path = "parent_message_interject_tests.rs"]
+mod interject_tests;

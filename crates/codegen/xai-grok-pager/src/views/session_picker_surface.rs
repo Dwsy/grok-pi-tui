@@ -107,6 +107,46 @@ pub(crate) fn render_session_picker(
     }
 }
 
+const SESSION_SEARCH_LABEL: &str = " search: ";
+
+pub(crate) fn render_session_picker_search_bar(
+    buf: &mut Buffer,
+    area: Rect,
+    theme: &Theme,
+    state: &crate::views::picker::PickerState,
+) {
+    crate::views::picker::render_picker_search_bar_with_label(
+        buf,
+        area.x,
+        area.y,
+        area.width,
+        theme,
+        SESSION_SEARCH_LABEL,
+        state,
+        state.search_active,
+        true,
+        Some(theme.bg_base),
+    );
+    let label_w = u16::try_from(SESSION_SEARCH_LABEL.len()).unwrap_or(0);
+    if state.search_active {
+        let width = label_w.min(area.width);
+        if width > 0 {
+            buf.set_style(
+                Rect::new(area.x, area.y, width, 1),
+                ratatui::style::Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            );
+        }
+    } else if !state.query().is_empty() {
+        let start = area.x.saturating_add(label_w);
+        let width = area.x.saturating_add(area.width).saturating_sub(start);
+        if width > 0 {
+            buf.set_style(Rect::new(start, area.y, width, 1), theme.dim());
+        }
+    }
+}
+
 fn empty_hit_areas() -> crate::views::picker::PickerHitAreas {
     crate::views::picker::PickerHitAreas {
         close_button: Rect::default(),
@@ -129,7 +169,7 @@ fn render_simple_session_picker_modal(
     use crate::views::modal_window::{ModalSizing, ModalWindowConfig, Shortcut};
     use crate::views::picker::{self, PickerField};
 
-    let mut shortcuts = vec![
+    let shortcuts = vec![
         Shortcut {
             label: "\u{2191}\u{2193} nav",
             clickable: false,
@@ -141,12 +181,16 @@ fn render_simple_session_picker_modal(
             id: 0,
         },
         Shortcut {
+            label: "/ search",
+            clickable: false,
+            id: 0,
+        },
+        Shortcut {
             label: "Esc close",
             clickable: false,
             id: 0,
         },
     ];
-    crate::views::modal_window::push_vim_nav_search_hint(&mut shortcuts, ctx.state.search_active);
     let modal_config = ModalWindowConfig {
         title,
         tabs: None,
@@ -170,16 +214,11 @@ fn render_simple_session_picker_modal(
     };
 
     let content = modal.content;
-    picker::render_picker_search_bar(
+    render_session_picker_search_bar(
         buf,
-        content.x,
-        content.y,
-        content.width,
+        Rect::new(content.x, content.y, content.width, 1),
         theme,
         ctx.state,
-        ctx.state.search_active,
-        true,
-        Some(theme.bg_base),
     );
     ctx.state.filter_area = None;
     let separator_y = content.y + 1;
@@ -252,5 +291,111 @@ fn render_simple_session_picker_modal(
         entry_indices: content_hit.entry_indices,
         tab_rects: vec![],
         filter_rect: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+
+    use super::render_session_picker_search_bar;
+    use crate::theme::Theme;
+
+    fn paint_inactive_query(theme: &Theme) -> Buffer {
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let mut state = crate::views::picker::PickerState::default();
+        state.search_active = false;
+        state.set_query("alpha");
+        render_session_picker_search_bar(&mut buf, area, theme, &state);
+        buf
+    }
+
+    fn row_text(buf: &Buffer) -> String {
+        (0..buf.area.width).fold(String::new(), |mut text, x| {
+            if let Some(cell) = buf.cell((x, 0)) {
+                text.push_str(cell.symbol());
+            }
+            text
+        })
+    }
+
+    fn assert_inactive_query_is_dim(theme: &Theme) {
+        let buf = paint_inactive_query(theme);
+        let text = row_text(&buf);
+        assert!(
+            text.contains(" search:"),
+            "idle query must keep the search label, got {text:?}"
+        );
+        assert!(
+            !text.contains(">search:"),
+            "idle query must not use the editing marker, got {text:?}"
+        );
+        assert!(
+            text.contains("alpha"),
+            "idle query must keep the typed text, got {text:?}"
+        );
+
+        let label_w = u16::try_from(" search: ".len()).unwrap_or(0);
+        let mut saw_query = false;
+        for x in label_w..buf.area.width {
+            let Some(cell) = buf.cell((x, 0)) else {
+                continue;
+            };
+            if cell.symbol().trim().is_empty() {
+                continue;
+            }
+            saw_query = true;
+            let dim = theme.dim();
+            if theme.is_bandless() {
+                assert!(
+                    cell.modifier.contains(Modifier::DIM),
+                    "terminal-native idle query must use DIM, got {cell:?}"
+                );
+            } else if let Some(fg) = dim.fg {
+                assert_eq!(cell.fg, fg, "idle query must use theme.dim(), got {cell:?}");
+            }
+        }
+        assert!(saw_query, "query glyphs missing from {text:?}");
+
+        let caret = (0..buf.area.width).any(|x| {
+            buf.cell((x, 0)).is_some_and(|cell| {
+                if theme.is_bandless() {
+                    cell.modifier.contains(Modifier::REVERSED)
+                } else {
+                    cell.bg == theme.text_primary
+                }
+            })
+        });
+        assert!(!caret, "idle query must not paint a caret, got {text:?}");
+    }
+
+    #[test]
+    fn inactive_nonempty_query_is_dim_without_a_caret() {
+        assert_inactive_query_is_dim(&Theme::groknight());
+        assert_inactive_query_is_dim(&Theme::terminal());
+    }
+
+    #[test]
+    fn focused_search_label_uses_the_title_color() {
+        let theme = Theme::groknight();
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let mut state = crate::views::picker::PickerState::default();
+        state.search_active = true;
+        render_session_picker_search_bar(&mut buf, area, &theme, &state);
+        let text = row_text(&buf);
+        assert!(text.contains(" search:"), "{text:?}");
+        assert!(!text.contains('>'), "{text:?}");
+        let labeled = (0..buf.area.width).any(|x| {
+            buf.cell((x, 0)).is_some_and(|cell| {
+                cell.symbol() == "s"
+                    && cell.fg == theme.text_primary
+                    && cell.modifier.contains(Modifier::BOLD)
+            })
+        });
+        assert!(labeled, "focused label must match the modal title color");
     }
 }

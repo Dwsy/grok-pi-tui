@@ -126,6 +126,7 @@ impl CompactionSampler for ShellCompactionSampler {
             turns.to_vec(),
             self.user_context.as_deref(),
             self.use_short_prompt,
+            self.sampling_config.max_request_bytes,
             self.compaction_tool_tokens,
         );
         self.state.lock().unwrap().record_attempt(&chat_history);

@@ -47,7 +47,7 @@ pub(super) fn dispatch_import_claude_confirm(app: &mut AppView) -> Vec<Effect> {
     };
 
     if selected_count > 0 {
-        match xai_grok_shell::claude_import::apply_import(&filtered, &cwd) {
+        match xai_grok_external_agent_migration::apply_import(&filtered, &cwd) {
             Ok(result) => {
                 summary.push_str(&format!(
                     "\nImported {} of {} setting(s).",

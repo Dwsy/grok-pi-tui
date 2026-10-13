@@ -12,6 +12,7 @@
 //!
 //! No deadline is imposed by default ([`WorkspaceClient::with_deadline`] opts in).
 //! That preserves the `WorkspaceOps::rpc_raw` behaviour where callers own their timeouts.
+#![deny(clippy::indexing_slicing)]
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -211,6 +211,25 @@ arrive as the same `CR` as Enter. This also affects VS Code reached over SSH whe
 `TERM_PROGRAM` is not forwarded. Use `Alt+Enter` to insert a newline; `/doctor`
 reports `terminal.newline-fallback` with the detected explanation and workaround.
 
+### Cmd+Enter is not an advertised send or newline chord
+
+`Cmd+Enter` is not an advertised send or newline chord. Grok advertises
+only `Shift+Enter` and `Alt+Enter` as newline. Many terminals bind
+Cmd+Enter to fullscreen, so `SUPER` is excluded from the newline matcher,
+and a delivered `SUPER+Enter` does not match the agent's bare-Enter send
+binding. When Kitty (or another protocol that can deliver `SUPER`) does
+deliver `SUPER+Enter`, the composer still inserts a newline: the key
+misses send and lands in the textarea, which treats any Enter as a line
+break. Apple Terminal is a separate local path: CoreGraphics rescue
+treats held Cmd as modified Enter and inserts a newline on what arrives
+as bare Enter. Over SSH the Cmd modifier never arrives, so the chord
+looks like bare Enter and sends.
+
+The composer footer shows the working newline chord when the draft is
+non-empty. Over SSH it prefers `Alt+Enter`. You can also type `\` then
+Enter, or `/ml`. Do not expect Cmd+Enter to insert a newline on a remote
+session.
+
 ### Mouse scrolling stops working
 
 If Grok stops receiving mouse input, re-enable mouse reporting in the terminal:

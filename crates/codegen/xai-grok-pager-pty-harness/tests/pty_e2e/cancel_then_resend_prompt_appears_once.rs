@@ -2,10 +2,7 @@
 #[allow(unused_imports)]
 use super::common::*;
 
-/// Mirrors `xai_interjection_core::format::{INTERRUPT_NOTE, UNFINISHED_TASKS_REMINDER}`.
-const INTERRUPT_NOTE: &str = "The user interrupted the previous turn:";
-const UNFINISHED_TASKS_REMINDER: &str =
-    "Make sure to complete any unfinished tasks from previous turns.";
+use xai_interjection_core::{INTERRUPT_NOTE, UNFINISHED_TASKS_REMINDER};
 
 /// Submit OLD, Ctrl+C rewind, send NEW: NEW's request must not contain OLD or interrupt framing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

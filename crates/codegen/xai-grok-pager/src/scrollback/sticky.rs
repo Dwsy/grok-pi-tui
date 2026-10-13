@@ -264,14 +264,15 @@ pub fn compute_sticky_layout(
         }
     };
 
-    let pinned_prompt = &prompts[pinned_idx];
+    let Some(pinned_prompt) = prompts.get(pinned_idx) else {
+        return StickyHeaderLayout::default();
+    };
 
     // As we scroll past, the pinned prompt shrinks (gradual collapse)
     let render_height = calculate_render_height(pinned_prompt, scroll_offset, viewport_height);
 
     // Check if next prompt is pushing
-    let next_prompt_info = if pinned_idx + 1 < prompts.len() {
-        let next = &prompts[pinned_idx + 1];
+    let next_prompt_info = if let Some(next) = prompts.get(pinned_idx + 1) {
         let next_naive_row = next.y_virtual.saturating_sub(scroll_offset);
 
         // Push starts when next prompt would overlap with current header + gap.

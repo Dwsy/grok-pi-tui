@@ -27,11 +27,26 @@ fn args<'a>(
 #[test]
 fn includes_baseline_keys_without_usage() {
     let meta = build_prompt_response_meta(args("sess-1", "prompt-1", 42_000, "grok-4.5"));
-    assert_eq!(meta["sessionId"], "sess-1");
-    assert_eq!(meta["requestId"], "prompt-1");
-    assert_eq!(meta["promptId"], "prompt-1");
-    assert_eq!(meta["totalTokens"], 42_000);
-    assert_eq!(meta["modelId"], "grok-4.5");
+    assert_eq!(
+        meta.get("sessionId").and_then(|v| v.as_str()),
+        Some("sess-1")
+    );
+    assert_eq!(
+        meta.get("requestId").and_then(|v| v.as_str()),
+        Some("prompt-1")
+    );
+    assert_eq!(
+        meta.get("promptId").and_then(|v| v.as_str()),
+        Some("prompt-1")
+    );
+    assert_eq!(
+        meta.get("totalTokens").and_then(|v| v.as_u64()),
+        Some(42_000)
+    );
+    assert_eq!(
+        meta.get("modelId").and_then(|v| v.as_str()),
+        Some("grok-4.5")
+    );
     // No per-turn keys when usage is absent.
     assert!(meta.get("inputTokens").is_none());
     assert!(meta.get("outputTokens").is_none());
@@ -53,11 +68,17 @@ fn enriches_meta_with_camelcase_token_keys() {
         ..args("sess-1", "prompt-1", 1_700, "grok-4.5")
     });
     // Bot's _META_TOKEN_KEY_MAP expects exactly these camelCase keys.
-    assert_eq!(meta["inputTokens"], 1500);
-    assert_eq!(meta["outputTokens"], 200);
-    assert_eq!(meta["cachedReadTokens"], 1000);
+    assert_eq!(meta.get("inputTokens").and_then(|v| v.as_u64()), Some(1500));
+    assert_eq!(meta.get("outputTokens").and_then(|v| v.as_u64()), Some(200));
+    assert_eq!(
+        meta.get("cachedReadTokens").and_then(|v| v.as_u64()),
+        Some(1000)
+    );
     // Reasoning tokens are carried through so diagnostics can read them
-    assert_eq!(meta["reasoningTokens"], 75);
+    assert_eq!(
+        meta.get("reasoningTokens").and_then(|v| v.as_u64()),
+        Some(75)
+    );
 }
 
 #[test]
@@ -77,8 +98,14 @@ fn preserves_zero_token_values() {
         last_turn_usage: Some(&usage),
         ..args("s", "p", 110, "m")
     });
-    assert_eq!(meta["cachedReadTokens"], 0);
-    assert_eq!(meta["reasoningTokens"], 0);
+    assert_eq!(
+        meta.get("cachedReadTokens").and_then(|v| v.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        meta.get("reasoningTokens").and_then(|v| v.as_u64()),
+        Some(0)
+    );
 }
 
 #[test]
@@ -101,8 +128,20 @@ fn usage_object_lands_on_meta() {
         prompt_usage: Some(crate::extensions::notification::PromptUsage::from(&ledger)),
         ..args("s", "p", 110, "m")
     });
-    assert_eq!(meta["usage"]["totalTokens"], 110);
-    assert_eq!(meta["usage"]["modelUsage"]["m"]["inputTokens"], 100);
+    assert_eq!(
+        meta.get("usage")
+            .and_then(|u| u.get("totalTokens"))
+            .and_then(|v| v.as_u64()),
+        Some(110)
+    );
+    assert_eq!(
+        meta.get("usage")
+            .and_then(|u| u.get("modelUsage"))
+            .and_then(|m| m.get("m"))
+            .and_then(|m| m.get("inputTokens"))
+            .and_then(|v| v.as_u64()),
+        Some(100)
+    );
     assert!(
         build_prompt_response_meta(args("s", "p", 0, "m"))
             .get("usage")
@@ -117,7 +156,10 @@ fn cancel_trigger_lands_as_camelcase_meta_key() {
         cancel_trigger: Some("send_now".to_string()),
         ..args("s", "p", 0, "m")
     });
-    assert_eq!(meta["cancelTrigger"], "send_now");
+    assert_eq!(
+        meta.get("cancelTrigger").and_then(|v| v.as_str()),
+        Some("send_now")
+    );
 
     // When nothing was cancelled, the key must not appear
     let none = build_prompt_response_meta(args("s", "p", 0, "m"));
@@ -140,10 +182,18 @@ fn tool_overrides_land_as_camelcase_meta_key() {
         ..args("s", "p", 0, "m")
     });
     assert_eq!(
-        meta["toolOverrides"]["xSearch"]["dateBound"]["toDate"],
-        "2024-03-15"
+        meta.get("toolOverrides")
+            .and_then(|t| t.get("xSearch"))
+            .and_then(|x| x.get("dateBound"))
+            .and_then(|d| d.get("toDate"))
+            .and_then(|v| v.as_str()),
+        Some("2024-03-15")
     );
-    assert!(meta["toolOverrides"].get("webSearch").is_none());
+    assert!(
+        meta.get("toolOverrides")
+            .and_then(|t| t.get("webSearch"))
+            .is_none()
+    );
 
     let none = build_prompt_response_meta(args("s", "p", 0, "m"));
     assert!(none.get("toolOverrides").is_none());
@@ -156,7 +206,12 @@ fn structured_output_maps_to_camelcase_meta_keys() {
         structured_output: Some(Ok(serde_json::json!({"name": "ada"}))),
         ..args("s", "p", 0, "m")
     });
-    assert_eq!(ok["structuredOutput"]["name"], "ada");
+    assert_eq!(
+        ok.get("structuredOutput")
+            .and_then(|s| s.get("name"))
+            .and_then(|v| v.as_str()),
+        Some("ada")
+    );
     assert!(ok.get("structuredOutputError").is_none());
 
     // Failure carries the message under `structuredOutputError`; no value key.
@@ -165,8 +220,8 @@ fn structured_output_maps_to_camelcase_meta_keys() {
         ..args("s", "p", 0, "m")
     });
     assert_eq!(
-        err["structuredOutputError"],
-        "output does not match the required schema"
+        err.get("structuredOutputError").and_then(|v| v.as_str()),
+        Some("output does not match the required schema")
     );
     assert!(err.get("structuredOutput").is_none());
 
@@ -184,5 +239,8 @@ fn removed_from_queue_stamps_completion_kind() {
         completion_kind: Some(crate::session::commands::REMOVED_FROM_QUEUE_KIND.to_string()),
         ..args("s", "p", 0, "m")
     });
-    assert_eq!(meta["completionKind"], "removedFromQueue");
+    assert_eq!(
+        meta.get("completionKind").and_then(|v| v.as_str()),
+        Some("removedFromQueue")
+    );
 }

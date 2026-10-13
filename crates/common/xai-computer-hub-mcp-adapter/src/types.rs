@@ -6,6 +6,7 @@
 //! stays testable with in-memory mocks.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Map;
 
 /// Metadata returned by a successful MCP `initialize` handshake.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +44,10 @@ pub struct McpCallResult {
     /// When `true`, the tool signalled an application-level error.
     #[serde(default)]
     pub is_error: bool,
+    /// The tool's `_meta` object, read by hub clients.
+    /// The model never sees it.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Map::is_empty")]
+    pub meta: Map<String, serde_json::Value>,
 }
 
 /// A single content block inside an [`McpCallResult`].

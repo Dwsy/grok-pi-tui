@@ -240,12 +240,7 @@ pub trait SlashCommand: Send + Sync {
     }
 
     /// Refuse before the submit path mutates the composer or stops voice input.
-    fn submission_refusal(
-        &self,
-        _args: &str,
-        _is_minimal: bool,
-        _voice_owns_prompt: bool,
-    ) -> Option<&'static str> {
+    fn submission_refusal(&self, _args: &str, _voice_owns_prompt: bool) -> Option<&'static str> {
         None
     }
 
@@ -273,6 +268,13 @@ pub trait SlashCommand: Send + Sync {
     /// `args_query` is the raw typed args text; most impls ignore it and return a static list.
     #[allow(unused_variables)]
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
+        None
+    }
+
+    /// `insert_text` of the row the args menu (dropdown or modal picker) opens on when no selection carries over.
+    /// Resolved by exact equality against the rows built from `suggest_args(ctx, args_query)`; `None` or an
+    /// unmatched value keeps the first row.
+    fn preselected_arg(&self, _ctx: &AppCtx, _args_query: &str) -> Option<String> {
         None
     }
 
@@ -304,6 +306,12 @@ pub trait SlashCommand: Send + Sync {
         false
     }
 
+    /// A mid-text `/name` token runs this command with the whole message as its args: `prose /name q` is `/name prose q`.
+    /// Opt in only when the whole message is the argument; `submission_refusal` only sees a leading `/` and is bypassed.
+    fn can_hoist_from_mid_text(&self) -> bool {
+        false
+    }
+
     /// A few commands exist only in minimal mode, because the full TUI solves the same problem with a pane or a chord.
     /// Clipboard helpers like `/copy` stay `Both`: they read scrollback state and do not need the fullscreen pane.
     fn mode_support(&self) -> ModeSupport {
@@ -311,7 +319,7 @@ pub trait SlashCommand: Send + Sync {
     }
 
     /// Placeholder text shown in the prompt when args are empty.
-    /// E.g., `"[context]"` for `/compact`.
+    /// E.g., `"<question>"` for `/btw`.
     fn arg_placeholder(&self) -> Option<&str> {
         None
     }
@@ -384,6 +392,7 @@ macro_rules! slash_meta {
         $(session_scoped: $session_scoped:expr,)?
         $(offered_when_session_less: $offered_when_session_less:expr,)?
         $(dashboard_only: $dashboard_only:expr,)?
+        $(can_hoist_from_mid_text: $can_hoist_from_mid_text:expr,)?
         $(mode_support: $mode_support:expr,)?
         $(arg_placeholder: $arg_placeholder:expr,)?
         $(required_tools: $required_tools:expr,)?
@@ -422,6 +431,10 @@ macro_rules! slash_meta {
 
         $(fn dashboard_only(&self) -> bool {
             $dashboard_only
+        })?
+
+        $(fn can_hoist_from_mid_text(&self) -> bool {
+            $can_hoist_from_mid_text
         })?
 
         $(fn mode_support(&self) -> crate::slash::mode_support::ModeSupport {

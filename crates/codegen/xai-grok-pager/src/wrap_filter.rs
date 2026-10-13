@@ -209,17 +209,23 @@ impl Osc52Filter {
                     // buf starts with \x1bP so tmux prefix bytes start at offset 2.
                     let prefix_pos = self.buf.len() - 2;
                     if prefix_pos <= TMUX_DCS_PREFIX.len() {
-                        if TMUX_DCS_PREFIX[prefix_pos - 1] == byte {
-                            if prefix_pos == TMUX_DCS_PREFIX.len() {
-                                // Full tmux prefix matched: \x1bPtmux;\x1b\x1b]
-                                self.state = FilterState::DcsTmuxOsc;
+                        match prefix_pos
+                            .checked_sub(1)
+                            .and_then(|j| TMUX_DCS_PREFIX.get(j))
+                        {
+                            Some(&expected) if expected == byte => {
+                                if prefix_pos == TMUX_DCS_PREFIX.len() {
+                                    // Full tmux prefix matched: \x1bPtmux;\x1b\x1b]
+                                    self.state = FilterState::DcsTmuxOsc;
+                                }
+                                // else keep matching prefix
                             }
-                            // else keep matching prefix
-                        } else {
-                            // Prefix mismatch: not a tmux passthrough, flush.
-                            output.extend_from_slice(&self.buf);
-                            self.buf.clear();
-                            self.state = FilterState::Normal;
+                            _ => {
+                                // Prefix mismatch: not a tmux passthrough, flush.
+                                output.extend_from_slice(&self.buf);
+                                self.buf.clear();
+                                self.state = FilterState::Normal;
+                            }
                         }
                     } else {
                         // Exceeded prefix length without matching; flush.
@@ -270,12 +276,14 @@ impl Osc52Filter {
 
     /// Handle OSC 52 clipboard or wrap image request; `true` if consumed.
     fn try_handle_consumed_osc(&mut self) -> bool {
-        let body = self.buf[2..].to_vec();
-        let body = strip_osc_terminator(&body);
-        if self.try_handle_wrap_image_request(body) {
+        let Some(body) = self.buf.get(2..) else {
+            return false;
+        };
+        let body = strip_osc_terminator(body).to_vec();
+        if self.try_handle_wrap_image_request(&body) {
             return true;
         }
-        self.extract_and_set_clipboard(body)
+        self.extract_and_set_clipboard(&body)
     }
 
     fn try_handle_wrap_image_request(&mut self, body: &[u8]) -> bool {
@@ -298,7 +306,13 @@ impl Osc52Filter {
         if self.buf.len() < prefix_len + 2 {
             return false;
         }
-        let body = self.buf[prefix_len..self.buf.len() - 2].to_vec(); // strip DCS ST
+        let Some(end) = self.buf.len().checked_sub(2) else {
+            return false;
+        };
+        let Some(body) = self.buf.get(prefix_len..end) else {
+            return false;
+        };
+        let body = body.to_vec(); // strip DCS ST
         let body = strip_osc_terminator(&body); // strip inner BEL if present
         self.extract_and_set_clipboard(body)
     }
@@ -310,14 +324,18 @@ impl Osc52Filter {
         if !body.starts_with(OSC52_PREFIX) {
             return false;
         }
-        let after_52 = &body[OSC52_PREFIX.len()..];
+        let Some(after_52) = body.get(OSC52_PREFIX.len()..) else {
+            return false;
+        };
 
         // Find the selection parameter separator (next ';').
         let payload_start = match after_52.iter().position(|&b| b == b';') {
             Some(pos) => pos + 1,
             None => return false,
         };
-        let b64_payload = &after_52[payload_start..];
+        let Some(b64_payload) = after_52.get(payload_start..) else {
+            return false;
+        };
 
         let decoded = match BASE64_STANDARD_INDIFFERENT.decode(b64_payload) {
             Ok(data) => data,
@@ -341,10 +359,10 @@ impl Osc52Filter {
 ///
 /// Removes trailing BEL (`\x07`) or ST (`\x1b\x5c`) if present.
 fn strip_osc_terminator(body: &[u8]) -> &[u8] {
-    if body.ends_with(&[0x1b, b'\\']) {
-        &body[..body.len() - 2]
-    } else if body.ends_with(&[0x07]) {
-        &body[..body.len() - 1]
+    if let Some(stripped) = body.strip_suffix(&[0x1b, b'\\']) {
+        stripped
+    } else if let Some(stripped) = body.strip_suffix(&[0x07]) {
+        stripped
     } else {
         body
     }
@@ -450,7 +468,10 @@ mod tests {
             "OSC 52 should be consumed, got: {output:?}"
         );
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0], b"hello");
+        let [clip] = clips.as_slice() else {
+            panic!("expected 1 clip: {clips:?}");
+        };
+        assert_eq!(clip, b"hello");
     }
 
     #[test]
@@ -462,7 +483,10 @@ mod tests {
             "OSC 52 should be consumed, got: {output:?}"
         );
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0], b"hello");
+        let [clip] = clips.as_slice() else {
+            panic!("expected 1 clip: {clips:?}");
+        };
+        assert_eq!(clip, b"hello");
     }
 
     #[test]
@@ -473,7 +497,10 @@ mod tests {
         let (output, clips) = filter_output(&seq);
         assert!(output.is_empty());
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0], b"clipboard data");
+        let [clip] = clips.as_slice() else {
+            panic!("expected 1 clip: {clips:?}");
+        };
+        assert_eq!(clip, b"clipboard data");
     }
 
     #[test]
@@ -485,7 +512,10 @@ mod tests {
             "tmux OSC 52 should be consumed, got: {output:?}"
         );
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0], b"hello from tmux");
+        let [clip] = clips.as_slice() else {
+            panic!("expected 1 clip: {clips:?}");
+        };
+        assert_eq!(clip, b"hello from tmux");
     }
 
     #[test]
@@ -496,7 +526,10 @@ mod tests {
         let (output, clips) = filter_output(&input);
         assert_eq!(output, b"before  after");
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0], b"copied");
+        let [clip] = clips.as_slice() else {
+            panic!("expected 1 clip: {clips:?}");
+        };
+        assert_eq!(clip, b"copied");
     }
 
     #[test]
@@ -507,8 +540,11 @@ mod tests {
         let (output, clips) = filter_output(&input);
         assert_eq!(output, b"gap");
         assert_eq!(clips.len(), 2);
-        assert_eq!(clips[0], b"first");
-        assert_eq!(clips[1], b"second");
+        let [first, second] = clips.as_slice() else {
+            panic!("expected 2 clips: {clips:?}");
+        };
+        assert_eq!(first, b"first");
+        assert_eq!(second, b"second");
     }
 
     #[test]
@@ -518,7 +554,10 @@ mod tests {
         let (output, clips) = filter_output_chunked(&seq, 1);
         assert!(output.is_empty(), "should be consumed even byte-by-byte");
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0], b"split test");
+        let [clip] = clips.as_slice() else {
+            panic!("expected 1 clip: {clips:?}");
+        };
+        assert_eq!(clip, b"split test");
     }
 
     #[test]
@@ -531,7 +570,10 @@ mod tests {
                 "chunk_size={chunk_size}: should be consumed"
             );
             assert_eq!(clips.len(), 1, "chunk_size={chunk_size}: expected 1 clip");
-            assert_eq!(clips[0], b"chunk test");
+            let [clip] = clips.as_slice() else {
+                panic!("expected 1 clip: {clips:?}");
+            };
+            assert_eq!(clip, b"chunk test");
         }
     }
 
@@ -541,7 +583,10 @@ mod tests {
         let (output, clips) = filter_output_chunked(&seq, 3);
         assert!(output.is_empty());
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0], b"tmux split");
+        let [clip] = clips.as_slice() else {
+            panic!("expected 1 clip: {clips:?}");
+        };
+        assert_eq!(clip, b"tmux split");
     }
 
     #[test]
@@ -596,7 +641,10 @@ mod tests {
         let (output, clips) = filter_output(seq);
         assert!(output.is_empty());
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0], b"");
+        let [clip] = clips.as_slice() else {
+            panic!("expected 1 clip: {clips:?}");
+        };
+        assert_eq!(clip, b"");
     }
 
     #[test]
@@ -776,7 +824,10 @@ mod tests {
             "the malformed CSI fragment must flush through"
         );
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0], b"after malformed csi");
+        let [clip] = clips.as_slice() else {
+            panic!("expected 1 clip: {clips:?}");
+        };
+        assert_eq!(clip, b"after malformed csi");
     }
 
     #[test]

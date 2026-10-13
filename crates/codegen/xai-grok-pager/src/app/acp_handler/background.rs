@@ -1,4 +1,6 @@
 use super::*;
+use crate::scrollback::blocks::KILLED_SIGNAL;
+use xai_grok_tools::computer::types::SESSION_RESTART_SIGNAL;
 
 /// Route a `ToolCallUpdate` stdout chunk to the central bg task store.
 ///
@@ -523,7 +525,7 @@ pub(super) fn handle_task_completed(notif: &acp::ExtNotification, app: &mut AppV
 
     let task_id = &task_snapshot.task_id;
     let exit_code = task_snapshot.exit_code;
-    let signal = task_snapshot.signal.clone();
+    let mut signal = task_snapshot.signal.clone();
 
     tracing::info!(
         task_id = %task_id,
@@ -538,7 +540,7 @@ pub(super) fn handle_task_completed(notif: &acp::ExtNotification, app: &mut AppV
     // A synthetic completion from cold-load reconciliation (`reconcile_stale_background_tasks`): the process died in an earlier session, not now
     // Finalize the pane and state quietly instead of pushing a fresh red "Task failed" block into the resumed scrollback
     // That block would repeat for every dead task on every resume, pure noise
-    let stale_on_load = signal.as_deref() == Some("session_restart");
+    let stale_on_load = signal.as_deref() == Some(SESSION_RESTART_SIGNAL);
 
     let child_sid: &str = session_notif.session_id.0.as_ref();
     let Some((session, scrollback)) = resolve_target_view(agent, matched, child_sid) else {
@@ -550,6 +552,11 @@ pub(super) fn handle_task_completed(notif: &acp::ExtNotification, app: &mut AppV
     // Fall back to the raw command only when no description was supplied
     let (command, elapsed, mut description, scrollback_entry_id) =
         if let Some(bg_task) = session.bg_tasks.get_mut(task_id) {
+            // Some backends report a stopped subagent shell as a plain non-zero exit
+            if bg_task.pending_kill && !success && signal.is_none() {
+                signal = Some(KILLED_SIGNAL.to_owned());
+            }
+
             bg_task.status = if success {
                 BgTaskStatus::Done
             } else {

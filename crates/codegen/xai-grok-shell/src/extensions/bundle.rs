@@ -80,19 +80,6 @@ pub struct RoleDetail {
     pub name: String,
     pub description: String,
 }
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EntryGetRequest {
-    kind: String,
-    name: String,
-}
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EntryGetResult {
-    pub kind: String,
-    pub name: String,
-    pub content: String,
-}
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         "x.ai/bundle/sync" => {
@@ -102,10 +89,6 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         "x.ai/bundle/status" => {
             let _req: BundleStatusRequest = parse_params(args)?;
             to_ext_response(status_bundle())
-        }
-        "x.ai/bundle/entry/get" => {
-            let req: EntryGetRequest = parse_params(args)?;
-            to_ext_response(get_entry(&req.kind, &req.name))
         }
         _ => Err(acp::Error::method_not_found()),
     }
@@ -235,37 +218,6 @@ pub(crate) async fn sync_bundle_to_root(
             })
         }
     }
-}
-fn get_entry(kind: &str, name: &str) -> anyhow::Result<EntryGetResult> {
-    get_entry_at(&bundle::bundled_root(), kind, name)
-}
-fn validate_entry_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty()
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains("..")
-        || name == "."
-    {
-        anyhow::bail!("invalid entry name: {name}");
-    }
-    Ok(())
-}
-fn get_entry_at(root: &Path, kind: &str, name: &str) -> anyhow::Result<EntryGetResult> {
-    validate_entry_name(name)?;
-    let (dir_name, ext) = match kind {
-        "persona" => ("personas", "toml"),
-        "role" => ("roles", "toml"),
-        "agent" => ("agents", "md"),
-        _ => anyhow::bail!("unknown entry kind: {kind}"),
-    };
-    let path = root.join(dir_name).join(format!("{name}.{ext}"));
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("{kind} '{name}' not found in bundle cache"))?;
-    Ok(EntryGetResult {
-        kind: kind.to_owned(),
-        name: name.to_owned(),
-        content,
-    })
 }
 fn status_bundle() -> anyhow::Result<BundleStatusResult> {
     status_bundle_at(&bundle::bundled_root())
@@ -408,7 +360,6 @@ mod tests {
         routing::get,
     };
     use prod_mc_cli_chat_proxy_types::SubagentBundle;
-    use serial_test::serial;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
     fn sample_bundle() -> SubagentBundle {
@@ -444,29 +395,11 @@ mod tests {
     fn test_auth() -> xai_grok_login::GrokAuth {
         xai_grok_login::GrokAuth {
             key: "token".to_string(),
-            auth_mode: xai_grok_login::AuthMode::Oidc,
-            create_time: chrono::Utc::now(),
             user_id: "user-1".to_string(),
             email: Some("test@example.com".to_string()),
-            first_name: None,
-            last_name: None,
-            profile_image_asset_id: None,
-            principal_type: None,
-            principal_id: None,
-            team_id: None,
-            team_name: None,
-            team_role: None,
-            organization_id: None,
-            organization_name: None,
-            organization_role: None,
-            user_blocked_reason: None,
-            team_blocked_reasons: vec![],
             coding_data_retention_opt_out: false,
-            has_grok_code_access: None,
-            refresh_token: None,
             expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
-            oidc_issuer: None,
-            oidc_client_id: None,
+            ..xai_grok_login::GrokAuth::default()
         }
     }
     fn test_auth_manager() -> Arc<xai_grok_login::AuthManager> {
@@ -543,7 +476,6 @@ mod tests {
         (format!("{base}/v1"), seen_headers, handle)
     }
     #[test]
-    #[serial]
     fn status_reports_no_cache_when_manifest_missing() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -563,7 +495,6 @@ mod tests {
         );
     }
     #[test]
-    #[serial]
     fn status_reports_cached_entries_from_manifest_and_disk() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -582,7 +513,6 @@ mod tests {
         assert_eq!(status.skills, Vec::<String>::new());
     }
     #[tokio::test(flavor = "current_thread")]
-    #[serial]
     async fn sync_success_writes_cache_and_returns_counts() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -607,7 +537,6 @@ mod tests {
         server.abort();
     }
     #[tokio::test(flavor = "current_thread")]
-    #[serial]
     async fn sync_force_true_has_same_write_semantics() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -625,7 +554,6 @@ mod tests {
         server.abort();
     }
     #[tokio::test(flavor = "current_thread")]
-    #[serial]
     async fn sync_http_failure_surfaces_error() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -642,7 +570,6 @@ mod tests {
         server.abort();
     }
     #[tokio::test(flavor = "current_thread")]
-    #[serial]
     async fn sync_uses_deployment_key_auth_mode() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -671,7 +598,6 @@ mod tests {
         server.abort();
     }
     #[test]
-    #[serial]
     fn status_only_reports_bundled_cache_not_higher_priority_sources() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -690,7 +616,7 @@ mod tests {
         )
         .unwrap();
         let base = crate::config::SubagentsConfig::resolve_base_with_sources(
-            false,
+            None,
             &toml::Value::Table(Default::default()),
             None,
             &root,
@@ -718,7 +644,6 @@ mod tests {
         assert_eq!(status.skills, Vec::<String>::new());
     }
     #[test]
-    #[serial]
     fn sync_requires_auth_or_deployment_key() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -736,61 +661,15 @@ mod tests {
             .contains("bundle sync requires either an authenticated cli-chat-proxy session or a deployment key"));
     }
     #[test]
-    #[serial]
-    fn get_entry_reads_persona_file() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("bundled");
-        bundle::write_bundle_to_cache(&root, &sample_bundle()).unwrap();
-        let result = get_entry_at(&root, "persona", "researcher").unwrap();
-        assert_eq!(result.kind, "persona");
-        assert_eq!(result.name, "researcher");
-        assert!(result.content.contains("instructions"));
-    }
-    #[test]
-    #[serial]
-    fn get_entry_unknown_kind_returns_error() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("bundled");
-        let err = get_entry_at(&root, "widget", "foo").unwrap_err();
-        assert!(err.to_string().contains("unknown entry kind: widget"));
-    }
-    #[test]
-    #[serial]
-    fn get_entry_missing_file_returns_error() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("bundled");
-        bundle::write_bundle_to_cache(&root, &sample_bundle()).unwrap();
-        let err = get_entry_at(&root, "persona", "nonexistent").unwrap_err();
-        assert!(err.to_string().contains("not found in bundle cache"));
-    }
-    #[test]
-    fn get_entry_rejects_path_traversal() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("bundled");
-        for bad_name in ["../../../etc/passwd", "foo/bar", "a\\b", "..", "."] {
-            let err = get_entry_at(&root, "persona", bad_name).unwrap_err();
-            assert!(
-                err.to_string().contains("invalid entry name"),
-                "expected rejection for {bad_name:?}, got: {err}"
-            );
-        }
-    }
-    #[test]
-    fn get_entry_rejects_empty_name() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("bundled");
-        let err = get_entry_at(&root, "persona", "").unwrap_err();
-        assert!(err.to_string().contains("invalid entry name"));
-    }
-    #[test]
-    #[serial]
     fn status_includes_persona_and_role_details() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
         bundle::write_bundle_to_cache(&root, &sample_bundle()).unwrap();
         let status = status_bundle_at(&root).unwrap();
         assert_eq!(status.persona_details.len(), 1);
-        let pd = &status.persona_details[0];
+        let Some(pd) = status.persona_details.first() else {
+            panic!("expected persona details: {status:?}");
+        };
         assert_eq!(pd.name, "researcher");
         assert_eq!(
             pd.description.as_deref(),
@@ -799,12 +678,13 @@ mod tests {
         assert!(pd.has_inputs);
         assert!(pd.has_outputs);
         assert_eq!(status.role_details.len(), 1);
-        let rd = &status.role_details[0];
+        let Some(rd) = status.role_details.first() else {
+            panic!("expected role details: {status:?}");
+        };
         assert_eq!(rd.name, "reviewer");
         assert_eq!(rd.description, "Meticulous code reviewer");
     }
     #[test]
-    #[serial]
     fn status_without_toml_files_returns_empty_details() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -853,7 +733,6 @@ mod tests {
         assert_eq!(detail.description, "");
     }
     #[tokio::test(flavor = "current_thread")]
-    #[serial]
     async fn sync_with_skills_reports_skills_count() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -877,7 +756,6 @@ mod tests {
         server.abort();
     }
     #[test]
-    #[serial]
     fn status_lists_skill_names_from_manifest() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -888,7 +766,6 @@ mod tests {
         assert_eq!(status.personas, vec!["researcher"]);
     }
     #[test]
-    #[serial]
     fn status_skills_only_lists_files_present_on_disk() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -920,7 +797,6 @@ mod tests {
         (format!("{base}/v1"), handle)
     }
     #[tokio::test(flavor = "current_thread")]
-    #[serial]
     async fn sync_with_archive_endpoint_extracts_and_reports_counts() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");
@@ -954,7 +830,6 @@ mod tests {
         server.abort();
     }
     #[tokio::test(flavor = "current_thread")]
-    #[serial]
     async fn sync_falls_back_to_legacy_when_archive_unavailable() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("bundled");

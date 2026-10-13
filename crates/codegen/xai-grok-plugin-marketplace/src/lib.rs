@@ -1,6 +1,8 @@
 //! Provides marketplace source configuration and plugin discovery, indexed with a filesystem fallback.
 //! Install integration goes through the existing `InstallRegistry` pipeline.
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod catalog;
 pub mod config;
 pub mod error;

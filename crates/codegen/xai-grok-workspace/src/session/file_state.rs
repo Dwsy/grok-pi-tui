@@ -1274,8 +1274,20 @@ mod tests {
         // A plural query (a rewind operation) loads the full set.
         let points = tracker.get_rewind_points().await;
         assert_eq!(points.len(), 2);
-        assert_eq!(points[0].prompt_index, 0);
-        assert_eq!(points[1].prompt_index, 1);
+        assert_eq!(
+            points
+                .first()
+                .unwrap_or_else(|| panic!("expected point 0"))
+                .prompt_index,
+            0
+        );
+        assert_eq!(
+            points
+                .get(1)
+                .unwrap_or_else(|| panic!("expected point 1"))
+                .prompt_index,
+            1
+        );
         // Now singular lookups see the loaded points.
         assert!(tracker.get_rewind_point(0).await.is_some());
     }
@@ -1291,17 +1303,43 @@ mod tests {
 
         let metas = tracker.get_rewind_point_metas().await;
         assert_eq!(metas.len(), 3);
-        assert_eq!(metas[0].prompt_index, 0);
-        assert_eq!(metas[0].num_file_snapshots, 2);
-        assert_eq!(metas[1].num_file_snapshots, 1);
-        assert_eq!(metas[2].num_file_snapshots, 0);
+        assert_eq!(
+            metas
+                .first()
+                .unwrap_or_else(|| panic!("expected meta 0"))
+                .prompt_index,
+            0
+        );
+        assert_eq!(
+            metas
+                .first()
+                .unwrap_or_else(|| panic!("expected meta 0"))
+                .num_file_snapshots,
+            2
+        );
+        assert_eq!(
+            metas
+                .get(1)
+                .unwrap_or_else(|| panic!("expected meta 1"))
+                .num_file_snapshots,
+            1
+        );
+        assert_eq!(
+            metas
+                .get(2)
+                .unwrap_or_else(|| panic!("expected meta 2"))
+                .num_file_snapshots,
+            0
+        );
 
         // The metadata scan must NOT consume the lazy source: a later rewind operation still gets the full file-content snapshots
         assert!(tracker.get_rewind_point(0).await.is_none());
         let points = tracker.get_rewind_points().await;
         assert_eq!(points.len(), 3);
         assert_eq!(
-            points[0]
+            points
+                .first()
+                .unwrap_or_else(|| panic!("expected point 0"))
                 .get_snapshot_by_rel(&RelPathBuf::new("a.rs").unwrap())
                 .and_then(|s| s.content.clone()),
             Some("v0".to_string())
@@ -1338,9 +1376,17 @@ mod tests {
         tracker.truncate_from(1).await;
         let remaining = tracker.get_rewind_points().await;
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].prompt_index, 0);
         assert_eq!(
-            remaining[0]
+            remaining
+                .first()
+                .unwrap_or_else(|| panic!("expected remaining 0"))
+                .prompt_index,
+            0
+        );
+        assert_eq!(
+            remaining
+                .first()
+                .unwrap_or_else(|| panic!("expected remaining 0"))
                 .get_snapshot_by_rel(&RelPathBuf::new("a.rs").unwrap())
                 .and_then(|s| s.content.clone()),
             Some("h0".to_string())
@@ -1363,7 +1409,9 @@ mod tests {
         let points = tracker.get_rewind_points().await;
         assert_eq!(points.len(), 1);
         assert_eq!(
-            points[0]
+            points
+                .first()
+                .unwrap_or_else(|| panic!("expected point 0"))
                 .get_snapshot_by_rel(&RelPathBuf::new("a.rs").unwrap())
                 .and_then(|s| s.content.clone()),
             Some("mem".to_string())
@@ -1383,10 +1431,34 @@ mod tests {
 
         let metas = tracker.get_rewind_point_metas().await;
         assert_eq!(metas.len(), 2);
-        assert_eq!(metas[0].prompt_index, 0); // from disk
-        assert_eq!(metas[0].num_file_snapshots, 1);
-        assert_eq!(metas[1].prompt_index, 1); // from memory
-        assert_eq!(metas[1].num_file_snapshots, 1);
+        assert_eq!(
+            metas
+                .first()
+                .unwrap_or_else(|| panic!("expected meta 0"))
+                .prompt_index,
+            0
+        ); // from disk
+        assert_eq!(
+            metas
+                .first()
+                .unwrap_or_else(|| panic!("expected meta 0"))
+                .num_file_snapshots,
+            1
+        );
+        assert_eq!(
+            metas
+                .get(1)
+                .unwrap_or_else(|| panic!("expected meta 1"))
+                .prompt_index,
+            1
+        ); // from memory
+        assert_eq!(
+            metas
+                .get(1)
+                .unwrap_or_else(|| panic!("expected meta 1"))
+                .num_file_snapshots,
+            1
+        );
     }
 
     #[tokio::test]
@@ -1411,15 +1483,25 @@ mod tests {
         tracker.merge_and_remove_from(1).await;
         let points = tracker.get_rewind_points().await;
         assert_eq!(points.len(), 1);
-        assert_eq!(points[0].prompt_index, 0);
+        assert_eq!(
+            points
+                .first()
+                .unwrap_or_else(|| panic!("expected point 0"))
+                .prompt_index,
+            0
+        );
         // Point 0 now also carries the merged files from points 1 and 2
         assert!(
-            points[0]
+            points
+                .first()
+                .unwrap_or_else(|| panic!("expected point 0"))
                 .get_snapshot_by_rel(&RelPathBuf::new("b.rs").unwrap())
                 .is_some()
         );
         assert!(
-            points[0]
+            points
+                .first()
+                .unwrap_or_else(|| panic!("expected point 0"))
                 .get_snapshot_by_rel(&RelPathBuf::new("c.rs").unwrap())
                 .is_some()
         );
@@ -1434,7 +1516,13 @@ mod tests {
             .get_rewind_points_normalized(Path::new("/repo"))
             .await;
         assert_eq!(normalized.len(), 1);
-        assert_eq!(normalized[0].prompt_index, 0);
+        assert_eq!(
+            normalized
+                .first()
+                .unwrap_or_else(|| panic!("expected normalized 0"))
+                .prompt_index,
+            0
+        );
     }
 
     /// `max_prompt_index` is a rewind op and must trigger the load.
@@ -1486,10 +1574,34 @@ mod tests {
         ]);
         let metas = scan_rewind_point_metas(file.path()).unwrap();
         assert_eq!(metas.len(), 2);
-        assert_eq!(metas[0].prompt_index, 0);
-        assert_eq!(metas[0].num_file_snapshots, 2);
-        assert_eq!(metas[1].prompt_index, 5);
-        assert_eq!(metas[1].num_file_snapshots, 1);
+        assert_eq!(
+            metas
+                .first()
+                .unwrap_or_else(|| panic!("expected meta 0"))
+                .prompt_index,
+            0
+        );
+        assert_eq!(
+            metas
+                .first()
+                .unwrap_or_else(|| panic!("expected meta 0"))
+                .num_file_snapshots,
+            2
+        );
+        assert_eq!(
+            metas
+                .get(1)
+                .unwrap_or_else(|| panic!("expected meta 1"))
+                .prompt_index,
+            5
+        );
+        assert_eq!(
+            metas
+                .get(1)
+                .unwrap_or_else(|| panic!("expected meta 1"))
+                .num_file_snapshots,
+            1
+        );
     }
 
     // ── pure merge_rewind_points_from branch coverage ────────────────────────
@@ -1531,7 +1643,9 @@ mod tests {
 
         let merged = merge_rewind_points_from(vec![p0, p1], 1);
         assert_eq!(merged.len(), 1);
-        let m0 = &merged[0];
+        let m0 = &merged
+            .first()
+            .unwrap_or_else(|| panic!("expected merged 0"));
         assert_eq!(m0.prompt_index, 0);
         // before-snapshot: earliest (p0) wins for shared.rs (or_insert keeps it).
         assert_eq!(
@@ -1564,9 +1678,17 @@ mod tests {
             3,
         );
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].prompt_index, 0);
+        assert_eq!(
+            merged
+                .first()
+                .unwrap_or_else(|| panic!("expected merged 0"))
+                .prompt_index,
+            0
+        );
         assert!(
-            merged[0]
+            merged
+                .first()
+                .unwrap_or_else(|| panic!("expected merged 0"))
                 .get_snapshot_by_rel(&RelPathBuf::new("b.rs").unwrap())
                 .is_none()
         );
@@ -1583,7 +1705,13 @@ mod tests {
             5,
         );
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].prompt_index, 0);
+        assert_eq!(
+            merged
+                .first()
+                .unwrap_or_else(|| panic!("expected merged 0"))
+                .prompt_index,
+            0
+        );
     }
 
     /// Blank/whitespace and malformed lines are skipped; both readers (full load and meta scan) recover exactly the valid points.

@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+
+use super::SessionActor;
 use super::support::create_test_actor;
 
 use crate::extensions::notification::{
@@ -92,13 +95,8 @@ fn write_compacted_session_fixture(session_dir: &std::path::Path, ckpt_id: &str)
     std::fs::write(session_dir.join("updates.jsonl"), content).unwrap();
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn rewind_pre_compaction_with_cancelled_turns_truncates_context_gb2961() {
-    let local = tokio::task::LocalSet::new();
-    local.run_until(run_rewind_scenario()).await;
-}
-
-async fn run_rewind_scenario() {
+/// Actor over the `ckpt5` fixture, live at prompt 7 with the compaction marker set.
+async fn actor_with_compacted_fixture(tag: &str) -> (SessionActor, PathBuf) {
     let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
     let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut actor = create_test_actor(0, 200_000, 80, gateway_tx, persistence_tx).await;
@@ -107,7 +105,7 @@ async fn run_rewind_scenario() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    actor.session_info.id = acp::SessionId::new(format!("rw-e2e-{unique}"));
+    actor.session_info.id = acp::SessionId::new(format!("rw-{tag}-{unique}"));
 
     let session_dir = crate::session::persistence::session_dir(&actor.session_info);
     write_compacted_session_fixture(&session_dir, "ckpt5");
@@ -130,6 +128,18 @@ async fn run_rewind_scenario() {
     snap.last_compaction_prompt_index = Some(5);
     actor.chat_state_handle.restore_snapshot(snap);
 
+    (actor, session_dir)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_pre_compaction_with_cancelled_turns_truncates_context_gb2961() {
+    let local = tokio::task::LocalSet::new();
+    local.run_until(run_rewind_scenario()).await;
+}
+
+async fn run_rewind_scenario() {
+    let (actor, session_dir) = actor_with_compacted_fixture("e2e").await;
+
     let resp = actor
         .handle_rewind(RewindRequest {
             target_prompt_index: 3,
@@ -141,7 +151,7 @@ async fn run_rewind_scenario() {
     assert!(resp.success, "rewind should succeed: {resp:?}");
 
     let conv = actor.chat_state_handle.get_conversation().await;
-    let texts: Vec<String> = conv.iter().map(|c| c.text_content()).collect();
+    let texts: Vec<String> = conv.iter().map(ConversationItem::text_content).collect();
 
     let _ = std::fs::remove_dir_all(&session_dir);
 
@@ -163,13 +173,82 @@ async fn run_rewind_scenario() {
     );
 }
 
-/// `FilesOnly` is exempt from the chat-state prompt-index bound; its real bound is the on-disk snapshot index.
-/// It therefore no-ops to success when out of range, the property the bridge relies on when the chat-state index is empty.
-/// `ConversationOnly` is not exempt and still rejects an out-of-range target.
 #[tokio::test(flavor = "current_thread")]
 async fn files_only_rewind_is_exempt_from_chat_state_bound() {
     let local = tokio::task::LocalSet::new();
     local.run_until(run_files_only_bound_scenario()).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_to_the_earlier_of_two_unanswered_prompts_drops_the_later() {
+    let local = tokio::task::LocalSet::new();
+    local.run_until(run_two_unanswered_prompts_rewind()).await;
+}
+
+async fn run_two_unanswered_prompts_rewind() {
+    let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut actor = create_test_actor(0, 200_000, 80, gateway_tx, persistence_tx).await;
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    actor.session_info.id = acp::SessionId::new(format!("rw-two-{unique}"));
+    let session_dir = crate::session::persistence::session_dir(&actor.session_info);
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let updates = vec![
+        user_chunk("EARLIER-PROMPT", 0),
+        user_chunk("LATER-PROMPT", 1),
+    ];
+    let mut content = Vec::new();
+    for update in &updates {
+        let env = SessionUpdateEnvelope::from_update(update).unwrap();
+        content.extend(serde_json::to_vec(&env).unwrap());
+        content.push(b'\n');
+    }
+    std::fs::write(session_dir.join("updates.jsonl"), content).unwrap();
+
+    let mut snap = actor
+        .chat_state_handle
+        .snapshot()
+        .await
+        .expect("snapshot available");
+    snap.conversation = vec![
+        ConversationItem::system("SYS"),
+        ConversationItem::user("UI"),
+        ConversationItem::user("EARLIER-PROMPT"),
+        ConversationItem::user("LATER-PROMPT"),
+    ];
+    snap.prompt_index = 2;
+    snap.prompt_texts = vec!["EARLIER-PROMPT".to_string(), "LATER-PROMPT".to_string()];
+    snap.last_compaction_prompt_index = Some(0);
+    actor.chat_state_handle.restore_snapshot(snap);
+
+    let resp = actor
+        .handle_rewind(RewindRequest {
+            target_prompt_index: 1,
+            force: true,
+            mode: RewindMode::ConversationOnly,
+        })
+        .await
+        .expect("handle_rewind ok");
+    assert!(resp.success, "rewind should succeed: {resp:?}");
+
+    let conv = actor.chat_state_handle.get_conversation().await;
+    let texts: Vec<String> = conv.iter().map(ConversationItem::text_content).collect();
+    let _ = std::fs::remove_dir_all(&session_dir);
+
+    let prompts: Vec<&str> = texts
+        .iter()
+        .filter(|text| text.contains("EARLIER-PROMPT") || text.contains("LATER-PROMPT"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        prompts,
+        vec!["EARLIER-PROMPT"],
+        "the later prompt is still in history"
+    );
 }
 
 async fn run_files_only_bound_scenario() {
@@ -277,37 +356,7 @@ async fn rewind_before_compaction_clears_stale_compaction_marker() {
 
 async fn run_clears_marker_scenario() {
     use xai_grok_sampling_types::CompactionsRemaining;
-    let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut actor = create_test_actor(0, 200_000, 80, gateway_tx, persistence_tx).await;
-
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    actor.session_info.id = acp::SessionId::new(format!("rw-marker-{unique}"));
-
-    let session_dir = crate::session::persistence::session_dir(&actor.session_info);
-    write_compacted_session_fixture(&session_dir, "ckptm");
-
-    let mut snap = actor
-        .chat_state_handle
-        .snapshot()
-        .await
-        .expect("snapshot available");
-    snap.conversation = vec![
-        ConversationItem::system("SYS"),
-        ConversationItem::user("UI1"),
-        ConversationItem::user("SUMMARY"),
-        ConversationItem::user("P5"),
-        ConversationItem::assistant("R5"),
-        ConversationItem::user("P6"),
-    ];
-    snap.prompt_index = 7;
-    snap.prompt_texts = (0..7).map(|i| format!("P{i}")).collect();
-    // The session believes it holds a compaction summary from prompt 5.
-    snap.last_compaction_prompt_index = Some(5);
-    actor.chat_state_handle.restore_snapshot(snap);
+    let (actor, session_dir) = actor_with_compacted_fixture("marker").await;
 
     // Rewind to prompt 3, before the compaction point (5), so the summary is dropped from the rebuilt conversation and the marker must be cleared
     let resp = actor
@@ -350,9 +399,85 @@ async fn run_clears_marker_scenario() {
     );
 }
 
-/// Forking a session must carry the `compaction_checkpoints/{uuid}.json` files along with the copied checkpoint records.
-/// Replay requires each referenced file, so without the copy every rewind in the forked session fails with "compaction checkpoint file missing".
-/// The test drives the production `fork_session` path, so it covers the real file-copy step.
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_before_missing_checkpoint_falls_back_to_current_user_info() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(run_before_missing_checkpoint_scenario())
+        .await;
+}
+
+async fn run_before_missing_checkpoint_scenario() {
+    let (actor, session_dir) = actor_with_compacted_fixture("missing-pre").await;
+    std::fs::remove_file(session_dir.join("compaction_checkpoints/ckpt5.json")).unwrap();
+
+    let resp = actor
+        .handle_rewind(RewindRequest {
+            target_prompt_index: 3,
+            force: true,
+            mode: RewindMode::ConversationOnly,
+        })
+        .await
+        .expect("handle_rewind ok");
+
+    let conv = actor.chat_state_handle.get_conversation().await;
+    let texts: Vec<String> = conv.iter().map(ConversationItem::text_content).collect();
+    let marker = actor
+        .chat_state_handle
+        .get_last_compaction_prompt_index()
+        .await;
+    let prompt_index = actor.chat_state_handle.get_prompt_index().await;
+
+    let _ = std::fs::remove_dir_all(&session_dir);
+
+    assert!(resp.success, "rewind should succeed: {resp:?}");
+    assert_eq!(vec!["SYS", "UI1", "P0", "P1", "P2"], texts);
+    assert_eq!(None, marker);
+    assert_eq!(3, prompt_index);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_after_missing_checkpoint_reports_dependent_range() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(run_after_missing_checkpoint_scenario())
+        .await;
+}
+
+async fn run_after_missing_checkpoint_scenario() {
+    let (actor, session_dir) = actor_with_compacted_fixture("missing-post").await;
+    std::fs::remove_file(session_dir.join("compaction_checkpoints/ckpt5.json")).unwrap();
+
+    let resp = actor
+        .handle_rewind(RewindRequest {
+            target_prompt_index: 6,
+            force: true,
+            mode: RewindMode::ConversationOnly,
+        })
+        .await
+        .expect("handle_rewind returns Ok(success=false)");
+
+    let conv = actor.chat_state_handle.get_conversation().await;
+    let texts: Vec<String> = conv.iter().map(ConversationItem::text_content).collect();
+    let prompt_index = actor.chat_state_handle.get_prompt_index().await;
+
+    let _ = std::fs::remove_dir_all(&session_dir);
+
+    assert!(!resp.success, "rewind must be rejected: {resp:?}");
+    assert_eq!(
+        Some(
+            "Cannot rewind to prompt #6: checkpoint for prompts #5 onward is missing. \
+             Pick a prompt before #5 or at or after the next compaction. \
+             (compaction_checkpoints/ckpt5.json)"
+                .to_owned()
+        ),
+        resp.error
+    );
+    assert_eq!(vec!["SYS", "UI1", "SUMMARY", "P5", "R5", "P6"], texts);
+    assert_eq!(7, prompt_index);
+}
+
+/// Forking must copy the base checkpoint file along with its record; the test drives the production `fork_session` path.
 #[tokio::test(flavor = "current_thread")]
 async fn rewind_succeeds_in_forked_session_with_compaction_checkpoint() {
     let local = tokio::task::LocalSet::new();
@@ -451,4 +576,191 @@ async fn run_forked_rewind_scenario() {
         prompt_index, 6,
         "prompt_index must be reset to the rewind target"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn files_only_reverts_the_file_and_keeps_the_conversation() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 200_000, 80, gateway_tx, persistence_tx).await;
+            let notes = std::path::Path::new("/tmp/notes-files-only.toml");
+            let cwd = std::path::Path::new("/tmp");
+            actor
+                .tool_context
+                .fs
+                .write_file(notes, b"alpha = 2\n")
+                .await
+                .expect("seed the edited file");
+            actor.file_state_tracker.begin_prompt(1).await;
+            actor
+                .file_state_tracker
+                .add_before_snapshot_for_prompt(1, notes, cwd, Some("alpha = 1\n".into()))
+                .await;
+            actor
+                .file_state_tracker
+                .end_prompt(&actor.tool_context.fs, 1)
+                .await;
+
+            let mut snap = actor
+                .chat_state_handle
+                .snapshot()
+                .await
+                .expect("snapshot available");
+            snap.conversation = vec![
+                ConversationItem::user("KEEP-THIS"),
+                ConversationItem::assistant("STILL-HERE"),
+            ];
+            snap.prompt_index = 2;
+            snap.prompt_texts = vec!["KEEP-THIS".into()];
+            actor.chat_state_handle.restore_snapshot(snap);
+
+            let resp = actor
+                .handle_rewind(RewindRequest {
+                    target_prompt_index: 1,
+                    force: true,
+                    mode: RewindMode::FilesOnly,
+                })
+                .await
+                .expect("files_only rewind ok");
+            assert!(
+                resp.success,
+                "files_only must revert a clean file: {resp:?}"
+            );
+            assert!(
+                resp.reverted_files
+                    .iter()
+                    .any(|path| path.contains("notes-files-only.toml")),
+                "reverted files: {:?}",
+                resp.reverted_files
+            );
+            let restored = actor
+                .tool_context
+                .fs
+                .try_read_to_string(notes)
+                .await
+                .expect("read restored file");
+            assert_eq!(restored.as_deref(), Some("alpha = 1\n"));
+            let texts: Vec<String> = actor
+                .chat_state_handle
+                .get_conversation()
+                .await
+                .iter()
+                .map(|item| item.text_content())
+                .collect();
+            assert!(
+                texts.iter().any(|text| text == "KEEP-THIS"),
+                "files_only must keep the conversation: {texts:?}"
+            );
+            assert_eq!(actor.chat_state_handle.get_prompt_index().await, 2);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn preview_reports_an_external_edit_and_changes_nothing() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 200_000, 80, gateway_tx, persistence_tx).await;
+            let notes = std::path::Path::new("/tmp/notes-preview.toml");
+            let cwd = std::path::Path::new("/tmp");
+            actor
+                .tool_context
+                .fs
+                .write_file(notes, b"alpha = 2\n")
+                .await
+                .expect("seed the agent edit");
+            actor.file_state_tracker.begin_prompt(1).await;
+            actor
+                .file_state_tracker
+                .add_before_snapshot_for_prompt(1, notes, cwd, Some("alpha = 1\n".into()))
+                .await;
+            actor
+                .file_state_tracker
+                .end_prompt(&actor.tool_context.fs, 1)
+                .await;
+            actor
+                .tool_context
+                .fs
+                .write_file(notes, b"alpha = 9\n")
+                .await
+                .expect("external edit");
+
+            let mut snap = actor
+                .chat_state_handle
+                .snapshot()
+                .await
+                .expect("snapshot available");
+            snap.prompt_index = 2;
+            actor.chat_state_handle.restore_snapshot(snap);
+
+            let resp = actor
+                .handle_rewind(RewindRequest {
+                    target_prompt_index: 1,
+                    force: false,
+                    mode: RewindMode::All,
+                })
+                .await
+                .expect("preview rewind ok");
+            assert!(!resp.success, "a preview must not commit: {resp:?}");
+            assert!(
+                resp.conflicts.iter().any(|conflict| {
+                    conflict.path.contains("notes-preview.toml")
+                        && conflict.conflict_type == "modified_externally"
+                }),
+                "conflicts: {:?}",
+                resp.conflicts
+            );
+            assert_eq!(
+                resp.error.as_deref(),
+                Some("External modifications detected. Confirm to revert anyway.")
+            );
+            let current = actor
+                .tool_context
+                .fs
+                .try_read_to_string(notes)
+                .await
+                .expect("read file");
+            assert_eq!(current.as_deref(), Some("alpha = 9\n"));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn repair_is_refused_while_a_turn_runs() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            let actor = create_test_actor(0, 200_000, 80, gateway_tx, persistence_tx).await;
+            actor
+                .session_turn_active
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let error = actor
+                .handle_repair_history(false)
+                .await
+                .expect_err("repair must be refused mid-turn");
+            assert_eq!(
+                "cannot repair history while a turn is in flight; stop the turn first",
+                error.to_string()
+            );
+
+            actor
+                .session_turn_active
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            let report = actor
+                .handle_repair_history(false)
+                .await
+                .expect("repair must be accepted once the turn settles");
+            assert_eq!(0, report.duplicates_removed);
+            assert_eq!(Vec::<String>::new(), report.stripped_tool_result_ids);
+            assert_eq!(0, report.synthetic_results_inserted);
+        })
+        .await;
 }

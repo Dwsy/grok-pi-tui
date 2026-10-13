@@ -24,7 +24,13 @@ fn replace(bytes: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
         .windows(old.len())
         .position(|value| value == old)
         .unwrap();
-    [&bytes[..start], new, &bytes[start + old.len()..]].concat()
+    let Some(head) = bytes.get(..start) else {
+        panic!("replace start out of range: {start}");
+    };
+    let Some(tail) = bytes.get(start + old.len()..) else {
+        panic!("replace tail out of range: {start}");
+    };
+    [head, new, tail].concat()
 }
 fn progress(effect: CompletionEffectV1, outcome: ProgressOutcomeV1) -> CompletionRecordV1 {
     CompletionRecordV1::Progress(CompletionProgress {
@@ -125,9 +131,16 @@ fn every_effect_slot_and_outcome_roundtrips_and_first_invalid_rejects() {
 
 #[test]
 fn strict_decoder_rejects_noncanonical_oversized_and_event_cap_rows() {
-    let valid = encoded(&records()[0]);
+    let fixtures = records();
+    let Some(first) = fixtures.first() else {
+        panic!("expected completion fixtures");
+    };
+    let valid = encoded(first);
+    let Some(truncated) = valid.len().checked_sub(1).and_then(|n| valid.get(..n)) else {
+        panic!("empty encoded completion row");
+    };
     let invalid = [
-        valid[..valid.len() - 1].to_vec(),
+        truncated.to_vec(),
         [valid.as_slice(), b"\n"].concat(),
         replace(&valid, b"\"g\":33,\"i\":12", b"\"i\":12,\"g\":33"),
         replace(&valid, b"\"i\":12", b"\"i\":13"),

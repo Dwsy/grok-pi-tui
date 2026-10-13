@@ -12,6 +12,7 @@ use crate::app::agent::{QueueEntryKind, QueuedPrompt};
 use crate::app::prompt_queue::QueueEntryWire;
 use crate::render::line_utils::truncate_str;
 use crate::theme::{Theme, ThemeKind};
+use crate::views::queue_mutation::{QueueMutation, ServerRowCapabilities};
 
 use super::list_pane::ListItem;
 
@@ -29,10 +30,6 @@ pub(crate) fn visible_held_server_row(
     id != running_id && id != send_now_id && !painted_pending.contains_key(key)
 }
 
-// ---------------------------------------------------------------------------
-// QueuedPromptEntry: ListItem wrapper around QueuedPrompt
-// ---------------------------------------------------------------------------
-
 /// Where a rendered queue row originates, which determines how an edit (delete / reorder) is routed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueRowOrigin {
@@ -40,42 +37,6 @@ pub enum QueueRowOrigin {
     Local,
     /// A server-authoritative `shared_prompt_queues` entry (plain prompt queued while running). Edits route to the agent as `x.ai/queue/*`.
     Server,
-}
-
-/// Capabilities projected from a server queue row's wire kind.
-/// Unknown kinds stay editable/sendable for backward compatibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ServerRowCapabilities {
-    can_mutate: bool,
-}
-
-impl ServerRowCapabilities {
-    const EDITABLE: Self = Self { can_mutate: true };
-    const PROTECTED: Self = Self { can_mutate: false };
-
-    pub(crate) fn from_wire_kind(kind: &str) -> Self {
-        if kind == "parent_agent_message" {
-            Self::PROTECTED
-        } else {
-            Self::EDITABLE
-        }
-    }
-
-    pub(crate) fn can_edit(self) -> bool {
-        self.can_mutate
-    }
-
-    pub(crate) fn can_delete(self) -> bool {
-        self.can_mutate
-    }
-
-    pub(crate) fn can_reorder(self) -> bool {
-        self.can_mutate
-    }
-
-    pub(crate) fn can_send_now(self) -> bool {
-        self.can_mutate
-    }
 }
 
 /// A resolved reference to a queue row, used by the edit handlers to route by origin. Returned by [`QueuePane::row_ref`].
@@ -110,7 +71,7 @@ pub struct QueuedPromptEntry {
     server_id: Option<String>,
     /// Server queue-entry version (for versioned removes); 0 for local.
     version: u64,
-    /// Server-only mutation/send capabilities; local rows are always editable.
+    /// Mutation/send capabilities under the pane's `QueueMutation`.
     capabilities: ServerRowCapabilities,
     /// Cached styled content (rebuilt with width in `rebuild_styled_for_width`).
     styled: Line<'static>,
@@ -126,6 +87,9 @@ fn synth_server_id(prompt_id: &str) -> u64 {
     h.finish() | (1 << 63)
 }
 
+/// Suffix on a row the pane cannot edit, delete, reorder, or send.
+const PROTECTED_MARKER: &str = " · protected";
+
 /// Map a shared-queue wire `kind` string to the local display kind only.
 /// Server-only capabilities are projected separately by [`ServerRowCapabilities`].
 /// Unknown kinds fall back to a plain prompt.
@@ -139,8 +103,7 @@ pub fn kind_from_wire(kind: &str) -> QueueEntryKind {
 
 impl QueuedPromptEntry {
     /// Create a new entry from a `QueuedPrompt` and its current position.
-    pub fn new(prompt: &QueuedPrompt, position: usize) -> Self {
-        // Show first non-empty line, trimmed.
+    pub(crate) fn new(prompt: &QueuedPrompt, position: usize, mutation: QueueMutation) -> Self {
         let first_line = prompt
             .text
             .lines()
@@ -150,9 +113,10 @@ impl QueuedPromptEntry {
             .to_string();
 
         let line_count = prompt.text.lines().count();
+        let capabilities = ServerRowCapabilities::for_local(mutation);
 
         // Build initial styled line (will be rebuilt with proper width later).
-        let styled = Self::build_styled(&first_line, line_count, prompt.kind, None);
+        let styled = Self::build_styled(&first_line, line_count, prompt.kind, None, capabilities);
 
         Self {
             id: prompt.id,
@@ -164,14 +128,18 @@ impl QueuedPromptEntry {
             origin: QueueRowOrigin::Local,
             server_id: None,
             version: 0,
-            capabilities: ServerRowCapabilities::EDITABLE,
+            capabilities,
             styled,
         }
     }
 
     /// Create an entry from a server-authoritative shared-queue wire entry.
     /// The wire `kind` selects the display style: plain prompts, bash (`! ` prefix), and the agent-driven cron kind.
-    pub fn from_server(wire: &QueueEntryWire, position: usize) -> Self {
+    pub(crate) fn from_server(
+        wire: &QueueEntryWire,
+        position: usize,
+        mutation: QueueMutation,
+    ) -> Self {
         let first_line = wire
             .text
             .lines()
@@ -181,7 +149,8 @@ impl QueuedPromptEntry {
             .to_string();
         let line_count = wire.text.lines().count();
         let kind = kind_from_wire(&wire.kind);
-        let styled = Self::build_styled(&first_line, line_count, kind, None);
+        let capabilities = ServerRowCapabilities::for_pane(&wire.kind, mutation);
+        let styled = Self::build_styled(&first_line, line_count, kind, None, capabilities);
         Self {
             id: synth_server_id(&wire.id),
             position,
@@ -192,7 +161,7 @@ impl QueuedPromptEntry {
             origin: QueueRowOrigin::Server,
             server_id: Some(wire.id.clone()),
             version: wire.version,
-            capabilities: ServerRowCapabilities::from_wire_kind(&wire.kind),
+            capabilities,
             styled,
         }
     }
@@ -206,23 +175,27 @@ impl QueuedPromptEntry {
             self.line_count,
             self.kind,
             Some(available_width as usize),
+            self.capabilities,
         );
     }
 
     /// Build the styled `Line` for display.
     ///
-    /// If `max_width` is provided and the entry is multiline, the first line is truncated so the `(+N lines)` suffix fits.
+    /// If `max_width` is provided, the first line is truncated so the gray suffix fits: `(+N lines)` for a
+    /// multiline entry, then the protected marker, which is dropped when the text, after the `(+N lines)`
+    /// suffix is reserved, would keep less than the marker's own width.
     fn build_styled(
         first_line: &str,
         line_count: usize,
         kind: QueueEntryKind,
         max_width: Option<usize>,
+        capabilities: ServerRowCapabilities,
     ) -> Line<'static> {
         let theme = Theme::current();
         let extra_lines = line_count.saturating_sub(1);
 
         // Build the suffix for multiline prompts: " (+N lines)" or " (+1 line)"
-        let suffix = if extra_lines > 0 {
+        let mut suffix = if extra_lines > 0 {
             if extra_lines == 1 {
                 " (+1 line)".to_string()
             } else {
@@ -231,17 +204,16 @@ impl QueuedPromptEntry {
         } else {
             String::new()
         };
+        let marker_width = PROTECTED_MARKER.width();
+        if capabilities.is_protected()
+            && max_width
+                .is_none_or(|w| w.saturating_sub(suffix.width() + marker_width) >= marker_width)
+        {
+            suffix.push_str(PROTECTED_MARKER);
+        }
         let suffix_width = suffix.width();
 
-        // Determine how much space we have for the first line content.
-        // Reserve space for the suffix if multiline.
-        let content_max_width = max_width.map(|w| {
-            if extra_lines > 0 {
-                w.saturating_sub(suffix_width)
-            } else {
-                w
-            }
-        });
+        let content_max_width = max_width.map(|w| w.saturating_sub(suffix_width));
 
         match kind {
             QueueEntryKind::Prompt => {
@@ -256,7 +228,7 @@ impl QueuedPromptEntry {
                     Style::default().fg(theme.accent_user),
                 )];
 
-                if extra_lines > 0 {
+                if !suffix.is_empty() {
                     spans.push(Span::styled(suffix, Style::default().fg(theme.gray)));
                 }
 
@@ -286,7 +258,7 @@ impl QueuedPromptEntry {
                     )]
                 };
 
-                if extra_lines > 0 {
+                if !suffix.is_empty() {
                     spans.push(Span::styled(suffix, Style::default().fg(theme.gray)));
                 }
 
@@ -306,7 +278,7 @@ impl QueuedPromptEntry {
                     Span::styled(display_text, Style::default().fg(theme.command)),
                 ];
 
-                if extra_lines > 0 {
+                if !suffix.is_empty() {
                     spans.push(Span::styled(suffix, Style::default().fg(theme.gray)));
                 }
 
@@ -362,10 +334,6 @@ impl ListItem for QueuedPromptEntry {
         self.text.clone()
     }
 }
-
-// ---------------------------------------------------------------------------
-// QueuePane: self-contained pane owning entries, state, and rendering
-// ---------------------------------------------------------------------------
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -483,6 +451,8 @@ pub struct QueuePane {
     pub overlay: OverlayState,
     /// Previous queue length, used for auto-show detection.
     prev_len: usize,
+    /// How rows get their capabilities; applied on every `sync_from_merged` rebuild.
+    mutation: QueueMutation,
     /// `[Send now]` (force-interject) action button.
     send_now: RowActionButton,
     /// `[cancel]` (row delete) action button.
@@ -524,6 +494,7 @@ impl QueuePane {
             last_theme: Theme::current_kind(),
             overlay: OverlayState::hidden(),
             prev_len: 0,
+            mutation: QueueMutation::PerRowKind,
             send_now: RowActionButton::default(),
             delete_button: RowActionButton::default(),
             edit_button: RowActionButton::default(),
@@ -532,7 +503,14 @@ impl QueuePane {
         }
     }
 
-    // -- Data management -----------------------------------------------------
+    /// Takes effect at the next `sync_from_merged`, which every queue change triggers.
+    pub(crate) fn set_mutation(&mut self, mutation: QueueMutation) {
+        self.mutation = mutation;
+    }
+
+    pub(crate) fn mutation(&self) -> QueueMutation {
+        self.mutation
+    }
 
     /// This is only correct because every server-queued prompt is older than every local one.
     /// `immediate_server_send_eligible` enforces that invariant. A prompt may take the immediate-send
@@ -552,11 +530,13 @@ impl QueuePane {
             if !visible_held_server_row(&wire.id, running_id, send_now_id, painted_pending) {
                 continue;
             }
-            self.entries.push(QueuedPromptEntry::from_server(wire, pos));
+            self.entries
+                .push(QueuedPromptEntry::from_server(wire, pos, self.mutation));
             pos += 1;
         }
         for prompt in local {
-            self.entries.push(QueuedPromptEntry::new(prompt, pos));
+            self.entries
+                .push(QueuedPromptEntry::new(prompt, pos, self.mutation));
             pos += 1;
         }
 
@@ -643,11 +623,9 @@ impl QueuePane {
         (self.entries.len() as u16).clamp(1, MAX_QUEUE_HEIGHT)
     }
 
-    // -- Input handling ------------------------------------------------------
-
     /// Handle a key event when the queue pane is focused. Returns `Some(QueueEvent)` for queue-specific
     /// actions (delete, edit, reorder). Returns `None` if the key wasn't a queue action; the caller
-    /// should then try `handle_navigation_key` for j/k/y etc.
+    /// should then try `handle_navigation_key` for j/k etc.
     pub fn handle_key(
         &self,
         key: &KeyEvent,
@@ -696,7 +674,7 @@ impl QueuePane {
         }
     }
 
-    /// Handle navigation keys (j/k, y to copy, scrolling, etc.).
+    /// Handle navigation keys (j/k, scrolling, etc.).
     ///
     /// Delegates to ListPane. Returns `true` if consumed.
     pub fn handle_navigation_key(&mut self, key: &KeyEvent) -> bool {
@@ -724,6 +702,17 @@ impl QueuePane {
             .iter()
             .find(|e| e.id == id)
             .map(|e| e.text.as_str())
+    }
+
+    pub(crate) fn yank_copy_target(&self) -> Option<(u64, String)> {
+        let entry = self
+            .hovered_row_id
+            .and_then(|id| self.entries.iter().find(|e| e.id == id))
+            .or_else(|| {
+                self.selected_id()
+                    .and_then(|id| self.entries.iter().find(|e| e.id == id))
+            })?;
+        Some((entry.id, entry.copy_text()))
     }
 
     /// Select the deleted row's neighbor (so the cursor doesn't jump to the top).
@@ -854,8 +843,6 @@ impl QueuePane {
         let idx = self.list_state.layout().item_at_y(vy)?;
         self.entries.get(idx).map(|e| e.id)
     }
-
-    // -- Rendering -----------------------------------------------------------
 
     /// That button is likewise right-aligned to the full width (it insets only on the left).
     fn content_area(area: Rect, layout_cfg: &LayoutConfig) -> Rect {
@@ -1053,10 +1040,6 @@ impl QueuePane {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn digit_count(n: usize) -> usize {
     if n == 0 {
         1
@@ -1065,13 +1048,17 @@ fn digit_count(n: usize) -> usize {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unicode_width::UnicodeWidthStr;
+
+    fn at<'a, T>(xs: &'a [T], i: usize) -> &'a T {
+        match xs.get(i) {
+            Some(v) => v,
+            None => panic!("index {i} out of {}", xs.len()),
+        }
+    }
 
     fn wire(id: &str, text: &str, pos: usize) -> QueueEntryWire {
         QueueEntryWire {
@@ -1090,73 +1077,231 @@ mod tests {
         QueuedPrompt::plain(id, text, QueueEntryKind::Prompt)
     }
 
-    #[test]
-    fn parent_message_wire_kind_is_protected() {
-        let mut wire = wire("parent-message-msg-1", "status update", 1);
-        wire.kind = "parent_agent_message".into();
-        let mut pane = QueuePane::new();
-        pane.sync_from_merged(
-            &Default::default(),
-            &[wire],
-            None,
-            None,
-            &Default::default(),
-        );
-        let id = pane.entry_ids()[0];
-        assert_eq!(
-            kind_from_wire("parent_agent_message"),
-            QueueEntryKind::Prompt
-        );
-        let capabilities = pane.row_capabilities(id).expect("protected parent row");
-        assert!(!capabilities.can_edit());
-        assert!(!capabilities.can_delete());
-        assert!(!capabilities.can_reorder());
-        assert!(!capabilities.can_send_now());
-        pane.list_state.select_by_id(id);
-        let registry = crate::actions::ActionRegistry::defaults();
-        for key in [
-            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Char('K'), KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
-        ] {
-            assert_eq!(pane.handle_key(&key, &registry), None);
-        }
+    fn editable() -> ServerRowCapabilities {
+        ServerRowCapabilities::for_local(QueueMutation::PerRowKind)
+    }
 
-        let area = Rect::new(0, 0, 80, 1);
-        let mut buf = Buffer::empty(area);
-        pane.render(area, &mut buf, true, &LayoutConfig::default(), None, true);
-        assert!(pane.edit_button.rect.is_none());
-        assert!(pane.delete_button.rect.is_none());
-        assert!(pane.send_now.rect.is_none());
-        for col in 0..area.width {
-            assert_eq!(pane.edit_click(col, area.y), None);
-            assert_eq!(pane.delete_click(col, area.y), None);
-            assert_eq!(pane.send_now_click(col, area.y), None);
-        }
+    fn protected() -> ServerRowCapabilities {
+        ServerRowCapabilities::for_pane("parent_agent_message", QueueMutation::PerRowKind)
+    }
+
+    /// Collect every rendered glyph in `area` into a single string.
+    fn buffer_text(buf: &Buffer, area: Rect) -> String {
+        (area.y..area.y + area.height)
+            .map(|y| {
+                (area.x..area.x + area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_owned()))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The two ways a row ends up protected: the wire kind on the session's own queue, and any row on a mirror.
+    fn protected_panes() -> [(QueuePane, &'static str); 2] {
+        let mut parent_message = wire("parent-message-msg-1", "status update", 1);
+        parent_message.kind = String::from("parent_agent_message");
+        let mut per_row_kind = QueuePane::new();
+        per_row_kind.sync_from_merged(
+            &Default::default(),
+            &[parent_message],
+            None,
+            None,
+            &Default::default(),
+        );
+        let mut read_only = QueuePane::new();
+        read_only.set_mutation(QueueMutation::ReadOnly);
+        read_only.sync_from_merged(
+            &Default::default(),
+            &[wire("mirrored-row", "status update", 1)],
+            None,
+            None,
+            &Default::default(),
+        );
+        [
+            (per_row_kind, "parent_agent_message"),
+            (read_only, "ReadOnly"),
+        ]
     }
 
     #[test]
-    fn ordinary_and_unknown_server_rows_keep_default_capabilities() {
-        for kind in ["prompt", "future_server_kind"] {
-            let mut wire = wire("server-prompt", "ordinary prompt", 1);
-            wire.kind = kind.into();
-            let mut pane = QueuePane::new();
-            pane.sync_from_merged(
-                &Default::default(),
-                &[wire],
-                None,
-                None,
-                &Default::default(),
+    fn protected_row_swallows_keys_and_renders_marker_without_chips() {
+        assert_eq!(
+            QueueEntryKind::Prompt,
+            kind_from_wire("parent_agent_message")
+        );
+        let registry = crate::actions::ActionRegistry::defaults();
+        for (mut pane, setup) in protected_panes() {
+            let id = *pane
+                .entry_ids()
+                .first()
+                .unwrap_or_else(|| panic!("queued id"));
+            let capabilities = pane.row_capabilities(id).expect("protected row");
+            assert!(capabilities.is_protected(), "{setup}");
+            assert!(!capabilities.can_edit(), "{setup}");
+            assert!(!capabilities.can_delete(), "{setup}");
+            assert!(!capabilities.can_reorder(), "{setup}");
+            assert!(!capabilities.can_send_now(), "{setup}");
+            pane.list_state.select_by_id(id);
+            for key in [
+                KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT),
+                KeyEvent::new(KeyCode::Char('K'), KeyModifiers::SHIFT),
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+            ] {
+                assert_eq!(None, pane.handle_key(&key, &registry), "{setup} {key:?}");
+            }
+
+            let area = Rect::new(0, 0, 80, 1);
+            let mut buf = Buffer::empty(area);
+            pane.render(area, &mut buf, true, &LayoutConfig::default(), None, true);
+            assert!(pane.edit_button.rect.is_none(), "{setup}");
+            assert!(pane.delete_button.rect.is_none(), "{setup}");
+            assert!(pane.send_now.rect.is_none(), "{setup}");
+            for col in 0..area.width {
+                assert_eq!(None, pane.edit_click(col, area.y), "{setup}");
+                assert_eq!(None, pane.delete_click(col, area.y), "{setup}");
+                assert_eq!(None, pane.send_now_click(col, area.y), "{setup}");
+            }
+            let text = buffer_text(&buf, area);
+            for chip in ["[Send now]", "[edit]", "[cancel]"] {
+                assert!(!text.contains(chip), "{setup}: {chip} rendered: {text:?}");
+            }
+            assert!(
+                text.contains("status update · protected"),
+                "{setup}: {text:?}"
             );
-            let capabilities = pane
-                .row_capabilities(pane.entry_ids()[0])
-                .expect("server row");
-            assert!(capabilities.can_edit(), "{kind}");
-            assert!(capabilities.can_delete(), "{kind}");
-            assert!(capabilities.can_reorder(), "{kind}");
-            assert!(capabilities.can_send_now(), "{kind}");
+        }
+    }
+
+    /// A read-only pane protects its local rows too, so a mirror never offers a control regardless of row origin.
+    #[test]
+    fn read_only_pane_protects_local_rows() {
+        let mut pane = QueuePane::new();
+        pane.set_mutation(QueueMutation::ReadOnly);
+        let mut local = std::collections::VecDeque::new();
+        local.push_back(local_prompt(1, "local draft"));
+        pane.sync_from_merged(&local, &[], None, None, &Default::default());
+        let id = *pane
+            .entry_ids()
+            .first()
+            .unwrap_or_else(|| panic!("queued id"));
+        assert_eq!(protected(), pane.row_capabilities(id).expect("local row"));
+        pane.list_state.select_by_id(id);
+        let registry = crate::actions::ActionRegistry::defaults();
+        assert_eq!(
+            None,
+            pane.handle_key(
+                &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                &registry
+            )
+        );
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(area);
+        pane.render(area, &mut buf, true, &LayoutConfig::default(), None, true);
+        assert!(pane.send_now.rect.is_none());
+        assert!(pane.edit_button.rect.is_none());
+        assert!(pane.delete_button.rect.is_none());
+        assert!(
+            buffer_text(&buf, area).contains("local draft · protected"),
+            "{:?}",
+            buffer_text(&buf, area)
+        );
+    }
+
+    fn span_texts(entry: &QueuedPromptEntry) -> Vec<String> {
+        entry
+            .styled
+            .spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect()
+    }
+
+    /// The marker is the last thing to fit: it renders only once the text (and any `(+N lines)` suffix) keeps at least the marker's width.
+    /// An editable row never carries it.
+    #[test]
+    fn protected_marker_yields_to_the_text_at_the_width_boundary() {
+        let mut protected = QueuedPromptEntry::from_server(
+            &wire("p1", "status update", 1),
+            1,
+            QueueMutation::ReadOnly,
+        );
+        protected.rebuild_styled_for_width(25);
+        assert_eq!(
+            vec![
+                String::from("status update"),
+                String::from(PROTECTED_MARKER)
+            ],
+            span_texts(&protected)
+        );
+        // 13 text columns plus the 12-column marker need 25: at 24 the text yields down to the marker's width
+        protected.rebuild_styled_for_width(24);
+        assert_eq!(
+            vec![String::from("status upda…"), String::from(PROTECTED_MARKER)],
+            span_texts(&protected)
+        );
+        protected.rebuild_styled_for_width(23);
+        assert_eq!(vec![String::from("status update")], span_texts(&protected));
+
+        // Multiline: " (+1 line)" (10) is reserved first, so the marker needs 10 + 12 + 12 = 34
+        let mut multiline = QueuedPromptEntry::from_server(
+            &wire("p2", "status update\nmore", 2),
+            2,
+            QueueMutation::ReadOnly,
+        );
+        multiline.rebuild_styled_for_width(34);
+        assert_eq!(
+            vec![
+                String::from("status upda…"),
+                String::from(" (+1 line) · protected")
+            ],
+            span_texts(&multiline)
+        );
+        multiline.rebuild_styled_for_width(33);
+        assert_eq!(
+            vec![String::from("status update"), String::from(" (+1 line)")],
+            span_texts(&multiline)
+        );
+
+        let mut editable = QueuedPromptEntry::from_server(
+            &wire("p3", "status update", 3),
+            3,
+            QueueMutation::PerRowKind,
+        );
+        editable.rebuild_styled_for_width(80);
+        assert_eq!(vec![String::from("status update")], span_texts(&editable));
+    }
+
+    #[test]
+    fn ordinary_and_unknown_server_rows_follow_the_pane_mutation() {
+        for kind in ["prompt", "future_server_kind"] {
+            for (mutation, expected) in [
+                (QueueMutation::PerRowKind, editable()),
+                (QueueMutation::ReadOnly, protected()),
+            ] {
+                let mut wire = wire("server-prompt", "ordinary prompt", 1);
+                wire.kind = String::from(kind);
+                let mut pane = QueuePane::new();
+                pane.set_mutation(mutation);
+                pane.sync_from_merged(
+                    &Default::default(),
+                    &[wire],
+                    None,
+                    None,
+                    &Default::default(),
+                );
+                let capabilities = pane
+                    .row_capabilities(
+                        *pane
+                            .entry_ids()
+                            .first()
+                            .unwrap_or_else(|| panic!("queued id")),
+                    )
+                    .expect("server row");
+                assert_eq!(expected, capabilities, "{kind} under {mutation:?}");
+            }
         }
     }
 
@@ -1193,7 +1338,7 @@ mod tests {
             "re-queued prompt must auto-show after external hide"
         );
         assert_eq!(pane.entries.len(), 1);
-        assert_eq!(pane.entries[0].text, "second");
+        assert_eq!(at(&pane.entries, 0).text, "second");
     }
 
     #[test]
@@ -1217,7 +1362,7 @@ mod tests {
             pane.overlay.visible,
             "hi2 must auto-show after x-delete of last queued prompt"
         );
-        assert_eq!(pane.entries[0].text, "hi2");
+        assert_eq!(at(&pane.entries, 0).text, "hi2");
     }
 
     #[test]
@@ -1258,7 +1403,7 @@ mod tests {
             &Default::default(),
         );
         let ids = pane.entry_ids();
-        pane.list_state.select_by_id(ids[0]);
+        pane.list_state.select_by_id(*at(&ids, 0));
 
         // "p1" starts running, so its row disappears.
         pane.sync_from_merged(
@@ -1289,7 +1434,12 @@ mod tests {
             None,
             &Default::default(),
         );
-        pane.list_state.select_by_id(pane.entry_ids()[0]);
+        pane.list_state.select_by_id(
+            *pane
+                .entry_ids()
+                .first()
+                .unwrap_or_else(|| panic!("queued id")),
+        );
 
         pane.sync_from_merged(&Default::default(), &[], None, None, &Default::default());
 
@@ -1309,9 +1459,9 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(pane.entries.len(), 2);
-        assert_eq!(pane.entries[0].text, "first");
-        assert_eq!(pane.entries[0].position, 1);
-        let r0 = pane.row_ref(pane.entries[0].id).unwrap();
+        assert_eq!(at(&pane.entries, 0).text, "first");
+        assert_eq!(at(&pane.entries, 0).position, 1);
+        let r0 = pane.row_ref(at(&pane.entries, 0).id).unwrap();
         assert_eq!(r0.origin, QueueRowOrigin::Server);
         assert_eq!(r0.server_id.as_deref(), Some("p1"));
 
@@ -1324,10 +1474,10 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(pane.entries.len(), 1);
-        assert_eq!(pane.entries[0].text, "second");
-        assert_eq!(pane.entries[0].position, 1);
+        assert_eq!(at(&pane.entries, 0).text, "second");
+        assert_eq!(at(&pane.entries, 0).position, 1);
         assert_eq!(
-            pane.row_ref(pane.entries[0].id)
+            pane.row_ref(at(&pane.entries, 0).id)
                 .unwrap()
                 .server_id
                 .as_deref(),
@@ -1351,9 +1501,9 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(pane.entries.len(), 1);
-        assert_eq!(pane.entries[0].text, "still waiting");
+        assert_eq!(at(&pane.entries, 0).text, "still waiting");
         assert_eq!(
-            pane.row_ref(pane.entries[0].id)
+            pane.row_ref(at(&pane.entries, 0).id)
                 .unwrap()
                 .server_id
                 .as_deref(),
@@ -1391,12 +1541,12 @@ mod tests {
         assert_eq!(pane.entries.len(), 2);
         // Server row first.
         assert_eq!(
-            pane.row_ref(pane.entries[0].id).unwrap().origin,
+            pane.row_ref(at(&pane.entries, 0).id).unwrap().origin,
             QueueRowOrigin::Server
         );
-        assert_eq!(pane.entries[0].text, "server one");
+        assert_eq!(at(&pane.entries, 0).text, "server one");
         // Local row second, keeping its u64 id and Local origin.
-        assert_eq!(pane.entries[1].id, 7);
+        assert_eq!(at(&pane.entries, 1).id, 7);
         let r1 = pane.row_ref(7).unwrap();
         assert_eq!(r1.origin, QueueRowOrigin::Local);
         assert_eq!(r1.server_id, None);
@@ -1416,7 +1566,7 @@ mod tests {
         // entries: [server p1, server p2, local 7]
         let ids = pane.entry_ids();
         assert_eq!(ids.len(), 3);
-        let (p1_id, p2_id, local_id) = (ids[0], ids[1], ids[2]);
+        let (p1_id, p2_id, local_id) = (*at(&ids, 0), *at(&ids, 1), *at(&ids, 2));
 
         // Deleting the trailing local row clamps to the new last row, which is the *server* row p2 (across the boundary), not a local row
         pane.list_state.select_by_id(local_id);
@@ -1490,8 +1640,13 @@ mod tests {
 
     #[test]
     fn test_single_line_no_suffix() {
-        let styled =
-            QueuedPromptEntry::build_styled("hello world", 1, QueueEntryKind::Prompt, None);
+        let styled = QueuedPromptEntry::build_styled(
+            "hello world",
+            1,
+            QueueEntryKind::Prompt,
+            None,
+            editable(),
+        );
         let text: String = styled.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "hello world");
         assert!(!text.contains("line"));
@@ -1499,7 +1654,13 @@ mod tests {
 
     #[test]
     fn test_multiline_suffix() {
-        let styled = QueuedPromptEntry::build_styled("first line", 5, QueueEntryKind::Prompt, None);
+        let styled = QueuedPromptEntry::build_styled(
+            "first line",
+            5,
+            QueueEntryKind::Prompt,
+            None,
+            editable(),
+        );
         let text: String = styled.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("first line"));
         assert!(text.contains("(+4 lines)"));
@@ -1509,7 +1670,7 @@ mod tests {
     #[test]
     fn copy_text_returns_full_prompt_not_display_suffix() {
         let full = "line one\nline two\nline three\nline four";
-        let entry = QueuedPromptEntry::new(&local_prompt(1, full), 1);
+        let entry = QueuedPromptEntry::new(&local_prompt(1, full), 1, QueueMutation::PerRowKind);
 
         // Precondition: display path still shows the collapsed row indicator.
         let display: String = entry
@@ -1574,7 +1735,13 @@ mod tests {
 
     #[test]
     fn test_multiline_singular() {
-        let styled = QueuedPromptEntry::build_styled("first line", 2, QueueEntryKind::Prompt, None);
+        let styled = QueuedPromptEntry::build_styled(
+            "first line",
+            2,
+            QueueEntryKind::Prompt,
+            None,
+            editable(),
+        );
         let text: String = styled.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("(+1 line)"));
         assert!(!text.contains("lines)"));
@@ -1583,15 +1750,25 @@ mod tests {
     #[test]
     fn test_truncation_preserves_suffix() {
         // Width of 25: "first line" (10) + " (+4 lines)" (11) = 21, fits
-        let styled =
-            QueuedPromptEntry::build_styled("first line", 5, QueueEntryKind::Prompt, Some(25));
+        let styled = QueuedPromptEntry::build_styled(
+            "first line",
+            5,
+            QueueEntryKind::Prompt,
+            Some(25),
+            editable(),
+        );
         let text: String = styled.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("first line"));
         assert!(text.contains("(+4 lines)"));
 
         // Width of 20: the first line must be truncated to fit the suffix
-        let styled =
-            QueuedPromptEntry::build_styled("first line here", 5, QueueEntryKind::Prompt, Some(20));
+        let styled = QueuedPromptEntry::build_styled(
+            "first line here",
+            5,
+            QueueEntryKind::Prompt,
+            Some(20),
+            editable(),
+        );
         let text: String = styled.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("(+4 lines)"));
         assert!(text.contains("…") || text.len() <= 20);
@@ -1605,6 +1782,7 @@ mod tests {
             10,
             QueueEntryKind::Prompt,
             Some(15), // " (+9 lines)" is 11 chars, leaving 4 for content
+            editable(),
         );
         let text: String = styled.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("(+9 lines)"));
@@ -1612,18 +1790,27 @@ mod tests {
 
     #[test]
     fn test_command_with_suffix() {
-        let styled = QueuedPromptEntry::build_styled("/help me", 3, QueueEntryKind::Command, None);
+        let styled = QueuedPromptEntry::build_styled(
+            "/help me",
+            3,
+            QueueEntryKind::Command,
+            None,
+            editable(),
+        );
         let text: String = styled.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("/help"));
         assert!(text.contains("(+2 lines)"));
     }
 
-    // -- Bash command queue pane tests --
-
     #[test]
     fn test_bash_command_has_bang_prefix() {
-        let styled =
-            QueuedPromptEntry::build_styled("ls -la", 1, QueueEntryKind::BashCommand, None);
+        let styled = QueuedPromptEntry::build_styled(
+            "ls -la",
+            1,
+            QueueEntryKind::BashCommand,
+            None,
+            editable(),
+        );
         let text: String = styled.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             text.starts_with("! "),
@@ -1634,8 +1821,13 @@ mod tests {
 
     #[test]
     fn test_bash_command_multiline_suffix() {
-        let styled =
-            QueuedPromptEntry::build_styled("echo hello", 3, QueueEntryKind::BashCommand, None);
+        let styled = QueuedPromptEntry::build_styled(
+            "echo hello",
+            3,
+            QueueEntryKind::BashCommand,
+            None,
+            editable(),
+        );
         let text: String = styled.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.starts_with("! "));
         assert!(text.contains("(+2 lines)"));
@@ -1648,13 +1840,15 @@ mod tests {
             1,
             QueueEntryKind::BashCommand,
             Some(15),
+            editable(),
         );
         let text: String = styled.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.starts_with("! "));
-        // Total should fit within width (prefix "! " is 2 chars, content truncated to 13)
+        assert!(
+            text.width() <= 15,
+            "bash row must reserve '! ' then truncate into max_width, got {text:?}"
+        );
     }
-
-    // -- Action-button rendering (hover + layout) ----------------------------
 
     /// The `[Interject]`, `[edit]`, and `[cancel]` buttons render flush against each other.
     /// The queued message behind the row then can't leak through a seam between them (no gap).
@@ -1668,7 +1862,7 @@ mod tests {
         ));
         pane.sync_from_merged(&local, &[], None, None, &Default::default());
         let ids = pane.entry_ids();
-        pane.list_state.select_by_id(ids[0]);
+        pane.list_state.select_by_id(*at(&ids, 0));
 
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
@@ -1697,7 +1891,7 @@ mod tests {
         local.push_back(local_prompt(1, "msg"));
         pane.sync_from_merged(&local, &[], None, None, &Default::default());
         let ids = pane.entry_ids();
-        pane.list_state.select_by_id(ids[0]);
+        pane.list_state.select_by_id(*at(&ids, 0));
 
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
@@ -1709,7 +1903,7 @@ mod tests {
         let send_now = pane.send_now.rect.expect("send-now button renders");
         let edit = pane.edit_button.rect.expect("edit button renders");
         let cancel = pane.delete_button.rect.expect("cancel button renders");
-        assert_eq!(pane.send_now.entry_id, Some(ids[0]));
+        assert_eq!(pane.send_now.entry_id, Some(*at(&ids, 0)));
         assert_eq!(send_now.x + send_now.width, edit.x);
         assert_eq!(edit.x + edit.width, cancel.x);
     }
@@ -1724,7 +1918,12 @@ mod tests {
         let mut local = std::collections::VecDeque::new();
         local.push_back(local_prompt(1, "msg"));
         pane.sync_from_merged(&local, &[], None, None, &Default::default());
-        pane.list_state.select_by_id(pane.entry_ids()[0]);
+        pane.list_state.select_by_id(
+            *pane
+                .entry_ids()
+                .first()
+                .unwrap_or_else(|| panic!("queued id")),
+        );
         let render = |pane: &mut QueuePane, inner_w: u16| {
             let area = Rect::new(0, 0, 80, 1);
             pane.render(
@@ -1780,7 +1979,7 @@ mod tests {
             local.push_back(local_prompt(1, "msg"));
             pane.sync_from_merged(&local, &[], None, None, &Default::default());
             let ids = pane.entry_ids();
-            pane.list_state.select_by_id(ids[0]);
+            pane.list_state.select_by_id(*at(&ids, 0));
 
             let area = Rect::new(0, 0, width, 1);
             let mut buf = Buffer::empty(area);
@@ -1804,8 +2003,9 @@ mod tests {
             }
             placed.sort_by_key(|(_, r)| r.x);
             for pair in placed.windows(2) {
-                let (an, a) = pair[0];
-                let (bn, b) = pair[1];
+                let [(an, a), (bn, b)] = pair else {
+                    continue;
+                };
                 assert!(
                     a.x + a.width <= b.x,
                     "{an} and {bn} rects must not overlap at width {width}: {a:?} vs {b:?}"
@@ -1842,9 +2042,9 @@ mod tests {
         pane.render(area, &mut buf, false, &layout_cfg, None, true);
 
         let ids = pane.entry_ids();
-        assert_eq!(pane.delete_button.entry_id, Some(ids[1]));
-        assert_eq!(pane.send_now.entry_id, Some(ids[1]));
-        assert_eq!(pane.edit_button.entry_id, Some(ids[1]));
+        assert_eq!(pane.delete_button.entry_id, Some(*at(&ids, 1)));
+        assert_eq!(pane.send_now.entry_id, Some(*at(&ids, 1)));
+        assert_eq!(pane.edit_button.entry_id, Some(*at(&ids, 1)));
         assert!(pane.delete_button.rect.is_some());
         assert!(pane.send_now.rect.is_some());
         assert!(pane.edit_button.rect.is_some());
@@ -1879,16 +2079,20 @@ mod tests {
         let hover_bg = Theme::current().row_hover_bg();
 
         // Hovered (second) row carries the hover bg across its full width.
-        assert_eq!(buf[(inner.x, inner.y + 1)].bg, hover_bg);
         assert_eq!(
-            buf[(inner.x + inner.width - 1, inner.y + 1)].bg,
-            hover_bg,
+            buf.cell((inner.x, inner.y + 1)).map(|c| c.bg),
+            Some(hover_bg)
+        );
+        assert_eq!(
+            buf.cell((inner.x + inner.width - 1, inner.y + 1))
+                .map(|c| c.bg),
+            Some(hover_bg),
             "hover bg spans the full row width"
         );
         // When the terminal has real colors the non-hovered row is visibly distinct
         // In headless tests every bg quantizes to `Reset`, so the difference is only asserted when the hover bg is a real color
         if hover_bg != ratatui::style::Color::Reset {
-            assert_ne!(buf[(inner.x, inner.y)].bg, hover_bg);
+            assert_ne!(buf.cell((inner.x, inner.y)).map(|c| c.bg), Some(hover_bg));
         }
     }
 
@@ -1901,7 +2105,7 @@ mod tests {
         local.push_back(local_prompt(1, "first"));
         pane.sync_from_merged(&local, &[], None, None, &Default::default());
         let ids = pane.entry_ids();
-        pane.list_state.select_by_id(ids[0]);
+        pane.list_state.select_by_id(*at(&ids, 0));
 
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
@@ -1910,7 +2114,9 @@ mod tests {
 
         pane.render(area, &mut buf, true, &layout_cfg, None, true);
         let rect = pane.send_now.rect.expect("interject button renders");
-        let non_hover_fg = buf[(rect.x, rect.y)].fg;
+        let Some(non_hover_fg) = buf.cell((rect.x, rect.y)).map(|c| c.fg) else {
+            panic!("interject cell");
+        };
         assert_eq!(non_hover_fg, theme.gray, "plain button uses gray fg");
 
         // Hovering the [Interject] button turns the fg text_primary
@@ -1918,11 +2124,15 @@ mod tests {
         pane.render(area, &mut buf, true, &layout_cfg, None, true);
         let rect = pane.send_now.rect.expect("interject button still renders");
         for x in rect.x..rect.x + rect.width {
-            assert_eq!(buf[(x, rect.y)].fg, theme.text_primary, "col {x}");
+            assert_eq!(
+                buf.cell((x, rect.y)).map(|c| c.fg),
+                Some(theme.text_primary),
+                "col {x}"
+            );
         }
         // With real colors the hover fg is visibly distinct from the plain fg (in headless tests every color quantizes to `Reset`)
         if theme.text_primary != theme.gray {
-            assert_ne!(buf[(rect.x, rect.y)].fg, non_hover_fg);
+            assert_ne!(buf.cell((rect.x, rect.y)).map(|c| c.fg), Some(non_hover_fg));
         }
     }
 
@@ -1947,7 +2157,7 @@ mod tests {
         // Establish layout, then scroll so rows 0 and 1 sit above the top and leave a stale hover on the now-off-screen first row
         pane.render(area, &mut buf, true, &layout_cfg, None, true);
         pane.list_state.set_scroll_offset(2);
-        pane.hovered_row_id = Some(ids[0]);
+        pane.hovered_row_id = Some(*at(&ids, 0));
         pane.render(area, &mut buf, true, &layout_cfg, None, true);
 
         assert!(
@@ -1976,7 +2186,7 @@ mod tests {
         local.push_back(local_prompt(1, "msg"));
         pane.sync_from_merged(&local, &[], None, None, &Default::default());
         let ids = pane.entry_ids();
-        pane.list_state.select_by_id(ids[0]);
+        pane.list_state.select_by_id(*at(&ids, 0));
 
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
@@ -2002,7 +2212,7 @@ mod tests {
         }
         pane.sync_from_merged(&local, &[], None, None, &Default::default());
         let ids = pane.entry_ids();
-        pane.list_state.select_by_id(ids[0]);
+        pane.list_state.select_by_id(*at(&ids, 0));
 
         // Queue area is 80 wide; the buffer is wider (outer padding) so the scrollbar column just past the area is in-bounds
         let area = Rect::new(0, 0, 80, 3);
@@ -2044,14 +2254,14 @@ mod tests {
         let inner = pane.last_inner.expect("inner area recorded during render");
         // Hover the top visible row, the first entry
         assert!(pane.update_row_hover(inner.x, inner.y));
-        assert_eq!(pane.hovered_row_id, Some(ids[0]));
+        assert_eq!(pane.hovered_row_id, Some(*at(&ids, 0)));
 
         // Wheel-scroll down one line with the cursor held over the top row.
         // The entry now under the pointer is the second one, and hover must refresh to it WITHOUT a separate mouse-move event
         pane.handle_scroll(1, inner.x, inner.y);
         assert_eq!(
             pane.hovered_row_id,
-            Some(ids[1]),
+            Some(*at(&ids, 1)),
             "scroll must refresh the hovered row to the entry now under the cursor"
         );
     }

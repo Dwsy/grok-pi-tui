@@ -409,7 +409,10 @@ impl SchedulerState {
             .iter()
             .position(|task| task.id == task_id)
             .ok_or_else(|| OccurrenceJournalError::TaskNotFound(task_id.to_owned()))?;
-        if self.tasks[index].recurring || !self.tasks[index].durable {
+        let Some(task) = self.tasks.get(index) else {
+            return Err(OccurrenceJournalError::TaskNotFound(task_id.to_owned()));
+        };
+        if task.recurring || !task.durable {
             return Err(OccurrenceJournalError::NotDurableOneShot(
                 task_id.to_owned(),
             ));
@@ -460,12 +463,26 @@ impl SchedulerState {
             }
         }
         let conflict_for = |occurrence: &OneShotOccurrence| {
-            if occurrence_counts[&occurrence.occurrence_id] > 1 {
+            if occurrence_counts
+                .get(&occurrence.occurrence_id)
+                .copied()
+                .is_some_and(|count| count > 1)
+            {
                 Some(OneShotJournalConflict::OccurrenceId)
-            } else if task_counts[&occurrence.task.id] > 1 {
+            } else if task_counts
+                .get(&occurrence.task.id)
+                .copied()
+                .is_some_and(|count| count > 1)
+            {
                 Some(OneShotJournalConflict::TaskId)
-            } else if version_counts[&occurrence.versions.fire()] > 1
-                || version_counts[&occurrence.versions.removal()] > 1
+            } else if version_counts
+                .get(&occurrence.versions.fire())
+                .copied()
+                .is_some_and(|count| count > 1)
+                || version_counts
+                    .get(&occurrence.versions.removal())
+                    .copied()
+                    .is_some_and(|count| count > 1)
             {
                 Some(OneShotJournalConflict::TransitionVersion)
             } else {

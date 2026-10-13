@@ -278,8 +278,7 @@ mod tests {
         app.agents
             .get_mut(&agent_id)
             .expect("agent present")
-            .subagent_views
-            .insert("sub-1".to_string(), Box::new(child));
+            .insert_test_child("sub-1".to_string(), Box::new(child));
 
         for &(mode, minimal) in &[
             (ScreenMode::Minimal, true),
@@ -303,7 +302,9 @@ mod tests {
                 mode,
                 "welcome prompt slash gate"
             );
-            let agent = &app.agents[&agent_id];
+            let Some(agent) = app.agents.get(&agent_id) else {
+                panic!("missing agent {agent_id:?}");
+            };
             assert_eq!(agent.is_minimal_mode(), minimal, "agent gate");
             let child = agent
                 .subagent_views
@@ -347,7 +348,9 @@ mod tests {
         reseed_screen_mode(&mut app, ScreenMode::Minimal);
         reseed_screen_mode(&mut app, ScreenMode::Fullscreen);
 
-        let agent = &app.agents[&agent_id];
+        let Some(agent) = app.agents.get(&agent_id) else {
+            panic!("missing agent {agent_id:?}");
+        };
         assert_eq!(
             agent
                 .scrollback

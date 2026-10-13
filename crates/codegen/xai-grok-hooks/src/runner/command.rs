@@ -385,19 +385,31 @@ fn rewrite_posix_env_refs_for_powershell<'a>(
         }
         let buf = out.get_or_insert_with(|| String::with_capacity(command.len() + 24));
         if quote == PsQuote::Bare {
-            let token_end = command[r.start..]
-                .find(|c: char| {
-                    c.is_whitespace()
-                        || matches!(c, ';' | '|' | '&' | '<' | '>' | '(' | ')' | '[' | ']' | ',')
+            let token_end = command
+                .get(r.start..)
+                .and_then(|s| {
+                    s.find(|c: char| {
+                        c.is_whitespace()
+                            || matches!(
+                                c,
+                                ';' | '|' | '&' | '<' | '>' | '(' | ')' | '[' | ']' | ','
+                            )
+                    })
                 })
                 .map_or(command.len(), |i| r.start + i);
-            buf.push_str(&command[cursor..r.start]);
+            if let Some(lit) = command.get(cursor..r.start) {
+                buf.push_str(lit);
+            }
             buf.push('"');
-            rewrite_ps_env_refs_in_span(buf, &command[r.start..token_end], extra_env);
+            if let Some(span) = command.get(r.start..token_end) {
+                rewrite_ps_env_refs_in_span(buf, span, extra_env);
+            }
             buf.push('"');
             cursor = token_end;
         } else {
-            buf.push_str(&command[cursor..r.start]);
+            if let Some(lit) = command.get(cursor..r.start) {
+                buf.push_str(lit);
+            }
             push_ps_env_ref(buf, r.braced, r.name);
             cursor = r.end;
         }
@@ -408,7 +420,9 @@ fn rewrite_posix_env_refs_for_powershell<'a>(
     match out {
         None => Cow::Borrowed(command),
         Some(mut buf) => {
-            buf.push_str(&command[cursor..]);
+            if let Some(tail) = command.get(cursor..) {
+                buf.push_str(tail);
+            }
             if first_rewrite_at.is_some_and(|at| {
                 let pad = command.len() - command.trim_start().len();
                 at == pad || (command.as_bytes().get(pad) == Some(&b'"') && at == pad + 1)
@@ -435,11 +449,15 @@ fn rewrite_ps_env_refs_in_span(
         if !RUNNER_ALWAYS_SET_ENV.contains(&r.name) && !extra_env.contains_key(r.name) {
             continue;
         }
-        buf.push_str(&span[cur..r.start]);
+        if let Some(lit) = span.get(cur..r.start) {
+            buf.push_str(lit);
+        }
         push_ps_env_ref(buf, r.braced, r.name);
         cur = r.end;
     }
-    buf.push_str(&span[cur..]);
+    if let Some(tail) = span.get(cur..) {
+        buf.push_str(tail);
+    }
 }
 
 #[cfg(any(test, not(unix)))]
@@ -460,7 +478,9 @@ fn powershell_ctx_at(command: &str, at: usize) -> (PsQuote, bool) {
     let mut i = 0;
     let mut quote = PsQuote::Bare;
     while i < at {
-        let c = bytes[i];
+        let Some(&c) = bytes.get(i) else {
+            break;
+        };
         match quote {
             PsQuote::Single => {
                 if c == b'\'' {
@@ -493,7 +513,8 @@ fn powershell_ctx_at(command: &str, at: usize) -> (PsQuote, bool) {
             }
         }
     }
-    let escaped = quote != PsQuote::Single && at > 0 && bytes[at - 1] == b'`';
+    let escaped = quote != PsQuote::Single
+        && at.checked_sub(1).and_then(|j| bytes.get(j)).copied() == Some(b'`');
     (quote, escaped)
 }
 
@@ -558,9 +579,14 @@ fn find_local_shell_assignments(command_str: &str) -> std::collections::HashSet<
         }
         let mut j = idx;
         while j > 0 {
-            let c = bytes[j - 1];
+            let Some(prev) = j.checked_sub(1) else {
+                return true;
+            };
+            let Some(&c) = bytes.get(prev) else {
+                return true;
+            };
             if c == b' ' || c == b'\t' {
-                j -= 1;
+                j = prev;
                 continue;
             }
             return matches!(c, b';' | b'&' | b'|' | b'\n' | b'(' | b'{');
@@ -568,29 +594,39 @@ fn find_local_shell_assignments(command_str: &str) -> std::collections::HashSet<
         true
     };
     while i < bytes.len() {
-        let c = bytes[i];
+        let Some(&c) = bytes.get(i) else {
+            break;
+        };
         if !(c.is_ascii_alphabetic() || c == b'_') {
             i += 1;
             continue;
         }
         let start = i;
-        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        while bytes
+            .get(i)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        {
             i += 1;
         }
-        let ident = std::str::from_utf8(&bytes[start..i]).unwrap_or("");
+        let ident = bytes
+            .get(start..i)
+            .and_then(|s| std::str::from_utf8(s).ok())
+            .unwrap_or("");
         if ident.is_empty() {
             continue;
         }
-        if i < bytes.len() && bytes[i] == b'=' && is_statement_start(start) {
+        if bytes.get(i).copied() == Some(b'=') && is_statement_start(start) {
             names.insert(ident.to_string());
             continue;
         }
         if ident == "read" && is_statement_start(start) {
-            while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+            while bytes.get(i).is_some_and(|&b| b == b' ' || b == b'\t') {
                 i += 1;
             }
             while i < bytes.len() {
-                let c2 = bytes[i];
+                let Some(&c2) = bytes.get(i) else {
+                    break;
+                };
                 if matches!(c2, b';' | b'&' | b'|' | b'\n' | b'<' | b'>') {
                     break;
                 }
@@ -599,7 +635,7 @@ fn find_local_shell_assignments(command_str: &str) -> std::collections::HashSet<
                     continue;
                 }
                 if c2 == b'-' {
-                    while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' {
+                    while bytes.get(i).is_some_and(|&b| b != b' ' && b != b'\t') {
                         i += 1;
                     }
                     continue;
@@ -608,10 +644,16 @@ fn find_local_shell_assignments(command_str: &str) -> std::collections::HashSet<
                     break;
                 }
                 let s = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                while bytes
+                    .get(i)
+                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                {
                     i += 1;
                 }
-                let read_ident = std::str::from_utf8(&bytes[s..i]).unwrap_or("");
+                let read_ident = bytes
+                    .get(s..i)
+                    .and_then(|b| std::str::from_utf8(b).ok())
+                    .unwrap_or("");
                 if !read_ident.is_empty() {
                     names.insert(read_ident.to_string());
                 }
@@ -930,7 +972,10 @@ fn truncate_output(bytes: &[u8]) -> String {
     if bytes.len() <= MAX_OUTPUT_BYTES {
         String::from_utf8_lossy(bytes).into_owned()
     } else {
-        let mut truncated = String::from_utf8_lossy(&bytes[..MAX_OUTPUT_BYTES]).into_owned();
+        let Some(head) = bytes.get(..MAX_OUTPUT_BYTES) else {
+            return String::from_utf8_lossy(bytes).into_owned();
+        };
+        let mut truncated = String::from_utf8_lossy(head).into_owned();
         truncated.push_str(" [truncated]");
         tracing::warn!(
             total_bytes = bytes.len(),
@@ -975,7 +1020,10 @@ mod tests {
             r#"{"hookSpecificOutput":{"updatedInput":{"command":"xb build"}}}"#,
             r#"{"decision":"allow","hookSpecificOutput":{"updatedInput":{"command":"xb build"}}}"#,
         ] {
-            assert_eq!(rewrite(parse(json))["command"], "xb build");
+            assert_eq!(
+                rewrite(parse(json)).get("command").and_then(|v| v.as_str()),
+                Some("xb build")
+            );
         }
         assert!(matches!(
             parse(r#"{"decision":"deny","hookSpecificOutput":{"updatedInput":{"command":"x"}}}"#),

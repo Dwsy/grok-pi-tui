@@ -32,12 +32,11 @@ impl TestHarness {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let working_dir = temp_dir.path().to_path_buf();
 
-        // Initialize a git repo using CLI
         git(&working_dir, &["init"]);
         git(&working_dir, &["config", "user.name", "Test User"]);
         git(&working_dir, &["config", "user.email", "test@test.com"]);
 
-        // Create an initial commit with an empty tree so HEAD exists
+        // Empty-tree commit so HEAD exists before any file is written.
         git(
             &working_dir,
             &["commit", "--allow-empty", "-m", "Initial commit"],
@@ -70,14 +69,12 @@ impl TestHarness {
         }
         std::fs::write(&full_path, content).expect("Failed to write file");
 
-        // Stage and commit
         git(&self.working_dir, &["add", path]);
         git(
             &self.working_dir,
             &["commit", "-m", &format!("Add baseline for {}", path)],
         );
 
-        // Verify the file is actually in HEAD
         let output = Command::new("git")
             .args(["show", &format!("HEAD:{}", path)])
             .current_dir(&self.working_dir)
@@ -92,12 +89,10 @@ impl TestHarness {
     /// Also writes to disk to simulate what a real agent tool would do.
     fn agent_write(&self, path: &str, content: &str, prompt_index: usize) {
         let abs_path = self.working_dir.join(path);
-        // Write to disk first (simulating what a real agent tool does)
         if let Some(parent) = abs_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
         std::fs::write(&abs_path, content).expect("Failed to write file");
-        // Then notify the hunk tracker
         self.handle
             .record_agent_write(abs_path, content.to_string(), prompt_index, None);
     }
@@ -112,12 +107,10 @@ impl TestHarness {
         previous_content: Option<&str>,
     ) {
         let abs_path = self.working_dir.join(path);
-        // Write to disk first (simulating what a real agent tool does)
         if let Some(parent) = abs_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
         std::fs::write(&abs_path, content).expect("Failed to write file");
-        // Then notify the hunk tracker with previous_content
         self.handle.record_agent_write(
             abs_path,
             content.to_string(),
@@ -133,7 +126,6 @@ impl TestHarness {
             std::fs::create_dir_all(parent).ok();
         }
         std::fs::write(&full_path, content).expect("Failed to write file");
-        // Pass absolute path to handle_file_change
         self.handle.handle_file_change(full_path);
     }
 
@@ -183,9 +175,7 @@ impl TestHarness {
         events
     }
 
-    /// Wait for the actor to finish processing all queued commands. Instead of an arbitrary sleep, we send a query to the
-    /// actor and await the response. Since the actor processes commands sequentially, receiving a reply guarantees that every
-    /// prior command (and its side-effects
+    /// Barrier: a query reply means every prior command has been processed.
     async fn settle(&mut self) {
         let _ = self.handle.get_all_hunks().await;
     }
@@ -198,9 +188,19 @@ impl TestHarness {
     }
 }
 
-// =========================================================================
-// Basic Hunk Tracking Tests
-// =========================================================================
+fn only_item<T: std::fmt::Debug>(xs: &[T]) -> &T {
+    let Some(x) = xs.first() else {
+        panic!("expected at least one item: {xs:?}");
+    };
+    x
+}
+
+fn item_at<T: std::fmt::Debug>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected item {i}: {xs:?}");
+    };
+    x
+}
 
 #[tokio::test]
 async fn test_new_file_creates_single_hunk() {
@@ -212,12 +212,12 @@ async fn test_new_file_creates_single_hunk() {
 
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1, "Expected 1 hunk for new file");
-    assert_eq!(hunks[0].path, harness.abs_path("foo.rs"));
+    assert_eq!(only_item(&hunks).path, harness.abs_path("foo.rs"));
     assert!(
-        hunks[0].old_text.is_none(),
+        only_item(&hunks).old_text.is_none(),
         "New file should have no old text"
     );
-    assert_eq!(hunks[0].new_text, "fn main() {}\n");
+    assert_eq!(only_item(&hunks).new_text, "fn main() {}\n");
 }
 
 #[tokio::test]
@@ -245,8 +245,8 @@ async fn test_modify_existing_file_creates_hunk() {
 
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1);
-    assert_eq!(hunks[0].old_text, Some("line 2\n".to_string()));
-    assert_eq!(hunks[0].new_text, "modified\n");
+    assert_eq!(only_item(&hunks).old_text, Some("line 2\n".to_string()));
+    assert_eq!(only_item(&hunks).new_text, "modified\n");
 }
 
 #[tokio::test]
@@ -261,7 +261,7 @@ async fn test_multiple_edits_same_region_merge() {
 
     let hunks1 = harness.get_all_hunks().await;
     assert_eq!(hunks1.len(), 1);
-    let first_hunk_id = hunks1[0].id.clone();
+    let first_hunk_id = only_item(&hunks1).id.clone();
 
     // Second edit to same region
     harness.agent_write("foo.rs", "line 1\nmodified again\nline 3\n", 1);
@@ -275,8 +275,12 @@ async fn test_multiple_edits_same_region_merge() {
     );
 
     // Hunk ID should be preserved for overlapping edits
-    assert_eq!(hunks2[0].id, first_hunk_id, "Hunk ID should be preserved");
-    assert_eq!(hunks2[0].new_text, "modified again\n");
+    assert_eq!(
+        only_item(&hunks2).id,
+        first_hunk_id,
+        "Hunk ID should be preserved"
+    );
+    assert_eq!(only_item(&hunks2).new_text, "modified again\n");
 }
 
 #[tokio::test]
@@ -336,10 +340,6 @@ async fn test_revert_to_baseline_removes_hunk() {
     );
 }
 
-// =========================================================================
-// Hunk Accept/Reject Tests
-// =========================================================================
-
 #[tokio::test]
 async fn test_accept_hunk_removes_it() {
     let mut harness = TestHarness::new();
@@ -351,7 +351,7 @@ async fn test_accept_hunk_removes_it() {
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1);
 
-    let success = harness.accept_hunk(&hunks[0].id).await;
+    let success = harness.accept_hunk(&only_item(&hunks).id).await;
     assert!(success);
     harness.settle().await;
 
@@ -370,7 +370,7 @@ async fn test_reject_hunk_reverts_file() {
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1);
 
-    let success = harness.reject_hunk(&hunks[0].id).await;
+    let success = harness.reject_hunk(&only_item(&hunks).id).await;
     assert!(success);
     harness.settle().await;
 
@@ -381,10 +381,6 @@ async fn test_reject_hunk_reverts_file() {
     let hunks_after = harness.get_all_hunks().await;
     assert!(hunks_after.is_empty(), "Rejected hunk should be removed");
 }
-
-// =========================================================================
-// Event Emission Tests
-// =========================================================================
 
 #[tokio::test]
 async fn test_hunk_added_event_emitted() {
@@ -426,10 +422,6 @@ async fn test_hunk_removed_event_on_revert() {
     assert!(has_removed, "Should emit HunkRemoved event when reverting");
 }
 
-// =========================================================================
-// Prompt Index Attribution Tests
-// =========================================================================
-
 #[tokio::test]
 async fn test_hunks_have_prompt_index() {
     let mut harness = TestHarness::new();
@@ -440,7 +432,7 @@ async fn test_hunks_have_prompt_index() {
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1);
 
-    match &hunks[0].source {
+    match &only_item(&hunks).source {
         crate::types::HunkSource::AgentEdit { prompt_index, .. } => {
             assert_eq!(*prompt_index, 0);
         }
@@ -510,7 +502,7 @@ EXTERNAL_CHANGE
         1,
         "Only agent turns should be included"
     );
-    assert_eq!(summary.turns[0].prompt_index, 0);
+    assert_eq!(only_item(&summary.turns).prompt_index, 0);
     assert_eq!(
         summary.pending_hunks, 1,
         "Totals should only include agent-attributed hunks"
@@ -663,7 +655,7 @@ EXTERNAL
         1,
         "Agent edits re-attribute hunks to the latest prompt_index"
     );
-    assert_eq!(summary.turns[0].prompt_index, 1);
+    assert_eq!(only_item(&summary.turns).prompt_index, 1);
     assert_eq!(
         summary.pending_hunks, 2,
         "Only agent hunks should count toward totals"
@@ -774,10 +766,6 @@ line 5
     assert_eq!(summary.files_with_pending, 0);
 }
 
-// =========================================================================
-// Source Attribution Preservation Tests
-// =========================================================================
-
 #[tokio::test]
 async fn test_external_edit_preserves_agent_hunk_source() {
     let mut harness = TestHarness::new();
@@ -818,10 +806,10 @@ line 10
 
     let hunks_before = harness.get_all_hunks().await;
     assert_eq!(hunks_before.len(), 1, "Should have 1 hunk from agent edit");
-    let agent_hunk_id = hunks_before[0].id.clone();
+    let agent_hunk_id = only_item(&hunks_before).id.clone();
 
     // Verify it's an agent hunk
-    match &hunks_before[0].source {
+    match &only_item(&hunks_before).source {
         crate::types::HunkSource::AgentEdit { prompt_index } => {
             assert_eq!(*prompt_index, 0, "Should have prompt_index 0");
         }
@@ -896,10 +884,6 @@ line 10
     }
 }
 
-// =========================================================================
-// Binary File Handling Tests
-// =========================================================================
-
 #[tokio::test]
 async fn test_binary_file_agent_write_ignored() {
     let mut harness = TestHarness::new();
@@ -926,20 +910,15 @@ async fn test_text_file_with_valid_utf8_tracked() {
 
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1, "Valid UTF-8 text should create a hunk");
-    assert_eq!(hunks[0].new_text, "Hello, 世界!\n");
+    assert_eq!(only_item(&hunks).new_text, "Hello, 世界!\n");
 }
 
-// Accept/Reject Per-Hunk Tests (Bug Demonstration). These tests explicitly demonstrate the bug where accept/reject
-// affects ALL hunks in a file instead of just the targeted hunk. Each test shows: The CURRENT broken behavior (what
-// happens now); What the CORRECT behavior should be (commented with TODO).
-
-/// BUG DEMONSTRATION: Accept sets baseline = current_content (whole file). This test shows that after accepting a hunk,
-/// the baseline becomes the entire current file, which means on the next recompute, there will be no diff (no hunks).
+/// Accepting a hunk folds it into the baseline; a later edit of another
+/// line is a new hunk, and the accepted text does not reappear.
 #[tokio::test]
 async fn test_bug_accept_makes_baseline_equal_current() {
     let mut harness = TestHarness::new();
 
-    // Setup
     harness.write_baseline(
         "baseline_bug.rs",
         r#"original line 1
@@ -960,11 +939,9 @@ original line 2
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1, "Should have 1 hunk");
 
-    // Accept the hunk
-    harness.accept_hunk(&hunks[0].id).await;
+    harness.accept_hunk(&only_item(&hunks).id).await;
     harness.settle().await;
 
-    // Now make a NEW change to a DIFFERENT line
     harness.agent_write(
         "baseline_bug.rs",
         r#"modified line 1
@@ -976,35 +953,24 @@ NEW CHANGE
 
     let new_hunks = harness.get_all_hunks().await;
 
-    // ============================================================
-    // This SHOULD work correctly - new change creates new hunk
-    // ============================================================
     assert_eq!(
         new_hunks.len(),
         1,
         "New change should create a new hunk (baseline was updated correctly)"
     );
 
-    // The new hunk should be for line 2, not line 1
     assert!(
-        new_hunks[0].new_text.contains("NEW CHANGE"),
+        only_item(&new_hunks).new_text.contains("NEW CHANGE"),
         "New hunk should be for the new change"
     );
 
-    // The old change (line 1) should NOT appear as a hunk anymore
-    // because it was accepted into the baseline
     assert!(
-        !new_hunks[0].new_text.contains("modified line 1"),
+        !only_item(&new_hunks).new_text.contains("modified line 1"),
         "Accepted change should not reappear as a hunk"
     );
 }
 
-// =========================================================================
-// Tests that will PASS after the fix is implemented
-// =========================================================================
-
-/// EXPECTED BEHAVIOR: Accept one hunk, other hunks remain. This test will FAIL now but should PASS after the fix. It
-/// triggers a recompute after accept to expose the bug.
+/// Accepting one hunk leaves the other hunks in the same file.
 #[tokio::test]
 async fn test_accept_one_hunk_preserves_other_hunks() {
     let mut harness = TestHarness::new();
@@ -1024,7 +990,6 @@ line 10
 "#,
     );
 
-    // Make 2 separate changes
     harness.agent_write(
         "multi.rs",
         r#"line 1
@@ -1056,11 +1021,9 @@ line 10
         .id
         .clone();
 
-    // Accept only hunk for line 2
     harness.accept_hunk(&hunk_2.id).await;
     harness.settle().await;
 
-    // Trigger a recompute by re-writing the same content (simulates any file touch)
     harness.external_write(
         "multi.rs",
         r#"line 1
@@ -1079,22 +1042,20 @@ line 10
 
     let hunks_after = harness.get_all_hunks().await;
 
-    // CORRECT BEHAVIOR (will fail until fix is implemented):
     assert_eq!(
         hunks_after.len(),
         1,
-        "EXPECTED: 1 hunk remains (line 9). ACTUAL with bug: 0 hunks"
+        "1 hunk remains (line 9) after accepting the other"
     );
 
     assert_eq!(
-        hunks_after[0].id, hunk_9_id,
+        only_item(&hunks_after).id,
+        hunk_9_id,
         "Remaining hunk should be the one for line 9"
     );
 }
 
-/// EXPECTED BEHAVIOR: Reject one hunk, other hunks remain, file partially reverted
-///
-/// This test will FAIL now but should PASS after the fix.
+/// Rejecting one hunk leaves the other hunks and only reverts that hunk.
 #[tokio::test]
 async fn test_reject_one_hunk_preserves_other_hunks() {
     let mut harness = TestHarness::new();
@@ -1146,17 +1107,14 @@ line 10
         .id
         .clone();
 
-    // Reject only hunk for line 9
     harness.reject_hunk(&hunk_9.id).await;
     harness.settle().await;
 
-    // Check file content
     let content = std::fs::read_to_string(harness.working_dir.join("multi.rs")).unwrap();
 
-    // CORRECT BEHAVIOR (will fail until fix is implemented):
     assert!(
         content.contains("CHANGED_2"),
-        "EXPECTED: Line 2 change remains. ACTUAL with bug: reverted"
+        "Line 2 change remains after rejecting line 9"
     );
     assert!(
         !content.contains("CHANGED_9"),
@@ -1171,17 +1129,17 @@ line 10
     assert_eq!(
         hunks_after.len(),
         1,
-        "EXPECTED: 1 hunk remains (line 2). ACTUAL with bug: 0 hunks"
+        "1 hunk remains (line 2) after rejecting the other"
     );
 
     assert_eq!(
-        hunks_after[0].id, hunk_2_id,
+        only_item(&hunks_after).id,
+        hunk_2_id,
         "Remaining hunk should be the one for line 2"
     );
 }
 
-/// EXPECTED BEHAVIOR: Sequential accepts work correctly. Accept hunks one by one, each time the remaining hunks should
-/// stay. This test triggers recomputes to expose the bug.
+/// Sequential accepts leave remaining hunks after each accept.
 #[tokio::test]
 async fn test_sequential_accepts_preserve_remaining_hunks() {
     let mut harness = TestHarness::new();
@@ -1240,11 +1198,7 @@ line 12
     harness.settle().await;
 
     let after_a = harness.get_all_hunks().await;
-    assert_eq!(
-        after_a.len(),
-        2,
-        "EXPECTED: 2 hunks remain after accepting A. ACTUAL with bug: 0"
-    );
+    assert_eq!(after_a.len(), 2, "2 hunks remain after accepting A");
 
     // Accept hunk B
     let hunk_b = after_a
@@ -1260,11 +1214,7 @@ line 12
     harness.settle().await;
 
     let after_b = harness.get_all_hunks().await;
-    assert_eq!(
-        after_b.len(),
-        1,
-        "EXPECTED: 1 hunk remains after accepting B"
-    );
+    assert_eq!(after_b.len(), 1, "1 hunk remains after accepting B");
 
     // Accept hunk C
     let hunk_c = after_b
@@ -1278,8 +1228,7 @@ line 12
     assert_eq!(after_c.len(), 0, "No hunks after accepting all");
 }
 
-/// EXPECTED BEHAVIOR: Mixed accept and reject operations
-/// This test triggers recomputes to expose the bug.
+/// Mixed accept then reject leaves the untouched hunk and the accepted text.
 #[tokio::test]
 async fn test_mixed_accept_reject_operations() {
     let mut harness = TestHarness::new();
@@ -1338,11 +1287,7 @@ line 12
     harness.settle().await;
 
     let after_accept = harness.get_all_hunks().await;
-    assert_eq!(
-        after_accept.len(),
-        2,
-        "EXPECTED: 2 hunks remain after accept. ACTUAL with bug: 0"
-    );
+    assert_eq!(after_accept.len(), 2, "2 hunks remain after accept");
 
     // Reject the second hunk
     let reject_hunk = after_accept
@@ -1353,7 +1298,7 @@ line 12
     harness.settle().await;
 
     let after_reject = harness.get_all_hunks().await;
-    assert_eq!(after_reject.len(), 1, "EXPECTED: 1 hunk remains (LEAVE_ME)");
+    assert_eq!(after_reject.len(), 1, "1 hunk remains (LEAVE_ME)");
 
     // Verify final file state
     let content = std::fs::read_to_string(harness.working_dir.join("mixed.rs")).unwrap();
@@ -1375,11 +1320,7 @@ line 12
     );
 }
 
-// These tests demonstrate the bug where agent-to-agent overlapping edits lose the latest prompt_index attribution.
-
-/// EXPECTED BEHAVIOR: Agent-to-agent merge updates prompt_index
-///
-/// This test will FAIL now but should PASS after the fix.
+/// Overlapping agent edits keep the later prompt_index.
 #[tokio::test]
 async fn test_agent_to_agent_merge_updates_prompt_index() {
     let mut harness = TestHarness::new();
@@ -1423,54 +1364,31 @@ line 5
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1, "Should have 1 hunk");
 
-    // CORRECT BEHAVIOR (will fail until fix is implemented):
-    match &hunks[0].source {
+    match &only_item(&hunks).source {
         crate::types::HunkSource::AgentEdit { prompt_index } => {
-            assert_eq!(
-                *prompt_index, 1,
-                "EXPECTED: Hunk attributed to turn 1. ACTUAL with bug: turn 0"
-            );
+            assert_eq!(*prompt_index, 1);
         }
         _ => panic!("Expected AgentEdit source"),
     }
 }
 
-// Integration Bug Test: record_agent_write vs handle_file_change. This test demonstrates the bug in the CLI shell where
-// tool execution only triggers fs_notify (handle_file_change) but never calls record_agent_write. This means ALL hunks
-// from agent tools are classified as External, not AgentEdit.
-
-/// This test shows that when a file change comes through handle_file_change (as happens via fs_notify in the CLI shell),
-/// the hunk is created as External, not as AgentEdit with a prompt_index. The fix requires calling record_agent_write
-/// from tool execution paths (search_replace, write_file, etc.) BEFORE the fs_notify event fires.
+/// fs_notify-only changes (`handle_file_change`) stay External until
+/// `record_agent_write` marks the file as agent-owned.
 #[tokio::test]
 async fn test_bug_fs_notify_path_creates_external_hunks_not_agent_hunks() {
-    // Use AllDirty mode to track all file changes (including external)
     let mut harness = TestHarness::with_mode(TrackingMode::AllDirty);
 
-    // Write a baseline file
     harness.write_baseline("tool_test.rs", "original content\n");
-
-    // Simulate what fs_notify + forward_to_hunk_tracker does:
-    // It writes the file to disk and calls handle_file_change (NOT record_agent_write)
     harness.external_write("tool_test.rs", "modified by agent tool\n");
     harness.settle().await;
 
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1, "Should have 1 hunk");
 
-    // BUG: The hunk is External, not AgentEdit
-    match &hunks[0].source {
-        crate::types::HunkSource::External => {
-            // This is the CURRENT BROKEN BEHAVIOR Since forward_to_hunk_tracker only calls handle_file_change, and the file wasn't
-            // previously tracked as an agent file, the hunk is created as External.
-        }
+    match &only_item(&hunks).source {
+        crate::types::HunkSource::External => {}
         crate::types::HunkSource::AgentEdit { prompt_index } => {
-            panic!(
-                "BUG: Hunk has AgentEdit source with prompt_index={}, but \
-                handle_file_change was used (simulating fs_notify path). \
-                This means record_agent_write was called somewhere.",
-                prompt_index
-            );
+            panic!("handle_file_change must not invent AgentEdit (prompt_index={prompt_index})");
         }
         crate::types::HunkSource::ExternalEditOnAgentFile => {
             panic!("Unexpected ExternalEditOnAgentFile - file was never marked as agent file");
@@ -1478,102 +1396,52 @@ async fn test_bug_fs_notify_path_creates_external_hunks_not_agent_hunks() {
     }
 }
 
-/// Test that record_agent_write creates AgentEdit hunks with prompt_index. This shows the CORRECT behavior when
-/// record_agent_write is called. Tool execution should follow this path, not the fs_notify/handle_file_change path.
-#[tokio::test]
-async fn test_record_agent_write_creates_agent_edit_hunks() {
-    let mut harness = TestHarness::new();
-
-    // Write a baseline file
-    harness.write_baseline("tool_correct.rs", "original content\n");
-
-    // Simulate what SHOULD happen: tool calls record_agent_write directly
-    let prompt_index = 5; // Example prompt index
-    harness.agent_write("tool_correct.rs", "modified by agent tool\n", prompt_index);
-    harness.settle().await;
-
-    let hunks = harness.get_all_hunks().await;
-    assert_eq!(hunks.len(), 1, "Should have 1 hunk");
-
-    // CORRECT: The hunk is AgentEdit with the prompt_index
-    match &hunks[0].source {
-        crate::types::HunkSource::AgentEdit { prompt_index: idx } => {
-            assert_eq!(
-                *idx, prompt_index,
-                "Hunk should have the correct prompt_index"
-            );
-        }
-        crate::types::HunkSource::External => {
-            panic!("Hunk should be AgentEdit, not External");
-        }
-        crate::types::HunkSource::ExternalEditOnAgentFile => {
-            panic!("Hunk should be AgentEdit, not ExternalEditOnAgentFile");
-        }
-    }
-}
-
-/// Integration test: record_agent_write should be called BEFORE fs_notify fires. This tests the race condition scenario
-/// where: The fix should ensure record_agent_write is called BEFORE or INSTEAD OF relying on fs_notify for
-/// agent-initiated writes.
+/// Agent attribution survives a later fs_notify of the same content.
 #[tokio::test]
 async fn test_agent_write_before_external_preserves_attribution() {
     let mut harness = TestHarness::new();
 
     harness.write_baseline("race.rs", "original\n");
 
-    // Step 1: Call record_agent_write (what the tool SHOULD do)
     harness.agent_write("race.rs", "agent modified\n", 3);
     harness.settle().await;
 
     let hunks_after_agent = harness.get_all_hunks().await;
     assert_eq!(hunks_after_agent.len(), 1);
 
-    // Verify it's an AgentEdit
-    match &hunks_after_agent[0].source {
+    match &only_item(&hunks_after_agent).source {
         crate::types::HunkSource::AgentEdit { prompt_index } => {
             assert_eq!(*prompt_index, 3);
         }
         _ => panic!("Expected AgentEdit after agent_write"),
     }
 
-    // Step 2: Simulate fs_notify firing for the same content
-    // (this happens because the file was written to disk)
     harness.external_write("race.rs", "agent modified\n");
     harness.settle().await;
 
     let hunks_after_notify = harness.get_all_hunks().await;
     assert_eq!(hunks_after_notify.len(), 1, "Should still have 1 hunk");
 
-    // The hunk should STILL be AgentEdit (not changed to External)
-    // because record_agent_write marked the file as an agent file
-    match &hunks_after_notify[0].source {
+    match &only_item(&hunks_after_notify).source {
         crate::types::HunkSource::AgentEdit { prompt_index } => {
             assert_eq!(
                 *prompt_index, 3,
                 "Agent attribution should be preserved after fs_notify"
             );
         }
-        crate::types::HunkSource::ExternalEditOnAgentFile => {
-            // This is also acceptable - the file is known to be an agent file
-            // and the content matches, so it's not re-attributed
-        }
+        crate::types::HunkSource::ExternalEditOnAgentFile => {}
         crate::types::HunkSource::External => {
             panic!("Hunk should not become External after fs_notify on agent file");
         }
     }
 }
 
-/// REPRO TEST: Multiple insertions cause baseline shifts that break hunk matching
-/// This test should FAIL on the old buggy code and PASS on the fixed code.
+/// Accepting several insertion hunks must not fail when later hunks shift.
 #[tokio::test]
 async fn test_repro_bulk_accept_insertion_baseline_shifts() {
     let mut harness = TestHarness::new();
 
-    // Simple baseline - each line is just a number
     harness.write_baseline("numbers.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
-
-    // Insert new lines between every other line
-    // This creates hunks that are pure insertions (old_count=0)
     harness.agent_write(
         "numbers.txt",
         "1\nINSERT_A\n2\n3\nINSERT_B\n4\n5\n6\nINSERT_C\n7\n8\n9\n10\n",
@@ -1584,32 +1452,10 @@ async fn test_repro_bulk_accept_insertion_baseline_shifts() {
     let hunks_before = harness.get_all_hunks().await;
     assert_eq!(hunks_before.len(), 3, "Should have 3 insertion hunks");
 
-    println!("\n=== BEFORE accept_all ===");
-    for hunk in &hunks_before {
-        println!(
-            "Hunk {}: old_start={}, old_count={}, new_start={}, old_text={:?}, new_text={:?}",
-            &hunk.id.as_str()[..8],
-            hunk.line_info.old_start,
-            hunk.line_info.old_count,
-            hunk.line_info.new_start,
-            hunk.old_text,
-            hunk.new_text
-        );
-    }
-
-    // apply_hunk_action(hunk_A) at old_start=2; patches baseline: "1\nINSERT_A\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"; recompute
-    // diffs new baseline vs current.
-
     let result = harness.handle.all_action(HunkAction::Accept).await;
-
-    if let Err(ref e) = result {
-        println!("\n=== REPRODUCED THE BUG! ===");
-        println!("Error: {:?}", e);
-    }
-
     assert!(
         result.is_ok(),
-        "EXPECTED (with fix): Accept all succeeds\nACTUAL (with bug): {:?}",
+        "Accept all succeeds after insertion baseline shifts: {:?}",
         result.err()
     );
 
@@ -1617,16 +1463,12 @@ async fn test_repro_bulk_accept_insertion_baseline_shifts() {
     assert_eq!(affected.len(), 3, "Should affect all 3 hunks");
 }
 
-/// REPRO TEST: Identical insertions at different positions - matching ambiguity
-/// When hunks have identical content, matching by position becomes critical.
+/// Identical insertions at different lines must still accept independently.
 #[tokio::test]
 async fn test_repro_identical_insertions_position_shifts() {
     let mut harness = TestHarness::new();
 
     harness.write_baseline("identical.txt", "A\nB\nC\nD\nE\nF\n");
-
-    // Insert IDENTICAL content "X\n" at three different positions
-    // After accepting first one, baseline shifts, breaking position-based matching
     harness.agent_write("identical.txt", "A\nX\nB\nC\nX\nD\nE\nX\nF\n", 0);
     harness.settle().await;
 
@@ -1637,27 +1479,7 @@ async fn test_repro_identical_insertions_position_shifts() {
         "Should have 3 identical insertion hunks"
     );
 
-    println!("\n=== BEFORE accept_all (identical insertions) ===");
-    for hunk in &hunks_before {
-        println!(
-            "Hunk {}: old_start={}, new_text={:?}",
-            &hunk.id.as_str()[..8],
-            hunk.line_info.old_start,
-            hunk.new_text
-        );
-    }
-
-    // With identical content, find_matching_old_hunk uses closest-by-line logic (line 437-439 in diff.rs)
-    // But after accepting first insertion, the new_start values shift
-    // This could pick the wrong old hunk to match with!
-
     let result = harness.handle.all_action(HunkAction::Accept).await;
-
-    if let Err(ref e) = result {
-        println!("\n=== REPRODUCED! ===");
-        println!("Error: {:?}", e);
-    }
-
     assert!(
         result.is_ok(),
         "Accept all should succeed: {:?}",
@@ -1797,29 +1619,18 @@ async fn test_repro_turn_action_preserves_other_turns() {
     let remaining = harness.get_all_hunks().await;
     assert_eq!(remaining.len(), 1, "Turn 1 hunk should survive");
     assert!(
-        remaining[0].new_text.contains("TURN1"),
+        only_item(&remaining).new_text.contains("TURN1"),
         "Remaining hunk should be from turn 1"
     );
 }
 
-// Worktree Diff Bug: previous_content as fallback baseline. When a session runs in a worktree created from dirty state,
-// files that exist on disk but are not committed to git should use previous_content as the baseline, not None. Otherwise
-// the diff shows the entire file as new (+N lines) instead of just the incremental change.
-
-/// Test that previous_content is used as baseline when file is not in git HEAD. This reproduces the worktree diff bug for
-/// forked sessions: Source repo has an uncommitted file (created by agent in prior turn); Worktree is created with dirty
-/// copy (file is copied but not in git HEAD); Diff should show only the new change (+1), not the entire file (+2).
+/// When the file is not in git HEAD, `previous_content` is the baseline
+/// so the hunk is the incremental edit, not the whole file.
 #[tokio::test]
 async fn test_worktree_previous_content_used_as_baseline_when_not_in_git() {
     let mut harness = TestHarness::new();
 
-    // Do NOT write_baseline — the file is not committed to git.
-    // This simulates a worktree where the file was copied from dirty state
-    // but doesn't exist in git HEAD.
-
-    // Simulate what happens when the agent in the forked worktree session
-    // edits a file that exists on disk but not in git HEAD.
-    // The tool reads "hello world\n" (previous_content), writes "hello world\nanother line\n".
+    // Not in git HEAD: previous_content is the dirty-worktree fallback baseline.
     harness.agent_write_with_previous(
         "hi.txt",
         "hello world\nanother line\n",
@@ -1833,15 +1644,18 @@ async fn test_worktree_previous_content_used_as_baseline_when_not_in_git() {
 
     // The hunk should show only the ADDED line, not the entire file
     assert_eq!(
-        hunks[0].line_info.new_count, 1,
+        only_item(&hunks).line_info.new_count,
+        1,
         "Should show +1 line (just 'another line'), not +2 (entire file)"
     );
     assert_eq!(
-        hunks[0].line_info.old_count, 0,
+        only_item(&hunks).line_info.old_count,
+        0,
         "Should have 0 old lines (pure insertion)"
     );
     assert_eq!(
-        hunks[0].new_text, "another line\n",
+        only_item(&hunks).new_text,
+        "another line\n",
         "The added text should be just 'another line'"
     );
 }
@@ -1866,11 +1680,13 @@ async fn test_new_file_without_previous_content_shows_all_lines() {
 
     // The entire file should show as additions
     assert_eq!(
-        hunks[0].line_info.new_count, 2,
+        only_item(&hunks).line_info.new_count,
+        2,
         "Should show +2 lines (entire file is new)"
     );
     assert_eq!(
-        hunks[0].line_info.old_count, 0,
+        only_item(&hunks).line_info.old_count,
+        0,
         "Should have 0 old lines (file didn't exist)"
     );
 }
@@ -1900,27 +1716,23 @@ async fn test_git_baseline_takes_precedence_over_previous_content() {
 
     // Diff should be against git HEAD ("original line 2\n" → "modified line 2\n")
     assert_eq!(
-        hunks[0].line_info.old_count, 1,
+        only_item(&hunks).line_info.old_count,
+        1,
         "Should have 1 old line (from git baseline)"
     );
     assert_eq!(
-        hunks[0].line_info.new_count, 1,
+        only_item(&hunks).line_info.new_count,
+        1,
         "Should have 1 new line (replacement)"
     );
     assert_eq!(
-        hunks[0].old_text,
+        only_item(&hunks).old_text,
         Some("original line 2\n".to_string()),
         "Old text should come from git HEAD, not previous_content"
     );
 }
 
-// =========================================================================
-// Baseline refresh after accept + git restore
-// =========================================================================
-
-/// Reproduces the bug where accepting all hunks then running `git restore.` leaves the hunk tracker with a stale
-/// baseline, producing a giant backwards diff (the entire file shown as deleted). Expected: after git restore, the file
-/// should appear clean (no hunks) because current content matches git HEAD.
+/// After accept-all then `git restore`, current matches HEAD so no hunks remain.
 #[tokio::test]
 async fn test_accept_all_then_git_restore_shows_clean() {
     let mut harness = TestHarness::new();
@@ -1953,9 +1765,7 @@ async fn test_accept_all_then_git_restore_shows_clean() {
     harness.external_write("restore_test.rs", baseline);
     harness.settle().await;
 
-    // BUG: without the fix, the hunk tracker shows a giant backwards diff because the baseline was patched by accept (=
-    // modified content), but the file was restored to HEAD (= baseline content). EXPECTED: file should be clean — current
-    // matches git HEAD, baseline should be refreshed to git HEAD, no hunks.
+    // Accept patches the tracker baseline; git restore must refresh it from HEAD.
     let hunks = harness.get_all_hunks().await;
     assert!(
         hunks.is_empty(),
@@ -2004,7 +1814,7 @@ async fn test_accept_then_external_edit_preserves_accept() {
         hunks.len()
     );
     assert!(
-        hunks[0].new_text.contains("line 6 new"),
+        only_item(&hunks).new_text.contains("line 6 new"),
         "The hunk should be the externally added line"
     );
 }
@@ -2054,10 +1864,6 @@ async fn test_binary_file_survives_baseline_refresh() {
         "Dirty binary file should survive refresh_all_baselines"
     );
 }
-
-// =========================================================================
-// HunkContentChanged event tests
-// =========================================================================
 
 /// When the agent edits the same region twice, the hunk tracker must emit
 /// HunkContentChanged (not just HunkAdded) so LOC tracking records the update.
@@ -2168,9 +1974,7 @@ async fn test_content_changed_external_edit_on_agent_hunk() {
     }
 }
 
-/// The diff engine produces one merged hunk. For HunkContentChanged, the prev lookup should find the matched old hunk by
-/// ID (primary path). To test the actual fallback: we need a case where `find_matching_old_hunk` can't find a match for a
-/// new hunk (no content match, but old hunk was claimed), yet the new hunk overlaps with an old hunk.
+/// Overlapping agent edits emit `HunkContentChanged` with `prev_lines_added > 0`.
 #[tokio::test]
 async fn test_content_changed_prev_lookup_uses_overlap_fallback() {
     let mut harness = TestHarness::new();
@@ -2181,8 +1985,12 @@ async fn test_content_changed_prev_lookup_uses_overlap_fallback() {
 
     // Agent writes: change line 3 and line 17 (two separate hunks far apart)
     let mut v1: Vec<String> = (1..=20).map(|i| format!("line{i}\n")).collect();
-    v1[2] = "CHANGED3\n".to_string(); // line 3
-    v1[16] = "CHANGED17\n".to_string(); // line 17
+    if let Some(slot) = v1.get_mut(2) {
+        *slot = "CHANGED3\n".to_string(); // line 3
+    }
+    if let Some(slot) = v1.get_mut(16) {
+        *slot = "CHANGED17\n".to_string(); // line 17
+    }
     harness.agent_write("overlap.rs", &v1.join(""), 0);
     harness.settle().await;
 
@@ -2193,15 +2001,20 @@ async fn test_content_changed_prev_lookup_uses_overlap_fallback() {
         hunks_v1.len(),
         hunks_v1.iter().map(|h| &h.line_info).collect::<Vec<_>>()
     );
-    let old_hunk_ids: Vec<_> = hunks_v1.iter().map(|h| h.id.clone()).collect();
-    harness.drain_events(); // consume v1 events
+    harness.drain_events();
 
     // Agent writes again: change line 3 AND line 4 (expanding the first hunk
     // so it's different content). Also change line 17 differently.
     let mut v2: Vec<String> = (1..=20).map(|i| format!("line{i}\n")).collect();
-    v2[2] = "CHANGED3_V2\n".to_string();
-    v2[3] = "CHANGED4_V2\n".to_string(); // expand first hunk
-    v2[16] = "CHANGED17_V2\n".to_string(); // change second hunk
+    if let Some(slot) = v2.get_mut(2) {
+        *slot = "CHANGED3_V2\n".to_string();
+    }
+    if let Some(slot) = v2.get_mut(3) {
+        *slot = "CHANGED4_V2\n".to_string(); // expand first hunk
+    }
+    if let Some(slot) = v2.get_mut(16) {
+        *slot = "CHANGED17_V2\n".to_string(); // change second hunk
+    }
     harness.agent_write("overlap.rs", &v2.join(""), 1);
     harness.settle().await;
 
@@ -2244,28 +2057,7 @@ async fn test_content_changed_prev_lookup_uses_overlap_fallback() {
             prev_added
         );
     }
-
-    // Verify that at least one HunkContentChanged has a NEW hunk ID (not matching any old hunk ID) — this proves the overlap
-    // fallback path was used (the hunk got a fresh ID because the old ID was already claimed by another new hunk).
-    let has_new_id = content_changed
-        .iter()
-        .any(|(id, _, _)| !old_hunk_ids.contains(id));
-
-    // Note: this assertion may not always hold depending on diff engine behavior (both hunks might get matched by ID). If it
-    // fails, the test still validates that prev_lines_added > 0 for all events, which is the core correctness property. Log
-    // rather than fail.
-    if !has_new_id {
-        eprintln!(
-            "INFO: All HunkContentChanged events matched old hunk IDs. \
-             The overlap fallback path was not exercised in this run. \
-             This is expected if find_matching_old_hunk found matches for all hunks."
-        );
-    }
 }
-
-// ============================================================================
-// SF-1: State transition tests (Full <-> TooLarge, Full <-> Binary)
-// ============================================================================
 
 /// SF-1: Test Full -> TooLarge transition via handle_file_change
 /// When a tracked text file grows beyond MAX_TRACKED_TEXT_BYTES, it should
@@ -2474,9 +2266,6 @@ async fn test_too_large_survives_baseline_refresh() {
         "TooLarge file should survive refresh_all_baselines"
     );
 }
-
-// These tests verify the explicit FileContentStatus contract exposed by get_file_hunk_data(), ensuring Missing, Binary,
-// TooLarge, and Full states are correctly propagated through the query/API surface.
 
 /// get_file_hunk_data returns Full status for normal text file
 /// Verifies: status=Full, byte_len set, content populated, legacy fields populated
@@ -2776,9 +2565,6 @@ async fn test_get_file_hunk_data_mixed_states() {
     assert!(data.hunks.is_empty());
 }
 
-// These tests verify that accept/reject actions are safe under the explicit content-state model, and that transitions
-// correctly clear/create hunks.
-
 /// Hunks are cleared when file becomes TooLarge
 /// When a file with pending hunks grows beyond MAX_TRACKED_TEXT_BYTES,
 /// the hunks should be cleared (can't diff TooLarge content).
@@ -2797,7 +2583,7 @@ async fn test_hunks_cleared_when_file_becomes_too_large() {
 
     let hunks_before = harness.get_all_hunks().await;
     assert_eq!(hunks_before.len(), 1, "Should have 1 hunk after agent edit");
-    let hunk_id = hunks_before[0].id.clone();
+    let hunk_id = only_item(&hunks_before).id.clone();
 
     // External edit makes the file TooLarge
     let large_content = "x".repeat(MAX_TRACKED_TEXT_BYTES + 100);
@@ -2842,7 +2628,7 @@ async fn test_hunks_cleared_when_file_becomes_binary() {
 
     let hunks_before = harness.get_all_hunks().await;
     assert_eq!(hunks_before.len(), 1, "Should have 1 hunk after agent edit");
-    let hunk_id = hunks_before[0].id.clone();
+    let hunk_id = only_item(&hunks_before).id.clone();
 
     // External edit replaces with binary content
     let binary_path = harness.working_dir.join("convertible.rs");
@@ -2946,7 +2732,7 @@ async fn test_accept_reject_normal_text_regression() {
     // Accept the hunk
     let result = harness
         .handle
-        .hunk_action(hunks[0].id.clone(), HunkAction::Accept)
+        .hunk_action(only_item(&hunks).id.clone(), HunkAction::Accept)
         .await;
     assert!(result.is_ok(), "Accept should succeed for normal text file");
 
@@ -2966,7 +2752,7 @@ async fn test_accept_reject_normal_text_regression() {
 
     let result = harness
         .handle
-        .hunk_action(hunks2[0].id.clone(), HunkAction::Reject)
+        .hunk_action(only_item(&hunks2).id.clone(), HunkAction::Reject)
         .await;
     assert!(result.is_ok(), "Reject should succeed for normal text file");
 
@@ -3037,7 +2823,7 @@ async fn test_file_deletion_hunk_action() {
     // Reject the deletion hunk should restore the file
     let result = harness
         .handle
-        .hunk_action(hunks[0].id.clone(), HunkAction::Reject)
+        .hunk_action(only_item(&hunks).id.clone(), HunkAction::Reject)
         .await;
     assert!(result.is_ok(), "Reject deletion should succeed");
 
@@ -3062,14 +2848,14 @@ async fn test_file_creation_hunk_action() {
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1, "Should have creation hunk");
     assert!(
-        hunks[0].old_text.is_none(),
+        only_item(&hunks).old_text.is_none(),
         "Creation hunk should have no old_text"
     );
 
     // Reject the creation hunk should delete the file
     let result = harness
         .handle
-        .hunk_action(hunks[0].id.clone(), HunkAction::Reject)
+        .hunk_action(only_item(&hunks).id.clone(), HunkAction::Reject)
         .await;
     assert!(result.is_ok(), "Reject creation should succeed");
 
@@ -3077,9 +2863,6 @@ async fn test_file_creation_hunk_action() {
     let exists = harness.working_dir.join("created.rs").exists();
     assert!(!exists, "File should be deleted after rejecting creation");
 }
-
-// These tests verify that the API correctly exposes file content status for clients to display appropriate UI messages
-// (e.g., "file too large").
 
 /// API returns Missing status for deleted files
 /// Clients can show "File was deleted" message.
@@ -3121,99 +2904,6 @@ async fn test_ui_messaging_deleted_file() {
     );
 }
 
-/// Smoke test for memory-bounded behavior with multiple large files. Verifies that tracking many large files doesn't
-/// retain their content. Creates files exceeding MAX_TRACKED_TEXT_BYTES; Verifies content is NOT retained (content:
-/// None); Verifies metadata IS retained (byte_len, status).
-#[tokio::test]
-async fn test_memory_bounded_multiple_large_files() {
-    use crate::actor::state::MAX_TRACKED_TEXT_BYTES;
-
-    let harness = TestHarness::with_mode(TrackingMode::AllDirty);
-
-    // Create multiple large files (simulating the original 12 × 100MB scenario)
-    // We use smaller sizes here for test speed, but the pattern is the same.
-    let num_files = 5;
-    let file_size = MAX_TRACKED_TEXT_BYTES + 1000;
-
-    for i in 0..num_files {
-        let file_path = harness.working_dir.join(format!("large_file_{}.txt", i));
-        let content = format!("{}", i).repeat(file_size);
-        std::fs::write(&file_path, &content).unwrap();
-        harness.handle.handle_file_change(file_path);
-    }
-
-    // Settle and get all hunks
-    let _ = harness.handle.get_all_hunks().await;
-
-    // Verify all files are tracked
-    let tracked = harness.handle.get_all_tracked_paths().await;
-    assert_eq!(
-        tracked.len(),
-        num_files,
-        "All large files should be tracked"
-    );
-
-    // Verify no hunks (all TooLarge)
-    let hunks = harness.handle.get_all_hunks().await;
-    assert!(
-        hunks.is_empty(),
-        "TooLarge files should have no hunks: found {}",
-        hunks.len()
-    );
-
-    // VALIDATION EVIDENCE: Verify each file reports TooLarge with NO content retained
-    for i in 0..num_files {
-        let file_path = harness.working_dir.join(format!("large_file_{}.txt", i));
-        let data = harness.handle.get_file_hunk_data(file_path).await;
-
-        // Status must be TooLarge
-        assert_eq!(
-            data.current.status,
-            FileContentStatus::TooLarge,
-            "File {} should be TooLarge",
-            i
-        );
-
-        // CRITICAL: Content must NOT be retained (this is the memory fix)
-        assert!(
-            data.current.content.is_none(),
-            "File {} content must NOT be retained for TooLarge files - this validates the memory fix",
-            i
-        );
-
-        // Metadata (byte_len) SHOULD be retained
-        assert!(
-            data.current.byte_len.is_some(),
-            "File {} byte_len should be retained as metadata",
-            i
-        );
-
-        // Verify reported size matches actual file size
-        assert_eq!(
-            data.current.byte_len.unwrap(),
-            file_size,
-            "File {} byte_len should match actual size",
-            i
-        );
-    }
-
-    // VALIDATION EVIDENCE: Legacy content fields must also be None
-    for i in 0..num_files {
-        let file_path = harness.working_dir.join(format!("large_file_{}.txt", i));
-        let data = harness.handle.get_file_hunk_data(file_path).await;
-
-        assert!(
-            data.current_content.is_none(),
-            "File {} legacy current_content must be None for TooLarge - validates no content retained",
-            i
-        );
-    }
-}
-
-// =========================================================================
-// Issue #2: Deleted committed files visible as deletion hunks
-// =========================================================================
-
 /// Deleting a committed file that was never tracked by the hunk tracker
 /// should produce a deletion hunk (in AllDirty mode).
 #[tokio::test]
@@ -3240,16 +2930,17 @@ async fn test_deleted_committed_file_produces_deletion_hunk() {
         "Deleting a committed file should produce a deletion hunk"
     );
     assert!(
-        hunks[0].old_text.is_some(),
+        only_item(&hunks).old_text.is_some(),
         "Deletion hunk should have old_text (the baseline content)"
     );
     assert_eq!(
-        hunks[0].old_text.as_deref(),
+        only_item(&hunks).old_text.as_deref(),
         Some("content to delete\n"),
         "Deletion hunk old_text should match the committed content"
     );
     assert_eq!(
-        hunks[0].new_text, "",
+        only_item(&hunks).new_text,
+        "",
         "Deletion hunk should have empty new_text"
     );
 
@@ -3388,7 +3079,7 @@ async fn test_reject_deletion_of_committed_file_restores_it() {
     // Reject the deletion → should restore the file
     let result = harness
         .handle
-        .hunk_action(hunks[0].id.clone(), HunkAction::Reject)
+        .hunk_action(only_item(&hunks).id.clone(), HunkAction::Reject)
         .await;
     assert!(result.is_ok(), "Reject deletion should succeed");
 
@@ -3402,10 +3093,6 @@ async fn test_reject_deletion_of_committed_file_restores_it() {
         "Restored content should match baseline"
     );
 }
-
-// =========================================================================
-// Issue #1: Staged-only files visible after git reset --soft HEAD^
-// =========================================================================
 
 /// After `git reset --soft HEAD^`, a file that was added in the undone
 /// commit should appear as a new file (staged in index, not in HEAD).
@@ -3435,11 +3122,12 @@ async fn test_soft_reset_staged_new_file_visible() {
         "Staged file after soft reset should produce a creation hunk"
     );
     assert!(
-        hunks[0].old_text.is_none(),
+        only_item(&hunks).old_text.is_none(),
         "Creation hunk should have no old_text (file not in HEAD)"
     );
     assert_eq!(
-        hunks[0].new_text, "print(\"hello\")\n",
+        only_item(&hunks).new_text,
+        "print(\"hello\")\n",
         "Creation hunk should contain the file content"
     );
 }
@@ -3474,12 +3162,13 @@ async fn test_soft_reset_staged_modified_file_visible() {
         "Modified file after soft reset should produce a hunk"
     );
     assert_eq!(
-        hunks[0].old_text.as_deref(),
+        only_item(&hunks).old_text.as_deref(),
         Some("debug = False\n"),
         "Hunk old_text should be the baseline (HEAD content)"
     );
     assert_eq!(
-        hunks[0].new_text, "debug = True\n",
+        only_item(&hunks).new_text,
+        "debug = True\n",
         "Hunk new_text should be the on-disk content"
     );
 }
@@ -3528,12 +3217,13 @@ async fn test_soft_reset_with_already_tracked_file() {
         "After soft reset, file should reappear with a hunk"
     );
     assert_eq!(
-        hunks_after[0].old_text.as_deref(),
+        only_item(&hunks_after).old_text.as_deref(),
         Some("original\n"),
         "Baseline should be from the restored HEAD"
     );
     assert_eq!(
-        hunks_after[0].new_text, "modified\n",
+        only_item(&hunks_after).new_text,
+        "modified\n",
         "Current should be the on-disk content"
     );
 }
@@ -3569,12 +3259,13 @@ async fn test_soft_reset_staged_deletion_visible() {
         "Staged deletion after soft reset should produce a deletion hunk"
     );
     assert_eq!(
-        hunks[0].old_text.as_deref(),
+        only_item(&hunks).old_text.as_deref(),
         Some("content to delete\n"),
         "Deletion hunk should contain the HEAD content as old_text"
     );
     assert_eq!(
-        hunks[0].new_text, "",
+        only_item(&hunks).new_text,
+        "",
         "Deletion hunk should have empty new_text"
     );
 }
@@ -3611,12 +3302,13 @@ async fn test_mixed_reset_modified_files_visible() {
         "Modified file after mixed reset should produce a hunk"
     );
     assert_eq!(
-        hunks[0].old_text.as_deref(),
+        only_item(&hunks).old_text.as_deref(),
         Some("# Hello\n"),
         "Hunk old_text should be the HEAD baseline"
     );
     assert_eq!(
-        hunks[0].new_text, "# Hello World\n",
+        only_item(&hunks).new_text,
+        "# Hello World\n",
         "Hunk new_text should be the on-disk content"
     );
 }
@@ -3652,27 +3344,15 @@ async fn test_mixed_reset_new_file_visible() {
         "New file after mixed reset should produce a creation hunk"
     );
     assert!(
-        hunks[0].old_text.is_none(),
+        only_item(&hunks).old_text.is_none(),
         "Creation hunk should have no old_text"
     );
     assert_eq!(
-        hunks[0].new_text, "def play():\n    pass\n",
+        only_item(&hunks).new_text,
+        "def play():\n    pass\n",
         "Creation hunk should contain the file content"
     );
 }
-
-// =========================================================================
-// GetAllFileContents Tests
-// =========================================================================
-
-/// Empty actor returns no file contents.
-#[tokio::test]
-async fn test_get_all_file_contents_empty() {
-    let harness = TestHarness::new();
-    let entries = harness.handle.get_all_file_contents().await;
-    assert!(entries.is_empty(), "No tracked files → empty result");
-}
-
 /// A single agent-written file returns baseline, current, and is_agent_file=true.
 #[tokio::test]
 async fn test_get_all_file_contents_single_agent_file() {
@@ -3685,7 +3365,7 @@ async fn test_get_all_file_contents_single_agent_file() {
     let entries = harness.handle.get_all_file_contents().await;
     assert_eq!(entries.len(), 1);
 
-    let e = &entries[0];
+    let e = &only_item(&entries);
     assert!(e.path.ends_with("foo.txt"));
     assert!(e.is_agent_file);
     assert!(!e.staged, "not git-staged");
@@ -3730,7 +3410,7 @@ async fn test_get_all_file_contents_new_file_missing_baseline() {
     let entries = harness.handle.get_all_file_contents().await;
     assert_eq!(entries.len(), 1);
 
-    let e = &entries[0];
+    let e = &only_item(&entries);
     assert_eq!(e.baseline.status, FileContentStatus::Missing);
     assert!(e.baseline.content.is_none());
     assert_eq!(e.current.status, FileContentStatus::Full);
@@ -3754,7 +3434,7 @@ async fn test_get_all_file_contents_binary_file() {
     let entries = harness.handle.get_all_file_contents().await;
     assert_eq!(entries.len(), 1);
 
-    let e = &entries[0];
+    let e = &only_item(&entries);
     assert!(e.is_agent_file);
     assert_eq!(e.current.status, FileContentStatus::Binary);
     assert!(e.current.content.is_none(), "binary files have no content");
@@ -3874,41 +3554,15 @@ async fn test_get_all_file_contents_after_accept() {
     // Accept the hunk
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1);
-    harness.accept_hunk(&hunks[0].id).await;
+    harness.accept_hunk(&only_item(&hunks).id).await;
     harness.settle().await;
 
     // File should still appear in get_all_file_contents (it's an agent file)
     let entries = harness.handle.get_all_file_contents().await;
     assert_eq!(entries.len(), 1);
-    let e = &entries[0];
+    let e = &only_item(&entries);
     assert!(e.is_agent_file);
 }
-
-/// Paths returned are absolute (contain the working directory).
-#[tokio::test]
-async fn test_get_all_file_contents_returns_absolute_paths() {
-    let mut harness = TestHarness::new();
-
-    harness.write_baseline("sub/deep.txt", "content\n");
-    harness.agent_write("sub/deep.txt", "updated\n", 0);
-    harness.settle().await;
-
-    let entries = harness.handle.get_all_file_contents().await;
-    assert_eq!(entries.len(), 1);
-    assert!(
-        entries[0].path.is_absolute(),
-        "path should be absolute: {:?}",
-        entries[0].path
-    );
-    assert!(
-        entries[0].path.ends_with("sub/deep.txt"),
-        "path should end with relative path"
-    );
-}
-
-// =========================================================================
-// refresh_all_baselines: non-diffable file cleanup via git dirty cache
-// =========================================================================
 
 /// A committed binary file that is NOT dirty in git status should be removed
 /// from tracking after refresh_all_baselines (no longer a phantom).
@@ -4078,10 +3732,6 @@ async fn test_dirty_lfs_file_survives_refresh() {
         "Dirty LFS file should survive refresh_all_baselines"
     );
 }
-
-// =========================================================================
-// Gitignored file filtering tests
-// =========================================================================
 
 /// Gitignored files (e.g., cargo build artifacts in `target/`) should NOT
 /// be tracked in AllDirty mode. The git dirty cache never contains ignored
@@ -4291,7 +3941,7 @@ async fn test_refresh_all_baselines_runs_for_agent_only_with_tracked_file() {
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1, "tracked agent file should have one hunk");
     assert_eq!(
-        hunks[0].old_text.as_deref(),
+        only_item(&hunks).old_text.as_deref(),
         Some("v1\n"),
         "baseline should come from HEAD"
     );
@@ -4354,29 +4004,8 @@ async fn test_untracked_directory_tracks_child_files_not_directory() {
     );
 }
 
-// =========================================================================
-// Command Coalescing Tests
-// =========================================================================
-
 use crate::actor::{CoalescedBatch, CoalescedPathAction};
 use crate::commands::HunkTrackerCommand;
-
-#[test]
-fn test_coalesced_batch_single_change() {
-    let mut batch = CoalescedBatch::new();
-    let path = PathBuf::from("/tmp/a.rs");
-    batch.add(HunkTrackerCommand::HandleFileChange { path: path.clone() });
-
-    assert_eq!(batch.file_actions.len(), 1);
-    assert_eq!(
-        batch.file_actions.get(&path),
-        Some(&CoalescedPathAction::Changed)
-    );
-    assert!(!batch.refresh_all);
-    assert!(!batch.refresh_dirty);
-    assert!(batch.other_commands.is_empty());
-}
-
 #[test]
 fn test_coalesced_batch_duplicate_changes_deduplicate() {
     let mut batch = CoalescedBatch::new();
@@ -4460,11 +4089,11 @@ fn test_coalesced_batch_non_coalescable_preserved_in_order() {
 
     assert_eq!(batch.other_commands.len(), 2);
     assert!(matches!(
-        batch.other_commands[0],
+        item_at(&batch.other_commands, 0),
         HunkTrackerCommand::ResetStats
     ));
     assert!(matches!(
-        batch.other_commands[1],
+        item_at(&batch.other_commands, 1),
         HunkTrackerCommand::ResetBaseline { .. }
     ));
 }
@@ -4496,35 +4125,6 @@ fn test_coalesced_batch_mixed_paths() {
         Some(&CoalescedPathAction::Deleted)
     );
 }
-
-#[test]
-fn test_is_coalescable() {
-    assert!(HunkTrackerActor::is_coalescable(
-        &HunkTrackerCommand::HandleFileChange {
-            path: PathBuf::from("/a")
-        }
-    ));
-    assert!(HunkTrackerActor::is_coalescable(
-        &HunkTrackerCommand::HandleFileDeleted {
-            path: PathBuf::from("/a")
-        }
-    ));
-    assert!(HunkTrackerActor::is_coalescable(
-        &HunkTrackerCommand::RefreshAllBaselines
-    ));
-    assert!(HunkTrackerActor::is_coalescable(
-        &HunkTrackerCommand::RefreshGitDirtyCache
-    ));
-    assert!(!HunkTrackerActor::is_coalescable(
-        &HunkTrackerCommand::ResetStats
-    ));
-    assert!(!HunkTrackerActor::is_coalescable(
-        &HunkTrackerCommand::ResetBaseline {
-            path: PathBuf::from("/a")
-        }
-    ));
-}
-
 #[test]
 fn test_coalesced_batch_deleted_then_changed_then_changed() {
     let mut batch = CoalescedBatch::new();
@@ -4539,22 +4139,6 @@ fn test_coalesced_batch_deleted_then_changed_then_changed() {
     );
     assert_eq!(batch.command_count, 3);
 }
-
-#[test]
-fn test_coalesced_batch_command_count() {
-    let mut batch = CoalescedBatch::new();
-    assert_eq!(batch.command_count, 0);
-
-    let path = PathBuf::from("/tmp/a.rs");
-    batch.add(HunkTrackerCommand::HandleFileChange { path: path.clone() });
-    batch.add(HunkTrackerCommand::HandleFileChange { path });
-    batch.add(HunkTrackerCommand::RefreshAllBaselines);
-    batch.add(HunkTrackerCommand::ResetStats);
-
-    assert_eq!(batch.command_count, 4);
-    assert_eq!(batch.file_actions.len(), 1);
-}
-
 /// Integration test: multiple rapid file changes are coalesced into a single
 /// processing pass, producing the same final state as sequential processing.
 #[tokio::test]
@@ -4582,7 +4166,7 @@ async fn test_coalescing_produces_correct_final_state() {
 
     let hunks = harness.get_all_hunks().await;
     assert_eq!(hunks.len(), 1);
-    assert_eq!(hunks[0].new_text, "final\n");
+    assert_eq!(only_item(&hunks).new_text, "final\n");
 }
 
 /// Integration test: delete + re-create cycle is correctly coalesced.
@@ -4738,10 +4322,6 @@ async fn test_snapshot_turn_delta_is_per_turn() {
     assert!(empty.file_states.is_empty() && empty.hunk_ids.is_empty());
 }
 
-// =========================================================================
-// Baseline refresh during git rebases (scan counting + hunk preservation)
-// =========================================================================
-
 /// Count of `BaselineUpdated` events in a drained batch. The real `refresh_all_baselines` scan path emits one per
 /// still-tracked file, while the unchanged-git-state skip path returns before emitting anything — so this distinguishes
 /// "real scan" from "skip" through the public event channel, independent of tracing configuration or runner environment.
@@ -4751,10 +4331,6 @@ fn baseline_updates(events: &[HunkEvent]) -> usize {
         .filter(|e| matches!(e, HunkEvent::BaselineUpdated { .. }))
         .count()
 }
-
-// =========================================================================
-// Scoped (pathspec-limited) dirty-cache scans
-// =========================================================================
 
 #[tokio::test]
 async fn set_working_dir_rebases_file_state_keys() {
@@ -4984,7 +4560,10 @@ async fn agent_only_refresh_scopes_scan_to_tracked_paths() {
             actor.git_dirty_cache
         );
         assert!(
-            !actor.file_states[&wd.join(name)].hunks.is_empty(),
+            actor
+                .file_states
+                .get(&wd.join(name))
+                .is_some_and(|s| !s.hunks.is_empty()),
             "hunks for {name} must survive the scoped refresh"
         );
     }

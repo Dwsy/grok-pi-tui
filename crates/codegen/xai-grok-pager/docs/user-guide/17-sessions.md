@@ -28,6 +28,9 @@ Grok stores each session in its own directory, grouped by working directory. It 
   summary.json            # metadata: summary/title, timestamps, model ID, message counts
   updates.jsonl           # ACP session update stream (conversation + tool calls)
   chat_history.jsonl      # raw chat messages sent to the model
+  system_prompt.txt       # the rendered system prompt, as sent to the model
+  prompt_context.json     # the inputs the system prompt was rendered from
+  tool_definitions.json   # function tools sent on the latest model call (no MCP server__tool entries)
   plan.json               # TODO/task list state
   rewind_points.jsonl     # rewind points for /rewind undo
   signals.json            # session signals (token usage, tool/turn counters)
@@ -36,7 +39,7 @@ Grok stores each session in its own directory, grouped by working directory. It 
   subagents/              # per-subagent metadata (meta.json); the child sessions live in the normal sessions tree
 ```
 
-`summary.json` is the index entry. It records the session summary and generated title, the model ID, the creation and update timestamps, the message counts, and a parent session reference for forked or restored sessions. It also records the latest last-turn summary and session recap so listing surfaces can show them. `updates.jsonl` is the authoritative conversation log that drives `/resume` and session restore. Per-turn token and cost totals are available through `grok usage`.
+`summary.json` is the index entry. It records the session summary and generated title, the model ID, the creation and update timestamps, the message counts, and a parent session reference for forked or restored sessions. It also records the latest last-turn summary and session recap so listing surfaces can show them. `updates.jsonl` is the authoritative conversation log that drives `/resume` and session restore. `tool_definitions.json` omits MCP `server__tool` entries because the model reaches those through `search_tool` and `use_tool`, which are listed. Per-turn token and cost totals are available through `grok usage`.
 
 ### Session titles
 
@@ -162,10 +165,7 @@ When **Confirm before rewind** is on (default in `/settings`), every pick asks f
 
 ```
 /compact
-/compact [context]
 ```
-
-The optional `context` argument lets you provide additional instructions about what to preserve during compaction.
 
 ### Auto-Compact
 
@@ -301,6 +301,33 @@ Worktree sessions are managed internally through the `x.ai/git/worktree/*` exten
 
 Resume a session in a fresh worktree with `grok -w -r <session-id>`.
 
+`grok worktree create [NAME]` creates the same worktree `grok -w [NAME]` would, without starting a session. It prints the directory the session would have opened in. That path is the only output on stdout, so `cd "$(grok worktree create my-fix)"` works. By default the worktree starts from HEAD with your uncommitted changes copied over. Pass `--ref <ref>` to start from a clean checkout of a branch, tag, or commit. If the new worktree lacks the directory you ran from, such as a `--ref` checkout that predates it or an ignored directory, the command prints the worktree root.
+
+### Manage Grove redirections
+
+A Grove worktree can redirect ignored artifact directories such as `target` and `node_modules` to storage outside the projected tree. The redirect commands take the mount path as their first argument.
+
+```bash
+grok worktree redirect list /path/to/worktree
+grok worktree redirect list /path/to/worktree --json
+grok worktree redirect add /path/to/worktree target bind
+grok worktree redirect del /path/to/worktree target
+grok worktree redirect fixup /path/to/worktree
+grok worktree redirect unmount /path/to/worktree target
+```
+
+`list` prints `repo_path`, `type`, `mechanism`, `target`, `source`, and `state`. Run `unmount` without a repo-relative path to take down every redirect on the mount. Use `fixup --force` to replace Grove-owned residue. Use `fixup --strict` to refuse a populated plain directory.
+
+
+```bash
+grok clone https://example.com/org/repo.git --redirect-ignored
+grok clone https://example.com/org/repo.git \
+  --redirect-ignored --redirect-dir build --redirect-dir '**/node_modules'
+grok clone https://example.com/org/repo.git --no-redirects
+```
+
+`GROVE_REDIRECTS=0` remains a runtime kill switch. Grok does not save the kill switch as the clone's redirect choice.
+
 ### Checking Disk Usage
 
 `grok du` (alias: `grok disk-usage`) reports what the grok home (`~/.grok`) uses on disk. It lists each top-level directory, largest first, then each worktree with its size, type, age, label, and path. Worktrees the registry does not track appear as `untracked`. Pass `--json` for the same report as machine-readable output.
@@ -321,6 +348,8 @@ Worktrees
 To reclaim space, run `grok worktree gc --max-age 7d --dry-run`, then the same command without `--dry-run`. Without `--max-age`, gc expires nothing, and it keeps a worktree whose work it cannot find elsewhere, naming each one.
 Untracked rows are not in the registry, so gc never visits them. Remove one with `grok worktree rm --dry-run <path>`, then without `--dry-run`.
 ```
+
+After the grok-home table, `grok du` may print **Redirections**, **Orphaned redirections**, and **Unattributed redirect directories**. Those bytes live in Grove escape jails, not in the grok-home total. An empty scan prints nothing. Reclaim a live jail with `grok worktree clean-artifacts`. Purge live jails plus proven orphans with `grok du --clean --yes`. Delete only proven orphans with `grok du --clean-orphaned --yes`.
 
 `AGE` is the value `grok worktree gc` measures: time since the worktree was last accessed, or since it was created when that is more recent. Session and agent activity update it; a shell or editor left open in the directory does not. An untracked worktree has no registry entry, so its age comes from the newest file underneath it.
 
@@ -369,7 +398,7 @@ The smaller state files -- `summary.json`, `plan.json`, and `signals.json` -- ar
 - `num_messages` and `num_chat_messages` -- update and chat-message counts
 - `current_model_id` -- the model in use
 - `parent_session_id` -- the source session for a fork or restore
-- `agent_name` -- the agent definition active when the session was last saved
+- `agent_name` -- named agents persist this only; an inline `--agent-profile` session also persists `agent_profile` JSON
 - `last_turn_summary` -- an ultra-short summary of the most recent turn
 - `last_recap` -- a bounded preview of the latest session recap
 

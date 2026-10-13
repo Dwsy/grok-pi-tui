@@ -26,6 +26,16 @@ fn pid_is_running(pid: u32) -> bool {
     !xai_tty_utils::process_not_running(pid)
 }
 
+fn proc_starttime(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = stat.rsplit(')').next()?.trim_start();
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+fn original_child_running(pid: u32, starttime: u64) -> bool {
+    proc_starttime(pid) == Some(starttime) && pid_is_running(pid)
+}
+
 /// Holder-fixture binary: cargo sets `CARGO_BIN_EXE_pty_orphan_holder`; Bazel
 /// wires `PTY_ORPHAN_HOLDER_BIN` (runfiles-relative, hence absolutize).
 fn holder_binary() -> std::path::PathBuf {
@@ -87,6 +97,7 @@ fn assert_no_orphan_after_holder_killed_by(signal: libc::c_int) {
         pid_is_running(child_pid),
         "sanity: PTY child {child_pid} must be running while the holder runs"
     );
+    let starttime = proc_starttime(child_pid).expect("PTY child /proc/pid/stat starttime");
 
     // Ungraceful death: SIGTERM/SIGKILL terminate the holder without
     // unwinding, so no Drop and no other userspace teardown runs.
@@ -95,16 +106,14 @@ fn assert_no_orphan_after_holder_killed_by(signal: libc::c_int) {
     assert_eq!(rc, 0, "deliver signal {signal} to holder");
     holder.wait().expect("reap holder");
 
-    // Only the kernel-side pdeathsig can end the child now. Bounded wait for
-    // delivery.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while pid_is_running(child_pid) && Instant::now() < deadline {
+    while original_child_running(child_pid, starttime) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        !pid_is_running(child_pid),
-        "PTY child {child_pid} survived the holder's ungraceful death \
-         (signal {signal}) — orphan leak"
+        !original_child_running(child_pid, starttime),
+        "PTY child {child_pid} (starttime {starttime}) survived the holder's \
+         ungraceful death (signal {signal}) — orphan leak"
     );
 }
 

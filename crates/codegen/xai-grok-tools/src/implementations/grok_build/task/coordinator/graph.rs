@@ -88,11 +88,25 @@ impl SpawnGraph {
         self.nodes.remove(child_id);
     }
 
+    pub(super) fn contains(&self, child_id: &str) -> bool {
+        self.nodes.contains_key(child_id)
+    }
+
     /// A missing node is unreachable.
     pub(super) fn is_reachable_from(&self, child_id: &str, session_id: &str) -> bool {
         self.nodes.get(child_id).is_some_and(|node| {
             node.root == session_id || node.spawner_chain.iter().any(|id| id == session_id)
         })
+    }
+
+    pub(super) fn is_ancestor(&self, child_id: &str, ancestor_id: &str) -> bool {
+        self.nodes
+            .get(child_id)
+            .is_some_and(|node| node.spawner_chain.iter().any(|id| id == ancestor_id))
+    }
+
+    pub(super) fn root_session(&self, child_id: &str) -> Option<&str> {
+        self.nodes.get(child_id).map(|node| node.root.as_str())
     }
 
     pub(super) fn direct_spawner(&self, child_id: &str) -> Option<&str> {

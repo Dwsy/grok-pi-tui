@@ -4,6 +4,8 @@ mod history_provider;
 mod path_provider;
 mod shell_token;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +15,8 @@ use crate::agent::MvpAgent;
 pub(crate) use file_provider::FilePathProvider;
 pub(crate) use history_provider::HistoryProvider;
 pub(crate) use path_provider::PathProvider;
+
+pub const SUGGEST_METHOD: &str = "x.ai/suggest";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,7 +91,7 @@ impl SuggestContext {
     }
 
     pub(crate) fn prefix(&self) -> &str {
-        &self.text[..self.cursor]
+        self.text.get(..self.cursor).unwrap_or("")
     }
 }
 
@@ -131,6 +135,27 @@ impl From<RankedSuggestion> for CompletionItem {
     }
 }
 
+/// Holds a provider's cache-refresh flag and clears it on drop.
+/// A caller that drops a completion mid-scan must not leave the flag set, or every later refresh
+/// is skipped and the stale cache is served until the process exits.
+#[must_use]
+pub(crate) struct RefreshGuard(&'static AtomicBool);
+
+impl RefreshGuard {
+    /// `None` while another refresh holds `flag`.
+    pub(crate) fn try_acquire(flag: &'static AtomicBool) -> Option<RefreshGuard> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .ok()
+            .map(|_| RefreshGuard(flag))
+    }
+}
+
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 /// Mark whole-line suggestions (history/AI carry the full command as `insert_text`) as replacing the entire request text.
 fn stamp_whole_line_range(results: &mut [RankedSuggestion], text_len: usize) {
     results
@@ -143,7 +168,12 @@ fn stamp_whole_line_range(results: &mut [RankedSuggestion], text_len: usize) {
 fn splice_token_into_line(results: &mut [RankedSuggestion], text: &str, range: (usize, usize)) {
     for s in results {
         let token = std::mem::take(&mut s.insert_text);
-        s.insert_text = format!("{}{}{}", &text[..range.0], token, &text[range.1..]);
+        s.insert_text = format!(
+            "{}{}{}",
+            text.get(..range.0).unwrap_or(""),
+            token,
+            text.get(range.1..).unwrap_or("")
+        );
         s.token_text = Some(token);
     }
 }
@@ -151,7 +181,7 @@ fn splice_token_into_line(results: &mut [RankedSuggestion], text: &str, range: (
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
-        "x.ai/suggest" => handle_suggest(agent, args).await,
+        SUGGEST_METHOD => handle_suggest(agent, args).await,
         "x.ai/suggestPrompt" => handle_suggest_prompt(agent, args).await,
         _ => Err(acp::Error::method_not_found()),
     }
@@ -239,17 +269,8 @@ async fn handle_suggest(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     } = req;
     let ctx = SuggestContext::new(text, cursor, cwd);
 
-    let (history_results, path_results, file_results) = tokio::join!(
-        async {
-            if token_only {
-                Vec::new()
-            } else {
-                HistoryProvider.suggest(&ctx).await
-            }
-        },
-        PathProvider.suggest(&ctx),
-        FilePathProvider.suggest(&ctx),
-    );
+    let (history_results, path_results, file_results) =
+        history_path_and_file_rows(&ctx, token_only).await;
 
     let mut ai_results =
         if include_ai && !token_only && !should_skip_ai(&history_results, ctx.prefix()) {
@@ -279,6 +300,62 @@ async fn handle_suggest(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         completions,
         generation,
     })
+}
+
+/// Answers `x.ai/suggest` with history, `PATH` and file rows, even when `includeAi` is set.
+/// The returned future is `Send`.
+pub async fn answer_without_session(args: &acp::ExtRequest) -> ExtResult {
+    let req: SuggestRequest = parse_params(args)?;
+    let ctx = SuggestContext::new(req.text, req.cursor, req.cwd);
+    let (history_results, path_results, file_results) =
+        history_path_and_file_rows(&ctx, req.token_only).await;
+
+    let (ghost, completions) = aggregate(
+        history_results,
+        path_results,
+        file_results,
+        Vec::new(),
+        ctx.prefix(),
+        req.limit,
+    );
+
+    to_raw_response(&SuggestResponse {
+        ghost,
+        completions,
+        generation: req.generation,
+    })
+}
+
+/// Answers `x.ai/suggest` with no rows and the request's `generation`.
+/// An error reply would leave the client's pending request waiting.
+pub fn answer_empty(args: &acp::ExtRequest) -> ExtResult {
+    let req: SuggestRequest = parse_params(args)?;
+    to_raw_response(&SuggestResponse {
+        ghost: None,
+        completions: Vec::new(),
+        generation: req.generation,
+    })
+}
+
+async fn history_path_and_file_rows(
+    ctx: &SuggestContext,
+    token_only: bool,
+) -> (
+    Vec<RankedSuggestion>,
+    Vec<RankedSuggestion>,
+    Vec<RankedSuggestion>,
+) {
+    tokio::join!(
+        async {
+            if token_only {
+                Vec::new()
+            } else {
+                HistoryProvider.suggest(ctx).await
+            }
+        },
+        PathProvider.suggest(ctx),
+        FilePathProvider.suggest(ctx),
+    )
 }
 
 fn find_session(
@@ -335,10 +412,10 @@ fn aggregate(
 
 /// Determines whether AI suggestions can be skipped based on history quality.
 pub(crate) fn should_skip_ai(history_matches: &[RankedSuggestion], prefix: &str) -> bool {
-    if history_matches.is_empty() {
+    let Some(first) = history_matches.first() else {
         return false;
-    }
-    if history_matches[0].priority >= 30 {
+    };
+    if first.priority >= 30 {
         return true;
     }
     !prefix.is_empty() && history_matches.len() >= 3
@@ -377,9 +454,12 @@ mod tests {
         ];
         let path = vec![ranked(0, SuggestionSource::Path, false, "git")];
         let (_, completions) = aggregate(history, path, vec![], vec![], "git", 10);
-        assert_eq!(completions[0].priority, 10);
-        assert_eq!(completions[1].priority, 5);
-        assert_eq!(completions[2].priority, 0);
+        let [a, b, c, ..] = completions.as_slice() else {
+            panic!("expected three completions");
+        };
+        assert_eq!(a.priority, 10);
+        assert_eq!(b.priority, 5);
+        assert_eq!(c.priority, 0);
     }
 
     #[test]
@@ -438,9 +518,12 @@ mod tests {
         )];
         let (_, completions) = aggregate(history, vec![], vec![], ai, "git", 10);
         assert_eq!(completions.len(), 2);
-        assert_eq!(completions[0].source, "history");
-        assert_eq!(completions[1].source, "ai");
-        assert_eq!(completions[1].priority, -10);
+        let [a, b] = completions.as_slice() else {
+            panic!("expected two completions");
+        };
+        assert_eq!(a.source, "history");
+        assert_eq!(b.source, "ai");
+        assert_eq!(b.priority, -10);
     }
 
     #[test]
@@ -529,10 +612,13 @@ mod tests {
         s.replace_range = Some((5, 7));
         s.token_text = Some("grep".into());
         let json = serde_json::to_value(CompletionItem::from(s)).unwrap();
-        assert_eq!(json["replaceRange"], serde_json::json!([5, 7]));
-        assert_eq!(json["tokenText"], "grep");
+        assert_eq!(json.get("replaceRange"), Some(&serde_json::json!([5, 7])));
+        assert_eq!(json.get("tokenText"), Some(&serde_json::json!("grep")));
         // Whole-line compat field for range-unaware pagers.
-        assert_eq!(json["insertText"], "ls | grep");
+        assert_eq!(
+            json.get("insertText"),
+            Some(&serde_json::json!("ls | grep"))
+        );
     }
 
     #[test]
@@ -555,7 +641,7 @@ mod tests {
         let mut s = ranked(0, SuggestionSource::File, false, "notes.md");
         s.truncated = true;
         let json = serde_json::to_value(CompletionItem::from(s)).unwrap();
-        assert_eq!(json["truncated"], true);
+        assert_eq!(json.get("truncated"), Some(&serde_json::json!(true)));
     }
 
     #[test]
@@ -575,8 +661,11 @@ mod tests {
     fn splice_token_into_line_builds_compat_pair() {
         let mut results = vec![ranked(0, SuggestionSource::Path, false, "grep")];
         splice_token_into_line(&mut results, "ls | gr | wc -l", (5, 7));
-        assert_eq!(results[0].insert_text, "ls | grep | wc -l");
-        assert_eq!(results[0].token_text.as_deref(), Some("grep"));
+        let Some(r) = results.first() else {
+            panic!("expected one result: {results:?}");
+        };
+        assert_eq!(r.insert_text, "ls | grep | wc -l");
+        assert_eq!(r.token_text.as_deref(), Some("grep"));
     }
 
     /// Equal-priority items must keep their provider-internal order. The file provider ships pre-ranked rows (fuzzy tier/score/dirs-first) at ONE shared priority. Its ranking reaches the wire only through this sort's stability.
@@ -607,7 +696,9 @@ mod tests {
         assert_eq!(file_order, expected);
         // The boosted file rows all sort ahead of the priority-0 path rows.
         assert_eq!(
-            completions[..32]
+            completions
+                .get(..32)
+                .unwrap_or(&[])
                 .iter()
                 .filter(|c| c.source == "file")
                 .count(),
@@ -634,8 +725,39 @@ mod tests {
         let file = vec![ranked(5, SuggestionSource::File, false, ".bashrc")];
         let (_, completions) = aggregate(history, vec![], file, vec![], "cat", 10);
         assert_eq!(completions.len(), 2);
-        assert_eq!(completions[0].priority, 10);
-        assert_eq!(completions[1].priority, 5);
-        assert_eq!(completions[1].source, "file");
+        let [a, b] = completions.as_slice() else {
+            panic!("expected two completions");
+        };
+        assert_eq!(a.priority, 10);
+        assert_eq!(b.priority, 5);
+        assert_eq!(b.source, "file");
+    }
+
+    #[tokio::test]
+    async fn refresh_dropped_mid_scan_frees_its_flag() {
+        static REFRESHING: AtomicBool = AtomicBool::new(false);
+        let (_scan_done, scan) = tokio::sync::oneshot::channel::<()>();
+        let refresh = async {
+            let _refreshing = RefreshGuard::try_acquire(&REFRESHING).expect("the flag is free");
+            let _ = scan.await;
+        };
+
+        // The refresh parks on its scan, then loses the race and is dropped, as on a session cancel
+        tokio::select! {
+            biased;
+            () = refresh => panic!("the scan never finishes"),
+            () = std::future::ready(()) => {}
+        }
+
+        assert!(RefreshGuard::try_acquire(&REFRESHING).is_some());
+    }
+
+    #[test]
+    fn failed_acquire_leaves_the_holders_flag_set() {
+        static REFRESHING: AtomicBool = AtomicBool::new(false);
+        let _holder = RefreshGuard::try_acquire(&REFRESHING).expect("the flag is free");
+
+        assert!(RefreshGuard::try_acquire(&REFRESHING).is_none());
+        assert!(RefreshGuard::try_acquire(&REFRESHING).is_none());
     }
 }

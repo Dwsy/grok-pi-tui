@@ -1,30 +1,25 @@
 //! Background `/user` enrichment spawned by `AuthManager::update()`.
-
-use std::sync::Arc;
-use std::time::Duration as StdDuration;
-
 use super::AuthManager;
 use super::lock::{Heartbeat, try_lock_auth_file_async};
 use crate::manager::AUTH_LOCK_TIMEOUT;
 use crate::model::{GrokAuth, UserInfo, lookup_auth};
 use crate::storage::{read_auth_json, write_auth_json};
-
+use std::sync::Arc;
+use std::time::Duration as StdDuration;
+use xai_grok_telemetry::unified_log::LogLevel;
 /// Timeout for the `/user` fetch, shared by the inline (login) and background paths.
 const USER_FETCH_TIMEOUT: StdDuration = StdDuration::from_secs(10);
-
 /// Logs `auth update enrichment dropped` if the task is cancelled before it finishes.
 /// Normal completion calls `disarm` first, which suppresses the log.
 pub(super) struct EnrichmentExitGuard {
     pub(super) started: std::time::Instant,
     pub(super) armed: bool,
 }
-
 impl EnrichmentExitGuard {
     pub(super) fn disarm(&mut self) {
         self.armed = false;
     }
 }
-
 impl Drop for EnrichmentExitGuard {
     fn drop(&mut self) {
         if !self.armed {
@@ -39,7 +34,6 @@ impl Drop for EnrichmentExitGuard {
         );
     }
 }
-
 pub(super) fn spawn(manager: Arc<AuthManager>, auth: GrokAuth) {
     tokio::spawn(async move {
         let mut exit_guard = EnrichmentExitGuard {
@@ -50,7 +44,26 @@ pub(super) fn spawn(manager: Arc<AuthManager>, auth: GrokAuth) {
         exit_guard.disarm();
     });
 }
-
+#[cfg(test)]
+tokio::task_local! {
+    pub(super) static TEST_LOG_HOOK: Arc<dyn Fn() + Send + Sync>;
+}
+/// `unified_log` writes under a global writer mutex and may trim the file, so the write leaves the executor; only the owned entry moves.
+/// A failed write task is reported through `tracing` and never reaches the auth result. The write still takes that global mutex: this keeps these sites off the session thread, it does not make the sink non-blocking.
+async fn log_offloaded(lvl: LogLevel, msg: String, ctx: serde_json::Value) {
+    #[cfg(test)]
+    let hook = TEST_LOG_HOOK.try_with(Arc::clone).ok();
+    let write = tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            hook();
+        }
+        xai_grok_telemetry::unified_log::emit(lvl, &msg, None, Some(ctx));
+    });
+    if let Err(e) = write.await {
+        tracing::warn!(error = %e, "unified_log write task failed");
+    }
+}
 async fn fetch_user_info(manager: &AuthManager, key: &str, log_label: &str) -> Option<UserInfo> {
     let user_url = format!("{}/user", manager.proxy_base_url);
     let token_header = &manager.grok_com_config.token_header;
@@ -68,61 +81,63 @@ async fn fetch_user_info(manager: &AuthManager, key: &str, log_label: &str) -> O
         )
         .send()
         .await;
-
     match response {
         Ok(resp) if resp.status().is_success() => match resp.json::<UserInfo>().await {
             Ok(ui) if !ui.user_id.is_empty() => Some(ui),
             Ok(_) => {
-                xai_grok_telemetry::unified_log::warn(
-                    &format!("{log_label} skipped"),
-                    None,
-                    Some(serde_json::json!({
+                log_offloaded(
+                    LogLevel::Warn,
+                    format!("{log_label} skipped"),
+                    serde_json::json!({
                         "reason": "empty_user_id",
                         "elapsed_ms": started.elapsed().as_millis() as u64,
-                    })),
-                );
+                    }),
+                )
+                .await;
                 None
             }
             Err(e) => {
-                xai_grok_telemetry::unified_log::warn(
-                    &format!("{log_label} failed"),
-                    None,
-                    Some(serde_json::json!({
+                log_offloaded(
+                    LogLevel::Warn,
+                    format!("{log_label} failed"),
+                    serde_json::json!({
                         "reason": "parse",
                         "error": e.to_string(),
                         "elapsed_ms": started.elapsed().as_millis() as u64,
-                    })),
-                );
+                    }),
+                )
+                .await;
                 None
             }
         },
         Ok(resp) => {
-            xai_grok_telemetry::unified_log::warn(
-                &format!("{log_label} failed"),
-                None,
-                Some(serde_json::json!({
+            log_offloaded(
+                LogLevel::Warn,
+                format!("{log_label} failed"),
+                serde_json::json!({
                     "reason": "http_status",
                     "http_status": resp.status().as_u16(),
                     "elapsed_ms": started.elapsed().as_millis() as u64,
-                })),
-            );
+                }),
+            )
+            .await;
             None
         }
         Err(e) => {
-            xai_grok_telemetry::unified_log::warn(
-                &format!("{log_label} failed"),
-                None,
-                Some(serde_json::json!({
+            log_offloaded(
+                LogLevel::Warn,
+                format!("{log_label} failed"),
+                serde_json::json!({
                     "reason": if e.is_timeout() { "timeout" } else { "transport" },
                     "error": e.to_string(),
                     "elapsed_ms": started.elapsed().as_millis() as u64,
-                })),
-            );
+                }),
+            )
+            .await;
             None
         }
     }
 }
-
 /// Blocking enrichment at login: merges `/user` fields into `auth` before the first save.
 pub(super) async fn enrich_inline(manager: &AuthManager, auth: &mut GrokAuth) {
     let Some(ui) = fetch_user_info(manager, &auth.key, "auth login enrichment").await else {
@@ -130,7 +145,6 @@ pub(super) async fn enrich_inline(manager: &AuthManager, auth: &mut GrokAuth) {
     };
     apply_user_info_enrichment(auth, ui);
 }
-
 async fn run_user_info_enrichment(manager: &AuthManager, auth: GrokAuth) {
     let started = std::time::Instant::now();
     let Some(user_info) = fetch_user_info(manager, &auth.key, "auth update enrichment").await
@@ -138,9 +152,6 @@ async fn run_user_info_enrichment(manager: &AuthManager, auth: GrokAuth) {
         return;
     };
     let user_elapsed_ms = started.elapsed().as_millis() as u64;
-
-    // Read-modify-write under the file lock. On timeout, skip the write rather than proceed unlocked. An unlocked read-modify-write can silently revert a freshly rotated access or refresh token on disk
-    // A rolled-back refresh token later fails with `invalid_grant` and forces a re-login Enrichment is cosmetic; it re-runs on the next refresh
     let lock_started = std::time::Instant::now();
     let lock_guard = try_lock_auth_file_async(&manager.path, AUTH_LOCK_TIMEOUT, Heartbeat::Skip)
         .await
@@ -157,7 +168,6 @@ async fn run_user_info_enrichment(manager: &AuthManager, auth: GrokAuth) {
         );
         return;
     };
-
     let Ok(mut map) = read_auth_json(&manager.path) else {
         xai_grok_telemetry::unified_log::warn(
             "auth update enrichment skipped",
@@ -174,9 +184,6 @@ async fn run_user_info_enrichment(manager: &AuthManager, auth: GrokAuth) {
         );
         return;
     };
-    // If the access token or the refresh token on disk differs from the one we wrote, a sibling process rotated tokens since our update() Skip enrichment then, so stale profile data never overwrites the sibling's fresher entry
-    // OR, not AND: during a concurrent refresh usually only the key changes while the refresh token stays
-    // Team-login transitions (a placeholder user_id becoming real) rotate no tokens, so they still pass this check and get enriched
     if disk.key != auth.key || disk.refresh_token != auth.refresh_token {
         xai_grok_telemetry::unified_log::info(
             "auth update enrichment skipped",
@@ -189,9 +196,7 @@ async fn run_user_info_enrichment(manager: &AuthManager, auth: GrokAuth) {
         );
         return;
     }
-
     apply_user_info_enrichment(&mut disk, user_info);
-
     map.insert(manager.scope.clone(), disk.clone());
     let write_started = std::time::Instant::now();
     if let Err(e) = write_auth_json(&manager.path, &map) {
@@ -219,7 +224,40 @@ async fn run_user_info_enrichment(manager: &AuthManager, auth: GrokAuth) {
         })),
     );
 }
-
+/// Keyed on account and principal rather than on `auth.key`, since a token refresh mid-GET rotates the bearer; merged only while still unresolved, since that refresh's own enrichment is newer. A same-identity caller hears the live value; another identity hears `None`.
+/// Not written to disk and not via [`apply_user_info_enrichment`]: either would let a response delayed past a privacy write (which takes no file lock) put the older `coding_data_retention_opt_out` back.
+pub(super) async fn hydrate_can_administer_team(
+    manager: &AuthManager,
+    auth: &GrokAuth,
+) -> Option<bool> {
+    let user_info = fetch_user_info(manager, &auth.key, "auth capability hydration").await?;
+    let value = user_info.can_administer_team;
+    let same_account = |live: &GrokAuth| {
+        auth.email.is_some()
+            && live.email == auth.email
+            && live.team_id == auth.team_id
+            && live.is_team_principal() == auth.is_team_principal()
+    };
+    let merged = manager.with_inner_write(|inner| match inner.as_mut() {
+        Some(live) if same_account(live) => {
+            if live.can_administer_team.is_none() {
+                live.can_administer_team = value;
+            }
+            live.can_administer_team
+        }
+        _ => None,
+    });
+    log_offloaded(
+        LogLevel::Info,
+        "auth capability hydration done".to_owned(),
+        serde_json::json!({ "can_administer_team": value, "merged": merged }),
+    )
+    .await;
+    manager.with_inner_read(|inner| match inner {
+        Some(live) if same_account(live) => live.can_administer_team,
+        _ => None,
+    })
+}
 /// Merge enrichment fields into disk auth. Does not touch token fields.
 pub(super) fn apply_user_info_enrichment(disk: &mut GrokAuth, user_info: UserInfo) {
     disk.user_id = user_info.user_id;
@@ -249,9 +287,13 @@ pub(super) fn apply_user_info_enrichment(disk: &mut GrokAuth, user_info: UserInf
     if let Some(opt_out) = user_info.coding_data_retention_opt_out {
         disk.coding_data_retention_opt_out = opt_out;
     }
+    disk.can_administer_team = user_info.can_administer_team;
     if let Some(ref email) = user_info.email
         && !email.is_empty()
     {
         disk.email = user_info.email;
     }
 }
+#[cfg(test)]
+#[path = "enrichment_tests.rs"]
+mod tests;

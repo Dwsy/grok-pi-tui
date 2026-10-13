@@ -117,10 +117,11 @@ impl<T: ListItem> StatefulWidget for ListPane<'_, T> {
             let y = content_area.bottom().saturating_sub(1);
             // Write each char, keeping bg (selection highlight) but overriding fg and modifiers so content styles don't leak
             for (i, ch) in toast_text.chars().enumerate() {
-                let cell = &mut buf[(x + i as u16, y)];
-                cell.set_char(ch);
-                cell.fg = self.style.toast_fg;
-                cell.modifier = ratatui::style::Modifier::BOLD;
+                if let Some(cell) = buf.cell_mut((x + i as u16, y)) {
+                    cell.set_char(ch);
+                    cell.fg = self.style.toast_fg;
+                    cell.modifier = ratatui::style::Modifier::BOLD;
+                }
             }
         }
 
@@ -312,12 +313,16 @@ impl<T: ListItem> ListPane<'_, T> {
                     let src_y = skip + row;
                     let dst_y = cursor_y + row;
                     for col in 0..area.width {
-                        let src_cell = &scratch[(col, src_y)];
-                        let dst_cell = &mut buf[(area.x + col, dst_y)];
-                        let parent_bg = dst_cell.bg;
-                        *dst_cell = src_cell.clone();
-                        if dst_cell.bg == ratatui::style::Color::Reset {
-                            dst_cell.bg = parent_bg;
+                        let Some(src) = scratch.cell((col, src_y)).cloned() else {
+                            continue;
+                        };
+                        let Some(dst) = buf.cell_mut((area.x + col, dst_y)) else {
+                            continue;
+                        };
+                        let parent_bg = dst.bg;
+                        *dst = src;
+                        if dst.bg == ratatui::style::Color::Reset {
+                            dst.bg = parent_bg;
                         }
                     }
                 }
@@ -353,7 +358,6 @@ impl<T: ListItem> ListPane<'_, T> {
                 buf.set_style(sel_area, overlay);
             }
 
-            // --- Post-pass 2: Match highlight overlay ---
             // Invert (REVERSED) the cells covering each match of the active query
             // Gated on `show_highlights` so callers can suppress the overlay (e.g. after accepting a filter, where every line matches).
             if state.show_highlights
@@ -395,10 +399,6 @@ impl<T: ListItem> ListPane<'_, T> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Truncation ellipsis
-// ---------------------------------------------------------------------------
-
 /// Place a `…` at the end of text on row `y` to indicate truncation. If there is room after it
 /// (text doesn't fill the full width), the `…` is appended.
 fn render_truncation_ellipsis(buf: &mut Buffer, y: u16, x_start: u16, width: u16) {
@@ -411,7 +411,7 @@ fn render_truncation_ellipsis(buf: &mut Buffer, y: u16, x_start: u16, width: u16
     // Find rightmost non-space cell.
     let mut last_text_x: Option<u16> = None;
     for x in (x_start..x_end).rev() {
-        if buf[(x, y)].symbol() != " " {
+        if buf.cell((x, y)).is_some_and(|c| c.symbol() != " ") {
             last_text_x = Some(x);
             break;
         }
@@ -424,15 +424,12 @@ fn render_truncation_ellipsis(buf: &mut Buffer, y: u16, x_start: u16, width: u16
     };
 
     // Inherit fg from the donor cell, preserve bg of the target cell.
-    let fg = buf[(donor_x, y)].fg;
-    let cell = &mut buf[(ellipsis_x, y)];
-    cell.set_symbol("…");
-    cell.fg = fg;
+    let fg = buf.cell((donor_x, y)).map(|c| c.fg).unwrap_or_default();
+    if let Some(cell) = buf.cell_mut((ellipsis_x, y)) {
+        cell.set_symbol("…");
+        cell.fg = fg;
+    }
 }
-
-// ---------------------------------------------------------------------------
-// Corner overlay indicators
-// ---------------------------------------------------------------------------
 
 /// Render single-character corner indicators for scroll position and follow mode. Top-right: `▲`
 /// (dim) when content is scrolled down (more above). Bottom-right: `◆` (dim) in follow mode, `▼`
@@ -458,21 +455,39 @@ fn render_corner_indicators(
             // Check if the indicator or the cell just before it has content.
             // If so, insert `… ` padding so the indicator doesn't visually merge with text (e.g., `count=3▶` becomes `count… ▶`)
             if area.width >= 3 && pos.0 >= area.x + 2 {
-                let at_pos = buf[pos].symbol().to_string();
-                let before_pos = buf[(pos.0 - 1, pos.1)].symbol().to_string();
+                let at_pos = buf
+                    .cell(pos)
+                    .map(|c| c.symbol().to_string())
+                    .unwrap_or_default();
+                let before_pos = pos
+                    .0
+                    .checked_sub(1)
+                    .and_then(|x| buf.cell((x, pos.1)).map(|c| c.symbol().to_string()))
+                    .unwrap_or_default();
                 let has_adjacent_content = !at_pos.chars().all(char::is_whitespace)
                     || !before_pos.chars().all(char::is_whitespace);
-                if has_adjacent_content {
-                    let ellipsis_fg = buf[(pos.0 - 2, pos.1)].fg;
-                    buf[(pos.0 - 2, pos.1)].set_symbol("…");
-                    buf[(pos.0 - 2, pos.1)].fg = ellipsis_fg;
-                    buf[(pos.0 - 1, pos.1)].set_symbol(" ");
+                if has_adjacent_content && let Some(ellipsis_x) = pos.0.checked_sub(2) {
+                    let ellipsis_fg = buf
+                        .cell((ellipsis_x, pos.1))
+                        .map(|c| c.fg)
+                        .unwrap_or_default();
+                    if let Some(cell) = buf.cell_mut((ellipsis_x, pos.1)) {
+                        cell.set_symbol("…");
+                        cell.fg = ellipsis_fg;
+                    }
+                    if let Some(x) = pos.0.checked_sub(1)
+                        && let Some(cell) = buf.cell_mut((x, pos.1))
+                    {
+                        cell.set_symbol(" ");
+                    }
                 }
             }
             // Indicator: set symbol and fg, preserve bg
-            buf[pos].set_symbol(symbol);
-            buf[pos].fg = fg;
-            buf[pos].modifier = ratatui::style::Modifier::empty();
+            if let Some(cell) = buf.cell_mut(pos) {
+                cell.set_symbol(symbol);
+                cell.fg = fg;
+                cell.modifier = ratatui::style::Modifier::empty();
+            }
         };
 
     // Top-right: ▲ when there's content above.
@@ -491,10 +506,6 @@ fn render_corner_indicators(
         place_indicator(buf, bottom_right, "▼", indicator_fg);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Input bar rendering
-// ---------------------------------------------------------------------------
 
 /// Render the bottom bar: active input bar or accepted matcher status. When the input bar is open:
 /// a left-aligned editable `search: ` or `filter: ` label and the textarea. When a matcher is
@@ -560,10 +571,6 @@ fn render_bottom_bar(
     }
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,8 +614,10 @@ mod tests {
             let style = Style::default();
             for (i, ch) in text.chars().enumerate() {
                 let x = area.x + i as u16;
-                if x < area.x + area.width {
-                    buf[(x, area.y)].set_char(ch).set_style(style);
+                if x < area.x + area.width
+                    && let Some(cell) = buf.cell_mut((x, area.y))
+                {
+                    cell.set_char(ch).set_style(style);
                 }
             }
         }
@@ -633,7 +642,11 @@ mod tests {
     /// Helper: extract text from a buffer row.
     fn row_text(buf: &Buffer, y: u16, x_start: u16, width: u16) -> String {
         (x_start..x_start + width)
-            .map(|x| buf[(x, y)].symbol().to_string())
+            .map(|x| {
+                buf.cell((x, y))
+                    .map(|c| c.symbol().to_string())
+                    .unwrap_or_default()
+            })
             .collect::<String>()
             .trim_end()
             .to_string()
@@ -822,8 +835,6 @@ mod tests {
         assert_eq!(row, ">short");
     }
 
-    // -- Match highlight tests ------------------------------------------------
-
     #[test]
     fn highlight_match_inverts_correct_cells() {
         // Items: "alpha", "beta", "alphabet"
@@ -856,7 +867,9 @@ mod tests {
 
         // Item 0: ">alpha", "alph" at columns 1..5 (after the ">" prefix)
         for col in 1..5u16 {
-            let cell = &buf[(col, 0)];
+            let Some(cell) = buf.cell((col, 0)) else {
+                panic!("cell ({col}, 0)");
+            };
             assert!(
                 cell.modifier.contains(ratatui::style::Modifier::REVERSED),
                 "col {col}: should have REVERSED modifier",
@@ -864,7 +877,8 @@ mod tests {
         }
         // Column 5 ('a' of "alpha") is outside the match
         assert!(
-            !buf[(5, 0)]
+            !buf.cell((5, 0))
+                .expect("cell")
                 .modifier
                 .contains(ratatui::style::Modifier::REVERSED),
             "col 5 should not be reversed"
@@ -873,7 +887,8 @@ mod tests {
         // Item 1: " beta" has no match, so no REVERSED
         for col in 0..5u16 {
             assert!(
-                !buf[(col, 1)]
+                !buf.cell((col, 1))
+                    .expect("cell")
                     .modifier
                     .contains(ratatui::style::Modifier::REVERSED),
                 "item 1 col {col} should not be reversed"
@@ -883,9 +898,8 @@ mod tests {
         // Item 2: " alphabet", "alph" at columns 1..5
         for col in 1..5u16 {
             assert!(
-                buf[(col, 2)]
-                    .modifier
-                    .contains(ratatui::style::Modifier::REVERSED),
+                buf.cell((col, 2))
+                    .is_some_and(|c| c.modifier.contains(ratatui::style::Modifier::REVERSED)),
                 "item 2 col {col}: should have REVERSED modifier"
             );
         }
@@ -911,10 +925,19 @@ mod tests {
 
         // Non-match cells get selection_bg but not REVERSED
         let sel_bg = style.selection_bg;
-        assert_eq!(buf[(0, 0)].bg, sel_bg, "selection bg at col 0");
-        assert_eq!(buf[(6, 0)].bg, sel_bg, "selection bg at col 6");
+        assert_eq!(
+            buf.cell((0, 0)).map(|c| c.bg),
+            Some(sel_bg),
+            "selection bg at col 0"
+        );
+        assert_eq!(
+            buf.cell((6, 0)).map(|c| c.bg),
+            Some(sel_bg),
+            "selection bg at col 6"
+        );
         assert!(
-            !buf[(0, 0)]
+            !buf.cell((0, 0))
+                .expect("cell")
                 .modifier
                 .contains(ratatui::style::Modifier::REVERSED),
             "non-match col 0 should not be reversed"
@@ -923,9 +946,8 @@ mod tests {
         // Match cells ("world" at columns 7..12) get REVERSED
         for col in 7..12u16 {
             assert!(
-                buf[(col, 0)]
-                    .modifier
-                    .contains(ratatui::style::Modifier::REVERSED),
+                buf.cell((col, 0))
+                    .is_some_and(|c| c.modifier.contains(ratatui::style::Modifier::REVERSED)),
                 "match col {col} should have REVERSED modifier"
             );
         }
@@ -965,9 +987,9 @@ mod tests {
         let mut reversed_cells: Vec<(u16, u16)> = Vec::new();
         for row in 0..height {
             for col in 0..width {
-                if buf[(col, row)]
-                    .modifier
-                    .contains(ratatui::style::Modifier::REVERSED)
+                if buf
+                    .cell((col, row))
+                    .is_some_and(|c| c.modifier.contains(ratatui::style::Modifier::REVERSED))
                 {
                     reversed_cells.push((col, row));
                 }
@@ -976,7 +998,11 @@ mod tests {
 
         let highlighted_text: String = reversed_cells
             .iter()
-            .map(|&(c, r)| buf[(c, r)].symbol().to_string())
+            .map(|&(c, r)| {
+                buf.cell((c, r))
+                    .map(|cell| cell.symbol().to_string())
+                    .unwrap_or_default()
+            })
             .collect();
         assert_eq!(
             highlighted_text, "tool",
@@ -1097,7 +1123,10 @@ mod tests {
         let mut reversed_cells: Vec<(u16, u16)> = Vec::new();
         for row in 0..height {
             for col in 0..width {
-                if buf[(col, row)].modifier.contains(Modifier::REVERSED) {
+                if buf
+                    .cell((col, row))
+                    .is_some_and(|c| c.modifier.contains(Modifier::REVERSED))
+                {
                     reversed_cells.push((col, row));
                 }
             }
@@ -1105,7 +1134,11 @@ mod tests {
 
         let highlighted_text: String = reversed_cells
             .iter()
-            .map(|&(c, r)| buf[(c, r)].symbol().to_string())
+            .map(|&(c, r)| {
+                buf.cell((c, r))
+                    .map(|cell| cell.symbol().to_string())
+                    .unwrap_or_default()
+            })
             .collect();
 
         // "tool" appears multiple times in the text; each occurrence highlights exactly "tool" (4 chars)
@@ -1179,9 +1212,9 @@ mod tests {
         let mut reversed_cells: Vec<(u16, u16)> = Vec::new();
         for row in 0..height {
             for col in 0..width {
-                if buf[(col, row)]
-                    .modifier
-                    .contains(ratatui::style::Modifier::REVERSED)
+                if buf
+                    .cell((col, row))
+                    .is_some_and(|c| c.modifier.contains(ratatui::style::Modifier::REVERSED))
                 {
                     reversed_cells.push((col, row));
                 }
@@ -1190,7 +1223,11 @@ mod tests {
 
         let highlighted_text: String = reversed_cells
             .iter()
-            .map(|&(c, r)| buf[(c, r)].symbol().to_string())
+            .map(|&(c, r)| {
+                buf.cell((c, r))
+                    .map(|cell| cell.symbol().to_string())
+                    .unwrap_or_default()
+            })
             .collect();
         assert_eq!(
             highlighted_text, "tool",
@@ -1198,10 +1235,6 @@ mod tests {
              at positions {reversed_cells:?}"
         );
     }
-
-    // =========================================================================
-    // Long line wrapping bug regression tests
-    // =========================================================================
 
     /// A content-based test item (uses the framework's wrapping).
     #[derive(Debug)]
@@ -1246,7 +1279,9 @@ mod tests {
         let mut s = String::new();
         for y in 0..height {
             for x in 0..width {
-                let sym = buf[(x, y)].symbol();
+                let Some(sym) = buf.cell((x, y)).map(|c| c.symbol()) else {
+                    continue;
+                };
                 if sym != " " {
                     s.push_str(sym);
                 }
@@ -1254,10 +1289,6 @@ mod tests {
         }
         s
     }
-
-    // =========================================================================
-    // Long line wrapping regression tests
-    // =========================================================================
 
     #[test]
     fn long_line_desired_height_is_accurate() {
@@ -1289,7 +1320,9 @@ mod tests {
         StatefulWidget::render(ListPane::new(&items), area, &mut buf, &mut state);
 
         let non_empty_rows = (0..viewport_height)
-            .filter(|&y| (0..width).any(|x| buf[(x, y)].symbol().trim() != ""))
+            .filter(|&y| {
+                (0..width).any(|x| buf.cell((x, y)).is_some_and(|c| c.symbol().trim() != ""))
+            })
             .count() as u16;
 
         assert_eq!(
@@ -1424,7 +1457,9 @@ mod tests {
 
         // Count rendered rows; they fill the viewport
         let non_empty_rows = (0..viewport_height)
-            .filter(|&y| (0..width).any(|x| buf[(x, y)].symbol().trim() != ""))
+            .filter(|&y| {
+                (0..width).any(|x| buf.cell((x, y)).is_some_and(|c| c.symbol().trim() != ""))
+            })
             .count() as u16;
 
         assert_eq!(
@@ -1531,10 +1566,6 @@ mod tests {
         );
     }
 
-    // =========================================================================
-    // Scrollbar width mismatch bug (regression tests)
-    // =========================================================================
-
     #[test]
     fn scrollbar_width_mismatch_bug_repro() {
         // Documents the scrollbar width mismatch issue. Root cause (without the fix).
@@ -1580,7 +1611,10 @@ mod tests {
             ContentTestItem::new(1, LONG_LINE),
         ];
 
-        let height_narrow = items[0].desired_height(narrow_width);
+        let Some(first) = items.first() else {
+            panic!("expected items");
+        };
+        let height_narrow = first.desired_height(narrow_width);
         let viewport_height: u16 = 10;
 
         let mut state = ListPaneState::new(WrapMode::Wrap, false);
@@ -1621,7 +1655,10 @@ mod tests {
         let mut state = ListPaneState::new(WrapMode::Wrap, false);
         state.prepare_layout(&items, full_width, viewport_height);
 
-        let narrow_height = items[0].desired_height(full_width - 2);
+        let Some(first) = items.first() else {
+            panic!("expected items");
+        };
+        let narrow_height = first.desired_height(full_width - 2);
         for i in 0..items.len() {
             assert_eq!(
                 state.layout().item_height(i),

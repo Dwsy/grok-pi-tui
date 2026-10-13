@@ -3,54 +3,35 @@ use std::sync::Arc;
 
 use agent_client_protocol as acp;
 use tokio_util::task::AbortOnDropHandle;
+use xai_grok_hooks::trust::Trust;
+use xai_grok_workspace::plugins::SessionPluginDirs;
 
 use crate::agent::folder_trust::{self, TrustScan};
 
 /// `session/new` / `session/load` `_meta` key carrying per-session plugin roots.
 pub(crate) const SESSION_PLUGIN_DIRS_META_KEY: &str = "pluginDirs";
 
-pub(crate) fn parse_session_plugin_dirs(meta: Option<&acp::Meta>) -> Vec<PathBuf> {
-    let Some(entries) = meta
-        .and_then(|m| m.get(SESSION_PLUGIN_DIRS_META_KEY))
-        .and_then(|v| v.as_array())
-    else {
-        return Vec::new();
-    };
-    let mut dirs = Vec::new();
-    for entry in entries {
-        let Some(raw) = entry.as_str() else {
-            tracing::warn!(?entry, "pluginDirs entry is not a string; skipping");
-            continue;
-        };
-        let path = PathBuf::from(raw);
-        if !path.is_absolute() {
-            tracing::warn!("pluginDirs entry is not absolute; skipping");
-            continue;
-        }
-        let canonical = dunce::canonicalize(&path).unwrap_or(path);
-        if !canonical.is_dir() {
-            tracing::warn!("pluginDirs entry is not a directory; skipping");
-            continue;
-        }
-        if !dirs.contains(&canonical) {
-            dirs.push(canonical);
-        }
-    }
-    dirs
+pub(crate) fn parse_session_plugin_dirs(meta: Option<&acp::Meta>) -> SessionPluginDirs {
+    SessionPluginDirs::parse(
+        meta.and_then(|m| m.get(SESSION_PLUGIN_DIRS_META_KEY))
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    )
 }
 
 pub(crate) struct SessionCreatePrefetchInputs {
     pub cwd: PathBuf,
     pub scan: TrustScan,
     pub plugin_handle: xai_grok_agent::plugins::SharedPluginRegistryHandle,
-    pub session_plugin_dirs: Vec<PathBuf>,
+    pub session_plugin_dirs: SessionPluginDirs,
 }
 
 pub(crate) struct SessionCreatePrefetch {
     cwd: PathBuf,
     scan: TrustScan,
     plugin_handle: xai_grok_agent::plugins::SharedPluginRegistryHandle,
-    session_plugin_dirs: Vec<PathBuf>,
+    session_plugin_dirs: SessionPluginDirs,
     /// Reconciled once; later callers share this verdict with the plugin refresh.
     reconciled: Option<bool>,
     plugins: PrefetchSlot<Option<Arc<xai_grok_agent::plugins::PluginRegistry>>>,
@@ -99,7 +80,7 @@ impl SessionCreatePrefetch {
                 None,
                 Vec::new(),
             ),
-            session_plugin_dirs: Vec::new(),
+            session_plugin_dirs: SessionPluginDirs::default(),
             reconciled: Some(true),
             plugins: PrefetchSlot::ready(plugin_registry),
         }
@@ -139,7 +120,7 @@ impl SessionCreatePrefetch {
             self.plugin_handle.clone(),
             self.cwd.clone(),
             std::mem::take(&mut self.session_plugin_dirs),
-            project_trusted,
+            Trust::from_verdict(project_trusted),
         ));
     }
 
@@ -157,7 +138,7 @@ impl SessionCreatePrefetch {
                 None,
                 Vec::new(),
             ),
-            session_plugin_dirs: Vec::new(),
+            session_plugin_dirs: SessionPluginDirs::default(),
             reconciled: Some(true),
             plugins: PrefetchSlot::spawn(plugins),
         }
@@ -186,16 +167,27 @@ impl SessionCreatePrefetch {
 async fn refresh_plugins_for_cwd(
     handle: xai_grok_agent::plugins::SharedPluginRegistryHandle,
     cwd: PathBuf,
-    session_plugin_dirs: Vec<PathBuf>,
-    project_trusted: bool,
+    session_plugin_dirs: SessionPluginDirs,
+    trust: Trust,
 ) -> Option<Arc<xai_grok_agent::plugins::PluginRegistry>> {
     #[cfg(test)]
     if CAPTURE_TRUST_ONLY.load(std::sync::atomic::Ordering::SeqCst) {
         return Some(Arc::new(xai_grok_agent::plugins::PluginRegistry::empty()));
     }
-    let disk_cfg = crate::config::resolve_effective_plugins_config(&cwd).to_discovery_config();
     match tokio::task::spawn_blocking(move || {
-        handle.refresh_and_build_for_cwd(&cwd, &disk_cfg, &session_plugin_dirs, project_trusted)
+        let effective_config = crate::config::load_effective_config().ok();
+        xai_grok_workspace::plugins::session_plugin_registry(
+            &handle,
+            &session_plugin_dirs,
+            xai_grok_workspace::plugins::PluginConfigInputs {
+                effective_config: effective_config.as_ref(),
+                home: xai_dirs::home_dir().as_deref(),
+                grok_home: xai_grok_config::user_grok_home().as_deref(),
+                cwd: &cwd,
+                trust,
+                claude_import: crate::claude_import::import_marker(),
+            },
+        )
     })
     .await
     {

@@ -505,7 +505,12 @@ fn spawn_stderr_reader(mut stderr: ChildStderr) -> io::Result<StderrReader> {
             let result = loop {
                 match stderr.read(&mut buffer) {
                     Ok(0) => break Ok(diagnostic.finish()),
-                    Ok(read) => diagnostic.push(&buffer[..read]),
+                    Ok(read) => {
+                        let Some(chunk) = buffer.get(..read) else {
+                            break Err(io::Error::other("stderr read exceeded buffer"));
+                        };
+                        diagnostic.push(chunk);
+                    }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => break Err(error),
                 }
@@ -544,7 +549,9 @@ impl CappedStderr {
         self.is_truncated |=
             self.tail.len().saturating_add(tail.len()) > STDERR_DIAGNOSTIC_TAIL_CAP;
         let keep_start = tail.len().saturating_sub(STDERR_DIAGNOSTIC_TAIL_CAP);
-        let tail = &tail[keep_start..];
+        let Some(tail) = tail.get(keep_start..) else {
+            return;
+        };
         let discard = self
             .tail
             .len()

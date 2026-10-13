@@ -133,21 +133,24 @@ fn merge_subagents(
         }
 
         if let Some(pos) = entries.iter().position(|e| e.name == def.name) {
-            let should_replace = match &entries[pos].source {
-                SubagentSource::Builtin(_) => true,
-                SubagentSource::UserDefined { scope } => {
+            let should_replace = match entries.get(pos).map(|e| &e.source) {
+                Some(SubagentSource::Builtin(_)) => true,
+                Some(SubagentSource::UserDefined { scope }) => {
                     discovered_scope_priority(def.scope) > discovered_scope_priority(*scope)
                 }
+                None => false,
             };
             if should_replace {
                 let cs = source_from_agent_def(&def);
-                entries[pos] = SubagentEntry {
-                    name: def.name,
-                    description: def.description,
-                    source: SubagentSource::UserDefined { scope: def.scope },
-                    shadows_builtin: is_builtin_name,
-                    config_source: cs,
-                };
+                if let Some(slot) = entries.get_mut(pos) {
+                    *slot = SubagentEntry {
+                        name: def.name,
+                        description: def.description,
+                        source: SubagentSource::UserDefined { scope: def.scope },
+                        shadows_builtin: is_builtin_name,
+                        config_source: cs,
+                    };
+                }
             }
         } else {
             // This name is new, so append it after the built-ins
@@ -478,7 +481,7 @@ fn by_name_in_cwd_with_plugins_and_home(
             }
         }
         if matches.len() == 1 {
-            let (plugin, agent_file) = &matches[0];
+            let (plugin, agent_file) = matches.first()?;
             if let Some(mut def) = load_plugin_agent_definition(plugin, agent_file) {
                 substitute_plugin_vars(&mut def, plugin);
                 return Some(def);
@@ -708,6 +711,7 @@ mod tests {
             lsp_server_count: 0,
             has_inline_lsp_only: false,
             inline_hooks: None,
+            hook_specs: Vec::new(),
             inline_mcp_servers: None,
             inline_lsp_servers: None,
             conflict: None,
@@ -829,7 +833,7 @@ mod tests {
 
         let defs = discover_with_home(tmp.path(), None, None);
         assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].name, "valid");
+        assert_eq!(defs.first().map(|d| d.name.as_str()), Some("valid"));
     }
 
     #[test]
@@ -843,7 +847,7 @@ mod tests {
 
         let defs = discover_with_home(tmp.path(), None, None);
         assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].name, "good");
+        assert_eq!(defs.first().map(|d| d.name.as_str()), Some("good"));
     }
 
     #[test]
@@ -886,8 +890,11 @@ mod tests {
 
         let defs = discover_with_home(&cwd, Some(&home), Some(&home.join(".grok")));
         assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].name, "bundled-agent");
-        assert_eq!(defs[0].scope, AgentScope::Bundled);
+        let Some(def) = defs.first() else {
+            panic!("expected bundled agent: {defs:?}");
+        };
+        assert_eq!(def.name, "bundled-agent");
+        assert_eq!(def.scope, AgentScope::Bundled);
     }
 
     #[test]
@@ -1182,12 +1189,15 @@ mod tests {
         let entries = merge_subagents(discovered, &HashMap::new());
         assert_eq!(entries.len(), 4);
         // Verify ordering: built-ins first, then user
-        assert!(matches!(&entries[0].source, SubagentSource::Builtin(_)));
-        assert!(matches!(&entries[1].source, SubagentSource::Builtin(_)));
-        assert!(matches!(&entries[2].source, SubagentSource::Builtin(_)));
-        assert_eq!(entries[3].name, "migration-helper");
+        let [e0, e1, e2, e3] = entries.as_slice() else {
+            panic!("expected four entries: {entries:?}");
+        };
+        assert!(matches!(&e0.source, SubagentSource::Builtin(_)));
+        assert!(matches!(&e1.source, SubagentSource::Builtin(_)));
+        assert!(matches!(&e2.source, SubagentSource::Builtin(_)));
+        assert_eq!(e3.name, "migration-helper");
         assert_eq!(
-            entries[3].source,
+            e3.source,
             SubagentSource::UserDefined {
                 scope: AgentScope::User
             }
@@ -1202,9 +1212,12 @@ mod tests {
             AgentScope::Bundled,
         )];
         let entries = merge_subagents(discovered, &HashMap::new());
-        assert_eq!(entries[3].name, "bundled-helper");
+        let Some(e3) = entries.get(3) else {
+            panic!("expected four entries: {entries:?}");
+        };
+        assert_eq!(e3.name, "bundled-helper");
         assert_eq!(
-            entries[3].source,
+            e3.source,
             SubagentSource::UserDefined {
                 scope: AgentScope::Bundled
             }
@@ -1246,10 +1259,10 @@ mod tests {
         let my_agent: Vec<_> = entries.iter().filter(|e| e.name == "my-agent").collect();
         assert_eq!(my_agent.len(), 1, "should dedup by name");
         assert_eq!(
-            my_agent[0].source,
-            SubagentSource::UserDefined {
+            my_agent.first().map(|e| &e.source),
+            Some(&SubagentSource::UserDefined {
                 scope: AgentScope::Project
-            }
+            })
         );
     }
 

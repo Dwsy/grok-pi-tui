@@ -84,6 +84,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"
 tokio = { workspace = true, features = ["test-util"] }
 xai-grok-test-support = { workspace = true }
 xai-grok-extra-ca = { workspace = true }
+wiremock = { workspace = true }
+pretty_assertions = { workspace = true }
+indexmap = { workspace = true }
 # Test-only builds expose `env::EnvVarGuard` to this crate's test targets.
 xai-grok-shell-base = { workspace = true, features = ["test-support"] }
 

@@ -4,6 +4,8 @@
 //! Archive extraction is bounded (entry count, per-entry size, total decompressed size).
 //! Every path is sanitized before it is joined onto the cache root.
 
+#![deny(clippy::indexing_slicing)]
+
 use anyhow::{Context, Result, bail};
 use prod_mc_cli_chat_proxy_types::SubagentBundle;
 use serde::{Deserialize, Serialize};
@@ -1308,7 +1310,9 @@ mod tests {
             h.set_size(small.len() as u64);
             h.set_mode(0o644);
             h.set_cksum();
-            builder.append_data(&mut h, &path, &small[..]).unwrap();
+            builder
+                .append_data(&mut h, &path, small.as_slice())
+                .unwrap();
         }
 
         let encoder = builder.into_inner().unwrap();
@@ -1350,7 +1354,11 @@ mod tests {
         fh.set_mode(0o644);
         fh.set_cksum();
         builder
-            .append_data(&mut fh, "subagents/personas/researcher.toml", &content[..])
+            .append_data(
+                &mut fh,
+                "subagents/personas/researcher.toml",
+                content.as_slice(),
+            )
             .unwrap();
 
         let encoder = builder.into_inner().unwrap();

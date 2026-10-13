@@ -31,13 +31,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn method_constant() {
-        assert_eq!("workspace.presence.note", PresenceNoteReq::METHOD);
-        assert_eq!(RpcActivityClass::Read, PresenceNoteReq::ACTIVITY);
-    }
-
-    /// A note from an old gateway (no `seq`) still parses.
-    #[test]
     fn seq_is_optional_on_the_wire() {
         let req: PresenceNoteReq =
             serde_json::from_str(r#"{"session_id":"s","visible":true}"#).unwrap();

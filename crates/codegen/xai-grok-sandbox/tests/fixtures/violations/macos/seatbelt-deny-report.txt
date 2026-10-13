@@ -1,0 +1,1 @@
+2026-09-20 15:40:41.102 E  kernel[0:2c1fdab] (Sandbox) Sandbox: bash(88795) deny(1) file-write-create /private/tmp/w1-deny/P0.txt

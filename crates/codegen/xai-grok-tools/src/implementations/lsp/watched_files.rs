@@ -364,14 +364,21 @@ fn expand_braces(pattern: &str) -> Vec<String> {
     let Some(start) = pattern.find('{') else {
         return vec![pattern.to_string()];
     };
-    let Some(end_rel) = pattern[start + 1..].find('}') else {
+    let Some(end_rel) = pattern.get(start + 1..).and_then(|rest| rest.find('}')) else {
         return vec![pattern.to_string()];
     };
     let end = start + 1 + end_rel;
-    let prefix = &pattern[..start];
-    let suffix = &pattern[end + 1..];
+    let Some(prefix) = pattern.get(..start) else {
+        return vec![pattern.to_string()];
+    };
+    let Some(suffix) = pattern.get(end + 1..) else {
+        return vec![pattern.to_string()];
+    };
     let mut out = Vec::new();
-    for alt in pattern[start + 1..end].split(',') {
+    let Some(alts) = pattern.get(start + 1..end) else {
+        return vec![pattern.to_string()];
+    };
+    for alt in alts.split(',') {
         out.extend(expand_braces(&format!("{prefix}{alt}{suffix}")));
     }
     if out.is_empty() {
@@ -398,6 +405,26 @@ mod tests {
                 "watchers": [{ "globPattern": glob }]
             })),
         }
+    }
+
+    #[test]
+    fn large_watcher_list_stays_one_registration() {
+        let root = workspace();
+        let watched = WatchedFiles::new(root.path().to_path_buf());
+        let watchers: Vec<_> = (0..4096)
+            .map(|index| {
+                serde_json::json!({
+                    "globPattern": format!("/tmp/fake-nuget/packages/pkg{index}/**/*.dll")
+                })
+            })
+            .collect();
+        let registration = Registration {
+            id: "roslyn".into(),
+            method: METHOD.into(),
+            register_options: Some(serde_json::json!({ "watchers": watchers })),
+        };
+        watched.accept(std::slice::from_ref(&registration));
+        assert_eq!(watched.accepted(), 1);
     }
 
     #[test]
@@ -560,7 +587,10 @@ mod tests {
         );
         let flushed = watched.accept(&[file_watch("proj", serde_json::json!("**/*.csproj"))]);
         assert_eq!(flushed.len(), 1);
-        assert_eq!(flushed[0].0, csproj);
+        let Some((path, _)) = flushed.first() else {
+            panic!("expected flushed csproj: {flushed:?}");
+        };
+        assert_eq!(path, &csproj);
     }
 
     #[test]

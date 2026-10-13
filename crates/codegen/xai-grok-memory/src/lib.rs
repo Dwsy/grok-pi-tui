@@ -1,8 +1,13 @@
 //! Cross-session memory for Grok.
 //!
-//! Memory files are markdown under `~/.grok/memory/`, one global file plus a subdirectory per workspace.
+//! Two isolated pipelines. They do not share files, search, flush, or Dream.
+//! See the crate `AGENTS.md` before changing either path.
 //!
-//! ## Data Layout
+//! - **Legacy:** markdown under `~/.grok/memory/` (tree below).
+//! - **v2:** `~/.grok/memory-v2/` topics, observation inbox, and generated
+//!   `MEMORY.md`. See `v2.rs`. v2 never reads or writes the legacy tree.
+//!
+//! ## Legacy data layout
 //!
 //! ```text
 //! ~/.grok/memory/
@@ -15,11 +20,23 @@
 //!
 //! ## Feature Flag
 //!
-//! Memory is enabled through `GROK_MEMORY`, `[memory] enabled`, or remote settings.
+//! Resolve enablement through `MemoryConfig::resolve_settings`.
+//! `GROK_MEMORY`, `[memory] enabled`, and `[memory_v2] enabled` all participate.
 //! When disabled, this crate is not initialized by the host.
+
+#![deny(clippy::indexing_slicing)]
 
 pub mod archive;
 pub mod backend;
+pub mod batch_dream;
+mod batch_dream_catalog;
+mod batch_dream_commit;
+mod batch_dream_control;
+mod batch_dream_io;
+mod batch_dream_outline;
+mod batch_dream_plan;
+mod batch_dream_recovery;
+mod batch_dream_session;
 pub mod chunker;
 pub mod dream;
 pub mod dream_lock;
@@ -37,6 +54,11 @@ pub mod text_utils;
 pub mod v2;
 mod v2_access;
 pub mod v2_capture;
+pub mod v2_carryover;
+mod v2_clock;
+pub mod v2_consolidation;
+mod v2_maintenance;
+mod v2_topic_reads;
 pub mod watcher;
 
 pub use backend::{EndpointScopedCredentials, MemoryBackendImpl, MemoryBackendParams};
@@ -44,13 +66,31 @@ pub use index::{MemoryIndex, init_sqlite_vec};
 pub use observation::*;
 pub use storage::{MemoryScope, MemoryStorage, SaveRememberNoteError};
 pub use v2::{
-    MAX_MANUAL_OBSERVATION_BYTES, V2Manifest, V2ManifestBudget, V2MemoryScope, V2StorageError,
-    ensure_scope_initialized, regenerate_scope_manifest, render_scope_manifest,
+    MAX_MANUAL_OBSERVATION_BYTES, V2Manifest, V2ManifestBudget, V2ManifestSource, V2MemoryScope,
+    V2StorageError, collect_scope_manifest_source, ensure_scope_initialized,
+    ensure_scope_initialized_with_journal_mode, persist_scope_manifest, regenerate_scope_manifest,
+    render_manifest_from_source, render_scope_manifest, set_configured_manifest_budget,
 };
 pub use v2_access::{V2AccessError, V2MemoryAccessPolicy, V2PathClass};
 pub use v2_capture::{
-    CaptureCursors, CaptureJob, CaptureLease, CaptureOutcomeDraft, CaptureRange, ClaimRequest,
-    CommitResult, ObservationDraft, ObservationType, V2CaptureError, V2CaptureStore,
+    CaptureCursors, CaptureJob, CaptureLease, CaptureOutcomeDraft, CaptureRange, CaptureWorkState,
+    ClaimRequest, CommitResult, MAX_ALIASES, MAX_BODY_BYTES, MAX_KEYWORDS, MAX_OBSERVATIONS,
+    MAX_STATEMENT_BYTES, MAX_TERM_BYTES, MAX_TOPIC_BYTES, ObservationDraft, ObservationType,
+    V2CaptureError, V2CaptureStore,
+};
+pub use v2_carryover::{
+    V2CarryoverError, V2CarryoverOutcome, V2CarryoverReport, carry_over_legacy_memory,
+    default_legacy_memory_root, legacy_memory_file,
+};
+pub use v2_clock::{SharedV2Clock, SystemV2Clock, V2Clock, system_v2_clock};
+pub use v2_consolidation::{
+    ClaimedObservation, ConsolidationInput, ConsolidationLease, ConsolidationResult,
+    ConsolidationStatus, DreamClaimRequest, DreamEligibility, DreamEligibilityConfig,
+    DreamTriggerDisposition, TopicOperation, V2ConsolidationError, V2ConsolidationStore,
+};
+pub use v2_maintenance::{
+    DreamLeaseState, ForgetReason, ForgetRequest, ForgetResult, GcResult, MAX_FORGET_FILE_BYTES,
+    RetentionPolicy, V2MaintenanceError, V2MaintenanceStore, V2ScopeStatus,
 };
 
 pub(crate) const MEMORY_LOG_TARGET: &str = "xai_memory";

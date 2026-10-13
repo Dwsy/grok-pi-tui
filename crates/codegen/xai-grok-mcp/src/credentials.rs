@@ -259,26 +259,14 @@ fn acquire_store_lock(store_path: &Path) -> Option<std::fs::File> {
     None
 }
 
-/// Config URLs can embed secrets.
+/// Config URLs can embed secrets. Written through a `GROK_HOME`-overlay link, like `auth.json`.
 fn write_owner_only_atomic(path: &Path, content: &str) -> Result<()> {
-    use std::io::Write;
-
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
     std::fs::create_dir_all(parent)?;
-
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tmp.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    tmp.write_all(content.as_bytes())?;
-    tmp.flush()?;
-    tmp.persist(path).map_err(|e| e.error)?;
+    xai_grok_config::fs_atomic::write_user_file_atomically(path, content, Some(0o600))?;
     Ok(())
 }
 
@@ -486,9 +474,11 @@ mod tests {
 
     #[test]
     fn save_and_load_from_file() {
-        let dir = std::env::temp_dir().join("grok-mcp-credentials-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test_creds.json");
+        // Unique dir: a hardcoded `$TMP/grok-mcp-credentials-test` is shared
+        // across `--runs_per_test` shards on the same worker, so a sibling
+        // can delete the file between `exists()` and `read_to_string`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_creds.json");
 
         let mut store = McpCredentialStore::default();
         let url = Url::parse("https://test.example.com/mcp").unwrap();
@@ -497,9 +487,6 @@ mod tests {
 
         let loaded = McpCredentialStore::load_from(&path).unwrap();
         assert!(loaded.get("test", &url).is_some());
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_dir(&dir);
     }
 
     #[cfg(unix)]

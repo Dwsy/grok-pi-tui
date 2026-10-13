@@ -1,12 +1,13 @@
 //! MCP server re-exports and shell-side wrappers for timeout override resolution.
 
 pub use xai_grok_mcp::servers::{
-    AcpServerEntry, Generation, HttpConfig, InitClaimGuard, MCP_TOOL_NAME_DELIMITER, McpClient,
-    McpClientTimeoutOverrides, McpConfigChange, McpConfigDiff, McpError, McpInitStrategy,
-    McpMetaConfigMap, McpOauthDiscovery, McpServerMetaConfig, McpServerName, McpService,
-    McpSpawnCtx, McpState, McpTool, McpToolRegistration, OauthInteractivity, Replacement,
-    SharedMcpPool, SharedMcpState, Superseded, mcp_server_name, mcp_target_str, mcp_transport_str,
-    parse_mcp_meta_config, parse_mcp_tool_name, sanitize_descriptor_segment, validate_tool_name,
+    AcpServerEntry, AdmittedMcpServers, Generation, HttpConfig, InitClaimGuard,
+    MCP_TOOL_NAME_DELIMITER, McpClient, McpClientTimeoutOverrides, McpConfigChange, McpConfigDiff,
+    McpError, McpInitStrategy, McpMetaConfigMap, McpOauthDiscovery, McpServerMetaConfig,
+    McpServerName, McpService, McpSpawnCtx, McpState, McpTool, McpToolRegistration,
+    OauthInteractivity, Replacement, SharedMcpPool, SharedMcpState, Superseded, mcp_server_name,
+    mcp_target_str, mcp_transport_str, parse_mcp_meta_config, parse_mcp_tool_name,
+    qualify_mcp_tool_name, sanitize_descriptor_segment, validate_tool_name,
 };
 
 use std::collections::HashMap;

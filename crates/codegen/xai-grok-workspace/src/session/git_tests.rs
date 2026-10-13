@@ -992,10 +992,34 @@ fn test_parse_porcelain_v2_ordinary() {
     );
     assert_eq!(staged.len(), 1);
     assert_eq!(unstaged.len(), 0);
-    assert_eq!(staged[0].path, "src/lib.rs");
-    assert!(matches!(staged[0].change_type, ChangeType::Edit));
-    assert_eq!(staged[0].additions, 10);
-    assert_eq!(staged[0].deletions, 2);
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .path,
+        "src/lib.rs"
+    );
+    assert!(matches!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .change_type,
+        ChangeType::Edit
+    ));
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .additions,
+        10
+    );
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .deletions,
+        2
+    );
 }
 
 #[test]
@@ -1011,8 +1035,20 @@ fn test_parse_porcelain_v2_both_staged_and_unstaged() {
     );
     assert_eq!(staged.len(), 1);
     assert_eq!(unstaged.len(), 1);
-    assert_eq!(staged[0].path, "src/lib.rs");
-    assert_eq!(unstaged[0].path, "src/lib.rs");
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .path,
+        "src/lib.rs"
+    );
+    assert_eq!(
+        unstaged
+            .first()
+            .unwrap_or_else(|| panic!("expected unstaged item"))
+            .path,
+        "src/lib.rs"
+    );
 }
 
 #[test]
@@ -1028,7 +1064,13 @@ fn test_parse_porcelain_v2_added() {
     );
     assert_eq!(staged.len(), 1);
     assert_eq!(unstaged.len(), 0);
-    assert!(matches!(staged[0].change_type, ChangeType::Create));
+    assert!(matches!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .change_type,
+        ChangeType::Create
+    ));
 }
 
 #[test]
@@ -1043,7 +1085,13 @@ fn test_parse_porcelain_v2_deleted() {
         &HashMap::new(),
     );
     assert_eq!(staged.len(), 1);
-    assert!(matches!(staged[0].change_type, ChangeType::Delete));
+    assert!(matches!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .change_type,
+        ChangeType::Delete
+    ));
 }
 
 #[test]
@@ -1059,8 +1107,20 @@ fn test_parse_porcelain_v2_untracked() {
     );
     assert_eq!(staged.len(), 0);
     assert_eq!(unstaged.len(), 1);
-    assert_eq!(unstaged[0].path, "untracked.txt");
-    assert!(matches!(unstaged[0].change_type, ChangeType::Untracked));
+    assert_eq!(
+        unstaged
+            .first()
+            .unwrap_or_else(|| panic!("expected unstaged item"))
+            .path,
+        "untracked.txt"
+    );
+    assert!(matches!(
+        unstaged
+            .first()
+            .unwrap_or_else(|| panic!("expected unstaged item"))
+            .change_type,
+        ChangeType::Untracked
+    ));
 }
 
 #[test]
@@ -1090,9 +1150,28 @@ fn test_parse_porcelain_v2_rename() {
         &HashMap::new(),
     );
     assert_eq!(staged.len(), 1);
-    assert_eq!(staged[0].path, "new_name.rs");
-    assert_eq!(staged[0].old_path.as_deref(), Some("old_name.rs"));
-    assert!(matches!(staged[0].change_type, ChangeType::Rename));
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .path,
+        "new_name.rs"
+    );
+    assert_eq!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .old_path
+            .as_deref(),
+        Some("old_name.rs")
+    );
+    assert!(matches!(
+        staged
+            .first()
+            .unwrap_or_else(|| panic!("expected staged item"))
+            .change_type,
+        ChangeType::Rename
+    ));
 }
 
 /// Split index makes libgit2's status fail, so `status()` must fall back to the CLI.
@@ -1169,7 +1248,13 @@ async fn test_status_via_cli_on_real_repo() {
         .filter(|f| f.path == "hello.txt")
         .collect();
     assert_eq!(untracked.len(), 1);
-    assert!(matches!(untracked[0].change_type, ChangeType::Untracked));
+    assert!(matches!(
+        untracked
+            .first()
+            .unwrap_or_else(|| panic!("expected untracked item"))
+            .change_type,
+        ChangeType::Untracked
+    ));
 }
 
 #[test]
@@ -1573,5 +1658,120 @@ fn git_cli_filter_pin_plan_cases() {
     assert_eq!(
         super::git_cli_filter_pin_plan(&["--weird", "status"]),
         GitCliFilterPinPlan::Refuse
+    );
+}
+
+async fn repo_with_readme(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    git_cli(&root, &["init", "-q", "-b", "main"]).await.unwrap();
+    git_cli(&root, &["config", "user.email", "t@example.com"])
+        .await
+        .unwrap();
+    git_cli(&root, &["config", "user.name", "t"]).await.unwrap();
+    std::fs::write(root.join("README.md"), body).unwrap();
+    git_cli(&root, &["add", "README.md"]).await.unwrap();
+    git_cli(&root, &["commit", "-q", "-m", "base"])
+        .await
+        .unwrap();
+    root
+}
+
+#[tokio::test]
+async fn discard_working_keeps_the_staged_edit_and_untracked_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = repo_with_readme(tmp.path(), "committed\n").await;
+    std::fs::write(root.join("README.md"), "STAGED").unwrap();
+    git_cli(&root, &["add", "README.md"]).await.unwrap();
+    std::fs::write(root.join("README.md"), "WORKING").unwrap();
+    std::fs::write(root.join("untracked.txt"), "UNTRACKED").unwrap();
+    discard(&root, None, DiscardScope::Working, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("README.md")).unwrap(),
+        "STAGED"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("untracked.txt")).unwrap(),
+        "UNTRACKED"
+    );
+}
+
+#[tokio::test]
+async fn discard_both_with_untracked_removes_the_untracked_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = repo_with_readme(tmp.path(), "committed\n").await;
+    std::fs::write(root.join("README.md"), "STAGED").unwrap();
+    git_cli(&root, &["add", "README.md"]).await.unwrap();
+    std::fs::write(root.join("README.md"), "WORKING").unwrap();
+    std::fs::write(root.join("untracked.txt"), "UNTRACKED").unwrap();
+    discard(&root, None, DiscardScope::Both, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("README.md")).unwrap(),
+        "committed\n"
+    );
+    assert!(!root.join("untracked.txt").exists());
+}
+
+#[tokio::test]
+async fn commit_with_a_failed_push_keeps_the_commit_and_warns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = repo_with_readme(tmp.path(), "committed\n").await;
+    let before = git_cli(&root, &["rev-parse", "HEAD"]).await.unwrap();
+    std::fs::write(root.join("committed.txt"), "COMMITTED").unwrap();
+    git_cli(&root, &["add", "committed.txt"]).await.unwrap();
+    let result = commit(
+        &root,
+        &GitCommitReq {
+            message: "e2e commit".to_owned(),
+            push: true,
+            ..GitCommitReq::default()
+        },
+    )
+    .await
+    .unwrap();
+    let warning = result.warning.expect("a push with no remote warns");
+    assert!(
+        warning.starts_with("Couldn't push your changes"),
+        "{warning}"
+    );
+    let after = git_cli(&root, &["rev-parse", "HEAD"]).await.unwrap();
+    assert_ne!(before.trim(), after.trim());
+    assert_eq!(
+        result.data.commit_hash.as_deref().map(str::trim),
+        Some(after.trim())
+    );
+}
+
+#[tokio::test]
+async fn checkout_commit_stashes_a_dirty_tree_only_when_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = repo_with_readme(tmp.path(), "committed\n").await;
+    let base = git_cli(&root, &["rev-parse", "HEAD"]).await.unwrap();
+    std::fs::write(root.join("README.md"), "SECOND").unwrap();
+    git_cli(&root, &["commit", "-qam", "second"]).await.unwrap();
+    std::fs::write(root.join("README.md"), "DIRTY").unwrap();
+    let refused = checkout_commit_with_fetch(&root, base.trim(), false).await;
+    assert!(!refused.checked_out);
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("would be overwritten")),
+        "{refused:?}"
+    );
+    let stashed = checkout_commit_with_fetch(&root, base.trim(), true).await;
+    assert!(stashed.checked_out, "{stashed:?}");
+    assert!(stashed.stashed, "{stashed:?}");
+    assert_eq!(
+        git_cli(&root, &["rev-parse", "HEAD"]).await.unwrap().trim(),
+        base.trim()
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("README.md")).unwrap(),
+        "committed\n"
     );
 }

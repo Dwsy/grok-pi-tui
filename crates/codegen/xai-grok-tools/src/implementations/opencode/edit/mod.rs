@@ -134,6 +134,10 @@ impl crate::types::tool_metadata::ToolMetadata for EditTool {
         ToolNamespace::OpenCode
     }
 
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("filePath")
+    }
+
     fn description_template(&self) -> &str {
         DESCRIPTION
     }
@@ -414,9 +418,9 @@ async fn handle_replacement(
 
     // Select which positions to replace.
     let replace_positions = if replace_all {
-        &positions[..]
+        positions.as_slice()
     } else {
-        &positions[..1]
+        positions.get(..1).unwrap_or(&[])
     };
 
     // Perform the replacement using the shared helpers.
@@ -466,13 +470,10 @@ async fn handle_replacement(
     );
 
     // Build output message.
-    let (tool_output_for_prompt, tool_output_for_prompt_concise) = if new_positions.len() == 1 {
-        let (snippet, _, _) = render_snippet(
-            &new_text,
-            &input.new_string,
-            new_positions[0],
-            CONTEXT_LINES,
-        );
+    let (tool_output_for_prompt, tool_output_for_prompt_concise) = if let [pos] =
+        new_positions.as_slice()
+    {
+        let (snippet, _, _) = render_snippet(&new_text, &input.new_string, *pos, CONTEXT_LINES);
         let default_msg = format!(
             "The file {} has been updated. Here's a relevant snippet of the edited file:\n\n{snippet}",
             &input.file_path,
@@ -586,9 +587,19 @@ mod tests {
 
         let schema = serde_json::to_value(schemars::schema_for!(EditInput)).unwrap();
         // rename_all = camelCase → replaceAll
-        let p = &schema["properties"]["replaceAll"];
-        assert_eq!(p["type"], "boolean", "schema: {schema}");
-        assert_eq!(p["default"], false, "schema: {schema}");
+        let Some(p) = schema.pointer("/properties/replaceAll") else {
+            panic!("schema missing replaceAll: {schema}");
+        };
+        assert_eq!(
+            p.get("type"),
+            Some(&serde_json::json!("boolean")),
+            "schema: {schema}"
+        );
+        assert_eq!(
+            p.get("default"),
+            Some(&serde_json::json!(false)),
+            "schema: {schema}"
+        );
         assert!(p.get("anyOf").is_none(), "schema: {schema}");
     }
 
@@ -1145,7 +1156,9 @@ mod tests {
                     !applied.edits.details.is_empty(),
                     "edits.details should not be empty"
                 );
-                let detail = &applied.edits.details[0];
+                let Some(detail) = applied.edits.details.first() else {
+                    panic!("edits.details should not be empty");
+                };
                 assert!(detail.old_line > 0, "old_line should be > 0");
                 assert!(detail.new_line > 0, "new_line should be > 0");
                 assert!(

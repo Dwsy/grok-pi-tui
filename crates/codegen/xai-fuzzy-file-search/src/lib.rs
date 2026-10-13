@@ -7,6 +7,8 @@
 //! browses from a serial top-level walk, and a fully refused matcher returns
 //! empty results.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -145,7 +147,9 @@ fn push_match(
         && let Some((path, is_dir)) = check_entry(&entry, root)
     {
         injector.push(MatchEntry { is_dir }, |_entry, columns| {
-            columns[0] = path.into();
+            if let Some(col) = columns.get_mut(0) {
+                *col = path.into();
+            }
         });
     }
 }
@@ -419,7 +423,11 @@ impl FuzzyFileMatcher {
     pub fn set_query(&mut self, mut query: &str, dirs: bool) {
         self.dirs = dirs;
         if dirs && query.ends_with('/') {
-            query = &query[..query.len() - 1];
+            query = query
+                .len()
+                .checked_sub(1)
+                .and_then(|n| query.get(..n))
+                .unwrap_or(query);
         }
         if query == self.query {
             return;
@@ -528,7 +536,7 @@ impl FuzzyFileMatcher {
                 if dirs_only && !item.data.is_dir {
                     return None;
                 }
-                let path = item.matcher_columns[0].clone();
+                let path = item.matcher_columns.first().cloned()?;
                 let mut indices = Vec::new();
                 if !pattern.atoms.is_empty() {
                     pattern.indices(path.slice(..), matcher, &mut indices);
@@ -560,7 +568,9 @@ impl FuzzyFileMatcher {
                         self.dirs,
                     ));
                 }
-                sort_by_key_hrtb(&mut items[start..], |m| (m.path.len(), &m.path));
+                if let Some(tied) = items.get_mut(start..) {
+                    sort_by_key_hrtb(tied, |m| (m.path.len(), &m.path));
+                }
             } else {
                 items.extend(extract_match(
                     m,

@@ -147,7 +147,7 @@ impl FeedbackClient {
                     am.clone(),
                     credentials.deployment_key.clone(),
                     credentials.alpha_test_key.clone(),
-                    std::sync::Arc::new(crate::managed_config::resolve_deployment_id),
+                    std::sync::Arc::new(xai_grok_cloud_config::managed_config::resolve_deployment_id),
                 ),
             )
         } else {
@@ -691,8 +691,11 @@ mod tests {
         );
         assert_eq!(delta.turn_duration_ms, Some(1500));
         assert_eq!(
-            serde_json::to_value(&delta).unwrap()["turnOutcome"],
-            "completed"
+            serde_json::to_value(&delta)
+                .unwrap()
+                .get("turnOutcome")
+                .and_then(|v| v.as_str()),
+            Some("completed")
         );
         assert_eq!(delta.model_fingerprint.as_deref(), Some("fp_test_123"));
     }

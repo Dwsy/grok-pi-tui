@@ -60,8 +60,8 @@ fn test_user_with_image() {
     };
     assert_eq!(u.content.len(), 2);
     assert_matches!(
-        &u.content[1],
-        ContentPart::Image { url } if url.as_ref() == "https://example.com/image.png"
+        u.content.get(1),
+        Some(ContentPart::Image { url }) if url.as_ref() == "https://example.com/image.png"
     );
 
     // Convert to chat request and verify
@@ -69,8 +69,8 @@ fn test_user_with_image() {
     let blocks = chat_msg.content.blocks();
     assert_eq!(blocks.len(), 2);
     assert_matches!(
-        &blocks[1],
-        ChatContentBlock::ImageUrl { image_url } if image_url.url == "https://example.com/image.png"
+        blocks.get(1),
+        Some(ChatContentBlock::ImageUrl { image_url }) if image_url.url == "https://example.com/image.png"
     );
 }
 
@@ -130,9 +130,11 @@ fn test_chat_response_message_to_conversation_item() {
     let ConversationItem::Assistant(a) = &item else {
         panic!("Expected Assistant item");
     };
-    assert_eq!(a.tool_calls.len(), 1);
-    assert_eq!(a.tool_calls[0].id.as_ref(), "call_123");
-    assert_eq!(a.tool_calls[0].name, "read_file");
+    let [tc] = a.tool_calls.as_slice() else {
+        panic!("expected one tool call: {:?}", a.tool_calls);
+    };
+    assert_eq!(tc.id.as_ref(), "call_123");
+    assert_eq!(tc.name, "read_file");
 }
 
 #[test]
@@ -146,11 +148,13 @@ fn test_tool_calls_roundtrip_to_chat_request() {
     let item = ConversationItem::assistant_tool_calls(vec![tool_call.clone()]);
 
     let chat_msg = conversation_item_to_chat_message(item.clone());
-    assert_eq!(chat_msg.tool_calls.len(), 1);
-    assert_eq!(chat_msg.tool_calls[0].id, Some("call_abc123".to_string()));
-    assert_eq!(chat_msg.tool_calls[0].function.name, "read_file");
+    let [ctc] = chat_msg.tool_calls.as_slice() else {
+        panic!("expected one chat tool call: {:?}", chat_msg.tool_calls);
+    };
+    assert_eq!(ctc.id, Some("call_abc123".to_string()));
+    assert_eq!(ctc.function.name, "read_file");
     assert_eq!(
-        chat_msg.tool_calls[0].function.arguments,
+        ctc.function.arguments,
         r#"{"path": "/foo.txt", "limit": 100}"#
     );
 
@@ -158,11 +162,13 @@ fn test_tool_calls_roundtrip_to_chat_request() {
     let ConversationItem::Assistant(a) = back else {
         panic!("Expected Assistant item");
     };
-    assert_eq!(a.tool_calls.len(), 1);
-    assert_eq!(a.tool_calls[0].id.as_ref(), "call_abc123");
-    assert_eq!(a.tool_calls[0].name, "read_file");
+    let [tc] = a.tool_calls.as_slice() else {
+        panic!("expected one tool call: {:?}", a.tool_calls);
+    };
+    assert_eq!(tc.id.as_ref(), "call_abc123");
+    assert_eq!(tc.name, "read_file");
     assert_eq!(
-        a.tool_calls[0].arguments.as_ref(),
+        tc.arguments.as_ref(),
         r#"{"path": "/foo.txt", "limit": 100}"#
     );
 }
@@ -190,20 +196,24 @@ fn test_multiple_tool_calls_roundtrip() {
     let item = ConversationItem::assistant_tool_calls(tool_calls);
 
     let chat_msg = conversation_item_to_chat_message(item);
-    assert_eq!(chat_msg.tool_calls.len(), 3);
-    assert_eq!(chat_msg.tool_calls[0].function.name, "read_file");
-    assert_eq!(chat_msg.tool_calls[1].function.name, "bash");
-    assert_eq!(chat_msg.tool_calls[2].function.name, "grep");
+    let [c0, c1, c2] = chat_msg.tool_calls.as_slice() else {
+        panic!("expected three chat tool calls: {:?}", chat_msg.tool_calls);
+    };
+    assert_eq!(c0.function.name, "read_file");
+    assert_eq!(c1.function.name, "bash");
+    assert_eq!(c2.function.name, "grep");
 
     // Back to ConversationItem
     let back: ConversationItem = chat_msg.into();
     let ConversationItem::Assistant(a) = back else {
         panic!("Expected Assistant item");
     };
-    assert_eq!(a.tool_calls.len(), 3);
-    assert_eq!(a.tool_calls[0].name, "read_file");
-    assert_eq!(a.tool_calls[1].name, "bash");
-    assert_eq!(a.tool_calls[2].name, "grep");
+    let [t0, t1, t2] = a.tool_calls.as_slice() else {
+        panic!("expected three tool calls: {:?}", a.tool_calls);
+    };
+    assert_eq!(t0.name, "read_file");
+    assert_eq!(t1.name, "bash");
+    assert_eq!(t2.name, "grep");
 }
 
 #[test]
@@ -262,9 +272,11 @@ fn test_conversation_request_with_tools_to_chat_completion() {
     let chat_req: ChatCompletionRequest = req.into();
     assert!(chat_req.tools.is_some());
     let tools = chat_req.tools.unwrap();
-    assert_eq!(tools.len(), 2);
-    assert_eq!(tools[0].function.name, "read_file");
-    assert_eq!(tools[1].function.name, "bash");
+    let [t0, t1] = tools.as_slice() else {
+        panic!("expected two tools: {tools:?}");
+    };
+    assert_eq!(t0.function.name, "read_file");
+    assert_eq!(t1.function.name, "bash");
 }
 
 #[test]
@@ -330,11 +342,13 @@ fn test_user_with_multiple_images() {
 
     let chat_msg = conversation_item_to_chat_message(user);
     let blocks = chat_msg.content.blocks();
-    assert_eq!(blocks.len(), 4);
-    assert_matches!(&blocks[0], ChatContentBlock::Text { text } if text == "Compare these images:");
-    assert_matches!(&blocks[1], ChatContentBlock::ImageUrl { .. });
-    assert_matches!(&blocks[2], ChatContentBlock::ImageUrl { .. });
-    assert_matches!(&blocks[3], ChatContentBlock::ImageUrl { .. });
+    let [b0, b1, b2, b3] = blocks.as_slice() else {
+        panic!("expected four blocks: {blocks:?}");
+    };
+    assert_matches!(b0, ChatContentBlock::Text { text } if text == "Compare these images:");
+    assert_matches!(b1, ChatContentBlock::ImageUrl { .. });
+    assert_matches!(b2, ChatContentBlock::ImageUrl { .. });
+    assert_matches!(b3, ChatContentBlock::ImageUrl { .. });
 }
 
 #[test]
@@ -355,7 +369,9 @@ fn test_malformed_tool_arguments_sanitized_to_empty_object_in_chat_request() {
     let item = ConversationItem::assistant_tool_calls(vec![tool_call]);
     let chat_msg = conversation_item_to_chat_message(item);
 
-    let sanitized = &chat_msg.tool_calls[0].function.arguments;
+    let Some(sanitized) = chat_msg.tool_calls.first().map(|c| &c.function.arguments) else {
+        panic!("expected a tool call: {:?}", chat_msg.tool_calls);
+    };
     assert_eq!(
         sanitized, "{}",
         "malformed arguments must be replaced with {{}}"
@@ -378,7 +394,11 @@ fn test_valid_tool_arguments_pass_through_unchanged_in_chat_request() {
     let item = ConversationItem::assistant_tool_calls(vec![tool_call]);
     let chat_msg = conversation_item_to_chat_message(item);
     assert_eq!(
-        chat_msg.tool_calls[0].function.arguments, valid_args,
+        chat_msg
+            .tool_calls
+            .first()
+            .map(|c| c.function.arguments.as_str()),
+        Some(valid_args),
         "valid arguments must not be modified"
     );
 }
@@ -446,8 +466,10 @@ fn test_btw_cross_api_chat_completions_no_regressions() {
             .iter()
             .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
             .unwrap();
-        let has_following_tool = messages[last_asst_idx + 1..]
-            .iter()
+        let has_following_tool = messages
+            .get(last_asst_idx + 1..)
+            .into_iter()
+            .flatten()
             .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("tool"));
         assert!(
             has_following_tool,
@@ -501,7 +523,11 @@ fn test_sanitize_non_ascii_args_preview_does_not_panic() {
     let item = ConversationItem::assistant_tool_calls(vec![tool_call]);
     let chat_msg = conversation_item_to_chat_message(item);
     assert_eq!(
-        chat_msg.tool_calls[0].function.arguments, "{}",
+        chat_msg
+            .tool_calls
+            .first()
+            .map(|c| c.function.arguments.as_str()),
+        Some("{}"),
         "malformed non-ASCII arguments must be sanitized to {{}}"
     );
     // Also confirm valid non-ASCII passes through unchanged.
@@ -513,7 +539,11 @@ fn test_sanitize_non_ascii_args_preview_does_not_panic() {
     let item_valid = ConversationItem::assistant_tool_calls(vec![tool_call_valid]);
     let chat_msg_valid = conversation_item_to_chat_message(item_valid);
     assert_eq!(
-        chat_msg_valid.tool_calls[0].function.arguments, bad_args,
+        chat_msg_valid
+            .tool_calls
+            .first()
+            .map(|c| c.function.arguments.as_str()),
+        Some(bad_args.as_str()),
         "valid non-ASCII arguments must pass through unchanged"
     );
 }
@@ -538,12 +568,12 @@ fn test_tool_result_with_images_to_chat_completions() {
             msg.content
         );
     };
-    assert_eq!(blocks.len(), 2);
+    let [b0, b1] = blocks.as_slice() else {
+        panic!("expected two blocks: {blocks:?}");
+    };
+    assert!(matches!(b0, ChatContentBlock::Text { text } if text == "Read image file: photo.png"));
     assert!(
-        matches!(&blocks[0], ChatContentBlock::Text { text } if text == "Read image file: photo.png")
-    );
-    assert!(
-        matches!(&blocks[1], ChatContentBlock::ImageUrl { image_url } if image_url.url == "data:image/png;base64,iVBOR")
+        matches!(b1, ChatContentBlock::ImageUrl { image_url } if image_url.url == "data:image/png;base64,iVBOR")
     );
 }
 
@@ -560,16 +590,14 @@ fn conversation_to_chat_messages_drops_reasoning_when_user_intervenes() {
 
     let msgs = conversation_to_chat_messages(items);
 
+    let [user, assistant] = msgs.as_slice() else {
+        panic!("expected user + assistant: {msgs:?}");
+    };
+    assert_eq!(user.role, Role::User);
+    assert_eq!(assistant.role, Role::Assistant);
+    assert_eq!(assistant.text_content(), "answer");
     assert_eq!(
-        msgs.len(),
-        2,
-        "user + assistant; orphaned reasoning dropped"
-    );
-    assert_eq!(msgs[0].role, Role::User);
-    assert_eq!(msgs[1].role, Role::Assistant);
-    assert_eq!(msgs[1].text_content(), "answer");
-    assert_eq!(
-        msgs[1].reasoning_content.as_deref(),
+        assistant.reasoning_content.as_deref(),
         None,
         "reasoning separated from the assistant by a user message is dropped"
     );
@@ -591,10 +619,12 @@ fn upgrade_then_fold_through_conversation_to_chat_messages() {
     siblings.push(assistant);
 
     let msgs = conversation_to_chat_messages(siblings);
-    assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0].role, Role::Assistant);
+    let [msg] = msgs.as_slice() else {
+        panic!("expected one message: {msgs:?}");
+    };
+    assert_eq!(msg.role, Role::Assistant);
     assert_eq!(
-        msgs[0].reasoning_content.as_deref(),
+        msg.reasoning_content.as_deref(),
         Some("step-by-step"),
         "reconstructed sibling folded onto assistant.reasoning_content"
     );

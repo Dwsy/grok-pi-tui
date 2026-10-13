@@ -65,7 +65,11 @@ fn to_snapshot_derives_completed_and_end_time() {
 }
 
 /// Scripted client side of the terminal protocol: each `terminal/output` serves the next snapshot; `wait_for_exit` resolves after the last one.
-fn scripted_gateway(outputs: Vec<(String, bool)>) -> GatewaySender {
+/// Each request pushes its method name onto `sent`.
+fn scripted_gateway(
+    outputs: Vec<(String, bool)>,
+    sent: std::sync::Arc<Mutex<Vec<&'static str>>>,
+) -> GatewaySender {
     use xai_acp_lib::AcpClientMessage;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
@@ -77,16 +81,25 @@ fn scripted_gateway(outputs: Vec<(String, bool)>) -> GatewaySender {
         while let Some(msg) = rx.recv().await {
             match msg {
                 AcpClientMessage::CreateTerminal(args) => {
+                    sent.lock().unwrap().push("create");
                     let _ = args
                         .response_tx
                         .send(Ok(acp::CreateTerminalResponse::new("term-1")));
                 }
                 AcpClientMessage::WaitForTerminalExit(args) => {
+                    sent.lock().unwrap().push("wait");
                     wait_reply = Some(args.response_tx);
                 }
                 AcpClientMessage::TerminalOutput(args) => {
-                    let idx = next.min(outputs.len() - 1);
-                    let (text, truncated) = outputs[idx].clone();
+                    sent.lock().unwrap().push("output");
+                    let idx = outputs
+                        .len()
+                        .checked_sub(1)
+                        .map(|last| next.min(last))
+                        .unwrap_or(0);
+                    let Some((text, truncated)) = outputs.get(idx).cloned() else {
+                        continue;
+                    };
                     let mut response = acp::TerminalOutputResponse::new(text, truncated);
                     if exited {
                         response = response
@@ -104,12 +117,14 @@ fn scripted_gateway(outputs: Vec<(String, bool)>) -> GatewaySender {
                     }
                 }
                 AcpClientMessage::ReleaseTerminal(args) => {
+                    sent.lock().unwrap().push("release");
                     let _ = args
                         .response_tx
                         .send(Ok(acp::ReleaseTerminalResponse::new()));
                     break;
                 }
                 AcpClientMessage::KillTerminalCommand(args) => {
+                    sent.lock().unwrap().push("kill");
                     let _ = args.response_tx.send(Ok(acp::KillTerminalResponse::new()));
                 }
                 _ => {}
@@ -117,6 +132,248 @@ fn scripted_gateway(outputs: Vec<(String, bool)>) -> GatewaySender {
         }
     });
     GatewaySender::new(tx)
+}
+
+fn foreground_request(
+    output_file: PathBuf,
+    auto_background_on_timeout: bool,
+) -> TerminalRunRequest {
+    TerminalRunRequest {
+        command: "cargo build".into(),
+        working_directory: PathBuf::from("/tmp"),
+        env: HashMap::new(),
+        timeout: Duration::from_secs(30),
+        output_byte_limit: 1024 * 1024,
+        output_file,
+        notification_handle: ToolNotificationHandle::noop(),
+        tool_call_id: "call-1".into(),
+        display_command: None,
+        auto_background_on_timeout,
+        // `timeout` alone ends the foreground block
+        foreground_block_budget: Some(Duration::MAX),
+        kind: TaskKind::Bash,
+        owner_session_id: Some("owner-1".into()),
+        description: Some("build the crate".into()),
+    }
+}
+
+/// A foreground command that outlives the block keeps running and returns `signal = "auto_backgrounded"` with the output so far.
+/// The adapter tracks the terminal under the tool call id for `get_task` and the completion notification.
+#[tokio::test(start_paused = true)]
+async fn run_auto_backgrounds_when_the_block_expires() {
+    use xai_grok_tools::notification::types::ToolNotification;
+
+    let dir = tempfile::tempdir().unwrap();
+    let output_file = dir.path().join("terminal").join("call-1.log");
+    let sent = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let gateway = scripted_gateway(
+        vec![
+            ("Compiling foo\n".into(), false),
+            ("Compiling foo\nCompiling bar\n".into(), false),
+            ("Compiling foo\nCompiling bar\nFinished\n".into(), false),
+        ],
+        Arc::clone(&sent),
+    );
+    let adapter = AcpTerminalAdapter::new(gateway, acp::SessionId::new("sess-1"));
+    let (handle, mut notifications) = ToolNotificationHandle::channel();
+    let mut request = foreground_request(output_file.clone(), true);
+    request.notification_handle = handle;
+
+    let result = adapter.run(request).await.unwrap();
+    assert_eq!(result.signal.as_deref(), Some("auto_backgrounded"));
+    assert!(!result.timed_out);
+    assert_eq!(result.exit_code, None);
+    assert_eq!(result.combined_output, "Compiling foo\n");
+
+    // BashTool reports the tool call id as the task id
+    let snapshot = adapter.get_task("call-1").await.expect("tracked task");
+    assert_eq!(snapshot.command, "cargo build");
+    assert_eq!(snapshot.description.as_deref(), Some("build the crate"));
+    assert_eq!(snapshot.owner_session_id.as_deref(), Some("owner-1"));
+    assert!(
+        snapshot.output.starts_with("Compiling foo\n"),
+        "{}",
+        snapshot.output
+    );
+
+    let completed = loop {
+        match notifications.recv().await.expect("completion notification") {
+            ToolNotification::TaskCompleted(snapshot) => break snapshot,
+            _ => continue,
+        }
+    };
+    assert_eq!(completed.task_id, "call-1");
+    assert_eq!(completed.exit_code, Some(0));
+    assert_eq!(
+        std::fs::read_to_string(&output_file).unwrap(),
+        "Compiling foo\nCompiling bar\nFinished\n"
+    );
+
+    let sent = sent.lock().unwrap();
+    assert!(sent.contains(&"release"), "{sent:?}");
+    assert!(
+        !sent.contains(&"kill"),
+        "auto-background must not kill the terminal: {sent:?}"
+    );
+}
+
+/// Client side where `wait_for_exit` never answers but the first `terminal/output` already carries an exit
+/// status (the wait lost the race). Optionally stalls `terminal/output` forever instead.
+fn racing_exit_gateway(
+    stall_output: bool,
+    sent: std::sync::Arc<Mutex<Vec<&'static str>>>,
+) -> GatewaySender {
+    use xai_acp_lib::AcpClientMessage;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut parked = Vec::new();
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                AcpClientMessage::CreateTerminal(args) => {
+                    sent.lock().unwrap().push("create");
+                    let _ = args
+                        .response_tx
+                        .send(Ok(acp::CreateTerminalResponse::new("term-1")));
+                }
+                AcpClientMessage::WaitForTerminalExit(args) => {
+                    sent.lock().unwrap().push("wait");
+                    parked.push(args.response_tx);
+                }
+                AcpClientMessage::TerminalOutput(args) => {
+                    sent.lock().unwrap().push("output");
+                    if stall_output {
+                        continue;
+                    }
+                    let response = acp::TerminalOutputResponse::new("done\n".to_string(), false)
+                        .exit_status(Some(acp::TerminalExitStatus::new().exit_code(Some(3))));
+                    let _ = args.response_tx.send(Ok(response));
+                }
+                AcpClientMessage::ReleaseTerminal(args) => {
+                    sent.lock().unwrap().push("release");
+                    let _ = args
+                        .response_tx
+                        .send(Ok(acp::ReleaseTerminalResponse::new()));
+                }
+                AcpClientMessage::KillTerminalCommand(args) => {
+                    sent.lock().unwrap().push("kill");
+                    let _ = args.response_tx.send(Ok(acp::KillTerminalResponse::new()));
+                }
+                _ => {}
+            }
+        }
+    });
+    GatewaySender::new(tx)
+}
+
+/// If the command has already exited when the block expires, the run reports the completion
+/// instead of tracking a finished command as a background task.
+#[tokio::test(start_paused = true)]
+async fn run_reports_completion_when_the_command_exited_before_the_block_expired() {
+    let dir = tempfile::tempdir().unwrap();
+    let output_file = dir.path().join("terminal").join("call-1.log");
+    let sent = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let adapter = AcpTerminalAdapter::new(
+        racing_exit_gateway(false, Arc::clone(&sent)),
+        acp::SessionId::new("sess-1"),
+    );
+
+    let result = adapter
+        .run(foreground_request(output_file.clone(), true))
+        .await
+        .unwrap();
+    assert_eq!(result.exit_code, Some(3));
+    assert_eq!(result.signal, None);
+    assert!(!result.timed_out);
+    assert_eq!(result.combined_output, "done\n");
+    assert!(
+        adapter.tasks.lock().unwrap().is_empty(),
+        "a finished command must not be tracked as a background task"
+    );
+    assert_eq!(std::fs::read_to_string(&output_file).unwrap(), "done\n");
+    let sent = sent.lock().unwrap();
+    assert!(sent.contains(&"release"), "{sent:?}");
+    assert!(!sent.contains(&"kill"), "{sent:?}");
+}
+
+/// A client that never answers `terminal/output` cannot hold the turn past the block: the fetch is bounded
+/// and the command is still backgrounded with empty partial output.
+#[tokio::test(start_paused = true)]
+async fn run_auto_background_output_fetch_is_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let output_file = dir.path().join("terminal").join("call-1.log");
+    let sent = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let adapter = AcpTerminalAdapter::new(
+        racing_exit_gateway(true, Arc::clone(&sent)),
+        acp::SessionId::new("sess-1"),
+    );
+
+    let started = tokio::time::Instant::now();
+    let result = adapter
+        .run(foreground_request(output_file, true))
+        .await
+        .unwrap();
+    assert_eq!(result.signal.as_deref(), Some("auto_backgrounded"));
+    assert_eq!(result.combined_output, "");
+    assert!(
+        started.elapsed()
+            <= Duration::from_secs(30) + TERMINAL_OUTPUT_RPC_BUDGET + Duration::from_secs(1),
+        "returned after {:?}",
+        started.elapsed()
+    );
+    assert!(
+        adapter.tasks.lock().unwrap().contains_key("call-1"),
+        "still tracked"
+    );
+}
+
+/// With auto-background off, the block is a kill deadline.
+#[tokio::test(start_paused = true)]
+async fn run_kills_at_the_deadline_when_auto_background_is_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let output_file = dir.path().join("terminal").join("call-1.log");
+    let sent = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let gateway = scripted_gateway(vec![("partial\n".into(), false)], Arc::clone(&sent));
+    let adapter = AcpTerminalAdapter::new(gateway, acp::SessionId::new("sess-1"));
+
+    let result = adapter
+        .run(foreground_request(output_file.clone(), false))
+        .await
+        .unwrap();
+    assert!(result.timed_out);
+    assert!(
+        sent.lock().unwrap().contains(&"kill"),
+        "{:?}",
+        sent.lock().unwrap()
+    );
+
+    assert!(
+        adapter.get_task("call-1").await.is_none(),
+        "a killed command is not tracked"
+    );
+}
+
+#[test]
+fn auto_background_wait_is_the_shorter_of_deadline_and_budget() {
+    let mut request = foreground_request(PathBuf::from("/tmp/x.log"), true);
+    request.timeout = Duration::from_secs(120);
+    request.foreground_block_budget = Some(Duration::from_secs(15));
+    assert_eq!(
+        AcpTerminalAdapter::auto_background_wait(&request),
+        Duration::from_secs(15)
+    );
+
+    request.foreground_block_budget = Some(Duration::MAX);
+    assert_eq!(
+        AcpTerminalAdapter::auto_background_wait(&request),
+        Duration::from_secs(120)
+    );
+
+    request.timeout = Duration::from_secs(5);
+    request.foreground_block_budget = Some(Duration::from_secs(15));
+    assert_eq!(
+        AcpTerminalAdapter::auto_background_wait(&request),
+        Duration::from_secs(5)
+    );
 }
 
 fn background_request(output_file: PathBuf) -> TerminalRunRequest {
@@ -145,11 +402,14 @@ async fn run_background_records_snapshots_and_threads_task_kind() {
     let dir = tempfile::tempdir().unwrap();
     let output_file = dir.path().join("terminal").join("monitor-call-1.log");
 
-    let gateway = scripted_gateway(vec![
-        ("line1\n".into(), false),
-        ("line1\nline2\n".into(), false),
-        ("line1\nline2\nline3\n".into(), false),
-    ]);
+    let gateway = scripted_gateway(
+        vec![
+            ("line1\n".into(), false),
+            ("line1\nline2\n".into(), false),
+            ("line1\nline2\nline3\n".into(), false),
+        ],
+        Arc::default(),
+    );
     let adapter = AcpTerminalAdapter::new(gateway, acp::SessionId::new("sess-1"));
 
     let (handle, mut notifications) = ToolNotificationHandle::channel();
@@ -450,14 +710,24 @@ async fn wait_for_completion_increments_live_waiters_and_drop_decrements() {
             "wait must stay pending so Drop can be observed"
         );
         assert_eq!(
-            adapter.tasks.lock().unwrap()["t-inc"].live_waiters,
-            1,
+            adapter
+                .tasks
+                .lock()
+                .unwrap()
+                .get("t-inc")
+                .map(|t| t.live_waiters),
+            Some(1),
             "wait_for_completion must increment live_waiters"
         );
     }
     assert_eq!(
-        adapter.tasks.lock().unwrap()["t-inc"].live_waiters,
-        0,
+        adapter
+            .tasks
+            .lock()
+            .unwrap()
+            .get("t-inc")
+            .map(|t| t.live_waiters),
+        Some(0),
         "dropping the wait must decrement live_waiters"
     );
 
@@ -489,7 +759,15 @@ async fn wait_for_completion_live_waiter_makes_client_ui_kill_delivered() {
             .is_err(),
         "wait must stay pending"
     );
-    assert_eq!(adapter.tasks.lock().unwrap()["t-live"].live_waiters, 1);
+    assert_eq!(
+        adapter
+            .tasks
+            .lock()
+            .unwrap()
+            .get("t-live")
+            .map(|t| t.live_waiters),
+        Some(1)
+    );
 
     let outcome = adapter
         .kill_task_with_source("t-live", KillSource::ClientUi)
@@ -534,7 +812,15 @@ async fn client_ui_kill_does_not_mark_delivered_if_waiter_drops_during_kill() {
             .is_err(),
         "wait must stay pending so it is live when kill starts"
     );
-    assert_eq!(adapter.tasks.lock().unwrap()["t-race"].live_waiters, 1);
+    assert_eq!(
+        adapter
+            .tasks
+            .lock()
+            .unwrap()
+            .get("t-race")
+            .map(|t| t.live_waiters),
+        Some(1)
+    );
 
     let kill = adapter.kill_task_with_source("t-race", KillSource::ClientUi);
     tokio::pin!(kill);
@@ -545,7 +831,10 @@ async fn client_ui_kill_does_not_mark_delivered_if_waiter_drops_during_kill() {
     }
     drop(wait);
     {
-        let task = &adapter.tasks.lock().unwrap()["t-race"];
+        let tasks = adapter.tasks.lock().unwrap();
+        let Some(task) = tasks.get("t-race") else {
+            panic!("missing task t-race");
+        };
         assert_eq!(task.live_waiters, 0);
         assert!(
             !task.block_waited,
@@ -603,7 +892,9 @@ async fn model_tool_kill_marks_delivered_before_kill_rpc_returns() {
     }
     {
         let tasks = adapter.tasks.lock().unwrap();
-        let task = &tasks["t-model"];
+        let Some(task) = tasks.get("t-model") else {
+            panic!("missing task t-model");
+        };
         assert!(task.explicitly_killed);
         assert!(
             task.kill_result_delivered,
@@ -631,7 +922,14 @@ async fn kill_task_tracked_completed_answers_already_exited_without_round_trips(
 
     assert!(matches!(outcome, KillOutcome::AlreadyExited));
     assert!(sent.lock().unwrap().is_empty());
-    assert!(!adapter.tasks.lock().unwrap()["t-done"].explicitly_killed);
+    assert!(
+        adapter
+            .tasks
+            .lock()
+            .unwrap()
+            .get("t-done")
+            .is_some_and(|t| !t.explicitly_killed)
+    );
 }
 
 /// A resumed session rebuilds the adapter with an empty map while the client still holds live terminals.
@@ -992,9 +1290,11 @@ async fn list_tasks_preserves_running_output_from_log() {
     );
 
     let snapshots = adapter.list_tasks().await;
-    assert_eq!(snapshots.len(), 1);
-    assert_eq!(snapshots[0].output, "live streamed bytes");
-    assert!(!snapshots[0].completed);
+    let [snap] = snapshots.as_slice() else {
+        panic!("expected one snapshot: {snapshots:?}");
+    };
+    assert_eq!(snap.output, "live streamed bytes");
+    assert!(!snap.completed);
 }
 
 /// Hangs `terminal/output` only for `hang_id`; other ids get a quick live reply.

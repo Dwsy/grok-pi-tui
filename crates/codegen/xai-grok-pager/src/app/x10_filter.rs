@@ -125,6 +125,13 @@ mod tests {
 
     use super::*;
 
+    fn nth<T>(xs: &[T], i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected index {i}, len {}", xs.len());
+        };
+        x
+    }
+
     fn test_instant() -> Instant {
         static NOW: OnceLock<Instant> = OnceLock::new();
         *NOW.get_or_init(Instant::now)
@@ -169,7 +176,7 @@ mod tests {
         ]);
         assert_eq!(out.len(), 1);
         assert_eq!(
-            out[0].event,
+            nth(&out, 0).event,
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Moved,
                 column: 99,
@@ -188,7 +195,7 @@ mod tests {
             press_mods(KeyCode::Char('P'), KeyModifiers::SHIFT),
         ]);
         assert_eq!(out.len(), 1);
-        assert!(matches!(out[0].event, Event::Mouse(m) if m.column == 163 && m.row == 47));
+        assert!(matches!(nth(&out, 0).event, Event::Mouse(m) if m.column == 163 && m.row == 47));
     }
 
     #[test]
@@ -200,7 +207,7 @@ mod tests {
         ]);
         assert_eq!(out.len(), 1);
         assert!(matches!(
-            out[0].event,
+            nth(&out, 0).event,
             Event::Mouse(m) if m.kind == MouseEventKind::Drag(MouseButton::Left)
                 && m.column == 99
                 && m.row == 47
@@ -217,7 +224,7 @@ mod tests {
             press_mods(KeyCode::Char('P'), KeyModifiers::SHIFT),
         ]);
         assert_eq!(out.len(), 1);
-        assert!(matches!(out[0].event, Event::Mouse(m) if m.column == 179 && m.row == 47));
+        assert!(matches!(nth(&out, 0).event, Event::Mouse(m) if m.column == 179 && m.row == 47));
     }
 
     #[test]
@@ -226,7 +233,7 @@ mod tests {
         assert!(f.filter(vec![mangled_c2_col100()]).is_empty());
         let out = f.filter(vec![press_mods(KeyCode::Char('P'), KeyModifiers::SHIFT)]);
         assert_eq!(out.len(), 1);
-        assert!(matches!(out[0].event, Event::Mouse(m) if m.column == 99 && m.row == 47));
+        assert!(matches!(nth(&out, 0).event, Event::Mouse(m) if m.column == 99 && m.row == 47));
     }
 
     #[test]
@@ -237,7 +244,7 @@ mod tests {
             press_mods(KeyCode::Char('\u{A0}'), KeyModifiers::NONE),
         ]);
         assert_eq!(out.len(), 1);
-        assert!(matches!(out[0].event, Event::Mouse(m) if m.column == 99 && m.row == 127));
+        assert!(matches!(nth(&out, 0).event, Event::Mouse(m) if m.column == 99 && m.row == 127));
     }
 
     #[test]
@@ -248,7 +255,7 @@ mod tests {
             press_mods(KeyCode::Backspace, KeyModifiers::NONE),
         ]);
         assert_eq!(out.len(), 1);
-        assert!(matches!(out[0].event, Event::Mouse(m) if m.column == 99 && m.row == 94));
+        assert!(matches!(nth(&out, 0).event, Event::Mouse(m) if m.column == 99 && m.row == 94));
     }
 
     #[test]
@@ -262,9 +269,9 @@ mod tests {
         };
         let out = f.filter(vec![late_key]);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].event, mangled_c2_col100().event);
+        assert_eq!(nth(&out, 0).event, mangled_c2_col100().event);
         assert!(matches!(
-            out[1].event,
+            nth(&out, 1).event,
             Event::Key(k) if k.code == KeyCode::Char('q')
         ));
     }
@@ -278,10 +285,10 @@ mod tests {
         ]);
         // Candidate released unchanged; the focus event and the (now unrelated) keystroke pass through
         assert_eq!(out.len(), 3);
-        assert_eq!(out[0].event, mangled_c2_col100().event);
-        assert_eq!(out[1].event, Event::FocusGained);
+        assert_eq!(nth(&out, 0).event, mangled_c2_col100().event);
+        assert_eq!(nth(&out, 1).event, Event::FocusGained);
         assert_eq!(
-            out[2].event,
+            nth(&out, 2).event,
             press_mods(KeyCode::Char('a'), KeyModifiers::NONE).event
         );
     }

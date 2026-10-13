@@ -1046,8 +1046,8 @@ mod tests {
         let payload = handle.acp_rx.recv().await.unwrap();
         // Verify it's valid JSON with a namespaced ID (format: "clientId|originalIdJson")
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(json["method"], "test");
-        let id_str = json["id"].as_str().unwrap();
+        assert_eq!(json.get("method").and_then(|v| v.as_str()), Some("test"));
+        let id_str = json.get("id").and_then(|v| v.as_str()).unwrap();
         assert!(
             id_str.contains('|'),
             "ID should be namespaced with pipe separator"
@@ -1061,7 +1061,7 @@ mod tests {
         // Receive on client; the ID should be restored to the original
         let received = client.recv().await.unwrap();
         let received_json: serde_json::Value = serde_json::from_str(&received).unwrap();
-        assert_eq!(received_json["id"], 1); // Original ID restored
+        assert_eq!(received_json.get("id"), Some(&serde_json::json!(1))); // Original ID restored
 
         client.cancel();
         handle.cancel.cancel();

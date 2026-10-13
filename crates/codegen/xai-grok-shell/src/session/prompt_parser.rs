@@ -1,6 +1,7 @@
 use crate::session::user_message::user_query;
 use agent_client_protocol::{self as acp, ImageContent};
 use serde::Deserialize;
+use std::ops::Range;
 use std::path::PathBuf;
 use xai_grok_workspace::file_system::{
     FileReference, render_embedded_resource, render_file_reference,
@@ -40,17 +41,56 @@ impl ParsedPrompt {
         skill_information: &str,
         is_cursor: bool,
     ) -> String {
-        let query_block = if skill_information.is_empty() {
-            query.to_string()
-        } else {
-            format!("{query}\n{skill_information}")
-        };
-        if context.is_empty() {
-            return query_block;
-        }
-        let _ = is_cursor;
-        format!("{query_block}\n\n{context}")
+        Self::assemble_with_layout(context, query, skill_information, is_cursor).0
     }
+    /// [`Self::assemble_parts_with_skills`] plus the byte range of each part in the result,
+    /// recorded as the parts are pushed, so a part-relative cut maps back to bytes of the assembled
+    /// message.
+    pub fn assemble_with_layout(
+        context: &str,
+        query: &str,
+        skill_information: &str,
+        is_cursor: bool,
+    ) -> (String, PromptLayout) {
+        let _ = is_cursor;
+        let context_first = false;
+        let mut out = String::new();
+        let mut push = |part: &str| {
+            let start = out.len();
+            out.push_str(part);
+            start..out.len()
+        };
+        let mut context_range = None;
+        if context_first {
+            context_range = Some(push(context));
+            push("\n\n");
+        }
+        let query_range = push(query);
+        let skill = if skill_information.is_empty() {
+            None
+        } else {
+            push("\n");
+            Some(push(skill_information))
+        };
+        if !context_first && !context.is_empty() {
+            push("\n\n");
+            context_range = Some(push(context));
+        }
+        let layout = PromptLayout {
+            query: query_range,
+            skill,
+            context: context_range,
+        };
+        (out, layout)
+    }
+}
+/// Byte ranges of each non-empty part inside the string [`ParsedPrompt::assemble_with_layout`]
+/// returns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptLayout {
+    pub query: Range<usize>,
+    pub skill: Option<Range<usize>>,
+    pub context: Option<Range<usize>>,
 }
 /// When `is_cursor` is true, produces query-last format output.
 /// `<attached_files>` (bare), resource links, then `<user_query>` last.
@@ -217,7 +257,7 @@ fn collect_file_references(message: &str) -> Vec<String> {
             i += 1;
             continue;
         }
-        let Some(at_symbol_offset) = message[i..].find('@') else {
+        let Some(at_symbol_offset) = message.get(i..).and_then(|s| s.find('@')) else {
             break;
         };
         let at = i + at_symbol_offset;
@@ -229,13 +269,15 @@ fn collect_file_references(message: &str) -> Vec<String> {
         if start > message.len() || !message.is_char_boundary(start) {
             break;
         }
-        if let Some(ch) = message[..at].chars().next_back()
+        if let Some(ch) = message.get(..at).and_then(|s| s.chars().next_back())
             && (ch.is_alphanumeric() || ch == '_')
         {
             i = start;
             continue;
         }
-        let rest = &message[start..];
+        let Some(rest) = message.get(start..) else {
+            break;
+        };
         let token = rest.split_whitespace().next().unwrap_or("");
         if !token.is_empty() {
             paths.push(token.to_string());
@@ -633,5 +675,35 @@ mod tests {
             !result.contains("<open_and_recently_viewed_files>"),
             "got: {result}"
         );
+    }
+    /// For every empty/non-empty combination of the parts, in both layouts, the assembled string
+    /// matches an independently built expectation and the layout slices back to the parts.
+    #[test]
+    fn assemble_with_layout_matches_expectation_for_all_part_combinations() {
+        let check = |is_cursor: bool| {
+            for context in ["", "<attached_files>ctx</attached_files>"] {
+                for query in ["", "<user_query>q</user_query>"] {
+                    for skill in ["", "<skill_information>s</skill_information>"] {
+                        let skill_joiner = if skill.is_empty() { "" } else { "\n" };
+                        let block = format!("{query}{skill_joiner}{skill}");
+                        let context_joiner = if context.is_empty() { "" } else { "\n\n" };
+                        let expected = if is_cursor {
+                            format!("{context}{context_joiner}{block}")
+                        } else {
+                            format!("{block}{context_joiner}{context}")
+                        };
+                        let (assembled, layout) =
+                            ParsedPrompt::assemble_with_layout(context, query, skill, is_cursor);
+                        assert_eq!(expected, assembled);
+                        assert_eq!(query, &assembled[layout.query]);
+                        let skill_slice = layout.skill.map(|r| &assembled[r]);
+                        assert_eq!((!skill.is_empty()).then_some(skill), skill_slice);
+                        let context_slice = layout.context.map(|r| &assembled[r]);
+                        assert_eq!((!context.is_empty()).then_some(context), context_slice);
+                    }
+                }
+            }
+        };
+        check(false);
     }
 }

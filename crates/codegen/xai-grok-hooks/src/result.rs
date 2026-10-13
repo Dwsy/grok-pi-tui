@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use crate::event::{MAX_HOOK_OUTPUT_REPLACEMENT_CHARS, clip_text};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookDecision {
     Allow,
@@ -59,6 +61,31 @@ pub struct OutputReplacement {
 impl OutputReplacement {
     pub fn wire_field(&self) -> &'static str {
         self.kind.wire_field()
+    }
+
+    /// A structured value stays structured while its JSON fits in `MAX_HOOK_OUTPUT_REPLACEMENT_CHARS`.
+    /// A client can still unpack that value.
+    pub fn mcp_output(self) -> serde_json::Value {
+        let text = match self.value {
+            serde_json::Value::String(text) => text,
+            structured => {
+                let text = structured.to_string();
+                if text.chars().count() <= MAX_HOOK_OUTPUT_REPLACEMENT_CHARS {
+                    return structured;
+                }
+                text
+            }
+        };
+        serde_json::Value::String(clip_text(&text, MAX_HOOK_OUTPUT_REPLACEMENT_CHARS))
+    }
+
+    /// The text a model reads in place of an MCP tool's output: the text form of [`Self::mcp_output`].
+    pub fn mcp_output_text(self) -> String {
+        let text = match self.value {
+            serde_json::Value::String(text) => text,
+            structured => structured.to_string(),
+        };
+        clip_text(&text, MAX_HOOK_OUTPUT_REPLACEMENT_CHARS)
     }
 }
 

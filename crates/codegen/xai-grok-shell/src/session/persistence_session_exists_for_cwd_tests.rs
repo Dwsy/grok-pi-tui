@@ -135,6 +135,14 @@ fn batch_resolver_loads_one_view_and_keeps_only_persisted_sessions() {
 }
 
 #[test]
+fn find_summary_by_session_id_misses_an_unknown_session() {
+    use super::find_summary_by_session_id_in_root;
+
+    let tmp = TempDir::new().unwrap();
+    assert!(find_summary_by_session_id_in_root("no-such-session", tmp.path()).is_none());
+}
+
+#[test]
 fn find_summary_by_session_id_reads_cross_cwd_uuid() {
     use super::find_summary_by_session_id_in_root;
 

@@ -44,7 +44,9 @@ async fn route(
 
     let messages = messages.lock().unwrap();
     assert_eq!(messages.len(), 1, "{command}");
-    let request_messages = messages[0].clone();
+    let Some(request_messages) = messages.first().cloned() else {
+        panic!("expected classifier messages: {messages:?}");
+    };
     drop(messages);
     let event = events.try_recv().expect("permission event");
     (decision, request_messages, event)
@@ -103,17 +105,17 @@ async fn stack_commands_and_feature_force_push_route_fixed_allow() {
                 (
                     "make a 3-PR stack and open the third PR",
                     "gh stack submit",
-                    &[][..],
+                    [].as_slice(),
                 ),
                 (
                     "change the second PR, then update the stack",
                     "gh stack sync",
-                    &[][..],
+                    [].as_slice(),
                 ),
                 (
                     "force-push my branch topic/my-change after the rebase",
                     "git push --force-with-lease origin topic/my-change",
-                    &[ClassifierSecurityFinding::DangerousCommand][..],
+                    [ClassifierSecurityFinding::DangerousCommand].as_slice(),
                 ),
             ] {
                 let (decision, messages, event) = route(

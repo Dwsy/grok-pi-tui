@@ -93,7 +93,13 @@ impl AsyncRead for LineBufferedRead {
         if this.pos < this.buf.len() {
             let avail = this.buf.len() - this.pos;
             let n = avail.min(buf.len());
-            buf[..n].copy_from_slice(&this.buf[this.pos..this.pos + n]);
+            let Some(dst) = buf.get_mut(..n) else {
+                return Poll::Ready(Ok(0));
+            };
+            let Some(src) = this.buf.get(this.pos..this.pos + n) else {
+                return Poll::Ready(Ok(0));
+            };
+            dst.copy_from_slice(src);
             this.pos += n;
             if this.pos >= this.buf.len() {
                 this.buf.clear();
@@ -106,7 +112,13 @@ impl AsyncRead for LineBufferedRead {
         match this.rx.poll_next_unpin(cx) {
             Poll::Ready(Some(Ok(line))) => {
                 let n = line.len().min(buf.len());
-                buf[..n].copy_from_slice(&line[..n]);
+                let Some(dst) = buf.get_mut(..n) else {
+                    return Poll::Ready(Ok(0));
+                };
+                let Some(src) = line.get(..n) else {
+                    return Poll::Ready(Ok(0));
+                };
+                dst.copy_from_slice(src);
                 if n < line.len() {
                     // Stash the remainder for subsequent poll_read calls.
                     this.buf = line;
@@ -136,7 +148,9 @@ async fn read_line_capped(
             }
             match available.iter().position(|&b| b == b'\n') {
                 Some(pos) => {
-                    buf.extend_from_slice(&available[..=pos]);
+                    if let Some(src) = available.get(..=pos) {
+                        buf.extend_from_slice(src);
+                    }
                     (pos + 1, true)
                 }
                 None => {
@@ -164,9 +178,48 @@ async fn read_line_capped(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::task::Waker;
+
     use futures::{AsyncReadExt as _, io::Cursor};
 
     use super::*;
+
+    struct GatedRead {
+        data: Vec<u8>,
+        pos: usize,
+        hold_after: usize,
+        release: Arc<AtomicBool>,
+        waker: Arc<Mutex<Option<Waker>>>,
+    }
+
+    impl AsyncRead for GatedRead {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            let this = self.get_mut();
+            if this.pos >= this.data.len() {
+                return Poll::Ready(Ok(0));
+            }
+            if this.pos >= this.hold_after && !this.release.load(Ordering::SeqCst) {
+                *this.waker.lock().expect("waker") = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+            let n = (this.data.len() - this.pos).min(buf.len());
+            let Some(dst) = buf.get_mut(..n) else {
+                return Poll::Ready(Ok(0));
+            };
+            let Some(src) = this.data.get(this.pos..this.pos + n) else {
+                return Poll::Ready(Ok(0));
+            };
+            dst.copy_from_slice(src);
+            this.pos += n;
+            Poll::Ready(Ok(n))
+        }
+    }
 
     /// Helper: run a test inside a tokio LocalSet so spawn_local works.
     fn run<F: Future<Output = ()>>(f: F) {
@@ -247,19 +300,74 @@ mod tests {
 
             // First read: "abc"
             let n = reader.read(&mut small_buf).await.unwrap();
-            assert_eq!(&small_buf[..n], b"abc");
+            assert_eq!(small_buf.get(..n), Some(b"abc".as_slice()));
 
             // Second read: "def"
             let n = reader.read(&mut small_buf).await.unwrap();
-            assert_eq!(&small_buf[..n], b"def");
+            assert_eq!(small_buf.get(..n), Some(b"def".as_slice()));
 
             // Third read: "\n"
             let n = reader.read(&mut small_buf).await.unwrap();
-            assert_eq!(&small_buf[..n], b"\n");
+            assert_eq!(small_buf.get(..n), Some(b"\n".as_slice()));
 
             // EOF
             let n = reader.read(&mut small_buf).await.unwrap();
             assert_eq!(n, 0);
+        });
+    }
+
+    #[test]
+    fn cancel_during_a_partial_line_still_returns_the_whole_line() {
+        run(async {
+            let release = Arc::new(AtomicBool::new(false));
+            let waker = Arc::new(Mutex::new(None));
+            let mut payload = vec![b'a'; 100];
+            payload.extend(std::iter::repeat_n(b'b', 9_000));
+            payload.push(b'\n');
+            let source = GatedRead {
+                data: payload.clone(),
+                pos: 0,
+                hold_after: 100,
+                release: Arc::clone(&release),
+                waker: Arc::clone(&waker),
+            };
+            let mut reader = LineBufferedRead::spawn_local(source);
+            {
+                let read_once = async {
+                    let mut tmp = [0u8; 8];
+                    let _ = reader.read(&mut tmp).await;
+                };
+                tokio::pin!(read_once);
+                let mut paused = false;
+                for _ in 0..100 {
+                    tokio::select! {
+                        biased;
+                        _ = &mut read_once => {
+                            panic!("the line resolved before the remainder was released")
+                        }
+                        _ = tokio::task::yield_now() => {}
+                    }
+                    if waker.lock().expect("waker").is_some() {
+                        paused = true;
+                        break;
+                    }
+                }
+                assert!(paused, "the reader never paused mid-line");
+            }
+            release.store(true, Ordering::SeqCst);
+            if let Some(waker) = waker.lock().expect("waker").take() {
+                waker.wake();
+            }
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf).await.unwrap();
+            assert_eq!(
+                (
+                    payload.len(),
+                    payload.first().copied(),
+                    payload.get(100).copied()
+                ),
+                (buf.len(), buf.first().copied(), buf.get(100).copied())
+            );
         });
     }
 }

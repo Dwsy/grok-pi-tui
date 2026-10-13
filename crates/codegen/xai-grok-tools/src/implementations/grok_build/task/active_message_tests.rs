@@ -31,21 +31,6 @@ fn admission_lease_settlement_table_is_exact() {
 }
 
 #[test]
-fn public_message_literals_keep_their_three_field_shapes() {
-    let _message = ActiveAgentMessage {
-        message_id: "message".to_owned(),
-        sender_session_id: "parent".to_owned(),
-        text: Arc::from("follow up"),
-    };
-    let (respond_to, _) = tokio::sync::oneshot::channel();
-    let _request = SubagentActiveMessageRequest {
-        request: ActiveAgentMessageRequest::try_new("child", "follow up").unwrap(),
-        parent_session_id: "parent".to_owned(),
-        respond_to,
-    };
-}
-
-#[test]
 fn request_enforces_utf8_byte_cap() {
     let exact = "é".repeat(MAX_ACTIVE_AGENT_MESSAGE_BYTES / 2);
     assert!(ActiveAgentMessageRequest::try_new("sub-1", exact).is_ok());
@@ -68,14 +53,26 @@ fn request_enforces_utf8_byte_cap() {
 }
 
 #[test]
+fn quota_kind_serialization_and_schema_are_stable() {
+    assert_eq!(
+        serde_json::to_value(ActiveAgentMessageQuotaKind::SenderTargetInFlight).unwrap(),
+        "sender_target_in_flight",
+    );
+    let schema = serde_json::to_value(schemars::schema_for!(ActiveAgentMessageQuotaKind)).unwrap();
+    assert!(schema.to_string().contains("attempt_outbound"));
+}
+
+#[test]
 fn try_new_defaults_to_queue_and_preserves_explicit_operation() {
     let queued = ActiveAgentMessageRequest::try_new("sub-1", "follow up").unwrap();
     assert_eq!(queued.operation(), ActiveAgentMessageOperation::Queue);
-    let steered = ActiveAgentMessageRequest::try_new_with_operation(
-        "sub-1",
-        "follow up",
+    for explicit in [
         ActiveAgentMessageOperation::Steer,
-    )
-    .unwrap();
-    assert_eq!(steered.operation(), ActiveAgentMessageOperation::Steer);
+        ActiveAgentMessageOperation::Interject,
+    ] {
+        let request =
+            ActiveAgentMessageRequest::try_new_with_operation("sub-1", "follow up", explicit)
+                .unwrap();
+        assert_eq!(request.operation(), explicit);
+    }
 }

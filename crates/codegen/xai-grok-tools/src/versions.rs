@@ -109,6 +109,18 @@ const V_LEGACY_BASH: VersionLifecycle = VersionLifecycle {
     source_refs: &[],
     summary: "Trailing-only & detection, legacy error text for background operator",
 };
+
+// This is the `run_terminal_cmd` behavior from before `block_until_ms` replaced `is_background` and `timeout`
+const V_PRE_BLOCK_UNTIL_MS_BASH: VersionLifecycle = VersionLifecycle {
+    version: "pre-block-until-ms",
+    lifecycle: BehaviorLifecycle::Active,
+    replacement: Some("current"),
+    deprecation_note: None,
+    cataloged_in: "0.1.220-alpha.4",
+    source_refs: &[],
+    summary: "Two-knob contract: `is_background` + `timeout` advertised, `timeout` is a foreground kill deadline (0 = default), auto-background only when the host enables it (15s budget); description text matches",
+};
+
 const V_LEGACY_READ_FILE: VersionLifecycle = VersionLifecycle {
     version: "legacy-0.4.10",
     lifecycle: BehaviorLifecycle::Active,
@@ -158,10 +170,11 @@ const V_LEGACY_TASK_OUTPUT: VersionLifecycle = VersionLifecycle {
 /// Per-tool version registry — canonical source for which versions each managed tool supports and their individual lifecycle. 7 managed tools
 /// total 6 legacy-ported (support both `"current"` and `"legacy-0.4.10"`) 1 managed but unported (`grep` — only `"current"`) Each legacy-ported
 /// tool has its own `V_LEGACY_*` constant with tool-specific `summary` and `source_refs`. Do not use a shared legacy constant.
+/// `run_terminal_cmd` also supports `"pre-block-until-ms"`, its `current` behavior from before `block_until_ms`.
 pub const TOOL_VERSION_REGISTRY: &[ToolVersionEntry] = &[
     ToolVersionEntry {
         fq_tool_id: "GrokBuild:run_terminal_cmd",
-        versions: &[V_CURRENT, V_LEGACY_BASH],
+        versions: &[V_CURRENT, V_PRE_BLOCK_UNTIL_MS_BASH, V_LEGACY_BASH],
     },
     ToolVersionEntry {
         fq_tool_id: "GrokBuild:read_file",
@@ -216,11 +229,11 @@ pub const PRESETS: &[PresetEntry] = &[
     PresetEntry {
         name: "release-0.1.157",
         lifecycle: BehaviorLifecycle::Active,
-        // At 0.1.157, all managed tools were at `current`. No per-tool
-        // version other than `legacy-0.4.10` had been carved out yet.
+        // At 0.1.157, all managed tools were at `current`.
+        // `run_terminal_cmd`'s `current` from that release is now `pre-block-until-ms`.
         // `grep` was managed but current-only (no legacy port).
         tool_defaults: &[
-            ("GrokBuild:run_terminal_cmd", "current"),
+            ("GrokBuild:run_terminal_cmd", "pre-block-until-ms"),
             ("GrokBuild:read_file", "current"),
             ("GrokBuild:search_replace", "current"),
             ("GrokBuild:list_dir", "current"),
@@ -498,6 +511,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v, Some("legacy-0.4.10".to_string()));
+    }
+
+    #[test]
+    fn pre_block_until_ms_pin_wins_under_any_preset_and_is_bash_only() {
+        for preset in PRESETS {
+            let v = resolve_version(
+                preset.name,
+                "GrokBuild:run_terminal_cmd",
+                Some("pre-block-until-ms"),
+            )
+            .expect("pre-block-until-ms pin should resolve for run_terminal_cmd");
+            assert_eq!(
+                v,
+                Some("pre-block-until-ms".to_string()),
+                "pin must win under preset {}",
+                preset.name
+            );
+        }
+
+        let err = resolve_version("current", "GrokBuild:read_file", Some("pre-block-until-ms"))
+            .expect_err("read_file has no pre-block-until-ms version");
+        assert!(err.contains("is not supported for tool"), "got: {err}");
     }
 
     #[test]
@@ -810,16 +845,21 @@ mod tests {
     }
 
     #[test]
-    fn release_preset_resolves_all_tools_to_current() {
-        // release-0.1.157 should resolve all managed tools to "current"
-        // because no post-legacy stable version had been carved out yet.
+    fn release_preset_resolves_tools_to_release_era_versions() {
+        // release-0.1.157 shipped before `block_until_ms` replaced `is_background` and `timeout`
         for &fq_id in MANAGED_TOOLS {
             let v = resolve_version("release-0.1.157", fq_id, None).unwrap();
+            let expected = if fq_id == "GrokBuild:run_terminal_cmd" {
+                "pre-block-until-ms"
+            } else {
+                "current"
+            };
             assert_eq!(
                 v,
-                Some("current".to_string()),
-                "release-0.1.157 should resolve {} to current",
-                fq_id
+                Some(expected.to_string()),
+                "release-0.1.157 should resolve {} to {}",
+                fq_id,
+                expected
             );
         }
     }
@@ -847,6 +887,7 @@ mod tests {
     fn legacy_versions_have_populated_tool_specific_metadata() {
         let legacy_constants = [
             ("bash", &V_LEGACY_BASH),
+            ("bash pre-block-until-ms", &V_PRE_BLOCK_UNTIL_MS_BASH),
             ("read_file", &V_LEGACY_READ_FILE),
             ("search_replace", &V_LEGACY_SEARCH_REPLACE),
             ("list_dir", &V_LEGACY_LIST_DIR),
@@ -882,6 +923,10 @@ mod tests {
             V_LEGACY_BASH.summary, V_LEGACY_KILL_TASK.summary,
             "bash and kill_task have different legacy behavior"
         );
+        assert_ne!(
+            V_LEGACY_BASH.summary, V_PRE_BLOCK_UNTIL_MS_BASH.summary,
+            "bash legacy and pre-block-until-ms freeze different behavior"
+        );
         // kill_task and task_output share the same legacy behavior (not-found wording)
         assert_eq!(
             V_LEGACY_KILL_TASK.summary, V_LEGACY_TASK_OUTPUT.summary,
@@ -894,6 +939,7 @@ mod tests {
         // Catalog intentionally keeps source_refs empty.
         for v in [
             &V_LEGACY_BASH,
+            &V_PRE_BLOCK_UNTIL_MS_BASH,
             &V_LEGACY_READ_FILE,
             &V_LEGACY_SEARCH_REPLACE,
             &V_LEGACY_LIST_DIR,

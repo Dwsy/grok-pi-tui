@@ -187,7 +187,11 @@ impl BlockViewerPane {
         if body_idx >= self.items.len() {
             return None;
         }
-        let is_blank = |i: usize| self.items[i].copy_text().is_empty();
+        let is_blank = |i: usize| {
+            self.items
+                .get(i)
+                .is_none_or(|item| item.copy_text().is_empty())
+        };
         if is_blank(body_idx) {
             return None;
         }
@@ -199,7 +203,8 @@ impl BlockViewerPane {
         while end + 1 < self.items.len() && !is_blank(end + 1) {
             end += 1;
         }
-        let end_width = crate::scrollback::types::str_display_cells(&self.items[end].copy_text())
+        let end_item = self.items.get(end)?;
+        let end_width = crate::scrollback::types::str_display_cells(&end_item.copy_text())
             .min(u16::MAX as usize) as u16;
         Some(TextDrag {
             anchor: TextEndpoint {

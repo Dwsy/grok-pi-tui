@@ -1,7 +1,6 @@
 //! `SessionActor` methods that start, abort, and commit the per-turn dashboard summary.
 //!
 //! Pure prompt helpers live in [`crate::session::helpers::turn_summary`].
-//! Shared sampling setup is in [`super::side_call`].
 
 use super::*;
 
@@ -50,53 +49,95 @@ impl SessionActor {
         }
     }
 
-    /// The turn-summary side-call body: snapshot, one tool-free model call, then persist to `summary.json` and broadcast transiently to clients.
+    /// The turn-summary side-call body: one small tool-free model call over the last turn, then persist to `summary.json` and broadcast transiently to clients.
     /// Display-only and best-effort: failures log and drop, the turn is already over.
     /// `generation` is the spawn-time token; if it no longer matches at commit time, this result is stale and is dropped.
     async fn generate_turn_summary(&self, prompt_id: &str, generation: u64) {
         use crate::session::helpers::turn_summary;
 
-        let conversation = self.chat_state_handle.get_conversation().await;
-        let Some(anchor) = turn_summary::last_user_anchor(&conversation) else {
+        let settings = crate::util::config::resolve_turn_summary_settings_from_disk();
+        let Some((user_text, reply)) = turn_summary::last_turn(
+            &self.chat_state_handle.get_conversation().await,
+            settings.user_message_max_chars,
+            settings.agent_reply_max_chars,
+        ) else {
             return;
         };
 
-        let setup = match self.prepare_side_call().await {
-            Ok(s) => s,
+        self.refresh_token_if_expired().await;
+        let session_config = self.reconstruct_full_config().await;
+        // Resolve the helper's own endpoint and credentials; the session endpoint may not serve it.
+        let aux_config = if self.models_manager.model_in_catalog(&settings.model) {
+            self.resolve_aux_sampler_config(&settings.model).await
+        } else {
+            None
+        };
+        let mut config = match aux_config {
+            Some(mut cfg) => {
+                crate::agent::config::stamp_session_local_sampler_fields(
+                    &mut cfg,
+                    &session_config,
+                    self.client_identifier.clone(),
+                    session_config.max_retries,
+                );
+                cfg
+            }
+            None => session_config,
+        };
+        if self
+            .models_manager
+            .model_supports_reasoning_effort_value(&config.model, settings.reasoning_effort)
+        {
+            self.models_manager.apply_supported_effort(
+                &mut config,
+                Some(settings.reasoning_effort),
+                &self.session_info.id,
+                crate::sampling::EffortTarget::SummaryClient,
+            );
+        }
+        let model = config.model.clone();
+        let reasoning_effort = config.reasoning_effort;
+        let client = match xai_grok_sampler::SamplingClient::new(config) {
+            Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "turn summary: failed to prepare sampling client");
                 return;
             }
         };
-        let instruction =
-            turn_summary::turn_summary_instruction(self.reminder_wrapper_tag(), &anchor);
-        let items = crate::session::helpers::session_recap::budget_instruction_items(
-            conversation,
-            instruction,
-            setup.strip_reasoning,
-            setup.context_window,
-        );
-        let request = self
-            .side_call_request(
-                &setup,
-                items,
-                format!("turn-summary-{}", uuid::Uuid::new_v4()),
-                format!("xai-turn-summary-{}", uuid::Uuid::new_v4()),
-            )
-            .await;
+        let request = ConversationRequest {
+            items: vec![
+                ConversationItem::system(turn_summary::TURN_SUMMARY_SYSTEM),
+                ConversationItem::user(turn_summary::turn_summary_user_message(&user_text, &reply)),
+            ],
+            model: Some(model),
+            reasoning_effort,
+            x_grok_conv_id: Some(format!("turn-summary-{}", uuid::Uuid::new_v4())),
+            x_grok_req_id: Some(format!("xai-turn-summary-{}", uuid::Uuid::new_v4())),
+            x_grok_session_id: Some(self.session_info.id.to_string()),
+            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
+            length_policy: xai_grok_sampling_types::LengthPolicy::Fail,
+            ..Default::default()
+        };
 
-        let response = match setup.client.conversation_collect(request).await {
-            Ok(r) => r,
-            Err(e) => {
+        let response = match tokio::time::timeout(
+            settings.timeout,
+            client.conversation_collect(request),
+        )
+        .await
+        {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
                 tracing::warn!(error = %e, "turn summary: model call failed");
                 return;
             }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = settings.timeout.as_millis() as u64,
+                    "turn summary: model call timed out"
+                );
+                return;
+            }
         };
-        super::side_call::log_prompt_cache_usage(
-            "turn_summary",
-            setup.client.api_backend(),
-            &response,
-        );
         let summary = turn_summary::clean_turn_summary_text(&response.assistant_text());
         if summary.is_empty() {
             tracing::debug!("turn summary: model returned empty summary");

@@ -41,7 +41,11 @@ pub fn run(args: &WrapArgs) -> Result<()> {
     let (wrapped, fallback) = {
         let direct = SpawnPlan {
             program: program.clone(),
-            args: args.command[1..].to_vec(),
+            args: args
+                .command
+                .get(1..)
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(Vec::new),
         };
         (direct.clone(), direct)
     };
@@ -98,26 +102,36 @@ fn derive_spawn(
         }
     };
 
+    let Some(first) = command.first() else {
+        return SpawnPlan {
+            program: String::new(),
+            args: Vec::new(),
+        };
+    };
+
     // A single argument containing whitespace is a shell-quoted command line (`grok wrap "mycli ssh host"`), not a program name
     // Hand it to the shell verbatim so it does word-splitting, alias expansion, pipes, etc
-    if command.len() == 1 && command[0].contains(char::is_whitespace) {
-        return via_shell(command[0].clone());
+    if command.len() == 1 && first.contains(char::is_whitespace) {
+        return via_shell(first.clone());
     }
 
     // A bare program name that PATH cannot resolve is usually a shell alias (`alias mycli=remote`); only a shell can
     // expand it. An empty one (`grok wrap "$PROG".` with `$PROG` unset) must keep failing fast instead of silently
     // running the tail.
-    if !command[0].is_empty()
-        && !command[0].contains('/')
-        && !command[0].contains(char::is_whitespace)
+    if !first.is_empty()
+        && !first.contains('/')
+        && !first.contains(char::is_whitespace)
         && !program_in_path
     {
         return via_shell(join_command_line(command));
     }
 
     SpawnPlan {
-        program: command[0].clone(),
-        args: command[1..].to_vec(),
+        program: first.clone(),
+        args: command
+            .get(1..)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(Vec::new),
     }
 }
 
@@ -126,8 +140,11 @@ fn derive_spawn(
 /// Every following word is quoted.
 #[cfg(unix)]
 fn join_command_line(command: &[String]) -> String {
-    let mut line = command[0].clone();
-    for word in &command[1..] {
+    let Some((first, rest)) = command.split_first() else {
+        return String::new();
+    };
+    let mut line = first.clone();
+    for word in rest {
         line.push(' ');
         line.push_str(&quote_word(word));
     }

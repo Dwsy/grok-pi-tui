@@ -7,10 +7,6 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, RawString};
 use xai_grok_shared::ui_config::UiConfig;
 
-// ============================================================================
-// Runtime Config (used by render code)
-// ============================================================================
-
 /// Background style for block content area.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum BlockBackground {
@@ -448,8 +444,7 @@ pub struct EditBlockConfig {
     /// Show the +N/-M line summary in the collapsed header.
     /// `None` (default) follows the shell-owned `collapsed_edit_blocks` flag; an explicit pager.toml value pins the shape regardless of the flag.
     pub line_summary: Option<bool>,
-    /// When true, Edit blocks start in Expanded mode showing the diff; when false, they start Collapsed (one-line summary).
-    /// `None` (default) follows the shell-owned `collapsed_edit_blocks` flag; an explicit pager.toml value pins the shape regardless of the flag.
+    /// Whether Edit blocks start expanded. Fold shape is [`Self::effective_expanded`].
     pub expanded_by_default: Option<bool>,
     /// Separator between diff hunks.
     /// Options: "…" (ellipsis, default), "───" (line), "⋯" (midline), "" (none).
@@ -478,13 +473,13 @@ impl Default for EditBlockConfig {
 }
 
 impl EditBlockConfig {
-    /// The one policy point pairing pager.toml with the shell flag: an explicit value wins; unset defers to `collapsed_edit_blocks`.
-    /// Flag on collapses Edits to the one-liner; flag off keeps the legacy expanded diff.
+    /// A true flag collapses even when `expanded_by_default` is `Some(true)`.
+    /// Flag off returns `expanded_by_default.unwrap_or(true)`, so an explicit false still collapses.
     pub fn effective_expanded(&self, collapsed_edit_blocks: bool) -> bool {
-        self.expanded_by_default.unwrap_or(!collapsed_edit_blocks)
+        !collapsed_edit_blocks && self.expanded_by_default.unwrap_or(true)
     }
 
-    /// Effective collapsed-header `+N/-M` diffstat toggle. Same pairing as [`Self::effective_expanded`]: explicit value wins.
+    /// Effective collapsed-header `+N/-M` diffstat toggle. An explicit `line_summary` wins; unset follows the flag.
     /// Unset shows the diffstat exactly when the flag collapses Edits (the one-liner view is what the summary exists for).
     pub fn effective_line_summary(&self, collapsed_edit_blocks: bool) -> bool {
         self.line_summary.unwrap_or(collapsed_edit_blocks)
@@ -1056,7 +1051,8 @@ pub struct RawEditBlockConfig {
     /// Commented out (unset), it follows the `[ui] collapsed_edit_blocks`
     /// flag in config.toml; uncomment to pin either way.
     pub line_summary: Option<bool>,
-    /// Unset follows `[ui] collapsed_edit_blocks`. Set to pin expanded or collapsed.
+    /// Unset follows `[ui] collapsed_edit_blocks`. A true flag collapses even when this is true.
+    /// An explicit false still collapses when the flag is off.
     pub expanded_by_default: Option<bool>,
     /// Separator between diff hunks. Options: "…" (default), "───", "⋯", "" (none).
     pub hunk_separator: Option<String>,
@@ -1271,10 +1267,6 @@ impl From<RawBlockBackground> for BlockBackground {
         }
     }
 }
-
-// ============================================================================
-// Raw → Runtime Conversion
-// ============================================================================
 
 impl From<RawAppearanceConfig> for AppearanceConfig {
     fn from(raw: RawAppearanceConfig) -> Self {
@@ -1518,10 +1510,6 @@ impl From<RawThinkingConfig> for ThinkingConfig {
     }
 }
 
-// ============================================================================
-// Color Parsing
-// ============================================================================
-
 /// An optional color that can be "none" or a color value.
 /// This allows TOML to represent None values explicitly.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1605,15 +1593,48 @@ fn parse_hex_color(hex: &str) -> Result<Color, String> {
     let hex = hex.trim_start_matches('#');
     let (r, g, b) = match hex.len() {
         3 => {
-            let r = u8::from_str_radix(&hex[0..1], 16).map_err(|e| e.to_string())? * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).map_err(|e| e.to_string())? * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).map_err(|e| e.to_string())? * 17;
+            let r = u8::from_str_radix(
+                hex.get(..1)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?
+                * 17;
+            let g = u8::from_str_radix(
+                hex.get(1..2)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?
+                * 17;
+            let b = u8::from_str_radix(
+                hex.get(2..3)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?
+                * 17;
             (r, g, b)
         }
         6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).map_err(|e| e.to_string())?;
-            let g = u8::from_str_radix(&hex[2..4], 16).map_err(|e| e.to_string())?;
-            let b = u8::from_str_radix(&hex[4..6], 16).map_err(|e| e.to_string())?;
+            let r = u8::from_str_radix(
+                hex.get(..2)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?;
+            let g = u8::from_str_radix(
+                hex.get(2..4)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?;
+            let b = u8::from_str_radix(
+                hex.get(4..6)
+                    .ok_or_else(|| format!("invalid hex color: #{hex}"))?,
+                16,
+            )
+            .map_err(|e| e.to_string())?;
             (r, g, b)
         }
         _ => return Err(format!("invalid hex color: #{hex}")),
@@ -1677,10 +1698,6 @@ fn lookup_named_color(name: &str) -> Result<Color, String> {
     };
     Ok(color)
 }
-
-// ============================================================================
-// TOML Generation with Comments
-// ============================================================================
 
 impl RawAppearanceConfig {
     pub fn to_toml_with_comments() -> String {
@@ -1842,41 +1859,27 @@ pub fn persist_respect_manual_folds(enabled: bool) -> std::io::Result<()> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let path = crate::util::pager_toml_path();
-    let content = match std::fs::read_to_string(&path) {
+    persist_respect_manual_folds_to(&crate::util::pager_toml_path(), enabled)
+}
+
+/// Path-taking body of [`persist_respect_manual_folds`]; the caller holds `PAGER_TOML_SAVE_LOCK`.
+fn persist_respect_manual_folds_to(path: &std::path::Path, enabled: bool) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+
+    // Bind read + publish to one follow destination (path + inode).
+    let dest = xai_grok_config::fs_atomic::bind_follow_destination(path)?;
+    let content = match std::fs::read_to_string(dest.as_path()) {
         Ok(c) => c,
         Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
+    let dest = xai_grok_config::fs_atomic::require_same_bound_destination(path, &dest)?;
     let updated = upsert_respect_manual_folds(&content, enabled)
         .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
-    if let Some(dir) = path.parent() {
+    if let Some(dir) = dest.as_path().parent() {
         std::fs::create_dir_all(dir)?;
     }
-
-    #[cfg(unix)]
-    let prior_mode: Option<u32> = std::fs::metadata(&path).ok().map(|m| {
-        use std::os::unix::fs::PermissionsExt;
-        m.permissions().mode()
-    });
-
-    let suffix = {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        format!("toml.tmp.{}.{}", std::process::id(), nanos)
-    };
-    let tmp = path.with_extension(suffix);
-    std::fs::write(&tmp, updated)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Some(mode) = prior_mode {
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode));
-        }
-    }
-    std::fs::rename(&tmp, &path)
+    xai_grok_config::fs_atomic::write_atomically_bound(&dest, &updated, None)
 }
 
 /// Persist the prompt cursor to `[prompt].cursor` in pager.toml.
@@ -1994,13 +1997,38 @@ fn annotate_table<T: DocumentedFields>(table: &mut toml_edit::Table) {
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `/settings` toggle on a dotfile-managed `~/.grok/pager.toml` must reach the dotfile, not replace the link.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn persist_respect_manual_folds_writes_through_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = xai_grok_env::EnvVarGuard::set("GROK_HOME", dir.path().to_str().unwrap());
+        let target = dir.path().join("dotfiles").join("pager.toml");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "[scrollback.scroll]\nanchor_on_fold = false\n").unwrap();
+        let link = dir.path().join("pager.toml");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        persist_respect_manual_folds_to(&link, true).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "pager.toml must stay a symlink"
+        );
+        let raw: RawAppearanceConfig =
+            toml::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
+        let cfg: AppearanceConfig = raw.into();
+        assert!(cfg.scrollback.scroll.respect_manual_folds);
+        assert!(!cfg.scrollback.scroll.anchor_on_fold, "siblings preserved");
+    }
 
     #[test]
     fn test_parse_hex_color() {
@@ -2346,17 +2374,17 @@ gutter_bg = true
         }
     }
 
-    /// Unset pager.toml shape keys follow the shell-owned `collapsed_edit_blocks` flag; explicit values pin the shape in both directions.
-    /// Flag on gives the collapsed one-liner with diffstat; flag off gives the legacy expanded diff without it.
+    /// A true `collapsed_edit_blocks` flag collapses edits even when `expanded_by_default` is `Some(true)`.
+    /// Flag off: `None` and `Some(true)` expand, `Some(false)` collapses. `line_summary` still pins on its own.
     #[test]
-    fn effective_edit_shape_follows_flag_unless_pinned() {
+    fn flag_on_forces_collapse_line_summary_still_pins() {
         let unset = EditBlockConfig::default();
-        assert!(unset.effective_expanded(false), "flag off: expanded");
+        assert!(unset.effective_expanded(false), "flag off + None: expanded");
         assert!(
             !unset.effective_line_summary(false),
             "flag off: no diffstat"
         );
-        assert!(!unset.effective_expanded(true), "flag on: collapsed");
+        assert!(!unset.effective_expanded(true), "flag on + None: collapsed");
         assert!(unset.effective_line_summary(true), "flag on: diffstat");
 
         let pinned = EditBlockConfig {
@@ -2365,8 +2393,12 @@ gutter_bg = true
             ..EditBlockConfig::default()
         };
         assert!(
-            pinned.effective_expanded(true),
-            "explicit expanded beats the flag"
+            !pinned.effective_expanded(true),
+            "flag on collapses even when expanded_by_default is Some(true)"
+        );
+        assert!(
+            pinned.effective_expanded(false),
+            "flag off + Some(true): expanded"
         );
         assert!(
             pinned.effective_line_summary(false),
@@ -2378,8 +2410,12 @@ gutter_bg = true
             ..EditBlockConfig::default()
         };
         assert!(
+            !pinned.effective_expanded(true),
+            "flag on + Some(false): collapsed"
+        );
+        assert!(
             !pinned.effective_expanded(false),
-            "explicit collapse beats the flag"
+            "flag off + Some(false): collapsed"
         );
         assert!(
             !pinned.effective_line_summary(true),
@@ -2419,8 +2455,6 @@ gutter_bg = true
             "inserted key must be active:\n{updated}"
         );
     }
-
-    // ── Terminal config (alt_screen) parsing ─────────────────────
 
     #[test]
     fn terminal_alt_screen_auto_default() {

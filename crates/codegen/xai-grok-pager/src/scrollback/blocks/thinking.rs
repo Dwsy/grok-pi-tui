@@ -412,10 +412,15 @@ impl ThinkingBlock {
             output_lines.push(ellipsis.into());
 
             // Last N lines (with blending)
-            for i in (total - n)..total {
+            for (line, joiner) in wrapped
+                .lines
+                .iter()
+                .zip(wrapped.joiners.iter())
+                .skip(total - n)
+            {
                 output_lines.push(Self::thinking_body_line(
-                    &wrapped.lines[i],
-                    &wrapped.joiners[i],
+                    line,
+                    joiner,
                     &strip,
                     bg_base,
                     fg_default,
@@ -683,8 +688,11 @@ mod tests {
         let block = ThinkingBlock::new("hello world");
         let out = block.output(&ctx(DisplayMode::Collapsed, 40));
         assert_eq!(out.lines.len(), 1);
-        assert!(matches!(out.lines[0].selectable, Selectable::None));
-        assert_eq!(out.lines[0].selection_range, None);
+        let Some(line) = out.lines.first() else {
+            panic!("expected a header line: {out:?}");
+        };
+        assert!(matches!(line.selectable, Selectable::None));
+        assert_eq!(line.selection_range, None);
     }
 
     #[test]
@@ -699,8 +707,14 @@ mod tests {
         let out = block.output(&ctx);
 
         assert!(out.lines.len() >= 3);
-        assert!(matches!(out.lines[0].selectable, Selectable::None));
-        assert!(matches!(out.lines[1].selectable, Selectable::None));
+        assert!(matches!(
+            out.lines.first().map(|l| &l.selectable),
+            Some(&Selectable::None)
+        ));
+        assert!(matches!(
+            out.lines.get(1).map(|l| &l.selectable),
+            Some(&Selectable::None)
+        ));
         assert!(
             out.lines
                 .iter()
@@ -886,7 +900,9 @@ mod tests {
         };
         apply_body_rail(&mut output, &ctx);
 
-        let line = &output.lines[0];
+        let Some(line) = output.lines.first() else {
+            panic!("expected a railed line: {output:?}");
+        };
         assert_eq!(
             line.content.style.bg, None,
             "a line-style bg would paint under the rail prefix"

@@ -45,6 +45,10 @@ Location: `~/.grok/config.toml`. If the file is missing, Grok uses its built-in 
 [cli]
 auto_update = true                     # check for updates on launch
 
+[agent]
+# name = "grok-build"                  # default agent on interactive `grok` (no --plan / --agent-profile)
+# definition = "/path/to/agent.md"     # path wins over name if both are set
+
 [models]
 default = "grok-4.5"                   # model used for new sessions
 web_search = "grok-4.5"                # model used by the web_search tool
@@ -75,8 +79,7 @@ group_tool_verbs = true                # fold runs of read/search/list tool call
                                        # — and finished thoughts among them — into one row (default: true)
 collapsed_edit_blocks = false          # show edits as one-line +N/-M diffstat summaries and merge
                                        # back-to-back same-file edits into one row, expand for the
-                                       # diffs (default: false; pager.toml [scrollback.blocks.edit]
-                                       # expanded_by_default/line_summary override its fold shape)
+                                       # diffs (default: false)
 page_flip_on_send = true               # pin a just-sent prompt at the top of the viewport so the
                                        # response starts on a fresh page (default: true); set false
                                        # so sending never moves the scroll position
@@ -113,6 +116,18 @@ respect_gitignore = false              # default: false; set true to make every 
 # max_parallel_image_gen_calls = 8
 # max_parallel_video_gen_calls = 4
 ```
+
+### Default agent
+
+Interactive `grok` uses `[agent]` in `config.toml` when you do not pass `--plan`, `--ask-user`, or `--agent-profile`:
+
+```toml
+[agent]
+name = "my-custom-agent"
+# definition = "/path/to/agent.md"   # path wins over name
+```
+
+`definition` is a markdown file with YAML frontmatter. `name` is a built-in or discovered agent (`~/.grok/agents/`, `.grok/agents/`). If the named agent is missing, Grok uses `GROK_AGENT`, then the built-in default. `--agent-profile`, `--plan`, and `--ask-user` still override that session. Field list: [26-config-reference.md](26-config-reference.md).
 
 #### Input mode
 
@@ -311,11 +326,14 @@ Priority for `[mcp_servers]` and `[plugins]`: `.grok/config.toml` (current dir) 
 
 ### Memory
 
-Persist knowledge across sessions. Enable memory with `GROK_MEMORY=1`, `[memory] enabled = true`, or managed remote settings.
+Persist knowledge across sessions. Enable it with `[memory] enabled = true` or
+`GROK_MEMORY=1`; an explicit `[memory] enabled = false` turns it off even when a
+managed remote setting enables it. Notes recorded by earlier versions are
+carried over automatically. See [13-memory.md](13-memory.md).
 
 ```toml
 [memory]
-enabled = false                       # enable memory
+enabled = true
 
 [memory.session]
 save_on_end = true                    # write metadata summary on session end
@@ -728,8 +746,8 @@ dim_accent = 0.5                      # dimming factor for collapsed accents (0.
 [scrollback.blocks.edit]
 indent = true                         # indent diff content
 vpad = false                          # vertical padding
-# expanded_by_default = true          # unset: follows [ui] collapsed_edit_blocks in config.toml
-                                      # (flag on = collapsed one-liner); uncomment to pin either shape
+# expanded_by_default = true          # Unset follows Collapsed edit blocks. When that setting is on,
+                                      # edits start collapsed even if this line is true.
 dual_line_numbers = false             # two-column line numbers (old + new)
 # line_summary = false                # show +N/-M in the collapsed header; unset follows the same flag
 hunk_separator = "…"                  # separator between diff hunks (default: "…")
@@ -834,6 +852,14 @@ The key ones. See the README for the complete list.
 | `.grok/agents/` | Project-scoped agent definitions |
 | `.grok/hooks/` | Project-scoped hooks |
 | `.grok/lsp.json` | LSP server configuration |
+
+### How Grok saves `config.toml`
+
+Writes to **`~/.grok/config.toml`** (`/settings`, `/vim-mode`, and other user-config saves) follow a leaf symlink. The atomic rename writes the referent (a file in your dotfiles repo). The link stays a link. If the link is dangling, the write creates the referent as a regular file.
+
+Writes to a **project** `.grok/config.toml` (MCP / plugin / permission edits) **replace** a leaf symlink with a regular file. That keeps a later save from following the link out of the repository.
+
+A user `config.toml` that cannot be parsed is not overwritten. Fix the syntax (or restore a backup) and save again.
 
 ---
 

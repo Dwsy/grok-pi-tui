@@ -1,0 +1,7 @@
+     Running unittests src/lib.rs (/opt/ws-fixture/target/debug/deps/xai_grok_sandbox-1da808f68b7d2627)
+test command::grants::tests::host_pattern_matches ... FAILED
+
+failures:
+    command::grants::tests::host_pattern_matches
+
+test result: FAILED. 236 passed; 1 failed; 0 ignored

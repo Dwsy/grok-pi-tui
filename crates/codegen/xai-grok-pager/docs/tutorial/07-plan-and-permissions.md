@@ -19,8 +19,8 @@ For bigger or more ambiguous tasks, use **plan mode**: Grok explores the
 codebase read-only, designs an approach, and presents a plan you approve
 *before* any code is written.
 
-- **`Shift+Tab`** (prompt focused) cycles the mode: Normal → Plan →
-  Always-approve.
+- **`Shift+Tab`** (prompt focused) cycles the mode: Normal → Plan → Auto →
+  Always-approve. Auto is skipped when the auto-mode gate is off.
 - **`/plan`** enters plan mode directly; `/plan <task>` plans that task in
   one step.
 

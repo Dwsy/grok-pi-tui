@@ -603,7 +603,7 @@ impl StreamingLocalTerminalRunner {
                     match result {
                         Ok(0) | Err(_) => stdout = None,
                         Ok(n) => {
-                            let bytes = &stdout_tmp[..n];
+                            let Some(bytes) = stdout_tmp.get(..n) else { continue };
                             output_buf.extend_from_slice(bytes);
 
                             // Write to the file before any truncation so it always has the complete output
@@ -617,7 +617,7 @@ impl StreamingLocalTerminalRunner {
                     match result {
                         Ok(0) | Err(_) => stderr = None,
                         Ok(n) => {
-                            let bytes = &stderr_tmp[..n];
+                            let Some(bytes) = stderr_tmp.get(..n) else { continue };
                             output_buf.extend_from_slice(bytes);
 
                             if let Some(ref mut file) = file_handle && let Err(e) = file.write_all(bytes).await {
@@ -937,7 +937,10 @@ fn truncate_buffer(buf: &mut Vec<u8>, limit: usize) -> bool {
             .map(|(i, _)| i)
             .unwrap_or(s.len());
 
-        *buf = s[start_idx..].as_bytes().to_vec();
+        let Some(tail) = s.get(start_idx..) else {
+            return false;
+        };
+        *buf = tail.as_bytes().to_vec();
 
         true
     } else {
@@ -1093,13 +1096,21 @@ async fn run_output_collector(
             result = stdout_fut.as_mut() => {
                 match result {
                     Ok(0) | Err(_) => stdout = None,
-                    Ok(n) => output_buf.extend_from_slice(&stdout_tmp[..n]),
+                    Ok(n) => {
+                        if let Some(bytes) = stdout_tmp.get(..n) {
+                            output_buf.extend_from_slice(bytes);
+                        }
+                    }
                 }
             }
             result = stderr_fut.as_mut() => {
                 match result {
                     Ok(0) | Err(_) => stderr = None,
-                    Ok(n) => output_buf.extend_from_slice(&stderr_tmp[..n]),
+                    Ok(n) => {
+                        if let Some(bytes) = stderr_tmp.get(..n) {
+                            output_buf.extend_from_slice(bytes);
+                        }
+                    }
                 }
             }
             _ = ticker.tick() => {

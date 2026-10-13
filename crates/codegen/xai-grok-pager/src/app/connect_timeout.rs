@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use xai_grok_shell::managed_config::LaunchProfile;
+use xai_grok_cloud_config::managed_config::LaunchProfile;
 
 macro_rules! connect_ui_timeout_env {
     () => {
@@ -33,8 +33,8 @@ const MANAGED_CONNECT_UI_FLOOR: Duration = Duration::from_secs(51);
 const MANAGED_CONNECT_UI_SLACK: Duration = Duration::from_secs(4);
 const _: () = assert!(
     MANAGED_CONNECT_UI_FLOOR.as_millis()
-        >= xai_grok_shell::managed_config::SESSION_START_AUTH_DEADLINE.as_millis()
-            + xai_grok_shell::managed_config::SESSION_START_SYNC_DEADLINE.as_millis()
+        >= xai_grok_cloud_config::managed_config::SESSION_START_AUTH_DEADLINE.as_millis()
+            + xai_grok_cloud_config::managed_config::SESSION_START_SYNC_DEADLINE.as_millis()
             + xai_grok_shell::http::MANAGED_STARTUP_SETTINGS_WAIT_DEADLINE.as_millis()
             + xai_grok_shell::http::STARTUP_AUTH_REFRESH_TIMEOUT.as_millis()
             + MANAGED_CONNECT_UI_SLACK.as_millis(),

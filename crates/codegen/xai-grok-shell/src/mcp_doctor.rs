@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Serialize;
+use xai_grok_config::mcp_servers::{McpServerOrigin, SessionMcpTier};
 use xai_grok_tools::types::config_source::ConfigSource;
 
 use crate::session::mcp_servers;
@@ -87,33 +88,7 @@ pub struct DoctorReport {
 
 struct DiscoveredServer {
     server: agent_client_protocol::McpServer,
-    source: ConfigSource,
-}
-
-/// Plugin registry as a one-shot CLI sees it: discovery gated by the live folder-trust verdict
-/// (no session resolve has run for a one-shot command).
-fn cli_plugin_registry(cwd: &Path) -> xai_grok_agent::plugins::PluginRegistry {
-    let trust_store = xai_grok_agent::plugins::TrustStore::load();
-    let mut plugins_cfg: crate::agent::config::PluginsConfig =
-        crate::config::load_effective_config()
-            .ok()
-            .and_then(|t| t.get("plugins").and_then(|v| v.clone().try_into().ok()))
-            .unwrap_or_default();
-    plugins_cfg.merge_claude_enabled_plugins(Some(cwd));
-    let mut plugin_config = plugins_cfg.to_discovery_config();
-    let project_trusted = crate::agent::folder_trust::resolve_and_record(cwd, None, false);
-    let discovered_plugins = xai_grok_agent::plugins::discover_plugins(
-        Some(cwd),
-        &plugin_config,
-        &trust_store,
-        project_trusted,
-    );
-    plugin_config.populate_plugin_lists(&discovered_plugins);
-    xai_grok_agent::plugins::PluginRegistry::from_discovered(
-        discovered_plugins,
-        &plugin_config.disabled,
-        &plugin_config.enabled,
-    )
+    origin: McpServerOrigin,
 }
 
 /// Which config file declares each TOML server: the user config.toml unless a
@@ -138,7 +113,7 @@ fn toml_declaring_paths(
 }
 
 fn discover_servers(cwd: &Path) -> (Vec<ConfigSourceStatus>, Vec<DiscoveredServer>) {
-    let plugin_registry = cli_plugin_registry(cwd);
+    let plugin_registry = crate::util::config::load_cli_plugin_registry(cwd);
 
     // mcp-doctor is a diagnostic tool; use default (all-on) compat to show everything.
     let sourced = crate::session::managed_mcp::merge_managed_mcp_servers_sourced(
@@ -169,23 +144,22 @@ fn discover_servers(cwd: &Path) -> (Vec<ConfigSourceStatus>, Vec<DiscoveredServe
     let mut mcp_json_count = 0usize;
     let mut plugin_counts: HashMap<String, usize> = HashMap::new();
     let mut servers = Vec::new();
-    for (server, source) in sourced {
-        match &source {
-            ConfigSource::ConfigToml { .. } | ConfigSource::Project { .. } => {
+    for (server, origin) in sourced {
+        match &origin {
+            McpServerOrigin::ConfigToml { .. } => {
                 let path = declaring
                     .get(mcp_servers::mcp_server_name(&server))
                     .cloned()
                     .unwrap_or_else(|| user_config.clone());
                 *toml_counts.entry(path).or_default() += 1;
             }
-            ConfigSource::ClaudeJson { .. } => claude_count += 1,
-            ConfigSource::McpJson { .. } => mcp_json_count += 1,
-            ConfigSource::Plugin { plugin_name, .. } => {
+            McpServerOrigin::ClaudeJson { .. } => claude_count += 1,
+            McpServerOrigin::McpJson { .. } => mcp_json_count += 1,
+            McpServerOrigin::Plugin { plugin_name, .. } => {
                 *plugin_counts.entry(plugin_name.clone()).or_default() += 1;
             }
-            _ => {}
         }
-        servers.push(DiscoveredServer { server, source });
+        servers.push(DiscoveredServer { server, origin });
     }
 
     let mut sources = Vec::new();
@@ -356,26 +330,56 @@ async fn check_handshake(
     }
 }
 
-async fn check_tools_list(service: &mcp_servers::McpService) -> Check {
+async fn check_tools_list(server_name: &str, service: &mcp_servers::McpService) -> Check {
     use xai_grok_mcp::rmcp::model::PaginatedRequestParams;
     match service
         .list_tools(Some(PaginatedRequestParams::default()))
         .await
     {
-        Ok(result) => {
-            let count = result.tools.len();
-            if count == 0 {
-                Check::fail(
-                    "0 tools discovered",
-                    "server returned an empty tool list",
-                    "check server config",
-                )
-            } else {
-                Check::pass(format!("{} tools discovered", count), "")
-            }
-        }
+        Ok(result) => tools_list_admission_check(
+            server_name,
+            result.tools.iter().map(|tool| tool.name.as_ref()),
+        ),
         Err(e) => Check::fail("tools/list failed", e.to_string(), "check server logs"),
     }
+}
+
+/// Apply session admission to a `tools/list` snapshot so doctor matches the catalog.
+fn tools_list_admission_check<'a>(
+    server_name: &str,
+    tool_names: impl IntoIterator<Item = &'a str>,
+) -> Check {
+    let mut listed = 0;
+    let mut skipped = Vec::new();
+    for name in tool_names {
+        listed += 1;
+        if let Err(reason) = mcp_servers::qualify_mcp_tool_name(server_name, name) {
+            skipped.push((name.to_owned(), reason.to_string()));
+        }
+    }
+    if listed == 0 {
+        return Check::fail(
+            "0 tools discovered",
+            "server returned an empty tool list",
+            "check server config",
+        );
+    }
+    if skipped.is_empty() {
+        return Check::pass(format!("{listed} tools discovered"), "");
+    }
+    let detail = skipped
+        .iter()
+        .map(|(name, reason)| format!("{name} ({reason})"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Check::fail(
+        format!(
+            "{listed} tools listed, {} skipped by session admission",
+            skipped.len()
+        ),
+        detail,
+        "session catalog omits these tools; rename the server or tool so each segment is a valid MCP id",
+    )
 }
 
 fn format_mcp_error(label: &str, err: &mcp_servers::McpError) -> Check {
@@ -493,7 +497,7 @@ async fn check_server(
                 }
                 Ok((service, check)) => {
                     checks.push(check);
-                    checks.push(check_tools_list(&service).await);
+                    checks.push(check_tools_list(&name, &service).await);
                 }
             }
             // Client drops here, killing the child process via kill_on_drop
@@ -523,7 +527,7 @@ fn policy_blocked_reasons(
     crate::session::managed_mcp::mcp_blocked_reasons(
         discovered.iter().map(|d| {
             let subject =
-                crate::session::managed_mcp::mcp_subject(&d.server, &d.source, project_names);
+                crate::session::managed_mcp::mcp_subject(&d.server, &d.origin, project_names);
             (mcp_servers::mcp_server_name(&d.server), &d.server, subject)
         }),
         ms,
@@ -543,7 +547,6 @@ fn policy_subjects(
         MCP_SCOPE_PROJECT, McpEnabledFilter, load_mcp_preferences,
         load_mcp_server_configs_with_project, materialize_mcp_config,
     };
-    use xai_grok_tools::types::config_source::ConfigSource;
     let project_names = crate::agent::folder_trust::project_scoped_mcp_names(cwd);
     let preferences = load_mcp_preferences().file();
     let sub = &crate::config::expand_env_vars_in_string;
@@ -566,25 +569,27 @@ fn policy_subjects(
                 raw.expand_strings(sub);
                 raw.to_acp_mcp_server(&name)
             })?;
-            let subject = crate::session::managed_mcp::mcp_subject_for_tier(
-                &name,
-                scope != MCP_SCOPE_PROJECT,
-                &project_names,
-            );
+            let tier = if scope == MCP_SCOPE_PROJECT {
+                SessionMcpTier::Foreign
+            } else {
+                SessionMcpTier::Native
+            };
+            let subject =
+                crate::session::managed_mcp::mcp_subject_for_tier(&name, tier, &project_names);
             Some((name, server, subject))
         })
         .collect();
     let plugin_registry = crate::util::config::load_cli_plugin_registry(cwd);
-    for (server, source) in crate::session::managed_mcp::merge_managed_mcp_servers_sourced(
+    for (server, origin) in crate::session::managed_mcp::merge_managed_mcp_servers_sourced(
         cwd,
         Some(&plugin_registry),
         &xai_grok_tools::types::compat::CompatConfig::default(),
     ) {
         // The merge re-adds enabled TOML servers; the walk above already judged every TOML one.
-        if matches!(source, ConfigSource::ConfigToml { .. }) {
+        if matches!(origin, McpServerOrigin::ConfigToml { .. }) {
             continue;
         }
-        let subject = crate::session::managed_mcp::mcp_subject(&server, &source, &project_names);
+        let subject = crate::session::managed_mcp::mcp_subject(&server, &origin, &project_names);
         subjects.push((
             mcp_servers::mcp_server_name(&server).to_string(),
             server,
@@ -656,7 +661,11 @@ fn policy_add_refusal_with(
         // The definition lands in a project source, so it is project-claimed before it exists there.
         project_names.insert(name.to_owned());
     }
-    let subject = crate::session::managed_mcp::mcp_subject_for_tier(name, true, &project_names);
+    let subject = crate::session::managed_mcp::mcp_subject_for_tier(
+        name,
+        SessionMcpTier::Native,
+        &project_names,
+    );
     crate::extensions::mcp::policy_enable_error(ms, &server, subject)
 }
 
@@ -739,7 +748,7 @@ pub async fn run_doctor(cwd: &Path, name_filter: Option<&str>) -> DoctorReport {
     use futures::StreamExt;
     let results: Vec<McpServerStatus> = futures::stream::iter(to_probe)
         .map(|d| {
-            let label = d.source.display_label();
+            let label = ConfigSource::from(d.origin.clone()).display_label();
             let name = mcp_servers::mcp_server_name(&d.server).to_string();
             let block_detail = blocked
                 .get(&name)
@@ -857,13 +866,16 @@ mod tests {
             true,
             true,
         );
+        let [first, ..] = checks.as_slice() else {
+            panic!("expected skip checks: {checks:?}");
+        };
         assert_eq!(checks.len(), 3);
         assert_eq!(
-            checks[0].label,
+            first.label,
             "blocked by organization policy — matches deniedMcpServers"
         );
         assert_eq!(
-            checks[0].detail.as_deref(),
+            first.detail.as_deref(),
             Some("/etc/grok/managed_config.toml")
         );
         assert!(
@@ -872,11 +884,17 @@ mod tests {
         );
 
         let checks = skip_verdict_checks(None, true, true);
-        assert!(checks[0].hint.is_some(), "--trust is the actionable step");
-        assert!(checks[1].hint.is_none(), "re-enable hint is a dead end");
+        let [first, second, ..] = checks.as_slice() else {
+            panic!("expected skip checks: {checks:?}");
+        };
+        assert!(first.hint.is_some(), "--trust is the actionable step");
+        assert!(second.hint.is_none(), "re-enable hint is a dead end");
 
         let checks = skip_verdict_checks(None, false, true);
-        assert!(checks[0].hint.is_some(), "plain disable keeps its hint");
+        assert!(
+            checks.first().is_some_and(|c| c.hint.is_some()),
+            "plain disable keeps its hint"
+        );
     }
 
     /// Project-declared servers must count under their own config file.
@@ -894,10 +912,10 @@ mod tests {
         let proj_path = std::path::PathBuf::from("/repo/.grok/config.toml");
 
         let declaring = toml_declaring_paths(user_path, Some(&user), &[(proj_path.clone(), proj)]);
-        assert_eq!(declaring["home1"], user_path);
-        assert_eq!(declaring["projsrv"], proj_path);
+        assert_eq!(declaring.get("home1").map(|p| p.as_path()), Some(user_path));
+        assert_eq!(declaring.get("projsrv"), Some(&proj_path));
         // The nearest definition wins a shared name, matching the merge.
-        assert_eq!(declaring["home2"], proj_path);
+        assert_eq!(declaring.get("home2"), Some(&proj_path));
     }
 
     /// Pins the CLI add gate seam: a deny-matching new definition gets the org-policy refusal;
@@ -1006,6 +1024,51 @@ mod tests {
             None,
             "the same definition in user config.toml is grok-native and unpinned"
         );
+    }
+
+    #[test]
+    fn tools_list_admission_reports_session_skips() {
+        // Digit-leading tool segments are admitted; letter/_ first-char is the server prefix.
+        let check = tools_list_admission_check("linear", ["list_issues", "2fa_enable"]);
+        assert!(check.passed, "{check:?}");
+        assert_eq!(check.label, "2 tools discovered");
+
+        let check = tools_list_admission_check("123bad", ["lookup"]);
+        assert!(!check.passed);
+        assert_eq!(
+            check.label,
+            "1 tools listed, 1 skipped by session admission"
+        );
+        assert!(
+            check
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("lookup") && d.contains("server name")),
+            "{check:?}"
+        );
+
+        let check = tools_list_admission_check("linear", ["list_issues", "bad.tool"]);
+        assert!(!check.passed);
+        assert_eq!(
+            check.label,
+            "2 tools listed, 1 skipped by session admission"
+        );
+        assert!(
+            check
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("bad.tool")),
+            "{check:?}"
+        );
+
+        // 31-char server + 37-char tool is 70 qualified chars: provider-64 rejects,
+        // session admission keeps it.
+        let check = tools_list_admission_check(
+            "sL_xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            ["t0_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"],
+        );
+        assert!(check.passed, "{check:?}");
+        assert_eq!(check.label, "1 tools discovered");
     }
 
     #[test]

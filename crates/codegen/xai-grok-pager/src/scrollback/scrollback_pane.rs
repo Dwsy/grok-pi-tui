@@ -1070,13 +1070,15 @@ impl ScrollbackPane {
             // Use virtual_y from cache to find screen positions.
             if let Some(all_virtual_y) = state.get_cached_virtual_y()
                 && let Some(all_layouts) = state.get_cached_entry_layouts()
+                && let Some(&base_y) = all_virtual_y.get(visible_range.start)
+                && let Some(&group_start_abs) = all_virtual_y.get(sel_range.start)
+                && let Some(last_idx) = sel_range.end.checked_sub(1)
+                && let Some(&last_vy) = all_virtual_y.get(last_idx)
+                && let Some(last_layout) = all_layouts.get(last_idx)
             {
                 // Virtual y positions (relative to visible range start)
-                let base_y = all_virtual_y[visible_range.start];
-                let group_start_vy = all_virtual_y[sel_range.start] - base_y;
-                let last_idx = sel_range.end - 1;
-                let group_end_vy =
-                    all_virtual_y[last_idx] - base_y + all_layouts[last_idx].height as usize;
+                let group_start_vy = group_start_abs - base_y;
+                let group_end_vy = last_vy - base_y + last_layout.height as usize;
 
                 // Convert virtual y to screen y
                 // Cumulative positions stay usize (tall sessions exceed u16::MAX)

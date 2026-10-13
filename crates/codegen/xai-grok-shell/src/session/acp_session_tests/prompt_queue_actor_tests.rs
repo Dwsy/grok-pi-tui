@@ -84,18 +84,21 @@ fn combine_front_merges_consecutive_plain_prompts() {
     SessionActor::combine_front_pending_inputs(&mut pending, &[]);
 
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].prompt_id, "p1");
+    assert_eq!(dq_at(&pending, 0).prompt_id, "p1");
     let combined = "text for p1\n\ntext for p2\n\ntext for p3";
     assert_eq!(
-        SessionActor::queue_text_from_blocks(&pending[0].prompt_blocks),
+        SessionActor::queue_text_from_blocks(&dq_at(&pending, 0).prompt_blocks),
         combined
     );
     assert_eq!(
-        pending[0].queue_meta.as_ref().map(|m| m.text.as_str()),
+        dq_at(&pending, 0)
+            .queue_meta
+            .as_ref()
+            .map(|m| m.text.as_str()),
         Some(combined)
     );
     assert_eq!(
-        pending[0]
+        dq_at(&pending, 0)
             .queue_meta
             .as_ref()
             .and_then(|m| m.combined_texts.as_ref())
@@ -110,7 +113,7 @@ fn combine_front_merges_consecutive_plain_prompts() {
         )
     );
     // The front block's meta records each combined prompt's text so echo and replay paint one bubble per prompt
-    let segs = pending[0]
+    let segs = dq_at(&pending, 0)
         .prompt_blocks
         .first()
         .and_then(|b| match b {
@@ -159,11 +162,11 @@ fn combine_front_stops_at_bash() {
 
     assert_eq!(pending.len(), 3);
     assert_eq!(
-        SessionActor::queue_text_from_blocks(&pending[0].prompt_blocks),
+        SessionActor::queue_text_from_blocks(&dq_at(&pending, 0).prompt_blocks),
         "text for p1\n\ntext for p2"
     );
-    assert_eq!(pending[1].prompt_id, "bash1");
-    assert_eq!(pending[2].prompt_id, "p3");
+    assert_eq!(dq_at(&pending, 1).prompt_id, "bash1");
+    assert_eq!(dq_at(&pending, 2).prompt_id, "p3");
 }
 
 #[test]
@@ -176,7 +179,7 @@ fn combine_front_noop_when_ineligible() {
         std::collections::VecDeque::from([bash_item("b", "A", "pwd"), user_item("p", "A")]);
     SessionActor::combine_front_pending_inputs(&mut bash_front, &[]);
     assert_eq!(bash_front.len(), 2);
-    assert_eq!(bash_front[0].prompt_id, "b");
+    assert_eq!(dq_at(&bash_front, 0).prompt_id, "b");
 }
 
 #[test]
@@ -239,9 +242,9 @@ fn combine_front_stops_at_a_per_turn_override_follower() {
         3,
         "an override-bearing follower must not be absorbed"
     );
-    assert_eq!(pending[0].prompt_id, "p1");
-    assert_eq!(pending[1].prompt_id, "p2");
-    assert_eq!(pending[2].prompt_id, "p3");
+    assert_eq!(dq_at(&pending, 0).prompt_id, "p1");
+    assert_eq!(dq_at(&pending, 1).prompt_id, "p2");
+    assert_eq!(dq_at(&pending, 2).prompt_id, "p3");
     assert!(
         rx2.try_recv().is_err(),
         "the pinned follower must stay queued"
@@ -262,8 +265,8 @@ fn combine_front_noop_when_front_carries_a_per_turn_override() {
         2,
         "an override-bearing front must not absorb followers"
     );
-    assert_eq!(pending[0].prompt_id, "p1");
-    assert_eq!(pending[1].prompt_id, "p2");
+    assert_eq!(dq_at(&pending, 0).prompt_id, "p1");
+    assert_eq!(dq_at(&pending, 1).prompt_id, "p2");
 }
 
 /// Two prompts arrive; the actor mailbox serializes them, so the order is FIFO.
@@ -384,8 +387,8 @@ async fn protected_rows_reject_generic_mutations() {
             actor.handle_clear_queue(None).await;
             let state = actor.state.lock().await;
             assert_eq!(state.pending_inputs.len(), 1);
-            assert_eq!(state.pending_inputs[0].prompt_id, "parent");
-            let meta = state.pending_inputs[0].queue_meta.as_ref().unwrap();
+            assert_eq!(dq_at(&state.pending_inputs, 0).prompt_id, "parent");
+            let meta = dq_at(&state.pending_inputs, 0).queue_meta.as_ref().unwrap();
             assert_eq!(meta.text, "text for parent");
             assert_eq!(meta.version, 0);
             assert_eq!(state.edit_holds.get("parent"), Some(&held_at));
@@ -484,7 +487,7 @@ async fn edit_queued_prompt_replaces_text_and_bumps_version() {
 
             // Underlying prompt_blocks was rebuilt with the new text.
             assert_eq!(item.prompt_blocks.len(), 1);
-            match &item.prompt_blocks[0] {
+            match &at(&item.prompt_blocks, 0) {
                 acp::ContentBlock::Text(t) => assert_eq!(t.text, "edited"),
                 other => panic!("expected text block, got {other:?}"),
             }
@@ -492,10 +495,10 @@ async fn edit_queued_prompt_replaces_text_and_bumps_version() {
             // The wire projection also reflects the new state.
             let wire = actor.build_queue_wire(&state);
             assert_eq!(wire.len(), 1);
-            assert_eq!(wire[0].text, "edited");
-            assert_eq!(wire[0].version, 1);
-            assert_eq!(wire[0].owner.as_deref(), Some("alice"));
-            assert_eq!(wire[0].last_editor.as_deref(), Some("bob"));
+            assert_eq!(at(&wire, 0).text, "edited");
+            assert_eq!(at(&wire, 0).version, 1);
+            assert_eq!(at(&wire, 0).owner.as_deref(), Some("alice"));
+            assert_eq!(at(&wire, 0).last_editor.as_deref(), Some("bob"));
         })
         .await;
 }
@@ -1059,15 +1062,17 @@ async fn edit_then_combine_uses_edited_text() {
                 SessionActor::combine_front_pending_inputs(&mut state.pending_inputs, &[]);
 
                 assert_eq!(state.pending_inputs.len(), 1);
-                assert_eq!(state.pending_inputs[0].prompt_id, "p1");
+                assert_eq!(dq_at(&state.pending_inputs, 0).prompt_id, "p1");
                 let combined = "text for p1\n\nedited follower";
                 assert_eq!(
-                    SessionActor::queue_text_from_blocks(&state.pending_inputs[0].prompt_blocks),
+                    SessionActor::queue_text_from_blocks(
+                        &dq_at(&state.pending_inputs, 0).prompt_blocks
+                    ),
                     combined,
                     "merge must use the post-edit text, not the pre-edit value"
                 );
                 assert_eq!(
-                    state.pending_inputs[0]
+                    dq_at(&state.pending_inputs, 0)
                         .queue_meta
                         .as_ref()
                         .map(|m| m.text.as_str()),
@@ -1426,8 +1431,8 @@ async fn interject_queued_prompt_with_new_text_no_running_turn_saves_edit() {
                 let state = actor.state.lock().await;
                 let wire = actor.build_queue_wire(&state);
                 assert_eq!(ids(&wire), vec!["p1"], "row stays queued");
-                assert_eq!(wire[0].text, "EDITED text", "edit saved to the row");
-                assert_eq!(wire[0].version, 1, "LWW edit bumps the version");
+                assert_eq!(at(&wire, 0).text, "EDITED text", "edit saved to the row");
+                assert_eq!(at(&wire, 0).version, 1, "LWW edit bumps the version");
                 assert!(
                     actor.pending_interjections.is_empty(),
                     "nothing buffered without a running turn"
@@ -1437,7 +1442,7 @@ async fn interject_queued_prompt_with_new_text_no_running_turn_saves_edit() {
             // The row's Image blocks survive the text-only LWW edit; the edit must not silently detach the queued prompt's images
             {
                 let state = actor.state.lock().await;
-                let images: usize = state.pending_inputs[0]
+                let images: usize = dq_at(&state.pending_inputs, 0)
                     .prompt_blocks
                     .iter()
                     .filter(|b| matches!(b, acp::ContentBlock::Image(_)))
@@ -1451,8 +1456,8 @@ async fn interject_queued_prompt_with_new_text_no_running_turn_saves_edit() {
                 .await;
             let state = actor.state.lock().await;
             let wire = actor.build_queue_wire(&state);
-            assert_eq!(wire[0].text, "EDITED text", "stale edit must not win");
-            assert_eq!(wire[0].version, 1);
+            assert_eq!(at(&wire, 0).text, "EDITED text", "stale edit must not win");
+            assert_eq!(at(&wire, 0).version, 1);
         })
         .await;
 }
@@ -1514,8 +1519,8 @@ async fn edit_queued_prompt_empty_text_is_noop() {
 
             let state = actor.state.lock().await;
             let wire = actor.build_queue_wire(&state);
-            assert_eq!(wire[0].text, "ls", "row text untouched");
-            assert_eq!(wire[0].version, 0, "no LWW bump for a blank edit");
+            assert_eq!(at(&wire, 0).text, "ls", "row text untouched");
+            assert_eq!(at(&wire, 0).version, 0, "no LWW bump for a blank edit");
         })
         .await;
 }
@@ -1537,7 +1542,7 @@ async fn edit_queued_plain_row_stays_plain() {
                 .await;
 
             let state = actor.state.lock().await;
-            let item = &state.pending_inputs[0];
+            let item = &dq_at(&state.pending_inputs, 0);
             assert!(
                 SessionActor::extract_bash_command(&item.prompt_blocks).is_none(),
                 "plain rows must not acquire bash meta"
@@ -1694,7 +1699,7 @@ async fn promote_queued_as_interjections_stops_at_send_now() {
                 .map(|i| i.prompt_id.as_str())
                 .collect();
             assert_eq!(order, vec!["running", "m1", "m2"]);
-            assert!(state.pending_inputs[1].send_now);
+            assert!(dq_at(&state.pending_inputs, 1).send_now);
             drop(state);
             assert!(
                 actor.pending_interjections.is_empty(),
@@ -1882,7 +1887,9 @@ async fn promote_queued_as_interjections_stops_at_tool_overrides() {
                 .collect();
             assert_eq!(order, vec!["running", "override", "after"]);
             assert!(
-                state.pending_inputs[1].tool_overrides_update.is_some(),
+                dq_at(&state.pending_inputs, 1)
+                    .tool_overrides_update
+                    .is_some(),
                 "override row must stay queued with its payload"
             );
             drop(state);
@@ -1960,7 +1967,7 @@ async fn promote_queued_as_interjections_keeps_protected_rows_pinned() {
                 "protected pin stays; only the editable prefix promotes"
             );
             assert!(
-                state.pending_inputs[1].is_queue_protected(),
+                dq_at(&state.pending_inputs, 1).is_queue_protected(),
                 "parent row must remain protected after promote"
             );
             drop(state);
@@ -2065,9 +2072,13 @@ async fn interject_queued_bash_row_with_new_text_saves_edit() {
             let state = actor.state.lock().await;
             let wire = actor.build_queue_wire(&state);
             assert_eq!(ids(&wire), vec!["p1"], "bash row must stay queued");
-            assert_eq!(wire[0].text, "ls -la", "the edit must be kept (LWW)");
-            assert_eq!(wire[0].version, 1, "LWW edit bumps the version");
-            assert_eq!(wire[0].kind, "bash", "kind survives the refused interject");
+            assert_eq!(at(&wire, 0).text, "ls -la", "the edit must be kept (LWW)");
+            assert_eq!(at(&wire, 0).version, 1, "LWW edit bumps the version");
+            assert_eq!(
+                at(&wire, 0).kind,
+                "bash",
+                "kind survives the refused interject"
+            );
             assert!(actor.pending_interjections.is_empty());
         })
         .await;
@@ -2133,7 +2144,7 @@ async fn ordinary_human_queue_uses_common_commit_and_preserves_fields() {
             assert_eq!(prompt_queue::take_queued_commit_count(), 1);
             let state = actor.state.lock().await;
             let item = state.pending_inputs.back().expect("queued human input");
-            assert!(matches!(&item.prompt_blocks[1], acp::ContentBlock::Image(actual) if actual == &image));
+            assert!(matches!(&at(&item.prompt_blocks, 1), acp::ContentBlock::Image(actual) if actual == &image));
             assert!(item.parsed_prompt_tx.is_some());
             drop(state);
 
@@ -2721,7 +2732,7 @@ async fn queue_send_now_promotes_row_and_requests_cancel() {
                 vec!["running", "b1", "held"],
                 "promoted row runs next; the held row stays behind it"
             );
-            let promoted = &state.pending_inputs[1];
+            let promoted = &dq_at(&state.pending_inputs, 1);
             assert_eq!(
                 promoted.queue_meta.as_ref().map(|m| m.text.as_str()),
                 Some("ls -la"),
@@ -3187,7 +3198,10 @@ async fn agent_rebuild_republishes_the_configured_cutoff() {
             let mut seeded = xai_grok_agent::AgentDefinition::default_grok_build();
             seeded.tool_overrides = Some(seed.clone());
             actor
-                .handle_rebuild_agent_for_definition(seeded)
+                .handle_rebuild_agent_for_definition(
+                    seeded,
+                    xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
+                )
                 .await
                 .expect("zero-turn rebuild should succeed");
             assert_eq!(
@@ -3203,6 +3217,7 @@ async fn agent_rebuild_republishes_the_configured_cutoff() {
             actor
                 .handle_rebuild_agent_for_definition(
                     xai_grok_agent::AgentDefinition::default_grok_build(),
+                    xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
                 )
                 .await
                 .expect("second rebuild should succeed");
@@ -3398,7 +3413,7 @@ async fn send_now_cancel_flushes_buffered_interjections_as_prompts() {
                 "the interjection runs next, ahead of the send-now prompt"
             );
             assert!(
-                is_interject_fallback(&state.pending_inputs[0].prompt_id),
+                is_interject_fallback(&dq_at(&state.pending_inputs, 0).prompt_id),
                 "converted interjections use the persist-only fallback prefix"
             );
         })
@@ -3594,7 +3609,7 @@ async fn dropped_finalization_lease_blocks_production_promotion() {
             let state = actor.state.lock().await;
             assert!(state.finalization_gate.is_active());
             assert!(state.running_task.is_none());
-            assert_eq!(state.pending_inputs[0].prompt_id, "next");
+            assert_eq!(dq_at(&state.pending_inputs, 0).prompt_id, "next");
         })
         .await;
 }
@@ -4208,9 +4223,9 @@ async fn goal_yield_runs_queued_row_next_then_resumes_goal() {
                     3,
                     "turn end queued one continuation: {order:?}"
                 );
-                assert_eq!(order[1], "p1", "the user row stays ahead: {order:?}");
+                assert_eq!(at(&order, 1), "p1", "the user row stays ahead: {order:?}");
                 assert!(
-                    order[2].starts_with("goal-summary-"),
+                    at(&order, 2).starts_with("goal-summary-"),
                     "the continuation re-arms behind the user row: {order:?}"
                 );
                 // The yielded turn finishes: its front row drains and the task slot clears, as after any completed turn
@@ -4218,7 +4233,7 @@ async fn goal_yield_runs_queued_row_next_then_resumes_goal() {
                     task.handle.abort();
                 }
                 state.pending_inputs.retain(|i| i.prompt_id != "goal-round");
-                order[2].clone()
+                at(&order, 2).clone()
             };
 
             let (completion_tx, _completion_rx) = tokio::sync::mpsc::unbounded_channel();

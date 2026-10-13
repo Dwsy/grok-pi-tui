@@ -9,13 +9,14 @@ use super::{
 };
 use crate::session::events::{LAZINESS_ABORT_USER_INPUT, LazinessCategory};
 use xai_grok_sampling_types::{
-    AssistantItem, ContentPart, ConversationItem, SystemItem, ToolCall, ToolResultItem, UserItem,
+    AssistantItem, ContentPart, ConversationItem, SyntheticReason, ToolCall, ToolResultItem,
+    UserItem,
 };
 
 fn user_text(text: &str) -> ConversationItem {
     ConversationItem::User(UserItem {
         content: vec![ContentPart::Text { text: text.into() }],
-        synthetic_reason: None,
+        synthetic_reason: SyntheticReason::Human,
         ..Default::default()
     })
 }
@@ -156,9 +157,7 @@ fn flatten_collapses_newlines_to_keep_one_line_per_item() {
 
 #[test]
 fn flatten_handles_system_items() {
-    let items = vec![ConversationItem::System(SystemItem {
-        content: "remember X".into(),
-    })];
+    let items = vec![ConversationItem::system("remember X")];
     let out = flatten_transcript_for_classifier(&items, true);
     assert_eq!(out, "[system] remember X\n");
 }
@@ -357,7 +356,7 @@ fn synthetic_user_text(
 ) -> ConversationItem {
     ConversationItem::User(UserItem {
         content: vec![ContentPart::Text { text: text.into() }],
-        synthetic_reason: Some(reason),
+        synthetic_reason: reason,
         ..Default::default()
     })
 }
@@ -626,10 +625,30 @@ fn log_line_serializes_to_expected_jsonl_shape() {
     }
     // `decision` serializes to a fixed snake_case string via serde's rename_all
     // Pinning it catches a typo or rename without forcing a match-arm update across consumers
-    assert_eq!(parsed["decision"], "would_nudge");
-    assert_eq!(parsed["parsed"]["category"], "stalled_narration");
-    assert_eq!(parsed["items_sent"], 28);
-    assert!(parsed["abort_reason"].is_null());
+    assert_eq!(
+        parsed
+            .pointer("/decision")
+            .unwrap_or(&serde_json::Value::Null),
+        "would_nudge"
+    );
+    assert_eq!(
+        parsed
+            .pointer("/parsed/category")
+            .unwrap_or(&serde_json::Value::Null),
+        "stalled_narration"
+    );
+    assert_eq!(
+        parsed
+            .pointer("/items_sent")
+            .unwrap_or(&serde_json::Value::Null),
+        28
+    );
+    assert!(
+        parsed
+            .pointer("/abort_reason")
+            .unwrap_or(&serde_json::Value::Null)
+            .is_null()
+    );
 }
 
 #[test]
@@ -641,10 +660,30 @@ fn log_line_aborted_decision_serializes_with_reason() {
     line.parsed = None;
     let json = serde_json::to_string(&line).expect("serialize");
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("re-parse");
-    assert_eq!(parsed["decision"], "aborted");
-    assert_eq!(parsed["abort_reason"], "user_input");
-    assert!(parsed["parsed"].is_null());
-    assert!(parsed["classifier_raw_output"].is_null());
+    assert_eq!(
+        parsed
+            .pointer("/decision")
+            .unwrap_or(&serde_json::Value::Null),
+        "aborted"
+    );
+    assert_eq!(
+        parsed
+            .pointer("/abort_reason")
+            .unwrap_or(&serde_json::Value::Null),
+        "user_input"
+    );
+    assert!(
+        parsed
+            .pointer("/parsed")
+            .unwrap_or(&serde_json::Value::Null)
+            .is_null()
+    );
+    assert!(
+        parsed
+            .pointer("/classifier_raw_output")
+            .unwrap_or(&serde_json::Value::Null)
+            .is_null()
+    );
 }
 
 #[test]
@@ -679,9 +718,20 @@ fn build_laziness_debug_line_suppressed_not_goal_mode_includes_parsed_verdict() 
     );
     let json = serde_json::to_string(&line).expect("serialize");
     let v: serde_json::Value = serde_json::from_str(&json).expect("re-parse");
-    assert_eq!(v["decision"], "suppressed_not_goal_mode");
-    assert_eq!(v["parsed"]["category"], "stalled_narration");
-    assert!(v["classifier_raw_output"].is_string());
+    assert_eq!(
+        v.pointer("/decision").unwrap_or(&serde_json::Value::Null),
+        "suppressed_not_goal_mode"
+    );
+    assert_eq!(
+        v.pointer("/parsed/category")
+            .unwrap_or(&serde_json::Value::Null),
+        "stalled_narration"
+    );
+    assert!(
+        v.pointer("/classifier_raw_output")
+            .unwrap_or(&serde_json::Value::Null)
+            .is_string()
+    );
 }
 
 /// Write two lines, parse them back from disk, and confirm both round-trip cleanly.
@@ -711,9 +761,27 @@ async fn append_writes_two_lines_each_parseable() {
         2,
         "expected exactly two newline-separated lines"
     );
-    let parsed1: serde_json::Value = serde_json::from_str(lines[0]).expect("parse line 1");
-    let parsed2: serde_json::Value = serde_json::from_str(lines[1]).expect("parse line 2");
-    assert_eq!(parsed1["decision"], "would_nudge");
-    assert_eq!(parsed2["decision"], "no_nudge_not_stalled");
-    assert_eq!(parsed2["classifier_elapsed_ms"], 921);
+    let [line1, line2] = lines.as_slice() else {
+        panic!("expected exactly two newline-separated lines: {lines:?}");
+    };
+    let parsed1: serde_json::Value = serde_json::from_str(line1).expect("parse line 1");
+    let parsed2: serde_json::Value = serde_json::from_str(line2).expect("parse line 2");
+    assert_eq!(
+        parsed1
+            .pointer("/decision")
+            .unwrap_or(&serde_json::Value::Null),
+        "would_nudge"
+    );
+    assert_eq!(
+        parsed2
+            .pointer("/decision")
+            .unwrap_or(&serde_json::Value::Null),
+        "no_nudge_not_stalled"
+    );
+    assert_eq!(
+        parsed2
+            .pointer("/classifier_elapsed_ms")
+            .unwrap_or(&serde_json::Value::Null),
+        921
+    );
 }

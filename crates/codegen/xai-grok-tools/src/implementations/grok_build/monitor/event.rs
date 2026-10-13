@@ -1,5 +1,5 @@
 use super::types::{BATCH_TRUNCATION_LIMIT, BUFFER_CAP_BYTES, LINE_TRUNCATION_LIMIT};
-use crate::util::floor_char_boundary;
+use crate::util::truncate_str;
 
 /// Processes raw stdout chunks into complete lines. Buffers partial lines, splits on `\n`,
 /// truncates individual lines at `LINE_TRUNCATION_LIMIT` chars, and caps the internal buffer at
@@ -21,7 +21,9 @@ impl LineProcessor {
         // Cap buffer at BUFFER_CAP_BYTES (keep the tail).
         if self.buffer.len() > BUFFER_CAP_BYTES {
             let start = self.buffer.len() - BUFFER_CAP_BYTES;
-            self.buffer = self.buffer[start..].to_vec();
+            if let Some(tail) = self.buffer.get(start..) {
+                self.buffer = tail.to_vec();
+            }
         }
 
         let mut lines = Vec::new();
@@ -52,8 +54,10 @@ impl LineProcessor {
 
 fn truncate_line(line: &str) -> String {
     if line.len() > LINE_TRUNCATION_LIMIT {
-        let boundary = floor_char_boundary(line, LINE_TRUNCATION_LIMIT);
-        format!("{}...(truncated)", &line[..boundary])
+        format!(
+            "{}...(truncated)",
+            truncate_str(line, LINE_TRUNCATION_LIMIT)
+        )
     } else {
         line.to_string()
     }
@@ -63,8 +67,10 @@ fn truncate_line(line: &str) -> String {
 pub fn batch_lines(lines: &[String]) -> String {
     let joined = lines.join("\n");
     if joined.len() > BATCH_TRUNCATION_LIMIT {
-        let boundary = floor_char_boundary(&joined, BATCH_TRUNCATION_LIMIT);
-        format!("{}\n...(truncated)", &joined[..boundary])
+        format!(
+            "{}\n...(truncated)",
+            truncate_str(&joined, BATCH_TRUNCATION_LIMIT)
+        )
     } else {
         joined
     }
@@ -140,9 +146,11 @@ mod tests {
         let long = "x".repeat(600);
         let input = format!("{long}\n");
         let lines = proc.push(input.as_bytes());
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].ends_with("...(truncated)"));
-        assert!(lines[0].len() < 600);
+        let Some(truncated) = lines.first() else {
+            panic!("expected truncated line: {lines:?}");
+        };
+        assert!(truncated.ends_with("...(truncated)"));
+        assert!(truncated.len() < 600);
     }
 
     #[test]

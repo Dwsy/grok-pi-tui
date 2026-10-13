@@ -105,44 +105,15 @@ fn persisted_row_id_round_trip_top_level() {
 }
 
 #[test]
-fn persisted_row_id_round_trip_subagent() {
-    let id = PersistedRowId::Subagent {
-        parent_session_id: "p-1".into(),
-        child_session_id: "c-1".into(),
-    };
-    let key = id.to_key();
-    assert_eq!(key, "sub:p-1:c-1");
-    assert_eq!(PersistedRowId::from_key(&key), Some(id));
-}
-
-#[test]
-fn persisted_row_id_subagent_with_colon_in_child_id() {
-    // The child session id portion may itself contain colons; we
-    // only split on the first colon after `sub:<parent>:`.
-    let raw = "sub:parent-x:abc:def:ghi";
-    let parsed = PersistedRowId::from_key(raw).unwrap();
-    match parsed {
-        PersistedRowId::Subagent {
-            parent_session_id,
-            child_session_id,
-        } => {
-            assert_eq!(parent_session_id, "parent-x");
-            assert_eq!(child_session_id, "abc:def:ghi");
-        }
-        _ => panic!("expected subagent variant"),
-    }
-}
-
-#[test]
 fn persisted_row_id_invalid() {
     assert!(PersistedRowId::from_key("garbage").is_none());
     // top:<empty> rejected.
     assert!(PersistedRowId::from_key("top:").is_none());
-    // sub: with no parent rejected.
+    // Stale subagent-row keys are ignored, including ones that used to parse.
+    assert!(PersistedRowId::from_key("sub:p-1:c-1").is_none());
+    assert!(PersistedRowId::from_key("sub:parent-x:abc:def:ghi").is_none());
     assert!(PersistedRowId::from_key("sub::child").is_none());
-    // sub:<parent> with no child rejected.
     assert!(PersistedRowId::from_key("sub:parent:").is_none());
-    // sub: with no colon between parent/child rejected.
     assert!(PersistedRowId::from_key("sub:foo").is_none());
 }
 
@@ -309,6 +280,7 @@ fn reanchor_selection_keeps_existing_id() {
     state.selected = Some(id1.clone());
     let rows = vec![super::super::row::DashboardRow {
         id: id1.clone(),
+        session_id: None,
         label: "r1".to_string(),
         subtitle: None,
         state: RowState::Idle,
@@ -320,10 +292,6 @@ fn reanchor_selection_keeps_existing_id() {
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }];
     state.reanchor_selection(&rows);
     assert_eq!(state.selected, Some(id1));
@@ -338,6 +306,7 @@ fn reanchor_selection_drops_to_none_when_previous_disappeared() {
     let id1 = DashboardRowId::TopLevel(AgentId(1));
     let rows = vec![super::super::row::DashboardRow {
         id: id1.clone(),
+        session_id: None,
         label: "r1".to_string(),
         subtitle: None,
         state: RowState::Idle,
@@ -349,10 +318,6 @@ fn reanchor_selection_drops_to_none_when_previous_disappeared() {
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }];
     state.reanchor_selection(&rows);
     assert_eq!(
@@ -373,9 +338,8 @@ fn persisted_on_disk_round_trip() {
     pinned.insert(PersistedRowId::TopLevel {
         session_id: "sess-3".into(),
     });
-    let reorder = vec![PersistedRowId::Subagent {
-        parent_session_id: "sess-3".into(),
-        child_session_id: "child-1".into(),
+    let reorder = vec![PersistedRowId::TopLevel {
+        session_id: "sess-9".into(),
     }];
     let p = PersistedDashboard {
         enabled: false,
@@ -389,6 +353,35 @@ fn persisted_on_disk_round_trip() {
     assert_eq!(loaded.grouping, Grouping::Directory);
     assert_eq!(loaded.pinned, pinned);
     assert_eq!(loaded.reorder, reorder);
+}
+
+/// A config written when the dashboard still pinned subagent rows must load. The `sub:` keys are
+/// dropped; the sibling `top:` keys and the rest of the table stay.
+#[test]
+fn load_persisted_drops_stale_subagent_row_ids() {
+    use std::collections::BTreeSet;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        "\
+[dashboard]
+enabled = true
+grouping = \"state\"
+pinned = [\"top:sess-keep\", \"sub:parent:child\"]
+reorder = [\"sub:parent:child:with:colons\", \"top:sess-keep\"]
+",
+    )
+    .unwrap();
+    let loaded =
+        load_persisted_from_path(&path).expect("stale subagent ids must not fail the load");
+    let keep = PersistedRowId::TopLevel {
+        session_id: "sess-keep".into(),
+    };
+    assert!(loaded.enabled);
+    assert_eq!(loaded.grouping, Grouping::State);
+    assert_eq!(loaded.pinned, BTreeSet::from([keep.clone()]));
+    assert_eq!(loaded.reorder, vec![keep]);
 }
 
 /// The onboarding hint was removed — a stale `[dashboard.onboarding]`
@@ -811,10 +804,6 @@ fn ctrl_w_emits_toggle_worktree_action() {
         "Ctrl+W must resolve to the DashboardToggleWorktree action",
     );
 }
-
-// ---------------------------------------------------------------
-// handle_key tests (Esc cascade, Enter routing).
-// ---------------------------------------------------------------
 
 fn make_state_with_selection() -> DashboardState {
     let mut s = DashboardState::new();
@@ -1750,6 +1739,120 @@ fn dropdown_file_search_follows_peek_state() {
     );
 }
 
+#[test]
+fn search_mode_mouse_does_not_edit_a_hidden_peek() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    let mut state = state_with_open_peek();
+    state.peek_reply.set_text("@src");
+    if let Some(peek) = state.peek.as_mut() {
+        peek.focused = false;
+    }
+    state.peek_reply_rect = Some(Rect::new(2, 10, 40, 1));
+    state.peek_close_rect = Some(Rect::new(70, 10, 3, 1));
+    let ctx = crate::views::file_search::context::detect("@src", 4).expect("context");
+    state.peek_reply.file_search.set_test_state(
+        ctx,
+        vec![xai_grok_workspace::file_system::FuzzyMatchResult {
+            path: nucleo::Utf32String::from("src/lib.rs"),
+            score: 1,
+            indices: Vec::new(),
+            is_dir: false,
+        }],
+        0,
+    );
+    assert!(state.peek_reply.file_search.set_hovered(Some(0)));
+    state.file_search_dropdown_items_area = Some(Rect::new(2, 4, 20, 3));
+    state.enter_search_mode();
+    assert!(
+        state.dropdown_file_search_mut().context().is_none(),
+        "search must route @ mouse to the dispatch picker, not the hidden peek"
+    );
+    state.dropdown_file_search_mut().move_selection(1);
+    assert_eq!(
+        state.peek_reply.file_search.selected(),
+        0,
+        "wheel over search must not move the hidden peek selection"
+    );
+
+    let dispatch_ctx = crate::views::file_search::context::detect("@q", 2).expect("context");
+    state.dispatch.file_search.set_test_state(
+        dispatch_ctx,
+        vec![
+            xai_grok_workspace::file_system::FuzzyMatchResult {
+                path: nucleo::Utf32String::from("a.rs"),
+                score: 1,
+                indices: Vec::new(),
+                is_dir: false,
+            },
+            xai_grok_workspace::file_system::FuzzyMatchResult {
+                path: nucleo::Utf32String::from("b.rs"),
+                score: 1,
+                indices: Vec::new(),
+                is_dir: false,
+            },
+        ],
+        0,
+    );
+    assert_eq!(state.peek_reply.file_search.hovered(), Some(0));
+    assert_eq!(state.dispatch.file_search.hovered(), None);
+    let over_dropdown = MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 4,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    };
+    let _ = state.handle_mouse(&over_dropdown);
+    assert_eq!(
+        state.dispatch.file_search.hovered(),
+        Some(1),
+        "a move over the visible dropdown must hover the dispatch picker"
+    );
+    assert_eq!(
+        state.peek_reply.file_search.hovered(),
+        Some(0),
+        "a move over search must not change the hidden peek hover"
+    );
+    state.file_search_dropdown_items_area = None;
+    let away = MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    };
+    let _ = state.handle_mouse(&away);
+    assert_eq!(state.dispatch.file_search.hovered(), None);
+    assert_eq!(state.peek_reply.file_search.hovered(), Some(0));
+    state.dispatch.file_search.clear_context();
+    state.file_search_dropdown_items_area = Some(Rect::new(2, 4, 20, 3));
+
+    for (kind, column, row) in [
+        (MouseEventKind::Drag(MouseButton::Left), 8, 10),
+        (MouseEventKind::Up(MouseButton::Left), 8, 10),
+        (MouseEventKind::Down(MouseButton::Left), 5, 10),
+        (MouseEventKind::Down(MouseButton::Left), 71, 10),
+        (MouseEventKind::Down(MouseButton::Left), 4, 4),
+    ] {
+        let _ = state.handle_mouse(&MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    assert_eq!(state.peek_reply.text(), "@src");
+    assert!(
+        state.peek.as_ref().is_some_and(|peek| !peek.focused),
+        "a click on the hidden reply must not focus it"
+    );
+    assert!(
+        state.peek.is_some(),
+        "a stale close hit must not close the hidden peek"
+    );
+    assert_eq!(state.peek_reply.file_search.selected(), 0);
+}
+
 /// The reply's `@` picker roots LAZILY at the peeked agent's cwd: a bare cursor move (navigation)
 /// never retargets the daemon (no thread churn), and the retarget lands on the first composing
 /// keystroke, deduped so a same-cwd agent switch is free.
@@ -2476,6 +2579,23 @@ fn alt_and_shift_enter_insert_newline_not_dispatch() {
             "{modifier:?}+Enter must insert a newline"
         );
     }
+}
+
+/// Delivered SUPER+Enter (Kitty) misses is_mod_enter and bare-Enter send; dashboard
+/// compose must insert a newline rather than dispatch (agent-prompt parity).
+#[test]
+fn delivered_super_enter_inserts_newline_not_dispatch() {
+    let reg = crate::actions::ActionRegistry::defaults();
+    let mut state = make_state_with_selection();
+    for ch in "hi".chars() {
+        let _ = state.handle_key(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &reg);
+    }
+    let outcome = state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER), &reg);
+    assert!(
+        !matches!(outcome, InputOutcome::Action(_)),
+        "SUPER+Enter must not dispatch, got {outcome:?}"
+    );
+    assert_eq!(state.dispatch.text(), "hi\n");
 }
 
 #[test]
@@ -3224,7 +3344,11 @@ fn pasted_image_chip_omits_full_path() {
         "chip must not embed the source path, got {text:?}"
     );
     assert_eq!(
-        state.dispatch.images[0].source_path.as_deref(),
+        state
+            .dispatch
+            .images
+            .first()
+            .and_then(|img| img.source_path.as_deref()),
         Some(std::path::Path::new(
             "/Users/somebody/very/long/path/screenshot.png"
         ))
@@ -3336,7 +3460,7 @@ fn dispatch_bracketed_image_paste_defers_probe() {
     );
 }
 
-/// Regression: an IME commit delivered as bracketed paste (Otty)
+/// Regression: a bracketed paste whose text is not the clipboard text
 /// must not attach the unrelated clipboard image.
 #[test]
 fn dispatch_bracketed_paste_stamps_ctx_bracketed() {
@@ -3607,6 +3731,31 @@ fn dashboard_deferred_bracketed_text_survives_failed_or_dropped_probe() {
         assert_eq!(completion, expected);
         assert_eq!(state.dispatch.text(), "bracketed text");
     }
+}
+
+/// The dashboard toasts the persist error itself (e.g. the ENOSPC text), not a generic line.
+#[test]
+fn dashboard_persist_failure_toasts_the_error_text() {
+    let mut state = DashboardState::new();
+    let completion = state.complete_clipboard_attachment_paste(
+        completion_ctx(None, false),
+        crate::app::actions::ProbedAttachment::PersistFailed("No space left on device".to_owned()),
+        None,
+    );
+    assert_eq!(
+        completion,
+        crate::app::actions::ClipboardPasteCompletion::Failed(
+            crate::app::actions::ClipboardPasteFailure::AlreadyReported
+        )
+    );
+    assert!(
+        state
+            .error_toast
+            .as_deref()
+            .is_some_and(|toast| toast.contains("No space left on device")),
+        "got {:?}",
+        state.error_toast
+    );
 }
 
 /// A no-image miss on a peek Cmd+V must NOT buffer the caption into the
@@ -3882,6 +4031,23 @@ fn ctrl_slash_toggles_search_mode() {
     let o2 = state.handle_input(&ctrl_slash, &reg);
     assert!(matches!(o2, InputOutcome::Changed));
     assert!(!state.search_mode, "Ctrl+/ again must exit search mode");
+}
+
+#[test]
+fn ctrl_slash_from_list_focuses_the_search_field() {
+    let mut state = DashboardState::new();
+    let reg = crate::actions::ActionRegistry::defaults();
+    state.list_focused = true;
+    let ctrl_slash = Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::CONTROL));
+    let _ = state.handle_input(&ctrl_slash, &reg);
+    assert!(state.search_mode);
+    assert!(
+        !state.list_focused,
+        "Ctrl+/ must leave the session list and focus the search field"
+    );
+    let typed = Event::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+    let _ = state.handle_input(&typed, &reg);
+    assert_eq!(state.dispatch.text(), "z");
 }
 
 /// In search mode the dispatch buffer is a live filter query;
@@ -4767,6 +4933,112 @@ fn ctrl_x_key_repeat_is_ignored() {
     ));
 }
 
+/// An empty Enter within a second of a send is an echo of that send (key auto-repeat, a bouncing key switch, a double tap).
+/// It must not click `+ New Agent` or open the selected row.
+#[test]
+fn empty_enter_right_after_send_is_swallowed() {
+    let mut state = DashboardState::new();
+    let reg = crate::actions::ActionRegistry::defaults();
+    let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    state.focus_new_agent_button();
+    state.list_focused = false;
+    state.dispatch.set_text("fix the bug");
+    assert!(matches!(
+        state.handle_input(&enter, &reg),
+        InputOutcome::Action(Action::DashboardDispatch { .. })
+    ));
+    // The dispatcher clears the input after creating the session
+    state.dispatch.set_text("");
+
+    assert!(
+        matches!(state.handle_input(&enter, &reg), InputOutcome::Unchanged),
+        "echoed Enter must not create an empty session"
+    );
+    // The window stays open while Enter keeps repeating
+    assert!(matches!(
+        state.handle_input(&enter, &reg),
+        InputOutcome::Unchanged
+    ));
+
+    // The same window swallows Enter on the selected row
+    state.focus_row(DashboardRowId::TopLevel(AgentId(0)));
+    state.list_focused = true;
+    assert!(matches!(
+        state.handle_input(&enter, &reg),
+        InputOutcome::Unchanged
+    ));
+
+    // `AppView` clears `last_send_at` on any key other than Enter
+    state.last_send_at = None;
+    assert!(matches!(
+        state.handle_input(&enter, &reg),
+        InputOutcome::Action(Action::DashboardAttach(_))
+    ));
+
+    // A draft typed inside the window still sends
+    state.focus_new_agent_button();
+    state.list_focused = false;
+    state.dispatch.set_text("again");
+    state.last_send_at = Some(Instant::now());
+    assert!(matches!(
+        state.handle_input(&enter, &reg),
+        InputOutcome::Action(Action::DashboardDispatch { .. })
+    ));
+}
+
+#[test]
+fn send_echo_window_is_one_second() {
+    use std::time::Duration;
+    assert!(send_echo_window_open(Duration::from_millis(900)));
+    assert!(!send_echo_window_open(Duration::from_millis(1000)));
+}
+
+fn enter_on_empty_input_right_after_send(
+    state: &mut DashboardState,
+    reg: &crate::actions::ActionRegistry,
+    multiline: bool,
+    modifiers: KeyModifiers,
+) -> InputOutcome {
+    state.multiline_mode = multiline;
+    state.dispatch.set_text("");
+    state.last_send_at = Some(Instant::now());
+    state.handle_input(&Event::Key(KeyEvent::new(KeyCode::Enter, modifiers)), reg)
+}
+
+/// Shift+Enter, Alt+Enter, and bare Enter in multiline mode insert a newline.
+/// They still do so on the empty input right after a send.
+#[test]
+fn newline_enter_right_after_send_still_inserts_newline() {
+    let mut state = DashboardState::new();
+    let reg = crate::actions::ActionRegistry::defaults();
+    state.focus_new_agent_button();
+    state.list_focused = false;
+
+    for (multiline, modifiers) in [
+        (false, KeyModifiers::SHIFT),
+        (false, KeyModifiers::ALT),
+        (true, KeyModifiers::NONE),
+    ] {
+        let outcome = enter_on_empty_input_right_after_send(&mut state, &reg, multiline, modifiers);
+        assert!(
+            matches!(outcome, InputOutcome::Changed),
+            "multiline={multiline} {modifiers:?}: expected a newline edit, got {outcome:?}"
+        );
+        assert_eq!(
+            state.dispatch.text(),
+            "\n",
+            "multiline={multiline} {modifiers:?}: the input must contain the newline"
+        );
+    }
+
+    // In multiline mode Shift+Enter is the send chord
+    assert!(matches!(
+        enter_on_empty_input_right_after_send(&mut state, &reg, true, KeyModifiers::SHIFT),
+        InputOutcome::Unchanged
+    ));
+}
+
 /// Cmd+X is SUPER, not CONTROL. DashboardStop is bound to Ctrl+X only,
 /// so a KKP Cmd+X must never arm/stop/delete — even with a highlight in
 /// the dispatch box or peek reply (wack setups / Ghostty).
@@ -4947,6 +5219,149 @@ fn vim_l_peek_attach_and_focused_type() {
     assert_eq!(reply, "l");
 }
 
+fn press(state: &mut DashboardState, code: KeyCode) -> InputOutcome {
+    let reg = crate::actions::ActionRegistry::defaults();
+    state.handle_key(&KeyEvent::new(code, KeyModifiers::NONE), &reg)
+}
+
+#[test]
+fn section_keys_stay_inert_in_search_mode() {
+    let key_sec = SectionKey::State(RowState::Working);
+
+    let mut state = DashboardState::new();
+    state.focus_section(key_sec);
+    state.list_focused = false;
+    state.enter_search_mode();
+    let collapsed_before = state.is_section_collapsed(key_sec);
+    // The section starts expanded, so Right is a no-op expand; Left is the discriminating press
+    let _ = press(&mut state, KeyCode::Left);
+    assert_eq!(
+        state.is_section_collapsed(key_sec),
+        collapsed_before,
+        "Left edits the empty query, it does not fold"
+    );
+    assert!(state.search_mode, "arrows do not leave search mode");
+    let _ = press(&mut state, KeyCode::Enter);
+    assert_eq!(
+        state.is_section_collapsed(key_sec),
+        collapsed_before,
+        "Enter applies the filter rather than toggling the section"
+    );
+    assert!(
+        !state.search_mode,
+        "Enter applies the query and leaves search mode"
+    );
+
+    // Assert after each press so a collapse-then-re-expand pair cannot net out to the start
+    crate::appearance::cache::set_vim_mode(true);
+    let mut state = DashboardState::new();
+    state.focus_section(key_sec);
+    state.enter_search_mode();
+    state.list_focused = true;
+    let collapsed_before = state.is_section_collapsed(key_sec);
+    let after_h = press(&mut state, KeyCode::Char('h'));
+    let collapsed_after_h = state.is_section_collapsed(key_sec);
+    let after_l = press(&mut state, KeyCode::Char('l'));
+    let collapsed_after_l = state.is_section_collapsed(key_sec);
+    crate::appearance::cache::set_vim_mode(false);
+    assert_eq!(
+        collapsed_after_h, collapsed_before,
+        "list-focused vim `h` stays inert in search mode"
+    );
+    assert_eq!(
+        collapsed_after_l, collapsed_before,
+        "list-focused vim `l` stays inert in search mode"
+    );
+    assert!(
+        matches!(after_h, InputOutcome::Unchanged),
+        "list-focused vim `h` must be swallowed, got {after_h:?}"
+    );
+    assert!(
+        matches!(after_l, InputOutcome::Unchanged),
+        "list-focused vim `l` must be swallowed, got {after_l:?}"
+    );
+}
+
+#[test]
+fn idle_overflow_and_row_open_stay_inert_in_search_mode() {
+    let mut state = DashboardState::new();
+    state.focus_idle_overflow();
+    state.list_focused = false;
+    state.enter_search_mode();
+    let _ = press(&mut state, KeyCode::Right);
+    assert!(
+        !state.idle_show_all,
+        "Right edits the query, it does not reveal"
+    );
+    let _ = press(&mut state, KeyCode::Enter);
+    assert!(
+        !state.idle_show_all,
+        "Enter applies the filter rather than toggling the overflow"
+    );
+    assert!(
+        !state.search_mode,
+        "Enter applies the query and leaves search mode"
+    );
+
+    let mut state = DashboardState::new();
+    state.focus_row(DashboardRowId::TopLevel(crate::app::agent::AgentId(0)));
+    state.list_focused = false;
+    state.enter_search_mode();
+    let outcome = press(&mut state, KeyCode::Right);
+    assert!(
+        !matches!(outcome, InputOutcome::Action(Action::DashboardAttach(_))),
+        "Right in search mode edits the query instead of opening the row, got {outcome:?}"
+    );
+    assert!(state.search_mode);
+}
+
+#[test]
+fn section_and_idle_overflow_keys_yield_to_a_typed_draft_from_input() {
+    let key_sec = SectionKey::State(RowState::Working);
+
+    let mut state = DashboardState::new();
+    state.focus_section(key_sec);
+    state.list_focused = false;
+    state.dispatch.set_text("draft");
+    let collapsed_before = state.is_section_collapsed(key_sec);
+    // The section starts expanded, so Left is the press that would fold under a wrong gate
+    let _ = press(&mut state, KeyCode::Left);
+    assert_eq!(
+        state.is_section_collapsed(key_sec),
+        collapsed_before,
+        "Left with a draft does not fold"
+    );
+    let outcome = press(&mut state, KeyCode::Enter);
+    assert!(
+        matches!(
+            outcome,
+            InputOutcome::Action(Action::DashboardDispatch { .. })
+        ),
+        "Enter on a section with a draft dispatches the draft, got {outcome:?}"
+    );
+    assert_eq!(
+        state.is_section_collapsed(key_sec),
+        collapsed_before,
+        "Enter did not toggle the section"
+    );
+
+    let mut state = DashboardState::new();
+    state.focus_idle_overflow();
+    state.list_focused = false;
+    state.dispatch.set_text("draft");
+    let _ = press(&mut state, KeyCode::Right);
+    assert!(!state.idle_show_all, "Right with a draft does not reveal");
+    let outcome = press(&mut state, KeyCode::Enter);
+    assert!(
+        matches!(
+            outcome,
+            InputOutcome::Action(Action::DashboardDispatch { .. })
+        ),
+        "Enter on the overflow with a draft dispatches the draft, got {outcome:?}"
+    );
+    assert!(!state.idle_show_all, "Enter did not toggle the overflow");
+}
+
 /// List-focused vim `h`/`l` fold sections; input-focused or vim-off type.
 #[test]
 fn section_vim_hl_collapse_expand() {
@@ -5009,6 +5424,7 @@ fn section_vim_hl_collapse_expand() {
 fn reanchor_test_row(id: usize, state: RowState) -> super::super::row::DashboardRow {
     super::super::row::DashboardRow {
         id: DashboardRowId::TopLevel(AgentId(id)),
+        session_id: None,
         label: format!("r{id}"),
         subtitle: None,
         state,
@@ -5020,10 +5436,6 @@ fn reanchor_test_row(id: usize, state: RowState) -> super::super::row::Dashboard
         pinned: false,
         badges: Vec::new(),
         context_pct: None,
-        indent: 0,
-        parent_label: None,
-        is_more_placeholder: false,
-        more_count: 0,
     }
 }
 
@@ -5118,31 +5530,6 @@ fn reanchor_moves_collapse_hidden_pinned_row_to_pinned_header() {
         state.selected_section,
         Some(SectionKey::Pinned),
         "a collapse-hidden pinned row must re-anchor to the Pinned header",
-    );
-}
-
-/// A subagent row hidden by its PARENT's collapsed section
-/// re-anchors to the parent's state header (subagents render under
-/// the parent's group).
-#[test]
-fn reanchor_moves_collapse_hidden_subagent_to_parent_header() {
-    let mut state = DashboardState::new();
-    state.set_section_collapsed(SectionKey::State(RowState::Working), true);
-    let child_id = DashboardRowId::Subagent {
-        parent: AgentId(1),
-        child_session_id: "child-1".into(),
-    };
-    state.focus_row(child_id.clone());
-    let parent = reanchor_test_row(1, RowState::Working);
-    let mut child = reanchor_test_row(2, RowState::Working);
-    child.id = child_id;
-    child.indent = 1;
-    state.reanchor_selection(&[parent, child]);
-    assert!(state.selected.is_none());
-    assert_eq!(
-        state.selected_section,
-        Some(SectionKey::State(RowState::Working)),
-        "a hidden subagent must re-anchor to its parent's header",
     );
 }
 
@@ -5334,10 +5721,6 @@ fn clamp_viewport_handles_zero_viewport_height() {
     assert_eq!(s.viewport_offset, 5);
 }
 
-// -----------------------------------------------------------------
-// Mouse wheel decoupled from selection
-// -----------------------------------------------------------------
-
 /// `handle_scroll` flags `manual_scroll_active` so the next
 /// `clamp_viewport` knows to skip the snap-to-selection
 /// pull-back.
@@ -5443,8 +5826,6 @@ fn env_var_force_disables() {
     assert!(!super::super::dashboard_enabled());
     unsafe { std::env::remove_var("GROK_AGENT_DASHBOARD") };
 }
-
-// ── Location picker ─────────────────────────────────────────────
 
 fn location_candidate(path: &str, label: &str) -> LocationCandidate {
     LocationCandidate {
@@ -5772,6 +6153,15 @@ fn location_picker_typed_path_no_match_uses_raw_query() {
     }
 }
 
+fn agent(
+    agents: &indexmap::IndexMap<AgentId, crate::app::agent_view::AgentView>,
+    id: AgentId,
+) -> &crate::app::agent_view::AgentView {
+    agents
+        .get(&id)
+        .unwrap_or_else(|| panic!("missing agent {id:?}"))
+}
+
 fn lease_fixture_agent() -> (
     AgentId,
     indexmap::IndexMap<AgentId, crate::app::agent_view::AgentView>,
@@ -5798,12 +6188,12 @@ fn lease_fixture_agent() -> (
 #[test]
 fn peek_viewport_lease_restore_without_page_flip_keeps_pre_guest_nav() {
     let (id, mut agents) = lease_fixture_agent();
-    let pre = agents[&id].scrollback.capture_viewport_snapshot();
+    let pre = agent(&agents, id).scrollback.capture_viewport_snapshot();
     let mut dash = DashboardState::new();
     let row = DashboardRowId::TopLevel(id);
     dash.begin_peek_viewport(row, &mut agents);
     assert!(dash.peek_viewport.is_some());
-    assert!(agents[&id].scrollback.is_follow_mode());
+    assert!(agent(&agents, id).scrollback.is_follow_mode());
     assert!(
         agents
             .get_mut(&id)
@@ -5841,7 +6231,7 @@ fn peek_viewport_lease_page_flip_re_pins_entry_on_restore() {
         sb.page_flip_to_entry(last);
         entry_id
     };
-    assert!(agents[&id].scrollback.is_follow_preserve_scroll());
+    assert!(agent(&agents, id).scrollback.is_follow_preserve_scroll());
     dash.note_page_flip_for_lease(id, page_flip_entry, &agents);
     assert_eq!(
         dash.peek_viewport.as_ref().and_then(|l| l.page_flip_entry),
@@ -5849,7 +6239,7 @@ fn peek_viewport_lease_page_flip_re_pins_entry_on_restore() {
     );
 
     dash.restore_peek_viewport(&mut agents);
-    let sb = &agents[&id].scrollback;
+    let sb = &agent(&agents, id).scrollback;
     assert!(sb.is_follow_mode());
     assert!(sb.is_follow_preserve_scroll());
     assert!(sb.is_pin_reserve_active());
@@ -5861,6 +6251,475 @@ fn peek_viewport_lease_page_flip_re_pins_entry_on_restore() {
     assert_eq!(sb.selected(), Some(sb.len().saturating_sub(1)));
     let snap = sb.capture_viewport_snapshot();
     assert_eq!(snap.last_width, 80);
+}
+
+#[test]
+fn search_mode_keeps_a_page_flipped_peek_lease() {
+    use crate::views::dashboard::peek::{PeekFields, PeekPanelState};
+
+    let (id, mut agents) = lease_fixture_agent();
+    let mut state = DashboardState::new();
+    let row = DashboardRowId::TopLevel(id);
+    state.begin_peek_viewport(row.clone(), &mut agents);
+    let page_flip_entry = {
+        let sb = &mut agents.get_mut(&id).expect("fixture agent").scrollback;
+        let last = sb.len().saturating_sub(1);
+        let entry_id = sb.entry(last).expect("fixture entry").id;
+        sb.set_selected(Some(last));
+        sb.page_flip_to_entry(last);
+        entry_id
+    };
+    state.note_page_flip_for_lease(id, page_flip_entry, &agents);
+    state.set_peek(Some(PeekPanelState::new(
+        row,
+        PeekFields {
+            label: "agent".into(),
+            time_ago: "1m".into(),
+            response_type: "Response".into(),
+            last_user_message: None,
+            question: None,
+            options: Vec::new(),
+            request_id: None,
+            reject_option: None,
+        },
+    )));
+
+    state.enter_search_mode();
+    assert!(state.search_mode);
+    assert!(state.peek.is_some(), "search hides peek without closing it");
+
+    let area = ratatui::layout::Rect::new(0, 0, 100, 28);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    let registry = crate::actions::ActionRegistry::defaults();
+    let _ = crate::views::dashboard::render_dashboard(
+        &mut buf,
+        area,
+        &mut state,
+        &mut agents,
+        &registry,
+        None,
+        &[],
+        false,
+        crate::views::dashboard::WorkspaceRowInputs {
+            workspace: None,
+            provisional: &[],
+        },
+        None,
+        false,
+        None,
+        None,
+    );
+
+    assert_eq!(
+        state
+            .peek_viewport
+            .as_ref()
+            .and_then(|lease| lease.page_flip_entry),
+        Some(page_flip_entry),
+        "search focus must not restore a page-flipped peek viewport"
+    );
+}
+
+#[test]
+fn search_mode_owns_keys_while_a_hidden_peek_keeps_its_lease() {
+    use crate::app::actions::Action;
+    use crate::views::dashboard::peek::PeekPanelState;
+
+    crate::appearance::cache::set_vim_mode(false);
+    let (id, mut agents) = lease_fixture_agent();
+    let mut state = DashboardState::new();
+    let row = DashboardRowId::TopLevel(id);
+    state.begin_peek_viewport(row.clone(), &mut agents);
+    let page_flip_entry = {
+        let sb = &mut agents.get_mut(&id).expect("fixture agent").scrollback;
+        let last = sb.len().saturating_sub(1);
+        let entry_id = sb.entry(last).expect("fixture entry").id;
+        sb.set_selected(Some(last));
+        sb.page_flip_to_entry(last);
+        entry_id
+    };
+    state.note_page_flip_for_lease(id, page_flip_entry, &agents);
+
+    let mut fields = peek_fields_for_test("Awaiting your input");
+    fields.question = Some("Allow?".into());
+    fields.options = vec![
+        ("allow".into(), "Allow".into()),
+        ("deny".into(), "Deny".into()),
+    ];
+    fields.request_id = Some(7);
+    state.set_peek(Some(PeekPanelState::new(row, fields)));
+    if let Some(peek) = state.peek.as_mut() {
+        peek.focused = true;
+        peek.selected_option = None;
+    }
+
+    let reg = crate::actions::ActionRegistry::defaults();
+    let ctrl_slash = Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::CONTROL));
+    let _ = state.handle_input(&ctrl_slash, &reg);
+    assert!(state.search_mode);
+    assert!(
+        state.peek.is_some(),
+        "search hides the peek without closing it"
+    );
+
+    let shift_tab = state.handle_input(
+        &Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)),
+        &reg,
+    );
+    assert!(
+        !matches!(
+            shift_tab,
+            InputOutcome::Action(Action::DashboardPeekCycleMode)
+        ),
+        "Shift+Tab must not cycle the hidden peek, got {shift_tab:?}"
+    );
+    assert!(state.search_mode);
+
+    let typed = state.handle_input(
+        &Event::Key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)),
+        &reg,
+    );
+    assert!(matches!(typed, InputOutcome::Changed), "{typed:?}");
+    assert_eq!(state.dispatch.text(), "1");
+    assert!(state.peek_reply.text().is_empty());
+    assert_eq!(
+        state.peek.as_ref().and_then(|peek| peek.selected_option),
+        None,
+        "1 must not select the hidden allow option"
+    );
+
+    crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook::no_raster(
+        Some("clip"),
+    ));
+    let _ = state.handle_input(&ctrl_v_event(), &reg);
+    let target = deferred_probe_target(&state);
+    crate::clipboard::clear_clipboard_probe_hook();
+    assert!(
+        !matches!(
+            target,
+            Some(crate::app::actions::ClipboardPasteTarget::DashboardPeek { .. })
+        ),
+        "Ctrl+V must not target the hidden peek, got {target:?}"
+    );
+    assert!(
+        state.dispatch.text().contains("clip"),
+        "Ctrl+V must paste into the search field, got {:?}",
+        state.dispatch.text()
+    );
+    assert!(state.peek_reply.text().is_empty());
+
+    let pasted = state.handle_input(&Event::Paste("note\n".into()), &reg);
+    assert!(matches!(pasted, InputOutcome::Changed), "{pasted:?}");
+    assert!(
+        state.dispatch.text().contains("note"),
+        "bracketed paste must edit the search query, got {:?}",
+        state.dispatch.text()
+    );
+    assert!(state.peek_reply.text().is_empty());
+
+    let enter = state.handle_input(
+        &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &reg,
+    );
+    assert!(
+        matches!(enter, InputOutcome::Changed),
+        "Enter must confirm the filter, not approve the hidden permission, got {enter:?}"
+    );
+    assert!(!state.search_mode);
+    assert!(state.peek.is_some());
+    assert_eq!(
+        state.peek.as_ref().and_then(|peek| peek.selected_option),
+        None
+    );
+    assert_eq!(
+        state
+            .peek_viewport
+            .as_ref()
+            .and_then(|lease| lease.page_flip_entry),
+        Some(page_flip_entry),
+        "search input must not restore the peek viewport lease"
+    );
+
+    let _ = state.handle_input(&ctrl_slash, &reg);
+    assert!(state.search_mode);
+    let esc = state.handle_input(
+        &Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        &reg,
+    );
+    assert!(matches!(esc, InputOutcome::Changed), "{esc:?}");
+    assert!(!state.search_mode);
+    assert!(
+        state.peek.is_some(),
+        "Esc from search must not close the hidden peek"
+    );
+    assert_eq!(
+        state
+            .peek_viewport
+            .as_ref()
+            .and_then(|lease| lease.page_flip_entry),
+        Some(page_flip_entry)
+    );
+}
+
+#[test]
+fn search_mode_file_completion_updates_the_filter() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    let mut state = state_with_open_peek();
+    state.peek_reply.set_text("hidden");
+    state.enter_search_mode();
+    state.dispatch.set_text("@src");
+    state.filter = Filter::Substring("@src".into());
+    let ctx = crate::views::file_search::context::detect("@src", 4).expect("context");
+    state.dispatch.file_search.set_test_state(
+        ctx,
+        vec![xai_grok_workspace::file_system::FuzzyMatchResult {
+            path: nucleo::Utf32String::from("src/lib.rs"),
+            score: 1,
+            indices: Vec::new(),
+            is_dir: false,
+        }],
+        0,
+    );
+    state.file_search_dropdown_items_area = Some(Rect::new(2, 4, 20, 3));
+
+    let click = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 4,
+        row: 4,
+        modifiers: KeyModifiers::NONE,
+    };
+    let _ = state.handle_mouse(&click);
+
+    let query = state.dispatch.text().trim().to_string();
+    assert!(
+        query.contains("src/lib.rs"),
+        "click must complete the visible query, got {query:?}"
+    );
+    assert_filter_substring(&state, &query);
+    assert_eq!(state.peek_reply.text(), "hidden");
+
+    let enter = state.handle_input(
+        &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &crate::actions::ActionRegistry::defaults(),
+    );
+    assert!(matches!(enter, InputOutcome::Changed), "{enter:?}");
+    assert!(!state.search_mode);
+    assert_filter_substring(&state, &query);
+    assert_eq!(state.peek_reply.text(), "hidden");
+}
+
+#[test]
+fn search_mode_keyboard_file_completion_updates_the_filter() {
+    let mut state = state_with_open_peek();
+    state.enter_search_mode();
+    state.dispatch.set_text("@src");
+    state.filter = Filter::Substring("@src".into());
+    let ctx = crate::views::file_search::context::detect("@src", 4).expect("context");
+    state.dispatch.file_search.set_test_state(
+        ctx,
+        vec![xai_grok_workspace::file_system::FuzzyMatchResult {
+            path: nucleo::Utf32String::from("src/lib.rs"),
+            score: 1,
+            indices: Vec::new(),
+            is_dir: false,
+        }],
+        0,
+    );
+    assert!(state.dispatch.file_search_visible());
+
+    let tab = state.handle_input(
+        &Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        &crate::actions::ActionRegistry::defaults(),
+    );
+    assert!(matches!(tab, InputOutcome::Changed), "{tab:?}");
+    let query = state.dispatch.text().trim().to_string();
+    assert!(
+        query.contains("src/lib.rs"),
+        "Tab must complete the visible query, got {query:?}"
+    );
+    assert_filter_substring(&state, &query);
+    assert_eq!(state.peek_reply.text(), "");
+}
+
+#[test]
+fn visible_peek_move_clears_only_peek_hover() {
+    use crossterm::event::{MouseEvent, MouseEventKind};
+
+    let mut state = state_with_open_peek();
+    assert!(!state.search_mode);
+    let peek_ctx = crate::views::file_search::context::detect("@p", 2).expect("context");
+    state.peek_reply.file_search.set_test_state(
+        peek_ctx,
+        vec![
+            xai_grok_workspace::file_system::FuzzyMatchResult {
+                path: nucleo::Utf32String::from("a.rs"),
+                score: 1,
+                indices: Vec::new(),
+                is_dir: false,
+            },
+            xai_grok_workspace::file_system::FuzzyMatchResult {
+                path: nucleo::Utf32String::from("b.rs"),
+                score: 1,
+                indices: Vec::new(),
+                is_dir: false,
+            },
+        ],
+        0,
+    );
+    assert!(state.peek_reply.file_search.set_hovered(Some(1)));
+    let dispatch_ctx = crate::views::file_search::context::detect("@d", 2).expect("context");
+    state.dispatch.file_search.set_test_state(
+        dispatch_ctx,
+        vec![xai_grok_workspace::file_system::FuzzyMatchResult {
+            path: nucleo::Utf32String::from("c.rs"),
+            score: 1,
+            indices: Vec::new(),
+            is_dir: false,
+        }],
+        0,
+    );
+    assert!(state.dispatch.file_search.set_hovered(Some(0)));
+    state.file_search_dropdown_items_area = None;
+
+    let _ = state.handle_mouse(&MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(state.peek_reply.file_search.hovered(), None);
+    assert_eq!(state.dispatch.file_search.hovered(), Some(0));
+}
+
+fn assert_filter_substring(state: &DashboardState, expected: &str) {
+    assert!(
+        matches!(&state.filter, Filter::Substring(text) if text == expected),
+        "expected filter {expected:?}, got {:?}",
+        state.filter
+    );
+}
+
+#[test]
+fn search_mode_paste_updates_the_filter_before_enter() {
+    let reg = crate::actions::ActionRegistry::defaults();
+    let mut state = state_with_open_peek();
+    state.enter_search_mode();
+    let pasted = state.handle_input(&Event::Paste("auth".into()), &reg);
+    assert!(matches!(pasted, InputOutcome::Changed), "{pasted:?}");
+    assert_eq!(state.dispatch.text(), "auth");
+    assert_filter_substring(&state, "auth");
+    assert!(deferred_probe_target(&state).is_none());
+    assert!(state.peek_reply.text().is_empty());
+    let enter = state.handle_input(
+        &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &reg,
+    );
+    assert!(matches!(enter, InputOutcome::Changed), "{enter:?}");
+    assert!(!state.search_mode);
+    assert_filter_substring(&state, "auth");
+    assert!(state.dispatch.text().is_empty());
+
+    let mut chord = state_with_open_peek();
+    chord.enter_search_mode();
+    crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook::no_raster(
+        Some("beta"),
+    ));
+    let _ = chord.handle_input(&ctrl_v_event(), &reg);
+    crate::clipboard::clear_clipboard_probe_hook();
+    assert_eq!(chord.dispatch.text(), "beta");
+    assert_filter_substring(&chord, "beta");
+    let enter = chord.handle_input(
+        &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        &reg,
+    );
+    assert!(matches!(enter, InputOutcome::Changed), "{enter:?}");
+    assert_filter_substring(&chord, "beta");
+
+    let mut deferred = state_with_open_peek();
+    deferred.enter_search_mode();
+    let _ = deferred.complete_clipboard_attachment_paste(
+        completion_ctx(Some("gamma"), false),
+        crate::app::actions::ProbedAttachment::NoRaster,
+        None,
+    );
+    assert_eq!(deferred.dispatch.text(), "gamma");
+    assert_filter_substring(&deferred, "gamma");
+    assert!(deferred.peek_reply.text().is_empty());
+}
+
+#[test]
+fn search_mode_paste_stays_text_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = write_test_png(dir.path());
+    let reg = crate::actions::ActionRegistry::defaults();
+    let mut state = state_with_open_peek();
+    if let Some(peek) = state.peek.as_mut() {
+        peek.question = Some("Allow?".into());
+        peek.options = vec![("allow".into(), "Allow".into())];
+        peek.request_id = Some(7);
+    }
+    state.enter_search_mode();
+    let path = png.display().to_string();
+    let outcome = state.handle_input(&Event::Paste(format!("{path}\n")), &reg);
+    assert!(matches!(outcome, InputOutcome::Changed), "{outcome:?}");
+    assert!(state.dispatch.images.is_empty());
+    assert!(state.peek_reply.images.is_empty());
+    assert!(state.peek_reply.text().is_empty());
+    assert!(state.dispatch.text().contains(&path));
+    assert_filter_substring(&state, &path);
+    assert!(deferred_probe_target(&state).is_none());
+    assert!(state.peek.is_some());
+}
+
+#[test]
+fn search_mode_wrap_image_paste_stays_on_the_search_field() {
+    let (id, mut agents) = lease_fixture_agent();
+    let mut state = DashboardState::new();
+    let row = DashboardRowId::TopLevel(id);
+    state.begin_peek_viewport(row.clone(), &mut agents);
+    let page_flip_entry = {
+        let sb = &mut agents.get_mut(&id).expect("fixture agent").scrollback;
+        let last = sb.len().saturating_sub(1);
+        let entry_id = sb.entry(last).expect("fixture entry").id;
+        sb.set_selected(Some(last));
+        sb.page_flip_to_entry(last);
+        entry_id
+    };
+    state.note_page_flip_for_lease(id, page_flip_entry, &agents);
+    state.set_peek(Some(super::super::peek::PeekPanelState::new(
+        row,
+        peek_fields_for_test("Idle"),
+    )));
+    state.enter_search_mode();
+
+    let png = test_png_bytes();
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png);
+    let paste = format!(
+        "{}\nimage/png\n{b64}",
+        crate::wrap_clipboard_image::MAGIC_IMG
+    );
+    let outcome = state.handle_input(
+        &Event::Paste(paste),
+        &crate::actions::ActionRegistry::defaults(),
+    );
+    assert!(matches!(outcome, InputOutcome::Changed), "{outcome:?}");
+    assert!(
+        state.dispatch.text().contains("[Image #1]"),
+        "wrap image must land on the search field, got {:?}",
+        state.dispatch.text()
+    );
+    assert_eq!(state.dispatch.images.len(), 1);
+    assert!(state.peek_reply.text().is_empty());
+    assert!(state.peek_reply.images.is_empty());
+    assert!(state.peek.is_some());
+    assert_eq!(
+        state
+            .peek_viewport
+            .as_ref()
+            .and_then(|lease| lease.page_flip_entry),
+        Some(page_flip_entry)
+    );
 }
 
 #[test]
@@ -5898,7 +6757,7 @@ fn note_page_flip_only_when_row_and_entry_match() {
     let (id, mut agents) = lease_fixture_agent();
     let mut dash = DashboardState::new();
     dash.begin_peek_viewport(DashboardRowId::TopLevel(id), &mut agents);
-    let entry_id = agents[&id].scrollback.entry(3).unwrap().id;
+    let entry_id = agent(&agents, id).scrollback.entry(3).unwrap().id;
     agents
         .get_mut(&id)
         .unwrap()
@@ -5930,10 +6789,10 @@ fn note_page_flip_only_when_row_and_entry_match() {
 #[test]
 fn restore_ignores_page_flip_entry_removed_during_lease() {
     let (id, mut agents) = lease_fixture_agent();
-    let pre = agents[&id].scrollback.capture_viewport_snapshot();
+    let pre = agent(&agents, id).scrollback.capture_viewport_snapshot();
     let mut dash = DashboardState::new();
     dash.begin_peek_viewport(DashboardRowId::TopLevel(id), &mut agents);
-    let entry_id = agents[&id].scrollback.entry(2).unwrap().id;
+    let entry_id = agent(&agents, id).scrollback.entry(2).unwrap().id;
     agents
         .get_mut(&id)
         .unwrap()
@@ -5949,72 +6808,11 @@ fn restore_ignores_page_flip_entry_removed_during_lease() {
     dash.restore_peek_viewport(&mut agents);
 
     assert!(dash.peek_viewport.is_none());
-    assert_eq!(agents[&id].scrollback.selected(), pre.selected);
-    assert_eq!(agents[&id].scrollback.is_follow_mode(), pre.follow_mode);
-}
-
-#[test]
-fn note_page_flip_ignores_subagent_lease_on_parent_agent() {
-    let (id, mut agents) = lease_fixture_agent();
-    let child = crate::test_util::make_agent_view(Some("child"), "/tmp");
-    agents
-        .get_mut(&id)
-        .unwrap()
-        .subagent_views
-        .insert("child".into(), Box::new(child));
-    let mut dash = DashboardState::new();
-    dash.begin_peek_viewport(
-        DashboardRowId::Subagent {
-            parent: id,
-            child_session_id: "child".into(),
-        },
-        &mut agents,
+    assert_eq!(agent(&agents, id).scrollback.selected(), pre.selected);
+    assert_eq!(
+        agent(&agents, id).scrollback.is_follow_mode(),
+        pre.follow_mode
     );
-    let entry_id = agents[&id].scrollback.entry(3).unwrap().id;
-    dash.note_page_flip_for_lease(id, entry_id, &agents);
-    assert!(
-        dash.peek_viewport
-            .as_ref()
-            .unwrap()
-            .page_flip_entry
-            .is_none(),
-        "parent drain must not write parent entries onto a subagent lease"
-    );
-    agents
-        .get_mut(&id)
-        .unwrap()
-        .scrollback
-        .enable_follow_with_preserve();
-    dash.note_page_flip_for_lease(id, entry_id, &agents);
-    assert!(
-        dash.peek_viewport
-            .as_ref()
-            .unwrap()
-            .page_flip_entry
-            .is_none()
-    );
-}
-
-#[test]
-fn prepare_agent_unbind_restores_subagent_peek_lease() {
-    let (parent, mut agents) = lease_fixture_agent();
-    let child = crate::test_util::make_agent_view(Some("child"), "/tmp");
-    agents
-        .get_mut(&parent)
-        .unwrap()
-        .subagent_views
-        .insert("child".into(), Box::new(child));
-    let row = DashboardRowId::Subagent {
-        parent,
-        child_session_id: "child".into(),
-    };
-    let mut dashboard = DashboardState::new();
-    dashboard.begin_peek_viewport(row, &mut agents);
-    assert!(dashboard.peek_viewport.is_some());
-
-    dashboard.prepare_agent_unbind(&std::collections::HashSet::from([parent]), &mut agents);
-
-    assert!(dashboard.peek_viewport.is_none());
 }
 
 #[test]
@@ -6186,4 +6984,24 @@ fn workspace_identity_keeps_removed_selection_as_repair_anchor() {
     dashboard.rebind_workspace_identities(&old, &new, &mut indexmap::IndexMap::new());
 
     assert_eq!(dashboard.selected, Some(old_row));
+}
+
+/// A subdivision flag keeps its tags; loose tags and tag text hidden after a flag are dropped
+#[test]
+fn rename_keeps_flag_tags_and_drops_loose_ones() {
+    let scotland = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}";
+    let hidden_after_flag =
+        "\u{1f3f4}\u{e0069}\u{e0067}\u{e006e}\u{e0020}\u{e0061}\u{e006c}\u{e006c}";
+    let mut draft = RenameDraft::new(DashboardRowId::TopLevel(AgentId(0)), "");
+
+    let pasted = format!("go {scotland} team\u{e0068}\u{e0069} {hidden_after_flag}");
+    handle_rename_paste(&mut draft, &pasted);
+
+    assert_eq!(format!("go {scotland} team \u{1f3f4}"), draft.text());
+
+    // A cap that cuts the flag leaves the black flag without its partial tags
+    let near_cap = "a".repeat(MAX_RENAME_SCALARS - 3);
+    let mut full = RenameDraft::new(DashboardRowId::TopLevel(AgentId(0)), "");
+    handle_rename_paste(&mut full, &format!("{near_cap}{scotland}"));
+    assert_eq!(format!("{near_cap}\u{1f3f4}"), full.text());
 }

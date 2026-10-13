@@ -136,7 +136,7 @@ fn prepare_replay_cursor_skips_to_position() {
     // The ev2 cursor skips ev1 and ev2, so only ev3 replays
     assert_eq!(prepared.lines.len(), 1);
     assert!(!prepared.mark_replay);
-    assert!(prepared.lines[0].contains("new"));
+    assert!(prepared.lines.first().is_some_and(|s| s.contains("new")));
     assert_eq!(prepared.total_live, 3);
 }
 
@@ -178,7 +178,12 @@ fn prepare_replay_cursor_refused_when_tail_has_event_id_less_line() {
     let prepared = prepare_replay_lines(&raw, Some("ev1"));
     assert!(!prepared.mark_replay);
     assert_eq!(prepared.lines.len(), 1);
-    assert!(prepared.lines[0].contains("trailing"));
+    assert!(
+        prepared
+            .lines
+            .first()
+            .is_some_and(|s| s.contains("trailing"))
+    );
 
     // An id-less ACU in the tail is exempt from the refusal: ACUs are dropped before forwarding, so they can never be re-applied
     let acu =
@@ -276,7 +281,12 @@ fn acu_confirm_rejects_nested_update_anchor_in_meta() {
     let raw = format!("{line}\n");
     let prepared = prepare_replay_lines(&raw, None);
     assert_eq!(prepared.lines.len(), 1, "non-ACU line must not be dropped");
-    assert!(prepared.lines[0].contains("tool_call"));
+    assert!(
+        prepared
+            .lines
+            .first()
+            .is_some_and(|s| s.contains("tool_call"))
+    );
 }
 
 /// Pin the cross-crate assumption behind [`line_is_available_commands_update`].
@@ -317,8 +327,8 @@ fn prepare_replay_drops_available_commands_update() {
             .iter()
             .all(|l| !l.contains("available_commands_update"))
     );
-    assert!(prepared.lines[0].contains("hi"));
-    assert!(prepared.lines[1].contains("yo"));
+    assert!(prepared.lines.first().is_some_and(|s| s.contains("hi")));
+    assert!(prepared.lines.get(1).is_some_and(|s| s.contains("yo")));
     assert!(prepared.mark_replay);
 }
 
@@ -366,7 +376,7 @@ fn prepare_replay_rewind_truncates_and_drops_acu() {
     let prepared = prepare_replay_lines(&raw, None);
     // Rewind to 0 kills u0/a0; ACU dropped; only the new p1 survives.
     assert_eq!(prepared.lines.len(), 1);
-    assert!(prepared.lines[0].contains("p1"));
+    assert!(prepared.lines.first().is_some_and(|s| s.contains("p1")));
     assert_eq!(prepared.total_live, 1);
     // last_tokens recomputed from the surviving timeline (p1 carries 9)
     assert_eq!(prepared.last_tokens, 9);
@@ -466,7 +476,12 @@ fn acu_drop_ignores_escaped_json_in_content() {
     let raw = format!("{line}\n");
     let prepared = prepare_replay_lines(&raw, None);
     assert_eq!(prepared.lines.len(), 1, "user prompt must survive replay");
-    assert!(prepared.lines[0].contains("available_commands_update"));
+    assert!(
+        prepared
+            .lines
+            .first()
+            .is_some_and(|s| s.contains("available_commands_update"))
+    );
 }
 
 /// An idle client can reconnect with the cursor pointing at the LAST persisted event, an ACU (the post-load re-advertise).
@@ -496,7 +511,7 @@ fn prepare_replay_cursor_on_dropped_acu_resolves() {
     let prepared = prepare_replay_lines(&raw, Some("ev1"));
     assert!(!prepared.mark_replay);
     assert_eq!(prepared.lines.len(), 1);
-    assert!(prepared.lines[0].contains("yo"));
+    assert!(prepared.lines.first().is_some_and(|s| s.contains("yo")));
 }
 
 /// A trailing `rewind_marker` empties the live set and yields `last_tokens == 0` (the `unwrap_or(0)` path).
@@ -528,7 +543,7 @@ fn prepare_replay_trailing_acu_dropped() {
     let raw = format!("{u}\n{acu}\n");
     let prepared = prepare_replay_lines(&raw, None);
     assert_eq!(prepared.lines.len(), 1);
-    assert!(prepared.lines[0].contains("hi"));
+    assert!(prepared.lines.first().is_some_and(|s| s.contains("hi")));
     assert_eq!(prepared.last_tokens, 7);
     assert_eq!(prepared.total_live, 1);
 }
@@ -566,7 +581,7 @@ fn prepare_replay_rewind_then_cursor_with_acu() {
     let prepared = prepare_replay_lines(&raw, Some("e2"));
     assert!(!prepared.mark_replay);
     assert_eq!(prepared.lines.len(), 1);
-    assert!(prepared.lines[0].contains("a1"));
+    assert!(prepared.lines.first().is_some_and(|s| s.contains("a1")));
     assert_eq!(prepared.last_tokens, 12); // last token-bearing survivor
     assert_eq!(prepared.total_live, 2); // ACU-free survivors: u1, a1
 }
@@ -601,8 +616,8 @@ fn filter_delta_replay_drops_blank_acu_and_rewinds() {
         live.iter()
             .all(|l| !l.contains("available_commands_update"))
     );
-    assert!(live[0].contains("p1"));
-    assert!(live[1].contains("a1"));
+    assert!(live.first().is_some_and(|s| s.contains("p1")));
+    assert!(live.get(1).is_some_and(|s| s.contains("a1")));
     assert!(live.iter().all(|l| !l.contains("dead")));
     assert!(live.iter().all(|l| !l.contains("rewind_marker")));
 }
@@ -832,7 +847,12 @@ fn in_progress_peek_uses_write_path_serde_shape() {
     let mixed = format!("{in_progress}\n{completed}\n{acu}\n");
     let prepared = prepare_replay_lines(&mixed, None);
     assert_eq!(prepared.lines.len(), 1);
-    assert!(prepared.lines[0].contains("completed"));
+    assert!(
+        prepared
+            .lines
+            .first()
+            .is_some_and(|s| s.contains("completed"))
+    );
 }
 
 #[test]
@@ -853,7 +873,7 @@ fn prepare_replay_cursor_on_dropped_in_progress_resolves() {
     let prepared = prepare_replay_lines(&raw, Some("ev2"));
     assert!(!prepared.mark_replay);
     assert_eq!(prepared.lines.len(), 1);
-    assert!(prepared.lines[0].contains("yo"));
+    assert!(prepared.lines.first().is_some_and(|s| s.contains("yo")));
 }
 
 #[test]
@@ -888,8 +908,8 @@ fn filter_delta_replay_drops_in_progress_tool_call_update() {
     let raw = format!("{u}\n{ip}\n{done}\n");
     let live = filter_delta_replay_lines(&raw);
     assert_eq!(live.len(), 2);
-    assert!(live[0].contains("hi"));
-    assert!(live[1].contains("completed"));
+    assert!(live.first().is_some_and(|s| s.contains("hi")));
+    assert!(live.get(1).is_some_and(|s| s.contains("completed")));
 }
 
 #[test]
@@ -923,7 +943,10 @@ fn stream_replay_collapses_tool_call_and_skips_in_progress() {
     let emission = stream_replay_updates_at(sid, home.path(), |u| updates.push(u)).unwrap();
     assert_eq!(emission, ReplayEmission::Emitted);
     assert_eq!(updates.len(), 1, "collapsed to one completed ToolCall");
-    match &updates[0] {
+    let Some(update) = updates.first() else {
+        panic!("expected an update: {updates:?}");
+    };
+    match update {
         acp::SessionUpdate::ToolCall(tc) => {
             assert_eq!(tc.status, acp::ToolCallStatus::Completed);
             assert_eq!(tc.title, "bash ls");
@@ -962,7 +985,10 @@ fn stream_replay_forwards_completed_tool_call_update_without_base() {
     )
     .unwrap();
     assert_eq!(updates.len(), 1);
-    assert!(matches!(&updates[0], acp::SessionUpdate::ToolCallUpdate(_)));
+    assert!(matches!(
+        updates.first(),
+        Some(acp::SessionUpdate::ToolCallUpdate(_))
+    ));
 }
 
 /// Persisted xAI child events (compaction, retry) are forwarded in file order alongside the ACP stream.
@@ -1022,9 +1048,10 @@ fn stream_replay_forwards_persisted_line_meta() {
         .unwrap();
     assert_eq!(emission, ReplayEmission::Emitted);
     assert_eq!(metas.len(), 1);
-    let meta = metas[0]
-        .as_ref()
-        .expect("persisted _meta must be forwarded");
+    let Some(meta) = metas.first() else {
+        panic!("expected metadata: {metas:?}");
+    };
+    let meta = meta.as_ref().expect("persisted _meta must be forwarded");
     assert_eq!(
         meta.get("agentTimestampMs").and_then(|v| v.as_i64()),
         Some(1_700_000_000_000)
@@ -1296,7 +1323,10 @@ fn stream_replay_eof_flushes_start_only_tool_call() {
         1,
         "EOF take_pending must emit the start-only ToolCall"
     );
-    match &updates[0] {
+    let Some(update) = updates.first() else {
+        panic!("expected an update: {updates:?}");
+    };
+    match update {
         acp::SessionUpdate::ToolCall(tc) => assert_eq!(tc.title, "bash ls"),
         other => panic!("expected ToolCall, got {other:?}"),
     }

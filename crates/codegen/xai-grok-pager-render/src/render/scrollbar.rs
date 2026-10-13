@@ -255,8 +255,12 @@ pub fn render_scrollbar_styled(
     for row in 0..scrollbar_area.height {
         let x = scrollbar_area.x;
         let y = scrollbar_area.y + row;
-        let src = &scratch[(x, y)];
-        let dst = &mut buf[(x, y)];
+        let Some(src) = scratch.cell((x, y)) else {
+            continue;
+        };
+        let Some(dst) = buf.cell_mut((x, y)) else {
+            continue;
+        };
         if src.symbol() == " " {
             dst.set_symbol(" ");
             dst.set_style(track_style);
@@ -357,7 +361,9 @@ mod tests {
         // Check scrollbar column is empty (spaces with no custom background)
         let sb = scrollbar_area.unwrap();
         for y in 0..sb.height {
-            let cell = &buf[(sb.x, sb.y + y)];
+            let Some(cell) = buf.cell((sb.x, sb.y + y)) else {
+                panic!("missing scrollbar cell at y={y}");
+            };
             assert_eq!(cell.symbol(), " ");
             if let Some(Color::Rgb(_, _, _)) = cell.style().bg {
                 panic!("Should not have RGB background when no scrollbar rendered");
@@ -382,8 +388,13 @@ mod tests {
         render_scrollbar(&mut buf_not_following, scrollbar_area, 100, 10, 50, false);
 
         let sb = scrollbar_area.unwrap();
-        let following_style = buf_following[(sb.x, sb.y)].style();
-        let not_following_style = buf_not_following[(sb.x, sb.y)].style();
+        let Some(following_style) = buf_following.cell((sb.x, sb.y)).map(|c| c.style()) else {
+            panic!("missing following scrollbar cell");
+        };
+        let Some(not_following_style) = buf_not_following.cell((sb.x, sb.y)).map(|c| c.style())
+        else {
+            panic!("missing not-following scrollbar cell");
+        };
 
         assert!(following_style.bg.is_some());
         assert!(not_following_style.bg.is_some());
@@ -408,7 +419,9 @@ mod tests {
 
         let mut thumb_cells = 0;
         for y in 0..sb.height {
-            let cell = &buf[(sb.x, sb.y + y)];
+            let Some(cell) = buf.cell((sb.x, sb.y + y)) else {
+                panic!("missing scrollbar cell at y={y}");
+            };
             if cell.symbol() == "\u{2588}" {
                 thumb_cells += 1;
                 assert_eq!(
@@ -440,7 +453,10 @@ mod tests {
         // Count thumb cells (non-space)
         let count_thumb = |buf: &Buffer| -> usize {
             (0..sb.height)
-                .filter(|&y| buf[(sb.x, sb.y + y)].symbol() != " ")
+                .filter(|&y| {
+                    buf.cell((sb.x, sb.y + y))
+                        .is_some_and(|c| c.symbol() != " ")
+                })
                 .count()
         };
 
@@ -453,7 +469,10 @@ mod tests {
 
         let thumb_positions = |buf: &Buffer| -> Vec<u16> {
             (0..sb.height)
-                .filter(|&y| buf[(sb.x, sb.y + y)].symbol() != " ")
+                .filter(|&y| {
+                    buf.cell((sb.x, sb.y + y))
+                        .is_some_and(|c| c.symbol() != " ")
+                })
                 .collect()
         };
 

@@ -1,12 +1,14 @@
 //! Workspace and session configuration types.
 use crate::capability::CapabilityMode;
 use crate::hub::HubConfig;
+use crate::permission::ToolApprovalGate;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use xai_grok_hooks::discovery::HookSource;
+pub use xai_grok_hooks::discovery::HookSourceConfig;
 use xai_grok_tools::registry::types::{SessionContext, ToolRegistryBuilder, ToolServerConfig};
+use xai_tool_runtime::ToolApprovalPolicy;
 /// Default capacity for the workspace event broadcast channel.
 pub const DEFAULT_EVENT_BUFFER_CAPACITY: usize = 64;
 /// A session-lifetime terminal backend (background-task registry and persistent shell) paired with its explicit shutdown hook.
@@ -89,6 +91,9 @@ pub struct WorkspaceBindConfig {
     pub viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
     /// Initial auto-approve (YOLO) state. `None` on legacy payloads fails closed (false).
     pub yolo_mode: Option<bool>,
+    /// The hub-set attended-execution ceiling; omitted → [`ToolApprovalPolicy::GrantsAllowed`],
+    /// present-but-unparseable → [`ToolApprovalPolicy::AlwaysPrompt`].
+    pub tool_approval_policy: ToolApprovalPolicy,
     /// Plane-configured toolset in the gRPC wire shape. An empty list is treated as unset (proto3 repeated default).
     pub tools: Option<Vec<xai_grok_tools_api::ToolConfigEntry>>,
     pub manifest_version: Option<String>,
@@ -146,6 +151,17 @@ impl WorkspaceBindConfig {
                 .and_then(|v| parse_field("tool_config", v)),
             viewer_ctx: wire.viewer_ctx,
             yolo_mode: wire.yolo_mode,
+            tool_approval_policy: match wire.tool_approval_policy {
+                Some(Ok(policy)) => policy,
+                Some(Err(raw)) => {
+                    tracing::warn!(
+                        tool_approval_policy = %raw,
+                        "session.bind metadata: unreadable tool_approval_policy; applying always_prompt"
+                    );
+                    ToolApprovalPolicy::AlwaysPrompt
+                }
+                None => ToolApprovalPolicy::GrantsAllowed,
+            },
             tools: Some(wire.tools).filter(|tools| !tools.is_empty()),
             manifest_version: wire.manifest_version,
             manifest_hash: wire.manifest_hash,
@@ -339,6 +355,57 @@ mod bind_config_tests {
         assert_eq!(malformed.preset.as_deref(), Some("explore"));
     }
     #[test]
+    fn workspace_bind_config_tool_approval_policy_defaults_to_grants_allowed() {
+        let ceiling = WorkspaceBindConfig::from_metadata(
+            &serde_json::json!({"tool_approval_policy": "always_prompt"}),
+        );
+        assert_eq!(
+            ceiling.tool_approval_policy,
+            ToolApprovalPolicy::AlwaysPrompt
+        );
+        for metadata in [
+            serde_json::json!({"preset": "explore"}),
+            serde_json::json!({"tool_approval_policy": null}),
+        ] {
+            assert_eq!(
+                ToolApprovalPolicy::GrantsAllowed,
+                WorkspaceBindConfig::from_metadata(&metadata).tool_approval_policy,
+                "{metadata}"
+            );
+        }
+        assert_eq!(
+            ToolApprovalPolicy::UnattendedAllowed,
+            WorkspaceBindConfig::from_metadata(&serde_json::json!({
+                "tool_approval_policy": "unattended_allowed",
+            }))
+            .tool_approval_policy,
+        );
+    }
+    /// A ceiling the hub stamped but this binary cannot read (a newer wire token, a typo,
+    /// the wrong JSON type) is the strict arm, never the omitted-field compat default.
+    #[test]
+    fn workspace_bind_config_malformed_tool_approval_policy_is_always_prompt() {
+        for metadata in [
+            serde_json::json!({"tool_approval_policy": "unattended"}),
+            serde_json::json!({"tool_approval_policy": "not_a_policy"}),
+            serde_json::json!({"tool_approval_policy": "GrantsAllowed"}),
+            serde_json::json!({"tool_approval_policy": true}),
+            serde_json::json!({"tool_approval_policy": 1}),
+            serde_json::json!({"preset": "explore", "tool_approval_policy": ["grants_allowed"]}),
+        ] {
+            let cfg = WorkspaceBindConfig::from_metadata(&metadata);
+            assert_eq!(
+                ToolApprovalPolicy::AlwaysPrompt,
+                cfg.tool_approval_policy,
+                "{metadata}"
+            );
+        }
+        let cfg = WorkspaceBindConfig::from_metadata(
+            &serde_json::json!({"preset": "explore", "tool_approval_policy": "unattended"}),
+        );
+        assert_eq!(Some("explore"), cfg.preset.as_deref());
+    }
+    #[test]
     fn workspace_bind_config_extracts_system_notifications_flag() {
         let on =
             WorkspaceBindConfig::from_metadata(&serde_json::json!({"system_notifications": true}));
@@ -423,7 +490,9 @@ mod bind_config_tests {
             "always the 'current' default"
         );
         assert_eq!(toolset.tools.len(), 2);
-        let grep = &toolset.tools[0];
+        let Some(grep) = toolset.tools.first() else {
+            panic!("expected grep tool: {:?}", toolset.tools);
+        };
         assert_eq!(grep.id, "GrokBuild:grep");
         assert_eq!(
             grep.params,
@@ -431,8 +500,11 @@ mod bind_config_tests {
         );
         assert_eq!(grep.name_override.as_deref(), Some("search"));
         assert_eq!(
-            grep.params_name_overrides.as_ref().unwrap()["pattern"],
-            "query"
+            grep.params_name_overrides
+                .as_ref()
+                .and_then(|m| m.get("pattern"))
+                .map(String::as_str),
+            Some("query")
         );
         assert_eq!(grep.behavior_version.as_deref(), Some("legacy-0.4.10"));
         assert_eq!(
@@ -440,7 +512,10 @@ mod bind_config_tests {
             Some("Search the codebase")
         );
         assert_eq!(grep.kind, None);
-        assert_eq!(toolset.tools[1].id, "GrokBuild:read_file");
+        assert_eq!(
+            toolset.tools.get(1).map(|t| t.id.as_str()),
+            Some("GrokBuild:read_file")
+        );
     }
     #[test]
     fn explicit_tool_config_wins_over_tools_entries() {
@@ -453,7 +528,10 @@ mod bind_config_tests {
             panic!("must resolve to a toolset");
         };
         assert_eq!(resolved.toolset.tools.len(), 1);
-        assert_eq!(resolved.toolset.tools[0].id, "raw:tool");
+        assert_eq!(
+            resolved.toolset.tools.first().map(|t| t.id.as_str()),
+            Some("raw:tool")
+        );
     }
     #[test]
     fn tools_entries_win_even_with_preset_present() {
@@ -466,7 +544,10 @@ mod bind_config_tests {
             panic!("must resolve to a toolset");
         };
         assert_eq!(resolved.toolset.tools.len(), 1);
-        assert_eq!(resolved.toolset.tools[0].id, "wire:tool");
+        assert_eq!(
+            resolved.toolset.tools.first().map(|t| t.id.as_str()),
+            Some("wire:tool")
+        );
     }
     #[test]
     fn empty_tools_array_is_treated_as_unset() {
@@ -580,10 +661,21 @@ mod bind_config_tests {
         };
         assert_eq!(resolved.toolset.tools.len(), 2);
         assert_eq!(
-            resolved.toolset.tools[0].name_override.as_deref(),
+            resolved
+                .toolset
+                .tools
+                .first()
+                .and_then(|t| t.name_override.as_deref()),
             Some("renamed_a")
         );
-        assert_eq!(resolved.toolset.tools[1].name_override, None);
+        assert_eq!(
+            resolved
+                .toolset
+                .tools
+                .get(1)
+                .and_then(|t| t.name_override.clone()),
+            None
+        );
     }
     #[test]
     fn pinned_tools_all_known_serves_full_expansion() {
@@ -598,7 +690,10 @@ mod bind_config_tests {
         };
         assert!(resolved.unserved_tool_ids.is_empty());
         assert_eq!(resolved.toolset.tools.len(), 1);
-        assert_eq!(resolved.toolset.tools[0].id, "wire:tool");
+        assert_eq!(
+            resolved.toolset.tools.first().map(|t| t.id.as_str()),
+            Some("wire:tool")
+        );
     }
     /// Unknown ids must be partitioned and reported, never silently replaced by live preset resolution.
     #[test]
@@ -618,7 +713,10 @@ mod bind_config_tests {
             panic!("partial coverage must still resolve to the known subset");
         };
         assert_eq!(resolved.toolset.tools.len(), 1);
-        assert_eq!(resolved.toolset.tools[0].id, "wire:known");
+        assert_eq!(
+            resolved.toolset.tools.first().map(|t| t.id.as_str()),
+            Some("wire:known")
+        );
         assert_eq!(
             resolved.unserved_tool_ids,
             vec!["wire:aa_unknown".to_owned(), "wire:zz_unknown".to_owned()],
@@ -652,7 +750,10 @@ mod bind_config_tests {
             panic!("legacy unpinned tools must resolve without gating");
         };
         assert_eq!(resolved.toolset.tools.len(), 1);
-        assert_eq!(resolved.toolset.tools[0].id, "wire:tool");
+        assert_eq!(
+            resolved.toolset.tools.first().map(|t| t.id.as_str()),
+            Some("wire:tool")
+        );
     }
     #[test]
     fn tool_config_wins_regardless_of_stale_manifest_version() {
@@ -667,7 +768,10 @@ mod bind_config_tests {
         };
         assert!(resolved.unserved_tool_ids.is_empty());
         assert_eq!(resolved.toolset.tools.len(), 1);
-        assert_eq!(resolved.toolset.tools[0].id, "raw:tool");
+        assert_eq!(
+            resolved.toolset.tools.first().map(|t| t.id.as_str()),
+            Some("raw:tool")
+        );
     }
     #[test]
     fn malformed_tools_field_is_dropped_keeping_siblings() {
@@ -691,6 +795,8 @@ pub struct BindMcpConfig {
     /// Server names designated first-party app endpoints — see
     /// [`Self::with_first_party_servers`].
     first_party: std::sync::Arc<std::collections::HashSet<String>>,
+    /// The call gate for each server name, set with [`Self::with_call_gate`].
+    call_gates: Arc<crate::mcp::McpCallGates>,
 }
 impl BindMcpConfig {
     pub const DEFAULT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -710,6 +816,7 @@ impl BindMcpConfig {
             servers: servers.into(),
             discovery_timeout: Self::DEFAULT_DISCOVERY_TIMEOUT,
             first_party: std::sync::Arc::new(std::collections::HashSet::new()),
+            call_gates: Arc::default(),
         }
     }
     pub fn with_discovery_timeout(mut self, timeout: Duration) -> Self {
@@ -725,6 +832,19 @@ impl BindMcpConfig {
     }
     pub fn first_party_servers(&self) -> &std::collections::HashSet<String> {
         &self.first_party
+    }
+    /// `gate` checks every tool call to the server named `server`, a host's own built-in server.
+    /// A server that started before this call keeps the gate it started with.
+    pub fn with_call_gate(
+        mut self,
+        server: impl Into<String>,
+        gate: Arc<dyn crate::mcp::McpCallGate>,
+    ) -> Self {
+        Arc::make_mut(&mut self.call_gates).insert(server.into(), gate);
+        self
+    }
+    pub fn call_gates(&self) -> &crate::mcp::McpCallGates {
+        &self.call_gates
     }
     pub fn servers(&self) -> &[agent_client_protocol::McpServer] {
         &self.servers
@@ -796,6 +916,14 @@ pub struct WorkspaceConfig {
     pub confine_fs_to_workspace_root: bool,
     /// MCP servers initialized for each admitted hub session bind.
     pub bind_mcp: Option<BindMcpConfig>,
+    /// Whether hub tool calls wait for the session owner; resolved per host by
+    /// [`approval_gate_for`](crate::permission::approval_gate_for).
+    pub tool_approval: ToolApprovalGate,
+    /// Which host runs this server; decides whether the root's `FsChanged` producer is lit.
+    pub host_kind: crate::host_kind::WorkspaceHostKind,
+    /// The folder's per-command shell sandbox; `None` on hosts that do not sandbox commands (the
+    /// CLI, the remote sandbox server). The session factory must carry its launch hook.
+    pub sandbox: Option<Arc<crate::sandbox::WorkspaceSandbox>>,
 }
 /// Metadata a tool server announces so hub consumers can identify and route to it.
 /// Re-export of the protocol crate's single catalog of well-known registration-metadata keys; every field is optional and independently sourced.
@@ -855,7 +983,10 @@ impl WorkspaceConfig {
             require_explicit_toolset: false,
             confine_fs_to_workspace_root: false,
             bind_mcp: None,
+            tool_approval: ToolApprovalGate::Off,
             status_config,
+            host_kind: Default::default(),
+            sandbox: None,
         }
     }
 }
@@ -917,23 +1048,6 @@ impl std::fmt::Debug for AgentSessionConfig {
             .finish()
     }
 }
-/// A single hook source: either a JSON settings file or a directory of `*.json` hook files.
-/// Maps 1:1 to [`xai_grok_hooks::discovery::HookSource`] but uses owned `PathBuf` so the config struct is `'static`.
-#[derive(Debug, Clone)]
-pub enum HookSourceConfig {
-    /// A single JSON settings file (e.g. `~/.claude/settings.json`).
-    SettingsFile(PathBuf),
-    /// A directory of `*.json` hook files (e.g. `~/.grok/hooks/`).
-    Directory(PathBuf),
-}
-impl HookSourceConfig {
-    pub fn as_hook_source(&self) -> HookSource<'_> {
-        match self {
-            Self::SettingsFile(path) => HookSource::SettingsFile(path),
-            Self::Directory(path) => HookSource::Directory(path),
-        }
-    }
-}
 /// Filesystem isolation strategy for a forked session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IsolationMode {
@@ -977,7 +1091,10 @@ mod bind_mcp_config_tests {
             ["other", "dup"],
             "one slot per name, positions of the kept (last) occurrences"
         );
-        let agent_client_protocol::McpServer::Http(kept) = &config.servers()[1] else {
+        let Some(server) = config.servers().get(1) else {
+            panic!("expected second server: {:?}", config.servers());
+        };
+        let agent_client_protocol::McpServer::Http(kept) = server else {
             panic!("expected http server");
         };
         assert_eq!(
@@ -998,10 +1115,14 @@ mod bind_mcp_config_tests {
             ))
         }));
         assert_eq!(config.servers().len(), BindMcpConfig::MAX_SERVERS);
-        let first = xai_grok_mcp::servers::mcp_server_name(&config.servers()[0]);
-        let last = xai_grok_mcp::servers::mcp_server_name(
-            &config.servers()[BindMcpConfig::MAX_SERVERS - 1],
-        );
+        let Some(first_server) = config.servers().first() else {
+            panic!("expected first server");
+        };
+        let Some(last_server) = config.servers().last() else {
+            panic!("expected last server");
+        };
+        let first = xai_grok_mcp::servers::mcp_server_name(first_server);
+        let last = xai_grok_mcp::servers::mcp_server_name(last_server);
         assert_eq!(first, "server-000");
         assert_eq!(
             last,

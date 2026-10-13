@@ -1,17 +1,12 @@
 use super::*;
 use crate::session::slash_commands::BUILTIN_COMMANDS;
-
-fn text_block(text: &str) -> acp::ContentBlock {
-    acp::ContentBlock::Text(acp::TextContent::new(text))
-}
+use xai_grok_test_support::acp_fixtures::text_block;
 
 #[test]
 fn model_authored_resolution_uses_exact_canonical_metadata() {
     assert!(matches!(
         resolve(&[text_block("/compact preserve auth")], BUILTIN_COMMANDS),
-        AuthorityResolution::StaticBuiltin(BuiltinAction::Compact {
-            user_context: Some(context),
-        }) if context == "preserve auth"
+        AuthorityResolution::StaticBuiltin(BuiltinAction::Compact)
     ));
 
     for text in ["/Compact", "/COMPACT", "/yolo", "/context", "/feedback"] {
@@ -29,4 +24,18 @@ fn parse_slash_prefix_extracts_name_and_args() {
         Some(("Compact", "keep aliases"))
     );
     assert_eq!(parse_slash_prefix(&[text_block("not a slash")]), None);
+}
+
+#[test]
+fn parse_slash_prefix_distinguishes_paths_from_commands() {
+    assert_eq!(
+        parse_slash_prefix(&[text_block(
+            "/workspace/project/src/lib.rs has a compile error"
+        )]),
+        None
+    );
+    assert_eq!(
+        parse_slash_prefix(&[text_block("/memory status")]),
+        Some(("memory", "status"))
+    );
 }

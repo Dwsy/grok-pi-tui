@@ -1,8 +1,11 @@
 //! Session title generation via LLM tool call.
 
+use xai_grok_sampler::SamplerConfig;
+use xai_grok_sampling_types::ApiBackend;
+
 use crate::sampling::{
     Client as OaiCompatClient, ConversationItem, ConversationRequest, ConversationToolChoice,
-    ToolSpec,
+    SamplingClient, ToolSpec,
 };
 use crate::session::helpers::chat::floor_char_boundary;
 
@@ -25,6 +28,55 @@ pub(crate) fn checkpoints_reached(turns: usize) -> usize {
 /// Hard byte cap guarding runaway title output; the instruction already targets 5-10 words.
 /// Applied on a char boundary, so a multibyte title is capped a little shorter, which is fine for a safety bound.
 const TITLE_MAX_BYTES: usize = 80;
+
+/// An explicit sampler route a backend pins its titles to, instead of the configured default.
+#[derive(Clone)]
+pub struct DirectSessionTitleRoute {
+    base_url: String,
+    model: String,
+    api_key: String,
+}
+
+impl DirectSessionTitleRoute {
+    pub fn new(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> Self {
+        DirectSessionTitleRoute {
+            base_url: base_url.into(),
+            model: model.into(),
+            api_key: api_key.into(),
+        }
+    }
+}
+
+/// Builds the title client for a daemon pinned to a direct Grok model endpoint. The route is
+/// authoritative: its credential never falls through to the configured public endpoints.
+pub fn build_direct_session_title_client(
+    direct: DirectSessionTitleRoute,
+    client_version: Option<String>,
+) -> crate::sampling::Result<(SamplingClient, String)> {
+    let sampling_config = direct_session_title_sampling_config(direct, client_version);
+    let model = sampling_config.model.clone();
+    let client = SamplingClient::new(sampling_config)?;
+    Ok((client, model))
+}
+
+fn direct_session_title_sampling_config(
+    direct: DirectSessionTitleRoute,
+    client_version: Option<String>,
+) -> SamplerConfig {
+    SamplerConfig {
+        api_key: Some(direct.api_key),
+        base_url: direct.base_url,
+        model: direct.model,
+        api_backend: ApiBackend::Responses,
+        context_window: 200_000,
+        client_version,
+        ..SamplerConfig::default()
+    }
+}
 
 /// Durable title-refresh checkpoint watermark under `{session_dir}/`: the number of [`TITLE_REFRESH_TURNS`] checkpoints already consumed.
 /// Only a committed value is persisted, so an aborted refresh still retries.
@@ -81,13 +133,21 @@ fn strip_system_reminder_blocks(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find(OPEN) {
-        out.push_str(&rest[..start]);
-        let after_open = &rest[start + OPEN.len()..];
+        let Some(before) = rest.get(..start) else {
+            break;
+        };
+        out.push_str(before);
+        let Some(after_open) = rest.get(start + OPEN.len()..) else {
+            return out.trim().to_string();
+        };
         // An unterminated reminder drops the remainder; it is system text
         let Some(end) = after_open.find(CLOSE) else {
             return out.trim().to_string();
         };
-        rest = &after_open[end + CLOSE.len()..];
+        let Some(next) = after_open.get(end + CLOSE.len()..) else {
+            return out.trim().to_string();
+        };
+        rest = next;
     }
     out.push_str(rest);
     out.trim().to_string()
@@ -95,7 +155,8 @@ fn strip_system_reminder_blocks(text: &str) -> String {
 
 /// Text the session title is derived from: strip system reminders and skill XML markup, then cap to the first few KB.
 /// Stripping runs before the cap so a leading reminder larger than the cap is still removed.
-fn title_source_text(user_message: &str) -> String {
+/// Callers that retain a prompt for later titling keep this, not the raw text.
+pub fn title_source_text(user_message: &str) -> String {
     let without_reminders = strip_system_reminder_blocks(user_message);
     let base = if without_reminders.is_empty() {
         user_message
@@ -109,7 +170,8 @@ fn title_source_text(user_message: &str) -> String {
     display
 }
 
-pub(crate) fn title_fallback_from_user_text(user_message: &str) -> String {
+/// The deterministic first-ten-words fallback shared by every initial-title path.
+pub fn title_fallback_from_user_text(user_message: &str) -> String {
     let text = title_source_text(user_message);
     let s = text
         .split_whitespace()
@@ -223,9 +285,22 @@ pub(crate) fn clean_title_text(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        TITLE_SOURCE_MAX_BYTES, clean_title_text, strip_system_reminder_blocks,
+        DirectSessionTitleRoute, TITLE_SOURCE_MAX_BYTES, clean_title_text,
+        direct_session_title_sampling_config, strip_system_reminder_blocks,
         title_fallback_from_user_text, title_refresh_instruction, title_source_text,
     };
+
+    #[test]
+    fn direct_title_route_builds_its_own_sampler_config() {
+        let config = direct_session_title_sampling_config(
+            DirectSessionTitleRoute::new("http://127.0.0.1:4242/v1", "local-model", "direct-key"),
+            Some("test-version".to_owned()),
+        );
+
+        assert_eq!("http://127.0.0.1:4242/v1", config.base_url);
+        assert_eq!("local-model", config.model);
+        assert_eq!(Some("direct-key"), config.api_key.as_deref());
+    }
 
     #[test]
     fn checkpoints_reached_counts_and_catches_up() {

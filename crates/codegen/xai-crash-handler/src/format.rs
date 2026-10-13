@@ -41,25 +41,21 @@ impl CrashBlob {
         if data.len() < HEADER_SIZE {
             return None;
         }
-        if data[0..4] != MAGIC {
+        if data.get(..4) != Some(MAGIC.as_slice()) {
             return None;
         }
-        if data[4] != VERSION {
+        if data.get(4).copied() != Some(VERSION) {
             return None;
         }
 
-        let signal = data[5];
-        let si_code = i32::from_le_bytes([data[6], data[7], data[8], data[9]]);
-        let si_addr = u64::from_le_bytes([
-            data[10], data[11], data[12], data[13], data[14], data[15], data[16], data[17],
-        ]);
-        let pid = u32::from_le_bytes([data[18], data[19], data[20], data[21]]);
-        let timestamp = u64::from_le_bytes([
-            data[22], data[23], data[24], data[25], data[26], data[27], data[28], data[29],
-        ]);
-        let n_frames = u16::from_le_bytes([data[30], data[31]]) as usize;
+        let signal = *data.get(5)?;
+        let si_code = i32::from_le_bytes(data.get(6..10)?.try_into().ok()?);
+        let si_addr = u64::from_le_bytes(data.get(10..18)?.try_into().ok()?);
+        let pid = u32::from_le_bytes(data.get(18..22)?.try_into().ok()?);
+        let timestamp = u64::from_le_bytes(data.get(22..30)?.try_into().ok()?);
+        let n_frames = u16::from_le_bytes(data.get(30..32)?.try_into().ok()?) as usize;
 
-        let version_bytes = &data[32..32 + VERSION_STRING_LEN];
+        let version_bytes = data.get(32..32 + VERSION_STRING_LEN)?;
         let app_version = std::str::from_utf8(version_bytes)
             .unwrap_or("")
             .trim_end_matches('\0')
@@ -77,16 +73,7 @@ impl CrashBlob {
         let mut frames = Vec::with_capacity(n_frames);
         for i in 0..n_frames {
             let offset = frames_start + i * 8;
-            let addr = u64::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-                data[offset + 4],
-                data[offset + 5],
-                data[offset + 6],
-                data[offset + 7],
-            ]);
+            let addr = u64::from_le_bytes(data.get(offset..offset + 8)?.try_into().ok()?);
             frames.push(addr as usize);
         }
 
@@ -121,20 +108,51 @@ pub mod writer {
         n_frames: u16,
         app_version: &[u8],
     ) -> usize {
-        buf[0..4].copy_from_slice(&MAGIC);
-        buf[4] = VERSION;
-        buf[5] = signal;
-        buf[6..10].copy_from_slice(&si_code.to_le_bytes());
-        buf[10..18].copy_from_slice(&si_addr.to_le_bytes());
-        buf[18..22].copy_from_slice(&pid.to_le_bytes());
-        buf[22..30].copy_from_slice(&timestamp.to_le_bytes());
-        buf[30..32].copy_from_slice(&n_frames.to_le_bytes());
+        let Some(magic) = buf.get_mut(..4) else {
+            return 0;
+        };
+        magic.copy_from_slice(&MAGIC);
+        let Some(ver) = buf.get_mut(4) else {
+            return 0;
+        };
+        *ver = VERSION;
+        let Some(sig) = buf.get_mut(5) else {
+            return 0;
+        };
+        *sig = signal;
+        let Some(dst) = buf.get_mut(6..10) else {
+            return 0;
+        };
+        dst.copy_from_slice(&si_code.to_le_bytes());
+        let Some(dst) = buf.get_mut(10..18) else {
+            return 0;
+        };
+        dst.copy_from_slice(&si_addr.to_le_bytes());
+        let Some(dst) = buf.get_mut(18..22) else {
+            return 0;
+        };
+        dst.copy_from_slice(&pid.to_le_bytes());
+        let Some(dst) = buf.get_mut(22..30) else {
+            return 0;
+        };
+        dst.copy_from_slice(&timestamp.to_le_bytes());
+        let Some(dst) = buf.get_mut(30..32) else {
+            return 0;
+        };
+        dst.copy_from_slice(&n_frames.to_le_bytes());
 
         // Null-pad the version string field.
-        let version_field = &mut buf[32..32 + VERSION_STRING_LEN];
+        let Some(version_field) = buf.get_mut(32..32 + VERSION_STRING_LEN) else {
+            return 0;
+        };
         version_field.fill(0);
         let copy_len = app_version.len().min(VERSION_STRING_LEN);
-        version_field[..copy_len].copy_from_slice(&app_version[..copy_len]);
+        if let (Some(dst), Some(src)) = (
+            version_field.get_mut(..copy_len),
+            app_version.get(..copy_len),
+        ) {
+            dst.copy_from_slice(src);
+        }
 
         32 + VERSION_STRING_LEN
     }
@@ -143,7 +161,10 @@ pub mod writer {
     /// # Safety
     /// The caller must ensure `buf[offset..offset+8]` is valid.
     pub unsafe fn write_frame(buf: &mut [u8], offset: usize, addr: usize) -> usize {
-        buf[offset..offset + 8].copy_from_slice(&(addr as u64).to_le_bytes());
+        let Some(dst) = buf.get_mut(offset..offset + 8) else {
+            return offset;
+        };
+        dst.copy_from_slice(&(addr as u64).to_le_bytes());
         offset + 8
     }
 }
@@ -173,7 +194,10 @@ mod tests {
                 offset = writer::write_frame(&mut buf, offset, frame);
             }
 
-            let blob = CrashBlob::parse(&buf[..offset]).expect("parse should succeed");
+            let Some(blob_bytes) = buf.get(..offset) else {
+                panic!("write offset in range: {offset}");
+            };
+            let blob = CrashBlob::parse(blob_bytes).expect("parse should succeed");
             assert_eq!(blob.signal, 10);
             assert_eq!(blob.si_code, 2);
             assert_eq!(blob.si_addr, 0x7f8a_1234_0000);
@@ -187,7 +211,9 @@ mod tests {
     #[test]
     fn rejects_bad_magic() {
         let mut buf = [0u8; HEADER_SIZE];
-        buf[0..4].copy_from_slice(b"NOPE");
+        if let Some(dst) = buf.get_mut(..4) {
+            dst.copy_from_slice(b"NOPE");
+        }
         assert!(CrashBlob::parse(&buf).is_none());
     }
 

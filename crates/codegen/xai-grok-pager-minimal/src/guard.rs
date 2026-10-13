@@ -1,8 +1,8 @@
 //! Compile-time guard for minimal mode's resize strategy.
 //!
-//! The terminal owns committed history, so minimal must use only the built-in `autoresize` / `set_viewport_height`.
-//! It must NEVER call the inline crate's RIS-rerender helpers or `emit_to_scrollback`.
-//! Those re-emit history the terminal already has, double-printing (or, with ED3, wiping) committed scrollback.
+//! Minimal reprints history from its scrollback entries through the commit renderer ([`crate::reprint`]).
+//! It must NEVER use the inline crate's string-history helpers (`resize_purge_rerender`, `emit_to_scrollback`, `resize_viewport_height`).
+//! They would print stale or hard-wrapped history from a string minimal does not keep.
 //! This test fails loudly if such a call ever sneaks into the minimal module.
 
 #[test]
@@ -18,11 +18,13 @@ fn minimal_never_uses_ris_rerender_or_emit_to_scrollback() {
         ("lib.rs", include_str!("lib.rs")),
         ("auth.rs", include_str!("auth.rs")),
         ("commit.rs", include_str!("commit.rs")),
+        ("feedback.rs", include_str!("feedback.rs")),
         ("full_view.rs", include_str!("full_view.rs")),
         ("live.rs", include_str!("live.rs")),
         ("overlay.rs", include_str!("overlay.rs")),
         ("panel.rs", include_str!("panel.rs")),
         ("plan.rs", include_str!("plan.rs")),
+        ("reprint.rs", include_str!("reprint.rs")),
         ("todo.rs", include_str!("todo.rs")),
         ("welcome.rs", include_str!("welcome.rs")),
     ];
@@ -30,9 +32,8 @@ fn minimal_never_uses_ris_rerender_or_emit_to_scrollback() {
         for needle in FORBIDDEN {
             assert!(
                 !src.contains(needle),
-                "minimal/{name} references forbidden resize helper `{needle}` — it would \
-                 double-print committed scrollback (design K6 / risk #2); use the built-in \
-                 autoresize / set_viewport_height instead"
+                "minimal/{name} references forbidden resize helper `{needle}`; reprint \
+                 history from the scrollback entries through `crate::reprint` instead"
             );
         }
     }

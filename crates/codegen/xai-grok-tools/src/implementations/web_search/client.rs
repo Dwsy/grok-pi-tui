@@ -159,7 +159,9 @@ impl WebSearchClient {
                 let filters = tool
                     .entry("filters")
                     .or_insert_with(|| serde_json::json!({}));
-                filters["excluded_domains"] = serde_json::json!(excluded);
+                if let Some(obj) = filters.as_object_mut() {
+                    obj.insert("excluded_domains".to_owned(), serde_json::json!(excluded));
+                }
             }
         }
         Ok(body)
@@ -443,10 +445,12 @@ mod tests {
         let body = client
             .build_request_json("q", None, Some(v(&["reddit.com"])))
             .expect("request json builds");
-        let filters = &body["tools"][0]["filters"];
+        let Some(filters) = body.pointer("/tools/0/filters") else {
+            panic!("missing tools[0].filters: {body}");
+        };
         assert_eq!(
-            filters["excluded_domains"],
-            serde_json::json!(["reddit.com"])
+            filters.get("excluded_domains"),
+            Some(&serde_json::json!(["reddit.com"]))
         );
         assert!(filters.get("allowed_domains").is_none());
     }
@@ -456,8 +460,13 @@ mod tests {
         let body = client
             .build_request_json("q", Some(v(&["docs.x.ai"])), None)
             .expect("request json builds");
-        let filters = &body["tools"][0]["filters"];
-        assert_eq!(filters["allowed_domains"], serde_json::json!(["docs.x.ai"]));
+        let Some(filters) = body.pointer("/tools/0/filters") else {
+            panic!("missing tools[0].filters: {body}");
+        };
+        assert_eq!(
+            filters.get("allowed_domains"),
+            Some(&serde_json::json!(["docs.x.ai"]))
+        );
         assert!(filters.get("excluded_domains").is_none());
     }
     #[test]
@@ -509,10 +518,13 @@ mod tests {
         client.record_401_attribution(Some("bearer-with-long-tail-aaaadistinct"));
         let calls = cb.invocations.lock().unwrap();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, ToolConsumer::WebSearch);
-        assert_eq!(calls[0].1.as_deref(), Some("aaaadistinct"));
+        let Some(call) = calls.first() else {
+            panic!("expected one attribution call");
+        };
+        assert_eq!(call.0, ToolConsumer::WebSearch);
+        assert_eq!(call.1.as_deref(), Some("aaaadistinct"));
         assert_eq!(
-            calls[0].1.as_deref().map(str::len),
+            call.1.as_deref().map(str::len),
             Some(crate::attribution::BEARER_SUFFIX_LEN),
         );
     }
@@ -587,8 +599,11 @@ mod tests {
         }));
         let citations = extract_citations(&response);
         assert_eq!(citations.len(), 2);
-        assert_eq!(citations[0], "https://www.rust-lang.org/");
-        assert_eq!(citations[1], "https://docs.rs/");
+        let [first, second] = citations.as_slice() else {
+            panic!("expected 2 citations: {citations:?}");
+        };
+        assert_eq!(first, "https://www.rust-lang.org/");
+        assert_eq!(second, "https://docs.rs/");
     }
     #[test]
     fn test_extract_citations_deduplicates() {
@@ -638,8 +653,11 @@ mod tests {
         }));
         let citations = extract_citations(&response);
         assert_eq!(citations.len(), 2);
-        assert_eq!(citations[0], "https://example.com/page1");
-        assert_eq!(citations[1], "https://example.com/page2");
+        let [first, second] = citations.as_slice() else {
+            panic!("expected 2 citations: {citations:?}");
+        };
+        assert_eq!(first, "https://example.com/page1");
+        assert_eq!(second, "https://example.com/page2");
     }
     #[test]
     fn test_extract_citations_multiple_messages() {
@@ -696,8 +714,11 @@ mod tests {
         }));
         let citations = extract_citations(&response);
         assert_eq!(citations.len(), 2);
-        assert_eq!(citations[0], "https://first.com/");
-        assert_eq!(citations[1], "https://second.com/");
+        let [first, second] = citations.as_slice() else {
+            panic!("expected 2 citations: {citations:?}");
+        };
+        assert_eq!(first, "https://first.com/");
+        assert_eq!(second, "https://second.com/");
     }
     #[test]
     fn test_extract_citations_ignores_non_url_annotations() {
@@ -733,7 +754,10 @@ mod tests {
         }));
         let citations = extract_citations(&response);
         assert_eq!(citations.len(), 1);
-        assert_eq!(citations[0], "https://valid.com/");
+        assert_eq!(
+            citations.first().map(String::as_str),
+            Some("https://valid.com/")
+        );
     }
     /// A provider that always returns `None`, simulating an API-key user
     /// whose token has aged past the client-side TTL.

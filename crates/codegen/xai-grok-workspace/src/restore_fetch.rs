@@ -185,7 +185,7 @@ fn short_oid(oid: &str) -> &str {
     while end > 0 && !oid.is_char_boundary(end) {
         end -= 1;
     }
-    &oid[..end]
+    oid.get(..end).unwrap_or(oid)
 }
 
 fn remaining(deadline: Instant) -> Duration {
@@ -545,7 +545,9 @@ fn read_stderr_capped(stderr: Option<ChildStderr>) -> String {
             Ok(n) => {
                 if collected.len() < MAX_FETCH_STDERR_BYTES {
                     let room = MAX_FETCH_STDERR_BYTES - collected.len();
-                    collected.extend_from_slice(&chunk[..n.min(room)]);
+                    if let Some(slice) = chunk.get(..n.min(room)) {
+                        collected.extend_from_slice(slice);
+                    }
                     if n > room {
                         truncated = true;
                     }

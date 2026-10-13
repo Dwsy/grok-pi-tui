@@ -1,0 +1,47 @@
+[package]
+license = "Apache-2.0"
+name = "xai-grok-lifecycle"
+version = "0.1.0"
+edition.workspace = true
+description = "Pre-stop lifecycle broker for the workspace server: trigger endpoint, handler registry, and exec runner"
+
+[dependencies]
+# Routes the diagnostics server serves next to its own.
+axum = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+# Atomic registration writes (temp file in the same dir, then persist).
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = [
+    "fs",
+    "io-util",
+    "macros",
+    "process",
+    "rt",
+    "sync",
+    "time",
+] }
+# `AbortOnDropHandle` for the exec output drain tasks.
+tokio-util = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
+# Detached, process-group spawns for exec handlers.
+xai-tty-utils = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+# Unix-socket end-to-end test through the diagnostics server.
+xai-grok-diag-server = { workspace = true }
+# `start_paused` clocks for the built-in deadline tests.
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "test-util"] }
+# `ServiceExt::oneshot` against the router.
+tower = { workspace = true, features = ["util"] }
+
+# `mkfifo` for the concurrency rendezvous test.
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true }
+
+[lints]
+workspace = true

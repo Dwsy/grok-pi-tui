@@ -17,8 +17,12 @@ fn ask_user_question_request_carries_session_id() {
     assert!(!req.session_id.is_empty());
     // Wire format is camelCase (`sessionId`); Tier-2 routing reads it.
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["sessionId"], "sess-abc");
-    assert!(!json["sessionId"].as_str().unwrap().is_empty());
+    assert_eq!(json.get("sessionId"), Some(&serde_json::json!("sess-abc")));
+    assert!(
+        json.get("sessionId")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty())
+    );
 }
 
 #[test]
@@ -30,6 +34,10 @@ fn exit_plan_mode_request_carries_session_id() {
     };
     assert!(!req.session_id.is_empty());
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["sessionId"], "sess-xyz");
-    assert!(!json["sessionId"].as_str().unwrap().is_empty());
+    assert_eq!(json.get("sessionId"), Some(&serde_json::json!("sess-xyz")));
+    assert!(
+        json.get("sessionId")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty())
+    );
 }

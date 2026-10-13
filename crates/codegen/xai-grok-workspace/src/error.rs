@@ -1,4 +1,5 @@
 use crate::capability::CapabilityMode;
+use xai_computer_hub_sdk::RefusalCode;
 /// Errors surfaced by the workspace public API.
 /// `#[non_exhaustive]` so new variants are non-breaking; match variants rather than scraping `Display`.
 #[derive(Debug, thiserror::Error)]
@@ -38,6 +39,14 @@ pub enum WorkspaceError {
     /// An error from the server connection or tool server.
     #[error("hub error: {0}")]
     HubError(String),
+    /// The hub refused the WebSocket upgrade with an auth status; a 403 names its policy as
+    /// `refusal` when the hub is new enough to. Rendered as the `HubError` it used to be, which the
+    /// sidecars' `/ready` classifiers read.
+    #[error("hub error: handshake auth failed: HTTP {status}")]
+    HubRefused {
+        status: u16,
+        refusal: Option<RefusalCode>,
+    },
     #[error("unknown workspace method: {0}")]
     UnknownMethod(String),
     #[error("workspace archive export failed: {0}")]
@@ -75,6 +84,7 @@ impl WorkspaceError {
             Self::InvalidHunkAction(_) => "invalid_hunk_action",
             Self::HunkActionFailed(_) => "hunk_action_failed",
             Self::HubError(_) => "hub_error",
+            Self::HubRefused { .. } => "hub_refused",
             Self::UnknownMethod(_) => "unknown_method",
             Self::ExportArchiveLimitExceeded(_) => "export_archive_limit_exceeded",
             Self::ExportGithub { kind, .. } => kind.wire_code(),

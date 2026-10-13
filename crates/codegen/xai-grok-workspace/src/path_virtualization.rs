@@ -245,12 +245,13 @@ fn replace_path_prefix_in_text<'a>(text: &'a str, from: &str, to: &str) -> Cow<'
     let mut out: Option<String> = None;
     let mut i = 0;
     while i < bytes.len() {
-        if text[i..].starts_with(from) {
+        if text.get(i..).is_some_and(|rest| rest.starts_with(from)) {
             let end = i + from.len();
-            let ok_before = i == 0 || !is_path_token_char(bytes[i - 1]);
-            let ok_after = end == bytes.len() || !is_path_token_char(bytes[end]);
+            let ok_before = i == 0 || bytes.get(i - 1).is_none_or(|b| !is_path_token_char(*b));
+            let ok_after =
+                end == bytes.len() || bytes.get(end).is_none_or(|b| !is_path_token_char(*b));
             if ok_before && ok_after {
-                let buf = out.get_or_insert_with(|| text[..i].to_owned());
+                let buf = out.get_or_insert_with(|| text.get(..i).unwrap_or("").to_owned());
                 buf.push_str(to);
                 i = end;
                 continue;
@@ -277,9 +278,13 @@ fn rewrite_text_inbound<'a>(virt: &PathVirtualization, text: &'a str) -> Cow<'a,
     let mut out: Option<String> = None;
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'/' && (i == 0 || !is_path_token_char(bytes[i - 1])) {
+        if bytes.get(i) == Some(&b'/')
+            && (i == 0 || bytes.get(i - 1).is_none_or(|b| !is_path_token_char(*b)))
+        {
             let end = path_token_end(bytes, i);
-            let token = &text[i..end];
+            let Some(token) = text.get(i..end) else {
+                break;
+            };
             match virt.to_guest(token) {
                 Cow::Borrowed(_) => {
                     if let Some(buf) = &mut out {
@@ -287,7 +292,7 @@ fn rewrite_text_inbound<'a>(virt: &PathVirtualization, text: &'a str) -> Cow<'a,
                     }
                 }
                 Cow::Owned(mapped) => {
-                    out.get_or_insert_with(|| text[..i].to_owned())
+                    out.get_or_insert_with(|| text.get(..i).unwrap_or("").to_owned())
                         .push_str(&mapped);
                 }
             }
@@ -319,7 +324,10 @@ fn push_char_at(text: &str, i: usize, buf: Option<&mut String>) -> usize {
 
 fn path_token_end(bytes: &[u8], start: usize) -> usize {
     let mut end = start + 1;
-    while end < bytes.len() && (bytes[end] == b'/' || is_path_token_char(bytes[end])) {
+    while bytes
+        .get(end)
+        .is_some_and(|b| *b == b'/' || is_path_token_char(*b))
+    {
         end += 1;
     }
     end
@@ -449,9 +457,7 @@ fn rewrite_chat_completion_output(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Bind-time mount hook (probe-then-mount; unbind must not unmount)
-// ---------------------------------------------------------------------------
 
 /// Context passed to bind/unbind lifecycle hooks.
 #[derive(Debug, Clone, Copy)]
@@ -477,7 +483,7 @@ type MountFn = Arc<dyn Fn(&Path) -> Result<(), BindMountError> + Send + Sync>;
 type UnbindFn = Arc<dyn Fn(&str, &Path) + Send + Sync>;
 
 /// Probe-then-mount hook, a no-op until a command is configured.
-/// `on_unbind` must not unmount: the guest mount outlives the hub session.
+/// `on_unbind` must not unmount: the mount outlives the hub session.
 pub struct BindMountHook {
     probe: Option<ProbeFn>,
     mount: Option<MountFn>,
@@ -508,6 +514,31 @@ impl BindMountHook {
             mount: None,
             on_unbind: None,
         }
+    }
+
+    /// StartSession env: non-empty value is the dest-less remount command.
+    pub const BIND_REMOUNT_ENV: &str = xai_grok_workspace_types::ARTIFACTS_BIND_REMOUNT_ENV;
+
+    /// Wire remount when the terminal set [`Self::BIND_REMOUNT_ENV`] to a command.
+    pub fn from_env() -> Self {
+        Self::maybe_grok_files_remount(std::env::var(Self::BIND_REMOUNT_ENV).ok().as_deref())
+    }
+
+    pub fn maybe_grok_files_remount(command: Option<&str>) -> Self {
+        match command {
+            Some(cmd) if !cmd.is_empty() => Self::grok_files_probe_then_mount(cmd.to_owned()),
+            _ => Self::noop(),
+        }
+    }
+
+    /// Probe-then-mount of the configured remount command.
+    /// Dest is `real_root` (conversation / parent id), not the dest baked
+    /// into `mount_command` at hook install. Unbind does not unmount.
+    /// `on_bind` fails if dest is not FUSE.
+    pub fn grok_files_probe_then_mount(mount_command: String) -> Self {
+        Self::probe_then_mount(grok_files_mount_live, move |root| {
+            grok_files_remount(root, &mount_command)
+        })
     }
 
     /// Probe-then-mount. `probe` true means a live mount (skip `mount`).
@@ -551,6 +582,164 @@ impl BindMountHook {
         if let Some(cb) = &self.on_unbind {
             cb(ctx.session_id, ctx.real_root);
         }
+    }
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+pub(crate) fn grok_files_detached_mount_cmd(mount_command: &str) -> String {
+    format!(
+        "setsid nohup {mount_command} </dev/null >> /tmp/grok-files.out 2>> /tmp/grok-files.err &"
+    )
+}
+
+/// 120 polls [`FUSE_READY_POLL_INTERVAL`] apart: a 12s budget without a
+/// whole-second sleep per miss.
+const FUSE_READY_POLL_ATTEMPTS: u32 = 120;
+/// Rendered as fractional seconds; GNU and busybox `sleep` both accept `0.1`.
+const FUSE_READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+pub(crate) fn grok_files_ready_probe(mountpoint: &str) -> String {
+    let mp = shell_quote(mountpoint);
+    format!(
+        "i=0; while :; do \
+           if mountpoint -q {mp} 2>/dev/null; then exit 0; fi; \
+           if awk -v p={mp} '$2==p && $3 ~ /^fuse/ {{ found=1 }} END {{ exit found?0:1 }}' /proc/mounts; then exit 0; fi; \
+           i=$((i+1)); \
+           [ \"$i\" -ge {attempts} ] && exit 1; \
+           sleep {sleep_secs}; \
+         done",
+        attempts = FUSE_READY_POLL_ATTEMPTS,
+        sleep_secs = FUSE_READY_POLL_INTERVAL.as_secs_f64(),
+    )
+}
+
+pub(crate) fn grok_files_live_check(mountpoint: &str) -> String {
+    let mp = shell_quote(mountpoint);
+    // Any FUSE at dest counts: custom `mount_command` binaries do not
+    // appear as source `grok-files` after a successful remount.
+    format!(
+        "awk -v p={mp} '$2==p && $3 ~ /^fuse/ {{ found=1 }} END {{ exit found?0:1 }}' /proc/mounts \
+         && test -d {mp}"
+    )
+}
+
+const GROK_FILES_LIVE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const GROK_FILES_READY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const GROK_FILES_REMOUNT_SPAWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const GROK_FILES_MKDIR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn grok_files_sh(
+    script: &str,
+    timeout: std::time::Duration,
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c").arg(script);
+    cmd.stdin(std::process::Stdio::null());
+    xai_tty_utils::detach_std_command(&mut cmd);
+    // Waited-on probe; kill only if the timeout fires.
+    #[allow(clippy::disallowed_methods)]
+    let mut child = cmd.spawn()?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(status),
+            None if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                // A stale FUSE dest can leave the child in D-state; unbounded
+                // wait() would pin this spawn_blocking worker past bind timeout.
+                let reap = std::time::Instant::now() + std::time::Duration::from_millis(200);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) | Err(_) => break,
+                        Ok(None) if std::time::Instant::now() >= reap => break,
+                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                    }
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "grok-files probe timed out",
+                ));
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+}
+
+fn grok_files_mount_live(root: &Path) -> bool {
+    let Some(mp) = root.to_str() else {
+        return false;
+    };
+    grok_files_sh(&grok_files_live_check(mp), GROK_FILES_LIVE_CHECK_TIMEOUT)
+        .is_ok_and(|s| s.success())
+}
+
+/// Bind dest replaces any dest baked into `mount_command`, or is inserted
+/// after the files source, and the dest's conversation token file is
+/// appended. Two conversations must share neither dest nor credential.
+/// `dest` and `jwt_file` are shell-quoted by the caller.
+pub(crate) fn grok_files_command_at(mount_command: &str, dest: &str, jwt_file: &str) -> String {
+    xai_grok_workspace_types::with_grok_files_jwt_file(
+        &xai_grok_workspace_types::rewrite_grok_files_mount_dest(mount_command, dest),
+        jwt_file,
+    )
+}
+
+/// Token file for the remount at `root`, derived from the same conversation
+/// id as the dest (its last segment) so it matches that conversation's
+/// published token file.
+pub(crate) fn grok_files_jwt_file_for(root: &Path) -> Result<String, BindMountError> {
+    let conversation_id = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            BindMountError(format!(
+                "session_root has no conversation segment: {}",
+                root.display()
+            ))
+        })?;
+    Ok(xai_grok_workspace_types::grok_files_conversation_jwt_path(
+        conversation_id,
+    ))
+}
+
+fn grok_files_remount(root: &Path, mount_command: &str) -> Result<(), BindMountError> {
+    let mp = root
+        .to_str()
+        .ok_or_else(|| BindMountError(format!("non-utf8 session_root: {}", root.display())))?;
+    let jwt_file = grok_files_jwt_file_for(root)?;
+    // The FUSE dest is `session_root` itself, which may not exist yet; a stale
+    // FUSE mountpoint can hang `stat`, so create it through the timed shell.
+    let mkdir = format!("mkdir -p '{}'", mp.replace('\'', "'\\''"));
+    let status = grok_files_sh(&mkdir, GROK_FILES_MKDIR_TIMEOUT)
+        .map_err(|e| BindMountError(format!("mkdir remount dest: {e}")))?;
+    if !status.success() {
+        return Err(BindMountError(format!(
+            "mkdir remount dest exited {status} at {mp}"
+        )));
+    }
+    // Quote dest so metacharacters cannot split `setsid nohup {cmd}`.
+    let mount_command =
+        grok_files_command_at(mount_command, &shell_quote(mp), &shell_quote(&jwt_file));
+    let launch = grok_files_detached_mount_cmd(&mount_command);
+    let status = grok_files_sh(&launch, GROK_FILES_REMOUNT_SPAWN_TIMEOUT)
+        .map_err(|e| BindMountError(format!("grok-files remount spawn: {e}")))?;
+    if !status.success() {
+        return Err(BindMountError(format!(
+            "grok-files remount exited {status} at {mp}"
+        )));
+    }
+    let ready = grok_files_sh(&grok_files_ready_probe(mp), GROK_FILES_READY_PROBE_TIMEOUT)
+        .map_err(|e| BindMountError(format!("grok-files ready probe: {e}")))?;
+    if ready.success() {
+        Ok(())
+    } else {
+        Err(BindMountError(format!(
+            "artifacts remount dest is not FUSE at {mp}"
+        )))
     }
 }
 

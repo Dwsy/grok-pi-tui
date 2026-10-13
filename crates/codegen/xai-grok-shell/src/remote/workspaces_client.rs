@@ -157,8 +157,9 @@ mod tests {
             "nextPageToken": "tok2"
         });
         let wire: ListWorkspacesResponseWire = serde_json::from_value(json).unwrap();
-        assert_eq!(wire.workspaces.len(), 1);
-        let w = &wire.workspaces[0];
+        let [w] = wire.workspaces.as_slice() else {
+            panic!("expected one workspace: {:?}", wire.workspaces);
+        };
         assert_eq!(w.workspace_id, "ws_9f3a");
         assert_eq!(w.name, "GPU vendor research");
         assert_eq!(w.create_time.as_deref(), Some("2026-06-18T17:30:00Z"));
@@ -170,7 +171,9 @@ mod tests {
     fn missing_fields_default_gracefully() {
         let json = serde_json::json!({ "workspaces": [{ "workspaceId": "w1" }] });
         let wire: ListWorkspacesResponseWire = serde_json::from_value(json).unwrap();
-        let w = &wire.workspaces[0];
+        let [w] = wire.workspaces.as_slice() else {
+            panic!("expected one workspace: {:?}", wire.workspaces);
+        };
         assert_eq!(w.workspace_id, "w1");
         assert!(w.name.is_empty());
         assert!(w.create_time.is_none());

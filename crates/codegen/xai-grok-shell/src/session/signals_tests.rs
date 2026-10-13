@@ -58,7 +58,12 @@ async fn test_pr_metrics_counters_and_turn_delta() {
     assert_eq!(turn.delta.delta_prs_created, 1);
     assert_eq!(turn.delta.delta_prs_merged, 1);
     assert_eq!(turn.delta.prs_created_this_turn.len(), 1);
-    let pr = &turn.delta.prs_created_this_turn[0];
+    let Some(pr) = turn.delta.prs_created_this_turn.first() else {
+        panic!(
+            "expected a PR created this turn: {:?}",
+            turn.delta.prs_created_this_turn
+        );
+    };
     assert_eq!(pr.number, Some(7));
     assert!(pr.had_commit_in_session);
 
@@ -542,14 +547,20 @@ async fn test_unfinished_turn_snapshot_keeps_last_completed_turn_tool_outcomes()
     handle.record_tool_success("read_file");
     let cancelled = handle.take_unfinished_turn_snapshot().await.unwrap();
     assert_eq!(cancelled.delta.tool_outcomes_this_turn.len(), 1);
-    assert_eq!(
-        cancelled.delta.tool_outcomes_this_turn[0].tool_name,
-        "read_file"
-    );
+    let Some(first_outcome) = cancelled.delta.tool_outcomes_this_turn.first() else {
+        panic!(
+            "expected a tool outcome: {:?}",
+            cancelled.delta.tool_outcomes_this_turn
+        );
+    };
+    assert_eq!(first_outcome.tool_name, "read_file");
 
     let outcomes = handle.last_turn_tool_outcomes().await;
     assert_eq!(outcomes.len(), 1);
-    assert_eq!(outcomes[0].tool_name, "bash");
+    let Some(last) = outcomes.first() else {
+        panic!("expected last-turn tool outcome: {outcomes:?}");
+    };
+    assert_eq!(last.tool_name, "bash");
 
     handle.shutdown();
     actor_handle.await.unwrap();
@@ -662,30 +673,25 @@ async fn test_turn_end_snapshot_tool_outcomes() {
 
     // tool_outcomes_this_turn should be sorted by name
     let outcomes = &snap1.delta.tool_outcomes_this_turn;
-    assert_eq!(outcomes.len(), 3);
     assert_eq!(
-        outcomes[0],
-        ToolOutcome {
-            tool_name: "bash".to_string(),
-            successes: 2,
-            failures: 0,
-        }
-    );
-    assert_eq!(
-        outcomes[1],
-        ToolOutcome {
-            tool_name: "read_file".to_string(),
-            successes: 1,
-            failures: 0,
-        }
-    );
-    assert_eq!(
-        outcomes[2],
-        ToolOutcome {
-            tool_name: "search_replace".to_string(),
-            successes: 0,
-            failures: 1,
-        }
+        outcomes.as_slice(),
+        [
+            ToolOutcome {
+                tool_name: "bash".to_string(),
+                successes: 2,
+                failures: 0,
+            },
+            ToolOutcome {
+                tool_name: "read_file".to_string(),
+                successes: 1,
+                failures: 0,
+            },
+            ToolOutcome {
+                tool_name: "search_replace".to_string(),
+                successes: 0,
+                failures: 1,
+            },
+        ]
     );
 
     // Turn 2: no tools, outcomes should be empty
@@ -1302,9 +1308,15 @@ fn tool_duration_serializes_camel_case_with_call_id() {
         duration_ms: 4_720,
     };
     let v = serde_json::to_value(&d).unwrap();
-    assert_eq!(v["toolName"], "run_terminal_command");
-    assert_eq!(v["toolCallId"], "call_abc");
-    assert_eq!(v["durationMs"], 4720);
+    assert_eq!(
+        v.get("toolName").and_then(|x| x.as_str()),
+        Some("run_terminal_command")
+    );
+    assert_eq!(
+        v.get("toolCallId").and_then(|x| x.as_str()),
+        Some("call_abc")
+    );
+    assert_eq!(v.get("durationMs").and_then(|x| x.as_u64()), Some(4720));
 }
 
 #[test]
@@ -1327,7 +1339,12 @@ async fn record_tool_duration_includes_call_id_in_turn_delta() {
     handle.record_tool_duration("bash", "call_1", 5_000);
     let snap = handle.take_turn_end_snapshot().await.unwrap();
     assert_eq!(snap.delta.tool_durations_this_turn.len(), 1);
-    let td = &snap.delta.tool_durations_this_turn[0];
+    let Some(td) = snap.delta.tool_durations_this_turn.first() else {
+        panic!(
+            "expected a tool duration: {:?}",
+            snap.delta.tool_durations_this_turn
+        );
+    };
     assert_eq!(td.tool_name, "bash");
     assert_eq!(td.tool_call_id, "call_1");
     assert_eq!(td.duration_ms, 5_000);

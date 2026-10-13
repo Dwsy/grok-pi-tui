@@ -238,15 +238,22 @@ impl ContextInfoBlock {
         let used = snapshot.used;
         let total = snapshot.total;
         let usage_pct = snapshot.usage_pct;
-        let system_tokens = snapshot.system_prompt_tokens;
         let tool_tokens = snapshot.tool_definitions_tokens;
         let tool_count = snapshot.tool_definitions_count;
-        let message_tokens = snapshot.message_tokens;
-        let free_tokens = snapshot.free_tokens;
         let turn_count = snapshot.turn_count;
         let tool_call_count = snapshot.tool_call_count;
         let compaction_count = snapshot.compaction_count;
-        let overhead_tokens = used.saturating_sub(system_tokens + message_tokens);
+
+        let tokens = window_tokens(
+            used,
+            total,
+            snapshot.system_prompt_tokens,
+            snapshot.message_tokens,
+        );
+        let system_tokens = tokens.system;
+        let message_tokens = tokens.messages;
+        let overhead_tokens = tokens.overhead;
+        let free_tokens = tokens.free;
 
         let muted = theme.muted();
         let primary = Style::default()
@@ -305,7 +312,7 @@ impl ContextInfoBlock {
             let start = row_idx * bar.row_len;
             let end = (start + bar.row_len).min(cells.len());
             let mut spans = Vec::with_capacity(bar.row_len * 2);
-            for (i, (glyph, color)) in cells[start..end].iter().enumerate() {
+            for (i, (glyph, color)) in cells.get(start..end).into_iter().flatten().enumerate() {
                 if i > 0 {
                     spans.push(Span::raw(" "));
                 }
@@ -317,8 +324,8 @@ impl ContextInfoBlock {
             bar_lines.push(Line::from(spans));
         }
 
-        // Legend rows fill the bar; informational rows sit below it because their tokens are already counted in its categories
-        // Tool definitions land in Reasoning/overhead, and the usage categories overlap Messages
+        // Tool definitions are already in Reasoning/overhead
+        // Usage categories are already in Messages
         let mut legend_rows = vec![
             LegendRow {
                 glyph: system_glyph,
@@ -400,6 +407,8 @@ impl ContextInfoBlock {
             lines.extend(layout.render(row, bar, total, label_style, muted));
         }
         lines.push(Line::from(""));
+
+        lines.push(Line::from(Span::styled("Already counted above", muted)));
         for row in &info_rows {
             lines.extend(layout.render(row, bar, total, label_style, muted));
         }
@@ -491,6 +500,28 @@ fn fmt_tok_big(n: u64) -> String {
         format!("{:.1}m", n as f64 / 1_000_000.0)
     } else {
         fmt_tok(n)
+    }
+}
+
+/// `system`, `messages`, `overhead`, and `free` sum to `total`.
+struct WindowTokens {
+    system: u64,
+    messages: u64,
+    overhead: u64,
+    free: u64,
+}
+
+/// `system_tokens` and `message_tokens` can exceed `used`.
+/// `used` can exceed `total`.
+fn window_tokens(used: u64, total: u64, system_tokens: u64, message_tokens: u64) -> WindowTokens {
+    let used = used.min(total);
+    let system = system_tokens.min(used);
+    let messages = message_tokens.min(used - system);
+    WindowTokens {
+        system,
+        messages,
+        overhead: used - system - messages,
+        free: xai_token_estimation::free_tokens(total, used),
     }
 }
 
@@ -609,11 +640,10 @@ mod tests {
 
     /// Render a block and collapse a single line's spans into a flat string.
     fn line_text(lines: &[Line<'static>], idx: usize) -> String {
-        lines[idx]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
+        let Some(line) = lines.get(idx) else {
+            panic!("expected line {idx}, got {} lines", lines.len());
+        };
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     /// Render a block and collapse all spans into a flat newline-joined string, useful for `contains` assertions.
@@ -831,7 +861,7 @@ mod tests {
         let mut free = 0usize;
         let bar_start = 5; // header / blank / tokens / model / blank
         let bar_end = bar_start + layout.rows;
-        for line in &lines[bar_start..bar_end] {
+        for line in lines.get(bar_start..bar_end).into_iter().flatten() {
             for span in &line.spans {
                 let c = span.content.as_ref();
                 if c == SYSTEM_GLYPH_TEST || c == MESSAGES_GLYPH_TEST {
@@ -845,6 +875,51 @@ mod tests {
             }
         }
         (diamonds, tools, free, diamonds + tools + free)
+    }
+
+    #[test]
+    fn window_tokens_caps_used_to_total_and_system_to_used() {
+        let tokens = window_tokens(600_000, 500_000, 1_000, 400_000);
+        assert_eq!(0, tokens.free);
+        assert_eq!(500_000, tokens.system + tokens.messages + tokens.overhead);
+
+        let tokens = window_tokens(100, 1_000, 500, 50);
+        assert_eq!(100, tokens.system);
+        assert_eq!(0, tokens.messages);
+        assert_eq!(0, tokens.overhead);
+        assert_eq!(900, tokens.free);
+    }
+
+    #[test]
+    fn legend_caps_messages_when_estimate_exceeds_used() {
+        let mut snap = snapshot();
+        snap.used = 206_000;
+        snap.total = 500_000;
+        snap.system_prompt_tokens = 1_500;
+        snap.message_tokens = 380_000;
+        snap.usage_pct = 41;
+
+        let block = ContextInfoBlock::new(snap, "grok-build");
+        let theme = test_theme();
+        let lines = block.build_lines(&theme, BarLayout::WIDE);
+
+        let all = all_text(&lines);
+        assert!(
+            all.contains("Messages") && all.contains("205k") && all.contains("(41%)"),
+            "Messages should show capped occupancy, not the 380k estimate:\n{all}"
+        );
+        assert!(
+            !all.contains("Reasoning/overhead"),
+            "overhead is zero when messages eat remaining occupancy:\n{all}"
+        );
+        assert!(
+            all.contains("Free") && all.contains("294k") && all.contains("(59%)"),
+            "Free stays window minus occupancy:\n{all}"
+        );
+        assert!(
+            all.contains("Already counted above"),
+            "info rows must be labeled as overlapping:\n{all}"
+        );
     }
 
     #[test]
@@ -1021,7 +1096,10 @@ mod tests {
         for needle in [" tokens ", ")"] {
             let positions = cols(needle);
             assert!(
-                positions.windows(2).all(|w| w[0] == w[1]),
+                positions.windows(2).all(|w| {
+                    let [a, b] = w else { return false };
+                    a == b
+                }),
                 "{needle:?} column misaligned: {positions:?}\n{all}"
             );
         }
@@ -1046,23 +1124,8 @@ mod tests {
         assert_eq!(percent_of_window(500_000, 1_000_000), "50%");
     }
 
-    // Responsive bar layout tests
     // The bar's shape (5×20 vs 10×10) is chosen by `BarLayout::for_width` based on terminal width
     // Narrow terminals thus get a square bar that still fits in their column budget
-
-    #[test]
-    fn bar_layout_wide_is_5_rows_of_20() {
-        assert_eq!(BarLayout::WIDE.rows, 5);
-        assert_eq!(BarLayout::WIDE.row_len, 20);
-        assert_eq!(BarLayout::WIDE.total(), 100);
-    }
-
-    #[test]
-    fn bar_layout_narrow_is_10_rows_of_10() {
-        assert_eq!(BarLayout::NARROW.rows, 10);
-        assert_eq!(BarLayout::NARROW.row_len, 10);
-        assert_eq!(BarLayout::NARROW.total(), 100);
-    }
 
     #[test]
     fn bar_layout_for_width_picks_wide_at_breakpoint_and_above() {
@@ -1095,14 +1158,17 @@ mod tests {
         let lines = block.build_lines(&theme, BarLayout::NARROW);
         // The bar starts at index 5 (header / blank / tokens / model / blank)
         // Each of the next 10 rows must be a non-empty bar row
-        for (offset, line) in lines[5..15].iter().enumerate() {
+        for (offset, line) in lines.get(5..15).into_iter().flatten().enumerate() {
             assert!(
                 !line.spans.is_empty(),
                 "narrow bar row {offset} must be non-empty"
             );
         }
         // The line right after the bar is the spacer blank
-        let after_bar: String = lines[15].spans.iter().map(|s| s.content.as_ref()).collect();
+        let after_bar: String = lines
+            .get(15)
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .unwrap_or_else(|| panic!("expected line 15 after narrow bar"));
         assert_eq!(after_bar, "", "expected blank line after narrow bar");
     }
 
@@ -1122,7 +1188,10 @@ mod tests {
         let block = ContextInfoBlock::new(snapshot(), "grok-4");
         let theme = test_theme();
         let lines = block.build_lines(&theme, BarLayout::NARROW);
-        for (offset, line) in lines[5..15].iter().enumerate() {
+        let bar = lines
+            .get(5..15)
+            .unwrap_or_else(|| panic!("expected 10 narrow bar rows, got {}", lines.len()));
+        for (offset, line) in bar.iter().enumerate() {
             let cell_count = line
                 .spans
                 .iter()
@@ -1147,7 +1216,10 @@ mod tests {
         let block = ContextInfoBlock::new(snapshot(), "grok-4");
         let theme = test_theme();
         let lines = block.build_lines(&theme, BarLayout::WIDE);
-        for (offset, line) in lines[5..10].iter().enumerate() {
+        let bar = lines
+            .get(5..10)
+            .unwrap_or_else(|| panic!("expected 5 wide bar rows, got {}", lines.len()));
+        for (offset, line) in bar.iter().enumerate() {
             let cell_count = line
                 .spans
                 .iter()
@@ -1166,10 +1238,6 @@ mod tests {
             );
         }
     }
-
-    // -------------------------------------------------------------------
-    // Legend label color and responsive wrapping tests
-    // -------------------------------------------------------------------
 
     /// Helper: find the legend row (or row 1, for the narrow layout) whose label text starts with `label_prefix`.
     /// Returns the matching `Line` so the caller can assert on its spans.
@@ -1238,16 +1306,14 @@ mod tests {
         ];
         let mut idx = 16;
         for (label, expected_tokens) in categories {
-            let row1: String = lines[idx]
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
-            let row2: String = lines[idx + 1]
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let row1: String = lines
+                .get(idx)
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .unwrap_or_else(|| panic!("expected legend row {idx}"));
+            let row2: String = lines
+                .get(idx + 1)
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .unwrap_or_else(|| panic!("expected legend row {}", idx + 1));
             assert!(
                 row1.contains(label),
                 "expected row {idx} to contain `{label}`, got: {row1:?}"
@@ -1267,7 +1333,9 @@ mod tests {
         let theme = test_theme();
         let lines = block.build_lines(&theme, BarLayout::NARROW);
         // The data row for the first legend entry sits at index 17 (16 is the "System prompt" header row, 17 its data row)
-        let data_row = &lines[17];
+        let Some(data_row) = lines.get(17) else {
+            panic!("expected data row at index 17");
+        };
         let first = data_row
             .spans
             .first()
@@ -1285,8 +1353,12 @@ mod tests {
         let block = ContextInfoBlock::new(snapshot(), "grok-4");
         let theme = test_theme();
         let lines = block.build_lines(&theme, BarLayout::WIDE);
-        let row_text =
-            |i: usize| -> String { lines[i].spans.iter().map(|s| s.content.as_ref()).collect() };
+        let row_text = |i: usize| -> String {
+            lines
+                .get(i)
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .unwrap_or_else(|| panic!("expected legend row {i}"))
+        };
         let l11 = row_text(11);
         assert!(
             l11.contains("System prompt") && l11.contains("1.2k"),

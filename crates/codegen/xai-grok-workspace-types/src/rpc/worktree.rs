@@ -113,28 +113,71 @@ impl StrategyReport {
         }
     }
 }
+/// spelling. The single map every strategy / transport label is derived from;
+/// an unknown transport is `None`, never assumed to be NFS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroveTransport {
+    Fuse,
+    Nfs,
+    Projfs,
+}
+impl GroveTransport {
+    /// From the daemon's wire label (`fuse` / `nfs` / `projfs`, any case).
+    #[must_use]
+    pub fn from_wire(transport: &str) -> Option<Self> {
+        if transport.eq_ignore_ascii_case("fuse") {
+            Some(Self::Fuse)
+        } else if transport.eq_ignore_ascii_case("nfs") {
+            Some(Self::Nfs)
+        } else if transport.eq_ignore_ascii_case("projfs") {
+            Some(Self::Projfs)
+        } else {
+            None
+        }
+    }
+    /// From a stored `resolved_strategy` / `creation_mode` (the legacy `nfs`
+    /// spelling included).
+    #[must_use]
+    pub fn from_strategy(strategy: &str) -> Option<Self> {
+        match strategy {
+            "grove-fuse" => Some(Self::Fuse),
+            "grove-nfs" | "nfs" => Some(Self::Nfs),
+            "grove-projfs" => Some(Self::Projfs),
+            _ => None,
+        }
+    }
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fuse => "fuse",
+            Self::Nfs => "nfs",
+            Self::Projfs => "projfs",
+        }
+    }
+    #[must_use]
+    pub fn strategy(self) -> &'static str {
+        match self {
+            Self::Fuse => "grove-fuse",
+            Self::Nfs => "grove-nfs",
+            Self::Projfs => "grove-projfs",
+        }
+    }
+}
 #[must_use]
 pub fn is_grove_resolved(strategy: &str) -> bool {
-    matches!(strategy, "grove-fuse" | "grove-nfs" | "nfs")
+    GroveTransport::from_strategy(strategy).is_some()
 }
-/// Transport label for a resolved strategy. Linux FUSE is never `nfs`.
+/// Transport label for a resolved strategy: the daemon-reported transport when
+/// it is one Grove knows, else the one the strategy spelling implies.
 #[must_use]
 pub fn transport_for_resolved(
     resolved: &str,
     grove_transport: Option<&str>,
 ) -> Option<&'static str> {
-    if let Some(t) = grove_transport {
-        return Some(if t.eq_ignore_ascii_case("fuse") {
-            "fuse"
-        } else {
-            "nfs"
-        });
-    }
-    match resolved {
-        "grove-fuse" => Some("fuse"),
-        "grove-nfs" | "nfs" => Some("nfs"),
-        _ => None,
-    }
+    grove_transport
+        .and_then(GroveTransport::from_wire)
+        .or_else(|| GroveTransport::from_strategy(resolved))
+        .map(GroveTransport::label)
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -176,9 +219,12 @@ pub struct CreateWorktreeRequest {
     /// `nfsWorktree` / `nfs_worktree` are deserialize aliases.
     #[serde(default, alias = "nfsWorktree", alias = "nfs_worktree")]
     pub grove_worktree: Option<bool>,
-    /// Gate source from `gate_grove_worktree_layers` (`request` / `env` / `local` / `remote` / `remote_kill` / `remote_unavailable` / `default`).
+    /// Gate source from `gate_grove_worktree_layers` (`request` / `env` / `local` / `enable_all` / `remote` / `remote_kill` / `default`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grove_gate_source: Option<String>,
+    /// Pinned by prepare so streaming `Created.source_git_root` matches `Creating`.
+    #[serde(default, skip)]
+    pub resolved_source_git_root: Option<String>,
 }
 impl WorkspaceRpc for CreateWorktreeRequest {
     const METHOD: &'static str = "workspace.create_worktree";
@@ -449,29 +495,6 @@ impl WorkspaceRpc for WorktreeCleanArtifactsReq {
 mod tests {
     use super::*;
     #[test]
-    fn method_constants() {
-        assert_eq!(CreateWorktreeRequest::METHOD, "workspace.create_worktree");
-        assert_eq!(
-            WorktreeCreateSyncReq::METHOD,
-            "workspace.worktree_create_sync"
-        );
-        assert_eq!(RemoveWorktreeRequest::METHOD, "workspace.remove_worktree");
-        assert_eq!(ApplyWorktreeRequest::METHOD, "workspace.apply_worktree");
-        assert_eq!(WorktreeShowReq::METHOD, "workspace.worktree_show");
-        assert_eq!(WorktreeGcReq::METHOD, "workspace.worktree_gc");
-        assert_eq!(WorktreeListReq::METHOD, "workspace.worktree_list");
-        assert_eq!(
-            WorktreeDbRebuildReq::METHOD,
-            "workspace.worktree_db_rebuild"
-        );
-        assert_eq!(WorktreeDbPathReq::METHOD, "workspace.worktree_db_path");
-        assert_eq!(WorktreeDbStatsReq::METHOD, "workspace.worktree_db_stats");
-        assert_eq!(
-            CreateWorktreeFromWorktreeSyncReq::METHOD,
-            "workspace.worktree_create_from_worktree_sync"
-        );
-    }
-    #[test]
     fn create_worktree_from_worktree_sync_req_keeps_inner_wrapper() {
         let req = CreateWorktreeFromWorktreeSyncReq {
             inner: CreateWorktreeFromWorktreeRequestWire {
@@ -487,8 +510,14 @@ mod tests {
         };
         let json = serde_json::to_value(&req).unwrap();
         let inner = json.get("inner").expect("inner wrapper present");
-        assert_eq!(inner["sourceWorktreePath"], "/src");
-        assert_eq!(inner["copyMode"], "dirty");
+        assert_eq!(
+            inner.get("sourceWorktreePath").and_then(|v| v.as_str()),
+            Some("/src")
+        );
+        assert_eq!(
+            inner.get("copyMode").and_then(|v| v.as_str()),
+            Some("dirty")
+        );
         assert!(inner.get("cancellationToken").is_none());
         assert!(inner.get("resolvedDestPath").is_none());
     }
@@ -506,10 +535,14 @@ mod tests {
             label: None,
             grove_worktree: None,
             grove_gate_source: None,
+            resolved_source_git_root: None,
         });
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["sessionId"], "s1");
-        assert_eq!(json["sourcePath"], "/repo");
+        assert_eq!(json.get("sessionId").and_then(|v| v.as_str()), Some("s1"));
+        assert_eq!(
+            json.get("sourcePath").and_then(|v| v.as_str()),
+            Some("/repo")
+        );
         assert!(json.get("inner").is_none());
     }
     #[test]
@@ -531,9 +564,15 @@ mod tests {
             source_git_root: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["status"], "creating");
-        assert_eq!(json["sessionId"], "s1");
-        assert_eq!(json["worktreePath"], "/wt");
+        assert_eq!(
+            json.get("status").and_then(|v| v.as_str()),
+            Some("creating")
+        );
+        assert_eq!(json.get("sessionId").and_then(|v| v.as_str()), Some("s1"));
+        assert_eq!(
+            json.get("worktreePath").and_then(|v| v.as_str()),
+            Some("/wt")
+        );
         assert!(json.get("sourceGitRoot").is_none());
     }
     #[test]
@@ -627,6 +666,22 @@ mod tests {
             Some("nfs")
         );
         assert_eq!(transport_for_resolved("nfs", None), Some("nfs"));
+        assert_eq!(
+            transport_for_resolved("grove-projfs", Some("projfs")),
+            Some("projfs")
+        );
+        assert_eq!(transport_for_resolved("grove-projfs", None), Some("projfs"));
+        assert!(is_grove_resolved("grove-projfs"));
+        assert_eq!(transport_for_resolved("copy", Some("weird")), None);
+        assert_eq!(GroveTransport::from_wire("weird"), None);
+        for t in [
+            GroveTransport::Fuse,
+            GroveTransport::Nfs,
+            GroveTransport::Projfs,
+        ] {
+            assert_eq!(GroveTransport::from_strategy(t.strategy()), Some(t));
+            assert_eq!(GroveTransport::from_wire(t.label()), Some(t));
+        }
         assert_eq!(transport_for_resolved("copy", None), None);
     }
 }

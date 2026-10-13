@@ -172,7 +172,7 @@ impl Navigator {
 
         match node {
             Some(n) => {
-                let text = std::str::from_utf8(&content[n.byte_range()])
+                let text = std::str::from_utf8(content.get(n.byte_range()).unwrap_or(&[]))
                     .map_err(|_| NavigationError::ParseError("Invalid UTF-8".to_string()))?;
                 Ok(text.to_string())
             }
@@ -411,7 +411,8 @@ function test(sessionId: string) {{
             "request should be found as a definition"
         );
         assert_eq!(
-            def_result.locations[0].line, 4,
+            def_result.locations.first().map(|l| l.line),
+            Some(4),
             "request should be defined on line 4"
         );
 
@@ -422,7 +423,8 @@ function test(sessionId: string) {{
             "toolCallId should be found as a definition"
         );
         assert_eq!(
-            def_result2.locations[0].line, 4,
+            def_result2.locations.first().map(|l| l.line),
+            Some(4),
             "toolCallId should be defined on line 4"
         );
 
@@ -464,7 +466,8 @@ for (const {{ name, value }} of items) {{
             "name should be found as a definition"
         );
         assert_eq!(
-            def_result.locations[0].line, 3,
+            def_result.locations.first().map(|l| l.line),
+            Some(3),
             "name should be defined on line 3"
         );
 
@@ -475,7 +478,8 @@ for (const {{ name, value }} of items) {{
             "value should be found as a definition"
         );
         assert_eq!(
-            def_result2.locations[0].line, 3,
+            def_result2.locations.first().map(|l| l.line),
+            Some(3),
             "value should be defined on line 3"
         );
     }
@@ -505,7 +509,8 @@ console.log(first, second);"#
             "first should be found as a definition"
         );
         assert_eq!(
-            def_result.locations[0].line, 2,
+            def_result.locations.first().map(|l| l.line),
+            Some(2),
             "first should be defined on line 2"
         );
 
@@ -516,7 +521,8 @@ console.log(first, second);"#
             "second should be found as a definition"
         );
         assert_eq!(
-            def_result2.locations[0].line, 2,
+            def_result2.locations.first().map(|l| l.line),
+            Some(2),
             "second should be defined on line 2"
         );
     }
@@ -546,7 +552,8 @@ console.log(foo, bar);"#
             "foo should be found as a definition"
         );
         assert_eq!(
-            def_result.locations[0].line, 2,
+            def_result.locations.first().map(|l| l.line),
+            Some(2),
             "foo should be defined on line 2"
         );
 
@@ -557,7 +564,8 @@ console.log(foo, bar);"#
             "bar should be found as a definition"
         );
         assert_eq!(
-            def_result2.locations[0].line, 2,
+            def_result2.locations.first().map(|l| l.line),
+            Some(2),
             "bar should be defined on line 2"
         );
     }
@@ -614,7 +622,8 @@ const result = myObject.value;"#
             "first should be found as a definition"
         );
         assert_eq!(
-            def_result.locations[0].line, 1,
+            def_result.locations.first().map(|l| l.line),
+            Some(1),
             "first should be defined on line 1"
         );
 
@@ -625,7 +634,8 @@ const result = myObject.value;"#
             "name should be found as a definition"
         );
         assert_eq!(
-            def_result2.locations[0].line, 1,
+            def_result2.locations.first().map(|l| l.line),
+            Some(1),
             "name should be defined on line 1"
         );
     }
@@ -655,7 +665,8 @@ const result = myObject.value;"#
             "name should be found as a definition"
         );
         assert_eq!(
-            def_result.locations[0].line, 1,
+            def_result.locations.first().map(|l| l.line),
+            Some(1),
             "name should be defined on line 1"
         );
 
@@ -666,7 +677,8 @@ const result = myObject.value;"#
             "age should be found as a definition"
         );
         assert_eq!(
-            def_result2.locations[0].line, 1,
+            def_result2.locations.first().map(|l| l.line),
+            Some(1),
             "age should be defined on line 1"
         );
     }

@@ -24,7 +24,7 @@ use crate::input::mouse::ScrollDebugSnapshot;
 const PANEL_WIDTH: u16 = 46;
 
 /// Runtime on/off switch for the HUD, mirroring how `FrameMetrics` reads its env var.
-/// `GROK_SCROLL_DEBUG` (nonempty and not `"0"`) enables it at startup, and the hidden `/scroll-debug` command toggles it live.
+/// `GROK_SCROLL_DEBUG` (nonempty and not `"0"`) enables it at startup, and `/debug scroll` toggles it live.
 /// Deliberately NOT a settings-registry entry: it is a diagnostic, not a preference to persist.
 pub struct ScrollDebugHud {
     enabled: bool,
@@ -46,7 +46,7 @@ impl ScrollDebugHud {
         self.enabled
     }
 
-    /// The hidden `/scroll-debug` command flips this live.
+    /// `/debug scroll` flips this live.
     pub fn toggle(&mut self) {
         self.enabled = !self.enabled;
     }
@@ -80,7 +80,7 @@ impl ScrollDebugPanel {
         let ctx = crate::terminal::terminal_context();
 
         let mut lines: Vec<String> = Vec::with_capacity(10);
-        lines.push("scroll debug  (/scroll-debug)".to_string());
+        lines.push("scroll debug (/debug scroll)".to_string());
         lines.push(format!("term:{} mux:{}", ctx.brand, ctx.multiplexer));
         lines.push(format!(
             "mode:{} inv:{} speed:x{:.2}",
@@ -205,7 +205,9 @@ mod tests {
         let x0 = area.width - PANEL_WIDTH;
         for y in 0..10u16 {
             for x in x0..area.width {
-                let cell = &buf[(x, y)];
+                let Some(cell) = buf.cell((x, y)) else {
+                    panic!("cell ({x},{y})");
+                };
                 assert_eq!(
                     cell.bg,
                     Color::Black,
@@ -225,7 +227,10 @@ mod tests {
             }
         }
         // The overlay stays inside its rect: cells outside it keep the theme
-        assert_eq!(buf[(0, 0)].bg, Color::Rgb(3, 3, 4));
-        assert_eq!(buf[(x0 - 1, 3)].modifier, Modifier::ITALIC);
+        assert_eq!(buf.cell((0, 0)).map(|c| c.bg), Some(Color::Rgb(3, 3, 4)));
+        assert_eq!(
+            buf.cell((x0 - 1, 3)).map(|c| c.modifier),
+            Some(Modifier::ITALIC)
+        );
     }
 }

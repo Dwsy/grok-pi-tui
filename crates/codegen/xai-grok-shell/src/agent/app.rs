@@ -2,6 +2,7 @@ use crate::agent::config::{Config as AgentConfig, ModelEntry};
 use crate::agent::init::{bootstrap_with_cancel, exit_on_config_error};
 use crate::agent::mvp_agent::MvpAgent;
 use crate::agent::remote_config::{ModelFetchAuth, prefetch_models_blocking};
+use crate::leader::CursorWorkerStartArgs;
 use crate::leader::protocol::InternalMethod;
 use crate::util::grok_home;
 use agent_client_protocol as acp;
@@ -113,6 +114,8 @@ pub(crate) async fn run_auto_update_checker(
         }
     }
 }
+/// Holds the agent past `drop(local_set)`; see `LocalRef`. Declared before the `LocalSet` so an unwind keeps that order.
+type AgentKeepalive = Rc<std::cell::RefCell<Option<Rc<MvpAgent>>>>;
 /// Spawn the agent inside a LocalSet and return a handle to the I/O future.
 fn spawn_agent_local(
     agent_config: AgentConfig,
@@ -122,6 +125,7 @@ fn spawn_agent_local(
     memory_config: Option<crate::config::MemoryConfig>,
     outgoing: impl futures::AsyncWrite + Unpin + 'static,
     incoming: impl futures::AsyncRead + Unpin + 'static,
+    keepalive: &AgentKeepalive,
 ) -> impl std::future::Future<Output = Result<(), acp::Error>> {
     let (gw_tx, gw_rx) = tokio::sync::mpsc::unbounded_channel();
     let gateway = GatewaySender::new(gw_tx);
@@ -137,6 +141,8 @@ fn spawn_agent_local(
     if let Some(mc) = memory_config {
         agent.set_memory_config(mc);
     }
+    let agent = Rc::new(agent);
+    *keepalive.borrow_mut() = Some(Rc::clone(&agent));
     let incoming = LineBufferedRead::spawn_local(incoming);
     let (conn, handle_io) = acp::AgentSideConnection::new(agent, outgoing, incoming, |fut| {
         tokio::task::spawn_local(fut);
@@ -255,10 +261,12 @@ pub async fn run_stdio_agent(
         let _ = stdin_closed_tx.send(());
     });
     let _skills_watcher = spawn_skills_file_watcher(&acp_incoming_tx, &agent_config.skills.paths);
+    let agent_keepalive = AgentKeepalive::default();
     let local_set = tokio::task::LocalSet::new();
     let agent_cancel = tokio_util::sync::CancellationToken::new();
     let _cancel_on_exit = agent_cancel.clone().drop_guard();
     let cancel_for_agent = agent_cancel.clone();
+    let keepalive_for_spawn = Rc::clone(&agent_keepalive);
     let result = local_set
         .run_until(async move {
             let simplex_tx = acp_incoming_tx;
@@ -271,7 +279,8 @@ pub async fn run_stdio_agent(
             let auth_manager = Arc::new(agent_config.create_auth_manager());
             auth_manager.start_proactive_refresh(cancel_for_agent.clone());
             auth_manager.start_system_power_listener();
-            crate::managed_config::ensure_managed_policy_present(&auth_manager).await;
+            xai_grok_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager)
+                .await;
             let boot = crate::agent::init::resolve_boot_startup_settings(
                 &mut agent_config,
                 &cancel_for_agent,
@@ -288,6 +297,7 @@ pub async fn run_stdio_agent(
                 memory_config,
                 outgoing,
                 incoming,
+                &keepalive_for_spawn,
             );
             handle_io.await?;
             Ok::<(), anyhow::Error>(())
@@ -418,10 +428,12 @@ pub async fn run_headless(
         Some(cancel.clone()),
         Some(on_first_connect),
     );
+    let agent_keepalive = AgentKeepalive::default();
     let local_set = tokio::task::LocalSet::new();
     let mut agent_config_clone = agent_config.clone();
     let memory_config_for_first = memory_config;
     let agent_cancel = cancel.clone();
+    let keepalive_for_spawn = Rc::clone(&agent_keepalive);
     local_set
         .run_until(async move {
             let _agent_handle = tokio::task::spawn_local(async move {
@@ -429,7 +441,9 @@ pub async fn run_headless(
                 let gateway = GatewaySender::new(gw_tx);
                 let auth_manager = shared_auth_manager;
                 auth_manager.start_proactive_refresh(agent_cancel.clone());
-                crate::managed_config::ensure_managed_policy_present(&auth_manager)
+                xai_grok_cloud_config::managed_config::ensure_managed_policy_present(
+                        &auth_manager,
+                    )
                     .await;
                 let boot = match crate::agent::init::resolve_boot_startup_settings(
                         &mut agent_config_clone,
@@ -455,6 +469,8 @@ pub async fn run_headless(
                 if let Some(mc) = memory_config_for_first {
                     agent.set_memory_config(mc);
                 }
+                let agent = Rc::new(agent);
+                *keepalive_for_spawn.borrow_mut() = Some(Rc::clone(&agent));
                 let incoming = LineBufferedRead::spawn_local(incoming);
                 let (conn, handle_io) = acp::AgentSideConnection::new(
                     agent,
@@ -653,37 +669,61 @@ pub fn apply_otel_config(auth_manager: &AuthManager, grok_com_config: &GrokComCo
         crate::agent::otel_gate::open_at_startup();
     }
 }
+/// Boot-time switches of [`run_leader`], set by `grok agent leader` flags.
+pub struct LeaderRunOptions {
+    /// Keep serving after the last IPC client disconnects (devbox / systemd leaders).
+    pub no_exit_on_disconnect: bool,
+    /// Defer the grok.com relay until the first headless client registers.
+    pub relay_on_demand: bool,
+    pub auto_update_check: Option<LeaderAutoUpdateConfig>,
+    pub memory_config: Option<crate::config::MemoryConfig>,
+    /// Start the worker door after readiness; `None` defers to `[cursor_worker] auto_start`.
+    /// Inert on a build without worker support.
+    pub cursor_worker: Option<CursorWorkerStartArgs>,
+}
+/// Another process is wedged inside its own open+flock of the leader lock (stalled grok home). Only `tracing`
+/// here: a socket probe, pid read, or log open under the grok home could wedge this process too. Best effort: a
+/// client-spawned leader's stderr is `$GROK_HOME/leader.log`, so even this line can park in `write(2)` there.
+fn refuse_in_flight_leader_lock(e: crate::leader::LockError) -> anyhow::Error {
+    tracing::error!(
+        error = %e,
+        "leader lock acquisition already in flight in another process (stalled filesystem?); exiting without touching the lock"
+    );
+    anyhow::Error::new(e).context("refusing to start a second leader-lock acquirer")
+}
 /// Run the agent in leader mode, accepting IPC connections from multiple clients. When a grok.com session is present, the leader connects to the websocket relay after startup (post-auth, post-prefetch).
 /// BYOK / no-session leaders start serving clients over IPC only. A relay-eligible token hot-reloaded later arms the relay via [`DeferredRelayArm`]. IPC server started (`tokio::spawn`); socket bound HERE, before auth.
 /// Bounded non-interactive auth (no blocking model/settings prefetch; those stream in after readiness). `None` (BYOK / no session) is not an error: the relay stays off and a background cold-mint / re-login can start it later.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn run_leader(
     agent_config: &AgentConfig,
-    no_exit_on_disconnect: bool,
-    relay_on_demand: bool,
-    auto_update_check: Option<LeaderAutoUpdateConfig>,
-    memory_config: Option<crate::config::MemoryConfig>,
+    options: LeaderRunOptions,
 ) -> anyhow::Result<()> {
+    use crate::leader::roster_merge::{ExternalRoster, RosterListMerge, run_changed_notifier};
     use crate::leader::{
         LeaderLock, LeaderServerControlState, LeaderServerMetadata, LockError, ShutdownReason,
         compute_ws_url_suffix, run_leader_server,
     };
     use tokio::sync::watch;
     use tokio_util::sync::CancellationToken;
+    let LeaderRunOptions {
+        no_exit_on_disconnect,
+        relay_on_demand,
+        auto_update_check,
+        memory_config,
+        cursor_worker: cursor_worker_boot,
+    } = options;
     register_fs_watch_runtime();
     xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
-    tokio::task::spawn_blocking(|| {
-        xai_file_utils::queue::cleanup_orphaned_uploads(
-            &grok_home::grok_home(),
-            xai_file_utils::queue::DEFAULT_MAX_AGE,
-        );
-    });
     let mut agent_config = agent_config.clone();
     agent_config.mode = crate::agent::config::AgentMode::Leader;
     let ws_url = &agent_config.grok_com_config.grok_ws_url;
     let mut lock = LeaderLock::new(ws_url);
     let socket_path = lock.socket_path().clone();
     match lock.try_acquire() {
+        Err(e @ LockError::AcquireInProgress { .. }) => {
+            return Err(refuse_in_flight_leader_lock(e));
+        }
         Ok(true) => {
             lock.write_pid()?;
             debug!("Acquired leader lock, proceeding as leader");
@@ -701,11 +741,14 @@ pub async fn run_leader(
                 ));
             }
             match lock.acquire_reopen_timeout(LEADER_ACQUIRE_TIMEOUT).await {
+                Err(e @ LockError::AcquireInProgress { .. }) => {
+                    return Err(refuse_in_flight_leader_lock(e));
+                }
                 Ok(()) => {
                     lock.write_pid()?;
                     debug!("Acquired leader lock after bounded wait, proceeding as leader");
                 }
-                Err(LockError::Timeout(_)) => {
+                Err(LockError::Timeout { .. }) => {
                     info!(
                         "Timed out waiting for the leader lock ({}). Exiting so the \
                          client adopts whoever won it.",
@@ -725,6 +768,12 @@ pub async fn run_leader(
     }
     lock.cleanup_socket()?;
     info!("Leader server starting");
+    tokio::task::spawn_blocking(|| {
+        xai_file_utils::queue::cleanup_orphaned_uploads(
+            &grok_home::grok_home(),
+            xai_file_utils::queue::DEFAULT_MAX_AGE,
+        );
+    });
     let (ipc_to_agent_tx, mut ipc_to_agent_rx) = mpsc::unbounded_channel::<String>();
     let (agent_to_ipc_tx, agent_to_ipc_rx) = mpsc::unbounded_channel::<String>();
     let (ws_to_agent_tx, mut ws_to_agent_rx) = mpsc::unbounded_channel::<String>();
@@ -741,6 +790,7 @@ pub async fn run_leader(
     let client_count = Arc::new(AtomicUsize::new(0));
     let agent_busy = Arc::new(AtomicBool::new(false));
     let agent_activity = crate::agent::activity::AgentActivity::default();
+    let external_roster = ExternalRoster::new();
     let control_state = LeaderServerControlState::new(LeaderServerMetadata {
         pid: std::process::id(),
         socket_path: socket_path.clone(),
@@ -748,8 +798,16 @@ pub async fn run_leader(
         ws_url_suffix: compute_ws_url_suffix(ws_url),
         leader_binary_version: xai_grok_version::VERSION.to_string(),
     })
-    .with_default_hub_url(agent_config.hub.url.clone());
+    .with_default_hub_url(agent_config.hub.url.clone())
+    .with_cursor_worker(
+        agent_config.cursor_worker.clone(),
+        agent_config.hub.url.clone(),
+        grok_home::grok_home(),
+        external_roster.clone(),
+    );
     let workspace_control = control_state.workspace.clone();
+    let cursor_worker_control = control_state.cursor_worker.clone();
+    let leader_pid = control_state.metadata.pid;
     let ipc_server_cancel = cancel.clone();
     let socket_path_for_server = socket_path.clone();
     let client_count_for_server = client_count.clone();
@@ -819,9 +877,11 @@ pub async fn run_leader(
     info!(
         "Leader ready: local-only boot (model/settings refresh runs in background), ACP forwarding enabled"
     );
+    let agent_keepalive = AgentKeepalive::default();
     let local_set = tokio::task::LocalSet::new();
     let mut agent_config_for_spawn = agent_config.clone();
     agent_config_for_spawn.remote_settings = None;
+    let keepalive_for_spawn = Rc::clone(&agent_keepalive);
     crate::util::config::sync_campaign_fields(&mut agent_config_for_spawn);
     let agent_to_ipc_tx_clone = agent_to_ipc_tx.clone();
     let cancel_clone = cancel.clone();
@@ -835,10 +895,12 @@ pub async fn run_leader(
     }
     let relay_config = relay_config_for_session(auth.as_ref(), &agent_config, &shared_auth_manager);
     workspace_control.set_auth_manager(shared_auth_manager.clone());
+    cursor_worker_control.set_auth_manager(shared_auth_manager.clone());
     let auth_manager_for_agent = shared_auth_manager.clone();
     let auth_manager_for_config = shared_auth_manager.clone();
     let auth_manager_for_mint = shared_auth_manager.clone();
-    crate::managed_config::ensure_managed_policy_present(&auth_manager_for_agent).await;
+    xai_grok_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager_for_agent)
+        .await;
     let boot = crate::agent::init::resolve_boot_startup_settings(
         &mut agent_config_for_spawn,
         &cancel_clone,
@@ -896,6 +958,8 @@ pub async fn run_leader(
                 if let Some(tx) = agent_config_watcher_path_tx {
                     agent.set_config_watcher_path_tx(tx);
                 }
+                let agent = Rc::new(agent);
+                *keepalive_for_spawn.borrow_mut() = Some(Rc::clone(&agent));
                 let incoming = LineBufferedRead::spawn_local(incoming);
                 let (conn, handle_io) = acp::AgentSideConnection::new(
                     agent,
@@ -915,9 +979,12 @@ pub async fn run_leader(
                 }
                 info!("Agent task completed");
             });
+            let roster_merge = Rc::new(RosterListMerge::new(external_roster.clone()));
             let acp_incoming_tx_ipc = acp_incoming_tx.clone();
+            let roster_merge_ipc = roster_merge.clone();
             tokio::task::spawn_local(async move {
                 while let Some(msg) = ipc_to_agent_rx.recv().await {
+                    roster_merge_ipc.observe_inbound(&msg);
                     let mut tx = acp_incoming_tx_ipc.lock().await;
                     if tx.write_all(msg.as_bytes()).await.is_err()
                         || tx.write_all(b"\n").await.is_err()
@@ -928,8 +995,10 @@ pub async fn run_leader(
                 }
             });
             let acp_incoming_tx_ws = acp_incoming_tx.clone();
+            let roster_merge_ws = roster_merge.clone();
             tokio::task::spawn_local(async move {
                 while let Some(msg) = ws_to_agent_rx.recv().await {
+                    roster_merge_ws.observe_inbound(&msg);
                     let mut tx = acp_incoming_tx_ws.lock().await;
                     if tx.write_all(msg.as_bytes()).await.is_err()
                         || tx.write_all(b"\n").await.is_err()
@@ -942,7 +1011,20 @@ pub async fn run_leader(
             let agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>> = Rc::new(
                 Mutex::new(None),
             );
-            let agent_to_ws_tx_clone = agent_to_ws_tx.clone();
+            let fan_out = {
+                let agent_to_ws_tx = agent_to_ws_tx.clone();
+                let agent_to_ipc_tx = agent_to_ipc_tx_clone;
+                move |msg: String| {
+                    let maybe_tx = agent_to_ws_tx.lock();
+                    if let Some(ref tx) = *maybe_tx {
+                        let _ = tx.send(msg.clone());
+                    }
+                    drop(maybe_tx);
+                    let _ = agent_to_ipc_tx.send(msg);
+                }
+            };
+            let fan_out_agent = fan_out.clone();
+            let roster_merge_out = roster_merge.clone();
             tokio::task::spawn_local(async move {
                 let mut reader = BufReader::new(acp_outgoing_rx);
                 let mut line = String::new();
@@ -951,14 +1033,11 @@ pub async fn run_leader(
                     match reader.read_line(&mut line).await {
                         Ok(0) => break,
                         Ok(_) => {
-                            let msg = line.trim_end_matches(['\r', '\n']).to_string();
+                            let msg = line.trim_end_matches(['\r', '\n']);
                             if !msg.is_empty() {
-                                let maybe_tx = agent_to_ws_tx_clone.lock();
-                                if let Some(ref tx) = *maybe_tx {
-                                    let _ = tx.send(msg.clone());
-                                }
-                                drop(maybe_tx);
-                                let _ = agent_to_ipc_tx_clone.send(msg);
+                                fan_out_agent(
+                                    roster_merge_out.filter_outbound(msg).into_owned(),
+                                );
                             }
                         }
                         Err(e) => {
@@ -968,6 +1047,7 @@ pub async fn run_leader(
                     }
                 }
             });
+            tokio::task::spawn_local(run_changed_notifier(external_roster, fan_out));
             if session_pending {
                 let mint_auth_manager = auth_manager_for_mint;
                 let mint_cancel = cancel_clone.clone();
@@ -1017,6 +1097,13 @@ pub async fn run_leader(
                     slot: relay_handle_slot.clone(),
                     grok_com_config: agent_config.grok_com_config.clone(),
                     alpha_test_key: agent_config.endpoints.alpha_test_key.clone(),
+                });
+            }
+            {
+                let control = cursor_worker_control;
+                let cancel = cancel_clone.clone();
+                tokio::task::spawn_local(async move {
+                    control.start_at_boot(cursor_worker_boot, &cancel, leader_pid).await;
                 });
             }
             let update_cancel = cancel_clone.clone();
@@ -1687,26 +1774,38 @@ mod tests {
         assert!(line.ends_with('\n'), "must be a newline-terminated line");
         let msg: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
         assert_eq!(
-            msg["method"], "_x.ai/internal/reload_models",
+            msg.get("method").and_then(|v| v.as_str()),
+            Some("_x.ai/internal/reload_models"),
             "wire method must carry the `_` ext prefix or the ACP decoder \
              rejects it with method_not_found"
         );
-        assert_eq!(msg["id"], "config-reload-models");
-        assert_eq!(msg["jsonrpc"], "2.0");
+        assert_eq!(
+            msg.get("id"),
+            Some(&serde_json::json!("config-reload-models"))
+        );
+        assert_eq!(msg.get("jsonrpc"), Some(&serde_json::json!("2.0")));
         let line = internal_reload_request_line(
             "config-reload-project-mcp",
             InternalMethod::ReloadProjectMcpServers,
             serde_json::json!({ "cwd": "/repo/x" }),
         );
         let msg: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
-        assert_eq!(msg["params"]["cwd"], "/repo/x");
+        assert_eq!(
+            msg.get("params")
+                .and_then(|p| p.get("cwd"))
+                .and_then(|v| v.as_str()),
+            Some("/repo/x")
+        );
         let line = internal_reload_request_line(
             "config-auth-cleared",
             InternalMethod::AuthCleared,
             serde_json::json!({}),
         );
         let msg: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
-        assert_eq!(msg["method"], "_x.ai/internal/auth_cleared");
+        assert_eq!(
+            msg.get("method").and_then(|v| v.as_str()),
+            Some("_x.ai/internal/auth_cleared")
+        );
     }
     #[tokio::test]
     #[tracing::instrument(level = "debug", skip_all)]

@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{PathBase, bundled_git_in, prepend_child_path, version_key};
+use super::{PathBase, bundled_git_at, bundled_git_in, prepend_child_path, version_key};
 
 /// Unique scratch root under the OS temp dir, removed on drop (no tempfile
 /// dev-dep for this crate).
@@ -112,7 +112,6 @@ fn complete_older_payload_beats_launcher_only_newer_one() {
 /// Helpers alone do not make a payload usable: `git-upload-pack.exe` under
 /// `libexec\git-core` with no `<tree>\bin` beside it cannot start (no DLLs).
 /// Such a newer tree must lose to an older one that has both, since the
-/// picker's choice is what `grove doctor` reports on and `hermetic_git` pins.
 #[test]
 fn usable_older_payload_beats_newer_one_with_helpers_but_no_dlls() {
     let tmp = TempRoot::new("usable");
@@ -219,6 +218,20 @@ fn arm64_payload_helper_dir_is_clangarm64() {
     );
 }
 
+/// A complete tree under a hidden name is an installer's staging directory
+/// (or some other non-version entry) and must never be picked, even when it
+/// is the only complete one: the installer deletes stale staging trees.
+#[test]
+fn hidden_entries_are_not_versions() {
+    let tmp = TempRoot::new("hidden");
+    install(tmp.path(), ".staging-0.2.10", true);
+    install_helper(tmp.path(), ".staging-0.2.10", &["mingw64", "bin"]);
+    assert!(bundled_git_in(tmp.path()).is_none());
+    install(tmp.path(), "2.47.1", true);
+    let git = bundled_git_in(tmp.path()).unwrap();
+    assert_eq!(git.cmd_dir, tmp.path().join("2.47.1").join("cmd"));
+}
+
 #[test]
 fn absent_payload_is_none() {
     let tmp = TempRoot::new("absent");
@@ -226,6 +239,21 @@ fn absent_payload_is_none() {
     assert!(bundled_git_in(&tmp.path().join("missing")).is_none());
     install(tmp.path(), "2.47.1", false);
     assert!(bundled_git_in(tmp.path()).is_none());
+}
+
+#[test]
+fn bundled_git_at_reports_one_version_dir() {
+    let tmp = TempRoot::new("at");
+    let dir = tmp.path().join("2.55.0");
+    assert!(bundled_git_at(&dir).is_none());
+    install(tmp.path(), "2.55.0", false);
+    assert!(bundled_git_at(&dir).is_none(), "launcher required");
+    install(tmp.path(), "2.55.0", true);
+    let git = bundled_git_at(&dir).unwrap();
+    assert_eq!(git.cmd_dir, dir.join("cmd"));
+    assert!(!git.is_usable(), "launcher only");
+    install_helper(tmp.path(), "2.55.0", &["mingw64", "bin"]);
+    assert!(bundled_git_at(&dir).unwrap().is_usable());
 }
 
 #[test]

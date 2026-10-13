@@ -1,6 +1,6 @@
 //! Handle to communicate with ChatStateActor.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use tokio::sync::{mpsc, oneshot};
 use xai_grok_sampling_types::{
@@ -366,11 +366,16 @@ impl ChatStateHandle {
         let _ = self.cmd_tx.send(ChatStateCommand::FlushHarnessTraceTurn);
     }
 
-    /// Repair dangling tool calls after a harness-initiated halt.
-    pub fn repair_dangling_after_harness_halt(&self, class: &'static str) {
+    /// Repair dangling tool calls after a harness-initiated halt. `answers` are
+    /// written only for ids still dangling; the rest are dropped.
+    pub fn repair_dangling_after_harness_halt(
+        &self,
+        class: &'static str,
+        answers: HashMap<String, String>,
+    ) {
         let _ = self
             .cmd_tx
-            .send(ChatStateCommand::RepairDanglingAfterHarnessHalt { class });
+            .send(ChatStateCommand::RepairDanglingAfterHarnessHalt { class, answers });
     }
 
     /// Drop a trailing continue reminder whose continuation will never
@@ -529,6 +534,39 @@ impl ChatStateHandle {
             ChatStateCommand::GetSamplingConfig { reply }
         })
         .await
+    }
+
+    /// Apply the same tool-result prune a turn request uses (`total_tokens` over half the window).
+    /// Returns `items` unchanged when the mailbox is closed. If the actor dies after
+    /// accepting the command, returns empty.
+    pub async fn apply_turn_request_pruning(
+        &self,
+        items: Vec<ConversationItem>,
+    ) -> Vec<ConversationItem> {
+        let (tx, rx) = oneshot::channel();
+        if let Err(error) = self
+            .cmd_tx
+            .send(ChatStateCommand::ApplyTurnRequestPruning { items, reply: tx })
+        {
+            tracing::error!(
+                cmd_name = "ApplyTurnRequestPruning",
+                "ChatStateActor dead: send failed"
+            );
+            return match error.0 {
+                ChatStateCommand::ApplyTurnRequestPruning { items, .. } => items,
+                _ => unreachable!("sent ApplyTurnRequestPruning"),
+            };
+        }
+        match rx.await {
+            Ok(pruned) => pruned,
+            Err(_) => {
+                tracing::error!(
+                    cmd_name = "ApplyTurnRequestPruning",
+                    "ChatStateActor dead: reply dropped"
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Get the set of agent-edited file paths.

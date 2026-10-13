@@ -198,7 +198,10 @@ async fn list_running_subagents_skips_live_coordinator_child() {
 
             let listed = agent.list_running_subagents(&parent).await;
             assert_eq!(listed.len(), 1);
-            assert_eq!(listed[0].snapshot.subagent_id, id);
+            let Some(first) = listed.first() else {
+                panic!("expected one running subagent: {listed:?}");
+            };
+            assert_eq!(first.snapshot.subagent_id, id);
 
             let reread: SubagentMeta =
                 serde_json::from_str(&std::fs::read_to_string(sub_dir.join("meta.json")).unwrap())

@@ -119,8 +119,7 @@ impl xai_tool_runtime::Tool for SchedulerListTool {
                 let next_fire = t.next_fire_at().to_rfc3339();
                 let created = t.created_at.to_rfc3339();
                 let prompt = if t.prompt.len() > 80 {
-                    let cut = crate::util::floor_char_boundary(&t.prompt, 80);
-                    format!("{}...", &t.prompt[..cut])
+                    format!("{}...", crate::util::truncate_str(&t.prompt, 80))
                 } else {
                     t.prompt
                 };

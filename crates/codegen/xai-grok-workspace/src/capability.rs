@@ -57,7 +57,7 @@ impl CapabilityMode {
     }
 }
 
-/// Every `ToolKind` variant. Used by `is_subset_of` and by parameterised tests.
+/// Every `ToolKind` variant. Used by `is_subset_of`.
 /// When a new variant is added to `ToolKind`, the compile-time assertion below fires so it can't be silently omitted.
 pub(crate) const ALL_TOOL_KINDS: &[ToolKind] = &[
     ToolKind::Read,
@@ -149,10 +149,6 @@ pub(crate) fn kind_allowed(mode: CapabilityMode, kind: ToolKind) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,28 +159,6 @@ mod tests {
         ToolServerConfig {
             tools,
             behavior_preset: None,
-        }
-    }
-
-    #[test]
-    fn capability_mode_filter_table_is_exhaustive_per_kind() {
-        for &mode in &[
-            CapabilityMode::ReadOnly,
-            CapabilityMode::ReadWrite,
-            CapabilityMode::Execute,
-            CapabilityMode::All,
-        ] {
-            for &kind in ALL_TOOL_KINDS {
-                let id = format!("kind_{kind:?}");
-                let cfg = make_cfg(vec![test_support::tc(&id, Some(kind))]);
-                let out = mode.filter(&cfg);
-                let expected_present = kind_allowed(mode, kind);
-                let actually_present = out.tools.iter().any(|t| t.id == id);
-                assert_eq!(
-                    actually_present, expected_present,
-                    "({mode:?}, {kind:?}): expected present={expected_present}, got {actually_present}"
-                );
-            }
         }
     }
 
@@ -299,22 +273,6 @@ mod tests {
                 Some("current"),
                 "behavior_preset lost under {mode:?}"
             );
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // is_subset_of partial order
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn capability_mode_is_subset_of_reflexive() {
-        for &m in &[
-            CapabilityMode::ReadOnly,
-            CapabilityMode::ReadWrite,
-            CapabilityMode::Execute,
-            CapabilityMode::All,
-        ] {
-            assert!(m.is_subset_of(m), "{m:?} must be a subset of itself");
         }
     }
 

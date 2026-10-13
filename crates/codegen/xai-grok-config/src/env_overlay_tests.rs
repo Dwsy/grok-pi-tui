@@ -193,6 +193,19 @@ fn overlay_still_sets_soft_settings() {
 }
 
 #[test]
+fn malformed_inline_gives_no_layer_and_a_valid_exclude_applies() {
+    assert!(resolve_overlay(Some("{not valid json"), None).is_none());
+    let overlay =
+        resolve_overlay(Some(r#"{"shell_environment_policy":{"exclude":[]}}"#), None).unwrap();
+    let exclude = overlay
+        .get("shell_environment_policy")
+        .and_then(|policy| policy.get("exclude"))
+        .and_then(toml::Value::as_array)
+        .unwrap();
+    assert!(exclude.is_empty());
+}
+
+#[test]
 fn malformed_overlay_parse_errors_do_not_carry_the_value() {
     let secret = "sk-secret-token";
 

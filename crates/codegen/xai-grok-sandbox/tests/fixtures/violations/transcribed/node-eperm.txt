@@ -1,0 +1,7 @@
+node:fs:2426
+    return binding.writeFileUtf8(
+                   ^
+
+Error: EPERM: operation not permitted, open '/opt/ws-fixture/dev/notes.txt'
+    at Object.writeFileSync (node:fs:2426:20)
+    at [eval]:1:15

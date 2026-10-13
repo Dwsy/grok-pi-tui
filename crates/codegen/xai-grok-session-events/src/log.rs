@@ -134,27 +134,39 @@ mod tests {
         let lines: Vec<&str> = text.trim().split('\n').collect();
         assert_eq!(lines.len(), 4);
 
-        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(first["type"], "turn_started");
-        assert_eq!(first["session_id"], "test-session");
-        assert!(first["ts"].as_str().is_some());
+        let [l0, l1, l2, l3] = lines.as_slice() else {
+            panic!("expected four event lines: {lines:?}");
+        };
+        let first: serde_json::Value = serde_json::from_str(l0).unwrap();
+        assert_eq!(first.get("type"), Some(&serde_json::json!("turn_started")));
+        assert_eq!(
+            first.get("session_id"),
+            Some(&serde_json::json!("test-session"))
+        );
+        assert!(first.get("ts").and_then(|v| v.as_str()).is_some());
 
-        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(second["type"], "first_token");
+        let second: serde_json::Value = serde_json::from_str(l1).unwrap();
+        assert_eq!(second.get("type"), Some(&serde_json::json!("first_token")));
 
-        let third: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
-        assert_eq!(third["type"], "tool_completed");
-        assert_eq!(third["tool_name"], "bash");
-        assert_eq!(third["duration_ms"], 1500);
-        assert_eq!(third["tool_call_id"], "call_xyz");
+        let third: serde_json::Value = serde_json::from_str(l2).unwrap();
+        assert_eq!(
+            third.get("type"),
+            Some(&serde_json::json!("tool_completed"))
+        );
+        assert_eq!(third.get("tool_name"), Some(&serde_json::json!("bash")));
+        assert_eq!(third.get("duration_ms"), Some(&serde_json::json!(1500)));
+        assert_eq!(
+            third.get("tool_call_id"),
+            Some(&serde_json::json!("call_xyz"))
+        );
         assert!(
             third.get("source").is_none(),
             "shell ToolCompleted must omit source"
         );
 
-        let fourth: serde_json::Value = serde_json::from_str(lines[3]).unwrap();
-        assert_eq!(fourth["type"], "turn_ended");
-        assert_eq!(fourth["outcome"], "completed");
+        let fourth: serde_json::Value = serde_json::from_str(l3).unwrap();
+        assert_eq!(fourth.get("type"), Some(&serde_json::json!("turn_ended")));
+        assert_eq!(fourth.get("outcome"), Some(&serde_json::json!("completed")));
         assert!(fourth.get("cancellation_category").is_none());
     }
 

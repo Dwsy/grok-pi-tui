@@ -3,6 +3,8 @@
 //! Uses `WorktreeBuilder` and `remove_worktree` for native standalone, native
 //! linked, and Grove-projected worktrees. Latencies are samples, not CI gates.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -314,41 +316,51 @@ fn redact_sensitive_tokens(text: &str) -> String {
     let mut redacted = String::with_capacity(text.len());
     let mut cursor = 0;
     while cursor < text.len() {
-        let remaining = &text[cursor..];
+        let Some(remaining) = text.get(cursor..) else {
+            break;
+        };
         let url_start = remaining.char_indices().find_map(|(index, character)| {
             if !character.is_ascii_alphabetic()
                 || (index > 0
-                    && !remaining[..index]
-                        .chars()
-                        .next_back()
-                        .is_some_and(is_path_start_delimiter))
+                    && !remaining.get(..index).is_some_and(|prefix| {
+                        prefix
+                            .chars()
+                            .next_back()
+                            .is_some_and(is_path_start_delimiter)
+                    }))
             {
                 return None;
             }
-            let candidate = &remaining[index..];
+            let candidate = remaining.get(index..)?;
             let end = candidate
                 .char_indices()
                 .find_map(|(offset, character)| {
                     (offset > 0 && is_sensitive_value_delimiter(character)).then_some(offset)
                 })
                 .unwrap_or(candidate.len());
-            url::Url::parse(&candidate[..end]).is_ok().then_some(index)
+            url::Url::parse(candidate.get(..end).unwrap_or(candidate))
+                .is_ok()
+                .then_some(index)
         });
         let path_start = remaining.char_indices().find_map(|(index, character)| {
             (character == '/'
                 && (index == 0
-                    || remaining[..index]
-                        .chars()
-                        .next_back()
-                        .is_some_and(is_path_start_delimiter)))
+                    || remaining.get(..index).is_some_and(|prefix| {
+                        prefix
+                            .chars()
+                            .next_back()
+                            .is_some_and(is_path_start_delimiter)
+                    })))
             .then_some(index)
         });
         let Some(start) = url_start.into_iter().chain(path_start).min() else {
             redacted.push_str(remaining);
             break;
         };
-        redacted.push_str(&remaining[..start]);
-        let sensitive = &remaining[start..];
+        redacted.push_str(remaining.get(..start).unwrap_or(""));
+        let Some(sensitive) = remaining.get(start..) else {
+            break;
+        };
         let end = sensitive
             .char_indices()
             .find_map(|(index, character)| {
@@ -1058,8 +1070,11 @@ fn run_case(kind: CaseKind, context: &RunContext<'_>) -> Result<CaseReport> {
         requested_transport: kind.requested_transport(),
         support: Support::Supported,
         summary_ms: Some(SampleSummary {
-            first: samples[0].durations_ms.clone(),
-            warm_median: median_phases(&samples[1..]),
+            first: samples
+                .first()
+                .map(|s| s.durations_ms.clone())
+                .unwrap_or_default(),
+            warm_median: median_phases(samples.get(1..).unwrap_or(&[])),
         }),
         raw_samples: samples,
     })
@@ -1600,8 +1615,8 @@ fn classify_status(status: &[u8]) -> StateCoverage {
         if record.starts_with(b"? ") {
             coverage.has_untracked = true;
         } else if matches!(record.first(), Some(b'1' | b'2' | b'u')) && record.len() >= 4 {
-            coverage.has_staged |= record[2] != b'.';
-            coverage.has_dirty |= record[3] != b'.';
+            coverage.has_staged |= record.get(2).copied().is_some_and(|b| b != b'.');
+            coverage.has_dirty |= record.get(3).copied().is_some_and(|b| b != b'.');
         }
     }
     coverage
@@ -1752,8 +1767,17 @@ fn median(values: impl Iterator<Item = f64>) -> f64 {
     values.sort_by(f64::total_cmp);
     match values.len() {
         0 => 0.0,
-        len if len % 2 == 1 => values[len / 2],
-        len => (values[len / 2 - 1] + values[len / 2]) / 2.0,
+        len if len % 2 == 1 => values.get(len / 2).copied().unwrap_or(0.0),
+        len => match (
+            (len / 2)
+                .checked_sub(1)
+                .and_then(|i| values.get(i))
+                .copied(),
+            values.get(len / 2).copied(),
+        ) {
+            (Some(a), Some(b)) => (a + b) / 2.0,
+            _ => 0.0,
+        },
     }
 }
 

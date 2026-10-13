@@ -319,10 +319,14 @@ fn persistent_agent_thread(
         return Ok(());
     }
 
+    // Declared before the `LocalSet` so it is dropped after the `LocalRef` tasks on it, on unwind too; see `LocalRef`.
+    let mut keepalive: Option<Rc<MvpAgent>> = None;
     let local_set = tokio::task::LocalSet::new();
-    local_set.block_on(&rt, async move {
-        run_persistent_agent(agent_config, conn_rx, prefetched_models).await
+    local_set.block_on(&rt, async {
+        run_persistent_agent(agent_config, conn_rx, prefetched_models, &mut keepalive).await
     });
+    drop(local_set);
+    drop(keepalive);
 
     warn!("Persistent agent thread exiting");
     Ok(())
@@ -452,6 +456,7 @@ async fn run_persistent_agent(
     mut agent_config: AgentConfig,
     mut connection_rx: mpsc::UnboundedReceiver<NewConnectionChannels>,
     prefetched_models: Option<IndexMap<String, ModelEntry>>,
+    keepalive: &mut Option<Rc<MvpAgent>>,
 ) {
     let (gw_tx, mut gw_rx) = tokio::sync::mpsc::unbounded_channel::<AcpClientMessage>();
     let gateway = GatewaySender::new(gw_tx);
@@ -461,7 +466,7 @@ async fn run_persistent_agent(
     // Covers unwind; the explicit cancel below keeps its teardown ordering.
     let _cancel_on_exit = agent_cancel.clone().drop_guard();
     auth_manager.start_proactive_refresh(agent_cancel.clone());
-    crate::managed_config::ensure_managed_policy_present(&auth_manager).await;
+    xai_grok_cloud_config::managed_config::ensure_managed_policy_present(&auth_manager).await;
     // Current-thread boot: resolve settings before sync bootstrap.
     let boot = match crate::agent::init::resolve_boot_startup_settings(
         &mut agent_config,
@@ -487,6 +492,8 @@ async fn run_persistent_agent(
         )
         .unwrap_or_else(crate::agent::init::exit_on_config_error),
     );
+    // Published before any `LocalRef` task can be spawned, so a panic below cannot free the agent first.
+    *keepalive = Some(Rc::clone(&agent));
     agent.models_manager.spawn_background_refresh();
 
     let relay_dest: RelayDest = Rc::new(RefCell::new(None));

@@ -166,17 +166,19 @@ impl SlashCommand for ThemeCommand {
         if trimmed.is_empty() {
             let mut cycle: Vec<String> = available
                 .iter()
-                .map(|k| k.display_name().to_string())
+                .map(|kind| kind.display_name().to_string())
                 .collect();
-            for meta in pi_theme::list_themes() {
-                cycle.push(meta.id);
-            }
-            if cycle.is_empty() {
-                return CommandResult::Error("No themes available".into());
-            }
+            cycle.extend(pi_theme::list_themes().into_iter().map(|meta| meta.id));
             let current = Theme::current_display_id();
-            let current_idx = cycle.iter().position(|k| k == &current).unwrap_or(0);
-            let next = cycle[(current_idx + 1) % cycle.len()].clone();
+            let current_idx = cycle.iter().position(|name| name == &current).unwrap_or(0);
+            let Some(next) = current_idx
+                .checked_add(1)
+                .and_then(|index| index.checked_rem(cycle.len()))
+                .and_then(|index| cycle.get(index))
+                .cloned()
+            else {
+                return CommandResult::Error("No themes available".into());
+            };
             return CommandResult::Action(Action::SetTheme(next));
         }
 
@@ -252,16 +254,21 @@ mod tests {
                 current_title: None,
             };
             let items = cmd.suggest_args(&ctx, "").expect("should return items");
-            assert_eq!(items[0].insert_text, "auto");
-            assert!(items[0].description.contains("follow system"));
+            let Some(first) = items.first() else {
+                panic!("expected items, got {items:?}");
+            };
+            assert_eq!(first.insert_text, "auto");
+            assert!(first.description.contains("follow system"));
             // auto + Grok available + every embedded/discovered Pi theme
             assert_eq!(
                 items.len(),
                 ThemeKind::available().len() + 1 + pi_theme::list_themes().len()
             );
-            assert!(items.iter().any(|i| i.insert_text == "pi:dark"));
-            assert!(items.iter().any(|i| i.insert_text == "pi:light"));
-            assert!(items.iter().any(|i| i.insert_text == "pi:dark-tokyo-night"));
+            assert!(items.iter().any(|item| item.insert_text == "pi:dark"));
+            assert!(items.iter().any(|item| item.insert_text == "pi:light"));
+            assert!(items
+                .iter()
+                .any(|item| item.insert_text == "pi:dark-tokyo-night"));
         });
     }
 
@@ -284,10 +291,13 @@ mod tests {
                 current_title: None,
             };
             let items = cmd.suggest_args(&ctx, "").expect("should return items");
+            let Some(first) = items.first() else {
+                panic!("expected items, got {items:?}");
+            };
             assert!(
-                items[0].description.contains("(active)"),
+                first.description.contains("(active)"),
                 "auto should show (active), got: {}",
-                items[0].description
+                first.description
             );
         });
     }
@@ -311,10 +321,13 @@ mod tests {
                 current_title: None,
             };
             let items = cmd.suggest_args(&ctx, "").expect("should return items");
+            let Some(first) = items.first() else {
+                panic!("expected items, got {items:?}");
+            };
             assert!(
-                !items[0].description.contains("(active)"),
+                !first.description.contains("(active)"),
                 "auto should not show (active), got: {}",
-                items[0].description
+                first.description
             );
         });
     }
@@ -411,7 +424,10 @@ mod tests {
                 let (top, _) = hits
                     .first()
                     .unwrap_or_else(|| panic!("{alias} matched nothing"));
-                assert_eq!(items[*top].insert_text, canonical, "top hit for {alias}");
+                let top = items
+                    .get(*top)
+                    .unwrap_or_else(|| panic!("{alias} ranked out-of-range index {top}"));
+                assert_eq!(top.insert_text, canonical, "top hit for {alias}");
             }
         });
     }
@@ -540,7 +556,10 @@ mod tests {
             match result {
                 CommandResult::Action(Action::SetTheme(name)) => {
                     // available[0] is GrokNight; next is available[1]
-                    let expected = ThemeKind::available()[1].display_name();
+                    let Some(expected) = ThemeKind::available().get(1).map(|k| k.display_name())
+                    else {
+                        panic!("expected at least two themes");
+                    };
                     assert_eq!(name, expected);
                 }
                 other => panic!("expected Action::SetTheme(...), got {other:?}"),

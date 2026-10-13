@@ -15,10 +15,6 @@ use crate::views::modal_window::ModalWindowState;
 
 use xai_grok_shell::agent::config::UiConfig;
 
-// ---------------------------------------------------------------------------
-// Public constants
-// ---------------------------------------------------------------------------
-
 /// Public display title of the modal, also used by `views/modal.rs::ActiveModal::message` so renames stay in one place.
 pub const MODAL_TITLE: &str = "Settings";
 
@@ -57,13 +53,7 @@ pub enum SettingsKeyOutcome {
     Unchanged,
 }
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/// One row in the flat row table. `rows` holds every tab's rows; which
-/// ones are visible is decided by [`compute_filtered`].
-
+/// One row in the visible flat list: either a category header (non-selectable) or a setting row (selectable, dispatchable).
 #[derive(Debug, Clone)]
 pub enum RowEntry {
     /// Tab heading. Hidden while browsing a tab (the tab bar names it) and
@@ -193,6 +183,12 @@ pub(super) fn mode_is_consent_chooser(mode: &SettingsMode) -> bool {
     )
 }
 
+/// Settings-domain visibility policy, snapshotted at OpenSettings.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RowVisibility {
+    pub hide_appearance: bool,
+}
+
 /// Settings modal state. Boxed inside `ActiveModal::Settings` to avoid clippy `large_enum_variant`.
 pub struct SettingsModalState {
     pub window: ModalWindowState,
@@ -219,7 +215,7 @@ pub struct SettingsModalState {
     /// Row indices matching `query`, recomputed per mutation (not per frame).
     pub(super) filtered_cache: Vec<usize>,
 
-    // -- Mouse hit-test rects (populated by render) --
+    /// List viewport; mouse hit-test rects below are populated by render.
     pub list_area: Rect,
     /// Click-hit rect per row, parallel to `rows`.
     pub row_rects: Vec<Rect>,
@@ -251,16 +247,36 @@ pub struct SettingsModalState {
     pub close_on_picker_exit: bool,
     /// Last left-click on a picker radio: `(choice index, when)`.
     pub(super) picker_last_click: Option<(usize, std::time::Instant)>,
+    /// Row visibility policy, snapshotted at open.
+    visibility: RowVisibility,
 }
 
 impl SettingsModalState {
-    /// Construct a new modal state from a registry and snapshots.
+    /// Appearance rows stay visible. Test helpers use this; production open
+    /// passes a [`RowVisibility`] snapshot via [`Self::new_with_row_visibility`].
     pub fn new(
         registry: Arc<SettingsRegistry>,
         ui_snapshot: UiConfig,
         pager_snapshot: PagerLocalSnapshot,
     ) -> Self {
-        let rows = build_rows(&registry);
+        Self::new_with_row_visibility(
+            registry,
+            ui_snapshot,
+            pager_snapshot,
+            RowVisibility {
+                hide_appearance: false,
+            },
+        )
+    }
+
+    /// Like [`Self::new`], but `visibility` controls which registry rows are dropped.
+    pub(crate) fn new_with_row_visibility(
+        registry: Arc<SettingsRegistry>,
+        ui_snapshot: UiConfig,
+        pager_snapshot: PagerLocalSnapshot,
+        visibility: RowVisibility,
+    ) -> Self {
+        let rows = build_rows(&registry, visibility);
         let tabs = build_tabs(&rows);
         // Start on the first selectable (non-header) row.
         let selected = rows
@@ -296,6 +312,7 @@ impl SettingsModalState {
             hover_row: None,
             close_on_picker_exit: false,
             picker_last_click: None,
+            visibility,
         }
     }
 
@@ -307,6 +324,12 @@ impl SettingsModalState {
         } else {
             None
         }
+    }
+
+    /// The expanded-row text: a lock reason replaces the description.
+    pub fn detail_text(&self, key: SettingKey, meta: &SettingMeta) -> &'static str {
+        self.row_lock(key)
+            .map_or(meta.description, CodingDataSharingLock::reason)
     }
 
     /// The currently-focused setting row, if any.
@@ -501,10 +524,10 @@ impl SettingsModalState {
             SettingsMode::Browse | SettingsMode::FilterFocused => None,
         };
 
-        self.rows = build_rows(&self.registry);
         // Gates can retire a tab wholesale (e.g. voice rows in the Editor
         // tab); keep the same category focused when it survives.
         let prev_tab = self.active_tab_category();
+        self.rows = build_rows(&self.registry, self.visibility);
         self.tabs = build_tabs(&self.rows);
         self.window.tab_count = self.tabs.len();
         self.window.tab_rects = vec![None; self.tabs.len()];
@@ -639,8 +662,14 @@ impl SettingsModalState {
             None => 0,
         };
         while next < self.filtered_cache.len() {
-            let row_idx = self.filtered_cache[next];
-            if matches!(self.rows[row_idx], RowEntry::Setting { .. }) {
+            let Some(&row_idx) = self.filtered_cache.get(next) else {
+                break;
+            };
+            if self
+                .rows
+                .get(row_idx)
+                .is_some_and(|r| matches!(r, RowEntry::Setting { .. }))
+            {
                 self.selected = row_idx;
                 return true;
             }
@@ -662,8 +691,14 @@ impl SettingsModalState {
             None => self.filtered_cache.len() - 1,
         };
         loop {
-            let row_idx = self.filtered_cache[prev];
-            if matches!(self.rows[row_idx], RowEntry::Setting { .. }) {
+            let Some(&row_idx) = self.filtered_cache.get(prev) else {
+                break;
+            };
+            if self
+                .rows
+                .get(row_idx)
+                .is_some_and(|r| matches!(r, RowEntry::Setting { .. }))
+            {
                 self.selected = row_idx;
                 return true;
             }
@@ -680,7 +715,11 @@ impl SettingsModalState {
         if idx >= self.rows.len() {
             return false;
         }
-        if !matches!(self.rows[idx], RowEntry::Setting { .. }) {
+        if !self
+            .rows
+            .get(idx)
+            .is_some_and(|r| matches!(r, RowEntry::Setting { .. }))
+        {
             return false;
         }
         if self.selected == idx {
@@ -1032,11 +1071,12 @@ pub(super) fn compute_filtered(
 /// `hidden_in_minimal` rows are dropped in minimal mode; `external_only` rows
 /// are hidden unless the process runs the external-agent (grok-pi) profile.
 
+/// `hidden_in_minimal` rows drop when `hide_appearance` is set.
 /// Pure for unit tests.
 pub(super) fn setting_row_visible(
     meta: &SettingMeta,
     kitty_releases: bool,
-    minimal: bool,
+    hide_appearance: bool,
     voice_mode: bool,
     external_agent: bool,
 ) -> bool {
@@ -1051,7 +1091,7 @@ pub(super) fn setting_row_visible(
     if meta.key == "voice_capture_mode" && !kitty_releases {
         return false;
     }
-    if minimal && meta.hidden_in_minimal {
+    if hide_appearance && meta.hidden_in_minimal {
         return false;
     }
     if meta.external_only && !external_agent {
@@ -1060,9 +1100,8 @@ pub(super) fn setting_row_visible(
     true
 }
 
-fn build_rows(registry: &SettingsRegistry) -> Vec<RowEntry> {
+fn build_rows(registry: &SettingsRegistry, visibility: RowVisibility) -> Vec<RowEntry> {
     let kitty_releases = crate::app::kitty_releases_reported();
-    let minimal = crate::app::minimal_mode_active();
     let voice_mode = crate::app::voice_mode_enabled();
     let external_agent = crate::app::external_agent_active();
     // Keys that belong to a group sub-sheet are rendered only inside that
@@ -1086,7 +1125,13 @@ fn build_rows(registry: &SettingsRegistry) -> Vec<RowEntry> {
             .enumerate()
             .filter(|(_, meta)| meta.category == *cat)
             .filter(|(_, meta)| {
-                setting_row_visible(meta, kitty_releases, minimal, voice_mode, external_agent)
+                setting_row_visible(
+                    meta,
+                    kitty_releases,
+                    visibility.hide_appearance,
+                    voice_mode,
+                    external_agent,
+                )
             })
             .filter(|(_, meta)| !group_children.contains(meta.key))
             .collect();
@@ -1220,6 +1265,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "toolset.ask_user_question.timeout_enabled" => {
             Some(Action::SetAskUserQuestionTimeoutEnabled(new))
         }
+        "subagent_model_inheritance" => Some(Action::SetSubagentModelInheritance(new)),
         "show_thinking_blocks" => Some(Action::SetShowThinkingBlocks(new)),
         "thinking_border_colors" => Some(Action::SetThinkingBorderColors(new)),
         "group_tool_verbs" => Some(Action::SetGroupToolVerbs(new)),
@@ -1228,6 +1274,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "prompt_suggestions" => Some(Action::SetPromptSuggestions(new)),
         "respect_manual_folds" => Some(Action::SetRespectManualFolds(new)),
         "page_flip_on_send" => Some(Action::SetPageFlipOnSend(new)),
+        "dashboard_preview" => Some(Action::SetDashboardPreview(new)),
         "confirm_before_rewind" => Some(Action::SetConfirmBeforeRewind(new)),
         "combine_queued_prompts" => Some(Action::SetCombineQueuedPrompts(new)),
 

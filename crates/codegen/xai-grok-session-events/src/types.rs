@@ -373,9 +373,10 @@ pub enum GoalPauseReasonTelemetry {
     NoProgress,
     Verification,
     Infra,
+    Planner,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, strum::IntoStaticStr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::IntoStaticStr)]
 #[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -420,6 +421,8 @@ pub enum TurnOutcomeLabel {
     Completed,
     Cancelled,
     Error,
+    /// Written at session load for a `turn_started` the previous process never closed.
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -519,7 +522,10 @@ mod tests {
             rewriting_hook: None,
         })
         .unwrap();
-        assert_eq!(workspace["source"], "workspace");
+        assert_eq!(
+            workspace.get("source"),
+            Some(&serde_json::json!("workspace"))
+        );
     }
 
     #[test]
@@ -530,10 +536,13 @@ mod tests {
             redirect_kind: RedirectKind::Interjection,
         };
         let v = serde_json::to_value(&ev).unwrap();
-        assert_eq!(v["type"], "interjected");
-        assert_eq!(v["source"], "direct");
-        assert_eq!(v["image_count"], 2);
-        assert_eq!(v["redirect_kind"], "interjection");
+        assert_eq!(v.get("type"), Some(&serde_json::json!("interjected")));
+        assert_eq!(v.get("source"), Some(&serde_json::json!("direct")));
+        assert_eq!(v.get("image_count"), Some(&serde_json::json!(2)));
+        assert_eq!(
+            v.get("redirect_kind"),
+            Some(&serde_json::json!("interjection"))
+        );
 
         let queue = serde_json::to_value(Event::Interjected {
             source: InterjectionSource::Queue,
@@ -541,9 +550,12 @@ mod tests {
             redirect_kind: RedirectKind::Interjection,
         })
         .unwrap();
-        assert_eq!(queue["source"], "queue");
-        assert_eq!(queue["image_count"], 0);
-        assert_eq!(queue["redirect_kind"], "interjection");
+        assert_eq!(queue.get("source"), Some(&serde_json::json!("queue")));
+        assert_eq!(queue.get("image_count"), Some(&serde_json::json!(0)));
+        assert_eq!(
+            queue.get("redirect_kind"),
+            Some(&serde_json::json!("interjection"))
+        );
     }
 
     #[test]
@@ -571,8 +583,14 @@ mod tests {
             redirect_kind: Some(RedirectKind::QueuedAfterCancel),
         })
         .unwrap();
-        assert_eq!(with_kind["type"], "turn_started");
-        assert_eq!(with_kind["redirect_kind"], "queued_after_cancel");
+        assert_eq!(
+            with_kind.get("type"),
+            Some(&serde_json::json!("turn_started"))
+        );
+        assert_eq!(
+            with_kind.get("redirect_kind"),
+            Some(&serde_json::json!("queued_after_cancel"))
+        );
 
         let normal = serde_json::to_value(Event::TurnStarted {
             session_id: "s".into(),
@@ -599,6 +617,7 @@ mod tests {
             (GoalPauseReasonTelemetry::NoProgress, "\"no_progress\""),
             (GoalPauseReasonTelemetry::Verification, "\"verification\""),
             (GoalPauseReasonTelemetry::Infra, "\"infra\""),
+            (GoalPauseReasonTelemetry::Planner, "\"planner\""),
         ] {
             let json = serde_json::to_string(&variant).unwrap();
             assert_eq!(json, expected, "{variant:?} must serialize to {expected}");
@@ -614,11 +633,14 @@ mod tests {
             model_id: "grok-4".to_string(),
         };
         let v = serde_json::to_value(&ev).unwrap();
-        assert_eq!(v["type"], "goal_strategist_fired");
-        assert_eq!(v["attempt"], 2);
-        assert_eq!(v["consecutive_failures"], 6);
-        assert_eq!(v["every"], 3);
-        assert_eq!(v["model_id"], "grok-4");
+        assert_eq!(
+            v.get("type"),
+            Some(&serde_json::json!("goal_strategist_fired"))
+        );
+        assert_eq!(v.get("attempt"), Some(&serde_json::json!(2)));
+        assert_eq!(v.get("consecutive_failures"), Some(&serde_json::json!(6)));
+        assert_eq!(v.get("every"), Some(&serde_json::json!(3)));
+        assert_eq!(v.get("model_id"), Some(&serde_json::json!("grok-4")));
     }
 
     #[test]
@@ -628,18 +650,24 @@ mod tests {
             model_id: "grok-4".to_string(),
         };
         let v = serde_json::to_value(&fired).unwrap();
-        assert_eq!(v["type"], "goal_summarizer_fired");
-        assert_eq!(v["attempt"], 2);
-        assert_eq!(v["model_id"], "grok-4");
+        assert_eq!(
+            v.get("type"),
+            Some(&serde_json::json!("goal_summarizer_fired"))
+        );
+        assert_eq!(v.get("attempt"), Some(&serde_json::json!(2)));
+        assert_eq!(v.get("model_id"), Some(&serde_json::json!("grok-4")));
 
         let completed = Event::GoalSummarizerCompleted {
             attempt: 2,
             latency_ms: 42,
         };
         let v = serde_json::to_value(&completed).unwrap();
-        assert_eq!(v["type"], "goal_summarizer_completed");
-        assert_eq!(v["attempt"], 2);
-        assert_eq!(v["latency_ms"], 42);
+        assert_eq!(
+            v.get("type"),
+            Some(&serde_json::json!("goal_summarizer_completed"))
+        );
+        assert_eq!(v.get("attempt"), Some(&serde_json::json!(2)));
+        assert_eq!(v.get("latency_ms"), Some(&serde_json::json!(42)));
 
         let failed = Event::GoalSummarizerFailOpen {
             reason: "transport",
@@ -647,10 +675,13 @@ mod tests {
             latency_ms: 7,
         };
         let v = serde_json::to_value(&failed).unwrap();
-        assert_eq!(v["type"], "goal_summarizer_fail_open");
-        assert_eq!(v["reason"], "transport");
-        assert_eq!(v["attempt"], 2);
-        assert_eq!(v["latency_ms"], 7);
+        assert_eq!(
+            v.get("type"),
+            Some(&serde_json::json!("goal_summarizer_fail_open"))
+        );
+        assert_eq!(v.get("reason"), Some(&serde_json::json!("transport")));
+        assert_eq!(v.get("attempt"), Some(&serde_json::json!(2)));
+        assert_eq!(v.get("latency_ms"), Some(&serde_json::json!(7)));
     }
 
     #[test]
@@ -663,12 +694,18 @@ mod tests {
             source: "remote",
         };
         let v = serde_json::to_value(&ev).unwrap();
-        assert_eq!(v["type"], "goal_role_model_resolved");
-        assert_eq!(v["role"], "skeptic");
-        assert_eq!(v["skeptic_idx"], 2);
-        assert_eq!(v["model_id"], "grok-4");
-        assert_eq!(v["agent_type"], "general-purpose");
-        assert_eq!(v["source"], "remote");
+        assert_eq!(
+            v.get("type"),
+            Some(&serde_json::json!("goal_role_model_resolved"))
+        );
+        assert_eq!(v.get("role"), Some(&serde_json::json!("skeptic")));
+        assert_eq!(v.get("skeptic_idx"), Some(&serde_json::json!(2)));
+        assert_eq!(v.get("model_id"), Some(&serde_json::json!("grok-4")));
+        assert_eq!(
+            v.get("agent_type"),
+            Some(&serde_json::json!("general-purpose"))
+        );
+        assert_eq!(v.get("source"), Some(&serde_json::json!("remote")));
     }
 
     #[test]
@@ -685,7 +722,7 @@ mod tests {
             obj.get("skeptic_idx").is_none(),
             "skeptic_idx must be omitted when None, got {obj}"
         );
-        assert_eq!(obj["role"], "planner");
+        assert_eq!(obj.get("role"), Some(&serde_json::json!("planner")));
     }
 
     #[test]
@@ -700,8 +737,14 @@ mod tests {
             obj.get("skeptic_idx").is_none(),
             "skeptic_idx must be omitted when None, got {obj}"
         );
-        assert_eq!(obj["type"], "goal_role_model_fail_open");
-        assert_eq!(obj["role"], "strategist");
-        assert_eq!(obj["reason"], "model_unauthorized");
+        assert_eq!(
+            obj.get("type"),
+            Some(&serde_json::json!("goal_role_model_fail_open"))
+        );
+        assert_eq!(obj.get("role"), Some(&serde_json::json!("strategist")));
+        assert_eq!(
+            obj.get("reason"),
+            Some(&serde_json::json!("model_unauthorized"))
+        );
     }
 }

@@ -34,12 +34,14 @@
 //!
 //! # Synchronized output
 //!
-//! Each frame is wrapped in `BeginSynchronizedUpdate` / `EndSynchronizedUpdate` so the terminal processes all escape sequences atomically.
-//! This prevents flicker and is critical for multiplexers like zellij and tmux.
+//! Each frame is wrapped in `BeginSynchronizedUpdate` / `EndSynchronizedUpdate` so the terminal presents the cell diff, images, and cursor moves atomically.
+//! The wrapper is omitted when tmux is the immediate terminal (see [`crate::terminal::should_emit_synchronized_output`]): tmux repaints the whole pane when a block closes and already synchronizes its own output toward the outer terminal.
+use crate::terminal::{TerminalContext, should_emit_synchronized_output};
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use crossterm::{QueueableCommand, cursor};
 use ratatui::Frame;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Position;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
@@ -496,9 +498,12 @@ impl CursorState {
 }
 /// Bypasses ratatui `try_draw()` so cursor management stays conditional. OSC 8 spans go out before the diff, in lockstep with cells.
 /// `PostFlush` stays inside the synchronized update so images appear atomically with the cell diff.
+/// `ctx` decides whether the frame is wrapped in DEC 2026 at all; both markers follow that one decision.
+/// Adopting the terminal size inside the update makes a fullscreen resize clear atomic with the repaint.
 pub fn draw_frame(
     terminal: &mut PagerTerminal,
     cursor: &mut CursorState,
+    ctx: &TerminalContext,
     render_fn: impl FnOnce(
         &mut Frame,
         &mut Vec<LinkSpan>,
@@ -507,8 +512,45 @@ pub fn draw_frame(
         Option<crate::terminal::overlay::PostFlush>,
     ),
 ) {
-    let _ = terminal.backend_mut().queue(BeginSynchronizedUpdate);
+    let synchronized = should_emit_synchronized_output(ctx);
+    if synchronized {
+        let _ = terminal.backend_mut().queue(BeginSynchronizedUpdate);
+    }
     let _ = terminal.autoresize();
+    render_and_present(terminal, cursor, synchronized, render_fn);
+}
+/// [`draw_frame`] without the resize, for a caller that adopted the terminal size before opening the update (minimal mode).
+/// A terminal holds the inline resize's cursor-position reply until an open update ends.
+pub fn draw_frame_at_adopted_size(
+    terminal: &mut PagerTerminal,
+    cursor: &mut CursorState,
+    ctx: &TerminalContext,
+    render_fn: impl FnOnce(
+        &mut Frame,
+        &mut Vec<LinkSpan>,
+    ) -> (
+        Option<(u16, u16)>,
+        Option<crate::terminal::overlay::PostFlush>,
+    ),
+) {
+    let synchronized = should_emit_synchronized_output(ctx);
+    if synchronized {
+        let _ = terminal.backend_mut().queue(BeginSynchronizedUpdate);
+    }
+    render_and_present(terminal, cursor, synchronized, render_fn);
+}
+fn render_and_present(
+    terminal: &mut PagerTerminal,
+    cursor: &mut CursorState,
+    synchronized: bool,
+    render_fn: impl FnOnce(
+        &mut Frame,
+        &mut Vec<LinkSpan>,
+    ) -> (
+        Option<(u16, u16)>,
+        Option<crate::terminal::overlay::PostFlush>,
+    ),
+) {
     let mut link_spans: Vec<LinkSpan> = Vec::new();
     let (cursor_pos, post_flush_escapes) = {
         let mut frame = terminal.get_frame();
@@ -527,7 +569,12 @@ pub fn draw_frame(
         let _ = post_flush.write_to(terminal.backend_mut());
     }
     cursor.apply(action, terminal.backend_mut());
-    let _ = terminal.backend_mut().queue(EndSynchronizedUpdate);
+    if let CursorAction::Reposition(x, y) | CursorAction::Show(x, y) = action {
+        terminal.record_cursor_position(Position::new(x, y));
+    }
+    if synchronized {
+        let _ = terminal.backend_mut().queue(EndSynchronizedUpdate);
+    }
     let _ = terminal.backend_mut().flush();
 }
 #[cfg(test)]
@@ -648,40 +695,46 @@ mod tests {
         assert!(sync.failed());
         assert!(matches!(event_rx.try_recv(), Ok(WriterEvent::Failed(_))));
     }
-    /// An unchanged frame must emit zero bytes to the PTY.
-    #[test]
-    fn idle_frame_emits_zero_bytes() {
-        use ratatui::backend::CrosstermBackend;
+    /// A fixed 80x24 terminal whose frames land on the returned channel instead of a PTY.
+    fn capturing_terminal() -> (PagerTerminal, mpsc::Receiver<WriterPayload>) {
         use ratatui::layout::Rect;
-        use ratatui::widgets::Paragraph;
         use ratatui::{TerminalOptions, Viewport};
-        use std::sync::mpsc;
-        fn render(
-            frame: &mut ratatui::Frame,
-            _links: &mut Vec<LinkSpan>,
-        ) -> (
-            Option<(u16, u16)>,
-            Option<crate::terminal::overlay::PostFlush>,
-        ) {
-            frame.render_widget(Paragraph::new("hello world"), frame.area());
-            (None, None)
-        }
         let (tx, rx) = mpsc::channel::<WriterPayload>();
         let backend = CrosstermBackend::new(
             TermWriter::new(tx, WriterSync::new()).expect("single test writer"),
         );
-        let mut terminal = xai_ratatui_inline::Terminal::with_options(
+        let terminal = xai_ratatui_inline::Terminal::with_options(
             backend,
             TerminalOptions {
                 viewport: Viewport::Fixed(Rect::new(0, 0, 80, 24)),
             },
         )
         .expect("build terminal");
+        (terminal, rx)
+    }
+    fn render_hello(
+        frame: &mut ratatui::Frame,
+        _links: &mut Vec<LinkSpan>,
+    ) -> (
+        Option<(u16, u16)>,
+        Option<crate::terminal::overlay::PostFlush>,
+    ) {
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new("hello world"),
+            frame.area(),
+        );
+        (None, None)
+    }
+    /// An unchanged frame must emit zero bytes to the PTY.
+    #[test]
+    fn idle_frame_emits_zero_bytes() {
+        let (mut terminal, rx) = capturing_terminal();
         let mut cursor = CursorState::new();
-        draw_frame(&mut terminal, &mut cursor, render);
+        let ctx = TerminalContext::default();
+        draw_frame(&mut terminal, &mut cursor, &ctx, render_hello);
         let first: Vec<u8> = rx.try_iter().flat_map(|payload| payload.data).collect();
         assert!(!first.is_empty(), "first frame should emit bytes");
-        draw_frame(&mut terminal, &mut cursor, render);
+        draw_frame(&mut terminal, &mut cursor, &ctx, render_hello);
         let second: Vec<u8> = rx.try_iter().flat_map(|payload| payload.data).collect();
         assert!(
             second.is_empty(),
@@ -689,6 +742,55 @@ mod tests {
             second.len(),
             String::from_utf8_lossy(&second),
         );
+    }
+    /// Begin and End are emitted as a pair or not at all, decided by the terminal context.
+    #[test]
+    fn synchronized_markers_follow_terminal_context() {
+        use crate::terminal::{EmbeddedEditor, MultiplexerKind};
+        const BEGIN: &[u8] = b"\x1b[?2026h";
+        const END: &[u8] = b"\x1b[?2026l";
+        fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+            haystack.windows(needle.len()).position(|w| w == needle)
+        }
+        let tmux = TerminalContext {
+            multiplexer: MultiplexerKind::Tmux,
+            ..Default::default()
+        };
+        let editor_inside_tmux = TerminalContext {
+            multiplexer: MultiplexerKind::Tmux,
+            embedded_editor: Some(EmbeddedEditor::Neovim),
+            ..Default::default()
+        };
+        let cases = [
+            (TerminalContext::default(), true),
+            (tmux, false),
+            (editor_inside_tmux, true),
+        ];
+        for (ctx, wrapped) in &cases {
+            let (mut terminal, rx) = capturing_terminal();
+            let mut cursor = CursorState::new();
+            draw_frame(&mut terminal, &mut cursor, ctx, render_hello);
+            let frame: Vec<u8> = rx.try_iter().flat_map(|payload| payload.data).collect();
+            assert!(
+                frame.windows(b"hello".len()).any(|w| w == b"hello"),
+                "frame must carry the cell diff"
+            );
+            let (begin, end) = (find(&frame, BEGIN), find(&frame, END));
+            if *wrapped {
+                assert!(
+                    matches!((begin, end), (Some(b), Some(e)) if b < e),
+                    "{ctx:?}: expected Begin before End, got {:?}",
+                    String::from_utf8_lossy(&frame)
+                );
+            } else {
+                assert_eq!(
+                    (begin, end),
+                    (None, None),
+                    "{ctx:?}: expected no DEC 2026 markers, got {:?}",
+                    String::from_utf8_lossy(&frame)
+                );
+            }
+        }
     }
     #[test]
     fn writer_success_is_acknowledged_after_flush() {

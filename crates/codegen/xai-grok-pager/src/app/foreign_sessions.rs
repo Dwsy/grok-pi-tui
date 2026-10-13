@@ -1,20 +1,16 @@
+use super::actions::Effect;
+use super::app_view::{ActiveView, AppView, SessionPickerEntry};
+use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-
-use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 use xai_grok_foreign_sessions::{
     EnabledForeignSessionSources, ForeignSessionSummary, ForeignSessionTool, RecentForeignSession,
 };
-
-use super::actions::Effect;
-use super::app_view::{ActiveView, AppView, SessionPickerEntry};
-
 pub(crate) const RESUME_HINT_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-
 #[derive(Debug, Clone)]
 pub(crate) struct ForeignResumeLaunch {
     token: u64,
@@ -22,12 +18,10 @@ pub(crate) struct ForeignResumeLaunch {
     canonical_cwd: Option<PathBuf>,
     hint: Option<RecentForeignSession>,
 }
-
 impl AppView {
     fn has_foreign_resume_startup_conflict(&self) -> bool {
         !self.deferred_startup.is_empty()
     }
-
     fn foreign_resume_launch_welcome(&self) -> bool {
         self.active_view == ActiveView::Welcome
             && self.auth_return_view.is_none()
@@ -36,21 +30,17 @@ impl AppView {
             && !self.is_zdr_blocked()
             && self.pending_update_version.is_none()
     }
-
     fn pristine_foreign_resume_welcome(&self) -> bool {
         self.foreign_resume_launch_welcome() && !self.has_foreign_resume_startup_conflict()
     }
-
     fn foreign_resume_context_matches(&self, launch: &ForeignResumeLaunch) -> bool {
         self.foreign_resume_launch_welcome() && self.cwd == launch.requested_cwd
     }
-
     fn invalidate_foreign_resume_launch(&mut self) {
         self.foreign_resume_launch_generation =
             self.foreign_resume_launch_generation.wrapping_add(1);
         self.foreign_resume_launch = None;
     }
-
     pub(crate) fn begin_foreign_resume_detection(&mut self) -> Option<Effect> {
         let compat = self.foreign_session_compat;
         if self.foreign_resume_launch.is_some()
@@ -74,7 +64,6 @@ impl AppView {
             launch_token: token,
         })
     }
-
     pub(crate) fn accept_foreign_resume_canonical_cwd(
         &mut self,
         token: u64,
@@ -105,7 +94,6 @@ impl AppView {
             false
         }
     }
-
     pub(crate) fn apply_foreign_resume_detection(
         &mut self,
         token: u64,
@@ -132,14 +120,12 @@ impl AppView {
             launch.hint = Some(hint);
         }
     }
-
     pub(crate) fn foreign_resume_hint(&self) -> Option<&RecentForeignSession> {
         self.foreign_resume_launch
             .as_ref()
             .filter(|launch| self.foreign_resume_context_matches(launch))
             .and_then(|launch| launch.hint.as_ref())
     }
-
     pub(crate) fn take_foreign_resume_hint(&mut self) -> Option<RecentForeignSession> {
         let hint = self
             .foreign_resume_launch
@@ -149,7 +135,6 @@ impl AppView {
         self.invalidate_foreign_resume_launch();
         Some(hint)
     }
-
     pub(crate) fn reconcile_foreign_resume_launch(&mut self) {
         let invalid = self.foreign_resume_launch.as_ref().is_some_and(|launch| {
             !self.foreign_resume_context_matches(launch)
@@ -160,29 +145,24 @@ impl AppView {
         }
     }
 }
-
 /// Opaque per-application coordinator for foreign session scans.
 #[derive(Debug, Clone)]
 pub struct ForeignScanCoordinator {
     inner: Arc<ForeignScanCoordinatorInner>,
 }
-
 #[derive(Debug)]
 struct ForeignScanCoordinatorInner {
     latest_seq: Arc<AtomicU64>,
     semaphore: Arc<Semaphore>,
     abort_handle: Mutex<Option<tokio::task::AbortHandle>>,
 }
-
 impl Drop for ForeignScanCoordinatorInner {
     fn drop(&mut self) {
-        // An already-running spawn_blocking closure remains non-cancellable.
         if let Some(handle) = self.abort_handle.get_mut().take() {
             handle.abort();
         }
     }
 }
-
 impl Default for ForeignScanCoordinator {
     fn default() -> Self {
         Self {
@@ -194,7 +174,6 @@ impl Default for ForeignScanCoordinator {
         }
     }
 }
-
 impl ForeignScanCoordinator {
     pub(crate) fn begin_request(&self, seq: u64) {
         self.inner.latest_seq.store(seq, Ordering::Release);
@@ -202,7 +181,6 @@ impl ForeignScanCoordinator {
             handle.abort();
         }
     }
-
     pub(crate) fn install_abort_handle(&self, seq: u64, handle: tokio::task::AbortHandle) {
         if self.latest_seq() != seq {
             handle.abort();
@@ -212,30 +190,24 @@ impl ForeignScanCoordinator {
             previous.abort();
         }
     }
-
     pub(crate) fn latest_seq(&self) -> u64 {
         self.inner.latest_seq.load(Ordering::Acquire)
     }
-
     pub(crate) fn latest_seq_handle(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.inner.latest_seq)
     }
-
     pub(crate) fn semaphore(&self) -> Arc<Semaphore> {
         Arc::clone(&self.inner.semaphore)
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ForeignPickerSource {
     Claude,
     Codex,
     Cursor,
 }
-
 impl ForeignPickerSource {
     const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Cursor];
-
     pub(crate) fn from_tool(tool: ForeignSessionTool) -> Self {
         match tool {
             ForeignSessionTool::Claude => Self::Claude,
@@ -243,7 +215,6 @@ impl ForeignPickerSource {
             ForeignSessionTool::Cursor => Self::Cursor,
         }
     }
-
     pub(crate) const fn tool(self) -> ForeignSessionTool {
         match self {
             Self::Claude => ForeignSessionTool::Claude,
@@ -251,7 +222,6 @@ impl ForeignPickerSource {
             Self::Cursor => ForeignSessionTool::Cursor,
         }
     }
-
     pub(crate) fn from_picker_source(source: &str) -> Option<Self> {
         match source {
             "claude" => Some(Self::Claude),
@@ -260,7 +230,6 @@ impl ForeignPickerSource {
             _ => None,
         }
     }
-
     pub(crate) const fn picker_source(self) -> &'static str {
         match self {
             Self::Claude => "claude",
@@ -268,7 +237,6 @@ impl ForeignPickerSource {
             Self::Cursor => "cursor",
         }
     }
-
     pub(crate) const fn display_label(self) -> &'static str {
         match self {
             Self::Claude => "Claude Code",
@@ -276,7 +244,6 @@ impl ForeignPickerSource {
             Self::Cursor => "Cursor",
         }
     }
-
     const fn skill_name(self) -> &'static str {
         match self {
             Self::Claude => "resume-claude",
@@ -284,7 +251,6 @@ impl ForeignPickerSource {
             Self::Cursor => "resume-cursor",
         }
     }
-
     fn compat_enabled(self, compat: EnabledForeignSessionSources) -> bool {
         match self {
             Self::Claude => compat.claude,
@@ -292,7 +258,6 @@ impl ForeignPickerSource {
             Self::Cursor => compat.cursor,
         }
     }
-
     fn set_enabled(self, enabled: &mut EnabledForeignSessionSources) {
         match self {
             Self::Claude => enabled.claude = true,
@@ -300,11 +265,9 @@ impl ForeignPickerSource {
             Self::Cursor => enabled.cursor = true,
         }
     }
-
     pub(crate) fn resume_prompt(self, native_id: &str) -> String {
         format!("/{} {native_id}", self.skill_name())
     }
-
     fn skill_paths(self, grok_home: &Path) -> [PathBuf; 2] {
         let skill = self.skill_name();
         [
@@ -317,25 +280,20 @@ impl ForeignPickerSource {
         ]
     }
 }
-
 pub(crate) fn is_foreign_picker_source(source: &str) -> bool {
     ForeignPickerSource::from_picker_source(source).is_some()
 }
-
 pub(crate) fn badge_for_picker_source(source: &str) -> &'static str {
-    if source == "conversation" {
-        "chat"
-    } else {
-        ForeignPickerSource::from_picker_source(source)
+    match source {
+        "conversation" => "chat",
+        _ => ForeignPickerSource::from_picker_source(source)
             .map(ForeignPickerSource::picker_source)
-            .unwrap_or("")
+            .unwrap_or(""),
     }
 }
-
 pub(crate) fn foreign_tool_display_label(tool: ForeignSessionTool) -> &'static str {
     ForeignPickerSource::from_tool(tool).display_label()
 }
-
 pub(crate) async fn gated_sources_async_with<F, Fut>(
     compat: EnabledForeignSessionSources,
     grok_home: &Path,
@@ -363,7 +321,6 @@ where
     }
     enabled
 }
-
 pub(crate) async fn gated_sources_async(
     compat: EnabledForeignSessionSources,
     grok_home: &Path,
@@ -373,7 +330,6 @@ pub(crate) async fn gated_sources_async(
     })
     .await
 }
-
 pub(crate) async fn with_gated_sources_async_with<F, Fut, W, WorkFut, T>(
     compat: EnabledForeignSessionSources,
     grok_home: &Path,
@@ -392,7 +348,6 @@ where
     }
     Some(work(enabled).await)
 }
-
 pub(crate) async fn with_gated_sources_async<W, WorkFut, T>(
     compat: EnabledForeignSessionSources,
     grok_home: &Path,
@@ -410,7 +365,6 @@ where
     )
     .await
 }
-
 pub(crate) fn scan_effect(
     cwd: &Path,
     compat: EnabledForeignSessionSources,
@@ -427,7 +381,6 @@ pub(crate) fn scan_effect(
         seq,
     })
 }
-
 pub(crate) fn map_summary(summary: ForeignSessionSummary) -> SessionPickerEntry {
     let source = ForeignPickerSource::from_tool(summary.tool);
     let updated_at = chrono::DateTime::<chrono::Utc>::from(summary.updated_at);
@@ -458,11 +411,9 @@ pub(crate) fn map_summary(summary: ForeignSessionSummary) -> SessionPickerEntry 
         card_detail: None,
     }
 }
-
 fn entry_recency(entry: &SessionPickerEntry) -> chrono::DateTime<chrono::Utc> {
     entry.last_active_at.unwrap_or(entry.updated_at)
 }
-
 fn sort_picker_entries(entries: &mut [SessionPickerEntry]) {
     entries.sort_by(|left, right| {
         entry_recency(right)
@@ -482,7 +433,6 @@ fn sort_picker_entries(entries: &mut [SessionPickerEntry]) {
             })
     });
 }
-
 pub(crate) fn replace_foreign_entries(
     entries: &mut Option<Vec<SessionPickerEntry>>,
     mut foreign: Vec<SessionPickerEntry>,
@@ -491,7 +441,6 @@ pub(crate) fn replace_foreign_entries(
     sort_picker_entries(&mut foreign);
     let mut seen = HashSet::new();
     foreign.retain(|entry| seen.insert((entry.source.clone(), entry.id.clone())));
-
     let mut merged = entries.take().unwrap_or_default();
     merged.retain(|entry| !is_foreign_picker_source(&entry.source));
     let has_foreign = !foreign.is_empty();
@@ -501,7 +450,6 @@ pub(crate) fn replace_foreign_entries(
     }
     *entries = (!merged.is_empty()).then_some(merged);
 }
-
 pub(crate) fn replace_native_entries(
     entries: &mut Option<Vec<SessionPickerEntry>>,
     mut native: Vec<SessionPickerEntry>,
@@ -520,18 +468,13 @@ pub(crate) fn replace_native_entries(
     sort_picker_entries(&mut native);
     *entries = (!native.is_empty()).then_some(native);
 }
-
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::cell::RefCell;
     use std::time::{Duration, UNIX_EPOCH};
-
     use xai_grok_foreign_sessions::ForeignSessionSource;
-
-    use super::*;
-
     struct CancellationSignal(Option<tokio::sync::oneshot::Sender<()>>);
-
     impl Drop for CancellationSignal {
         fn drop(&mut self) {
             if let Some(sender) = self.0.take() {
@@ -539,7 +482,6 @@ mod tests {
             }
         }
     }
-
     fn compat_all() -> EnabledForeignSessionSources {
         EnabledForeignSessionSources {
             claude: true,
@@ -547,7 +489,6 @@ mod tests {
             cursor: true,
         }
     }
-
     fn picker_entry(id: &str, source: &str, timestamp: i64) -> SessionPickerEntry {
         let timestamp = chrono::DateTime::from_timestamp(timestamp, 0).unwrap();
         SessionPickerEntry {
@@ -576,7 +517,6 @@ mod tests {
             card_detail: None,
         }
     }
-
     #[tokio::test]
     async fn async_gate_checks_compat_before_skill_metadata() {
         let probed = RefCell::new(Vec::new());
@@ -592,7 +532,6 @@ mod tests {
         assert_eq!(enabled, EnabledForeignSessionSources::default());
         assert!(probed.borrow().is_empty());
     }
-
     #[tokio::test]
     async fn async_gate_missing_skill_prevents_store_work() {
         let probed = RefCell::new(Vec::new());
@@ -624,7 +563,6 @@ mod tests {
         );
         assert_eq!(store_calls.get(), 0);
     }
-
     #[tokio::test]
     async fn async_gate_supports_bundled_and_user_skill_locations() {
         let enabled = gated_sources_async_with(compat_all(), Path::new("/grok"), |path| {
@@ -645,7 +583,6 @@ mod tests {
             }
         );
     }
-
     #[test]
     fn launch_detection_schedules_once_only_for_pristine_welcome() {
         let mut app = crate::app::app_view::tests::test_app();
@@ -677,7 +614,6 @@ mod tests {
         ));
         assert!(app.foreign_resume_hint().is_none());
     }
-
     #[test]
     fn scan_effect_defers_skill_gate_to_background_lane() {
         let home = tempfile::tempdir().unwrap();
@@ -713,16 +649,13 @@ mod tests {
             .is_none()
         );
     }
-
     #[tokio::test]
     async fn scan_coordinator_aborts_obsolete_pending_task() {
         let coordinator = ForeignScanCoordinator::default();
         coordinator.begin_request(1);
         let first = tokio::spawn(std::future::pending::<()>());
         coordinator.install_abort_handle(1, first.abort_handle());
-
         coordinator.begin_request(2);
-
         let join_error = tokio::time::timeout(Duration::from_secs(1), first)
             .await
             .expect("obsolete task cancellation timed out")
@@ -730,7 +663,6 @@ mod tests {
         assert!(join_error.is_cancelled());
         assert_eq!(coordinator.latest_seq(), 2);
     }
-
     #[test]
     fn scan_coordinators_are_independent_and_clones_share_state() {
         let first = ForeignScanCoordinator::default();
@@ -738,13 +670,11 @@ mod tests {
         first.begin_request(3);
         assert_eq!(first.latest_seq(), 3);
         assert_eq!(second.latest_seq(), 0);
-
         let first_clone = first.clone();
         first_clone.begin_request(4);
         assert_eq!(first.latest_seq(), 4);
         assert_eq!(second.latest_seq(), 0);
     }
-
     #[tokio::test]
     async fn final_coordinator_drop_aborts_pending_outer_task() {
         let coordinator = ForeignScanCoordinator::default();
@@ -765,7 +695,6 @@ mod tests {
             .expect("pending task start timed out")
             .expect("pending task started");
         coordinator.install_abort_handle(1, task.abort_handle());
-
         let clone = coordinator.clone();
         drop(coordinator);
         let (acknowledge_tx, acknowledge_rx) = tokio::sync::oneshot::channel();
@@ -776,7 +705,6 @@ mod tests {
             .await
             .expect("liveness probe timed out")
             .expect("non-final drop keeps task alive");
-
         drop(clone);
         tokio::time::timeout(Duration::from_secs(1), cancelled_rx)
             .await
@@ -788,7 +716,6 @@ mod tests {
             .expect_err("final drop must abort the task");
         assert!(join_error.is_cancelled());
     }
-
     #[test]
     fn source_mapping_owns_badges_and_prompts() {
         for (source, wire, prompt) in [
@@ -815,7 +742,6 @@ mod tests {
         assert_eq!(badge_for_picker_source("conversation"), "chat");
         assert_eq!(badge_for_picker_source("local"), "");
     }
-
     #[test]
     fn summary_mapping_collapses_cursor_and_codex_store_variants() {
         for (tool, store_source, picker_source) in [
@@ -871,24 +797,19 @@ mod tests {
             assert_eq!(entry.last_active_at, Some(entry.updated_at));
         }
     }
-
     #[test]
     fn replacing_foreign_rows_preserves_native_and_clears_stale_sources() {
         let native = picker_entry("native", "local", 1);
         let stale = picker_entry("stale", "claude", 1);
         let mut entries = Some(vec![native, stale]);
-
         replace_foreign_entries(&mut entries, vec![]);
-
         let entries = entries.unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, "native");
+        assert_eq!(entries.first().map(|e| e.id.as_str()), Some("native"));
     }
-
     #[test]
     fn equal_recency_keeps_native_first_and_orders_foreign_deterministically() {
         let mut entries = Some(vec![picker_entry("native", "local", 1)]);
-
         replace_foreign_entries(
             &mut entries,
             vec![
@@ -897,7 +818,6 @@ mod tests {
                 picker_entry("a", "claude", 1),
             ],
         );
-
         let ids: Vec<_> = entries.unwrap().into_iter().map(|entry| entry.id).collect();
         assert_eq!(ids, ["native", "a", "b", "z"]);
     }

@@ -27,12 +27,22 @@ fn split_identifier(s: &str) -> Vec<&str> {
         let bytes = part.as_bytes();
         let mut start = 0;
         for i in 1..bytes.len() {
-            if bytes[i - 1].is_ascii_lowercase() && bytes[i].is_ascii_uppercase() {
-                words.push(&part[start..i]);
+            let Some(prev) = i.checked_sub(1).and_then(|j| bytes.get(j)) else {
+                continue;
+            };
+            let Some(cur) = bytes.get(i) else {
+                break;
+            };
+            if prev.is_ascii_lowercase() && cur.is_ascii_uppercase() {
+                if let Some(word) = part.get(start..i) {
+                    words.push(word);
+                }
                 start = i;
             }
         }
-        words.push(&part[start..]);
+        if let Some(word) = part.get(start..) {
+            words.push(word);
+        }
     }
     words
 }
@@ -43,10 +53,12 @@ fn normalize_query(query: &str) -> String {
     let needs_split = query.contains("__")
         || query.contains('_')
         || query.contains('-')
-        || query
-            .as_bytes()
-            .windows(2)
-            .any(|w| w[0].is_ascii_lowercase() && w[1].is_ascii_uppercase());
+        || query.as_bytes().windows(2).any(|w| {
+            let [a, b] = w else {
+                return false;
+            };
+            a.is_ascii_lowercase() && b.is_ascii_uppercase()
+        });
     if !needs_split {
         return query.to_owned();
     }

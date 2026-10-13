@@ -65,25 +65,6 @@ fn stop_cron_from_scheduled(
     }
 }
 
-fn format_stop_feedback(blocks: &[dispatcher::StopBlock], additional_context: &[String]) -> String {
-    use std::fmt::Write as _;
-    let clip = |text: &str| event::clip_text(text, event::MAX_HOOK_FEEDBACK_CHARS);
-    let mut feedback = String::new();
-    if !blocks.is_empty() {
-        feedback.push_str("Stop hook feedback:\n");
-        for block in blocks {
-            let _ = writeln!(feedback, "- {}", clip(&block.reason));
-        }
-    }
-    for context in additional_context {
-        if !feedback.is_empty() {
-            feedback.push('\n');
-        }
-        feedback.push_str(&clip(context));
-    }
-    feedback
-}
-
 /// Downgrade `Blocked` to `Success` for the observe-only session-end fire.
 /// The decision is discarded, so scrollback and telemetry must not report a block.
 pub(super) fn demote_ignored_blocks(
@@ -235,7 +216,7 @@ impl SessionActor {
         } else {
             let (background_tasks, session_crons) = self.stop_gate_work_snapshot().await;
             event::HookPayload::Stop {
-                reason: "end_turn".to_string(),
+                reason: event::END_TURN_STOP_REASON.to_string(),
                 stop_hook_active,
                 last_assistant_message,
                 background_tasks: Some(background_tasks),
@@ -348,7 +329,7 @@ impl SessionActor {
         self.announce_keep_working(&result.blocks, &result.additional_context)
             .await;
         StopGateDecision::KeepWorking {
-            feedback: format_stop_feedback(&result.blocks, &result.additional_context),
+            feedback: result.feedback(),
         }
     }
 
@@ -452,26 +433,6 @@ mod stop_gate_snapshot_tests {
     }
 
     #[test]
-    fn format_stop_feedback_lists_blocks_then_appends_context() {
-        let block = |reason: &str| dispatcher::StopBlock {
-            hook_name: "h".into(),
-            reason: reason.into(),
-        };
-        assert_eq!(
-            format_stop_feedback(&[block("first"), block("second")], &[]),
-            "Stop hook feedback:\n- first\n- second\n"
-        );
-        assert_eq!(
-            format_stop_feedback(&[block("fix tests")], &["note".to_string()]),
-            "Stop hook feedback:\n- fix tests\n\nnote"
-        );
-        assert_eq!(
-            format_stop_feedback(&[], &["only context".to_string()]),
-            "only context"
-        );
-    }
-
-    #[test]
     fn scheduled_task_maps_to_stop_cron() {
         let task =
             xai_grok_tools::implementations::grok_build::scheduler::types::ScheduledTask::new(
@@ -510,12 +471,14 @@ mod stop_gate_snapshot_tests {
             },
         ]);
 
+        let [ok, failed, skipped] = results.as_slice() else {
+            panic!("expected three hook results: {results:?}");
+        };
         assert!(
-            matches!(&results[0], HookRunResult::Success { hook_name, .. } if hook_name == "gate"),
-            "a discarded decision must read as success, got {:?}",
-            results[0]
+            matches!(ok, HookRunResult::Success { hook_name, .. } if hook_name == "gate"),
+            "a discarded decision must read as success, got {ok:?}"
         );
-        assert!(matches!(&results[1], HookRunResult::Failed { .. }));
-        assert!(matches!(&results[2], HookRunResult::Skipped { .. }));
+        assert!(matches!(failed, HookRunResult::Failed { .. }));
+        assert!(matches!(skipped, HookRunResult::Skipped { .. }));
     }
 }

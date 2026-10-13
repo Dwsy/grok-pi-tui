@@ -369,7 +369,10 @@ impl VideoViewerState {
 
     /// Current frame image data.
     pub fn current_frame_data(&self) -> &[u8] {
-        &self.frames[self.current_frame]
+        match self.frames.get(self.current_frame) {
+            Some(frame) => frame,
+            None => &[],
+        }
     }
 
     /// Current playback position in seconds.
@@ -492,9 +495,9 @@ fn ffprobe_metadata(path: &std::path::Path) -> Option<(u32, u32, f64, f64)> {
         return None;
     }
 
-    let width: u32 = parts[0].trim().parse().ok()?;
-    let height: u32 = parts[1].trim().parse().ok()?;
-    let fps = parse_fraction(parts[2].trim()).unwrap_or(30.0);
+    let width: u32 = parts.first()?.trim().parse().ok()?;
+    let height: u32 = parts.get(1)?.trim().parse().ok()?;
+    let fps = parse_fraction(parts.get(2)?.trim()).unwrap_or(30.0);
 
     // Try stream duration, fall back to format duration.
     let duration = parts
@@ -832,9 +835,9 @@ fn strip_verbatim_prefix(path: &std::path::Path) -> PathBuf {
 fn looks_like_windows_path(s: &str) -> bool {
     let b = s.as_bytes();
     let drive = b.len() >= 3
-        && b[0].is_ascii_alphabetic()
-        && b[1] == b':'
-        && (b[2] == b'\\' || b[2] == b'/');
+        && b.first().is_some_and(|c| c.is_ascii_alphabetic())
+        && b.get(1) == Some(&b':')
+        && matches!(b.get(2), Some(b'\\' | b'/'));
     drive || b.starts_with(b"\\\\")
 }
 
@@ -862,12 +865,17 @@ fn shell_unescape(s: &str) -> std::borrow::Cow<'_, str> {
 /// Strip a single pair of matching ASCII single or double quotes that wrap `s`. Otherwise return `s` unchanged.
 fn strip_matching_quotes(s: &str) -> &str {
     let bytes = s.as_bytes();
-    if bytes.len() >= 2 {
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return &s[1..s.len() - 1];
-        }
+    if bytes.len() >= 2
+        && let (Some(&first), Some(&last)) = (bytes.first(), bytes.last())
+        && ((first == b'"' && last == b'"') || (first == b'\'' && last == b'\''))
+    {
+        let Some(end) = s.len().checked_sub(1) else {
+            return s;
+        };
+        return match s.get(1..end) {
+            Some(inner) => inner,
+            None => s,
+        };
     }
     s
 }
@@ -935,9 +943,9 @@ fn starts_with_path_anchor(s: &str) -> bool {
     matches!(b.first(), Some(b'/'))
         || b.starts_with(b"~/")
         || (b.len() >= 3
-            && b[0].is_ascii_alphabetic()
-            && b[1] == b':'
-            && (b[2] == b'\\' || b[2] == b'/'))
+            && b.first().is_some_and(|c| c.is_ascii_alphabetic())
+            && b.get(1) == Some(&b':')
+            && matches!(b.get(2), Some(b'\\' | b'/')))
         || b.starts_with(b"\\\\")
 }
 
@@ -959,13 +967,17 @@ fn split_space_before_path(s: &str) -> Vec<&str> {
     let mut start = 0;
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b' ' && starts_with_drop_anchor(&s[i + 1..]) {
-            parts.push(&s[start..i]);
+        if bytes.get(i) == Some(&b' ') && s.get(i + 1..).is_some_and(starts_with_drop_anchor) {
+            if let Some(part) = s.get(start..i) {
+                parts.push(part);
+            }
             start = i + 1;
         }
         i += 1;
     }
-    parts.push(&s[start..]);
+    if let Some(part) = s.get(start..) {
+        parts.push(part);
+    }
     parts
 }
 
@@ -1109,8 +1121,11 @@ fn paste_anchor_kind(trimmed: &str) -> &'static str {
     } else if trimmed.starts_with("~/") {
         "tilde"
     } else if trimmed.len() >= 3
-        && trimmed.as_bytes()[0].is_ascii_alphabetic()
-        && &trimmed.as_bytes()[1..3] == b":\\"
+        && trimmed
+            .as_bytes()
+            .first()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && trimmed.as_bytes().get(1..3) == Some(b":\\")
     {
         "windows_drive"
     } else if trimmed.starts_with("\\\\") {
@@ -1275,6 +1290,14 @@ pub fn load_for_send(img: &PastedImage) -> Option<(Vec<u8>, String)> {
 // ACP content block construction
 // -------------------------------------------------------------------------
 
+/// Wire blocks plus the display numbers of attached images whose bytes could not be loaded
+/// (`load_for_send` returned `None`). Their `[Image #N]` text stays in the text block.
+#[derive(Debug, Default)]
+pub struct ContentBlocksBuild {
+    pub blocks: Vec<agent_client_protocol::ContentBlock>,
+    pub skipped_display_numbers: Vec<usize>,
+}
+
 /// Matching chips supply bytes. Orphans load via the shared helper (same path rules as the server) when `workspace_cwd` is set.
 /// Load failure strips the placeholder (warn only). `None` cwd leaves orphans unchanged.
 pub fn build_content_blocks_with_workspace(
@@ -1282,7 +1305,17 @@ pub fn build_content_blocks_with_workspace(
     images: Vec<PastedImage>,
     workspace_cwd: Option<&std::path::Path>,
 ) -> Vec<agent_client_protocol::ContentBlock> {
-    build_content_blocks_with_workspace_ref(text, &images, workspace_cwd)
+    build_content_blocks_with_workspace_report(text, images, workspace_cwd).blocks
+}
+
+/// [`build_content_blocks_with_workspace`] that also reports the attached images it could not load,
+/// so the caller can tell the user instead of sending silently without them.
+pub fn build_content_blocks_with_workspace_report(
+    text: String,
+    images: Vec<PastedImage>,
+    workspace_cwd: Option<&std::path::Path>,
+) -> ContentBlocksBuild {
+    build_content_blocks_with_workspace_report_ref(text, &images, workspace_cwd)
 }
 
 /// Caller keeps the [`PastedImage`] records and must unlink staged files after the bytes are copied.
@@ -1291,9 +1324,18 @@ pub fn build_content_blocks_with_workspace_ref(
     images: &[PastedImage],
     workspace_cwd: Option<&std::path::Path>,
 ) -> Vec<agent_client_protocol::ContentBlock> {
+    build_content_blocks_with_workspace_report_ref(text, images, workspace_cwd).blocks
+}
+
+/// Borrowing form of [`build_content_blocks_with_workspace_report`].
+pub fn build_content_blocks_with_workspace_report_ref(
+    text: String,
+    images: &[PastedImage],
+    workspace_cwd: Option<&std::path::Path>,
+) -> ContentBlocksBuild {
     let allowed: Option<Vec<std::path::PathBuf>> =
         workspace_cwd.map(xai_grok_shared::placeholder_images::default_allowed_prefixes);
-    build_content_blocks_with_prefixes_ref(
+    build_content_blocks_with_prefixes_and_caps_ref(
         text,
         images,
         allowed.as_deref(),
@@ -1307,21 +1349,13 @@ pub fn build_content_blocks_with_prefixes(
     images: Vec<PastedImage>,
     allowed_prefixes: Option<&[std::path::PathBuf]>,
 ) -> Vec<agent_client_protocol::ContentBlock> {
-    build_content_blocks_with_prefixes_ref(
+    build_content_blocks_with_prefixes_and_caps_ref(
         text,
         &images,
         allowed_prefixes,
         xai_grok_shared::placeholder_images::MAX_PLACEHOLDER_AGGREGATE_BYTES,
     )
-}
-
-fn build_content_blocks_with_prefixes_ref(
-    text: String,
-    images: &[PastedImage],
-    allowed_prefixes: Option<&[std::path::PathBuf]>,
-    aggregate_max: usize,
-) -> Vec<agent_client_protocol::ContentBlock> {
-    build_content_blocks_with_prefixes_and_caps_ref(text, images, allowed_prefixes, aggregate_max)
+    .blocks
 }
 
 /// Cap check matches the server: `aggregate + len > cap` breaks, so a total exactly equal to the cap is admitted.
@@ -1332,6 +1366,7 @@ pub fn build_content_blocks_with_prefixes_and_caps(
     aggregate_max: usize,
 ) -> Vec<agent_client_protocol::ContentBlock> {
     build_content_blocks_with_prefixes_and_caps_ref(text, &images, allowed_prefixes, aggregate_max)
+        .blocks
 }
 
 fn build_content_blocks_with_prefixes_and_caps_ref(
@@ -1339,7 +1374,7 @@ fn build_content_blocks_with_prefixes_and_caps_ref(
     images: &[PastedImage],
     allowed_prefixes: Option<&[std::path::PathBuf]>,
     aggregate_max: usize,
-) -> Vec<agent_client_protocol::ContentBlock> {
+) -> ContentBlocksBuild {
     use agent_client_protocol::{ContentBlock, ImageContent, TextContent};
     use base64::Engine as _;
 
@@ -1354,11 +1389,15 @@ fn build_content_blocks_with_prefixes_and_caps_ref(
 
     let mut blocks = Vec::with_capacity(1 + images.len() + orphan_images.len());
     blocks.push(ContentBlock::Text(TextContent::new(rewritten_text)));
+    let mut skipped_display_numbers = Vec::new();
 
     for img in images {
         let (bytes, mime_type) = match load_for_send(img) {
             Some(loaded) => loaded,
-            None => continue,
+            None => {
+                skipped_display_numbers.push(img.display_number);
+                continue;
+            }
         };
 
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -1387,7 +1426,10 @@ fn build_content_blocks_with_prefixes_and_caps_ref(
         blocks.push(ContentBlock::Image(orphan));
     }
 
-    blocks
+    ContentBlocksBuild {
+        blocks,
+        skipped_display_numbers,
+    }
 }
 
 /// Matching chips stay. Successful orphan loads stay and attach; failed loads are stripped with a warn.
@@ -1723,6 +1765,13 @@ pub fn extract_video_refs(text: &str) -> Vec<ScrollbackVideoRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn nth<T>(xs: &[T], i: usize) -> &T {
+        let Some(x) = xs.get(i) else {
+            panic!("expected item {i}, got {} items", xs.len());
+        };
+        x
+    }
 
     /// The image dir is keyed off the session's cwd.
     /// With `AgentSession.cwd` anchored to the origin cwd, pasted images land under that origin, not the process cwd.
@@ -2155,8 +2204,8 @@ mod tests {
         let pasted = format!("{}\n{}", a.display(), b.display());
         let images = try_read_images_from_paste(&pasted);
         assert_eq!(images.len(), 2);
-        assert_eq!(images[0].source_path.as_ref().unwrap(), &a);
-        assert_eq!(images[1].source_path.as_ref().unwrap(), &b);
+        assert_eq!(nth(&images, 0).source_path.as_ref().unwrap(), &a);
+        assert_eq!(nth(&images, 1).source_path.as_ref().unwrap(), &b);
     }
 
     #[test]
@@ -2170,8 +2219,8 @@ mod tests {
         let pasted = format!("{} {}", a.display(), b.display());
         let images = try_read_images_from_paste(&pasted);
         assert_eq!(images.len(), 2);
-        assert_eq!(images[0].source_path.as_ref().unwrap(), &a);
-        assert_eq!(images[1].source_path.as_ref().unwrap(), &b);
+        assert_eq!(nth(&images, 0).source_path.as_ref().unwrap(), &a);
+        assert_eq!(nth(&images, 1).source_path.as_ref().unwrap(), &b);
     }
 
     #[test]
@@ -2248,19 +2297,19 @@ mod tests {
         // The drop classifier inserts in source order, and order determines the final prompt layout
         // A regression that scrambled the order would still pass a count-only assertion
         assert!(
-            matches!(entries[0], DroppedPath::Image(_)),
-            "entries[0] must be Image; got {:?}",
-            entries[0],
+            matches!(nth(&entries, 0), DroppedPath::Image(_)),
+            "nth(&entries, 0) must be Image; got {:?}",
+            nth(&entries, 0),
         );
         assert!(
-            matches!(entries[1], DroppedPath::NonImage(_)),
-            "entries[1] must be NonImage; got {:?}",
-            entries[1],
+            matches!(nth(&entries, 1), DroppedPath::NonImage(_)),
+            "nth(&entries, 1) must be NonImage; got {:?}",
+            nth(&entries, 1),
         );
         assert!(
-            matches!(entries[2], DroppedPath::Image(_)),
-            "entries[2] must be Image; got {:?}",
-            entries[2],
+            matches!(nth(&entries, 2), DroppedPath::Image(_)),
+            "nth(&entries, 2) must be Image; got {:?}",
+            nth(&entries, 2),
         );
     }
 
@@ -2422,8 +2471,8 @@ mod tests {
         let pasted = format!("file://{} {}", a.display(), b.display());
         let images = try_read_images_from_paste(&pasted);
         assert_eq!(images.len(), 2, "file:// + bare path split must work");
-        assert_eq!(images[0].source_path.as_ref().unwrap(), &a);
-        assert_eq!(images[1].source_path.as_ref().unwrap(), &b);
+        assert_eq!(nth(&images, 0).source_path.as_ref().unwrap(), &a);
+        assert_eq!(nth(&images, 1).source_path.as_ref().unwrap(), &b);
     }
 
     #[test]
@@ -2437,8 +2486,8 @@ mod tests {
         let pasted = format!("{} file://{}", a.display(), b.display());
         let images = try_read_images_from_paste(&pasted);
         assert_eq!(images.len(), 2, "bare + file:// path split must work");
-        assert_eq!(images[0].source_path.as_ref().unwrap(), &a);
-        assert_eq!(images[1].source_path.as_ref().unwrap(), &b);
+        assert_eq!(nth(&images, 0).source_path.as_ref().unwrap(), &a);
+        assert_eq!(nth(&images, 1).source_path.as_ref().unwrap(), &b);
     }
 
     #[test]
@@ -2462,10 +2511,10 @@ mod tests {
         );
         let images = try_read_images_from_paste(&pasted);
         assert_eq!(images.len(), 4, "mixed newline+space must flatten to 4");
-        assert_eq!(images[0].source_path.as_ref().unwrap(), &a);
-        assert_eq!(images[1].source_path.as_ref().unwrap(), &b);
-        assert_eq!(images[2].source_path.as_ref().unwrap(), &c);
-        assert_eq!(images[3].source_path.as_ref().unwrap(), &d);
+        assert_eq!(nth(&images, 0).source_path.as_ref().unwrap(), &a);
+        assert_eq!(nth(&images, 1).source_path.as_ref().unwrap(), &b);
+        assert_eq!(nth(&images, 2).source_path.as_ref().unwrap(), &c);
+        assert_eq!(nth(&images, 3).source_path.as_ref().unwrap(), &d);
     }
 
     /// A valid drop line followed by a prose comment line causes the whole paste to fall through to plain text.
@@ -2502,8 +2551,8 @@ mod tests {
         let pasted = format!("file://{} file://{}", a.display(), b.display());
         let images = try_read_images_from_paste(&pasted);
         assert_eq!(images.len(), 2, "two file:// URLs must split on space");
-        assert_eq!(images[0].source_path.as_ref().unwrap(), &a);
-        assert_eq!(images[1].source_path.as_ref().unwrap(), &b);
+        assert_eq!(nth(&images, 0).source_path.as_ref().unwrap(), &a);
+        assert_eq!(nth(&images, 1).source_path.as_ref().unwrap(), &b);
     }
 
     #[test]
@@ -2548,7 +2597,10 @@ mod tests {
 
         let images = try_read_images_from_paste(&visible.display().to_string());
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].source_path.as_deref(), Some(visible.as_path()));
+        assert_eq!(
+            nth(&images, 0).source_path.as_deref(),
+            Some(visible.as_path())
+        );
         assert_ne!(visible, dunce::canonicalize(&visible).unwrap());
     }
 
@@ -2573,7 +2625,7 @@ mod tests {
         let url = format!("file://{}", txt.display());
         let non_images = dropped_non_image_paths(&url);
         assert_eq!(non_images.len(), 1);
-        assert_eq!(non_images[0], canon(&txt));
+        assert_eq!(*nth(&non_images, 0), canon(&txt));
         assert!(dropped_image_paths(&url).is_empty());
     }
 
@@ -2585,7 +2637,7 @@ mod tests {
 
         let non_images = dropped_non_image_paths(&txt.display().to_string());
         assert_eq!(non_images.len(), 1);
-        assert_eq!(non_images[0], canon(&txt));
+        assert_eq!(*nth(&non_images, 0), canon(&txt));
     }
 
     #[test]
@@ -2624,7 +2676,7 @@ mod tests {
         let url = format!("file://{}", img.display());
         let images = dropped_image_paths(&url);
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0], img);
+        assert_eq!(*nth(&images, 0), img);
         assert!(dropped_non_image_paths(&url).is_empty());
     }
 
@@ -2647,7 +2699,7 @@ mod tests {
             1,
             "percent-encoded space must round-trip; got {non_images:?}"
         );
-        assert_eq!(non_images[0], canon(&txt));
+        assert_eq!(*nth(&non_images, 0), canon(&txt));
     }
 
     #[test]
@@ -2666,7 +2718,7 @@ mod tests {
             1,
             "percent-encoded `#` must round-trip; got {non_images:?}"
         );
-        assert_eq!(non_images[0], canon(&txt));
+        assert_eq!(*nth(&non_images, 0), canon(&txt));
     }
 
     #[test]
@@ -2685,7 +2737,7 @@ mod tests {
             1,
             "percent-encoded `?` must round-trip; got {non_images:?}"
         );
-        assert_eq!(non_images[0], canon(&txt));
+        assert_eq!(*nth(&non_images, 0), canon(&txt));
     }
 
     #[test]
@@ -2769,8 +2821,8 @@ mod tests {
                 _ => panic!("expected both as NonImage"),
             })
             .collect();
-        assert_eq!(paths[0], canon(&a));
-        assert_eq!(paths[1], canon(&b));
+        assert_eq!(*nth(&paths, 0), canon(&a));
+        assert_eq!(*nth(&paths, 1), canon(&b));
     }
 
     #[test]
@@ -2787,8 +2839,8 @@ mod tests {
 
         let non_images = dropped_non_image_paths(&url);
         assert_eq!(non_images.len(), 1, "got {non_images:?}");
-        let got = &non_images[0];
-        assert_eq!(got, &canon(&txt));
+        let got = nth(&non_images, 0);
+        assert_eq!(*got, canon(&txt));
         // Double-check: the decoded path must still contain a `+` character, not a stray space
         assert!(
             got.to_string_lossy().contains('+'),
@@ -2821,7 +2873,7 @@ mod tests {
 
         let non_images = dropped_non_image_paths(&url);
         assert_eq!(non_images.len(), 1, "got {non_images:?}");
-        assert_eq!(non_images[0], canon(&txt));
+        assert_eq!(*nth(&non_images, 0), canon(&txt));
     }
 
     #[test]
@@ -2840,7 +2892,7 @@ mod tests {
         let lo = dropped_non_image_paths(&lower);
         assert_eq!(up, lo, "mixed-case %XX must decode identically");
         assert_eq!(up.len(), 1);
-        assert_eq!(up[0], canon(&ellipsis_file));
+        assert_eq!(nth(&up, 0), &canon(&ellipsis_file));
     }
 
     #[test]
@@ -2853,7 +2905,7 @@ mod tests {
         let entries = dropped_paths(&url);
         let ok = entries.is_empty()
             || (entries.len() == 1
-                && matches!(&entries[0], DroppedPath::NonImage(p) if p.to_string_lossy().contains("%ZZ")));
+                && matches!(&nth(&entries, 0), DroppedPath::NonImage(p) if p.to_string_lossy().contains("%ZZ")));
         assert!(
             ok,
             "%ZZ outcome must be either empty-Vec or single NonImage with literal `%ZZ`; got {entries:?}"
@@ -2871,7 +2923,7 @@ mod tests {
         let url = format!("file://{}", fake.display());
         let entries = dropped_paths(&url);
         assert_eq!(entries.len(), 1);
-        match &entries[0] {
+        match &nth(&entries, 0) {
             DroppedPath::NonImage(p) => assert_eq!(p, &canon(&fake)),
             other => panic!("expected NonImage fallthrough, got {other:?}"),
         }
@@ -2900,7 +2952,7 @@ mod tests {
         let via_url = dropped_paths(&url);
         assert_eq!(via_url.len(), 1);
         assert!(
-            matches!(via_url[0], DroppedPath::Image(_)),
+            matches!(nth(&via_url, 0), DroppedPath::Image(_)),
             "absolute file:// to the same PNG must be intercepted as Image; got {via_url:?}"
         );
     }
@@ -2959,9 +3011,9 @@ mod tests {
             let entries = dropped_paths(&url);
             assert_eq!(entries.len(), 1, "{ext}: {entries:?}");
             assert!(
-                matches!(entries[0], DroppedPath::NonImage(_)),
+                matches!(nth(&entries, 0), DroppedPath::NonImage(_)),
                 "{ext} must fall through to NonImage, got {:?}",
-                entries[0],
+                nth(&entries, 0),
             );
         }
     }
@@ -2983,9 +3035,9 @@ mod tests {
         let entries = dropped_paths(&url);
         assert_eq!(entries.len(), 1);
         assert!(
-            matches!(entries[0], DroppedPath::NonImage(_)),
+            matches!(nth(&entries, 0), DroppedPath::NonImage(_)),
             "SVG must fall through to NonImage; got {:?}",
-            entries[0],
+            nth(&entries, 0),
         );
     }
 
@@ -2998,7 +3050,7 @@ mod tests {
         let url = format!("file://{}   ", txt.display());
         let non_images = dropped_non_image_paths(&url);
         assert_eq!(non_images.len(), 1, "got {non_images:?}");
-        assert_eq!(non_images[0], canon(&txt));
+        assert_eq!(*nth(&non_images, 0), canon(&txt));
     }
 
     #[test]
@@ -3010,7 +3062,7 @@ mod tests {
         let url = format!("file://{}\t\n", txt.display());
         let non_images = dropped_non_image_paths(&url);
         assert_eq!(non_images.len(), 1, "got {non_images:?}");
-        assert_eq!(non_images[0], canon(&txt));
+        assert_eq!(*nth(&non_images, 0), canon(&txt));
     }
 
     #[test]
@@ -3026,8 +3078,8 @@ mod tests {
         let pasted = format!("file://{}\n\nfile://{}", a.display(), b.display());
         let non_images = dropped_non_image_paths(&pasted);
         assert_eq!(non_images.len(), 2, "got {non_images:?}");
-        assert_eq!(non_images[0], canon(&a));
-        assert_eq!(non_images[1], canon(&b));
+        assert_eq!(*nth(&non_images, 0), canon(&a));
+        assert_eq!(*nth(&non_images, 1), canon(&b));
     }
 
     #[test]
@@ -3041,8 +3093,8 @@ mod tests {
         let pasted = format!("file://{}  file://{}", a.display(), b.display());
         let non_images = dropped_non_image_paths(&pasted);
         assert_eq!(non_images.len(), 2, "got {non_images:?}");
-        assert_eq!(non_images[0], canon(&a));
-        assert_eq!(non_images[1], canon(&b));
+        assert_eq!(*nth(&non_images, 0), canon(&a));
+        assert_eq!(*nth(&non_images, 1), canon(&b));
     }
 
     #[test]
@@ -3056,7 +3108,7 @@ mod tests {
         let url = format!("file://{}", sub.display());
         let entries = dropped_paths(&url);
         assert_eq!(entries.len(), 1);
-        assert!(matches!(entries[0], DroppedPath::NonImage(_)));
+        assert!(matches!(nth(&entries, 0), DroppedPath::NonImage(_)));
     }
 
     #[test]
@@ -3067,7 +3119,7 @@ mod tests {
 
         let entries = dropped_paths(&sub.display().to_string());
         assert_eq!(entries.len(), 1);
-        assert!(matches!(entries[0], DroppedPath::NonImage(_)));
+        assert!(matches!(nth(&entries, 0), DroppedPath::NonImage(_)));
     }
 
     #[test]
@@ -3207,7 +3259,7 @@ mod tests {
         let entries = dropped_paths(&dir.path().display().to_string());
         // The directory exists; the NonImage gate uses `path.exists()` (not `is_file()`), so directories qualify
         assert_eq!(entries.len(), 1);
-        assert!(matches!(entries[0], DroppedPath::NonImage(_)));
+        assert!(matches!(nth(&entries, 0), DroppedPath::NonImage(_)));
     }
 
     #[test]
@@ -3220,7 +3272,7 @@ mod tests {
         let url = format!("file://{}\n", txt.display());
         let non_images = dropped_non_image_paths(&url);
         assert_eq!(non_images.len(), 1);
-        assert_eq!(non_images[0], canon(&txt));
+        assert_eq!(*nth(&non_images, 0), canon(&txt));
     }
 
     #[test]
@@ -3232,7 +3284,7 @@ mod tests {
         let url = format!("file://{}\r\n", txt.display());
         let non_images = dropped_non_image_paths(&url);
         assert_eq!(non_images.len(), 1);
-        assert_eq!(non_images[0], canon(&txt));
+        assert_eq!(*nth(&non_images, 0), canon(&txt));
     }
 
     #[test]
@@ -3267,11 +3319,11 @@ mod tests {
         assert_eq!(entries.len(), 1);
         // Explicit variant check first so a regression that collapsed `NonImage` into `Image` fails with a clean error, not a destructuring panic
         assert!(
-            matches!(entries[0], DroppedPath::NonImage(_)),
+            matches!(nth(&entries, 0), DroppedPath::NonImage(_)),
             "expected NonImage variant; got {:?}",
-            entries[0]
+            nth(&entries, 0)
         );
-        match &entries[0] {
+        match &nth(&entries, 0) {
             DroppedPath::NonImage(p) => {
                 assert_eq!(p, &nonexistent);
             }
@@ -3289,8 +3341,8 @@ mod tests {
         reconcile(SessionPathPolicy::Preserve, &mut images, &live);
 
         assert_eq!(images.len(), 2);
-        assert_eq!(images[0].display_number, 1);
-        assert_eq!(images[1].display_number, 3);
+        assert_eq!(nth(&images, 0).display_number, 1);
+        assert_eq!(nth(&images, 1).display_number, 3);
     }
 
     #[test]
@@ -3629,7 +3681,7 @@ mod tests {
         let blocks = build_blocks_no_workspace("hello".into(), vec![]);
         assert_eq!(blocks.len(), 1);
         assert!(matches!(
-            &blocks[0],
+            &nth(&blocks, 0),
             agent_client_protocol::ContentBlock::Text(_)
         ));
     }
@@ -3639,7 +3691,7 @@ mod tests {
         let img = make_real_image(100, 80);
         let blocks = build_blocks_no_workspace("look at this [Image #1]".into(), vec![img]);
         assert_eq!(blocks.len(), 2);
-        if let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] {
+        if let agent_client_protocol::ContentBlock::Image(ic) = &nth(&blocks, 1) {
             assert_eq!(ic.mime_type, "image/png");
             assert!(!ic.data.is_empty());
             assert!(ic.uri.is_none());
@@ -3669,7 +3721,7 @@ mod tests {
         };
         let blocks = build_blocks_no_workspace("text".into(), vec![img]);
         assert_eq!(blocks.len(), 2);
-        if let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] {
+        if let agent_client_protocol::ContentBlock::Image(ic) = &nth(&blocks, 1) {
             assert!(!ic.data.is_empty());
             // The durable session copy goes out through `uri` even for clipboard pastes (no `source_path`)
             // This is the reference `image_edit` resolves `[Image #N]` against
@@ -3690,7 +3742,7 @@ mod tests {
         img.source_path = Some(PathBuf::from("/Users/test/logo.png"));
         let blocks = build_blocks_no_workspace("text".into(), vec![img]);
         assert_eq!(blocks.len(), 2);
-        if let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] {
+        if let agent_client_protocol::ContentBlock::Image(ic) = &nth(&blocks, 1) {
             assert!(ic.uri.is_none());
             assert!(!ic.data.is_empty());
         } else {
@@ -3710,7 +3762,7 @@ mod tests {
         img.source_path = Some(visible.clone());
 
         let blocks = build_blocks_no_workspace("text".into(), vec![img]);
-        let agent_client_protocol::ContentBlock::Image(image) = &blocks[1] else {
+        let agent_client_protocol::ContentBlock::Image(image) = &nth(&blocks, 1) else {
             panic!("expected image");
         };
         let canonical_target = dunce::canonicalize(&target).unwrap();
@@ -3727,7 +3779,7 @@ mod tests {
         img.display_number = 3;
         let blocks = build_blocks_no_workspace("text [Image #3]".into(), vec![img]);
         assert_eq!(blocks.len(), 2);
-        let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] else {
+        let agent_client_protocol::ContentBlock::Image(ic) = &nth(&blocks, 1) else {
             panic!("expected Image block");
         };
         assert_eq!(
@@ -3744,7 +3796,7 @@ mod tests {
         img.session_image_path = Some(PathBuf::from("/Users/test/.grok/session/image.png"));
         let blocks = build_blocks_no_workspace("text".into(), vec![img]);
         assert_eq!(blocks.len(), 2);
-        if let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] {
+        if let agent_client_protocol::ContentBlock::Image(ic) = &nth(&blocks, 1) {
             assert_eq!(
                 ic.uri.as_deref(),
                 Some("file:///Users/test/.grok/session/image.png"),
@@ -3792,7 +3844,7 @@ mod tests {
 
         // Text block plus 1 recovered image
         assert_eq!(blocks.len(), 2);
-        let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] else {
+        let agent_client_protocol::ContentBlock::Image(ic) = &nth(&blocks, 1) else {
             panic!("expected recovered Image block");
         };
         assert_eq!(ic.mime_type, "image/png");
@@ -3811,7 +3863,7 @@ mod tests {
         // Placeholder anchor stays but the path is now stripped
         // The image is already attached inline, so the model has no reason to call `Read` on the path (and the path component would tempt it to)
         // The bracketed `[Image #N]` form preserves the positional anchor inside the prose
-        let agent_client_protocol::ContentBlock::Text(t) = &blocks[0] else {
+        let agent_client_protocol::ContentBlock::Text(t) = &nth(&blocks, 0) else {
             panic!("first block must be text");
         };
         assert!(
@@ -3847,14 +3899,14 @@ mod tests {
         let blocks = build_content_blocks_with_prefixes(text, vec![img], Some(&[]));
 
         assert_eq!(blocks.len(), 2, "expected text + 1 inline image");
-        let agent_client_protocol::ContentBlock::Text(t) = &blocks[0] else {
+        let agent_client_protocol::ContentBlock::Text(t) = &nth(&blocks, 0) else {
             panic!("first block must be text");
         };
         assert_eq!(
             t.text, "what is that?[Image #1] thanks",
             "placeholder path must be stripped while the anchor survives"
         );
-        let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] else {
+        let agent_client_protocol::ContentBlock::Image(ic) = &nth(&blocks, 1) else {
             panic!("second block must be the inline image");
         };
         assert_eq!(ic.mime_type, "image/png");
@@ -3871,11 +3923,37 @@ mod tests {
         let blocks = build_content_blocks_with_prefixes(text, vec![], Some(&allowed));
         // No image attached, only text block.
         assert_eq!(blocks.len(), 1);
-        let agent_client_protocol::ContentBlock::Text(t) = &blocks[0] else {
+        let agent_client_protocol::ContentBlock::Text(t) = &nth(&blocks, 0) else {
             panic!("expected text block");
         };
         // Pin the exact post-strip text: the strip seam (space before and after the placeholder) collapses to a single space
         assert_eq!(t.text, "before after");
+    }
+
+    #[test]
+    fn build_blocks_report_lists_unloadable_display_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let loadable = make_real_image(40, 40);
+        let mut unloadable = make_image(2, 2);
+        unloadable.session_image_path = Some(dir.path().join("gone.png"));
+
+        let build = build_content_blocks_with_workspace_report(
+            "see [Image #1] and [Image #2]".to_owned(),
+            vec![loadable, unloadable],
+            None,
+        );
+
+        assert_eq!(build.skipped_display_numbers, vec![2]);
+        // Text plus the one loadable image; the unloadable one contributes no block
+        assert_eq!(build.blocks.len(), 2);
+        let agent_client_protocol::ContentBlock::Text(t) = &nth(&build.blocks, 0) else {
+            panic!("first block must be text");
+        };
+        assert_eq!(t.text, "see [Image #1] and [Image #2]");
+        assert!(matches!(
+            nth(&build.blocks, 1),
+            agent_client_protocol::ContentBlock::Image(_)
+        ));
     }
 
     #[test]
@@ -3910,7 +3988,7 @@ mod tests {
         let blocks = build_content_blocks_with_prefixes(text, vec![img], Some(&allowed));
         // Text plus the PastedImage's own block; no orphan recovery (skipped because `display_number` matches)
         assert_eq!(blocks.len(), 2);
-        let agent_client_protocol::ContentBlock::Text(t) = &blocks[0] else {
+        let agent_client_protocol::ContentBlock::Text(t) = &nth(&blocks, 0) else {
             panic!("first block must be text");
         };
         // Phase 2 universal strip: the anchor `[Image #1]` survives so the model can place the inline image
@@ -3937,7 +4015,7 @@ mod tests {
         let blocks = build_content_blocks_with_workspace(text.into(), vec![], None);
         // Text block only; no recovery without a workspace
         assert_eq!(blocks.len(), 1);
-        let agent_client_protocol::ContentBlock::Text(t) = &blocks[0] else {
+        let agent_client_protocol::ContentBlock::Text(t) = &nth(&blocks, 0) else {
             panic!("expected text block");
         };
         assert!(
@@ -3973,7 +4051,7 @@ mod tests {
             build_content_blocks_with_prefixes_and_caps(text, vec![], Some(&allowed), png.len());
         // Text plus 1 recovered image (not 2)
         assert_eq!(blocks.len(), 2);
-        let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] else {
+        let agent_client_protocol::ContentBlock::Image(ic) = &nth(&blocks, 1) else {
             panic!("expected recovered Image block");
         };
         let attached_uri = ic.uri.as_deref().unwrap();
@@ -3982,7 +4060,7 @@ mod tests {
             "first placeholder must be the one kept, got: {attached_uri}"
         );
         // Cap-breach is `break`, not an Err-strip, so the anchor survives. The path is stripped so an unattached image does not tempt a Read.
-        let agent_client_protocol::ContentBlock::Text(t) = &blocks[0] else {
+        let agent_client_protocol::ContentBlock::Text(t) = &nth(&blocks, 0) else {
             panic!("expected text block");
         };
         assert!(
@@ -4014,7 +4092,7 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         // Symmetric to `build_blocks_orphan_placeholder_loaded_from_disk`
         // Decode the base64 data and assert byte-for-byte equality with the on-disk PNG so wrong bytes at the inclusive boundary are caught
-        let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] else {
+        let agent_client_protocol::ContentBlock::Image(ic) = &nth(&blocks, 1) else {
             panic!("expected recovered Image block");
         };
         assert_eq!(ic.mime_type, "image/png");
@@ -4042,7 +4120,7 @@ mod tests {
         );
         // Cap below image size means no recovered image; only the text block remains
         assert_eq!(blocks.len(), 1);
-        let agent_client_protocol::ContentBlock::Text(t) = &blocks[0] else {
+        let agent_client_protocol::ContentBlock::Text(t) = &nth(&blocks, 0) else {
             panic!("expected text block");
         };
         // Cap breach keeps the `[Image #N]` anchor and strips the path, so the position stays visible without tempting a Read.
@@ -4233,7 +4311,7 @@ mod tests {
         let text = format!("Here is the image: ![hero]({})", path.display());
         let refs = extract_image_refs(&text);
         assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].path, path);
+        assert_eq!(nth(&refs, 0).path, path);
     }
 
     #[test]
@@ -4245,7 +4323,7 @@ mod tests {
         let text = format!("saved to {} (1234 bytes)", path.display());
         let refs = extract_image_refs(&text);
         assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].path, path);
+        assert_eq!(nth(&refs, 0).path, path);
     }
 
     #[test]
@@ -4257,7 +4335,7 @@ mod tests {
         let text = format!("saved to {} (1234 bytes)", path.display());
         let refs = extract_image_refs(&text);
         assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].path, path);
+        assert_eq!(nth(&refs, 0).path, path);
     }
 
     #[test]

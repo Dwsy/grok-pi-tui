@@ -35,12 +35,17 @@ Each entry records:
 
 ## [2bdd1d6a] — 2026-10-13
 
-> **Status:** Pending — recorded before merge; not yet integrated into grok-pi.
+> **Status:** Integrated — statically merged on the isolated `merge/upstream-2bdd1d6a-static-20261013` branch. Cargo, build scripts, and runtime verification were deliberately not run in this task.
 
 - **Sync range:** `37949780..2bdd1d6a` (`37949780c144e37df692e3d669051a21fec24f20` → `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8`)
 - **Upstream commits:** 7 (`Synced from monorepo`)
 - **SOURCE_REV (monorepo SHA):** `559751fdcec02d413e4c57c8832ab275e4f44980` (was `c4ea71cfdbcdb21e32e41bc25a0043d7d4836714`)
 - **Diff size:** 2484 files changed, +335380 / −101458 (rename-aware: 715 added, 25 deleted, 54 renamed, 1690 modified)
+
+- **Integration evidence:** all 95 predicted conflict paths were resolved with an empty unmerged index and no staged conflict markers. The final Pager seams were reviewed manually rather than resolved by blanket side selection.
+- **Static validation:** 437/437 Rust files that differ from upstream passed direct `rustfmt` parsing; 10 TOML/Cargo.lock, 151 JSON, 10 Python, 14 shell, and 14 JavaScript files passed syntax parsing; 103 architecture assertions passed.
+- **Structural repair:** restored the upstream split PTY test roots (`pty_e2e_minimal` and edit-merge modules), removed the obsolete unreferenced monolithic test entry, and propagated the new `BundleState` render argument into 15 fork-retained Pager test call sites.
+- **Whitespace classification:** integration-owned changes introduced no new whitespace errors. Remaining whole-index warnings are byte-identical either to upstream or to the pre-merge fork baseline.
 
 ### Summary
 

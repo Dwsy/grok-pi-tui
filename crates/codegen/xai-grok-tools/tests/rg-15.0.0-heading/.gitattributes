@@ -1,0 +1,2 @@
+# Byte-exact rg output: never convert line endings.
+* -text

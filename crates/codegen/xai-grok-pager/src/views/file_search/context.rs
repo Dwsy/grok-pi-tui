@@ -73,10 +73,10 @@ pub fn detect_with_drill(
     }
 
     // Find the rightmost `@` before the cursor.
-    let at_idx = text[..cursor].rfind('@')?;
+    let at_idx = text.get(..cursor)?.rfind('@')?;
 
     // Reject if `@` is preceded by alphanumeric or underscore (email-like).
-    if let Some(ch) = text[..at_idx].chars().next_back()
+    if let Some(ch) = text.get(..at_idx)?.chars().next_back()
         && (ch.is_alphanumeric() || ch == '_')
     {
         return None;
@@ -84,7 +84,7 @@ pub fn detect_with_drill(
 
     // Path content starts after `@` (+ optional `!` hidden-mode marker).
     let content_start = at_idx + 1;
-    let after_bang = if text[content_start..].starts_with('!') {
+    let after_bang = if text.get(content_start..)?.starts_with('!') {
         content_start + 1
     } else {
         content_start
@@ -97,7 +97,8 @@ pub fn detect_with_drill(
     });
 
     // Find the end of the @-token: first whitespace, comma, or semicolon after `@`.
-    let token_end = text[at_idx + 1..]
+    let token_end = text
+        .get(at_idx + 1..)?
         .char_indices()
         .find_map(|(offset, ch)| {
             let abs = at_idx + 1 + offset;
@@ -119,7 +120,7 @@ pub fn detect_with_drill(
     Some(AtContext {
         range: at_idx..token_end,
         cursor,
-        query: text[at_idx + 1..cursor].to_owned(),
+        query: text.get(at_idx + 1..cursor)?.to_owned(),
     })
 }
 
@@ -271,7 +272,7 @@ mod tests {
         assert_eq!(ctx.path_range(), 7..10);
     }
 
-    // ── Drill-aware detection (whitespace inside a drilled dir name) ─────
+    // Drill-aware: whitespace inside a drilled dir name.
 
     #[test]
     fn drill_prefix_allows_internal_space() {

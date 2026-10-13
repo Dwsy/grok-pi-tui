@@ -42,7 +42,7 @@ fn decode(buf: &[u8]) -> (String, bool) {
     match std::str::from_utf8(buf) {
         Ok(text) => (text.to_owned(), false),
         Err(error) if error.error_len().is_none() => (
-            String::from_utf8_lossy(&buf[..error.valid_up_to()]).into_owned(),
+            String::from_utf8_lossy(buf.get(..error.valid_up_to()).unwrap_or(buf)).into_owned(),
             true,
         ),
         Err(_) => (String::from_utf8_lossy(buf).into_owned(), false),

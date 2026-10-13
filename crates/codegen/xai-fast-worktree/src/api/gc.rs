@@ -285,7 +285,6 @@ fn rec_cwd_within(rec: &crate::db::WorktreeRecord, live_cwds: &[PathBuf]) -> boo
     let path = Path::new(&rec.path);
     if crate::worktree::is_grove_strategy(&rec.creation_mode) || dest_must_not_stat(path) {
         // Never canonicalize an NFS dest (wedged mount hang), including
-        // linked/copy rows whose dest is a live grove mount.
         return live_cwds
             .iter()
             .any(|cwd| crate::nfs::dest_path_contains(path, cwd));

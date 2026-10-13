@@ -31,6 +31,8 @@
 //! });
 //! ```
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod format;
 mod handler;
 pub mod symbolicate;
@@ -172,8 +174,13 @@ fn archive_report(crash_dir: &Path, report_text: &str, timestamp: u64) {
             .filter(|p| p.extension().is_some_and(|e| e == "txt"))
             .collect();
         files.sort();
-        if files.len() > MAX_HISTORY {
-            for old in &files[..files.len() - MAX_HISTORY] {
+        if files.len() > MAX_HISTORY
+            && let Some(old_files) = files
+                .len()
+                .checked_sub(MAX_HISTORY)
+                .and_then(|n| files.get(..n))
+        {
+            for old in old_files {
                 let _ = std::fs::remove_file(old);
             }
         }

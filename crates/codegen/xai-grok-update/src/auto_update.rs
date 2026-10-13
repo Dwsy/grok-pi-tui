@@ -10,10 +10,12 @@ use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::io::AsyncWriteExt;
 
+use crate::cleanup_downloads::cleanup_old_downloads;
 use crate::version::{
     UpdateConfig, fetch_latest_version, get_installed_grok_version, get_latest_version,
-    is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
+    is_stable_channel, is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
 };
+use crate::winget::{UPGRADE_COMMAND, WINGET};
 use xai_grok_shell::util::config;
 use xai_grok_shell::util::grok_home::{grok_application, grok_home};
 pub use xai_grok_telemetry::events::CliUpdateTrigger;
@@ -30,10 +32,6 @@ pub enum UpdateRunMode {
 const PROMPT_UPDATE_NOW: &str = "Update now? [Y/n/d]";
 const MSG_AUTO_UPDATE_BACKGROUND: &str = "Auto-update running in background.";
 const MSG_RUN_UPDATE_MANUAL: &str = "Run `grok update` to get the latest version.";
-/// An empty or `"stable"` channel means stable, the installers' default (`CHANNEL="${GROK_CHANNEL:-stable}"` in install.sh).
-fn is_stable_channel(channel: &str) -> bool {
-    channel.is_empty() || channel == "stable"
-}
 
 /// Manual-install one-liner for this platform's bootstrap installer. On Unix the variable must prefix `bash` (which runs
 /// install.sh), not `curl`. In `VAR=x curl … | bash` the assignment applies to `curl` only and install.sh would fall back
@@ -72,6 +70,7 @@ fn reinstall_hint(installer: &str, channel: &str) -> String {
     match installer {
         "npm" => "Please reinstall via npm:\n  npm i -g @xai-official/grok".to_string(),
         "gh-release" => "Please reinstall via GitHub Releases:\n  gh release download --repo xai-org-shared/grok-build --pattern 'grok-*' --output grok && chmod +x grok".to_string(),
+        WINGET => format!("Update with WinGet:\n  {UPGRADE_COMMAND}"),
         _ => format!("Please reinstall via:\n  {}", manual_install_cmd(channel)),
     }
 }
@@ -202,6 +201,15 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
         } else {
             println!("A new version of Grok Build is available.");
         }
+        if status.installer.as_deref() == Some(WINGET) {
+            let target = match status.latest_version.as_deref() {
+                Some(latest) if has_version_cap(&config::VersionPolicy::resolve()) => {
+                    crate::winget::Target::Exact(latest)
+                }
+                _ => crate::winget::Target::Newest,
+            };
+            println!("{}", crate::winget::update_available_note(target));
+        }
         return Ok(());
     }
 
@@ -222,7 +230,12 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
     let current_version = get_installed_grok_version();
     let current_config = config::load_config().await;
     let auto_update = current_config.cli.auto_update;
-    let channel = update_config.channel.clone();
+    // The WinGet package ships only stable releases, whatever channel is configured.
+    let channel = if installer.as_deref() == Some(WINGET) {
+        "stable".to_owned()
+    } else {
+        update_config.channel.clone()
+    };
 
     let Some(ref inst) = installer else {
         return UpdateStatus {
@@ -332,6 +345,25 @@ fn plan_for(policy: &config::VersionPolicy, latest: String) -> UpdatePlan {
     }
 }
 
+/// `winget upgrade` jumps to the newest stable release, past an org version cap, so capped orgs get the exact target.
+fn has_version_cap(policy: &config::VersionPolicy) -> bool {
+    policy.maximum.is_some() || policy.required_maximum.is_some()
+}
+
+fn skipped_update_notice(latest: &str, current: &str) -> String {
+    format!(
+        "The latest release ({latest}) is not an allowed update; \
+         keeping the current version ({current})."
+    )
+}
+
+fn unavailable_update_error(latest: &str, target: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "The required minimum version ({target}) is newer than the latest \
+         available release ({latest}). Contact your administrator."
+    )
+}
+
 async fn fetch_update_plan(
     installer: &str,
     update_config: &UpdateConfig,
@@ -348,6 +380,9 @@ async fn fetch_update_plan(
 /// Gates on the installer (via `installer_allows_downgrade`) so npm is never downgraded; the decision depends on the installer, never the caller.
 pub async fn auto_update_target(update_config: &UpdateConfig) -> Option<(&'static str, String)> {
     let installer = get_installer().await?;
+    if installer == WINGET {
+        return None;
+    }
     let current = get_installed_grok_version();
     let policy = config::VersionPolicy::resolve();
     let UpdatePlan::Install { target, .. } = fetch_update_plan(installer, update_config, &policy)
@@ -391,6 +426,9 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
     let Some(installer) = get_installer().await else {
         return Ok(outcome);
     };
+    if installer == WINGET {
+        return Ok(outcome);
+    }
     heal_managed_install(installer).await;
     let allow_downgrade = installer_allows_downgrade(installer);
     let policy = config::VersionPolicy::resolve();
@@ -447,14 +485,22 @@ fn disk_version_for_installer(installer: &str) -> Option<String> {
     }
 }
 
+fn parse_grok_installer(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "npm" => Some("npm"),
+        "internal" => Some("internal"),
+        "gh-release" | "gh" => Some("gh-release"),
+        _ => None,
+    }
+}
+
 fn env_installer() -> Option<&'static str> {
     if let Ok(v) = std::env::var("GROK_INSTALLER") {
-        return match v.to_ascii_lowercase().as_str() {
-            "npm" => Some("npm"),
-            "internal" => Some("internal"),
-            "gh-release" | "gh" => Some("gh-release"),
-            _ => None,
-        };
+        let installer = parse_grok_installer(&v);
+        if installer.is_none() {
+            tracing::debug!(value = %v, "unrecognized GROK_INSTALLER disables env installer hints");
+        }
+        return installer;
     }
     if std::env::var_os("GROK_MANAGED_BY_NPM").is_some() {
         return Some("npm");
@@ -469,6 +515,17 @@ fn env_installer() -> Option<&'static str> {
 }
 
 pub async fn get_installer() -> Option<&'static str> {
+    // Only an explicit override outranks the WinGet location; npm hints and stale config do not.
+    if let Some(explicit) = std::env::var("GROK_INSTALLER")
+        .ok()
+        .as_deref()
+        .and_then(parse_grok_installer)
+    {
+        return Some(explicit);
+    }
+    if running_exe_matches(crate::winget::is_winget_package_path) {
+        return Some(WINGET);
+    }
     if let Some(i) = env_installer() {
         return Some(i);
     }
@@ -479,17 +536,21 @@ pub async fn get_installer() -> Option<&'static str> {
         Some(_) => Some("internal"),
         // A wiped config must not reclassify an npm install as internal:
         // that re-enables downgrades and updates npm never sees.
-        None if path_resolves_to_npm_entry() => Some("npm"),
+        None if running_exe_matches(is_under_node_modules) => Some("npm"),
         None => Some("internal"),
     }
 }
 
-/// The npm entry links to a binary inside the package, so the running
-/// executable's real path names the installer.
-fn path_resolves_to_npm_entry() -> bool {
-    std::env::current_exe()
-        .and_then(|exe| dunce::canonicalize(&exe))
-        .is_ok_and(|exe| is_under_node_modules(&exe))
+/// True when the running executable's raw or canonical path satisfies `is_match`. Package-manager entry points (the
+/// npm bin, WinGet's `Links\grok.exe`) link into the package, so the canonical path names the installer.
+fn running_exe_matches(is_match: fn(&std::path::Path) -> bool) -> bool {
+    match std::env::current_exe() {
+        Ok(exe) => is_match(&exe) || dunce::canonicalize(&exe).is_ok_and(|real| is_match(&real)),
+        Err(e) => {
+            tracing::debug!(error = %e, "current_exe unavailable; installer path checks skipped");
+            false
+        }
+    }
 }
 
 fn is_under_node_modules(exe: &std::path::Path) -> bool {
@@ -567,6 +628,9 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     let Some(installer) = get_installer().await else {
         return BackgroundUpdateCheck::none();
     };
+    if installer == WINGET {
+        return BackgroundUpdateCheck::none();
+    }
 
     heal_managed_install(installer).await;
 
@@ -670,6 +734,7 @@ pub async fn run_update_if_available(
     let auto_update = current_config.cli.auto_update.unwrap_or(true);
 
     if current_config.cli.auto_update.is_none()
+        && inst != WINGET
         && let Err(e) = config::update_config(|st| {
             if st.cli.auto_update.is_none() {
                 st.cli.auto_update = Some(true);
@@ -685,20 +750,43 @@ pub async fn run_update_if_available(
     // Don't write version.json here
     // Only cache after confirming no update is needed or after a successful install
     // Otherwise a failed background download would suppress retries for the TTL window
-    let latest_version = match fetch_update_plan(inst, update_config, &policy).await {
-        Ok(UpdatePlan::Install { target, .. }) => target,
-        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => return Ok(false),
+    let (latest_release, latest_version) =
+        match fetch_update_plan(inst, update_config, &policy).await {
+            Ok(UpdatePlan::Install { latest, target }) => (latest, target),
+            Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => {
+                return Ok(false);
+            }
+        };
+    // The WinGet package ships only stable releases, whatever channel is configured.
+    let channel = if inst == WINGET {
+        "stable"
+    } else {
+        update_config.channel.as_str()
     };
     if !needs_update(
         &current_version,
         &latest_version,
-        &update_config.channel,
+        channel,
         installer_allows_downgrade(inst),
     )
     .unwrap_or(false)
     {
         let stable_ptr = try_fetch_stable_pointer().await;
         write_version_cache(&latest_version, stable_ptr.as_deref()).await;
+        return Ok(false);
+    }
+    if inst == WINGET {
+        eprintln!(
+            "A new version of Grok Build is available: {current_version} -> {latest_version}"
+        );
+        let target = if has_version_cap(&policy) {
+            crate::winget::Target::Exact(&latest_version)
+        } else {
+            crate::winget::Target::Newest
+        };
+        eprintln!("{}", crate::winget::update_available_note(target));
+        // A WinGet plan reads the stable pointer, so `latest_release` is the uncapped stable version.
+        write_version_cache(&latest_version, Some(latest_release.as_str())).await;
         return Ok(false);
     }
 
@@ -888,6 +976,7 @@ pub async fn run_install_script(
         )
         .map(|()| None),
         "gh-release" => install_gh_release(target).await.map(|()| None),
+        WINGET => Err(anyhow::anyhow!("this install is managed by WinGet")),
         _ => install_internal(target, update_config).await.map(Some),
     };
     // Measured before the success-only cache sweep, so the sweep cannot inflate success durations
@@ -953,7 +1042,7 @@ pub(crate) fn detect_platform() -> Result<(&'static str, &'static str)> {
 /// Age past which a leftover `.tmp` download file or freshly-renamed versioned binary counts as abandoned (crashed or
 /// killed updater). The per-request budget is [`DOWNLOAD_REQUEST_TIMEOUT`] and the leader's check-and-download pass
 /// matches it. So a concurrent updater's in-flight or just-landed file is never deleted out from under it.
-const STALE_TMP_AGE: Duration = Duration::from_secs(60 * 60);
+pub(crate) const STALE_TMP_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// Total timeout for a CLI artifact download request (including body).
 /// Tighter budgets abort slow-link transfers mid-body and restart them from zero.
@@ -966,7 +1055,7 @@ fn download_client() -> reqwest::Result<reqwest::Client> {
 /// Unique temp path for an in-flight download of `dest`. Two updaters may race in the same instant; that residual race is
 /// accepted instead of taking a lock. The unique name means neither racer can rename the other's half-written temp file
 /// into place. Leftovers older than [`STALE_TMP_AGE`] are swept by `cleanup_old_downloads`.
-fn tmp_download_path(dest: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn tmp_download_path(dest: &std::path::Path) -> std::path::PathBuf {
     unique_temp_sibling(dest, "tmp")
 }
 
@@ -989,7 +1078,10 @@ fn unique_temp_sibling(base: &std::path::Path, ext: &str) -> std::path::PathBuf 
 }
 
 /// Set `+x` on the temp file before renaming onto `dest`, so a concurrent same-version installer never execs `dest` while it is still 0644.
-async fn publish_downloaded_artifact(tmp: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+pub(crate) async fn publish_downloaded_artifact(
+    tmp: &std::path::Path,
+    dest: &std::path::Path,
+) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1406,10 +1498,10 @@ pub async fn install_internal_from_bases(
 
 /// First-launch of a freshly downloaded macOS binary can exceed 10s (Rosetta AOT and Gatekeeper on ~140MB).
 /// A short cap would fail a good artifact.
-const SMOKE_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const SMOKE_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Retry budget for exec attempts refused with ETXTBSY. The failure window is normally the microseconds another spawn in
-/// this process sits between fork and exec (see [`smoke_test_binary`]). On a heavily loaded machine that window can
+/// this process sits between fork and exec (see [`probe_version`]). On a heavily loaded machine that window can
 /// stretch, so the budget errs generous. A false "failed to run" both aborts this install and deletes the binary.
 const SMOKE_TEST_ETXTBSY_ATTEMPTS: u32 = 8;
 const SMOKE_TEST_ETXTBSY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
@@ -1423,7 +1515,7 @@ fn truncate_err(s: &str, max: usize) -> String {
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}...", &s[..end])
+    format!("{}...", s.get(..end).unwrap_or(""))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1456,7 +1548,17 @@ fn nonzero_message(status: &str, stderr: &str) -> String {
     )
 }
 
-async fn smoke_test_binary(binary_path: &std::path::Path) -> Result<(), SmokeTestFailure> {
+/// How `<binary> --version` failed to produce an exit status.
+pub(crate) enum VersionProbeError {
+    Timeout,
+    Spawn(String),
+}
+
+/// Runs a fresh download's `--version`, detached, within [`SMOKE_TEST_TIMEOUT`]. Shared by the stock
+/// updater and the private distributions, which judge the output differently.
+pub(crate) async fn probe_version(
+    binary_path: &std::path::Path,
+) -> Result<std::process::Output, VersionProbeError> {
     // ETXTBSY race: a concurrent updater's child in this process briefly holds every open fd between fork and exec pre_exec
     // in detach_command forces the fork/exec path. The held fds include the write side of a download just renamed onto
     // `binary_path`. So retry instead of failing the install (and deleting a racer's freshly installed binary)
@@ -1465,33 +1567,43 @@ async fn smoke_test_binary(binary_path: &std::path::Path) -> Result<(), SmokeTes
         let mut cmd = tokio::process::Command::new(binary_path);
         cmd.arg("--version")
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         xai_grok_tools::util::detach_command(&mut cmd);
         match tokio::time::timeout(SMOKE_TEST_TIMEOUT, cmd.output()).await {
-            Err(_) => return Err(SmokeTestFailure::Timeout),
-            Ok(Ok(output)) if output.status.success() => return Ok(()),
-            Ok(Ok(output)) => {
-                let status = output
-                    .status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| output.status.to_string());
-                let stderr = truncate_err(&String::from_utf8_lossy(&output.stderr), 400);
-                return Err(SmokeTestFailure::NonZero { status, stderr });
-            }
+            Err(_) => return Err(VersionProbeError::Timeout),
+            Ok(Ok(output)) => return Ok(output),
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                 last_spawn = e.to_string();
                 if attempt < SMOKE_TEST_ETXTBSY_ATTEMPTS {
                     tokio::time::sleep(SMOKE_TEST_ETXTBSY_BACKOFF * attempt).await;
                 }
             }
-            Ok(Err(e)) => return Err(SmokeTestFailure::Spawn(e.to_string())),
+            Ok(Err(e)) => return Err(VersionProbeError::Spawn(e.to_string())),
         }
     }
     // Reached only when every attempt hit ETXTBSY; `last_spawn` holds the final spawn error
-    Err(SmokeTestFailure::Spawn(last_spawn))
+    Err(VersionProbeError::Spawn(last_spawn))
+}
+
+async fn smoke_test_binary(binary_path: &std::path::Path) -> Result<(), SmokeTestFailure> {
+    let output = probe_version(binary_path)
+        .await
+        .map_err(|error| match error {
+            VersionProbeError::Timeout => SmokeTestFailure::Timeout,
+            VersionProbeError::Spawn(message) => SmokeTestFailure::Spawn(message),
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let status = output
+        .status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| output.status.to_string());
+    let stderr = truncate_err(&String::from_utf8_lossy(&output.stderr), 400);
+    Err(SmokeTestFailure::NonZero { status, stderr })
 }
 
 /// Test-only entry point: same as [`install_internal`] but reads from `gcs_base_url` instead of the hardcoded GCS bucket.
@@ -1516,6 +1628,9 @@ pub async fn install_internal_from_base(
 struct VerifiedDownload {
     version: String,
     binary_path: std::path::PathBuf,
+    /// Windows: the grove hook exes and MinGit archive fetched for this release (empty elsewhere).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    payload: windows_payload::Payload,
 }
 
 /// Base-dependent install phase: resolve the version (per base when no target is pinned), download the binary, and smoke-test it.
@@ -1571,9 +1686,16 @@ async fn download_verified_from_base(
         return Err(fail.into());
     }
 
+    // Best-effort and base-dependent, so it belongs to this phase; a miss never fails the install.
+    #[cfg(windows)]
+    let payload = windows_payload::download(gcs_base_url, &version, &platform, &download_dir).await;
+    #[cfg(not(windows))]
+    let payload = windows_payload::Payload::default();
+
     Ok(VerifiedDownload {
         version,
         binary_path,
+        payload,
     })
 }
 
@@ -1595,9 +1717,13 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
 
     remove_stale_pager(&bin_dir).await;
 
+    // Hook exes beside grok.exe and the bundled MinGit; grok is already live, so a failure here is only logged.
+    #[cfg(windows)]
+    windows_payload::activate(&download.payload, &bin_dir, &download.version).await;
+
     eprintln!();
 
-    // Clean up old versioned binaries (keeps the current and one previous)
+    // Current, N-1, and any leftover a live process is still executing.
     cleanup_old_downloads(&download_dir, "grok", &download.version).await;
     cleanup_old_downloads(&download_dir, "grok-pager", &download.version).await;
 
@@ -1651,7 +1777,10 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
 /// returns a relative path like `../downloads/grok-0.1.203-linux-x86_64`. Relative symlinks survive Docker bind-mounts
 /// where `~/.grok/` is mapped into a container with a different `$HOME` (and thus a different absolute prefix).
 #[cfg(unix)]
-fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn relative_symlink_target(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::path::PathBuf {
     let (Some(target_parent), Some(link_parent)) = (target.parent(), link.parent()) else {
         return target.to_path_buf();
     };
@@ -1681,13 +1810,23 @@ async fn swap_managed_bin_links(
     let grok_name = if cfg!(windows) { "grok.exe" } else { "grok" };
     let agent_name = if cfg!(windows) { "agent.exe" } else { "agent" };
     let grok_link = bin_dir.join(grok_name);
-    let agent_link = bin_dir.join(agent_name);
-    let link_paths: [std::path::PathBuf; 2] = [grok_link.clone(), agent_link];
+    let pairs = [
+        (binary_path.to_path_buf(), grok_link.clone()),
+        (binary_path.to_path_buf(), bin_dir.join(agent_name)),
+    ];
+    replace_managed_bins(&pairs).await?;
+    Ok(grok_link)
+}
 
-    // Capture every link up-front so a second-link capture failure can't strand the first mid-swap
-    let mut captured: Vec<LinkRollback> = Vec::with_capacity(link_paths.len());
-    for path in &link_paths {
-        match LinkRollback::capture(path).await {
+/// Point every `dest` in `pairs` at its `src` (a symlink on Unix, a copy through
+/// `windows_replace_exe` on Windows) as one unit: every `dest` is captured
+/// up-front, then replaced in order, and a failure restores the completed ones in
+/// reverse, including removing a `dest` that did not exist before.
+async fn replace_managed_bins(pairs: &[(std::path::PathBuf, std::path::PathBuf)]) -> Result<()> {
+    // Capture every dest up-front so a later capture failure can't strand an earlier one mid-swap
+    let mut captured: Vec<LinkRollback> = Vec::with_capacity(pairs.len());
+    for (_, dest) in pairs {
+        match LinkRollback::capture(dest).await {
             Ok(rb) => captured.push(rb),
             Err(e) => {
                 // Nothing swapped yet; drop any Windows .rollback.bak files.
@@ -1695,24 +1834,24 @@ async fn swap_managed_bin_links(
                     prior.cleanup().await;
                 }
                 return Err(e)
-                    .with_context(|| format!("capturing rollback state for {}", path.display()));
+                    .with_context(|| format!("capturing rollback state for {}", dest.display()));
             }
         }
     }
 
     let mut completed: Vec<&LinkRollback> = Vec::with_capacity(captured.len());
-    for (i, (link_path, rollback)) in link_paths.iter().zip(captured.iter()).enumerate() {
+    for (i, ((src, dest), rollback)) in pairs.iter().zip(captured.iter()).enumerate() {
         #[cfg(unix)]
         let swap_result = {
-            let rel_target = relative_symlink_target(binary_path, link_path);
-            atomic_symlink_swap(&rel_target, link_path).await
+            let rel_target = relative_symlink_target(src, dest);
+            atomic_symlink_swap(&rel_target, dest).await
         };
         #[cfg(windows)]
-        let swap_result = windows_replace_exe(binary_path, link_path).await;
+        let swap_result = windows_replace_exe(src, dest).await;
         #[cfg(not(any(unix, windows)))]
         let swap_result: Result<()> = {
             // No managed bin layout on this target; no-op.
-            let _ = (binary_path, link_path);
+            let _ = (src, dest);
             Ok(())
         };
 
@@ -1737,10 +1876,10 @@ async fn swap_managed_bin_links(
                 // Failed swap had no active state to restore; drop its backup.
                 rollback.cleanup().await;
                 // Drop backups for never-attempted later captures (Windows orphans).
-                for later in &captured[i + 1..] {
+                for later in captured.get(i + 1..).unwrap_or(&[]) {
                     later.cleanup().await;
                 }
-                return Err(e);
+                return Err(e).with_context(|| format!("replacing {}", dest.display()));
             }
         }
     }
@@ -1748,10 +1887,10 @@ async fn swap_managed_bin_links(
     for cap in &captured {
         cap.cleanup().await;
     }
-    Ok(grok_link)
+    Ok(())
 }
 
-/// Snapshot of a managed-bin link's prior state for rollback in [`swap_managed_bin_links`].
+/// Snapshot of a managed-bin link's prior state for rollback in [`replace_managed_bins`].
 /// `Absent` vs `Present` is discriminated up front via `symlink_metadata` so capture errors never get misread as "link was absent".
 enum LinkRollback {
     /// Link was absent before the swap; rollback removes the one we created.
@@ -1888,7 +2027,10 @@ impl LinkRollback {
 /// remove-then-create race where the path briefly doesn't exist, and never deletes the old target file. On macOS
 /// (especially Apple Silicon), deleting a binary that a running process has mmap'd causes SIGKILL.
 #[cfg(unix)]
-async fn atomic_symlink_swap(target: &std::path::Path, link_path: &std::path::Path) -> Result<()> {
+pub(crate) async fn atomic_symlink_swap(
+    target: &std::path::Path,
+    link_path: &std::path::Path,
+) -> Result<()> {
     // Per-racer temp name: a shared one makes remove_file then symlink racy (EEXIST, or ENOENT when another racer renames the link away)
     sweep_stale_tmp_links(link_path, STALE_TMP_AGE).await;
     let tmp_link = unique_temp_sibling(link_path, "tmp-link");
@@ -2031,107 +2173,6 @@ async fn sweep_old_exe_backups(old: &std::path::Path) {
     }
 }
 
-/// A process may still be running the old binary without having loaded all its pages yet. Deleting it on macOS causes
-/// SIGKILL because the kernel can no longer verify the code signature. Files must match `{bin_prefix}-{digit}*` to be
-/// considered versioned binaries (this avoids `grok-*` matching `grok-pager-*` or `grok-latest`).
-async fn cleanup_old_downloads(dir: &std::path::Path, bin_prefix: &str, current_version: &str) {
-    let prefix = format!("{}-", bin_prefix);
-    let current_semver = match semver::Version::parse(current_version) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(
-                "cleanup_old_downloads: invalid current version '{}': {}",
-                current_version,
-                e
-            );
-            return;
-        }
-    };
-
-    let mut entries = match tokio::fs::read_dir(dir).await {
-        Ok(rd) => rd,
-        Err(e) => {
-            tracing::warn!(
-                "cleanup_old_downloads: failed to read {}: {}",
-                dir.display(),
-                e
-            );
-            return;
-        }
-    };
-
-    let mut versioned: Vec<(semver::Version, String)> = Vec::new();
-
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with(&prefix) {
-            continue;
-        }
-        // Temp/partial files: sweep only STALE ones (a fresh `.tmp` may be a concurrent updater's in-flight download)
-        if name.contains(".tmp") {
-            let stale = match entry.metadata().await.and_then(|m| m.modified()) {
-                Ok(modified) => std::time::SystemTime::now()
-                    .duration_since(modified)
-                    .map(|age| age > STALE_TMP_AGE)
-                    // Future mtime (clock skew): can't tell; leave it
-                    .unwrap_or(false),
-                // Unknown mtime: leave it; it is swept once readable and old
-                Err(_) => false,
-            };
-            if stale && let Err(e) = tokio::fs::remove_file(entry.path()).await {
-                tracing::warn!("failed to remove stale temp file {}: {}", name, e);
-            }
-            continue;
-        }
-        // Skip symlinks (e.g. grok-latest).
-        if let Ok(ft) = entry.file_type().await
-            && ft.is_symlink()
-        {
-            continue;
-        }
-        // The suffix after the prefix must start with a digit to be a versioned binary (avoids `grok-latest`, `grok-pager-*` when prefix is `grok`)
-        let suffix = &name[prefix.len()..];
-        if !suffix.starts_with(|c: char| c.is_ascii_digit()) {
-            continue;
-        }
-        // Extract the version portion via the shared parser
-        // It handles the internal `grok-0.1.150-macos-aarch64`, pre-release, and npm `grok-0.1.150` layouts
-        let Some(ver_str) = crate::version::version_from_versioned_binary_name(&name, bin_prefix)
-        else {
-            continue;
-        };
-        if let Ok(v) = semver::Version::parse(&ver_str) {
-            // Never delete the current version
-            if v == current_semver {
-                continue;
-            }
-            versioned.push((v, name));
-        }
-    }
-
-    versioned.sort_by(|a, b| b.0.cmp(&a.0));
-
-    // Keep the most recent old version (the newest sorts first) and delete the rest
-    for (_, name) in versioned.iter().skip(1) {
-        let path = dir.join(name);
-        // Same freshness guard as the `.tmp` sweep: a versioned binary written moments ago is likely a concurrent installer's just-renamed download
-        // Its symlink swap hasn't happened yet; deleting the binary would leave that swap pointing at nothing
-        // Old binaries from previous releases are days old
-        let fresh = tokio::fs::metadata(&path)
-            .await
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
-            .is_some_and(|age| age <= STALE_TMP_AGE);
-        if fresh {
-            continue;
-        }
-        if let Err(e) = tokio::fs::remove_file(&path).await {
-            tracing::warn!("failed to remove old binary {}: {}", name, e);
-        }
-    }
-}
-
 fn installer_manages_bin_entrypoints(installer: &str) -> bool {
     matches!(installer, "internal" | "gh-release")
 }
@@ -2223,8 +2264,11 @@ async fn agent_exe_differs(
         if n == 0 {
             return Ok(false);
         }
-        ra.read_exact(&mut ba[..n]).await?;
-        if bg[..n] != ba[..n] {
+        let Some(dst) = ba.get_mut(..n) else {
+            return Ok(true);
+        };
+        ra.read_exact(dst).await?;
+        if bg.get(..n) != ba.get(..n) {
             return Ok(true);
         }
     }
@@ -2344,7 +2388,7 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
 
     eprintln!();
 
-    // Clean up old versioned binaries (keeps the current and one previous)
+    // Current, N-1, and any leftover a live process is still executing.
     cleanup_old_downloads(&download_dir, "grok", &version).await;
     cleanup_old_downloads(&download_dir, "grok-pager", &version).await;
 
@@ -2498,6 +2542,10 @@ pub async fn apply_channel_switch(channel_switch: Option<&str>, update_config: &
     if let Some(ch) = channel_switch
         && update_config.channel != ch
     {
+        if get_installer().await == Some(WINGET) {
+            eprint!("{}", crate::winget::ignored_channel_note(ch));
+            return;
+        }
         let _ = config::update_config(|st| {
             st.cli.channel = Some(ch.to_string());
         })
@@ -2517,8 +2565,56 @@ pub async fn run_update(
     update_config: &mut UpdateConfig,
     trigger: CliUpdateTrigger,
 ) -> Result<Option<String>> {
+    let installer = get_installer().await;
+    let policy = config::VersionPolicy::resolve();
+    if let Some(version) = pinned_version
+        && let Err(e) = crate::version_policy::check_install_target(&policy, version)
+    {
+        anyhow::bail!("{e}");
+    }
+    if installer == Some(WINGET) {
+        let capped = match pinned_version {
+            // No allowed target means no command: `winget upgrade` would jump past the cap
+            None if has_version_cap(&policy) => {
+                match fetch_update_plan(WINGET, update_config, &policy).await? {
+                    UpdatePlan::Install { target, .. } => {
+                        let current = get_installed_grok_version();
+                        // Like `--check`, never move down, unless the running version is above the hard cap
+                        let above_hard_cap = policy.required_maximum.as_ref().is_some_and(|hi| {
+                            semver::Version::parse(&current).is_ok_and(|v| v > *hi)
+                        });
+                        if !force
+                            && needs_update(&current, &target, "stable", above_hard_cap)
+                                == Some(false)
+                        {
+                            eprintln!("Already up to date ({current}).");
+                            return Ok(None);
+                        }
+                        Some(target)
+                    }
+                    UpdatePlan::Skip { latest } => {
+                        let current = get_installed_grok_version();
+                        eprintln!("{}", skipped_update_notice(&latest, &current));
+                        return Ok(None);
+                    }
+                    UpdatePlan::Unavailable { latest, target } => {
+                        return Err(unavailable_update_error(&latest, &target));
+                    }
+                }
+            }
+            _ => None,
+        };
+        let target = match (pinned_version.or(capped.as_deref()), force) {
+            (Some(version), _) => crate::winget::Target::Exact(version),
+            (None, true) => crate::winget::Target::Reinstall,
+            (None, false) => crate::winget::Target::Newest,
+        };
+        let channel = channel_switch.unwrap_or(update_config.channel.as_str());
+        eprint!("{}", crate::winget::hand_off_message(target, channel));
+        return Ok(None);
+    }
     apply_channel_switch(channel_switch, update_config).await;
-    let installer = match get_installer().await {
+    let installer = match installer {
         Some(i) => i,
         None => {
             eprintln!("Auto-update is not available for manual installations.");
@@ -2537,13 +2633,9 @@ pub async fn run_update(
     heal_managed_install(installer).await;
 
     let current_version = get_installed_grok_version();
-    let policy = config::VersionPolicy::resolve();
 
     // When --version is given, skip the latest-version check and install directly
     if let Some(version) = pinned_version {
-        if let Err(e) = crate::version_policy::check_install_target(&policy, version) {
-            anyhow::bail!("{e}");
-        }
         eprintln!(
             "Installing Grok {} (current: {})...",
             version, current_version
@@ -2578,18 +2670,12 @@ pub async fn run_update(
             // Cache so an explicit `grok update` doesn't re-prompt every run.
             let stable_ptr = try_fetch_stable_pointer().await;
             write_version_cache(&latest, stable_ptr.as_deref()).await;
-            eprintln!(
-                "The latest release ({latest}) is not an allowed update; \
-                 keeping the current version ({current_version})."
-            );
+            eprintln!("{}", skipped_update_notice(&latest, &current_version));
             refresh_deployment_config().await;
             return Ok(None);
         }
         UpdatePlan::Unavailable { latest, target } => {
-            anyhow::bail!(
-                "The required minimum version ({target}) is newer than the latest \
-                 available release ({latest}). Contact your administrator."
-            );
+            return Err(unavailable_update_error(&latest, &target));
         }
         UpdatePlan::Install { latest, target } => (latest, target),
     };
@@ -2692,20 +2778,20 @@ pub async fn run_update(
 
 /// Refresh managed config post-update (best-effort, staleness-gated), for deployment-key and team principals alike.
 async fn refresh_deployment_config() {
-    if !xai_grok_shell::managed_config::has_principal() {
+    if !xai_grok_cloud_config::managed_config::has_principal() {
         return;
     }
-    if !xai_grok_shell::managed_config::is_fetch_enabled() {
+    if !xai_grok_cloud_config::managed_config::is_fetch_enabled() {
         return;
     }
     // Clear a logged-out team's files before deciding to fetch (mirrors the loop).
-    xai_grok_shell::managed_config::clear_orphan();
+    xai_grok_cloud_config::managed_config::clear_orphan();
     if !xai_grok_shell::config::is_managed_config_stale_for(
-        &xai_grok_shell::managed_config::current_serving_identity(),
+        &xai_grok_cloud_config::managed_config::current_serving_identity(),
     ) {
         return;
     }
-    match xai_grok_shell::managed_config::sync().await {
+    match xai_grok_cloud_config::managed_config::sync().await {
         Ok(true) => eprintln!("  Applied managed configuration."),
         Ok(false) => tracing::debug!("no managed configuration to apply"),
         // Auth issues aren't actionable mid-update: quiet here, loud on `grok setup`.
@@ -2717,6 +2803,9 @@ async fn refresh_deployment_config() {
         Err(e) => eprintln!("  Couldn't apply managed configuration. {e}"),
     }
 }
+
+#[path = "windows_payload.rs"]
+mod windows_payload;
 
 #[cfg(test)]
 #[path = "auto_update_tests.rs"]

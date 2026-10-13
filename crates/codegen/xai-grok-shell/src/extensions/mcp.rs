@@ -65,6 +65,9 @@ fn default_true() -> bool {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct McpListResponse {
     pub servers: Vec<McpServerEntry>,
+    /// Session-scoped: true when `is_initialized` is set. A missing client is then a failed handshake.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_mcp_resolved: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,6 +215,8 @@ pub struct McpStatusSnapshot {
     pub configs: Vec<acp::McpServer>,
     pub clients: Vec<McpClientStatus>,
     pub auth_required: std::collections::HashSet<String>,
+    /// Mirrors `McpState::is_initialized`. A missing client then means handshake failed.
+    pub is_resolved: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -605,7 +610,7 @@ pub(crate) async fn build_mcp_status(
     let (
         configs,
         clients,
-        _is_initializing,
+        is_initialized,
         initializing_servers,
         mcp_tool_meta,
         mcp_tool_icons,
@@ -620,7 +625,7 @@ pub(crate) async fn build_mcp_status(
                 .all_clients()
                 .map(|(_, c)| c.clone())
                 .collect::<Vec<_>>(),
-            state.is_initializing(),
+            state.is_initialized(),
             state.handshaking_servers_cloned(),
             state.mcp_tool_meta.clone(),
             state.mcp_tool_icons.clone(),
@@ -737,6 +742,7 @@ pub(crate) async fn build_mcp_status(
         configs,
         clients: client_statuses,
         auth_required,
+        is_resolved: is_initialized,
     }
 }
 
@@ -925,7 +931,11 @@ pub(crate) fn list_blocked_reasons<'a>(
             let name = crate::session::mcp_servers::mcp_server_name(server);
             // Raw catalog entries carry no source tier; classify through the one classifier with the
             // fail-closed non-native tier (only `project_scoped` feeds the pin arm).
-            let subject = crate::session::managed_mcp::mcp_subject_for_tier(name, false, &project);
+            let subject = crate::session::managed_mcp::mcp_subject_for_tier(
+                name,
+                xai_grok_config::mcp_servers::SessionMcpTier::Foreign,
+                &project,
+            );
             if let Some(reason) = ms.mcp_project_pin_block(server, subject) {
                 blocked.entry(name.to_string()).or_insert(reason);
             }
@@ -1090,6 +1100,9 @@ async fn handle_list(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         }
     }
 
+    let session_mcp_resolved = session_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.is_resolved);
     // Carry the verdict for policy-dropped servers so the pager can say "blocked by policy"
     // instead of a generic "unavailable"; computed only with a session snapshot.
     let blocked_reasons: HashMap<String, String> = match (&session_snapshot, &definition_index) {
@@ -1224,7 +1237,10 @@ async fn handle_list(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             }
         }
     }
-    to_ext_response(Ok(McpListResponse { servers }))
+    to_ext_response(Ok(McpListResponse {
+        servers,
+        session_mcp_resolved,
+    }))
 }
 
 // ── mcp/call handler ────────────────────────────────────────────────
@@ -1301,6 +1317,7 @@ pub(crate) async fn read_mcp_resource(
         )
     };
 
+    let _request = client.begin_outbound_request();
     let mcp_service = client
         .ensure_initialized()
         .await
@@ -1451,6 +1468,7 @@ impl xai_grok_tools::types::resources::McpResourceProvider for McpStateResourceP
             )
         };
 
+        let _request = client.begin_outbound_request();
         let mcp_service = client
             .ensure_initialized()
             .await
@@ -2132,7 +2150,7 @@ fn upsert_policy_subject(
 ) -> xai_grok_workspace::permission::resolution::McpSubject {
     crate::session::managed_mcp::mcp_subject_for_tier(
         server_name,
-        true,
+        xai_grok_config::mcp_servers::SessionMcpTier::Native,
         &crate::agent::folder_trust::project_scoped_mcp_names(cwd),
     )
 }
@@ -2843,16 +2861,35 @@ mod tests {
                     }),
                 },
             ],
+            session_mcp_resolved: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
         // [0] local HTTP
-        assert_eq!(json["servers"][0]["source"], "local");
-        assert_eq!(json["servers"][0]["type"], "http");
-        assert_eq!(json["servers"][0]["url"], "https://mcp.linear.app");
-        assert_eq!(json["servers"][0]["scope"], "team");
-        assert_eq!(json["servers"][0]["scopeId"], "team-uuid-123");
-        assert_eq!(json["servers"][0]["scopeName"], "Grok CLI");
-        assert!(json["servers"][0].get("session").is_none());
+        assert_eq!(
+            json.pointer("/servers/0/source"),
+            Some(&serde_json::json!("local"))
+        );
+        assert_eq!(
+            json.pointer("/servers/0/type"),
+            Some(&serde_json::json!("http"))
+        );
+        assert_eq!(
+            json.pointer("/servers/0/url"),
+            Some(&serde_json::json!("https://mcp.linear.app"))
+        );
+        assert_eq!(
+            json.pointer("/servers/0/scope"),
+            Some(&serde_json::json!("team"))
+        );
+        assert_eq!(
+            json.pointer("/servers/0/scopeId"),
+            Some(&serde_json::json!("team-uuid-123"))
+        );
+        assert_eq!(
+            json.pointer("/servers/0/scopeName"),
+            Some(&serde_json::json!("Grok CLI"))
+        );
+        assert!(json.pointer("/servers/0/session").is_none());
         // Managed gateway connectors are not serialized as local transports.
         let gateway = serde_json::to_value(McpServerEntry {
             name: managed_gateway_entry_name("linear"),
@@ -2873,25 +2910,49 @@ mod tests {
             }),
         })
         .unwrap();
-        assert_eq!(gateway["name"], "managed_gateway:linear");
-        assert_eq!(gateway["displayName"], "linear");
-        assert_eq!(gateway["type"], "managedGateway");
+        assert_eq!(
+            gateway.get("name"),
+            Some(&serde_json::json!("managed_gateway:linear"))
+        );
+        assert_eq!(
+            gateway.get("displayName"),
+            Some(&serde_json::json!("linear"))
+        );
+        assert_eq!(
+            gateway.get("type"),
+            Some(&serde_json::json!("managedGateway"))
+        );
         assert!(gateway.get("command").is_none());
         assert!(gateway.get("url").is_none());
         // [1] local Stdio
-        assert_eq!(json["servers"][1]["source"], "local");
-        assert_eq!(json["servers"][1]["type"], "stdio");
-        assert_eq!(json["servers"][1]["command"], "/usr/bin/mcp-filesystem");
         assert_eq!(
-            json["servers"][1]["args"],
-            serde_json::json!(["--root", "/home"])
+            json.pointer("/servers/1/source"),
+            Some(&serde_json::json!("local"))
         );
-        assert!(json["servers"][1].get("url").is_none());
-        assert_eq!(json["servers"][1]["session"]["enabled"], true);
-        assert_eq!(json["servers"][1]["session"]["status"], "ready");
         assert_eq!(
-            json["servers"][1]["session"]["tools"][0]["name"],
-            "read_file"
+            json.pointer("/servers/1/type"),
+            Some(&serde_json::json!("stdio"))
+        );
+        assert_eq!(
+            json.pointer("/servers/1/command"),
+            Some(&serde_json::json!("/usr/bin/mcp-filesystem"))
+        );
+        assert_eq!(
+            json.pointer("/servers/1/args"),
+            Some(&serde_json::json!(["--root", "/home"]))
+        );
+        assert!(json.pointer("/servers/1/url").is_none());
+        assert_eq!(
+            json.pointer("/servers/1/session/enabled"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            json.pointer("/servers/1/session/status"),
+            Some(&serde_json::json!("ready"))
+        );
+        assert_eq!(
+            json.pointer("/servers/1/session/tools/0/name"),
+            Some(&serde_json::json!("read_file"))
         );
     }
 
@@ -2949,13 +3010,25 @@ mod tests {
             }),
         };
         let json = serde_json::to_value(&entry).unwrap();
-        assert_eq!(json["icons"][0]["src"], "https://example.com/icon.png");
-        assert_eq!(json["icons"][0]["mimeType"], "image/png");
-        assert_eq!(json["icons"][0]["sizes"][0], "48x48");
-        assert_eq!(json["icons"][0]["theme"], "dark");
         assert_eq!(
-            json["session"]["tools"][0]["icons"][0]["src"],
-            "data:image/png;base64,aaa"
+            json.pointer("/icons/0/src"),
+            Some(&serde_json::json!("https://example.com/icon.png"))
+        );
+        assert_eq!(
+            json.pointer("/icons/0/mimeType"),
+            Some(&serde_json::json!("image/png"))
+        );
+        assert_eq!(
+            json.pointer("/icons/0/sizes/0"),
+            Some(&serde_json::json!("48x48"))
+        );
+        assert_eq!(
+            json.pointer("/icons/0/theme"),
+            Some(&serde_json::json!("dark"))
+        );
+        assert_eq!(
+            json.pointer("/session/tools/0/icons/0/src"),
+            Some(&serde_json::json!("data:image/png;base64,aaa"))
         );
     }
 
@@ -2996,11 +3069,14 @@ mod tests {
             build_mcp_catalog_with_gateway_tools(&[], Some(&catalog), &Default::default());
 
         assert_eq!(servers.len(), 2);
-        assert_eq!(servers[0].name, "managed_gateway:linear");
-        assert_eq!(servers[0].display_name.as_deref(), Some("Linear"));
-        assert_eq!(servers[0].source, McpServerSource::Managed);
-        assert!(matches!(servers[0].config, McpServerConfig::ManagedGateway));
-        let linear_session = servers[0].session.as_ref().unwrap();
+        let [linear, slack] = servers.as_slice() else {
+            panic!("expected two servers: {servers:?}");
+        };
+        assert_eq!(linear.name, "managed_gateway:linear");
+        assert_eq!(linear.display_name.as_deref(), Some("Linear"));
+        assert_eq!(linear.source, McpServerSource::Managed);
+        assert!(matches!(linear.config, McpServerConfig::ManagedGateway));
+        let linear_session = linear.session.as_ref().unwrap();
         assert_eq!(linear_session.status, Some(McpSessionStatus::Ready));
         assert!(!linear_session.auth_required);
         let linear_names: Vec<&str> = linear_session
@@ -3013,16 +3089,16 @@ mod tests {
             vec!["linear__list_issues", "linear__create_issue"]
         );
 
-        assert_eq!(servers[1].name, "managed_gateway:slack");
-        assert_eq!(servers[1].display_name.as_deref(), Some("Slack"));
-        let slack_session = servers[1].session.as_ref().unwrap();
+        assert_eq!(slack.name, "managed_gateway:slack");
+        assert_eq!(slack.display_name.as_deref(), Some("Slack"));
+        let slack_session = slack.session.as_ref().unwrap();
         assert!(slack_session.auth_required);
         assert!(slack_session.status.is_none());
-        assert_eq!(slack_session.tools[0].name, "slack__search");
-        assert_eq!(
-            slack_session.tools[0].display_name.as_deref(),
-            Some("Search")
-        );
+        let Some(tool) = slack_session.tools.first() else {
+            panic!("expected a slack tool: {:?}", slack_session.tools);
+        };
+        assert_eq!(tool.name, "slack__search");
+        assert_eq!(tool.display_name.as_deref(), Some("Search"));
     }
 
     #[test]
@@ -3043,8 +3119,11 @@ mod tests {
         let servers =
             build_mcp_catalog_with_gateway_tools(&[], Some(&catalog), &Default::default());
         assert_eq!(servers.len(), 1);
-        let session = servers[0].session.as_ref().unwrap();
-        assert_eq!(servers[0].name, "managed_gateway:google_drive");
+        let Some(server) = servers.first() else {
+            panic!("expected one server: {servers:?}");
+        };
+        let session = server.session.as_ref().unwrap();
+        assert_eq!(server.name, "managed_gateway:google_drive");
         assert!(session.auth_required);
         assert!(session.status.is_none());
         assert_eq!(session.tools.len(), 1);
@@ -3185,9 +3264,12 @@ mod tests {
         let servers =
             build_mcp_catalog_with_gateway_tools(&[], Some(&catalog), &Default::default());
         assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].name, "managed_gateway:github");
-        assert_eq!(servers[0].display_name.as_deref(), Some("GitHub"));
-        assert!(servers[0].session.as_ref().unwrap().auth_required);
+        let Some(server) = servers.first() else {
+            panic!("expected one server: {servers:?}");
+        };
+        assert_eq!(server.name, "managed_gateway:github");
+        assert_eq!(server.display_name.as_deref(), Some("GitHub"));
+        assert!(server.session.as_ref().unwrap().auth_required);
     }
 
     #[test]
@@ -3259,13 +3341,16 @@ mod tests {
             build_mcp_catalog_with_gateway_tools(&[local], Some(&catalog), &Default::default());
 
         assert_eq!(servers.len(), 2);
-        assert_eq!(servers[0].name, "managed_gateway:linear");
-        assert_eq!(servers[0].display_name.as_deref(), Some("Linear"));
-        assert_eq!(servers[0].source, McpServerSource::Managed);
-        assert_eq!(servers[1].name, "linear");
-        assert_eq!(servers[1].display_name, None);
-        assert_eq!(servers[1].source, McpServerSource::Local);
-        assert!(matches!(servers[1].config, McpServerConfig::Stdio { .. }));
+        let [managed, local] = servers.as_slice() else {
+            panic!("expected two servers: {servers:?}");
+        };
+        assert_eq!(managed.name, "managed_gateway:linear");
+        assert_eq!(managed.display_name.as_deref(), Some("Linear"));
+        assert_eq!(managed.source, McpServerSource::Managed);
+        assert_eq!(local.name, "linear");
+        assert_eq!(local.display_name, None);
+        assert_eq!(local.source, McpServerSource::Local);
+        assert!(matches!(local.config, McpServerConfig::Stdio { .. }));
     }
 
     #[test]
@@ -3292,9 +3377,12 @@ mod tests {
         );
         let servers = build_mcp_catalog_with_gateway_tools(&[local], None, &Default::default());
         assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].name, "grok_com_slack");
-        assert_eq!(servers[0].source, McpServerSource::Local);
-        assert!(matches!(servers[0].config, McpServerConfig::Http { .. }));
+        let Some(server) = servers.first() else {
+            panic!("expected one server: {servers:?}");
+        };
+        assert_eq!(server.name, "grok_com_slack");
+        assert_eq!(server.source, McpServerSource::Local);
+        assert!(matches!(server.config, McpServerConfig::Http { .. }));
 
         let placeholder = disabled_server_placeholder_entry("grok_com_slack");
         assert_eq!(placeholder.source, McpServerSource::Local);
@@ -3337,11 +3425,17 @@ mod tests {
             ),
         ]);
         let servers = build_mcp_catalog_with_gateway_tools(&[], Some(&catalog), &disabled);
-        let session = servers[0].session.as_ref().unwrap();
+        let Some(server) = servers.first() else {
+            panic!("expected one server: {servers:?}");
+        };
+        let session = server.session.as_ref().unwrap();
         assert!(!session.enabled);
         assert!(session.status.is_none());
-        assert!(session.tools[0].enabled);
-        assert!(!session.tools[1].enabled);
+        let [t0, t1] = session.tools.as_slice() else {
+            panic!("expected two tools: {:?}", session.tools);
+        };
+        assert!(t0.enabled);
+        assert!(!t1.enabled);
     }
 
     #[test]
@@ -3354,9 +3448,15 @@ mod tests {
             is_error: Some(false),
         };
         let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["content"][0]["type"], "text");
-        assert_eq!(json["content"][0]["text"], "Created issue LIN-123");
-        assert_eq!(json["isError"], false);
+        assert_eq!(
+            json.pointer("/content/0/type"),
+            Some(&serde_json::json!("text"))
+        );
+        assert_eq!(
+            json.pointer("/content/0/text"),
+            Some(&serde_json::json!("Created issue LIN-123"))
+        );
+        assert_eq!(json.get("isError"), Some(&serde_json::json!(false)));
     }
 
     #[test]
@@ -3398,10 +3498,22 @@ mod tests {
             }),
         };
         let json = serde_json::to_value(&entry).unwrap();
-        assert_eq!(json["session"]["status"], "setuprequired");
-        assert_eq!(json["session"]["setupRequired"], true);
-        assert_eq!(json["setup"]["fields"][0]["id"], "site");
-        assert_eq!(json["setupValues"]["site"], "us5");
+        assert_eq!(
+            json.pointer("/session/status"),
+            Some(&serde_json::json!("setuprequired"))
+        );
+        assert_eq!(
+            json.pointer("/session/setupRequired"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            json.pointer("/setup/fields/0/id"),
+            Some(&serde_json::json!("site"))
+        );
+        assert_eq!(
+            json.pointer("/setupValues/site"),
+            Some(&serde_json::json!("us5"))
+        );
     }
 
     #[test]
@@ -3412,7 +3524,10 @@ mod tests {
             error: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["status"], "authenticated");
+        assert_eq!(
+            json.get("status"),
+            Some(&serde_json::json!("authenticated"))
+        );
         assert!(
             json.get("error").is_none(),
             "error field must be omitted on success: {json}"
@@ -3427,9 +3542,10 @@ mod tests {
             error: Some("MCP server 'linear' does not use OAuth".to_string()),
         };
         let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["status"], "failed");
+        assert_eq!(json.get("status"), Some(&serde_json::json!("failed")));
         assert_eq!(
-            json["error"], "MCP server 'linear' does not use OAuth",
+            json.get("error"),
+            Some(&serde_json::json!("MCP server 'linear' does not use OAuth")),
             "failure must carry the descriptive error verbatim: {json}"
         );
     }
@@ -3442,7 +3558,7 @@ mod tests {
             error: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["status"], "failed");
+        assert_eq!(json.get("status"), Some(&serde_json::json!("failed")));
         assert!(json.get("error").is_none());
     }
 
@@ -3472,11 +3588,17 @@ mod tests {
             }),
         };
         let json = serde_json::to_value(&entry).unwrap();
-        assert_eq!(json["type"], "http");
-        assert_eq!(json["scope"], "user");
-        assert_eq!(json["scopeId"], "user-uuid-456");
-        assert_eq!(json["session"]["enabled"], false);
-        assert!(json["session"].get("status").is_none());
-        assert!(json["session"].get("tools").is_none());
+        assert_eq!(json.get("type"), Some(&serde_json::json!("http")));
+        assert_eq!(json.get("scope"), Some(&serde_json::json!("user")));
+        assert_eq!(
+            json.get("scopeId"),
+            Some(&serde_json::json!("user-uuid-456"))
+        );
+        assert_eq!(
+            json.pointer("/session/enabled"),
+            Some(&serde_json::json!(false))
+        );
+        assert!(json.get("session").and_then(|s| s.get("status")).is_none());
+        assert!(json.get("session").and_then(|s| s.get("tools")).is_none());
     }
 }

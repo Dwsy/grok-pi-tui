@@ -10,6 +10,8 @@ use crate::views::jump::{
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 
 impl AgentView {
+    /// Close the `/jump` picker (if open) and restore the viewport it opened from.
+    /// Shared by the `Esc` dismiss path and the rewind entry points, so a shadowed picker can't reappear stale.
     pub(crate) fn dismiss_jump_picker(&mut self) {
         if let Some(state) = self.jump_state.take() {
             self.restore_jump_viewport(state.restore);
@@ -26,9 +28,10 @@ impl AgentView {
         }
     }
 
+    /// True when another prompt overlay owns the input slot, so the `/jump` picker must not open and an open one must be dismissed.
+    /// Fork/review overlays are Pi-hosted prompt owners in addition to the upstream rewind, `/btw`, and approval surfaces.
     pub(crate) fn jump_slot_taken(&self) -> bool {
         self.rewind_state.is_some()
-            || self.inline_edit.is_some()
             || self.btw_state.is_some()
             || self.fork_state.is_some()
             || self.review_state.is_some()

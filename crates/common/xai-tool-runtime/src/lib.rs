@@ -11,6 +11,7 @@
 pub mod context;
 pub mod dispatch;
 pub mod error;
+pub mod mcp_structured_content;
 pub mod notification;
 pub mod render;
 pub mod search;
@@ -18,11 +19,12 @@ pub mod streaming;
 pub mod tool;
 
 pub use context::{
-    BehaviorVersion, Cancellation, Cwd, ListToolsContext, SessionContext, ToolCallContext,
-    TraceContext, TypedExtensions, WorkspaceBindMetadata, WorkspaceViewerContext,
+    BehaviorVersion, Cancellation, Cwd, ListToolsContext, SessionContext, ToolApprovalPolicy,
+    ToolCallContext, TraceContext, TypedExtensions, WorkspaceBindMetadata, WorkspaceViewerContext,
 };
 pub use dispatch::ToolDispatch;
 pub use error::{ToolError, ToolErrorKind};
+pub use mcp_structured_content::render_structured_content;
 pub use notification::{
     BashExecutionBackgrounded, BashExecutionComplete, BashExecutionFailed, BashExecutionTimeout,
     BashNotificationBase, BashOutputChunk, FileRead, FileWritten, LspServerCrashed,
@@ -39,7 +41,7 @@ pub use search::{SearchSnapshot, ServerSummary, ToolIndex, ToolSearchIndex, Tool
 pub use streaming::{PartialResultPayload, stream_chunk};
 pub use tool::{
     ArcTool, ArcToolFamily, ContentBlock, Tool, ToolDyn, ToolFamily, ToolProgress, ToolStream,
-    ToolStreamItem, ToolVariant, TypedToolOutput, terminal_only, with_progress,
+    ToolStreamItem, ToolVariant, TypedToolOutput, deferred_terminal, terminal_only, with_progress,
 };
 
 pub use xai_tool_protocol::{StreamingSpec, ToolCallId, ToolCapabilities, ToolId, ToolScope};

@@ -1,6 +1,13 @@
 use super::super::support::*;
+fn at<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
 use super::super::*;
 use super::{AutoCompactTriggerInfo, SuppressReason};
+use crate::session::SwitchContextWindow;
 use crate::session::acp_session::McpReminderMode;
 use crate::terminal::AsyncTerminalRunner;
 use crate::terminal::runner::{TerminalError, TerminalRunRequest, TerminalRunResult};
@@ -57,22 +64,10 @@ async fn create_test_actor(
         vec![],
         xai_grok_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
-            mtls_cert_dir: None,
             model: "test".to_string(),
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            max_retries: None,
-            rate_limit_retry_threshold: None,
-            api_backend: Default::default(),
-            extra_headers: Default::default(),
-            conversation_group_id: None,
-            query_params: Default::default(),
-            env_http_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(context_window)
                 .expect("test context_window must be non-zero"),
-            reasoning_effort: None,
-            stream_tool_calls: None,
+            ..Default::default()
         },
         Box::new(xai_chat_state::NullChatPersistence),
         chat_event_tx,
@@ -80,8 +75,7 @@ async fn create_test_actor(
     );
     chat_state_handle.record_token_usage(total_tokens);
     SessionActor {
-        repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::default(
-        ),
+        vcs_root: None,
         transient_retry_enabled: true,
         transient_retries_prompt_total: std::cell::Cell::new(0),
         transient_episode_start: std::cell::Cell::new(None),
@@ -126,25 +120,26 @@ async fn create_test_actor(
         rewind_pending_prompt: std::sync::Mutex::new(None),
         startup_hints: StartupHints::default(),
         forked_tool_override: None,
-        compaction: crate::session::compaction_config::CompactionConfig {
-            threshold_percent: std::cell::Cell::new(threshold_percent),
-            force_compact: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            context_window_override: None,
-            count: std::sync::atomic::AtomicU64::new(0),
-            auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
-            previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
-            verbatim_input: true,
-            tool_choice: crate::util::config::CompactionToolChoice::Auto,
-            prefire: crate::session::compaction_config::PrefireState::default(),
-            prefix_released: std::sync::atomic::AtomicBool::new(false),
-            cancel: Default::default(),
+        compaction: test_compaction_config(threshold_percent),
+        long_reasoning_reminder: crate::session::long_reasoning_reminder::LongReasoningReminder {
+            enabled: false,
+            tokens: crate::session::long_reasoning_reminder::DEFAULT_TOKENS,
+            delay: crate::session::long_reasoning_reminder::DEFAULT_DELAY,
         },
+        long_reasoning_turn_state: Default::default(),
         memory: crate::session::memory_state::SessionMemory {
             configured_mode: None,
+            v2_config: Default::default(),
             configured_storage: None,
+            process_disabled: false,
+            config_opt_out: false,
+            v2_legacy_carryover: false,
+            prompt_sync_pending: std::sync::atomic::AtomicBool::new(false),
             flush_config: crate::config::MemoryFlushConfig::default(),
-            is_flushing: std::sync::atomic::AtomicBool::new(false),
+            is_flushing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            capture_worker: std::cell::RefCell::new(None),
+            dream_workers: crate::session::memory_state::V2DreamWorkers::default(),
+            last_capture_failure: std::cell::RefCell::new(None),
             last_flush_compaction: std::sync::atomic::AtomicU64::new(0),
             storage: std::cell::RefCell::new(None),
             save_on_end: true,
@@ -164,6 +159,7 @@ async fn create_test_actor(
             dream_count: std::sync::atomic::AtomicU64::new(0),
             dream_success_count: std::sync::atomic::AtomicU64::new(0),
             dream_error_count: std::sync::atomic::AtomicU64::new(0),
+            token_totals: Default::default(),
         },
         session_start: std::time::Instant::now(),
         inference_idle_timeout: std::time::Duration::from_secs(300),
@@ -231,7 +227,7 @@ async fn create_test_actor(
         pending_classifier_completions: parking_lot::Mutex::new(std::collections::VecDeque::new()),
         goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
         managed_mcp_handle: Default::default(),
-        initial_client_mcp_servers: vec![],
+        initial_client_mcp_servers: Default::default(),
         tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
         mcp_announcements: Default::default(),
         mcp_reminder_mode: McpReminderMode::Delta,
@@ -258,7 +254,6 @@ async fn create_test_actor(
         turn_end_tx: Default::default(),
         client_hooks: Default::default(),
         hook_resolved_workspace_root: String::new(),
-        vcs_kind: xai_grok_workspace::session::git::VcsKind::Git,
         hook_load_errors: std::cell::RefCell::new(Vec::new()),
         plugin_registry: std::cell::RefCell::new(None),
         plugin_registry_handle: None,
@@ -366,6 +361,62 @@ async fn suppression_gates_and_reset_is_reason_scoped() {
                 .auto_compact_suppressed
                 .store(SUPPRESS_NONE, Relaxed);
             assert!(actor.check_auto_compact_needed().await.is_some());
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn schema_rejection_suppresses_auto_compaction_on_later_turns() {
+    use crate::session::compaction_config::{SUPPRESS_NONE, SUPPRESS_STICKY, SUPPRESS_TURN};
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+            let actor = create_test_actor(
+                    214_000,
+                    200_000,
+                    85,
+                    gateway_tx,
+                    persistence_tx,
+                )
+                .await;
+            let schema = r#"{"error":{"message":"the summary request does not match the schema","type":"invalid_request_error"}}"#;
+            assert_eq!(
+                SessionActor::classify_suppress_reason(schema),
+                SuppressReason::Schema
+            );
+            assert_eq!(
+                SessionActor::classify_suppress_reason("mock upstream failure 400"),
+                SuppressReason::Other
+            );
+            actor
+                .suppress_auto_compaction(SuppressReason::Schema, "", 1_000, 200_000)
+                .await;
+            assert_eq!(
+                actor.compaction.auto_compact_suppressed.load(Relaxed),
+                SUPPRESS_STICKY
+            );
+            assert!(actor.check_auto_compact_needed().await.is_none());
+            let _ = actor
+                .compaction
+                .auto_compact_suppressed
+                .compare_exchange(SUPPRESS_TURN, SUPPRESS_NONE, Relaxed, Relaxed);
+            assert!(
+                actor.check_auto_compact_needed().await.is_none(),
+                "a schema rejection must keep auto-compaction off after the turn resets"
+            );
+            actor.compaction.auto_compact_suppressed.store(SUPPRESS_NONE, Relaxed);
+            actor
+                .suppress_auto_compaction(SuppressReason::Other, "", 1_000, 200_000)
+                .await;
+            let _ = actor
+                .compaction
+                .auto_compact_suppressed
+                .compare_exchange(SUPPRESS_TURN, SUPPRESS_NONE, Relaxed, Relaxed);
+            assert!(
+                actor.check_auto_compact_needed().await.is_some(),
+                "a plain summary failure must let the next turn compact"
+            );
         })
         .await;
 }
@@ -685,7 +736,11 @@ async fn suppression_emits_composed_notification() {
             let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
             let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel();
             let actor = create_test_actor(10_000, 200_000, 85, gateway_tx, persistence_tx).await;
-            let (service, replacement) = crate::sampling::error::SERVICE_NAME_REWRITES[0];
+            let Some(&(service, replacement)) =
+                crate::sampling::error::SERVICE_NAME_REWRITES.first()
+            else {
+                panic!("SERVICE_NAME_REWRITES must be non-empty");
+            };
             let detail = format!("compact failed: {service}: upstream timeout");
             actor
                 .suppress_auto_compaction(SuppressReason::Other, &detail, 1_000, 200_000)
@@ -772,22 +827,26 @@ async fn spawn_capturing_status_body_server(
                 let request_body = loop {
                     match stream.read(&mut buf).await {
                         Ok(0) | Err(_) => break String::new(),
-                        Ok(n) => raw.extend_from_slice(&buf[..n]),
+                        Ok(n) => {
+                            let Some(chunk) = buf.get(..n) else {
+                                break String::new();
+                            };
+                            raw.extend_from_slice(chunk);
+                        }
                     }
                     if let Some(header_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-                        let headers =
-                            String::from_utf8_lossy(&raw[..header_end]).to_ascii_lowercase();
+                        let Some(header_bytes) = raw.get(..header_end) else {
+                            break String::new();
+                        };
+                        let headers = String::from_utf8_lossy(header_bytes).to_ascii_lowercase();
                         let content_length: usize = headers
                             .lines()
                             .find_map(|l| l.strip_prefix("content-length:"))
                             .and_then(|v| v.trim().parse().ok())
                             .unwrap_or(0);
                         let body_start = header_end + 4;
-                        if raw.len() >= body_start + content_length {
-                            break String::from_utf8_lossy(
-                                &raw[body_start..body_start + content_length],
-                            )
-                            .into_owned();
+                        if let Some(body) = raw.get(body_start..body_start + content_length) {
+                            break String::from_utf8_lossy(body).into_owned();
                         }
                     }
                 };
@@ -848,14 +907,17 @@ async fn family_switch_compacts_lossy_with_new_model() {
                 .await
                 .expect("mock inference server");
             actor
-                .handle_set_session_model(
-                    switch_target_config("new-model", server.url()),
-                    false,
-                    true,
-                    false,
-                    true,
-                    85,
-                )
+                .handle_set_session_model(crate::session::SessionModelSwitch {
+                    sampling_config: switch_target_config("new-model", server.url()),
+                    use_concise: false,
+                    is_family_switch: true,
+                    apply_prompt_override: false,
+                    skip_prompt_rewrite: true,
+                    auto_compact_threshold_percent: 85,
+                    system_prompt_label: xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_owned(),
+                    context_window_selection: SwitchContextWindow::Set(None),
+                    supported_context_windows: Vec::new(),
+                })
                 .await
                 .expect("compact failure is log-only; the switch must succeed");
             let requests = server.requests();
@@ -863,21 +925,22 @@ async fn family_switch_compacts_lossy_with_new_model() {
                 !requests.is_empty(),
                 "family switch must fire a compaction sample"
             );
-            let body = requests[0].body.as_ref().unwrap();
+            let body = at(&requests, 0).body.as_ref().unwrap();
             assert_eq!(
-                body["model"], "new-model",
+                j(body, "model"),
+                "new-model",
                 "summarizer must be the NEW model"
             );
-            for message in body["input"].as_array().unwrap() {
+            for message in j(body, "input").as_array().unwrap() {
                 let keys: Vec<&String> = message.as_object().unwrap().keys().collect();
                 assert!(
                     keys.iter()
                         .all(|k| *k == "type" || *k == "role" || *k == "content"),
                     "lossy view must send plain text messages, got keys {keys:?} in {message}"
                 );
-                assert_eq!(message["type"], "message", "non-message item: {message}");
+                assert_eq!(j(message, "type"), "message", "non-message item: {message}");
                 assert!(
-                    message["content"].is_string(),
+                    j(message, "content").is_string(),
                     "non-text content in {message}"
                 );
             }
@@ -913,6 +976,7 @@ async fn e2e_auto_compact_401_suppresses_auth_and_surfaces_reauth() {
                         tokens_used: 180_000,
                         context_window: 200_000,
                         percentage: 90,
+                        reason_override: None,
                     },
                     false,
                 )
@@ -1018,6 +1082,7 @@ async fn e2e_auto_compact_413_steps_ladder_then_sticky_size_suppress() {
                         tokens_used: 180_000,
                         context_window: 200_000,
                         percentage: 90,
+                        reason_override: None,
                     },
                     false,
                 )
@@ -1029,9 +1094,13 @@ async fn e2e_auto_compact_413_steps_ladder_then_sticky_size_suppress() {
                 3,
                 "413 must step the input ladder exactly once per stage"
             );
-            assert!(!bodies[0].is_empty(), "server must capture request bodies");
+            assert!(
+                !at(&bodies, 0).is_empty(),
+                "server must capture request bodies"
+            );
             assert_ne!(
-                bodies[2], bodies[0],
+                at(&bodies, 2),
+                at(&bodies, 0),
                 "lossy stage must send a degraded input, not the verbatim payload"
             );
             assert_eq!(
@@ -1242,7 +1311,7 @@ async fn bare_manual_compact_failure_does_not_suppress_auto() {
                 ConversationItem::system("sys"),
                 ConversationItem::user("hello"),
             ]);
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             let err = result.expect_err("mock 400 must fail the compaction");
             assert_eq!(
                 crate::session::helpers::session_compact::compact_error_kind(&err),
@@ -1260,6 +1329,7 @@ async fn bare_manual_compact_failure_does_not_suppress_auto() {
                         tokens_used: 180_000,
                         context_window: 200_000,
                         percentage: 90,
+                        reason_override: None,
                     },
                     false,
                 )
@@ -1300,6 +1370,7 @@ async fn transient_auto_compact_failure_notifies_with_real_error() {
                         tokens_used: 180_000,
                         context_window: 200_000,
                         percentage: 90,
+                        reason_override: None,
                     },
                     false,
                 )
@@ -1342,12 +1413,26 @@ async fn transient_auto_compact_failure_notifies_with_real_error() {
         })
         .await;
 }
+/// Point the actor's sampling at a mock server that answers every request with `summary`.
+/// Callers keep the returned server bound: dropping it shuts the server down.
+async fn route_compaction_to_mock_server(
+    actor: &SessionActor,
+    summary: String,
+) -> xai_grok_test_support::MockInferenceServer {
+    let server = xai_grok_test_support::MockInferenceServer::start()
+        .await
+        .unwrap();
+    server.set_response(summary);
+    let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+    cfg.base_url = server.url();
+    actor.chat_state_handle.update_sampling_config(cfg);
+    server
+}
 /// A successful compaction lets failed-server announcements fire again.
 /// The failure reminder was dropped with the compacted context (unlike connected servers, which the compaction context carries).
 /// So the announced episodes clear and the MCP reminder goes dirty for a re-announcement at the next injection.
 #[tokio::test(flavor = "current_thread")]
 async fn compaction_rearms_failed_server_announcements() {
-    use xai_grok_test_support::MockInferenceServer;
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -1355,11 +1440,8 @@ async fn compaction_rearms_failed_server_announcements() {
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
             let actor =
                 Arc::new(create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await);
-            let server = MockInferenceServer::start().await.unwrap();
-            server.set_response("Summary of prior work. ".repeat(30));
-            let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
-            cfg.base_url = server.url();
-            actor.chat_state_handle.update_sampling_config(cfg);
+            let _server =
+                route_compaction_to_mock_server(&actor, "Summary of prior work. ".repeat(30)).await;
             let filler = "x".repeat(8_000);
             actor.chat_state_handle.replace_conversation(vec![
                 ConversationItem::system("sys"),
@@ -1375,7 +1457,7 @@ async fn compaction_rearms_failed_server_announcements() {
             actor
                 .mcp_reminder_dirty
                 .store(false, std::sync::atomic::Ordering::Relaxed);
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(result.is_ok(), "compaction should succeed: {result:?}");
             assert!(
                 actor.mcp_announcements.lock().failed.is_empty(),
@@ -1390,13 +1472,172 @@ async fn compaction_rearms_failed_server_announcements() {
         })
         .await;
 }
+/// The re-added last query keeps the image parts and `<image_files>` block of the turn it came from,
+/// both in the live conversation and in the persisted compaction checkpoint.
+#[tokio::test(flavor = "current_thread")]
+async fn compaction_keeps_last_user_turn_images_and_paths() {
+    const IMAGE_SENTINEL: &str = "data:image/png;base64,last-turn-image-sentinel";
+    const IMAGE_FILES_BLOCK: &str =
+        "<image_files>\n1. /tmp/test-session/assets/image-1.png\n</image_files>";
+    fn carried_image_item(items: &[ConversationItem]) -> Option<&ConversationItem> {
+        items
+            .iter()
+            .find(|item| {
+                matches!(
+                item,
+                ConversationItem::User(user)
+                    if user.synthetic_reason.is_human()
+                        && user.content.iter().any(|part| {
+                            matches!(part, ContentPart::Image { url } if url.as_ref() == IMAGE_SENTINEL)
+                        })
+            )
+            })
+    }
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel();
+            let actor = Arc::new(
+                create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await,
+            );
+            let _server = route_compaction_to_mock_server(
+                    &actor,
+                    "Summary of prior work. ".repeat(30),
+                )
+                .await;
+            let filler = "x".repeat(8_000);
+            actor
+                .chat_state_handle
+                .replace_conversation(
+                    vec![
+                ConversationItem::system("sys"),
+                ConversationItem::user(format!("u0 {filler}")),
+                ConversationItem::assistant(format!("a0 {filler}")),
+                ConversationItem::user_with_parts(vec![
+                    ContentPart::Text {
+                        text: format!(
+                            "{IMAGE_FILES_BLOCK}\n\n<user_query>\nwhat is in this screenshot?\n</user_query>"
+                        )
+                        .into(),
+                    },
+                    ContentPart::Image {
+                        url: IMAGE_SENTINEL.into(),
+                    },
+                ]),
+            ],
+                );
+            let result = actor.run_compact().await;
+            assert!(result.is_ok(), "compaction should succeed: {result:?}");
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            let carried = carried_image_item(&conversation)
+                .expect("compacted history must keep a human item with the image");
+            let text = carried.text_content();
+            assert!(text.contains(IMAGE_FILES_BLOCK), "{text}");
+            assert!(
+                text.contains("<user_query>\nwhat is in this screenshot?\n</user_query>"),
+                "{text}"
+            );
+            let mut checkpoint = None;
+            while let Ok(message) = persistence_rx.try_recv() {
+                if let PersistenceMsg::CompactionCheckpoint(file) = message {
+                    checkpoint = Some(file);
+                }
+            }
+            let checkpoint = checkpoint.expect("compaction must persist a checkpoint");
+            let persisted = carried_image_item(&checkpoint.compacted_history)
+                .expect("checkpoint must keep the human item with the image");
+            assert!(persisted.text_content().contains(IMAGE_FILES_BLOCK));
+        })
+        .await;
+}
+/// Paths of earlier attachments come back as one note listing only regular files inside the session
+/// assets dir, and a second compaction re-harvests that note instead of losing it.
+#[tokio::test(flavor = "current_thread")]
+async fn compaction_paths_note_survives_second_compaction_and_filters_missing_files() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+            let actor = Arc::new(
+                create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await,
+            );
+            let assets_dir = crate::session::image_describe::session_assets_dir(
+                &crate::session::persistence::ensure_owner_only_session_dir(
+                        &actor.session_info,
+                    )
+                    .unwrap(),
+            );
+            crate::util::grok_home::create_dir_all_owner_only(&assets_dir).unwrap();
+            let existing = assets_dir.join("image-note-flow.png");
+            std::fs::write(&existing, b"png").unwrap();
+            let existing = existing.to_string_lossy().into_owned();
+            let missing = assets_dir
+                .join("image-gone.png")
+                .to_string_lossy()
+                .into_owned();
+            let planted = "/etc/hostname";
+            let _server = route_compaction_to_mock_server(
+                    &actor,
+                    "Summary of prior work. ".repeat(30),
+                )
+                .await;
+            let filler = "x".repeat(8_000);
+            actor
+                .chat_state_handle
+                .replace_conversation(
+                    vec![
+                ConversationItem::system("sys"),
+                ConversationItem::user(format!(
+                    "<image_files>\n1. {existing}\n2. {planted}\n</image_files>\n\n<user_query>\nu0 {filler}\n</user_query>"
+                )),
+                ConversationItem::assistant(format!("a0 {filler}")),
+                ConversationItem::user(format!(
+                    "<image_files>\n1. {missing}\n</image_files>\n\n<user_query>\nu1\n</user_query>"
+                )),
+                ConversationItem::assistant("a1"),
+                ConversationItem::user("final query"),
+            ],
+                );
+            let result = actor.run_compact().await;
+            assert!(result.is_ok(), "first compaction should succeed: {result:?}");
+            let mut conversation = actor.chat_state_handle.get_conversation().await;
+            conversation
+                .push(ConversationItem::user("<user_query>\nnext task\n</user_query>"));
+            conversation.push(ConversationItem::assistant("on it"));
+            actor.chat_state_handle.replace_conversation(conversation);
+            let result = actor.run_compact().await;
+            assert!(result.is_ok(), "second compaction should succeed: {result:?}");
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            std::fs::remove_file(&existing).unwrap();
+            let notes: Vec<String> = conversation
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item,
+                        ConversationItem::User(user)
+                            if user.synthetic_reason == SyntheticReason::CompactionMeta
+                    )
+                })
+                .map(ConversationItem::text_content)
+                .filter(|text| text.starts_with("<image_files>"))
+                .collect();
+            let [note] = notes.as_slice() else {
+                panic!("exactly one paths note expected, got: {notes:?}");
+            };
+            assert_eq!(note.matches(existing.as_str()).count(), 1, "{note}");
+            assert!(!note.contains(missing.as_str()), "{note}");
+            assert!(!note.contains(planted), "{note}");
+        })
+        .await;
+}
 /// A forked session whose whole-transcript inherited prefix alone exceeds the auto-compact threshold releases the prefix on compaction.
 /// That lets the conversation actually shrink below the threshold.
 /// The release stays sticky across further compactions (no unbounded compaction loop).
 #[tokio::test(flavor = "current_thread")]
 async fn forked_prefix_released_under_pressure_and_stays_released() {
     use crate::session::compaction_config::SUPPRESS_NONE;
-    use xai_grok_test_support::MockInferenceServer;
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -1413,11 +1654,8 @@ async fn forked_prefix_released_under_pressure_and_stays_released() {
             let mut actor = create_test_actor(0, 40_000, 80, gateway_tx, persistence_tx).await;
             actor.startup_hints.inherited_prefix_len = Some(prefix_len);
             let actor = Arc::new(actor);
-            let server = MockInferenceServer::start().await.unwrap();
-            server.set_response("Summary of prior work. ".repeat(30));
-            let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
-            cfg.base_url = server.url();
-            actor.chat_state_handle.update_sampling_config(cfg);
+            let _server =
+                route_compaction_to_mock_server(&actor, "Summary of prior work. ".repeat(30)).await;
             actor.chat_state_handle.replace_conversation(conv);
             let threshold_tokens = 40_000u64 * 80 / 100;
             let before = actor.chat_state_handle.get_total_tokens().await;
@@ -1425,7 +1663,7 @@ async fn forked_prefix_released_under_pressure_and_stays_released() {
                 before > threshold_tokens,
                 "seed must exceed threshold: {before} <= {threshold_tokens}"
             );
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(result.is_ok(), "compaction should succeed: {result:?}");
             assert!(
                 actor.compaction.prefix_released.load(Relaxed),
@@ -1445,7 +1683,7 @@ async fn forked_prefix_released_under_pressure_and_stays_released() {
                 SUPPRESS_NONE,
                 "a shrunk conversation must not suppress AUTO"
             );
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(
                 result.is_ok(),
                 "second compaction should succeed: {result:?}"
@@ -1468,7 +1706,6 @@ async fn forked_prefix_released_under_pressure_and_stays_released() {
 #[tokio::test(flavor = "current_thread")]
 async fn forked_release_still_over_threshold_suppresses_auto() {
     use crate::session::compaction_config::SUPPRESS_STICKY;
-    use xai_grok_test_support::MockInferenceServer;
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -1485,11 +1722,7 @@ async fn forked_release_still_over_threshold_suppresses_auto() {
             let mut actor = create_test_actor(0, 40_000, 80, gateway_tx, persistence_tx).await;
             actor.startup_hints.inherited_prefix_len = Some(prefix_len);
             let actor = Arc::new(actor);
-            let server = MockInferenceServer::start().await.unwrap();
-            server.set_response("Summary. ".repeat(70));
-            let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
-            cfg.base_url = server.url();
-            actor.chat_state_handle.update_sampling_config(cfg);
+            let _server = route_compaction_to_mock_server(&actor, "Summary. ".repeat(70)).await;
             actor.chat_state_handle.replace_conversation(conv);
             let threshold_tokens = 40_000u64 * 80 / 100;
             let before = actor.chat_state_handle.get_total_tokens().await;
@@ -1497,7 +1730,7 @@ async fn forked_release_still_over_threshold_suppresses_auto() {
                 before > threshold_tokens,
                 "seed must exceed threshold: {before}"
             );
-            let result = actor.run_compact(None).await;
+            let result = actor.run_compact().await;
             assert!(result.is_ok(), "compaction should succeed: {result:?}");
             assert!(
                 actor.compaction.prefix_released.load(Relaxed),
@@ -1547,10 +1780,13 @@ fn cancelled_error_is_typed_and_extracts_to_cancel_text() {
 #[test]
 fn compact_error_data_scrubs_and_caps_raw_producer_input() {
     use crate::session::helpers::session_compact::{CompactErrorKind, compact_error_data};
-    let (service, replacement) = crate::sampling::error::SERVICE_NAME_REWRITES[0];
+    let Some(&(service, replacement)) = crate::sampling::error::SERVICE_NAME_REWRITES.first()
+    else {
+        panic!("SERVICE_NAME_REWRITES must be non-empty");
+    };
     let raw = format!("{service} exploded:\nsecond line {}", "z".repeat(400));
     let data = compact_error_data(CompactErrorKind::Failed, &raw);
-    let message = data["message"].as_str().expect("message key");
+    let message = j(&data, "message").as_str().expect("message key");
     assert!(
         !message.contains(service),
         "service names must be scrubbed at the wire: {message}"
@@ -1563,12 +1799,18 @@ fn compact_error_data_scrubs_and_caps_raw_producer_input() {
     assert!(message.ends_with('…'), "truncation marker: {message}");
     let cased = service.to_ascii_uppercase();
     assert_eq!(
-        compact_error_data(CompactErrorKind::Failed, &format!("{cased} timed out"))["message"],
-        format!("{replacement} timed out")
+        j(
+            &compact_error_data(CompactErrorKind::Failed, &format!("{cased} timed out")),
+            "message",
+        ),
+        &format!("{replacement} timed out")
     );
     let normalized = "API error (status 400 Bad Request): invalid_image: too big";
     assert_eq!(
-        compact_error_data(CompactErrorKind::Failed, normalized)["message"],
+        j(
+            &compact_error_data(CompactErrorKind::Failed, normalized),
+            "message",
+        ),
         normalized
     );
 }
@@ -1680,6 +1922,7 @@ fn suppress_reason_as_str_is_stable() {
 mod preserve_prefix {
     use super::super::preserve_inherited_prefix;
     use super::super::project_preserved_reseed_tokens;
+    use super::at;
     use xai_grok_sampling_types::conversation::ConversationItem;
     #[test]
     fn splices_inherited_with_compacted_suffix() {
@@ -1695,7 +1938,7 @@ mod preserve_prefix {
         ];
         let items = preserve_inherited_prefix(&conversation, compacted, 3).expect("Ok");
         assert_eq!(items.len(), 4);
-        assert!(matches!(items[0], ConversationItem::System(_)));
+        assert!(matches!(at(&items, 0), ConversationItem::System(_)));
     }
     /// Invariant: a head-only prefix lets compaction shrink the conversation; a whole-transcript prefix does not.
     /// That pinned floor is what causes the compaction loop.

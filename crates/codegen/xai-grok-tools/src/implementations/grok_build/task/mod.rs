@@ -13,13 +13,18 @@
 //! - `SessionIdResource` — current session ID for parent scoping (optional)
 //! - `SubagentForegroundWait` — host wait-window guard factory (optional)
 //! - `TaskModelValidator` — validates explicit model slugs before spawn
+//! - `Params<TaskParams>` — whether the model may pick a child model (optional)
 
 mod active_message;
 pub mod admission;
+mod agent_message_sender;
 pub mod backend;
 pub mod coordinator;
 mod coordinator_state;
 pub use coordinator_state::{cap_completion_output, completion_summary, terminal_snapshot};
+pub mod model_policy;
+pub use model_policy::TaskParams;
+pub mod root_control;
 pub mod types;
 
 use self::backend::SubagentBackendResource;
@@ -30,7 +35,6 @@ use crate::types::output::ToolOutput;
 use crate::types::requirements::{Expr, ToolRequirement};
 use crate::types::resources::{SessionFolder, SharedResources};
 use crate::types::tool::{ToolKind, ToolNamespace};
-use regex::Regex;
 use xai_tool_types::{SubagentCompletedOutput, SubagentIsolationMode, TaskToolInput};
 
 pub const TASK_TOOL_NAME: &str = "task";
@@ -68,7 +72,7 @@ fn normalize_user_ask(raw: &str) -> Option<String> {
         return None;
     }
     if let Some(start) = t.find("<user_query>") {
-        let after = &t[start + "<user_query>".len()..];
+        let after = t.get(start + "<user_query>".len()..)?;
         let body = after.split("</user_query>").next().unwrap_or(after).trim();
         if body.is_empty() {
             return None;
@@ -126,7 +130,7 @@ async fn recent_user_asks(resources: &SharedResources) -> Vec<String> {
     }
     const KEEP: usize = 12;
     if asks.len() > KEEP {
-        asks[asks.len() - KEEP..].to_vec()
+        asks.get(asks.len() - KEEP..).unwrap_or(&asks).to_vec()
     } else {
         asks
     }
@@ -144,7 +148,9 @@ async fn detect_continue_parent_work(
 /// Resolve the model-facing get-output tool and param names for the
 /// background notices. Kind-wide resolution is correct here: these name the
 /// retrieval tool's schema (which the host may rename), not task's own.
-async fn resolve_background_notice_names(resources: &SharedResources) -> (String, String, String) {
+pub(crate) async fn resolve_background_notice_names(
+    resources: &SharedResources,
+) -> (String, String, String) {
     let canonical = xai_tool_types::BackgroundNoticeNaming::CANONICAL;
     let res = resources.lock().await;
     let Some(renderer) = res.get::<crate::types::template_renderer::TemplateRenderer>() else {
@@ -168,6 +174,16 @@ async fn resolve_background_notice_names(resources: &SharedResources) -> (String
             .unwrap_or(canonical.timeout_ms_param)
             .to_string(),
     )
+}
+
+/// Only clients that deliver system reminders actually wake the model when a
+/// backgrounded child finishes.
+pub(crate) async fn notified_on_completion(resources: &SharedResources) -> bool {
+    resources
+        .lock()
+        .await
+        .get::<crate::types::resources::SystemRemindersEnabled>()
+        .is_none_or(|e| e.0)
 }
 
 #[derive(Debug, Default)]
@@ -252,47 +268,37 @@ impl crate::types::tool_metadata::ToolMetadata for TaskTool {
     }
 
     fn description_template(&self) -> &str {
-        // Grok Build normally supplies the description via `ToolConfig::with_description(...)` using `build_task_description()` in
-        // xai-grok-agent/src/builder.rs (live subagent roster). But a registration without an override must still ship a real description, never a
-        // placeholder: default to the built-in roster with templated tool/param names, resolved by the registry renderer at finalize time.
-        fn guard_kind_tokens(template: &str) -> String {
-            static TOKEN: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-                Regex::new(r"\$\{\{\s*tools\.by_kind\.([a-z_]+)\s*\}\}").expect("valid regex")
-            });
-            TOKEN
-                .replace_all(template, |caps: &regex::Captures| {
-                    let kind = &caps[1];
-                    format!(
-                        "${{% if tools.by_kind.{kind} %}}${{{{ tools.by_kind.{kind} }}}}\
-                         ${{% else %}}{kind}${{% endif %}}"
-                    )
-                })
-                .into_owned()
-        }
-
         static DESC: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-            let subagents: Vec<xai_tool_types::SubagentDescriptor> =
-                xai_tool_types::BUILTIN_SUBAGENTS
-                    .iter()
-                    .map(|b| xai_tool_types::SubagentDescriptor {
-                        name: b.name.to_owned(),
-                        description: b.description.to_owned(),
-                        tools: Some(guard_kind_tokens(b.tools_template)),
-                    })
-                    .collect();
-            xai_tool_types::build_task_description(
-                &subagents,
-                &xai_tool_types::TaskToolNaming {
-                    task_tool: "${{ tools.by_kind.task }}",
-                    subagent_type_param: "${{ params.task.subagent_type }}",
-                    run_in_background_param: "${{ params.task.run_in_background }}",
-                    resume_from_param: "${{ params.task.resume_from }}",
-                    background_retrieval_tool: "${{ tools.by_kind.background_task_action }}",
-                    isolation_param: "${{ params.task.isolation }}",
-                },
-            )
+            xai_tool_types::build_task_description(&xai_tool_types::TaskToolNaming {
+                task_tool: "${{ tools.by_kind.task }}",
+                run_in_background_param: "${{ params.task.run_in_background }}",
+                resume_from_param: "${{ params.task.resume_from }}",
+                background_retrieval_tool: "${{ tools.by_kind.background_task_action }}",
+                isolation_param: "${{ params.task.isolation }}",
+            })
         });
         &DESC
+    }
+
+    fn versioned_definition(
+        &self,
+        _contract_version: Option<&str>,
+        client_name: &str,
+        description_override: Option<&str>,
+        renderer: &crate::types::template_renderer::TemplateRenderer,
+        param_map: &std::collections::HashMap<String, String>,
+        input_schema: &serde_json::Value,
+        effective_params: &serde_json::Value,
+    ) -> crate::types::definition::ToolDefinition {
+        model_policy::task_versioned_definition(
+            client_name,
+            description_override,
+            self.description_template(),
+            renderer,
+            param_map,
+            input_schema,
+            effective_params,
+        )
     }
 
     fn requires_expr(&self) -> Expr<ToolRequirement> {
@@ -360,6 +366,9 @@ impl xai_tool_runtime::Tool for TaskTool {
             max_depth,
             backend,
             model_validator,
+            model_selection,
+            implicit_subagent_type,
+            model_rejection_sink,
             parent_session_id,
             parent_prompt_id,
             foreground_wait,
@@ -380,6 +389,14 @@ impl xai_tool_runtime::Tool for TaskTool {
                 .clone();
 
             let model_validator = res.get::<TaskModelValidator>().cloned();
+            let task_params =
+                res.get::<crate::types::resources::Params<model_policy::TaskParams>>();
+            let model_selection = task_params
+                .map(|params| params.model_selection)
+                .unwrap_or_default();
+            let implicit_subagent_type =
+                task_params.and_then(|params| params.implicit_subagent_type.clone());
+            let model_rejection_sink = res.get::<model_policy::TaskModelRejectionSink>().cloned();
 
             let parent_session_id = res
                 .get::<SessionIdResource>()
@@ -397,6 +414,9 @@ impl xai_tool_runtime::Tool for TaskTool {
                 max_depth,
                 backend,
                 model_validator,
+                model_selection,
+                implicit_subagent_type,
+                model_rejection_sink,
                 parent_session_id,
                 parent_prompt_id,
                 foreground_wait,
@@ -450,6 +470,18 @@ impl xai_tool_runtime::Tool for TaskTool {
             model
         };
 
+        // Before validation and bootstrap, so a forbidden choice costs no child work
+        if model.is_some() && model_selection == model_policy::TaskModelSelection::Inherited {
+            if let Some(sink) = model_rejection_sink {
+                sink.notify(model_policy::TaskModelRejection::HiddenSelection);
+            }
+            let param_names = crate::types::tool_metadata::invoking_param_names(&ctx);
+            let param_name = param_names.resolve(model_policy::MODEL_PARAM);
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                model_policy::hidden_selection_message(param_name),
+            ));
+        }
+
         // Treat blank/empty/"null" cwd as absent (models sometimes emit these).
         // Also strip stray surrounding quote characters and expand `~`.
         let cwd = input.cwd.as_deref().and_then(sanitize_cwd_value);
@@ -500,58 +532,40 @@ impl xai_tool_runtime::Tool for TaskTool {
 
         // 2. Eager validation — catch unknown / disabled / not-allowed
         //    types before the fire-and-forget background spawn.
-        match backend
-            .backend()
-            .validate_type(&input.subagent_type, &parent_session_id)
-            .await
-        {
-            SubagentValidateTypeOutcome::Ok => {}
-            SubagentValidateTypeOutcome::Unknown { available } => {
-                let suffix = if available.is_empty() {
-                    String::new()
-                } else {
-                    format!(". Available types: {}", available.join(", "))
-                };
-                return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
-                    "Unknown subagent type: {}{suffix}",
-                    input.subagent_type
-                )));
+        // Resume inherits the source type; the host validates that.
+        let mut subagent_type = input.subagent_type.clone();
+        let type_was_omitted = !input.subagent_type_specified;
+        if resume_from.is_none() {
+            if type_was_omitted
+                && let Some(implicit) = implicit_subagent_type.filter(|implicit| {
+                    is_default_subagent_type(&subagent_type)
+                        && !implicit.eq_ignore_ascii_case(&subagent_type)
+                })
+            {
+                subagent_type = implicit;
             }
-            SubagentValidateTypeOutcome::Disabled => {
-                return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
-                    "Subagent '{}' is disabled via [subagents.toggle] in config.toml",
-                    input.subagent_type
-                )));
+            let mut outcome = backend
+                .backend()
+                .validate_type(&subagent_type, &parent_session_id)
+                .await;
+            let replacement = if type_was_omitted {
+                match &outcome {
+                    SubagentValidateTypeOutcome::NotAllowed { allowed } => {
+                        sole_default_subagent_type(&subagent_type, allowed)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(only) = replacement {
+                subagent_type = only;
+                outcome = backend
+                    .backend()
+                    .validate_type(&subagent_type, &parent_session_id)
+                    .await;
             }
-            SubagentValidateTypeOutcome::NotAllowed { allowed } => {
-                return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
-                    "agent can only spawn: {}; '{}' not allowed",
-                    allowed.join(", "),
-                    input.subagent_type
-                )));
-            }
-            // `custom` (not `invalid_arguments`) so the model doesn't
-            // retry with a different name on transport faults.
-            SubagentValidateTypeOutcome::CoordinatorGone => {
-                return Err(xai_tool_runtime::ToolError::custom(
-                    "validation_unavailable",
-                    format!(
-                        "Cannot validate subagent type '{}': the subagent coordinator \
-                         has shut down. Retrying will not help.",
-                        input.subagent_type
-                    ),
-                ));
-            }
-            SubagentValidateTypeOutcome::ValidationUnavailable => {
-                return Err(xai_tool_runtime::ToolError::custom(
-                    "validation_unavailable",
-                    format!(
-                        "Cannot validate subagent type '{}': the subagent coordinator did \
-                         not respond (it may be busy). Retry shortly.",
-                        input.subagent_type
-                    ),
-                ));
-            }
+            reject_subagent_type(outcome, &subagent_type)?;
         }
 
         if let Some(ref requested) = model {
@@ -570,7 +584,7 @@ impl xai_tool_runtime::Tool for TaskTool {
         let spawn_root_span = tracing::info_span!(
             parent: None,
             "subagent.spawn",
-            subagent_type = %input.subagent_type,
+            subagent_type = %subagent_type,
             isolation = tracing::field::Empty,
             subagent_id = %id,
         );
@@ -592,14 +606,16 @@ impl xai_tool_runtime::Tool for TaskTool {
             id: id.clone(),
             prompt: input.prompt.clone(),
             description: input.description.clone(),
-            subagent_type: input.subagent_type.clone(),
+            subagent_type: subagent_type.clone(),
             parent_session_id,
             parent_prompt_id,
             resume_from,
             cwd,
             runtime_overrides: SubagentRuntimeOverrides {
                 model,
-                model_override_provenance: ModelOverrideProvenance::Tool,
+                model_override_provenance: ModelOverrideProvenance::Tool {
+                    selection: model_selection,
+                },
                 reasoning_effort: None,
                 persona: None,
                 // JSON cannot set this field. Compat-harness adapters still
@@ -624,6 +640,7 @@ impl xai_tool_runtime::Tool for TaskTool {
             owner: SubagentOwner::Task,
             cancel_token: child_cancellation,
             spawn_root: SpawnRootSpan::new(spawn_root_span),
+            tool_call_id: Some(ctx.call_id.as_str().to_owned()),
         };
 
         // 4. Background mode: await registration (pending/queued), not the
@@ -646,13 +663,13 @@ impl xai_tool_runtime::Tool for TaskTool {
                 reg = &mut registered_rx => matches!(reg, Ok(())),
                 joined = &mut spawn_task => {
                     if registered_rx.try_recv().is_ok() {
-                        log_background_spawn_after_start(&id, &input.subagent_type, joined);
+                        log_background_spawn_after_start(&id, &subagent_type, joined);
                         terminal_already_logged = true;
                         true
                     } else {
                         return Err(background_spawn_reject_error(
                             &id,
-                            &input.subagent_type,
+                            &subagent_type,
                             flatten_spawn_join(joined),
                         ));
                     }
@@ -661,13 +678,13 @@ impl xai_tool_runtime::Tool for TaskTool {
             if !registered {
                 return Err(background_spawn_reject_error(
                     &id,
-                    &input.subagent_type,
+                    &subagent_type,
                     flatten_spawn_join(spawn_task.await),
                 ));
             }
             if !terminal_already_logged {
                 let log_id = id.clone();
-                let log_type = input.subagent_type.clone();
+                let log_type = subagent_type.clone();
                 // Detached: started text is the model reply; `spawn()` is terminal.
                 tokio::spawn(async move {
                     log_background_spawn_after_start(&log_id, &log_type, spawn_task.await);
@@ -687,7 +704,6 @@ impl xai_tool_runtime::Tool for TaskTool {
             return Ok(ToolOutput::Text(
                 xai_tool_types::format_subagent_started_background(
                     &id,
-                    &input.subagent_type,
                     &input.description,
                     &naming,
                     continue_parent,
@@ -714,19 +730,12 @@ impl xai_tool_runtime::Tool for TaskTool {
                 task_ids_param: &task_ids_param,
                 timeout_ms_param: &timeout_ms_param,
             };
-            // Only promise a completion notification when the client
-            // actually delivers system reminders.
-            let notified_on_completion = resources
-                .lock()
-                .await
-                .get::<crate::types::resources::SystemRemindersEnabled>()
-                .is_none_or(|e| e.0);
+            let notified_on_completion = notified_on_completion(&resources).await;
             let continue_parent =
                 detect_continue_parent_work(&resources, &input.description, &input.prompt).await;
 
             let text = xai_tool_types::format_subagent_auto_backgrounded(
                 &id,
-                &input.subagent_type,
                 &input.description,
                 &naming,
                 notified_on_completion,
@@ -739,13 +748,18 @@ impl xai_tool_runtime::Tool for TaskTool {
         if result.success {
             let resume_from_hint = result.subagent_id.clone();
             let persona_hint: Option<String> = None;
+            let resolved_type = if result.subagent_type.is_empty() {
+                subagent_type
+            } else {
+                result.subagent_type
+            };
             Ok(ToolOutput::SubagentCompleted(SubagentCompletedOutput {
                 // SubagentCompletedOutput.output is `String` (serde-visible
                 // boundary). One allocation per completion; cheaper paths
                 // (pending_completions / snapshot) keep the Arc<str>.
                 output: result.output.to_string(),
                 subagent_id: result.subagent_id,
-                subagent_type: input.subagent_type,
+                subagent_type: resolved_type,
                 tool_calls: result.tool_calls,
                 turns: result.turns,
                 duration_ms: result.duration_ms,
@@ -759,6 +773,71 @@ impl xai_tool_runtime::Tool for TaskTool {
                 result
                     .error
                     .unwrap_or_else(|| "Unknown subagent error".to_string()),
+            ))
+        }
+    }
+}
+
+fn is_default_subagent_type(subagent_type: &str) -> bool {
+    subagent_type.eq_ignore_ascii_case("general-purpose")
+}
+
+/// Default general-purpose becomes the single allowlisted type.
+fn sole_default_subagent_type(current: &str, allowed: &[String]) -> Option<String> {
+    if !is_default_subagent_type(current) {
+        return None;
+    }
+    let [only] = allowed else {
+        return None;
+    };
+    if only.eq_ignore_ascii_case(current) {
+        return None;
+    }
+    Some(only.clone())
+}
+
+fn reject_subagent_type(
+    outcome: SubagentValidateTypeOutcome,
+    subagent_type: &str,
+) -> Result<(), xai_tool_runtime::ToolError> {
+    match outcome {
+        SubagentValidateTypeOutcome::Ok => Ok(()),
+        SubagentValidateTypeOutcome::Unknown { available } => {
+            let suffix = if available.is_empty() {
+                String::new()
+            } else {
+                format!(". Available types: {}", available.join(", "))
+            };
+            Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "Unknown subagent type: {subagent_type}{suffix}"
+            )))
+        }
+        SubagentValidateTypeOutcome::Disabled => {
+            Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "Subagent '{subagent_type}' is disabled via [subagents.toggle] in config.toml"
+            )))
+        }
+        SubagentValidateTypeOutcome::NotAllowed { allowed } => {
+            Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "agent can only spawn: {}; '{subagent_type}' not allowed",
+                allowed.join(", ")
+            )))
+        }
+        // `custom` (not `invalid_arguments`) so the model doesn't retry with a different name.
+        SubagentValidateTypeOutcome::CoordinatorGone => Err(xai_tool_runtime::ToolError::custom(
+            "validation_unavailable",
+            format!(
+                "Cannot validate subagent type '{subagent_type}': the subagent coordinator \
+                 has shut down. Retrying will not help."
+            ),
+        )),
+        SubagentValidateTypeOutcome::ValidationUnavailable => {
+            Err(xai_tool_runtime::ToolError::custom(
+                "validation_unavailable",
+                format!(
+                    "Cannot validate subagent type '{subagent_type}': the subagent coordinator did \
+                     not respond (it may be busy). Retry shortly."
+                ),
             ))
         }
     }
@@ -850,12 +929,14 @@ mod tests {
                 description: "test task".into(),
                 prompt: "do something".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -911,12 +992,14 @@ mod tests {
                 description: "nested ok".into(),
                 prompt: "should be allowed at max_depth=2".into(),
                 subagent_type: "explore".into(),
+                subagent_type_specified: false,
                 run_in_background: true,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -945,12 +1028,14 @@ mod tests {
                 description: "nested spawn".into(),
                 prompt: "should be rejected".into(),
                 subagent_type: "explore".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -976,12 +1061,14 @@ mod tests {
                 description: "test task".into(),
                 prompt: "do something".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -1034,12 +1121,14 @@ mod tests {
                 description: "Find auth middleware".into(),
                 prompt: "Search for authentication middleware files".into(),
                 subagent_type: "explore".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -1090,12 +1179,14 @@ mod tests {
                 description: "test task".into(),
                 prompt: "do something".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -1133,12 +1224,14 @@ mod tests {
                 description: "test task".into(),
                 prompt: "do something".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -1241,12 +1334,14 @@ mod tests {
             description: "test".into(),
             prompt: "do it".into(),
             subagent_type: subagent_type.into(),
+            subagent_type_specified: false,
             run_in_background: background,
             capability_mode: None,
             isolation: None,
             resume_from: None,
             cwd: None,
             model: None,
+            workspace: None,
             task_id: None,
         }
     }
@@ -1353,6 +1448,279 @@ mod tests {
         let msg = result.expect_err("must reject").to_string();
         assert!(msg.contains("'general-purpose' not allowed") && msg.contains("explore"));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn sole_allowed_type_replaces_default_general_purpose() {
+        let (backend, mut rx) = make_backend_with_validation_fn(|subagent_type, _| {
+            if subagent_type == "explore" {
+                SubagentValidateTypeOutcome::Ok
+            } else {
+                SubagentValidateTypeOutcome::NotAllowed {
+                    allowed: vec!["explore".to_owned()],
+                }
+            }
+        });
+        let shared = resources_for_task(backend).into_shared();
+        let handle = tokio::spawn(async move {
+            let request = unwrap_spawn(rx.recv().await.expect("spawn"));
+            assert_eq!(request.subagent_type, "explore");
+            request
+                .respond_with(|request| SubagentResult {
+                    success: true,
+                    output: std::sync::Arc::from("ok"),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+
+        let result = xai_tool_runtime::Tool::run(
+            &TaskTool,
+            test_ctx(shared),
+            task_input("general-purpose", false),
+        )
+        .await
+        .expect("sole allowlisted type is spawnable");
+        handle.await.unwrap();
+        assert!(matches!(result, ToolOutput::SubagentCompleted(_)));
+    }
+
+    #[tokio::test]
+    async fn implicit_subagent_type_replaces_default_general_purpose() {
+        let (backend, mut rx) = make_backend();
+        let mut resources = resources_for_task(backend);
+        resources.insert(crate::types::resources::Params(model_policy::TaskParams {
+            implicit_subagent_type: Some("explore".to_owned()),
+            ..model_policy::TaskParams::default()
+        }));
+        let shared = resources.into_shared();
+        let handle = tokio::spawn(async move {
+            let request = unwrap_spawn(rx.recv().await.expect("spawn"));
+            assert_eq!(request.subagent_type, "explore");
+            request
+                .respond_with(|request| SubagentResult {
+                    success: true,
+                    output: std::sync::Arc::from("ok"),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+
+        let result = xai_tool_runtime::Tool::run(
+            &TaskTool,
+            test_ctx(shared),
+            task_input("general-purpose", false),
+        )
+        .await
+        .expect("implicit type is spawnable");
+        handle.await.unwrap();
+        assert!(matches!(result, ToolOutput::SubagentCompleted(_)));
+    }
+
+    #[tokio::test]
+    async fn omitted_type_stays_general_purpose_when_types_are_selectable() {
+        let (backend, mut rx) = make_backend();
+        let mut resources = resources_for_task(backend);
+        resources.insert(crate::types::resources::Params(model_policy::TaskParams {
+            selectable_subagent_types: vec![xai_tool_types::SubagentDescriptor {
+                name: "demo-plugin:reviewer".to_owned(),
+                description: "Reviews diffs.".to_owned(),
+                tools: None,
+            }],
+            ..model_policy::TaskParams::default()
+        }));
+        let shared = resources.into_shared();
+        let handle = tokio::spawn(async move {
+            let request = unwrap_spawn(rx.recv().await.expect("spawn"));
+            assert_eq!("general-purpose", request.subagent_type);
+            request
+                .respond_with(|request| SubagentResult {
+                    success: true,
+                    output: std::sync::Arc::from("ok"),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                })
+                .expect("respond to spawn");
+        });
+
+        xai_tool_runtime::Tool::run(
+            &TaskTool,
+            test_ctx(shared),
+            task_input("general-purpose", false),
+        )
+        .await
+        .expect("omitted type spawns general-purpose");
+        handle.await.expect("spawn responder");
+    }
+
+    #[tokio::test]
+    async fn explicit_type_is_not_replaced_by_implicit_or_allowlist() {
+        let (backend, mut rx) = make_backend_with_validation_fn(|subagent_type, _| {
+            if subagent_type == "plan" {
+                SubagentValidateTypeOutcome::NotAllowed {
+                    allowed: vec!["explore".to_owned()],
+                }
+            } else {
+                SubagentValidateTypeOutcome::Ok
+            }
+        });
+        let mut resources = resources_for_task(backend);
+        resources.insert(crate::types::resources::Params(model_policy::TaskParams {
+            implicit_subagent_type: Some("explore".to_owned()),
+            ..model_policy::TaskParams::default()
+        }));
+
+        let result = xai_tool_runtime::Tool::run(
+            &TaskTool,
+            test_ctx(resources.into_shared()),
+            task_input("plan", true),
+        )
+        .await;
+        let msg = result
+            .expect_err("explicit type must not be rewritten")
+            .to_string();
+        assert!(msg.contains("'plan' not allowed"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn explicit_general_purpose_json_is_not_replaced_by_sole_allowlist() {
+        let (backend, mut rx) = make_backend_with_validation_fn(|subagent_type, _| {
+            if subagent_type == "explore" {
+                SubagentValidateTypeOutcome::Ok
+            } else {
+                SubagentValidateTypeOutcome::NotAllowed {
+                    allowed: vec!["explore".to_owned()],
+                }
+            }
+        });
+        let input: TaskToolInput = serde_json::from_str(
+            r#"{"description":"test","prompt":"do it","subagent_type":"general-purpose"}"#,
+        )
+        .unwrap();
+        assert!(input.subagent_type_specified);
+
+        let result = xai_tool_runtime::Tool::run(
+            &TaskTool,
+            test_ctx(resources_for_task(backend).into_shared()),
+            input,
+        )
+        .await;
+        let msg = result
+            .expect_err("explicit general-purpose must not be rewritten")
+            .to_string();
+        assert!(msg.contains("'general-purpose' not allowed"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn explicit_general_purpose_json_is_not_replaced_by_implicit_type() {
+        let (backend, mut rx) = make_backend();
+        let mut resources = resources_for_task(backend);
+        resources.insert(crate::types::resources::Params(model_policy::TaskParams {
+            implicit_subagent_type: Some("explore".to_owned()),
+            ..model_policy::TaskParams::default()
+        }));
+        let shared = resources.into_shared();
+        let handle = tokio::spawn(async move {
+            let request = unwrap_spawn(rx.recv().await.expect("spawn"));
+            assert_eq!(request.subagent_type, "general-purpose");
+            request
+                .respond_with(|request| SubagentResult {
+                    success: true,
+                    output: std::sync::Arc::from("ok"),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+
+        let input: TaskToolInput = serde_json::from_str(
+            r#"{"description":"test","prompt":"do it","subagent_type":"general-purpose","run_in_background":false}"#,
+        )
+        .unwrap();
+        let result = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
+            .await
+            .expect("explicit general-purpose stays general-purpose");
+        handle.await.unwrap();
+        assert!(matches!(result, ToolOutput::SubagentCompleted(_)));
+    }
+
+    #[tokio::test]
+    async fn omitted_general_purpose_json_round_trip_still_uses_sole_allowlist() {
+        let omitted: TaskToolInput = serde_json::from_str(
+            r#"{"description":"test","prompt":"do it","run_in_background":false}"#,
+        )
+        .unwrap();
+        let replayed: TaskToolInput =
+            serde_json::from_str(&serde_json::to_string(&omitted).unwrap()).unwrap();
+        assert!(!replayed.subagent_type_specified);
+
+        let (backend, mut rx) = make_backend_with_validation_fn(|subagent_type, _| {
+            if subagent_type == "explore" {
+                SubagentValidateTypeOutcome::Ok
+            } else {
+                SubagentValidateTypeOutcome::NotAllowed {
+                    allowed: vec!["explore".to_owned()],
+                }
+            }
+        });
+        let shared = resources_for_task(backend).into_shared();
+        let handle = tokio::spawn(async move {
+            let request = unwrap_spawn(rx.recv().await.expect("spawn"));
+            assert_eq!(request.subagent_type, "explore");
+            request
+                .respond_with(|request| SubagentResult {
+                    success: true,
+                    output: std::sync::Arc::from("ok"),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+        xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), replayed)
+            .await
+            .expect("replayed omitted type is still rewritten");
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resume_keeps_the_call_type_when_an_implicit_type_is_set() {
+        let (backend, mut rx) = make_backend();
+        let mut resources = resources_for_task(backend);
+        resources.insert(crate::types::resources::Params(model_policy::TaskParams {
+            implicit_subagent_type: Some("explore".to_owned()),
+            ..model_policy::TaskParams::default()
+        }));
+        let shared = resources.into_shared();
+        let handle = tokio::spawn(async move {
+            let request = unwrap_spawn(rx.recv().await.expect("spawn"));
+            assert_eq!(request.subagent_type, "general-purpose");
+            assert_eq!(request.resume_from.as_deref(), Some("prev-id"));
+            request
+                .respond_with(|request| SubagentResult {
+                    success: true,
+                    output: std::sync::Arc::from("ok"),
+                    subagent_id: request.id.clone(),
+                    child_session_id: request.id.clone(),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+
+        let mut input = task_input("general-purpose", false);
+        input.resume_from = Some("prev-id".to_owned());
+        xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
+            .await
+            .expect("resume skips implicit type selection");
+        handle.await.unwrap();
     }
 
     #[tokio::test]
@@ -1837,12 +2205,14 @@ mod tests {
     #[test]
     fn task_tool_input_schema_includes_model() {
         let schema = serde_json::to_value(schemars::schema_for!(TaskToolInput)).unwrap();
-        assert_eq!(
-            schema["properties"]["model"]["description"],
-            "Optional model slug for this agent. If provided, it must resolve to one of the \
-             available model slugs. If omitted, the subagent uses the same model as the parent \
-             agent. Do not pass if resume_from is set (prior model will be used). Only choose \
-             an explicit model when the user directly requests it."
+        assert!(
+            schema
+                .get("properties")
+                .and_then(|p| p.get("model"))
+                .and_then(|m| m.get("description"))
+                .and_then(|v| v.as_str())
+                .is_some_and(|desc| !desc.is_empty()),
+            "model must stay an advertised, described property"
         );
     }
 
@@ -1850,7 +2220,10 @@ mod tests {
     fn task_tool_input_schema_omits_capability_mode() {
         let schema = serde_json::to_value(schemars::schema_for!(TaskToolInput)).unwrap();
         assert!(
-            schema["properties"].get("capability_mode").is_none(),
+            schema
+                .get("properties")
+                .and_then(|p| p.get("capability_mode"))
+                .is_none(),
             "capability_mode must not be advertised on the model-facing schema"
         );
     }
@@ -1870,17 +2243,23 @@ mod tests {
             description: "find bugs".into(),
             prompt: "search for bugs".into(),
             subagent_type: "explore".into(),
+            subagent_type_specified: true,
             run_in_background: true,
             capability_mode: Some(SubagentCapabilityMode::ReadOnly),
             isolation: Some(SubagentIsolationMode::Worktree),
             resume_from: None,
             cwd: None,
             model: Some("test-model".into()),
+            workspace: None,
             task_id: Some("task-123".into()),
         };
+        assert_eq!(input.subagent_type, "explore");
         let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"subagent_type\":\"explore\""));
         let parsed: TaskToolInput = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.description, "find bugs");
+        assert_eq!(parsed.subagent_type, "explore");
+        assert!(parsed.subagent_type_specified);
         assert!(
             parsed.capability_mode.is_none(),
             "capability_mode is harness-only and must not round-trip through JSON"
@@ -2122,6 +2501,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_read_only_children_are_ceilinged_out_of_agent_messaging() {
+        use crate::types::tool::ToolKind;
+        let allowed = [
+            SubagentCapabilityMode::ReadOnly,
+            SubagentCapabilityMode::ReadWrite,
+            SubagentCapabilityMode::Execute,
+            SubagentCapabilityMode::All,
+        ]
+        .map(|mode| mode.allows_tool_kind(ToolKind::ActiveAgentMessage));
+        assert_eq!([false, true, true, true], allowed);
+    }
+
     // ── resume_from tests ────────────────────────────────────────────
 
     #[test]
@@ -2138,12 +2530,14 @@ mod tests {
             description: "d".into(),
             prompt: "p".into(),
             subagent_type: "general-purpose".into(),
+            subagent_type_specified: false,
             run_in_background: false,
             capability_mode: None,
             isolation: None,
             resume_from: None,
             cwd: None,
             model: None,
+            workspace: None,
             task_id: None,
         })
         .unwrap();
@@ -2187,12 +2581,14 @@ mod tests {
                 description: "d".into(),
                 prompt: "p".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2223,12 +2619,14 @@ mod tests {
             description: "d".into(),
             prompt: "p".into(),
             subagent_type: "general-purpose".into(),
+            subagent_type_specified: false,
             run_in_background: false,
             capability_mode: None,
             isolation: None,
             resume_from: None,
             cwd: None,
             model: None,
+            workspace: None,
             task_id: None,
         };
         let json = serde_json::to_string(&input).unwrap();
@@ -2269,12 +2667,14 @@ mod tests {
                 description: "resume".into(),
                 prompt: "continue".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: Some("prev-id".into()),
                 cwd: None,
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2335,12 +2735,14 @@ mod tests {
                     description: "test sentinel".into(),
                     prompt: "work".into(),
                     subagent_type: "general-purpose".into(),
+                    subagent_type_specified: false,
                     run_in_background: false,
                     capability_mode: None,
                     isolation: None,
                     resume_from: Some(sentinel.into()),
                     cwd: None,
                     model: None,
+                    workspace: None,
                     task_id: None,
                 },
             )
@@ -2381,12 +2783,14 @@ mod tests {
             description: "d".into(),
             prompt: "p".into(),
             subagent_type: "general-purpose".into(),
+            subagent_type_specified: false,
             run_in_background: false,
             capability_mode: None,
             isolation: None,
             resume_from: None,
             cwd: None,
             model: None,
+            workspace: None,
             task_id: None,
         };
         let json = serde_json::to_string(&input).unwrap();
@@ -2409,12 +2813,14 @@ mod tests {
                 description: "test cwd conflict".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::Worktree),
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2463,12 +2869,14 @@ mod tests {
                 description: "test empty cwd".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::Worktree),
                 resume_from: None,
                 cwd: Some("".into()),
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2513,12 +2921,14 @@ mod tests {
                 description: "test null cwd".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::Worktree),
                 resume_from: None,
                 cwd: Some("null".into()),
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2563,12 +2973,14 @@ mod tests {
                 description: "test whitespace cwd".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::Worktree),
                 resume_from: None,
                 cwd: Some("  ".into()),
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2616,12 +3028,14 @@ mod tests {
                 description: "test nonexistent cwd".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::Worktree),
                 resume_from: None,
                 cwd: Some("/nonexistent/path/that/does/not/exist".into()),
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2650,12 +3064,14 @@ mod tests {
                 description: "test nonexistent cwd no worktree".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: Some("/nonexistent/path/that/does/not/exist".into()),
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2705,12 +3121,14 @@ mod tests {
                     description: "test sentinel cwd".into(),
                     prompt: "work".into(),
                     subagent_type: "general-purpose".into(),
+                    subagent_type_specified: false,
                     run_in_background: false,
                     capability_mode: None,
                     isolation: None,
                     resume_from: None,
                     cwd: Some(sentinel.into()),
                     model: None,
+                    workspace: None,
                     task_id: None,
                 },
             )
@@ -2758,12 +3176,14 @@ mod tests {
                 description: "cwd test".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2815,12 +3235,14 @@ mod tests {
                 description: "stray quote cwd".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: None,
                 cwd: Some("\"/tmp".into()),
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2867,12 +3289,14 @@ mod tests {
                 description: "cwd with none".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::None),
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2915,12 +3339,14 @@ mod tests {
                 description: "cwd + resume".into(),
                 prompt: "work".into(),
                 subagent_type: "general-purpose".into(),
+                subagent_type_specified: false,
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
                 resume_from: Some("prev-id".into()),
                 cwd: Some("/tmp/some-dir".into()),
                 model: None,
+                workspace: None,
                 task_id: None,
             },
         )
@@ -2953,7 +3379,9 @@ mod tests {
             );
             assert_eq!(
                 request.runtime_overrides.model_override_provenance,
-                ModelOverrideProvenance::Tool,
+                ModelOverrideProvenance::Tool {
+                    selection: model_policy::TaskModelSelection::Selectable,
+                },
             );
             assert!(request.runtime_overrides.reasoning_effort.is_none());
             assert!(request.runtime_overrides.persona.is_none());
@@ -3123,7 +3551,9 @@ mod tests {
             );
             assert_eq!(
                 request.runtime_overrides.model_override_provenance,
-                ModelOverrideProvenance::Tool,
+                ModelOverrideProvenance::Tool {
+                    selection: model_policy::TaskModelSelection::Selectable,
+                },
             );
             assert!(request.runtime_overrides.reasoning_effort.is_none());
             assert!(request.runtime_overrides.persona.is_none());

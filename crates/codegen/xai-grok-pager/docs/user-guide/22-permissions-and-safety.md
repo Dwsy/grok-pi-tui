@@ -95,11 +95,11 @@ grok -p "Deploy the service" --always-approve --deny 'Bash(rm -rf *)'
 
 Deny always wins over allow and over always-approve’s normal pass-through. See [Configuring permissions](#configuring-permissions).
 
-### Auto mode
+### Auto-review mode
 
-Reduces interactive prompts by checking many tool calls before they run. Routine local work often proceeds. A call the classifier will not auto-allow surfaces a permission prompt so you can allow or reject it. In non-interactive sessions (`grok -p`, unidentified stdio), that same call fails and is reported to the model (for example `Auto mode blocked this action …`).
+`permission_mode = "auto"`, `/auto`, or `Shift+Tab`. Reduces interactive prompts by checking many tool calls before they run. Routine local work often proceeds. A call the classifier will not auto-allow surfaces a permission prompt so you can allow or reject it. In non-interactive sessions (`grok -p`, unidentified stdio), that same call fails and is reported to the model (for example `Auto mode blocked this action …`).
 
-For automation that must run tools without interactive approval, use always-approve (and deny rules if you need hard blocks) rather than auto alone.
+For automation that must run tools without interactive approval, use always-approve (and deny rules if you need hard blocks) rather than Auto-review alone.
 
 ### Disable always-approve (administrators)
 
@@ -340,7 +340,8 @@ A few more matching details:
 - Rules also apply inside a literal script passed to `bash -c`. For `allow`, every command inside that script must itself be allowed.
 - Wrappers not on the list (`sudo`, `xargs`, `nohup`, …) are not peeled. Write rules that name them explicitly.
 - When the parser cannot safely peel a form (for example `env -S`), the command prompts instead of matching an `allow` rule.
-- Matching sees the parsed words joined by single spaces, without shell quotes. Write patterns against the unquoted command.
+- Matching sees parsed literal words joined by single spaces, without shell quotes. Recovered filename variables retain their written spelling; values are never expanded for rule matching.
+- An `allow` rule can cover a quoted filename variable when it is an `ls` or `rg` file operand that follows `--`, carries a literal `/` or `./` prefix, or was assigned a literal path earlier in the same script; `echo`, `head`, and `tail` may appear alongside with literal arguments only, and dynamic options, writes, other programs, and Read/Edit restrictions still prompt. The variable keeps its written spelling, quotes included (`rg -n ERROR "$LOG"`), so match it with `*`. Ask and Auto both honor such a covering `allow` (and an exact remembered grant for the whole script) without the classifier; other scripts with variable arguments go to the classifier in Auto.
 
 ### Dangerous Commands
 

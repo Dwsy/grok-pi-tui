@@ -1,0 +1,5 @@
+{
+  "outcome": "reject",
+  "tool_call_id": "tc-0192c1a0",
+  "reason": "decode_failed"
+}

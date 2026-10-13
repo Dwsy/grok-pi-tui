@@ -1,6 +1,6 @@
 //! Wire test for the external OTEL stream with **both content gates ON**, the higher-risk privacy path.
 //! Here prompt text and tool parameters actually leave the process.
-//! Asserts against an in-process OTLP collector that:
+//! Asserts against `xai_grok_test_support::MockOtelServer` that:
 //!
 //! - gated content (`prompt`, `tool_parameters`, `file_path`, verbatim `tool_name`/`mcp_server.name`) IS present when the gate is on,
 //! - planted secret shapes are STILL scrubbed inside that gated content (gates loosen *which fields* export, never the secret scrub),
@@ -8,18 +8,17 @@
 //! - `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative` and `OTEL_METRICS_INCLUDE_VERSION=1` take effect on the wire,
 //! - the remote fleet kill switch stops emission in-process.
 //!
-//! Everything runs in one sequential `#[test]`: the `EXTERNAL` registry is a process-global `OnceLock`.
+//! Everything runs in one sequential test: the `EXTERNAL` registry is a process-global `OnceLock`.
 //! Each init-config scenario is its own test binary.
 
-mod otlp_collector;
+use std::time::Duration;
 
-use otlp_collector as col;
+use serde_json::Value;
 use xai_grok_telemetry::external::{self, ExternalOtelRemotePolicy, IdentityAttrs};
+use xai_grok_test_support::{MockOtelServer, OtelMetricData, OtelSignal, OtelTemporality};
 
-// Secret shapes that MUST be scrubbed everywhere, even inside gated content
 const SECRET_KEY: &str = "sk-LEAKaaaaaaaaaaaaaaaa1234567890";
 const SECRET_MODEL: &str = "grok-4-sk-LEAKmodel1234567890abcd";
-// Benign markers: with the gate ON these MUST appear on the wire (proving the gated field is actually exported, not just that the scrub ran)
 const PROMPT_MARK: &str = "promptbodymarker";
 const PARAM_MARK: &str = "parammarker";
 const LONG_CMD_MARK: &str = "longcmdmarker";
@@ -28,30 +27,24 @@ const RESPONSE_MARK: &str = "assistantresponsemarker";
 const OAUTH_EMAIL: &str = "otel.parity.on@example.com";
 const CLIENT_VERSION: &str = "9.9.9-cv";
 
-#[test]
-fn external_stream_gates_on_end_to_end() {
-    let collected = col::Collected::default();
-    let endpoint = col::start_collector(collected.clone());
+#[tokio::test]
+async fn external_stream_gates_on_end_to_end() {
+    let server = MockOtelServer::start().await.unwrap();
 
-    let mut cfg = external::ExternalOtelConfig::resolve_with(
-        |name| match name {
-            "GROK_EXTERNAL_OTEL" => Some("1".into()),
-            "OTEL_LOGS_EXPORTER" | "OTEL_METRICS_EXPORTER" => Some("otlp".into()),
-            "OTEL_EXPORTER_OTLP_ENDPOINT" => Some(endpoint.clone()),
-            // Both content gates ON.
-            "OTEL_LOG_USER_PROMPTS"
-            | "OTEL_LOG_TOOL_DETAILS"
-            | "OTEL_LOG_ASSISTANT_RESPONSES"
-            | "OTEL_LOG_TOOL_CONTENT" => Some("1".into()),
-            "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE" => Some("cumulative".into()),
-            "OTEL_METRICS_INCLUDE_VERSION" => Some("1".into()),
-            "OTEL_METRIC_EXPORT_INTERVAL" => Some("200".into()),
-            "OTEL_BLRP_SCHEDULE_DELAY" => Some("100".into()),
-            _ => None,
-        },
-        None,
-    )
-    .expect("double opt-in must resolve");
+    let mut env = server.exporter_env();
+    env.extend([
+        ("OTEL_LOG_USER_PROMPTS", "1".to_owned()),
+        ("OTEL_LOG_TOOL_DETAILS", "1".to_owned()),
+        ("OTEL_LOG_ASSISTANT_RESPONSES", "1".to_owned()),
+        ("OTEL_LOG_TOOL_CONTENT", "1".to_owned()),
+        (
+            "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE",
+            "cumulative".to_owned(),
+        ),
+        ("OTEL_METRICS_INCLUDE_VERSION", "1".to_owned()),
+    ]);
+    let mut cfg = external::ExternalOtelConfig::resolve_with(|name| env.get(name).cloned(), None)
+        .expect("double opt-in must resolve");
     assert!(cfg.gates.log_user_prompts && cfg.gates.log_tool_details);
     assert!(cfg.gates.log_tool_content, "content gate must be on");
     assert!(
@@ -67,7 +60,6 @@ fn external_stream_gates_on_end_to_end() {
     external::init(Some(cfg));
     assert!(external::is_active(), "gates-on config must activate");
 
-    // Identity attrs (plain ids, never tokens) ride every record and metric
     external::set_identity(IdentityAttrs {
         user_id: Some("user-x".into()),
         email: Some(OAUTH_EMAIL.into()),
@@ -76,7 +68,6 @@ fn external_stream_gates_on_end_to_end() {
         deployment_id: Some("deploy-eu".into()),
     });
 
-    // Product events stay disabled; the external sink must still emit through the real funnel
     assert!(!xai_grok_telemetry::is_enabled());
 
     xai_grok_telemetry::log_event(xai_grok_telemetry::events::SessionHarness {
@@ -113,39 +104,26 @@ fn external_stream_gates_on_end_to_end() {
         reasoning_tokens: Some(3),
         cached_prompt_tokens: Some(9),
         cache_creation_tokens: None,
+        context_tokens: None,
         cost_usd_ticks: None,
     });
-    xai_grok_telemetry::log_event(xai_grok_telemetry::events::ToolCallCompleted {
-        tool_name: "github__create_issue".into(),
-        outcome: xai_grok_session_events::types::ToolOutcome::Success,
-        hook_rewrote: false,
-        duration_ms: 12,
-        tool_result_size_bytes: None,
-        model_id: "grok".into(),
-        file_path: Some("/tmp/projectdir/config.toml".into()),
-        parameters: Some(serde_json::json!({
-            "marker": PARAM_MARK,
-            "token": SECRET_KEY,
-            "deep": {"a": {"b": "c"}},
-        })),
-        tool_use_id: Some("call-github".into()),
-        tool_output: Some(format!("ok {PARAM_MARK}")),
-        error_message: None,
-    });
+    let mut github = xai_grok_telemetry::events::completed_for_test("github__create_issue", "grok");
+    github.duration_ms = 12;
+    github.file_path = Some("/tmp/projectdir/config.toml".into());
+    github.parameters = Some(serde_json::json!({
+        "marker": PARAM_MARK,
+        "token": SECRET_KEY,
+        "deep": {"a": {"b": "c"}},
+    }));
+    github.tool_use_id = Some("call-github".into());
+    github.tool_output = Some(format!("ok {PARAM_MARK}"));
+    xai_grok_telemetry::log_event(github);
     let long_command = format!("{LONG_CMD_MARK}{}", "x".repeat(600));
-    xai_grok_telemetry::log_event(xai_grok_telemetry::events::ToolCallCompleted {
-        tool_name: "run_terminal_cmd".into(),
-        outcome: xai_grok_session_events::types::ToolOutcome::Success,
-        hook_rewrote: false,
-        duration_ms: 8,
-        tool_result_size_bytes: None,
-        model_id: "grok".into(),
-        file_path: None,
-        parameters: Some(serde_json::json!({ "command": long_command })),
-        tool_use_id: Some("call-bash-long".into()),
-        tool_output: None,
-        error_message: None,
-    });
+    let mut bash = xai_grok_telemetry::events::completed_for_test("run_terminal_cmd", "grok");
+    bash.duration_ms = 8;
+    bash.parameters = Some(serde_json::json!({ "command": long_command }));
+    bash.tool_use_id = Some("call-bash-long".into());
+    xai_grok_telemetry::log_event(bash);
     xai_grok_telemetry::log_event(xai_grok_telemetry::events::PermissionDecisionRecord {
         payload: xai_grok_telemetry::events::PermissionDecisionPayload {
             tool_name: "run_terminal_cmd".into(),
@@ -178,25 +156,24 @@ fn external_stream_gates_on_end_to_end() {
         response_text: Some(RESPONSE_MARK.into()),
     });
 
-    external::flush();
-    assert!(
-        col::wait_until(std::time::Duration::from_secs(10), || {
-            !collected.logs.lock().unwrap().is_empty()
-                && !collected.metrics.lock().unwrap().is_empty()
-        }),
-        "collector must receive both signals"
-    );
+    tokio::task::spawn_blocking(external::flush).await.unwrap();
+    server
+        .recorder()
+        .wait_for_signals(
+            Duration::from_secs(10),
+            &[OtelSignal::Logs, OtelSignal::Metrics],
+        )
+        .await
+        .expect("server must receive both signals");
 
-    // ── Resource + scope ────────────────────────────────────────────────
-    let records = col::log_records(&collected);
-    let harness = col::find_event(&collected, "grok_code.session_start")
-        .expect("session_start must be present");
-    assert_eq!(harness.scope_name, "ai.xai.grok_code");
+    let records = server.recorder().log_records();
+    let harness = server
+        .recorder()
+        .log_record("grok_code.session_start")
+        .expect("grok_code.session_start record");
+    assert_eq!("ai.xai.grok_code", harness.scope);
     assert_eq!(
-        harness
-            .resource
-            .get("service.name")
-            .and_then(|v| v.as_str()),
+        harness.resource.get("service.name").and_then(Value::as_str),
         Some("grok-cli"),
         "service.name=grok-cli is a wire commitment"
     );
@@ -204,46 +181,49 @@ fn external_stream_gates_on_end_to_end() {
         harness
             .resource
             .get("grok_code.schema.version")
-            .and_then(|v| v.as_str()),
+            .and_then(Value::as_str),
         Some("v1")
     );
-    // External records carry no free-text body.
     assert!(
-        records.iter().all(|r| !r.has_body),
+        records.iter().all(|record| record.body.is_none()),
         "no record may carry a body"
     );
 
-    // ── Identity attrs on a record ──────────────────────────────────────
     assert_eq!(
-        harness.attrs.get("user.id").and_then(|v| v.as_str()),
+        harness.attributes.get("user.id").and_then(Value::as_str),
         Some("user-x")
     );
     assert_eq!(
-        harness.attrs.get("user.email").and_then(|v| v.as_str()),
+        harness.attributes.get("user.email").and_then(Value::as_str),
         Some(OAUTH_EMAIL)
     );
     assert_eq!(
         harness
-            .attrs
+            .attributes
             .get("organization.id")
-            .and_then(|v| v.as_str()),
+            .and_then(Value::as_str),
         Some("org-acme")
     );
     assert_eq!(
-        harness.attrs.get("team.id").and_then(|v| v.as_str()),
+        harness.attributes.get("team.id").and_then(Value::as_str),
         Some("team-7")
     );
     assert_eq!(
-        harness.attrs.get("deployment.id").and_then(|v| v.as_str()),
+        harness
+            .attributes
+            .get("deployment.id")
+            .and_then(Value::as_str),
         Some("deploy-eu")
     );
 
-    // ── Prompt gate ON: text present, secret still scrubbed ─────────────
-    let prompt = col::find_event(&collected, "grok_code.user_prompt").expect("user_prompt present");
+    let prompt = server
+        .recorder()
+        .log_record("grok_code.user_prompt")
+        .expect("grok_code.user_prompt record");
     let prompt_text = prompt
-        .attrs
+        .attributes
         .get("prompt")
-        .and_then(|v| v.as_str())
+        .and_then(Value::as_str)
         .expect("prompt attr present when OTEL_LOG_USER_PROMPTS=1");
     assert!(
         prompt_text.contains(PROMPT_MARK),
@@ -254,38 +234,47 @@ fn external_stream_gates_on_end_to_end() {
         "secret survived in prompt: {prompt_text:?}"
     );
     assert_eq!(
-        prompt.attrs.get("command_name").and_then(|v| v.as_str()),
+        prompt
+            .attributes
+            .get("command_name")
+            .and_then(Value::as_str),
         Some("compact")
     );
 
-    // ── Tool details gate ON: verbatim name + gated path/params, scrubbed ─
-    let tool = col::find_event(&collected, "grok_code.tool_result").expect("tool_result present");
+    let tool = server
+        .recorder()
+        .log_record("grok_code.tool_result")
+        .expect("grok_code.tool_result record");
     assert_eq!(
-        tool.attrs.get("tool_name").and_then(|v| v.as_str()),
+        tool.attributes.get("tool_name").and_then(Value::as_str),
         Some("github__create_issue"),
         "details gate exposes the verbatim tool name"
     );
     assert_eq!(
-        tool.attrs.get("mcp_tool.name").and_then(|v| v.as_str()),
+        tool.attributes.get("mcp_tool.name").and_then(Value::as_str),
         Some("create_issue")
     );
     assert_eq!(
-        tool.attrs.get("mcp_server.name").and_then(|v| v.as_str()),
+        tool.attributes
+            .get("mcp_server.name")
+            .and_then(Value::as_str),
         Some("github")
     );
     assert_eq!(
-        tool.attrs.get("file_extension").and_then(|v| v.as_str()),
+        tool.attributes
+            .get("file_extension")
+            .and_then(Value::as_str),
         Some("toml"),
         "file_extension always exported"
     );
     assert!(
-        tool.attrs.contains_key("file_path"),
+        tool.attributes.contains_key("file_path"),
         "full path exported under details gate"
     );
     let params = tool
-        .attrs
+        .attributes
         .get("tool_parameters")
-        .and_then(|v| v.as_str())
+        .and_then(Value::as_str)
         .expect("tool_parameters present under details gate");
     assert!(
         params.contains(PARAM_MARK),
@@ -296,9 +285,9 @@ fn external_stream_gates_on_end_to_end() {
         "secret survived in params: {params:?}"
     );
     let tool_input = tool
-        .attrs
+        .attributes
         .get("tool_input")
-        .and_then(|v| v.as_str())
+        .and_then(Value::as_str)
         .expect("tool_input present under content gate");
     assert!(
         tool_input.contains(PARAM_MARK),
@@ -306,21 +295,21 @@ fn external_stream_gates_on_end_to_end() {
     );
     let expected_output = format!("ok {PARAM_MARK}");
     assert_eq!(
-        tool.attrs.get("tool_output").and_then(|v| v.as_str()),
+        tool.attributes.get("tool_output").and_then(Value::as_str),
         Some(expected_output.as_str())
     );
 
-    let bash = col::log_records(&collected)
-        .into_iter()
+    let bash = records
+        .iter()
         .find(|r| {
             r.event_name == "grok_code.tool_result"
-                && r.attrs.get("tool_use_id").and_then(|v| v.as_str()) == Some("call-bash-long")
+                && r.attributes.get("tool_use_id").and_then(Value::as_str) == Some("call-bash-long")
         })
         .expect("long-command tool_result");
     let full_command = bash
-        .attrs
+        .attributes
         .get("full_command")
-        .and_then(|v| v.as_str())
+        .and_then(Value::as_str)
         .expect("full_command under content gate");
     assert!(
         full_command.starts_with(LONG_CMD_MARK),
@@ -336,122 +325,145 @@ fn external_stream_gates_on_end_to_end() {
         "full_command must not collapse: {full_command:?}"
     );
 
-    let decision = col::find_event(&collected, "grok_code.tool_decision").expect("tool_decision");
+    let decision = server
+        .recorder()
+        .log_record("grok_code.tool_decision")
+        .expect("grok_code.tool_decision record");
     assert_eq!(
-        decision.attrs.get("decision").and_then(|v| v.as_str()),
+        decision.attributes.get("decision").and_then(Value::as_str),
         Some("deny")
     );
     assert_eq!(
-        decision.attrs.get("tool_use_id").and_then(|v| v.as_str()),
+        decision
+            .attributes
+            .get("tool_use_id")
+            .and_then(Value::as_str),
         Some("call-deny-1")
     );
     let deny_params = decision
-        .attrs
+        .attributes
         .get("tool_parameters")
-        .and_then(|v| v.as_str())
+        .and_then(Value::as_str)
         .expect("deny tool_decision exports params under details gate");
     assert!(
         deny_params.contains(DENY_CMD_MARK),
         "deny params must export: {deny_params:?}"
     );
     assert_eq!(
-        decision.attrs.get("full_command").and_then(|v| v.as_str()),
+        decision
+            .attributes
+            .get("full_command")
+            .and_then(Value::as_str),
         Some(DENY_CMD_MARK)
     );
 
-    let assistant = col::find_event(&collected, "grok_code.assistant_response")
-        .expect("assistant_response present");
-    assert!(!assistant.has_body, "no record may carry a body");
+    let assistant = server
+        .recorder()
+        .log_record("grok_code.assistant_response")
+        .expect("grok_code.assistant_response record");
+    assert_eq!(None, assistant.body, "no record may carry a body");
     let response = assistant
-        .attrs
+        .attributes
         .get("response")
-        .and_then(|v| v.as_str())
+        .and_then(Value::as_str)
         .expect("gated response present");
     assert!(
         response.contains(RESPONSE_MARK),
         "gated response must export: {response:?}"
     );
     let response_length = assistant
-        .attrs
+        .attributes
         .get("response_length")
-        .and_then(|v| v.as_i64())
+        .and_then(Value::as_i64)
         .or_else(|| {
             assistant
-                .attrs
+                .attributes
                 .get("response_length")
-                .and_then(|v| v.as_str())
+                .and_then(Value::as_str)
                 .and_then(|s| s.parse().ok())
         })
         .expect("response_length always-on");
     assert_eq!(response_length as usize, RESPONSE_MARK.len());
 
-    // ── Metrics: cumulative temporality + app.version + scrubbed model ──
-    let tokens = col::find_metric(&collected, "grok_code.token.usage");
+    let tokens = server
+        .recorder()
+        .metric_points_named("grok_code.token.usage");
     assert!(!tokens.is_empty(), "token.usage must export");
     for p in &tokens {
+        let OtelMetricData::Sum { temporality, .. } = p.data else {
+            panic!("token.usage is a sum, got {p:?}");
+        };
         assert_eq!(
-            p.temporality,
-            col::TEMPORALITY_CUMULATIVE,
+            OtelTemporality::Cumulative,
+            temporality,
             "cumulative requested"
         );
         assert_eq!(
-            p.attrs.get("app.version").and_then(|v| v.as_str()),
+            p.attributes.get("app.version").and_then(Value::as_str),
             Some(CLIENT_VERSION),
             "OTEL_METRICS_INCLUDE_VERSION=1 attaches app.version"
         );
         assert_eq!(
-            p.attrs.get("user.id").and_then(|v| v.as_str()),
+            p.attributes.get("user.id").and_then(Value::as_str),
             Some("user-x")
         );
         assert_eq!(
-            p.attrs.get("user.email").and_then(|v| v.as_str()),
+            p.attributes.get("user.email").and_then(Value::as_str),
             Some(OAUTH_EMAIL)
         );
-        let model = p.attrs.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        let model = p
+            .attributes
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         assert!(
             !model.contains("sk-LEAKmodel"),
             "metric model must be scrubbed: {model:?}"
         );
     }
-    let sessions = col::find_metric(&collected, "grok_code.session.count");
-    // SessionHarness has no session.count metric; that comes from SessionNew, which this test never emits
-    // The token.usage checks above already cover metric identity
-    let _ = sessions;
 
-    // ── Canary scan at the raw HTTP layer (both signals) ────────────────
-    let raw = collected.raw_text();
-    assert!(!raw.contains(SECRET_KEY), "secret key reached the wire");
+    let wire = server.recorder().body_text().unwrap();
+    assert!(!wire.contains(SECRET_KEY), "secret key reached the wire");
     assert!(
-        !raw.contains("sk-LEAKmodel"),
+        !wire.contains("sk-LEAKmodel"),
         "secret model shape reached the wire"
     );
 
-    // ── Remote fleet kill switch stops emission in-process ──────────────
-    external::flush();
-    col::wait_until(std::time::Duration::from_millis(500), || false);
-    let logs_before = collected.logs_len();
-    external::apply_remote_policy(ExternalOtelRemotePolicy {
-        force_disable: true,
-        lock_content_gates: false,
-    });
+    tokio::task::spawn_blocking(external::flush).await.unwrap();
+    tokio::task::spawn_blocking(|| {
+        external::apply_remote_policy(ExternalOtelRemotePolicy {
+            force_disable: true,
+            lock_content_gates: false,
+        })
+    })
+    .await
+    .unwrap();
     assert!(
         !external::is_active(),
         "kill switch must clear the emission gate"
     );
-    xai_grok_telemetry::log_event(xai_grok_telemetry::events::PromptSubmitted {
-        prompt_length: 1,
-        model_id: "grok-4".into(),
-        client_identifier: None,
-        screen_mode: None,
-        prompt_text: Some("post-kill".into()),
-        command_name: None,
-    });
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    assert_eq!(
-        collected.logs_len(),
-        logs_before,
-        "no exports after the remote kill switch"
+    let (silence, ()) = tokio::join!(
+        server
+            .recorder()
+            .wait_for_silence(Duration::from_millis(400), |events| {
+                events
+                    .iter()
+                    .any(|event| event.signal() == OtelSignal::Logs)
+            }),
+        async {
+            xai_grok_telemetry::log_event(xai_grok_telemetry::events::PromptSubmitted {
+                prompt_length: 1,
+                model_id: "grok-4".into(),
+                client_identifier: None,
+                screen_mode: None,
+                prompt_text: Some("post-kill".into()),
+                command_name: None,
+            });
+        },
     );
+    silence.expect("no log exports after the remote kill switch");
 
-    external::shutdown();
+    tokio::task::spawn_blocking(external::shutdown)
+        .await
+        .unwrap();
 }

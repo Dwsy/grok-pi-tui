@@ -114,7 +114,10 @@ fn find_substring(
                     let offset = np.offset_from(hp) as usize;
                     let range = offset..(offset + needle.len());
                     if cfg!(debug_assertions) {
-                        assert_eq!(&haystack.as_bytes()[range.clone()], needle.as_bytes());
+                        assert_eq!(
+                            haystack.as_bytes().get(range.clone()),
+                            Some(needle.as_bytes())
+                        );
                     }
                     return Some(range);
                 }
@@ -147,10 +150,9 @@ fn decode_html_entity(entity: &str) -> Option<String> {
 
 /// Check if there's a blank line after the given position.
 fn has_blank_line_after(text: &str, pos: usize) -> bool {
-    text.as_bytes()[pos..]
-        .iter()
-        .copied()
-        .find(|&c| c != b' ' && c != b'\t')
+    text.as_bytes()
+        .get(pos..)
+        .and_then(|s| s.iter().copied().find(|&c| c != b' ' && c != b'\t'))
         == Some(b'\n')
 }
 
@@ -282,7 +284,10 @@ pub(crate) fn cell_word_separator<'a>(
         let mut ranges = Vec::new();
         let mut pos = 0;
         for token in line.split_whitespace() {
-            let start = line[pos..].find(token).unwrap() + pos;
+            let Some(rel) = line.get(pos..).and_then(|rest| rest.find(token)) else {
+                break;
+            };
+            let start = rel + pos;
             let end = start + token.len();
             if url::Url::parse(token).is_ok() {
                 ranges.push(start..end);
@@ -308,20 +313,50 @@ pub(crate) fn cell_word_separator<'a>(
                 split_positions.push(attach_left);
             } else {
                 // Determine segment boundaries for this break.
-                let seg_start = if i == 0 { 0 } else { split_positions[i - 1] };
+                let seg_start = if i == 0 {
+                    0
+                } else {
+                    match i
+                        .checked_sub(1)
+                        .and_then(|j| split_positions.get(j))
+                        .copied()
+                    {
+                        Some(s) => s,
+                        None => continue,
+                    }
+                };
                 let seg_end = if i + 1 < breaks.len() {
                     // Use the leftward attachment of the next break as a conservative estimate of the right segment end
-                    breaks[i + 1].0
+                    match breaks.get(i + 1) {
+                        Some(&(end, _)) => end,
+                        None => len,
+                    }
                 } else {
                     len
                 };
 
-                let left_if_attach_left = unicode_display_width(&line[seg_start..attach_left]);
-                let right_if_attach_left = unicode_display_width(&line[attach_left..seg_end]);
+                let Some(left_if_attach_left) =
+                    line.get(seg_start..attach_left).map(unicode_display_width)
+                else {
+                    continue;
+                };
+                let Some(right_if_attach_left) =
+                    line.get(attach_left..seg_end).map(unicode_display_width)
+                else {
+                    continue;
+                };
                 let max_attach_left = left_if_attach_left.max(right_if_attach_left);
 
-                let left_if_attach_right = unicode_display_width(&line[seg_start..attach_right]);
-                let right_if_attach_right = unicode_display_width(&line[attach_right..seg_end]);
+                let Some(left_if_attach_right) =
+                    line.get(seg_start..attach_right).map(unicode_display_width)
+                else {
+                    continue;
+                };
+                let Some(right_if_attach_right) =
+                    line.get(attach_right..seg_end).map(unicode_display_width)
+                else {
+                    continue;
+                };
                 let max_attach_right = left_if_attach_right.max(right_if_attach_right);
 
                 if max_attach_right < max_attach_left {
@@ -341,13 +376,14 @@ pub(crate) fn cell_word_separator<'a>(
             return None;
         }
         let end = if idx < split_positions.len() {
-            let e = split_positions[idx];
+            let e = *split_positions.get(idx)?;
             idx += 1;
             e
         } else {
             line.len()
         };
-        let word = textwrap::core::Word::from(&line[pos..end]);
+        let slice = line.get(pos..end)?;
+        let word = textwrap::core::Word::from(slice);
         pos = end;
         Some(word)
     }))
@@ -390,7 +426,10 @@ fn cell_wrap_joins(source: &str, lines: &[String]) -> Vec<CellJoin> {
                 && source.is_char_boundary(start)
             {
                 if start > prev {
-                    joins.push(CellJoin::Gap(source[prev..start].to_string()));
+                    match source.get(prev..start) {
+                        Some(gap) => joins.push(CellJoin::Gap(gap.to_string())),
+                        None => joins.push(CellJoin::Tight),
+                    }
                 } else {
                     joins.push(CellJoin::Tight);
                 }
@@ -534,9 +573,10 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
             self.tag_stack
                 .iter()
                 .filter_map(|ancestor| match ancestor {
-                    Tag::Heading { level, .. } => {
-                        Some(Some(self.ms.heading_inner[(*level as i32) as usize - 1]))
-                    }
+                    Tag::Heading { level, .. } => (*level as i32 as usize)
+                        .checked_sub(1)
+                        .and_then(|i| self.ms.heading_inner.get(i).copied())
+                        .map(Some),
                     Tag::Emphasis => Some(Some(strip_fg_in_link(self.ms.emphasis_inner))),
                     Tag::Strong => Some(Some(strip_fg_in_link(self.ms.strong_inner))),
                     Tag::Strikethrough => Some(Some(strip_fg_in_link(self.ms.strikethrough_inner))),
@@ -773,8 +813,9 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                 } else {
                     // Fallback (conversion declined or nothing visible): highlight the TeX source as code
                     self.push_highlight(Some(self.ms.code_outer), &range);
-                    let outer_text = &self.text[range.clone()];
-                    if let Some(r) = find_substring(outer_text, &math, true, false) {
+                    if let Some(outer_text) = self.text.get(range.clone())
+                        && let Some(r) = find_substring(outer_text, &math, true, false)
+                    {
                         let inner_range = (range.start + r.start)..(range.start + r.end);
                         if let Some(highlighted) = syntax_highlight_raw(self.syntect, "tex", &math)
                         {
@@ -794,21 +835,22 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
             Event::Rule => {
                 // Style and transform "---" to "───" (horizontal rule)
                 self.push_highlight(Some(self.ms.rule), &range);
-                let rule_text = &self.text[range.clone()];
-                if let Some(marker_end) = rule_text.find('\n') {
-                    // Transform only up to the newline
-                    self.buffers.transforms.push(Transform {
-                        range: range.start..range.start + marker_end,
-                        to: "───".to_string(),
-                        force: false,
-                    });
-                } else {
-                    // No trailing newline, transform the whole range
-                    self.buffers.transforms.push(Transform {
-                        range: range.clone(),
-                        to: "───".to_string(),
-                        force: false,
-                    });
+                if let Some(rule_text) = self.text.get(range.clone()) {
+                    if let Some(marker_end) = rule_text.find('\n') {
+                        // Transform only up to the newline
+                        self.buffers.transforms.push(Transform {
+                            range: range.start..range.start + marker_end,
+                            to: "───".to_string(),
+                            force: false,
+                        });
+                    } else {
+                        // No trailing newline, transform the whole range
+                        self.buffers.transforms.push(Transform {
+                            range: range.clone(),
+                            to: "───".to_string(),
+                            force: false,
+                        });
+                    }
                 }
                 if self.depth == 0 {
                     self.last_checkpoint = Some((CheckpointKind::ThematicBreak, range.end));
@@ -842,54 +884,58 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
             Tag::Paragraph => None,
             Tag::Heading { level, .. } => {
                 let level_usize = (*level as usize).saturating_sub(1).min(5);
-                let heading_text = &self.text[range.clone()];
-                if let Some(marker_end) = heading_text.find(|c: char| c != '#' && c != ' ') {
+                let heading_outer = self.ms.heading_outer.get(level_usize).copied();
+                let heading_text = self.text.get(range.clone());
+                if let Some(marker_end) =
+                    heading_text.and_then(|t| t.find(|c: char| c != '#' && c != ' '))
+                {
                     let marker_range = range.start..range.start + marker_end;
                     more.push(Highlight {
-                        style: Some(self.ms.heading_outer[level_usize]),
+                        style: heading_outer,
                         range: marker_range,
                     });
                     None
                 } else {
-                    Some(self.ms.heading_outer[level_usize])
+                    heading_outer
                 }
             }
             Tag::BlockQuote(_) => {
                 // Transform the `>` belonging to THIS blockquote level to `│`.
                 // On those subsequent lines, the outer `>` is included in the inner range, so we must skip it
                 // A line starting at a real source line boundary skips (bq_depth-1) `>`s; one starting mid-line (the first fragment) skips none
-                let bq_text = &self.text[range.clone()];
-                let mut pos = range.start;
+                if let Some(bq_text) = self.text.get(range.clone()) {
+                    let mut pos = range.start;
 
-                for line in bq_text.split_inclusive('\n') {
-                    // Does this fragment start at a source line boundary?
-                    let at_line_start =
-                        pos == 0 || self.text.as_bytes().get(pos - 1) == Some(&b'\n');
-                    // If at a line start, outer levels already have `>`s that we must skip
-                    // If mid-line (first fragment of range), the outer `>`s are before the range so skip 0
-                    let skip = if at_line_start { self.bq_depth - 1 } else { 0 };
+                    for line in bq_text.split_inclusive('\n') {
+                        // Does this fragment start at a source line boundary?
+                        let at_line_start =
+                            pos == 0 || self.text.as_bytes().get(pos - 1) == Some(&b'\n');
+                        // If at a line start, outer levels already have `>`s that we must skip
+                        // If mid-line (first fragment of range), the outer `>`s are before the range so skip 0
+                        let skip = if at_line_start { self.bq_depth - 1 } else { 0 };
 
-                    let mut found = 0usize;
-                    for (byte_offset, ch) in line.char_indices() {
-                        if ch == '>' {
-                            if found == skip {
-                                let gt_pos = pos + byte_offset;
-                                self.buffers.transforms.push(Transform {
-                                    range: gt_pos..gt_pos + 1,
-                                    to: "│".to_string(),
-                                    force: false,
-                                });
-                                more.push(Highlight {
-                                    style: Some(self.ms.blockquote_outer),
-                                    range: gt_pos..gt_pos + 1,
-                                });
-                                break;
+                        let mut found = 0usize;
+                        for (byte_offset, ch) in line.char_indices() {
+                            if ch == '>' {
+                                if found == skip {
+                                    let gt_pos = pos + byte_offset;
+                                    self.buffers.transforms.push(Transform {
+                                        range: gt_pos..gt_pos + 1,
+                                        to: "│".to_string(),
+                                        force: false,
+                                    });
+                                    more.push(Highlight {
+                                        style: Some(self.ms.blockquote_outer),
+                                        range: gt_pos..gt_pos + 1,
+                                    });
+                                    break;
+                                }
+                                found += 1;
                             }
-                            found += 1;
                         }
-                    }
 
-                    pos += line.len();
+                        pos += line.len();
+                    }
                 }
 
                 // Return None: we've handled the styling via per-line highlights
@@ -901,8 +947,10 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                 // Indented code blocks are not fences and report no span
                 self.pending_code_block = match code {
                     CodeBlockKind::Fenced(lang) => {
-                        let body_start = self.text[range.start..]
-                            .find('\n')
+                        let body_start = self
+                            .text
+                            .get(range.start..)
+                            .and_then(|s| s.find('\n'))
                             .map_or(range.end, |nl| range.start + nl + 1);
                         Some(PendingCodeBlock {
                             info: lang.to_string(),
@@ -916,10 +964,15 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
 
                 // pulldown-cmark's code-block range starts at the fence marker (```) and excludes leading indentation on the opening-fence line
                 // Only extend when the prefix is pure whitespace so structural prefixes are left intact.
-                let line_start = self.text[..range.start].rfind('\n').map_or(0, |p| p + 1);
-                let fence_start = if self.text[line_start..range.start]
-                    .bytes()
-                    .all(|b| b == b' ' || b == b'\t')
+                let line_start = self
+                    .text
+                    .get(..range.start)
+                    .and_then(|s| s.rfind('\n'))
+                    .map_or(0, |p| p + 1);
+                let fence_start = if self
+                    .text
+                    .get(line_start..range.start)
+                    .is_some_and(|s| s.bytes().all(|b| b == b' ' || b == b'\t'))
                 {
                     line_start
                 } else {
@@ -931,8 +984,8 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                 });
                 match code {
                     CodeBlockKind::Fenced(lang) if !lang.is_empty() => {
-                        if let Some(r) =
-                            find_substring(&self.text[range.clone()], lang, true, false)
+                        if let Some(slice) = self.text.get(range.clone())
+                            && let Some(r) = find_substring(slice, lang, true, false)
                         {
                             let range = (r.start + range.start)..(r.end + range.start);
                             more.push(Highlight {
@@ -953,42 +1006,41 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
             }
             Tag::List(_) => None,
             Tag::Item => {
-                let item_text = &self.text[range.clone()];
-                let trimmed = item_text.trim_start();
-                let leading_ws = item_text.len() - trimmed.len();
+                if let Some(item_text) = self.text.get(range.clone()) {
+                    let trimmed = item_text.trim_start();
+                    let leading_ws = item_text.len() - trimmed.len();
 
-                let marker_len = if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-                    2
-                } else if let Some(pos) = trimmed.find(". ") {
-                    if pos > 0 && trimmed[..pos].chars().all(|c| c.is_ascii_digit()) {
-                        pos + 2
+                    let digits_before = |pos: usize| {
+                        pos > 0
+                            && trimmed
+                                .get(..pos)
+                                .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()))
+                    };
+                    let marker_len = if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+                        2
+                    } else if let Some(pos) = trimmed.find(". ") {
+                        if digits_before(pos) { pos + 2 } else { 0 }
+                    } else if let Some(pos) = trimmed.find(") ") {
+                        if digits_before(pos) { pos + 2 } else { 0 }
                     } else {
                         0
-                    }
-                } else if let Some(pos) = trimmed.find(") ") {
-                    if pos > 0 && trimmed[..pos].chars().all(|c| c.is_ascii_digit()) {
-                        pos + 2
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                };
+                    };
 
-                if marker_len > 0 {
-                    let marker_start = range.start + leading_ws;
-                    let marker_end = marker_start + marker_len;
-                    more.push(Highlight {
-                        style: Some(self.ms.list_item),
-                        range: marker_start..marker_end,
-                    });
-
-                    if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-                        self.buffers.transforms.push(Transform {
-                            range: marker_start..marker_start + 1,
-                            to: "•".to_string(),
-                            force: false,
+                    if marker_len > 0 {
+                        let marker_start = range.start + leading_ws;
+                        let marker_end = marker_start + marker_len;
+                        more.push(Highlight {
+                            style: Some(self.ms.list_item),
+                            range: marker_start..marker_end,
                         });
+
+                        if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+                            self.buffers.transforms.push(Transform {
+                                range: marker_start..marker_start + 1,
+                                to: "•".to_string(),
+                                force: false,
+                            });
+                        }
                     }
                 }
                 None
@@ -1050,7 +1102,17 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                     return;
                 }
 
-                let tag_str = &self.text[range.clone()];
+                let Some(tag_str) = self.text.get(range.clone()) else {
+                    self.buffers.link_targets.push(LinkTarget {
+                        source_range: range.clone(),
+                        url: dest_url.to_string(),
+                        id: self.link_id_counter,
+                    });
+                    self.link_id_counter += 1;
+                    self.push_highlight(Some(self.ms.link_outer), &range);
+                    self.tag_stack.push(tag);
+                    return;
+                };
 
                 if !title.is_empty() {
                     for t in [format!("\"{title}\""), format!("'{title}'")].map(CowStr::from) {
@@ -1076,9 +1138,12 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                     });
                 }
 
-                let bracket_pos_opt = url_rel_opt
-                    .as_ref()
-                    .and_then(|r| tag_str[..r.start].rfind("](").map(|p| p..p + 2));
+                let bracket_pos_opt = url_rel_opt.as_ref().and_then(|r| {
+                    tag_str
+                        .get(..r.start)
+                        .and_then(|s| s.rfind("]("))
+                        .map(|p| p..p + 2)
+                });
                 if let Some(bracket_pos) = bracket_pos_opt {
                     let open_bracket = if tag_str.starts_with("![") { 1 } else { 0 };
                     if open_bracket > 0 {
@@ -1346,18 +1411,24 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
 
         let mut cursor = 0;
         url_scan::for_each_plain_link(text, |range, url| {
-            if range.start > cursor {
-                state.push_text(&text[cursor..range.start]);
+            if range.start > cursor
+                && let Some(prefix) = text.get(cursor..range.start)
+            {
+                state.push_text(prefix);
             }
             let id = self.link_id_counter;
             self.link_id_counter += 1;
             state.cell_link = Some((url, id));
-            state.push_text(&text[range.clone()]);
+            if let Some(slice) = text.get(range.clone()) {
+                state.push_text(slice);
+            }
             state.cell_link = None;
             cursor = range.end;
         });
-        if cursor < text.len() {
-            state.push_text(&text[cursor..]);
+        if cursor < text.len()
+            && let Some(rest) = text.get(cursor..)
+        {
+            state.push_text(rest);
         }
     }
 
@@ -1365,7 +1436,10 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
     /// Shared by `Event::Code` and the inline-math fallback path.
     fn style_inline_code_span(&mut self, code: &CowStr<'_>, range: &Range<usize>) {
         // Find the actual content range (excluding the delimiters).
-        let outer_text = &self.text[range.clone()];
+        let Some(outer_text) = self.text.get(range.clone()) else {
+            self.push_highlight(Some(self.ms.inline_code_inner), range);
+            return;
+        };
         if let Some(inner_range) = find_substring(outer_text, code, false, false)
             .or_else(|| find_substring(outer_text, code, true, false))
         {
@@ -1469,16 +1543,25 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         // Without it, a batch render emits an extra blank line after the block (the source newline) that the streaming checkpoint+tail path does not
         // That breaks render convergence
         let mut range = range;
-        if self.text[range.end..].starts_with("\r\n") {
+        if self
+            .text
+            .get(range.end..)
+            .is_some_and(|s| s.starts_with("\r\n"))
+        {
             range.end += 2;
-        } else if self.text[range.end..].starts_with('\n') {
+        } else if self
+            .text
+            .get(range.end..)
+            .is_some_and(|s| s.starts_with('\n'))
+        {
             range.end += 1;
         }
         let style: ratatui::style::Style = self.ms.math.style_into();
-        let src_newlines = self.text[range.clone()]
-            .bytes()
-            .filter(|&b| b == b'\n')
-            .count();
+        let src_newlines = self
+            .text
+            .get(range.clone())
+            .map(|s| s.bytes().filter(|&b| b == b'\n').count())
+            .unwrap_or(0);
         let mut lines = Vec::with_capacity(rendered.len());
         let mut styled_lines = Vec::with_capacity(rendered.len());
         let mut line_source_offsets = Vec::with_capacity(rendered.len());
@@ -1532,8 +1615,8 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                     .map(unicode_display_width)
                     .max()
                     .unwrap_or(0);
-                if col_idx < col_widths.len() {
-                    col_widths[col_idx] = col_widths[col_idx].max(cell_width);
+                if let Some(width) = col_widths.get_mut(col_idx) {
+                    *width = (*width).max(cell_width);
                 }
             }
         }
@@ -1560,7 +1643,9 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                         let text = cell.plain_text();
                         for word in cell_word_separator(&text) {
                             let w = unicode_display_width(word.word);
-                            min_col_widths[col] = min_col_widths[col].max(w);
+                            if let Some(min_w) = min_col_widths.get_mut(col) {
+                                *min_w = (*min_w).max(w);
+                            }
                         }
                         if !text.is_empty()
                             && let Some(floor) = hard_floors.get_mut(col)
@@ -2100,7 +2185,10 @@ mod wrap_cell_joins_tests {
                 "width={width} lines={lines:?} joins={joins:?}"
             );
             for (i, join) in joins.iter().enumerate() {
-                if lines[i + 1].trim_start().starts_with('/') {
+                if lines
+                    .get(i + 1)
+                    .is_some_and(|l| l.trim_start().starts_with('/'))
+                {
                     assert!(
                         matches!(join, CellJoin::Gap(g) if g.contains(' ')),
                         "width={width} join before slash line must keep the space, \

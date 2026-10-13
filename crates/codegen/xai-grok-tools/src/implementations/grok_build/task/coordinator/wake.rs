@@ -2,6 +2,7 @@
 
 use super::super::admission::{AdmissionDecision, AdmissionError};
 use super::active_message::ParkedSpawnReadyMessage;
+use super::agent_quotas::{ActiveMessageQuotaAdmission, TargetIncarnationKey};
 use super::queue::{QueuedCaller, QueuedSpawn, StartOrigin};
 use super::{SubagentCoordinator, SubagentLimitDecision};
 use crate::implementations::grok_build::task::active_message::ActiveMessageIngress;
@@ -9,22 +10,60 @@ use crate::implementations::grok_build::task::coordinator_state::{
     ChildRunner, DisplacedCompletedChild, MAX_COMPLETED_ENTRIES, WakeOrigin,
 };
 use crate::implementations::grok_build::task::types::{
-    ActiveAgentMessageOutcome, ActiveAgentMessageSource,
+    ActiveAgentMessageOutcome, ActiveAgentMessageSource, ActiveMessageRoute,
+    ActiveMessageSenderContext, SubagentActiveMessageRequest,
 };
 
+pub(super) struct PendingWake {
+    pub(super) route: ActiveMessageRoute,
+    pub(super) incarnation: TargetIncarnationKey,
+    pub(super) quota_admission: Option<ActiveMessageQuotaAdmission>,
+    pub(super) ingress: ActiveMessageIngress,
+}
+
 pub(super) enum ResolvedSend {
-    Admit { subagent_id: String },
-    Park { subagent_id: String },
-    Wake { subagent_id: String },
+    Admit {
+        subagent_id: String,
+        target: TargetIncarnationKey,
+    },
+    Park {
+        subagent_id: String,
+        target: TargetIncarnationKey,
+    },
+    Wake {
+        subagent_id: String,
+        target: TargetIncarnationKey,
+        authorization: WakeAuthorization,
+    },
+    Root {
+        key: super::root_targets::RootTargetKey,
+    },
     Fail(ActiveAgentMessageOutcome),
+}
+
+/// Who vouched for a completed-child wake when its target resolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WakeAuthorization {
+    /// Typed `Agent` target: the resolver authorized the sender (granted child or resident root).
+    ResolvedTarget,
+    /// Legacy `ChildId`/`Address` target: wake admission re-checks the sender's lineage.
+    SenderLineage,
 }
 
 impl<R: ChildRunner> SubagentCoordinator<R> {
     pub(super) fn wake_completed_child(
         &mut self,
         subagent_id: String,
+        route: ActiveMessageRoute,
+        target: TargetIncarnationKey,
+        authorization: WakeAuthorization,
+        quota_admission: Option<ActiveMessageQuotaAdmission>,
         ingress: ActiveMessageIngress,
     ) {
+        if let Err(outcome) = self.verify_message_sender(&ingress.request.sender_context) {
+            let _ = ingress.request.respond_to.send(outcome);
+            return;
+        }
         if self.completed.get(&subagent_id).is_some_and(|completed| {
             !completed
                 .terminal_published
@@ -33,7 +72,12 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             self.pending_wakes
                 .entry(subagent_id)
                 .or_default()
-                .push(ingress);
+                .push(PendingWake {
+                    route,
+                    incarnation: target,
+                    quota_admission,
+                    ingress,
+                });
             return;
         }
         if !self.runner.supports_wake() {
@@ -55,9 +99,15 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         }
         let can_wake = self.completed.get(&subagent_id).is_some_and(|child| {
             !child.request.owner.is_workflow()
-                && self
-                    .graph
-                    .is_reachable_from(&subagent_id, &ingress.request.parent_session_id)
+                && (authorization == WakeAuthorization::ResolvedTarget
+                    || matches!(
+                        &ingress.request.sender_context,
+                        ActiveMessageSenderContext::GrantedChild { .. }
+                    )
+                    || self.graph.is_reachable_from(
+                        &subagent_id,
+                        Self::message_sender_session(&ingress.request.sender_context),
+                    ))
         });
         if !can_wake {
             let _ = ingress
@@ -67,20 +117,26 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             return;
         }
 
-        let completed = &self.completed[&subagent_id];
+        let Some(completed) = self.completed.get(&subagent_id) else {
+            let _ = ingress
+                .request
+                .respond_to
+                .send(ActiveAgentMessageOutcome::NotFoundOrNotOwned);
+            return;
+        };
         let mut wake_request = completed.request.clone();
         let agent_address = completed.agent_address.clone();
         let spawner_session_id = completed.spawner_session_id.clone();
         let ActiveMessageIngress {
             request:
-                crate::implementations::grok_build::task::types::SubagentActiveMessageRequest {
+                SubagentActiveMessageRequest {
                     request,
-                    parent_session_id,
+                    sender_context,
                     respond_to,
                 },
             permit,
         } = ingress;
-        let wake_message_source = request.source();
+        let wake_message_source = Self::message_source(&sender_context);
         wake_request.prompt = request.text().to_string();
         wake_request.fork_context = false;
         wake_request.parent_prompt_id = None;
@@ -103,11 +159,13 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         };
         let parked = ParkedSpawnReadyMessage {
             subagent_id: subagent_id.clone(),
-            parent_session_id,
+            sender_context,
+            route,
             request,
             respond_to: Some(respond_to),
             deadline: None,
             initial_message_id: Some(message_id.clone()),
+            quota_admission,
             permit: Some(permit),
         };
 
@@ -182,11 +240,13 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             .saturating_sub(MAX_COMPLETED_ENTRIES as u64);
         if age < retained_age_floor {
             self.graph.remove(&id);
+            self.clear_target_incarnation(&id);
             for waiter in self.waiters.remove(&id).unwrap_or_default() {
                 let _ = waiter.respond_to.send(None);
             }
             return;
         }
+        self.restore_completed_incarnation(&id);
         let snapshot = self.completed_snapshot_for_query(&displaced.completed);
         for waiter in self.waiters.remove(&id).unwrap_or_default() {
             let _ = waiter.respond_to.send(Some(snapshot.clone()));

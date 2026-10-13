@@ -72,6 +72,8 @@
 //! let exists     = handle.has_definition_blocking("MyStruct");
 //! ```
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod index_manager;
 pub mod interner;
 pub mod languages;

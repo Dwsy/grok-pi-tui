@@ -1,181 +1,149 @@
-#![allow(dead_code)] // Functions consumed by handle.rs event forwarder wiring
-//! FsNotify adapters that forward [`xai_fsnotify`] events to workspace subsystems (hunk tracker, codebase graph, workspace event broadcast).
+//! Bridges [`xai_fsnotify`] into the workspace: the [`WorkspaceEvent::FsChanged`] producer for an
+//! exposed root, and the codebase-graph refresh that follows a git HEAD change.
 //!
-//! [`fs_event_to_codebase_graph_event`] converts FsNotify file-change events for the [`IndexManagerHandle`](xai_codebase_graph::IndexManagerHandle).
-//! The [`refresh_codebase_graph_after_head_change`] helper handles git HEAD changes by diffing `ORIG_HEAD..HEAD`.
+//! The producer shares the OS watcher per canonical root ([`xai_fsnotify::shared`]) and never
+//! calls `shutdown()` on it; the watcher lives exactly as long as the producer task holds its `Arc`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use xai_fsnotify::{FsEvent, FsEventKind};
-use xai_hunk_tracker::HunkTrackerHandle;
+use tokio::sync::broadcast;
+use tokio_util::task::AbortOnDropHandle;
+use xai_codebase_graph::{FileEvent, FileEventKind, IndexManagerHandle};
+use xai_fsnotify::{FsConfig, FsEvent, FsEventKind};
+use xai_grok_workspace_types::WorkspaceEvent;
 
-/// True if `path` lies under a hidden component below `cwd`.
-/// The `cwd` prefix is stripped first so a hidden cwd itself is not flagged; only longer-than-`.` components below it count.
-pub(crate) fn is_under_hidden_dir(path: &Path, cwd: &Path) -> bool {
-    let rel = path.strip_prefix(cwd).unwrap_or(path);
-    rel.components().any(|c| {
-        c.as_os_str()
-            .to_str()
-            .is_some_and(|s| s.starts_with('.') && s.len() > 1)
-    })
-}
+#[cfg(test)]
+#[path = "fs_notify_tests.rs"]
+mod tests;
 
-/// Hidden-dir filter against the longest matching root.
-/// Multi-repo events under `/workspace/lib` must not use `/workspace/app` as cwd.
-pub(crate) fn is_under_hidden_dir_any(path: &Path, roots: &[PathBuf]) -> bool {
-    let Some(root) = roots
-        .iter()
-        .filter(|root| path.starts_with(root))
-        .max_by_key(|root| root.as_os_str().len())
-    else {
-        return is_under_hidden_dir(path, Path::new(""));
-    };
-    is_under_hidden_dir(path, root)
-}
+/// Most paths one `FsChanged` carries. A watcher batch is unbounded (a tarball extracted into the
+/// root); the hub closes a socket on any inbound frame over 8 MiB, and at ~100 bytes a path this
+/// keeps a frame two orders of magnitude under that. A `Renamed` batch is at most a `[from, to]`
+/// pair and is never split.
+const FS_CHANGED_PATHS_PER_FRAME: usize = 1024;
 
-/// Forward an fs event to the hunk tracker.
-/// Hidden-directory paths (relative to `cwd`) are filtered out so the hunk tracker never sees `.git/`, `.grok/`, etc.
-pub(crate) fn forward_to_hunk_tracker(
-    paths: &[PathBuf],
-    kind: FsEventKind,
-    handle: &HunkTrackerHandle,
-    cwd: &Path,
-) {
-    forward_to_hunk_tracker_roots(
-        paths,
-        kind,
-        handle,
-        std::slice::from_ref(&cwd.to_path_buf()),
-    );
-}
-
-pub(crate) fn forward_to_hunk_tracker_roots(
-    paths: &[PathBuf],
-    kind: FsEventKind,
-    handle: &HunkTrackerHandle,
-    roots: &[PathBuf],
-) {
-    for path in paths {
-        if is_under_hidden_dir_any(path, roots) {
-            continue;
-        }
-        match kind {
-            FsEventKind::Created | FsEventKind::Modified | FsEventKind::Renamed => {
-                handle.handle_file_change(path.clone());
-            }
-            FsEventKind::Removed => {
-                handle.handle_file_deleted(path.clone());
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Convert to codebase graph `FileEvent` for incremental index updates.
-pub(crate) fn fs_event_to_codebase_graph_event(
-    paths: &[PathBuf],
-    kind: FsEventKind,
-) -> xai_codebase_graph::FileEvent {
-    use xai_codebase_graph::{FileEvent, FileEventKind};
-    let graph_kind = match kind {
-        FsEventKind::Created => FileEventKind::Created,
-        FsEventKind::Modified => FileEventKind::Modified,
-        FsEventKind::Removed => FileEventKind::Removed,
-        FsEventKind::Renamed => FileEventKind::Renamed,
-        // `#[non_exhaustive]` fallback.
-        _ => FileEventKind::Modified,
-    };
-    FileEvent::new(paths.to_vec(), graph_kind)
-}
-
-/// Convert [`xai_fsnotify::FsEventKind`] to the wire-type [`xai_grok_workspace_types::FsEventKind`].
-/// Identity mapping today; kept explicit so all known variants are consciously mapped.
-/// Unknown future variants fall back to `Modified` via the `#[non_exhaustive]` wildcard arm.
-pub(crate) fn to_workspace_event_kind(kind: FsEventKind) -> xai_grok_workspace_types::FsEventKind {
+/// Identity mapping onto the wire type; unknown future variants of the `#[non_exhaustive]` source
+/// enum fall back to `Modified`.
+fn to_workspace_event_kind(kind: FsEventKind) -> xai_grok_workspace_types::FsEventKind {
     match kind {
         FsEventKind::Created => xai_grok_workspace_types::FsEventKind::Created,
         FsEventKind::Modified => xai_grok_workspace_types::FsEventKind::Modified,
         FsEventKind::Removed => xai_grok_workspace_types::FsEventKind::Removed,
         FsEventKind::Renamed => xai_grok_workspace_types::FsEventKind::Renamed,
-        // `#[non_exhaustive]` fallback.
         _ => xai_grok_workspace_types::FsEventKind::Modified,
     }
 }
 
-/// Forward `FilesChanged` from an [`FsEvent`] broadcast to the hunk tracker and re-broadcast each path as `FsChanged`.
-/// Exits when the broadcast sender drops or `cancel` is cancelled.
-pub(crate) fn spawn_fs_event_forwarder(
-    rx: tokio::sync::broadcast::Receiver<FsEvent>,
-    hunk_tracker: HunkTrackerHandle,
-    events_tx: tokio::sync::broadcast::Sender<xai_grok_workspace_types::WorkspaceEvent>,
-    cwd: PathBuf,
-    cancel: tokio_util::sync::CancellationToken,
-    codebase_index: Option<std::sync::Arc<xai_codebase_graph::IndexManagerHandle>>,
-) {
-    spawn_fs_event_forwarder_roots(
-        rx,
-        hunk_tracker,
-        events_tx,
-        vec![cwd],
-        cancel,
-        codebase_index,
-    );
+/// Watch `root` and broadcast each settle window's changed paths as one [`WorkspaceEvent::FsChanged`].
+///
+/// Watcher init failure (root gone, inotify exhausted) is logged once at warn and the task exits;
+/// the workspace keeps serving without change events. The task holds the only strong reference to
+/// the shared OS watcher and cannot end on its own, so its handle aborts it on drop: whoever owns
+/// the handle owns the watch, and letting go of the handle — `shutdown` or not — releases it.
+pub(crate) fn spawn_fs_change_producer(
+    root: PathBuf,
+    events_tx: broadcast::Sender<WorkspaceEvent>,
+) -> AbortOnDropHandle<()> {
+    AbortOnDropHandle::new(tokio::spawn(async move {
+        // OS-watcher init walks the tree and blocks until every watch is armed. The watcher
+        // reports paths under the canonical root (`shared` canonicalizes what it watches), so
+        // that, not `root` as given, is what the paths are made relative to.
+        let init_root = root.clone();
+        let init = tokio::task::spawn_blocking(move || {
+            let source = xai_fsnotify::shared(init_root.clone(), FsConfig::default())?;
+            Ok::<_, xai_fsnotify::FsNotifyError>((
+                source,
+                dunce::canonicalize(&init_root).unwrap_or(init_root),
+            ))
+        })
+        .await
+        .map_err(|join| join.to_string())
+        .and_then(|init| init.map_err(|e| e.to_string()));
+        let (source, watch_root) = match init {
+            Ok(init) => init,
+            Err(error) => {
+                tracing::warn!(
+                    root = %root.display(),
+                    error,
+                    "fs change producer: watcher init failed; no FsChanged events for this root"
+                );
+                return;
+            }
+        };
+        // `source` outlives the loop: dropping the last `Arc` tears down the shared OS watcher.
+        forward_fs_changes(source.subscribe(), &events_tx, &watch_root).await;
+    }))
 }
 
-pub(crate) fn spawn_fs_event_forwarder_roots(
-    mut rx: tokio::sync::broadcast::Receiver<FsEvent>,
-    hunk_tracker: HunkTrackerHandle,
-    events_tx: tokio::sync::broadcast::Sender<xai_grok_workspace_types::WorkspaceEvent>,
-    roots: Vec<PathBuf>,
-    cancel: tokio_util::sync::CancellationToken,
-    codebase_index: Option<std::sync::Arc<xai_codebase_graph::IndexManagerHandle>>,
+/// Re-broadcast each `FilesChanged` batch as one `FsChanged` until the source closes. The
+/// watcher's settle window is the coalescing unit: a checkout is one frame, not one per file,
+/// split only past [`FS_CHANGED_PATHS_PER_FRAME`]. Paths are confined to `root` first
+/// ([`confine_to_root`]); a batch with nothing left inside it sends no frame.
+async fn forward_fs_changes(
+    mut rx: broadcast::Receiver<FsEvent>,
+    events_tx: &broadcast::Sender<WorkspaceEvent>,
+    root: &Path,
 ) {
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => break,
-                result = rx.recv() => {
-                    match result {
-                        Ok(FsEvent::FilesChanged { ref paths, kind }) => {
-                            forward_to_hunk_tracker_roots(paths, kind, &hunk_tracker, &roots);
-                            // Hidden-dir paths are forwarded to the codebase graph; its own ignore logic handles them
-                            if let Some(ref idx) = codebase_index {
-                                let graph_event = fs_event_to_codebase_graph_event(paths, kind);
-                                if let Err(e) = idx.send_event(graph_event) {
-                                    tracing::debug!(
-                                        error = %e,
-                                        "failed to forward fs event to codebase graph"
-                                    );
-                                }
-                            }
-                            // Broadcast per-path WorkspaceEvent::FsChanged.
-                            let ws_kind = to_workspace_event_kind(kind);
-                            for path in paths {
-                                let _ = events_tx.send(
-                                    xai_grok_workspace_types::WorkspaceEvent::FsChanged {
-                                        path: path.clone(),
-                                        kind: ws_kind,
-                                    },
-                                );
-                            }
-                        }
-                        Ok(other) => {
-                            // Git meta and operation events are not yet bridged to WorkspaceEvent::GitHeadChanged etc
-                            tracing::trace!(?other, "fs event forwarder: unhandled event variant");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(
-                                lagged = n,
-                                "fs event forwarder lagged; some events were dropped"
-                            );
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
+    loop {
+        match rx.recv().await {
+            Ok(FsEvent::FilesChanged { paths, kind }) => {
+                let (mut paths, kind) = confine_to_root(paths, to_workspace_event_kind(kind), root);
+                while !paths.is_empty() {
+                    let rest = paths.split_off(paths.len().min(FS_CHANGED_PATHS_PER_FRAME));
+                    let _ = events_tx.send(WorkspaceEvent::FsChanged { paths, kind });
+                    paths = rest;
                 }
             }
+            Ok(other) => {
+                tracing::trace!(?other, "fs change producer: event variant not bridged");
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                tracing::warn!(
+                    lagged = n,
+                    "fs change producer lagged; some events were dropped"
+                );
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
         }
-    });
+    }
+}
+
+/// Make `paths` relative to `root` and drop the ones outside it. A rename across the root boundary
+/// is reported as the half inside: `Removed` for a file that left the root, `Created` for one that
+/// arrived, since a lone-path `Renamed` would not say which. A rename the watcher saw by one path
+/// stays a `Renamed` when that path is inside.
+fn confine_to_root(
+    paths: Vec<PathBuf>,
+    kind: xai_grok_workspace_types::FsEventKind,
+    root: &Path,
+) -> (Vec<PathBuf>, xai_grok_workspace_types::FsEventKind) {
+    let relative = |path: &PathBuf| {
+        path.strip_prefix(root)
+            .ok()
+            .filter(|rel| !rel.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    };
+    let confined = match (kind, paths.as_slice()) {
+        (xai_grok_workspace_types::FsEventKind::Renamed, [from, to]) => {
+            match (relative(from), relative(to)) {
+                (Some(from), Some(to)) => (vec![from, to], kind),
+                (Some(from), None) => (vec![from], xai_grok_workspace_types::FsEventKind::Removed),
+                (None, Some(to)) => (vec![to], xai_grok_workspace_types::FsEventKind::Created),
+                (None, None) => (Vec::new(), kind),
+            }
+        }
+        _ => (paths.iter().filter_map(relative).collect(), kind),
+    };
+    let dropped = paths.len() - confined.0.len();
+    if dropped > 0 {
+        tracing::debug!(
+            dropped,
+            root = %root.display(),
+            "fs change producer: dropped paths outside the watch root"
+        );
+    }
+    confined
 }
 
 const GIT_DIFF_REBUILD_THRESHOLD: usize = 500;
@@ -209,7 +177,7 @@ fn parse_diff_name_status_line(
 pub(crate) async fn refresh_codebase_graph_after_head_change(
     idx: &xai_codebase_graph::IndexManagerHandle,
     repo_root: &Path,
-    events_tx: &tokio::sync::broadcast::Sender<xai_grok_workspace_types::WorkspaceEvent>,
+    events_tx: &broadcast::Sender<WorkspaceEvent>,
 ) {
     let mut diff_cmd = tokio::process::Command::new("git");
     diff_cmd
@@ -264,135 +232,64 @@ pub(crate) async fn refresh_codebase_graph_after_head_change(
     }
 
     if let Some(count) = files_updated {
-        let _ = events_tx.send(
-            xai_grok_workspace_types::WorkspaceEvent::CodebaseIndexUpdated {
-                files_indexed: count,
-            },
-        );
+        let _ = events_tx.send(WorkspaceEvent::CodebaseIndexUpdated {
+            files_indexed: count,
+        });
     }
 }
 
-pub(crate) fn ws_event_to_codebase_graph_event(
-    path: &std::path::Path,
+/// One [`FileEvent`] per covering index for an `FsChanged` batch, each carrying every path of the
+/// batch that index covers; paths no index covers are dropped.
+///
+/// A `Renamed` batch is `[from, to]` when the watcher saw both halves, or one path when it saw one
+/// (notify's `From`/`To`/`Any` rename modes). A pair whose halves share an index goes to it whole,
+/// and the graph splits it into Removed(from) + Created(to); halves under different indexes go to
+/// each as its own Removed / Created, since an index never learns of a file outside its root from
+/// a pair sent elsewhere. A lone path is a `Renamed` its index re-indexes.
+pub(crate) fn codebase_graph_events_for_batch(
+    paths: Vec<PathBuf>,
     kind: xai_grok_workspace_types::FsEventKind,
-) -> xai_codebase_graph::FileEvent {
-    use xai_codebase_graph::{FileEvent, FileEventKind};
+    mut covering: impl FnMut(&Path) -> Option<Arc<IndexManagerHandle>>,
+) -> Vec<(Arc<IndexManagerHandle>, FileEvent)> {
     let graph_kind = match kind {
         xai_grok_workspace_types::FsEventKind::Created => FileEventKind::Created,
         xai_grok_workspace_types::FsEventKind::Modified => FileEventKind::Modified,
         xai_grok_workspace_types::FsEventKind::Removed => FileEventKind::Removed,
         xai_grok_workspace_types::FsEventKind::Renamed => FileEventKind::Renamed,
     };
-    FileEvent::new(vec![path.to_path_buf()], graph_kind)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::{Path, PathBuf};
-
-    #[test]
-    fn hidden_dir_positive() {
-        assert!(is_under_hidden_dir(
-            &PathBuf::from("/workspace/.grok/worktrees/abc/src/main.rs"),
-            &PathBuf::from("/workspace"),
-        ));
+    if graph_kind == FileEventKind::Renamed {
+        let mut paths = paths.into_iter();
+        let (Some(from), to) = (paths.next(), paths.next()) else {
+            return Vec::new();
+        };
+        let (from_idx, to_idx) = (covering(&from), to.as_deref().and_then(&mut covering));
+        return match (from_idx, to, to_idx) {
+            (Some(idx), Some(to), Some(to_idx)) if Arc::ptr_eq(&idx, &to_idx) => {
+                vec![(idx, FileEvent::new(vec![from, to], graph_kind))]
+            }
+            (from_idx, Some(to), to_idx) => from_idx
+                .map(|idx| (idx, FileEvent::new(vec![from], FileEventKind::Removed)))
+                .into_iter()
+                .chain(to_idx.map(|idx| (idx, FileEvent::new(vec![to], FileEventKind::Created))))
+                .collect(),
+            (from_idx, None, _) => from_idx
+                .map(|idx| vec![(idx, FileEvent::new(vec![from], graph_kind))])
+                .unwrap_or_default(),
+        };
     }
-
-    #[test]
-    fn hidden_dir_ignores_cwd_components() {
-        assert!(!is_under_hidden_dir(
-            &PathBuf::from("/home/user/.config/project/src/lib.rs"),
-            &PathBuf::from("/home/user/.config/project"),
-        ));
+    let mut groups: Vec<(Arc<IndexManagerHandle>, Vec<PathBuf>)> = Vec::new();
+    for path in paths {
+        let Some(idx) = covering(&path) else { continue };
+        match groups
+            .iter_mut()
+            .find(|(group_idx, _)| Arc::ptr_eq(group_idx, &idx))
+        {
+            Some((_, group)) => group.push(path),
+            None => groups.push((idx, vec![path])),
+        }
     }
-
-    #[test]
-    fn hidden_dir_dot_only() {
-        // A bare `.` component is not "hidden".
-        assert!(!is_under_hidden_dir(
-            &PathBuf::from("/workspace/./src/main.rs"),
-            &PathBuf::from("/workspace"),
-        ));
-    }
-
-    #[test]
-    fn hidden_dir_any_uses_longest_mount_prefix() {
-        let roots = vec![
-            PathBuf::from("/workspace/app"),
-            PathBuf::from("/workspace/lib"),
-        ];
-        assert!(is_under_hidden_dir_any(
-            Path::new("/workspace/lib/.git/HEAD"),
-            &roots,
-        ));
-        assert!(!is_under_hidden_dir_any(
-            Path::new("/workspace/lib/src/lib.rs"),
-            &roots,
-        ));
-        assert!(!is_under_hidden_dir_any(
-            Path::new("/workspace/app/src/main.rs"),
-            &roots,
-        ));
-    }
-
-    #[test]
-    fn workspace_event_kind_round_trip() {
-        use xai_grok_workspace_types::FsEventKind as WsKind;
-        assert_eq!(
-            to_workspace_event_kind(FsEventKind::Created),
-            WsKind::Created
-        );
-        assert_eq!(
-            to_workspace_event_kind(FsEventKind::Modified),
-            WsKind::Modified
-        );
-        assert_eq!(
-            to_workspace_event_kind(FsEventKind::Removed),
-            WsKind::Removed
-        );
-        assert_eq!(
-            to_workspace_event_kind(FsEventKind::Renamed),
-            WsKind::Renamed
-        );
-    }
-
-    #[test]
-    fn codebase_graph_event_mapping() {
-        use xai_codebase_graph::FileEventKind;
-        let paths = vec![PathBuf::from("/workspace/src/main.rs")];
-
-        let ev = fs_event_to_codebase_graph_event(&paths, FsEventKind::Created);
-        assert_eq!(ev.kind, FileEventKind::Created);
-
-        let ev = fs_event_to_codebase_graph_event(&paths, FsEventKind::Modified);
-        assert_eq!(ev.kind, FileEventKind::Modified);
-
-        let ev = fs_event_to_codebase_graph_event(&paths, FsEventKind::Removed);
-        assert_eq!(ev.kind, FileEventKind::Removed);
-
-        let ev = fs_event_to_codebase_graph_event(&paths, FsEventKind::Renamed);
-        assert_eq!(ev.kind, FileEventKind::Renamed);
-    }
-
-    #[test]
-    fn parse_diff_name_status_all_variants() {
-        use std::path::Path;
-        use xai_codebase_graph::FileEventKind;
-        let root = Path::new("/repo");
-
-        let ev = parse_diff_name_status_line("M\tsrc/main.rs", root).unwrap();
-        assert_eq!(ev.kind, FileEventKind::Modified);
-
-        let ev = parse_diff_name_status_line("A\tnew_file.rs", root).unwrap();
-        assert_eq!(ev.kind, FileEventKind::Created);
-
-        let ev = parse_diff_name_status_line("D\told_file.rs", root).unwrap();
-        assert_eq!(ev.kind, FileEventKind::Removed);
-
-        let ev = parse_diff_name_status_line("R100\told.rs\tnew.rs", root).unwrap();
-        assert_eq!(ev.kind, FileEventKind::Renamed);
-
-        assert!(parse_diff_name_status_line("", root).is_none());
-    }
+    groups
+        .into_iter()
+        .map(|(idx, paths)| (idx, FileEvent::new(paths, graph_kind)))
+        .collect()
 }

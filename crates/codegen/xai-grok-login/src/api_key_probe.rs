@@ -20,8 +20,10 @@ pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 /// Returns the last 12 chars of a key for diagnostic logs, never the full secret.
 /// This is a copy; importing it from `auth::model` would create an import cycle under Bazel.
 fn key_suffix(t: &str) -> &str {
-    let len = t.len();
-    if len > 12 { &t[len - 12..] } else { t }
+    t.len()
+        .checked_sub(12)
+        .and_then(|i| t.get(i..))
+        .unwrap_or(t)
 }
 
 /// Whether `initialize` should HTTP-probe the first-party env key.

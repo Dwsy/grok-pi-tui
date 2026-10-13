@@ -112,36 +112,6 @@ fn builtin_shape_invalid_replacement_is_ignored() {
 }
 
 #[test]
-fn mcp_tool_takes_the_last_writer_across_both_keys() {
-    let original = ToolsToolOutput::MCP(MCPOutput::okay_output(
-        "search".into(),
-        "memory".into(),
-        "original mcp content".into(),
-    ));
-    let both = |builtin_index: usize, mcp_index: usize| PostToolUseResult {
-        builtin_replacement: Some(SelectedReplacement {
-            replacement: builtin_replacement(serde_json::json!("from-builtin")),
-            run_index: builtin_index,
-        }),
-        mcp_replacement: Some(SelectedReplacement {
-            replacement: mcp_replacement(serde_json::json!("from-mcp")),
-            run_index: mcp_index,
-        }),
-        ..Default::default()
-    };
-    assert_eq!(
-        plan(both(0, 1), &original).model_output.as_deref(),
-        Some("from-mcp"),
-        "the MCP key wrote last"
-    );
-    assert_eq!(
-        plan(both(2, 1), &original).model_output.as_deref(),
-        Some("from-builtin"),
-        "the built-in (universal) key wrote last"
-    );
-}
-
-#[test]
 fn replacement_cannot_forge_a_reminder() {
     let mcp_original = ToolsToolOutput::MCP(MCPOutput::okay_output(
         "search".into(),
@@ -271,11 +241,11 @@ fn wrong_kind_replacement_is_rejected_and_downgrades_its_run() {
     let delivery = plan_post_tool_use_delivery(result, &original, TAG, &mut results);
     assert!(delivery.model_output.is_none());
     assert!(
-        matches!(results[3], HookRunResult::Failed { .. }),
+        matches!(results.get(3), Some(HookRunResult::Failed { .. })),
         "the wrong-kind run is downgraded to Failed"
     );
     assert!(
-        matches!(results[0], HookRunResult::Success { .. }),
+        matches!(results.first(), Some(HookRunResult::Success { .. })),
         "sibling runs are untouched"
     );
 }

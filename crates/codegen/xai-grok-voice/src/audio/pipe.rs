@@ -82,7 +82,7 @@ pub(super) fn forward_pcm(
                 // Never park this thread on the channel: `stop()` joins it
                 // A send that waits on a stalled STT consumer would turn teardown into a hang. Shed load instead.
                 // (`read` itself is unblocked by the kill-on-stop path: killing the child closes stdout, so a waiting `read` returns 0.)
-                match pcm_tx.try_send(buf[..n].to_vec()) {
+                match pcm_tx.try_send(buf.get(..n).unwrap_or(&[]).to_vec()) {
                     Ok(()) => {}
                     Err(async_mpsc::error::TrySendError::Full(_)) => dropped += 1,
                     // Consumer is gone: the session ended; stop capturing.

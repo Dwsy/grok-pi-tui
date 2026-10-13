@@ -169,7 +169,10 @@ impl OpenCodeHighlighter {
         // Walk only the not-yet-committed remainder.
         let highlighter = Highlighter::new(&syn.theme);
         let mut tentative: Option<HlLine> = None;
-        for line in LinesWithEndings::from(&text[self.committed_len..]) {
+        let Some(rest) = text.get(self.committed_len..) else {
+            return Some(self.committed_lines.clone());
+        };
+        for line in LinesWithEndings::from(rest) {
             if line.ends_with('\n') {
                 // The line is final: highlight it once and permanently advance the persisted state
                 // On a (practically unreachable) parse error, invalidate the cache so the next pass rebuilds from scratch
@@ -268,11 +271,11 @@ mod tests {
         let mut cache = OpenCodeHighlighter::new(syn);
         // Grow one byte at a time; every prefix must equal a one-shot batch highlight of that same prefix
         for end in 1..=full.len() {
-            if !full.is_char_boundary(end) {
+            let Some(prefix) = full.get(..end) else {
                 continue;
-            }
-            let got = cache.highlight(syn, "yaml", 0, &full[..end]).expect("hl");
-            assert_eq!(got, batch(syn, "yaml", &full[..end]), "prefix len {end}");
+            };
+            let got = cache.highlight(syn, "yaml", 0, prefix).expect("hl");
+            assert_eq!(got, batch(syn, "yaml", prefix), "prefix len {end}");
         }
     }
 
@@ -354,12 +357,12 @@ mod tests {
         let closed = "name: pinned\n";
         let full = "a = 1\nb = 2\nc = 3\n";
         for end in 1..=full.len() {
-            if !full.is_char_boundary(end) {
+            let Some(prefix) = full.get(..end) else {
                 continue;
-            }
+            };
             let _ = cache.highlight_closed(syn, "yaml", closed).expect("memo");
-            let got = cache.highlight(syn, "python", 7, &full[..end]).expect("hl");
-            assert_eq!(got, batch(syn, "python", &full[..end]), "prefix len {end}");
+            let got = cache.highlight(syn, "python", 7, prefix).expect("hl");
+            assert_eq!(got, batch(syn, "python", prefix), "prefix len {end}");
         }
         assert_eq!(cache.closed_memo_bytes(), closed.len());
     }

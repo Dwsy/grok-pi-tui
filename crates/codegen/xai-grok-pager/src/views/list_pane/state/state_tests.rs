@@ -71,8 +71,6 @@ impl ListItem for TestItem {
     }
 }
 
-// -- Scroll tests ---------------------------------------------------------
-
 #[test]
 fn scroll_basics() {
     let items: Vec<TestItem> = (0..20).map(TestItem::new).collect();
@@ -165,8 +163,6 @@ fn scroll_content_fits_viewport() {
     state.scroll_down(5);
     assert_eq!(state.scroll_offset(), 0);
 }
-
-// -- Selection tests ------------------------------------------------------
 
 #[test]
 fn select_next_prev() {
@@ -287,8 +283,6 @@ fn selection_clears_when_selected_removed() {
     assert!(state.selected_index().is_some());
 }
 
-// -- Filter + selection tests ---------------------------------------------
-
 #[test]
 fn select_with_filter() {
     let items = vec![
@@ -336,8 +330,6 @@ fn select_with_filter() {
     assert_eq!(state.selected_id(), Some(2));
 }
 
-// -- Visible range tests --------------------------------------------------
-
 #[test]
 fn visible_range_fixed_height() {
     let items: Vec<TestItem> = (0..20).map(TestItem::new).collect();
@@ -375,8 +367,6 @@ fn visible_range_variable_height() {
     assert_eq!(state.first_item_skip_rows(), 1);
 }
 
-// -- Filter tests ---------------------------------------------------------
-
 #[test]
 fn filter_reduces_visible_items() {
     let items = vec![
@@ -405,8 +395,6 @@ fn filter_reduces_visible_items() {
     assert_eq!(state.visible_count(), 4);
 }
 
-// -- Wrap mode tests ------------------------------------------------------
-
 #[test]
 fn wrap_mode_variable_heights() {
     let items = vec![
@@ -433,8 +421,6 @@ fn nowrap_mode_all_height_one() {
     // NoWrap forces height 1 regardless of desired_height
     assert_eq!(state.total_height(), 3);
 }
-
-// -- Keyboard input tests -------------------------------------------------
 
 #[test]
 fn key_j_k_selects() {
@@ -569,8 +555,6 @@ fn unrecognized_key_returns_false() {
     // 'x' is not a navigation key
     assert!(!state.handle_key_event(&key!('x').to_key_event(), &items));
 }
-
-// -- Selection follows scroll (vim/lnav screen-y preservation) ----------
 
 #[test]
 fn ctrl_d_selection_stays_at_same_screen_y() {
@@ -765,8 +749,6 @@ fn ctrl_j_k_selection_follows_at_screen_y() {
     assert_eq!(state.selected_index(), Some(4)); // back to 4
 }
 
-// -- Dirty flag / incremental append tests --------------------------------
-
 #[test]
 fn prepare_layout_skips_rebuild_when_clean() {
     // With Wrap mode and variable heights, calling prepare_layout with unchanged inputs should reuse the cache (same total_height)
@@ -897,8 +879,6 @@ fn prepare_layout_eviction_with_wrap_mode() {
     assert_eq!(state.visible_count(), 7);
 }
 
-// -- Center selected tests ------------------------------------------------
-
 #[test]
 fn center_selected_places_item_mid_viewport() {
     let items: Vec<TestItem> = (0..30).map(TestItem::new).collect();
@@ -934,8 +914,6 @@ fn key_z_centers_selected() {
     assert_eq!(state.scroll_offset(), 10);
 }
 
-// -- Click-to-select tests ------------------------------------------------
-
 #[test]
 fn select_at_y_selectable() {
     let items: Vec<TestItem> = (0..10).map(TestItem::new).collect();
@@ -965,13 +943,13 @@ fn select_at_y_non_selectable_returns_false() {
     assert_eq!(state.selected_index(), Some(0));
 }
 
-// -- Scroll past non-selectable (viewport-constrained) --------------------
-
 #[test]
 fn scroll_past_non_selectable_stays_in_viewport() {
     // Items: 0, 1, 2(non-sel), 3, 4, 5, 6, 7, 8, 9
     let mut items: Vec<TestItem> = (0..10).map(TestItem::new).collect();
-    items[2] = TestItem::new(2).not_selectable();
+    if let Some(slot) = items.get_mut(2) {
+        *slot = TestItem::new(2).not_selectable();
+    }
     let mut state = ListPaneState::new(WrapMode::NoWrap, false);
     state.prepare_layout(&items, 80, 5);
 
@@ -991,8 +969,6 @@ fn scroll_past_non_selectable_stays_in_viewport() {
     // Should pick item 3 (forward from non-selectable 2).
     assert_eq!(sel, 3);
 }
-
-// -- Ctrl-d/u edge cases: cursor continues when viewport is clamped -----
 
 #[test]
 fn ctrl_d_at_bottom_moves_cursor_past_viewport_clamp() {
@@ -1078,9 +1054,15 @@ fn ctrl_d_skips_non_selectable_at_end() {
     // Last 3 items are non-selectable
     // Cursor should stop at the last selectable item, not get stuck on a separator
     let mut items: Vec<TestItem> = (0..20).map(TestItem::new).collect();
-    items[17] = TestItem::new(17).not_selectable();
-    items[18] = TestItem::new(18).not_selectable();
-    items[19] = TestItem::new(19).not_selectable();
+    if let Some(slot) = items.get_mut(17) {
+        *slot = TestItem::new(17).not_selectable();
+    }
+    if let Some(slot) = items.get_mut(18) {
+        *slot = TestItem::new(18).not_selectable();
+    }
+    if let Some(slot) = items.get_mut(19) {
+        *slot = TestItem::new(19).not_selectable();
+    }
 
     let mut state = ListPaneState::new(WrapMode::NoWrap, false);
     state.prepare_layout(&items, 80, 10);
@@ -1099,9 +1081,15 @@ fn ctrl_d_skips_non_selectable_at_end() {
 fn ctrl_u_skips_non_selectable_at_start() {
     // First 3 items are non-selectable.
     let mut items: Vec<TestItem> = (0..20).map(TestItem::new).collect();
-    items[0] = TestItem::new(0).not_selectable();
-    items[1] = TestItem::new(1).not_selectable();
-    items[2] = TestItem::new(2).not_selectable();
+    if let Some(slot) = items.get_mut(0) {
+        *slot = TestItem::new(0).not_selectable();
+    }
+    if let Some(slot) = items.get_mut(1) {
+        *slot = TestItem::new(1).not_selectable();
+    }
+    if let Some(slot) = items.get_mut(2) {
+        *slot = TestItem::new(2).not_selectable();
+    }
 
     let mut state = ListPaneState::new(WrapMode::NoWrap, false);
     state.prepare_layout(&items, 80, 10);
@@ -1114,8 +1102,6 @@ fn ctrl_u_skips_non_selectable_at_start() {
     state.half_page_up(&items);
     assert_eq!(state.selected_index(), Some(3));
 }
-
-// -- ListMatcher tests ----------------------------------------------------
 
 #[test]
 fn matcher_substring_builds_match_indices() {
@@ -1265,8 +1251,6 @@ fn next_match_selects_and_scrolls() {
     state.prev_match(&items);
     assert_eq!(state.selected_index(), Some(3));
 }
-
-// -- Follow mode: one-past and overscroll tests --------------------------
 
 #[test]
 fn j_one_past_engages_follow() {
@@ -1457,8 +1441,6 @@ fn follow_mode_auto_scrolls_on_new_items() {
     assert!(state.follow_mode);
 }
 
-// -- Follow mode: no cursor -----------------------------------------------
-
 #[test]
 fn follow_mode_has_no_selection() {
     let items: Vec<TestItem> = (0..10).map(TestItem::new).collect();
@@ -1486,8 +1468,6 @@ fn follow_mode_clears_selection_on_prepare_layout() {
     state.prepare_layout(&items, 80, 5);
     assert_eq!(state.selected_index(), None);
 }
-
-// -- Follow to NAV transitions --------------------------------------------
 
 #[test]
 fn j_in_follow_is_noop() {
@@ -1531,8 +1511,6 @@ fn ctrl_u_in_follow_exits_and_scrolls_up() {
     assert_eq!(state.scroll_offset(), 5);
     assert!(state.selected_index().is_some());
 }
-
-// -- NAV mode: new items don't reset edge state ---------------------------
 
 #[test]
 fn new_items_dont_reset_edge_state() {
@@ -1610,8 +1588,6 @@ fn next_match_with_filter_mode() {
     state.next_match(&items);
     assert_eq!(state.selected_index(), Some(0));
 }
-
-// -- Config gating tests --------------------------------------------------
 
 #[test]
 fn follow_disabled_g_selects_last_item() {
@@ -1730,8 +1706,6 @@ fn wrap_toggle_disabled_w_not_consumed() {
     assert_eq!(state.wrap_mode(), WrapMode::NoWrap);
 }
 
-// -- Toggle follow tests --------------------------------------------------
-
 #[test]
 fn toggle_follow_from_nav_engages() {
     let items: Vec<TestItem> = (0..20).map(TestItem::new).collect();
@@ -1756,8 +1730,6 @@ fn toggle_follow_from_follow_exits() {
     assert!(!state.follow_mode);
     assert!(state.selected_index().is_some());
 }
-
-// -- Copy tests -----------------------------------------------------------
 
 fn new_with_copy() -> ListPaneState {
     ListPaneState::new_with_config(
@@ -1925,8 +1897,6 @@ fn copy_noop_after_filter_hides_all() {
     assert_eq!(state.visible_count(), 0);
     assert!(!state.copy_selected(&items));
 }
-
-// -- Visual select tests --------------------------------------------------
 
 /// Helper: create a state with visual select and copy enabled.
 fn new_with_visual() -> ListPaneState {

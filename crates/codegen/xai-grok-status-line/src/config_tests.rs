@@ -272,11 +272,11 @@ fn only_a_row_that_can_change_mid_turn_keeps_recomputing_through_one() {
 
     for (kind, items, changes) in [
         // A script may read a clock, so `command` always can.
-        (Command, &[][..], true),
+        (Command, &[] as &[_], true),
         // One segment that varies is enough for the row.
-        (Builtin, &[Cwd, TurnTimer][..], true),
-        (Builtin, &[Cwd][..], false),
-        (Disabled, &[][..], false),
+        (Builtin, &[Cwd, TurnTimer] as &[_], true),
+        (Builtin, &[Cwd] as &[_], false),
+        (Disabled, &[] as &[_], false),
     ] {
         let row = section(kind, items);
         assert_eq!(row.changes_during_a_turn(), changes, "{row:?}");

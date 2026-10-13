@@ -1,5 +1,7 @@
 use super::model::TEAM_PRINCIPAL_TYPE;
 use serde::{Deserialize, Serialize};
+pub use xai_grok_config::CLI_CHAT_PROXY_BASE_URL_DEFAULT;
+use xai_grok_config::{Capability, Distribution};
 use xai_grok_shell_base::env::{PROD_RELAY_WS_URL, PROD_WS_ORIGIN};
 fn default_oidc_scopes() -> Vec<String> {
     vec![
@@ -170,7 +172,135 @@ pub fn is_xai_oauth2_issuer(issuer: &str) -> bool {
 /// auth.json scope key used by the pre-OIDC `grok login --legacy` flow.
 /// Matches the key format produced by the original `accounts.x.ai` relay auth.
 pub const LEGACY_AUTH_SCOPE: &str = "https://accounts.x.ai/sign-in";
+/// `[grok_com_config]` as a config writes it. A field it omits keeps the value it is merged over,
+/// down to a single field of a provider table: the provider fields' serde default is `None`, so
+/// parsing the section as a [`GrokComConfig`] would drop the default provider instead.
+#[derive(Deserialize)]
+struct GrokComConfigSection {
+    grok_ws_origin: Option<String>,
+    grok_ws_url: Option<String>,
+    token_header: Option<String>,
+    oidc: Option<toml::Value>,
+    oauth2: Option<toml::Value>,
+    auth_provider_command: Option<String>,
+    auth_provider_label: Option<String>,
+    auth_token_ttl: Option<u64>,
+    disable_api_key_auth: Option<bool>,
+    force_login_team_uuid: Option<ForceLoginTeam>,
+    preferred_method: Option<PreferredAuthMethod>,
+}
+impl GrokComConfigSection {
+    fn merge_over(self, base: GrokComConfig) -> Result<GrokComConfig, toml::de::Error> {
+        let oidc = match (self.oidc, base.oidc) {
+            (None, base) => base,
+            (Some(table), None) => Some(table.try_into()?),
+            (Some(table), Some(base)) => {
+                Some(table.try_into::<OidcAuthSection>()?.merge_over(base))
+            }
+        };
+        let oauth2 = match (self.oauth2, base.oauth2) {
+            (None, base) => base,
+            (Some(table), None) => Some(table.try_into()?),
+            (Some(table), Some(base)) => {
+                Some(table.try_into::<OAuth2ProviderSection>()?.merge_over(base))
+            }
+        };
+        Ok(GrokComConfig {
+            grok_ws_origin: self.grok_ws_origin.unwrap_or(base.grok_ws_origin),
+            grok_ws_url: self.grok_ws_url.unwrap_or(base.grok_ws_url),
+            token_header: self.token_header.unwrap_or(base.token_header),
+            oidc,
+            oauth2,
+            auth_provider_command: self.auth_provider_command.or(base.auth_provider_command),
+            auth_provider_label: self.auth_provider_label.or(base.auth_provider_label),
+            auth_token_ttl: self.auth_token_ttl.or(base.auth_token_ttl),
+            disable_api_key_auth: self.disable_api_key_auth.or(base.disable_api_key_auth),
+            force_login_team_uuid: self.force_login_team_uuid.or(base.force_login_team_uuid),
+            preferred_method: self.preferred_method.or(base.preferred_method),
+        })
+    }
+}
+/// `[grok_com_config.oidc]` as a config writes it over a provider the environment already named.
+#[derive(Deserialize)]
+struct OidcAuthSection {
+    issuer: Option<String>,
+    client_id: Option<String>,
+    scopes: Option<Vec<String>>,
+    audience: Option<String>,
+}
+impl OidcAuthSection {
+    fn merge_over(self, base: OidcAuthConfig) -> OidcAuthConfig {
+        OidcAuthConfig {
+            issuer: self.issuer.unwrap_or(base.issuer),
+            client_id: self.client_id.unwrap_or(base.client_id),
+            scopes: self.scopes.unwrap_or(base.scopes),
+            audience: self.audience.or(base.audience),
+        }
+    }
+}
+/// `[grok_com_config.oauth2]` as a config writes it over the default provider.
+#[derive(Deserialize)]
+struct OAuth2ProviderSection {
+    issuer: Option<String>,
+    client_id: Option<String>,
+    scopes: Option<Vec<String>>,
+    principal_type: Option<String>,
+    principal_id: Option<String>,
+    referrer: Option<String>,
+}
+impl OAuth2ProviderSection {
+    fn merge_over(self, base: OAuth2ProviderConfig) -> OAuth2ProviderConfig {
+        OAuth2ProviderConfig {
+            issuer: self.issuer.unwrap_or(base.issuer),
+            client_id: self.client_id.unwrap_or(base.client_id),
+            scopes: self.scopes.unwrap_or(base.scopes),
+            principal_type: self.principal_type.or(base.principal_type),
+            principal_id: self.principal_id.or(base.principal_id),
+            referrer: self.referrer.or(base.referrer),
+        }
+    }
+}
 impl GrokComConfig {
+    /// The login config of an effective `config`, as every process resolves it: `[auth]` folded
+    /// into `[grok_com_config]`, the fields it names merged over [`GrokComConfig::default`],
+    /// identity providers the config names none of taken from the environment, and the login-team
+    /// pin resolved across its tiers.
+    ///
+    /// # Errors
+    /// Returns an error when `[grok_com_config]` does not parse, including a provider table that
+    /// names no provider the default already has and lacks a required field.
+    pub fn from_effective_config(config: &toml::Value) -> Result<GrokComConfig, toml::de::Error> {
+        let config = expand_auth_alias(config);
+        let mut login_config = match config.get("grok_com_config") {
+            Some(section) => GrokComConfigSection::deserialize(section.clone())?
+                .merge_over(GrokComConfig::default())?,
+            None => GrokComConfig::default(),
+        };
+        if login_config.oidc.is_none() {
+            login_config.oidc = OidcAuthConfig::from_env();
+        }
+        if login_config.oidc.is_none() && login_config.oauth2.is_none() {
+            login_config.oauth2 = OAuth2ProviderConfig::from_env();
+        }
+        login_config.pin_login_team();
+        login_config.withhold_account_login(Distribution::current());
+        Ok(login_config)
+    }
+    /// A distribution without account logins has no auth provider command, whatever the config or
+    /// the environment name, so every reader of this config sees none.
+    fn withhold_account_login(&mut self, distribution: Distribution) {
+        if !distribution.allows(Capability::AccountLogin) {
+            self.auth_provider_command = None;
+        }
+    }
+    /// Resolves `force_login_team_uuid` across its tiers; see [`resolve_force_login_team`].
+    pub fn pin_login_team(&mut self) {
+        self.force_login_team_uuid = resolve_force_login_team(
+            force_login_team_from_requirements(),
+            force_login_team_from_env(),
+            self.force_login_team_uuid.take(),
+        );
+    }
     /// Pinning a team (`force_login_team_uuid`) disables `xai.api_key` auth: team membership can't be verified from a bare API key.
     /// The `GROK_DISABLE_API_KEY_AUTH` env lockdown is read at call time and OR-ed in, so a lower-trust user `config.toml` cannot turn it back off.
     /// `requirements.toml` already wins by layer precedence.
@@ -255,7 +385,7 @@ impl Default for GrokComConfig {
                 }),
             )
         };
-        Self {
+        let mut config = Self {
             grok_ws_origin: std::env::var("GROK_WS_ORIGIN")
                 .unwrap_or_else(|_| PROD_WS_ORIGIN.to_owned()),
             grok_ws_url: std::env::var("GROK_WS_URL")
@@ -273,7 +403,9 @@ impl Default for GrokComConfig {
                 .map(|v| env_flag_enabled(&v)),
             force_login_team_uuid: None,
             preferred_method: None,
-        }
+        };
+        config.withhold_account_login(Distribution::current());
+        config
     }
 }
 /// Parses a boolean env-var value for grok's on/off flags.
@@ -301,6 +433,12 @@ pub fn force_login_team_from_env() -> Option<ForceLoginTeam> {
     let raw = std::env::var(FORCE_LOGIN_TEAM_ID_ENV).ok()?;
     parse_force_login_team(&raw)
 }
+/// The `force_login_team_uuid` pin of the merged `requirements.toml` / MDM layers; the requirements
+/// tier in [`resolve_force_login_team`]. Read at call time, so the clamp holds for a login config
+/// built without the layer merge.
+pub fn force_login_team_from_requirements() -> Option<ForceLoginTeam> {
+    force_login_team_from_requirements_value(&xai_grok_config::load_merged_requirements()?)
+}
 /// Extracts the `force_login_team_uuid` pin from a merged requirements value, including the `[auth]` alias.
 /// A present but unparseable value fails closed so a malformed pin cannot silently drop the restriction.
 /// The caller loads the merged requirements, so this stays a pure parse over a narrow input.
@@ -324,6 +462,26 @@ pub fn force_login_team_from_requirements_value(
             Some(ForceLoginTeam::AnyOf(vec![]))
         }
     }
+}
+/// If `config` contains `[auth]`, copy its contents under `[grok_com_config]`.
+/// `[grok_com_config]` takes precedence if both are present (explicit wins).
+/// This lets customers write the shorter `[auth.oidc]` instead of `[grok_com_config.oidc]`.
+pub fn expand_auth_alias(config: &toml::Value) -> toml::Value {
+    let mut config = config.clone();
+    if let toml::Value::Table(ref mut table) = config
+        && let Some(auth) = table.remove("auth")
+    {
+        if let Some(gcc) = table.get_mut("grok_com_config") {
+            if let (toml::Value::Table(gcc_table), toml::Value::Table(auth_table)) = (gcc, &auth) {
+                for (k, v) in auth_table {
+                    gcc_table.entry(k.clone()).or_insert(v.clone());
+                }
+            }
+        } else {
+            table.insert("grok_com_config".to_owned(), auth);
+        }
+    }
+    config
 }
 /// Resolves the effective login-team pin by tier: `requirements` beats `env` beats `config`.
 /// `requirements` is the non-overridable `requirements.toml` / MDM pin.
@@ -375,6 +533,51 @@ impl OidcAuthConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_build_without_account_logins_has_no_auth_provider_command() {
+        let named = GrokComConfig {
+            auth_provider_command: Some("mint-token".to_owned()),
+            ..GrokComConfig::default()
+        };
+        let mut withheld = named.clone();
+        withheld.withhold_account_login(Distribution::withholding(&[Capability::AccountLogin]));
+        assert_eq!(None, withheld.auth_provider_command);
+        let mut stock = named;
+        stock.withhold_account_login(Distribution::STOCK);
+        assert_eq!(Some("mint-token"), stock.auth_provider_command.as_deref());
+    }
+    #[test]
+    fn login_config_field_the_config_omits_keeps_its_default() {
+        let default_oauth2 = GrokComConfig::default().oauth2;
+        let cases = [
+            (
+                "[grok_com_config]\ntoken_header = \"custom\"\n",
+                GrokComConfig {
+                    token_header: "custom".to_owned(),
+                    ..GrokComConfig::default()
+                },
+            ),
+            (
+                "[grok_com_config.oauth2]\nprincipal_type = \"Team\"\n",
+                GrokComConfig {
+                    oauth2: default_oauth2.map(|oauth2| OAuth2ProviderConfig {
+                        principal_type: Some("Team".to_owned()),
+                        ..oauth2
+                    }),
+                    ..GrokComConfig::default()
+                },
+            ),
+        ];
+        for (config, expected) in cases {
+            let config: toml::Value = toml::from_str(config).unwrap();
+            assert_eq!(
+                toml::Value::try_from(expected).unwrap(),
+                toml::Value::try_from(GrokComConfig::from_effective_config(&config).unwrap())
+                    .unwrap(),
+                "{config}"
+            );
+        }
+    }
     #[test]
     fn team_auth_scope_is_base_scope() {
         let cfg = OAuth2ProviderConfig {

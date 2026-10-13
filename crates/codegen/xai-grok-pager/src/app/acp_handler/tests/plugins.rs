@@ -29,11 +29,14 @@
         );
         assert!(handled);
 
-        let modal = app.agents[&AgentId(0)].extensions_modal.as_ref().unwrap();
+        let modal = test_agent(&app, AgentId(0)).extensions_modal.as_ref().unwrap();
         match &modal.plugins_data {
             TabDataState::Loaded(response) => {
                 assert_eq!(response.plugins.len(), 1);
-                assert_eq!(response.plugins[0].name, "user-tool");
+                let Some(plugin) = response.plugins.first() else {
+                    panic!("expected a plugin: {:?}", response.plugins);
+                };
+                assert_eq!(plugin.name, "user-tool");
             }
             other => panic!("expected Loaded plugins data, got {other:?}"),
         }
@@ -73,7 +76,7 @@
         );
         assert!(handled);
 
-        let modal = app.agents[&AgentId(0)].extensions_modal.as_ref().unwrap();
+        let modal = test_agent(&app, AgentId(0)).extensions_modal.as_ref().unwrap();
         assert_eq!(
             modal.plugins_collapsed_groups,
             std::collections::HashSet::from([
@@ -109,7 +112,7 @@
             &mut app,
         );
         assert!(handled);
-        let modal = app.agents[&AgentId(0)].extensions_modal.as_ref().unwrap();
+        let modal = test_agent(&app, AgentId(0)).extensions_modal.as_ref().unwrap();
         assert_eq!(
             modal.plugins_collapsed_groups,
             std::collections::HashSet::from(["origin:user-claude".to_string()]),

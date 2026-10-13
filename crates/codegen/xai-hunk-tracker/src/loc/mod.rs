@@ -17,10 +17,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-// ---------------------------------------------------------------------------
-// Enums
-// ---------------------------------------------------------------------------
-
 /// Who authored a change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,10 +75,6 @@ impl std::fmt::Display for EventType {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// HunkRecord
-// ---------------------------------------------------------------------------
 
 /// A single LOC attribution record derived from a [`Hunk`]. Each record captures who authored a hunk (agent vs human),
 /// along with enough context (session, file, line range) for downstream analytics.
@@ -190,10 +182,6 @@ impl HunkRecord {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HunkRecordWriter
-// ---------------------------------------------------------------------------
-
 /// Implementations may write to JSONL files, databases, etc. All returned futures must be `Send` because `run_loc_sink`
 /// is spawned via `tokio::spawn` (which may run the task on any thread in the pool).
 pub trait HunkRecordWriter: Send {
@@ -235,7 +223,6 @@ impl JsonlHunkRecordWriter {
                 .await?;
             self.file = Some(file);
         }
-        // The `if` block above guarantees `self.file` is `Some` at this point.
         Ok(self.file.as_mut().unwrap())
     }
 }
@@ -262,10 +249,6 @@ impl HunkRecordWriter for JsonlHunkRecordWriter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LocAggregate (channel-based bridge to signals)
-// ---------------------------------------------------------------------------
-
 /// Lightweight aggregate update emitted by the LOC sink for consumption by an external bridge (e.g., the signals system
 /// in `xai-grok-shell`). The sink sends one of these per processed `HunkEvent` that affects LOC. The bridge task
 /// translates them into `SignalEvent` variants.
@@ -286,10 +269,6 @@ pub enum LocAggregate {
     },
 }
 
-// ---------------------------------------------------------------------------
-// Sink configuration
-// ---------------------------------------------------------------------------
-
 /// Context passed to the LOC sink at spawn time.
 pub struct LocSinkContext {
     /// Session identifier.
@@ -302,10 +281,6 @@ pub struct LocSinkContext {
     /// (e.g., the session signals system). When `None`, only JSONL is written.
     pub aggregate_tx: Option<mpsc::UnboundedSender<LocAggregate>>,
 }
-
-// ---------------------------------------------------------------------------
-// run_loc_sink
-// ---------------------------------------------------------------------------
 
 /// It runs as a long-lived async task and should be spawned via `tokio::spawn`. When a `HunkRemoved` event arrives, the
 /// accumulated total is negated and written as a `Removed` record, zeroing out the hunk's contribution in SUM-based
@@ -330,7 +305,6 @@ pub async fn run_loc_sink(
             }
             event = event_rx.recv() => {
                 let Some(event) = event else {
-                    // Channel closed — sender dropped.
                     tracing::debug!("LOC sink: event channel closed");
                     break;
                 };
@@ -367,7 +341,6 @@ async fn handle_event(
             let entry = acc.entry(hunk.id.clone()).or_insert((0, 0));
             entry.0 += record.lines_added;
             entry.1 += record.lines_removed;
-            // Emit aggregate for signals bridge
             if let Some(tx) = &ctx.aggregate_tx {
                 let _ = tx.send(LocAggregate::LinesChanged {
                     author_type: record.author_type.unwrap_or(AuthorType::Agent),
@@ -404,7 +377,6 @@ async fn handle_event(
             let entry = acc.entry(hunk.id.clone()).or_insert((0, 0));
             entry.0 += record.lines_added;
             entry.1 += record.lines_removed;
-            // Emit aggregate for signals bridge
             if let Some(tx) = &ctx.aggregate_tx {
                 let _ = tx.send(LocAggregate::LinesChanged {
                     author_type: record.author_type.unwrap_or(AuthorType::Human),
@@ -433,7 +405,6 @@ async fn handle_event(
                     if let Some((total_added, total_removed)) = acc.remove(&hunk_id)
                         && (total_added != 0 || total_removed != 0)
                     {
-                        // Emit revert aggregate for signals bridge
                         if let Some(tx) = &ctx.aggregate_tx {
                             let _ = tx.send(LocAggregate::LinesReverted {
                                 lines_added_reverted: total_added.max(0),

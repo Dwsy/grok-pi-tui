@@ -93,17 +93,17 @@ mod tests {
         ensure_event_id_meta("sess-x", &mut meta);
         let obj = meta.as_ref().unwrap();
         assert!(
-            obj["eventId"]
-                .as_str()
+            obj.get("eventId")
+                .and_then(|v| v.as_str())
                 .is_some_and(|id| id.starts_with("sess-x-"))
         );
-        assert!(obj["agentTimestampMs"].is_i64());
+        assert!(obj.get("agentTimestampMs").is_some_and(|v| v.is_i64()));
 
         // Existing meta without eventId: fields are merged, not replaced.
         let mut meta = serde_json::json!({ "custom": true }).as_object().cloned();
         ensure_event_id_meta("sess-x", &mut meta);
         let obj = meta.as_ref().unwrap();
-        assert_eq!(obj["custom"], serde_json::json!(true));
+        assert_eq!(obj.get("custom"), Some(&serde_json::json!(true)));
         assert!(obj.contains_key("eventId"));
     }
 

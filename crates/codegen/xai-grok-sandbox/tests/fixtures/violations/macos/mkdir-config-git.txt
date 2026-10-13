@@ -1,0 +1,1 @@
+mkdir: /opt/ws-fixture/homedir/.config/git: Operation not permitted

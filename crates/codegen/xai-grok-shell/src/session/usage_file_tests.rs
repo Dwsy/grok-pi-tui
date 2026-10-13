@@ -27,11 +27,13 @@ fn first_turn_writes_session_and_one_turn() {
     let first = live(&[("grok-4", 100, 20, Some(50))]);
     file.apply_turn(1, "2026-08-26T00:00:00Z", &first, None);
 
-    assert_eq!(file.turns.len(), 1);
-    assert_eq!(file.turns[0].turn_number, 1);
-    assert_eq!(file.turns[0].usage.input_tokens, 100);
-    assert_eq!(file.turns[0].usage.output_tokens, 20);
-    assert_eq!(file.turns[0].usage.cost_usd_ticks, Some(50));
+    let [t0] = file.turns.as_slice() else {
+        panic!("expected one turn: {:?}", file.turns);
+    };
+    assert_eq!(t0.turn_number, 1);
+    assert_eq!(t0.usage.input_tokens, 100);
+    assert_eq!(t0.usage.output_tokens, 20);
+    assert_eq!(t0.usage.cost_usd_ticks, Some(50));
     assert_eq!(file.session.input_tokens, 100);
     assert_eq!(file.session.output_tokens, 20);
     assert_eq!(file.session.turn_count, 1);
@@ -57,7 +59,9 @@ fn session_primary_model_is_the_most_used_not_the_last_turn() {
     );
 
     assert_eq!(
-        file.turns[1].usage.primary_model_id.as_deref(),
+        file.turns
+            .get(1)
+            .and_then(|t| t.usage.primary_model_id.as_deref()),
         Some("grok-fast")
     );
     assert_eq!(file.session.primary_model_id.as_deref(), Some("grok-4"));
@@ -75,11 +79,13 @@ fn second_turn_appends_and_session_becomes_latest_ledger() {
         Some(&first),
     );
 
-    assert_eq!(file.turns.len(), 2);
-    assert_eq!(file.turns[1].turn_number, 2);
-    assert_eq!(file.turns[1].usage.input_tokens, 40);
-    assert_eq!(file.turns[1].usage.output_tokens, 10);
-    assert_eq!(file.turns[1].usage.cost_usd_ticks, Some(20));
+    let [_, t1] = file.turns.as_slice() else {
+        panic!("expected two turns: {:?}", file.turns);
+    };
+    assert_eq!(t1.turn_number, 2);
+    assert_eq!(t1.usage.input_tokens, 40);
+    assert_eq!(t1.usage.output_tokens, 10);
+    assert_eq!(t1.usage.cost_usd_ticks, Some(20));
     assert_eq!(file.session.input_tokens, 140);
     assert_eq!(file.session.output_tokens, 30);
     assert_eq!(file.session.turn_count, 2);
@@ -95,11 +101,13 @@ fn inherited_turn_number_without_fold_appends() {
     let resumed = live(&[("grok-4", 10, 2, Some(5))]);
     file.apply_turn(1, "t-resume", &resumed, None);
 
-    assert_eq!(file.turns.len(), 2);
-    assert_eq!(file.turns[0].turn_number, 1);
-    assert_eq!(file.turns[0].usage.input_tokens, 100);
-    assert_eq!(file.turns[1].turn_number, 2);
-    assert_eq!(file.turns[1].usage.input_tokens, 10);
+    let [t0, t1] = file.turns.as_slice() else {
+        panic!("expected two turns: {:?}", file.turns);
+    };
+    assert_eq!(t0.turn_number, 1);
+    assert_eq!(t0.usage.input_tokens, 100);
+    assert_eq!(t1.turn_number, 2);
+    assert_eq!(t1.usage.input_tokens, 10);
     assert_eq!(file.session.input_tokens, 110);
     assert_eq!(file.session.turn_count, 2);
 }
@@ -111,8 +119,10 @@ fn duplicate_turn_number_zero_delta_does_not_mutate_turns() {
     file.apply_turn(1, "t1", &first, None);
     file.apply_turn(1, "t1-again", &first, Some(&first));
 
-    assert_eq!(file.turns.len(), 1);
-    assert_eq!(file.turns[0].ended_at, "t1");
+    let [t0] = file.turns.as_slice() else {
+        panic!("expected one turn: {:?}", file.turns);
+    };
+    assert_eq!(t0.ended_at, "t1");
     assert_eq!(file.session.turn_count, 1);
     assert_eq!(file.updated_at, "t1-again");
 }
@@ -125,11 +135,13 @@ fn duplicate_turn_number_folds_extra_live_usage() {
     let continued = live(&[("grok-4", 100, 20, Some(50)), ("grok-4", 40, 10, Some(20))]);
     file.apply_turn(1, "t1-late", &continued, Some(&first));
 
-    assert_eq!(file.turns.len(), 1);
-    assert_eq!(file.turns[0].ended_at, "t1-late");
-    assert_eq!(file.turns[0].usage.input_tokens, 140);
-    assert_eq!(file.turns[0].usage.output_tokens, 30);
-    assert_eq!(file.turns[0].usage.cost_usd_ticks, Some(70));
+    let [t0] = file.turns.as_slice() else {
+        panic!("expected one turn: {:?}", file.turns);
+    };
+    assert_eq!(t0.ended_at, "t1-late");
+    assert_eq!(t0.usage.input_tokens, 140);
+    assert_eq!(t0.usage.output_tokens, 30);
+    assert_eq!(t0.usage.cost_usd_ticks, Some(70));
     assert_eq!(file.session.input_tokens, 140);
     assert_eq!(file.session.output_tokens, 30);
     assert_eq!(file.session.turn_count, 1);
@@ -151,10 +163,12 @@ fn resume_folds_new_process_ledger_onto_persisted_session() {
     let post_resume_1 = live(&[("grok-4", 25, 5, Some(8))]);
     file.apply_turn(3, "t3", &post_resume_1, None);
 
-    assert_eq!(file.turns.len(), 3);
-    assert_eq!(file.turns[2].turn_number, 3);
-    assert_eq!(file.turns[2].usage.input_tokens, 25);
-    assert_eq!(file.turns[2].usage.output_tokens, 5);
+    let [_, _, t2] = file.turns.as_slice() else {
+        panic!("expected three turns: {:?}", file.turns);
+    };
+    assert_eq!(t2.turn_number, 3);
+    assert_eq!(t2.usage.input_tokens, 25);
+    assert_eq!(t2.usage.output_tokens, 5);
     assert_eq!(file.session.input_tokens, 165);
     assert_eq!(file.session.output_tokens, 35);
     assert_eq!(file.session.turn_count, 3);
@@ -182,9 +196,11 @@ fn resume_later_turns_use_process_local_delta() {
         Some(&post_resume_1),
     );
 
-    assert_eq!(file.turns.len(), 4);
-    assert_eq!(file.turns[3].usage.input_tokens, 30);
-    assert_eq!(file.turns[3].usage.output_tokens, 6);
+    let [_, _, _, t3] = file.turns.as_slice() else {
+        panic!("expected four turns: {:?}", file.turns);
+    };
+    assert_eq!(t3.usage.input_tokens, 30);
+    assert_eq!(t3.usage.output_tokens, 6);
     assert_eq!(file.session.input_tokens, 195);
     assert_eq!(file.session.output_tokens, 41);
     assert_eq!(file.session.turn_count, 4);
@@ -204,8 +220,10 @@ fn retain_turns_through_drops_later_turns_and_rebuilds_session() {
     );
     file.retain_turns_through(1);
 
-    assert_eq!(file.turns.len(), 1);
-    assert_eq!(file.turns[0].turn_number, 1);
+    let [t0] = file.turns.as_slice() else {
+        panic!("expected one turn: {:?}", file.turns);
+    };
+    assert_eq!(t0.turn_number, 1);
     assert_eq!(file.session.input_tokens, 100);
     assert_eq!(file.session.turn_count, 1);
     assert_eq!(file.session.cost_usd_ticks, Some(50));

@@ -7,7 +7,7 @@ description = "MCP integration crate. Quarantines rmcp + reqwest 0.13 (rmcp 3.x 
 authors = ["xAI"]
 
 [dependencies]
-rmcp = { version = "3.2", features = [
+rmcp = { version = "3.4", features = [
     "auth",
     "client",
     "transport-async-rw",
@@ -51,7 +51,6 @@ sse-stream = "0.2"
 agent-client-protocol = { workspace = true }
 xai-grok-session-events = { workspace = true }
 futures = { workspace = true }
-regex = { workspace = true }
 which = { workspace = true }
 # Atomic descriptor writes (NamedTempFile + persist) in materialize_descriptors.
 tempfile = { workspace = true }
@@ -77,6 +76,10 @@ xai-computer-hub-sdk = { workspace = true }
 # `test-util` enables `tokio::time::pause` / `advance`, required by
 # the deterministic timing tests in `liveness.rs`.
 tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+# FIFOs stand in for a hung network mount in the bearer_token_file tests.
+nix = { workspace = true }
 
 [lints]
 workspace = true

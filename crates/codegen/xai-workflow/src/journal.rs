@@ -80,9 +80,11 @@ impl Journal {
         let mut last_line_start = None;
         while offset < content.len() {
             line_number += 1;
-            let Some(relative_newline) = content[offset..].iter().position(|byte| *byte == b'\n')
-            else {
-                let tail = &content[offset..];
+            let Some(rest) = content.get(offset..) else {
+                break;
+            };
+            let Some(relative_newline) = rest.iter().position(|byte| *byte == b'\n') else {
+                let tail = rest;
                 if tail.iter().all(u8::is_ascii_whitespace) {
                     truncate_tail(&path, offset as u64)?;
                     bytes = offset as u64;
@@ -115,7 +117,9 @@ impl Journal {
                 break;
             };
             let end = offset + relative_newline;
-            let line = &content[offset..end];
+            let Some(line) = content.get(offset..end) else {
+                break;
+            };
             let line_start = offset as u64;
             offset = end + 1;
             if line.iter().all(u8::is_ascii_whitespace) {

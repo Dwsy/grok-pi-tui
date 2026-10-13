@@ -268,8 +268,11 @@ async fn a_premature_empty_answer_does_not_erase_known_diagnostics() {
             !current.is_empty(),
             "diagnostics were blanked by an answer from a server mid-analysis"
         );
-        if current[0].message == "real problem 3" {
-            settled = Some(current[0].message.clone());
+        if current
+            .first()
+            .is_some_and(|d| d.message == "real problem 3")
+        {
+            settled = current.first().map(|d| d.message.clone());
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -464,17 +467,13 @@ async fn e2e_did_open_publishes_diagnostics() {
     let diags = poll_diagnostics(&client, &test_file, 2).await;
     assert_eq!(diags.len(), 2, "expected 2 diagnostics, got {:?}", diags);
 
-    assert_eq!(diags[0].message, "mock error: undeclared variable");
-    assert_eq!(
-        diags[0].severity,
-        Some(lsp_types::DiagnosticSeverity::ERROR)
-    );
-
-    assert_eq!(diags[1].message, "mock warning: unused import");
-    assert_eq!(
-        diags[1].severity,
-        Some(lsp_types::DiagnosticSeverity::WARNING)
-    );
+    let [err, warn] = diags.as_slice() else {
+        panic!("expected 2 diagnostics, got {diags:?}");
+    };
+    assert_eq!(err.message, "mock error: undeclared variable");
+    assert_eq!(err.severity, Some(lsp_types::DiagnosticSeverity::ERROR));
+    assert_eq!(warn.message, "mock warning: unused import");
+    assert_eq!(warn.severity, Some(lsp_types::DiagnosticSeverity::WARNING));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -491,10 +490,13 @@ async fn e2e_goto_definition() {
         "expected 1 location, got {:?}",
         locations
     );
-    assert_eq!(locations[0].range.start.line, 10);
-    assert_eq!(locations[0].range.start.character, 0);
-    assert_eq!(locations[0].range.end.line, 10);
-    assert_eq!(locations[0].range.end.character, 20);
+    let Some(loc) = locations.first() else {
+        panic!("expected 1 location, got {locations:?}");
+    };
+    assert_eq!(loc.range.start.line, 10);
+    assert_eq!(loc.range.start.character, 0);
+    assert_eq!(loc.range.end.line, 10);
+    assert_eq!(loc.range.end.character, 20);
 }
 
 /// Exercises the production API: init -> notify (fire-and-forget) -> drain -> shutdown.
@@ -1461,7 +1463,13 @@ async fn a_server_that_starts_answering_is_waited_on_again() {
 
     // The server finishes loading and answers the question it was asked.
     let uri = file_uri(&file).unwrap().to_string();
-    let store = mgr.lock().await.clients["mock-ts"].diagnostics.clone();
+    let store = {
+        let guard = mgr.lock().await;
+        let Some(client) = guard.clients.get("mock-ts") else {
+            panic!("missing mock-ts client: {:?}", guard.clients.keys());
+        };
+        client.diagnostics.clone()
+    };
     store.install(
         &uri,
         Answer::new(
@@ -1626,7 +1634,13 @@ async fn a_server_that_publishes_is_not_second_guessed_with_a_pull() {
     );
 
     // And from here on it is not asked at all — its own reports are the truth.
-    let before = mgr.lock().await.clients["mock-ts"].pull.support();
+    let before = {
+        let guard = mgr.lock().await;
+        let Some(client) = guard.clients.get("mock-ts") else {
+            panic!("missing mock-ts client: {:?}", guard.clients.keys());
+        };
+        client.pull.support()
+    };
     assert_eq!(before, super::pull::PullSupport::Asking, "not rejected");
     for round in 0..3 {
         let text = format!("const y = {round};\n");
@@ -1669,7 +1683,9 @@ async fn a_report_from_before_we_opened_a_file_does_not_settle_our_first_edit() 
 
     // Wait for the unsolicited report to land before touching the file.
     wait_until("the unsolicited report", || {
-        mgr.clients["mock-ts"].diagnostics.covers(&uri).is_some()
+        mgr.clients
+            .get("mock-ts")
+            .is_some_and(|c| c.diagnostics.covers(&uri).is_some())
     })
     .await;
 
@@ -1712,10 +1728,12 @@ async fn a_refresh_we_cannot_act_on_does_not_discard_what_we_know() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let uri = file_uri(&file).unwrap().to_string();
     assert_eq!(
-        mgr.lock().await.clients["mock-ts"]
-            .diagnostics
-            .items(&uri)
-            .len(),
+        mgr.lock()
+            .await
+            .clients
+            .get("mock-ts")
+            .map(|c| c.diagnostics.items(&uri).len())
+            .unwrap_or(0),
         1,
         "the only report we have must survive a refresh we cannot act on"
     );
@@ -1756,7 +1774,10 @@ async fn an_edit_during_the_confirmation_does_not_cost_us_the_errors() {
         1,
         "a clean answer about replaced text must not erase the errors we hold"
     );
-    assert_eq!(held[0].message, "the real problem");
+    assert_eq!(
+        held.first().map(|d| d.message.as_str()),
+        Some("the real problem")
+    );
 
     client.shutdown().await;
 }
@@ -2142,7 +2163,10 @@ async fn e2e_real_roslyn_survives_editing() {
         crate::notification::ToolNotificationHandle::noop(),
     );
     mgr.ensure_initialized().await;
-    let started_lifecycle = mgr.clients["csharp"].lifecycle_id;
+    let Some(csharp) = mgr.clients.get("csharp") else {
+        panic!("missing csharp client: {:?}", mgr.clients.keys());
+    };
+    let started_lifecycle = csharp.lifecycle_id;
     let mgr = std::sync::Arc::new(tokio::sync::Mutex::new(mgr));
     // The restart monitor is what would rebuild a torn-down server, and
     // rebuilding is what the bug cost. Without it running, this test could not
@@ -2169,7 +2193,9 @@ async fn e2e_real_roslyn_survives_editing() {
         }
 
         let guard = mgr.lock().await;
-        let client = &guard.clients["csharp"];
+        let Some(client) = guard.clients.get("csharp") else {
+            panic!("missing csharp client: {:?}", guard.clients.keys());
+        };
         assert_eq!(
             client.lifecycle_id, started_lifecycle,
             "round {round}: the server was restarted — this is the bug, and each \
@@ -2219,12 +2245,19 @@ async fn advertises_and_accepts_file_watch_registration_without_error() {
     let caps_path = script_dir.path().join("initialize_caps.json");
     wait_until("initialize capabilities dump", || caps_path.exists()).await;
     let caps = read_json(&caps_path);
-    let watch = &caps["workspace"]["didChangeWatchedFiles"];
+    let Some(watch) = caps.pointer("/workspace/didChangeWatchedFiles") else {
+        panic!("missing didChangeWatchedFiles capability: {caps}");
+    };
     assert_eq!(
-        watch["dynamicRegistration"], true,
+        watch.get("dynamicRegistration"),
+        Some(&serde_json::json!(true)),
         "client must claim didChangeWatchedFiles so Roslyn does not use FileSystemWatcher: {watch}"
     );
-    assert_eq!(watch["relativePatternSupport"], true, "{watch}");
+    assert_eq!(
+        watch.get("relativePatternSupport"),
+        Some(&serde_json::json!(true)),
+        "{watch}"
+    );
 
     let reply_path = script_dir.path().join("register_reply.json");
     wait_until("registerCapability reply", || reply_path.exists()).await;
@@ -2244,13 +2277,17 @@ async fn advertises_and_accepts_file_watch_registration_without_error() {
     })
     .await;
     let watched = read_json(&watched_path);
-    let uri = watched["changes"][0]["uri"].as_str().unwrap_or("");
+    let uri = watched
+        .pointer("/changes/0/uri")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     assert!(
         uri.ends_with("app.ts"),
         "edit should be forwarded as a watched-file change, got {watched}"
     );
     assert_eq!(
-        watched["changes"][0]["type"], 2,
+        watched.pointer("/changes/0/type"),
+        Some(&serde_json::json!(2)),
         "search_replace of an existing file is FileChangeType::Changed: {watched}"
     );
 

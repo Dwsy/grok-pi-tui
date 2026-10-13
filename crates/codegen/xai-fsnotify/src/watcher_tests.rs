@@ -406,9 +406,12 @@ mod merge_events_tests {
         let merged = merge_events(events);
 
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].kind, FsEventKind::Created);
-        assert_eq!(merged[0].paths.len(), 1);
-        assert_eq!(merged[0].paths[0], PathBuf::from("/test/file.txt"));
+        let Some(first) = merged.first() else {
+            panic!("expected one merged event: {merged:?}");
+        };
+        assert_eq!(first.kind, FsEventKind::Created);
+        assert_eq!(first.paths.len(), 1);
+        assert_eq!(first.paths.first(), Some(&PathBuf::from("/test/file.txt")));
     }
 
     #[test]
@@ -571,8 +574,11 @@ mod merge_events_tests {
 
         // Should only have the Create event
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].kind, FsEventKind::Created);
-        assert!(merged[0].paths.iter().any(|p| p.ends_with("create.txt")));
+        let Some(first) = merged.first() else {
+            panic!("expected one merged event: {merged:?}");
+        };
+        assert_eq!(first.kind, FsEventKind::Created);
+        assert!(first.paths.iter().any(|p| p.ends_with("create.txt")));
     }
 
     #[test]
@@ -646,7 +652,7 @@ mod merge_events_tests {
             .filter(|e| e.kind == FsEventKind::Created)
             .collect();
         assert_eq!(create_events.len(), 1);
-        assert_eq!(create_events[0].paths.len(), 3);
+        assert_eq!(create_events.first().map(|e| e.paths.len()), Some(3));
     }
 }
 

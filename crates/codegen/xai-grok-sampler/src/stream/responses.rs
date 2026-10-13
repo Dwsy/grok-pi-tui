@@ -1261,8 +1261,14 @@ mod tests {
         ))
         .await;
 
-        assert!(matches!(events[0], SamplingEvent::StreamStarted { .. }));
-        assert!(matches!(events[1], SamplingEvent::ModelMetadata { .. }));
+        assert!(matches!(
+            events.first(),
+            Some(SamplingEvent::StreamStarted { .. })
+        ));
+        assert!(matches!(
+            events.get(1),
+            Some(SamplingEvent::ModelMetadata { .. })
+        ));
     }
 
     #[test]
@@ -1392,7 +1398,7 @@ mod tests {
         let (call_id, result) = completed.expect("a code_interpreter BackendToolCallCompleted");
         assert_eq!(call_id, "ci-1");
         let result = result.expect("serialized code-interpreter payload");
-        assert_eq!(result["code"], "print(1)");
+        assert_eq!(result.get("code"), Some(&serde_json::json!("print(1)")));
     }
 
     fn function_call_added_event(
@@ -1466,16 +1472,18 @@ mod tests {
         .await;
         let deltas = tool_call_deltas(&evs);
 
-        assert_eq!(deltas.len(), 3);
-        assert_eq!(deltas[0].0, 0);
-        assert_eq!(deltas[0].1.as_deref(), Some("call_xyz"));
-        assert_eq!(deltas[0].2.as_deref(), Some("do_thing"));
-        assert_eq!(deltas[0].3, None);
-        assert_eq!(deltas[1].0, 0);
-        assert_eq!(deltas[1].1, None);
-        assert_eq!(deltas[1].2, None);
-        assert_eq!(deltas[1].3.as_deref(), Some("{\"x\":"));
-        assert_eq!(deltas[2].3.as_deref(), Some("1}"));
+        let [d0, d1, d2] = deltas.as_slice() else {
+            panic!("expected three deltas: {deltas:?}");
+        };
+        assert_eq!(d0.0, 0);
+        assert_eq!(d0.1.as_deref(), Some("call_xyz"));
+        assert_eq!(d0.2.as_deref(), Some("do_thing"));
+        assert_eq!(d0.3, None);
+        assert_eq!(d1.0, 0);
+        assert_eq!(d1.1, None);
+        assert_eq!(d1.2, None);
+        assert_eq!(d1.3.as_deref(), Some("{\"x\":"));
+        assert_eq!(d2.3.as_deref(), Some("1}"));
     }
 
     #[tokio::test]
@@ -1517,15 +1525,17 @@ mod tests {
         .await;
         let deltas = tool_call_deltas(&evs);
 
-        assert_eq!(deltas.len(), 4);
-        assert_eq!(deltas[0].0, 0);
-        assert_eq!(deltas[0].1.as_deref(), Some("call_a"));
-        assert_eq!(deltas[1].0, 1);
-        assert_eq!(deltas[1].1.as_deref(), Some("call_b"));
-        assert_eq!(deltas[2].0, 0);
-        assert_eq!(deltas[2].3.as_deref(), Some("a-args"));
-        assert_eq!(deltas[3].0, 1);
-        assert_eq!(deltas[3].3.as_deref(), Some("b-args"));
+        let [d0, d1, d2, d3] = deltas.as_slice() else {
+            panic!("expected four deltas: {deltas:?}");
+        };
+        assert_eq!(d0.0, 0);
+        assert_eq!(d0.1.as_deref(), Some("call_a"));
+        assert_eq!(d1.0, 1);
+        assert_eq!(d1.1.as_deref(), Some("call_b"));
+        assert_eq!(d2.0, 0);
+        assert_eq!(d2.3.as_deref(), Some("a-args"));
+        assert_eq!(d3.0, 1);
+        assert_eq!(d3.3.as_deref(), Some("b-args"));
     }
 
     #[tokio::test]
@@ -1548,10 +1558,10 @@ mod tests {
         match events.last().unwrap() {
             SamplingEvent::Completed { response, .. } => {
                 assert_eq!(response.doom_loop_signals.len(), 1);
-                assert_eq!(
-                    response.doom_loop_signals[0].raw,
-                    "tail_repetition:4@response"
-                );
+                let Some(signal) = response.doom_loop_signals.first() else {
+                    panic!("expected doom loop signal: {response:?}");
+                };
+                assert_eq!(signal.raw, "tail_repetition:4@response");
             }
             other => panic!("expected Completed, got {other:?}"),
         }
@@ -1591,7 +1601,7 @@ mod tests {
                 assert!(error.is_retryable);
                 assert_eq!(
                     error.doom_loop_triggers.as_deref(),
-                    Some(&["tail_repetition:8@thinking".to_string()][..])
+                    Some(["tail_repetition:8@thinking".to_string()].as_slice())
                 );
             }
             other => panic!("expected Failed(DoomLoopDetected), got {other:?}"),

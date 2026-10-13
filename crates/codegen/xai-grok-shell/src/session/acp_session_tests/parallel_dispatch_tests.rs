@@ -6,6 +6,13 @@
 
 use super::*;
 
+fn at<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
+
 use xai_grok_tools::implementations::grok_build::task::backend::SubagentBackend;
 use xai_grok_tools::implementations::grok_build::task::types::{
     ActiveAgentMessageOutcome, ActiveAgentMessageRequest, SubagentCancelOutcome,
@@ -57,17 +64,19 @@ impl SubagentBackend for FixedActiveMessageBackend {
 }
 
 fn active_message_call(id: &str, text: &str) -> crate::sampling::types::ToolCallResponse {
-    active_message_call_with_queue(id, text, None)
+    active_message_call_with_delivery(id, text, None)
 }
 
-fn active_message_call_with_queue(
+fn active_message_call_with_delivery(
     id: &str,
     text: &str,
-    queue: Option<bool>,
+    delivery: Option<&str>,
 ) -> crate::sampling::types::ToolCallResponse {
     let mut arguments = serde_json::json!({ "subagent_id": "child", "text": text });
-    if let Some(queue) = queue {
-        arguments["queue"] = queue.into();
+    if let Some(delivery) = delivery
+        && let Some(obj) = arguments.as_object_mut()
+    {
+        obj.insert("delivery".into(), delivery.into());
     }
     crate::sampling::types::ToolCallResponse {
         id: id.to_owned(),
@@ -96,7 +105,9 @@ async fn execute_with_captured_active_message_events(
 ) -> Vec<crate::session::telemetry::ActiveAgentMessageEvent> {
     let (result, events) = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        crate::session::telemetry::capture_product_events(actor.execute_tool_calls(vec![call])),
+        crate::session::telemetry::capture_product_events(
+            actor.execute_tool_calls(vec![call], None),
+        ),
     )
     .await
     .expect("generic tool completion must not hang");
@@ -115,6 +126,9 @@ fn active_message_event_names(
             }
             crate::session::telemetry::ActiveAgentMessageEvent::LimitHit(_) => {
                 "active_agent_message_limit_hit"
+            }
+            crate::session::telemetry::ActiveAgentMessageEvent::QuotaHit(_) => {
+                "active_agent_message_quota_hit"
             }
             crate::session::telemetry::ActiveAgentMessageEvent::Settled(_) => {
                 "active_agent_message_settled"
@@ -252,23 +266,35 @@ async fn generic_tool_completion_chokepoint_has_exact_active_message_cardinality
                 assert_eq!(active_message_event_names(&events), expected);
             }
 
-            let events = execute_with_captured_active_message_events(
-                &actor,
-                active_message_call_with_queue("queued", "follow up", Some(true)),
-            )
-            .await;
-            assert!(matches!(
-                events.as_slice(),
-                [
-                    crate::session::telemetry::ActiveAgentMessageEvent::Completed(
-                        xai_grok_telemetry::events::ActiveAgentMessageCompleted {
-                            requested_operation:
-                                xai_grok_telemetry::events::ActiveAgentMessageOperation::Queue,
-                            ..
-                        }
-                    )
-                ]
-            ));
+            for (id, delivery, expected_operation) in [
+                (
+                    "queued",
+                    "queue",
+                    xai_grok_telemetry::events::ActiveAgentMessageOperation::Queue,
+                ),
+                (
+                    "interjected",
+                    "interject",
+                    xai_grok_telemetry::events::ActiveAgentMessageOperation::Interject,
+                ),
+            ] {
+                let events = execute_with_captured_active_message_events(
+                    &actor,
+                    active_message_call_with_delivery(id, "follow up", Some(delivery)),
+                )
+                .await;
+                assert!(matches!(
+                    events.as_slice(),
+                    [
+                        crate::session::telemetry::ActiveAgentMessageEvent::Completed(
+                            xai_grok_telemetry::events::ActiveAgentMessageCompleted {
+                                requested_operation,
+                                ..
+                            }
+                        )
+                    ] if *requested_operation == expected_operation
+                ));
+            }
 
             let events = execute_with_captured_active_message_events(
                 &actor,
@@ -301,9 +327,9 @@ async fn test_parallel_dispatch_basic() {
     let results = join_all(futures).await;
 
     // Results must be in input order, not completion order
-    assert_eq!(results[0], (0, "tool_a"));
-    assert_eq!(results[1], (1, "tool_b"));
-    assert_eq!(results[2], (2, "tool_c"));
+    assert_eq!(*at(&results, 0), (0, "tool_a"));
+    assert_eq!(*at(&results, 1), (1, "tool_b"));
+    assert_eq!(*at(&results, 2), (2, "tool_c"));
 }
 
 #[test]
@@ -353,9 +379,9 @@ fn test_parallel_dispatch_followups() {
     deferred_followups.extend(followups_tool_1);
 
     assert_eq!(deferred_followups.len(), 3);
-    assert_eq!(deferred_followups[0], "followup_a");
-    assert_eq!(deferred_followups[1], "followup_b");
-    assert_eq!(deferred_followups[2], "followup_c");
+    assert_eq!(*at(&deferred_followups, 0), "followup_a");
+    assert_eq!(*at(&deferred_followups, 1), "followup_b");
+    assert_eq!(*at(&deferred_followups, 2), "followup_c");
 }
 
 #[test]
@@ -419,8 +445,8 @@ async fn incremental_dispatch_surfaces_fast_tool_before_slow_sibling() {
     }
 
     assert_eq!(completion_order.len(), 2);
-    assert_eq!(completion_order[0], (0, "grep"));
-    assert_eq!(completion_order[1], (1, "wait_tasks"));
+    assert_eq!(*at(&completion_order, 0), (0, "grep"));
+    assert_eq!(*at(&completion_order, 1), (1, "wait_tasks"));
     assert!(fast_done.load(Ordering::SeqCst));
     assert!(slow_done.load(Ordering::SeqCst));
 }
@@ -615,12 +641,24 @@ fn test_skill_discovery_deferred_during_parallel_batch() {
 
     // 1 assistant + 3 tool_result + 2 deferred user messages
     assert_eq!(conversation.len(), 6);
-    assert!(matches!(conversation[0], ConversationItem::Assistant(_)));
-    assert!(matches!(conversation[1], ConversationItem::ToolResult(_)));
-    assert!(matches!(conversation[2], ConversationItem::ToolResult(_)));
-    assert!(matches!(conversation[3], ConversationItem::ToolResult(_)));
-    assert!(matches!(conversation[4], ConversationItem::User(_)));
+    assert!(matches!(
+        at(&conversation, 0),
+        ConversationItem::Assistant(_)
+    ));
+    assert!(matches!(
+        at(&conversation, 1),
+        ConversationItem::ToolResult(_)
+    ));
+    assert!(matches!(
+        at(&conversation, 2),
+        ConversationItem::ToolResult(_)
+    ));
+    assert!(matches!(
+        at(&conversation, 3),
+        ConversationItem::ToolResult(_)
+    ));
+    assert!(matches!(at(&conversation, 4), ConversationItem::User(_)));
     assert!(
-        matches!(conversation[5], ConversationItem::User(ref u) if u.synthetic_reason == Some(SyntheticReason::SystemReminder))
+        matches!(at(&conversation, 5), ConversationItem::User(u) if u.synthetic_reason == SyntheticReason::SystemReminder)
     );
 }

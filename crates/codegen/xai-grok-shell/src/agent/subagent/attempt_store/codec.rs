@@ -385,21 +385,18 @@ pub(super) const ROW_LIMITS: [(usize, usize); 11] = [
 pub(super) const MAX_ENCODED_RECORD_BYTES: usize = ROW_LIMITS[2].1;
 impl RecordV1 {
     pub(super) fn limits(&self) -> (usize, usize) {
-        ROW_LIMITS[usize::from(self.event())]
-    }
-    fn event(&self) -> u8 {
         match self {
-            Self::AttemptHeader(_) => 0,
-            Self::CapacityReserved(_) => 1,
-            Self::AcceptedAgentContent(_) => 2,
-            Self::SegmentReserved(_) => 3,
-            Self::TurnStarted(_) => 4,
-            Self::TurnCommitIntent(_) => 5,
-            Self::TurnResolution(_) => 6,
-            Self::InputDisposition(_) => 7,
-            Self::QueueCut(_) => 8,
-            Self::AdmissionClosed(_) => 9,
-            Self::AttemptOutcome(_) => 10,
+            Self::AttemptHeader(_) => ROW_LIMITS[0],
+            Self::CapacityReserved(_) => ROW_LIMITS[1],
+            Self::AcceptedAgentContent(_) => ROW_LIMITS[2],
+            Self::SegmentReserved(_) => ROW_LIMITS[3],
+            Self::TurnStarted(_) => ROW_LIMITS[4],
+            Self::TurnCommitIntent(_) => ROW_LIMITS[5],
+            Self::TurnResolution(_) => ROW_LIMITS[6],
+            Self::InputDisposition(_) => ROW_LIMITS[7],
+            Self::QueueCut(_) => ROW_LIMITS[8],
+            Self::AdmissionClosed(_) => ROW_LIMITS[9],
+            Self::AttemptOutcome(_) => ROW_LIMITS[10],
         }
     }
 }
@@ -526,8 +523,14 @@ pub(super) fn encode_hex(bytes: &[u8]) -> String {
     const D: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        out.push(D[usize::from(byte >> 4)] as char);
-        out.push(D[usize::from(byte & 15)] as char);
+        let Some(&hi) = D.get(usize::from(byte >> 4)) else {
+            continue;
+        };
+        let Some(&lo) = D.get(usize::from(byte & 15)) else {
+            continue;
+        };
+        out.push(hi as char);
+        out.push(lo as char);
     }
     out
 }

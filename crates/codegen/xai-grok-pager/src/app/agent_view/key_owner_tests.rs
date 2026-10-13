@@ -520,7 +520,7 @@ fn a_parked_card_does_not_hand_esc_to_the_turn_cancel() {
     for open in [
         open_permission as fn(&mut AgentView),
         open_question as fn(&mut AgentView),
-        open_elicitation as fn(&mut AgentView),
+        (|agent: &mut AgentView| drop(open_elicitation(agent))) as fn(&mut AgentView),
     ] {
         let mut agent = make_agent();
         open(&mut agent);
@@ -640,7 +640,7 @@ fn esc_parks_even_under_a_latent_queued_edit() {
     for open in [
         open_permission as fn(&mut AgentView),
         open_question as fn(&mut AgentView),
-        open_elicitation as fn(&mut AgentView),
+        (|agent: &mut AgentView| drop(open_elicitation(agent))) as fn(&mut AgentView),
     ] {
         let mut agent = make_agent();
         agent.prompt_mode = crate::app::queue_edit::PromptMode::EditingQueued {
@@ -776,7 +776,10 @@ fn anything_parked_in_the_overlay_keeps_an_esc_route_to_the_dashboard() {
     for (label, setup) in [
         ("permission", open_permission as fn(&mut AgentView)),
         ("question", open_question as fn(&mut AgentView)),
-        ("elicitation", open_elicitation as fn(&mut AgentView)),
+        (
+            "elicitation",
+            (|agent: &mut AgentView| drop(open_elicitation(agent))) as fn(&mut AgentView),
+        ),
         ("plan approval", open_plan as fn(&mut AgentView)),
         (
             "plan approval over a parked question",
@@ -919,8 +922,14 @@ fn blanking_a_free_text_answer_unmarks_it_from_the_nav_buttons_too() {
     // Mark a free-text answer, then blank the composer and leave by clicking the nav bar's "next question" button
     let qv = agent.question_view.as_mut().expect("card open");
     qv.focus = QuestionFocus::InputMode;
-    qv.per_question_freeform[0] = "typed then deleted".into();
-    qv.per_question_freeform_selected[0] = true;
+    let Some(slot) = qv.per_question_freeform.get_mut(0) else {
+        panic!("missing freeform slot");
+    };
+    *slot = "typed then deleted".into();
+    let Some(selected) = qv.per_question_freeform_selected.get_mut(0) else {
+        panic!("missing freeform selected slot");
+    };
+    *selected = true;
     agent.prompt.set_text("   ");
 
     let _ = agent.handle_question_mouse(&crossterm::event::MouseEvent {
@@ -937,7 +946,10 @@ fn blanking_a_free_text_answer_unmarks_it_from_the_nav_buttons_too() {
         "the draft is committed"
     );
     assert!(
-        !qv.per_question_freeform_selected[0],
+        !qv.per_question_freeform_selected
+            .first()
+            .copied()
+            .unwrap_or_else(|| panic!("missing index")),
         "a blank answer is not an answer, so its mark goes with it"
     );
     // The text itself is a draft, not an answer
@@ -1105,9 +1117,13 @@ fn vim_mode_permission_tab_and_esc_match_default() {
     assert_eq!(agent.key_owner(), KeyOwner::Card(BlockingCard::Permission));
 }
 
-fn open_elicitation(agent: &mut AgentView) {
+type ElicitAnswer = tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<acp::ExtResponse>>;
+
+/// Returns what the MCP server would receive.
+fn open_elicitation(agent: &mut AgentView) -> ElicitAnswer {
     use crate::views::elicitation_view::ElicitationViewState;
     use xai_grok_tools::mcp_elicitation::{McpElicitExtRequest, McpElicitModeFields};
+    let (tx, rx) = tokio::sync::oneshot::channel();
     agent.elicitation_view = Some(ElicitationViewState::from_request(
         McpElicitExtRequest {
             session_id: "s".into(),
@@ -1125,8 +1141,9 @@ fn open_elicitation(agent: &mut AgentView) {
             },
         },
         Some(StashedPrompt::default()),
-        None,
+        Some(tx),
     ));
+    rx
 }
 
 #[test]
@@ -1164,7 +1181,15 @@ fn elicitation_keys_win_over_rewind() {
     );
     let ev = agent.elicitation_view.as_ref().unwrap();
     assert_eq!(ev.focus, ElicitationFocus::Editing);
-    assert_eq!(ev.form().unwrap().fields[0].draft(), "y");
+    assert_eq!(
+        ev.form()
+            .unwrap()
+            .fields
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+            .draft(),
+        "y"
+    );
     assert!(agent.rewind_state.is_some());
 }
 
@@ -1209,11 +1234,27 @@ fn elicitation_form_printable_keys_enter_edit() {
     let _ = agent.handle_elicitation_key(&KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
     let ev = agent.elicitation_view.as_ref().unwrap();
     assert_eq!(ev.focus, ElicitationFocus::Editing);
-    assert_eq!(ev.form().unwrap().fields[0].draft(), "y");
+    assert_eq!(
+        ev.form()
+            .unwrap()
+            .fields
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+            .draft(),
+        "y"
+    );
     let _ = agent.handle_elicitation_key(&KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
     let ev = agent.elicitation_view.as_ref().unwrap();
     assert_eq!(ev.focus, ElicitationFocus::Editing);
-    assert_eq!(ev.form().unwrap().fields[0].draft(), "yd");
+    assert_eq!(
+        ev.form()
+            .unwrap()
+            .fields
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+            .draft(),
+        "yd"
+    );
 }
 
 #[test]
@@ -1228,7 +1269,15 @@ fn elicitation_paste_on_fields_enters_edit() {
     let _ = agent.handle_elicitation_paste("user@example.com");
     let ev = agent.elicitation_view.as_ref().unwrap();
     assert_eq!(ev.focus, ElicitationFocus::Editing);
-    assert_eq!(ev.form().unwrap().fields[0].draft(), "user@example.com");
+    assert_eq!(
+        ev.form()
+            .unwrap()
+            .fields
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+            .draft(),
+        "user@example.com"
+    );
 }
 
 #[test]
@@ -1242,7 +1291,9 @@ fn elicitation_paste_strips_control_chars() {
         .unwrap()
         .form()
         .unwrap()
-        .fields[0]
+        .fields
+        .first()
+        .unwrap_or_else(|| panic!("missing field"))
         .draft();
     assert!(
         !draft.chars().any(char::is_control),
@@ -1264,7 +1315,9 @@ fn elicitation_draft_stops_at_named_cap() {
         .unwrap()
         .form()
         .unwrap()
-        .fields[0]
+        .fields
+        .first()
+        .unwrap_or_else(|| panic!("missing field"))
         .draft();
     assert_eq!(draft.chars().count(), MAX_ELICIT_DRAFT_CHARS);
 }
@@ -1380,4 +1433,174 @@ fn elicitation_shift_tab_walks_fields_backwards() {
         assert_eq!(ev.focus, ElicitationFocus::Fields);
         assert_eq!(ev.field_cursor(), 0);
     }
+}
+
+fn delivered_answer(rx: &mut ElicitAnswer) -> serde_json::Value {
+    let response = rx
+        .try_recv()
+        .expect("an answer was sent")
+        .expect("the answer is not an error");
+    serde_json::from_str(response.0.get()).expect("answer is JSON")
+}
+
+fn system_notes(agent: &AgentView) -> Vec<String> {
+    (0..agent.scrollback.len())
+        .filter_map(|i| agent.scrollback.get(i))
+        .filter_map(|entry| match &entry.block {
+            crate::scrollback::block::RenderBlock::System(block) => Some(block.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn minimal_type(agent: &mut AgentView, keys: &[KeyCode]) {
+    use crossterm::event::Event;
+    let registry = ActionRegistry::defaults();
+    for code in keys {
+        let _ = agent.handle_minimal_input(
+            &Event::Key(KeyEvent::new(*code, KeyModifiers::NONE)),
+            &registry,
+        );
+    }
+}
+
+/// Minimal keeps the prompt pane focused and routes keys through its `/btw` panel before the shared router.
+fn minimal_agent_with_btw() -> AgentView {
+    let mut agent = make_agent();
+    agent
+        .prompt
+        .set_screen_mode(crate::app::ScreenMode::Minimal);
+    agent.set_active_pane(AgentPane::Prompt, true);
+    let request_id = crate::minimal_api::start_minimal_btw(&mut agent, "q".into());
+    assert!(crate::minimal_api::finish_minimal_btw(
+        &mut agent,
+        request_id,
+        Ok("answer".into())
+    ));
+    agent.btw_focused = true;
+    agent
+}
+
+#[test]
+fn minimal_keys_answer_the_elicitation_card_and_submit_it() {
+    let mut agent = minimal_agent_with_btw();
+    let mut rx = open_elicitation(&mut agent);
+    assert!(agent.is_awaiting_user_answer());
+
+    let mut keys: Vec<KeyCode> = "a@b.co".chars().map(KeyCode::Char).collect();
+    keys.extend([KeyCode::Enter, KeyCode::Tab, KeyCode::Char('y')]);
+    minimal_type(&mut agent, &keys);
+
+    assert_eq!(
+        serde_json::json!({ "outcome": "accept", "content": { "email": "a@b.co" } }),
+        delivered_answer(&mut rx)
+    );
+    assert!(
+        agent.elicitation_view.is_none(),
+        "the card closes on accept"
+    );
+    assert_eq!("", agent.prompt.text(), "no key leaked into the composer");
+    assert!(
+        agent.btw_state.is_some(),
+        "the /btw panel never saw the keys"
+    );
+    assert_eq!(Vec::<String>::new(), system_notes(&agent));
+}
+
+#[test]
+fn declined_elicitation_tells_the_server_and_leaves_a_notice() {
+    let mut agent = minimal_agent_with_btw();
+    let mut rx = open_elicitation(&mut agent);
+    minimal_type(&mut agent, &[KeyCode::Tab, KeyCode::Char('d')]);
+
+    assert_eq!(
+        serde_json::json!({ "outcome": "decline" }),
+        delivered_answer(&mut rx)
+    );
+    assert!(agent.elicitation_view.is_none());
+    assert_eq!(
+        vec!["Declined MCP “demo” request for input.".to_owned()],
+        system_notes(&agent)
+    );
+}
+
+#[test]
+fn cancelled_elicitation_tells_the_server_and_leaves_a_notice() {
+    use crossterm::event::Event;
+    let mut agent = minimal_agent_with_btw();
+    let mut rx = open_elicitation(&mut agent);
+    let _ = agent.handle_minimal_input(
+        &Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        &ActionRegistry::defaults(),
+    );
+
+    assert_eq!(
+        serde_json::json!({ "outcome": "cancel" }),
+        delivered_answer(&mut rx)
+    );
+    assert_eq!(
+        vec!["Dismissed MCP “demo” request for input without answering.".to_owned()],
+        system_notes(&agent)
+    );
+}
+
+#[test]
+fn accept_after_the_server_gave_up_leaves_a_notice() {
+    let mut agent = minimal_agent_with_btw();
+    drop(open_elicitation(&mut agent));
+    let mut keys: Vec<KeyCode> = "a@b.co".chars().map(KeyCode::Char).collect();
+    keys.extend([KeyCode::Enter, KeyCode::Tab, KeyCode::Char('y')]);
+    minimal_type(&mut agent, &keys);
+
+    assert!(agent.elicitation_view.is_none());
+    assert_eq!(
+        vec![
+            "MCP “demo” request for input closed before it was answered here (it timed out or was answered elsewhere)."
+                .to_owned()
+        ],
+        system_notes(&agent)
+    );
+}
+
+#[test]
+fn notice_quotes_only_catalog_name_characters_of_the_server() {
+    let mut agent = make_agent();
+    crate::minimal_api::open_test_elicitation(
+        &mut agent,
+        "x” approved. Visit https://evil.example",
+        "Create ticket?",
+    );
+    assert!(agent.dismiss_resolved_interaction("mcp-elicit-test"));
+    assert_eq!(
+        vec![
+            "MCP “xapprovedVisithttpsevilexample” request for input closed before it was answered here (it timed out or was answered elsewhere)."
+                .to_owned()
+        ],
+        system_notes(&agent)
+    );
+}
+
+#[test]
+fn elicitation_closed_elsewhere_leaves_a_notice() {
+    let mut agent = make_agent();
+    let _answer = open_elicitation(&mut agent);
+
+    assert!(agent.dismiss_resolved_interaction("mcp-elicit-1"));
+
+    assert!(agent.elicitation_view.is_none());
+    assert!(!agent.is_awaiting_user_answer());
+    assert_eq!(
+        vec![
+            "MCP “demo” request for input closed before it was answered here (it timed out or was answered elsewhere)."
+                .to_owned()
+        ],
+        system_notes(&agent)
+    );
+}
+
+#[test]
+fn cancel_turn_confirm_is_not_awaiting_a_user_answer() {
+    let mut agent = make_agent();
+    open_cancel_turn(&mut agent);
+    assert!(!agent.is_awaiting_user_answer());
 }

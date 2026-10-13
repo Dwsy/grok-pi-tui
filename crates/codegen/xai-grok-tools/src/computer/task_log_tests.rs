@@ -54,9 +54,10 @@ async fn drops_a_character_split_by_the_budget() {
 async fn a_log_ending_mid_character_reads_as_incomplete() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("torn.log");
-    tokio::fs::write(&path, &"日".as_bytes()[..2])
-        .await
-        .unwrap();
+    let Some(torn) = "日".as_bytes().get(..2) else {
+        panic!("日 is 3 bytes");
+    };
+    tokio::fs::write(&path, torn).await.unwrap();
 
     assert_eq!(
         read_prefix(&path, /*max_bytes*/ 100).await,

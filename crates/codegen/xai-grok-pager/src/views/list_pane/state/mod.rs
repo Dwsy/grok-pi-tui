@@ -16,10 +16,6 @@ use crate::key;
 use crate::render::scrollbar::SCROLLBAR_TOTAL_COLS;
 use crate::search::{QueryKind, TextMatcher};
 
-// ---------------------------------------------------------------------------
-// ListMatcher — unified filter / search
-// ---------------------------------------------------------------------------
-
 /// Whether the matcher hides non-matching items or just highlights them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchMode {
@@ -104,7 +100,7 @@ impl ListMatcher {
     pub fn next_match_after(&mut self, current_pi: usize) -> Option<usize> {
         let idx = crate::search::next_index_after(&self.match_indices, current_pi)?;
         self.current_match = Some(idx);
-        Some(self.match_indices[idx])
+        self.match_indices.get(idx).copied()
     }
 
     /// Go to the previous match before the given physical index.
@@ -112,13 +108,9 @@ impl ListMatcher {
     pub fn prev_match_before(&mut self, current_pi: usize) -> Option<usize> {
         let idx = crate::search::prev_index_before(&self.match_indices, current_pi)?;
         self.current_match = Some(idx);
-        Some(self.match_indices[idx])
+        self.match_indices.get(idx).copied()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Backward-compatible aliases
-// ---------------------------------------------------------------------------
 
 /// Backward-compatible alias for [`ListMatcher`]. Existing code that constructs
 /// `FilterMatcher::substring(...)` or `FilterMatcher::regex(...)` continues to work via these
@@ -157,10 +149,6 @@ impl ListFilter {
         self.matcher.match_count()
     }
 }
-
-// ---------------------------------------------------------------------------
-// InputBarMode — search vs filter
-// ---------------------------------------------------------------------------
 
 /// Which mode the input bar is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,10 +194,6 @@ struct GotoLineSnapshot {
     visual_anchor_id: Option<u64>,
 }
 
-// ---------------------------------------------------------------------------
-// LayoutStamp — dirty-tracking for prepare_layout
-// ---------------------------------------------------------------------------
-
 /// Snapshot of parameters used to build the current layout cache.
 ///
 /// Stored in [`ListPaneState`] and compared each frame to decide whether the layout cache can be reused, extended incrementally, or must be rebuilt.
@@ -223,23 +207,17 @@ struct LayoutStamp {
     wrap: WrapMode,
 }
 
-// ---------------------------------------------------------------------------
-// ListPaneState
-// ---------------------------------------------------------------------------
-
 /// View state for a scrollable list pane.
 ///
 /// **Non-generic**: the item type `T: ListItem` only appears at the boundaries, [`prepare_layout`] and `ListPane<'a, T>` (the widget).
 #[derive(Debug)]
 pub struct ListPaneState {
-    // -- Scroll ---------------------------------------------------------------
     /// Scroll offset in visual lines from the top of the content.
     scroll_offset: usize,
 
     /// Viewport height in terminal rows (set by [`prepare_layout`]).
     viewport_height: u16,
 
-    // -- Selection (stable IDs) -----------------------------------------------
     /// Currently selected item, stored as a stable ID.
     /// Resolved to `selected_index` in [`prepare_layout`].
     selected_id: Option<u64>,
@@ -262,14 +240,12 @@ pub struct ListPaneState {
     /// The range is [anchor, cursor] (cursor = `selected_id`).
     visual_anchor_id: Option<u64>,
 
-    // -- Layout ---------------------------------------------------------------
     /// Layout cache (heights and prefix sums, or fixed-height).
     layout: ListLayoutCache,
 
     /// Current wrap mode.
     wrap_mode: WrapMode,
 
-    // -- Layout dirty tracking ------------------------------------------------
     /// Parameters of the last layout build (for incremental / skip logic).
     /// `None` if no layout has been computed yet.
     last_stamp: Option<LayoutStamp>,
@@ -288,12 +264,10 @@ pub struct ListPaneState {
     /// separator crossing.
     scroll_screen_y: Option<usize>,
 
-    // -- Modes ----------------------------------------------------------------
     /// Follow mode: auto-scroll to bottom when new items appear.
     /// In follow mode the cursor is hidden (no selection highlight).
     pub follow_mode: bool,
 
-    // -- Follow / NAV edge tracking -------------------------------------------
     /// NAV only: true when the last downward action was clamped at the content bottom (viewport or selection at the end).
     /// The next downward action with this flag set engages follow ("one-past").
     at_content_edge: bool,
@@ -321,18 +295,15 @@ pub struct ListPaneState {
     // visible line matches. Defaults to `true` (highlights always shown).
     pub show_highlights: bool,
 
-    // Height cache (Wrap mode) --------------------------------------------Per-physical-item height
-    // cache for Wrap mode.
+    /// Per-physical-item height cache for Wrap mode.
     height_cache: Vec<u16>,
 
     /// Width at which `height_cache` was computed.
     height_cache_width: u16,
 
-    // -- Config ---------------------------------------------------------------
     /// Feature flags controlling which behaviors are active.
     config: ListPaneConfig,
 
-    // -- Input bar (search / filter) ------------------------------------------
     /// Active input bar mode, or `None` if the bar is closed.
     input_mode: Option<InputBarMode>,
 
@@ -345,13 +316,11 @@ pub struct ListPaneState {
     /// Cached screen position of the input bar cursor (set during render).
     input_cursor_screen_pos: Option<(u16, u16)>,
 
-    // -- Mouse / scrollbar ----------------------------------------------------
     /// Whether a scrollbar drag is in progress.
     scrollbar_dragging: bool,
 
-    // Clipboard -----------------------------------------------------------Clipboard provider for `y`
-    // (copy). Default is `InternalClipboard` (in-memory). Host app can inject system clipboard via
-    // [`set_clipboard_provider`].
+    /// Clipboard provider for `y` (copy). Default is `InternalClipboard` (in-memory). Host app can
+    /// inject the system clipboard via [`set_clipboard_provider`].
     clipboard: Box<dyn ClipboardProvider>,
 
     /// When the last successful copy happened (for toast notification).
@@ -368,10 +337,6 @@ pub struct ListPaneState {
 /// Mouse-wheel overscroll ticks required to snap into follow mode.
 /// Tunable: start with 1 (easy to trigger), increase if too twitchy.
 const MOUSE_OVERSCROLL_THRESHOLD: u8 = 1;
-
-// ---------------------------------------------------------------------------
-// ListPaneConfig — feature flags
-// ---------------------------------------------------------------------------
 
 /// Configuration flags for a `ListPaneState`. Controls which features are available. Use-case
 /// examples. | Use case | follow | wrap_toggle |. | Tracing pane | ✓ | ✓ |. | Todo list | ✗ | ✗ |.
@@ -455,10 +420,6 @@ impl ListPaneConfig {
 }
 
 mod methods;
-
-// ===========================================================================
-// Goto-line input parsing
-// ===========================================================================
 
 /// Parsed result of goto-line input.
 enum GotoTarget {

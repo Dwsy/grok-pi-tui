@@ -100,20 +100,46 @@ mod tests {
     fn omitted_turn_returns_session_and_all_turns() {
         let file = file_with_turns();
         let value = select_payload(&file, None, "sess-1").unwrap();
-        assert_eq!(value["sessionId"], "sess-1");
-        assert_eq!(value["session"]["inputTokens"], 25);
-        assert_eq!(value["turns"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            value.get("sessionId").and_then(|v| v.as_str()),
+            Some("sess-1")
+        );
+        assert_eq!(
+            value
+                .get("session")
+                .and_then(|s| s.get("inputTokens"))
+                .and_then(|v| v.as_u64()),
+            Some(25)
+        );
+        assert_eq!(
+            value.get("turns").and_then(|v| v.as_array()).map(Vec::len),
+            Some(2)
+        );
     }
 
     #[test]
     fn turn_index_returns_that_row() {
         let file = file_with_turns();
         let value = select_payload(&file, Some(2), "sess-1").unwrap();
-        assert_eq!(value["sessionId"], "sess-1");
-        assert_eq!(value["session"]["inputTokens"], 25);
-        assert_eq!(value["turns"].as_array().unwrap().len(), 1);
-        assert_eq!(value["turns"][0]["turnNumber"], 2);
-        assert_eq!(value["turns"][0]["inputTokens"], 15);
+        assert_eq!(
+            value.get("sessionId").and_then(|v| v.as_str()),
+            Some("sess-1")
+        );
+        assert_eq!(
+            value
+                .get("session")
+                .and_then(|s| s.get("inputTokens"))
+                .and_then(|v| v.as_u64()),
+            Some(25)
+        );
+        let Some(turns) = value.get("turns").and_then(|v| v.as_array()) else {
+            panic!("expected turns array: {value:?}");
+        };
+        let [turn] = turns.as_slice() else {
+            panic!("expected one turn: {turns:?}");
+        };
+        assert_eq!(turn.get("turnNumber").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(turn.get("inputTokens").and_then(|v| v.as_u64()), Some(15));
     }
 
     #[test]

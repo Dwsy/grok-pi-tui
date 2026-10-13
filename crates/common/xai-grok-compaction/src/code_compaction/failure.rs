@@ -35,6 +35,7 @@ fn has_size_slug(m: &str) -> bool {
         "context_length_exceeded",
         "exceed_context_size_error",
         "payload_too_large",
+        "request_too_large",
     ]
     .iter()
     .any(|slug| is_anchored(m, slug))
@@ -87,6 +88,7 @@ mod tests {
             "Request too large",
             "compact failed: 413: Request too large",
             "API error (status 429 Too Many Requests): Request too large for model",
+            "request_too_large: request rejected",
         ] {
             assert!(is_context_length_error(msg), "should match: {msg}");
         }
@@ -108,6 +110,7 @@ mod tests {
             // Slugs echoed mid-prose (not at start / after ": ").
             "invalid_request_error: user asked what context_length_exceeded means",
             "invalid_request_error: docs mention the payload_too_large code",
+            "invalid_request_error: docs mention the request_too_large code",
             // A stray digit run next to an echoed phrase, but not the
             // rendered "413 <reason phrase>" adjacency.
             "invalid_request_error: line 413 of the doc mentions payload too large limits",

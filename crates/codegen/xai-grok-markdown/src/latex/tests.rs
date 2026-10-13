@@ -200,8 +200,11 @@ fn aligned_environment_strips_markers() {
 fn cases_environment_renders_brace_column() {
     let lines = display("f(x) = \\begin{cases} x & x > 0 \\\\ 0 & \\text{otherwise} \\end{cases}");
     assert_eq!(lines.len(), 2);
-    assert!(lines[0].starts_with("f(x) = ⎧ x"), "got {lines:?}");
-    assert!(lines[1].trim_start().starts_with("⎩ 0"), "got {lines:?}");
+    let [first, second] = lines.as_slice() else {
+        panic!("expected two items: {lines:?}");
+    };
+    assert!(first.starts_with("f(x) = ⎧ x"), "got {lines:?}");
+    assert!(second.trim_start().starts_with("⎩ 0"), "got {lines:?}");
 }
 
 #[test]

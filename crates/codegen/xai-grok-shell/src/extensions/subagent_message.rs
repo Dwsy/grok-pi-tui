@@ -2,8 +2,9 @@
 
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
+use xai_grok_tools::implementations::grok_build::send_subagent_message::resolve_delivery;
 use xai_grok_tools::implementations::grok_build::task::types::{
-    ActiveAgentMessageOperation, ActiveAgentMessageOutcome, MAX_ACTIVE_AGENT_MESSAGE_BYTES,
+    ActiveAgentMessageOutcome, MAX_ACTIVE_AGENT_MESSAGE_BYTES,
 };
 
 use crate::agent::MvpAgent;
@@ -107,11 +108,7 @@ pub(crate) async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResul
         Ok(text) => text,
         Err(outcome) => return respond(Ok::<_, String>(outcome)),
     };
-    let operation = if req.queue {
-        ActiveAgentMessageOperation::Queue
-    } else {
-        ActiveAgentMessageOperation::Steer
-    };
+    let operation = resolve_delivery(/*delivery*/ None, req.queue);
     let outcome = agent
         .send_human_subagent_message(&req.session_id, req.agent_address, text, operation)
         .await;
@@ -149,6 +146,6 @@ mod tests {
             SendSubagentMessageOutcome::from(ActiveAgentMessageOutcome::NotActiveOrFinalizing);
         assert_eq!(outcome, SendSubagentMessageOutcome::NotActive);
         let json = serde_json::to_value(&outcome).expect("serialize");
-        assert_eq!(json["kind"], "not_active");
+        assert_eq!(json.get("kind"), Some(&serde_json::json!("not_active")));
     }
 }

@@ -20,10 +20,6 @@ use nucleo::{
     pattern::{CaseMatching, MultiPattern, Normalization},
 };
 
-// ---------------------------------------------------------------------------
-// Public data types
-// ---------------------------------------------------------------------------
-
 /// A single entry in the prompt history.
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
@@ -37,19 +33,11 @@ pub struct HistoryMatchResult {
     pub indices: Vec<u32>,
 }
 
-// ---------------------------------------------------------------------------
-// Shared state (daemon to UI)
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Default)]
 struct Snapshot {
     items: Arc<[HistoryMatchResult]>,
     generation: usize,
 }
-
-// ---------------------------------------------------------------------------
-// Daemon messages (UI to daemon)
-// ---------------------------------------------------------------------------
 
 enum Msg {
     SetItems(Vec<String>),
@@ -57,10 +45,6 @@ enum Msg {
     SetQuery(String),
     Stop,
 }
-
-// ---------------------------------------------------------------------------
-// Background daemon
-// ---------------------------------------------------------------------------
 
 struct Daemon {
     shared: Arc<Mutex<Snapshot>>,
@@ -232,14 +216,14 @@ fn publish_query_matches(
     let col = pattern.column_pattern(0);
     let mut matched: Vec<HistoryMatchResult> = hits
         .into_iter()
-        .map(|(i, _)| {
-            let (text, u) = &items[i];
+        .filter_map(|(i, _)| {
+            let (text, u) = items.get(i)?;
             let mut idx = Vec::new();
             col.indices(u.slice(..), matcher, &mut idx);
-            HistoryMatchResult {
+            Some(HistoryMatchResult {
                 text: text.clone(),
                 indices: idx,
-            }
+            })
         })
         .collect();
     // `hits` is sorted best-first; reverse so the best match is last (rendered at the bottom of the overlay, selected by default)
@@ -276,10 +260,6 @@ impl Drop for Daemon {
         let _ = self.tx.send(Msg::Stop);
     }
 }
-
-// ---------------------------------------------------------------------------
-// HistorySearchState (UI-thread side)
-// ---------------------------------------------------------------------------
 
 /// Which entry point opened the overlay.
 #[derive(Clone, Copy, PartialEq)]
@@ -589,10 +569,6 @@ impl HistorySearchState {
         self.snapshot.items.get(idx)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

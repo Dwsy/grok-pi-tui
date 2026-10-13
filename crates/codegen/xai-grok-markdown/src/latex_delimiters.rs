@@ -127,7 +127,7 @@ impl LatexDelimiterNormalizer {
         let mut buf = std::mem::take(&mut self.pending);
         buf.push_str(chunk);
         let (out, consumed) = self.process(&buf, false);
-        self.pending = buf[consumed..].to_string();
+        self.pending = buf.get(consumed..).unwrap_or("").to_string();
         out
     }
 
@@ -157,7 +157,10 @@ impl LatexDelimiterNormalizer {
                         match scan_fence_open(bytes, i, final_flush) {
                             FenceScan::NeedMore => break,
                             FenceScan::Match { ch, len, end } => {
-                                out.push_str(&buf[i..end]);
+                                let Some(s) = buf.get(i..end) else {
+                                    break;
+                                };
+                                out.push_str(s);
                                 i = end;
                                 self.state = State::Fenced { ch, len };
                                 self.at_line_start = false;
@@ -166,7 +169,10 @@ impl LatexDelimiterNormalizer {
                             FenceScan::No => {}
                         }
                     }
-                    match bytes[i] {
+                    let Some(&bi) = bytes.get(i) else {
+                        break;
+                    };
+                    match bi {
                         b'\n' => {
                             out.push('\n');
                             i += 1;
@@ -177,7 +183,10 @@ impl LatexDelimiterNormalizer {
                             if i + run == n && !final_flush {
                                 break; // run may extend; hold it back
                             }
-                            out.push_str(&buf[i..i + run]);
+                            let Some(s) = buf.get(i..i + run) else {
+                                break;
+                            };
+                            out.push_str(s);
                             i += run;
                             self.state = State::InlineCode { run };
                             self.at_line_start = false;
@@ -191,7 +200,13 @@ impl LatexDelimiterNormalizer {
                                     InlineClose::Found { close } => {
                                         // Trim pulldown's flanking whitespace so `$…$` is accepted
                                         // The custom set (vs `char::is_ascii_whitespace`) exists only to add vertical tab (0x0B)
-                                        let inner = buf[i + 2..close]
+                                        let Some(raw) = buf.get(i + 2..close) else {
+                                            out.push('$');
+                                            i += 2;
+                                            self.at_line_start = false;
+                                            continue;
+                                        };
+                                        let inner = raw
                                             .trim_matches(|c: char| matches!(c, ' ' | '\t'..='\r'));
                                         if inner.is_empty() {
                                             // Empty after trim: a lone `$` keeps the old position-for-position output
@@ -218,7 +233,13 @@ impl LatexDelimiterNormalizer {
                                 Bs::DisplayOpen { len } => {
                                     match find_display_close(buf, i + len, final_flush) {
                                         DisplayClose::Found { close, close_len } => {
-                                            emit_display_span(&mut out, &buf[i + len..close]);
+                                            let Some(interior) = buf.get(i + len..close) else {
+                                                out.push_str("$$");
+                                                i += len;
+                                                self.at_line_start = false;
+                                                continue;
+                                            };
+                                            emit_display_span(&mut out, interior);
                                             i = close + close_len;
                                         }
                                         // No close in reach: emit the canonical opener alone (the old position-for-position behavior)
@@ -236,7 +257,9 @@ impl LatexDelimiterNormalizer {
                                     i += len;
                                 }
                                 Bs::Literal { len } => {
-                                    out.push_str(&buf[i..i + len]);
+                                    if let Some(s) = buf.get(i..i + len) {
+                                        out.push_str(s);
+                                    }
                                     i += len;
                                 }
                             }
@@ -253,7 +276,13 @@ impl LatexDelimiterNormalizer {
                                 // Output like `$` + `$$…$$` re-tokenizes to the same bytes on a second pass (idempotency)
                                 match find_display_close(buf, i + 2, final_flush) {
                                     DisplayClose::Found { close, close_len } => {
-                                        emit_display_span(&mut out, &buf[i + 2..close]);
+                                        let Some(interior) = buf.get(i + 2..close) else {
+                                            out.push_str("$$");
+                                            i += 2;
+                                            self.at_line_start = false;
+                                            continue;
+                                        };
+                                        emit_display_span(&mut out, interior);
                                         i = close + close_len;
                                     }
                                     // No close in reach: `$$` stays literal (pulldown decides), the interior is processed normally
@@ -274,10 +303,17 @@ impl LatexDelimiterNormalizer {
                             // Copy a run of ordinary bytes up to the next interesting ASCII byte
                             // Multibyte UTF-8 bytes (0x80 and up) never equal the ASCII delimiters, so they are copied whole and slices stay valid
                             let start = i;
-                            while i < n && !matches!(bytes[i], b'\n' | b'`' | b'\\' | b'$') {
+                            while i < n
+                                && !matches!(
+                                    bytes.get(i).copied(),
+                                    Some(b'\n' | b'`' | b'\\' | b'$')
+                                )
+                            {
                                 i += 1;
                             }
-                            out.push_str(&buf[start..i]);
+                            if let Some(s) = buf.get(start..i) {
+                                out.push_str(s);
+                            }
                             self.at_line_start = false;
                         }
                     }
@@ -288,24 +324,30 @@ impl LatexDelimiterNormalizer {
                     let start = i;
                     let mut handled = false;
                     while i < n {
-                        match bytes[i] {
-                            b'\n' => {
+                        match bytes.get(i).copied() {
+                            Some(b'\n') => {
                                 i += 1;
-                                out.push_str(&buf[start..i]);
+                                if let Some(s) = buf.get(start..i) {
+                                    out.push_str(s);
+                                }
                                 self.state = State::Normal;
                                 self.at_line_start = true;
                                 handled = true;
                                 break;
                             }
-                            b'`' => {
+                            Some(b'`') => {
                                 let r = count_run(bytes, i, b'`');
                                 if i + r == n && !final_flush {
-                                    out.push_str(&buf[start..i]);
+                                    if let Some(s) = buf.get(start..i) {
+                                        out.push_str(s);
+                                    }
                                     return (out, i); // hold back the trailing run
                                 }
                                 if r == run {
                                     i += r;
-                                    out.push_str(&buf[start..i]);
+                                    if let Some(s) = buf.get(start..i) {
+                                        out.push_str(s);
+                                    }
                                     self.state = State::Normal;
                                     self.at_line_start = false;
                                     handled = true;
@@ -313,11 +355,12 @@ impl LatexDelimiterNormalizer {
                                 }
                                 i += r; // non-matching run is literal content
                             }
-                            _ => i += 1,
+                            Some(_) => i += 1,
+                            None => break,
                         }
                     }
-                    if !handled {
-                        out.push_str(&buf[start..i]); // EOF inside code
+                    if !handled && let Some(s) = buf.get(start..i) {
+                        out.push_str(s); // EOF inside code
                     }
                 }
                 State::Fenced { ch, len } => {
@@ -325,7 +368,10 @@ impl LatexDelimiterNormalizer {
                         match scan_fence_close(bytes, i, ch, len, final_flush) {
                             FenceScan::NeedMore => break,
                             FenceScan::Match { end, .. } => {
-                                out.push_str(&buf[i..end]);
+                                let Some(s) = buf.get(i..end) else {
+                                    break;
+                                };
+                                out.push_str(s);
                                 i = end;
                                 self.state = State::Normal;
                                 self.at_line_start = false;
@@ -336,7 +382,7 @@ impl LatexDelimiterNormalizer {
                     }
                     // Copy the rest of this line verbatim (fenced content).
                     let start = i;
-                    while i < n && bytes[i] != b'\n' {
+                    while i < n && bytes.get(i) != Some(&b'\n') {
                         i += 1;
                     }
                     if i < n {
@@ -345,7 +391,9 @@ impl LatexDelimiterNormalizer {
                     } else {
                         self.at_line_start = false;
                     }
-                    out.push_str(&buf[start..i]);
+                    if let Some(s) = buf.get(start..i) {
+                        out.push_str(s);
+                    }
                 }
             }
         }
@@ -363,7 +411,7 @@ pub fn normalize_latex_delimiters(s: &str) -> String {
 
 fn count_run(bytes: &[u8], start: usize, ch: u8) -> usize {
     let mut j = start;
-    while j < bytes.len() && bytes[j] == ch {
+    while bytes.get(j) == Some(&ch) {
         j += 1;
     }
     j - start
@@ -385,21 +433,20 @@ fn scan_fence_open(bytes: &[u8], i: usize, final_flush: bool) -> FenceScan {
     let n = bytes.len();
     let mut j = i;
     let mut spaces = 0;
-    while j < n && bytes[j] == b' ' && spaces < 4 {
+    while bytes.get(j) == Some(&b' ') && spaces < 4 {
         spaces += 1;
         j += 1;
     }
     if spaces >= 4 {
         return FenceScan::No; // indented; not treated as a fence opener
     }
-    if j == n {
+    let Some(&ch) = bytes.get(j) else {
         return if final_flush {
             FenceScan::No
         } else {
             FenceScan::NeedMore // 3 or fewer spaces then EOF: a fence may still start
         };
-    }
-    let ch = bytes[j];
+    };
     if ch != b'`' && ch != b'~' {
         return FenceScan::No;
     }
@@ -422,21 +469,21 @@ fn scan_fence_close(bytes: &[u8], i: usize, ch: u8, len: usize, final_flush: boo
     let n = bytes.len();
     let mut j = i;
     let mut spaces = 0;
-    while j < n && bytes[j] == b' ' && spaces < 4 {
+    while bytes.get(j) == Some(&b' ') && spaces < 4 {
         spaces += 1;
         j += 1;
     }
     if spaces >= 4 {
         return FenceScan::No;
     }
-    if j == n {
+    let Some(&bj) = bytes.get(j) else {
         return if final_flush {
             FenceScan::No
         } else {
             FenceScan::NeedMore
         };
-    }
-    if bytes[j] != ch {
+    };
+    if bj != ch {
         return FenceScan::No;
     }
     let run = count_run(bytes, j, ch);
@@ -448,7 +495,7 @@ fn scan_fence_close(bytes: &[u8], i: usize, ch: u8, len: usize, final_flush: boo
     }
     // A close line carries no info string: only trailing whitespace allowed.
     let mut k = j + run;
-    while k < n && matches!(bytes[k], b' ' | b'\t') {
+    while matches!(bytes.get(k), Some(&b' ' | &b'\t')) {
         k += 1;
     }
     if k == n {
@@ -462,7 +509,7 @@ fn scan_fence_close(bytes: &[u8], i: usize, ch: u8, len: usize, final_flush: boo
             FenceScan::NeedMore
         };
     }
-    if bytes[k] == b'\n' {
+    if bytes.get(k) == Some(&b'\n') {
         FenceScan::Match {
             ch,
             len: run,
@@ -490,16 +537,15 @@ enum Bs {
 
 fn classify_backslash(buf: &str, i: usize, final_flush: bool) -> Bs {
     let bytes = buf.as_bytes();
-    let n = bytes.len();
-    debug_assert_eq!(bytes[i], b'\\');
-    if i + 1 >= n {
+    debug_assert_eq!(bytes.get(i).copied(), Some(b'\\'));
+    let Some(&b1) = bytes.get(i + 1) else {
         return if final_flush {
             Bs::Literal { len: 1 }
         } else {
             Bs::NeedMore
         };
-    }
-    match bytes[i + 1] {
+    };
+    match b1 {
         // Escaped backslash: emit the pair so a following `(`/`[` is not read as a delimiter
         // This is the even/odd parity rule, applied incrementally
         b'\\' => Bs::Literal { len: 2 },
@@ -514,7 +560,7 @@ fn classify_backslash(buf: &str, i: usize, final_flush: bool) -> Bs {
         b'b' | b'e' => match match_env(buf, i, final_flush) {
             // `\begin{equation[*]}` opens a display span; a stray `\end{equation[*]}` still maps to `$$` position-for-position
             EnvScan::Convert(len) => {
-                if bytes[i + 1] == b'b' {
+                if b1 == b'b' {
                     Bs::DisplayOpen { len }
                 } else {
                     Bs::Convert { to: "$$", len }
@@ -555,7 +601,7 @@ fn find_inline_close(bytes: &[u8], open: usize, final_flush: bool) -> InlineClos
         if k - (open + 2) > MAX_MATH_SOURCE_LEN {
             return InlineClose::Unmatched;
         }
-        if bytes[k] == b'\\' {
+        if bytes.get(k) == Some(&b'\\') {
             match bytes.get(k + 1) {
                 None => break, // trailing `\`: need the next byte to classify
                 Some(b')') => return InlineClose::Found { close: k },
@@ -595,18 +641,20 @@ fn find_display_close(buf: &str, content_start: usize, final_flush: bool) -> Dis
         if k - content_start > MAX_MATH_SOURCE_LEN {
             return DisplayClose::Unmatched;
         }
-        match bytes[k] {
-            b'\\' => match bytes.get(k + 1) {
+        match bytes.get(k).copied() {
+            Some(b'\\') => match bytes.get(k + 1) {
                 None => break, // trailing `\`: need the next byte to classify
-                Some(b']') => {
+                Some(&b']') => {
                     return DisplayClose::Found {
                         close: k,
                         close_len: 2,
                     };
                 }
-                Some(b'e') => {
+                Some(&b'e') => {
                     // `\end{equation}` / `\end{equation*}` closes the span.
-                    let rest = &buf[k..];
+                    let Some(rest) = buf.get(k..) else {
+                        break;
+                    };
                     let mut matched = None;
                     let mut could_extend = false;
                     for tok in [ENV_END, ENV_END_STARRED] {
@@ -632,7 +680,7 @@ fn find_display_close(buf: &str, content_start: usize, final_flush: bool) -> Dis
                 }
                 Some(_) => k += 2, // `\\` pair or `\x` escape: span content
             },
-            b'$' => {
+            Some(b'$') => {
                 let run = count_run(bytes, k, b'$');
                 if run >= 2 {
                     return DisplayClose::Found {
@@ -645,21 +693,22 @@ fn find_display_close(buf: &str, content_start: usize, final_flush: bool) -> Dis
                 }
                 k += run;
             }
-            b'\n' => {
+            Some(b'\n') => {
                 // Look at the next line's start: a blank line or `>` marker aborts the span (see doc comment)
                 let mut j = k + 1;
-                while j < n && matches!(bytes[j], b' ' | b'\t') {
+                while matches!(bytes.get(j), Some(&b' ' | &b'\t')) {
                     j += 1;
                 }
                 if j == n {
                     break; // need the next line's first byte to decide
                 }
-                if matches!(bytes[j], b'\n' | b'>') {
+                if matches!(bytes.get(j), Some(&b'\n' | &b'>')) {
                     return DisplayClose::Unmatched;
                 }
                 k += 1;
             }
-            _ => k += 1,
+            Some(_) => k += 1,
+            None => break,
         }
     }
     if final_flush {
@@ -707,7 +756,9 @@ enum EnvScan {
 
 /// Match `\begin{equation}` / `\end{equation}` (and starred variants) at `i`.
 fn match_env(buf: &str, i: usize, final_flush: bool) -> EnvScan {
-    let rest = &buf[i..];
+    let Some(rest) = buf.get(i..) else {
+        return EnvScan::No;
+    };
     let mut best: Option<usize> = None;
     let mut could_extend = false;
     for tok in ENV_TOKENS {
@@ -1010,8 +1061,8 @@ mod tests {
                 continue;
             }
             let mut nz = LatexDelimiterNormalizer::new();
-            let mut got = nz.push(&doc[..split]);
-            got.push_str(&nz.push(&doc[split..]));
+            let mut got = nz.push(doc.get(..split).unwrap_or(""));
+            got.push_str(&nz.push(doc.get(split..).unwrap_or("")));
             got.push_str(&nz.finish());
             assert_eq!(got, oneshot, "2-way split at byte {split}");
         }
@@ -1117,7 +1168,11 @@ The review is already complete at:\n\n\
         assert!(
             !pre_finish.ends_with('`'),
             "pre-finish source must hold back the trailing closer; got {:?}",
-            &pre_finish[pre_finish.len().saturating_sub(40)..]
+            pre_finish
+                .len()
+                .checked_sub(40)
+                .and_then(|n| pre_finish.get(n..))
+                .unwrap_or(pre_finish.as_str())
         );
         assert!(
             pre_finish.contains('`') && pre_finish.contains("/tmp/project/results"),
@@ -1133,12 +1188,21 @@ The review is already complete at:\n\n\
         assert_eq!(full, msg);
 
         let mut nz = LatexDelimiterNormalizer::new();
-        let mut streamed = nz.push(&msg[..msg.len() - 1]);
+        let mut streamed = nz.push(
+            msg.len()
+                .checked_sub(1)
+                .and_then(|n| msg.get(..n))
+                .unwrap_or(""),
+        );
         streamed.push_str(&nz.push("`"));
         assert!(
             !streamed.ends_with('`') || streamed.matches('`').count() < 2,
             "closing backtick still held after final chunk without finish(); got {:?}",
-            &streamed[streamed.len().saturating_sub(40)..]
+            streamed
+                .len()
+                .checked_sub(40)
+                .and_then(|n| streamed.get(n..))
+                .unwrap_or(streamed.as_str())
         );
         streamed.push_str(&nz.finish());
         assert_eq!(streamed, msg);
@@ -1184,7 +1248,9 @@ mod token_soup_stress {
         };
         for _ in 0..4000 {
             let len = 1 + next() % 12;
-            let doc: String = (0..len).map(|_| TOKENS[next() % TOKENS.len()]).collect();
+            let doc: String = (0..len)
+                .map(|_| TOKENS.get(next() % TOKENS.len()).copied().unwrap_or(""))
+                .collect();
             let oneshot = normalize_latex_delimiters(&doc);
             // Char-by-char streaming must match one-shot.
             let mut nz = LatexDelimiterNormalizer::new();

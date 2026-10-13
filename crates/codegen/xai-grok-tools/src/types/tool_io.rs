@@ -104,7 +104,7 @@ impl ToolInput {
     /// callers fall back to `function.name` on `None`. Add any new dispatcher here.
     pub fn dispatch_target_name(&self) -> Option<String> {
         match self {
-            ToolInput::UseTool(input) => Some(input.tool_name.clone()),
+            ToolInput::UseTool(input) => input.target_name().map(str::to_owned),
             _ => None,
         }
     }
@@ -137,10 +137,12 @@ mod tests {
     }
     #[test]
     fn dispatch_target_name_resolves_meta_dispatch_tools() {
-        let use_tool = ToolInput::UseTool(UseToolInput {
-            tool_name: "linear__save_issue".to_string(),
-            tool_input: serde_json::json!({}),
-        });
+        let use_tool = ToolInput::UseTool(UseToolInput::Inline(
+            crate::implementations::use_tool::InlineMcpInvocation {
+                tool_name: "linear__save_issue".to_string(),
+                tool_input: serde_json::json!({}),
+            },
+        ));
         assert_eq!(
             use_tool.dispatch_target_name().as_deref(),
             Some("linear__save_issue")
@@ -174,6 +176,7 @@ mod tests {
             timeout: None,
             description: "list files".into(),
             is_background: false,
+            block_until_ms: None,
         })
         .try_into();
         assert_eq!(bash.unwrap().command, "ls");
@@ -209,7 +212,7 @@ mod tests {
         let input = ToolInput::Dynamic(serde_json::json!({"custom": "data"}));
         match input {
             ToolInput::Dynamic(v) => {
-                assert_eq!(v["custom"], "data");
+                assert_eq!(v.get("custom").and_then(|x| x.as_str()), Some("data"));
             }
             _ => panic!("Expected Dynamic variant"),
         }

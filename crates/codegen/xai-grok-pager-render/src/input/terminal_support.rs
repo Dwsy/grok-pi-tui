@@ -52,6 +52,16 @@ pub fn is_mod_enter(key: &KeyEvent) -> bool {
             || is_apple_terminal_newline_modifier_held())
 }
 
+/// Kitty (and similar) can deliver `SUPER+Enter`. It is not an advertised newline
+/// chord — [`is_mod_enter`] excludes SUPER because many terminals bind Cmd+Enter
+/// to fullscreen — and it is not bare-Enter send. PromptWidget must insert a
+/// newline itself; otherwise textarea's any-`KeyCode::Enter` arm does it by
+/// accident. Kept out of [`is_mod_enter`] so multiline mode still swaps only
+/// Shift/Alt with Enter.
+pub fn is_delivered_super_enter(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Enter && key.modifiers == KeyModifiers::SUPER
+}
+
 #[cfg(target_os = "macos")]
 fn os_any_newline_modifier_held() -> bool {
     let s = super::macos_modifiers::snapshot();
@@ -93,11 +103,24 @@ mod tests {
             KeyCode::Enter,
             KeyModifiers::ALT
         )));
-        // SUPER/Cmd is not a product-wide newline chord (fullscreen/split on many terminals)
-        // Apple Terminal Cmd+Enter is rescued via CoreGraphics on bare Enter, not via the SUPER flag here
+        // SUPER/Cmd is not an advertised newline chord (fullscreen/split on many terminals).
+        // Apple Terminal Cmd+Enter is rescued via CoreGraphics on bare Enter, not via the SUPER flag here.
+        // A delivered SUPER+Enter is still a newline via [`is_delivered_super_enter`], not this matcher.
         assert!(!is_mod_enter(&KeyEvent::new(
             KeyCode::Enter,
             KeyModifiers::SUPER
+        )));
+        assert!(is_delivered_super_enter(&KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::SUPER
+        )));
+        assert!(!is_delivered_super_enter(&KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::SHIFT
+        )));
+        assert!(!is_delivered_super_enter(&KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE
         )));
         assert!(!is_mod_enter(&KeyEvent::new(
             KeyCode::Enter,

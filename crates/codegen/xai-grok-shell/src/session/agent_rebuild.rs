@@ -28,6 +28,10 @@
 //! The subagent channels are wrapped in a `ChannelBackend` behind `SubagentBackendResource`.
 //! On rebuild, we must reuse the **same** senders so the existing coordinator keeps receiving requests.
 //! A fresh channel would orphan the running coordinator.
+use crate::agent::remote_config::task_model_policy::{
+    LatchedTaskModelSelection, TaskModelPolicyInputs, latch_task_model_presentation,
+    presentation_applied_event, rejection_sink,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,7 +46,9 @@ use xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployer
 use xai_grok_tools::implementations::grok_build::ask_user_question::types::UserQuestionRequest;
 use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
 use xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventBuffer;
-use xai_grok_tools::implementations::grok_build::task::types::{SubagentEvent, TaskModelValidator};
+use xai_grok_tools::implementations::grok_build::task::types::{
+    AgentMessageSender, SubagentCapabilityModeExt, SubagentEvent, TaskModelValidator,
+};
 use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
 use xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig;
 use xai_grok_tools::implementations::lsp::LspBackend;
@@ -60,6 +66,27 @@ pub(crate) struct ResolvedToolParamsJson {
     /// `[toolset.ask_user_question]` timeout policy for the ask tool.
     pub ask_user_question: Option<serde_json::Map<String, serde_json::Value>>,
 }
+/// The live memory-v2 file-access policy shared by spawn, the `/memory` toggle, and rebuilds.
+/// The lock never escapes: readers get a clone, writers replace the value.
+pub(crate) struct MemoryV2AccessSlot(
+    parking_lot::Mutex<Option<xai_grok_tools::types::memory_v2::MemoryV2AccessResource>>,
+);
+impl MemoryV2AccessSlot {
+    pub(crate) fn new(
+        access: Option<xai_grok_tools::types::memory_v2::MemoryV2AccessResource>,
+    ) -> Self {
+        Self(parking_lot::Mutex::new(access))
+    }
+    pub(crate) fn get(&self) -> Option<xai_grok_tools::types::memory_v2::MemoryV2AccessResource> {
+        self.0.lock().clone()
+    }
+    pub(crate) fn set(
+        &self,
+        access: Option<xai_grok_tools::types::memory_v2::MemoryV2AccessResource>,
+    ) {
+        *self.0.lock() = access;
+    }
+}
 /// Cached recipe for building a session-scoped [`Agent`].
 /// See module docs for the invariant: this is the only construction site for `Agent` in the shell crate.
 /// Cloning is intentionally not derived; the spec lives behind an [`Arc`] and is shared by cloning that `Arc`.
@@ -71,13 +98,18 @@ pub(crate) struct AgentRebuildSpec {
     pub bridge_state_path: PathBuf,
     pub session_env: Arc<HashMap<String, String>>,
     pub models_manager: crate::agent::remote_config::ModelsManager,
+    pub task_model_policy: TaskModelPolicyInputs,
+    pub task_model_selection: LatchedTaskModelSelection,
     pub compaction_policy: CompactionPolicy,
     pub reminder_policy: ReminderPolicy,
     pub memory_enabled: bool,
     pub memory_global_path: Option<String>,
     pub memory_workspace_path: Option<String>,
     pub memory_backend: Option<Arc<dyn MemoryBackend>>,
-    pub memory_v2_access: Option<xai_grok_tools::types::memory_v2::MemoryV2AccessResource>,
+    /// Live v2 file-access policy. `None` while v2 memory is off; the `/memory` toggle
+    /// replaces it so a later zero-turn rebuild renders the same prompt as a fresh spawn.
+    pub memory_v2_access: MemoryV2AccessSlot,
+    pub memory_v2_exposed: bool,
     pub web_search_config: WebSearchConfig,
     /// `[toolset.web_search]` domain policy, resolved once at spawn.
     /// It is applied to both search paths (the hosted `tool_overrides` merge and the client-side `WebSearchConfig`) so they never diverge.
@@ -101,6 +133,8 @@ pub(crate) struct AgentRebuildSpec {
     pub skills_config: SkillsConfig,
     /// Resolved vendor-compat config (from `Config::compat_resolved`), threaded into skills / rules / AGENTS.md discovery via the builder.
     pub compat: CompatConfig,
+    /// `[paths]` config, threaded into rules discovery via the builder.
+    pub paths_config: xai_grok_agent::prompt::paths::PathsConfig,
     pub context_window_tokens: u64,
     pub prompt_working_directory: Option<String>,
     pub lsp: Option<Arc<dyn LspBackend>>,
@@ -112,6 +146,7 @@ pub(crate) struct AgentRebuildSpec {
     pub subagent_coordinator_sender: Option<
         xai_grok_tools::implementations::grok_build::task::backend::SubagentCoordinatorSender,
     >,
+    pub agent_message_sender: Option<AgentMessageSender>,
     pub monitor_event_buffer: Option<MonitorEventBuffer>,
     pub user_question_tx: UnboundedSender<UserQuestionRequest>,
     pub subagent_depth: u32,
@@ -126,7 +161,6 @@ pub(crate) struct AgentRebuildSpec {
     pub managed_gateway_tool_client:
         Option<xai_grok_tools::types::resources::ManagedGatewayToolClient>,
     pub is_non_interactive: bool,
-    pub system_prompt_label: String,
     pub owner_session_id: Option<String>,
     pub parent_scheduler_handle:
         Option<xai_grok_tools::implementations::grok_build::scheduler::types::SchedulerHandle>,
@@ -137,8 +171,11 @@ impl AgentRebuildSpec {
     pub(crate) async fn build_agent(
         self: &Arc<Self>,
         definition: AgentDefinition,
+        system_prompt_label: impl Into<String>,
     ) -> Result<Agent, AgentBuildError> {
-        let (agent, _build_elapsed) = self.build_agent_inner(definition, None, None).await?;
+        let (agent, _build_elapsed) = self
+            .build_agent_inner(definition, system_prompt_label.into(), None, None)
+            .await?;
         Ok(agent)
     }
     /// `persisted_skill_names`: restored into the `SkillManager` before `seed()` to prevent duplicate system-reminder injection on resume.
@@ -147,16 +184,23 @@ impl AgentRebuildSpec {
     pub(crate) async fn build_agent_with_initial_overrides(
         self: &Arc<Self>,
         definition: AgentDefinition,
+        system_prompt_label: impl Into<String>,
         persisted_skill_names: Option<std::collections::HashSet<String>>,
         preloaded_skills: Option<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>>,
     ) -> Result<(Agent, std::time::Duration), AgentBuildError> {
-        self.build_agent_inner(definition, persisted_skill_names, preloaded_skills)
-            .await
+        self.build_agent_inner(
+            definition,
+            system_prompt_label.into(),
+            persisted_skill_names,
+            preloaded_skills,
+        )
+        .await
     }
     #[deny(unused_variables)]
     async fn build_agent_inner(
         self: &Arc<Self>,
         definition: AgentDefinition,
+        system_prompt_label: String,
         persisted_skill_names: Option<std::collections::HashSet<String>>,
         preloaded_skills: Option<Vec<xai_grok_tools::implementations::skills::types::SkillInfo>>,
     ) -> Result<(Agent, std::time::Duration), AgentBuildError> {
@@ -169,6 +213,8 @@ impl AgentRebuildSpec {
             bridge_state_path,
             session_env,
             models_manager,
+            task_model_policy,
+            task_model_selection,
             compaction_policy,
             reminder_policy,
             memory_enabled,
@@ -176,6 +222,7 @@ impl AgentRebuildSpec {
             memory_workspace_path,
             memory_backend,
             memory_v2_access,
+            memory_v2_exposed,
             web_search_config,
             web_search_domains,
             backend_search,
@@ -196,6 +243,7 @@ impl AgentRebuildSpec {
             persona_instructions,
             skills_config,
             compat,
+            paths_config,
             context_window_tokens,
             prompt_working_directory,
             lsp,
@@ -205,6 +253,7 @@ impl AgentRebuildSpec {
             tool_params_json,
             subagent_event_tx,
             subagent_coordinator_sender,
+            agent_message_sender,
             monitor_event_buffer,
             user_question_tx,
             subagent_depth,
@@ -216,11 +265,25 @@ impl AgentRebuildSpec {
             mcp_state,
             managed_gateway_tool_client,
             is_non_interactive,
-            system_prompt_label,
             owner_session_id,
             parent_scheduler_handle,
         } = self.as_ref();
         let _ = mcp_state;
+        if (*prompt_audience == PromptAudience::Subagent || agent_message_sender.is_some())
+            && subagent_coordinator_sender.is_some()
+        {
+            return Err(AgentBuildError::InvalidConfig(
+                "a sender-scoped child cannot hold the subagent coordinator sender".to_owned(),
+            ));
+        }
+        let active_agent_messages_enabled = *active_agent_messages_enabled
+            && (*prompt_audience == PromptAudience::Primary
+                || (agent_message_sender.is_some()
+                    && definition.capability_mode.is_none_or(|mode| {
+                        mode.allows_tool_kind(
+                            xai_grok_tools::types::tool::ToolKind::ActiveAgentMessage,
+                        )
+                    })));
         #[allow(unused_variables)]
         let is_cursor_template =
             crate::session::is_cursor_system_template(&definition.system_prompt);
@@ -236,6 +299,7 @@ impl AgentRebuildSpec {
             env.insert("GROK_SESSION_ID".to_string(), session_id_str.clone());
             Arc::new(env)
         };
+        let presentation = latch_task_model_presentation(models_manager, task_model_policy).await;
         let mut builder = AgentBuilder::new(
             working_directory.clone(),
             terminal_backend.clone(),
@@ -246,9 +310,9 @@ impl AgentRebuildSpec {
         .with_reminder_policy(reminder_policy.clone())
         .with_memory_enabled(*memory_enabled)
         .with_memory_paths(memory_global_path.clone(), memory_workspace_path.clone())
-        .with_memory_v2_access(memory_v2_access.clone())
+        .with_memory_v2_access(memory_v2_access.get(), *memory_v2_exposed)
         .with_is_non_interactive(*is_non_interactive)
-        .with_system_prompt_label(system_prompt_label.clone())
+        .with_system_prompt_label(system_prompt_label)
         .with_session_env(session_env.clone())
         .with_state_path(bridge_state_path.clone())
         .with_web_search_config(web_search_config.clone())
@@ -258,18 +322,14 @@ impl AgentRebuildSpec {
         .with_app_builder_deployer_config(app_builder_deployer_config.clone())
         .with_web_fetch_config(web_fetch_config.clone())
         .with_write_file_enabled(*write_file_enabled)
-        .with_active_agent_messages_enabled(*active_agent_messages_enabled)
+        .with_active_agent_messages_enabled(active_agent_messages_enabled)
         .with_fs(fs_backend.clone())
+        .with_mcp_file_input_preparation()
         .with_subagents_enabled(*subagents_enabled)
         .with_subagent_toggle(subagent_toggle.clone())
         .with_background_workflows_enabled(*background_workflows_enabled)
-        .with_task_model_slugs(
-            models_manager
-                .available()
-                .keys()
-                .map(|model_id| model_id.0.to_string())
-                .collect::<Vec<_>>(),
-        )
+        .with_task_model_slugs(presentation.model_slugs.clone())
+        .with_task_model_selection(presentation.selection)
         .with_ask_user_question_enabled(*ask_user_question_enabled)
         .with_persona_summaries(persona_summaries.clone())
         .with_prompt_audience(*prompt_audience)
@@ -277,6 +337,7 @@ impl AgentRebuildSpec {
         .with_persona_instructions(persona_instructions.clone())
         .with_skills_config(skills_config.clone())
         .with_compat_config(*compat)
+        .with_paths_config(paths_config.clone())
         .with_project_trusted(crate::agent::folder_trust::project_scope_allowed(
             working_directory,
         ))
@@ -323,6 +384,12 @@ impl AgentRebuildSpec {
         let agent = builder.build().await?;
         crate::waterfall::mark(session_id_str, crate::waterfall::stage::SB_BUILDER_DONE);
         let agent_build_elapsed = build_phase_start.elapsed();
+        task_model_selection.set(presentation.selection);
+        xai_grok_telemetry::session_ctx::log_event(presentation_applied_event(
+            &presentation,
+            task_model_policy,
+            *prompt_audience,
+        ));
         let model_validator = models_manager.clone();
         agent
             .tool_bridge()
@@ -333,13 +400,14 @@ impl AgentRebuildSpec {
                             model_validator.task_model_error(requested)
                         }),
                     );
+                resources.insert(rejection_sink(session_id_str.clone()));
                 if let Some(event_tx) = subagent_event_tx.clone() {
                     use xai_grok_tools::implementations::grok_build::task::backend::{
                         ChannelBackend, SubagentBackendResource,
                     };
                     use xai_grok_tools::implementations::grok_build::task::types::{
-                        MaxSubagentDepth, SessionIdResource, SubagentDepthCounter,
-                        SubagentEventSender,
+                        AgentMessageSenderResource, MaxSubagentDepth, SessionIdResource,
+                        SubagentDepthCounter, SubagentEventSender,
                     };
                     resources
                         .insert(
@@ -352,10 +420,13 @@ impl AgentRebuildSpec {
                                                 event_tx.clone(),
                                                 session_id_str.clone(),
                                             ),
-                                            |sender| ChannelBackend::for_coordinator_session(
-                                                sender.clone(),
-                                                session_id_str.clone(),
-                                            ),
+                                            |sender| {
+                                                ChannelBackend::for_coordinator_session(
+                                                        sender.clone(),
+                                                        session_id_str.clone(),
+                                                    )
+                                                    .with_root_targets()
+                                            },
                                         ),
                                 ),
                             ),
@@ -364,6 +435,11 @@ impl AgentRebuildSpec {
                     resources.insert(MaxSubagentDepth(*subagents_max_depth));
                     resources.insert(SessionIdResource(session_id_str.clone()));
                     resources.insert(SubagentEventSender(event_tx));
+                    if active_agent_messages_enabled
+                        && let Some(sender) = agent_message_sender.clone()
+                    {
+                        resources.insert(AgentMessageSenderResource(sender));
+                    }
                     resources
                         .insert(
                             crate::tools::tool_context::subagent_foreground_wait(
@@ -414,13 +490,23 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         bridge_state_path: std::env::temp_dir().join("test_tool_state.json"),
         session_env: Arc::new(HashMap::new()),
         models_manager: crate::agent::remote_config::ModelsManager::default(),
+        task_model_policy: TaskModelPolicyInputs {
+            inheritance: crate::agent::config::Resolved::new(
+                false,
+                crate::agent::config::ConfigSource::Default,
+            ),
+            remote_fetch_enabled: false,
+            forked_selection: None,
+        },
+        task_model_selection: LatchedTaskModelSelection::default(),
         compaction_policy: CompactionPolicy::default(),
         reminder_policy: ReminderPolicy::default(),
         memory_enabled: false,
         memory_global_path: None,
         memory_workspace_path: None,
         memory_backend: None,
-        memory_v2_access: None,
+        memory_v2_access: MemoryV2AccessSlot::new(None),
+        memory_v2_exposed: false,
         web_search_config: WebSearchConfig::default(),
         web_search_domains: None,
         backend_search: false,
@@ -441,6 +527,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         persona_instructions: None,
         skills_config: SkillsConfig::default(),
         compat: CompatConfig::default(),
+        paths_config: Default::default(),
         context_window_tokens: 256_000,
         prompt_working_directory: None,
         lsp: None,
@@ -450,6 +537,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         tool_params_json: ResolvedToolParamsJson::default(),
         subagent_event_tx: None,
         subagent_coordinator_sender: None,
+        agent_message_sender: None,
         monitor_event_buffer: None,
         user_question_tx: uq_tx,
         subagent_depth: 0,
@@ -463,13 +551,12 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         )),
         managed_gateway_tool_client: None,
         is_non_interactive: false,
-        system_prompt_label: xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_string(),
         owner_session_id: Some("test-session".to_string()),
         parent_scheduler_handle: None,
     })
 }
 #[cfg(test)]
-mod tests {
+mod legacy_tests {
     use super::*;
     use crate::agent::config::{EndpointsConfig, ModelEntry};
     fn model_entry(internal_id: &str) -> ModelEntry {
@@ -528,7 +615,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let agent = spec_with(Some(configured.clone()))
-                    .build_agent(definition())
+                    .build_agent(definition(), xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL)
                     .await
                     .expect("agent build should succeed");
                 assert_eq!(
@@ -548,7 +635,7 @@ mod tests {
                     agent.hosted_tools()
                 );
                 let agent = spec_with(None)
-                    .build_agent(definition())
+                    .build_agent(definition(), xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL)
                     .await
                     .expect("agent build should succeed");
                 assert_eq!(
@@ -583,7 +670,10 @@ mod tests {
                 models_manager
                     .insert_test_entry("private-unselectable-model", unselectable);
                 let first = spec
-                    .build_agent(AgentDefinition::default_grok_build())
+                    .build_agent(
+                        AgentDefinition::default_grok_build(),
+                        xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL,
+                    )
                     .await
                     .expect("first agent build should succeed");
                 let first_description = task_description(&first);
@@ -609,7 +699,10 @@ mod tests {
                     .insert_test_entry("beta-public", model_entry("internal-beta"));
                 assert!(validator.error_for("beta-public").is_none());
                 let rebuilt = spec
-                    .build_agent(AgentDefinition::default_grok_build())
+                    .build_agent(
+                        AgentDefinition::default_grok_build(),
+                        xai_grok_agent::DEFAULT_SYSTEM_PROMPT_LABEL,
+                    )
                     .await
                     .expect("rebuilt agent should succeed");
                 let rebuilt_description = task_description(&rebuilt);
@@ -625,3 +718,6 @@ mod tests {
             .await;
     }
 }
+#[cfg(test)]
+#[path = "agent_rebuild_tests.rs"]
+mod tests;

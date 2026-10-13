@@ -165,7 +165,9 @@ fn header_only_accepts_full_decode_rejects_idat_corrupt_png() {
         .windows(4)
         .position(|w| w == tag)
         .expect("IDAT chunk present");
-    bytes[pos + 8] ^= 0xFF;
+    if let Some(slot) = bytes.get_mut(pos + 8) {
+        *slot ^= 0xFF;
+    }
     let r_header = validate_image_bytes_with(&bytes, false);
     assert!(r_header.is_ok(), "header-only must admit");
     let r_full = validate_image_bytes_with(&bytes, true).unwrap_err();
@@ -475,7 +477,10 @@ fn jpeg_reaches_eoi_scans_through_restart_markers() {
     assert!(jpeg_reaches_eoi(&full));
     for cut in 3..full.len() {
         assert!(
-            !jpeg_reaches_eoi(&full[..cut]),
+            !jpeg_reaches_eoi(
+                full.get(..cut)
+                    .unwrap_or_else(|| panic!("cut {cut} past jpeg fixture of len {}", full.len()))
+            ),
             "cut at {cut} must not reach EOI"
         );
     }
@@ -496,7 +501,10 @@ fn jpeg_reaches_eoi_walks_multiple_scans() {
     ];
     assert!(jpeg_reaches_eoi(&full));
     let cut = full.len() - 3; // inside entropy 2
-    assert!(!jpeg_reaches_eoi(&full[..cut]));
+    let Some(prefix) = full.get(..cut) else {
+        panic!("cut {cut} past jpeg fixture of len {}", full.len());
+    };
+    assert!(!jpeg_reaches_eoi(prefix));
 }
 
 #[test]
@@ -552,7 +560,9 @@ fn png_structurally_valid_rejects_corrupt_crc() {
         .windows(4)
         .position(|w| w == b"IDAT")
         .expect("IDAT present");
-    corrupt[idat + 6] ^= 0xFF;
+    if let Some(slot) = corrupt.get_mut(idat + 6) {
+        *slot ^= 0xFF;
+    }
     assert!(!png_structurally_valid(&corrupt));
     assert!(png_structurally_valid(&png));
 }
@@ -566,14 +576,30 @@ fn jpeg_reaches_eoi_skips_stray_inter_segment_bytes() {
     let jpeg = noisy_jpeg(64, 64);
     // Splice garbage right after the APP0 segment (SOI + APP0 header
     // at offset 2; APP0 length at offset 4).
-    assert_eq!(&jpeg[2..4], &[0xFF, 0xE0], "encoder emits APP0 first");
-    let app0_len = usize::from(jpeg[4]) << 8 | usize::from(jpeg[5]);
+    assert_eq!(
+        jpeg.get(2..4),
+        Some([0xFF, 0xE0].as_slice()),
+        "encoder emits APP0 first"
+    );
+    let Some(len_bytes) = jpeg.get(4..6) else {
+        panic!("jpeg fixture missing APP0 length at bytes 4..6");
+    };
+    let [hi, lo] = len_bytes else {
+        panic!("jpeg fixture APP0 length is not 2 bytes");
+    };
+    let app0_len = usize::from(*hi) << 8 | usize::from(*lo);
     let after_app0 = 4 + app0_len;
     let garbage_runs: [&[u8]; 3] = [&[0x12], &[0x12, 0x34], &[1, 2, 3, 4, 5, 6, 7, 8]];
     for garbage in garbage_runs {
-        let mut spliced = jpeg[..after_app0].to_vec();
+        let Some(head) = jpeg.get(..after_app0) else {
+            panic!("APP0 end {after_app0} past jpeg of len {}", jpeg.len());
+        };
+        let mut spliced = head.to_vec();
         spliced.extend_from_slice(garbage);
-        spliced.extend_from_slice(&jpeg[after_app0..]);
+        spliced
+            .extend_from_slice(jpeg.get(after_app0..).unwrap_or_else(|| {
+                panic!("APP0 end {after_app0} past jpeg of len {}", jpeg.len())
+            }));
         assert!(
             image::load_from_memory(&spliced).is_ok(),
             "precondition: decoders accept stray inter-segment bytes"
@@ -590,9 +616,15 @@ fn jpeg_reaches_eoi_skips_stray_inter_segment_bytes() {
     }
     // A stray FF00 pair at a marker position is skipped, not treated
     // as a marker.
-    let mut stuffed = jpeg[..after_app0].to_vec();
+    let Some(head) = jpeg.get(..after_app0) else {
+        panic!("APP0 end {after_app0} past jpeg of len {}", jpeg.len());
+    };
+    let mut stuffed = head.to_vec();
     stuffed.extend_from_slice(&[0xFF, 0x00]);
-    stuffed.extend_from_slice(&jpeg[after_app0..]);
+    stuffed.extend_from_slice(
+        jpeg.get(after_app0..)
+            .unwrap_or_else(|| panic!("APP0 end {after_app0} past jpeg of len {}", jpeg.len())),
+    );
     assert!(jpeg_reaches_eoi(&stuffed));
 }
 

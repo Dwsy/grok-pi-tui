@@ -1,13 +1,16 @@
 use std::sync::Arc;
 
+use rusqlite::params;
 use tempfile::TempDir;
 use xai_grok_tools::types::memory_v2::{
     MemoryV2Access as _, MemoryV2AccessResource, MemoryV2Write, record_memory_v2_read,
     write_memory_v2_file,
 };
 use xai_grok_tools::types::resources::Resources;
+use xai_sqlite_journal::JournalMode;
 
 use super::*;
+use crate::V2CaptureStore;
 use crate::v2::ensure_scope_initialized;
 
 struct Fixture {
@@ -65,7 +68,7 @@ fn classifies_both_scopes_and_protected_paths() {
             .policy
             .classify_path(&fixture.workspace.join("archive/old.md"))
             .unwrap(),
-        V2PathClass::Protected(V2MemoryScope::Workspace)
+        V2PathClass::ArchivedObservation(V2MemoryScope::Workspace)
     );
     assert_eq!(
         fixture
@@ -100,6 +103,36 @@ fn rejects_traversal_protected_and_non_markdown_writes() {
             .unwrap_err()
             .contains(".md")
     );
+}
+
+#[test]
+fn rejects_recreating_durably_excluded_paths() {
+    let fixture = Fixture::new();
+    V2CaptureStore::open(&fixture.workspace, V2MemoryScope::Workspace).unwrap();
+    let state_path = fixture.workspace.join("memory_state.sqlite");
+    JournalMode::for_db_path(&state_path)
+        .open(&state_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO memory_v2_tombstones(
+                tombstone_id, target_kind, relative_path, provenance_hash, created_at, reason
+             ) VALUES ('forgotten', 'topic', 'topics/forgotten.md', ?1, 1, 'privacy')",
+            params!["0".repeat(64)],
+        )
+        .unwrap();
+
+    assert!(matches!(
+        fixture
+            .policy
+            .write_file_inner(&fixture.workspace.join("topics/forgotten.md"), b"resurrect"),
+        Err(V2AccessError::Excluded(_))
+    ));
+    assert!(matches!(
+        fixture
+            .policy
+            .validate_read_inner(&fixture.workspace.join("topics/forgotten.md")),
+        Err(V2AccessError::Excluded(_))
+    ));
 }
 
 #[test]
@@ -271,12 +304,83 @@ fn rejects_nested_topic_and_observation_paths() {
         Err(V2AccessError::NestedPath(_))
     ));
     assert!(!fixture.global.join("observations/_inbox/2026").exists());
+    assert!(
+        fixture
+            .policy
+            .write_file(&nested_topic, b"# Conventions")
+            .unwrap_err()
+            .contains("directly under topics/")
+    );
+    assert!(
+        !std::fs::read_to_string(fixture.workspace.join("MEMORY.md"))
+            .unwrap()
+            .contains("conventions.md")
+    );
+}
+
+#[test]
+fn rejects_oversized_writes_before_touching_the_filesystem() {
+    let fixture = Fixture::new();
+    let topic = fixture.workspace.join("topics/bulky.md");
+    let error = fixture
+        .policy
+        .write_file_inner(&topic, &vec![b'x'; MAX_TOPIC_FILE_BYTES as usize + 1])
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        V2AccessError::TooLarge {
+            limit_bytes: MAX_TOPIC_FILE_BYTES,
+            ..
+        }
+    ));
+    assert!(!topic.exists());
+    fixture
+        .policy
+        .write_file_inner(&topic, &vec![b'x'; MAX_TOPIC_FILE_BYTES as usize])
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&topic).unwrap().len(),
+        MAX_TOPIC_FILE_BYTES
+    );
+    assert!(
+        std::fs::read_to_string(fixture.workspace.join("MEMORY.md"))
+            .unwrap()
+            .contains("topics/bulky.md")
+    );
+
+    let observation = fixture.global.join("observations/_inbox/bulky.md");
+    let error = fixture
+        .policy
+        .write_file_inner(
+            &observation,
+            &vec![b'o'; MAX_WRITE_OBSERVATION_BYTES as usize + 1],
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        V2AccessError::TooLarge {
+            limit_bytes: MAX_WRITE_OBSERVATION_BYTES,
+            ..
+        }
+    ));
+    assert!(!observation.exists());
+    fixture
+        .policy
+        .write_file_inner(
+            &observation,
+            &vec![b'o'; MAX_WRITE_OBSERVATION_BYTES as usize],
+        )
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&observation).unwrap().len(),
+        MAX_WRITE_OBSERVATION_BYTES
+    );
 }
 
 #[test]
 fn caps_new_file_contents_before_filesystem_access() {
     let fixture = Fixture::new();
-    let oversized = vec![b'x'; MAX_WRITE_CONTENT_BYTES + 1];
+    let oversized = vec![b'x'; MAX_TOPIC_FILE_BYTES as usize + 1];
     let outside_path = fixture._temp.path().join("ordinary/massive.md");
     assert_eq!(
         fixture
@@ -288,7 +392,7 @@ fn caps_new_file_contents_before_filesystem_access() {
     assert!(!outside_path.parent().unwrap().exists());
 
     let boundary_path = fixture.workspace.join("topics/boundary.md");
-    let boundary = vec![b'x'; MAX_WRITE_CONTENT_BYTES];
+    let boundary = vec![b'x'; MAX_TOPIC_FILE_BYTES as usize];
     fixture
         .policy
         .write_file(&boundary_path, &boundary)
@@ -308,9 +412,67 @@ fn caps_new_file_contents_before_filesystem_access() {
         V2AccessError::TooLarge {
             limit_bytes,
             ..
-        } if limit_bytes == MAX_WRITE_CONTENT_BYTES as u64
+        } if limit_bytes == MAX_TOPIC_FILE_BYTES
     ));
     assert!(!oversized_path.exists());
+}
+
+#[test]
+fn ordinary_topic_reads_are_counted_per_scope() {
+    let fixture = Fixture::new();
+    let topic = fixture.workspace.join("topics/rust.md");
+    std::fs::write(&topic, "# Rust\n\nNotes.").unwrap();
+    let note = fixture.workspace.join("observations/_inbox/note.md");
+    std::fs::write(&note, "# Note\n\nEvidence.").unwrap();
+
+    fixture.policy.record_read(&topic, b"# Rust").unwrap();
+    fixture.policy.record_read(&topic, b"# Rust").unwrap();
+    fixture.policy.record_read(&note, b"# Note").unwrap();
+    fixture
+        .policy
+        .record_read(&fixture.workspace.join("MEMORY.md"), b"")
+        .unwrap();
+
+    let read_ledger = |scope: &PathBuf| {
+        let state_path = scope.join("memory_state.sqlite");
+        let connection = JournalMode::for_db_path(&state_path)
+            .open_readonly(&state_path)
+            .unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT relative_path, read_count FROM memory_v2_topic_reads
+                 ORDER BY relative_path",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        read_ledger(&fixture.workspace),
+        vec![("topics/rust.md".to_owned(), 2)]
+    );
+    assert!(read_ledger(&fixture.global).is_empty());
+
+    // Internal snapshot reads (Dream, forget, carry-over) never count.
+    fixture.policy.record_read_typed(&topic, b"# Rust").unwrap();
+    assert_eq!(
+        read_ledger(&fixture.workspace),
+        vec![("topics/rust.md".to_owned(), 2)]
+    );
+
+    // A topic read while the state database is missing is skipped, and the
+    // read itself still succeeds without recreating the database.
+    let state_path = fixture.workspace.join("memory_state.sqlite");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", state_path.display()));
+    }
+    fixture.policy.record_read(&topic, b"# Rust").unwrap();
+    assert!(!state_path.exists());
 }
 
 #[test]
@@ -415,6 +577,31 @@ fn manifest_refresh_failure_restores_existing_content() {
     assert_eq!(std::fs::read(&path).unwrap(), b"before");
 }
 
+#[test]
+fn manifest_refresh_failure_restores_deleted_topic() {
+    let fixture = Fixture::new();
+    let path = fixture.workspace.join("topics/deleted.md");
+    fixture.policy.write_file(&path, b"before").unwrap();
+    fixture.policy.record_read(&path, b"before").unwrap();
+
+    let manifest = fixture.workspace.join("MEMORY.md");
+    std::fs::remove_file(&manifest).unwrap();
+    std::fs::create_dir(&manifest).unwrap();
+
+    let error = fixture.policy.remove_topic_file(&path).unwrap_err();
+    assert!(matches!(error, V2AccessError::ManifestRefresh { .. }));
+    assert_eq!(std::fs::read(&path).unwrap(), b"before");
+
+    std::fs::remove_dir(&manifest).unwrap();
+    fixture.policy.remove_topic_file(&path).unwrap();
+    assert!(!path.exists());
+    assert!(
+        !std::fs::read_to_string(&manifest)
+            .unwrap()
+            .contains("topics/deleted.md")
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn rejects_symlink_file_and_directory_escapes() {
@@ -463,11 +650,28 @@ fn nonexistent_target_under_existing_writable_directory_is_safe() {
 }
 
 #[test]
+fn observations_are_create_only() {
+    let fixture = Fixture::new();
+    let path = fixture.workspace.join("observations/_inbox/note.md");
+    let original = b"# Note\n\nfirst version";
+    assert!(fixture.policy.preflight_write(&path, original).unwrap());
+    fixture.policy.write_file(&path, original).unwrap();
+    fixture.policy.record_read(&path, original).unwrap();
+
+    let edited = b"# Note\n\nsecond version";
+    let error = fixture.policy.preflight_write(&path, edited).unwrap_err();
+    assert!(error.contains("append-only"), "{error}");
+    let error = fixture.policy.write_file(&path, edited).unwrap_err();
+    assert!(error.contains("append-only"), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+}
+
+#[test]
 fn atomic_replacement_never_exposes_partial_content() {
     let fixture = Fixture::new();
     let path = fixture.workspace.join("topics/concurrent.md");
-    let old = vec![b'a'; MAX_WRITE_CONTENT_BYTES];
-    let new = vec![b'b'; MAX_WRITE_CONTENT_BYTES];
+    let old = vec![b'a'; MAX_TOPIC_FILE_BYTES as usize];
+    let new = vec![b'b'; MAX_TOPIC_FILE_BYTES as usize];
     fixture.policy.write_file(&path, &old).unwrap();
     fixture.policy.record_read(&path, &old).unwrap();
 
@@ -482,4 +686,19 @@ fn atomic_replacement_never_exposes_partial_content() {
     });
     fixture.policy.write_file(&path, &new).unwrap();
     reader.join().unwrap();
+}
+
+#[test]
+fn removal_rejects_oversized_topic_without_deleting_it() {
+    let fixture = Fixture::new();
+    let path = fixture.workspace.join("topics/oversized.md");
+    let bytes = vec![b'x'; MAX_TOPIC_FILE_BYTES as usize + 1];
+    std::fs::write(&path, &bytes).unwrap();
+    fixture.policy.record_read_typed(&path, &bytes).unwrap();
+
+    assert!(matches!(
+        fixture.policy.remove_topic_file(&path),
+        Err(V2AccessError::Inspect { .. })
+    ));
+    assert!(path.is_file());
 }

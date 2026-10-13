@@ -1,7 +1,42 @@
 //! Regression: settings saves must serialize against config-init-flock writers, or the two
 //! domains interleave read-modify-writes and the last atomic rename drops the other side's edit.
 
-use std::time::Duration;
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+fn wait_for(deadline: Instant, mut check: impl FnMut() -> bool) -> bool {
+    while Instant::now() < deadline {
+        if check() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+/// `acquire_init_lock` opens `.config-init.lock` before its 1s `try_lock` loop.
+/// A second fd means the saver is already in that loop.
+fn saver_has_opened_init_lock(lock_path: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
+        return false;
+    };
+    let opens = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let Ok(linked) = std::fs::read_link(entry.path()) else {
+                return false;
+            };
+            if linked == lock_path {
+                return true;
+            }
+            match (dunce::canonicalize(&linked), dunce::canonicalize(lock_path)) {
+                (Ok(linked), Ok(lock_path)) => linked == lock_path,
+                _ => false,
+            }
+        })
+        .count();
+    opens >= 2
+}
 
 #[test]
 fn settings_save_serializes_against_init_flock_writer() {
@@ -31,9 +66,16 @@ fn settings_save_serializes_against_init_flock_writer() {
             }))
     });
 
-    // Give the save time to land (pre-fix) or block on the flock (post-fix),
-    // then finish the flock writer's read-modify-write and release.
-    std::thread::sleep(Duration::from_millis(400));
+    // The saver fails closed after 1s of `try_lock` retries. A fixed sleep spends
+    // that budget before this thread is scheduled to drop the flock.
+    let lock_path = grok_home.path().join(".config-init.lock");
+    assert!(
+        wait_for(Instant::now() + Duration::from_secs(10), || {
+            saver_has_opened_init_lock(&lock_path)
+        }),
+        "settings save never opened {}",
+        lock_path.display()
+    );
     let mut modified: toml::Value = toml::from_str(&stale_read).unwrap();
     modified.as_table_mut().unwrap().insert(
         "plugins".into(),

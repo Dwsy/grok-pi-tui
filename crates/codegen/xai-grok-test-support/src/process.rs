@@ -48,6 +48,7 @@ pub struct TestProcessConfig {
     stdin: TestStdin,
     stdout: TestOutput,
     stderr: TestOutput,
+    keep_stdout: bool,
     tail_bytes: usize,
     grace_period: Duration,
     kill_wait: Duration,
@@ -72,6 +73,11 @@ impl TestProcessConfig {
 
     pub fn stdout(mut self, policy: TestOutput) -> Self {
         self.stdout = policy;
+        self
+    }
+
+    pub fn keep_stdout(mut self) -> Self {
+        self.keep_stdout = true;
         self
     }
 
@@ -127,6 +133,7 @@ impl Default for TestProcessConfig {
             grace_period: DEFAULT_GRACE_PERIOD,
             kill_wait: DEFAULT_KILL_WAIT,
             env: Vec::new(),
+            keep_stdout: false,
         }
     }
 }
@@ -181,8 +188,13 @@ impl TailState {
         self.bytes_seen = self.bytes_seen.saturating_add(bytes.len() as u64);
         if bytes.len() >= self.capacity {
             self.bytes.clear();
-            self.bytes
-                .extend_from_slice(&bytes[bytes.len() - self.capacity..]);
+            self.bytes.extend_from_slice(
+                bytes
+                    .len()
+                    .checked_sub(self.capacity)
+                    .and_then(|start| bytes.get(start..))
+                    .unwrap_or(bytes),
+            );
             self.truncated = true;
             return;
         }
@@ -252,7 +264,7 @@ macro_rules! captured_reader {
                 let before = buf.filled().len();
                 match Pin::new(&mut this.inner).poll_read(cx, buf) {
                     Poll::Ready(Ok(())) => {
-                        this.tail.append(&buf.filled()[before..]);
+                        this.tail.append(buf.filled().get(before..).unwrap_or(&[]));
                         Poll::Ready(Ok(()))
                     }
                     Poll::Ready(Err(error)) => {
@@ -445,9 +457,11 @@ impl TestProcess {
                 TestStdin::Null => Stdio::null(),
                 TestStdin::Piped => Stdio::piped(),
             })
-            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if !config.keep_stdout {
+            cmd.stdout(Stdio::piped());
+        }
         xai_tty_utils::detach_command(&mut cmd);
 
         let mut group = xai_tty_utils::ProcessGroup::new()?;
@@ -485,18 +499,23 @@ impl TestProcess {
         let stdin = child.stdin.take();
         let stdout_tail = OutputTail::new(config.tail_bytes);
         let stderr_tail = OutputTail::new(config.tail_bytes);
-        let child_stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("test child stdout pipe missing"))?;
+        let child_stdout = child.stdout.take();
+        if !config.keep_stdout && child_stdout.is_none() {
+            return Err(io::Error::other("test child stdout pipe missing"));
+        }
         let child_stderr = child
             .stderr
             .take()
             .ok_or_else(|| io::Error::other("test child stderr pipe missing"))?;
 
-        let (stdout, stdout_capture) = match config.stdout {
-            TestOutput::Capture => (None, Some(spawn_capture(child_stdout, stdout_tail.clone()))),
-            TestOutput::Piped => (Some(child_stdout), None),
+        let (stdout, stdout_capture) = match child_stdout {
+            None => (None, None),
+            Some(child_stdout) => match config.stdout {
+                TestOutput::Capture => {
+                    (None, Some(spawn_capture(child_stdout, stdout_tail.clone())))
+                }
+                TestOutput::Piped => (Some(child_stdout), None),
+            },
         };
         let (stderr, stderr_capture) = match config.stderr {
             TestOutput::Capture => (None, Some(spawn_capture(child_stderr, stderr_tail.clone()))),
@@ -872,7 +891,11 @@ where
         loop {
             match reader.read(&mut buffer).await {
                 Ok(0) => break,
-                Ok(read) => tail.append(&buffer[..read]),
+                Ok(read) => {
+                    if let Some(chunk) = buffer.get(..read) {
+                        tail.append(chunk);
+                    }
+                }
                 Err(error) => {
                     tail.record_error(&error);
                     break;
@@ -930,6 +953,49 @@ fn sanitize_output(output: &str, redactions: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The slave is the child's stdout so Rust line-buffers it.
+#[cfg(unix)]
+pub fn open_pty_stdout() -> io::Result<(std::fs::File, std::process::Stdio)> {
+    let mut master_fd = -1;
+    let mut slave_fd = -1;
+    // SAFETY: openpty writes the two fds; null termios and winsize take the defaults.
+    let rc = unsafe {
+        libc::openpty(
+            &mut master_fd,
+            &mut slave_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let size = libc::winsize {
+        ws_row: 24,
+        ws_col: 200,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: master_fd is the pty master openpty just returned.
+    unsafe {
+        libc::ioctl(master_fd, libc::TIOCSWINSZ, &size);
+    }
+    use std::os::unix::io::FromRawFd as _;
+    // SAFETY: both fds are owned by this function and not used again.
+    let master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+    let slave = unsafe { std::process::Stdio::from(std::fs::File::from_raw_fd(slave_fd)) };
+    Ok((master, slave))
+}
+
+#[cfg(not(unix))]
+pub fn open_pty_stdout() -> io::Result<(std::fs::File, std::process::Stdio)> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "line-buffered stdout needs a unix pty",
+    ))
 }
 
 #[cfg(test)]

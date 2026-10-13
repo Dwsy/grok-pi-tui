@@ -8,6 +8,8 @@
 //! Conversion from domain types (`HookSpec`, `LoadedPlugin`) to these DTOs
 //! lives in the shell's extension handlers, not here.
 
+#![deny(clippy::indexing_slicing)]
+
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -233,7 +235,7 @@ pub struct HookInfo {
     pub timeout_ms: u64,
     /// Source directory of the hook definition file.
     pub source_dir: String,
-    /// Whether this hook is disabled via ~/.grok/disabled-hooks.
+    /// Whether dispatch skips this hook: `enabled = false`, listed in ~/.grok/disabled-hooks, or kept off by `allow_managed_hooks_only`.
     #[serde(default)]
     pub disabled: bool,
     /// Enforced by root-owned managed policy: disable actions are refused
@@ -439,7 +441,7 @@ fn strip_control_chars(s: &str) -> String {
 
 fn truncate_chars(s: &str, max_chars: usize) -> String {
     match s.char_indices().nth(max_chars) {
-        Some((idx, _)) => s[..idx].to_string(),
+        Some((idx, _)) => s.get(..idx).unwrap_or(s).to_string(),
         None => s.to_string(),
     }
 }
@@ -980,11 +982,11 @@ mod tests {
         };
         components.sanitize();
         assert_eq!(components.skills.len(), MAX_COMPONENTS_PER_CATEGORY);
-        assert_eq!(components.skills[0].name, "s0");
-        assert_eq!(
-            components.skills[0].description.as_ref().unwrap().len(),
-            120
-        );
+        let Some(skill) = components.skills.first() else {
+            panic!("expected a skill: {:?}", components.skills);
+        };
+        assert_eq!(skill.name, "s0");
+        assert_eq!(skill.description.as_ref().unwrap().len(), 120);
     }
 
     fn one_item_per_category() -> PluginComponents {
@@ -1020,7 +1022,10 @@ mod tests {
         );
         components.sanitize();
         for (_, items) in components.categories() {
-            assert!(!items[0].name.contains('\u{1b}'));
+            let Some(item) = items.first() else {
+                panic!("expected one item: {items:?}");
+            };
+            assert!(!item.name.contains('\u{1b}'));
         }
     }
 
@@ -1039,11 +1044,11 @@ mod tests {
         assert!(!json.contains("commands"), "{json}");
         let parsed: PluginComponents = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, components);
-        assert_eq!(parsed.skills[0].name, "brainstorming");
-        assert_eq!(
-            parsed.skills[0].description.as_deref(),
-            Some("Structured ideation")
-        );
+        let Some(skill) = parsed.skills.first() else {
+            panic!("expected a skill: {:?}", parsed.skills);
+        };
+        assert_eq!(skill.name, "brainstorming");
+        assert_eq!(skill.description.as_deref(), Some("Structured ideation"));
     }
 
     #[test]
@@ -1069,7 +1074,10 @@ mod tests {
         let parsed: MarketplacePluginEntry = serde_json::from_str(json).unwrap();
         let components = parsed.components.clone().expect("components present");
         assert_eq!(components.skills.len(), 1);
-        assert_eq!(components.skills[0].name, "code-review");
+        let Some(skill) = components.skills.first() else {
+            panic!("expected a skill: {:?}", components.skills);
+        };
+        assert_eq!(skill.name, "code-review");
         let reserialized = serde_json::to_string(&parsed).unwrap();
         assert!(reserialized.contains("code-review"), "{reserialized}");
     }

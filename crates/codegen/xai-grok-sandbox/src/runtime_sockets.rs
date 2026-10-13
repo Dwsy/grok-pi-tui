@@ -1,9 +1,11 @@
-//! Container-runtime API socket deny policy for network-restricted profiles.
+//! Launch-time unix socket deny masks for sandbox profiles.
 //!
 //! `/run`, `/var`, and the home directory stay readable in restricted profiles (DNS/NSS, tool config).
-//! That leaves container-runtime API sockets path-reachable, so profile resolution denies the well-known endpoints that exist at launch.
+//! That leaves container-runtime API sockets and D-Bus/systemd private sockets path-reachable, so profile
+//! resolution denies the well-known endpoints that exist at launch.
 //! These launch-time masks are defense in depth only: they cannot cover sockets created or unlinked/recreated after startup.
-//! The session-long guarantee is the per-spawn child network filter ([`crate::child_net::restrict_child_network`]).
+//! For container runtimes, the session-long guarantee is the per-spawn child network filter
+//! ([`crate::child_net::restrict_child_network`]). D-Bus/systemd masks block out-of-tree unit spawn via those buses.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -33,6 +35,24 @@ const PER_UID_SOCKET_SUFFIXES: &[&str] = &[
 const PER_HOME_SOCKET_SUFFIXES: &[&str] =
     &[".docker/desktop/docker.sock", ".docker/run/docker.sock"];
 
+/// System/session D-Bus and systemd private sockets.
+/// Landlock is process-tree local; a message on these sockets can spawn a unit outside that tree.
+pub(crate) fn dbus_socket_deny_paths() -> Vec<PathBuf> {
+    let mut paths = vec![
+        PathBuf::from("/run/dbus/system_bus_socket"),
+        PathBuf::from("/var/run/dbus/system_bus_socket"),
+        PathBuf::from("/run/systemd/private"),
+    ];
+    #[cfg(unix)]
+    {
+        // SAFETY: getuid is always safe.
+        let uid = unsafe { libc::getuid() };
+        paths.push(PathBuf::from(format!("/run/user/{uid}/bus")));
+        paths.push(PathBuf::from(format!("/run/user/{uid}/systemd/private")));
+    }
+    paths
+}
+
 /// Every container-runtime socket endpoint the restriction must cover.
 pub(crate) fn runtime_socket_deny_paths() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = SYSTEM_SOCKETS.iter().copied().map(PathBuf::from).collect();
@@ -52,18 +72,14 @@ pub(crate) fn runtime_socket_deny_paths() -> Vec<PathBuf> {
     paths
 }
 
-/// Resolve parent aliases of existing automatic socket endpoints without following endpoints.
-pub(crate) fn materialize_runtime_socket_deny_paths() -> io::Result<Vec<PathBuf>> {
-    materialize_runtime_socket_deny_paths_from(runtime_socket_deny_paths())
-}
-
-fn runtime_socket_deny_paths_for_resolution() -> io::Result<Vec<PathBuf>> {
+/// Materialize `policy` outside bwrap; inside bwrap, recover only handed paths in that policy.
+fn socket_deny_paths_for_resolution(policy: &[PathBuf]) -> io::Result<Vec<PathBuf>> {
     if !(cfg!(target_os = "linux") && crate::is_inside_bwrap()) {
-        return materialize_runtime_socket_deny_paths();
+        return materialize_runtime_socket_deny_paths_from(policy.iter().cloned());
     }
     runtime_socket_deny_paths_for_context_with_policy(
         std::env::var(BWRAP_RUNTIME_SOCKET_DENY_ENV_VAR),
-        runtime_socket_deny_paths(),
+        policy.to_vec(),
     )
 }
 
@@ -82,7 +98,7 @@ fn runtime_socket_deny_paths_for_context_with_policy(
 }
 
 /// Missing candidates are skipped; every other resolution failure is returned.
-fn materialize_runtime_socket_deny_paths_from(
+pub(crate) fn materialize_runtime_socket_deny_paths_from(
     candidates: impl IntoIterator<Item = PathBuf>,
 ) -> io::Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
@@ -141,6 +157,7 @@ fn materialize_runtime_socket_deny_paths_from(
 }
 
 /// Encode the outer process's materialized automatic socket paths for bwrap re-exec.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn encode_bwrap_runtime_socket_denies(paths: &[PathBuf]) -> io::Result<String> {
     serde_json::to_string(paths).map_err(io::Error::other)
 }
@@ -223,16 +240,19 @@ fn normalize_existing_parent_alias(parent: &Path) -> io::Result<PathBuf> {
     Ok(normalized)
 }
 
-/// Append the runtime-socket denials a network-restricted profile needs. Inside bwrap it uses only the validated outer
-/// handoff, so mounts cannot create new auto entries. Every other explicit deny stays strict. Returns an error when an
-/// existing automatic endpoint cannot be resolved or the inside-bwrap handoff is malformed or outside the static policy.
-pub(crate) fn append_runtime_socket_denies(
+/// Append materialized automatic socket denials for `policy`. Inside bwrap it uses only the validated outer handoff
+/// against that same policy. Returns an error when an existing automatic endpoint cannot be resolved or the
+/// inside-bwrap handoff is malformed or outside the policy.
+pub(crate) fn append_socket_denies(
     deny: &mut Vec<PathBuf>,
     auto_sockets: &mut Vec<PathBuf>,
+    policy: &[PathBuf],
 ) -> io::Result<()> {
-    let policy = runtime_socket_deny_paths();
-    let materialized = runtime_socket_deny_paths_for_resolution()?;
-    merge_runtime_socket_denies(deny, &materialized, &policy)?;
+    if policy.is_empty() {
+        return Ok(());
+    }
+    let materialized = socket_deny_paths_for_resolution(policy)?;
+    merge_runtime_socket_denies(deny, &materialized, policy)?;
     for path in materialized {
         if !auto_sockets.contains(&path) {
             auto_sockets.push(path);

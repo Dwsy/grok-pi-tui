@@ -9,10 +9,6 @@ use crate::types::{Hunk, HunkId, HunkLineInfo, HunkSource};
 
 use super::*;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn sample_agent_hunk() -> Hunk {
     Hunk {
         id: HunkId::from_string("test-hunk-001".into()),
@@ -128,10 +124,6 @@ fn make_ctx() -> LocSinkContext {
         aggregate_tx: None,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Unit tests: HunkRecord::from_hunk
-// ---------------------------------------------------------------------------
 
 #[test]
 fn from_hunk_agent_edit() {
@@ -259,10 +251,6 @@ fn from_hunk_trigger_source_overrides_preserved_source() {
     assert_eq!(record.event_type, EventType::Updated);
 }
 
-// ---------------------------------------------------------------------------
-// Sink tests
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn sink_processes_added_and_content_changed() {
     let (tx, rx) = mpsc::unbounded_channel();
@@ -331,24 +319,23 @@ async fn sink_processes_added_and_content_changed() {
         "HunkAdded + HunkContentChanged + HunkRemoved should produce 3 records"
     );
 
-    // First record: added (full counts)
-    assert_eq!(
-        w.records[0].hunk_id,
-        HunkId::from_string("test-hunk-001".into())
-    );
-    assert_eq!(w.records[0].event_type, EventType::Added);
-    assert_eq!(w.records[0].lines_added, 5);
-    assert_eq!(w.records[0].lines_removed, 3);
+    let [added, updated, removed] = w.records.as_slice() else {
+        panic!("expected three records: {:?}", w.records);
+    };
+    assert_eq!(added.hunk_id, HunkId::from_string("test-hunk-001".into()));
+    assert_eq!(added.event_type, EventType::Added);
+    assert_eq!(added.lines_added, 5);
+    assert_eq!(added.lines_removed, 3);
 
     // Second record: updated (delta: 8-5=3 added, 3-3=0 removed)
-    assert_eq!(w.records[1].event_type, EventType::Updated);
-    assert_eq!(w.records[1].lines_added, 3i64);
-    assert_eq!(w.records[1].lines_removed, 0i64);
+    assert_eq!(updated.event_type, EventType::Updated);
+    assert_eq!(updated.lines_added, 3i64);
+    assert_eq!(updated.lines_removed, 0i64);
 
     // Third record: removed (negates accumulated: -(5+3)=-8, -(3+0)=-3)
-    assert_eq!(w.records[2].event_type, EventType::Removed);
-    assert_eq!(w.records[2].lines_added, -8i64);
-    assert_eq!(w.records[2].lines_removed, -3i64);
+    assert_eq!(removed.event_type, EventType::Removed);
+    assert_eq!(removed.lines_added, -8i64);
+    assert_eq!(removed.lines_removed, -3i64);
 
     // SUM should be zero
     let total: i64 = w.records.iter().map(|r| r.lines_added).sum();
@@ -387,15 +374,17 @@ async fn sink_removed_hunk_zeroes_out_accumulated_total() {
     let w = shared.lock().unwrap();
     assert_eq!(w.records.len(), 2, "Should have added + removed records");
 
-    // First: added
-    assert_eq!(w.records[0].event_type, EventType::Added);
-    assert_eq!(w.records[0].lines_added, 5);
-    assert_eq!(w.records[0].lines_removed, 3);
+    let [added, removed] = w.records.as_slice() else {
+        panic!("expected two records: {:?}", w.records);
+    };
+    assert_eq!(added.event_type, EventType::Added);
+    assert_eq!(added.lines_added, 5);
+    assert_eq!(added.lines_removed, 3);
 
     // Second: removed (negated)
-    assert_eq!(w.records[1].event_type, EventType::Removed);
-    assert_eq!(w.records[1].lines_added, -5);
-    assert_eq!(w.records[1].lines_removed, -3);
+    assert_eq!(removed.event_type, EventType::Removed);
+    assert_eq!(removed.lines_added, -5);
+    assert_eq!(removed.lines_removed, -3);
 
     // SUM should be zero
     let total_added: i64 = w.records.iter().map(|r| r.lines_added).sum();
@@ -491,7 +480,10 @@ async fn sink_accepted_hunk_preserves_loc() {
         1,
         "Accepted hunk should NOT produce a Removed record"
     );
-    assert_eq!(w.records[0].event_type, EventType::Added);
+    let Some(added) = w.records.first() else {
+        panic!("expected an added record: {:?}", w.records);
+    };
+    assert_eq!(added.event_type, EventType::Added);
 
     // LOC is preserved
     let total_added: i64 = w.records.iter().map(|r| r.lines_added).sum();
@@ -537,15 +529,17 @@ async fn sink_shrinking_hunk_produces_negative_delta() {
     let w = shared.lock().unwrap();
     assert_eq!(w.records.len(), 2);
 
-    // First: agent added 10 lines
-    assert_eq!(w.records[0].author_type, Some(AuthorType::Agent));
-    assert_eq!(w.records[0].lines_added, 10i64);
+    let [agent, human] = w.records.as_slice() else {
+        panic!("expected two records: {:?}", w.records);
+    };
+    assert_eq!(agent.author_type, Some(AuthorType::Agent));
+    assert_eq!(agent.lines_added, 10i64);
 
     // Second: human shrunk the hunk by 3 → negative delta
-    assert_eq!(w.records[1].author_type, Some(AuthorType::Human));
-    assert_eq!(w.records[1].event_type, EventType::Updated);
-    assert_eq!(w.records[1].lines_added, -3i64);
-    assert_eq!(w.records[1].lines_removed, 0i64);
+    assert_eq!(human.author_type, Some(AuthorType::Human));
+    assert_eq!(human.event_type, EventType::Updated);
+    assert_eq!(human.lines_added, -3i64);
+    assert_eq!(human.lines_removed, 0i64);
 
     // SUM(lines_added) by author: agent=10, human=-3, net=7 ✅
     let agent_total: i64 = w
@@ -601,10 +595,6 @@ async fn sink_drains_on_cancellation() {
     assert!(w.flush_count > 0, "Writer should be flushed on shutdown");
 }
 
-// ---------------------------------------------------------------------------
-// JSONL round-trip test
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn jsonl_round_trip() {
     let dir = tempfile::tempdir().unwrap();
@@ -629,7 +619,10 @@ async fn jsonl_round_trip() {
     let lines: Vec<&str> = contents.trim().lines().collect();
     assert_eq!(lines.len(), 1);
 
-    let deserialized: HunkRecord = serde_json::from_str(lines[0]).unwrap();
+    let Some(line) = lines.first() else {
+        panic!("expected a jsonl line: {lines:?}");
+    };
+    let deserialized: HunkRecord = serde_json::from_str(line).unwrap();
     assert_eq!(deserialized, record);
 }
 
@@ -673,10 +666,6 @@ async fn jsonl_writer_appends() {
     assert_eq!(lines.len(), 2);
 }
 
-// ---------------------------------------------------------------------------
-// Deserialization validation
-// ---------------------------------------------------------------------------
-
 /// Invalid enum values must be rejected during deserialization.
 /// This validates that the serde enum gate works — a typo like "foo"
 /// in the JSONL can't silently sneak past.
@@ -713,10 +702,6 @@ fn deserialize_rejects_invalid_source_type() {
     let result = serde_json::from_str::<HunkRecord>(&json);
     assert!(result.is_err(), "Should reject invalid source_type");
 }
-
-// ---------------------------------------------------------------------------
-// Writer failure resilience
-// ---------------------------------------------------------------------------
 
 /// The sink must continue processing events even when the writer fails.
 /// This validates the "log warning and drop the record" error policy.

@@ -24,7 +24,7 @@ async fn drag_select_autoscroll_full_scrollout_copy_pty() {
         "selection anchor turn",
         format!("{ANCHOR_FIRST} anchor first line  \nmiddle filler line  \n{ANCHOR_LAST} anchor last line"),
     );
-    let _filler_turn = content.expect_agent_turn(
+    let mut filler_turn = content.expect_agent_turn(
         "selection autoscroll filler turn",
         marker_response(MOCK_RESPONSE_SENTINEL, FILLER_ROWS),
     );
@@ -69,10 +69,26 @@ async fn drag_select_autoscroll_full_scrollout_copy_pty() {
     harness
         .inject_keys(format!("{PROMPT}\r").as_bytes())
         .expect("submit turn 2");
+    // page_flip_on_send can park at the new prompt (head visible, tail off
+    // screen) or follow can pin the tail (head off screen). Either proves
+    // the filler rendered; the later wheel-up finds the anchor from both.
     harness
-        .wait_for_text(&marker_line(FILLER_ROWS - 1), Duration::from_secs(60))
-        .expect("filler streamed");
-    harness.update(Duration::from_millis(500));
+        .wait_until(
+            "filler head or tail on screen",
+            Duration::from_secs(30),
+            |h| {
+                h.contains_text(MOCK_RESPONSE_SENTINEL)
+                    || h.contains_text(&marker_line(FILLER_ROWS - 1))
+                    || topmost_visible_marker(h).is_some()
+            },
+        )
+        .expect("filler rendered");
+    tokio::time::timeout(Duration::from_secs(15), filler_turn.wait_satisfied())
+        .await
+        .expect("filler turn completes");
+    harness
+        .wait_for_turn_idle(Duration::from_secs(15))
+        .expect("turn 2 finalized");
 
     harness.inject_keys(b"\t").expect("focus scrollback");
     harness

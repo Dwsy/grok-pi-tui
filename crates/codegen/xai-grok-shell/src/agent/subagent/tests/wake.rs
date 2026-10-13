@@ -25,6 +25,8 @@ impl xai_grok_tools::implementations::grok_build::task::coordinator::ChildRunner
     for RunShellChildTestRunner
 {
     type Control = ShellChildRuntime;
+    type RootControl =
+        xai_grok_tools::implementations::grok_build::task::root_control::NoRootControl;
     type CompletionData = ShellCompletionData;
     type RunFuture = xai_grok_tools::implementations::grok_build::task::coordinator::LocalBoxFuture<
         ChildRunOutput<ShellCompletionData>,
@@ -597,6 +599,84 @@ async fn ordinary_spawn_disposes_worktree_when_only_remote_settings_enable_snaps
             assert!(persisted.snapshot_ref.is_some());
 
             drop(backend);
+            coordinator.await.expect("coordinator");
+            usage_ack.abort();
+        })
+        .await;
+}
+
+/// The child's actor no longer binds itself; `run_shell_child` binds it once the actor is up,
+/// ahead of the first turn, and teardown releases it.
+#[tokio::test(flavor = "current_thread")]
+async fn ordinary_spawn_binds_the_child_workspace_session_before_its_first_turn() {
+    use xai_grok_tools::implementations::grok_build::task::backend::{
+        ChannelBackend, SubagentBackend,
+    };
+    use xai_grok_tools::implementations::grok_build::task::coordinator::{
+        CoordinatorConfig, SubagentCoordinator,
+    };
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let temp = tempfile::TempDir::new().expect("tempdir");
+            let meta_dir = temp.path().join("meta");
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock server");
+            server.set_response("bound output");
+            // Park the child's first turn at the model so its binding is observable mid-turn.
+            server.hold_agent_completions();
+            let id = uuid::Uuid::now_v7().to_string();
+            let mut ctx = ctx_with_toggle(HashMap::new());
+            configure_completion_harness(
+                &mut ctx,
+                &server,
+                RunShellChildHarnessConfig::new(meta_dir.clone(), InitialAttemptBehavior::Normal),
+            );
+            ctx.parent_cwd = temp.path().to_path_buf();
+            let workspace_ops = ctx.workspace_ops.clone();
+            let (parent_cmd_tx, parent_cmd_rx) = mpsc::unbounded_channel();
+            ctx.parent_cmd_tx = Some(parent_cmd_tx);
+            let usage_ack = tokio::task::spawn_local(acknowledge_parent_usage(parent_cmd_rx));
+            let (gateway, _gateway_rx) = test_gateway_with_receiver();
+            let (command_tx, command_rx) =
+                SubagentCoordinator::<RunShellChildTestRunner>::channel();
+            let coordinator = tokio::task::spawn_local(
+                SubagentCoordinator::from_channel(
+                    command_rx,
+                    RunShellChildTestRunner::new([ctx], false, gateway),
+                    CoordinatorConfig::default(),
+                )
+                .run(),
+            );
+            let backend = ChannelBackend::for_coordinator_session(command_tx, "setup-parent");
+            let request = auto_wake_test_request(&id);
+            let spawned =
+                tokio::task::spawn_local(async move { backend.spawn(request, None).await });
+            let first_turn_at_model = async {
+                while server.request_count() == 0 {
+                    tokio::task::yield_now().await;
+                }
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(30), first_turn_at_model)
+                .await
+                .expect("the child's first turn reaches the model");
+            let workspace = workspace_ops
+                .workspace_handle()
+                .expect("local workspace ops");
+            assert!(
+                workspace.session(&id).is_some(),
+                "the child's toolset is bound before its first turn dispatches"
+            );
+            server.release_agent_completions();
+            let result = spawned.await.expect("spawn task").expect("ordinary spawn");
+            assert!(result.success);
+            assert!(
+                workspace.session(&id).is_none(),
+                "teardown releases the child's binding"
+            );
+
             coordinator.await.expect("coordinator");
             usage_ack.abort();
         })

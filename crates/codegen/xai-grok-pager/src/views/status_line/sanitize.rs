@@ -59,7 +59,11 @@ fn clamp_lines(text: &str) -> Cow<'_, str> {
             out.push('\n');
         }
         match line.char_indices().nth(MAX_SANITIZED_CHARS) {
-            Some((cut, _)) => out.push_str(&line[..cut]),
+            Some((cut, _)) => {
+                if let Some(head) = line.get(..cut) {
+                    out.push_str(head);
+                }
+            }
             None => out.push_str(line),
         }
     }
@@ -104,8 +108,8 @@ fn extract_osc8_links(text: &str) -> (String, Vec<CommandLink>) {
         // Both columns are measured from `line_start`, which locates the link only if it opened on this line
         debug_assert_eq!(link.line, line, "a link outlived the line it opened on");
         let columns = |text: &str| u16::try_from(painted_width(text)).unwrap_or(u16::MAX);
-        let col_start = columns(&visible[line_start..link.byte_start]);
-        let col_end = columns(&visible[line_start..]);
+        let col_start = columns(visible.get(line_start..link.byte_start).unwrap_or(""));
+        let col_end = columns(visible.get(line_start..).unwrap_or(""));
         if col_end > col_start {
             links.push(CommandLink {
                 line: link.line,
@@ -117,14 +121,14 @@ fn extract_osc8_links(text: &str) -> (String, Vec<CommandLink>) {
     };
 
     while i < chars.len() {
-        let c = chars[i];
+        let Some(&c) = chars.get(i) else { break };
         if c == '\x1b' {
             match chars.get(i + 1).copied() {
                 // Every OSC but a link is dropped
                 // `ansi_to_tui` ends one at BEL only, so an ST-terminated notification would eat the rest of the line
                 Some(']') => {
                     let (body_end, next_i) = string_sequence(&chars, i + 2);
-                    let body: String = chars[i + 2..body_end].iter().collect();
+                    let body: String = chars.get(i + 2..body_end).into_iter().flatten().collect();
                     if let Some(rest) = body.strip_prefix("8;") {
                         let uri = rest.split_once(';').map(|(_, u)| u).unwrap_or("");
                         close_link(&visible, &mut links, &mut open, line_start, line);
@@ -141,8 +145,7 @@ fn extract_osc8_links(text: &str) -> (String, Vec<CommandLink>) {
                 Some('[') => {
                     let mut j = i + 2;
                     let mut final_byte = None;
-                    while j < chars.len() {
-                        let cc = chars[j];
+                    while let Some(&cc) = chars.get(j) {
                         // An unterminated sequence ends at the line: swallowing the newline counts a later link onto the wrong line
                         if cc == '\n' {
                             break;
@@ -157,8 +160,10 @@ fn extract_osc8_links(text: &str) -> (String, Vec<CommandLink>) {
                     }
                     // Only SGR reaches the parser
                     // `ansi_to_tui` eats any other CSI up to the next ASCII letter and that letter too, dropping a counted glyph
-                    if final_byte == Some('m') {
-                        out.extend(&chars[i..j]);
+                    if final_byte == Some('m')
+                        && let Some(seq) = chars.get(i..j)
+                    {
+                        out.extend(seq);
                     }
                     i = j;
                 }
@@ -168,10 +173,16 @@ fn extract_osc8_links(text: &str) -> (String, Vec<CommandLink>) {
                 // Charset selection and two-character escapes: `tput sgr0` emits `ESC ( B ESC [ m`; an `ESC (` left here paints `(B`
                 _ => {
                     let mut j = i + 1;
-                    while j < chars.len() && matches!(chars[j], '\u{20}'..='\u{2f}') {
+                    while chars
+                        .get(j)
+                        .is_some_and(|c| matches!(c, '\u{20}'..='\u{2f}'))
+                    {
                         j += 1;
                     }
-                    if j < chars.len() && matches!(chars[j], '\u{30}'..='\u{7e}') {
+                    if chars
+                        .get(j)
+                        .is_some_and(|c| matches!(c, '\u{30}'..='\u{7e}'))
+                    {
                         j += 1;
                     }
                     i = j;
@@ -224,8 +235,8 @@ fn safe_link_target(uri: &str) -> Option<Arc<str>> {
 /// BEL and ST close one; a newline ends an unterminated one at the line.
 fn string_sequence(chars: &[char], start: usize) -> (usize, usize) {
     let mut i = start;
-    while i < chars.len() {
-        match chars[i] {
+    while let Some(&ch) = chars.get(i) {
+        match ch {
             '\x07' => return (i, i + 1),
             '\x1b' if chars.get(i + 1) == Some(&'\\') => return (i, i + 2),
             '\n' => return (i, i),

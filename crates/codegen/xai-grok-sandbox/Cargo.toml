@@ -10,15 +10,24 @@ anyhow = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 xai-dirs = { workspace = true }
 dunce = { workspace = true }
+# The advisory lock every writer of a grants file takes around its read-modify-write.
+fs2 = { workspace = true }
+# Validates and matches every deny glob and the child environment filter on every target.
+globset = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
+# NFC folding for the floor on APFS (normalisation-insensitive volumes).
+unicode-normalization = { workspace = true }
 url = { workspace = true }
 xai-grok-config = { workspace = true }
+# Detached, scope-enrolled spawns for the per-command backend probe.
+xai-tty-utils = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -29,14 +38,10 @@ libc = { workspace = true }
 #
 # Non-optional (not gated on `enforce`): Cargo has no target-conditional features
 # table, so a `dep:nono` reference from the cross-platform `enforce` feature would
-# break feature resolution on non-unix targets (e.g. Windows builds). nono/globset
-# are unix-only here, so they only compile on unix anyway; the enforce *code*
+# break feature resolution on non-unix targets (e.g. Windows builds). nono is
+# unix-only here, so it only compiles on unix anyway; the enforce *code*
 # stays gated on `cfg(all(feature = "enforce", unix))`.
 nono = { version = "=0.53.0", default-features = false }
-# globset validates every deny glob on BOTH platforms (so a glob is interpreted
-# identically or rejected identically) and matches them on Linux. Non-optional for
-# the same reason as nono above.
-globset = { workspace = true }
 
 # Linux additionally walks the tree to expand globs to existing paths (enforce+
 # linux only). cfg(linux)-gated rather than enforce-gated: the cross-platform

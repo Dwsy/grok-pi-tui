@@ -9,8 +9,14 @@ fn assert_viewport_invariants(
     viewport: &SingleLineViewport,
     display_width: usize,
 ) {
-    let visible = &buffer.text()[viewport.visible_byte_range.clone()];
-    let prefix = &buffer.text()[viewport.visible_byte_range.start..buffer.cursor_byte()];
+    let visible = buffer
+        .text()
+        .get(viewport.visible_byte_range.clone())
+        .unwrap_or("");
+    let prefix = buffer
+        .text()
+        .get(viewport.visible_byte_range.start..buffer.cursor_byte())
+        .unwrap_or("");
     assert!(!visible.contains('\n'));
     assert!(!visible.contains('\r'));
     assert!(visible.width() <= display_width);
@@ -33,7 +39,10 @@ fn single_line_viewport_clips_only_at_grapheme_boundaries() {
     let viewport = buffer.single_line_viewport(4);
     let expected = format!("{zwj}b");
     assert_eq!(
-        &buffer.text()[viewport.visible_byte_range.clone()],
+        buffer
+            .text()
+            .get(viewport.visible_byte_range.clone())
+            .unwrap_or(""),
         expected.as_str()
     );
     assert_eq!(viewport.cursor_display_column, 3);
@@ -43,7 +52,10 @@ fn single_line_viewport_clips_only_at_grapheme_boundaries() {
     let viewport = buffer.single_line_viewport(4);
     let expected = format!("a{zwj}b");
     assert_eq!(
-        &buffer.text()[viewport.visible_byte_range.clone()],
+        buffer
+            .text()
+            .get(viewport.visible_byte_range.clone())
+            .unwrap_or(""),
         expected.as_str()
     );
     assert_eq!(viewport.cursor_display_column, 0);
@@ -51,7 +63,13 @@ fn single_line_viewport_clips_only_at_grapheme_boundaries() {
 
     let _ = buffer.set_cursor_byte(buffer.text().len());
     let viewport = buffer.single_line_viewport(4);
-    assert_eq!(&buffer.text()[viewport.visible_byte_range.clone()], "界");
+    assert_eq!(
+        buffer
+            .text()
+            .get(viewport.visible_byte_range.clone())
+            .unwrap_or(""),
+        "界"
+    );
     assert_eq!(viewport.cursor_display_column, 2);
     assert_viewport_invariants(&buffer, &viewport, 4);
 
@@ -66,7 +84,10 @@ fn single_line_viewport_clips_only_at_grapheme_boundaries() {
     let combining = EditBuffer::from_parts("e\u{301}x", 0);
     let viewport = combining.single_line_viewport(1);
     assert_eq!(
-        &combining.text()[viewport.visible_byte_range.clone()],
+        combining
+            .text()
+            .get(viewport.visible_byte_range.clone())
+            .unwrap_or(""),
         "e\u{301}"
     );
     assert_viewport_invariants(&combining, &viewport, 1);
@@ -82,7 +103,10 @@ fn single_line_viewport_clips_only_at_grapheme_boundaries() {
     let zero_width_buffer = EditBuffer::from_parts(text.as_str(), 1 + zero_width.len());
     let viewport = zero_width_buffer.single_line_viewport(2);
     assert_eq!(
-        &zero_width_buffer.text()[viewport.visible_byte_range.clone()],
+        zero_width_buffer
+            .text()
+            .get(viewport.visible_byte_range.clone())
+            .unwrap_or(""),
         text.as_str()
     );
     assert_eq!(viewport.cursor_display_column, 1);
@@ -99,7 +123,10 @@ fn single_line_viewport_stays_within_lf_and_crlf_logical_lines() {
         let buffer = EditBuffer::from_parts(text, cursor_byte);
         let viewport = buffer.single_line_viewport(4);
         assert_eq!(
-            &buffer.text()[viewport.visible_byte_range.clone()],
+            buffer
+                .text()
+                .get(viewport.visible_byte_range.clone())
+                .unwrap_or(""),
             expected
         );
         assert_viewport_invariants(&buffer, &viewport, 4);
@@ -114,10 +141,22 @@ fn atomic_line_break_stays_inside_single_line_viewport() {
     let atomic = text.find('X').expect("X")..text.find('b').expect("b");
 
     let physical = buffer.single_line_viewport(16);
-    assert_eq!(&buffer.text()[physical.visible_byte_range], "Ybb");
+    assert_eq!(
+        buffer
+            .text()
+            .get(physical.visible_byte_range.clone())
+            .unwrap_or(""),
+        "Ybb"
+    );
 
     let logical = buffer.single_line_viewport_with_atomic_ranges(16, &[atomic]);
-    assert_eq!(&buffer.text()[logical.visible_byte_range], text);
+    assert_eq!(
+        buffer
+            .text()
+            .get(logical.visible_byte_range.clone())
+            .unwrap_or(""),
+        text
+    );
     assert_eq!(logical.cursor_display_column, 5);
 }
 
@@ -170,7 +209,10 @@ fn fixed_seed_edit_sequence_preserves_cursor_and_viewport_invariants() {
     for _ in 0..2_000 {
         match rng.random_range(0..13) {
             0 => {
-                let atom = atoms[rng.random_range(0..atoms.len())];
+                let atom = atoms
+                    .get(rng.random_range(0..atoms.len()))
+                    .copied()
+                    .unwrap_or("");
                 let _ = buffer.insert_str(atom);
             }
             1 => {
@@ -210,7 +252,10 @@ fn fixed_seed_edit_sequence_preserves_cursor_and_viewport_invariants() {
                 let max = buffer.text().len().saturating_add(2);
                 let start = rng.random_range(0..=max);
                 let end = rng.random_range(0..=max);
-                let replacement = atoms[rng.random_range(0..atoms.len())];
+                let replacement = atoms
+                    .get(rng.random_range(0..atoms.len()))
+                    .copied()
+                    .unwrap_or("");
                 let _ = buffer.replace_byte_range(start..end, replacement);
             }
             12 => {

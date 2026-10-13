@@ -578,7 +578,7 @@ mod tests {
         let original = base_with_output(vec![0x00, 0xff, 0xfe, b'h', b'i']);
         let value = serde_json::to_value(&original).unwrap();
         assert!(
-            value["output"].is_string(),
+            value.get("output").is_some_and(|v| v.is_string()),
             "output must be a base64 string, got {value:?}"
         );
         let back: BashNotificationBase = serde_json::from_value(value).unwrap();
@@ -590,7 +590,7 @@ mod tests {
     fn base_output_exact_base64_string() {
         let original = base_with_output(b"hello".to_vec());
         let value = serde_json::to_value(&original).unwrap();
-        assert_eq!(value["output"], serde_json::json!("aGVsbG8="));
+        assert_eq!(value.get("output"), Some(&serde_json::json!("aGVsbG8=")));
     }
 
     #[test]
@@ -635,9 +635,12 @@ mod tests {
             base: base_with_output(vec![0x00, 0xff, 0xfe, b'h', b'i']),
         });
         let value = serde_json::to_value(&original).unwrap();
-        assert_eq!(value["type"], serde_json::json!("BashOutputChunk"));
+        assert_eq!(
+            value.get("type"),
+            Some(&serde_json::json!("BashOutputChunk"))
+        );
         assert!(
-            value["output"].is_string(),
+            value.get("output").is_some_and(|v| v.is_string()),
             "output must be a base64 string through the enum, got {value:?}"
         );
 
@@ -670,7 +673,11 @@ mod tests {
             revision: 7,
         };
         let json = serde_json::to_value(&current).unwrap();
-        assert_eq!(json["reason"], "expired", "reason serializes snake_case");
+        assert_eq!(
+            json.get("reason"),
+            Some(&serde_json::json!("expired")),
+            "reason serializes snake_case"
+        );
         let round_trip: ScheduledTaskRemoved = serde_json::from_value(json).unwrap();
         assert_eq!(round_trip, current);
 

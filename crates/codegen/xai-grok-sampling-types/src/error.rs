@@ -1019,6 +1019,24 @@ mod tests {
     }
 
     #[test]
+    fn text_and_structured_detectors_agree_on_named_size_slugs() {
+        // Numeric "413" is a status, not a slug: the text detector matches
+        // rendered "413 <reason phrase>", not a bare "413:" prefix.
+        for slug in [
+            "payload_too_large",
+            "exceed_context_size_error",
+            "context_length_exceeded",
+            "request_too_large",
+        ] {
+            assert!(is_size_overflow_error_code(slug), "structured: {slug}");
+            assert!(
+                is_context_length_error(&format!("{slug}: request rejected")),
+                "text detector must match structured slug {slug}"
+            );
+        }
+    }
+
+    #[test]
     fn flat_envelope_size_slug_survives_semantic_code_filter() {
         // Size slugs are semantic and must survive the flat envelope's semantic-value filter so downstream classification sees them
         assert_eq!(

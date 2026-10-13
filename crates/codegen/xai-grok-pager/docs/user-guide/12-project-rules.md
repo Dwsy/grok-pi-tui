@@ -42,8 +42,16 @@ Grok also scans home-level rules, regardless of where it starts. These roots are
 | `$GROK_HOME/rules/` (default `~/.grok/rules/`) | Always scanned; applies to all projects |
 | `~/.claude/rules/` | Controlled by `compat.claude.rules` |
 | `~/.cursor/rules/` | Controlled by `compat.cursor.rules` |
+| Each entry of `[paths] extra_rule_dirs` | Any absolute directory you list in `config.toml`; `~` is expanded |
 
-Home rules load first, in the table order, followed by project files from repo root to the current directory. Files are alphabetical within each rules directory. The vendor `rules` cells control both home and project rules independently of the corresponding `agents` cells. Claude's `agents` cell controls named files under `~/.claude/` and project `<dir>/.claude/CLAUDE*.md`; generic top-level names such as `Claude.md`, `CLAUDE.md`, and `CLAUDE.local.md` remain recognized. See [Configuration](05-configuration.md#harness-compatibility).
+Home rules load first, in the table order, followed by project files from repo root to the current directory. Files are alphabetical within each rules directory. To load rules from a directory that is not one of the built-in locations, list it under `[paths]`:
+
+```toml
+[paths]
+extra_rule_dirs = ["~/team-rules", "/opt/company/grok-rules"]
+```
+
+Every `*.md` directly inside a listed directory is loaded as a rule (subdirectories are not scanned), in every project and regardless of folder trust, the repository's `.gitignore`, or the compatibility cells; the model receives them as user rules and `grok inspect` lists them as `global`. Entries must be absolute or start with `~/`; a relative or missing entry loads nothing. `/import-claude` writes your existing `~/.claude/rules/` here so it keeps loading after the Claude compatibility scan is turned off. The vendor `rules` cells control both home and project rules independently of the corresponding `agents` cells. Claude's `agents` cell controls named files under `~/.claude/` and project `<dir>/.claude/CLAUDE*.md`; generic top-level names such as `Claude.md`, `CLAUDE.md`, and `CLAUDE.local.md` remain recognized. See [Configuration](05-configuration.md#harness-compatibility).
 
 ---
 
@@ -51,7 +59,7 @@ Home rules load first, in the table order, followed by project files from repo r
 
 Grok scans for project rules in this order:
 
-1. **Home rules**: `$GROK_HOME`, then enabled `~/.claude/` and `~/.cursor/` sources
+1. **Home rules**: `$GROK_HOME`, then enabled `~/.claude/` and `~/.cursor/` sources, then `[paths] extra_rule_dirs`
 2. **Repo rules**: If inside a git repo, every directory from the repo root down to the current working directory (inclusive)
 3. **CWD-only**: If not inside a git repo, only the current working directory
 

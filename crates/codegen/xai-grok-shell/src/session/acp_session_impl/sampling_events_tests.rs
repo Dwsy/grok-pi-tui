@@ -94,6 +94,70 @@ async fn channel_tokens_accumulate_into_streaming_capture() {
         .await;
 }
 
+/// A `Narration` token re-emits a thinking block's text whole.
+/// Its deltas already streamed and were captured on the `Reasoning` channel.
+#[tokio::test(flavor = "current_thread")]
+async fn narration_token_sends_message_chunk_and_skips_capture() {
+    use xai_grok_sampler::{RequestId, SamplingChannel, SamplingEvent};
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut fixture = make_replay_send_update_fixture().await;
+            let actor = Arc::new(fixture.actor);
+
+            *actor
+                .current_prompt_id
+                .lock()
+                .expect("current_prompt_id mutex poisoned") = Some("prompt-narration".to_string());
+
+            let req = RequestId::random();
+            own_request(&actor, &req);
+            actor
+                .handle_sampling_event(SamplingEvent::ChannelToken {
+                    request_id: req.clone(),
+                    channel: SamplingChannel::Reasoning,
+                    text: "Found the bug; fixing next.".to_string(),
+                    chunk_index: 0,
+                })
+                .await;
+            // Discard the reasoning thought chunk so the next event is the narration chunk
+            while fixture.event_rx.try_recv().is_ok() {}
+
+            actor
+                .handle_sampling_event(SamplingEvent::ChannelToken {
+                    request_id: req,
+                    channel: SamplingChannel::Narration,
+                    text: "Found the bug; fixing next.".to_string(),
+                    chunk_index: 1,
+                })
+                .await;
+
+            let cap = actor.streaming_turn_capture.lock().clone();
+            assert_eq!(cap.reasoning_text, "Found the bug; fixing next.");
+            assert_eq!(
+                cap.response_text, "",
+                "narration must not double-capture as response text"
+            );
+
+            let event = fixture
+                .event_rx
+                .try_recv()
+                .expect("narration must enter the client event queue");
+            let SessionEvent::Notification(SessionNotification::Acp(notification)) = event else {
+                panic!("expected ACP notification event");
+            };
+            let acp::SessionUpdate::AgentMessageChunk(chunk) = &notification.update else {
+                panic!("expected AgentMessageChunk, got {:?}", notification.update);
+            };
+            let acp::ContentBlock::Text(t) = &chunk.content else {
+                panic!("expected text content, got {:?}", chunk.content);
+            };
+            // Paragraph breaks on both sides keep the block from gluing onto adjacent message text
+            assert_eq!(t.text, "\n\nFound the bug; fixing next.\n\n");
+        })
+        .await;
+}
+
 /// A same-prompt `StreamStarted` restart (a doomloop retry) must accumulate a second generation rather than wipe the first.
 /// This guards the `if cap.prompt_id != prompt_id` branch in the `StreamStarted` arm, which the pure-struct tests bypass.
 #[tokio::test(flavor = "current_thread")]
@@ -149,7 +213,10 @@ async fn same_prompt_restart_accumulates_segments_via_handler() {
                 1,
                 "the first generation must be folded into segments, not wiped",
             );
-            assert_eq!(cap.segments[0].reasoning_text, "first gen reasoning");
+            assert_eq!(
+                cap.segments.first().map(|s| s.reasoning_text.as_str()),
+                Some("first gen reasoning")
+            );
             assert_eq!(
                 cap.reasoning_text, "second gen reasoning",
                 "the second generation is the in-progress slot",
@@ -242,8 +309,8 @@ async fn completed_event_clears_slot_keeps_prior_uncommitted_segments() {
                 "the prior uncommitted generation must be retained",
             );
             assert_eq!(
-                cap.segments[0].reasoning_text,
-                "prior uncommitted reasoning"
+                cap.segments.first().map(|s| s.reasoning_text.as_str()),
+                Some("prior uncommitted reasoning")
             );
             assert!(
                 cap.reasoning_text.is_empty(),
@@ -1069,8 +1136,10 @@ async fn doom_loop_recovery_stamps_capture_segments_and_counters() {
                 .await;
 
             let cap = actor.streaming_turn_capture.lock().clone();
-            assert_eq!(cap.segments.len(), 2, "doomed fold + text-free accept");
-            let resampled = cap.segments[0].doom_loop.as_ref().expect("stamped");
+            let [resampled_seg, accepted_seg] = cap.segments.as_slice() else {
+                panic!("doomed fold + text-free accept: {:?}", cap.segments);
+            };
+            let resampled = resampled_seg.doom_loop.as_ref().expect("stamped");
             assert_eq!(resampled.action, "resampled");
             assert_eq!(resampled.attempt, 1);
             assert_eq!(resampled.aborted_at_chunk, Some(421));
@@ -1078,11 +1147,11 @@ async fn doom_loop_recovery_stamps_capture_segments_and_counters() {
                 resampled.doom_loop_triggers,
                 vec!["tail_repetition:8@thinking".to_string()]
             );
-            assert_eq!(cap.segments[0].reasoning_text, "loop loop loop");
-            let accepted = cap.segments[1].doom_loop.as_ref().expect("stamped");
+            assert_eq!(resampled_seg.reasoning_text, "loop loop loop");
+            let accepted = accepted_seg.doom_loop.as_ref().expect("stamped");
             assert_eq!(accepted.action, "accepted_after_budget");
             assert!(
-                cap.segments[1].reasoning_text.is_empty(),
+                accepted_seg.reasoning_text.is_empty(),
                 "committed text lives in history, not the capture"
             );
             assert!(cap.has_doom_loop_segments());
@@ -1259,6 +1328,7 @@ async fn reasoning_only_doomloop_turn_captures_every_generation_as_segments() {
                 actor,
                 event_rx,
                 sent: _sent,
+                sent_ext: _,
                 persistence_rx: _persistence_rx,
             } = make_replay_send_update_fixture().await;
             let actor = Arc::new(actor);
@@ -1398,8 +1468,11 @@ async fn reasoning_only_doomloop_turn_captures_every_generation_as_segments() {
                 2,
                 "both reasoning-only generations must be retained as segments",
             );
-            assert_eq!(capture.segments[0].reasoning_text, "thinking attempt 1");
-            assert_eq!(capture.segments[1].reasoning_text, "thinking attempt 2");
+            let [first, second] = capture.segments.as_slice() else {
+                panic!("expected two reasoning segments: {:?}", capture.segments);
+            };
+            assert_eq!(first.reasoning_text, "thinking attempt 1");
+            assert_eq!(second.reasoning_text, "thinking attempt 2");
             assert_eq!(capture.empty_reason.as_deref(), Some("reasoning_only"));
         })
         .await;

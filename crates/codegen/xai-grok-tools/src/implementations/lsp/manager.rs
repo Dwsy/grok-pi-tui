@@ -727,12 +727,18 @@ mod tests {
         collected.append_file("file:///a.cs", items);
 
         assert!(
-            collected.lines[1].contains("an error"),
+            collected
+                .lines
+                .get(1)
+                .is_some_and(|l| l.contains("an error")),
             "{:?}",
             collected.lines
         );
         assert!(
-            collected.lines[2].contains("a warning"),
+            collected
+                .lines
+                .get(2)
+                .is_some_and(|l| l.contains("a warning")),
             "{:?}",
             collected.lines
         );

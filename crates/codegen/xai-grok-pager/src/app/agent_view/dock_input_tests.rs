@@ -29,10 +29,39 @@ fn insert_running_subagent(agent: &mut AgentView, child_session_id: &str) {
     agent
         .subagent_sessions
         .insert(child_session_id.to_string(), info);
-    agent.insert_subagent_view(
+    agent.insert_test_child(
         child_session_id.to_string(),
         Box::new(super::test_fixtures::make_agent()),
     );
+}
+
+fn insert_finished_subagent(agent: &mut AgentView, child_session_id: &str) {
+    insert_running_subagent(agent, child_session_id);
+    let info = agent.subagent_sessions.get_mut(child_session_id).unwrap();
+    info.set_finished_for_test(true);
+    info.attempt.status = Some(std::sync::Arc::from("completed"));
+}
+
+fn dock_with_subagents(running: &[&str], finished: &[&str]) -> AgentView {
+    let mut agent = make_agent();
+    for id in running {
+        insert_running_subagent(&mut agent, id);
+    }
+    for id in finished {
+        insert_finished_subagent(&mut agent, id);
+    }
+    agent.dock_shown = true;
+    agent.dock_on = true;
+    agent.active_pane = AgentPane::Dock;
+    agent
+}
+
+fn dock_subagent_ids(agent: &AgentView) -> Vec<String> {
+    agent
+        .dock_subagent_rows()
+        .into_iter()
+        .map(|(child, _, _)| child)
+        .collect()
 }
 
 fn insert_running_monitor(agent: &mut AgentView, task_id: &str) {
@@ -178,8 +207,37 @@ fn toggle_tasks_still_toggles_legacy_pane_when_dock_off() {
     assert_eq!(agent.active_pane, AgentPane::Tasks);
 }
 
+fn ctrl_g(agent: &mut AgentView) -> InputOutcome {
+    agent.handle_input(
+        &Event::Key(key(KeyCode::Char('g'), KeyModifiers::CONTROL)),
+        &ActionRegistry::defaults(),
+    )
+}
+
 #[test]
-fn left_h_collapse_and_right_l_expand_the_selected_header() {
+fn ctrl_g_hides_and_shows_dock_from_prompt() {
+    let mut agent = dock_with_task();
+    agent.active_pane = AgentPane::Prompt;
+    assert!(matches!(ctrl_g(&mut agent), InputOutcome::Changed));
+    assert!(agent.dock_hidden);
+    assert_eq!(agent.active_pane, AgentPane::Prompt);
+    assert!(!agent.tasks.overlay.visible);
+    assert!(matches!(ctrl_g(&mut agent), InputOutcome::Changed));
+    assert!(!agent.dock_hidden);
+    assert_eq!(agent.active_pane, AgentPane::Prompt);
+}
+
+#[test]
+fn ctrl_g_hides_shown_dock_when_dock_focused() {
+    let mut agent = dock_with_task();
+    assert_eq!(agent.active_pane, AgentPane::Dock);
+    assert!(matches!(ctrl_g(&mut agent), InputOutcome::Changed));
+    assert!(agent.dock_hidden);
+    assert_eq!(agent.active_pane, AgentPane::Scrollback);
+}
+
+#[test]
+fn left_collapses_and_right_l_expand_the_selected_header() {
     let mut agent = dock_with_task();
     assert!(agent.dock_tasks_expanded);
     assert!(
@@ -192,15 +250,9 @@ fn left_h_collapse_and_right_l_expand_the_selected_header() {
         "cursor starts on the Tasks header"
     );
 
-    for code in [KeyCode::Left, KeyCode::Char('h')] {
-        agent.dock_tasks_expanded = true;
-        let outcome = agent.handle_dock_key(&key(code, KeyModifiers::NONE));
-        assert!(
-            matches!(outcome, InputOutcome::Changed),
-            "{code:?} must collapse, got {outcome:?}"
-        );
-        assert!(!agent.dock_tasks_expanded, "{code:?} left the section open");
-    }
+    let outcome = agent.handle_dock_key(&key(KeyCode::Left, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert!(!agent.dock_tasks_expanded);
 
     for code in [KeyCode::Right, KeyCode::Char('l')] {
         agent.dock_tasks_expanded = false;
@@ -214,6 +266,53 @@ fn left_h_collapse_and_right_l_expand_the_selected_header() {
             "{code:?} left the section closed"
         );
     }
+}
+
+#[test]
+fn dock_h_toggles_show_done() {
+    let mut agent = dock_with_subagents(&["child-running"], &["child-done"]);
+    assert!(!agent.tasks.show_done());
+    assert_eq!(dock_subagent_ids(&agent), ["child-running"]);
+
+    assert!(matches!(
+        agent.handle_dock_key(&key(KeyCode::Char('h'), KeyModifiers::NONE)),
+        InputOutcome::Changed
+    ));
+    assert!(agent.tasks.show_done());
+    assert!(agent.dock_subagents_expanded);
+    assert_eq!(dock_subagent_ids(&agent), ["child-running", "child-done"]);
+    let rows = agent.dock_subagent_rows();
+    let done = rows.get(1).expect("finished child");
+    assert_eq!(done.2.activity.as_deref(), Some("completed"));
+    assert!(!done.2.spinning);
+
+    assert!(matches!(
+        agent.handle_dock_key(&key(KeyCode::Char('h'), KeyModifiers::NONE)),
+        InputOutcome::Changed
+    ));
+    assert!(!agent.tasks.show_done());
+    assert_eq!(dock_subagent_ids(&agent), ["child-running"]);
+}
+
+#[test]
+fn finished_only_subagents_do_not_paint_a_done_summary() {
+    let mut agent = dock_with_subagents(&[], &["child-done"]);
+    assert!(agent.dock_subagent_rows().is_empty());
+    assert!(!agent.dock_items().iter().any(|item| {
+        matches!(
+            item,
+            crate::views::dock::DockItem::Header(crate::views::dock::Section::Subagents)
+                | crate::views::dock::DockItem::Row(crate::views::dock::Section::Subagents, _)
+        )
+    }));
+
+    insert_running_task(&mut agent, "bg-1");
+    assert!(agent.dock_subagent_rows().is_empty());
+    assert!(matches!(
+        agent.handle_dock_key(&key(KeyCode::Char('h'), KeyModifiers::NONE)),
+        InputOutcome::Changed
+    ));
+    assert_eq!(dock_subagent_ids(&agent), ["child-done"]);
 }
 
 #[test]
@@ -431,6 +530,30 @@ fn clicking_hover_stop_cancels_scheduled_loop() {
         outcome,
         InputOutcome::Action(Action::CancelScheduledTask(id)) if id == "loop-1"
     ));
+}
+
+#[test]
+fn dock_loop_meta_includes_cadence_and_next_trigger() {
+    let mut agent = make_agent();
+    let next = (chrono::Utc::now() + chrono::Duration::minutes(10)).to_rfc3339();
+    agent.session.scheduled_tasks.insert(
+        "loop-1".into(),
+        crate::app::agent::ScheduledTaskInfo {
+            task_id: "loop-1".into(),
+            prompt: "check CI".into(),
+            human_schedule: "every 30 minutes".into(),
+            created_at: std::time::Instant::now(),
+            next_fire_at: Some(next),
+            tag: "loop".into(),
+            last_subagent_id: None,
+        },
+    );
+    let rows = agent.dock_watcher_rows();
+    let meta = &rows.first().expect("loop row").1.meta;
+    assert!(
+        meta.starts_with("every 30 minutes (next in ") && !meta.contains("due now"),
+        "{meta}"
+    );
 }
 
 #[test]
@@ -681,7 +804,12 @@ fn stop_click_after_a_relayout_kills_the_row_now_under_the_pointer() {
             _ => None,
         })
         .expect("a task row sits under the pointer after the relayout");
-    let expected = agent.dock_task_rows()[index].0.clone();
+    let expected = agent
+        .dock_task_rows()
+        .get(index)
+        .unwrap_or_else(|| panic!("missing index"))
+        .0
+        .clone();
 
     let _ = agent.handle_mouse(&mouse(MouseEventKind::Moved, stop_col, row_y));
     cache_stop_button(&mut agent);
@@ -741,7 +869,11 @@ fn wheel_scrolls_the_section_under_the_pointer_and_clicks_follow_it() {
         .expect("first task row");
     assert_ne!(scrolled, first, "the wheel scrolls the section's rows");
     assert_eq!(
-        agent.dock_items()[0],
+        agent
+            .dock_items()
+            .first()
+            .copied()
+            .unwrap_or_else(|| panic!("missing index")),
         crate::views::dock::DockItem::Header(crate::views::dock::Section::Tasks),
         "the header stays on the dock's first row"
     );
@@ -754,7 +886,14 @@ fn wheel_scrolls_the_section_under_the_pointer_and_clicks_follow_it() {
         modifiers: KeyModifiers::NONE,
     });
     assert!(matches!(outcome, InputOutcome::Changed));
-    assert_eq!(agent.dock_items()[agent.dock_cursor], clicked);
+    assert_eq!(
+        agent
+            .dock_items()
+            .get(agent.dock_cursor)
+            .copied()
+            .unwrap_or_else(|| panic!("missing index")),
+        clicked
+    );
 }
 
 #[test]
@@ -792,7 +931,11 @@ fn walking_down_reaches_the_show_more_row_and_enter_opens_it() {
     }
     assert_eq!(agent.dock_cursor, reveal);
     assert_eq!(
-        agent.dock_items()[agent.dock_cursor],
+        agent
+            .dock_items()
+            .get(agent.dock_cursor)
+            .copied()
+            .unwrap_or_else(|| panic!("missing index")),
         crate::views::dock::DockItem::RevealRemaining(crate::views::dock::Section::Tasks)
     );
 
@@ -847,12 +990,30 @@ fn hover_follows_the_pointer_after_the_dock_relayouts() {
     let x = 5;
     let y = agent.pane_areas.dock.y + 1;
     let _ = agent.handle_mouse(&mouse(MouseEventKind::Moved, x, y));
-    assert_eq!(agent.dock_hovered, Some(agent.dock_items()[1]));
+    assert_eq!(
+        agent.dock_hovered,
+        Some(
+            agent
+                .dock_items()
+                .get(1)
+                .copied()
+                .unwrap_or_else(|| panic!("missing index"))
+        )
+    );
 
     agent.dock_tasks_show_all = true;
     let dock = agent.pane_areas.dock;
     agent.sync_dock_hover_from_pointer(dock);
-    assert_eq!(agent.dock_hovered, Some(agent.dock_items()[1]));
+    assert_eq!(
+        agent.dock_hovered,
+        Some(
+            agent
+                .dock_items()
+                .get(1)
+                .copied()
+                .unwrap_or_else(|| panic!("missing index"))
+        )
+    );
 }
 
 #[test]
@@ -868,7 +1029,16 @@ fn hover_sync_hit_tests_against_the_current_frame_dock_rect() {
     // stale pane area.
     let current = Rect::new(0, 4, 80, crate::views::dock::MAX_DOCK_ROWS);
     agent.sync_dock_hover_from_pointer(current);
-    assert_eq!(agent.dock_hovered, Some(agent.dock_items()[1]));
+    assert_eq!(
+        agent.dock_hovered,
+        Some(
+            agent
+                .dock_items()
+                .get(1)
+                .copied()
+                .unwrap_or_else(|| panic!("missing index"))
+        )
+    );
 
     let stale = agent.pane_areas.dock;
     agent.sync_dock_hover_from_pointer(stale);
@@ -877,24 +1047,6 @@ fn hover_sync_hit_tests_against_the_current_frame_dock_rect() {
 
 #[test]
 fn tab_cycles_scrollback_to_dock_to_prompt() {
-    let mut agent = dock_with_task();
-    agent.vim_mode = true;
-    agent.active_pane = AgentPane::Scrollback;
-    let registry = ActionRegistry::defaults();
-
-    let outcome = agent.handle_scrollback_key(&key(KeyCode::Tab, KeyModifiers::NONE), &registry);
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert_eq!(agent.active_pane, AgentPane::Dock);
-
-    let outcome = agent.handle_dock_key(&key(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(
-        matches!(outcome, InputOutcome::Action(Action::FocusPrompt)),
-        "Tab from the last dock header must return to the prompt, got {outcome:?}"
-    );
-}
-
-#[test]
-fn later_tab_cycles_start_at_the_first_dock_header() {
     let mut agent = make_agent();
     insert_running_subagent(&mut agent, "child-1");
     insert_running_task(&mut agent, "bg-1");
@@ -910,24 +1062,25 @@ fn later_tab_cycles_start_at_the_first_dock_header() {
         })
         .expect("tasks");
     let registry = ActionRegistry::defaults();
+
     let outcome = agent.handle_scrollback_key(&key(KeyCode::Tab, KeyModifiers::NONE), &registry);
     assert!(matches!(outcome, InputOutcome::Changed));
     assert_eq!(agent.active_pane, AgentPane::Dock);
     assert_eq!(
-        agent.dock_items()[agent.dock_cursor],
+        agent
+            .dock_items()
+            .get(agent.dock_cursor)
+            .copied()
+            .unwrap_or_else(|| panic!("missing index")),
         crate::views::dock::DockItem::Header(crate::views::dock::Section::Subagents)
     );
 
     let outcome = agent.handle_dock_key(&key(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert_eq!(
-        agent.dock_items()[agent.dock_cursor],
-        crate::views::dock::DockItem::Header(crate::views::dock::Section::Tasks)
-    );
+    assert!(matches!(outcome, InputOutcome::Action(Action::FocusPrompt)));
 }
 
 #[test]
-fn tab_visits_each_dock_header_before_the_prompt() {
+fn tab_from_dock_is_one_stop() {
     let mut agent = make_agent();
     insert_running_subagent(&mut agent, "child-1");
     agent
@@ -942,28 +1095,6 @@ fn tab_visits_each_dock_header_before_the_prompt() {
     agent.dock_on = true;
     agent.dock_queued_expanded = false;
     agent.active_pane = AgentPane::Dock;
-    agent.dock_cursor = 0;
-    assert_eq!(
-        agent.dock_items()[agent.dock_cursor],
-        crate::views::dock::DockItem::Header(crate::views::dock::Section::Subagents)
-    );
-    assert_eq!(agent.dock_tab_label(), "queued");
-
-    let outcome = agent.handle_dock_key(&key(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert_eq!(agent.active_pane, AgentPane::Dock);
-    assert_eq!(
-        agent.dock_items()[agent.dock_cursor],
-        crate::views::dock::DockItem::Header(crate::views::dock::Section::Queued)
-    );
-    assert_eq!(agent.dock_tab_label(), "prompt");
-
-    let outcome = agent.handle_dock_key(&key(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(
-        matches!(outcome, InputOutcome::Action(Action::FocusPrompt)),
-        "Tab from Queued must return to the prompt, got {outcome:?}"
-    );
-
     agent.dock_cursor = agent
         .dock_items()
         .iter()
@@ -971,51 +1102,13 @@ fn tab_visits_each_dock_header_before_the_prompt() {
             *item == crate::views::dock::DockItem::Header(crate::views::dock::Section::Queued)
         })
         .expect("queued");
-    let outcome = agent.handle_dock_key(&key(KeyCode::BackTab, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert_eq!(agent.active_pane, AgentPane::Dock);
-    assert_eq!(
-        agent.dock_items()[agent.dock_cursor],
-        crate::views::dock::DockItem::Header(crate::views::dock::Section::Subagents)
-    );
+
+    let outcome = agent.handle_dock_key(&key(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Action(Action::FocusPrompt)));
 
     let outcome = agent.handle_dock_key(&key(KeyCode::BackTab, KeyModifiers::NONE));
     assert!(matches!(outcome, InputOutcome::Changed));
     assert_eq!(agent.active_pane, AgentPane::Scrollback);
-}
-
-#[test]
-fn tab_from_a_section_row_jumps_to_the_next_header() {
-    let mut agent = make_agent();
-    insert_running_subagent(&mut agent, "child-1");
-    agent
-        .session
-        .pending_prompts
-        .push_back(crate::app::agent::QueuedPrompt::plain(
-            1,
-            "queued",
-            crate::app::agent::QueueEntryKind::Prompt,
-        ));
-    agent.dock_shown = true;
-    agent.dock_on = true;
-    agent.active_pane = AgentPane::Dock;
-    agent.dock_cursor = agent
-        .dock_items()
-        .iter()
-        .position(|item| {
-            matches!(
-                item,
-                crate::views::dock::DockItem::Row(crate::views::dock::Section::Subagents, 0)
-            )
-        })
-        .expect("subagent row");
-
-    let outcome = agent.handle_dock_key(&key(KeyCode::Tab, KeyModifiers::NONE));
-    assert!(matches!(outcome, InputOutcome::Changed));
-    assert_eq!(
-        agent.dock_items()[agent.dock_cursor],
-        crate::views::dock::DockItem::Header(crate::views::dock::Section::Queued)
-    );
 }
 
 #[test]
@@ -1039,7 +1132,11 @@ fn j_reaches_the_queued_header() {
         agent.handle_dock_key(&key(KeyCode::Char('j'), KeyModifiers::NONE));
     }
     assert_eq!(
-        agent.dock_items()[agent.dock_cursor],
+        agent
+            .dock_items()
+            .get(agent.dock_cursor)
+            .copied()
+            .unwrap_or_else(|| panic!("missing index")),
         crate::views::dock::DockItem::Header(crate::views::dock::Section::Queued)
     );
 }
@@ -1101,6 +1198,100 @@ fn enter_on_header_still_toggles() {
     assert!(matches!(outcome, InputOutcome::Changed));
     assert!(!agent.dock_tasks_expanded);
     assert_eq!(agent.dock_enter_label(), Some("expand"));
+}
+
+fn header_row(agent: &AgentView, section: crate::views::dock::Section) -> u16 {
+    agent
+        .dock_items()
+        .iter()
+        .position(|item| *item == crate::views::dock::DockItem::Header(section))
+        .expect("section header") as u16
+}
+
+fn painted_header_bg(
+    agent: &AgentView,
+    section: crate::views::dock::Section,
+) -> Option<ratatui::style::Color> {
+    let theme = crate::theme::Theme::tokyonight();
+    let data = agent.dock_snapshot();
+    let area = Rect::new(0, 0, 80, crate::views::dock::desired_height(&data));
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    crate::views::dock::render(&mut buf, area, &theme, &data);
+    buf.cell((0, header_row(agent, section))).map(|c| c.bg)
+}
+
+#[test]
+fn clicking_a_section_header_clears_selection_after_collapse() {
+    let mut agent = dock_with_task();
+    agent
+        .session
+        .pending_prompts
+        .push_back(crate::app::agent::QueuedPrompt::plain(
+            1,
+            "queued",
+            crate::app::agent::QueueEntryKind::Prompt,
+        ));
+    agent.dock_queued_expanded = true;
+    agent.active_pane = AgentPane::Prompt;
+    agent.pane_areas.dock = Rect::new(0, 4, 80, 8);
+    let queued = crate::views::dock::Section::Queued;
+    let y = agent.pane_areas.dock.y + header_row(&agent, queued);
+
+    let outcome = agent.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 5, y));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert!(!agent.dock_queued_expanded);
+    assert_eq!(agent.active_pane, AgentPane::Prompt);
+    assert!(!agent.dock_snapshot().focused);
+
+    let _ = agent.handle_mouse(&mouse(MouseEventKind::Moved, 5, 0));
+    let theme = crate::theme::Theme::tokyonight();
+    assert_ne!(painted_header_bg(&agent, queued), Some(theme.bg_highlight));
+    assert_ne!(
+        painted_header_bg(&agent, queued),
+        Some(theme.row_hover_bg())
+    );
+
+    let y = agent.pane_areas.dock.y + header_row(&agent, queued);
+    let outcome = agent.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 5, y));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert!(agent.dock_queued_expanded);
+    assert_eq!(agent.active_pane, AgentPane::Dock);
+    assert!(agent.dock_snapshot().focused);
+}
+
+#[test]
+fn clicking_a_focused_section_header_returns_to_prompt() {
+    let mut agent = dock_with_task();
+    agent.pane_areas.dock = Rect::new(0, 4, 80, 8);
+    let tasks = crate::views::dock::Section::Tasks;
+    let y = agent.pane_areas.dock.y + header_row(&agent, tasks);
+
+    assert_eq!(agent.active_pane, AgentPane::Dock);
+    let outcome = agent.handle_mouse(&mouse(MouseEventKind::Down(MouseButton::Left), 5, y));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert!(!agent.dock_tasks_expanded);
+    assert_eq!(agent.active_pane, AgentPane::Prompt);
+    assert!(!agent.dock_snapshot().focused);
+    let _ = agent.handle_mouse(&mouse(MouseEventKind::Moved, 5, 0));
+    assert_ne!(
+        painted_header_bg(&agent, tasks),
+        Some(crate::theme::Theme::tokyonight().bg_highlight)
+    );
+}
+
+#[test]
+fn keyboard_collapse_keeps_dock_focus_on_the_header() {
+    let mut agent = dock_with_task();
+    assert!(agent.dock_tasks_expanded);
+    let outcome = agent.handle_dock_key(&key(KeyCode::Left, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert!(!agent.dock_tasks_expanded);
+    assert_eq!(agent.active_pane, AgentPane::Dock);
+    assert!(agent.dock_snapshot().focused);
+    assert_eq!(
+        painted_header_bg(&agent, crate::views::dock::Section::Tasks),
+        Some(crate::theme::Theme::tokyonight().bg_highlight)
+    );
 }
 
 #[test]
@@ -1260,7 +1451,12 @@ fn click_opens_a_linked_loop_and_ignores_an_unlinked_one() {
         })
         .expect("loop row");
     assert!(
-        agent.dock_watcher_rows()[0].1.openable,
+        agent
+            .dock_watcher_rows()
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+            .1
+            .openable,
         "linked loop must paint the view control"
     );
 
@@ -1427,7 +1623,11 @@ fn reveal_aims_the_cursor_when_the_last_painted_dock_is_the_resting_cap() {
     assert!(matches!(outcome, InputOutcome::Changed));
     assert!(agent.dock_tasks_show_all);
     assert_eq!(
-        agent.dock_items()[agent.dock_cursor],
+        agent
+            .dock_items()
+            .get(agent.dock_cursor)
+            .copied()
+            .unwrap_or_else(|| panic!("missing index")),
         crate::views::dock::DockItem::Row(crate::views::dock::Section::Tasks, first_hidden),
         "the cursor must follow the uncovered row, not stay on show-more because dock_items() was still the resting cap"
     );
@@ -1469,7 +1669,11 @@ fn reveal_after_scroll_aims_the_cursor_at_the_first_hidden_row() {
     assert!(matches!(outcome, InputOutcome::Changed));
     assert!(agent.dock_tasks_show_all);
     assert_eq!(
-        agent.dock_items()[agent.dock_cursor],
+        agent
+            .dock_items()
+            .get(agent.dock_cursor)
+            .copied()
+            .unwrap_or_else(|| panic!("missing index")),
         crate::views::dock::DockItem::Row(crate::views::dock::Section::Tasks, first_hidden),
         "the cursor must follow the first row the reveal uncovers"
     );
@@ -1855,4 +2059,165 @@ fn a_frame_spends_the_pending_reveal() {
         !agent.take_dock_row_request(),
         "and a frame that paints no dock leaves nothing behind"
     );
+}
+
+fn workflow_run(
+    run_id: &str,
+    name: &str,
+    status: &str,
+) -> crate::views::workflows::WorkflowRunSnapshot {
+    crate::views::workflows::WorkflowRunSnapshot {
+        run_id: run_id.to_owned(),
+        name: name.to_owned(),
+        objective: "obj".to_owned(),
+        status: status.to_owned(),
+        management_available: true,
+        builtin: false,
+        phases: Vec::new(),
+        current_phase: Some("Verify".to_owned()),
+        agents: vec![crate::views::workflows::WorkflowAgentRowView {
+            agent_id: "a1".into(),
+            label: "one".into(),
+            phase: Some("Verify".into()),
+            model: None,
+            state: "running".into(),
+            tokens_used: 0,
+            duration_ms: 0,
+        }],
+        agent_budget: None,
+        agents_used: 0,
+        agents_reserved: 0,
+        agents_remaining: None,
+        agent_usage_incomplete: false,
+        active_agents: 1,
+        elapsed_ms: 5_000,
+        received_at: std::time::Instant::now(),
+        pause_message: None,
+        result_summary: None,
+    }
+}
+
+fn dock_with_workflow() -> AgentView {
+    let mut agent = make_agent();
+    agent
+        .workflow_runs
+        .push(workflow_run("wf-1", "learn-traces-2", "active"));
+    agent.session.scheduled_tasks.insert(
+        "loop-1".into(),
+        crate::app::agent::ScheduledTaskInfo {
+            task_id: "loop-1".into(),
+            prompt: "check CI".into(),
+            human_schedule: "every 5m".into(),
+            created_at: std::time::Instant::now(),
+            next_fire_at: None,
+            tag: "loop".into(),
+            last_subagent_id: None,
+        },
+    );
+    agent.dock_shown = true;
+    agent.dock_on = true;
+    agent.active_pane = AgentPane::Dock;
+    agent
+}
+
+fn workflow_row_index(agent: &AgentView) -> usize {
+    agent
+        .dock_items()
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                crate::views::dock::DockItem::Row(crate::views::dock::Section::Workflows, 0)
+            )
+        })
+        .expect("workflow row")
+}
+
+#[test]
+fn hidden_dock_keeps_the_running_workflow_status_cue() {
+    let mut agent = dock_with_workflow();
+    assert_eq!(agent.watchers().workflows, 1);
+    assert!(agent.dock_covers_idle_cues(true));
+    agent.dock_hidden = true;
+    assert!(!agent.dock_covers_idle_cues(true));
+    assert_eq!(agent.watchers().workflows, 1);
+}
+
+#[test]
+fn running_workflow_is_a_dock_row_above_watchers() {
+    let agent = dock_with_workflow();
+    let items = agent.dock_items();
+    assert_eq!(
+        items.first(),
+        Some(&crate::views::dock::DockItem::Header(
+            crate::views::dock::Section::Workflows
+        ))
+    );
+    assert_eq!(
+        items.get(1),
+        Some(&crate::views::dock::DockItem::Row(
+            crate::views::dock::Section::Workflows,
+            0
+        ))
+    );
+    assert!(
+        items.contains(&crate::views::dock::DockItem::Header(
+            crate::views::dock::Section::Watchers
+        )),
+        "watchers stay after the workflow row: {items:?}"
+    );
+    let (run_id, row) = agent
+        .dock_workflow_rows()
+        .into_iter()
+        .next()
+        .expect("workflow row");
+    assert_eq!(run_id, "wf-1");
+    assert_eq!(row.kind, "Workflow");
+    assert_eq!(row.description, "learn-traces-2");
+    assert_eq!(row.activity.as_deref(), Some("Verify · 1 agent"));
+    assert!(row.openable && row.killable && row.spinning);
+}
+
+#[test]
+fn terminal_workflow_is_hidden_from_the_dock() {
+    let mut agent = make_agent();
+    agent
+        .workflow_runs
+        .push(workflow_run("wf-done", "old-scan", "complete"));
+    agent.dock_shown = true;
+    agent.dock_on = true;
+    assert!(agent.dock_workflow_rows().is_empty());
+    assert!(!agent.dock_items().iter().any(|item| {
+        matches!(
+            item,
+            crate::views::dock::DockItem::Header(crate::views::dock::Section::Workflows)
+                | crate::views::dock::DockItem::Row(crate::views::dock::Section::Workflows, _)
+        )
+    }));
+}
+
+#[test]
+fn enter_on_workflow_row_opens_the_active_run() {
+    let mut agent = dock_with_workflow();
+    agent.dock_cursor = workflow_row_index(&agent);
+    let outcome = agent.handle_dock_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(outcome, InputOutcome::Changed));
+    assert!(agent.show_workflows);
+    assert_eq!(agent.workflows_view.detail_run_id.as_deref(), Some("wf-1"));
+    assert_eq!(
+        agent.workflows_view.selected_run_id.as_deref(),
+        Some("wf-1")
+    );
+}
+
+#[test]
+fn x_on_workflow_row_stops_the_run() {
+    let mut agent = dock_with_workflow();
+    agent.dock_cursor = workflow_row_index(&agent);
+    let outcome = agent.handle_dock_key(&key(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert!(matches!(
+        outcome,
+        InputOutcome::Action(Action::SendSlashCommandPreservingDraft(ref command))
+            if command == "/workflow stop learn-traces-2"
+    ));
 }

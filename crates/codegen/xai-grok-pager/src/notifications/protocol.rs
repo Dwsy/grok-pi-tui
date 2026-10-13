@@ -126,7 +126,7 @@ mod tests {
         }
     }
 
-    // --- tmux does NOT override protocol selection (passthrough is handled at emission time, not selection time) ---
+    // tmux does NOT override protocol selection (passthrough is handled at emission time, not selection time)
 
     #[test]
     fn tmux_preserves_osc9_for_iterm2() {
@@ -150,7 +150,7 @@ mod tests {
         );
     }
 
-    // --- screen does not override ---
+    // screen does not override
 
     #[test]
     fn screen_preserves_osc777_for_ghostty() {
@@ -162,8 +162,6 @@ mod tests {
             NotificationProtocol::Osc777
         );
     }
-
-    // --- notification_bytes / emit_notification ---
 
     #[test]
     fn bytes_none_is_noop() {
@@ -253,8 +251,6 @@ mod tests {
     fn notification_sequence_none_is_none() {
         assert!(notification_sequence(NotificationProtocol::None, "t", "b").is_none());
     }
-
-    // --- exhaustive brand coverage in a table-driven test ---
 
     #[test]
     fn all_brands_have_defined_protocol() {

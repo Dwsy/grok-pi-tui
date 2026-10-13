@@ -234,8 +234,11 @@ fn truncate_diff(raw: String) -> String {
     while cut > 0 && !raw.is_char_boundary(cut) {
         cut -= 1;
     }
+    let Some(prefix) = raw.get(..cut) else {
+        return raw;
+    };
     let mut out = String::with_capacity(cut + 64);
-    out.push_str(&raw[..cut]);
+    out.push_str(prefix);
     out.push_str(&format!(
         "\n... (diff truncated, {elided} bytes elided) ...\n"
     ));
@@ -753,7 +756,10 @@ fn walkdir_changes_blocking(
         }
         // Binary heuristic: matches git's "is_binary" (a NUL byte in the head 8 KiB)
         // Do not "improve" this without re-checking git
-        let head_for_binary_check = &head_buf[..head_buf.len().min(8192)];
+        let n = head_buf.len().min(8192);
+        let Some(head_for_binary_check) = head_buf.get(..n) else {
+            continue;
+        };
         let is_binary = head_for_binary_check.contains(&0);
         emit_walkdir_diff_header(&mut out, &rel);
         if is_binary {
@@ -830,7 +836,7 @@ fn utf8_truncate_boundary(buf: &[u8], desired: usize) -> usize {
     // Walk back over continuation bytes until `buf[cap]` is a leading byte (or we reach 0)
     // At most 3 hops are needed since the widest UTF-8 codepoint has 1 leading and 3 continuation bytes
     for _ in 0..3 {
-        if cap == 0 || buf[cap] & 0b1100_0000 != 0b1000_0000 {
+        if cap == 0 || buf.get(cap).is_none_or(|b| b & 0b1100_0000 != 0b1000_0000) {
             break;
         }
         cap -= 1;
@@ -959,7 +965,8 @@ pub(crate) fn sanitize_final_response(text: &str) -> Cow<'_, str> {
         if out.contains(tag) {
             // Insert a `<!--esc-->` between `<` and `/` so the resulting string is no longer a valid close tag
             // A human glancing at the details file can still tell what the original content was
-            let escaped = format!("<<!--esc-->{}", &tag[1..]);
+            let Some(rest) = tag.get(1..) else { continue };
+            let escaped = format!("<<!--esc-->{rest}");
             out = out.replace(tag, &escaped);
         }
     }
@@ -969,7 +976,7 @@ pub(crate) fn sanitize_final_response(text: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_grok_sampling_types::{AssistantItem, UserItem};
+    use xai_grok_sampling_types::{AssistantItem, SyntheticReason, UserItem};
 
     fn assistant(text: &str) -> ConversationItem {
         ConversationItem::Assistant(AssistantItem {
@@ -998,7 +1005,7 @@ mod tests {
     fn user(text: &str) -> ConversationItem {
         ConversationItem::User(UserItem {
             content: vec![xai_grok_sampling_types::ContentPart::Text { text: text.into() }],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         })
     }
@@ -1814,7 +1821,7 @@ mod tests {
                 "file truncated at {WALKDIR_PER_FILE_MAX_BYTES} bytes"
             )),
             "per-file truncation marker missing; first 200B = {:?}",
-            &diff[..diff.len().min(200)],
+            diff.get(..diff.len().min(200)),
         );
     }
 
@@ -1840,7 +1847,10 @@ mod tests {
         assert!(
             diff.contains("diff truncated"),
             "global truncation marker missing; last 200B = {:?}",
-            &diff[diff.len().saturating_sub(200)..],
+            diff.len()
+                .checked_sub(200)
+                .and_then(|i| diff.get(i..))
+                .unwrap_or(diff.as_str()),
         );
         assert!(
             diff.len() <= GOAL_CLASSIFIER_DIFF_MAX_BYTES + 256,

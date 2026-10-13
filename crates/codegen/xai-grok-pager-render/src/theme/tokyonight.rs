@@ -270,6 +270,15 @@ impl Theme {
         }
     }
 
+    /// One step fainter than [`Self::dim`]: `gray_dim` blended 0.66 toward `bg_base`, for text that must be present but read after
+    /// every label. Falls back to [`Self::dim`] on palettes that cannot blend.
+    pub fn faint(&self) -> Style {
+        // Lands on the design system's `fg_gutter` token for the GrokNight palette
+        const BLEND: f32 = 0.66;
+        crate::render::color::blend_color(self.bg_base, self.gray_dim, BLEND)
+            .map_or(self.dim(), |c| Style::new().fg(c))
+    }
+
     pub const fn primary(&self) -> Style {
         Style::new().fg(self.text_primary)
     }

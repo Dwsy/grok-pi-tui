@@ -1,8 +1,5 @@
 use std::path::{Path, PathBuf};
 
-// Project-hook trust is no longer stored here: the shell's folder-trust store
-// (`~/.grok/trusted_folders.toml`) is the single authority for whether a repo's project hooks run (the same gate as repo-local MCP/LSP). The helpers below exist only to migrate prior grants out of the legacy file.
-
 /// Path to the legacy project-hook trust file (`<user_grok_home>/trusted-hook-projects`), or `None` when no user grok home resolves.
 /// It is retained only for the one-time migration into folder-trust.
 pub fn legacy_trust_file_path() -> Option<PathBuf> {
@@ -26,58 +23,95 @@ pub fn list_trusted_projects_with_file(trust_file: &Path) -> std::io::Result<Vec
         .collect())
 }
 
+/// Whether the user trusts a workspace, which decides if its project hooks and plugins load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Trust {
+    Trusted,
+    Untrusted,
+}
+
+impl Trust {
+    #[must_use]
+    pub fn from_verdict(is_trusted: bool) -> Trust {
+        if is_trusted {
+            Trust::Trusted
+        } else {
+            Trust::Untrusted
+        }
+    }
+
+    #[must_use]
+    pub fn allows_project_sources(self) -> bool {
+        matches!(self, Trust::Trusted)
+    }
+}
+
 // ── Hook enable/disable ─────────────────────────────────────────────────
 
-/// Disabled hooks are listed in `$GROK_HOME/disabled-hooks`, one hook name per line.
-pub fn is_hook_disabled(hook_name: &str) -> bool {
-    match disabled_hooks_file_path() {
-        Some(file) => is_hook_disabled_with_file(hook_name, &file),
-        None => false,
-    }
+/// Why a hook is skipped at dispatch and shown disabled in the modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookSkipReason {
+    /// Its `enabled` flag is off or its name is in `$GROK_HOME/disabled-hooks`.
+    UserDisabled,
+    /// `allow_managed_hooks_only` is pinned and the hook is not managed policy.
+    ManagedOnly,
 }
 
-/// What the hooks modal and status reports show as disabled; managed-policy hooks never do, since dispatch ignores their disable state.
-/// Keep this in lockstep with `dispatcher::eligible_or_record_skip` or the modal lies about what runs.
-pub fn hook_disabled_for_display(spec: &crate::config::HookSpec) -> bool {
-    hook_disabled_for_display_with(spec, &DisabledHooks::load())
-}
-
-/// The same rule as [`hook_disabled_for_display`], evaluated against a pre-loaded snapshot (bulk display passes and tests).
-pub fn hook_disabled_for_display_with(
-    spec: &crate::config::HookSpec,
-    disabled: &DisabledHooks,
-) -> bool {
-    !spec.is_managed_policy() && (!spec.enabled || disabled.contains(&spec.name))
-}
-
-/// One-shot snapshot of the disabled-hooks file, for callers that evaluate many specs per pass (dispatch loops, the stop-gate guard).
-/// One `load()` replaces a file read per spec.
+/// One-shot snapshot of the per-spec skip inputs: the disabled-hooks file and the `allow_managed_hooks_only` pin.
+/// [`Self::skip_reason`] is the one rule the dispatcher, the stop-gate guard, and the modal apply, so they cannot disagree about what runs.
 #[derive(Debug, Default)]
-pub struct DisabledHooks(std::collections::HashSet<String>);
+pub struct DisabledHooks {
+    names: std::collections::HashSet<String>,
+    managed_only: bool,
+}
 
 impl DisabledHooks {
-    /// Build from explicit names (tests; no filesystem or env dependence).
-    pub fn from_names<I: IntoIterator<Item = String>>(names: I) -> Self {
-        Self(names.into_iter().collect())
+    pub fn new<I: IntoIterator<Item = String>>(names: I, managed_only: bool) -> Self {
+        Self {
+            names: names.into_iter().collect(),
+            managed_only,
+        }
     }
 
-    pub fn load() -> Self {
-        let names = disabled_hooks_file_path()
-            .and_then(|file| std::fs::read_to_string(file).ok())
+    /// Read the disabled-hooks file under `grok_home`; `managed_only` is the resolved `allow_managed_hooks_only` pin, which the caller reads from managed settings.
+    pub fn load(grok_home: Option<&Path>, managed_only: bool) -> Self {
+        let names = grok_home
+            .and_then(|grok_home| std::fs::read_to_string(grok_home.join(DISABLED_HOOKS_FILE)).ok())
             .map(|content| {
                 content
                     .lines()
                     .map(str::trim)
                     .filter(|l| !l.is_empty() && !l.starts_with('#'))
                     .map(str::to_string)
-                    .collect()
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        Self(names)
+        Self::new(names, managed_only)
     }
 
     pub fn contains(&self, hook_name: &str) -> bool {
-        self.0.contains(hook_name)
+        self.names.contains(hook_name)
+    }
+
+    pub fn managed_only(&self) -> bool {
+        self.managed_only
+    }
+
+    /// Managed-policy hooks are never skipped; the lockdown outranks a user disable as the reported reason.
+    pub fn skip_reason(&self, spec: &crate::config::HookSpec) -> Option<HookSkipReason> {
+        if spec.is_managed_policy() {
+            return None;
+        }
+        if self.managed_only {
+            return Some(HookSkipReason::ManagedOnly);
+        }
+        (!spec.enabled || self.names.contains(&spec.name)).then_some(HookSkipReason::UserDisabled)
+    }
+
+    /// Whether dispatch skips `spec`; also what the modal shows as disabled.
+    pub fn blocks(&self, spec: &crate::config::HookSpec) -> bool {
+        self.skip_reason(spec).is_some()
     }
 }
 
@@ -157,9 +191,11 @@ fn enable_hook_with_file(hook_name: &str, file: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+const DISABLED_HOOKS_FILE: &str = "disabled-hooks";
+
 /// Returns the path to `$GROK_HOME/disabled-hooks`, or `None` when no user grok home resolves.
 fn disabled_hooks_file_path() -> Option<PathBuf> {
-    Some(xai_grok_config::user_grok_home()?.join("disabled-hooks"))
+    Some(xai_grok_config::user_grok_home()?.join(DISABLED_HOOKS_FILE))
 }
 
 #[cfg(test)]

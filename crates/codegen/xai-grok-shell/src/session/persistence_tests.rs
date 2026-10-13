@@ -117,6 +117,38 @@ async fn writeback_backfill_is_fresh_only_and_acp_only() {
     );
 }
 
+#[tokio::test]
+async fn winning_identity_stamp_seeds_remote_writeback() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = Info {
+        id: acp::SessionId::new("winner-identity"),
+        cwd: "/test".into(),
+    };
+    let storage = Arc::new(JsonlStorageAdapter::with_explicit_session_dir(
+        dir.path().to_path_buf(),
+    ));
+    storage
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    let (remote_sync, mut identities) = RemoteSync::test_identity_observer();
+    let actor = test_actor_with_remote_sync(info, storage, Some(remote_sync));
+    let identity = mint_next_session_identity(None, false);
+    let expected = identity.agent_id.clone();
+    let (respond_to, response) = tokio::sync::oneshot::channel();
+    actor
+        .handle
+        .tx
+        .send(PersistenceMsg::StampSessionIdentity {
+            identity,
+            respond_to,
+        })
+        .unwrap();
+    response.await.unwrap().unwrap();
+    assert_eq!(identities.recv().await.as_deref(), Some(expected.as_str()));
+    actor.stop().await;
+}
+
 fn break_summary_writes(dir: &std::path::Path) {
     let summary = dir.join("summary.json");
     std::fs::remove_file(&summary).unwrap();
@@ -588,7 +620,7 @@ async fn acknowledged_wake_start_stamps_summary_once() {
     assert_eq!(summary.attempt_id.as_deref(), Some("at1.started"));
     assert_eq!(summary.next_trace_turn, 8);
     assert_eq!(summary.current_model_id, wake_model);
-    assert_eq!(summary.agent_name.as_deref(), Some("wake-agent"));
+    assert_eq!(summary.agent_name(), Some("wake-agent"));
     assert_eq!(
         summary.reasoning_effort,
         Some(xai_grok_sampling_types::ReasoningEffort::High)
@@ -1209,10 +1241,13 @@ async fn flush_and_ack_propagates_session_file_sync_error_through_the_ack() {
 async fn measure_prompt_barrier_idle_barrier_and_summary_rewrite_cost() {
     fn median_and_max(mut samples: Vec<std::time::Duration>) -> (String, String) {
         samples.sort();
-        (
-            format!("{:?}", samples[samples.len() / 2]),
-            format!("{:?}", samples[samples.len() - 1]),
-        )
+        let Some(mid) = samples.get(samples.len() / 2) else {
+            panic!("expected samples for median: {samples:?}");
+        };
+        let Some(last) = samples.last() else {
+            panic!("expected samples for max: {samples:?}");
+        };
+        (format!("{mid:?}"), format!("{last:?}"))
     }
 
     const N: usize = 50;
@@ -1908,10 +1943,13 @@ async fn reset_title_to_auto_then_generated_title_is_adopted() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
+    // ClearTitle is save_session_data then upsert_session on the remote-sync
+    // task; the POST can become visible before the PUT is recorded under load.
     // The sync task sends the row PUT only after the data POST's response.
     let upsert_path = format!("/sessions/{SESSION_ID}");
-    let find_upserted_title = || {
-        server.requests().into_iter().rev().find_map(|r| {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let upserted_title = loop {
+        let found = server.requests().into_iter().rev().find_map(|r| {
             (r.method == "PUT" && r.path == upsert_path)
                 .then(|| {
                     r.body
@@ -1922,15 +1960,15 @@ async fn reset_title_to_auto_then_generated_title_is_adopted() {
                         .map(str::to_owned)
                 })
                 .flatten()
-        })
-    };
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    let upserted_title = loop {
-        if let Some(title) = find_upserted_title() {
-            break Some(title);
+        });
+        if found.as_deref() == Some("") {
+            break found;
         }
         if tokio::time::Instant::now() >= deadline {
-            break None;
+            panic!(
+                "ClearTitle must upsert the session-row title empty, not only the metadata blob; last={found:?} requests={:?}",
+                request_path_summary(&server)
+            );
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };

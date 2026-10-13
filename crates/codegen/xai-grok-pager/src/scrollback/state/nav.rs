@@ -251,7 +251,10 @@ impl ScrollbackState {
         }
         self.ensure_layout_cache(self.last_width);
         for t in (0..self.turns.len()).rev() {
-            let Some(idx) = response_anchor_in_range(&self.entries, self.turns[t].range()) else {
+            let Some(turn) = self.turns.get(t) else {
+                continue;
+            };
+            let Some(idx) = response_anchor_in_range(&self.entries, turn.range()) else {
                 continue;
             };
             if !self.visible_entry_range().contains(&idx) {
@@ -288,7 +291,10 @@ impl ScrollbackState {
         }
         self.ensure_layout_cache(self.last_width);
         for t in 0..self.turns.len() {
-            let Some(idx) = response_anchor_in_range(&self.entries, self.turns[t].range()) else {
+            let Some(turn) = self.turns.get(t) else {
+                continue;
+            };
+            let Some(idx) = response_anchor_in_range(&self.entries, turn.range()) else {
                 continue;
             };
             if !self.visible_entry_range().contains(&idx) {
@@ -624,9 +630,17 @@ impl ScrollbackState {
 
         // Compute RELATIVE positions for the visible range.
         // scroll_offset is relative to the start of visible_range, not entry 0.
-        let base_y = cache.virtual_y[visible_range.start];
-        let entry_y = cache.virtual_y[selected_idx] - base_y;
-        let entry_height = cache.entries[selected_idx].height;
+        let Some(&base_y) = cache.virtual_y.get(visible_range.start) else {
+            return;
+        };
+        let Some(&entry_y_abs) = cache.virtual_y.get(selected_idx) else {
+            return;
+        };
+        let Some(entry_info) = cache.entries.get(selected_idx) else {
+            return;
+        };
+        let entry_y = entry_y_abs - base_y;
+        let entry_height = entry_info.height;
         let entry_bottom = entry_y + entry_height as usize;
 
         // Build prompt descriptors relative to visible range (for sticky layout)
@@ -739,7 +753,9 @@ impl ScrollbackState {
             return Vec::new();
         }
 
-        let base_y = cache.virtual_y[visible_range.start];
+        let Some(&base_y) = cache.virtual_y.get(visible_range.start) else {
+            return Vec::new();
+        };
 
         cache
             .prompt_descriptors
@@ -846,8 +862,9 @@ impl ScrollbackState {
 
         // scroll_offset is relative to the start of visible_entry_range, not entry 0.
         let visible_range = self.visible_entry_range();
-        let base_y = cache.virtual_y[visible_range.start];
-        let entry_y = cache.virtual_y[entry_idx] - base_y;
+        let base_y = *cache.virtual_y.get(visible_range.start)?;
+        let entry_y_abs = *cache.virtual_y.get(entry_idx)?;
+        let entry_y = entry_y_abs - base_y;
 
         // Account for the sticky header: the content area starts at scroll_offset + header_height, so scroll_offset = entry_y - header
         // The header depends on scroll_offset (sticky headers collapse as you scroll), so the shared helper iterates to a fixed point
@@ -868,8 +885,13 @@ impl ScrollbackState {
             return;
         };
         let visible_range = self.visible_entry_range();
-        let base_y = cache.virtual_y[visible_range.start];
-        let entry_y = cache.virtual_y[entry_idx] - base_y;
+        let Some(&base_y) = cache.virtual_y.get(visible_range.start) else {
+            return;
+        };
+        let Some(&entry_y_abs) = cache.virtual_y.get(entry_idx) else {
+            return;
+        };
+        let entry_y = entry_y_abs - base_y;
         let half_vp = self.viewport_height as usize / 2;
         let target = entry_y.saturating_sub(half_vp);
         let relative_prompts = self.build_relative_prompt_descriptors(cache, &visible_range);
@@ -1712,7 +1734,10 @@ mod tests {
 
         // The read folds on its own; the Others truncate behind entry 1.
         let verb_header = |state: &ScrollbackState, idx: usize| {
-            state.get_cached_entry_layouts().unwrap()[idx].verb_group_header
+            state
+                .get_cached_entry_layouts()
+                .and_then(|layouts| layouts.get(idx))
+                .is_some_and(|info| info.verb_group_header)
         };
         assert!(verb_header(&state, 0));
         assert_eq!(cached_height_at(&state, 2), 0, "dense member truncated");
@@ -1858,7 +1883,13 @@ mod tests {
         state.set_selected(Some(head_idx));
         assert!(state.toggle_group_expansion());
         state.prepare_layout(80, 6);
-        assert!(state.layout_cache.as_ref().unwrap().entries[head_idx].is_expanded_verb_header());
+        assert!(
+            state
+                .layout_cache
+                .as_ref()
+                .and_then(|c| c.entries.get(head_idx))
+                .is_some_and(|e| e.is_expanded_verb_header())
+        );
 
         state.scroll_to_entry_center(head_idx);
         let header_row_offset = state.scroll_offset();
@@ -2094,7 +2125,8 @@ mod tests {
         assert_eq!(state.selected(), Some(1));
         // The unhide block is reveal's only writer of expanded_groups, so the group's start id being present proves the unhide actually ran
         assert!(
-            state.expanded_groups.contains(&ids[0]),
+            ids.first()
+                .is_some_and(|id| state.expanded_groups.contains(id)),
             "reveal on a cache-miss must un-hide the truncated group"
         );
         assert!(

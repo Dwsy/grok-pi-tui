@@ -77,7 +77,12 @@ pub(crate) fn truncate_if_needed(cwd: &str) -> io::Result<()> {
     }
 
     // Keep the most recent entries
-    let to_keep = &entries[entries.len() - MAX_PROMPT_HISTORY_ENTRIES..];
+    let Some(start) = entries.len().checked_sub(MAX_PROMPT_HISTORY_ENTRIES) else {
+        return Ok(());
+    };
+    let Some(to_keep) = entries.get(start..) else {
+        return Ok(());
+    };
 
     // Write to a temp file first, then rename (atomic)
     let temp_path = path.with_extension("jsonl.tmp");
@@ -210,8 +215,7 @@ mod tests {
         let prompts = load_prompts(&cwd).unwrap();
         assert_eq!(prompts.len(), 2);
         // Most recent first
-        assert_eq!(prompts[0], "second prompt");
-        assert_eq!(prompts[1], "first prompt");
+        assert_eq!(prompts.as_slice(), ["second prompt", "first prompt"]);
     }
 
     #[test]
@@ -232,7 +236,7 @@ mod tests {
         let prompts = load_prompts(&cwd).unwrap();
         // Consecutive identical prompts collapse to one entry
         assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts[0], "same prompt");
+        assert_eq!(prompts.first().map(String::as_str), Some("same prompt"));
     }
 
     #[test]
@@ -280,8 +284,7 @@ mod tests {
 
         let bash_prompts = load_bash_prompts(&cwd).unwrap();
         assert_eq!(bash_prompts.len(), 2);
-        assert_eq!(bash_prompts[0], "ls -la");
-        assert_eq!(bash_prompts[1], "git status");
+        assert_eq!(bash_prompts.as_slice(), ["ls -la", "git status"]);
 
         // load_prompts still returns all
         let all_prompts = load_prompts(&cwd).unwrap();
@@ -302,7 +305,7 @@ mod tests {
         // The old entry deserializes with is_bash defaulting to false
         let all = load_prompts(&cwd).unwrap();
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0], "old command");
+        assert_eq!(all.first().map(String::as_str), Some("old command"));
 
         // The old entry does not appear in bash-filtered results
         let bash = load_bash_prompts(&cwd).unwrap();
@@ -325,7 +328,7 @@ mod tests {
 
         let bash = load_bash_prompts(&cwd).unwrap();
         assert_eq!(bash.len(), 1);
-        assert_eq!(bash[0], "git status");
+        assert_eq!(bash.first().map(String::as_str), Some("git status"));
     }
 
     #[test]

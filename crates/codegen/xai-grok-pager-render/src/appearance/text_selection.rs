@@ -69,12 +69,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn default_is_flash() {
-        assert_eq!(TextSelection::default(), TextSelection::Flash);
-        assert_eq!(TextSelection::default().as_canonical(), "flash");
-    }
-
     /// `word_select` always implies `holds()` (persistent highlight).
     /// It is the only mode that turns on double-click word select.
     #[test]

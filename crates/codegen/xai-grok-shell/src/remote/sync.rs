@@ -47,6 +47,20 @@ pub struct RemoteSync {
 
 impl RemoteSync {
     #[cfg(test)]
+    pub(crate) fn test_identity_observer() -> (Self, mpsc::UnboundedReceiver<String>) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (observed_tx, observed_rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                if let SyncMsg::SetAgentId(agent_id) = message {
+                    let _ = observed_tx.send(agent_id);
+                }
+            }
+        });
+        (RemoteSync { tx }, observed_rx)
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_observer() -> (Self, mpsc::UnboundedReceiver<acp::SessionNotification>) {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (observed_tx, observed_rx) = mpsc::unbounded_channel();

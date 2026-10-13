@@ -1,6 +1,6 @@
 //! Commands sent to the ChatStateActor.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use tokio::sync::oneshot;
 use xai_grok_sampling_types::{
@@ -204,8 +204,12 @@ pub enum ChatStateCommand {
     /// after each verifier panel). No-op when nothing was recorded.
     FlushHarnessTraceTurn,
 
-    /// Repair dangling tool calls after a harness-initiated halt.
-    RepairDanglingAfterHarnessHalt { class: &'static str },
+    /// Repair dangling tool calls after a harness-initiated halt. `answers` are
+    /// written only for ids still dangling; the rest are dropped.
+    RepairDanglingAfterHarnessHalt {
+        class: &'static str,
+        answers: HashMap<String, String>,
+    },
 
     /// Drop a trailing continue reminder whose continuation will never
     /// sample (the turn is completing truncated after a failed
@@ -264,6 +268,12 @@ pub enum ChatStateCommand {
     /// Get sampling config.
     GetSamplingConfig {
         reply: oneshot::Sender<SamplingConfig>,
+    },
+
+    /// Soft-trim / hard-clear old tool results the same way a turn request does.
+    ApplyTurnRequestPruning {
+        items: Vec<ConversationItem>,
+        reply: oneshot::Sender<Vec<ConversationItem>>,
     },
 
     /// Get the set of agent-edited file paths.
@@ -429,22 +439,8 @@ mod tests {
         let _ = ChatStateCommand::IncrementPromptIndex;
         let _ = ChatStateCommand::UpdateSamplingConfig {
             config: Box::new(SamplingConfig {
-                base_url: String::new(),
-                mtls_cert_dir: None,
-                model: String::new(),
-                max_completion_tokens: None,
-                temperature: None,
-                top_p: None,
-                max_retries: None,
-                rate_limit_retry_threshold: None,
-                api_backend: Default::default(),
-                extra_headers: Default::default(),
-                conversation_group_id: None,
-                query_params: Default::default(),
-                env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(128_000).unwrap(),
-                reasoning_effort: None,
-                stream_tool_calls: None,
+                ..Default::default()
             }),
         };
         let _ = ChatStateCommand::RecordAgentEditedPath {
@@ -484,6 +480,12 @@ mod tests {
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetSamplingConfig { reply: tx };
+
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::ApplyTurnRequestPruning {
+            items: vec![],
+            reply: tx,
+        };
 
         let (tx, _rx) = oneshot::channel();
         let _ = ChatStateCommand::GetAgentEditedPaths { reply: tx };

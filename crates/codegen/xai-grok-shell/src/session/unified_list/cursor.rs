@@ -107,9 +107,12 @@ pub(super) fn merge_and_paginate(
             .count();
         emit_count = emit_count.min(frontier_count);
     }
-    let new_boundary = (emit_count > 0).then(|| boundary_of(&keyed[emit_count - 1].1));
+    let new_boundary = emit_count
+        .checked_sub(1)
+        .and_then(|i| keyed.get(i))
+        .map(|(_, row)| boundary_of(row));
 
-    let tail = &keyed[emit_count..];
+    let tail = keyed.get(emit_count..).unwrap_or(&[]);
     let local_has_more = tail.iter().any(|(_, r)| r.kind == SessionKind::Build);
     let conv_in_tail = tail.iter().any(|(_, r)| r.kind == SessionKind::Chat);
 
@@ -291,7 +294,10 @@ mod tests {
             let lane = conv.page(cursor.conv_page_token.as_deref());
             let result = merge_and_paginate(local_window.to_vec(), lane, &cursor, limit);
             emitted.extend(
-                result.candidates[..result.emit_count]
+                result
+                    .candidates
+                    .get(..result.emit_count)
+                    .unwrap_or(&[])
                     .iter()
                     .map(|r| r.legacy.session_id.clone()),
             );
@@ -385,8 +391,11 @@ mod tests {
         expected_all.extend(conv_rows.clone());
         expected_all.sort_by(cmp_total_order);
         let expected_ids = ids(&expected_all);
-        assert_eq!(expected_ids[0], "l_same");
-        assert_eq!(expected_ids[1], "c_same");
+        let [first, second, ..] = expected_ids.as_slice() else {
+            panic!("expected at least two ids: {expected_ids:?}");
+        };
+        assert_eq!(first, "l_same");
+        assert_eq!(second, "c_same");
 
         for &limit in &[1usize, 2, 3] {
             let source = ConvSource::new(conv_rows.clone(), 1);
@@ -452,7 +461,10 @@ mod tests {
             };
             let result = merge_and_paginate(local_window.clone(), lane, &cursor, 2);
             emitted.extend(
-                result.candidates[..result.emit_count]
+                result
+                    .candidates
+                    .get(..result.emit_count)
+                    .unwrap_or(&[])
                     .iter()
                     .map(|r| r.legacy.session_id.clone()),
             );

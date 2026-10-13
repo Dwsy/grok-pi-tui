@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use xai_grok_config::mcp_servers::McpServerOrigin;
 
 /// Where a piece of configuration was loaded from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,6 +94,19 @@ impl ConfigSource {
             | Self::McpJson { path }
             | Self::Cli { path } => Some(path),
             Self::Managed { path } => path.as_deref(),
+        }
+    }
+}
+
+impl From<McpServerOrigin> for ConfigSource {
+    fn from(origin: McpServerOrigin) -> ConfigSource {
+        match origin {
+            McpServerOrigin::ConfigToml { path } => ConfigSource::ConfigToml { path },
+            McpServerOrigin::Plugin { plugin_name, path } => {
+                ConfigSource::Plugin { plugin_name, path }
+            }
+            McpServerOrigin::ClaudeJson { path } => ConfigSource::ClaudeJson { path },
+            McpServerOrigin::McpJson { path } => ConfigSource::McpJson { path },
         }
     }
 }

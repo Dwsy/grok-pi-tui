@@ -7,7 +7,7 @@
         let mut app = make_app_with_agent("sess-1");
         let (msg, _rx) = make_permission_message("sess-1");
         handle(msg, &mut app);
-        assert_eq!(app.agents[&AgentId(0)].permission_queue.len(), 1);
+        assert_eq!(test_agent(&app, AgentId(0)).permission_queue.len(), 1);
 
         let changed = handle_session_notification(
             &interaction_resolved_ext("sess-1", "call-perm-1"),
@@ -15,7 +15,7 @@
         );
         assert!(changed, "dismissing a visible permission must redraw");
         assert!(
-            app.agents[&AgentId(0)].permission_queue.is_empty(),
+            test_agent(&app, AgentId(0)).permission_queue.is_empty(),
             "the resolved permission must be removed from the queue"
         );
     }
@@ -34,7 +34,7 @@
             handle_session_notification(&interaction_resolved_ext("sess-1", "call-q"), &mut app);
         assert!(changed, "dismissing a visible question must redraw");
         assert!(
-            app.agents[&AgentId(0)].question_view.is_none(),
+            test_agent(&app, AgentId(0)).question_view.is_none(),
             "the resolved question must be cleared"
         );
     }
@@ -44,13 +44,13 @@
         let mut app = make_app_with_agent("sess-1");
         let (ext, _rx) = make_exit_plan_ext_with_tool_call_id("call-plan", Some("# Plan"));
         assert!(handle_exit_plan_mode(ext, &mut app));
-        assert!(app.agents[&AgentId(0)].plan_approval_view.is_some());
+        assert!(test_agent(&app, AgentId(0)).plan_approval_view.is_some());
 
         let changed =
             handle_session_notification(&interaction_resolved_ext("sess-1", "call-plan"), &mut app);
         assert!(changed, "dismissing a visible plan approval must redraw");
         assert!(
-            app.agents[&AgentId(0)].plan_approval_view.is_none(),
+            test_agent(&app, AgentId(0)).plan_approval_view.is_none(),
             "the resolved plan approval must be cleared"
         );
     }
@@ -67,7 +67,7 @@
         );
         assert!(!changed, "an unknown tool_call_id must be a silent no-op");
         assert_eq!(
-            app.agents[&AgentId(0)].permission_queue.len(),
+            test_agent(&app, AgentId(0)).permission_queue.len(),
             1,
             "an unrelated pending modal must be left intact"
         );
@@ -328,6 +328,57 @@
     }
 
     #[test]
+    fn superseded_elicitation_is_cancelled_and_leaves_a_notice() {
+        let open = |app: &mut AppView, tool_call_id: &str| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let raw = serde_json::value::to_raw_value(&serde_json::json!({
+                "sessionId": "sess-A",
+                "toolCallId": tool_call_id,
+                "serverName": "airlock",
+                "message": "Create ticket?",
+                "mode": "form",
+                "requestedSchema": { "type": "object", "properties": { "title": { "type": "string" } } }
+            }))
+            .unwrap();
+            handle(
+                AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+                    request: acp::ExtRequest::new("x.ai/mcp/elicit", raw.into()),
+                    response_tx: tx,
+                }),
+                app,
+            );
+            rx
+        };
+        let mut app = make_app_with_agent("sess-A");
+        let mut first = open(&mut app, "mcp-elicit-1");
+        let _second = open(&mut app, "mcp-elicit-2");
+
+        let answer = first
+            .try_recv()
+            .expect("the superseded request is answered")
+            .expect("not an error");
+        assert_eq!(
+            serde_json::json!({ "outcome": "cancel" }),
+            serde_json::from_str::<serde_json::Value>(answer.0.get()).unwrap()
+        );
+        let agent = test_agent(&app, AgentId(0));
+        assert_eq!(
+            Some("mcp-elicit-2"),
+            agent.elicitation_view.as_ref().map(|ev| ev.tool_call_id.as_str())
+        );
+        let notes: Vec<String> = (0..agent.scrollback.len())
+            .filter_map(|i| agent.scrollback.get(i))
+            .filter_map(|entry| entry.block.searchable_text())
+            .collect();
+        assert_eq!(
+            vec![
+                "Cancelled MCP “airlock” request for input to show a newer one.".to_owned()
+            ],
+            notes
+        );
+    }
+
+    #[test]
     fn mcp_elicit_does_not_replace_url_waiting() {
         let mut app = make_app_with_agent("sess-A");
         let (tx1, mut rx1) = tokio::sync::oneshot::channel();
@@ -443,9 +494,9 @@
 
         // A peer resolves the elicitation while the question is open.
         handle_session_notification(&interaction_resolved_ext("sess-A", "mcp-elicit-1"), &mut app);
-        assert!(app.agents[&AgentId(0)].elicitation_view.is_none());
+        assert!(test_agent(&app, AgentId(0)).elicitation_view.is_none());
         assert_eq!(
-            app.agents[&AgentId(0)].prompt.text(),
+            test_agent(&app, AgentId(0)).prompt.text(),
             "",
             "the question still owns the composer; the draft must not write through"
         );
@@ -453,7 +504,7 @@
         // The question closes: the handed-over draft comes back.
         handle_session_notification(&interaction_resolved_ext("sess-A", "call-q"), &mut app);
         assert_eq!(
-            app.agents[&AgentId(0)].prompt.text(),
+            test_agent(&app, AgentId(0)).prompt.text(),
             "my precious draft",
             "the question's close must restore the elicitation's session draft"
         );
@@ -506,16 +557,16 @@
         // The question resolves first and restores the draft…
         handle_session_notification(&interaction_resolved_ext("sess-A", "call-q"), &mut app);
         assert_eq!(
-            app.agents[&AgentId(0)].prompt.text(),
+            test_agent(&app, AgentId(0)).prompt.text(),
             "my precious draft",
             "question close must put the draft back"
         );
 
         // …then the elicitation resolves and must NOT clobber it.
         handle_session_notification(&interaction_resolved_ext("sess-A", "mcp-elicit-1"), &mut app);
-        assert!(app.agents[&AgentId(0)].elicitation_view.is_none());
+        assert!(test_agent(&app, AgentId(0)).elicitation_view.is_none());
         assert_eq!(
-            app.agents[&AgentId(0)].prompt.text(),
+            test_agent(&app, AgentId(0)).prompt.text(),
             "my precious draft",
             "elicitation close must not restore an empty stash over the draft"
         );
@@ -571,7 +622,7 @@
             }),
             &mut app,
         );
-        assert!(app.agents[&AgentId(0)].pending_elicitation.is_some());
+        assert!(test_agent(&app, AgentId(0)).pending_elicitation.is_some());
 
         let changed = handle_session_notification(
             &interaction_resolved_ext("sess-A", "mcp-elicit-form"),
@@ -579,7 +630,7 @@
         );
         assert!(changed);
         assert!(
-            app.agents[&AgentId(0)].pending_elicitation.is_none(),
+            test_agent(&app, AgentId(0)).pending_elicitation.is_none(),
             "peer resolve must drop the parked form"
         );
         match rx2.try_recv() {
@@ -648,7 +699,7 @@
         );
         assert!(!changed);
         assert!(
-            app.agents[&AgentId(0)].elicitation_view.is_some(),
+            test_agent(&app, AgentId(0)).elicitation_view.is_some(),
             "a mismatched serverName must not dismiss the waiting card"
         );
 
@@ -666,7 +717,7 @@
         );
         assert!(changed);
         assert!(
-            app.agents[&AgentId(0)].elicitation_view.is_none(),
+            test_agent(&app, AgentId(0)).elicitation_view.is_none(),
             "the matching serverName must dismiss the waiting card"
         );
     }
@@ -914,7 +965,10 @@
         let response = rx.blocking_recv().expect("should have sent response");
         let raw = response.expect("should be Ok");
         let parsed: serde_json::Value = serde_json::from_str(raw.0.get()).unwrap();
-        assert_eq!(parsed["outcome"], "approved");
+        assert_eq!(
+            parsed.get("outcome").and_then(|v| v.as_str()),
+            Some("approved")
+        );
     }
 
     /// Delivers a status snapshot the way the agent does, and reports whether the client repainted.
@@ -943,7 +997,7 @@
 
         assert!(!notify_status(&mut app, "/tmp"), "no row, no repaint");
         assert!(
-            app.agents[&AgentId(0)].status_context.is_some(),
+            test_agent(&app, AgentId(0)).status_context.is_some(),
             "the payload is still stored for whenever a row is enabled"
         );
         assert!(app.status_line.display().is_none(), "and nothing is drawn");

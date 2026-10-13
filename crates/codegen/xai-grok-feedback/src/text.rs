@@ -24,7 +24,7 @@ pub(crate) fn title_prefix(line: &str) -> &str {
         .char_indices()
         .nth(MAX_TITLE_CHARS)
         .map_or(line.len(), |(index, _)| index);
-    &line[..end]
+    line.get(..end).unwrap_or("")
 }
 
 #[cfg(test)]

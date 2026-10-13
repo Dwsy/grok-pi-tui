@@ -96,22 +96,28 @@ fn mask_modifier_forms(input: &str, sentinel: &str) -> String {
     let mut cursor: usize = 0;
     for r in iter_env_var_references(input) {
         // Copy any literal text between the previous reference (or start of string) and this one verbatim
-        if cursor < r.start {
-            out.push_str(&input[cursor..r.start]);
+        if cursor < r.start
+            && let Some(lit) = input.get(cursor..r.start)
+        {
+            out.push_str(lit);
         }
         // Modifier-form braced ref: replace leading `${` with sentinel and emit the body (including closing `}`) as-is
         if r.braced && r.has_modifier {
             out.push_str(sentinel);
-            out.push_str(&input[r.start + 2..r.end]);
-        } else {
+            if let Some(body) = input.get(r.start + 2..r.end) {
+                out.push_str(body);
+            }
+        } else if let Some(raw) = input.get(r.start..r.end) {
             // Plain `${NAME}`, bare `$NAME`, or invalid form: pass through verbatim so shellexpand can resolve (or leave unresolved)
-            out.push_str(&input[r.start..r.end]);
+            out.push_str(raw);
         }
         cursor = r.end;
     }
     // Copy the trailing literal tail.
-    if cursor < input.len() {
-        out.push_str(&input[cursor..]);
+    if cursor < input.len()
+        && let Some(tail) = input.get(cursor..)
+    {
+        out.push_str(tail);
     }
     out
 }
@@ -152,7 +158,7 @@ impl<'a> Iterator for EnvVarRefIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let bytes = self.input.as_bytes();
         while self.pos < bytes.len() {
-            if bytes[self.pos] != b'$' {
+            if bytes.get(self.pos).copied() != Some(b'$') {
                 self.pos += 1;
                 continue;
             }
@@ -163,19 +169,20 @@ impl<'a> Iterator for EnvVarRefIter<'a> {
                 self.pos = bytes.len();
                 return None;
             }
-            if bytes[after] == b'{' {
+            if bytes.get(after).copied() == Some(b'{') {
                 // Braced form: ${...}
                 let body_start = after + 1;
                 // Read identifier prefix (alphanumeric / underscore).
                 let mut name_end = body_start;
-                while name_end < bytes.len()
-                    && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
+                while bytes
+                    .get(name_end)
+                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
                 {
                     name_end += 1;
                 }
                 // Find the FIRST closing `}` from the identifier end.
                 let mut close = name_end;
-                while close < bytes.len() && bytes[close] != b'}' {
+                while bytes.get(close).is_some_and(|&b| b != b'}') {
                     close += 1;
                 }
                 if close >= bytes.len() {
@@ -183,7 +190,10 @@ impl<'a> Iterator for EnvVarRefIter<'a> {
                     self.pos = dollar + 1;
                     continue;
                 }
-                let name = std::str::from_utf8(&bytes[body_start..name_end]).unwrap_or("");
+                let name = bytes
+                    .get(body_start..name_end)
+                    .and_then(|s| std::str::from_utf8(s).ok())
+                    .unwrap_or("");
                 let has_modifier = !name.is_empty() && name_end < close;
                 let end = close + 1;
                 self.pos = end;
@@ -197,15 +207,22 @@ impl<'a> Iterator for EnvVarRefIter<'a> {
             }
             // Bare `$NAME`: identifier must start with letter / `_`.
             // Anything else (`$1`, `$$`, `$?`, `$#`, `$(`, etc.) is a shell special and not an env-var reference
-            if bytes[after].is_ascii_alphabetic() || bytes[after] == b'_' {
+            if bytes
+                .get(after)
+                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+            {
                 let start_id = after;
                 let mut end_id = start_id;
-                while end_id < bytes.len()
-                    && (bytes[end_id].is_ascii_alphanumeric() || bytes[end_id] == b'_')
+                while bytes
+                    .get(end_id)
+                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
                 {
                     end_id += 1;
                 }
-                let name = std::str::from_utf8(&bytes[start_id..end_id]).unwrap_or("");
+                let name = bytes
+                    .get(start_id..end_id)
+                    .and_then(|s| std::str::from_utf8(s).ok())
+                    .unwrap_or("");
                 self.pos = end_id;
                 return Some(EnvVarRef {
                     start: dollar,
@@ -586,35 +603,41 @@ mod tests {
     #[test]
     fn iter_yields_plain_braced_form() {
         let refs: Vec<_> = iter_env_var_references("foo ${BAR} baz").collect();
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].name, "BAR");
-        assert!(refs[0].braced);
-        assert!(!refs[0].has_modifier);
-        assert_eq!(refs[0].start, 4);
-        assert_eq!(refs[0].end, 10);
+        let [r] = refs.as_slice() else {
+            panic!("expected one ref: {refs:?}");
+        };
+        assert_eq!(r.name, "BAR");
+        assert!(r.braced);
+        assert!(!r.has_modifier);
+        assert_eq!(r.start, 4);
+        assert_eq!(r.end, 10);
     }
 
     /// Lock down the iterator output for a single bare form.
     #[test]
     fn iter_yields_bare_form() {
         let refs: Vec<_> = iter_env_var_references("foo $BAR baz").collect();
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].name, "BAR");
-        assert!(!refs[0].braced);
-        assert!(!refs[0].has_modifier);
-        assert_eq!(refs[0].start, 4);
-        assert_eq!(refs[0].end, 8);
+        let [r] = refs.as_slice() else {
+            panic!("expected one ref: {refs:?}");
+        };
+        assert_eq!(r.name, "BAR");
+        assert!(!r.braced);
+        assert!(!r.has_modifier);
+        assert_eq!(r.start, 4);
+        assert_eq!(r.end, 8);
     }
 
     #[test]
     fn iter_flags_modifier_form() {
         let refs: Vec<_> = iter_env_var_references("${VAR:-x}").collect();
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].name, "VAR");
-        assert!(refs[0].braced);
-        assert!(refs[0].has_modifier);
-        assert_eq!(refs[0].start, 0);
-        assert_eq!(refs[0].end, 9);
+        let [r] = refs.as_slice() else {
+            panic!("expected one ref: {refs:?}");
+        };
+        assert_eq!(r.name, "VAR");
+        assert!(r.braced);
+        assert!(r.has_modifier);
+        assert_eq!(r.start, 0);
+        assert_eq!(r.end, 9);
     }
 
     /// Shell positionals / specials / command substitutions are NOT yielded.
@@ -638,11 +661,13 @@ mod tests {
     #[test]
     fn iter_yields_invalid_braced_form_with_empty_name() {
         let refs: Vec<_> = iter_env_var_references("${:-foo}").collect();
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].name, "");
-        assert!(refs[0].braced);
+        let [r] = refs.as_slice() else {
+            panic!("expected one ref: {refs:?}");
+        };
+        assert_eq!(r.name, "");
+        assert!(r.braced);
         assert!(
-            !refs[0].has_modifier,
+            !r.has_modifier,
             "invalid form (no identifier) must not be flagged as a modifier form"
         );
     }
@@ -651,13 +676,15 @@ mod tests {
     #[test]
     fn iter_yields_mixed_forms_in_order() {
         let refs: Vec<_> = iter_env_var_references("${A}${B:-x}$C $1").collect();
-        assert_eq!(refs.len(), 3);
-        assert_eq!(refs[0].name, "A");
-        assert!(refs[0].braced && !refs[0].has_modifier);
-        assert_eq!(refs[1].name, "B");
-        assert!(refs[1].braced && refs[1].has_modifier);
-        assert_eq!(refs[2].name, "C");
-        assert!(!refs[2].braced && !refs[2].has_modifier);
+        let [a, b, c] = refs.as_slice() else {
+            panic!("expected three refs: {refs:?}");
+        };
+        assert_eq!(a.name, "A");
+        assert!(a.braced && !a.has_modifier);
+        assert_eq!(b.name, "B");
+        assert!(b.braced && b.has_modifier);
+        assert_eq!(c.name, "C");
+        assert!(!c.braced && !c.has_modifier);
     }
 
     /// Nested braces are matched at the FIRST `}`; see `mask_helper_nested_braces_in_modifier_body`.
@@ -666,11 +693,13 @@ mod tests {
         // The walker reads `A`, sees `:` as the first non-identifier byte, then stops at the FIRST `}`, the inner one at index 8, so end is 9
         // The trailing `}` at index 9 is literal text
         let refs: Vec<_> = iter_env_var_references("${A:-${B}}").collect();
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].name, "A");
-        assert!(refs[0].braced);
-        assert!(refs[0].has_modifier);
-        assert_eq!(refs[0].start, 0);
-        assert_eq!(refs[0].end, 9);
+        let [r] = refs.as_slice() else {
+            panic!("expected one ref: {refs:?}");
+        };
+        assert_eq!(r.name, "A");
+        assert!(r.braced);
+        assert!(r.has_modifier);
+        assert_eq!(r.start, 0);
+        assert_eq!(r.end, 9);
     }
 }

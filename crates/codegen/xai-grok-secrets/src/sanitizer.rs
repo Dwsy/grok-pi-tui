@@ -128,7 +128,9 @@ pub fn redact_json_string_values(value: &mut serde_json::Value) {
 fn redact_urls_in(text: &str) -> String {
     URL_REGEX
         .replace_all(text, |caps: &regex::Captures<'_>| {
-            let raw = &caps[0];
+            let Some(raw) = caps.get(0).map(|m| m.as_str()) else {
+                return String::new();
+            };
             url::Url::parse(raw).map_or_else(
                 |_| raw.to_owned(),
                 |mut url| {
@@ -227,8 +229,12 @@ fn replace_home_prefix(input: &str, home: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
     while let Some(idx) = rest.find(home) {
-        let (before, tail) = rest.split_at(idx);
-        let after = &tail[home.len()..];
+        let Some((before, tail)) = rest.split_at_checked(idx) else {
+            break;
+        };
+        let Some(after) = tail.get(home.len()..) else {
+            break;
+        };
         let prev_ok = before.chars().last().is_none_or(is_segment_boundary);
         let next_ok = after.chars().next().is_none_or(is_segment_boundary);
         out.push_str(before);

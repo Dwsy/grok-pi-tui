@@ -30,7 +30,7 @@ pub fn truncate_line(line: &str, max_chars: usize) -> Cow<'_, str> {
         .unwrap_or(line.len());
     Cow::Owned(format!(
         "{} [... truncated ({} chars total)]",
-        &line[..end_byte],
+        line.get(..end_byte).unwrap_or(""),
         char_count
     ))
 }
@@ -72,7 +72,7 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     while !s.is_char_boundary(end) {
         end -= 1;
     }
-    &s[..end]
+    s.get(..end).unwrap_or("")
 }
 
 /// Text on hand, and the size of the output it came from. The two differ when
@@ -156,7 +156,11 @@ pub fn truncate_str_with_marker(s: &str, max_bytes: usize) -> Cow<'_, str> {
     while !s.is_char_boundary(end) {
         end -= 1;
     }
-    Cow::Owned(format!("{}{}", &s[..end], TRUNCATION_MARKER))
+    Cow::Owned(format!(
+        "{}{}",
+        s.get(..end).unwrap_or(""),
+        TRUNCATION_MARKER
+    ))
 }
 
 /// Find the largest byte index `<= index` that is a char boundary in `s`. Polyfill for
@@ -265,9 +269,9 @@ pub fn truncate_front_and_back(s: &str, max_chars: usize) -> (String, bool) {
     };
     let ellipsis = FRONT_BACK_TRUNCATION_MARKER;
     let mut result = String::with_capacity(front_end + ellipsis.len() + (s.len() - back_start));
-    result.push_str(&s[..front_end]);
+    result.push_str(s.get(..front_end).unwrap_or(""));
     result.push_str(ellipsis);
-    result.push_str(&s[back_start..]);
+    result.push_str(s.get(back_start..).unwrap_or(""));
     (result, true)
 }
 
@@ -305,9 +309,9 @@ pub fn truncate_middle(s: &str, max_chars: usize) -> String {
             .unwrap_or(0)
     };
     let mut result = String::with_capacity(front_end + MARKER_LEN + (s.len() - back_start));
-    result.push_str(&s[..front_end]);
+    result.push_str(s.get(..front_end).unwrap_or(""));
     result.push_str(MARKER);
-    result.push_str(&s[back_start..]);
+    result.push_str(s.get(back_start..).unwrap_or(""));
     result
 }
 
@@ -326,10 +330,10 @@ pub fn truncate_lines_to_char_budget(content: &str, budget: usize) -> (String, b
         .rev()
         .find(|&i| trimmed.is_char_boundary(i))
         .unwrap_or(0);
-    let truncated = &trimmed[..safe_end];
+    let truncated = trimmed.get(..safe_end).unwrap_or("");
     let last_nl = truncated.rfind('\n');
     match last_nl {
-        Some(idx) => (trimmed[..idx].trim().to_string(), true),
+        Some(idx) => (trimmed.get(..idx).unwrap_or("").trim().to_string(), true),
         None => (
             "... [First line would be too large to fit within character budget] ...".to_string(),
             true,
@@ -440,9 +444,9 @@ mod tests {
         let r = soft_wrap_line(&line, 2_000);
         let lines: Vec<&str> = r.split('\n').collect();
         assert_eq!(lines.len(), 3); // 2000 + 2000 + 1000
-        assert_eq!(lines[0].len(), 2_000);
-        assert_eq!(lines[1].len(), 2_000);
-        assert_eq!(lines[2].len(), 1_000);
+        assert_eq!(lines.first().map(|l| l.len()), Some(2_000));
+        assert_eq!(lines.get(1).map(|l| l.len()), Some(2_000));
+        assert_eq!(lines.get(2).map(|l| l.len()), Some(1_000));
     }
 
     #[test]
@@ -450,8 +454,8 @@ mod tests {
         let line = "😀".repeat(3_000);
         let r = soft_wrap_line(&line, 2_000);
         let lines: Vec<&str> = r.split('\n').collect();
-        assert_eq!(lines[0].chars().count(), 2_000);
-        assert_eq!(lines[1].chars().count(), 1_000);
+        assert_eq!(lines.first().map(|l| l.chars().count()), Some(2_000));
+        assert_eq!(lines.get(1).map(|l| l.chars().count()), Some(1_000));
     }
 
     // ---- truncate_str ----
@@ -613,9 +617,9 @@ mod tests {
         let text = format!("short\n{}\nanother", "x".repeat(5_000));
         let result = soft_wrap_lines(&text, 2_000);
         let lines: Vec<&str> = result.split('\n').collect();
-        assert_eq!(lines[0], "short");
-        assert_eq!(lines[1].len(), 2_000); // first chunk of wrapped line
-        assert_eq!(lines[4], "another");
+        assert_eq!(lines.first().copied(), Some("short"));
+        assert_eq!(lines.get(1).map(|l| l.len()), Some(2_000)); // first chunk of wrapped line
+        assert_eq!(lines.get(4).copied(), Some("another"));
         // Total content preserved
         let unwrapped: String = result.chars().filter(|c| *c != '\n').collect();
         let original: String = text.chars().filter(|c| *c != '\n').collect();

@@ -7,6 +7,13 @@ use crate::app::prompt_ack::{PromptAckDeadlines, PromptAckWatch};
 use pretty_assertions::assert_eq;
 use std::time::{Duration, Instant};
 
+fn agent_ref(app: &AppView, id: AgentId) -> &AgentView {
+    let Some(agent) = app.agents.get(&id) else {
+        panic!("expected agent {id:?}");
+    };
+    agent
+}
+
 const DEADLINES: PromptAckDeadlines = PromptAckDeadlines {
     soft: Duration::from_secs(10),
     hard: Duration::from_secs(60),
@@ -23,7 +30,7 @@ fn send_and_arm(app: &mut AppView, text: &str) -> String {
         matches!(effects.as_slice(), [Effect::SendPrompt { .. }]),
         "expected a local drain, got {effects:?}"
     );
-    let agent = &app.agents[&AgentId(0)];
+    let agent = &agent_ref(app, AgentId(0));
     let watch = agent.prompt_ack.as_ref().expect("watch armed");
     assert_eq!(
         agent.session.current_prompt_id.as_deref(),
@@ -57,7 +64,7 @@ fn local_drain_arms_the_watch_for_prompts_but_not_commands() {
     send_and_arm(&mut app, "hello");
     dispatch(end_turn(), &mut app);
     assert!(
-        app.agents[&id].prompt_ack.is_none(),
+        agent_ref(&app, id).prompt_ack.is_none(),
         "the turn's response disarms the watch"
     );
     app.agents
@@ -68,7 +75,7 @@ fn local_drain_arms_the_watch_for_prompts_but_not_commands() {
     let effects = dispatch(Action::DrainQueue, &mut app);
     assert!(matches!(effects.as_slice(), [Effect::Compact { .. }]));
     assert!(
-        app.agents[&id].prompt_ack.is_none(),
+        agent_ref(&app, id).prompt_ack.is_none(),
         "a slash command owns the pane through its own completion"
     );
 }
@@ -81,7 +88,7 @@ fn expired_watch_restores_the_prompt_and_sends_a_rewind_cancel() {
     let effects = reconcile_overdue_prompt_acks_at(&mut app, &DEADLINES, past_hard_deadline())
         .expect("the expired watch fires");
     expect_rewind_cancel(&effects, &pid);
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     let bubbles = (0..agent.scrollback.len())
         .filter_map(|idx| agent.scrollback.get(idx))
         .filter(|entry| matches!(entry.block, RenderBlock::UserPrompt(_)))
@@ -113,7 +120,9 @@ fn expired_watch_on_an_overlay_child_restores_the_child_prompt() {
     );
     child.session.enqueue_prompt("child text".into());
     assert!(matches!(
-        maybe_drain_queue(&mut child).effects.as_slice(),
+        maybe_drain_queue(&mut child, &mut Vec::new())
+            .effects
+            .as_slice(),
         [Effect::SendPrompt { .. }]
     ));
     let pid = child
@@ -140,7 +149,9 @@ fn expired_watch_on_an_overlay_child_restores_the_child_prompt() {
         ),
         "the abort targets the child session, got {effects:?}"
     );
-    let child = &app.agents[&parent_id].subagent_views[child_sid];
+    let Some(child) = agent_ref(&app, parent_id).subagent_views.get(child_sid) else {
+        panic!("expected overlay child {child_sid}");
+    };
     assert_eq!(
         (true, "child text", true, true),
         (
@@ -202,7 +213,7 @@ fn stale_watch_on_an_idle_pane_is_dropped_silently() {
     app.agents.get_mut(&id).unwrap().prompt_ack =
         Some(PromptAckWatch::new("p-stale", Instant::now()));
     assert!(reconcile_overdue_prompt_acks_at(&mut app, &DEADLINES, past_hard_deadline()).is_none());
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert_eq!(
         (None, 0),
         (agent.prompt_ack.as_ref(), agent.scrollback.len())
@@ -217,12 +228,12 @@ fn expired_watch_while_cancelling_forces_idle() {
     app.cancel_rewind_enabled = false;
     let pid = send_and_arm(&mut app, "stuck");
     dispatch(Action::CancelTurn, &mut app);
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(agent.session.state.is_cancelling() && agent.prompt_ack.is_some());
     let effects = reconcile_overdue_prompt_acks_at(&mut app, &DEADLINES, past_hard_deadline())
         .expect("the expired watch fires while cancelling");
     expect_rewind_cancel(&effects, &pid);
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert_eq!(
         (true, "stuck", true),
         (
@@ -251,7 +262,7 @@ fn late_prompt_response_after_the_fail_safe_leaves_the_pane_idle() {
         }),
         &mut app,
     );
-    let agent = &app.agents[&id];
+    let agent = agent_ref(&app, id);
     assert!(stale.is_empty());
     assert_eq!(
         (true, "restore me", 1),

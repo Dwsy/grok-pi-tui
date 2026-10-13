@@ -320,10 +320,9 @@ pub(crate) fn render_legacy(root: &Path, max_output_bytes: usize) -> String {
     let collected = collect(root, walker, &cfg);
     let output_lines = render_with_fallback(root, &collected, &cfg);
     // Skip the first line (root dir name) — the caller prepends its own.
-    if output_lines.len() > 1 {
-        output_lines[1..].join("\n")
-    } else {
-        String::new()
+    match output_lines.get(1..) {
+        Some(rest) if !rest.is_empty() => rest.join("\n"),
+        _ => String::new(),
     }
 }
 

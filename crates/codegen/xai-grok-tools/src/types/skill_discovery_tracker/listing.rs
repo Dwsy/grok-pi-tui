@@ -330,7 +330,7 @@ impl<'a> SkillListing<'a> {
         }
         let remaining = self.0.len() - included;
         if overflow_indicator && remaining > 0 {
-            let dirs = collect_source_dirs(&self.0[included..]);
+            let dirs = collect_source_dirs(self.0.get(included..).unwrap_or(&[]));
             out.push_str(&format!(
                 "<!-- {remaining} more skills available in {} -->\n",
                 dirs.join(", ")
@@ -377,7 +377,7 @@ impl<'a> SkillListing<'a> {
         }
         let remaining = self.0.len() - included;
         if remaining > 0 {
-            let dirs = collect_source_dirs(&self.0[included..]);
+            let dirs = collect_source_dirs(self.0.get(included..).unwrap_or(&[]));
             listing.push_str(&format!(
                 "\n... and {remaining} more skills in {}",
                 dirs.join(", ")
@@ -427,9 +427,9 @@ fn extract_trigger_suffix(description: &str) -> Option<(&str, &str)> {
     }
     let pos = best_pos?;
 
-    let before = description[..pos].trim_end();
+    let before = description.get(..pos)?.trim_end();
     let before = before.strip_suffix('.').unwrap_or(before);
-    let triggers = &description[pos..];
+    let triggers = description.get(pos..)?;
 
     if before.is_empty() || triggers.is_empty() {
         return None;
@@ -453,7 +453,9 @@ fn strip_leading_trigger_prefix(wtu: &str) -> &str {
             // ASCII lowercasing preserves byte length, so the offset computed on
             // the lowercased copy is valid on the original `trimmed` slice.
             let off = trimmed.len() - rest.len();
-            let out = trimmed[off..]
+            let out = trimmed
+                .get(off..)
+                .unwrap_or("")
                 .trim_start_matches(|c: char| c == ':' || c == ',' || c.is_whitespace());
             if !out.is_empty() {
                 return out;

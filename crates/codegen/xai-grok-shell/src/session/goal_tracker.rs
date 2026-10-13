@@ -112,6 +112,9 @@ pub enum GoalPauseReason {
     /// Turn finished with `PromptTurnResult::Err`.
     /// Maps to [`GoalStatus::InfraPaused`]; pairs with a human-readable message on [`GoalOrchestration::pause_message`].
     Infra,
+    /// The `/goal` planner failed closed (transport/runtime error, aborted child, no plan written).
+    /// Maps to [`GoalStatus::InfraPaused`] like `Infra`; history/telemetry read `"planner"` so a harness failure is never scored as a user stop or a turn error.
+    Planner,
 }
 
 impl GoalPauseReason {
@@ -121,7 +124,7 @@ impl GoalPauseReason {
             Self::BackOff => GoalStatus::BackOffPaused,
             Self::NoProgress => GoalStatus::NoProgressPaused,
             Self::Verification => GoalStatus::Blocked,
-            Self::Infra => GoalStatus::InfraPaused,
+            Self::Infra | Self::Planner => GoalStatus::InfraPaused,
         }
     }
 
@@ -133,6 +136,7 @@ impl GoalPauseReason {
             Self::NoProgress => "no_progress",
             Self::Verification => "blocked",
             Self::Infra => "infra",
+            Self::Planner => "planner",
         }
     }
 }

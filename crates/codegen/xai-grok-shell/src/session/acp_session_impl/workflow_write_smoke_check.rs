@@ -33,8 +33,9 @@ pub(super) fn is_project_workflow_rhai_path(path: &Path) -> bool {
 
     let components: Vec<_> = path.components().collect();
     components.windows(2).any(|pair| {
-        matches!(pair[0], Component::Normal(name) if name == ".grok")
-            && matches!(pair[1], Component::Normal(name) if name == "workflows")
+        let [a, b] = pair else { return false };
+        matches!(a, Component::Normal(name) if *name == ".grok")
+            && matches!(b, Component::Normal(name) if *name == "workflows")
     })
 }
 

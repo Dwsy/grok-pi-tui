@@ -12,8 +12,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use xai_grok_test_support::{MockInferenceServer, TestSandbox};
 
+pub use xai_grok_test_support::mock_server::FeedbackPost;
 pub use xai_grok_test_support::mock_server::LogEntry;
+pub use xai_grok_test_support::mock_server::MockCanAdministerTeam;
 pub use xai_grok_test_support::mock_server::MockModelEntry as MockModel;
+pub use xai_grok_test_support::mock_server::MockUserTeam;
 pub use xai_grok_test_support::mock_server::StorageUpload;
 pub use xai_grok_test_support::sse;
 pub use xai_grok_test_support::{
@@ -297,6 +300,21 @@ impl ContentController {
     /// Snapshot of accepted (HTTP 200) `/v1/storage` uploads.
     pub fn storage_uploads(&self) -> Vec<StorageUpload> {
         self.server.storage_uploads()
+    }
+
+    /// While set, every `POST /v1/feedback` answers 500 (still recorded).
+    pub fn set_feedback_failure(&self, fail: bool) {
+        self.server.set_feedback_failure(fail);
+    }
+
+    /// Snapshot of every `POST /v1/feedback` seen, accepted or failed, in arrival order.
+    pub fn feedback_posts(&self) -> Vec<FeedbackPost> {
+        self.server.feedback_posts()
+    }
+
+    /// Snapshot of every product-telemetry event posted to `/v1/events` (point `GROK_TELEMETRY_EVENTS_URL` at `{url()}/events`).
+    pub fn telemetry_events(&self) -> Vec<serde_json::Value> {
+        self.server.telemetry_events()
     }
 }
 

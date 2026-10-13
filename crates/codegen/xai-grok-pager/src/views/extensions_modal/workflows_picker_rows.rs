@@ -101,11 +101,14 @@ mod tests {
         let by_desc = build_workflows_picker_rows(&workflows, "ci");
         assert_eq!(labels(&by_desc), ["alpha-wf"]);
         assert_eq!(
-            by_desc[0].fields,
-            [(
-                "path".to_string(),
-                "/home/u/.grok/workflows/alpha-wf.rhai".to_string()
-            )]
+            by_desc.first().map(|r| r.fields.as_slice()),
+            Some(
+                [(
+                    "path".to_string(),
+                    "/home/u/.grok/workflows/alpha-wf.rhai".to_string()
+                )]
+                .as_slice()
+            )
         );
         let by_name = build_workflows_picker_rows(&workflows, "beta");
         assert_eq!(labels(&by_name), ["beta-wf"]);
@@ -123,11 +126,11 @@ mod tests {
     fn error_and_loading_states_build_their_own_rows() {
         let error = build_workflows_picker_rows(&TabDataState::Error("boom".into()), "");
         assert_eq!(labels(&error), ["Error: boom"]);
-        assert!(error[0].dimmed);
+        assert!(error.first().is_some_and(|r| r.dimmed));
         let loading = build_workflows_picker_rows(&TabDataState::Loading, "");
         assert!(loading.is_empty());
         let empty = build_workflows_picker_rows(&TabDataState::Loaded(vec![]), "");
         assert_eq!(labels(&empty), [WORKFLOWS_EMPTY_PLACEHOLDER]);
-        assert!(empty[0].dimmed);
+        assert!(empty.first().is_some_and(|r| r.dimmed));
     }
 }

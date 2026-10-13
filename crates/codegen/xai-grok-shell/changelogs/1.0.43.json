@@ -1,0 +1,7 @@
+[
+  {
+    "category": "fixes",
+    "description": "**MCP tool prompts** now appear correctly in minimal mode and users are notified when a prompt goes unanswered.",
+    "breaking_change": false
+  }
+]

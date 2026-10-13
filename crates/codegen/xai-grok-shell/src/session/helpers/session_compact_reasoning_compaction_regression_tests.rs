@@ -8,6 +8,17 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+fn j<'a>(v: &'a serde_json::Value, k: &str) -> &'a serde_json::Value {
+    v.get(k).unwrap_or(&serde_json::Value::Null)
+}
+
+fn at<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
+
 /// Minimal ChatCompletions SSE stream: one content token, `stop`, then `[DONE]`.
 fn summary_stream() -> Vec<Event> {
     vec![
@@ -166,37 +177,11 @@ fn test_config(base_url: &str) -> SamplerConfig {
     SamplerConfig {
         api_key: Some("test-api-key".to_string()),
         base_url: base_url.to_string(),
-        mtls_cert_dir: None,
         model: "test-model".to_string(),
         max_completion_tokens: Some(1000),
         temperature: Some(0.7),
-        top_p: None,
-        api_backend: ApiBackend::ChatCompletions,
-        auth_scheme: Default::default(),
-        extra_headers: Default::default(),
-        extra_response_includes: Vec::new(),
-        query_params: Default::default(),
-        env_http_headers: Default::default(),
         context_window: 256_000,
-        client_version: None,
-        force_http1: false,
-        max_retries: None,
-        rate_limit_retry_threshold: None,
-        stream_tool_calls: false,
-        idle_timeout_secs: None,
-        client_identifier: None,
-        reasoning_effort: None,
-        deployment_id: None,
-        user_id: None,
-        conversation_group_id: None,
-        origin_client: None,
-        attribution_callback: None,
-        bearer_resolver: None,
-        supports_backend_search: false,
-        compactions_remaining: None,
-        compaction_at_tokens: None,
-        doom_loop_recovery: None,
-        header_injector: None,
+        ..Default::default()
     }
 }
 
@@ -349,20 +334,23 @@ async fn chat_completions_below_trigger_preserves_images_and_tools() {
     let bodies = captured.lock().unwrap();
     assert_eq!(bodies.len(), 2, "mock must have served both requests");
 
-    let with_tools = &bodies[0];
+    let with_tools = &at(&bodies, 0);
     assert_eq!(
-        with_tools["tool_choice"],
-        json!("auto"),
+        j(with_tools, "tool_choice"),
+        &json!("auto"),
         "default compaction tool_choice is auto"
     );
-    let sent_tools = with_tools["tools"]
+    let sent_tools = j(with_tools, "tools")
         .as_array()
         .expect("tools must be attached for prefix-cache alignment");
     assert_eq!(sent_tools.len(), 1);
-    assert_eq!(sent_tools[0]["function"]["name"], json!("read_file"));
+    assert_eq!(
+        j(j(at(sent_tools, 0), "function"), "name"),
+        &json!("read_file")
+    );
     assert_preserved_compaction_body(with_tools);
 
-    let without_tools = &bodies[1];
+    let without_tools = &at(&bodies, 1);
     assert!(
         without_tools.get("tools").is_none(),
         "no tools key when none are passed"
@@ -507,13 +495,13 @@ async fn responses_below_trigger_preserves_images_and_tools() {
     let bodies = captured.lock().unwrap();
     assert_eq!(bodies.len(), 2, "mock must have served both requests");
 
-    let with_tools = &bodies[0];
+    let with_tools = &at(&bodies, 0);
     assert_eq!(
-        with_tools["tool_choice"],
-        json!("auto"),
+        j(with_tools, "tool_choice"),
+        &json!("auto"),
         "default Responses compaction tool_choice is auto"
     );
-    let sent_tools = with_tools["tools"]
+    let sent_tools = j(with_tools, "tools")
         .as_array()
         .expect("tools must be attached for prefix-cache alignment");
     let has_read_file = sent_tools.iter().any(|t| {
@@ -532,7 +520,7 @@ async fn responses_below_trigger_preserves_images_and_tools() {
     );
     assert_preserved_compaction_body(with_tools);
 
-    let without_tools = &bodies[1];
+    let without_tools = &at(&bodies, 1);
     assert!(
         without_tools
             .get("tools")

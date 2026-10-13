@@ -113,7 +113,10 @@ fn membership_is_backgrounded_only_and_keeps_completed() {
     let update = background_tasks_update([fg, done], &sess(), meta()).expect("fit");
     let (tasks, truncated) = update_tasks(update);
     assert_eq!(tasks.len(), 1);
-    assert_eq!(tasks[0].task_id, "done");
+    let Some(task) = tasks.first() else {
+        panic!("expected one task: {tasks:?}");
+    };
+    assert_eq!(task.task_id, "done");
     assert!(!truncated);
 }
 
@@ -128,15 +131,34 @@ fn session_update_tag_is_background_tasks_and_omits_output() {
         truncated: false,
     };
     let value = serde_json::to_value(&update).expect("serialize");
-    assert_eq!(value["sessionUpdate"], "background_tasks");
+    assert_eq!(
+        value.get("sessionUpdate").and_then(|v| v.as_str()),
+        Some("background_tasks")
+    );
     assert!(value.get("output").is_none());
-    assert!(value["tasks"][0].get("output").is_none());
-    assert_eq!(value["tasks"][0]["task_id"], "bg-1");
-    assert_eq!(value["tasks"][0]["status"], "completed");
-    assert_eq!(value["tasks"][0]["kind"], "bash");
-    assert_eq!(value["tasks"][0]["started_at"], "1970-01-01T00:00:00+00:00");
-    assert_eq!(value["tasks"][0]["output_file"], "/tmp/bg-1.log");
-    assert!(value["tasks"][0].get("tool_call_id").is_none());
+    let Some(task) = value
+        .get("tasks")
+        .and_then(|t| t.as_array())
+        .and_then(|a| a.first())
+    else {
+        panic!("expected one serialized task: {value:?}");
+    };
+    assert!(task.get("output").is_none());
+    assert_eq!(task.get("task_id").and_then(|v| v.as_str()), Some("bg-1"));
+    assert_eq!(
+        task.get("status").and_then(|v| v.as_str()),
+        Some("completed")
+    );
+    assert_eq!(task.get("kind").and_then(|v| v.as_str()), Some("bash"));
+    assert_eq!(
+        task.get("started_at").and_then(|v| v.as_str()),
+        Some("1970-01-01T00:00:00+00:00")
+    );
+    assert_eq!(
+        task.get("output_file").and_then(|v| v.as_str()),
+        Some("/tmp/bg-1.log")
+    );
+    assert!(task.get("tool_call_id").is_none());
     assert!(value.get("omitted_count").is_none());
 
     let roundtrip: SessionUpdate = serde_json::from_value(value).expect("deserialize");
@@ -202,7 +224,10 @@ fn fitted_list_stays_within_task_completed_frame_budget() {
     let update = background_tasks_update([huge], &sess(), meta()).expect("fit");
     let (tasks, truncated) = update_tasks(update.clone());
     assert_eq!(tasks.len(), 1);
-    assert!(tasks[0].command.len() <= 1024);
+    let Some(task) = tasks.first() else {
+        panic!("expected one task: {tasks:?}");
+    };
+    assert!(task.command.len() <= 1024);
     assert!(!truncated);
     let line = session_notification_frame_len(&update);
     assert!(line <= FRAME_MAX_BYTES, "line is {line} bytes");
@@ -244,7 +269,7 @@ fn running_only_oversized_list_is_trimmed_to_the_session_notification_frame() {
         })
         .collect();
     assert!(
-        nums.windows(2).all(|w| w[0] >= w[1]),
+        nums.windows(2).all(|w| matches!(w, [a, b] if a >= b)),
         "expected newest-first running retention, got {nums:?}"
     );
     let line = session_notification_frame_len(&update);
@@ -267,7 +292,7 @@ fn truncated_marker_is_on_the_wire_when_rows_are_dropped() {
         .collect();
     let update = background_tasks_update(snaps, &sess(), meta()).expect("fit");
     let value = serde_json::to_value(&update).expect("serialize");
-    assert_eq!(value["truncated"], true);
+    assert_eq!(value.get("truncated").and_then(|v| v.as_bool()), Some(true));
     assert!(value.get("omitted_count").is_none());
 }
 

@@ -12,6 +12,8 @@
 //! `servers.list` is scoped per-user on the server, so the bearer must resolve to the same user that owns the session; the
 //! access token from `~/.grok/auth.json` does (same identity).
 
+#![deny(clippy::indexing_slicing)]
+
 use base64::Engine;
 use clap::Parser;
 use serde_json::{Value, json};

@@ -1,9 +1,11 @@
 use super::load::load_config_from_toml;
 use super::mcp::{Config, user_config_path};
 use anyhow::Result;
+use std::path::Path;
 use toml::Value as TomlValue;
 use toml::map::Map as TomlMap;
 use xai_grok_agent::prompt::skills::SkillsConfig;
+use xai_grok_config::fs_atomic::BoundDest;
 /// Process-wide write lock for `~/.grok/config.toml`.
 /// Serializes the read-modify-write in `save_config` so two rapid settings toggles can't interleave and clobber each other.
 static SAVE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -14,23 +16,34 @@ pub(crate) fn parse_existing_config_toml(s: &str) -> Result<TomlValue, toml::de:
     }
     toml::from_str(s)
 }
-/// Settings-save body; caller must hold the full [`ConfigWriteGuard`] — [`SAVE_LOCK`] alone races
-/// flock-only writers and the last rename drops their edit.
-async fn save_config_locked(config: &Config) -> Result<()> {
-    let path = user_config_path();
-    let mut root: TomlValue = match tokio::fs::read_to_string(&path).await {
+/// Settings-save body. Caller must hold [`ConfigWriteGuard`].
+/// Re-resolve `dest` before publish. A retarget must not merge A onto B.
+async fn save_config_locked(
+    guard: ConfigWriteGuard,
+    slot: &Path,
+    dest: BoundDest,
+    config: &Config,
+) -> Result<()> {
+    let dest = require_same_user_config_dest(slot, &dest)?;
+    let mut root: TomlValue = match tokio::fs::read_to_string(dest.as_path()).await {
         Ok(s) => match parse_existing_config_toml(&s) {
             Ok(v) => v,
             Err(parse_err) => {
                 return Err(anyhow::anyhow!(
                     "refusing to overwrite unparseable {}: {}; save a backup \
                          and fix the syntax error before retrying",
-                    path.display(),
+                    slot.display(),
                     parse_err,
                 ));
             }
         },
-        Err(_) => TomlValue::Table(TomlMap::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => TomlValue::Table(TomlMap::new()),
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "refusing to overwrite unreadable {}: {e}",
+                slot.display()
+            ));
+        }
     };
     if !matches!(root, TomlValue::Table(_)) {
         root = TomlValue::Table(TomlMap::new());
@@ -63,55 +76,50 @@ async fn save_config_locked(config: &Config) -> Result<()> {
     merge_section(table, "telemetry", &config.telemetry);
     merge_section(table, "features", &config.features);
     let toml_str = toml::to_string_pretty(&root)?;
-    if let Some(parent) = path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    #[cfg(unix)]
-    let prior_mode: Option<u32> = match tokio::fs::metadata(&path).await {
-        Ok(m) => {
-            use std::os::unix::fs::PermissionsExt;
-            Some(m.permissions().mode())
-        }
-        Err(_) => None,
-    };
-    #[cfg(not(unix))]
-    let prior_mode: Option<u32> = None;
-    let suffix = {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        format!("toml.tmp.{}.{}", std::process::id(), nanos)
-    };
-    let tmp = path.with_extension(suffix);
-    tokio::fs::write(&tmp, toml_str).await?;
-    #[cfg(unix)]
-    if let Some(mode) = prior_mode {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).await;
-    }
-    let _ = prior_mode;
-    tokio::fs::rename(&tmp, &path).await?;
+    let dest = require_same_user_config_dest(slot, &dest)?;
+    guard
+        .run_blocking(move || atomic_write_resolved_string(&dest, &toml_str))
+        .await
+        .map_err(|e| anyhow::anyhow!("config write task failed: {e}"))??;
     Ok(())
 }
 /// Guard for a user `config.toml` read-modify-write: [`SAVE_LOCK`] plus the config-init flock —
 /// without the flock leg, a SAVE_LOCK writer and a flock writer silently drop each other's edits.
+#[must_use]
 pub(crate) struct ConfigWriteGuard {
     _save: tokio::sync::MutexGuard<'static, ()>,
     _flock: std::fs::File,
 }
+impl ConfigWriteGuard {
+    /// Run `f` on the blocking pool with this guard living in that task.
+    /// Cancelling the returned future must not drop the guard in the async frame.
+    pub(crate) async fn run_blocking<T, F>(self, f: F) -> Result<T, tokio::task::JoinError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        tokio::task::spawn_blocking(move || {
+            let _guard = self;
+            f()
+        })
+        .await
+    }
+}
 /// Acquire the user `config.toml` write guard (SAVE_LOCK ⊃ init flock) on the blocking pool;
 /// fails closed — callers must not fall back to an unguarded write.
+/// `SAVE_LOCK` moves into that task so a cancelled await cannot release it while flock is still being acquired.
 pub(crate) async fn lock_config_writes() -> std::io::Result<ConfigWriteGuard> {
     let save = SAVE_LOCK.lock().await;
     let grok_home = crate::util::grok_home::grok_home();
-    let flock = tokio::task::spawn_blocking(move || acquire_init_lock(&grok_home))
-        .await
-        .map_err(|e| std::io::Error::other(format!("config lock task failed: {e}")))??;
-    Ok(ConfigWriteGuard {
-        _save: save,
-        _flock: flock,
+    tokio::task::spawn_blocking(move || {
+        let flock = acquire_init_lock(&grok_home)?;
+        Ok(ConfigWriteGuard {
+            _save: save,
+            _flock: flock,
+        })
     })
+    .await
+    .map_err(|e| std::io::Error::other(format!("config lock task failed: {e}")))?
 }
 /// Exclusive advisory `flock` on `<grok_home>/.config-init.lock`, retried briefly, serializing
 /// `config.toml` read-modify-writes; only `WouldBlock` retries, and the file is never removed.
@@ -147,42 +155,105 @@ pub fn read_to_string_or_empty(path: &std::path::Path) -> std::io::Result<String
         Err(e) => Err(e),
     }
 }
-/// Atomic write via temp file then `rename` (mirrors [`save_config`]) so a crash mid-write can't truncate `config.toml`.
-/// Preserves the dest mode on unix.
+/// Bind the follow dest then read it. Pair with [`atomic_write_follow_bound`].
+pub fn read_follow_bound(path: &std::path::Path) -> std::io::Result<(BoundDest, String)> {
+    let dest = bind_user_config_dest(path)?;
+    let content = read_to_string_or_empty(dest.as_path())?;
+    Ok((dest, content))
+}
+fn bind_user_config_dest(path: &std::path::Path) -> std::io::Result<BoundDest> {
+    bind_user_config_dest_with(path, true, xai_grok_config::user_grok_home().is_some())
+}
+fn bind_user_config_dest_with(
+    path: &std::path::Path,
+    follow_leaf: bool,
+    has_user_home: bool,
+) -> std::io::Result<BoundDest> {
+    if follow_leaf && has_user_home {
+        xai_grok_config::fs_atomic::bind_follow_destination(path)
+    } else {
+        xai_grok_config::fs_atomic::bind_slot_destination(path)
+    }
+}
+/// Re-resolve with the same follow/slot policy used to bind `dest`.
+pub(crate) fn require_same_user_config_dest(
+    slot: &std::path::Path,
+    dest: &BoundDest,
+) -> std::io::Result<BoundDest> {
+    require_same_user_config_dest_with(slot, dest, xai_grok_config::user_grok_home().is_some())
+}
+fn require_same_user_config_dest_with(
+    slot: &std::path::Path,
+    dest: &BoundDest,
+    has_user_home: bool,
+) -> std::io::Result<BoundDest> {
+    let now = bind_user_config_dest_with(slot, true, has_user_home)?;
+    if now != *dest {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "config destination for {} changed from {} to {}",
+                slot.display(),
+                dest.as_path().display(),
+                now.as_path().display()
+            ),
+        ));
+    }
+    Ok(now)
+}
+/// Publish onto `dest` only if `slot` still resolves to it.
+pub fn atomic_write_follow_bound(
+    slot: &std::path::Path,
+    dest: &BoundDest,
+    content: &str,
+) -> std::io::Result<()> {
+    let dest = require_same_user_config_dest(slot, dest)?;
+    atomic_write_resolved_string(&dest, content)
+}
+/// Atomic write via temp file then `rename`. Follows a leaf symlink.
+/// Project `.grok/config.toml` must use [`atomic_replace_string`].
+/// User-config RMW must bind dest before load ([`read_follow_bound`] + [`atomic_write_follow_bound`]).
 pub fn atomic_write_string(path: &std::path::Path, content: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
+    atomic_write_string_inner(path, content, true)
+}
+/// Like [`atomic_write_string`], but `rename` replaces a leaf symlink inode.
+pub fn atomic_replace_string(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    atomic_write_string_inner(path, content, false)
+}
+/// Follow-leaf bind + read. Caller already classified `path` as user `config.toml`.
+pub fn read_follow_leaf(path: &std::path::Path) -> std::io::Result<(BoundDest, String)> {
+    let dest = xai_grok_config::fs_atomic::bind_follow_destination(path)?;
+    let content = read_to_string_or_empty(dest.as_path())?;
+    Ok((dest, content))
+}
+/// Follow-leaf publish if `slot` still resolves to `dest`.
+pub fn atomic_write_follow_leaf(
+    slot: &std::path::Path,
+    dest: &BoundDest,
+    content: &str,
+) -> std::io::Result<()> {
+    let dest = xai_grok_config::fs_atomic::require_same_bound_destination(slot, dest)?;
+    atomic_write_resolved_string(&dest, content)
+}
+fn atomic_write_string_inner(
+    path: &std::path::Path,
+    content: &str,
+    follow_leaf: bool,
+) -> std::io::Result<()> {
+    let dest = if follow_leaf {
+        let first = xai_grok_config::fs_atomic::bind_follow_destination(path)?;
+        xai_grok_config::fs_atomic::require_same_bound_destination(path, &first)?
+    } else {
+        xai_grok_config::fs_atomic::bind_slot_destination(path)?
+    };
+    atomic_write_resolved_string(&dest, content)
+}
+/// Publish onto an already-bound destination. Temp inherits the current dest mode.
+pub(crate) fn atomic_write_resolved_string(dest: &BoundDest, content: &str) -> std::io::Result<()> {
+    if let Some(parent) = dest.as_path().parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    #[cfg(unix)]
-    let prior_mode: Option<u32> = match std::fs::metadata(path) {
-        Ok(m) => {
-            use std::os::unix::fs::PermissionsExt;
-            Some(m.permissions().mode())
-        }
-        Err(_) => None,
-    };
-    #[cfg(not(unix))]
-    let prior_mode: Option<u32> = None;
-    let suffix = {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        format!("toml.tmp.{}.{}", std::process::id(), nanos)
-    };
-    let tmp = path.with_extension(suffix);
-    std::fs::write(&tmp, content)?;
-    #[cfg(unix)]
-    if let Some(mode) = prior_mode {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode));
-    }
-    let _ = prior_mode;
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    Ok(())
+    xai_grok_config::fs_atomic::write_atomically_bound(dest, content, None)
 }
 /// Merge `[toolset.ask_user_question]` into the root table.
 /// `[toolset]` is deliberately NOT merged wholesale, so only this settings-writable sub-table round-trips.
@@ -249,12 +320,13 @@ pub async fn update_config<F>(f: F) -> Result<()>
 where
     F: FnOnce(&mut Config),
 {
-    let _guard = lock_config_writes().await?;
-    let root: TomlValue =
-        crate::config::load_from_disk().unwrap_or_else(|_| TomlValue::Table(TomlMap::new()));
+    let guard = lock_config_writes().await?;
+    let path = user_config_path();
+    let dest = bind_user_config_dest(&path)?;
+    let root: TomlValue = crate::config::load_config_file(dest.as_path())?;
     let mut cfg = load_config_from_toml(&root);
     f(&mut cfg);
-    save_config_locked(&cfg).await
+    save_config_locked(guard, &path, dest, &cfg).await
 }
 #[cfg(test)]
 #[path = "persist_tests.rs"]

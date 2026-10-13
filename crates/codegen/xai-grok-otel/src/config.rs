@@ -149,9 +149,12 @@ mod tests {
         };
         let extra = vec![("Authorization".to_string(), "Bearer custom".to_string())];
         let headers = build_export_headers(&static_headers, "auto-token", None, &extra, &snapshot);
-        assert_eq!(headers["x-userid"], "u1");
-        assert_eq!(headers["x-teamid"], "t9");
-        assert_eq!(headers["Authorization"], "Bearer custom");
+        assert_eq!(headers.get("x-userid").map(String::as_str), Some("u1"));
+        assert_eq!(headers.get("x-teamid").map(String::as_str), Some("t9"));
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer custom")
+        );
     }
     #[test]
     fn resource_injects_tenant_id_attrs() {

@@ -204,12 +204,18 @@ mod tests {
             .await
             .expect("repair ok");
         let v = parse(&resp);
-        assert_eq!(v["repaired"], true);
-        assert_eq!(v["resident"], false);
-        assert_eq!(v["dryRun"], false);
-        assert_eq!(v["strippedToolResultIds"], serde_json::json!(["call_LOST"]));
-        assert_eq!(v["duplicatesRemoved"], 0);
-        assert_eq!(v["syntheticResultsInserted"], 0);
+        assert_eq!(v.get("repaired"), Some(&serde_json::json!(true)));
+        assert_eq!(v.get("resident"), Some(&serde_json::json!(false)));
+        assert_eq!(v.get("dryRun"), Some(&serde_json::json!(false)));
+        assert_eq!(
+            v.get("strippedToolResultIds"),
+            Some(&serde_json::json!(["call_LOST"]))
+        );
+        assert_eq!(v.get("duplicatesRemoved"), Some(&serde_json::json!(0)));
+        assert_eq!(
+            v.get("syntheticResultsInserted"),
+            Some(&serde_json::json!(0))
+        );
 
         // The rewritten file must reload as a valid conversation with the orphan gone and the intact pair preserved
         let reloaded = adapter
@@ -229,7 +235,7 @@ mod tests {
                 .await
                 .expect("second repair ok"),
         );
-        assert_eq!(v2["repaired"], false);
+        assert_eq!(v2.get("repaired"), Some(&serde_json::json!(false)));
     }
 
     #[tokio::test]
@@ -242,9 +248,12 @@ mod tests {
                 .await
                 .expect("dry run ok"),
         );
-        assert_eq!(v["repaired"], true);
-        assert_eq!(v["dryRun"], true);
-        assert_eq!(v["strippedToolResultIds"], serde_json::json!(["call_LOST"]));
+        assert_eq!(v.get("repaired"), Some(&serde_json::json!(true)));
+        assert_eq!(v.get("dryRun"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            v.get("strippedToolResultIds"),
+            Some(&serde_json::json!(["call_LOST"]))
+        );
 
         // Disk untouched: the orphan is still there.
         let reloaded = adapter
@@ -270,7 +279,7 @@ mod tests {
                 .await
                 .expect("repair ok"),
         );
-        assert_eq!(v["repaired"], false);
+        assert_eq!(v.get("repaired"), Some(&serde_json::json!(false)));
     }
 
     #[tokio::test]

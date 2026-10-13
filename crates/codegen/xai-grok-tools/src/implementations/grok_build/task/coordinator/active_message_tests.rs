@@ -13,19 +13,21 @@ use crate::implementations::grok_build::task::coordinator_state::{
 };
 use crate::implementations::grok_build::task::types::{
     ActiveAgentMessageOperation, ActiveAgentMessageRequest, ActiveAgentMessageSource,
-    SubagentOwner, SubagentResult,
+    ActiveMessageRoute, ActiveMessageSenderContext, AgentMessageSender, SubagentOwner,
+    SubagentResult,
 };
 
 const TEST_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
-pub(in crate::implementations::grok_build::task::coordinator) struct AdmissionCall {
-    pub(super) message_id: String,
-    late_delivery: ActiveAgentMessageDelivery,
-    release: oneshot::Sender<ActiveMessageAdmission>,
+pub(in super::super) struct AdmissionCall {
+    pub(in super::super) message_id: String,
+    pub(in super::super) late_delivery: ActiveAgentMessageDelivery,
+    pub(in crate::implementations::grok_build::task::coordinator) release:
+        oneshot::Sender<ActiveMessageAdmission>,
 }
 
 pub(in crate::implementations::grok_build::task::coordinator) struct TestControl {
-    admissions: mpsc::UnboundedSender<AdmissionCall>,
+    pub(in super::super) admissions: mpsc::UnboundedSender<AdmissionCall>,
 }
 
 impl ChildControl for TestControl {
@@ -73,6 +75,7 @@ struct PanickingRunner {
 
 impl ChildRunner for PanickingRunner {
     type Control = TestControl;
+    type RootControl = crate::implementations::grok_build::task::root_control::NoRootControl;
     type CompletionData = ();
     type RunFuture = SendBoxFuture<ChildRunOutput<()>>;
     type ValidateFuture = SendBoxFuture<SubagentValidateTypeOutcome>;
@@ -131,6 +134,7 @@ impl ChildRunner for PanickingRunner {
 
 impl ChildRunner for TestRunner {
     type Control = TestControl;
+    type RootControl = super::super::root_targets::tests::TestRootControl;
     type CompletionData = ();
     type RunFuture = SendBoxFuture<ChildRunOutput<()>>;
     type ValidateFuture = SendBoxFuture<SubagentValidateTypeOutcome>;
@@ -150,6 +154,17 @@ impl ChildRunner for TestRunner {
 
     fn supports_wake(&self) -> bool {
         true
+    }
+
+    fn resolve_root(
+        &self,
+        agent_id: &xai_message_delivery_core::AgentId,
+    ) -> Option<Self::RootControl> {
+        super::super::root_targets::tests::resolve_root(agent_id)
+    }
+
+    fn resolve_root_session(&self, session_id: &str) -> Option<Self::RootControl> {
+        super::super::root_targets::tests::resolve_root_session(session_id)
     }
 
     fn on_completed(&self, _: ChildCompletion<()>, terminal_published: Box<dyn FnOnce() + Send>) {
@@ -250,12 +265,14 @@ pub(in crate::implementations::grok_build::task::coordinator) fn insert_child_wi
             handle_only: true,
             definition_background: false,
             explicitly_killed: false,
+            disposition: Default::default(),
             child_session_id: id.to_owned(),
             persona: None,
             resumed_from: None,
             child_cwd: String::new(),
             worktree_path: None,
             effective_model_id: "test-model".to_owned(),
+            attempt_id: xai_message_delivery_core::AttemptId::mint(1),
             generation: ActiveChildGeneration::new(),
             agent_address: Some(address),
             spawner_session_id: None,
@@ -267,7 +284,7 @@ pub(in crate::implementations::grok_build::task::coordinator) fn insert_child_wi
     address_text
 }
 
-fn insert_pending(coordinator: &mut TestCoordinator, id: &str, parent: &str) {
+pub(in super::super) fn insert_pending(coordinator: &mut TestCoordinator, id: &str, parent: &str) {
     let mut request =
         crate::implementations::grok_build::task::coordinator::tests::request(id, true);
     request.parent_session_id = parent.to_owned();
@@ -283,7 +300,10 @@ fn insert_pending(coordinator: &mut TestCoordinator, id: &str, parent: &str) {
             foreground_deadline: None,
             handle_only: true,
             explicitly_killed: false,
+            disposition: Default::default(),
             launched: true,
+            attempt_id: xai_message_delivery_core::AttemptId::mint(1),
+            generation: ActiveChildGeneration::new(),
             agent_address: None,
             spawner_session_id: None,
             wake_of: None,
@@ -291,7 +311,7 @@ fn insert_pending(coordinator: &mut TestCoordinator, id: &str, parent: &str) {
     );
 }
 
-fn promote_pending(
+pub(in super::super) fn promote_pending(
     coordinator: &mut TestCoordinator,
     admissions: mpsc::UnboundedSender<AdmissionCall>,
     id: &str,
@@ -323,7 +343,9 @@ pub(in crate::implementations::grok_build::task::coordinator) fn begin_send(
     let (respond_to, response_rx) = oneshot::channel();
     let request = SubagentActiveMessageRequest {
         request: ActiveAgentMessageRequest::try_new(id, "follow up").unwrap(),
-        parent_session_id: parent.to_owned(),
+        sender_context: ActiveMessageSenderContext::RootSession {
+            session_id: Arc::from(parent),
+        },
         respond_to,
     };
     command_tx
@@ -345,7 +367,7 @@ async fn await_with_timeout<T>(future: impl Future<Output = T>) -> T {
         .expect("active-message test wait timed out")
 }
 
-pub(super) async fn recv_with_timeout<T>(receiver: &mut mpsc::UnboundedReceiver<T>) -> T {
+pub(in super::super) async fn recv_with_timeout<T>(receiver: &mut mpsc::UnboundedReceiver<T>) -> T {
     await_with_timeout(receiver.recv())
         .await
         .expect("active-message test channel closed")
@@ -358,7 +380,7 @@ async fn finish_next_active_message(coordinator: &mut TestCoordinator) {
     coordinator.finish_active_message(completion);
 }
 
-pub(super) async fn release_admission(
+pub(in super::super) async fn release_admission(
     coordinator: &mut TestCoordinator,
     call: AdmissionCall,
     admission: ActiveMessageAdmission,
@@ -417,6 +439,38 @@ fn finish_child_with_result(coordinator: &mut TestCoordinator, id: &str, result:
 }
 
 #[tokio::test]
+async fn unregistered_granted_child_is_not_active_and_releases_capacity() {
+    let (mut coordinator, _command_tx, _admission_tx, mut admissions) = fixture();
+    let factory = coordinator.agent_message_sender_factory.as_ref().unwrap();
+    let child_id = uuid::Uuid::now_v7().to_string();
+    let sender = AgentMessageSender::mint_for_child(Some(factory), &child_id, true)
+        .sender
+        .unwrap();
+    let send = tokio::spawn({
+        let sender = sender.clone();
+        async move {
+            sender
+                .send(ActiveAgentMessageRequest::try_new("child", "follow up").unwrap())
+                .await
+        }
+    });
+    let ingress = coordinator
+        .active_message_ingress
+        .as_mut()
+        .unwrap()
+        .recv()
+        .await
+        .unwrap();
+    coordinator.handle_send_active_message(ingress);
+    assert_eq!(
+        ActiveAgentMessageOutcome::NotActiveOrFinalizing,
+        send.await.unwrap(),
+    );
+    assert_eq!(MAX_ACTIVE_MESSAGE_ADMISSIONS, sender.available_permits());
+    assert!(admissions.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn two_sequential_admissions_keep_child_open() {
     let (mut coordinator, command_tx, admission_tx, mut admissions) = fixture();
     insert_child(&mut coordinator, admission_tx, "child", "parent");
@@ -429,7 +483,9 @@ async fn two_sequential_admissions_keep_child_open() {
                 ActiveAgentMessageOperation::Steer,
             )
             .unwrap(),
-            parent_session_id: "parent".to_owned(),
+            sender_context: ActiveMessageSenderContext::RootSession {
+                session_id: Arc::from("parent"),
+            },
             respond_to,
         };
         command_tx
@@ -611,7 +667,9 @@ async fn global_ingress_cap_rejects_before_enqueue_and_drains() {
         Err(CAPACITY),
         command_tx.try_send_active_message(SubagentActiveMessageRequest {
             request: ActiveAgentMessageRequest::try_new("overflow", "follow up").unwrap(),
-            parent_session_id: "parent".to_owned(),
+            sender_context: ActiveMessageSenderContext::RootSession {
+                session_id: Arc::from("parent"),
+            },
             respond_to,
         })
     );
@@ -630,7 +688,9 @@ async fn global_ingress_cap_rejects_before_enqueue_and_drains() {
         command_tx
             .try_send_active_message(SubagentActiveMessageRequest {
                 request: ActiveAgentMessageRequest::try_new("overflow", "follow up").unwrap(),
-                parent_session_id: "parent".to_owned(),
+                sender_context: ActiveMessageSenderContext::RootSession {
+                    session_id: Arc::from("parent"),
+                },
                 respond_to,
             })
             .is_ok()
@@ -1141,6 +1201,10 @@ fn insert_queued(
 
 #[tokio::test]
 async fn send_to_owned_queued_child_parks_until_started() {
+    replay_owned_queued_child_promotion().await;
+}
+
+pub(in super::super) async fn replay_owned_queued_child_promotion() {
     let (mut coordinator, command_tx, admission_tx, mut admissions) = fixture();
     let mut spawn_result = insert_queued(&mut coordinator, "child", "parent");
     let mut response = begin_send(&mut coordinator, &command_tx, "child", "parent");
@@ -1185,7 +1249,9 @@ async fn parked_send_holds_ingress_permit_until_admit() {
     assert_eq!(
         command_tx.try_send_active_message(SubagentActiveMessageRequest {
             request: ActiveAgentMessageRequest::try_new("holder", "follow up").unwrap(),
-            parent_session_id: "parent".to_owned(),
+            sender_context: ActiveMessageSenderContext::RootSession {
+                session_id: Arc::from("parent"),
+            },
             respond_to,
         }),
         Err(1),
@@ -1269,11 +1335,15 @@ async fn cancel_workflow_run_rejects_parked_send() {
         .spawn_ready
         .push(super::ParkedSpawnReadyMessage {
             subagent_id: "child".to_owned(),
-            parent_session_id: "parent".to_owned(),
+            sender_context: ActiveMessageSenderContext::RootSession {
+                session_id: Arc::from("parent"),
+            },
+            route: ActiveMessageRoute::ParentToOwnedDescendant,
             request: ActiveAgentMessageRequest::try_new("child", "hello").unwrap(),
             respond_to: Some(tx),
             deadline: Some(tokio::time::Instant::now() + ACTIVE_MESSAGE_SPAWN_READY_TIMEOUT),
             initial_message_id: None,
+            quota_admission: None,
             // Cancel replies without admitting, so no ingress permit is held.
             permit: None,
         });
@@ -1328,7 +1398,9 @@ pub(in crate::implementations::grok_build::task::coordinator) fn begin_human_sen
             ActiveAgentMessageOperation::Steer,
         )
         .unwrap(),
-        parent_session_id: parent.to_owned(),
+        sender_context: ActiveMessageSenderContext::HumanRoot {
+            session_id: Arc::from(parent),
+        },
         respond_to,
     };
     command_tx
@@ -1425,7 +1497,10 @@ async fn human_pending_address_is_not_active() {
             foreground_deadline: None,
             handle_only: true,
             explicitly_killed: false,
+            disposition: Default::default(),
             launched: true,
+            attempt_id: xai_message_delivery_core::AttemptId::mint(1),
+            generation: ActiveChildGeneration::new(),
             agent_address: Some(address),
             spawner_session_id: None,
             wake_of: None,
@@ -1451,6 +1526,23 @@ async fn human_finalizing_address_is_rejected() {
     let address = insert_child(&mut coordinator, admission_tx, "child", "parent");
     let (finalizing_tx, _finalizing_rx) = oneshot::channel();
     coordinator.handle_active_message_finalizing("child".to_owned(), finalizing_tx);
+    let response = begin_human_send(&mut coordinator, &command_tx, &address, "parent");
+    assert_eq!(
+        ActiveAgentMessageOutcome::NotFoundOrNotOwned,
+        response_outcome(response).await
+    );
+}
+
+#[tokio::test]
+async fn human_cancelled_address_is_rejected() {
+    let (mut coordinator, command_tx, admission_tx, _admissions) = fixture();
+    let address = insert_child(&mut coordinator, admission_tx, "child", "parent");
+    coordinator
+        .active
+        .get("child")
+        .unwrap()
+        .cancellation
+        .cancel();
     let response = begin_human_send(&mut coordinator, &command_tx, &address, "parent");
     assert_eq!(
         ActiveAgentMessageOutcome::NotFoundOrNotOwned,

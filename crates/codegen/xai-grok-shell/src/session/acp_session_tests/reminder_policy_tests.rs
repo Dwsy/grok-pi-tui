@@ -1,4 +1,10 @@
 use super::support::{create_test_actor, test_agent_with_user_message_template};
+fn at<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
 use super::{
     date_rollover_reminder, laziness_injection_active, resolve_reminder_policy, todo_gate_active,
 };
@@ -291,7 +297,7 @@ async fn same_session_rolls_over_once_when_local_date_advances() {
             actor.maybe_inject_date_rollover_reminder().await;
             let conv = actor.chat_state_handle.get_conversation().await;
             assert_eq!(conv.len(), 1, "rollover must inject exactly one reminder");
-            let text = conv[0].text_content();
+            let text = at(&conv, 0).text_content();
             assert!(
                 text.contains("<system-reminder>"),
                 "rollover reminder must be wrapped in system-reminder tags: {text}"
@@ -349,9 +355,9 @@ async fn rollover_reminder_follows_the_custom_template_date_intent() {
                 "a today_local-bearing custom template must keep the rollover reminder"
             );
             assert!(
-                conv[0].text_content().contains(&today.to_string()),
+                at(&conv, 0).text_content().contains(&today.to_string()),
                 "the kept reminder must carry today's date: {}",
-                conv[0].text_content()
+                at(&conv, 0).text_content()
             );
         })
         .await;
@@ -390,9 +396,9 @@ async fn rollover_reminder_fires_when_fallback_stamps_a_date_free_template() {
                 "a fallback-stamped date must roll over even under a date-free template"
             );
             assert!(
-                conv[0].text_content().contains(&today.to_string()),
+                at(&conv, 0).text_content().contains(&today.to_string()),
                 "the injected reminder must carry today's date: {}",
-                conv[0].text_content()
+                at(&conv, 0).text_content()
             );
         })
         .await;

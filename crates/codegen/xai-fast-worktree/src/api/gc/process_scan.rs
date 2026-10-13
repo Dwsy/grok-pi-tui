@@ -41,7 +41,7 @@ pub(crate) fn usable_cwds(scan: &LiveCwdScan, force: bool) -> Option<&[PathBuf]>
     match scan {
         LiveCwdScan::Ok(cwds) => Some(cwds),
         LiveCwdScan::Unsupported => Some(&[]),
-        LiveCwdScan::Failed => force.then_some(&[][..]),
+        LiveCwdScan::Failed => force.then_some([].as_slice()),
     }
 }
 
@@ -101,7 +101,7 @@ fn vip_path_to_pathbuf(path: &[[libc::c_char; 32]; 32]) -> Option<PathBuf> {
     // VIP_PATH_LEN (1024) bytes from its start stays within the array.
     let bytes = unsafe { std::slice::from_raw_parts(path.as_ptr().cast::<u8>(), VIP_PATH_LEN) };
     let nul = bytes.iter().position(|&b| b == 0)?;
-    let s = &bytes[..nul];
+    let s = bytes.get(..nul)?;
     if s.is_empty() {
         return None;
     }
@@ -297,7 +297,7 @@ mod tests {
         match validate_cwd_scan(vec![cwd.clone()]) {
             LiveCwdScan::Ok(v) => {
                 assert_eq!(v.len(), 1);
-                assert_eq!(v[0], cwd);
+                assert_eq!(v.first(), Some(&cwd));
             }
             other => panic!("self path must validate: {other:?}"),
         }
@@ -312,14 +312,15 @@ mod tests {
         );
         assert_eq!(
             usable_cwds(&LiveCwdScan::Failed, true),
-            Some(&[][..]),
+            Some([].as_slice()),
             "force accepts a scan that failed"
         );
         let one = LiveCwdScan::Ok(vec![PathBuf::from("/")]);
-        assert_eq!(usable_cwds(&one, false), Some(&[PathBuf::from("/")][..]));
+        let expected = [PathBuf::from("/")];
+        assert_eq!(usable_cwds(&one, false), Some(expected.as_slice()));
         assert_eq!(
             usable_cwds(&LiveCwdScan::Unsupported, false),
-            Some(&[][..]),
+            Some([].as_slice()),
             "an OS with no enumerator is not an OS that failed"
         );
     }

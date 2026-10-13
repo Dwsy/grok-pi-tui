@@ -40,10 +40,11 @@ async fn queue_reorder_local_row_above_server_row() {
         .expect("shell row queued");
     // A slash command stays in the client queue, so the pane draws it last.
     harness
-        .inject_keys(b"/compact keep-this-note\r")
+        .inject_keys(b"/compact\r")
         .expect("queue a client row");
+    // The queue pane prefixes rows with `#N `, so the needle cannot match `/compact` elsewhere on screen.
     harness
-        .wait_for_text("keep-this-note", Duration::from_secs(20))
+        .wait_for_text("#2 /compact", Duration::from_secs(20))
         .expect("client row queued");
 
     harness
@@ -59,10 +60,10 @@ async fn queue_reorder_local_row_above_server_row() {
     }
 
     let screen = harness.screen_contents();
-    let slash_row = locate_screen_text(&screen, "keep-this-note")
+    let slash_row = locate_screen_text(&screen, "#1 /compact")
         .unwrap_or_else(|| panic!("slash row on screen:\n{screen}"))
         .0;
-    let prompt_row = locate_screen_text(&screen, "reorder gamma")
+    let prompt_row = locate_screen_text(&screen, "#2 reorder gamma")
         .unwrap_or_else(|| panic!("prompt row on screen:\n{screen}"))
         .0;
     assert!(

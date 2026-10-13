@@ -361,12 +361,27 @@ mod tests {
             );
         }
 
-        assert_eq!(value["schema_version"], "v1");
-        assert_eq!(value["principal_type"], "Team");
-        assert_eq!(value["principal_id"], "team-456");
-        assert_eq!(value["sandbox_id"], "sb_abc123");
-        assert_eq!(value["sandbox_profile"], "devbox");
-        assert_eq!(value["inside_bwrap"], true);
+        assert_eq!(
+            value.get("schema_version").and_then(|v| v.as_str()),
+            Some("v1")
+        );
+        assert_eq!(
+            value.get("principal_type").and_then(|v| v.as_str()),
+            Some("Team")
+        );
+        assert_eq!(
+            value.get("principal_id").and_then(|v| v.as_str()),
+            Some("team-456")
+        );
+        assert_eq!(
+            value.get("sandbox_id").and_then(|v| v.as_str()),
+            Some("sb_abc123")
+        );
+        assert_eq!(
+            value.get("sandbox_profile").and_then(|v| v.as_str()),
+            Some("devbox")
+        );
+        assert_eq!(value.get("inside_bwrap"), Some(&serde_json::json!(true)));
 
         let parsed: WorkspaceEnvironment = serde_json::from_slice(&bytes).expect("roundtrip");
         assert_eq!(parsed, env);
@@ -390,9 +405,9 @@ mod tests {
             serde_json::from_slice(&env.to_json_bytes().unwrap()).unwrap();
         // Absent optionals serialize as explicit JSON null (stable schema).
         assert!(value.get("sandbox_id").is_some());
-        assert_eq!(value["sandbox_id"], serde_json::Value::Null);
-        assert_eq!(value["principal_id"], serde_json::Value::Null);
-        assert_eq!(value["repo_root"], serde_json::Value::Null);
+        assert_eq!(value.get("sandbox_id"), Some(&serde_json::Value::Null));
+        assert_eq!(value.get("principal_id"), Some(&serde_json::Value::Null));
+        assert_eq!(value.get("repo_root"), Some(&serde_json::Value::Null));
     }
 
     /// A token embedded in an HTTPS `origin` must never survive into the captured `remote_url`.

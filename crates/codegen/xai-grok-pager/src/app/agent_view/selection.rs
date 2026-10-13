@@ -29,11 +29,9 @@ fn prewrap_line_index(
     lines: &[crate::scrollback::types::BlockLine],
     block_line: usize,
 ) -> Option<usize> {
-    if block_line >= lines.len() {
-        return None;
-    }
     Some(
-        lines[..=block_line]
+        lines
+            .get(..=block_line)?
             .iter()
             .filter(|line| line.joiner.is_none())
             .count()
@@ -1099,8 +1097,7 @@ impl AgentView {
         let entry_block = self.scrollback.entry(idx).map(|e| &e.block);
         let is_bg_task = entry_block
             .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::BgTask(_)));
-        let is_subagent = entry_block
-            .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::Subagent(_)));
+        let is_child_row = entry_block.is_some_and(|b| b.child_session_id().is_some());
         let is_workflow = entry_block
             .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::Workflow(_)));
 
@@ -1183,15 +1180,10 @@ impl AgentView {
                     );
                 }
             }
-            2 if is_subagent => {
-                // Double-click subagent: open subagent view (same as Enter)
-                if let Some(entry) = self.scrollback.entry(idx)
-                    && let crate::scrollback::block::RenderBlock::Subagent(ref sb) = entry.block
-                {
-                    let child_sid = sb.child_session_id.clone();
-                    if self.subagent_views.contains_key(&child_sid) {
-                        self.open_subagent_fullscreen(child_sid);
-                    }
+            2 if is_child_row => {
+                // Same as Enter; a message row whose child view is gone folds like any other tool row
+                if !self.try_open_child_from_selected_row() && foldable {
+                    self.scrollback.toggle_fold_selected();
                 }
             }
             2 if is_workflow => {
@@ -1203,15 +1195,10 @@ impl AgentView {
                 }
             }
             2 if is_prompt => {
-                // Edit in place; bash/cron keep the old fold behavior.
-                // Gated OFF for now (unsolved scroll jump on enter; see inline_edit::INLINE_EDIT_ENABLED)
-                // When disabled this is a no-op, so the block below runs
-                if !(crate::app::inline_edit::INLINE_EDIT_ENABLED && self.enter_inline_edit(idx)) {
-                    if foldable {
-                        self.scrollback.toggle_fold_selected();
-                    }
-                    self.scrollback.scroll_to_entry_top(idx);
+                if foldable {
+                    self.scrollback.toggle_fold_selected();
                 }
+                self.scrollback.scroll_to_entry_top(idx);
             }
             2 => {
                 if foldable {
@@ -1999,9 +1986,7 @@ mod tests {
             rendered.selection_boundaries,
         );
         let child_id = "child".to_string();
-        parent
-            .subagent_views
-            .insert(child_id.clone(), Box::new(child));
+        parent.insert_test_child(child_id.clone(), Box::new(child));
         parent.active_subagent = Some(child_id.clone());
 
         let source_text = parent
@@ -2018,7 +2003,12 @@ mod tests {
             let entry = child.scrollback.get(0).expect("child Read entry");
             let cached = entry.cached_output_ref();
             assert_eq!(
-                derive_selection_text(&cached.lines[line.block_line_idx]),
+                derive_selection_text(
+                    cached
+                        .lines
+                        .get(line.block_line_idx)
+                        .unwrap_or_else(|| panic!("missing index"))
+                ),
                 "src/lib.rs",
                 "copy helper must not rebuild the child cache against parent cwd"
             );
@@ -2209,10 +2199,6 @@ mod tests {
             "the expired attempt still re-arms for the next gesture"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // reclamp_drag_head_post_render tests
-    // -----------------------------------------------------------------------
 
     fn mouse_down(col: u16, row: u16) -> MouseEvent {
         MouseEvent {
@@ -2406,10 +2392,6 @@ mod tests {
         let drag = agent.drag_selection.expect("drag still active");
         assert_eq!(drag.head.block_line_idx, 3, "btw rebuild moves the head");
     }
-
-    // -----------------------------------------------------------------------
-    // anchor_content_width snapshot tests
-    // -----------------------------------------------------------------------
 
     /// The linear copy resolves the anchor entry's lines with the drag-start width snapshot when the block is gone from `visible_blocks`.
     /// A block can scroll fully out before mouse-up; without the snapshot that copy fails.
@@ -2863,10 +2845,6 @@ mod tests {
         assert!(agent.drag_table_geometry.is_none());
         assert!(agent.btw_selection_wrap_width.is_none());
     }
-
-    // -----------------------------------------------------------------------
-    // deferred text-press (anchor on entry into text) tests
-    // -----------------------------------------------------------------------
 
     fn mouse_up(col: u16, row: u16) -> MouseEvent {
         MouseEvent {
@@ -3398,10 +3376,6 @@ mod tests {
         assert!(agent2.drag_selection.is_none());
         assert!(agent2.deferred_text_press.is_none());
     }
-
-    // -----------------------------------------------------------------------
-    // drag-autoscroll bounce tests (tick + reclamp interplay)
-    // -----------------------------------------------------------------------
 
     /// Agent over real scrollback content taller than its viewport, so `tick_drag_autoscroll` moves real offsets against real clamps.
     /// 30 one-line messages through the real layout; pane rows 0-9, prompt at rows 14-16, so rows 10-13 are the strip band.

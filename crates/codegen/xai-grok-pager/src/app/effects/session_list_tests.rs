@@ -1,5 +1,4 @@
 use super::*;
-
 /// For payloads with no `remote` rows: reaching the resolver is a test failure.
 fn parse(payload: Value) -> Vec<SessionPickerEntry> {
     parse_session_picker_entries_with(payload, LocalPresence::Relabel, |ids| {
@@ -7,7 +6,6 @@ fn parse(payload: Value) -> Vec<SessionPickerEntry> {
     })
     .unwrap()
 }
-
 fn row(id: &str, source: &str) -> Value {
     serde_json::json!({
         "sessionId": id,
@@ -17,7 +15,6 @@ fn row(id: &str, source: &str) -> Value {
         "updatedAt": chrono::Utc::now().to_rfc3339(),
     })
 }
-
 fn conversation_row(id: &str) -> Value {
     serde_json::json!({
         "sessionId": id,
@@ -27,7 +24,6 @@ fn conversation_row(id: &str) -> Value {
         "_meta": { "x.ai/session": { "kind": "chat" } }
     })
 }
-
 #[test]
 fn picker_keeps_conversation_with_empty_cwd_and_missing_updated_at() {
     let payload = serde_json::json!({
@@ -41,11 +37,13 @@ fn picker_keeps_conversation_with_empty_cwd_and_missing_updated_at() {
     });
     let entries = parse(payload);
     assert_eq!(entries.len(), 1, "conversation must not vanish");
-    assert_eq!(entries[0].id, "conv_abc");
-    assert_eq!(entries[0].cwd, "");
-    assert_eq!(entries[0].source, "conversation");
+    let Some(entry) = entries.first() else {
+        panic!("expected conversation: {entries:?}");
+    };
+    assert_eq!(entry.id, "conv_abc");
+    assert_eq!(entry.cwd, "");
+    assert_eq!(entry.source, "conversation");
 }
-
 #[test]
 fn picker_keeps_old_conversation_past_cutoff() {
     let payload = serde_json::json!({
@@ -60,9 +58,11 @@ fn picker_keeps_old_conversation_past_cutoff() {
     });
     let entries = parse(payload);
     assert_eq!(entries.len(), 1, "old conversation must still render");
-    assert_eq!(entries[0].source, "conversation");
+    assert_eq!(
+        entries.first().map(|e| e.source.as_str()),
+        Some("conversation")
+    );
 }
-
 #[test]
 fn picker_drops_local_with_missing_updated_at() {
     let payload = serde_json::json!({
@@ -79,7 +79,6 @@ fn picker_drops_local_with_missing_updated_at() {
         "local rows still require a parseable updatedAt"
     );
 }
-
 #[test]
 fn picker_keeps_untitled_conversation_as_untitled() {
     let payload = serde_json::json!({
@@ -94,13 +93,14 @@ fn picker_keeps_untitled_conversation_as_untitled() {
     });
     let entries = parse(payload);
     assert_eq!(entries.len(), 1, "untitled conversation must not vanish");
-    assert_eq!(entries[0].summary, "Untitled");
-    assert_eq!(entries[0].source, "conversation");
+    let Some(entry) = entries.first() else {
+        panic!("expected untitled conversation: {entries:?}");
+    };
+    assert_eq!(entry.summary, "Untitled");
+    assert_eq!(entry.source, "conversation");
 }
-
 #[test]
 fn picker_parses_last_recap_and_last_turn_summary() {
-    // Use a fresh timestamp so the row is inside the 30-day list cutoff.
     let recent = chrono::Utc::now().to_rfc3339();
     let payload = serde_json::json!({
         "sessions": [{
@@ -115,16 +115,18 @@ fn picker_parses_last_recap_and_last_turn_summary() {
     });
     let entries = parse(payload);
     assert_eq!(entries.len(), 1);
+    let Some(entry) = entries.first() else {
+        panic!("expected recap entry: {entries:?}");
+    };
     assert_eq!(
-        entries[0].last_turn_summary.as_deref(),
+        entry.last_turn_summary.as_deref(),
         Some("Wired retries into billing")
     );
     assert_eq!(
-        entries[0].last_recap.as_deref(),
+        entry.last_recap.as_deref(),
         Some("Where we left off: auth refactor across the API")
     );
 }
-
 #[test]
 fn picker_parses_session_kind() {
     let recent = chrono::Utc::now().to_rfc3339();
@@ -149,10 +151,12 @@ fn picker_parses_session_kind() {
     });
     let entries = parse(payload);
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].session_kind.as_deref(), Some("headless"));
-    assert_eq!(entries[1].session_kind, None);
+    let [headless, plain] = entries.as_slice() else {
+        panic!("expected two session-kind entries: {entries:?}");
+    };
+    assert_eq!(headless.session_kind.as_deref(), Some("headless"));
+    assert_eq!(plain.session_kind, None);
 }
-
 #[test]
 fn picker_relabels_remote_rows_with_one_batched_lookup() {
     let payload = serde_json::json!({
@@ -164,7 +168,6 @@ fn picker_relabels_remote_rows_with_one_batched_lookup() {
             row("remote_missing", "remote"),
         ]
     });
-
     let entries =
         parse_session_picker_entries_with(payload, LocalPresence::Relabel, |remote_ids| {
             assert_eq!(
@@ -177,7 +180,6 @@ fn picker_relabels_remote_rows_with_one_batched_lookup() {
                 .collect())
         })
         .unwrap();
-
     let labels: Vec<(&str, &str)> = entries
         .iter()
         .map(|e| (e.id.as_str(), e.source.as_str()))
@@ -193,13 +195,11 @@ fn picker_relabels_remote_rows_with_one_batched_lookup() {
         ]
     );
 }
-
 #[test]
 fn session_list_response_unwraps_result_envelope_or_takes_bare_payload() {
     let bare = r#"{"sessions":[{"sessionId":"a"}]}"#;
     let wrapped = r#"{"result":{"sessions":[{"sessionId":"a"}]}}"#;
     let expected = serde_json::json!({"sessions": [{"sessionId": "a"}]});
-
     assert_eq!(read_session_list_response(bare).unwrap(), expected);
     assert_eq!(read_session_list_response(wrapped).unwrap(), expected);
     assert_eq!(
@@ -211,7 +211,6 @@ fn session_list_response_unwraps_result_envelope_or_takes_bare_payload() {
         serde_json::Value::Null
     );
 }
-
 #[test]
 fn session_list_response_surfaces_error_envelope() {
     assert_eq!(
@@ -223,7 +222,6 @@ fn session_list_response_surfaces_error_envelope() {
         Err("unknown error".to_owned())
     );
 }
-
 /// A grok.com chat and a Build session can carry the same id; resolving the Build id must not pull the chat off the conversation load path.
 #[test]
 fn picker_relabel_leaves_conversation_row_sharing_a_remote_id() {
@@ -255,7 +253,6 @@ fn picker_relabel_leaves_conversation_row_sharing_a_remote_id() {
     let labels: Vec<&str> = entries.iter().map(|e| e.source.as_str()).collect();
     assert_eq!(labels, ["local", "conversation"]);
 }
-
 #[test]
 fn picker_skips_local_lookup_when_no_remote_rows() {
     let recent = chrono::Utc::now().to_rfc3339();
@@ -280,7 +277,6 @@ fn picker_skips_local_lookup_when_no_remote_rows() {
     let entries = parse(payload);
     assert_eq!(entries.len(), 2);
 }
-
 #[test]
 fn picker_still_drops_build_row_with_empty_summary() {
     let payload = serde_json::json!({
@@ -295,7 +291,6 @@ fn picker_still_drops_build_row_with_empty_summary() {
     let entries = parse(payload);
     assert!(entries.is_empty(), "empty-summary Build rows stay dropped");
 }
-
 #[test]
 fn session_list_partial_parses_reasons() {
     let payload = |reason: &str| {
@@ -321,7 +316,6 @@ fn session_list_partial_parses_reasons() {
         Some(ConversationsPartial::Error)
     );
 }
-
 #[test]
 fn session_list_partial_absent_for_healthy_or_meta_less_responses() {
     let healthy = serde_json::json!({
@@ -332,7 +326,6 @@ fn session_list_partial_absent_for_healthy_or_meta_less_responses() {
     let legacy = serde_json::json!({ "sessions": [] });
     assert_eq!(parse_session_list_partial(&legacy), None);
 }
-
 #[test]
 fn dashboard_presence_resolves_every_candidate_in_one_call() {
     let payload = serde_json::json!({
@@ -345,20 +338,24 @@ fn dashboard_presence_resolves_every_candidate_in_one_call() {
             conversation_row("conv"),
         ]
     });
-
-    let entries = parse_session_picker_entries_with(payload, LocalPresence::Require, |ids| {
-        assert_eq!(
+    let entries = parse_session_picker_entries_with(
+            payload,
+            LocalPresence::Require,
+            |ids| {
+                assert_eq!(
             ids,
             ["on_disk_local", "on_disk_remote", "on_disk_both", "gone_local"],
             "conversation and foreign rows are dropped before the walk; every other row is a candidate"
         );
-        Ok(["on_disk_local", "on_disk_remote", "on_disk_both"]
-            .map(str::to_owned)
-            .into_iter()
-            .collect())
-    })
-    .unwrap();
-
+                Ok(
+                    ["on_disk_local", "on_disk_remote", "on_disk_both"]
+                        .map(str::to_owned)
+                        .into_iter()
+                        .collect(),
+                )
+            },
+        )
+        .unwrap();
     let labels: Vec<(&str, &str)> = entries
         .iter()
         .map(|e| (e.id.as_str(), e.source.as_str()))
@@ -372,46 +369,36 @@ fn dashboard_presence_resolves_every_candidate_in_one_call() {
         ]
     );
 }
-
 #[test]
 fn dashboard_presence_skips_the_walk_when_no_row_can_be_local() {
     let payload = serde_json::json!({
         "sessions": [row("foreign", "cursor"), conversation_row("conv")]
     });
-
     let entries = parse_session_picker_entries_with(payload, LocalPresence::Require, |ids| {
         panic!("no local lookup expected for {ids:?}")
     })
     .unwrap();
-
     assert!(entries.is_empty());
 }
-
 #[test]
 fn dashboard_presence_surfaces_resolution_failure() {
     let payload = serde_json::json!({ "sessions": [row("local", "local")] });
-
     let error = parse_session_picker_entries_with(payload, LocalPresence::Require, |_| {
         Err("disk failed".to_owned())
     })
     .unwrap_err();
-
     assert!(error.contains("disk failed"), "{error}");
 }
-
 #[test]
 fn relabel_presence_keeps_shell_labels_when_resolution_fails() {
     let payload = serde_json::json!({ "sessions": [row("remote_row", "remote")] });
-
     let entries = parse_session_picker_entries_with(payload, LocalPresence::Relabel, |_| {
         Err("disk failed".to_owned())
     })
     .unwrap();
-
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].source, "remote");
+    assert_eq!(entries.first().map(|e| e.source.as_str()), Some("remote"));
 }
-
 #[test]
 fn session_picker_entry_maps_to_dormant_roster_row() {
     let updated = chrono::Utc::now();
@@ -434,7 +421,6 @@ fn session_picker_entry_maps_to_dormant_roster_row() {
         session_kind: None,
         card_detail: None,
     };
-
     let roster = session_picker_entry_to_roster(entry);
     assert_eq!(roster.session_id, "sess-1");
     assert_eq!(roster.title.as_deref(), Some("Wire up dashboard"));

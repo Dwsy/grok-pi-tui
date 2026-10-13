@@ -1,10 +1,10 @@
-//! Tracks undiscovered AGENTS.md files during a session.
+//! Records startup AGENTS.md paths for a session.
 //!
-//! When the agent accesses files outside the initial CWD→root discovery
-//! chain, this tracker walks up from the target path to the git root,
-//! checking each directory for AGENTS.md files. Newly discovered files
-//! are reported once per session (or once per compaction cycle) as
-//! path-only reminders — the agent decides whether to read them.
+//! `seed` stores the cwd-to-git-root files discovered at agent build.
+//! `check_path` can walk from a later file toward the git root and return
+//! nested instruction files that were not in that set. No production
+//! caller invokes `check_path`. Nested files below cwd reach the model
+//! only through `read_file`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -387,7 +387,7 @@ mod tests {
 
         let results = tracker.check_path(&sub.join("foo.rs")).await;
         assert_eq!(results.len(), 1);
-        assert!(results[0].ends_with("AGENTS.md"));
+        assert!(results.first().is_some_and(|r| r.ends_with("AGENTS.md")));
     }
 
     #[tokio::test]
@@ -405,7 +405,7 @@ mod tests {
 
         let results = tracker.check_path(&sub.join("foo.rs")).await;
         assert_eq!(results.len(), 1);
-        assert!(results[0].ends_with("Claude.md"));
+        assert!(results.first().is_some_and(|r| r.ends_with("Claude.md")));
     }
 
     #[tokio::test]
@@ -678,7 +678,12 @@ mod tests {
         let dotdot_path = b.join("..").join("b").join("file.rs");
         let results = tracker.check_path(&dotdot_path).await;
         assert_eq!(results.len(), 1);
-        assert!(!results[0].to_str().unwrap().contains(".."));
+        assert!(
+            results
+                .first()
+                .and_then(|p| p.to_str())
+                .is_some_and(|s| !s.contains(".."))
+        );
     }
 
     #[tokio::test]
@@ -721,7 +726,12 @@ mod tests {
 
         let results = tracker.check_path(&apps.join("foo.ts")).await;
         assert_eq!(results.len(), 1);
-        assert!(results[0].to_str().unwrap().contains("frontend"));
+        assert!(
+            results
+                .first()
+                .and_then(|p| p.to_str())
+                .is_some_and(|s| s.contains("frontend"))
+        );
     }
 
     // ── Rules directory discovery tests ─────────────────────────────

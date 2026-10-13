@@ -36,6 +36,8 @@
 //! println!("loaded {} pre_tool_use hooks", pre_hooks.len());
 //! ```
 
+#![deny(clippy::indexing_slicing)]
+
 pub mod config;
 pub mod discovery;
 pub mod dispatcher;

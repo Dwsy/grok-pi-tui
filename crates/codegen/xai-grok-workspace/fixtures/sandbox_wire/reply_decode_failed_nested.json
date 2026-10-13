@@ -1,0 +1,8 @@
+{
+  "outcome": "reject",
+  "tool_call_id": "tc-0192c1a0",
+  "scope": {
+    "kind": "bash_command",
+    "value": "{\"outcome\":\"reject\",\"reason\":\"decode_failed\"}"
+  }
+}

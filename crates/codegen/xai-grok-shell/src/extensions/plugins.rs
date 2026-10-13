@@ -134,7 +134,12 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             let sid = acp::SessionId::new(req.session_id);
             let registry = match agent.session_handle_waiting_for_load(&sid).await {
                 Some(handle) => handle.plugins_list().await,
-                None => agent.plugin_registry_snapshot(),
+                None => {
+                    // The snapshot is built lazily on the first session; a pull before that must build it
+                    // rather than report an empty registry
+                    agent.ensure_plugin_registry_async().await;
+                    agent.plugin_registry_snapshot()
+                }
             };
             let response = match registry {
                 Some(registry) => {
@@ -217,6 +222,7 @@ mod tests {
             lsp_server_count: 0,
             has_inline_lsp_only: false,
             inline_hooks: None,
+            hook_specs: Vec::new(),
             inline_mcp_servers: None,
             inline_lsp_servers: None,
             conflict: None,

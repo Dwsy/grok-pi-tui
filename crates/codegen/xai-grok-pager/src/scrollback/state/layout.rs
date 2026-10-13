@@ -79,7 +79,7 @@ impl LayoutCache {
             return None;
         }
 
-        let slice = &self.virtual_y[valid_range.clone()];
+        let slice = self.virtual_y.get(valid_range.clone())?;
 
         // partition_point returns the first index where virtual_y > content_y, so the entry we want is the one before that
         let pos = slice.partition_point(|&y| y <= content_y);
@@ -88,8 +88,8 @@ impl LayoutCache {
         }
 
         let idx = valid_range.start + pos - 1;
-        let entry_start = self.virtual_y[idx];
-        let entry_end = entry_start + self.entries[idx].height as usize;
+        let entry_start = *self.virtual_y.get(idx)?;
+        let entry_end = entry_start + self.entries.get(idx)?.height as usize;
 
         if content_y < entry_end {
             Some(idx)
@@ -258,7 +258,7 @@ impl ScrollbackState {
         }
 
         // Convert screen row to absolute content-space Y
-        let base_y = cache.virtual_y[visible_range.start];
+        let base_y = *cache.virtual_y.get(visible_range.start)?;
         let content_y = base_y + (screen_row - scrollback_area.y) as usize + self.scroll_offset;
 
         cache.entry_at_content_y(content_y, visible_range)
@@ -301,9 +301,9 @@ impl ScrollbackState {
         // Content entry: compute from virtual_y coordinates
         // Keep the cumulative positions in usize (tall sessions exceed u16::MAX)
         // The final screen y / height are viewport-relative and provably fit in u16
-        let base_y = cache.virtual_y[visible_range.start];
-        let entry_start = cache.virtual_y[entry_idx] - base_y;
-        let entry_height = cache.entries[entry_idx].height;
+        let base_y = *cache.virtual_y.get(visible_range.start)?;
+        let entry_start = *cache.virtual_y.get(entry_idx)? - base_y;
+        let entry_height = cache.entries.get(entry_idx)?.height;
         let entry_end = entry_start + entry_height as usize;
 
         // Check if entry is within viewport
@@ -656,13 +656,6 @@ impl ScrollbackState {
             .width
     }
 
-    /// Content-column width (excluding accent bar and block padding) for a full scrollback width.
-    /// Used to size the inline edit textarea.
-    pub fn entry_text_column_width(&self, width: u16) -> u16 {
-        let simulated_area = Rect::new(0, 0, width, 1);
-        HorizontalLayout::new(simulated_area, &self.appearance.scrollback.layout).content_width()
-    }
-
     /// Measure exact heights for not-yet-measured entries in `[start, end]`. Returns `(entry_index, height_delta)` for
     /// each estimate replaced by an exact height. Hidden (group-truncated, height 0) and synthetic group-header rows
     /// render no markdown, so they are skipped. Their height is owned by group truncation, not measurement.
@@ -674,7 +667,7 @@ impl ScrollbackState {
             };
             let needs_measure = (start..=end).any(|idx| {
                 cache.entries.get(idx).is_some_and(|info| {
-                    !cache.measured[idx]
+                    cache.measured.get(idx).is_some_and(|m| !m)
                         && info.height != 0
                         && (!info.is_group_header() || info.is_expanded_verb_header())
                 })
@@ -687,7 +680,6 @@ impl ScrollbackState {
         let theme = Theme::current();
         let entry_area_width = self.entry_area_width(width);
         let cwd = self.cwd.as_deref();
-        let inline_edit_height = self.inline_edit_height;
 
         let Some(cache) = self.layout_cache.as_mut() else {
             return Vec::new();
@@ -698,36 +690,40 @@ impl ScrollbackState {
             if idx >= cache.entries.len() {
                 break;
             }
-            if cache.measured[idx] {
+            if cache.measured.get(idx) != Some(&false) {
                 continue;
             }
-            let info = cache.entries[idx];
+            let Some(info) = cache.entries.get(idx).copied() else {
+                continue;
+            };
             // Estimated entries always have height >= 1, so a height of 0 here means group truncation hid this entry
             // Synthetic-only headers need no block render; an expanded verb header also owns member 0 rows
             if info.height == 0 || (info.is_group_header() && !info.is_expanded_verb_header()) {
                 continue;
             }
-            let Some((entry_id, entry)) = self.entries.get_index(idx) else {
+            let Some((_, entry)) = self.entries.get_index(idx) else {
                 continue;
             };
             let renderer = EntryRenderer::new(entry, &theme)
                 .with_appearance_ref(&self.appearance)
                 .with_cwd(cwd);
-            let member_height = match inline_edit_height {
-                Some((edit_id, h)) if edit_id == *entry_id => h,
-                _ => renderer.desired_height(entry_area_width),
-            };
+            let member_height = renderer.desired_height(entry_area_width);
             let exact_height = info.with_verb_header_row(member_height);
             let delta = exact_height as i32 - info.height as i32;
-            cache.entries[idx].height = exact_height;
+            if let Some(slot) = cache.entries.get_mut(idx) {
+                slot.height = exact_height;
+            }
             changes.push((idx, delta));
             // Truncated height only feeds prompt sticky-header min_height, so only prompts pay for the extra Truncated-mode render
             // Others keep their seeded value (unused for non-prompts)
-            if entry.block.is_user_prompt() {
-                cache.entry_truncated_heights[idx] =
-                    renderer.compute_truncated_height(entry_area_width);
+            if entry.block.is_user_prompt()
+                && let Some(slot) = cache.entry_truncated_heights.get_mut(idx)
+            {
+                *slot = renderer.compute_truncated_height(entry_area_width);
             }
-            cache.measured[idx] = true;
+            if let Some(slot) = cache.measured.get_mut(idx) {
+                *slot = true;
+            }
         }
         changes
     }
@@ -969,7 +965,10 @@ impl ScrollbackState {
         // Sum entry heights and gap_after in the visible range
         // Per-entry heights are u16; accumulate into usize so a long session (many entries / tall content) is not truncated
         // The last entry's gap_after (always 1) is the trailing gap for the selection box, so the sum is correct as-is
-        let total: usize = cache.entries[range]
+        let Some(entries) = cache.entries.get(range) else {
+            return;
+        };
+        let total: usize = entries
             .iter()
             .map(|e| e.height as usize + e.gap_after as usize)
             .sum();
@@ -981,7 +980,6 @@ impl ScrollbackState {
     pub(super) fn update_dirty_entry_heights(&mut self, width: u16) -> Vec<(usize, i32)> {
         let entry_area_width = self.entry_area_width(width);
         let cwd = self.cwd.as_deref();
-        let inline_edit_height = self.inline_edit_height;
         let Some(cache) = self.layout_cache.as_mut() else {
             return Vec::new();
         };
@@ -990,14 +988,14 @@ impl ScrollbackState {
 
         let mut changes = Vec::new();
 
-        // Collect (id, idx) pairs first to avoid borrow issues
-        let dirty_entries: Vec<(EntryId, usize)> = self
+        // Collect indices first: the height update mutably borrows the cache while `dirty_heights` is still live
+        let dirty_entries: Vec<usize> = self
             .dirty_heights
             .iter()
-            .filter_map(|&id| self.entries.get_index_of(&id).map(|idx| (id, idx)))
+            .filter_map(|id| self.entries.get_index_of(id))
             .collect();
 
-        for (id, idx) in dirty_entries {
+        for idx in dirty_entries {
             if idx >= cache.entries.len() {
                 continue; // Entry added after cache was built
             }
@@ -1005,29 +1003,33 @@ impl ScrollbackState {
             let Some((_, entry)) = self.entries.get_index(idx) else {
                 continue;
             };
-            let info = cache.entries[idx];
+            let Some(info) = cache.entries.get(idx).copied() else {
+                continue;
+            };
             let renderer = EntryRenderer::new(entry, &theme)
                 .with_appearance_ref(&self.appearance)
                 .with_cwd(cwd);
-            let member_height = match inline_edit_height {
-                Some((edit_id, h)) if edit_id == id => h,
-                _ => renderer.desired_height(entry_area_width),
-            };
+            let member_height = renderer.desired_height(entry_area_width);
             let new_height = info.with_verb_header_row(member_height);
-            let old_height = cache.entries[idx].height;
+            let old_height = info.height;
             // This entry now has an exact (re)measured height, so it no longer needs the lazy viewport measurement pass
-            cache.measured[idx] = true;
+            if let Some(slot) = cache.measured.get_mut(idx) {
+                *slot = true;
+            }
 
             // A measured prompt's exact truncated height feeds sticky min_height. Refresh it unconditionally, matching the
             // sibling measure paths. The height can be unchanged while the seed is still the conservative MAX. Cheap: prompts
             // are rarely re-dirtied.
-            if entry.block.is_user_prompt() {
-                cache.entry_truncated_heights[idx] =
-                    renderer.compute_truncated_height(entry_area_width);
+            if entry.block.is_user_prompt()
+                && let Some(slot) = cache.entry_truncated_heights.get_mut(idx)
+            {
+                *slot = renderer.compute_truncated_height(entry_area_width);
             }
 
             if new_height != old_height {
-                cache.entries[idx].height = new_height;
+                if let Some(slot) = cache.entries.get_mut(idx) {
+                    slot.height = new_height;
+                }
                 changes.push((idx, new_height as i32 - old_height as i32));
             }
         }
@@ -1066,7 +1068,11 @@ impl ScrollbackState {
             if let Some((_, entry)) = self.entries.get_index(idx)
                 && entry.block.is_user_prompt()
             {
-                let truncated_height = cache.entry_truncated_heights[idx];
+                let truncated_height = cache
+                    .entry_truncated_heights
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(MAX_TRUNCATED_HEADER_HEIGHT);
                 let min_height = truncated_height.min(MAX_TRUNCATED_HEADER_HEIGHT);
                 // Expanded foldable prompts participate in push calculations but don't stick themselves; they scroll away normally
                 let sticky =
@@ -1136,10 +1142,12 @@ impl ScrollbackState {
             if change_iter.peek().is_some_and(|&&(cidx, _)| cidx == idx) {
                 let &(_, d) = change_iter.next().unwrap();
                 // Apply delta from earlier changes first, then add this one
-                cache.virtual_y[idx] = (cache.virtual_y[idx] as i64 + cumulative_delta) as usize;
+                if let Some(slot) = cache.virtual_y.get_mut(idx) {
+                    *slot = (*slot as i64 + cumulative_delta) as usize;
+                }
                 cumulative_delta += d as i64;
-            } else {
-                cache.virtual_y[idx] = (cache.virtual_y[idx] as i64 + cumulative_delta) as usize;
+            } else if let Some(slot) = cache.virtual_y.get_mut(idx) {
+                *slot = (*slot as i64 + cumulative_delta) as usize;
             }
         }
 
@@ -1150,15 +1158,19 @@ impl ScrollbackState {
             } else if pd.entry_idx == earliest_idx {
                 // The prompt itself didn't move, but its full_height may have changed
                 // Update from the cache, which update_dirty_entry_heights already patched
-                pd.full_height = cache.entries[pd.entry_idx].height;
+                if let Some(info) = cache.entries.get(pd.entry_idx) {
+                    pd.full_height = info.height;
+                }
             }
         }
 
         // Also update full_height for any prompts at dirty indices
         for &(idx, _) in changes {
             for pd in cache.prompt_descriptors.iter_mut() {
-                if pd.entry_idx == idx {
-                    pd.full_height = cache.entries[idx].height;
+                if pd.entry_idx == idx
+                    && let Some(info) = cache.entries.get(idx)
+                {
+                    pd.full_height = info.height;
                 }
             }
         }
@@ -1218,17 +1230,23 @@ impl ScrollbackState {
         // We still use `if let Some(...)` to keep the access panic-free
         if new_idx > 0
             && let Some((_, prev_entry)) = self.entries.get_index(new_idx - 1)
+            && let Some(prev) = new_idx.checked_sub(1)
+            && let Some(slot) = cache.entries.get_mut(prev)
         {
-            cache.entries[new_idx - 1].gap_after = gap_after_between(prev_entry, new_entry);
+            slot.gap_after = gap_after_between(prev_entry, new_entry);
         }
 
         // Compute the new entry's virtual_y (start position) using the previous entry's (now-correct) gap_after
-        let new_y = if new_idx == 0 {
-            0
+        let new_y = if let Some(prev) = new_idx.checked_sub(1) {
+            let Some(&vy) = cache.virtual_y.get(prev) else {
+                return false;
+            };
+            let Some(info) = cache.entries.get(prev) else {
+                return false;
+            };
+            vy + info.height as usize + info.gap_after as usize
         } else {
-            cache.virtual_y[new_idx - 1]
-                + cache.entries[new_idx - 1].height as usize
-                + cache.entries[new_idx - 1].gap_after as usize
+            0
         };
 
         // Append the new entry. It's now the trailing entry, so gap_after = 1.
@@ -1313,7 +1331,11 @@ impl ScrollbackState {
             if let Some((_, entry)) = self.entries.get_index(idx)
                 && entry.block.is_user_prompt()
             {
-                let truncated_height = cache.entry_truncated_heights[idx];
+                let truncated_height = cache
+                    .entry_truncated_heights
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(MAX_TRUNCATED_HEADER_HEIGHT);
                 let min_height = truncated_height.min(MAX_TRUNCATED_HEADER_HEIGHT);
                 let sticky =
                     !(entry.block.is_foldable() && entry.display_mode == DisplayMode::Expanded);
@@ -1550,14 +1572,22 @@ pub fn compute_paint_window(
     if visible_range.is_empty() {
         return (visible_range.start..visible_range.start, 0);
     }
-    let base_y = virtual_y[visible_range.start];
+    let Some(&base_y) = virtual_y.get(visible_range.start) else {
+        return (visible_range.start..visible_range.start, 0);
+    };
     let vp_start = base_y + scroll;
     let vp_end = vp_start + viewport_h;
-    let range_vy = &virtual_y[visible_range.clone()];
+    let Some(range_vy) = virtual_y.get(visible_range.clone()) else {
+        return (visible_range.start..visible_range.start, 0);
+    };
     let mut first_rel = range_vy.partition_point(|&y| y < vp_start);
     if first_rel > 0 {
         let prev = visible_range.start + first_rel - 1;
-        if virtual_y[prev] + layouts[prev].height as usize > vp_start {
+        if virtual_y
+            .get(prev)
+            .zip(layouts.get(prev))
+            .is_some_and(|(&vy, layout)| vy + layout.height as usize > vp_start)
+        {
             first_rel -= 1;
         }
     }
@@ -1566,14 +1596,17 @@ pub fn compute_paint_window(
     let mut i = paint_start;
     while i < paint_end {
         // Any group header row (verb or truncation) aggregates entries that can sit past the viewport edge; extend so the label walks see them
-        if layouts[i].height > 0 && layouts[i].is_group_header() {
+        if layouts
+            .get(i)
+            .is_some_and(|layout| layout.height > 0 && layout.is_group_header())
+        {
             // The run walk is range-agnostic; keep the window inside the visible range so index remapping downstream stays valid
             paint_end = paint_end.max(run_end(i).min(visible_range.end));
         }
         i += 1;
     }
     let content_y0 = if paint_start < paint_end {
-        virtual_y[paint_start] - base_y
+        virtual_y.get(paint_start).map_or(0, |&y| y - base_y)
     } else {
         0
     };

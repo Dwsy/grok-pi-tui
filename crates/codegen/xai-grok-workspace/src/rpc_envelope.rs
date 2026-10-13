@@ -20,7 +20,7 @@ pub fn error_code(err: &WorkspaceError) -> &'static str {
         WorkspaceError::JoinError(_) => "join_error",
         WorkspaceError::InvalidHunkAction(_) => "invalid_hunk_action",
         WorkspaceError::HunkActionFailed(_) => "hunk_action_failed",
-        WorkspaceError::HubError(_) => "hub_error",
+        WorkspaceError::HubError(_) | WorkspaceError::HubRefused { .. } => "hub_error",
         WorkspaceError::UnknownMethod(_) => "unknown_method",
         WorkspaceError::ExportArchiveLimitExceeded(_) => "export_archive_limit_exceeded",
         WorkspaceError::ExportGithub { kind, .. } => kind.wire_code(),
@@ -29,7 +29,8 @@ pub fn error_code(err: &WorkspaceError) -> &'static str {
     }
 }
 /// Known codes map back to their variants. Unknown codes become `HubError` so an older shell survives newer workspace codes.
-/// `CapabilityWidening`, `Unauthorized`, and `MaxDepthExceeded` lose struct fields on the wire, so they also become `HubError` with the original code prefixed.
+/// `CapabilityWidening`, `Unauthorized`, and `MaxDepthExceeded` lose struct fields on the wire, so they also become `HubError` with the original code prefixed;
+/// `HubRefused` travels as the `hub_error` it renders to.
 pub fn rpc_error_to_workspace(err: RpcError) -> WorkspaceError {
     if let Some(kind) =
         xai_grok_workspace_types::rpc::export_github::ExportGithubError::from_wire_code(&err.code)
@@ -94,6 +95,10 @@ mod tests {
             WorkspaceError::InvalidHunkAction("h".into()),
             WorkspaceError::HunkActionFailed("h".into()),
             WorkspaceError::HubError("hub".into()),
+            WorkspaceError::HubRefused {
+                status: 403,
+                refusal: None,
+            },
             WorkspaceError::UnknownMethod("workspace.bogus".into()),
             WorkspaceError::ExportArchiveLimitExceeded("too big".into()),
             WorkspaceError::ShuttingDown,

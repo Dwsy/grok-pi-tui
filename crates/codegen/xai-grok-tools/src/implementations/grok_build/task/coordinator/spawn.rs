@@ -86,6 +86,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 .graph
                 .insert_root_child(&id, &request.parent_session_id),
         }
+        self.inherit_resume_subagent_type(request.as_mut());
         let running = self.session_running_count(&request.parent_session_id);
         match self.admission.admit(&request, running) {
             AdmissionDecision::Start => self.start_child(
@@ -247,7 +248,12 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 foreground_deadline: None,
                 handle_only: request.run_in_background,
                 explicitly_killed: false,
+                disposition: Default::default(),
                 launched: false,
+                attempt_id: xai_message_delivery_core::AttemptId::mint(
+                    uuid::Uuid::new_v4().as_u128(),
+                ),
+                generation: super::ActiveChildGeneration::new(),
                 agent_address: None,
                 spawner_session_id: None,
                 wake_of: None,
@@ -262,6 +268,29 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 snapshot_ref: None,
             },
         );
+    }
+
+    /// In-memory resume source wins over the caller's default type before admission.
+    fn inherit_resume_subagent_type(&self, request: &mut SubagentRequest) {
+        let Some(resume_id) = request
+            .resume_from
+            .as_deref()
+            .filter(|id| xai_tool_types::is_not_sentinel(id))
+        else {
+            return;
+        };
+        if let Some(source) = self.completed.get(resume_id) {
+            if source.request.parent_session_id == request.parent_session_id {
+                request.subagent_type = source.request.subagent_type.clone();
+            }
+            return;
+        }
+        if let Some(subagent_type) = self
+            .runner
+            .durable_resume_type(resume_id, &request.parent_session_id)
+        {
+            request.subagent_type = subagent_type;
+        }
     }
 }
 

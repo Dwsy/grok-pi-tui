@@ -392,8 +392,11 @@ mod tests {
 
         let resolved = resolve_known_marketplaces_in(&claude_dir);
         assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].name, "mp");
-        assert_eq!(resolved[0].path, mp_dir);
+        let Some(r) = resolved.first() else {
+            panic!("expected one marketplace: {resolved:?}");
+        };
+        assert_eq!(r.name, "mp");
+        assert_eq!(r.path, mp_dir);
         assert_eq!(
             plugin_dir_names(&resolved),
             vec!["alpha".to_string(), "gamma".to_string()]

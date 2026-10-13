@@ -475,8 +475,8 @@ fn first_prompt(head: &str) -> Option<String> {
 
 fn between<'a>(value: &'a str, start: &str, end: &str) -> Option<&'a str> {
     let start = value.find(start)? + start.len();
-    let end = value[start..].find(end)? + start;
-    Some(&value[start..end])
+    let end = value.get(start..)?.find(end)? + start;
+    value.get(start..end)
 }
 
 fn is_generated_prompt(value: &str) -> bool {

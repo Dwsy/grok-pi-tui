@@ -42,9 +42,18 @@ fn different_commits_no_branch_returns_divergence() {
 fn serializes_to_camel_case_json() {
     let d = detect_head_divergence(Some("aaa"), Some("main"), Some("bbb")).unwrap();
     let json = serde_json::to_value(&d).unwrap();
-    assert_eq!(json["sessionCommit"], "aaa");
-    assert_eq!(json["currentCommit"], "bbb");
-    assert_eq!(json["sessionBranch"], "main");
+    assert_eq!(
+        json.get("sessionCommit").and_then(|v| v.as_str()),
+        Some("aaa")
+    );
+    assert_eq!(
+        json.get("currentCommit").and_then(|v| v.as_str()),
+        Some("bbb")
+    );
+    assert_eq!(
+        json.get("sessionBranch").and_then(|v| v.as_str()),
+        Some("main")
+    );
 }
 
 #[test]

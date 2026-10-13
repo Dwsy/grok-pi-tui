@@ -379,7 +379,9 @@ pub fn render_rewind_overlay(buf: &mut Buffer, area: Rect, phase: &RewindPhase, 
                 selected: *selected,
             }
             .render(buf, area, "Rewind to which turn?", focused, |i, ctx| {
-                let point = &points[i];
+                let Some(point) = points.get(i) else {
+                    return Line::from("");
+                };
                 let dot_style = Style::default().fg(theme.gray).bg(ctx.row_bg);
                 let preview: String = crate::render::line_utils::truncate_str(
                     point.prompt_preview.as_deref().unwrap_or("(no preview)"),

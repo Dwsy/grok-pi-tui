@@ -294,15 +294,15 @@ fn append_chunk_id_range(range_arr: &mut Vec<serde_json::Value>, new_chunk_id: u
     }
 
     if let Some(range_values) = last_value.as_array_mut() {
-        if range_values.len() == 2 {
-            if let Some(range_end) = chunk_id_as_u64(&range_values[1])
+        if let [_, end] = range_values.as_mut_slice() {
+            if let Some(range_end) = chunk_id_as_u64(end)
                 && new_chunk_id == range_end + 1
             {
-                range_values[1] = serde_json::json!(new_chunk_id);
+                *end = serde_json::json!(new_chunk_id);
                 return;
             }
-        } else if range_values.len() == 1
-            && let Some(range_end) = chunk_id_as_u64(&range_values[0])
+        } else if let [only] = range_values.as_slice()
+            && let Some(range_end) = chunk_id_as_u64(only)
             && new_chunk_id == range_end + 1
         {
             *last_value = serde_json::json!([range_end, new_chunk_id]);

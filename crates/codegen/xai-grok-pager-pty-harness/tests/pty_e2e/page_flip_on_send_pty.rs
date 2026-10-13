@@ -37,12 +37,21 @@ async fn drive_to_second_send(content: &ContentController) -> (PtyHarness, Agent
     harness
         .inject_keys(format!("{PROMPT}\r").as_bytes())
         .expect("submit first prompt");
+    // Default page_flip_on_send parks at the prompt (head visible, tail off
+    // screen). Follow can pin the tail instead. Either proves turn 1 rendered.
     harness
-        .wait_for_text(TAIL_SENTINEL, Duration::from_secs(90))
-        .expect("turn 1 tail visible");
+        .wait_until(
+            "turn 1 head or tail on screen",
+            Duration::from_secs(90),
+            |h| h.contains_text("line 0 payload") || h.contains_text(TAIL_SENTINEL),
+        )
+        .expect("turn 1 rendered");
     tokio::time::timeout(Duration::from_secs(10), first_turn.wait_satisfied())
         .await
         .expect("first turn completes before second send");
+    harness
+        .wait_for_turn_idle(Duration::from_secs(15))
+        .expect("turn 1 finalized");
 
     harness
         .inject_keys(format!("{SECOND_PROMPT}\r").as_bytes())

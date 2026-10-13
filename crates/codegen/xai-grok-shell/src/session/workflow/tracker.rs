@@ -768,7 +768,7 @@ fn summarize_result(result: &serde_json::Value) -> String {
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        format!("{}…", &text[..end])
+        format!("{}…", text.get(..end).unwrap_or(""))
     } else {
         text
     }
@@ -842,13 +842,19 @@ mod tests {
         t.rebind_agent_id(&id, "child-attempt-1", "child-attempt-2");
         let run = t.get(&id).unwrap();
         assert_eq!(run.agents.len(), 1);
-        assert_eq!(run.agents[0].agent_id, "child-attempt-2");
-        assert_eq!(run.agents[0].label, "worker");
-        assert_eq!(run.agents[0].state, "running");
+        let Some(agent) = run.agents.first() else {
+            panic!("expected an agent row: {:?}", run.agents);
+        };
+        assert_eq!(agent.agent_id, "child-attempt-2");
+        assert_eq!(agent.label, "worker");
+        assert_eq!(agent.state, "running");
         assert!(run.revision > before);
 
         t.agent_finished(&id, "child-attempt-2", "done", 42, 1_000);
-        assert_eq!(t.get(&id).unwrap().agents[0].state, "done");
+        assert_eq!(
+            t.get(&id).unwrap().agents.first().map(|a| a.state.as_str()),
+            Some("done")
+        );
     }
 
     #[test]
@@ -879,7 +885,10 @@ mod tests {
         let run = restored.get(&id).unwrap();
         assert_eq!(run.status, WorkflowRunStatus::Interrupted);
         assert!(!run.status.is_paused());
-        assert_eq!(run.agents[0].state, "cancelled");
+        assert_eq!(
+            run.agents.first().map(|a| a.state.as_str()),
+            Some("cancelled")
+        );
     }
 
     #[test]
@@ -937,7 +946,8 @@ mod tests {
         assert_eq!(resumed.status, WorkflowRunStatus::Active);
         assert!(resumed.pause_message.is_none());
         assert_eq!(
-            resumed.agents[0].state, "cancelled",
+            resumed.agents.first().map(|a| a.state.as_str()),
+            Some("cancelled"),
             "ghost running agent rows must be cancelled on resume"
         );
         assert_eq!(t.execution_epoch(&id), Some(1));
@@ -1137,7 +1147,10 @@ mod tests {
         assert_eq!(state.agent_budget, Some(1024));
         let resumed_status = t.take_status_report();
         assert_eq!(resumed_status.len(), 1);
-        assert_eq!(resumed_status[0].revision, state.revision);
+        assert_eq!(
+            resumed_status.first().map(|s| s.revision),
+            Some(state.revision)
+        );
         t.apply_outcome(
             &id,
             &WorkflowOutcome::Completed {
@@ -1161,7 +1174,10 @@ mod tests {
         let mut restored = WorkflowTracker::from_snapshot(t.snapshot());
         let (pre_resume, fresh) = restored.take_unreported_terminal_runs();
         assert_eq!(pre_resume.len(), 1);
-        assert_eq!(pre_resume[0].run_id, id);
+        assert_eq!(
+            pre_resume.first().map(|s| s.run_id.as_str()),
+            Some(id.as_str())
+        );
         assert!(fresh.is_empty());
         assert!(restored.take_status_report().is_empty());
 
@@ -1187,7 +1203,7 @@ mod tests {
 
         let report = t.take_status_report();
         assert_eq!(report.len(), 1);
-        assert!(report[0].elapsed_ms_floor >= 7_000);
+        assert!(report.first().is_some_and(|s| s.elapsed_ms_floor >= 7_000));
         assert_eq!(t.get(&id).unwrap().elapsed_ms_floor, 2_000);
     }
 
@@ -1271,7 +1287,10 @@ mod tests {
     fn restore_charges_unresolved_lease_and_preserves_cap() {
         let (mut t, id) = tracker_with_run();
         let mut snapshot = t.snapshot();
-        snapshot[0].token_leases.push(WorkflowTokenLease {
+        let Some(first) = snapshot.get_mut(0) else {
+            panic!("expected a snapshot run: {snapshot:?}");
+        };
+        first.token_leases.push(WorkflowTokenLease {
             lease_id: "lease_legacy".into(),
             grant: 400,
         });

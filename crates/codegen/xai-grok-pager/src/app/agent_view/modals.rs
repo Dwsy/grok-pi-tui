@@ -538,9 +538,9 @@ impl AgentView {
                 }
             }
             ButtonAction::ToggleSelectedSkill => {
-                if let TabDataState::Loaded(ref skills) = state.skills_data
+                if let TabDataState::Loaded(ref listing) = state.skills_data
                     && let Some(idx) = state.selected_data_index()
-                    && let Some(skill) = skills.get(idx)
+                    && let Some(skill) = listing.skills.get(idx)
                 {
                     (Some(skill.name.clone()), next_enabled)
                 } else {
@@ -2010,8 +2010,9 @@ impl AgentView {
                 let Some(state) = self.extensions_modal.as_mut() else {
                     return InputOutcome::Changed;
                 };
-                let crate::views::extensions_modal::TabDataState::Loaded(ref skills) =
-                    state.skills_data
+                let crate::views::extensions_modal::TabDataState::Loaded(
+                    xai_grok_shell::extensions::skills::SkillsListResponse { ref skills, .. },
+                ) = state.skills_data
                 else {
                     return InputOutcome::Changed;
                 };
@@ -2899,9 +2900,16 @@ mod extensions_action_target_tests {
         };
 
         let mut agent = tab_bar_focused_agent();
-        let hooks_tab = agent.extensions_modal.as_ref().unwrap().window.tab_rects
-            [tab_index(ExtensionsTab::Hooks)]
-        .expect("Hooks tab rect");
+        let hooks_tab = agent
+            .extensions_modal
+            .as_ref()
+            .unwrap()
+            .window
+            .tab_rects
+            .get(tab_index(ExtensionsTab::Hooks))
+            .copied()
+            .flatten()
+            .expect("Hooks tab rect");
         agent.handle_extensions_modal_mouse(&left_down(hooks_tab.x, hooks_tab.y));
         render_modal(&mut agent);
         assert_list_focused(&agent, ExtensionsTab::Hooks, "tab label click");
@@ -2919,8 +2927,13 @@ mod extensions_action_target_tests {
             .expect("footer `Tab tabs` hint");
         agent.handle_extensions_modal_mouse(&left_down(tab_hint.x, tab_hint.y));
         render_modal(&mut agent);
-        let next =
-            ExtensionsTab::ALL[(tab_index(ExtensionsTab::Plugins) + 1) % ExtensionsTab::ALL.len()];
+        let tabs = ExtensionsTab::ALL;
+        let next = match tabs.len() {
+            0 => panic!("ExtensionsTab::ALL is empty"),
+            n => *tabs
+                .get((tab_index(ExtensionsTab::Plugins) + 1) % n)
+                .unwrap_or_else(|| panic!("next extensions tab")),
+        };
         assert_list_focused(&agent, next, "footer Tab hint click");
     }
 
@@ -2960,13 +2973,14 @@ mod extensions_action_target_tests {
             load_errors: Vec::new(),
         });
         let mut skills = ExtensionsModalState::new(ExtensionsTab::Skills);
-        skills.skills_data = TabDataState::Loaded(vec![
-            xai_grok_tools::implementations::skills::types::SkillInfo {
+        skills.skills_data = TabDataState::Loaded(
+            vec![xai_grok_tools::implementations::skills::types::SkillInfo {
                 name: "my-skill".into(),
                 enabled: true,
                 ..Default::default()
-            },
-        ]);
+            }]
+            .into(),
+        );
 
         for (noun, modal) in [("hook", hooks), ("skill", skills)] {
             let mut agent = pipeline_agent(modal);
@@ -3228,18 +3242,21 @@ mod extensions_action_target_tests {
         for enabled in [true, false] {
             let mut agent = super::test_fixtures::make_agent();
             let mut modal = ExtensionsModalState::new(ExtensionsTab::Skills);
-            modal.skills_data = TabDataState::Loaded(vec![
-                xai_grok_tools::implementations::skills::types::SkillInfo {
-                    name: "other-skill".into(),
-                    enabled,
-                    ..Default::default()
-                },
-                xai_grok_tools::implementations::skills::types::SkillInfo {
-                    name: "my-skill".into(),
-                    enabled,
-                    ..Default::default()
-                },
-            ]);
+            modal.skills_data = TabDataState::Loaded(
+                vec![
+                    xai_grok_tools::implementations::skills::types::SkillInfo {
+                        name: "other-skill".into(),
+                        enabled,
+                        ..Default::default()
+                    },
+                    xai_grok_tools::implementations::skills::types::SkillInfo {
+                        name: "my-skill".into(),
+                        enabled,
+                        ..Default::default()
+                    },
+                ]
+                .into(),
+            );
             modal.entry_data_indices = vec![None, Some(1), Some(0)];
             modal.entry_group_keys = vec![Some("User".into()), None, None];
             modal.picker_state.selected = 1;
@@ -3273,7 +3290,7 @@ mod extensions_action_target_tests {
             ..Default::default()
         };
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Skills);
-        modal.skills_data = TabDataState::Loaded(vec![skill]);
+        modal.skills_data = TabDataState::Loaded(vec![skill].into());
         modal.entry_data_indices = vec![Some(0)];
         modal.entry_group_keys = vec![None];
         modal.picker_state.selected = 0;
@@ -3848,7 +3865,10 @@ mod connectors_url_click_tests {
             .iter()
             .position(|&e| e == entry_idx)
             .unwrap();
-        (hit.item_rects[pos].x + 2, band)
+        let Some(rect) = hit.item_rects.get(pos) else {
+            panic!("missing item rect at {pos}");
+        };
+        (rect.x + 2, band)
     }
 
     #[test]
@@ -3883,7 +3903,9 @@ mod connectors_url_click_tests {
                 .iter()
                 .position(|&e| e == entry_idx)
                 .unwrap();
-            let rect = hit.item_rects[pos];
+            let Some(rect) = hit.item_rects.get(pos).copied() else {
+                panic!("missing item rect at {pos}");
+            };
             (rect.x + 2, rect.y) // first row of the item rect is the fold-toggle label
         };
         let outcome = agent.handle_extensions_modal_mouse(&left_down(col, label_row));

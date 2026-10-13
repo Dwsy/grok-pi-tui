@@ -157,7 +157,10 @@ async fn bash_task_completed_injects_bash_task_completed_source() {
         } => {
             assert!(prompt_id.starts_with("task-completed-"));
             assert!(verbatim);
-            let text = match &prompt_blocks[0] {
+            let Some(block) = prompt_blocks.first() else {
+                panic!("expected a prompt block: {prompt_blocks:?}");
+            };
+            let text = match block {
                 acp::ContentBlock::Text(t) => &t.text,
                 _ => panic!("expected text block"),
             };
@@ -340,7 +343,10 @@ fn task_completed_will_wake(
             && args.request.method.as_ref() == "x.ai/task_completed"
         {
             let v: serde_json::Value = serde_json::from_str(args.request.params.get()).ok()?;
-            return v["update"]["will_wake"].as_bool();
+            return v
+                .get("update")
+                .and_then(|u| u.get("will_wake"))
+                .and_then(|w| w.as_bool());
         }
     }
     None
@@ -641,7 +647,10 @@ async fn monitor_task_completed_auto_wakes_with_monitor_ended_message() {
         } => {
             assert_eq!(prompt_id, "task-completed-mon-456");
             assert!(verbatim);
-            let text = match &prompt_blocks[0] {
+            let Some(block) = prompt_blocks.first() else {
+                panic!("expected a prompt block: {prompt_blocks:?}");
+            };
+            let text = match block {
                 acp::ContentBlock::Text(t) => t.text.as_str(),
                 _ => panic!("expected text block"),
             };
@@ -817,7 +826,10 @@ async fn ui_killed_monitor_auto_wakes_and_tells_model_not_to_restart() {
     let command = cmd_rx.try_recv().expect("expected Prompt");
     match command {
         SessionCommand::Prompt { prompt_blocks, .. } => {
-            let text = match &prompt_blocks[0] {
+            let Some(block) = prompt_blocks.first() else {
+                panic!("expected a prompt block: {prompt_blocks:?}");
+            };
+            let text = match block {
                 acp::ContentBlock::Text(t) => &t.text,
                 _ => panic!("expected text block"),
             };
@@ -898,8 +910,15 @@ async fn scheduled_task_created_is_persisted() {
                 crate::extensions::notification::SessionUpdate::ScheduledTaskCreated { .. }
             ));
             let meta = notif.meta.as_ref().expect("scheduler metadata");
-            assert_eq!(meta["x.ai/schedulerGeneration"], "generation-a");
-            assert_eq!(meta["x.ai/schedulerRevision"], 1);
+            assert_eq!(
+                meta.get("x.ai/schedulerGeneration")
+                    .and_then(|v| v.as_str()),
+                Some("generation-a")
+            );
+            assert_eq!(
+                meta.get("x.ai/schedulerRevision").and_then(|v| v.as_u64()),
+                Some(1)
+            );
             assert!(
                 notif
                     .meta
@@ -1061,8 +1080,15 @@ async fn scheduled_task_removed_is_persisted() {
                 "the persisted deletion line must be stamped"
             );
             let meta = notif.meta.as_ref().expect("scheduler metadata");
-            assert_eq!(meta["x.ai/schedulerGeneration"], "generation-a");
-            assert_eq!(meta["x.ai/schedulerRevision"], 2);
+            assert_eq!(
+                meta.get("x.ai/schedulerGeneration")
+                    .and_then(|v| v.as_str()),
+                Some("generation-a")
+            );
+            assert_eq!(
+                meta.get("x.ai/schedulerRevision").and_then(|v| v.as_u64()),
+                Some(2)
+            );
         }
         _ => panic!("expected PersistenceMsg::Update(Xai(ScheduledTaskDeleted))"),
     }
@@ -1086,7 +1112,14 @@ async fn acknowledged_scheduler_removal_appends_before_ack_and_broadcast() {
         else {
             panic!("expected durable scheduler tombstone");
         };
-        assert_eq!(notification.meta.unwrap()["x.ai/schedulerRevision"], 17);
+        assert_eq!(
+            notification
+                .meta
+                .as_ref()
+                .and_then(|m| m.get("x.ai/schedulerRevision"))
+                .and_then(|v| v.as_u64()),
+            Some(17)
+        );
         assert!(gateway_rx.try_recv().is_err());
         assert!(matches!(
             receipt.try_recv(),
@@ -1378,8 +1411,20 @@ async fn scheduled_task_fired_is_not_persisted() {
         panic!("expected scheduler fire notification");
     };
     let value: serde_json::Value = serde_json::from_str(fired.request.params.get()).unwrap();
-    assert_eq!(value["_meta"]["x.ai/schedulerGeneration"], "generation-a");
-    assert_eq!(value["_meta"]["x.ai/schedulerRevision"], 3);
+    assert_eq!(
+        value
+            .get("_meta")
+            .and_then(|m| m.get("x.ai/schedulerGeneration"))
+            .and_then(|v| v.as_str()),
+        Some("generation-a")
+    );
+    assert_eq!(
+        value
+            .get("_meta")
+            .and_then(|m| m.get("x.ai/schedulerRevision"))
+            .and_then(|v| v.as_u64()),
+        Some(3)
+    );
 }
 
 fn make_monitor_event_notification(task_id: &str, owner: Option<&str>) -> ToolNotification {
@@ -1596,7 +1641,10 @@ async fn ui_killed_task_auto_wakes_and_tells_model_not_to_restart() {
     let command = cmd_rx.try_recv().expect("expected Prompt");
     match command {
         SessionCommand::Prompt { prompt_blocks, .. } => {
-            let text = match &prompt_blocks[0] {
+            let Some(block) = prompt_blocks.first() else {
+                panic!("expected a prompt block: {prompt_blocks:?}");
+            };
+            let text = match block {
                 acp::ContentBlock::Text(t) => &t.text,
                 _ => panic!("expected text block"),
             };
@@ -1679,7 +1727,10 @@ async fn bash_task_completed_falls_back_when_auto_wake_disabled() {
                 source,
                 NotificationSource::BashTaskCompleted { ref task_id } if task_id == "bg-disabled"
             ));
-            let text = match &prompt_blocks[0] {
+            let Some(block) = prompt_blocks.first() else {
+                panic!("expected a prompt block: {prompt_blocks:?}");
+            };
+            let text = match block {
                 acp::ContentBlock::Text(t) => &t.text,
                 _ => panic!("expected text block"),
             };
@@ -1945,9 +1996,9 @@ fn make_large_bash_snapshot(task_id: &str, output_file: PathBuf) -> TaskSnapshot
 fn auto_wake_prompt_text(cmd_rx: &mut mpsc::UnboundedReceiver<SessionCommand>) -> String {
     let cmd = cmd_rx.try_recv().expect("expected Prompt");
     match cmd {
-        SessionCommand::Prompt { prompt_blocks, .. } => match &prompt_blocks[0] {
-            acp::ContentBlock::Text(t) => t.text.clone(),
-            _ => panic!("expected text block"),
+        SessionCommand::Prompt { prompt_blocks, .. } => match prompt_blocks.first() {
+            Some(acp::ContentBlock::Text(t)) => t.text.clone(),
+            other => panic!("expected text block: {other:?}"),
         },
         _ => panic!("expected Prompt"),
     }
@@ -1957,9 +2008,9 @@ fn auto_wake_prompt_text(cmd_rx: &mut mpsc::UnboundedReceiver<SessionCommand>) -
 fn inject_notification_prompt_text(cmd_rx: &mut mpsc::UnboundedReceiver<SessionCommand>) -> String {
     let cmd = cmd_rx.try_recv().expect("expected InjectNotification");
     match cmd {
-        SessionCommand::InjectNotification { prompt_blocks, .. } => match &prompt_blocks[0] {
-            acp::ContentBlock::Text(t) => t.text.clone(),
-            _ => panic!("expected text block"),
+        SessionCommand::InjectNotification { prompt_blocks, .. } => match prompt_blocks.first() {
+            Some(acp::ContentBlock::Text(t)) => t.text.clone(),
+            other => panic!("expected text block: {other:?}"),
         },
         _ => panic!("expected InjectNotification"),
     }

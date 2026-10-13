@@ -91,13 +91,16 @@ pub fn encode_cwd_dirname(cwd: &str) -> String {
         return url_encoded.into_owned();
     }
     let hash = blake3::hash(cwd.as_bytes());
-    let hash16 = &hash.to_hex()[..16];
+    let hex = hash.to_hex();
     let leaf = std::path::Path::new(cwd)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("workspace");
     let slug = slugify(leaf, 40);
     let slug = if slug.is_empty() { "workspace" } else { &slug };
+    let Some(hash16) = hex.get(..16) else {
+        return format!("{slug}-{hex}");
+    };
     format!("{slug}-{hash16}")
 }
 

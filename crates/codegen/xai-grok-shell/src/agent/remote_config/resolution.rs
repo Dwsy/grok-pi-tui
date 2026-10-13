@@ -1,11 +1,101 @@
 //! Model-id resolution: catalog keys, routing slugs, and selection.
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use std::collections::HashSet;
+
 use indexmap::IndexMap;
 
+use super::ModelGlobSet;
 use crate::agent::config::{self, ModelEntry};
 use agent_client_protocol as acp;
 use xai_grok_sampling_types::ReasoningEffort;
+
+/// Which sources feed the model catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CatalogSource {
+    /// Built-in defaults until the first fetch, then the fetched list, plus every `[model.<id>]` table.
+    Standard,
+    /// External auth with a configured models endpoint. Built-in and bundled models never appear.
+    /// See [`EndpointScope`] for which entries stay.
+    ModelsEndpoint,
+}
+
+/// What the models endpoint has listed, as the external-auth catalog sees it.
+enum EndpointListing {
+    /// No list has arrived, so the `[model.<id>]` tables are the whole catalog.
+    NotFetched,
+    /// The ids the endpoint listed, possibly none. An entry stays only when its `model` is one of them.
+    Listed(HashSet<String>),
+}
+
+/// Which entries the external-auth catalog keeps.
+/// An entry must pass the [`EndpointListing`] check and send requests only to hosts the models endpoint serves.
+struct EndpointScope {
+    listing: EndpointListing,
+    /// The models endpoint's inference host plus every host a listed row uses.
+    hosts: HashSet<String>,
+}
+
+impl EndpointScope {
+    fn new(cfg: &config::Config, prefetched: Option<&IndexMap<String, ModelEntry>>) -> Self {
+        let mut hosts = HashSet::from([url_host(&cfg.endpoints.resolve_inference_base_url())]);
+        let listing = match prefetched {
+            None => EndpointListing::NotFetched,
+            Some(rows) => {
+                hosts.extend(rows.values().flat_map(entry_hosts));
+                EndpointListing::Listed(
+                    rows.iter()
+                        .flat_map(|(key, entry)| [key.clone(), entry.info.model.clone()])
+                        .collect(),
+                )
+            }
+        };
+        EndpointScope { listing, hosts }
+    }
+
+    fn keeps(&self, entry: &ModelEntry) -> bool {
+        let listed = match &self.listing {
+            EndpointListing::NotFetched => true,
+            EndpointListing::Listed(ids) => ids.contains(&entry.info.model),
+        };
+        listed && entry_hosts(entry).all(|host| self.hosts.contains(&host))
+    }
+}
+
+/// The hosts `entry` sends requests to: its `base_url`, and its `api_base_url` when set.
+fn entry_hosts(entry: &ModelEntry) -> impl Iterator<Item = String> + '_ {
+    std::iter::once(entry.info.base_url.as_str())
+        .chain(entry.api_base_url.as_deref())
+        .map(url_host)
+}
+
+/// The URL's host, or the raw string when it does not parse, so an unparseable URL matches only itself.
+fn url_host(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+        .unwrap_or_else(|| url.to_owned())
+}
+
+/// The id used when the catalog has no usable model.
+/// External auth with a models endpoint never names a bundled model. It keeps `preferred` or leaves the id empty.
+pub(crate) fn fallback_model_id(cfg: &config::Config, preferred: Option<&str>) -> String {
+    match CatalogSource::for_config(cfg) {
+        CatalogSource::Standard => crate::models::default_model().to_owned(),
+        CatalogSource::ModelsEndpoint => preferred.unwrap_or_default().to_owned(),
+    }
+}
+
+impl CatalogSource {
+    pub(crate) fn for_config(cfg: &config::Config) -> Self {
+        if cfg.grok_com_config.auth_provider_command.is_some()
+            && cfg.endpoints.has_custom_endpoint()
+        {
+            CatalogSource::ModelsEndpoint
+        } else {
+            CatalogSource::Standard
+        }
+    }
+}
 
 /// Map a model id (catalog key or routing slug) to its catalog key.
 pub(crate) fn resolve_catalog_key(
@@ -42,24 +132,7 @@ pub(crate) fn selectable_catalog_key_for_persisted(
     resolve_catalog_key(models, id).filter(|key| available.contains_key(key))
 }
 
-/// A "campaign-only" preferred flip: the default changed and either side's value is an active campaign default.
-pub(crate) fn is_campaign_only_flip(
-    old_preferred: &Option<String>,
-    new_preferred: &Option<String>,
-    campaign_defaults: &std::collections::HashSet<String>,
-) -> bool {
-    if new_preferred == old_preferred || new_preferred.is_none() {
-        return false;
-    }
-    new_preferred
-        .as_ref()
-        .is_some_and(|p| campaign_defaults.contains(p))
-        || old_preferred
-            .as_ref()
-            .is_some_and(|p| campaign_defaults.contains(p))
-}
-
-/// Pick the default model: CLI > env > config > remote-settings hint, falling back to the first visible model, then the bundled default.
+/// Pick the default model: CLI > env > config > remote-settings hint, falling back to the first visible model, then [`fallback_model_id`].
 pub(crate) fn resolve_default_model(
     cfg: &config::Config,
     catalog: &IndexMap<String, ModelEntry>,
@@ -88,8 +161,16 @@ pub(crate) fn resolve_default_model(
             tracing::warn!("no auth-visible selectable model; using first selectable entry");
             return (key.clone(), entry.clone());
         }
-        tracing::warn!("no selectable models; falling back to bundled default (pre-catalog)");
-        let default_id = crate::models::default_model().to_string();
+        let local_pref = model_pref.as_ref().filter(|p| {
+            matches!(
+                p.source,
+                config::ConfigSource::Cli
+                    | config::ConfigSource::Env
+                    | config::ConfigSource::Config
+            )
+        });
+        let default_id = fallback_model_id(cfg, local_pref.map(|p| p.value.as_str()));
+        tracing::warn!(model = %default_id, "no selectable models; using the fallback model id");
         let mut entry = ModelEntry::fallback(&default_id, &cfg.endpoints);
         entry.info.user_selectable = model_is_allowlisted(cfg, &default_id, &default_id);
         (default_id, entry)
@@ -150,55 +231,17 @@ pub(crate) fn resolve_default_model(
     }
 }
 
-/// Filter hidden and auth-gated entries out of `catalog` and convert to ACP wire format.
+/// Keep the picker projection of `catalog` (`ModelInfo::is_picker_eligible`) in ACP wire format.
 pub(crate) fn available_models(
     catalog: &IndexMap<String, ModelEntry>,
     is_session_auth: bool,
 ) -> IndexMap<acp::ModelId, acp::ModelInfo> {
     let visible: IndexMap<String, ModelEntry> = catalog
         .iter()
-        .filter(|(_, e)| e.info.visible_for_auth(is_session_auth))
+        .filter(|(_, e)| e.info.is_picker_eligible(is_session_auth))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     config::to_acp_model_info(&visible)
-}
-
-/// Compiled glob matcher shared by `allowed_models`, `disabled_models`, and `hidden_models` (matched against catalog key or model id).
-pub(crate) struct ModelGlobSet(GlobSet);
-
-impl ModelGlobSet {
-    /// Compile a filter list (`Ok(None)` for `None`/empty). Fails **closed**: an invalid pattern returns `Err` listing every bad one.
-    pub(crate) fn compile(patterns: Option<&[String]>) -> Result<Option<Self>, Vec<String>> {
-        let patterns = match patterns {
-            Some(p) if !p.is_empty() => p,
-            _ => return Ok(None),
-        };
-        let mut builder = GlobSetBuilder::new();
-        let mut invalid = Vec::new();
-        for pat in patterns {
-            match Glob::new(pat) {
-                Ok(glob) => {
-                    builder.add(glob);
-                }
-                Err(_) => invalid.push(pat.clone()),
-            }
-        }
-        if !invalid.is_empty() {
-            return Err(invalid);
-        }
-        builder
-            .build()
-            .map(|set| Some(Self(set)))
-            .map_err(|e| vec![e.to_string()])
-    }
-
-    fn matches(&self, key: &str, model: &str) -> bool {
-        self.0.is_match(key) || self.0.is_match(model)
-    }
-
-    fn matches_model(&self, model: &str) -> bool {
-        self.0.is_match(model)
-    }
 }
 
 /// Resolved allowlist: fleet pin, user/project list, or unrestricted.
@@ -326,12 +369,30 @@ pub(crate) fn allowlist_excludes_all_message(cfg: &config::Config) -> String {
     }
 }
 
-/// Single source of truth for the catalog: applies `disabled_models`, then `allowed_models`, then `hidden_models`.
+/// Single source of truth for the catalog.
+/// It keeps the sources [`CatalogSource`] allows, then applies `disabled_models`, `allowed_models`, and `hidden_models`.
 pub(crate) fn resolve_model_catalog(
     cfg: &config::Config,
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
+    let scope = (CatalogSource::for_config(cfg) == CatalogSource::ModelsEndpoint)
+        .then(|| EndpointScope::new(cfg, prefetched.as_ref()));
     let mut catalog: IndexMap<String, ModelEntry> = config::resolve_model_list(cfg, prefetched);
+
+    if let Some(scope) = scope {
+        let unlisted: Vec<String> = catalog
+            .iter()
+            .filter(|(_, entry)| !scope.keeps(entry))
+            .map(|(key, _)| key.clone())
+            .collect();
+        if !unlisted.is_empty() {
+            tracing::warn!(
+                models = ?unlisted,
+                "external auth: dropping models the endpoint did not list or that use another host"
+            );
+            catalog.retain(|key, _| !unlisted.contains(key));
+        }
+    }
 
     if let Ok(Some(disabled)) = ModelGlobSet::compile(cfg.models.disabled_models.as_deref()) {
         let before = catalog.len();
@@ -400,6 +461,25 @@ pub(crate) fn allowlist_matches_nothing(
     catalog: &IndexMap<String, ModelEntry>,
 ) -> bool {
     !effective_allowlist(cfg).is_unrestricted() && !catalog.values().any(|e| e.info.user_selectable)
+}
+
+/// The message that blocks prompts when [`CatalogSource::ModelsEndpoint`] leaves the catalog empty.
+pub(crate) fn models_endpoint_empty_message(
+    cfg: &config::Config,
+    remote_fetch_enabled: bool,
+) -> String {
+    let url = cfg.endpoints.resolve_models_list_url();
+    if remote_fetch_enabled {
+        format!(
+            "No models are available: {url} returned none or could not be reached. \
+             Check the endpoint and your login, then try again."
+        )
+    } else {
+        format!(
+            "No models are available: `[features] remote_fetch = false` stops Grok from reading {url}. \
+             Add a `[model.<id>]` table that names an endpoint id, or turn remote_fetch on."
+        )
+    }
 }
 
 /// Reject an `allowed_models` allowlist that leaves no selectable model, or excludes an explicitly configured default.

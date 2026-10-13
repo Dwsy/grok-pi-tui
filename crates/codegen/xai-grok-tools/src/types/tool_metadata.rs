@@ -53,6 +53,20 @@ pub trait ToolMetadata: Send + Sync {
         self.kind().is_read_only()
     }
 
+    /// The canonical input field naming the workspace path this call touches
+    /// (`file_path` on `search_replace`, `filePath` on opencode `edit`, ...).
+    ///
+    /// The tool server advertises it (under the client-facing name, post-rename)
+    /// as `lock_path_param:<name>` so a client can serialize same-path writers
+    /// from the arguments it sends, without a hand-kept table. The server itself
+    /// does not lock: the client that issues the batch owns ordering, as the
+    /// production dispatchers do. Default `None`: the tool has no single path
+    /// key (shells, `apply_patch`, `todo_write`, directory listings whose
+    /// `path` is a directory).
+    fn lock_path_param(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Notification variant tags this tool may emit during execution.
     /// Default: none. Tags match `ToolNotification`'s serde `type` discriminator
     /// (the keys of [`notification_schema_catalog`](crate::notification::notification_schema_catalog)).
@@ -71,6 +85,17 @@ pub trait ToolMetadata: Send + Sync {
     /// for consumers that bypass the registry, which must never see raw template syntax.
     fn sanitized_description_template(&self) -> String {
         crate::types::template_renderer::strip_template_markers(self.description_template())
+    }
+
+    /// The input schema this tool advertises under `contract_version`, when it differs from `input_schema`.
+    /// The registry fills `${{ params.<kind>.* }}` from this schema.
+    fn advertised_input_schema(
+        &self,
+        _contract_version: Option<&str>,
+        _input_schema: &serde_json::Value,
+        _effective_params: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        None
     }
 
     /// Build the tool definition for a given contract version. Default: renders `description_template()` via the

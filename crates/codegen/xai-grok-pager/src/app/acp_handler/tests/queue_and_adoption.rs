@@ -73,7 +73,7 @@
             &mut app,
         ));
 
-        let parent = &app.agents[&AgentId(0)];
+        let parent = test_agent(&app, AgentId(0));
         assert_eq!(
             parent
                 .shared_queue
@@ -89,7 +89,7 @@
         );
         assert!(app.pending_running_adoptions.is_empty());
         assert!(app.pending_effects.is_empty());
-        let child = &parent.subagent_views[child_sid];
+        let child = test_subagent(parent, child_sid);
         assert_eq!(
             child
                 .shared_queue
@@ -106,7 +106,7 @@
         assert!(child.queue.is_visible());
 
         assert!(handle(notification(child_sid, &[], None), &mut app));
-        let parent = &app.agents[&AgentId(0)];
+        let parent = test_agent(&app, AgentId(0));
         assert_eq!(
             parent
                 .shared_queue
@@ -116,7 +116,7 @@
             vec!["root-prompt"],
             "clearing the child must not affect root",
         );
-        let child = &parent.subagent_views[child_sid];
+        let child = test_subagent(parent, child_sid);
         assert!(child.shared_queue.is_empty());
         assert!(child.queue.entry_ids().is_empty());
         assert!(!child.queue.is_visible());
@@ -222,7 +222,7 @@
             .collect();
         let mut params = serde_json::json!({ "sessionId": session_id, "entries": entries });
         if let Some(r) = running {
-            params["runningPromptId"] = serde_json::json!(r);
+            json_set(&mut params, "runningPromptId", serde_json::json!(r));
         }
         acp::ExtNotification::new(
             "x.ai/queue/changed",
@@ -252,7 +252,7 @@
                 .any(|e| matches!(e, Effect::SendBashCommand { .. })),
             "mid-turn bash must send server-authoritatively; effects = {effects:?}"
         );
-        let echo_id = app.agents[&AgentId(0)]
+        let echo_id = test_agent(app, AgentId(0))
             .optimistic_queue_ids
             .iter()
             .next()
@@ -271,7 +271,7 @@
             "the send-now against an unconfirmed row must park, got {outcome:?}"
         );
         assert_eq!(
-            app.agents[&AgentId(0)].send_now_awaiting_confirm.as_deref(),
+            test_agent(app, AgentId(0)).send_now_awaiting_confirm.as_deref(),
             Some(echo_id.as_str())
         );
         echo_id
@@ -300,7 +300,7 @@
             ),
             &mut app,
         ));
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert!(agent.send_now_awaiting_confirm.is_none());
         assert!(
             agent.optimistic_queue_ids.is_empty(),
@@ -335,7 +335,7 @@
             &queue_changed_versioned("sess-1", &[], Some(echo_id.as_str())),
             &mut app,
         ));
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert!(agent.send_now_awaiting_confirm.is_none());
         assert!(
             !app.pending_effects
@@ -364,7 +364,7 @@
             &mut app,
         ));
         assert_eq!(
-            app.agents[&AgentId(0)].send_now_awaiting_confirm.as_deref(),
+            test_agent(&app, AgentId(0)).send_now_awaiting_confirm.as_deref(),
             Some(echo_id.as_str()),
             "an unconfirmed park must survive unrelated broadcasts"
         );
@@ -383,7 +383,7 @@
             ),
             &mut app,
         ));
-        assert!(app.agents[&AgentId(0)].send_now_awaiting_confirm.is_none());
+        assert!(test_agent(&app, AgentId(0)).send_now_awaiting_confirm.is_none());
         assert!(
             app.pending_effects.iter().any(|e| matches!(
                 e,
@@ -466,8 +466,8 @@
         let id = AgentId(0);
         // A prompt the pager sent server-authoritatively, echoed in the queue.
         app.push_optimistic_prompt_echo("sess-1", "p2", "second prompt", "prompt");
-        let scroll_before = app.agents[&id].scrollback.len();
-        assert!(app.agents[&id].session.current_prompt_id.is_none());
+        let scroll_before = test_agent(&app, id).scrollback.len();
+        assert!(test_agent(&app, id).session.current_prompt_id.is_none());
 
         assert!(handle_queue_changed(
             &queue_changed_running("sess-1", &[], Some("p2")),
@@ -492,7 +492,7 @@
     fn running_combined_texts_paints_one_bubble_per_segment() {
         let mut app = make_app_with_agent("sess-1");
         let id = AgentId(0);
-        let before = app.agents[&id].scrollback.len();
+        let before = test_agent(&app, id).scrollback.len();
         assert!(handle_queue_changed(
             &queue_changed_running_ex(
                 "sess-1",
@@ -521,7 +521,7 @@
     fn running_text_without_segments_paints_single_bubble() {
         let mut app = make_app_with_agent("sess-1");
         let id = AgentId(0);
-        let before = app.agents[&id].scrollback.len();
+        let before = test_agent(&app, id).scrollback.len();
         assert!(handle_queue_changed(
             &queue_changed_running_ex(
                 "sess-1",
@@ -548,7 +548,7 @@
     fn queue_changed_does_not_adopt_server_initiated_running_prompt() {
         let mut app = make_app_with_agent("sess-1");
         let id = AgentId(0);
-        assert!(app.agents[&id].session.current_prompt_id.is_none());
+        assert!(test_agent(&app, id).session.current_prompt_id.is_none());
 
         assert!(handle_queue_changed(
             &queue_changed_running("sess-1", &[], Some("task-completed-bg-123")),
@@ -578,7 +578,7 @@
     fn queue_changed_adopts_scheduler_fired_running_prompt() {
         let mut app = make_app_with_agent("sess-1");
         let id = AgentId(0);
-        assert!(app.agents[&id].session.current_prompt_id.is_none());
+        assert!(test_agent(&app, id).session.current_prompt_id.is_none());
 
         assert!(handle_queue_changed(
             &queue_changed_running("sess-1", &[], Some("scheduler-fired-task-1")),
@@ -613,8 +613,8 @@
             &mut app,
         );
         app.agents.get_mut(&id).unwrap().session.loading_replay = false;
-        assert!(app.agents[&id].replayed_terminal_prompts.contains("p-run"));
-        assert!(app.agents[&id].session.current_prompt_id.is_none());
+        assert!(test_agent(&app, id).replayed_terminal_prompts.contains("p-run"));
+        assert!(test_agent(&app, id).session.current_prompt_id.is_none());
 
         // The leader re-reports the already-ended pid as running (stale slot).
         assert!(handle_queue_changed(
@@ -706,18 +706,24 @@
 
         // p1: an idle submit drains locally and starts the turn
         let effects = dispatch(Action::SendPrompt("first".into()), &mut app);
-        let pid_first = match &effects[0] {
+        let Some(first) = effects.first() else {
+            panic!("expected an effect: {effects:?}");
+        };
+        let pid_first = match first {
             Effect::SendPrompt { prompt_id, .. } => prompt_id.clone(),
             other => panic!("expected SendPrompt, got {other:?}"),
         };
         assert_eq!(
-            app.agents[&id].session.current_prompt_id.as_deref(),
+            test_agent(&app, id).session.current_prompt_id.as_deref(),
             Some(pid_first.as_str())
         );
 
         // p2: a mid-turn submit sends to the server immediately and leaves an optimistic echo
         let effects = dispatch(Action::SendPrompt("second".into()), &mut app);
-        let pid_second = match &effects[0] {
+        let Some(second) = effects.first() else {
+            panic!("expected an effect: {effects:?}");
+        };
+        let pid_second = match second {
             Effect::SendPrompt {
                 text, prompt_id, ..
             } => {
@@ -726,7 +732,7 @@
             }
             other => panic!("expected immediate SendPrompt, got {other:?}"),
         };
-        assert_eq!(app.agents[&id].session.queue_len(), 0);
+        assert_eq!(test_agent(&app, id).session.queue_len(), 0);
 
         // Leader drains p2 and broadcasts running=p2 BEFORE p1's PromptResponse.
         assert!(handle_queue_changed(
@@ -735,14 +741,14 @@
         ));
         // The in-flight turn (p1) is NOT corrupted; p2 is stashed.
         assert_eq!(
-            app.agents[&id].session.current_prompt_id.as_deref(),
+            test_agent(&app, id).session.current_prompt_id.as_deref(),
             Some(pid_first.as_str()),
             "must not adopt while a different prompt is still running"
         );
         assert!(app.pending_running_adoptions.contains_key(&id));
 
         // p1's PromptResponse runs finish_turn, which clears current, so p2 is adopted (shim)
-        let scroll_before = app.agents[&id].scrollback.len();
+        let scroll_before = test_agent(&app, id).scrollback.len();
         let effects = dispatch(
             Action::TaskComplete(TaskResult::PromptResponse {
                 agent_id: id,
@@ -752,15 +758,15 @@
             }),
             &mut app,
         );
-        assert!(app.agents[&id].session.state.is_turn_running());
+        assert!(test_agent(&app, id).session.state.is_turn_running());
         assert_eq!(
-            app.agents[&id].session.current_prompt_id.as_deref(),
+            test_agent(&app, id).session.current_prompt_id.as_deref(),
             Some(pid_second.as_str()),
             "current_prompt_id handed off to the next running prompt"
         );
         assert!(app.pending_running_adoptions.is_empty());
         assert!(
-            app.agents[&id].scrollback.len() > scroll_before,
+            test_agent(&app, id).scrollback.len() > scroll_before,
             "shim renders p2's user block on adoption"
         );
         // No re-send: p2 was already sent at enqueue time
@@ -822,7 +828,10 @@
 
         // p2 is submitted while running, so it goes to the server immediately
         let effects = dispatch(Action::SendPrompt("second".into()), &mut app);
-        let pid_second = match &effects[0] {
+        let Some(second) = effects.first() else {
+            panic!("expected an effect: {effects:?}");
+        };
+        let pid_second = match second {
             Effect::SendPrompt { prompt_id, .. } => prompt_id.clone(),
             other => panic!("expected immediate SendPrompt, got {other:?}"),
         };
@@ -857,7 +866,7 @@
             "exactly one p2 user block after handoff (no duplicate)"
         );
         assert_eq!(
-            app.agents[&id].session.current_prompt_id.as_deref(),
+            test_agent(&app, id).session.current_prompt_id.as_deref(),
             Some(pid_second.as_str()),
         );
     }
@@ -1015,7 +1024,7 @@
         // Broadcast adopts p2 (idle, so the shim sets current_prompt_id to p2)
         handle_queue_changed(&queue_changed_running("sess-1", &[], Some("p2")), &mut app);
         assert_eq!(
-            app.agents[&id].session.current_prompt_id.as_deref(),
+            test_agent(&app, id).session.current_prompt_id.as_deref(),
             Some("p2")
         );
 
@@ -1052,14 +1061,15 @@
         let mut app = make_app_with_agent("sess-1");
         let id = AgentId(0);
         // A viewer that loaded the session mid-turn has no local prompt id.
-        assert!(app.agents[&id].session.current_prompt_id.is_none());
-        let scroll_before = app.agents[&id].scrollback.len();
+        assert!(test_agent(&app, id).session.current_prompt_id.is_none());
+        let scroll_before = test_agent(&app, id).scrollback.len();
 
         dispatch(
             Action::TaskComplete(TaskResult::SessionLoaded {
                 agent_id: id,
                 session_id: acp::SessionId::new("sess-1"),
                 models: None,
+                modes: None,
                 code_restored: false,
                 restore_summary: None,
                 restore_degree: None,
@@ -1070,18 +1080,18 @@
 
         // Adopted the in-flight prompt id and entered the turn-running state
         assert_eq!(
-            app.agents[&id].session.current_prompt_id.as_deref(),
+            test_agent(&app, id).session.current_prompt_id.as_deref(),
             Some("p-run"),
             "loader must adopt the server-conveyed running prompt id"
         );
         assert!(
-            app.agents[&id].session.state.is_turn_running(),
+            test_agent(&app, id).session.state.is_turn_running(),
             "loading mid-turn must enter TurnRunning so the spinner shows"
         );
         // No user-prompt block pushed: the in-flight turn's user prompt arrived via the `session/load` replay; adoption must not duplicate it
-        let user_blocks = app.agents[&id]
+        let user_blocks = test_agent(&app, id)
             .scrollback
-            .entries_in_range(0..app.agents[&id].scrollback.len())
+            .entries_in_range(0..test_agent(&app, id).scrollback.len())
             .iter()
             .filter(|e| matches!(&e.block, RenderBlock::UserPrompt(_)))
             .count();
@@ -1090,7 +1100,7 @@
             "adoption-on-load must NOT render a duplicate user-prompt block"
         );
         assert_eq!(
-            app.agents[&id].scrollback.len(),
+            test_agent(&app, id).scrollback.len(),
             scroll_before,
             "adoption-on-load must not grow the scrollback"
         );
@@ -1174,6 +1184,7 @@
                 agent_id: id,
                 session_id: acp::SessionId::new("sess-1"),
                 models: None,
+                modes: None,
                 code_restored: false,
                 restore_summary: None,
                 restore_degree: None,
@@ -1183,15 +1194,15 @@
         );
 
         assert!(
-            app.agents[&id].session.current_prompt_id.is_none(),
+            test_agent(&app, id).session.current_prompt_id.is_none(),
             "synthetic non-scheduler running prompt must not be adopted on load"
         );
         assert!(
-            app.agents[&id].session.state.is_idle(),
+            test_agent(&app, id).session.state.is_idle(),
             "adopting a synthetic actor-run turn would strand the viewer in TurnRunning"
         );
         assert!(
-            app.agents[&id].follow_up_pending.is_empty(),
+            test_agent(&app, id).follow_up_pending.is_empty(),
             "a synthetic id's buffered follow-ups must be dropped, not preserved"
         );
     }
@@ -1213,6 +1224,7 @@
                 agent_id: id,
                 session_id: acp::SessionId::new("sess-1"),
                 models: None,
+                modes: None,
                 code_restored: false,
                 restore_summary: None,
                 restore_degree: None,
@@ -1222,12 +1234,12 @@
         );
 
         assert_eq!(
-            app.agents[&id].session.current_prompt_id.as_deref(),
+            test_agent(&app, id).session.current_prompt_id.as_deref(),
             Some(pid),
             "scheduler-fired turns must still be adopted on load"
         );
         assert!(
-            app.agents[&id].session.state.is_turn_running(),
+            test_agent(&app, id).session.state.is_turn_running(),
             "an adopted /loop turn must enter TurnRunning so the dashboard shows Working"
         );
     }
@@ -1249,6 +1261,7 @@
                 agent_id: id,
                 session_id: acp::SessionId::new("sess-1"),
                 models: None,
+                modes: None,
                 code_restored: false,
                 restore_summary: None,
                 restore_degree: None,
@@ -1257,7 +1270,7 @@
             &mut app,
         );
         assert!(
-            app.agents[&id].follow_ups.is_none(),
+            test_agent(&app, id).follow_ups.is_none(),
             "adopting a running turn on session-load must clear prior chips"
         );
     }
@@ -1281,6 +1294,7 @@
                 agent_id: id,
                 session_id: acp::SessionId::new("sess-1"),
                 models: None,
+                modes: None,
                 code_restored: false,
                 restore_summary: None,
                 restore_degree: None,
@@ -1288,7 +1302,7 @@
             }),
             &mut app,
         );
-        let agent = &app.agents[&id];
+        let agent = test_agent(&app, id);
         assert!(agent.follow_ups.is_none(), "idle reload must clear chips");
         assert!(
             agent.follow_up_chips.is_empty(),
@@ -1346,7 +1360,7 @@
 
         // Adopted the driver's prompt id (so subsequent deltas keep matching).
         assert_eq!(
-            app.agents[&id].session.current_prompt_id.as_deref(),
+            test_agent(&app, id).session.current_prompt_id.as_deref(),
             Some("p-driver"),
             "viewer must adopt the driver's prompt id rather than drop the delta"
         );
@@ -1407,7 +1421,7 @@
 
         // Dropped: no adoption, nothing rendered.
         assert!(
-            app.agents[&id].session.current_prompt_id.is_none(),
+            test_agent(&app, id).session.current_prompt_id.is_none(),
             "driver post-rewind must NOT adopt a stale prompt id"
         );
         assert_eq!(
@@ -1483,13 +1497,16 @@
         };
         let json = serde_json::to_string(&shell).unwrap();
         let mirror: crate::app::prompt_queue::QueueChanged = serde_json::from_str(&json).unwrap();
-        assert_eq!(mirror.entries[0].kind, "bash");
+        let Some(entry) = mirror.entries.first() else {
+            panic!("expected a queue entry: {:?}", mirror.entries);
+        };
+        assert_eq!(entry.kind, "bash");
 
         // Adoption: seed the shared queue with the bash entry, then the leader reports it running and the bash turn-start shim fires
         let mut app = make_app_with_agent("sess-1");
         let id = AgentId(0);
         app.push_optimistic_prompt_echo("sess-1", "b1", "ls -la", "bash");
-        let scroll_before = app.agents[&id].scrollback.len();
+        let scroll_before = test_agent(&app, id).scrollback.len();
 
         handle_queue_changed(&queue_changed_running("sess-1", &[], Some("b1")), &mut app);
 
@@ -1548,7 +1565,7 @@
         );
 
         prompt_response(&mut app, "b1");
-        assert!(app.agents[&id].session.state.is_idle());
+        assert!(test_agent(&app, id).session.state.is_idle());
     }
 
     /// The stash survives one `running=None`; a second tears down the stash and buffer.
@@ -1576,13 +1593,13 @@
             "second running=None must tear the stash down"
         );
         assert!(
-            app.agents[&id].pending_adoption_updates.is_empty(),
+            test_agent(&app, id).pending_adoption_updates.is_empty(),
             "the torn-down stash's buffered updates must be discarded"
         );
 
         prompt_response(&mut app, "p1");
-        assert!(app.agents[&id].session.state.is_idle());
-        assert!(app.agents[&id].session.current_prompt_id.is_none());
+        assert!(test_agent(&app, id).session.state.is_idle());
+        assert!(test_agent(&app, id).session.current_prompt_id.is_none());
     }
 
     /// The stashed turn's own PromptResponse is its only exit, and it discards the stash rather than restoring it.
@@ -1613,8 +1630,8 @@
         }
 
         prompt_response(&mut app, "p1");
-        assert!(app.agents[&id].session.state.is_idle());
-        assert!(app.agents[&id].session.current_prompt_id.is_none());
+        assert!(test_agent(&app, id).session.state.is_idle());
+        assert!(test_agent(&app, id).session.current_prompt_id.is_none());
     }
 
     /// A newer promoted prompt supersedes the stash and discards the old pid's buffer.
@@ -1634,7 +1651,7 @@
             &mut app
         ));
         assert!(
-            app.agents[&id]
+            test_agent(&app, id)
                 .pending_adoption_updates
                 .iter()
                 .all(|(pid, _, _)| pid != "b1"),
@@ -1659,10 +1676,10 @@
         let mut app = app_with_running_p1_and_stashed_b1();
         let id = AgentId(0);
         send_tool_call_update(&mut app, "b1", "bash-mode-1", None);
-        assert_eq!(app.agents[&id].pending_adoption_updates.len(), 1);
+        assert_eq!(test_agent(&app, id).pending_adoption_updates.len(), 1);
 
         app.agents.get_mut(&id).unwrap().begin_session_reload(1);
-        assert!(app.agents[&id].pending_adoption_updates.is_empty());
+        assert!(test_agent(&app, id).pending_adoption_updates.is_empty());
     }
 
     /// Retention must not depend on the buffer being non-empty; the channel can reorder events.
@@ -1682,7 +1699,7 @@
         );
 
         send_tool_call_update(&mut app, "b1", "bash-mode-1", None);
-        assert_eq!(app.agents[&id].pending_adoption_updates.len(), 1);
+        assert_eq!(test_agent(&app, id).pending_adoption_updates.len(), 1);
 
         prompt_response(&mut app, "p1");
         let agent = app.agents.get(&id).unwrap();
@@ -1690,7 +1707,7 @@
         assert_eq!(tool_call_block_count(agent), 1, "late update must render");
 
         prompt_response(&mut app, "b1");
-        assert!(app.agents[&id].session.state.is_idle());
+        assert!(test_agent(&app, id).session.state.is_idle());
     }
 
     /// The flush never moves the shared reconnect cursor backwards.
@@ -1755,7 +1772,7 @@
             send_tool_call_update(&mut app, "b1", &tool, Some(&event));
         }
         assert_eq!(
-            app.agents[&id].pending_adoption_updates.len(),
+            test_agent(&app, id).pending_adoption_updates.len(),
             MAX_PENDING_ADOPTION_UPDATES,
             "overflow entry must be dropped, not evict the prefix"
         );
@@ -1882,7 +1899,7 @@
             // The adopted turn ends.
             agent.session.finish_turn(&mut agent.scrollback);
         }
-        let len_before = app.agents[&id].scrollback.len();
+        let len_before = test_agent(&app, id).scrollback.len();
 
         // The driver's NEXT turn begins with its user-message broadcast.
         let (tx, _rx) = tokio::sync::oneshot::channel();
@@ -1906,7 +1923,7 @@
         );
 
         assert_eq!(
-            app.agents[&id].scrollback.len(),
+            test_agent(&app, id).scrollback.len(),
             len_before + 1,
             "the next turn's user message must render, not be echo-swallowed"
         );
@@ -1935,7 +1952,7 @@
                 "a failed reload must not leave the user-echo skip armed"
             );
         }
-        let len_before = app.agents[&id].scrollback.len();
+        let len_before = test_agent(&app, id).scrollback.len();
 
         // The next turn's user-message broadcast must render, not be swallowed.
         let (tx, _rx) = tokio::sync::oneshot::channel();
@@ -1959,7 +1976,7 @@
         );
 
         assert_eq!(
-            app.agents[&id].scrollback.len(),
+            test_agent(&app, id).scrollback.len(),
             len_before + 1,
             "the next turn's user message must render after a failed reload"
         );
@@ -2466,6 +2483,7 @@
                 agent_id: id,
                 session_id: acp::SessionId::new("sess-1"),
                 models: None,
+                modes: None,
                 code_restored: false,
                 restore_summary: None,
                 restore_degree: None,
@@ -2474,7 +2492,7 @@
             &mut app,
         );
 
-        let agent = &app.agents[&id];
+        let agent = test_agent(&app, id);
         assert_eq!(
             agent.session.current_prompt_id.as_deref(),
             Some("p-run"),
@@ -2530,7 +2548,7 @@
             &queue_changed_ext("sess-1", &[]),
             &mut app
         ));
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert!(
             agent.send_now_painted_blocks.is_empty(),
             "removed row's painted entry must retire"
@@ -2553,7 +2571,7 @@
             &mut app
         ));
         assert!(
-            app.agents[&AgentId(0)]
+            test_agent(&app, AgentId(0))
                 .send_now_painted_blocks
                 .contains_key("p1"),
             "a row draining to running keeps its painted block for the adoption"
@@ -2586,9 +2604,9 @@
         let mut app = make_app_with_agent("sess-1");
         arm_prompt_ack(app.agents.get_mut(&AgentId(0)).unwrap(), "p1");
         handle_ext_notification(&queue_changed_running("sess-1", &["other"], None), &mut app);
-        assert!(app.agents[&AgentId(0)].prompt_ack.is_some());
+        assert!(test_agent(&app, AgentId(0)).prompt_ack.is_some());
         handle_ext_notification(&queue_changed_running("sess-1", &[], Some("p1")), &mut app);
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert_eq!(
             (None, true),
             (agent.prompt_ack.as_ref(), agent.session.state.is_turn_running()),
@@ -2613,7 +2631,7 @@
             AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs { request, response_tx: tx }),
             &mut app,
         );
-        let agent = &app.agents[&AgentId(0)];
+        let agent = test_agent(&app, AgentId(0));
         assert_eq!(
             (None, true),
             (agent.prompt_ack.as_ref(), agent.session.state.is_turn_running())
@@ -2630,8 +2648,8 @@
             make_agent_chunk_message_with_prompt("sess-1-child", "hi", "p-child", false),
             &mut app,
         );
-        let parent = &app.agents[&AgentId(0)];
-        let child = &parent.subagent_views["sess-1-child"];
+        let parent = test_agent(&app, AgentId(0));
+        let child = test_subagent(parent, "sess-1-child");
         assert_eq!(
             (None, true, true),
             (
@@ -2649,12 +2667,59 @@
         let mut app = make_app_with_agent("sess-1");
         insert_armed_child(&mut app, "sess-1-child", "p-child");
         handle_ext_notification(&queue_changed_running("sess-1-child", &["other"], None), &mut app);
-        assert!(app.agents[&AgentId(0)].subagent_views["sess-1-child"].prompt_ack.is_some());
+        assert!(test_subagent(test_agent(&app, AgentId(0)), "sess-1-child").prompt_ack.is_some());
         handle_ext_notification(&queue_changed_running("sess-1-child", &[], Some("p-child")), &mut app);
-        let child = &app.agents[&AgentId(0)].subagent_views["sess-1-child"];
+        let child = test_subagent(test_agent(&app, AgentId(0)), "sess-1-child");
         assert_eq!(
             (None, true),
             (child.prompt_ack.as_ref(), child.session.state.is_turn_running()),
             "acknowledged; the child's turn keeps running"
         );
+    }
+
+    /// A background session's update drains its own queue; the unreadable-image notice lands on the
+    /// visible session and the handler reports a change even though the updated session is off-screen.
+    #[test]
+    fn background_drain_notice_reaches_active_view_and_requests_redraw() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = make_app_two_agents();
+        let background = AgentId(0);
+        let foreground = AgentId(1);
+        {
+            let agent = app.agents.get_mut(&background).unwrap();
+            agent.session.enqueue_prompt("look at [Image #2]".into());
+            let mut image = crate::app::agent_view::test_fixtures::test_pasted_image();
+            image.display_number = 2;
+            image.encoded_bytes = None;
+            image.session_image_path = Some(dir.path().join("gone.png"));
+            agent.session.pending_prompts.back_mut().unwrap().images = vec![image];
+        }
+
+        // An info-only update on the background session: it changes nothing itself, but the
+        // idle session with a queued prompt drains afterwards.
+        let changed = handle(
+            make_ext_session_notification_with_method(
+                "sess-owner",
+                "x.ai/session/update",
+                XaiSessionUpdate::ImageCompressed {
+                    images: vec![compressed_entry(0)],
+                    message: "resized".into(),
+                },
+            ),
+            &mut app,
+        );
+
+        assert!(changed, "a notice on the visible view is a change");
+        assert!(
+            test_agent(&app, background).session.pending_prompts.is_empty(),
+            "the background queue must have drained"
+        );
+        assert_eq!(
+            test_agent(&app, foreground)
+                .toast
+                .as_ref()
+                .map(|(message, _)| message.as_str()),
+            Some("Image #2 couldn't be read — not sent")
+        );
+        assert!(test_agent(&app, background).toast.is_none());
     }

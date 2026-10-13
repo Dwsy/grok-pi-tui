@@ -2051,11 +2051,11 @@ fn temp_file_name(artifact_name: &str, session_id: &str, turn_number: u64) -> St
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let short_id = if session_id.len() > 8 {
-        &session_id[session_id.len() - 8..]
-    } else {
-        session_id
-    };
+    let short_id = session_id
+        .len()
+        .checked_sub(8)
+        .and_then(|i| session_id.get(i..))
+        .unwrap_or(session_id);
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!(
         "{}_turn{}_{}_{}_{}",

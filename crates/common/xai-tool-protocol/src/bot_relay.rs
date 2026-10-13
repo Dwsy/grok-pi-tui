@@ -24,11 +24,16 @@ pub const BOT_RELAY_CAPABILITIES: &[&str] = &[
     Method::BotSubscribe.as_wire_str(),
     Method::BotUnsubscribe.as_wire_str(),
     Method::BotBindConversation.as_wire_str(),
+    Method::BotPresence.as_wire_str(),
     Method::BotEvent.as_wire_str(),
 ];
 
 /// `bot.event` envelope version carried in [`BotEventEnvelope::v`].
 pub const BOT_EVENT_ENVELOPE_V: u32 = 1;
+
+/// Prefix of the `clientNonce` the hub mints for a prompt Grok chat sends to
+/// a bot: `grok-chat.<conversationId>.<uuid>`. Clients may not send it.
+pub const GROK_CHAT_CLIENT_NONCE_PREFIX: &str = "grok-chat.";
 
 /// `reason` on `command_rejected` when the command is compiled in but not allowlisted.
 pub const COMMAND_REJECTED_NOT_YET_ENABLED: &str = "not_yet_enabled";
@@ -42,12 +47,14 @@ pub const COMMAND_REJECTED_ARGS_TOO_LARGE: &str = "args_too_large";
 /// `reason` on `command_rejected` when required command args are missing or empty.
 pub const COMMAND_REJECTED_ARGS_INVALID: &str = "args_invalid";
 
+/// `reason` on `command_rejected` when the session's audience (owner vs. viewer) may not act on that agent.
+pub const COMMAND_REJECTED_AUDIENCE_UNSUPPORTED: &str = "audience_unsupported";
+
 /// `reason` on `command_rejected` when Live mode cannot accept attachments.
 pub const COMMAND_REJECTED_ATTACHMENTS_NOT_SUPPORTED_IN_LIVE: &str =
     "attachments_not_supported_in_live";
 
-/// `reason` on `command_rejected` when Live mode cannot interrupt or look up
-/// prompt acceptance (no Temporal interrupt RPC; on-box ledger is never written).
+/// `reason` on `command_rejected` when Live mode cannot interrupt or look up prompt acceptance.
 pub const COMMAND_REJECTED_NOT_SUPPORTED_IN_LIVE: &str = "not_supported_in_live";
 
 /// `reason` on `command_rejected` when attachUpload cannot fetch the file because this connection has no usable credential.
@@ -73,14 +80,28 @@ pub const COMMAND_REJECTED_ATTACHMENT_TOO_LARGE: &str = "attachment_too_large";
 pub const COMMAND_REJECTED_ATTACHMENT_NOT_READY: &str = "attachment_not_ready";
 
 /// `reason` on `command_rejected` when the live box gateway refused a well-formed command with its own sentence.
-/// The refusal is an HTTP 4xx carrying a JSON `error` body: `detail.upstream_message`
-/// carries that sentence, and a `failureCode` lands in `detail.upstream` as
+/// The refusal is an HTTP 4xx carrying a JSON `error` body, or a 5xx whose `error`
+/// names a missing or malformed agent id: `detail.upstream_message` carries that
+/// sentence, and a `failureCode` lands in `detail.upstream` as
 /// `code=<failureCode>`. Nothing was accepted.
 pub const COMMAND_REJECTED_BOX_REFUSED: &str = "box_refused";
 
-/// `reason` on `command_rejected` when the box refused a well-formed
-/// catalog method (capability skew, not a client catalog bug).
+/// `reason` on `command_rejected` when the box refused a well-formed catalog method (capability skew, not a client catalog bug).
 pub const COMMAND_REJECTED_GATEWAY_UNKNOWN_METHOD: &str = "gateway/unknown-method";
+
+/// `reason` on `command_rejected` when the target agent's harness owns this state and exposes no RPC for the operation.
+/// The box never held the state, so a box answer would be empty or a ghost.
+pub const COMMAND_REJECTED_TEMPORAL_UNSUPPORTED: &str = "temporal_unsupported";
+
+/// `reason` on `command_rejected` when the upstream answered the voice mint with `invalid_argument` or a voice harness call with `not_found`: voice calling is not enabled for this account, or the mint was refused.
+/// `detail.upstream` keeps the `status=... connect=...` excerpt and
+/// `detail.upstream_message` the sentence.
+pub const COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE: &str = "voice_call_unavailable";
+
+/// `reason` on `command_rejected` when the upstream refused `setMainAgent` because the main bot feature is not enabled for this account: `getMainAgent` still reads the pointer, but nothing can write it until the account is enrolled.
+/// `detail.upstream` keeps the `status=400 connect=invalid_argument` excerpt
+/// and `detail.upstream_message` the sentence.
+pub const COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED: &str = "main_agent_not_enabled";
 
 /// Every `command_rejected` reason above, sorted. Codegen fails if this
 /// disagrees with the `COMMAND_REJECTED_*` consts, and the hub checks its
@@ -95,11 +116,15 @@ pub const COMMAND_REJECTED_REASONS: &[&str] = &[
     COMMAND_REJECTED_ATTACHMENT_NOT_READY,
     COMMAND_REJECTED_ATTACHMENT_TOO_LARGE,
     COMMAND_REJECTED_ATTACHMENT_WRONG_SOURCE,
+    COMMAND_REJECTED_AUDIENCE_UNSUPPORTED,
     COMMAND_REJECTED_BOX_REFUSED,
     COMMAND_REJECTED_GATEWAY_UNKNOWN_METHOD,
     COMMAND_REJECTED_HARNESS_REFUSED,
+    COMMAND_REJECTED_MAIN_AGENT_NOT_ENABLED,
     COMMAND_REJECTED_NOT_SUPPORTED_IN_LIVE,
     COMMAND_REJECTED_NOT_YET_ENABLED,
+    COMMAND_REJECTED_TEMPORAL_UNSUPPORTED,
+    COMMAND_REJECTED_VOICE_CALL_UNAVAILABLE,
 ];
 
 /// True only when the hub classified a box unknown-method refusal.
@@ -167,22 +192,32 @@ pub struct BotVncDescriptorResult {
 // ── bot.roster ───────────────────────────────────────────────────────────
 
 /// `bot.roster` params. A live read from the box that may wake a
-/// hibernated box. The hub bounds the wait and answers a retryable
-/// `box_unavailable` (`box_waking` / `box_hibernated` / `wake_failed`) or
-/// `box_migrating` while the box is coming up; an empty `agents` list is
-/// only ever a real answer from a live box, never the result of a failure.
+/// hibernated box. The hub bounds the wait and, while the box is coming up,
+/// answers either a retryable `box_unavailable` (`box_waking` /
+/// `box_hibernated` / `wake_failed`) or `box_migrating`, or, when it
+/// remembers one, the last live roster with `rememberedAtMs` set and every
+/// row `unknown`; an empty `agents` list is only ever a real answer from a
+/// live box, never the result of a failure.
 #[typeshare]
 pub type BotRosterParams = BotEmptyParams;
 
+fn default_viewer_is_owner() -> bool {
+    true
+}
+
 /// One roster row, read live from the box.
 #[typeshare]
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BotRosterEntry {
     pub agent_id: String,
     pub name: String,
     /// One of `running`, `idle` or `unknown`.
     pub status: String,
+    /// `false` marks a row shared with the viewer; mutations on it are
+    /// rejected with `audience_unsupported`.
+    #[serde(default = "default_viewer_is_owner")]
+    pub viewer_is_owner: bool,
     /// Unix time in milliseconds of the agent's last turn, when the box
     /// reports one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -194,13 +229,43 @@ pub struct BotRosterEntry {
     /// Box `avatarShape`. A short glyph name, never an image payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_shape: Option<String>,
+    /// Sidebar hide. Omitted means unknown, not false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_from_sidebar: Option<bool>,
+    /// Custom-picture presence. Omitted means unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_custom_image: Option<bool>,
+}
+
+impl Default for BotRosterEntry {
+    /// Mirrors the serde default so `..Default::default()` reads as an owned row.
+    fn default() -> Self {
+        BotRosterEntry {
+            agent_id: String::new(),
+            name: String::new(),
+            status: String::new(),
+            viewer_is_owner: true,
+            last_turn_at: None,
+            avatar_color: None,
+            avatar_shape: None,
+            hidden_from_sidebar: None,
+            has_custom_image: None,
+        }
+    }
 }
 
 /// `bot.roster` result.
 #[typeshare]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BotRosterResult {
     pub agents: Vec<BotRosterEntry>,
+    /// Unix time in milliseconds of the live read this roster was remembered
+    /// from. Present only when the box was not ready and the hub served the
+    /// last live roster in its place; every row then reads `unknown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[typeshare(serialized_as = "Option<I54>")]
+    pub remembered_at_ms: Option<i64>,
 }
 
 // ── bot.status ───────────────────────────────────────────────────────────
@@ -291,6 +356,24 @@ pub struct BotTranscriptOffboxResult {
     pub next_cursor: Option<String>,
 }
 
+// ── transcript entries ───────────────────────────────────────────────────
+
+/// Fields the hub merges into every transcript entry it decodes from the
+/// durable store — `getAgentTranscriptTail` / window / thread reads and
+/// `transcript` events alike — next to the box's own fields. Entries the box
+/// answers directly carry none of them.
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotTranscriptEntryStamp {
+    /// Grows with every write to the entry, so of two copies with the same id
+    /// the higher `entry_version` is the newer one. Taken from the store's
+    /// per-agent write sequence, so versions are not contiguous per entry and
+    /// only compare between copies of the same entry.
+    #[typeshare(serialized_as = "I54")]
+    pub entry_version: u64,
+}
+
 // ── bot.usage ────────────────────────────────────────────────────────────
 
 /// `bot.usage` params. Cold — never wakes the box.
@@ -379,6 +462,22 @@ pub struct BotBindConversationParams {
 #[typeshare]
 pub type BotBindConversationResult = BotEmptyResult;
 
+// ── bot.presence ─────────────────────────────────────────────────────────
+
+/// `bot.presence` params. A connection views at most one agent; `viewing:
+/// true` for a new agent replaces the previous one.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotPresenceParams {
+    pub agent_id: String,
+    pub viewing: bool,
+}
+
+/// `bot.presence` result.
+#[typeshare]
+pub type BotPresenceResult = BotEmptyResult;
+
 // ── Closed error enum ────────────────────────────────────────────────────
 
 /// Closed hub-owned error code. This list is the client stability boundary.
@@ -418,6 +517,11 @@ pub enum BotRelayErrorCode {
     /// precisely (a reason token newer than the mapping). `reason` carries
     /// the token verbatim.
     LinkUnsupported,
+    /// The linked Cursor account, or a Cursor team that seats it, is in
+    /// Privacy Mode (Legacy), which refuses cloud-agent storage. Definitive
+    /// until the user (or a team admin) switches to Privacy Mode. `reason`
+    /// is `personal` or `team`.
+    LegacyPrivacyUnsupported,
     NoPlan,
     UsageExhausted,
     BoxMigrating,
@@ -440,6 +544,7 @@ impl BotRelayErrorCode {
         Self::LinkConflict,
         Self::CursorAccountUnavailable,
         Self::LinkUnsupported,
+        Self::LegacyPrivacyUnsupported,
         Self::NoPlan,
         Self::UsageExhausted,
         Self::BoxMigrating,
@@ -462,6 +567,7 @@ impl BotRelayErrorCode {
             Self::LinkConflict => "link_conflict",
             Self::CursorAccountUnavailable => "cursor_account_unavailable",
             Self::LinkUnsupported => "link_unsupported",
+            Self::LegacyPrivacyUnsupported => "legacy_privacy_unsupported",
             Self::NoPlan => "no_plan",
             Self::UsageExhausted => "usage_exhausted",
             Self::BoxMigrating => "box_migrating",
@@ -486,6 +592,7 @@ impl BotRelayErrorCode {
             "link_conflict" => Self::LinkConflict,
             "cursor_account_unavailable" => Self::CursorAccountUnavailable,
             "link_unsupported" => Self::LinkUnsupported,
+            "legacy_privacy_unsupported" => Self::LegacyPrivacyUnsupported,
             "no_plan" => Self::NoPlan,
             "usage_exhausted" => Self::UsageExhausted,
             "box_migrating" => Self::BoxMigrating,
@@ -513,7 +620,8 @@ impl BotRelayErrorCode {
             | Self::EmailUnverified
             | Self::LinkConflict
             | Self::CursorAccountUnavailable
-            | Self::LinkUnsupported => (-32003, "forbidden"),
+            | Self::LinkUnsupported
+            | Self::LegacyPrivacyUnsupported => (-32003, "forbidden"),
             Self::UsageExhausted => (-32099, "rate_limited"),
             Self::IdentityUnavailable
             | Self::BoxMigrating
@@ -602,6 +710,7 @@ impl TryFrom<BotRelayErrorCode> for LinkStateCode {
             BotRelayErrorCode::CursorAccountUnavailable => Ok(Self::CursorAccountUnavailable),
             BotRelayErrorCode::LinkUnsupported => Ok(Self::LinkUnsupported),
             BotRelayErrorCode::IdentityUnavailable
+            | BotRelayErrorCode::LegacyPrivacyUnsupported
             | BotRelayErrorCode::NoPlan
             | BotRelayErrorCode::UsageExhausted
             | BotRelayErrorCode::BoxMigrating
@@ -640,6 +749,7 @@ pub enum BotRelaySignIn {
     Password,
     Github,
     Sso,
+    EmailCode,
     Other,
 }
 
@@ -651,6 +761,7 @@ impl BotRelaySignIn {
         Self::Password,
         Self::Github,
         Self::Sso,
+        Self::EmailCode,
         Self::Other,
     ];
 
@@ -662,6 +773,7 @@ impl BotRelaySignIn {
             Self::Password => "password",
             Self::Github => "github",
             Self::Sso => "sso",
+            Self::EmailCode => "email_code",
             Self::Other => "other",
         }
     }
@@ -674,6 +786,7 @@ impl BotRelaySignIn {
             "password" => Self::Password,
             "github" => Self::Github,
             "sso" => Self::Sso,
+            "email_code" => Self::EmailCode,
             _ => Self::Other,
         }
     }
@@ -702,7 +815,7 @@ impl<'de> Deserialize<'de> for BotRelaySignIn {
 pub struct BotRelaySiblingAccount {
     #[typeshare(serialized_as = "String")]
     pub sign_in: BotRelaySignIn,
-    /// X username without `@`, Google or password email, GitHub username.
+    /// X username without `@`, Google / password / email-code email, GitHub username.
     /// Absent for Apple / SSO / other.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handle: Option<String>,
@@ -789,6 +902,8 @@ impl From<BotRelayError> for JsonRpcError {
 #[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum HubChannel {
+    #[serde(rename = "hub:turn_started")]
+    TurnStarted,
     #[serde(rename = "hub:turn_finished")]
     TurnFinished,
     #[serde(rename = "hub:resync_required")]
@@ -796,10 +911,11 @@ pub enum HubChannel {
 }
 
 impl HubChannel {
-    pub const ALL: &'static [Self] = &[Self::TurnFinished, Self::ResyncRequired];
+    pub const ALL: &'static [Self] = &[Self::TurnStarted, Self::TurnFinished, Self::ResyncRequired];
 
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::TurnStarted => "hub:turn_started",
             Self::TurnFinished => "hub:turn_finished",
             Self::ResyncRequired => "hub:resync_required",
         }
@@ -807,6 +923,7 @@ impl HubChannel {
 
     pub fn from_wire(s: &str) -> Option<Self> {
         match s {
+            "hub:turn_started" => Some(Self::TurnStarted),
             "hub:turn_finished" => Some(Self::TurnFinished),
             "hub:resync_required" => Some(Self::ResyncRequired),
             _ => None,
@@ -916,7 +1033,24 @@ impl<'de> Deserialize<'de> for BotEventChannel {
 
 // ── Hub-owned event bodies ───────────────────────────────────────────────
 
+/// Body of `hub:turn_started` (`event` when [`HubChannel::TurnStarted`]).
+///
+/// The hub mints `turn_id` when it sees the agent's `isRunning` level rise
+/// and repeats it on the matching [`HubTurnFinishedEvent`], so a client can
+/// tell which running span a finish closes. A subscriber joining mid-turn
+/// receives the running turn's start first.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubTurnStartedEvent {
+    pub agent_id: String,
+    pub turn_id: String,
+}
+
 /// Body of `hub:turn_finished` (`event` when [`HubChannel::TurnFinished`]).
+///
+/// `turn_id` matches the [`HubTurnStartedEvent`] that opened the span;
+/// empty from hubs that predate turn ids.
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -924,6 +1058,8 @@ pub struct HubTurnFinishedEvent {
     pub agent_id: String,
     pub conversation_ids: Vec<String>,
     pub preview: String,
+    #[serde(default)]
+    pub turn_id: String,
 }
 
 /// Body of `hub:resync_required` (`event` when [`HubChannel::ResyncRequired`]).
@@ -948,6 +1084,7 @@ pub struct HubResyncRequiredEvent {
 /// omitted from the wire when `None`.
 ///
 /// `event` is upstream-verbatim for [`BotEventChannel::Upstream`]. For
+/// [`HubChannel::TurnStarted`] it is [`HubTurnStartedEvent`]; for
 /// [`HubChannel::TurnFinished`] it is [`HubTurnFinishedEvent`]; for
 /// [`HubChannel::ResyncRequired`] it is [`HubResyncRequiredEvent`].
 ///
@@ -1026,6 +1163,7 @@ mod tests {
             "bot.subscribe",
             "bot.unsubscribe",
             "bot.bindConversation",
+            "bot.presence",
             "bot.event",
         ];
         assert_eq!(BOT_RELAY_CAPABILITIES, expected);
@@ -1144,12 +1282,14 @@ mod tests {
                 last_turn_at: Some(1_700_000_123_000_i64),
                 ..Default::default()
             }],
+            remembered_at_ms: None,
         };
         let wire = json!({
             "agents": [{
                 "agentId": "agt_1",
                 "name": "Watcher",
                 "status": "idle",
+                "viewerIsOwner": true,
                 "lastTurnAt": 1_700_000_123_000_i64,
             }],
         });
@@ -1161,6 +1301,58 @@ mod tests {
             "name": "Watcher",
             "status": "idle",
         }));
+    }
+
+    #[test]
+    fn remembered_roster_round_trips_remembered_at_ms() {
+        let remembered = BotRosterResult {
+            agents: vec![BotRosterEntry {
+                agent_id: "agt_1".to_owned(),
+                name: "Watcher".to_owned(),
+                status: "unknown".to_owned(),
+                ..Default::default()
+            }],
+            remembered_at_ms: Some(1_700_000_200_000_i64),
+        };
+        let wire = json!({
+            "agents": [{
+                "agentId": "agt_1",
+                "name": "Watcher",
+                "status": "unknown",
+                "viewerIsOwner": true,
+            }],
+            "rememberedAtMs": 1_700_000_200_000_i64,
+        });
+        assert_eq!(wire, roundtrip(&remembered));
+        let parsed: BotRosterResult = serde_json::from_value(wire).unwrap();
+        assert_eq!(remembered, parsed);
+    }
+
+    #[test]
+    fn roster_viewer_is_owner_defaults_true_and_round_trips_false() {
+        let omitted: BotRosterEntry = serde_json::from_value(json!({
+            "agentId": "agt_5",
+            "name": "Mine",
+            "status": "idle",
+        }))
+        .unwrap();
+        assert!(omitted.viewer_is_owner);
+        let shared = BotRosterEntry {
+            agent_id: "agt_6".to_owned(),
+            name: "Theirs".to_owned(),
+            status: "unknown".to_owned(),
+            viewer_is_owner: false,
+            ..Default::default()
+        };
+        let wire = json!({
+            "agentId": "agt_6",
+            "name": "Theirs",
+            "status": "unknown",
+            "viewerIsOwner": false,
+        });
+        assert_eq!(roundtrip(&shared), wire);
+        let parsed: BotRosterEntry = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, shared);
     }
 
     #[test]
@@ -1214,11 +1406,13 @@ mod tests {
             last_turn_at: None,
             avatar_color: Some("red".to_owned()),
             avatar_shape: Some("hex".to_owned()),
+            ..Default::default()
         };
         let wire = json!({
             "agentId": "agt_3",
             "name": "Painter",
             "status": "idle",
+            "viewerIsOwner": true,
             "avatarColor": "red",
             "avatarShape": "hex",
         });
@@ -1245,6 +1439,40 @@ mod tests {
                 .unwrap()
                 .contains_key("avatarShape")
         );
+    }
+
+    #[test]
+    fn roster_sidebar_facts_round_trip_and_omit_when_absent() {
+        let facts = BotRosterEntry {
+            agent_id: "agt_4".to_owned(),
+            name: "Hidden".to_owned(),
+            status: "idle".to_owned(),
+            hidden_from_sidebar: Some(true),
+            has_custom_image: Some(true),
+            ..Default::default()
+        };
+        let wire = json!({
+            "agentId": "agt_4",
+            "name": "Hidden",
+            "status": "idle",
+            "viewerIsOwner": true,
+            "hiddenFromSidebar": true,
+            "hasCustomImage": true,
+        });
+        assert_eq!(roundtrip(&facts), wire);
+        let parsed: BotRosterEntry = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, facts);
+        let omitted: BotRosterEntry = serde_json::from_value(json!({
+            "agentId": "agt_4",
+            "name": "Hidden",
+            "status": "idle",
+        }))
+        .unwrap();
+        assert_eq!(omitted.hidden_from_sidebar, None);
+        assert_eq!(omitted.has_custom_image, None);
+        let object = roundtrip(&omitted).as_object().unwrap().clone();
+        assert!(!object.contains_key("hiddenFromSidebar"));
+        assert!(!object.contains_key("hasCustomImage"));
     }
 
     #[test]
@@ -1416,6 +1644,17 @@ mod tests {
         assert_eq!(roundtrip(&empty_bind), empty_bind_wire);
         let parsed: BotBindConversationParams = serde_json::from_value(empty_bind_wire).unwrap();
         assert!(parsed.agent_ids.is_empty());
+
+        let presence = BotPresenceParams {
+            agent_id: "agt_a".to_owned(),
+            viewing: true,
+        };
+        assert_eq!(
+            json!({"agentId": "agt_a", "viewing": true}),
+            roundtrip(&presence)
+        );
+        assert_rejects::<BotPresenceParams>(json!({"agentId": "agt_a"}));
+        assert_rejects::<BotPresenceParams>(json!({"agent_id": "agt_a", "viewing": true}));
     }
 
     #[test]
@@ -1772,10 +2011,19 @@ mod tests {
 
     #[test]
     fn hub_owned_event_bodies_round_trip() {
+        let started = HubTurnStartedEvent {
+            agent_id: "agt_1".to_owned(),
+            turn_id: "turn_7".to_owned(),
+        };
+        assert_eq!(
+            roundtrip(&started),
+            json!({"agentId": "agt_1", "turnId": "turn_7"})
+        );
         let finished = HubTurnFinishedEvent {
             agent_id: "agt_1".to_owned(),
             conversation_ids: vec!["conv_1".to_owned()],
             preview: "done".to_owned(),
+            turn_id: "turn_7".to_owned(),
         };
         assert_eq!(
             roundtrip(&finished),
@@ -1783,6 +2031,7 @@ mod tests {
                 "agentId": "agt_1",
                 "conversationIds": ["conv_1"],
                 "preview": "done",
+                "turnId": "turn_7",
             })
         );
         let resync = HubResyncRequiredEvent {
@@ -1790,6 +2039,13 @@ mod tests {
         };
         assert_eq!(roundtrip(&resync), json!({"agentId": "agt_1"}));
         assert_rejects::<HubResyncRequiredEvent>(json!({"agent_id": "agt_1"}));
+        let legacy: HubTurnFinishedEvent = serde_json::from_value(json!({
+            "agentId": "agt_1",
+            "conversationIds": [],
+            "preview": "",
+        }))
+        .unwrap();
+        assert_eq!("", legacy.turn_id);
     }
 
     #[test]
@@ -1798,6 +2054,7 @@ mod tests {
             agent_id: "agt_1".to_owned(),
             conversation_ids: vec!["conv_1".to_owned()],
             preview: "done".to_owned(),
+            turn_id: "turn_7".to_owned(),
         };
         let finished_env = BotEventEnvelope::new(
             "agt_1",
@@ -1814,6 +2071,7 @@ mod tests {
                 "agentId": "agt_1",
                 "conversationIds": ["conv_1"],
                 "preview": "done",
+                "turnId": "turn_7",
             },
         });
         assert_eq!(roundtrip(&finished_env), finished_wire);

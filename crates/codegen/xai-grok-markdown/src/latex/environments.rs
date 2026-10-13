@@ -27,12 +27,16 @@ pub(super) fn render_environment(
     let mut nest = 0usize;
     let mut search = cursor.pos;
     while search < cursor.src.len() {
-        let rest = &cursor.src[search..];
+        let Some(rest) = cursor.src.get(search..) else {
+            break;
+        };
         let Some(rel) = rest.find('\\') else {
             break;
         };
         let bs_pos = search + rel;
-        let after_bs = &cursor.src[bs_pos + 1..];
+        let Some(after_bs) = cursor.src.get(bs_pos + 1..) else {
+            break;
+        };
         let kw_len = if command_at(after_bs, "begin") {
             "begin".len()
         } else if command_at(after_bs, "end") {
@@ -63,7 +67,9 @@ pub(super) fn render_environment(
         search = probe.pos.max(bs_pos + 1 + kw_len);
     }
     cursor.pos = resume;
-    let mut body = &cursor.src[body_start..body_end.min(cursor.src.len())];
+    let Some(mut body) = cursor.src.get(body_start..body_end.min(cursor.src.len())) else {
+        return;
+    };
 
     // Optional column spec for array environments: `\begin{array}{ll}`.
     if env_name == "array" || env_name == "alignat" {
@@ -72,7 +78,10 @@ pub(super) fn render_environment(
         if probe.peek() == Some('{') {
             probe.bump();
             let _ = probe.read_group_body();
-            body = &body[probe.pos..];
+            let Some(rest) = body.get(probe.pos..) else {
+                return;
+            };
+            body = rest;
         }
     }
     let rows = env_rows_to_strings(body, env_name, out.flat, depth, mode);
@@ -82,9 +91,9 @@ pub(super) fn render_environment(
 /// `true` if `rest` starts with command word `word` NOT followed by another ASCII letter (so `\endx` is not mistaken for `\end`).
 fn command_at(rest: &str, word: &str) -> bool {
     rest.starts_with(word)
-        && !rest[word.len()..]
-            .chars()
-            .next()
+        && !rest
+            .get(word.len()..)
+            .and_then(|s| s.chars().next())
             .is_some_and(|c| c.is_ascii_alphabetic())
 }
 
@@ -106,11 +115,14 @@ fn env_rows_to_strings(
     let bytes = body.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
-        match bytes[i] {
+        let Some(&b) = bytes.get(i) else {
+            break;
+        };
+        match b {
             b'\\' => {
                 if bytes.get(i + 1) == Some(&b'\\') {
                     if brace_depth == 0 && env_depth == 0 {
-                        row.push(body[cell_start..i].to_string());
+                        row.push(body.get(cell_start..i).unwrap_or("").to_string());
                         rows.push(std::mem::take(&mut row));
                         i += 2;
                         cell_start = i;
@@ -119,7 +131,10 @@ fn env_rows_to_strings(
                     i += 2;
                     continue;
                 }
-                let rest = &body[i + 1..];
+                let Some(rest) = body.get(i + 1..) else {
+                    i += 1;
+                    continue;
+                };
                 if command_at(rest, "begin") {
                     env_depth += 1;
                 } else if command_at(rest, "end") {
@@ -133,14 +148,18 @@ fn env_rows_to_strings(
             b'{' => brace_depth += 1,
             b'}' => brace_depth = brace_depth.saturating_sub(1),
             b'&' if brace_depth == 0 && env_depth == 0 => {
-                row.push(body[cell_start..i].to_string());
+                row.push(body.get(cell_start..i).unwrap_or("").to_string());
                 cell_start = i + 1;
             }
             _ => {}
         }
         i += 1;
     }
-    row.push(body[cell_start.min(bytes.len())..].to_string());
+    row.push(
+        body.get(cell_start.min(bytes.len())..)
+            .unwrap_or("")
+            .to_string(),
+    );
     rows.push(row);
 
     // Render each cell, drop fully-empty rows.
@@ -195,8 +214,8 @@ fn env_rows_to_strings(
         let n_cols = rendered_rows.iter().map(Vec::len).max().unwrap_or(0);
         let mut widths = vec![0usize; n_cols];
         for cells in &rendered_rows {
-            for (i, cell) in cells.iter().enumerate() {
-                widths[i] = widths[i].max(unicode_display_width(cell));
+            for (cell, w) in cells.iter().zip(widths.iter_mut()) {
+                *w = (*w).max(unicode_display_width(cell));
             }
         }
         rendered_rows
@@ -210,7 +229,11 @@ fn env_rows_to_strings(
                     }
                     content.push_str(cell);
                     if i + 1 < cells.len() {
-                        let pad = widths[i].saturating_sub(unicode_display_width(cell));
+                        let pad = widths
+                            .get(i)
+                            .copied()
+                            .unwrap_or(0)
+                            .saturating_sub(unicode_display_width(cell));
                         content.push_str(&" ".repeat(pad));
                     }
                 }

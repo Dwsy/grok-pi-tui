@@ -522,8 +522,6 @@ fn open_block_viewer_opens_image_only_blocks_natively() {
     assert!(agent.image_viewer.is_none());
 }
 
-// -- Plugins tab: group-collapse seeding on PluginsListLoaded --------------
-
 fn plugins_list_response() -> xai_hooks_plugins_types::PluginsListResponse {
     use crate::views::extensions_modal::test_plugin_info;
     xai_hooks_plugins_types::PluginsListResponse {
@@ -558,7 +556,13 @@ fn deliver_plugins_list(app: &mut AppView, id: AgentId) {
 }
 
 fn plugins_collapsed_keys(app: &AppView, id: AgentId) -> Vec<String> {
-    let modal = app.agents[&id].extensions_modal.as_ref().unwrap();
+    let Some(modal) = app
+        .agents
+        .get(&id)
+        .and_then(|a| a.extensions_modal.as_ref())
+    else {
+        panic!("expected extensions modal on {id:?}");
+    };
     let mut keys: Vec<String> = modal.plugins_collapsed_groups.iter().cloned().collect();
     keys.sort();
     keys
@@ -578,7 +582,13 @@ fn plugins_list_loaded_seeds_all_groups_collapsed_on_first_load() {
         plugins_collapsed_keys(&app, id),
         vec!["origin:user".to_string(), "origin:user-claude".to_string()]
     );
-    let modal = app.agents[&id].extensions_modal.as_ref().unwrap();
+    let Some(modal) = app
+        .agents
+        .get(&id)
+        .and_then(|a| a.extensions_modal.as_ref())
+    else {
+        panic!("expected extensions modal on {id:?}");
+    };
     match &modal.plugins_data {
         TabDataState::Loaded(response) => assert_eq!(response.plugins.len(), 2),
         other => panic!("expected Loaded plugins data, got {other:?}"),

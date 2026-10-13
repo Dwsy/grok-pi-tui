@@ -54,6 +54,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::mcp_structured_content::render_structured_content;
 use crate::tool::ContentBlock;
 
 /// Unified trait for typed tool outputs.
@@ -87,6 +88,8 @@ impl ToolOutput for String {}
 /// Lets `xai_tool_types::TaskOutputOutput` be used directly as a `Tool::Output`
 /// (handy for stub/test tools and pass-through proxies).
 impl ToolOutput for xai_tool_types::TaskOutputOutput {}
+impl ToolOutput for xai_tool_types::GrepSearchOutput {}
+impl ToolOutput for xai_tool_types::WebSearchOutput {}
 
 /// Lets `xai_tool_types::SubagentCompletedOutput` be used directly as a
 /// `Tool::Output` (the `task` tool's structured completion output).
@@ -194,7 +197,7 @@ pub struct ToolStreamError {
 /// |---|-------|--------|
 /// | 1 | Value is itself a `ContentBlock` (`{"type":"text",…}`) | `vec![block]` |
 /// | 2 | Array containing ≥ 1 `ContentBlock` | each element: block or text |
-/// | 3 | Object with `"content": [...]` (MCP `CallToolResult`) | `structuredContent` (if any) as JSON text, followed by the content array |
+/// | 3 | Object with `"content": [...]` (MCP `CallToolResult`) | `structuredContent` (if any) as JSON text unless a text block already carries it, then the content array |
 /// | 4 | Object with mixed fields | block-shaped fields extracted, rest as JSON text |
 /// | 5 | Anything else | `ContentBlock::Text` with the stringified value |
 pub fn extract_content_blocks(value: &Value) -> Vec<ContentBlock> {
@@ -233,16 +236,16 @@ pub fn extract_content_blocks(value: &Value) -> Vec<ContentBlock> {
         {
             // Surface `structuredContent` so IDs/handles the server
             // expects the model to round-trip aren't dropped.
-            let structured = obj
-                .get("structuredContent")
-                .filter(|v| !v.is_null())
-                .map(|v| ContentBlock::Text {
-                    text: v.to_string(),
-                });
-            let mut blocks = Vec::with_capacity(arr.len() + structured.is_some() as usize);
-            blocks.extend(structured);
-            blocks.extend(arr.iter().map(value_to_block));
-            return blocks;
+            let content: Vec<ContentBlock> = arr.iter().map(value_to_block).collect();
+            let structured = render_structured_content(
+                obj.get("structuredContent"),
+                content.iter().filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                }),
+            )
+            .map(|text| ContentBlock::Text { text });
+            return structured.into_iter().chain(content).collect();
         }
 
         // 4. Mixed object -> pull block-shaped field values out; collect
@@ -551,6 +554,56 @@ mod tests {
             "structuredContent must surface drawing_id, got: {text}"
         );
         assert!(matches!(&blocks[1], ContentBlock::Resource { .. }));
+    }
+
+    /// A result whose text block already carries the `structuredContent` payload, inside prose
+    /// and in the server's own key order and spacing, renders the payload once.
+    #[test]
+    fn extract_content_skips_structured_content_a_text_block_already_carries() {
+        let inlined =
+            r#"Frontmost app: {"bundle_id": "com.apple.TextEdit", "app_name": "TextEdit"}"#;
+        let v = json!({
+            "content": [
+                {"type": "text", "text": "Typed 5 characters into TextEdit."},
+                {"type": "text", "text": inlined},
+            ],
+            "structuredContent": {"app_name": "TextEdit", "bundle_id": "com.apple.TextEdit"},
+            "isError": false,
+        });
+        let blocks = extract_content_blocks(&v);
+        assert_eq!(
+            blocks,
+            vec![
+                ContentBlock::Text {
+                    text: "Typed 5 characters into TextEdit.".into()
+                },
+                ContentBlock::Text {
+                    text: inlined.into()
+                },
+            ]
+        );
+    }
+
+    /// Only a text block carries the payload: an image's stray `text` is dropped on
+    /// deserialisation, so it must not suppress the leading JSON block.
+    #[test]
+    fn extract_content_dedupes_structured_content_against_text_blocks_only() {
+        let v = json!({
+            "content": [
+                {"type": "image", "mimeType": "image/png", "data": "b64",
+                 "text": r#"{"drawing_id":"abc123"}"#},
+            ],
+            "structuredContent": {"drawing_id": "abc123"},
+        });
+        let blocks = extract_content_blocks(&v);
+        assert_eq!(blocks.len(), 2, "expected structured + image");
+        assert_eq!(
+            blocks[0],
+            ContentBlock::Text {
+                text: r#"{"drawing_id":"abc123"}"#.into()
+            }
+        );
+        assert!(matches!(&blocks[1], ContentBlock::Image { .. }));
     }
 
     #[test]

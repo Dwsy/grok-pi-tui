@@ -23,9 +23,15 @@ fn replace_once(bytes: &[u8], old: &[u8], new: &[u8]) -> Vec<u8> {
         .position(|window| window == old)
         .unwrap();
     let mut changed = Vec::with_capacity(bytes.len() - old.len() + new.len());
-    changed.extend_from_slice(&bytes[..start]);
+    let Some(head) = bytes.get(..start) else {
+        panic!("replace start out of range: {start}");
+    };
+    let Some(tail) = bytes.get(start + old.len()..) else {
+        panic!("replace tail out of range: {start}");
+    };
+    changed.extend_from_slice(head);
     changed.extend_from_slice(new);
-    changed.extend_from_slice(&bytes[start + old.len()..]);
+    changed.extend_from_slice(tail);
     changed
 }
 
@@ -37,7 +43,10 @@ fn with_field_byte(bytes: &[u8], key: &str, value: u8) -> Vec<u8> {
         .unwrap()
         + needle.len();
     let mut changed = bytes.to_vec();
-    changed[start] = value;
+    let Some(slot) = changed.get_mut(start) else {
+        panic!("field start out of range: {start}");
+    };
+    *slot = value;
     changed
 }
 
@@ -120,7 +129,11 @@ fn global_event_and_content_caps_precede_allocating_json_parse() {
 
 #[test]
 fn strict_line_dispatch_key_and_numeric_alternates_reject() {
-    let valid = encoded(&codec_tests::records(codec_tests::text(b""))[4]);
+    let records = codec_tests::records(codec_tests::text(b""));
+    let Some(turn_started) = records.get(4) else {
+        panic!("expected turn-started fixture: {records:?}");
+    };
+    let valid = encoded(turn_started);
     let invalid = [
         ("empty", b"".as_slice()),
         ("missing LF", valid.strip_suffix(b"\n").unwrap()),
@@ -170,26 +183,31 @@ fn strict_line_dispatch_key_and_numeric_alternates_reject() {
 #[test]
 fn every_event_rejects_an_invalid_ordinal_or_scalar() {
     let records = codec_tests::records(codec_tests::text(b""));
+    let rec = |i: usize| {
+        records
+            .get(i)
+            .unwrap_or_else(|| panic!("expected fixture {i}: {records:?}"))
+    };
     let invalid = [
-        replace_once(&encoded(&records[0]), b"\"k\":1", b"\"k\":2"),
-        replace_once(&encoded(&records[1]), b"\"s\":33", b"\"s\":34"),
-        replace_once(&encoded(&records[2]), b"\"r\":0", b"\"r\":1"),
-        replace_once(&encoded(&records[3]), b"\"g\":33", b"\"g\":0"),
-        replace_once(&encoded(&records[4]), b"\"g\":33", b"\"g\":34"),
+        replace_once(&encoded(rec(0)), b"\"k\":1", b"\"k\":2"),
+        replace_once(&encoded(rec(1)), b"\"s\":33", b"\"s\":34"),
+        replace_once(&encoded(rec(2)), b"\"r\":0", b"\"r\":1"),
+        replace_once(&encoded(rec(3)), b"\"g\":33", b"\"g\":0"),
+        replace_once(&encoded(rec(4)), b"\"g\":33", b"\"g\":34"),
         replace_once(
-            &encoded(&records[5]),
+            &encoded(rec(5)),
             b"\"t\":9999999999999",
             b"\"t\":10000000000000",
         ),
-        replace_once(&encoded(&records[6]), b"\"o\":0", b"\"o\":3"),
-        replace_once(&encoded(&records[7]), b"\"r\":2", b"\"r\":1"),
+        replace_once(&encoded(rec(6)), b"\"o\":0", b"\"o\":3"),
+        replace_once(&encoded(rec(7)), b"\"r\":2", b"\"r\":1"),
         replace_once(
-            &encoded(&records[8]),
+            &encoded(rec(8)),
             b"18446744073709551615",
             b"18446744073709551616",
         ),
-        replace_once(&encoded(&records[9]), b"\"o\":3", b"\"o\":4"),
-        replace_once(&encoded(&records[10]), b"\"w\":33", b"\"w\":34"),
+        replace_once(&encoded(rec(9)), b"\"o\":3", b"\"o\":4"),
+        replace_once(&encoded(rec(10)), b"\"w\":33", b"\"w\":34"),
     ];
     for (event, bytes) in invalid.iter().enumerate() {
         assert!(decode_core(bytes).is_err(), "event {event}");
@@ -213,7 +231,10 @@ fn every_identifier_and_hash_domain_rejects_non_lowercase_hex() {
         (6, "c"),
         (6, "r"),
     ] {
-        let bytes = with_field_byte(&encoded(&records[event]), key, b'A');
+        let Some(record) = records.get(event) else {
+            panic!("expected fixture {event}: {records:?}");
+        };
+        let bytes = with_field_byte(&encoded(record), key, b'A');
         assert!(decode_core(&bytes).is_err(), "event {event} key {key}");
     }
 }
@@ -221,11 +242,16 @@ fn every_identifier_and_hash_domain_rejects_non_lowercase_hex() {
 #[test]
 fn content_lineage_width_and_closed_products_reject() {
     let records = codec_tests::records(codec_tests::text(b""));
-    let accepted = encoded(&records[2]);
+    let rec = |i: usize| {
+        records
+            .get(i)
+            .unwrap_or_else(|| panic!("expected fixture {i}: {records:?}"))
+    };
+    let accepted = encoded(rec(2));
     let invalid = [
-        with_field_byte(&encoded(&records[0]), "a", b'g'),
+        with_field_byte(&encoded(rec(0)), "a", b'g'),
         replace_once(
-            &encoded(&records[0]),
+            &encoded(rec(0)),
             b"01010101010101010101010101010101",
             b"010101010101010101010101010101",
         ),
@@ -239,13 +265,9 @@ fn content_lineage_width_and_closed_products_reject() {
         replace_once(&accepted, b"\"c\":\"\"", b"\"c\":\"AB\""),
         replace_once(&accepted, b"\"c\":\"\"", b"\"c\":\"_w\""),
         replace_once(&accepted, b"\"c\":\"\"", b"\"c\":\"\\u0059Q\""),
-        replace_once(&encoded(&records[3]), b"\"g\":33,\"b\"", b"\"g\":1,\"b\""),
-        replace_once(&encoded(&records[6]), b"\"o\":0", b"\"o\":1"),
-        replace_once(
-            &encoded(&records[10]),
-            b"\"o\":3,\"r\":3",
-            b"\"o\":0,\"r\":1",
-        ),
+        replace_once(&encoded(rec(3)), b"\"g\":33,\"b\"", b"\"g\":1,\"b\""),
+        replace_once(&encoded(rec(6)), b"\"o\":0", b"\"o\":1"),
+        replace_once(&encoded(rec(10)), b"\"o\":3,\"r\":3", b"\"o\":0,\"r\":1"),
     ];
     for (case, bytes) in invalid.iter().enumerate() {
         assert!(decode_core(bytes).is_err(), "case {case}");
@@ -254,7 +276,11 @@ fn content_lineage_width_and_closed_products_reject() {
 
 #[test]
 fn content_bound_rejects_whitespace_and_escaped_duplicate_keys() {
-    let accepted = encoded(&codec_tests::records(codec_tests::text(b""))[2]);
+    let records = codec_tests::records(codec_tests::text(b""));
+    let Some(accepted_record) = records.get(2) else {
+        panic!("expected accepted-content fixture: {records:?}");
+    };
+    let accepted = encoded(accepted_record);
     let oversize = "a".repeat(43_691 + 1);
     for injection in [
         format!("\"c\" : \"{oversize}\",\"r\":0,\"a\":0,\"c\":\"\""),

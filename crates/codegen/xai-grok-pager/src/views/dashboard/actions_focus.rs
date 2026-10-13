@@ -17,7 +17,6 @@ pub enum ActionsFocus {
     Worktree,
 }
 
-/// One horizontal step along the actions row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Step {
     Left,

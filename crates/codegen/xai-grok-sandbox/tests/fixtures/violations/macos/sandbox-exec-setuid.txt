@@ -1,0 +1,1 @@
+sandbox-exec: execvp() of '/usr/bin/sudo' failed: Operation not permitted

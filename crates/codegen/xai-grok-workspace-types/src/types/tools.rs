@@ -130,7 +130,6 @@ mod tests {
             at: DateTime::<Utc>::default(),
         };
         let json = serde_json::to_string(&chunk).unwrap();
-        // snake_case field names (matches gRPC field convention).
         assert!(json.contains("\"call_id\""), "got {json}");
         assert!(!json.contains("\"callId\""), "got {json}");
     }

@@ -260,7 +260,10 @@ async fn test_ws_session_forwards_text_to_agent() {
         .try_recv()
         .expect("should have forwarded message to agent");
     let received_json: serde_json::Value = serde_json::from_str(&received).unwrap();
-    assert_eq!(received_json["method"], "initialize");
+    assert_eq!(
+        received_json.get("method").and_then(|v| v.as_str()),
+        Some("initialize")
+    );
 }
 #[tokio::test]
 async fn test_ws_session_cancel_stops_session() {
@@ -665,17 +668,85 @@ async fn non_sticky_verdict_keeps_reconnecting_with_growing_backoff() {
         ["old-key", "old-key", "old-key", "new-key", "new-key"],
         "recovery must adopt the rotated key and reconnect with it"
     );
-    let gaps: Vec<Duration> = connects.windows(2).map(|w| w[1].0 - w[0].0).collect();
+    let gaps: Vec<Duration> = connects
+        .windows(2)
+        .filter_map(|w| {
+            let [a, b] = w else {
+                return None;
+            };
+            Some(b.0 - a.0)
+        })
+        .collect();
+    let [g0, g1, g2, g3] = gaps.as_slice() else {
+        panic!("expected 4 reconnect gaps: {gaps:?}");
+    };
     assert!(
-        gaps[1] >= gaps[0] + Duration::from_secs(1),
+        *g1 >= *g0 + Duration::from_secs(1),
         "backoff must keep growing across auth failures, got gaps {gaps:?}"
     );
     assert!(
-        gaps[2] < Duration::from_secs(1),
+        *g2 < Duration::from_secs(1),
         "recovery with a new key must reconnect immediately, got gaps {gaps:?}"
     );
     assert!(
-        gaps[3] < gaps[1],
+        *g3 < *g1,
         "a new key must start the backoff over, got gaps {gaps:?}"
     );
+}
+#[test]
+fn relay_initialize_gains_user_message_echo_capability() {
+    let mut frame = serde_json::json!({
+        "jsonrpc": "2.0", "id": 7, "method": "initialize",
+        "params": {
+            "protocolVersion": 1,
+            "clientCapabilities": { "_meta": { "x.ai/fs_notify": true } }
+        }
+    });
+    assert!(declare_relay_client_capabilities(&mut frame));
+    let meta = frame
+        .pointer("/params/clientCapabilities/_meta")
+        .expect("_meta present");
+    assert_eq!(
+        meta.get("x.ai/userMessageEcho"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(meta.get("x.ai/fs_notify"), Some(&serde_json::json!(true)));
+    assert_eq!(frame.get("id"), Some(&serde_json::json!(7)));
+}
+#[test]
+fn relay_initialize_without_capabilities_block_gets_one() {
+    let mut frame = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": 1 }
+    });
+    assert!(declare_relay_client_capabilities(&mut frame));
+    assert_eq!(
+        frame.pointer("/params/clientCapabilities/_meta/x.ai~1userMessageEcho"),
+        Some(&serde_json::json!(true))
+    );
+}
+#[test]
+fn relay_explicit_user_message_echo_is_respected() {
+    let mut frame = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "clientCapabilities": { "_meta": { "x.ai/userMessageEcho": false } } }
+    });
+    assert!(!declare_relay_client_capabilities(&mut frame));
+    assert_eq!(
+        frame.pointer("/params/clientCapabilities/_meta/x.ai~1userMessageEcho"),
+        Some(&serde_json::json!(false))
+    );
+}
+#[test]
+fn non_initialize_frames_are_left_alone() {
+    for frame in [
+        serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "session/new", "params": { "cwd": "/w", "_meta": {} } }),
+        serde_json::json!({ "jsonrpc": "2.0", "id": 3, "result": { "ok": true } }),
+        serde_json::json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s" } }),
+    ] {
+        let original = frame.clone();
+        let mut frame = frame;
+        assert!(!declare_relay_client_capabilities(&mut frame));
+        assert_eq!(frame, original);
+    }
 }

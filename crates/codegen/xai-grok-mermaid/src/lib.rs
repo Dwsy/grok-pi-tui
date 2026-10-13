@@ -33,6 +33,7 @@
 //! ```
 
 #![warn(missing_docs)]
+#![deny(clippy::indexing_slicing)]
 
 mod engine;
 mod mmdc;

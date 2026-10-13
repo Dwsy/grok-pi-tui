@@ -81,11 +81,23 @@ mod tests {
             usage: PromptUsage::from(&ledger),
         })
         .unwrap();
-        assert_eq!(v["usage"]["inputTokens"], 100);
-        assert_eq!(v["usage"]["outputTokens"], 10);
-        assert_eq!(v["usage"]["numTurns"], 1);
-        assert_eq!(v["usage"]["costUsdTicks"], 20_000_000);
-        assert_eq!(v["usage"]["modelUsage"]["grok-build"]["inputTokens"], 100);
+        assert_eq!(
+            v.pointer("/usage/inputTokens"),
+            Some(&serde_json::json!(100))
+        );
+        assert_eq!(
+            v.pointer("/usage/outputTokens"),
+            Some(&serde_json::json!(10))
+        );
+        assert_eq!(v.pointer("/usage/numTurns"), Some(&serde_json::json!(1)));
+        assert_eq!(
+            v.pointer("/usage/costUsdTicks"),
+            Some(&serde_json::json!(20_000_000))
+        );
+        assert_eq!(
+            v.pointer("/usage/modelUsage/grok-build/inputTokens"),
+            Some(&serde_json::json!(100))
+        );
         let rt: SessionUsageResponse = serde_json::from_value(v).unwrap();
         assert_eq!(rt.usage.totals.cost_usd_ticks, Some(20_000_000));
     }
@@ -99,7 +111,15 @@ mod tests {
             usage: PromptUsage::from(&ledger),
         })
         .unwrap();
-        assert_eq!(v["usage"]["costUsdTicks"], serde_json::Value::Null);
-        assert_eq!(v["usage"]["costIsPartial"], true);
+        // Scrubbed cost is either omitted or serialized as null.
+        assert!(
+            v.pointer("/usage/costUsdTicks")
+                .is_none_or(serde_json::Value::is_null),
+            "{v:?}"
+        );
+        assert_eq!(
+            v.pointer("/usage/costIsPartial"),
+            Some(&serde_json::json!(true))
+        );
     }
 }

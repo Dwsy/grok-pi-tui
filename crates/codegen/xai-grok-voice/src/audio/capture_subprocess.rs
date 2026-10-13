@@ -298,7 +298,7 @@ mod tests {
             assert!(
                 matches!(header(bytes), Err(HandshakeFailure::Broken(_))),
                 "input {:?}... must be Broken",
-                &bytes[..bytes.len().min(12)]
+                bytes.get(..bytes.len().min(12)).unwrap_or(&[])
             );
         }
     }

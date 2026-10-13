@@ -521,7 +521,9 @@ mod tests {
         };
 
         let (_store, states) = WorkflowRunStore::from_restored(None, tx, vec![restored]);
-        let state = &states[0];
+        let Some(state) = states.first() else {
+            panic!("expected a restored workflow state: {states:?}");
+        };
         assert_eq!(
             state.status,
             crate::session::workflow::tracker::WorkflowRunStatus::Interrupted

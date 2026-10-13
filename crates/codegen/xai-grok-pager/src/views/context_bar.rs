@@ -11,10 +11,6 @@ use ratatui::text::{Line, Span};
 use super::progress_bar::progress_bar_spans;
 use crate::theme::Theme;
 
-// ---------------------------------------------------------------------------
-// Formatting utilities
-// ---------------------------------------------------------------------------
-
 /// Format a percentage as a fixed-width 5-char string. `< 10`: `"X.XX%"` (e.g. `"0.00%"`,
 /// `"5.12%"`). `10–99`: `"XX.X%"` (e.g. `"20.1%"`, `"99.9%"`).
 pub fn fmt_pct5(pct: f64) -> String {
@@ -43,10 +39,6 @@ pub fn fmt_tokens(n: u64) -> String {
         format!("{}M", n / 1_000_000)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Color blending
-// ---------------------------------------------------------------------------
 
 /// A breakpoint for color blending: at `pct` percent, the bar color is `color`.
 #[derive(Debug, Clone, Copy)]
@@ -89,19 +81,22 @@ pub fn default_breakpoints(theme: &Theme) -> Vec<ColorBreakpoint> {
 
 /// Blend between breakpoints for a given percentage.
 pub fn blend_color(pct: f64, breakpoints: &[ColorBreakpoint]) -> Color {
-    if breakpoints.is_empty() {
+    let Some(first) = breakpoints.first() else {
         return Color::Reset;
+    };
+    if pct <= first.pct {
+        return first.color;
     }
-    if pct <= breakpoints[0].pct {
-        return breakpoints[0].color;
-    }
-    for i in 1..breakpoints.len() {
-        if pct <= breakpoints[i].pct {
-            let t = (pct - breakpoints[i - 1].pct) / (breakpoints[i].pct - breakpoints[i - 1].pct);
-            return lerp_color(breakpoints[i - 1].color, breakpoints[i].color, t as f32);
+    for w in breakpoints.windows(2) {
+        let [prev, next] = w else {
+            continue;
+        };
+        if pct <= next.pct {
+            let t = (pct - prev.pct) / (next.pct - prev.pct);
+            return lerp_color(prev.color, next.color, t as f32);
         }
     }
-    breakpoints.last().unwrap().color
+    breakpoints.last().map(|b| b.color).unwrap_or(Color::Reset)
 }
 
 /// Linear interpolation between two colors.
@@ -132,16 +127,8 @@ fn color_to_rgb(c: Color) -> (u8, u8, u8) {
     crate::render::color::resolve_to_rgb(c).unwrap_or((198, 198, 198))
 }
 
-// ---------------------------------------------------------------------------
-// Status bar separator
-// ---------------------------------------------------------------------------
-
 /// The separator character between status bar items.
 pub const SEPARATOR: &str = "│";
-
-// ---------------------------------------------------------------------------
-// Context bar line builder
-// ---------------------------------------------------------------------------
 
 /// Width of the percentage field on hover (`fmt_pct5` always returns 5 chars).
 const PCT_WIDTH: u16 = 5;
@@ -207,10 +194,6 @@ pub fn context_bar_line_for_session(
         )))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

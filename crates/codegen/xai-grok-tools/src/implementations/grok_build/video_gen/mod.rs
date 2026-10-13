@@ -48,8 +48,9 @@ const ZDR_VIDEO_CONTENT_TYPE: &str = "video/mp4";
 const DEFAULT_VIDEO_DIR: &str = "videos";
 const DEFAULT_RESOLUTION: &str = "480p";
 const DEFAULT_IMAGINE_VIDEO_DURATION_SECS: u32 = 6;
-const MAX_R2V_REFERENCE_IMAGES: usize = 7;
+const MAX_R2V_REFERENCE_IMAGES: usize = 14;
 const MAX_R2V_REFERENCE_VOICES: usize = 3;
+const MAX_R2V_MID_KEYFRAMES: usize = 4;
 const MIN_R2V_DURATION_SECS: u32 = 1;
 const MAX_R2V_DURATION_SECS: u32 = 15;
 const VALID_IMAGINE_VIDEO_ASPECT_RATIOS: &[&str] =
@@ -145,7 +146,7 @@ pub struct VideoGenClient {
     base_url: String,
     writer: super::storage::SessionFileWriter,
     zdr_video_output_s3: Option<ZdrVideoOutputS3Config>,
-    api_key_provider: Option<SharedApiKeyProvider>,
+    bearer: super::media_bearer::MediaBearer,
     /// Optional 401-attribution hook. Hosts wire this so a 401 from the Video Generation API emits
     /// an `auth_401_attribution` event with `consumer` of `"VideoGen.start"` (start request) or
     /// `"VideoGen.poll"` (poll request) for unified auth-failure telemetry.
@@ -183,16 +184,6 @@ impl VideoGenClient {
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        // Always bake the static api_key as the default Authorization header.
-        // The dynamic provider overrides per-request; this is the fallback.
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
-                    "Invalid API key for header: {e}"
-                ))
-            })?,
-        );
 
         extra_headers.into_iter().try_for_each(|(key, value)| {
             let header_name =
@@ -251,7 +242,7 @@ impl VideoGenClient {
                 .as_ref()
                 .map(|c| (**c).clone())
                 .filter(ZdrVideoOutputS3Config::is_valid),
-            api_key_provider,
+            bearer: super::media_bearer::MediaBearer::new(api_key_provider, api_key.clone()),
             attribution_callback: None,
             tier_restricted: *tier_restricted,
             zdr_restricted: *zdr_restricted,
@@ -267,12 +258,12 @@ impl VideoGenClient {
         &self,
         method: reqwest::Method,
         url: &str,
-        sent_bearer: Option<&str>,
+        sent_bearer: &str,
     ) -> reqwest::RequestBuilder {
-        let mut req = self.http.request(method, url);
-        if let Some(key) = sent_bearer {
-            req = req.header(AUTHORIZATION, format!("Bearer {key}"));
-        }
+        let mut req = self
+            .http
+            .request(method, url)
+            .header(AUTHORIZATION, format!("Bearer {sent_bearer}"));
         if let Some(ref session) = self.session_header {
             req = req.header(super::image_gen::SESSION_ID_HEADER, session.clone());
         }
@@ -310,8 +301,9 @@ impl VideoGenClient {
         self
     }
 
-    async fn current_bearer(&self) -> Option<String> {
-        crate::types::api_key_provider::resolve_bearer(self.api_key_provider.as_ref()).await
+    /// `Err` means no request may leave; see `MediaBearer::resolve`.
+    async fn current_bearer(&self) -> Result<String, xai_tool_runtime::ToolError> {
+        self.bearer.resolve().await
     }
 
     fn record_401_attribution(&self, consumer: ToolConsumer, sent_bearer: Option<&str>) {
@@ -328,8 +320,12 @@ impl VideoGenClient {
         image: Option<String>,
         reference_images: Vec<String>,
         reference_voices: Vec<String>,
+        pins: VideoKeyframePins,
     ) -> Result<VideoOutcome, xai_tool_runtime::ToolError> {
         let start_url = format!("{}/videos/generations", self.base_url.trim_end_matches('/'));
+
+        // Before the ZDR presign, a network call that must not happen on a refused bearer
+        let sent_bearer = self.current_bearer().await?;
 
         let presigned = match &self.zdr_video_output_s3 {
             Some(config) => Some(self.presign_zdr_output_urls(config).await?),
@@ -351,14 +347,22 @@ impl VideoGenClient {
                 .into_iter()
                 .map(|voice_id| VideoVoiceId { voice_id })
                 .collect(),
+            last_frame: pins.last_frame.map(|url| VideoImageUrl { url }),
+            keyframes: pins
+                .keyframes
+                .into_iter()
+                .map(|(url, timestamp_s)| VideoKeyframePayload {
+                    image: VideoImageUrl { url },
+                    timestamp_s,
+                })
+                .collect(),
             output: presigned.as_ref().map(|urls| VideoOutput {
                 upload_url: urls.upload_url.clone(),
             }),
         };
 
-        let sent_bearer = self.current_bearer().await;
         let req = self
-            .request(reqwest::Method::POST, &start_url, sent_bearer.as_deref())
+            .request(reqwest::Method::POST, &start_url, &sent_bearer)
             .timeout(std::time::Duration::from_secs(VIDEO_START_TIMEOUT_SECS))
             .json(&payload);
 
@@ -370,7 +374,7 @@ impl VideoGenClient {
 
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            self.record_401_attribution(ToolConsumer::VideoGenStart, sent_bearer.as_deref());
+            self.record_401_attribution(ToolConsumer::VideoGenStart, Some(&sent_bearer));
         }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -423,9 +427,9 @@ impl VideoGenClient {
                 )));
             }
 
-            let poll_sent_bearer = self.current_bearer().await;
+            let poll_sent_bearer = self.current_bearer().await?;
             let poll_req = self
-                .request(reqwest::Method::GET, &poll_url, poll_sent_bearer.as_deref())
+                .request(reqwest::Method::GET, &poll_url, &poll_sent_bearer)
                 .timeout(poll_timeout);
 
             let poll_response = poll_req.send().await.map_err(|e| {
@@ -436,10 +440,7 @@ impl VideoGenClient {
 
             let poll_status = poll_response.status();
             if poll_status == reqwest::StatusCode::UNAUTHORIZED {
-                self.record_401_attribution(
-                    ToolConsumer::VideoGenPoll,
-                    poll_sent_bearer.as_deref(),
-                );
+                self.record_401_attribution(ToolConsumer::VideoGenPoll, Some(&poll_sent_bearer));
             }
             if !poll_status.is_success() && poll_status.as_u16() != 202 {
                 let body = poll_response.text().await.unwrap_or_default();
@@ -734,7 +735,8 @@ pub enum VideoGenConfig {
     #[default]
     Disabled,
     Enabled {
-        api_key: String,
+        /// `None`: the per-request provider is the only bearer source.
+        api_key: Option<String>,
         base_url: String,
         extra_headers: indexmap::IndexMap<String, String>,
         zdr_video_output_s3: Option<Box<ZdrVideoOutputS3Config>>,
@@ -799,6 +801,12 @@ pub enum VideoOutcome {
     UploadedUrl(String),
 }
 
+#[derive(Default)]
+pub struct VideoKeyframePins {
+    pub last_frame: Option<String>,
+    pub keyframes: Vec<(String, f32)>,
+}
+
 #[derive(serde::Serialize)]
 struct GenerateVideoPayload<'a> {
     model: &'static str,
@@ -815,12 +823,22 @@ struct GenerateVideoPayload<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     reference_audios: Vec<VideoVoiceId>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    last_frame: Option<VideoImageUrl>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    keyframes: Vec<VideoKeyframePayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     output: Option<VideoOutput>,
 }
 
 #[derive(serde::Serialize)]
 struct VideoImageUrl {
     url: String,
+}
+
+#[derive(serde::Serialize)]
+struct VideoKeyframePayload {
+    image: VideoImageUrl,
+    timestamp_s: f32,
 }
 
 #[derive(serde::Serialize)]
@@ -871,7 +889,12 @@ async fn resolve_image_reference(value: &str) -> Result<String, xai_tool_runtime
         let comma = value.find(',').ok_or_else(|| {
             xai_tool_runtime::ToolError::invalid_arguments("malformed data URL in image reference")
         })?;
-        if !value[..comma].contains(";base64") {
+        let Some(header) = value.get(..comma) else {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                "malformed data URL in image reference",
+            ));
+        };
+        if !header.contains(";base64") {
             return Err(xai_tool_runtime::ToolError::invalid_arguments(
                 "image references only support base64 data URLs",
             ));
@@ -938,6 +961,29 @@ fn validate_r2v_duration(duration: Option<u32>) -> Result<(), xai_tool_runtime::
     Ok(())
 }
 
+fn validate_keyframes(
+    keyframes: &[VideoKeyframeInput],
+    duration: u32,
+) -> Result<(), xai_tool_runtime::ToolError> {
+    if keyframes.len() > MAX_R2V_MID_KEYFRAMES {
+        return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+            "`keyframes` must contain at most {MAX_R2V_MID_KEYFRAMES} anchors. Got {}.",
+            keyframes.len()
+        )));
+    }
+    for keyframe in keyframes {
+        let t = keyframe.timestamp_s;
+        if !t.is_finite() || t <= 0.0 || t >= duration as f32 {
+            return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "`keyframes` timestamp {t}s must be strictly inside the clip \
+                 (0 < t < {duration}s). Pin the endpoints with `first_frame` / `last_frame` \
+                 instead."
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn duration_from_json<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -991,6 +1037,19 @@ pub struct ImageToVideoInput {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct VideoKeyframeInput {
+    #[schemars(
+        description = "Image that appears literally at `timestamp_s`. Absolute filesystem path, HTTPS URL, or `data:image/...;base64,...` URL."
+    )]
+    pub image: String,
+
+    #[schemars(
+        description = "Time in seconds at which the image appears, strictly inside the clip (0 < t < duration). Snapped server-side to the engine's 1/3-second keyframe grid; two anchors closer than 1/3 s are rejected."
+    )]
+    pub timestamp_s: f32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReferenceToVideoInput {
     #[schemars(
         description = "Prompt to guide the video generation model. Describe the desired video."
@@ -999,9 +1058,27 @@ pub struct ReferenceToVideoInput {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(
-        description = "Reference images, up to 7 entries; the images are used as style/content references for the generated video (people, objects, clothing, settings). Each entry may be an absolute filesystem path, HTTPS URL, or `data:image/...;base64,...` URL. Reference them in the prompt as `<IMAGE_0>`, `<IMAGE_1>`, ... May be empty when `voices` is provided."
+        description = "Reference images, up to 14 entries; the images are used as style/content references for the generated video (people, objects, clothing, settings). Each entry may be an absolute filesystem path, HTTPS URL, or `data:image/...;base64,...` URL. Reference them in the prompt as `<IMAGE_0>`, `<IMAGE_1>`, ... May be empty when `voices`, `first_frame`, `last_frame`, or `keyframes` is provided."
     )]
     pub images: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional image pinned as the video's exact FIRST frame — it appears literally at the start (unlike `images`, which condition the video and appear re-rendered). Absolute filesystem path, HTTPS URL, or `data:image/...;base64,...` URL. Combine with `last_frame` to interpolate between two exact frames."
+    )]
+    pub first_frame: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional image pinned as the video's exact LAST frame — the clip ends arriving on it. Same formats as `first_frame`. Set `first_frame` and `last_frame` to the same image for a perfect loop."
+    )]
+    pub last_frame: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(
+        description = "Mid-video keyframe anchors, up to 4 entries; each pins an image to appear literally at a timestamp strictly inside the clip (use `first_frame` / `last_frame` for the endpoints). Timestamps snap to the engine's 1/3-second grid, so anchors closer than 1/3 s to each other are rejected."
+    )]
+    pub keyframes: Vec<VideoKeyframeInput>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(
@@ -1176,6 +1253,7 @@ impl xai_tool_runtime::Tool for ImageToVideoTool {
                 Some(image),
                 Vec::new(),
                 Vec::new(),
+                VideoKeyframePins::default(),
             )
             .await?;
         generate_span.record("elapsed_ms", generate_start.elapsed().as_millis() as i64);
@@ -1200,7 +1278,7 @@ impl crate::types::tool_metadata::ToolMetadata for ReferenceToVideoTool {
     }
 
     fn description_template(&self) -> &str {
-        r##"Generate a video from reference images and/or preset voices, guided by a required text prompt; returns the saved video's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `videos/1.mp4`) rather than the absolute path, so it renders as a clickable link that opens the video. Provide up to 7 `images` (style/content references: people, objects, clothing, settings) and/or up to 3 `voices` (preset voice identifiers the subjects speak in); at least one of either is required. Tag references in the prompt as `<IMAGE_0>`, `<IMAGE_1>`, ... and `<AUDIO_0>`, `<AUDIO_1>`, ... Use this tool when the user wants a video referencing existing images without locking the first frame, or wants a speaking subject with a specific voice. Example: reference_to_video(prompt="The person from <IMAGE_0> presents the product from <IMAGE_1>, speaking with the voice from <AUDIO_0>", images=["/Users/me/host.jpg", "/Users/me/product.jpg"], voices=["eve"], aspect_ratio="16:9", duration=10, resolution_name="480p")"##
+        r##"Generate a video from reference images, preset voices, and/or pinned keyframes, guided by a required text prompt; returns the saved video's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `videos/1.mp4`) rather than the absolute path, so it renders as a clickable link that opens the video. Provide up to 14 `images` (style/content references: people, objects, clothing, settings — they appear re-rendered, not as literal frames) and/or up to 3 `voices` (preset voice identifiers the subjects speak in). To pin EXACT frames instead, set `first_frame` and/or `last_frame` (those images appear literally as the video's first/last frame; set both to interpolate, or the same image for a perfect loop) and/or `keyframes` (up to 4 `{image, timestamp_s}` anchors strictly inside the clip, snapped to a 1/3-second grid). At least one of `images`, `voices`, `first_frame`, `last_frame`, or `keyframes` is required. Tag references in the prompt as `<IMAGE_i>` and voices as `<AUDIO_0>`, ...; the index space follows the upload order `first_frame`, `images`, `keyframes`, `last_frame` — so with `first_frame` set, the first `images` entry is `<IMAGE_1>`, not `<IMAGE_0>`. Pinned frames never need prompt tags (their timing is explicit). Example: reference_to_video(prompt="The person from <IMAGE_1> walks toward the camera, speaking with the voice from <AUDIO_0>", first_frame="/Users/me/wide_shot.jpg", images=["/Users/me/person.jpg"], keyframes=[{"image": "/Users/me/closeup.jpg", "timestamp_s": 3.0}], last_frame="/Users/me/closeup.jpg", voices=["eve"], aspect_ratio="16:9", duration=6, resolution_name="480p")"##
     }
 
     fn requires_expr(&self) -> Expr<ToolRequirement> {
@@ -1249,9 +1327,15 @@ impl xai_tool_runtime::Tool for ReferenceToVideoTool {
                 "`prompt` must not be empty.",
             ));
         }
-        if input.images.is_empty() && input.voices.is_empty() {
+        if input.images.is_empty()
+            && input.voices.is_empty()
+            && input.first_frame.is_none()
+            && input.last_frame.is_none()
+            && input.keyframes.is_empty()
+        {
             return Err(xai_tool_runtime::ToolError::invalid_arguments(
-                "Provide at least one reference: `images` (up to 7) and/or `voices` (up to 3).",
+                "Provide at least one input: `images` (up to 14), `voices` (up to 3), \
+                 `first_frame`, `last_frame`, and/or `keyframes` (up to 4).",
             ));
         }
         if input.images.len() > MAX_R2V_REFERENCE_IMAGES {
@@ -1270,6 +1354,12 @@ impl xai_tool_runtime::Tool for ReferenceToVideoTool {
             ));
         }
         validate_r2v_duration(input.duration)?;
+        validate_keyframes(
+            &input.keyframes,
+            input
+                .duration
+                .unwrap_or(DEFAULT_IMAGINE_VIDEO_DURATION_SECS),
+        )?;
         validate_one_of(
             "aspect_ratio",
             &input.aspect_ratio,
@@ -1284,6 +1374,21 @@ impl xai_tool_runtime::Tool for ReferenceToVideoTool {
         let mut reference_images = Vec::with_capacity(input.images.len());
         for image in &input.images {
             reference_images.push(resolve_image_reference(image).await?);
+        }
+        let first_frame = match &input.first_frame {
+            Some(image) => Some(resolve_image_reference(image).await?),
+            None => None,
+        };
+        let last_frame = match &input.last_frame {
+            Some(image) => Some(resolve_image_reference(image).await?),
+            None => None,
+        };
+        let mut keyframes = Vec::with_capacity(input.keyframes.len());
+        for keyframe in &input.keyframes {
+            keyframes.push((
+                resolve_image_reference(&keyframe.image).await?,
+                keyframe.timestamp_s,
+            ));
         }
 
         let (client, session_folder) = acquire_video_client(&ctx).await?;
@@ -1313,9 +1418,13 @@ impl xai_tool_runtime::Tool for ReferenceToVideoTool {
                 ),
                 Some(&input.aspect_ratio),
                 &input.resolution_name,
-                None,
+                first_frame,
                 reference_images,
                 input.voices,
+                VideoKeyframePins {
+                    last_frame,
+                    keyframes,
+                },
             )
             .await?;
         generate_span.record("elapsed_ms", generate_start.elapsed().as_millis() as i64);
@@ -1334,7 +1443,7 @@ mod tests {
     #[tokio::test]
     async fn request_attaches_session_and_bearer_headers() {
         let cfg = VideoGenConfig::Enabled {
-            api_key: "k".into(),
+            api_key: Some("k".into()),
             base_url: "https://api.x.ai/v1".into(),
             extra_headers: indexmap::IndexMap::new(),
             zdr_video_output_s3: None,
@@ -1345,11 +1454,7 @@ mod tests {
             .unwrap()
             .with_session_id("sess-7");
         let req = client
-            .request(
-                reqwest::Method::POST,
-                "https://api.x.ai/v1/videos",
-                Some("tok"),
-            )
+            .request(reqwest::Method::POST, "https://api.x.ai/v1/videos", "tok")
             .build()
             .unwrap();
         assert_eq!(
@@ -1446,10 +1551,17 @@ mod tests {
             resolution: DEFAULT_RESOLUTION,
             reference_images: Vec::new(),
             reference_audios: Vec::new(),
+            last_frame: None,
+            keyframes: Vec::new(),
             output: None,
         };
         let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["image"]["url"], "data:image/png;base64,a");
+        assert_eq!(
+            json.get("image")
+                .and_then(|i| i.get("url"))
+                .and_then(|v| v.as_str()),
+            Some("data:image/png;base64,a")
+        );
         assert!(json.get("aspect_ratio").is_none());
         assert!(json.get("output").is_none());
 
@@ -1469,11 +1581,21 @@ mod tests {
                 },
             ],
             reference_audios: Vec::new(),
+            last_frame: None,
+            keyframes: Vec::new(),
             output: None,
         };
         let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["reference_images"].as_array().unwrap().len(), 2);
-        assert_eq!(json["aspect_ratio"], "16:9");
+        assert_eq!(
+            json.get("reference_images")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            json.get("aspect_ratio").and_then(|v| v.as_str()),
+            Some("16:9")
+        );
     }
 
     #[test]
@@ -1487,14 +1609,18 @@ mod tests {
             resolution: DEFAULT_RESOLUTION,
             reference_images: Vec::new(),
             reference_audios: Vec::new(),
+            last_frame: None,
+            keyframes: Vec::new(),
             output: Some(VideoOutput {
                 upload_url: "https://bucket.example.com/signed-put".to_owned(),
             }),
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(
-            json["output"]["upload_url"],
-            "https://bucket.example.com/signed-put"
+            json.get("output")
+                .and_then(|o| o.get("upload_url"))
+                .and_then(|v| v.as_str()),
+            Some("https://bucket.example.com/signed-put")
         );
     }
 
@@ -1658,6 +1784,9 @@ mod tests {
                 prompt: "blend".into(),
                 images: vec!["/tmp/a.jpg".into(), "/tmp/b.jpg".into()],
                 voices: Vec::new(),
+                first_frame: None,
+                last_frame: None,
+                keyframes: Vec::new(),
                 aspect_ratio: "21:9".into(),
                 duration: None,
                 resolution_name: DEFAULT_RESOLUTION.into(),
@@ -1698,6 +1827,9 @@ mod tests {
                 prompt: "blend".into(),
                 images: Vec::new(),
                 voices: Vec::new(),
+                first_frame: None,
+                last_frame: None,
+                keyframes: Vec::new(),
                 aspect_ratio: "16:9".into(),
                 duration: None,
                 resolution_name: DEFAULT_RESOLUTION.into(),
@@ -1705,7 +1837,7 @@ mod tests {
         )
         .await
         .expect_err("Expected missing references error");
-        assert!(err.to_string().contains("at least one reference"));
+        assert!(err.to_string().contains("at least one input"));
     }
 
     #[tokio::test]
@@ -1719,6 +1851,9 @@ mod tests {
                 prompt: "speak".into(),
                 images: Vec::new(),
                 voices: vec!["ara".into(), "eve".into(), "leo".into(), "rex".into()],
+                first_frame: None,
+                last_frame: None,
+                keyframes: Vec::new(),
                 aspect_ratio: "16:9".into(),
                 duration: None,
                 resolution_name: DEFAULT_RESOLUTION.into(),
@@ -1740,6 +1875,9 @@ mod tests {
                 prompt: "speak".into(),
                 images: Vec::new(),
                 voices: vec!["ara".into()],
+                first_frame: None,
+                last_frame: None,
+                keyframes: Vec::new(),
                 aspect_ratio: "16:9".into(),
                 duration: Some(16),
                 resolution_name: DEFAULT_RESOLUTION.into(),
@@ -1762,6 +1900,103 @@ mod tests {
         )
         .expect_err("expected parse error");
         assert!(err.to_string().contains("whole number of seconds"));
+    }
+
+    #[test]
+    fn reference_to_video_input_deserializes_keyframe_pins() {
+        let input: ReferenceToVideoInput = serde_json::from_str(
+            r#"{"prompt":"wax","first_frame":"/tmp/a.jpg","last_frame":"/tmp/d.jpg","keyframes":[{"image":"/tmp/b.jpg","timestamp_s":2.0},{"image":"/tmp/c.jpg","timestamp_s":4.0}],"aspect_ratio":"1:1"}"#,
+        )
+        .unwrap();
+        assert_eq!(input.first_frame.as_deref(), Some("/tmp/a.jpg"));
+        assert_eq!(input.last_frame.as_deref(), Some("/tmp/d.jpg"));
+        assert_eq!(
+            vec![("/tmp/b.jpg", 2.0f32), ("/tmp/c.jpg", 4.0f32)],
+            input
+                .keyframes
+                .iter()
+                .map(|k| (k.image.as_str(), k.timestamp_s))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn keyframe_pin_payload_fields_are_serialized() {
+        let payload = GenerateVideoPayload {
+            model: XAI_VIDEO_MODEL,
+            prompt: "wax",
+            image: Some(VideoImageUrl {
+                url: "data:image/png;base64,first".to_owned(),
+            }),
+            duration: Some(6),
+            aspect_ratio: Some("1:1"),
+            resolution: DEFAULT_RESOLUTION,
+            reference_images: Vec::new(),
+            reference_audios: Vec::new(),
+            last_frame: Some(VideoImageUrl {
+                url: "data:image/png;base64,last".to_owned(),
+            }),
+            keyframes: vec![VideoKeyframePayload {
+                image: VideoImageUrl {
+                    url: "data:image/png;base64,mid".to_owned(),
+                },
+                timestamp_s: 2.0,
+            }],
+            output: None,
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(
+            serde_json::json!({
+                "image": {"url": "data:image/png;base64,first"},
+                "last_frame": {"url": "data:image/png;base64,last"},
+                "keyframes": [{"image": {"url": "data:image/png;base64,mid"}, "timestamp_s": 2.0}],
+            }),
+            serde_json::json!({
+                "image": json.get("image"),
+                "last_frame": json.get("last_frame"),
+                "keyframes": json.get("keyframes"),
+            })
+        );
+    }
+
+    #[test]
+    fn keyframe_validation_bounds_and_cap() {
+        let kf = |t: f32| VideoKeyframeInput {
+            image: "/tmp/k.jpg".to_owned(),
+            timestamp_s: t,
+        };
+        assert!(validate_keyframes(&[kf(2.0), kf(4.0)], 6).is_ok());
+        for t in [0.0, -1.0, 6.0, 9.0, f32::NAN] {
+            assert!(
+                validate_keyframes(&[kf(t)], 6).is_err(),
+                "timestamp {t} should be rejected"
+            );
+        }
+        assert!(validate_keyframes(&[kf(1.0), kf(2.0), kf(3.0), kf(4.0), kf(5.0)], 6).is_err());
+    }
+
+    #[tokio::test]
+    async fn reference_to_video_accepts_pin_only_shape() {
+        let tool = ReferenceToVideoTool;
+        let resources = crate::types::resources::Resources::new();
+        let err = xai_tool_runtime::Tool::run(
+            &tool,
+            test_ctx_with_call_id(resources.into_shared(), "test-call"),
+            ReferenceToVideoInput {
+                prompt: "interpolate".into(),
+                images: Vec::new(),
+                voices: Vec::new(),
+                first_frame: Some("/nonexistent/a.jpg".into()),
+                last_frame: Some("/nonexistent/b.jpg".into()),
+                keyframes: Vec::new(),
+                aspect_ratio: "1:1".into(),
+                duration: None,
+                resolution_name: DEFAULT_RESOLUTION.into(),
+            },
+        )
+        .await
+        .expect_err("expected image resolution error, not a missing-references error");
+        assert!(err.to_string().contains("not readable"), "{err}");
     }
 
     #[test]
@@ -1791,11 +2026,25 @@ mod tests {
                     voice_id: "eve".to_owned(),
                 },
             ],
+            last_frame: None,
+            keyframes: Vec::new(),
             output: None,
         };
         let json = serde_json::to_value(&payload).unwrap();
-        assert_eq!(json["reference_audios"][0]["voice_id"], "ara");
-        assert_eq!(json["reference_audios"][1]["voice_id"], "eve");
+        assert_eq!(
+            json.get("reference_audios")
+                .and_then(|a| a.get(0))
+                .and_then(|v| v.get("voice_id"))
+                .and_then(|v| v.as_str()),
+            Some("ara")
+        );
+        assert_eq!(
+            json.get("reference_audios")
+                .and_then(|a| a.get(1))
+                .and_then(|v| v.get("voice_id"))
+                .and_then(|v| v.as_str()),
+            Some("eve")
+        );
 
         let payload = GenerateVideoPayload {
             model: XAI_VIDEO_MODEL,
@@ -1806,6 +2055,8 @@ mod tests {
             resolution: DEFAULT_RESOLUTION,
             reference_images: Vec::new(),
             reference_audios: Vec::new(),
+            last_frame: None,
+            keyframes: Vec::new(),
             output: None,
         };
         let json = serde_json::to_value(&payload).unwrap();
@@ -1825,6 +2076,8 @@ mod tests {
             resolution: DEFAULT_RESOLUTION,
             reference_images: Vec::new(),
             reference_audios: Vec::new(),
+            last_frame: None,
+            keyframes: Vec::new(),
             output: None,
         };
         let json = serde_json::to_value(&payload).unwrap();
@@ -1845,6 +2098,8 @@ mod tests {
             resolution: DEFAULT_RESOLUTION,
             reference_images: Vec::new(),
             reference_audios: Vec::new(),
+            last_frame: None,
+            keyframes: Vec::new(),
             output: None,
         };
         let json = serde_json::to_value(&payload).unwrap();

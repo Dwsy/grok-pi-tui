@@ -68,8 +68,14 @@ fn heading_inner_styles(
     mods: [ratatui::style::Modifier; 6],
 ) -> [Style; 6] {
     std::array::from_fn(|i| {
-        let color_style = fg(colors[i]);
-        let mod_style = modifier_to_anstyle(mods[i]);
+        let Some(&color) = colors.get(i) else {
+            return Style::new();
+        };
+        let Some(&m) = mods.get(i) else {
+            return Style::new();
+        };
+        let color_style = fg(color);
+        let mod_style = modifier_to_anstyle(m);
         // Combine fg color with modifier effects.
         let mut s = color_style;
         let effects = mod_style.get_effects();

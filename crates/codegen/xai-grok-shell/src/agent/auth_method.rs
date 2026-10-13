@@ -516,7 +516,10 @@ mod tests {
         // Cross-check with the pager-side predicate: the first method must not require interactive login
         // That is the exact condition the pager's `startup_auth_metadata()` uses
         assert!(
-            !AuthMethodKind::from_id(built.methods[0].id()).needs_interactive_login(),
+            built
+                .methods
+                .first()
+                .is_some_and(|m| !AuthMethodKind::from_id(m.id()).needs_interactive_login()),
             "first method MUST NOT need interactive login when xai.api_key is available",
         );
     }
@@ -713,7 +716,10 @@ mod tests {
                  ordering sends enterprise users to the login screen",
             );
             assert!(
-                !AuthMethodKind::from_id(built.methods[0].id()).needs_interactive_login(),
+                built
+                    .methods
+                    .first()
+                    .is_some_and(|m| !AuthMethodKind::from_id(m.id()).needs_interactive_login()),
                 "auth_methods.first() MUST NOT need interactive login -- this \
                  is the exact predicate the pager's startup_auth_metadata() \
                  uses to decide whether to show the login screen",
@@ -930,7 +936,10 @@ mod tests {
              (pager startup_auth_metadata returns needs_login=false)",
         );
         assert!(
-            !AuthMethodKind::from_id(built.methods[0].id()).needs_interactive_login(),
+            built
+                .methods
+                .first()
+                .is_some_and(|m| !AuthMethodKind::from_id(m.id()).needs_interactive_login()),
             "auth_methods.first() MUST NOT need interactive login when legacy token \
              is in env -- prevents login screen regression",
         );

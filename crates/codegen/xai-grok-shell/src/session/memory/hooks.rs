@@ -166,20 +166,23 @@ pub(crate) fn generate_metadata_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sampling::conversation::{AssistantItem, ContentPart, ToolResultItem, UserItem};
+    use crate::sampling::conversation::{
+        AssistantItem, ContentPart, SyntheticReason, ToolResultItem, UserItem,
+    };
     use tempfile::TempDir;
 
     fn make_user(text: &str) -> ConversationItem {
         ConversationItem::User(UserItem {
             content: vec![ContentPart::Text { text: text.into() }],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         })
     }
 
-    /// Build a realistic first-turn user message: metadata prefix plus user query in tags.
+    /// Build a first-turn user message with a metadata prefix plus `<user_query>`.
     ///
-    /// This matches what `SessionActor::construct_legacy_prefix` + `user_query()` produce.
+    /// Includes a historical `<git_status>` block so extractors still work on
+    /// resumed transcripts that predate the prefix removal.
     fn make_synthetic_prefix_with_query(query: &str) -> ConversationItem {
         make_user(&format!(
             "<user_info>\nOS Version: macos\nShell: /bin/bash\n</user_info>\n\

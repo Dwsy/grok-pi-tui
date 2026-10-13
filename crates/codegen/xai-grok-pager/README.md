@@ -42,7 +42,7 @@ src/
 | `Ctrl+P` or `?` | Agent screen | Open command palette |
 | `Ctrl+L` | Agent screen / prompt | Open the searchable model picker (Pi TUI alignment; retains prompt text) |
 | `Tab` | Prompt | Switch to scrollback |
-| `Esc` | Turn running | Cancel — in minimal mode or with vim scrollback mode off (the default). Fullscreen vim mode: no-op (use `Ctrl+C`) |
+| `Esc` | Turn running | Esc never cancels a turn. Mid-turn it shows a reminder to use `Ctrl+C`. |
 | `Esc` `Esc` | Idle, non-empty prompt | Clear prompt (within 800ms; first press shows hint) |
 | `Esc` `Esc` | Idle, empty prompt + messages | Open rewind picker (silent first press) |
 | `Ctrl+M` | Prompt | Toggle multiline mode |

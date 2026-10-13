@@ -166,8 +166,9 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
             let t_end = transform.range.end.min(end);
 
             // Copy text before transform
-            if t_start > pos {
-                let before = &text[(pos - start)..(t_start - start)];
+            if t_start > pos
+                && let Some(before) = text.get((pos - start)..(t_start - start))
+            {
                 result.push_str(before);
             }
 
@@ -181,8 +182,10 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
             Cow::Borrowed(text)
         } else {
             // Copy remaining text
-            if pos < end {
-                result.push_str(&text[(pos - start)..]);
+            if pos < end
+                && let Some(rest) = text.get(pos - start..)
+            {
+                result.push_str(rest);
             }
             Cow::Owned(result)
         }
@@ -287,7 +290,9 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                         && self.text.is_char_boundary(t.range.end),
                     "force transform range must align with char boundaries",
                 );
-                bytes[t.range.clone()].copy_from_slice(t.to.as_bytes());
+                if let Some(slot) = bytes.get_mut(t.range.clone()) {
+                    slot.copy_from_slice(t.to.as_bytes());
+                }
             }
             Some(String::from_utf8(bytes).expect("force transforms preserve UTF-8"))
         } else {
@@ -315,7 +320,7 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
             rendered_offset: &mut usize,
         ) {
             let (crange, cstyle) = current;
-            let ctext = &text[crange.clone()];
+            let ctext = text.get(crange.clone()).unwrap_or("");
             if !range.is_empty() && style == *cstyle {
                 if !ctext.is_empty() {
                     debug_assert_eq!(crange.end, range.start);
@@ -343,8 +348,12 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                 && mermaid_replace.is_none()
                 && ev.pos > last_pos
             {
-                let should_skip =
-                    pretty && all_hidden(hl_ids.iter().map(|&i| self.buffers.highlights[i].style));
+                let should_skip = pretty
+                    && all_hidden(
+                        hl_ids
+                            .iter()
+                            .filter_map(|&i| self.buffers.highlights.get(i).map(|h| h.style)),
+                    );
 
                 if should_skip {
                     push(
@@ -357,9 +366,12 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                         &mut rendered_offset,
                     );
                 } else {
-                    let mut style =
-                        merge_styles(hl_ids.iter().map(|&i| self.buffers.highlights[i].style));
-                    let text = &view_text[last_pos..ev.pos];
+                    let mut style = merge_styles(
+                        hl_ids
+                            .iter()
+                            .filter_map(|&i| self.buffers.highlights.get(i).map(|h| h.style)),
+                    );
+                    let text = view_text.get(last_pos..ev.pos).unwrap_or("");
                     let is_invert = style.get_effects().contains(Effects::INVERT);
                     if text.as_bytes().iter().all(|&ch| ch == b'\n')
                         || (text.as_bytes().iter().all(u8::is_ascii_whitespace)
@@ -387,6 +399,9 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                         replace = None;
                         out.push_str(&Reset.to_string());
                     } else if !ev.is_end && replace.is_none() && table_replace.is_none() {
+                        let Some(repl) = self.buffers.replaces.get(ev.index) else {
+                            continue;
+                        };
                         replace = Some(ev.index);
                         push(
                             &mut out,
@@ -399,7 +414,6 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                         );
                         out.push_str(&Reset.to_string());
 
-                        let repl = &self.buffers.replaces[ev.index];
                         let ansi_content = render_replace_ansi(&repl.highlighted);
 
                         let replace_text_len: usize = repl
@@ -418,6 +432,9 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                     if ev.is_end && table_replace == Some(ev.index) {
                         table_replace = None;
                     } else if !ev.is_end && table_replace.is_none() && pretty {
+                        let Some(trepl) = self.buffers.table_replaces.get(ev.index) else {
+                            continue;
+                        };
                         table_replace = Some(ev.index);
                         push(
                             &mut out,
@@ -428,8 +445,6 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                             &mut source_map,
                             &mut rendered_offset,
                         );
-
-                        let trepl = &self.buffers.table_replaces[ev.index];
                         // Block lines must start at a line boundary; a display-math replacement can occur mid-paragraph
                         // Styled chunks end with a reset sequence after the newline, so check both forms
                         let at_line_start =
@@ -452,6 +467,9 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                     if ev.is_end && mermaid_replace == Some(ev.index) {
                         mermaid_replace = None;
                     } else if !ev.is_end && mermaid_replace.is_none() && pretty {
+                        let Some(mrepl) = self.buffers.mermaid_replaces.get(ev.index) else {
+                            continue;
+                        };
                         mermaid_replace = Some(ev.index);
                         push(
                             &mut out,
@@ -463,7 +481,6 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                             &mut rendered_offset,
                         );
 
-                        let mrepl = &self.buffers.mermaid_replaces[ev.index];
                         for line in &mrepl.lines {
                             out.push_str(line);
                             out.push('\n');
@@ -556,10 +573,10 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
             let from = from.min(to);
             // Use as_bytes() to avoid panicking on non-char-boundary offsets.
             // This is safe because '\n' (0x0A) is a single-byte ASCII value that can never appear as a UTF-8 continuation byte (0x80..0xBF)
-            text.as_bytes()[from..to]
-                .iter()
-                .filter(|&&b| b == b'\n')
-                .count()
+            text.as_bytes()
+                .get(from..to)
+                .map(|s| s.iter().filter(|&&b| b == b'\n').count())
+                .unwrap_or(0)
         };
 
         for ev in &render_events {
@@ -625,7 +642,7 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                             self.buffers
                                 .active_highlights
                                 .iter()
-                                .map(|&i| self.buffers.highlights[i].style),
+                                .filter_map(|&i| self.buffers.highlights.get(i).map(|h| h.style)),
                         );
 
                     if is_hidden {
@@ -634,7 +651,11 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                         if at_line_start {
                             // Check if this hidden block is a code fence (``` or ~~~).
                             // Only code fences need separator handling; heading markers (#) are also hidden at line start but are unpaired
-                            let hidden_text = self.text[range_start..range_end].trim_start();
+                            let hidden_text = self
+                                .text
+                                .get(range_start..range_end)
+                                .unwrap_or("")
+                                .trim_start();
                             let is_code_fence =
                                 hidden_text.starts_with("```") || hidden_text.starts_with("~~~");
 
@@ -653,22 +674,22 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                             skip_leading_newline = true;
                         }
                     } else {
-                        let mut text = &self.text[range_start..range_end];
+                        let Some(mut text) = self.text.get(range_start..range_end) else {
+                            continue;
+                        };
                         let mut text_start = range_start;
 
-                        if skip_leading_newline && text.starts_with('\n') {
-                            text = &text[1..];
+                        if skip_leading_newline && let Some(rest) = text.strip_prefix('\n') {
+                            text = rest;
                             text_start += 1;
                         }
                         skip_leading_newline = false;
 
                         if !text.is_empty() {
-                            let style = merge_styles(
-                                self.buffers
-                                    .active_highlights
-                                    .iter()
-                                    .map(|&i| self.buffers.highlights[i].style),
-                            );
+                            let style =
+                                merge_styles(self.buffers.active_highlights.iter().filter_map(
+                                    |&i| self.buffers.highlights.get(i).map(|h| h.style),
+                                ));
 
                             let transformed = self.apply_transforms(text, range_start, pretty);
                             let ratatui_style: ratatui::style::Style = style.style_into();
@@ -678,15 +699,19 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
 
                             // Advance the cursor past links that ended before this chunk starts, then check if any remaining link overlaps it
                             // When none does, skip all hyperlink bookkeeping so the common no-link chunk does no extra work
-                            while next_link_idx < self.buffers.link_targets.len()
-                                && self.buffers.link_targets[next_link_idx].source_range.end
-                                    <= chunk_src_start
+                            while self
+                                .buffers
+                                .link_targets
+                                .get(next_link_idx)
+                                .is_some_and(|t| t.source_range.end <= chunk_src_start)
                             {
                                 next_link_idx += 1;
                             }
-                            let chunk_has_links = next_link_idx < self.buffers.link_targets.len()
-                                && self.buffers.link_targets[next_link_idx].source_range.start
-                                    < chunk_src_end;
+                            let chunk_has_links = self
+                                .buffers
+                                .link_targets
+                                .get(next_link_idx)
+                                .is_some_and(|t| t.source_range.start < chunk_src_end);
 
                             let chunk_links: Vec<ChunkLinkRange> = if chunk_has_links {
                                 chunk_link_offsets(
@@ -758,8 +783,10 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                     if ev.is_end && replace == Some(ev.index) {
                         replace = None;
                     } else if !ev.is_end && replace.is_none() && table_replace.is_none() {
+                        let Some(repl) = self.buffers.replaces.get(ev.index) else {
+                            continue;
+                        };
                         replace = Some(ev.index);
-                        let repl = &self.buffers.replaces[ev.index];
 
                         // Update source line to code start
                         if repl.range.start > last_line_count_pos {
@@ -830,8 +857,10 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                     if ev.is_end && table_replace == Some(ev.index) {
                         table_replace = None;
                     } else if !ev.is_end && table_replace.is_none() && pretty {
+                        let Some(trepl) = self.buffers.table_replaces.get(ev.index) else {
+                            continue;
+                        };
                         table_replace = Some(ev.index);
-                        let trepl = &self.buffers.table_replaces[ev.index];
 
                         // Tables always start at a line boundary, so for them this is a no-op
                         // A display-math block replacement can occur mid-paragraph (`text $$x$$ more`)
@@ -901,8 +930,10 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                     if ev.is_end && mermaid_replace == Some(ev.index) {
                         mermaid_replace = None;
                     } else if !ev.is_end && mermaid_replace.is_none() && pretty {
+                        let Some(mrepl) = self.buffers.mermaid_replaces.get(ev.index) else {
+                            continue;
+                        };
                         mermaid_replace = Some(ev.index);
-                        let mrepl = &self.buffers.mermaid_replaces[ev.index];
 
                         if mrepl.range.start > last_line_count_pos {
                             current_source_line += count_newlines_in_range(
@@ -948,7 +979,7 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         if last_pos < len {
             // Apply force transforms only; non-force transforms have never been applied in this trailing path
             // Force transforms preserve byte length, so source offsets below stay valid
-            let raw = &self.text[last_pos..len];
+            let raw = self.text.get(last_pos..len).unwrap_or("");
             let transformed = self.apply_transforms(raw, last_pos, false);
             debug_assert_eq!(transformed.len(), raw.len());
             let text: &str = &transformed;
@@ -964,13 +995,19 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                 let chunk_src_end = last_pos + text.len();
 
                 // Same cursor-skip pattern as the main path: a no-link chunk skips all hyperlink bookkeeping
-                while next_link_idx < self.buffers.link_targets.len()
-                    && self.buffers.link_targets[next_link_idx].source_range.end <= chunk_src_start
+                while self
+                    .buffers
+                    .link_targets
+                    .get(next_link_idx)
+                    .is_some_and(|t| t.source_range.end <= chunk_src_start)
                 {
                     next_link_idx += 1;
                 }
-                let chunk_has_links = next_link_idx < self.buffers.link_targets.len()
-                    && self.buffers.link_targets[next_link_idx].source_range.start < chunk_src_end;
+                let chunk_has_links = self
+                    .buffers
+                    .link_targets
+                    .get(next_link_idx)
+                    .is_some_and(|t| t.source_range.start < chunk_src_end);
 
                 // Trailing text bypasses apply_transforms (it's emitted raw), so transformed offsets equal source offsets within the chunk
                 let chunk_links: Vec<ChunkLinkRange> = if chunk_has_links {
@@ -1056,7 +1093,10 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
             // The checkpoint is at the start of the NEXT block, so the frozen content must not include anything at or after cp_byte
             // line_source_map[i] is the source line at which output line i was created; source_line_at_cp is the source line containing cp_byte
 
-            let source_line_at_cp = self.text[..cp_byte.min(self.text.len())]
+            let source_line_at_cp = self
+                .text
+                .get(..cp_byte.min(self.text.len()))
+                .unwrap_or("")
                 .bytes()
                 .filter(|&b| b == b'\n')
                 .count();
@@ -1117,6 +1157,10 @@ mod tests {
             .collect()
     }
 
+    fn first_str(xs: &[String]) -> Option<&str> {
+        xs.first().map(String::as_str)
+    }
+
     /// A fenced `mermaid` block renders as a diagram in pretty mode.
     #[test]
     fn test_mermaid_block_renders_diagram() {
@@ -1165,15 +1209,16 @@ mod tests {
         let (output, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
         let lines = lines_to_text(&output.lines);
 
+        let Some(line) = lines.first() else {
+            panic!("expected a rendered line: {lines:?}");
+        };
         assert!(
-            !lines[0].contains("[link"),
-            "Pretty mode should remove '[' from link. Got: {:?}",
-            lines[0]
+            !line.contains("[link"),
+            "Pretty mode should remove '[' from link. Got: {line:?}"
         );
         assert!(
-            lines[0].contains("link (https://example.com)"),
-            "Pretty mode should render 'link (url)'. Got: {:?}",
-            lines[0]
+            line.contains("link (https://example.com)"),
+            "Pretty mode should render 'link (url)'. Got: {line:?}"
         );
     }
 
@@ -1184,7 +1229,9 @@ mod tests {
         let (output, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
         let lines = lines_to_text(&output.lines);
 
-        let img_line = &lines[0];
+        let Some(img_line) = lines.first() else {
+            panic!("expected a rendered line: {lines:?}");
+        };
         assert!(
             !img_line.contains("[image"),
             "Pretty mode should remove '[' from image. Got: {:?}",
@@ -1260,7 +1307,7 @@ mod tests {
                 line.style.bg,
                 Some(expected_bg),
                 "Line {i} ({:?}) should have code_background, got {:?}",
-                lines_to_text(std::slice::from_ref(line))[0],
+                first_str(&lines_to_text(std::slice::from_ref(line))),
                 line.style.bg,
             );
         }
@@ -1289,7 +1336,7 @@ mod tests {
                 line.style.bg,
                 Some(expected_bg),
                 "Line {i} ({:?}) should have code_background",
-                texts[i],
+                texts.get(i),
             );
         }
     }
@@ -1332,7 +1379,9 @@ mod tests {
 
         // All table lines should still have consistent widths
         let table_widths: Vec<usize> = narrow_lines.iter().map(|l| l.width()).collect();
-        let first_width = table_widths[0];
+        let Some(&first_width) = table_widths.first() else {
+            panic!("expected table widths: {table_widths:?}");
+        };
         for (i, &w) in table_widths.iter().enumerate() {
             assert_eq!(
                 w, first_width,
@@ -1645,15 +1694,16 @@ mod tests {
             let rows = reconstruct_table_cells(&lines);
             assert_eq!(rows.len(), 2, "header + one body row, got {rows:#?}");
             assert_eq!(
-                rows[1],
-                [
+                rows.get(1)
+                    .map(|r| r.iter().map(String::as_str).collect::<Vec<_>>()),
+                Some(vec![
                     "LongalphaToken",
                     "TokenTwo",
                     "ID-AA1001",
                     "EngineeringOps",
                     "ManagerRole",
                     "$145,000",
-                ],
+                ]),
                 "body cells must reconstruct exactly at width {narrow}"
             );
         }
@@ -1753,10 +1803,15 @@ mod tests {
             links.len() >= 2,
             "wrapped label should produce multiple link fragments: {links:#?}"
         );
-        let first_id = links[0].id;
+        let Some(first) = links.first() else {
+            panic!("expected link fragments: {links:?}");
+        };
+        let first_id = first.id;
         for link in &links {
             assert_eq!(link.id, first_id, "fragments must share one link id");
-            let line = &lines[link.line_index];
+            let Some(line) = lines.get(link.line_index) else {
+                panic!("missing line {}", link.line_index);
+            };
             assert!(
                 link.column_range.end <= line.width(),
                 "range {:?} exceeds line {} width {}: {line:?}",
@@ -1831,10 +1886,15 @@ mod tests {
             .filter(|h| h.url == "https://example.com")
             .collect();
         assert_eq!(links.len(), 2, "plain fragment must not link: {links:#?}");
-        assert_eq!(links[0].id, links[1].id, "fragments must share one link id");
+        let [a, b] = links.as_slice() else {
+            panic!("expected two link fragments: {links:?}");
+        };
+        assert_eq!(a.id, b.id, "fragments must share one link id");
         for link in &links {
             // All chars on these lines are one display cell wide.
-            let line = &lines[link.line_index];
+            let Some(line) = lines.get(link.line_index) else {
+                panic!("missing line {}", link.line_index);
+            };
             let covered: String = line
                 .chars()
                 .skip(link.column_range.start)
@@ -1848,7 +1908,9 @@ mod tests {
 
         // The trailing plain "aa" must render unstyled (no link leak).
         let last_link_line = links.iter().map(|l| l.line_index).max().unwrap_or(0);
-        let plain_line = &output.lines[last_link_line + 1];
+        let Some(plain_line) = output.lines.get(last_link_line + 1) else {
+            panic!("missing plain line after {last_link_line}");
+        };
         let default_style = ratatui::style::Style::default();
         for span in &plain_line.spans {
             let content = span.content.trim();
@@ -1885,12 +1947,17 @@ mod tests {
             links.len() >= 2,
             "URL must wrap into multiple fragments: {links:#?}\n{lines:#?}"
         );
-        let id = links[0].id;
+        let Some(first) = links.first() else {
+            panic!("expected URL fragments: {links:?}");
+        };
+        let id = first.id;
         let mut covered = String::new();
         for link in links {
             assert_eq!(link.url, url, "every fragment must carry the full URL");
             assert_eq!(link.id, id, "fragments must share one link id");
-            let line = &lines[link.line_index];
+            let Some(line) = lines.get(link.line_index) else {
+                panic!("missing line {}", link.line_index);
+            };
             covered.extend(
                 line.chars()
                     .skip(link.column_range.start)
@@ -1925,9 +1992,10 @@ mod tests {
             "email must wrap into fragments: {links:#?}"
         );
         assert!(
-            links
-                .iter()
-                .all(|l| l.url == format!("mailto:{email}") && l.id == links[0].id),
+            links.iter().all(|l| {
+                l.url == format!("mailto:{email}")
+                    && links.first().is_some_and(|first| l.id == first.id)
+            }),
             "every fragment must carry the full mailto target: {links:#?}"
         );
     }
@@ -1967,7 +2035,9 @@ mod tests {
         // Find which rendered lines contain table content.
         // Source offsets: header=0, separator=1, row1=2, row2=3
         for (i, line_text) in text.iter().enumerate() {
-            let src = map[i];
+            let Some(&src) = map.get(i) else {
+                panic!("missing source map entry {i}");
+            };
             if line_text.contains("H1") || line_text.contains("H2") {
                 assert_eq!(
                     src, 0,
@@ -2256,7 +2326,9 @@ mod tests {
         let text = lines_to_text(&output.lines);
         assert_eq!(text.len(), 1, "got: {text:?}");
         assert!(
-            text[0].contains("no \"<decl> \" pollution)."),
+            first_str(&text)
+                .unwrap_or("")
+                .contains("no \"<decl> \" pollution)."),
             "got: {text:?}"
         );
     }
@@ -2276,7 +2348,10 @@ mod tests {
         let (output, _) = render_markdown_ratatui_full(md, test_style::STYLE, true, None);
         let text = lines_to_text(&output.lines);
         assert_eq!(text.len(), 1, "got: {text:?}");
-        assert!(text[0].contains("<decl> baz qux."), "got: {text:?}");
+        assert!(
+            first_str(&text).unwrap_or("").contains("<decl> baz qux."),
+            "got: {text:?}"
+        );
     }
 
     #[test]
@@ -2295,8 +2370,8 @@ mod tests {
         let (output, _) = render_markdown_ratatui_full(md, test_style::STYLE, false, None);
         let text = lines_to_text(&output.lines);
         assert_eq!(text.len(), 2, "got: {text:?}");
-        assert_eq!(text[0].trim_end(), "Foo bar");
-        assert_eq!(text[1], "baz qux.");
+        assert_eq!(first_str(&text).unwrap_or("").trim_end(), "Foo bar");
+        assert_eq!(text.get(1).map(String::as_str).unwrap_or(""), "baz qux.");
     }
 
     #[test]
@@ -2305,8 +2380,11 @@ mod tests {
         let (output, _) = render_markdown_ratatui_full(md, test_style::STYLE, false, None);
         let text = lines_to_text(&output.lines);
         assert_eq!(text.len(), 2, "got: {text:?}");
-        assert!(text[0].starts_with("Foo bar"), "got: {text:?}");
-        assert_eq!(text[1], "baz qux.");
+        assert!(
+            first_str(&text).unwrap_or("").starts_with("Foo bar"),
+            "got: {text:?}"
+        );
+        assert_eq!(text.get(1).map(String::as_str).unwrap_or(""), "baz qux.");
     }
 
     #[test]
@@ -2355,8 +2433,17 @@ mod tests {
         let (output, _) = render_markdown_ratatui_full(md, test_style::STYLE, true, None);
         let text = lines_to_text(&output.lines);
         assert_eq!(text.len(), 2, "got: {text:?}");
-        assert!(text[0].contains("first line"), "got: {text:?}");
-        assert!(text[1].contains("second line"), "got: {text:?}");
+        assert!(
+            first_str(&text).unwrap_or("").contains("first line"),
+            "got: {text:?}"
+        );
+        assert!(
+            text.get(1)
+                .map(String::as_str)
+                .unwrap_or("")
+                .contains("second line"),
+            "got: {text:?}"
+        );
     }
 
     #[test]
@@ -2366,10 +2453,24 @@ mod tests {
         let (output, _) = render_markdown_ratatui_full(md, test_style::STYLE, true, None);
         let text = lines_to_text(&output.lines);
         assert_eq!(text.len(), 2, "got: {text:?}");
-        assert!(text[0].contains("first line"), "got: {text:?}");
-        assert!(text[1].contains("second line"), "got: {text:?}");
         assert!(
-            !text[0].contains("second line") && !text[1].contains("first line"),
+            first_str(&text).unwrap_or("").contains("first line"),
+            "got: {text:?}"
+        );
+        assert!(
+            text.get(1)
+                .map(String::as_str)
+                .unwrap_or("")
+                .contains("second line"),
+            "got: {text:?}"
+        );
+        assert!(
+            !first_str(&text).unwrap_or("").contains("second line")
+                && !text
+                    .get(1)
+                    .map(String::as_str)
+                    .unwrap_or("")
+                    .contains("first line"),
             "lines must not collapse: {text:?}",
         );
     }
@@ -2395,9 +2496,9 @@ mod tests {
         assert_eq!(output.lines.len(), 1);
         assert_eq!(output.line_source_map.len(), 1);
         assert!(
-            output.line_source_map[0] <= 1,
-            "got {}",
-            output.line_source_map[0]
+            output.line_source_map.first().is_some_and(|&n| n <= 1),
+            "got {:?}",
+            output.line_source_map.first()
         );
     }
 
@@ -2465,8 +2566,16 @@ mod tests {
         // No rendered line should begin with leftover indentation.
         let x_idx = text.iter().position(|l| l.contains("int x = 1;")).unwrap();
         let y_idx = text.iter().position(|l| l.contains("int y = 2;")).unwrap();
-        assert_eq!(text[x_idx], "int x = 1;", "first code line: {text:#?}");
-        assert_eq!(text[y_idx], "int y = 2;", "second code line: {text:#?}");
+        assert_eq!(
+            text.get(x_idx).map(String::as_str),
+            Some("int x = 1;"),
+            "first code line: {text:#?}"
+        );
+        assert_eq!(
+            text.get(y_idx).map(String::as_str),
+            Some("int y = 2;"),
+            "second code line: {text:#?}"
+        );
         assert!(
             text.last().is_some_and(|l| !l.is_empty()),
             "no spurious trailing blank line: {text:#?}",
@@ -2487,6 +2596,10 @@ mod math_tests {
             .collect()
     }
 
+    fn first_str(xs: &[String]) -> Option<&str> {
+        xs.first().map(String::as_str)
+    }
+
     fn pretty_lines(text: &str) -> Vec<String> {
         let (output, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
         lines_to_text(&output.lines)
@@ -2495,14 +2608,24 @@ mod math_tests {
     #[test]
     fn dollar_inline_math_renders_unicode() {
         let lines = pretty_lines("Energy is $E = mc^2$ here.\n\n");
-        assert_eq!(lines[0], "Energy is E = mc² here.", "got: {lines:#?}");
+        assert_eq!(
+            first_str(&lines).unwrap_or(""),
+            "Energy is E = mc² here.",
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
     fn dollar_inline_math_hides_delimiters_in_pretty_mode() {
         let lines = pretty_lines("So $x_1 + x_2$ holds.\n\n");
-        assert!(!lines[0].contains('$'), "got: {lines:#?}");
-        assert!(lines[0].contains("x₁ + x₂"), "got: {lines:#?}");
+        assert!(
+            !first_str(&lines).unwrap_or("").contains('$'),
+            "got: {lines:#?}"
+        );
+        assert!(
+            first_str(&lines).unwrap_or("").contains("x₁ + x₂"),
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
@@ -2510,13 +2633,20 @@ mod math_tests {
         let text = "Energy is $E = mc^2$ here.\n\n";
         let (output, _) = render_markdown_ratatui_full(text, test_style::STYLE, false, None);
         let lines = lines_to_text(&output.lines);
-        assert!(lines[0].contains("$E = mc^2$"), "got: {lines:#?}");
+        assert!(
+            first_str(&lines).unwrap_or("").contains("$E = mc^2$"),
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
     fn paren_inline_math_renders_unicode() {
         let lines = pretty_lines("Sum \\(\\alpha + \\beta\\) end.\n\n");
-        assert_eq!(lines[0], "Sum α + β end.", "got: {lines:#?}");
+        assert_eq!(
+            first_str(&lines).unwrap_or(""),
+            "Sum α + β end.",
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
@@ -2524,9 +2654,13 @@ mod math_tests {
         // Regression: whitespace just inside `\( … \)` made the normalized `$ … $` violate pulldown's dollar-math flanking rule
         // It used to render as raw `$ … $`; the normalizer now trims that padding
         let lines = pretty_lines("Sum \\( x+y \\) end.\n\n");
-        assert_eq!(lines[0], "Sum x+y end.", "got: {lines:#?}");
+        assert_eq!(
+            first_str(&lines).unwrap_or(""),
+            "Sum x+y end.",
+            "got: {lines:#?}"
+        );
         assert!(
-            !lines[0].contains('$'),
+            !first_str(&lines).unwrap_or("").contains('$'),
             "delimiters must be gone: {lines:#?}"
         );
     }
@@ -2542,19 +2676,28 @@ mod math_tests {
     #[test]
     fn paren_inline_math_in_list_item() {
         let lines = pretty_lines("- implies \\(p \\to q\\)\n- plain\n\n");
-        assert!(lines[0].contains("implies p → q"), "got: {lines:#?}");
+        assert!(
+            first_str(&lines).unwrap_or("").contains("implies p → q"),
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
     fn paren_inline_math_in_heading() {
         let lines = pretty_lines("## About \\(\\pi^2\\)\n\n");
-        assert!(lines[0].contains("About π²"), "got: {lines:#?}");
+        assert!(
+            first_str(&lines).unwrap_or("").contains("About π²"),
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
     fn dollar_inline_math_in_heading() {
         let lines = pretty_lines("# Energy $E=mc^2$\n\n");
-        assert!(lines[0].contains("Energy E=mc²"), "got: {lines:#?}");
+        assert!(
+            first_str(&lines).unwrap_or("").contains("Energy E=mc²"),
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
@@ -2824,7 +2967,8 @@ mod math_tests {
     fn multiple_inline_math_spans_in_one_paragraph() {
         let lines = pretty_lines("Both $a^2$ and \\(b_1\\) and $c \\ne d$ work.\n\n");
         assert_eq!(
-            lines[0], "Both a² and b₁ and c ≠ d work.",
+            first_str(&lines).unwrap_or(""),
+            "Both a² and b₁ and c ≠ d work.",
             "got: {lines:#?}"
         );
     }
@@ -2833,7 +2977,11 @@ mod math_tests {
     fn greek_and_symbols_inline() {
         let lines =
             pretty_lines("Rate $\\lambda \\approx 0.5$ and set $S \\subseteq \\mathbb{R}^n$.\n\n");
-        assert_eq!(lines[0], "Rate λ ≈ 0.5 and set S ⊆ ℝⁿ.", "got: {lines:#?}");
+        assert_eq!(
+            first_str(&lines).unwrap_or(""),
+            "Rate λ ≈ 0.5 and set S ⊆ ℝⁿ.",
+            "got: {lines:#?}"
+        );
     }
 }
 
@@ -2850,6 +2998,10 @@ mod entity_tests {
             .collect()
     }
 
+    fn first_str(xs: &[String]) -> Option<&str> {
+        xs.first().map(String::as_str)
+    }
+
     fn pretty_lines(text: &str) -> Vec<String> {
         let (output, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
         lines_to_text(&output.lines)
@@ -2863,39 +3015,63 @@ mod entity_tests {
     #[test]
     fn lt_gt_amp_decoded_in_prose() {
         let lines = pretty_lines("Use &lt;tag&gt; with a &amp; b.\n\n");
-        assert_eq!(lines[0], "Use <tag> with a & b.", "got: {lines:#?}");
+        assert_eq!(
+            first_str(&lines).unwrap_or(""),
+            "Use <tag> with a & b.",
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
     fn multiple_entities_one_paragraph() {
         let lines = pretty_lines("1 &lt; 2 &amp;&amp; 3 &gt; 2\n\n");
-        assert_eq!(lines[0], "1 < 2 && 3 > 2", "got: {lines:#?}");
+        assert_eq!(
+            first_str(&lines).unwrap_or(""),
+            "1 < 2 && 3 > 2",
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
     fn quote_and_apostrophe_entities() {
         let lines = pretty_lines("&quot;hello&quot; &amp; &#39;world&#39;\n\n");
-        assert_eq!(lines[0], "\"hello\" & 'world'", "got: {lines:#?}");
+        assert_eq!(
+            first_str(&lines).unwrap_or(""),
+            "\"hello\" & 'world'",
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
     fn numeric_decimal_and_hex_entities() {
         // &#60; = '<', &#x3e; = '>'
         let lines = pretty_lines("a &#60;b&#x3e; c\n\n");
-        assert_eq!(lines[0], "a <b> c", "got: {lines:#?}");
+        assert_eq!(
+            first_str(&lines).unwrap_or(""),
+            "a <b> c",
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
     fn full_html5_named_entities_decoded() {
         // Beyond the XML core set: these must decode in prose just like they already do in table cells (via pulldown), keeping the two consistent
         let lines = pretty_lines("&mdash; &copy; &hellip; &rarr; &times;\n\n");
-        assert_eq!(lines[0], "— © … → ×", "got: {lines:#?}");
+        assert_eq!(
+            first_str(&lines).unwrap_or(""),
+            "— © … → ×",
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
     fn nbsp_decodes_to_no_break_space() {
         let lines = pretty_lines("a&nbsp;b\n\n");
-        assert_eq!(lines[0], "a\u{a0}b", "got: {lines:#?}");
+        assert_eq!(
+            first_str(&lines).unwrap_or(""),
+            "a\u{a0}b",
+            "got: {lines:#?}"
+        );
     }
 
     #[test]
@@ -2947,7 +3123,7 @@ mod entity_tests {
     fn raw_mode_preserves_entity_source() {
         let lines = raw_lines("Use &lt;tag&gt; here.\n\n");
         assert!(
-            lines[0].contains("&lt;tag&gt;"),
+            first_str(&lines).unwrap_or("").contains("&lt;tag&gt;"),
             "raw mode must keep source: {lines:#?}"
         );
     }
@@ -2955,7 +3131,7 @@ mod entity_tests {
     #[test]
     fn entities_decoded_inside_emphasis_and_heading() {
         let bold = pretty_lines("**a &lt; b**\n\n");
-        assert_eq!(bold[0], "a < b", "got: {bold:#?}");
+        assert_eq!(first_str(&bold), Some("a < b"), "got: {bold:#?}");
         let heading = pretty_lines("## Compare &lt;T&gt;\n\n");
         assert!(
             heading.iter().any(|l| l.contains("Compare <T>")),
@@ -2983,7 +3159,8 @@ mod entity_tests {
         // No semicolon, unknown name, and a lone `&` must all pass through.
         let lines = pretty_lines("Tom &amp Jerry &unknown; plain & text\n\n");
         assert_eq!(
-            lines[0], "Tom &amp Jerry &unknown; plain & text",
+            first_str(&lines).unwrap_or(""),
+            "Tom &amp Jerry &unknown; plain & text",
             "got: {lines:#?}"
         );
     }

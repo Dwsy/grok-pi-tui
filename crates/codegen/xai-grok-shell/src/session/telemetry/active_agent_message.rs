@@ -3,16 +3,20 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use serde::Deserialize;
 use xai_grok_telemetry::TelemetryCtx;
 use xai_grok_telemetry::events::{
     ActiveAgentMessageCompleted as Completed,
     ActiveAgentMessageFallbackDisposition as FallbackDisposition,
     ActiveAgentMessageFallbackReason as FallbackReason, ActiveAgentMessageLimitHit as LimitHit,
     ActiveAgentMessageOperation as Operation, ActiveAgentMessageOutcome as Outcome,
-    ActiveAgentMessageSettled as Settled,
+    ActiveAgentMessageQuotaHit as QuotaHit, ActiveAgentMessageQuotaKind as QuotaKind,
+    ActiveAgentMessageSafePointTrigger as SafePointTrigger, ActiveAgentMessageSettled as Settled,
     ActiveAgentMessageSettlementDisposition as SettlementDisposition,
 };
-use xai_grok_tools::implementations::grok_build::send_subagent_message::SendSubagentMessageOutput;
+use xai_grok_tools::implementations::grok_build::send_subagent_message::{
+    SendSubagentMessageInput, SendSubagentMessageOutput,
+};
 use xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageOperation;
 use xai_grok_tools::types::output::ToolOutput;
 
@@ -20,13 +24,21 @@ use xai_grok_tools::types::output::ToolOutput;
 pub(crate) enum ActiveAgentMessageEvent {
     Completed(Completed),
     LimitHit(LimitHit),
+    QuotaHit(QuotaHit),
     Settled(Settled),
+}
+
+/// Recorded once, at the first safe-point delivery of the message.
+#[derive(Clone, Copy)]
+struct SafePointDelivery {
+    latency_ms: u64,
+    trigger: SafePointTrigger,
 }
 
 #[derive(Default)]
 struct ActiveAgentMessageDeliveryTelemetry {
     fallback_reason: parking_lot::Mutex<Option<FallbackReason>>,
-    safe_point_latency_ms: parking_lot::Mutex<Option<u64>>,
+    safe_point: parking_lot::Mutex<Option<SafePointDelivery>>,
 }
 
 #[derive(Clone)]
@@ -53,7 +65,7 @@ impl ActiveAgentMessageAdmissionTelemetry {
             effective_operation: operation(effective_operation),
             delivery: Arc::new(ActiveAgentMessageDeliveryTelemetry {
                 fallback_reason: parking_lot::Mutex::new(fallback_reason),
-                safe_point_latency_ms: parking_lot::Mutex::new(None),
+                safe_point: parking_lot::Mutex::new(None),
             }),
         }
     }
@@ -62,18 +74,27 @@ impl ActiveAgentMessageAdmissionTelemetry {
         *self.delivery.fallback_reason.lock() = Some(reason);
     }
 
-    pub(crate) fn record_safe_point_delivery(&self, delivered_at: Instant) {
+    pub(crate) fn record_safe_point_delivery(
+        &self,
+        delivered_at: Instant,
+        trigger: SafePointTrigger,
+    ) {
         let latency_ms = delivered_at
             .saturating_duration_since(self.admitted_at)
             .as_millis() as u64;
         self.delivery
-            .safe_point_latency_ms
+            .safe_point
             .lock()
-            .get_or_insert(latency_ms);
+            .get_or_insert(SafePointDelivery {
+                latency_ms,
+                trigger,
+            });
     }
 }
 
-pub(crate) use xai_grok_telemetry::events::ActiveAgentMessageFallbackReason;
+pub(crate) use xai_grok_telemetry::events::{
+    ActiveAgentMessageFallbackReason, ActiveAgentMessageSafePointTrigger,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ActiveAgentMessageSettlementStatus {
@@ -109,6 +130,7 @@ fn operation(operation: ActiveAgentMessageOperation) -> Operation {
     match operation {
         ActiveAgentMessageOperation::Queue => Operation::Queue,
         ActiveAgentMessageOperation::Steer => Operation::Steer,
+        ActiveAgentMessageOperation::Interject => Operation::Interject,
     }
 }
 
@@ -127,6 +149,9 @@ impl ActiveAgentMessageEventSink for ProductEventSink {
             ActiveAgentMessageEvent::LimitHit(event) => {
                 xai_grok_telemetry::session_ctx::log_event(event);
             }
+            ActiveAgentMessageEvent::QuotaHit(event) => {
+                xai_grok_telemetry::session_ctx::log_event(event);
+            }
             ActiveAgentMessageEvent::Settled(event) => {
                 xai_grok_telemetry::session_ctx::log_event(event);
             }
@@ -143,11 +168,24 @@ fn emit_immediate_events<S: ActiveAgentMessageEventSink + ?Sized>(
     let ToolOutput::SendSubagentMessage(output) = output else {
         return;
     };
+    let mut quota_hit = None;
     let (outcome, limit_hit) = match output {
         SendSubagentMessageOutput::Accepted { .. } => (Outcome::Accepted, None),
         SendSubagentMessageOutput::NotFoundOrNotOwned => (Outcome::NotFoundOrNotOwned, None),
         SendSubagentMessageOutput::NotActiveOrFinalizing => (Outcome::NotActiveOrFinalizing, None),
         SendSubagentMessageOutput::Saturated { .. } => (Outcome::Saturated, None),
+        SendSubagentMessageOutput::QuotaExceeded { kind, limit } => {
+            let kind = match kind {
+                xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageQuotaKind::SenderTargetInFlight => QuotaKind::SenderTargetInFlight,
+                xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageQuotaKind::AttemptOutbound => QuotaKind::AttemptOutbound,
+                _ => return,
+            };
+            quota_hit = Some(QuotaHit {
+                kind,
+                limit: u64::try_from(*limit).unwrap_or(u64::MAX),
+            });
+            (Outcome::QuotaExceeded, None)
+        }
         SendSubagentMessageOutput::AdmissionUncertain => (Outcome::AdmissionUncertain, None),
         SendSubagentMessageOutput::NotAcceptedBeforeDeadline => {
             (Outcome::NotAcceptedBeforeDeadline, None)
@@ -175,13 +213,34 @@ fn emit_immediate_events<S: ActiveAgentMessageEventSink + ?Sized>(
     if let Some(limit_hit) = limit_hit {
         sink.emit(ActiveAgentMessageEvent::LimitHit(limit_hit));
     }
+    if let Some(quota_hit) = quota_hit {
+        sink.emit(ActiveAgentMessageEvent::QuotaHit(quota_hit));
+    }
+}
+
+/// Telemetry only; the tool already parsed these arguments, so a failure here changes nothing.
+fn requested_operation_from_args(parsed_args: &serde_json::Value) -> ActiveAgentMessageOperation {
+    match SendSubagentMessageInput::deserialize(parsed_args) {
+        Ok(input) => input.operation(),
+        Err(error) => {
+            tracing::debug!(
+                %error,
+                "active-message telemetry: tool arguments did not parse; recording steer"
+            );
+            ActiveAgentMessageOperation::Steer
+        }
+    }
 }
 
 pub(crate) fn record_completed_tool_output(
     output: &ToolOutput,
-    requested_operation: ActiveAgentMessageOperation,
+    parsed_args: &serde_json::Value,
     duration_ms: u64,
 ) {
+    if !matches!(output, ToolOutput::SendSubagentMessage(_)) {
+        return;
+    }
+    let requested_operation = requested_operation_from_args(parsed_args);
     #[cfg(test)]
     if try_emit_test_event(output, requested_operation, duration_ms) {
         return;
@@ -269,7 +328,7 @@ fn record_completed_tool_output_with_sink(
     emit_immediate_events(output, requested_operation, duration_ms, sink);
 }
 
-fn project_settlement(
+pub(crate) fn project_settlement(
     admission: Option<ActiveAgentMessageAdmissionTelemetry>,
     status: ActiveAgentMessageSettlementStatus,
     settled_at: Instant,
@@ -286,7 +345,7 @@ fn project_settlement(
         }
     };
     let fallback_reason = *admission.delivery.fallback_reason.lock();
-    let safe_point_latency_ms = *admission.delivery.safe_point_latency_ms.lock();
+    let safe_point = *admission.delivery.safe_point.lock();
     Some((
         admission.parent_ctx,
         Settled {
@@ -299,7 +358,8 @@ fn project_settlement(
                 FallbackDisposition::NotApplicable
             },
             fallback_reason,
-            safe_point_latency_ms,
+            safe_point_latency_ms: safe_point.map(|delivery| delivery.latency_ms),
+            safe_point_trigger: safe_point.map(|delivery| delivery.trigger),
             duration_ms: settled_at
                 .saturating_duration_since(admission.admitted_at)
                 .as_millis() as u64,

@@ -3,30 +3,20 @@
 //! `prompt.id` must appear on events ONLY, never on metrics (unbounded cardinality).
 //! This complements the other wire tests, which emit outside any ctx.
 
-mod otlp_collector;
-
 use std::sync::Arc;
+use std::time::Duration;
 
-use otlp_collector as col;
+use serde_json::Value;
 use xai_grok_telemetry::external;
+use xai_grok_test_support::{MockOtelServer, OtelSignal};
 
-#[test]
-fn ambient_ctx_injects_session_turn_and_prompt_id() {
-    let collected = col::Collected::default();
-    let endpoint = col::start_collector(collected.clone());
+#[tokio::test]
+async fn ambient_ctx_injects_session_turn_and_prompt_id() {
+    let server = MockOtelServer::start().await.unwrap();
 
-    let mut cfg = external::ExternalOtelConfig::resolve_with(
-        |name| match name {
-            "GROK_EXTERNAL_OTEL" => Some("1".into()),
-            "OTEL_LOGS_EXPORTER" | "OTEL_METRICS_EXPORTER" => Some("otlp".into()),
-            "OTEL_EXPORTER_OTLP_ENDPOINT" => Some(endpoint.clone()),
-            "OTEL_METRIC_EXPORT_INTERVAL" => Some("150".into()),
-            "OTEL_BLRP_SCHEDULE_DELAY" => Some("100".into()),
-            _ => None,
-        },
-        None,
-    )
-    .expect("double opt-in must resolve");
+    let env = server.exporter_env();
+    let mut cfg = external::ExternalOtelConfig::resolve_with(|name| env.get(name).cloned(), None)
+        .expect("double opt-in must resolve");
     cfg.client = external::config::ExternalClientInfo {
         service_version: "0.0.0-test".into(),
         client_version: "0.0.0-test".into(),
@@ -35,16 +25,11 @@ fn ambient_ctx_injects_session_turn_and_prompt_id() {
     external::init(Some(cfg));
     assert!(external::is_active());
 
-    // Emit inside a session ctx (turn_number = 3) so the ambient snapshot is populated
-    // `log_event` is synchronous and runs within the task-local scope of `with_session_ctx`
     let ctx = xai_grok_telemetry::TelemetryCtx::new(
         "sess-ctx".to_owned(),
         Arc::new(tokio::sync::Mutex::new(3usize)),
     );
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("current-thread runtime");
-    rt.block_on(xai_grok_telemetry::with_session_ctx(ctx, async {
+    xai_grok_telemetry::with_session_ctx(ctx, async {
         xai_grok_telemetry::session_ctx::begin_prompt_id();
         xai_grok_telemetry::log_event(xai_grok_telemetry::events::PromptSubmitted {
             prompt_length: 42,
@@ -63,60 +48,67 @@ fn ambient_ctx_injects_session_turn_and_prompt_id() {
             reasoning_tokens: None,
             cached_prompt_tokens: None,
             cache_creation_tokens: None,
+            context_tokens: None,
             cost_usd_ticks: None,
         });
-    }));
+    })
+    .await;
 
-    external::flush();
-    assert!(
-        col::wait_until(std::time::Duration::from_secs(10), || {
-            !collected.logs.lock().unwrap().is_empty()
-                && !collected.metrics.lock().unwrap().is_empty()
-        }),
-        "collector must receive both signals"
-    );
+    tokio::task::spawn_blocking(external::flush).await.unwrap();
+    server
+        .recorder()
+        .wait_for_signals(
+            Duration::from_secs(10),
+            &[OtelSignal::Logs, OtelSignal::Metrics],
+        )
+        .await
+        .expect("server must receive both signals");
 
-    // ── Event carries session.id, turn_number, prompt.id, event.sequence ──
-    let prompt = col::find_event(&collected, "grok_code.user_prompt").expect("user_prompt present");
+    let prompt = server
+        .recorder()
+        .log_record("grok_code.user_prompt")
+        .expect("user_prompt present");
     assert_eq!(
-        prompt.attrs.get("session.id").and_then(|v| v.as_str()),
+        prompt.attributes.get("session.id").and_then(Value::as_str),
         Some("sess-ctx"),
         "ambient session.id injected onto events"
     );
     assert_eq!(
-        prompt.attrs.get("turn_number").and_then(|v| v.as_i64()),
+        prompt.attributes.get("turn_number").and_then(Value::as_i64),
         Some(3),
         "ambient turn_number injected onto events"
     );
     let prompt_id = prompt
-        .attrs
+        .attributes
         .get("prompt.id")
-        .and_then(|v| v.as_str())
+        .and_then(Value::as_str)
         .expect("prompt.id injected onto events");
     assert!(!prompt_id.is_empty(), "prompt.id must be a real uuid");
     assert!(
-        prompt.attrs.contains_key("event.sequence"),
+        prompt.attributes.contains_key("event.sequence"),
         "event.sequence injected onto every event"
     );
 
-    // ── prompt.id / turn_number NEVER on metrics ────────────────────────
-    let tokens = col::find_metric(&collected, "grok_code.token.usage");
+    let tokens: Vec<_> = server
+        .recorder()
+        .metric_points_named("grok_code.token.usage");
     assert!(!tokens.is_empty(), "token.usage must export");
     for p in &tokens {
         assert!(
-            !p.attrs.contains_key("prompt.id"),
+            !p.attributes.contains_key("prompt.id"),
             "prompt.id must never reach metrics"
         );
         assert!(
-            !p.attrs.contains_key("turn_number"),
+            !p.attributes.contains_key("turn_number"),
             "turn_number must never reach metrics"
         );
-        // session.id DOES flow to metrics from the ambient ctx; that cardinality opt-in defaults to on
         assert_eq!(
-            p.attrs.get("session.id").and_then(|v| v.as_str()),
+            p.attributes.get("session.id").and_then(Value::as_str),
             Some("sess-ctx")
         );
     }
 
-    external::shutdown();
+    tokio::task::spawn_blocking(external::shutdown)
+        .await
+        .unwrap();
 }

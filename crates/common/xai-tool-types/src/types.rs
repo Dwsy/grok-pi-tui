@@ -80,6 +80,15 @@ impl ToolDescription {
         self
     }
 
+    /// Fill `arguments_schema` from `fallback` when this description has none; an attached
+    /// schema always wins.
+    pub fn or_arguments_schema(mut self, fallback: Option<Value>) -> Self {
+        if self.arguments_schema.is_none() {
+            self.arguments_schema = fallback;
+        }
+        self
+    }
+
     /// Derive structured arguments from the attached `arguments_schema`.
     ///
     /// **Lossy** — this only extracts flat, top-level properties and a
@@ -595,6 +604,27 @@ fn validate_identifier(field: &str, value: &str, errors: &mut Vec<ValidationErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn or_arguments_schema_fills_only_a_missing_schema() {
+        let served = serde_json::json!({"type": "object"});
+        let own = serde_json::json!({"type": "object", "properties": {}});
+        let bare = ToolDescription::new("wait", "Wait");
+        assert_eq!(
+            bare.clone()
+                .or_arguments_schema(Some(served.clone()))
+                .arguments_schema,
+            Some(served.clone())
+        );
+        assert_eq!(bare.or_arguments_schema(None).arguments_schema, None);
+        assert_eq!(
+            ToolDescription::new("wait", "Wait")
+                .with_arguments_schema(own.clone())
+                .or_arguments_schema(Some(served))
+                .arguments_schema,
+            Some(own)
+        );
+    }
 
     #[test]
     fn argument_type_serde_roundtrip() {

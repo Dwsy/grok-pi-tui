@@ -12,6 +12,8 @@
 //! pre-fix binaries that would flip a shared DB back to WAL — ever shares
 //! the file.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::path::{Path, PathBuf};
 
 /// Wait for peers' locks instead of failing instantly; matches what every
@@ -276,7 +278,8 @@ fn hostname_raw() -> Option<String> {
         return None;
     }
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    String::from_utf8(buf[..len].to_vec()).ok()
+    buf.get(..len)
+        .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok())
 }
 
 #[cfg(windows)]
@@ -409,7 +412,10 @@ mod imp {
         // take up to the first NUL.
         let bytes = st.f_fstypename.map(|c| c as u8);
         let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-        let name = std::str::from_utf8(&bytes[..len]).unwrap_or("");
+        let name = bytes
+            .get(..len)
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .unwrap_or("");
         super::is_network_fs_mac(st.f_flags, name)
     }
 }

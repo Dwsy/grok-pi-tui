@@ -494,6 +494,13 @@ impl acp::Agent for AcpGatewaySender<acp::ClientSide> {
         self.forward(args).await
     }
 
+    async fn set_session_model(
+        &self,
+        args: acp::SetSessionModelRequest,
+    ) -> AcpResult<acp::SetSessionModelResponse> {
+        self.forward(args).await
+    }
+
     async fn prompt(&self, args: acp::PromptRequest) -> AcpResult<acp::PromptResponse> {
         self.forward(args).await
     }
@@ -573,9 +580,12 @@ mod tests {
 
                 let log = log.borrow();
                 assert_eq!(log.len(), N + 1);
-                assert_eq!(log[N], "RESPONSE");
+                assert_eq!(log.get(N).map(String::as_str), Some("RESPONSE"));
                 for i in 0..N {
-                    assert_eq!(log[i], format!("{i}"));
+                    assert_eq!(
+                        log.get(i).map(String::as_str),
+                        Some(format!("{i}").as_str())
+                    );
                 }
             })
             .await;
@@ -652,11 +662,12 @@ mod tests {
                     .map(|i| log.iter().position(|s| s == &format!("delta-{i}")).unwrap())
                     .collect();
                 for w in delta_positions.windows(2) {
+                    let [a, b] = w else {
+                        continue;
+                    };
                     assert!(
-                        w[0] < w[1],
-                        "delta ordering violated: delta at index {} came after delta at index {}",
-                        w[0],
-                        w[1]
+                        a < b,
+                        "delta ordering violated: delta at index {a} came after delta at index {b}"
                     );
                 }
 

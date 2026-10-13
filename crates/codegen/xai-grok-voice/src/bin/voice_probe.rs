@@ -5,6 +5,8 @@
 //! cargo run -p xai-grok-voice --bin voice-probe -- --seconds 5
 //! ```
 
+#![deny(clippy::indexing_slicing)]
+
 use std::path::PathBuf;
 
 use xai_grok_voice::{
@@ -97,17 +99,20 @@ fn parse_args(argv: Vec<String>) -> Args {
     };
     let mut i = 0;
     while i < argv.len() {
-        match argv[i].as_str() {
+        let Some(arg) = argv.get(i) else {
+            break;
+        };
+        match arg.as_str() {
             "--seconds" | "-s" => {
                 i += 1;
-                if i < argv.len() {
-                    out.seconds = argv[i].parse().unwrap_or(5);
+                if let Some(v) = argv.get(i) {
+                    out.seconds = v.parse().unwrap_or(5);
                 }
             }
             "--config" => {
                 i += 1;
-                if i < argv.len() {
-                    out.config_path = Some(PathBuf::from(&argv[i]));
+                if let Some(v) = argv.get(i) {
+                    out.config_path = Some(PathBuf::from(v));
                 }
             }
             "--mic-only" => out.mic_only = true,
@@ -116,7 +121,7 @@ fn parse_args(argv: Vec<String>) -> Args {
                 std::process::exit(0);
             }
             other if !other.starts_with('-') => {}
-            _ => eprintln!("unknown arg: {}", argv[i]),
+            _ => eprintln!("unknown arg: {arg}"),
         }
         i += 1;
     }

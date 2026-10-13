@@ -325,15 +325,22 @@ impl MarkdownContent {
 
         let frozen_count = state.renderer.frozen_lines_count();
 
-        // --- Incremental wrapping ---. Only two ranges need wrapping. We clone the line slices we need *before* mutating
+        // Only two ranges need wrapping. We clone the line slices we need *before* mutating
         // cache_lines, because view() borrows the renderer immutably.
 
         // Step 1: Wrap any newly frozen lines
         let new_frozen_wrapped = if frozen_count > state.frozen_pre_wrap_count {
-            let new_frozen: Vec<Line<'static>> = apply_code_block_inset(
-                state.renderer.view().lines[state.frozen_pre_wrap_count..frozen_count].to_vec(),
-            );
-            Some(word_wrap_lines_with_joiners(new_frozen, width))
+state
+                .renderer
+                .view()
+                .lines
+                .get(state.frozen_pre_wrap_count..frozen_count)
+                .map(|new_frozen| {
+                    word_wrap_lines_with_joiners(
+                        apply_code_block_inset(new_frozen.to_vec()),
+                        width,
+                    )
+                })
         } else {
             None
         };
@@ -341,9 +348,14 @@ impl MarkdownContent {
         // Step 2: Wrap the tail (unfrozen) lines
         let total_lines = state.renderer.view().lines.len();
         let tail_wrapped = if frozen_count < total_lines {
-            let tail: Vec<Line<'static>> =
-                apply_code_block_inset(state.renderer.view().lines[frozen_count..].to_vec());
-            Some(word_wrap_lines_with_joiners(tail, width))
+state
+                .renderer
+                .view()
+                .lines
+                .get(frozen_count..)
+                .map(|tail| {
+                    word_wrap_lines_with_joiners(apply_code_block_inset(tail.to_vec()), width)
+                })
         } else {
             None
         };
@@ -606,7 +618,7 @@ mod tests {
         let md = MarkdownContent::new("hello world this should wrap across lines");
         let out = md.output(10);
         assert!(out.lines.len() > 1);
-        assert_eq!(out.lines[0].joiner, None);
+        assert_eq!(out.lines.first().map(|l| l.joiner.as_ref()), Some(None));
         assert!(out.lines.iter().skip(1).any(|line| line.joiner.is_some()));
     }
 
@@ -614,7 +626,10 @@ mod tests {
     fn markdown_body_lines_remain_selectable() {
         let md = MarkdownContent::new("hello");
         let out = md.output(80);
-        assert!(matches!(out.lines[0].selectable, Selectable::All));
+        assert!(matches!(
+            out.lines.first().map(|l| &l.selectable),
+            Some(&Selectable::All)
+        ));
     }
 
     /// Verify that incremental wrapping during streaming produces the same output as creating a fresh MarkdownContent with the full text.

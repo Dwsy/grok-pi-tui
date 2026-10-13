@@ -70,12 +70,16 @@ async fn failed_server_announced_once_per_episode() {
             let reminders = failed_reminders(&actor).await;
             assert_eq!(reminders.len(), 1, "{reminders:?}");
             assert!(
-                reminders[0]
+                at(&reminders, 0)
                     .contains("dead (\"boom - forged\" — retries automatically on next tool call)"),
                 "{}",
-                reminders[0]
+                at(&reminders, 0)
             );
-            assert!(!reminders[0].contains("\n- forged"), "{}", reminders[0]);
+            assert!(
+                !at(&reminders, 0).contains("\n- forged"),
+                "{}",
+                at(&reminders, 0)
+            );
             refresh_and_inject(&actor).await;
             refresh_and_inject(&actor).await;
             assert_eq!(failed_reminders(&actor).await.len(), 1);
@@ -135,9 +139,9 @@ async fn tools_listed_server_with_failure_record_is_announced() {
             let reminders = failed_reminders(&actor).await;
             assert_eq!(reminders.len(), 1, "{reminders:?}");
             assert!(
-                reminders[0].contains("half (\"tools/list failed\""),
+                at(&reminders, 0).contains("half (\"tools/list failed\""),
                 "{}",
-                reminders[0]
+                at(&reminders, 0)
             );
         })
         .await;
@@ -165,9 +169,9 @@ async fn auth_escalation_reannounces_once() {
             let reminders = failed_reminders(&actor).await;
             assert_eq!(reminders.len(), 2, "{reminders:?}");
             assert!(
-                reminders[1].contains("dead (auth required"),
+                at(&reminders, 1).contains("dead (auth required"),
                 "{}",
-                reminders[1]
+                at(&reminders, 1)
             );
             {
                 let mut state = actor.mcp_state.lock().await;
@@ -214,7 +218,7 @@ fn classify_defers_placeholder_reason_until_init_completes() {
     state.complete_init();
     let (failed, _) = classify_failed_servers(&state, &connected);
     assert_eq!(failed.len(), 1);
-    assert!(failed[0].detail.is_none(), "{:?}", failed[0]);
+    assert!(at(&failed, 0).detail.is_none(), "{:?}", at(&failed, 0));
 }
 #[test]
 fn classify_collects_facts_and_sorts() {
@@ -229,16 +233,17 @@ fn classify_collects_facts_and_sorts() {
     state.record_init_failure("a-dead", false, Some("boom".to_string()));
     let (failed, _) = classify_failed_servers(&state, &connected);
     assert_eq!(failed.len(), 2, "{failed:?}");
-    assert_eq!(failed[0].name, "a-dead");
-    assert_eq!(failed[0].detail.as_deref(), Some("boom"));
-    assert_eq!(failed[0].class, AnnouncedFailure::Transport);
-    assert!(failed[0].retries_on_use);
-    assert_eq!(failed[1].name, "b-auth");
-    assert_eq!(failed[1].detail, None);
-    assert_eq!(failed[1].class, AnnouncedFailure::AuthRequired);
-    assert!(!failed[1].retries_on_use);
+    assert_eq!(at(&failed, 0).name, "a-dead");
+    assert_eq!(at(&failed, 0).detail.as_deref(), Some("boom"));
+    assert_eq!(at(&failed, 0).class, AnnouncedFailure::Transport);
+    assert!(at(&failed, 0).retries_on_use);
+    assert_eq!(at(&failed, 1).name, "b-auth");
+    assert_eq!(at(&failed, 1).detail, None);
+    assert_eq!(at(&failed, 1).class, AnnouncedFailure::AuthRequired);
+    assert!(!at(&failed, 1).retries_on_use);
     assert_ne!(
-        failed[0].config_identity, failed[1].config_identity,
+        at(&failed, 0).config_identity,
+        at(&failed, 1).config_identity,
         "identities must reflect the differing configs"
     );
 }
@@ -317,15 +322,21 @@ async fn handshaking_and_init_windows_defer_announcements() {
                 state.mark_server_ready("dead");
                 state.record_init_failure("dead", false, Some("timed out".to_string()));
                 state.record_init_failure("fresh", false, Some("refused".to_string()));
+                state.finish_init();
+                state.complete_init();
             }
             refresh_and_inject(&actor).await;
             let reminders = failed_reminders(&actor).await;
             assert_eq!(reminders.len(), 2, "{reminders:?}");
-            assert!(!reminders[1].contains("dead ("), "{}", reminders[1]);
             assert!(
-                reminders[1].contains("fresh (\"refused\""),
+                !at(&reminders, 1).contains("dead ("),
                 "{}",
-                reminders[1]
+                at(&reminders, 1)
+            );
+            assert!(
+                at(&reminders, 1).contains("fresh (\"refused\""),
+                "{}",
+                at(&reminders, 1)
             );
         })
         .await;
@@ -386,11 +397,10 @@ async fn rewind_rearms_failed_server_announcements() {
             actor.maybe_inject_mcp_reminder().await;
             let reminders = failed_reminders(&actor).await;
             assert_eq!(reminders.len(), before + 1, "{reminders:?}");
-            assert!(
-                reminders[before].contains("dead (\"boom\""),
-                "{}",
-                reminders[before]
-            );
+            let Some(latest) = reminders.get(before) else {
+                panic!("expected reminder at {before}: {reminders:?}");
+            };
+            assert!(latest.contains("dead (\"boom\""), "{latest}");
         })
         .await;
 }
@@ -421,9 +431,9 @@ async fn episode_ends_on_recovery_or_removal_then_reannounces() {
             let reminders = failed_reminders(&actor).await;
             assert_eq!(reminders.len(), 2, "{reminders:?}");
             assert!(
-                reminders[1].contains("flaky (\"down again\""),
+                at(&reminders, 1).contains("flaky (\"down again\""),
                 "{}",
-                reminders[1]
+                at(&reminders, 1)
             );
             {
                 let (gateway_tx, _) = tokio::sync::mpsc::unbounded_channel();
@@ -497,7 +507,9 @@ async fn announce_and_collect(a: &SessionActor, server: &str, tool: &str) -> Str
         .store(true, std::sync::atomic::Ordering::Relaxed);
     a.maybe_inject_mcp_reminder().await;
     let conversation = a.chat_state_handle.get_conversation().await;
-    conversation[len_before..]
+    conversation
+        .get(len_before..)
+        .unwrap_or(&[])
         .iter()
         .filter_map(|item| match item {
             ConversationItem::User(u) => Some(

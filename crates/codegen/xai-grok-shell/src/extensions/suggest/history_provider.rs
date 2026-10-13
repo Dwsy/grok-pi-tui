@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
-use super::{RankedSuggestion, SuggestContext, SuggestionSource, stamp_whole_line_range};
+use super::{
+    RankedSuggestion, RefreshGuard, SuggestContext, SuggestionSource, stamp_whole_line_range,
+};
 use crate::session::prompt_history;
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
@@ -111,14 +113,11 @@ async fn get_or_refresh_cross_cwd_cache() -> Arc<CrossCwdCache> {
         return current;
     }
 
-    if CROSS_CWD_REFRESHING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
+    let Some(_refreshing) = RefreshGuard::try_acquire(&CROSS_CWD_REFRESHING) else {
         return current;
-    }
+    };
 
-    let result = match tokio::task::spawn_blocking(scan_cross_cwd_prompts).await {
+    match tokio::task::spawn_blocking(scan_cross_cwd_prompts).await {
         Ok(prompts) => {
             let new = Arc::new(CrossCwdCache {
                 prompts,
@@ -128,10 +127,7 @@ async fn get_or_refresh_cross_cwd_cache() -> Arc<CrossCwdCache> {
             new
         }
         Err(_) => current,
-    };
-
-    CROSS_CWD_REFRESHING.store(false, Ordering::Release);
-    result
+    }
 }
 
 fn scan_cross_cwd_prompts() -> Vec<String> {
@@ -198,14 +194,11 @@ async fn get_or_refresh_shell_history_cache() -> Arc<ShellHistoryCache> {
         return current;
     }
 
-    if SHELL_HISTORY_REFRESHING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_err()
-    {
+    let Some(_refreshing) = RefreshGuard::try_acquire(&SHELL_HISTORY_REFRESHING) else {
         return current;
-    }
+    };
 
-    let result = match tokio::task::spawn_blocking(load_shell_history).await {
+    match tokio::task::spawn_blocking(load_shell_history).await {
         Ok(commands) => {
             let new = Arc::new(ShellHistoryCache {
                 commands,
@@ -215,10 +208,7 @@ async fn get_or_refresh_shell_history_cache() -> Arc<ShellHistoryCache> {
             new
         }
         Err(_) => current,
-    };
-
-    SHELL_HISTORY_REFRESHING.store(false, Ordering::Release);
-    result
+    }
 }
 
 /// Detect the user's shell and load history from the appropriate file.
@@ -315,7 +305,9 @@ fn load_zsh_history(path: &std::path::Path) -> Vec<String> {
         // Extended history format: `: 1234567890:0;actual command`
         let cmd = if let Some(rest) = trimmed.strip_prefix(": ") {
             // Find the `;` separator after the timestamp:duration part
-            rest.find(';').map(|pos| &rest[pos + 1..]).unwrap_or(rest)
+            rest.find(';')
+                .and_then(|pos| rest.get(pos + 1..))
+                .unwrap_or(rest)
         } else {
             trimmed
         };
@@ -368,11 +360,14 @@ mod tests {
         let local = vec!["git commit".into(), "git checkout".into()];
         let results = rank_history_matches("git commit", &local, &[], &[]);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].insert_text, "git commit");
+        let Some(r) = results.first() else {
+            panic!("expected one result: {results:?}");
+        };
+        assert_eq!(r.insert_text, "git commit");
         assert!(
-            results[0].priority >= 30,
+            r.priority >= 30,
             "exact match priority {} should be >= 30",
-            results[0].priority
+            r.priority
         );
     }
 
@@ -385,9 +380,12 @@ mod tests {
         ];
         let results = rank_history_matches("git c", &local, &[], &[]);
         assert_eq!(results.len(), 3);
-        assert_eq!(results[0].priority, 10);
-        assert_eq!(results[1].priority, 9);
-        assert_eq!(results[2].priority, 8);
+        let [a, b, c] = results.as_slice() else {
+            panic!("expected three results: {results:?}");
+        };
+        assert_eq!(a.priority, 10);
+        assert_eq!(b.priority, 9);
+        assert_eq!(c.priority, 8);
     }
 
     #[test]
@@ -405,8 +403,11 @@ mod tests {
         let cross = vec!["git pull".into(), "git fetch".into()];
         let results = rank_history_matches("git p", &local, &[], &cross);
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].insert_text, "git push");
-        assert_eq!(results[1].insert_text, "git pull");
+        let [a, b] = results.as_slice() else {
+            panic!("expected two results: {results:?}");
+        };
+        assert_eq!(a.insert_text, "git push");
+        assert_eq!(b.insert_text, "git pull");
     }
 
     #[test]
@@ -415,16 +416,22 @@ mod tests {
         let cross = vec!["git push origin dev".into()];
         let results = rank_history_matches("git push", &local, &[], &cross);
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].insert_text, "git push origin main");
-        assert!(results[0].priority > results[1].priority);
+        let [a, b] = results.as_slice() else {
+            panic!("expected two results: {results:?}");
+        };
+        assert_eq!(a.insert_text, "git push origin main");
+        assert!(a.priority > b.priority);
     }
 
     #[test]
     fn first_match_is_ghost_candidate() {
         let local = vec!["ls -la".into(), "ls -lh".into()];
         let results = rank_history_matches("ls", &local, &[], &[]);
-        assert!(results[0].is_ghost_candidate);
-        assert!(!results[1].is_ghost_candidate);
+        let [a, b] = results.as_slice() else {
+            panic!("expected two results: {results:?}");
+        };
+        assert!(a.is_ghost_candidate);
+        assert!(!b.is_ghost_candidate);
     }
 
     #[test]
@@ -464,9 +471,12 @@ mod tests {
         ];
         let results = rank_history_matches("cargo build", &local, &[], &[]);
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].priority, 10);
-        assert_eq!(results[1].priority, 9 + 30);
-        assert!(results[1].priority > results[0].priority);
+        let [a, b] = results.as_slice() else {
+            panic!("expected two results: {results:?}");
+        };
+        assert_eq!(a.priority, 10);
+        assert_eq!(b.priority, 9 + 30);
+        assert!(b.priority > a.priority);
     }
 
     #[test]
@@ -479,8 +489,11 @@ mod tests {
         let local = vec!["git commit".into(), "grep foo".into(), "ls".into()];
         let results = rank_history_matches("g", &local, &[], &[]);
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].insert_text, "git commit");
-        assert_eq!(results[1].insert_text, "grep foo");
+        let [a, b] = results.as_slice() else {
+            panic!("expected two results: {results:?}");
+        };
+        assert_eq!(a.insert_text, "git commit");
+        assert_eq!(b.insert_text, "grep foo");
     }
 
     // --- Shell history priority ordering ---
@@ -492,12 +505,15 @@ mod tests {
         let cross = vec!["git push origin dev".into()];
         let results = rank_history_matches("git push", &local, &shell, &cross);
         assert_eq!(results.len(), 3);
-        assert_eq!(results[0].insert_text, "git push origin main");
-        assert_eq!(results[1].insert_text, "git push origin staging");
-        assert_eq!(results[2].insert_text, "git push origin dev");
+        let [a, b, c] = results.as_slice() else {
+            panic!("expected three results: {results:?}");
+        };
+        assert_eq!(a.insert_text, "git push origin main");
+        assert_eq!(b.insert_text, "git push origin staging");
+        assert_eq!(c.insert_text, "git push origin dev");
         // Priority decreases: local, then shell, then cross
-        assert!(results[0].priority > results[1].priority);
-        assert!(results[1].priority > results[2].priority);
+        assert!(a.priority > b.priority);
+        assert!(b.priority > c.priority);
     }
 
     #[test]
@@ -542,7 +558,7 @@ mod tests {
         let commands = load_bash_history(f.path());
         assert_eq!(commands.len(), MAX_SHELL_HISTORY_ENTRIES);
         // The most recent command comes first
-        assert_eq!(commands[0], "cmd_299");
+        assert_eq!(commands.first().map(String::as_str), Some("cmd_299"));
     }
 
     #[test]
@@ -632,7 +648,7 @@ mod tests {
         }
         let commands = load_zsh_history(f.path());
         assert_eq!(commands.len(), MAX_SHELL_HISTORY_ENTRIES);
-        assert_eq!(commands[0], "cmd_299");
+        assert_eq!(commands.first().map(String::as_str), Some("cmd_299"));
     }
 
     #[test]
@@ -693,7 +709,7 @@ mod tests {
         }
         let commands = load_fish_history(f.path());
         assert_eq!(commands.len(), MAX_SHELL_HISTORY_ENTRIES);
-        assert_eq!(commands[0], "cmd_299");
+        assert_eq!(commands.first().map(String::as_str), Some("cmd_299"));
     }
 
     #[test]

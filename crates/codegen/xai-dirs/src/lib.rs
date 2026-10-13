@@ -13,6 +13,8 @@
 //! TODO: collapse these getters by threading the path through config as an
 //! explicit value.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

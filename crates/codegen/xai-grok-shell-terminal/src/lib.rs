@@ -2,6 +2,8 @@
 //!
 //! `xai-grok-shell` re-exports this crate as `xai_grok_shell::terminal`.
 
+#![deny(clippy::indexing_slicing)]
+
 use std::sync::Arc;
 
 pub mod runner;

@@ -58,9 +58,24 @@ pub fn x11_display_env_present() -> bool {
     platform::x11_display_env_present()
 }
 
-/// Read an image from the system clipboard. Returns `Ok(None)` when the clipboard does not contain an image. The returned
-/// [`ImageData`] contains encoded image bytes (not raw RGBA).
-pub fn get_image() -> anyhow::Result<Option<ImageData>> {
+/// Which backend answered a paste-time image read, so telemetry can localize a wrong-image report to one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardReadPath {
+    Native,
+    Osascript,
+    Arboard,
+    LinuxCli,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClipboardImageRead {
+    /// Encoded bytes (not raw RGBA); `None` when the clipboard holds no image.
+    pub image: Option<ImageData>,
+    pub read_path: ClipboardReadPath,
+}
+
+/// Read an image from the system clipboard.
+pub fn get_image() -> anyhow::Result<ClipboardImageRead> {
     platform::get_image()
 }
 
@@ -74,12 +89,13 @@ pub fn get_file_urls() -> anyhow::Result<Option<String>> {
 /// File URLs and/or image data from the system clipboard in one probe. On macOS one `osascript` tries `«class furl»`
 /// first and coerces PNGf, TIFF, then JPEG only when no file URLs are present. On other platforms this composes
 /// [`get_file_urls`] and [`get_image`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ClipboardAttachments {
     /// Newline-joined POSIX paths (same format as [`get_file_urls`]).
     pub file_urls: Option<String>,
     /// Encoded image bytes when the pasteboard holds a raster image.
     pub image: Option<ImageData>,
+    pub read_path: ClipboardReadPath,
 }
 
 /// Probe file URLs then image (macOS: one `osascript`; elsewhere: two reads).
@@ -184,7 +200,10 @@ pub fn mime_from_bytes(data: &[u8]) -> &'static str {
         "image/tiff"
     } else if data.starts_with(b"GIF8") {
         "image/gif"
-    } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+    } else if data.len() >= 12
+        && data.starts_with(b"RIFF")
+        && data.get(8..12) == Some(b"WEBP".as_slice())
+    {
         "image/webp"
     } else if data.starts_with(b"BM") {
         "image/bmp"
@@ -282,6 +301,9 @@ pub fn wayland_data_control_supported() -> bool {
 #[error("process did not exit within {0:?}")]
 pub struct WaitTimeout(pub std::time::Duration);
 
+/// Deadline for one paste-time `osascript`; the pager's probe timeout must stay above it so the child dies first.
+pub const OSASCRIPT_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// Clipboard helpers spawn tools (`wl-copy`, `xclip`, `pbcopy`, `tmux load-buffer`) that can hang on a stuck compositor
 /// or server. Callers must take/close `child.stdin` (or feed it from a file) before waiting. Unlike `wait()`, the
 /// `try_wait` loop does not drop stdin, so a child still reading a held pipe would burn the whole deadline.
@@ -378,14 +400,154 @@ pub fn is_containerized_without_display() -> bool {
     false
 }
 
-// ---------------------------------------------------------------------------
-// macOS unified attachments `osascript` stdout parsing (pure, no I/O)
-// ---------------------------------------------------------------------------
-
+// Compiled on every platform so the Linux presubmit covers the pure parts.
 #[cfg(any(target_os = "macos", test))]
 mod attachments_protocol {
     pub const FURL_MARKER: &str = "<<<FURL>>>";
     pub const IMAGE_MARKER: &str = "<<<IMAGE>>>";
+
+    /// Pasteboard raster classes the AppleScript coerces to, in probe order.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum RasterClass {
+        Png,
+        Tiff,
+        Jpeg,
+    }
+
+    impl RasterClass {
+        pub const ALL: [Self; 3] = [Self::Png, Self::Tiff, Self::Jpeg];
+
+        /// The `«class PNGf»` code, also what the script prints on stdout.
+        pub fn code(self) -> &'static str {
+            match self {
+                Self::Png => "PNGf",
+                Self::Tiff => "TIFF",
+                Self::Jpeg => "JPEG",
+            }
+        }
+
+        pub fn mime(self) -> &'static str {
+            match self {
+                Self::Png => "image/png",
+                Self::Tiff => "image/tiff",
+                Self::Jpeg => "image/jpeg",
+            }
+        }
+    }
+
+    impl std::str::FromStr for RasterClass {
+        type Err = ();
+
+        fn from_str(code: &str) -> Result<Self, ()> {
+            Self::ALL
+                .into_iter()
+                .find(|class| class.code() == code)
+                .ok_or(())
+        }
+    }
+
+    /// Private 0700 scratch dir for one `osascript` raster hand-off, removed on drop; a path shared by every grok process let a concurrent probe swap the file between write and read.
+    pub struct ProbeTemps(tempfile::TempDir);
+
+    impl ProbeTemps {
+        pub fn new() -> anyhow::Result<Self> {
+            let mut builder = tempfile::Builder::new();
+            builder.prefix("grok-clipboard-probe-");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                builder.permissions(std::fs::Permissions::from_mode(0o700));
+            }
+            builder
+                .tempdir()
+                .map(Self)
+                .map_err(|e| anyhow::anyhow!("failed to create clipboard probe dir: {e}"))
+        }
+
+        /// The one file the chain writes: every branch truncates it first and the class that wrote arrives on stdout.
+        pub fn path(&self) -> std::path::PathBuf {
+            self.0.path().join("probe")
+        }
+    }
+
+    pub(super) fn applescript_string(text: &str) -> String {
+        format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+
+    /// Nested `try` chain coercing each class in order into this probe's file; the code of the one that wrote lands in the caller's `imageOut`. Guillemets are required for `«class …»`.
+    pub fn raster_try_chain(temps: &ProbeTemps) -> String {
+        let path = applescript_string(&temps.path().display().to_string());
+        let mut script = String::new();
+        for class in RasterClass::ALL {
+            script.push_str(&format!(
+                "try\n\
+                 set imgData to the clipboard as \u{00AB}class {code}\u{00BB}\n\
+                 set filePath to POSIX file {path} as text\n\
+                 set fRef to open for access file filePath with write permission\n\
+                 set eof of fRef to 0\n\
+                 write imgData to fRef\n\
+                 close access fRef\n\
+                 set imageOut to \"{code}\"\n\
+                 on error\n",
+                code = class.code(),
+            ));
+        }
+        for _ in RasterClass::ALL {
+            script.push_str("end try\n");
+        }
+        script
+    }
+
+    /// Prints the class code that wrote, else `none`.
+    pub fn image_osascript(temps: &ProbeTemps) -> String {
+        format!(
+            "set imageOut to \"none\"\n{}return imageOut",
+            raster_try_chain(temps)
+        )
+    }
+
+    /// File URLs first, rasters only when none are present; without `temps` the raster half is skipped so a Finder paste still works. Stdout follows [`parse_attachments_output`].
+    pub fn attachments_osascript(temps: Option<&ProbeTemps>) -> String {
+        let image_probe = temps.map_or_else(String::new, |temps| {
+            format!(
+                "if furlOut is \"none\" then\n{}end if\n",
+                raster_try_chain(temps)
+            )
+        });
+        format!(
+            "set furlOut to \"none\"\n\
+             try\n\
+             set urlList to the clipboard as list\n\
+             set out to \"\"\n\
+             repeat with u in urlList\n\
+             try\n\
+             set itemRef to contents of u as \u{00AB}class furl\u{00BB}\n\
+             set out to out & POSIX path of itemRef & \"\\n\"\n\
+             end try\n\
+             end repeat\n\
+             if out is not \"\" then\n\
+             set furlOut to out\n\
+             else\n\
+             try\n\
+             set urlRef to the clipboard as \u{00AB}class furl\u{00BB}\n\
+             set furlOut to POSIX path of urlRef\n\
+             on error\n\
+             end try\n\
+             end if\n\
+             on error\n\
+             try\n\
+             set urlRef to the clipboard as \u{00AB}class furl\u{00BB}\n\
+             set furlOut to POSIX path of urlRef\n\
+             on error\n\
+             end try\n\
+             end try\n\
+             set imageOut to \"NONE\"\n\
+             {image_probe}\
+             return \"{furl_marker}\" & linefeed & furlOut & linefeed & \"{image_marker}\" & linefeed & \"IMAGE:\" & imageOut",
+            furl_marker = FURL_MARKER,
+            image_marker = IMAGE_MARKER,
+        )
+    }
 
     /// Parse the stdout payload of the `get_file_urls` AppleScript. The script returns one of: one or more POSIX paths
     /// separated by `\n` (success), or; the literal string `"none"` (no file URLs present), or; empty / whitespace-only
@@ -401,7 +563,7 @@ mod attachments_protocol {
     /// Parse stdout from the unified attachments AppleScript. The image section is `NONE` when file URLs were found (image
     /// probe skipped) or when no image type is on the pasteboard. When both sections parse successfully, file URLs take
     /// precedence over the image class at the [`get_attachments`] layer. Image bytes are not read if `file_urls` is `Some`.
-    pub fn parse_attachments_output(raw: &str) -> (Option<String>, Option<&'static str>) {
+    pub fn parse_attachments_output(raw: &str) -> (Option<String>, Option<RasterClass>) {
         let (furl_section, image_line) = match raw.split_once(IMAGE_MARKER) {
             Some((before, after)) => (before, Some(after)),
             None => (raw, None),
@@ -418,14 +580,7 @@ mod attachments_protocol {
         let image_class = image_line.and_then(|line| {
             line.trim()
                 .strip_prefix("IMAGE:")
-                .map(str::trim)
-                .filter(|c| *c != "NONE" && !c.is_empty())
-                .and_then(|c| match c {
-                    "PNGf" => Some("PNGf"),
-                    "TIFF" => Some("TIFF"),
-                    "JPEG" => Some("JPEG"),
-                    _ => None,
-                })
+                .and_then(|code| code.trim().parse::<RasterClass>().ok())
         });
         if !raw.trim().is_empty() && file_urls.is_none() && image_class.is_none() {
             tracing::debug!(
@@ -437,6 +592,53 @@ mod attachments_protocol {
         }
         (file_urls, image_class)
     }
+
+    /// The bytes the script wrote for the class it reported; `None` when it wrote nothing.
+    pub fn read_probe_raster(
+        class: RasterClass,
+        temps: &ProbeTemps,
+    ) -> anyhow::Result<Option<super::ImageData>> {
+        let data = std::fs::read(temps.path())
+            .map_err(|e| anyhow::anyhow!("failed to read clipboard temp file: {e}"))?;
+        if data.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(super::ImageData {
+            data,
+            mime_type: class.mime().to_owned(),
+        }))
+    }
+
+    /// The `osascript` half of [`super::get_attachments`]; `run` executes a script and returns its stdout. Without a scratch dir the
+    /// furl half still answers a file paste; with no file URL either the board is unreadable, not empty, as [`super::get_image`] reports it.
+    pub fn osascript_attachments(
+        temps: anyhow::Result<ProbeTemps>,
+        run: impl FnOnce(&str) -> anyhow::Result<Vec<u8>>,
+    ) -> anyhow::Result<super::ClipboardAttachments> {
+        if let Err(error) = &temps {
+            tracing::warn!(%error, "clipboard probe reads file URLs only");
+        }
+        let stdout = run(&attachments_osascript(temps.as_ref().ok()))?;
+        let (file_urls, image_class) = parse_attachments_output(&String::from_utf8_lossy(&stdout));
+        let read_path = super::ClipboardReadPath::Osascript;
+        if file_urls.is_some() {
+            return Ok(super::ClipboardAttachments {
+                file_urls,
+                image: None,
+                read_path,
+            });
+        }
+        let temps = temps?;
+        let image = match image_class {
+            Some(class) => read_probe_raster(class, &temps)?,
+            None => None,
+        };
+        Ok(super::ClipboardAttachments {
+            file_urls: None,
+            image,
+            read_path,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -447,8 +649,10 @@ mod platform {
     use std::process::{Command, Stdio};
     use std::sync::OnceLock;
 
-    use super::attachments_protocol::{FURL_MARKER, IMAGE_MARKER, parse_attachments_output};
-    use super::{ClipboardAttachments, ImageData};
+    use super::attachments_protocol::{
+        ProbeTemps, RasterClass, image_osascript, osascript_attachments, read_probe_raster,
+    };
+    use super::{ClipboardAttachments, ClipboardImageRead, ClipboardReadPath, OSASCRIPT_WAIT};
 
     // These probes deliberately do NOT use `objc2-app-kit`: that crate emits a `#[link]` against AppKit, which this module
     // exists to avoid. Instead AppKit is `dlopen`ed lazily at the FIRST probe and NSPasteboard is reached via objc2 runtime
@@ -621,153 +825,61 @@ mod platform {
         Ok(output.stdout)
     }
 
-    fn attachments_probe_temp_paths() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)
-    {
-        let temp_dir = std::env::temp_dir();
-        (
-            temp_dir.join("grok-clipboard-probe.png"),
-            temp_dir.join("grok-clipboard-probe.tiff"),
-            temp_dir.join("grok-clipboard-probe.jpg"),
-        )
+    /// Killed at [`OSASCRIPT_WAIT`]: a script hung on a stuck pasteboard owner or a privacy prompt must not outlive the paste.
+    fn run_osascript(script: &str) -> anyhow::Result<Vec<u8>> {
+        run_osascript_with_deadline(script, OSASCRIPT_WAIT)
     }
 
-    fn read_clipboard_image_from_class(
-        class: &str,
-        path_png: &std::path::Path,
-        path_tiff: &std::path::Path,
-        path_jpg: &std::path::Path,
-    ) -> anyhow::Result<Option<ImageData>> {
-        let (temp_path, mime) = match class {
-            "PNGf" => (path_png, "image/png"),
-            "TIFF" => (path_tiff, "image/tiff"),
-            "JPEG" => (path_jpg, "image/jpeg"),
-            _ => return Ok(None),
-        };
-
-        let data = match std::fs::read(temp_path) {
-            Ok(bytes) if !bytes.is_empty() => bytes,
-            Ok(_) => {
-                let _ = std::fs::remove_file(temp_path);
-                return Ok(None);
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(temp_path);
-                return Err(anyhow::anyhow!("failed to read clipboard temp file: {e}"));
-            }
-        };
-
-        let _ = std::fs::remove_file(temp_path);
-        Ok(Some(ImageData {
-            data,
-            mime_type: mime.to_owned(),
-        }))
-    }
-
-    fn remove_attachment_probe_temps(
-        path_png: &std::path::Path,
-        path_tiff: &std::path::Path,
-        path_jpg: &std::path::Path,
-    ) {
-        let _ = std::fs::remove_file(path_png);
-        let _ = std::fs::remove_file(path_tiff);
-        let _ = std::fs::remove_file(path_jpg);
-    }
-
-    fn attachments_osascript(
-        path_png: &std::path::Path,
-        path_tiff: &std::path::Path,
-        path_jpg: &std::path::Path,
-    ) -> String {
-        format!(
-            "set furlOut to \"none\"\n\
-             try\n\
-             set urlList to the clipboard as list\n\
-             set out to \"\"\n\
-             repeat with u in urlList\n\
-             try\n\
-             set itemRef to contents of u as \u{00AB}class furl\u{00BB}\n\
-             set out to out & POSIX path of itemRef & \"\\n\"\n\
-             end try\n\
-             end repeat\n\
-             if out is not \"\" then\n\
-             set furlOut to out\n\
-             else\n\
-             try\n\
-             set urlRef to the clipboard as \u{00AB}class furl\u{00BB}\n\
-             set furlOut to POSIX path of urlRef\n\
-             on error\n\
-             end try\n\
-             end if\n\
-             on error\n\
-             try\n\
-             set urlRef to the clipboard as \u{00AB}class furl\u{00BB}\n\
-             set furlOut to POSIX path of urlRef\n\
-             on error\n\
-             end try\n\
-             end try\n\
-             set imageOut to \"NONE\"\n\
-             if furlOut is \"none\" then\n\
-             try\n\
-             set imgData to the clipboard as \u{00AB}class PNGf\u{00BB}\n\
-             set filePath to POSIX file \"{png}\" as text\n\
-             set fRef to open for access file filePath with write permission\n\
-             set eof of fRef to 0\n\
-             write imgData to fRef\n\
-             close access fRef\n\
-             set imageOut to \"PNGf\"\n\
-             on error\n\
-             try\n\
-             set imgData to the clipboard as \u{00AB}class TIFF\u{00BB}\n\
-             set filePath to POSIX file \"{tiff}\" as text\n\
-             set fRef to open for access file filePath with write permission\n\
-             set eof of fRef to 0\n\
-             write imgData to fRef\n\
-             close access fRef\n\
-             set imageOut to \"TIFF\"\n\
-             on error\n\
-             try\n\
-             set imgData to the clipboard as \u{00AB}class JPEG\u{00BB}\n\
-             set filePath to POSIX file \"{jpg}\" as text\n\
-             set fRef to open for access file filePath with write permission\n\
-             set eof of fRef to 0\n\
-             write imgData to fRef\n\
-             close access fRef\n\
-             set imageOut to \"JPEG\"\n\
-             on error\n\
-             end try\n\
-             end try\n\
-             end try\n\
-             end if\n\
-             return \"{furl_marker}\" & linefeed & furlOut & linefeed & \"{image_marker}\" & linefeed & \"IMAGE:\" & imageOut",
-            png = path_png.display(),
-            tiff = path_tiff.display(),
-            jpg = path_jpg.display(),
-            furl_marker = FURL_MARKER,
-            image_marker = IMAGE_MARKER,
-        )
-    }
-
-    fn run_attachments_osascript() -> anyhow::Result<String> {
-        let (path_png, path_tiff, path_jpg) = attachments_probe_temp_paths();
-        remove_attachment_probe_temps(&path_png, &path_tiff, &path_jpg);
-
-        let script = attachments_osascript(&path_png, &path_tiff, &path_jpg);
-
+    pub(super) fn run_osascript_with_deadline(
+        script: &str,
+        deadline: std::time::Duration,
+    ) -> anyhow::Result<Vec<u8>> {
         let mut cmd = Command::new("osascript");
         cmd.arg("-e")
-            .arg(&script)
+            .arg(script)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         xai_tty_utils::detach_std_command(&mut cmd);
-        let stdout = match checked_command_stdout("osascript", cmd.output()) {
-            Ok(stdout) => stdout,
+        #[allow(clippy::disallowed_methods)] // short-lived clipboard helper, waited on below
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("failed to run osascript: {e}"))?;
+        // Drain both pipes on workers so the deadline wait can kill a hung script without deadlocking on a full pipe
+        fn drain<R: std::io::Read + Send + 'static>(
+            mut reader: R,
+        ) -> std::io::Result<std::thread::JoinHandle<Vec<u8>>> {
+            std::thread::Builder::new().spawn(move || {
+                let mut buf = Vec::new();
+                let _ = reader.read_to_end(&mut buf);
+                buf
+            })
+        }
+        let readers = match (child.stdout.take(), child.stderr.take()) {
+            (Some(stdout), Some(stderr)) => {
+                drain(stdout).and_then(|stdout| Ok((stdout, drain(stderr)?)))
+            }
+            _ => Err(std::io::Error::other("stdout or stderr was not piped")),
+        };
+        let (stdout, stderr) = match readers {
+            Ok(readers) => readers,
             Err(error) => {
-                remove_attachment_probe_temps(&path_png, &path_tiff, &path_jpg);
-                return Err(error);
+                // Without its readers the script would run on unwaited, writing into a scratch dir this probe is about to remove
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!("failed to start osascript pipe reader: {error}");
             }
         };
-        Ok(String::from_utf8_lossy(&stdout).into_owned())
+        let status = super::wait_with_deadline(&mut child, deadline)?;
+        let collect = |handle: std::thread::JoinHandle<Vec<u8>>| handle.join().unwrap_or_default();
+        checked_command_stdout(
+            "osascript",
+            Ok(std::process::Output {
+                status,
+                stdout: collect(stdout),
+                stderr: collect(stderr),
+            }),
+        )
     }
 
     /// It is reachable only when the pasteboard text was empty or unactionable, so the AppleScript's text-to-`furl` coercions
@@ -777,30 +889,10 @@ mod platform {
             return Ok(ClipboardAttachments {
                 file_urls: None,
                 image: Some(image),
+                read_path: ClipboardReadPath::Native,
             });
         }
-        let raw = run_attachments_osascript()?;
-        if raw.trim().is_empty() {
-            return Ok(ClipboardAttachments::default());
-        }
-
-        let (path_png, path_tiff, path_jpg) = attachments_probe_temp_paths();
-        let (file_urls, image_class) = parse_attachments_output(&raw);
-        let image = if file_urls.is_some() {
-            remove_attachment_probe_temps(&path_png, &path_tiff, &path_jpg);
-            None
-        } else {
-            match image_class {
-                Some(class) => {
-                    read_clipboard_image_from_class(class, &path_png, &path_tiff, &path_jpg)?
-                }
-                None => {
-                    remove_attachment_probe_temps(&path_png, &path_tiff, &path_jpg);
-                    None
-                }
-            }
-        };
-        Ok(ClipboardAttachments { file_urls, image })
+        osascript_attachments(ProbeTemps::new(), run_osascript)
     }
 
     /// Read text via `pbpaste -Prefer txt`.
@@ -857,80 +949,27 @@ mod platform {
         outcome
     }
 
-    /// Probes PNG, TIFF, then JPEG in a single `osascript` invocation using nested `try` blocks. This avoids spawning up to 3
-    /// separate subprocesses when no image is present, reducing worst-case latency from ~300-600 ms to ~100-200 ms. Uses a
-    /// temp file as the transfer medium to avoid brittle hex parsing of AppleScript output.
-    pub fn get_image() -> anyhow::Result<Option<ImageData>> {
-        // Hot path: a raster advertised with no file-URL type is read in-process, no subprocess
-        // Any other shape falls through to the AppleScript coercion below
-        // That includes the Copy-Image caption case where only legacy raster spellings are advertised
+    /// In-process `NSPasteboard` first; the `osascript` fallback probes PNG, TIFF, then JPEG in one invocation via this probe's temp file.
+    pub fn get_image() -> anyhow::Result<ClipboardImageRead> {
+        // Every shape the native read declines (legacy raster spellings included) falls through to the AppleScript coercion
         if let Some(image) = native_image_read() {
-            return Ok(Some(image));
+            return Ok(ClipboardImageRead {
+                image: Some(image),
+                read_path: ClipboardReadPath::Native,
+            });
         }
+        let read_path = ClipboardReadPath::Osascript;
 
-        let (path_png, path_tiff, path_jpg) = attachments_probe_temp_paths();
-        remove_attachment_probe_temps(&path_png, &path_tiff, &path_jpg);
-
-        // Image-only AppleScript (ImageOnly paste route)
-        // Unicode guillemets (\u{AB}/\u{BB}) are required for `«class …»` in `osascript -e`
-        let script = format!(
-            "try\n\
-             set imgData to the clipboard as \u{00AB}class PNGf\u{00BB}\n\
-             set filePath to POSIX file \"{png}\" as text\n\
-             set fRef to open for access file filePath with write permission\n\
-             set eof of fRef to 0\n\
-             write imgData to fRef\n\
-             close access fRef\n\
-             return \"PNGf\"\n\
-             on error\n\
-             try\n\
-             set imgData to the clipboard as \u{00AB}class TIFF\u{00BB}\n\
-             set filePath to POSIX file \"{tiff}\" as text\n\
-             set fRef to open for access file filePath with write permission\n\
-             set eof of fRef to 0\n\
-             write imgData to fRef\n\
-             close access fRef\n\
-             return \"TIFF\"\n\
-             on error\n\
-             try\n\
-             set imgData to the clipboard as \u{00AB}class JPEG\u{00BB}\n\
-             set filePath to POSIX file \"{jpg}\" as text\n\
-             set fRef to open for access file filePath with write permission\n\
-             set eof of fRef to 0\n\
-             write imgData to fRef\n\
-             close access fRef\n\
-             return \"JPEG\"\n\
-             on error\n\
-             return \"none\"\n\
-             end try\n\
-             end try\n\
-             end try",
-            png = path_png.display(),
-            tiff = path_tiff.display(),
-            jpg = path_jpg.display(),
-        );
-
-        let mut cmd = Command::new("osascript");
-        cmd.arg("-e")
-            .arg(&script)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        xai_tty_utils::detach_std_command(&mut cmd);
-        let stdout = match checked_command_stdout("osascript", cmd.output()) {
-            Ok(stdout) => stdout,
-            Err(error) => {
-                remove_attachment_probe_temps(&path_png, &path_tiff, &path_jpg);
-                return Err(error);
-            }
+        let temps = ProbeTemps::new()?;
+        let stdout = run_osascript(&image_osascript(&temps))?;
+        let image = match String::from_utf8_lossy(&stdout)
+            .trim()
+            .parse::<RasterClass>()
+        {
+            Ok(class) => read_probe_raster(class, &temps)?,
+            Err(()) => None,
         };
-        let class = String::from_utf8_lossy(&stdout);
-        let class = class.trim();
-        if class == "none" {
-            remove_attachment_probe_temps(&path_png, &path_tiff, &path_jpg);
-            return Ok(None);
-        }
-        read_clipboard_image_from_class(class, &path_png, &path_tiff, &path_jpg)
+        Ok(ClipboardImageRead { image, read_path })
     }
 
     /// On several macOS versions `the clipboard as «class furl»` on a multi-file selection returns only the first file's URL
@@ -938,17 +977,6 @@ mod platform {
     /// clipboards that still coerce to a single-item list) are skipped rather than passed through as bogus "paths".
     pub fn get_file_urls() -> anyhow::Result<Option<String>> {
         Ok(get_attachments()?.file_urls)
-    }
-
-    /// Map pasteboard class to file extension for the temp file.
-    #[cfg(test)]
-    pub(super) fn extension_for_class(class: &str) -> &'static str {
-        match class {
-            "PNGf" => "png",
-            "TIFF" => "tiff",
-            "JPEG" | "JPEGAufs" => "jpg",
-            _ => "bin",
-        }
     }
 
     /// Copy an image file to the macOS clipboard via `osascript`. Detects the pasteboard class from the file extension (PNG,
@@ -992,7 +1020,7 @@ mod platform {
 // ---------------------------------------------------------------------------
 #[cfg(not(target_os = "macos"))]
 mod platform {
-    use super::ImageData;
+    use super::{ClipboardImageRead, ClipboardReadPath, ImageData};
     use std::process::{Command, Stdio};
 
     /// No subprocess-free pasteboard probe exists off-macOS.
@@ -1093,6 +1121,44 @@ mod platform {
     /// leaks with it; harmless while the lease keeps the shared backend alive.
     const ARBOARD_READ_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
+    /// Copies run on the UI thread, so a write waits only briefly for an in-flight read.
+    const ARBOARD_WRITE_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+    /// Run one arboard operation while no other arboard operation runs in this process, or fail after `wait`.
+    ///
+    /// Windows allows one open clipboard at a time, and arboard opens it inside every operation. Its docs warn that
+    /// parallel operations are likely to fail or deadlock and say to use the clipboard from one thread.
+    ///
+    /// Linux stays unlocked: a Wayland read can block forever, and holding the lock through it would fail every later
+    /// operation.
+    fn run_arboard_exclusive<T>(
+        wait: std::time::Duration,
+        op: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        #[cfg(target_os = "windows")]
+        {
+            static ARBOARD_OP_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+            run_exclusive(&ARBOARD_OP_LOCK, wait, op)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = wait;
+            op()
+        }
+    }
+
+    #[cfg(any(target_os = "windows", test))]
+    fn run_exclusive<T>(
+        lock: &parking_lot::Mutex<()>,
+        wait: std::time::Duration,
+        op: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let Some(_guard) = lock.try_lock_for(wait) else {
+            anyhow::bail!("arboard busy: an earlier clipboard operation is still running");
+        };
+        op()
+    }
+
     fn arboard_read_with_deadline<T: Send + 'static>(
         op: impl FnOnce(&mut arboard::Clipboard) -> anyhow::Result<T> + Send + 'static,
     ) -> anyhow::Result<T> {
@@ -1101,9 +1167,11 @@ mod platform {
             anyhow::bail!("arboard leg disabled (GROK_CLIPBOARD_NO_DATA_CONTROL)");
         }
         let result = spawn_with_deadline("clipboard-read", ARBOARD_READ_WAIT, move || {
-            arboard::Clipboard::new()
-                .map_err(anyhow::Error::from)
-                .and_then(|mut clipboard| op(&mut clipboard))
+            run_arboard_exclusive(ARBOARD_READ_WAIT, || {
+                arboard::Clipboard::new()
+                    .map_err(anyhow::Error::from)
+                    .and_then(|mut clipboard| op(&mut clipboard))
+            })
         });
         match result {
             Ok(inner) => inner,
@@ -1141,29 +1209,33 @@ mod platform {
     }
 
     fn arboard_set_text(text: &str) -> anyhow::Result<()> {
-        arboard_lease()?.lock().set_text(text)?;
-        Ok(())
+        run_arboard_exclusive(ARBOARD_WRITE_WAIT, || {
+            arboard_lease()?.lock().set_text(text)?;
+            Ok(())
+        })
     }
 
+    /// The PNG encode runs after the read returns so it does not hold [`run_arboard_exclusive`]'s lock.
     fn arboard_get_image() -> anyhow::Result<Option<ImageData>> {
-        arboard_read_with_deadline(|clipboard| {
-            let img_data = match clipboard.get_image() {
-                Ok(data) => data,
-                Err(arboard::Error::ContentNotAvailable) => return Ok(None),
-                Err(err) => return Err(err.into()),
-            };
+        let Some(img_data) = arboard_read_with_deadline(|clipboard| match clipboard.get_image() {
+            Ok(data) => Ok(Some(data)),
+            Err(arboard::Error::ContentNotAvailable) => Ok(None),
+            Err(err) => Err(err.into()),
+        })?
+        else {
+            return Ok(None);
+        };
 
-            let png_bytes = encode_rgba_to_png(
-                &img_data.bytes,
-                img_data.width as u32,
-                img_data.height as u32,
-            )?;
+        let png_bytes = encode_rgba_to_png(
+            &img_data.bytes,
+            img_data.width as u32,
+            img_data.height as u32,
+        )?;
 
-            Ok(Some(ImageData {
-                data: png_bytes,
-                mime_type: "image/png".to_owned(),
-            }))
-        })
+        Ok(Some(ImageData {
+            data: png_bytes,
+            mime_type: "image/png".to_owned(),
+        }))
     }
 
     // arboard is built with `wayland-data-control` On compositors exposing the data-control protocol (probe:
@@ -1421,7 +1493,10 @@ mod platform {
 
     #[cfg(target_os = "linux")]
     fn tool_available(spec: &ToolSpec) -> bool {
-        let mut cmd = Command::new(spec.write_text[0]);
+        let Some(bin) = spec.write_text.first() else {
+            return false;
+        };
+        let mut cmd = Command::new(bin);
         cmd.arg("--version")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -1824,14 +1899,18 @@ mod platform {
         outcome
     }
 
-    pub fn get_image() -> anyhow::Result<Option<ImageData>> {
+    pub fn get_image() -> anyhow::Result<ClipboardImageRead> {
+        let arboard = |image| ClipboardImageRead {
+            image,
+            read_path: ClipboardReadPath::Arboard,
+        };
         let mut arboard_error = None;
         match arboard_get_image() {
-            Ok(Some(image)) => return Ok(Some(image)),
+            Ok(Some(image)) => return Ok(arboard(Some(image))),
             // Wayland-only: arboard's empty answer is not authoritative, fall through to wl-paste (see `wayland_tool_selected`)
             #[cfg(target_os = "linux")]
             Ok(None) if wayland_tool_selected(linux_tool_spec()) => {}
-            Ok(None) => return Ok(None),
+            Ok(None) => return Ok(arboard(None)),
             Err(e) => {
                 tracing::debug!("arboard get_image failed: {e}");
                 arboard_error = Some(e);
@@ -1841,21 +1920,21 @@ mod platform {
         if let Some(spec) = linux_tool_spec()
             && let Some(argv) = spec.read_png
         {
-            // Not checked: typed image MIME miss is Ok(None), not probe failure.
+            // Not checked: typed image MIME miss is an empty read, not probe failure.
             let bytes = run_capture_out(argv, CLI_READ_WAIT)?;
-            if !bytes.is_empty() {
-                let mime = super::mime_from_bytes(&bytes);
-                return Ok(Some(ImageData {
-                    data: bytes,
-                    mime_type: mime.to_owned(),
-                }));
-            }
-            return Ok(None);
+            let image = (!bytes.is_empty()).then(|| ImageData {
+                mime_type: super::mime_from_bytes(&bytes).to_owned(),
+                data: bytes,
+            });
+            return Ok(ClipboardImageRead {
+                image,
+                read_path: ClipboardReadPath::LinuxCli,
+            });
         }
         if let Some(error) = arboard_error {
             return Err(error);
         }
-        Ok(None)
+        Ok(arboard(None))
     }
 
     /// Unlike `set_text`/`get_text`/`get_image`, this skips arboard and goes straight to CLI tools.
@@ -1931,12 +2010,17 @@ mod platform {
                 None
             }
         };
-        let image = if file_urls.is_none() {
-            get_image()?
+        let (image, read_path) = if file_urls.is_none() {
+            let read = get_image()?;
+            (read.image, read.read_path)
         } else {
-            None
+            (None, ClipboardReadPath::Arboard)
         };
-        Ok(super::ClipboardAttachments { file_urls, image })
+        Ok(super::ClipboardAttachments {
+            file_urls,
+            image,
+            read_path,
+        })
     }
 
     /// Read file references via arboard's `file_list()`: `CF_HDROP` on Windows, `text/uri-list` on X11.
@@ -1961,12 +2045,30 @@ mod platform {
         })
     }
 
-    /// Contract tests for `spawn_with_deadline` (private to this module, so they live here; any non-macOS test host runs them).
+    /// Contract tests for `spawn_with_deadline` and `run_exclusive` (private to this module, so they live here; any
+    /// non-macOS test host runs them).
     #[cfg(test)]
     mod worker_deadline_tests {
         use super::*;
         use std::sync::mpsc::RecvTimeoutError;
         use std::time::Duration;
+
+        #[test]
+        fn run_exclusive_fails_without_running_when_holder_outlives_wait() {
+            let lock = parking_lot::Mutex::new(());
+            let _held = lock.lock();
+            let ran = std::cell::Cell::new(false);
+            let error = run_exclusive(&lock, Duration::from_millis(10), || {
+                ran.set(true);
+                Ok(())
+            })
+            .expect_err("lock is held");
+            assert_eq!(
+                "arboard busy: an earlier clipboard operation is still running",
+                error.to_string()
+            );
+            assert!(!ran.get());
+        }
 
         #[test]
         fn fast_closure_returns_value() {
@@ -2005,11 +2107,11 @@ mod platform {
         fn primary_read_argv_targets_x11_primary_exactly() {
             assert_eq!(
                 XCLIP_SPEC.read_primary,
-                Some(&["xclip", "-o", "-selection", "primary"][..])
+                Some(["xclip", "-o", "-selection", "primary"].as_slice())
             );
             assert_eq!(
                 XSEL_SPEC.read_primary,
-                Some(&["xsel", "--primary", "--output"][..])
+                Some(["xsel", "--primary", "--output"].as_slice())
             );
             assert_eq!(WL_SPEC.read_primary, None);
         }
@@ -2705,7 +2807,8 @@ mod tests {
 
     mod attachments_protocol_tests {
         use super::super::attachments_protocol::{
-            FURL_MARKER, IMAGE_MARKER, parse_attachments_output, parse_osascript_furl_output,
+            FURL_MARKER, IMAGE_MARKER, RasterClass, parse_attachments_output,
+            parse_osascript_furl_output,
         };
 
         fn sample_output(furl_body: &str, image: &str) -> String {
@@ -2791,21 +2894,17 @@ mod tests {
 
         #[test]
         fn parse_attachments_image_classes() {
-            for (image, expected) in [
-                ("PNGf", Some("PNGf")),
-                ("TIFF", Some("TIFF")),
-                ("JPEG", Some("JPEG")),
-            ] {
-                let raw = sample_output("none", image);
+            for expected in RasterClass::ALL {
+                let raw = sample_output("none", expected.code());
                 let (urls, class) = parse_attachments_output(&raw);
-                assert!(urls.is_none(), "furl should be none for {image}");
-                assert_eq!(class, expected);
+                assert!(urls.is_none(), "furl should be none for {expected:?}");
+                assert_eq!(class, Some(expected));
             }
         }
 
         #[test]
         fn parse_attachments_unknown_image_class_is_none() {
-            for image in ["WEBP", "GIFf", "unknown"] {
+            for image in ["WEBP", "GIFf", "unknown", "JPEGAufs", ""] {
                 let raw = sample_output("none", image);
                 let (urls, class) = parse_attachments_output(&raw);
                 assert!(urls.is_none(), "furl should be none for {image}");
@@ -2818,7 +2917,7 @@ mod tests {
             let raw = sample_output("/tmp/a.png\n", "PNGf");
             let (urls, class) = parse_attachments_output(&raw);
             assert_eq!(urls.as_deref(), Some("/tmp/a.png"));
-            assert_eq!(class, Some("PNGf"));
+            assert_eq!(class, Some(RasterClass::Png));
         }
 
         #[test]
@@ -2840,7 +2939,7 @@ mod tests {
             let raw = format!("{FURL_MARKER}\r\n/tmp/a.png\r\n{IMAGE_MARKER}\r\nIMAGE:PNGf");
             let (urls, class) = parse_attachments_output(&raw);
             assert_eq!(urls.as_deref(), Some("/tmp/a.png"));
-            assert_eq!(class, Some("PNGf"));
+            assert_eq!(class, Some(RasterClass::Png));
         }
 
         #[test]
@@ -2862,19 +2961,182 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // macOS extension helper
+    // osascript raster hand-off
     // -----------------------------------------------------------------------
 
-    #[cfg(target_os = "macos")]
-    mod macos_helpers {
-        use super::super::platform::extension_for_class;
+    mod probe_temps_tests {
+        use super::super::attachments_protocol::{
+            FURL_MARKER, IMAGE_MARKER, ProbeTemps, RasterClass, applescript_string,
+            attachments_osascript, image_osascript, osascript_attachments, raster_try_chain,
+        };
+
+        /// Pins the generated chain: `osascript` runs only on macOS, so a generator slip would pass Linux CI and fail every fallback paste.
+        #[test]
+        fn raster_try_chain_matches_its_golden_script() {
+            let temps = ProbeTemps::new().expect("probe temps");
+            let path = applescript_string(&temps.path().display().to_string());
+            let write = |class: RasterClass| {
+                format!(
+                    "try\n\
+                     set imgData to the clipboard as \u{00AB}class {code}\u{00BB}\n\
+                     set filePath to POSIX file {path} as text\n\
+                     set fRef to open for access file filePath with write permission\n\
+                     set eof of fRef to 0\n\
+                     write imgData to fRef\n\
+                     close access fRef\n\
+                     set imageOut to \"{code}\"\n\
+                     on error\n",
+                    code = class.code(),
+                )
+            };
+            let expected = format!(
+                "{png}{tiff}{jpeg}end try\nend try\nend try\n",
+                png = write(RasterClass::Png),
+                tiff = write(RasterClass::Tiff),
+                jpeg = write(RasterClass::Jpeg),
+            );
+            assert_eq!(expected, raster_try_chain(&temps));
+        }
+
+        /// The image script returns what the chain set; the attachments script gates the same chain on no file URL.
+        #[test]
+        fn both_osascripts_embed_the_raster_chain() {
+            let temps = ProbeTemps::new().expect("probe temps");
+            let chain = raster_try_chain(&temps);
+            assert_eq!(
+                format!("set imageOut to \"none\"\n{chain}return imageOut"),
+                image_osascript(&temps)
+            );
+            let attachments = attachments_osascript(Some(&temps));
+            assert!(
+                attachments.contains(&format!("if furlOut is \"none\" then\n{chain}end if\n")),
+                "{attachments}"
+            );
+        }
 
         #[test]
-        fn extension_mapping() {
-            assert_eq!(extension_for_class("PNGf"), "png");
-            assert_eq!(extension_for_class("TIFF"), "tiff");
-            assert_eq!(extension_for_class("JPEG"), "jpg");
-            assert_eq!(extension_for_class("unknown"), "bin");
+        fn applescript_string_escapes_quotes_and_backslashes() {
+            assert_eq!(applescript_string("plain"), "\"plain\"");
+            assert_eq!(
+                applescript_string(r#"a "quoted" \ path"#),
+                r#""a \"quoted\" \\ path""#
+            );
+        }
+
+        fn attachments_stdout(furl: &str, image: &str) -> Vec<u8> {
+            format!("{FURL_MARKER}\n{furl}\n{IMAGE_MARKER}\nIMAGE:{image}").into_bytes()
+        }
+
+        /// The class on stdout selects the MIME; the bytes come from this probe's file.
+        #[test]
+        fn osascript_attachments_reads_the_reported_class_from_the_probe_file() {
+            let temps = ProbeTemps::new().expect("probe temps");
+            std::fs::write(temps.path(), b"MM\x00\x2a").expect("write");
+            let read = osascript_attachments(Ok(temps), |_| Ok(attachments_stdout("none", "TIFF")))
+                .expect("raster read");
+            let image = read.image.expect("raster attached");
+            assert_eq!("image/tiff", image.mime_type);
+            assert_eq!(b"MM\x00\x2a".to_vec(), image.data);
+            assert!(read.file_urls.is_none());
+        }
+
+        /// Without a scratch dir the furl half still answers a file paste; a board that answers nothing is unreadable, not empty.
+        #[test]
+        fn osascript_attachments_without_a_scratch_dir_answers_file_urls_or_fails() {
+            let no_dir = || Err(anyhow::anyhow!("no scratch dir"));
+            let furl_only = |stdout: Vec<u8>| {
+                move |script: &str| {
+                    assert!(
+                        !script.contains("open for access"),
+                        "raster half must be skipped"
+                    );
+                    Ok(stdout)
+                }
+            };
+            let file = osascript_attachments(
+                no_dir(),
+                furl_only(attachments_stdout("/tmp/a.png", "NONE")),
+            )
+            .expect("a file paste still answers");
+            assert_eq!(Some("/tmp/a.png"), file.file_urls.as_deref());
+            assert!(file.image.is_none());
+
+            let err =
+                osascript_attachments(no_dir(), furl_only(attachments_stdout("none", "NONE")))
+                    .expect_err("no scratch dir and no file URL is not an empty board");
+            assert!(err.to_string().contains("no scratch dir"), "{err}");
+        }
+
+        /// Without a scratch dir the script still answers file URLs and skips the raster half.
+        #[test]
+        fn attachments_osascript_without_temps_is_furl_only() {
+            let script = attachments_osascript(None);
+            assert!(script.contains("class furl"));
+            assert!(script.contains(FURL_MARKER) && script.contains(IMAGE_MARKER));
+            assert!(
+                !script.contains("class PNGf") && !script.contains("open for access"),
+                "raster coercion must be skipped without a scratch dir"
+            );
+        }
+
+        /// The pipe readers hand back the script's stdout, and a script error's stderr reaches the error message.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn osascript_stdout_and_stderr_are_collected() {
+            let run = |script: &str| {
+                super::super::platform::run_osascript_with_deadline(
+                    script,
+                    std::time::Duration::from_secs(20),
+                )
+            };
+            assert_eq!(
+                b"PNGf\n".to_vec(),
+                run("return \"PNGf\"").expect("script ran")
+            );
+            let err = run("error \"pasteboard busy\"").expect_err("script error");
+            assert!(err.to_string().contains("pasteboard busy"), "{err}");
+        }
+
+        /// A script that never returns is killed at the deadline and the kill reaches the caller as [`WaitTimeout`].
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn hung_osascript_is_killed_at_the_deadline() {
+            let started = std::time::Instant::now();
+            let err = super::super::platform::run_osascript_with_deadline(
+                "delay 30",
+                std::time::Duration::from_millis(100),
+            )
+            .expect_err("the script outlives the deadline");
+            assert!(
+                err.downcast_ref::<super::super::WaitTimeout>().is_some(),
+                "{err}"
+            );
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        }
+
+        /// Two live probes never share a file; the dir is owner-only and gone on drop.
+        #[test]
+        fn each_probe_gets_a_private_dir_removed_on_drop() {
+            let a = ProbeTemps::new().expect("probe temps");
+            let b = ProbeTemps::new().expect("probe temps");
+            assert_ne!(a.path(), b.path(), "probe file shared between probes");
+            let dir = a.path().parent().expect("probe dir").to_path_buf();
+            assert!(dir.is_dir());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&dir)
+                    .expect("probe dir")
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(mode, 0o700, "probe dir must be owner-only, got {mode:o}");
+            }
+            drop(a);
+            assert!(
+                !dir.exists(),
+                "dropping the probe must remove its scratch dir"
+            );
         }
     }
 

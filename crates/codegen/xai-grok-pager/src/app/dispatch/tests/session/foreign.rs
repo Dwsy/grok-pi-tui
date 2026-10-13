@@ -29,7 +29,10 @@ fn modal_entries(app: &AppView) -> &[crate::app::app_view::SessionPickerEntry] {
     let Some(ActiveModal::SessionPicker {
         entries: Some(entries),
         ..
-    }) = app.agents[&AgentId(0)].active_modal.as_ref()
+    }) = app
+        .agents
+        .get(&AgentId(0))
+        .and_then(|a| a.active_modal.as_ref())
     else {
         panic!("modal picker missing");
     };
@@ -75,7 +78,10 @@ fn foreign_result_interleaves_deduplicates_and_empty_clears_only_external() {
     );
     let entries = app.session_picker_entries.as_ref().unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].id, "native");
+    let Some(entry) = entries.first() else {
+        panic!("expected a picker entry: {entries:?}");
+    };
+    assert_eq!(entry.id, "native");
 }
 
 #[test]
@@ -115,8 +121,11 @@ fn foreign_generation_drops_stale_closed_and_pre_reopen_results() {
         &mut app,
     );
     assert_eq!(
-        app.session_picker_entries.as_ref().unwrap()[0].id,
-        "reopened"
+        app.session_picker_entries
+            .as_ref()
+            .and_then(|e| e.first())
+            .map(|e| e.id.as_str()),
+        Some("reopened")
     );
 }
 
@@ -139,8 +148,10 @@ fn modal_refetch_clears_orphaned_welcome_foreign_loading() {
             .any(|effect| matches!(effect, Effect::ScanForeignSessions { .. }))
     );
     assert!(!app.session_picker_lanes.foreign_loading);
-    let Some(ActiveModal::SessionPicker { lanes, .. }) =
-        app.agents[&AgentId(0)].active_modal.as_ref()
+    let Some(ActiveModal::SessionPicker { lanes, .. }) = app
+        .agents
+        .get(&AgentId(0))
+        .and_then(|a| a.active_modal.as_ref())
     else {
         panic!("modal picker missing");
     };
@@ -187,7 +198,10 @@ fn modal_without_foreign_lane_does_not_consume_welcome_result() {
         &mut app,
     );
 
-    assert_eq!(modal_entries(&app)[0].id, "modal-native");
+    assert_eq!(
+        modal_entries(&app).first().map(|e| e.id.as_str()),
+        Some("modal-native")
+    );
     assert!(
         app.session_picker_entries
             .as_ref()
@@ -233,8 +247,11 @@ fn native_empty_waits_for_foreign_and_foreign_only_rows_survive() {
     assert!(!app.session_picker_lanes.foreign_loading);
     assert!(app.session_picker_lanes.pending_notice.is_none());
     assert_eq!(
-        app.session_picker_entries.as_ref().unwrap()[0].id,
-        "foreign-only"
+        app.session_picker_entries
+            .as_ref()
+            .and_then(|e| e.first())
+            .map(|e| e.id.as_str()),
+        Some("foreign-only")
     );
 }
 
@@ -298,7 +315,11 @@ fn modal_native_failure_waits_for_foreign_rows_before_toast() {
         }),
         &mut app,
     );
-    assert!(app.agents[&AgentId(0)].toast.is_none());
+    assert!(
+        app.agents
+            .get(&AgentId(0))
+            .is_some_and(|a| a.toast.is_none())
+    );
 
     let _ = dispatch(
         Action::TaskComplete(TaskResult::ForeignSessionsScanned {
@@ -307,7 +328,10 @@ fn modal_native_failure_waits_for_foreign_rows_before_toast() {
         }),
         &mut app,
     );
-    assert_eq!(modal_entries(&app)[0].id, "foreign-only");
+    assert_eq!(
+        modal_entries(&app).first().map(|e| e.id.as_str()),
+        Some("foreign-only")
+    );
     assert!(read_toast(&app).contains("native failed"));
 }
 
@@ -337,7 +361,11 @@ fn modal_empty_notice_waits_until_both_lanes_are_empty() {
         }),
         &mut app,
     );
-    assert!(app.agents[&AgentId(0)].toast.is_none());
+    assert!(
+        app.agents
+            .get(&AgentId(0))
+            .is_some_and(|a| a.toast.is_none())
+    );
 
     let _ = dispatch(
         Action::TaskComplete(TaskResult::ForeignSessionsScanned {
@@ -374,7 +402,9 @@ fn welcome_selection_survives_foreign_insertion_with_viewport_offset() {
 
     assert_eq!(app.session_picker_state.selected, 2);
     assert_eq!(app.session_picker_state.scroll_offset, Some(2));
-    let selected = &app.session_picker_entries.as_ref().unwrap()[2];
+    let Some(selected) = app.session_picker_entries.as_ref().and_then(|e| e.get(2)) else {
+        panic!("expected picker entry at index 2");
+    };
     assert_eq!(
         (selected.source.as_str(), selected.id.as_str()),
         ("local", "b")
@@ -417,8 +447,10 @@ fn modal_selection_survives_native_and_foreign_completion_races() {
         }),
         &mut app,
     );
-    let Some(ActiveModal::SessionPicker { state, .. }) =
-        app.agents[&AgentId(0)].active_modal.as_ref()
+    let Some(ActiveModal::SessionPicker { state, .. }) = app
+        .agents
+        .get(&AgentId(0))
+        .and_then(|a| a.active_modal.as_ref())
     else {
         panic!("modal picker missing");
     };
@@ -433,10 +465,15 @@ fn modal_selection_survives_native_and_foreign_completion_races() {
         SourceFilter::All,
         Some("repo"),
     );
-    let Some(PickerItem::Fuzzy { original_index }) = map[state.selected].as_ref() else {
+    let Some(PickerItem::Fuzzy { original_index }) =
+        map.get(state.selected).and_then(|item| item.as_ref())
+    else {
         panic!("selection must remain on a row");
     };
-    assert_eq!(modal_entries(&app)[*original_index].id, "b");
+    let Some(entry) = modal_entries(&app).get(*original_index) else {
+        panic!("missing picker row {original_index}");
+    };
+    assert_eq!(entry.id, "b");
 
     let _ = dispatch(
         Action::TaskComplete(TaskResult::SessionListLoaded {
@@ -453,8 +490,10 @@ fn modal_selection_survives_native_and_foreign_completion_races() {
         }),
         &mut app,
     );
-    let Some(ActiveModal::SessionPicker { state, .. }) =
-        app.agents[&AgentId(0)].active_modal.as_ref()
+    let Some(ActiveModal::SessionPicker { state, .. }) = app
+        .agents
+        .get(&AgentId(0))
+        .and_then(|a| a.active_modal.as_ref())
     else {
         panic!("modal picker missing");
     };
@@ -467,10 +506,15 @@ fn modal_selection_survives_native_and_foreign_completion_races() {
         SourceFilter::All,
         Some("repo"),
     );
-    let Some(PickerItem::Fuzzy { original_index }) = map[state.selected].as_ref() else {
+    let Some(PickerItem::Fuzzy { original_index }) =
+        map.get(state.selected).and_then(|item| item.as_ref())
+    else {
         panic!("selection must remain on a row");
     };
-    assert_eq!(modal_entries(&app)[*original_index].id, "b");
+    let Some(entry) = modal_entries(&app).get(*original_index) else {
+        panic!("missing picker row {original_index}");
+    };
+    assert_eq!(entry.id, "b");
 }
 
 #[test]
@@ -551,12 +595,16 @@ fn external_filter_clears_and_suppresses_native_content_state() {
         None,
     );
     assert_eq!(map.len(), 1);
-    let Some(PickerItem::Fuzzy { original_index }) = map[0].as_ref() else {
+    let Some(PickerItem::Fuzzy { original_index }) = map.first().and_then(|item| item.as_ref())
+    else {
         panic!("external row missing");
     };
     assert_eq!(
-        app.session_picker_entries.as_ref().unwrap()[*original_index].id,
-        "foreign"
+        app.session_picker_entries
+            .as_ref()
+            .and_then(|e| e.get(*original_index))
+            .map(|e| e.id.as_str()),
+        Some("foreign")
     );
 }
 
@@ -596,7 +644,10 @@ fn modal_external_filter_clears_native_content_and_blocks_forced_search() {
         content_loading,
         source_filter,
         ..
-    }) = app.agents[&AgentId(0)].active_modal.as_ref()
+    }) = app
+        .agents
+        .get(&AgentId(0))
+        .and_then(|a| a.active_modal.as_ref())
     else {
         panic!("modal picker missing");
     };
@@ -845,7 +896,10 @@ fn modal_cycle_refetches_when_entering_headless() {
         source_filter,
         loading,
         ..
-    }) = app.agents[&AgentId(0)].active_modal.as_ref()
+    }) = app
+        .agents
+        .get(&AgentId(0))
+        .and_then(|a| a.active_modal.as_ref())
     else {
         panic!("modal picker missing");
     };
@@ -928,7 +982,10 @@ fn active_modal_owns_stale_and_external_deep_search_results() {
         assert!(app.session_picker_content_results.is_none());
         let Some(ActiveModal::SessionPicker {
             content_results, ..
-        }) = app.agents[&AgentId(0)].active_modal.as_ref()
+        }) = app
+            .agents
+            .get(&AgentId(0))
+            .and_then(|a| a.active_modal.as_ref())
         else {
             panic!("modal picker missing");
         };
@@ -1187,14 +1244,17 @@ fn gated_foreign_pick_replaces_all_prior_startup_intents() {
             .iter()
             .any(|effect| matches!(effect, Effect::CreateWorktreeSession { .. }))
     );
-    assert!(app.agents[&old_id].session.pending_prompts.is_empty());
+    assert!(
+        app.agents
+            .get(&old_id)
+            .is_some_and(|a| a.session.pending_prompts.is_empty())
+    );
     let new_id = AgentId(1);
     assert_eq!(app.active_view, ActiveView::Agent(new_id));
     assert_eq!(
-        app.agents[&new_id]
-            .session
-            .pending_prompts
-            .front()
+        app.agents
+            .get(&new_id)
+            .and_then(|a| a.session.pending_prompts.front())
             .map(|prompt| prompt.text.as_str()),
         Some("/resume-codex codex-deferred")
     );
@@ -1212,10 +1272,10 @@ fn welcome_and_modal_foreign_picks_always_target_fresh_sessions() {
             .any(|effect| matches!(effect, Effect::CreateSession { .. }))
     );
     assert_eq!(
-        welcome.agents[&AgentId(0)]
-            .session
-            .pending_prompts
-            .front()
+        welcome
+            .agents
+            .get(&AgentId(0))
+            .and_then(|a| a.session.pending_prompts.front())
             .map(|prompt| prompt.text.as_str()),
         Some("/resume-codex codex-native")
     );
@@ -1231,12 +1291,17 @@ fn welcome_and_modal_foreign_picks_always_target_fresh_sessions() {
             .iter()
             .any(|effect| matches!(effect, Effect::CreateSession { .. }))
     );
-    assert!(modal.agents[&AgentId(0)].session.pending_prompts.is_empty());
+    assert!(
+        modal
+            .agents
+            .get(&AgentId(0))
+            .is_some_and(|a| a.session.pending_prompts.is_empty())
+    );
     assert_eq!(
-        modal.agents[&AgentId(1)]
-            .session
-            .pending_prompts
-            .front()
+        modal
+            .agents
+            .get(&AgentId(1))
+            .and_then(|a| a.session.pending_prompts.front())
             .map(|prompt| prompt.text.as_str()),
         Some("/resume-cursor cursor-native")
     );
@@ -1271,7 +1336,11 @@ fn foreign_selection_and_mutation_guards_remain_central() {
         )
         .is_empty()
     );
-    assert!(app.agents[&AgentId(0)].active_modal.is_some());
+    assert!(
+        app.agents
+            .get(&AgentId(0))
+            .is_some_and(|a| a.active_modal.is_some())
+    );
 }
 
 #[test]

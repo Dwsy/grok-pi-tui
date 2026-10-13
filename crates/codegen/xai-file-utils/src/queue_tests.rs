@@ -196,15 +196,27 @@ async fn blocking_enqueue_spills_recoverable_sidecar_pair() {
         .filter(|p| p.to_string_lossy().ends_with(SIDECAR_SUFFIX))
         .collect();
     assert_eq!(sidecars.len(), 1, "one sidecar spilled");
-    let sidecar: QueueItemSidecar =
-        serde_json::from_slice(&std::fs::read(&sidecars[0]).unwrap()).unwrap();
+    let sidecar: QueueItemSidecar = serde_json::from_slice(
+        &std::fs::read(
+            sidecars
+                .first()
+                .unwrap_or_else(|| panic!("expected one sidecar: {sidecars:?}")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(sidecar.gcs_path, "sess-1234/turn_7/tool_state.json");
     assert_eq!(
         sidecar.sha256,
         crate::sha256_hex(content),
         "recovery's corruption guard must accept the pair"
     );
-    let temp_file = temp_path_for_sidecar(&sidecars[0]).unwrap();
+    let temp_file = temp_path_for_sidecar(
+        sidecars
+            .first()
+            .unwrap_or_else(|| panic!("expected one sidecar: {sidecars:?}")),
+    )
+    .unwrap();
     assert!(temp_file.exists(), "the pair's temp file is in place");
 }
 
@@ -979,7 +991,7 @@ async fn enqueue_does_not_write_sidecar_legacy_fast_path() {
         "exactly one temp file, no sidecar: {names:?}"
     );
     assert!(
-        !names[0].ends_with(SIDECAR_SUFFIX),
+        !names.first().is_some_and(|n| n.ends_with(SIDECAR_SUFFIX)),
         "legacy enqueue must not write a .meta.json sidecar"
     );
     let item = rx.recv().await.expect("item handed to the worker");
@@ -1212,7 +1224,13 @@ async fn enqueue_writes_temp_file_and_returns_ok() {
     // Verify temp file was written.
     let files: Vec<_> = std::fs::read_dir(&queue_dir).unwrap().flatten().collect();
     assert_eq!(files.len(), 1);
-    let content = std::fs::read(files[0].path()).unwrap();
+    let content = std::fs::read(
+        files
+            .first()
+            .unwrap_or_else(|| panic!("expected one file: {files:?}"))
+            .path(),
+    )
+    .unwrap();
     assert_eq!(content, b"test content");
 }
 
@@ -1259,7 +1277,13 @@ async fn enqueue_file_copies_to_queue() {
     // Verify file exists in queue dir.
     let files: Vec<_> = std::fs::read_dir(&queue_dir).unwrap().flatten().collect();
     assert_eq!(files.len(), 1);
-    let content = std::fs::read(files[0].path()).unwrap();
+    let content = std::fs::read(
+        files
+            .first()
+            .unwrap_or_else(|| panic!("expected one file: {files:?}"))
+            .path(),
+    )
+    .unwrap();
     assert_eq!(content, b"tarball bytes");
 }
 
@@ -1310,7 +1334,13 @@ async fn enqueue_file_blocking_returns_receiver_and_copies() {
 
     let files: Vec<_> = std::fs::read_dir(&queue_dir).unwrap().flatten().collect();
     assert_eq!(files.len(), 1);
-    let content = std::fs::read(files[0].path()).unwrap();
+    let content = std::fs::read(
+        files
+            .first()
+            .unwrap_or_else(|| panic!("expected one file: {files:?}"))
+            .path(),
+    )
+    .unwrap();
     assert_eq!(content, b"dedup blob content");
     // B9 copy-path: source outside queue_dir must be preserved by the
     // copy fallback (catches a regression that unconditionally renamed).
@@ -1366,7 +1396,13 @@ async fn enqueue_file_blocking_stores_plain_file_even_with_compress_true() {
     // happens at upload time in the worker, not at enqueue time.
     let files: Vec<_> = std::fs::read_dir(&queue_dir).unwrap().flatten().collect();
     assert_eq!(files.len(), 1);
-    let queued = std::fs::read(files[0].path()).unwrap();
+    let queued = std::fs::read(
+        files
+            .first()
+            .unwrap_or_else(|| panic!("expected one file: {files:?}"))
+            .path(),
+    )
+    .unwrap();
     assert_eq!(queued.len(), content.len());
 
     // The item carries compress=true for the worker to act on.
@@ -1430,14 +1466,27 @@ async fn enqueue_file_blocking_renames_when_source_inside_queue_dir() {
     let files: Vec<_> = std::fs::read_dir(&queue_dir).unwrap().flatten().collect();
     assert_eq!(files.len(), 1, "expected one file after rename");
     assert_eq!(
-        std::fs::read(files[0].path()).unwrap(),
+        std::fs::read(
+            files
+                .first()
+                .unwrap_or_else(|| panic!("expected one file: {files:?}"))
+                .path(),
+        )
+        .unwrap(),
         b"dedup blob content"
     );
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let dest_inode = std::fs::metadata(files[0].path()).unwrap().ino();
+        let dest_inode = std::fs::metadata(
+            files
+                .first()
+                .unwrap_or_else(|| panic!("expected one file: {files:?}"))
+                .path(),
+        )
+        .unwrap()
+        .ino();
         assert_eq!(
             src_inode, dest_inode,
             "rename(2) preserves inode; a copy+remove regression would allocate a new inode"
@@ -1623,7 +1672,7 @@ async fn counting_reader_tracks_bytes() {
     use tokio::io::AsyncReadExt;
 
     let data = b"hello world, counting reader test data";
-    let reader = &data[..];
+    let reader = data.as_slice();
     let counter = Arc::new(AtomicU64::new(0));
     let mut counting = CountingReader {
         inner: reader,
@@ -1652,14 +1701,17 @@ async fn streaming_zstd_produces_valid_compressed_output() {
     counting.read_to_end(&mut compressed).await.unwrap();
 
     // Verify zstd magic bytes
-    assert_eq!(&compressed[..4], &[0x28, 0xB5, 0x2F, 0xFD]);
+    assert_eq!(
+        compressed.get(..4),
+        Some([0x28, 0xB5, 0x2F, 0xFD].as_slice())
+    );
     // Counter matches actual compressed size
     assert_eq!(counter.load(Ordering::Relaxed), compressed.len() as u64);
     // Compressed is smaller than original
     assert!(compressed.len() < content.len());
 
     // Roundtrip: decompress and verify
-    let mut decoder = ZstdDecoder::new(tokio::io::BufReader::new(&compressed[..]));
+    let mut decoder = ZstdDecoder::new(tokio::io::BufReader::new(compressed.as_slice()));
     let mut decompressed = Vec::new();
     decoder.read_to_end(&mut decompressed).await.unwrap();
     assert_eq!(decompressed, content.as_bytes());
@@ -1680,7 +1732,7 @@ async fn streaming_zstd_handles_incompressible_data() {
         })
         .collect();
 
-    let reader = tokio::io::BufReader::new(&content[..]);
+    let reader = tokio::io::BufReader::new(content.as_slice());
     let encoder = ZstdEncoder::new(reader);
     let counter = Arc::new(AtomicU64::new(0));
     let mut counting = CountingReader {
@@ -1691,7 +1743,10 @@ async fn streaming_zstd_handles_incompressible_data() {
     counting.read_to_end(&mut compressed).await.unwrap();
 
     // Zstd header is valid even for incompressible data
-    assert_eq!(&compressed[..4], &[0x28, 0xB5, 0x2F, 0xFD]);
+    assert_eq!(
+        compressed.get(..4),
+        Some([0x28, 0xB5, 0x2F, 0xFD].as_slice())
+    );
     // Counter matches
     assert_eq!(counter.load(Ordering::Relaxed), compressed.len() as u64);
 }

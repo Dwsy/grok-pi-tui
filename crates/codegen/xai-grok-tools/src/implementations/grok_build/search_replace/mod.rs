@@ -449,10 +449,10 @@ fn build_confusable_hint(
     let (norm_file, offset_map) = build_offset_map(file);
     let norm_old = normalize_confusables(old_string);
     let norm_start = norm_file.find(&norm_old)?;
-    let orig_start = offset_map[norm_start];
-    let orig_end = offset_map[norm_start + norm_old.len()];
-    let match_start_line = file[..orig_start].matches('\n').count() + 1;
-    let match_end_line = file[..orig_end].matches('\n').count() + 1;
+    let orig_start = *offset_map.get(norm_start)?;
+    let orig_end = *offset_map.get(norm_start + norm_old.len())?;
+    let match_start_line = file.get(..orig_start)?.matches('\n').count() + 1;
+    let match_end_line = file.get(..orig_end)?.matches('\n').count() + 1;
     let hits = detect_confusables(file);
     let mut affected_lines: Vec<usize> = hits
         .iter()
@@ -471,7 +471,9 @@ fn build_confusable_hint(
             .collect::<Vec<_>>()
             .join(", ")
     } else {
-        let shown: Vec<String> = affected_lines[..MAX_LISTED_LINES]
+        let shown: Vec<String> = affected_lines
+            .get(..MAX_LISTED_LINES)
+            .unwrap_or(affected_lines.as_slice())
             .iter()
             .map(|n| n.to_string())
             .collect();
@@ -782,6 +784,9 @@ impl crate::types::tool_metadata::ToolMetadata for SearchReplaceTool {
     }
     fn tool_namespace(&self) -> ToolNamespace {
         ToolNamespace::GrokBuild
+    }
+    fn lock_path_param(&self) -> Option<&'static str> {
+        Some("file_path")
     }
     fn description_template(&self) -> &str {
         DESCRIPTION_FULL

@@ -252,7 +252,7 @@ impl FeedbackModalState {
             .enumerate()
             .map(|(vis, &variant)| {
                 PickerEntry::Row(PickerRow {
-                    label: labels[variant],
+                    label: labels.get(variant).copied().unwrap_or(""),
                     right_label: "",
                     selected: picker.state.hovered == Some(vis)
                         || (picker.state.hovered.is_none() && vis == picker.state.selected),

@@ -1,4 +1,10 @@
 use crate::sampling::{AssistantItem, ConversationItem, Role, ToolCall};
+fn at<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
 use crate::session::helpers::compaction_context::{
     BackgroundTaskSummary, CompactionInputs, CompactionStateContext, RunningSubagentSummary,
     SubagentToolNames, to_system_reminder_sync,
@@ -100,10 +106,13 @@ async fn test_compacted_history_raw_strings() {
         compaction_summary,
         &discovered_agents_md,
     );
-    assert_eq!(compacted[0].role(), Role::System);
-    assert_eq!(compacted[0].text_content(), "You are a helpful assistant.");
-    assert_eq!(compacted[1].role(), Role::User);
-    let msg1_text = compacted[1].text_content();
+    assert_eq!(at(&compacted, 0).role(), Role::System);
+    assert_eq!(
+        at(&compacted, 0).text_content(),
+        "You are a helpful assistant."
+    );
+    assert_eq!(at(&compacted, 1).role(), Role::User);
+    let msg1_text = at(&compacted, 1).text_content();
     assert_eq!(
         msg1_text,
         "<user_info>\nOS: macos\nShell: /bin/bash\nWorkspace Path: /Users/test/project\n</user_info>",
@@ -113,24 +122,27 @@ async fn test_compacted_history_raw_strings() {
         !msg1_text.contains("<user_query>"),
         "User message prefix must NOT contain <user_query> tags"
     );
-    assert_eq!(compacted[2].role(), Role::User);
-    let msg2_text = compacted[2].text_content();
+    assert_eq!(at(&compacted, 2).role(), Role::User);
+    let msg2_text = at(&compacted, 2).text_content();
     assert_eq!(
         msg2_text, "<user_query>\nfix the login bug in auth.rs\n</user_query>",
         "Last user query should be wrapped in <user_query> tags"
     );
-    assert_eq!(compacted[3].role(), Role::Assistant);
-    assert_eq!(compacted[3].text_content(), "Let me look at the file.");
-    assert_eq!(compacted[4].role(), Role::Assistant);
-    assert_eq!(compacted[4].text_content(), "I'll read the file now.");
-    assert_eq!(compacted[5].role(), Role::Tool);
-    assert_eq!(compacted[5].text_content(), "Tool call omitted...");
-    assert_eq!(compacted[6].role(), Role::Assistant);
-    assert_eq!(compacted[6].text_content(), "Found the bug, applying fix.");
-    assert_eq!(compacted[7].role(), Role::Tool);
-    assert_eq!(compacted[7].text_content(), "Tool call omitted...");
-    assert_eq!(compacted[8].role(), Role::User);
-    let msg_summary_text = compacted[8].text_content();
+    assert_eq!(at(&compacted, 3).role(), Role::Assistant);
+    assert_eq!(at(&compacted, 3).text_content(), "Let me look at the file.");
+    assert_eq!(at(&compacted, 4).role(), Role::Assistant);
+    assert_eq!(at(&compacted, 4).text_content(), "I'll read the file now.");
+    assert_eq!(at(&compacted, 5).role(), Role::Tool);
+    assert_eq!(at(&compacted, 5).text_content(), "Tool call omitted...");
+    assert_eq!(at(&compacted, 6).role(), Role::Assistant);
+    assert_eq!(
+        at(&compacted, 6).text_content(),
+        "Found the bug, applying fix."
+    );
+    assert_eq!(at(&compacted, 7).role(), Role::Tool);
+    assert_eq!(at(&compacted, 7).text_content(), "Tool call omitted...");
+    assert_eq!(at(&compacted, 8).role(), Role::User);
+    let msg_summary_text = at(&compacted, 8).text_content();
     assert!(
         !msg_summary_text.contains("<user_query>"),
         "Summary message should NOT be wrapped in <user_query> tags"
@@ -145,8 +157,8 @@ async fn test_compacted_history_raw_strings() {
         msg_summary_text, formatted_summary,
         "Summary message should be the summary text without <user_query> wrapping"
     );
-    assert_eq!(compacted[9].role(), Role::User);
-    let msg_reminder_text = compacted[9].text_content();
+    assert_eq!(at(&compacted, 9).role(), Role::User);
+    let msg_reminder_text = at(&compacted, 9).text_content();
     assert!(msg_reminder_text.contains("<system-reminder>"));
     assert!(msg_reminder_text.contains("src/auth.rs"));
     assert!(msg_reminder_text.contains("Files Edited This Session"));
@@ -175,14 +187,14 @@ async fn test_compacted_history_minimal_no_state_context() {
         "Summary: user said hello.",
         &[],
     );
-    assert_eq!(compacted[0].text_content(), "system prompt");
-    let prefix = compacted[1].text_content();
+    assert_eq!(at(&compacted, 0).text_content(), "system prompt");
+    let prefix = at(&compacted, 1).text_content();
     assert_eq!(prefix, "<user_info>OS: linux</user_info>");
     assert!(!prefix.contains("<user_query>"));
-    let query = compacted[2].text_content();
+    let query = at(&compacted, 2).text_content();
     assert_eq!(query, "<user_query>\nhello world\n</user_query>");
-    assert_eq!(compacted[3].text_content(), "Hi! How can I help?");
-    let summary = compacted[4].text_content();
+    assert_eq!(at(&compacted, 3).text_content(), "Hi! How can I help?");
+    let summary = at(&compacted, 4).text_content();
     assert!(
         summary.contains("Summary: user said hello."),
         "Summary should contain the original summary text"
@@ -312,6 +324,7 @@ fn fallback_minimal_history_has_no_tool_results() {
         scheduled_loops: vec![],
         workflows: vec![],
         workflow_tool_name: None,
+        images: Default::default(),
     };
     let fallback = build_compacted_history(
         "You are a helpful assistant.",
@@ -544,6 +557,7 @@ fn fallback_preserves_subagents() {
         scheduled_loops: vec![],
         workflows: vec![],
         workflow_tool_name: None,
+        images: Default::default(),
     };
     let fallback = CompactionStateContext {
         cwd_generation: original.cwd_generation,
@@ -559,12 +573,13 @@ fn fallback_preserves_subagents() {
         scheduled_loops: original.scheduled_loops.clone(),
         workflows: original.workflows.clone(),
         workflow_tool_name: original.workflow_tool_name.clone(),
+        images: original.images.clone(),
     };
     assert_eq!(
         fallback.running_subagents.len(),
         2,
         "fallback must preserve all running subagents"
     );
-    assert_eq!(fallback.running_subagents[0].subagent_id, "sub-abc");
-    assert_eq!(fallback.running_subagents[1].subagent_id, "sub-def");
+    assert_eq!(at(&fallback.running_subagents, 0).subagent_id, "sub-abc");
+    assert_eq!(at(&fallback.running_subagents, 1).subagent_id, "sub-def");
 }

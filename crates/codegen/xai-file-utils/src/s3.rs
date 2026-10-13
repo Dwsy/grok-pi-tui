@@ -328,7 +328,9 @@ async fn multipart_upload_bytes(
     let result: anyhow::Result<()> = async {
         while offset < content.len() {
             let end = (offset + MULTIPART_PART_SIZE).min(content.len());
-            let chunk = &content[offset..end];
+            let Some(chunk) = content.get(offset..end) else {
+                break;
+            };
 
             let upload_part = client
                 .upload_part()
@@ -1151,7 +1153,9 @@ mod tests {
         let by_path: HashMap<&str, &prod_mc_cli_chat_proxy_types::BatchUploadResult> =
             results.iter().map(|r| (r.path.as_str(), r)).collect();
 
-        let good = by_path["good.txt"];
+        let Some(good) = by_path.get("good.txt").copied() else {
+            panic!("missing good.txt: {by_path:?}");
+        };
         assert_eq!(
             good.status,
             prod_mc_cli_chat_proxy_types::BatchUploadStatus::Ok
@@ -1159,7 +1163,9 @@ mod tests {
         assert!(good.size.is_some());
         assert!(good.error.is_none());
 
-        let fail = by_path["fail-item.txt"];
+        let Some(fail) = by_path.get("fail-item.txt").copied() else {
+            panic!("missing fail-item.txt: {by_path:?}");
+        };
         assert_eq!(
             fail.status,
             prod_mc_cli_chat_proxy_types::BatchUploadStatus::Error
@@ -1167,7 +1173,9 @@ mod tests {
         assert!(fail.size.is_none());
         assert!(fail.error.is_some());
 
-        let also_good = by_path["also-good.txt"];
+        let Some(also_good) = by_path.get("also-good.txt").copied() else {
+            panic!("missing also-good.txt: {by_path:?}");
+        };
         assert_eq!(
             also_good.status,
             prod_mc_cli_chat_proxy_types::BatchUploadStatus::Ok

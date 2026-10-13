@@ -67,15 +67,6 @@ fn events_log(tmp: &tempfile::TempDir) -> String {
     std::fs::read_to_string(tmp.path().join("events.jsonl")).unwrap_or_default()
 }
 
-fn has_event_with(log: &str, ty: &str, predicate: impl Fn(&serde_json::Value) -> bool) -> bool {
-    log.lines().any(|line| {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            return false;
-        };
-        v.get("type").and_then(|t| t.as_str()) == Some(ty) && predicate(&v)
-    })
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn disabled_detector_is_a_no_op() {
     let local = tokio::task::LocalSet::new();
@@ -128,7 +119,7 @@ async fn user_input_bump_during_idle_wait_aborts_with_user_input() {
             drop(Arc::try_unwrap(actor).ok().unwrap());
             let log = events_log(&tmp);
             assert!(
-                has_event_with(&log, "laziness_classifier_aborted", |v| v["reason"]
+                has_event_with(&log, "laziness_classifier_aborted", |v| j(v, "reason")
                     == crate::session::events::LAZINESS_ABORT_USER_INPUT),
                 "expected user_input abort:\n{log}"
             );
@@ -162,7 +153,7 @@ async fn model_switch_during_idle_wait_aborts_with_model_switch() {
             drop(Arc::try_unwrap(actor).ok().unwrap());
             let log = events_log(&tmp);
             assert!(
-                has_event_with(&log, "laziness_classifier_aborted", |v| v["reason"]
+                has_event_with(&log, "laziness_classifier_aborted", |v| j(v, "reason")
                     == crate::session::events::LAZINESS_ABORT_MODEL_SWITCH),
                 "expected model_switch abort:\n{log}"
             );
@@ -255,7 +246,7 @@ async fn sampler_error_aborts_with_classifier_error() {
             );
             let log = events_log(&tmp);
             assert!(
-                has_event_with(&log, "laziness_classifier_aborted", |v| v["reason"]
+                has_event_with(&log, "laziness_classifier_aborted", |v| j(v, "reason")
                     == crate::session::events::LAZINESS_ABORT_CLASSIFIER_ERROR),
                 "expected classifier_error abort:\n{log}"
             );
@@ -425,7 +416,7 @@ async fn emit_laziness_abort_writes_each_reason_with_the_correct_const() {
             for reason in LazinessAbortReason::all() {
                 let expected = reason.as_const_str();
                 assert!(
-                    has_event_with(&log, "laziness_classifier_aborted", |v| v["reason"]
+                    has_event_with(&log, "laziness_classifier_aborted", |v| j(v, "reason")
                         == expected),
                     "missing classifier_aborted event for reason={expected}:\n{log}"
                 );
@@ -533,11 +524,13 @@ async fn debug_mode_fires_classifier_even_with_per_model_enable_false() {
                 1,
                 "expected exactly one JSONL line, got:\n{contents}",
             );
+            let first_line: &str = lines.first().copied().unwrap_or_default();
             let parsed: serde_json::Value =
-                serde_json::from_str(lines[0]).expect("line parses as JSON");
-            assert_eq!(parsed["decision"], "aborted");
+                serde_json::from_str(first_line).expect("line parses as JSON");
+            assert_eq!(j(&parsed, "decision"), "aborted");
             assert_eq!(
-                parsed["abort_reason"], "classifier_error",
+                j(&parsed, "abort_reason"),
+                "classifier_error",
                 "non-listening localhost sampler must surface as classifier_error",
             );
             assert_eq!(nudges, 0, "no nudge possible when sampler fails");

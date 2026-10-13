@@ -25,6 +25,8 @@
 //! }
 //! ```
 
+#![deny(clippy::indexing_slicing)]
+
 mod buffers;
 pub mod checkpoint;
 mod colors;
@@ -40,6 +42,8 @@ mod source_map;
 pub mod streaming;
 pub mod style;
 mod syntax;
+#[cfg(test)]
+mod syntax_backend_tests;
 mod url_scan;
 
 // Re-export public API

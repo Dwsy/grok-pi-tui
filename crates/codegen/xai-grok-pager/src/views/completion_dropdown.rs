@@ -92,7 +92,9 @@ pub fn render_dropdown(
         if item_idx >= items.len() {
             break;
         }
-        let item = &items[item_idx];
+        let Some(item) = items.get(item_idx) else {
+            break;
+        };
         let y = area.y + vis_row as u16;
         let is_selected = item_idx == selected;
         let is_hovered = hovered == Some(item_idx) && !is_selected;

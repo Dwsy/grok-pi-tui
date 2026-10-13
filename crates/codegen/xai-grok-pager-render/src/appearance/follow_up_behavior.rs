@@ -53,12 +53,6 @@ mod tests {
     }
 
     #[test]
-    fn default_is_queue() {
-        assert_eq!(FollowUpBehavior::default(), FollowUpBehavior::Queue);
-        assert_eq!(FollowUpBehavior::default().as_canonical(), "queue");
-    }
-
-    #[test]
     fn unknown_canonical_is_none() {
         assert_eq!(FollowUpBehavior::from_canonical("yes"), None);
         assert_eq!(FollowUpBehavior::from_canonical(""), None);

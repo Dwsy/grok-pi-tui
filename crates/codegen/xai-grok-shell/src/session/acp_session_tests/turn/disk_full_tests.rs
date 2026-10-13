@@ -219,7 +219,13 @@ fn completed_turn_flush_enospc_returns_error_and_reports_stop_failure() {
             assert_eq!(error.message, "No space left on device");
             let fired = fired.borrow();
             assert_eq!(fired.len(), 1);
-            assert_eq!(fired[0]["hookEventName"], "stop_failure");
+            let Some(first) = fired.first() else {
+                panic!("expected one hook payload: {fired:?}");
+            };
+            assert_eq!(
+                first.get("hookEventName"),
+                Some(&serde_json::json!("stop_failure"))
+            );
         });
     });
 }

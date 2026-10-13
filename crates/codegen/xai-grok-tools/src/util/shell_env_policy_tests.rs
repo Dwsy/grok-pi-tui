@@ -1,9 +1,10 @@
 use super::{
     EnvironmentVariablePattern, ShellEnvironmentPolicy, ShellEnvironmentPolicyInherit,
-    apply_shell_environment_policy, create_env_from_vars, install_policy_base_env,
+    apply_shell_environment_policy, create_env, create_env_from_vars, install_policy_base_env,
 };
-use std::collections::HashMap;
-use std::ffi::OsStr;
+use crate::sandbox_launch::child_env;
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
 fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -39,6 +40,30 @@ fn apply_policy_reshapes_command_env() {
     assert_eq!(envs.get("MY_FLAG").map(String::as_str), Some("1"));
     // inherit=None cleared the env, so no inherited PATH leaks through.
     assert!(!envs.contains_key("PATH"));
+}
+
+/// The policy's base env is the child's whole environment, and `cmd` says so: every inherited
+/// (or earlier) name is removed rather than cleared, so the sandbox seam reads back exactly the
+/// base env, never the daemon's variables underneath it.
+#[test]
+fn a_policy_base_env_reads_back_as_the_childs_whole_environment() {
+    let mut set = HashMap::new();
+    set.insert("MY_FLAG".to_string(), "1".to_string());
+    let policy = ShellEnvironmentPolicy {
+        inherit: ShellEnvironmentPolicyInherit::None,
+        set,
+        ..Default::default()
+    };
+    let mut cmd = tokio::process::Command::new("true");
+    cmd.env("SET_BEFORE_THE_POLICY", "x");
+    install_policy_base_env(&mut cmd, Some(&policy));
+    let child: BTreeMap<OsString, OsString> = child_env(&cmd, []).into_iter().collect();
+    let base: BTreeMap<OsString, OsString> = create_env(&policy)
+        .into_iter()
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+        .collect();
+    assert_eq!(base, child);
+    assert!(child.contains_key(OsStr::new("MY_FLAG")));
 }
 
 #[test]
@@ -189,7 +214,11 @@ fn bundled_git_prepend_respects_the_policy_base_env() {
     let mut cmd = tokio::process::Command::new("true");
     install_policy_base_env(&mut cmd, Some(&inherit_none));
     xai_tty_utils::prepend_child_path(cmd.as_std_mut(), dir, xai_tty_utils::PathBase::ExplicitOnly);
-    assert_eq!(child_path(&cmd), None, "inherit=none must not grow a PATH");
+    assert_eq!(
+        child_path(&cmd).flatten(),
+        None,
+        "inherit=none must not grow a PATH"
+    );
 
     let mut set = HashMap::new();
     set.insert("PATH".to_string(), "/policy/bin".to_string());

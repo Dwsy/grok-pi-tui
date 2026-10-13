@@ -151,7 +151,7 @@ fn bundle_fd() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    let gz = flate2::read::GzDecoder::new(&bytes[..]);
+    let gz = flate2::read::GzDecoder::new(bytes.as_slice());
     let mut ar = tar::Archive::new(gz);
     let mut found = false;
     for entry in ar.entries()? {
@@ -198,7 +198,7 @@ fn compress_and_pin(
         hex_encode(&sha2::Sha256::digest(&bytes))
     };
 
-    let compressed = zstd::encode_all(&bytes[..], 19)?;
+    let compressed = zstd::encode_all(bytes.as_slice(), 19)?;
     let mut zst = dest.to_path_buf().into_os_string();
     zst.push(".zst");
     fs::write(&zst, &compressed)?;
@@ -330,7 +330,7 @@ fn bundle_rg() -> Result<(), Box<dyn std::error::Error>> {
         resp.bytes()?.to_vec()
     };
 
-    let gz = flate2::read::GzDecoder::new(&bytes[..]);
+    let gz = flate2::read::GzDecoder::new(bytes.as_slice());
     let mut ar = tar::Archive::new(gz);
     let mut found = false;
     for entry in ar.entries()? {

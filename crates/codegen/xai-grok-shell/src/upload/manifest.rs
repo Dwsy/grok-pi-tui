@@ -108,7 +108,7 @@ pub(crate) fn record_artifact(
 }
 fn truncate(s: &str) -> &str {
     match s.char_indices().nth(512) {
-        Some((idx, _)) => &s[..idx],
+        Some((idx, _)) => s.get(..idx).unwrap_or(""),
         None => s,
     }
 }
@@ -258,7 +258,12 @@ mod tests {
         let manifest = build_manifest(&tracker, ManifestUploadMethod::S3, None);
         assert!(manifest.fully_uploaded);
         let json: serde_json::Value = serde_json::to_value(&manifest).unwrap();
-        assert_eq!(json["artifacts"]["turn_result.json"], "enqueued");
+        assert_eq!(
+            json.get("artifacts")
+                .and_then(|a| a.get("turn_result.json"))
+                .and_then(|v| v.as_str()),
+            Some("enqueued")
+        );
         assert!(json.get("failure_details").is_none());
     }
     /// A later terminal outcome may overwrite `enqueued` (an in-flight upload finishing during the flush); last write wins.
@@ -334,19 +339,54 @@ mod tests {
         );
         let manifest = build_manifest(&tracker, ManifestUploadMethod::S3, None);
         let json: serde_json::Value = serde_json::to_value(&manifest).unwrap();
-        assert_eq!(json["schema_version"], 3);
-        assert_eq!(json["fully_uploaded"], false);
-        assert_eq!(json["upload_method"], "s3");
-        assert_eq!(json["artifacts"]["turn_messages.json"], "succeeded");
-        assert_eq!(json["artifacts"]["memory.tar.gz"], "skipped");
-        assert_eq!(json["artifacts"]["metadata.json"], "failed");
-        assert!(json["completed_at"].is_string());
-        let details = &json["failure_details"]["metadata.json"];
-        assert_eq!(details["reason"], "upload_failed");
-        assert_eq!(details["error"], "HTTP 503: service unavailable");
+        assert_eq!(json.get("schema_version").and_then(|v| v.as_u64()), Some(3));
         assert_eq!(
-            json["skip_details"]["memory.tar.gz"],
-            "artifact_disabled_for_turn"
+            json.get("fully_uploaded"),
+            Some(&serde_json::Value::Bool(false))
+        );
+        assert_eq!(
+            json.get("upload_method").and_then(|v| v.as_str()),
+            Some("s3")
+        );
+        assert_eq!(
+            json.get("artifacts")
+                .and_then(|a| a.get("turn_messages.json"))
+                .and_then(|v| v.as_str()),
+            Some("succeeded")
+        );
+        assert_eq!(
+            json.get("artifacts")
+                .and_then(|a| a.get("memory.tar.gz"))
+                .and_then(|v| v.as_str()),
+            Some("skipped")
+        );
+        assert_eq!(
+            json.get("artifacts")
+                .and_then(|a| a.get("metadata.json"))
+                .and_then(|v| v.as_str()),
+            Some("failed")
+        );
+        assert!(json.get("completed_at").is_some_and(|v| v.is_string()));
+        let details = json
+            .get("failure_details")
+            .and_then(|d| d.get("metadata.json"));
+        assert_eq!(
+            details
+                .and_then(|d| d.get("reason"))
+                .and_then(|v| v.as_str()),
+            Some("upload_failed")
+        );
+        assert_eq!(
+            details
+                .and_then(|d| d.get("error"))
+                .and_then(|v| v.as_str()),
+            Some("HTTP 503: service unavailable")
+        );
+        assert_eq!(
+            json.get("skip_details")
+                .and_then(|d| d.get("memory.tar.gz"))
+                .and_then(|v| v.as_str()),
+            Some("artifact_disabled_for_turn")
         );
     }
     #[test]

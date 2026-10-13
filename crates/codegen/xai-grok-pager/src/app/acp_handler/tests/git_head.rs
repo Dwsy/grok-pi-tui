@@ -68,8 +68,7 @@
         {
             let parent = app.agents.get_mut(&AgentId(0)).unwrap();
             parent
-                .subagent_views
-                .insert(child_sid.into(), Box::new(make_agent(Some(child_sid))));
+                .insert_test_child(child_sid.into(), Box::new(make_agent(Some(child_sid))));
         }
 
         let notif = make_git_head_changed_notif(
@@ -112,8 +111,7 @@
         {
             let parent = app.agents.get_mut(&AgentId(0)).unwrap();
             parent
-                .subagent_views
-                .insert(child_sid.into(), Box::new(make_agent(Some(child_sid))));
+                .insert_test_child(child_sid.into(), Box::new(make_agent(Some(child_sid))));
             parent.current_branch = Some("parent-branch".into());
         }
 

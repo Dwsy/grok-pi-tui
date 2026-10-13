@@ -263,7 +263,7 @@ fn failed_archive_restores_optimistic_pin_and_order() {
     ));
     let view = membership.view().unwrap();
     assert_eq!(view.members.len(), 1);
-    assert!(view.members[0].pin_rank.is_some());
+    assert!(view.members.first().is_some_and(|m| m.pin_rank.is_some()));
     assert_eq!(membership.effective_manual_order(), vec![key("saved")]);
 }
 
@@ -506,7 +506,7 @@ fn request_during_write_is_deferred_until_store_returns() {
         [Effect::WriteWorkspace {
             mutation: WorkspaceMutation::Upsert(members),
             ..
-        }] if members.len() == 1 && members[0].key.session_id.as_ref() == "next"
+        }] if matches!(members.as_slice(), [m] if m.key.session_id.as_ref() == "next")
     ));
 }
 
@@ -754,10 +754,13 @@ fn foreign_commit_refreshes_through_the_same_store_handle() {
     membership.on_refresh_completed(store, Ok(Some(refreshed)), &HashSet::new());
 
     assert_eq!(
-        membership.snapshot().unwrap().members[0]
-            .session_id
-            .as_ref(),
-        "foreign"
+        membership
+            .snapshot()
+            .unwrap()
+            .members
+            .first()
+            .map(|m| m.session_id.as_ref()),
+        Some("foreign")
     );
 }
 

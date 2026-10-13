@@ -325,11 +325,13 @@ fn apply_porcelain_v2_entries(
             }
 
             let path = extract_ordinary_path(line);
-            let xy = &line[2..4];
+            let Some(xy) = line.get(2..4) else {
+                continue;
+            };
             apply_file_change(xy, path, source, worktree, &mut copied, &mut deleted)?;
 
             // Track staged changes (X column != '.')
-            let x = xy.as_bytes()[0];
+            let x = xy.as_bytes().first().copied().unwrap_or(0);
             if x != b'.' {
                 if x == b'D' {
                     staged_deletes.push(path.to_string());
@@ -354,7 +356,9 @@ fn apply_porcelain_v2_entries(
             }
 
             let path = extract_ordinary_path(line);
-            let xy = &line[2..4];
+            let Some(xy) = line.get(2..4) else {
+                continue;
+            };
 
             // Copy the new file
             apply_file_change(xy, path, source, worktree, &mut copied, &mut deleted)?;
@@ -408,7 +412,7 @@ fn extract_index_mode_hash(line: &str) -> Option<(String, String)> {
     let fields: Vec<&str> = line.splitn(10, ' ').collect();
     if fields.len() >= 8 {
         // fields[4] = mI (mode in index), fields[7] = hI (hash in index)
-        Some((fields[4].to_string(), fields[7].to_string()))
+        Some((fields.get(4)?.to_string(), fields.get(7)?.to_string()))
     } else {
         None
     }
@@ -433,7 +437,7 @@ fn extract_ordinary_path(line: &str) -> &str {
         if c == ' ' {
             spaces_seen += 1;
             if spaces_seen == prefix {
-                return &line[i + 1..];
+                return line.get(i + 1..).unwrap_or("");
             }
         }
     }
@@ -452,7 +456,7 @@ fn apply_file_change(
     copied: &mut u64,
     deleted: &mut u64,
 ) -> Result<()> {
-    let y = xy.as_bytes()[1];
+    let y = xy.as_bytes().get(1).copied().unwrap_or(0);
 
     if y == b'D' {
         // Worktree deletion — file does not exist on disk in source

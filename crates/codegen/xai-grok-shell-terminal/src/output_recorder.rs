@@ -66,7 +66,7 @@ impl OutputRecorder {
                         "output recorder: no overlap between consecutive output snapshots; appending whole snapshot (possible duplication)"
                     );
                 }
-                &current[overlap..]
+                current.get(overlap..).unwrap_or("")
             }
         };
         if !new_suffix.is_empty() {
@@ -112,7 +112,11 @@ fn largest_overlap(
     if cur.is_empty() || last_bytes.is_empty() {
         return 0;
     }
-    let tail = &last_bytes[last_bytes.len().saturating_sub(window)..];
+    let tail = last_bytes
+        .len()
+        .checked_sub(window)
+        .and_then(|start| last_bytes.get(start..))
+        .unwrap_or(last_bytes);
 
     s.clear();
     s.extend_from_slice(cur);
@@ -121,19 +125,33 @@ fn largest_overlap(
     pi.resize(s.len(), 0);
     let mut k: u32 = 0;
     for i in 1..s.len() {
-        while k > 0 && s[i] != s[k as usize] {
-            k = pi[(k - 1) as usize];
+        let Some(&si) = s.get(i) else { break };
+        while k > 0 && s.get(k as usize).is_some_and(|&sk| si != sk) {
+            let Some(&prev) = k.checked_sub(1).and_then(|j| pi.get(j as usize)) else {
+                k = 0;
+                break;
+            };
+            k = prev;
         }
-        if s[i] == s[k as usize] {
+        if s.get(k as usize).is_some_and(|&sk| si == sk) {
             k += 1;
         }
-        pi[i] = k;
+        if let Some(slot) = pi.get_mut(i) {
+            *slot = k;
+        }
     }
 
     let cap = cur.len().min(tail.len());
-    let mut overlap = pi[s.len() - 1] as usize;
+    let mut overlap = s
+        .len()
+        .checked_sub(1)
+        .and_then(|i| pi.get(i).copied())
+        .unwrap_or(0) as usize;
     while overlap > cap {
-        overlap = pi[overlap - 1] as usize;
+        let Some(&prev) = overlap.checked_sub(1).and_then(|j| pi.get(j)) else {
+            break;
+        };
+        overlap = prev as usize;
     }
     while overlap > 0 && !current.is_char_boundary(overlap) {
         overlap -= 1;
@@ -161,10 +179,13 @@ pub(crate) async fn read_log_tail(path: &std::path::Path, limit: usize) -> Optio
         .iter()
         .position(|&b| b & 0xC0 != 0x80)
         .unwrap_or(buf.len());
-    let text = match std::str::from_utf8(&buf[head..]) {
+    let rest = buf.get(head..)?;
+    let text = match std::str::from_utf8(rest) {
         Ok(s) => s,
-        Err(e) => std::str::from_utf8(&buf[head..head + e.valid_up_to()])
-            .expect("valid_up_to() yields a valid UTF-8 prefix"),
+        Err(e) => {
+            let valid = rest.get(..e.valid_up_to())?;
+            std::str::from_utf8(valid).expect("valid_up_to() yields a valid UTF-8 prefix")
+        }
     };
     if text.is_empty() {
         return None;
@@ -241,7 +262,10 @@ mod tests {
         let full = "abcdefghijklmnopqrstuvwxyz";
         for end in 1..=full.len() {
             let start = end.saturating_sub(limit);
-            recorder.append(&full[start..end]).await.unwrap();
+            let Some(chunk) = full.get(start..end) else {
+                panic!("chunk {start}..{end} out of {full:?}");
+            };
+            recorder.append(chunk).await.unwrap();
         }
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), full);

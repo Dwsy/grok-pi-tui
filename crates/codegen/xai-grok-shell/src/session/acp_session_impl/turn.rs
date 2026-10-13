@@ -112,6 +112,8 @@ struct TurnCompletionEmitter {
     model_id: String,
     started: std::time::Instant,
     emitted: bool,
+    context_tokens: Option<u64>,
+    turn_tokens: Option<u64>,
 }
 impl TurnCompletionEmitter {
     fn new(session: Arc<SessionActor>, model_id: String, started: std::time::Instant) -> Self {
@@ -120,7 +122,13 @@ impl TurnCompletionEmitter {
             model_id,
             started,
             emitted: false,
+            context_tokens: None,
+            turn_tokens: None,
         }
+    }
+    fn record_turn_usage(&mut self, turn_tokens: u64, context_tokens: Option<u64>) {
+        self.turn_tokens = Some(turn_tokens);
+        self.context_tokens = context_tokens;
     }
     /// Re-anchor the model and duration clock when the turn's work starts (post-setup), so an abort
     /// during the turn measures like a completed turn instead of counting setup time.
@@ -151,6 +159,8 @@ impl TurnCompletionEmitter {
             error_category: outcome.error_category,
             error_code: outcome.error_code,
             error_detail: outcome.error_detail,
+            context_tokens: self.context_tokens,
+            turn_tokens: self.turn_tokens,
         });
     }
 }
@@ -515,6 +525,9 @@ impl SessionActor {
         } = request;
         let prompt_id = prompt_id.as_str();
         let handle_prompt_start = std::time::Instant::now();
+        self.chat_state_handle
+            .record_turn_start(chrono::Utc::now().timestamp_millis());
+        self.apply_supported_context_window_selection().await;
         *self.active_skill.lock() = None;
         xai_grok_telemetry::unified_log::info(
             "shell.handle_prompt.start",
@@ -697,8 +710,17 @@ impl SessionActor {
                         token_budget,
                     } => {
                         xai_grok_telemetry::session_ctx::log_event(slash_used);
-                        let reminder = self.setup_goal(&objective, token_budget).await;
-                        vec![text_block(reminder)]
+                        match self.setup_goal(&objective, token_budget).await {
+                            GoalSetupOutcome::Inference { reminder } => {
+                                vec![text_block(reminder)]
+                            }
+                            GoalSetupOutcome::Message(msg) => {
+                                self.persist_host_turn_user_echo(&original_prompt_text, prompt_id);
+                                self.mark_front_message_committed().await;
+                                self.send_host_turn_slash_command_output(&msg).await;
+                                return ok_end_turn(0, None);
+                            }
+                        }
                     }
                     BuiltinAction::GoalResume => {
                         xai_grok_telemetry::session_ctx::log_event(slash_used);
@@ -760,21 +782,19 @@ impl SessionActor {
                             args_provided: !sk.args.is_empty(),
                         },
                     );
+                    let skill_source = crate::session::telemetry::skill_source(
+                        sk.scope,
+                        sk.plugin_name.as_deref(),
+                    );
                     xai_grok_telemetry::session_ctx::log_event(
                         xai_grok_telemetry::events::SkillDispatched {
                             skill_name: sk.name.clone(),
                             plugin_source: sk.plugin_name.clone(),
                             trigger: xai_grok_telemetry::events::SkillTrigger::SlashCommand,
+                            skill_source: Some(skill_source.to_owned()),
+                            skill_origin: sk.origin.clone(),
                         },
                     );
-                    let skill_source = if sk.plugin_name.is_some() {
-                        "plugin"
-                    } else {
-                        crate::session::telemetry::skill_source_label(
-                            &sk.skill_path,
-                            self.session_info.cwd.as_str(),
-                        )
-                    };
                     xai_grok_telemetry::event_span!(
                         "skill.activated",
                         skill_name = %sk.name,
@@ -814,6 +834,9 @@ impl SessionActor {
         let model_id = self.current_model_id().await;
         let turn_number = self.chat_state_handle.get_prompt_index().await as u64;
         self.current_turn_number.set(turn_number);
+        self.long_reasoning_turn_state
+            .lock()
+            .begin_turn(turn_number, model_id.clone());
         self.transient_retries_prompt_total.set(0);
         self.transient_episode_start.set(None);
         let yolo_mode = self.permissions.is_yolo_mode();
@@ -1099,7 +1122,6 @@ impl SessionActor {
                 xai_grok_telemetry::session_ctx::log_event_dual(self.telemetry_enabled, ev);
             }
             self.maybe_inject_mcp_reminder().await;
-            self.maybe_inject_mcp_connecting_reminder().await;
             self.maybe_inject_date_rollover_reminder().await;
             self.inject_plan_mode_reminders().await;
             self.inject_fork_reminder().await;
@@ -1259,6 +1281,7 @@ impl SessionActor {
         let turn_timer = std::time::Instant::now();
         turn_completion_emitter.begin_turn_work(turn_model_id.clone(), turn_timer);
         let mut turn_sampling = TurnSampling::default();
+        let prompt_was_blocked = prompt_block.is_some();
         let mut result = if let Some((hook_name, reason)) = prompt_block {
             self.state.lock().await.arm_hook_block_hold();
             if let Some(kind) = redirect_kind {
@@ -1418,6 +1441,16 @@ impl SessionActor {
             })),
         );
         let turn_tool_count = self.events.tool_count_this_turn();
+        if !prompt_was_blocked
+            && let Ok(Some(bill)) = self.chat_state_handle.try_get_prompt_usage().await
+        {
+            turn_completion_emitter.record_turn_usage(
+                bill.totals.total_tokens(),
+                self.chat_state_handle
+                    .try_get_estimated_total_tokens()
+                    .await,
+            );
+        }
         turn_completion_emitter.emit(
             TurnTelemetryOutcome::from_result(&result),
             turn_duration_ms,
@@ -1617,10 +1650,11 @@ impl SessionActor {
                     attempts: doom_tally.attempts,
                     accepted_after_budget: doom_tally.accepted_after_budget,
                     top_trigger: doom_tally.top_trigger,
-                    model: doom_event_model,
+                    model: doom_event_model.clone(),
                 },
             );
         }
+        self.emit_long_reasoning_turn_event();
         match &result {
             Ok(TurnOutcome::Completed { .. }) | Ok(TurnOutcome::StationarityEnded) => {
                 for contributor in self.extension_registry.turn_lifecycle_contributors() {
@@ -2104,12 +2138,17 @@ impl SessionActor {
         {
             return None;
         }
-        let is_v2 =
+        let is_v2_mode =
             self.memory.is_enabled() && self.memory.mode() == Some(crate::config::MemoryMode::V2);
+        let is_v2 = self.memory.can_expose_v2();
         self.memory
             .context_injected
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        if is_v2_mode && !is_v2 {
+            return None;
+        }
         if is_v2 {
+            let compact_index = self.memory.v2_config.compact_index_enabled;
             let conversation = self.chat_state_handle.get_conversation().await;
             if crate::session::helpers::memory_context::conversation_has_memory_context(
                 &conversation,
@@ -2118,27 +2157,84 @@ impl SessionActor {
                     target: xai_grok_telemetry::memory_log::TARGET,
                     "MEMORY_INJECT: persisted v2 manifests reused to preserve prompt cache"
                 );
+                let block = conversation.first().and_then(|item| match item {
+                    xai_grok_sampling_types::ConversationItem::System(sys) => sys
+                        .content
+                        .find(xai_chat_state::MEMORY_CONTEXT_OPEN_TAG)
+                        .and_then(|start| sys.content.get(start..)),
+                    _ => None,
+                });
+                let injected_bytes = block.map(|text| text.len() as u64).unwrap_or(0);
+                let estimated_tokens = block
+                    .map(xai_token_estimation::estimate_tokens)
+                    .unwrap_or(0);
+                if injected_bytes > 0 {
+                    self.memory.record_injected_bytes(injected_bytes);
+                }
+                crate::session::memory_observation::log_memory_injection(
+                    self.session_info.id.to_string(),
+                    xai_grok_telemetry::memory_telemetry::MemoryInjectionOutcome::Skipped,
+                    crate::session::memory_observation::MemoryInjectionMetrics {
+                        injected_bytes,
+                        estimated_tokens,
+                        was_reused: true,
+                        compact_index,
+                        ..Default::default()
+                    },
+                );
                 return None;
             }
+            let inject_start = std::time::Instant::now();
             let storage = self.memory.storage()?;
             let context = tokio::task::spawn_blocking(move || {
-                crate::session::helpers::memory_context::format_v2_memory_context(&storage)
+                crate::session::helpers::memory_context::format_v2_memory_context(
+                    &storage,
+                    compact_index,
+                )
             })
             .await
             .map_err(|error| error.to_string())
             .and_then(std::convert::identity);
             return match context {
                 Ok(context) => {
+                    let injected_bytes = context.content.len() as u64;
+                    self.memory.record_injected_bytes(injected_bytes);
+                    crate::session::memory_observation::log_memory_injection(
+                        self.session_info.id.to_string(),
+                        xai_grok_telemetry::memory_telemetry::MemoryInjectionOutcome::Results,
+                        crate::session::memory_observation::MemoryInjectionMetrics {
+                            result_count: context
+                                .global_entry_count
+                                .saturating_add(context.workspace_entry_count),
+                            injected_bytes,
+                            estimated_tokens: xai_token_estimation::estimate_tokens(
+                                &context.content,
+                            ),
+                            global_entry_count: context.global_entry_count,
+                            workspace_entry_count: context.workspace_entry_count,
+                            compact_index,
+                            duration_ms: inject_start.elapsed().as_millis() as u64,
+                            ..Default::default()
+                        },
+                    );
                     self.memory
                         .injection_count
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Some(context)
+                    Some(context.content)
                 }
                 Err(error) => {
                     tracing::warn!(
                         target: xai_grok_telemetry::memory_log::TARGET,
                         %error,
                         "MEMORY_INJECT: failed to generate v2 manifest context"
+                    );
+                    crate::session::memory_observation::log_memory_injection(
+                        self.session_info.id.to_string(),
+                        xai_grok_telemetry::memory_telemetry::MemoryInjectionOutcome::Error,
+                        crate::session::memory_observation::MemoryInjectionMetrics {
+                            compact_index,
+                            ..Default::default()
+                        },
                     );
                     None
                 }
@@ -2265,6 +2361,7 @@ impl SessionActor {
                 top_score,
                 configured_min_score,
                 duration_ms: inject_start.elapsed().as_millis() as u64,
+                ..Default::default()
             },
         );
         crate::session::helpers::memory_context::format_memory_reminder(&inject_results)
@@ -2298,8 +2395,11 @@ impl SessionActor {
             tool_calls.retain(|tc| tc.name != STRUCTURED_OUTPUT_TOOL);
             return StructuredOutputStep::Proceed;
         }
-        let call_id = tool_calls[pos].id.as_ref().to_owned();
-        let validated = validate_structured_output(validator, &tool_calls[pos].arguments);
+        let Some(tc) = tool_calls.get(pos) else {
+            return StructuredOutputStep::Proceed;
+        };
+        let call_id = tc.id.as_ref().to_owned();
+        let validated = validate_structured_output(validator, &tc.arguments);
         if let Err(err) = &validated
             && *retries < STRUCTURED_OUTPUT_MAX_RETRIES
         {
@@ -2347,22 +2447,28 @@ impl SessionActor {
         if signals.turn_count == 0 {
             return;
         }
-        match self.chat_state_handle.try_get_session_usage().await {
-            Ok(ledger) => {
-                let _ = self
-                    .notifications
-                    .persistence_tx
-                    .send(PersistenceMsg::UsageTurn {
-                        turn_number: signals.turn_count,
-                        live: crate::session::usage_file::UsageSummary::from_ledger(&ledger),
-                    });
-            }
-            Err(()) => {
-                tracing::warn!(
-                    turn_number = signals.turn_count,
-                    "failed to snapshot session usage for persist"
-                );
-            }
+        let Ok(ledger) = self.chat_state_handle.try_get_session_usage().await else {
+            tracing::warn!(
+                turn_number = signals.turn_count,
+                "failed to snapshot session usage for persist"
+            );
+            return;
+        };
+        let (respond_to, ack) = oneshot::channel();
+        if self
+            .notifications
+            .persistence_tx
+            .send(PersistenceMsg::UsageTurn {
+                turn_number: signals.turn_count,
+                live: crate::session::usage_file::UsageSummary::from_ledger(&ledger),
+                respond_to,
+            })
+            .is_err()
+        {
+            return;
+        }
+        if let Ok(Err(e)) = ack.await {
+            tracing::warn!(?e, "session usage persist failed");
         }
     }
     /// Shared round-completion bookkeeping (plan cleanup, cancel-streak reset, token sums, feedback prompt).
@@ -2428,6 +2534,32 @@ impl SessionActor {
                 turn_outcome,
             )
             .await;
+    }
+    /// Emitted whether or not the reminder is armed, so cohorts compare on identical properties.
+    /// Runs at turn end and when a cancel aborts the turn task (under the state lock, before a
+    /// replacement turn can be promoted); a second call after `finish_turn` is a no-op.
+    pub(super) fn emit_long_reasoning_turn_event(&self) {
+        let tally = self.long_reasoning_turn_state.lock().finish_turn();
+        if tally.model_calls == 0 {
+            return;
+        }
+        let policy = self.long_reasoning_reminder;
+        xai_grok_telemetry::session_ctx::log_session_event(
+            crate::agent::session_metrics::LongReasoningReminderTurn {
+                session_id: self.session_info.id.0.to_string(),
+                turn_number: tally.turn_number,
+                enabled: policy.enabled,
+                threshold_tokens: policy.tokens,
+                delay: policy.delay,
+                model_calls: tally.model_calls,
+                reasoning_tokens: tally.reasoning_tokens,
+                completion_tokens: tally.completion_tokens,
+                max_call_reasoning_tokens: tally.max_call_reasoning_tokens,
+                long_calls: tally.long_calls,
+                reminders_fired: tally.reminders_fired,
+                model: tally.model,
+            },
+        );
     }
     async fn process_conversation_turn(
         self: &Arc<Self>,
@@ -2537,6 +2669,8 @@ impl SessionActor {
         let tool_prep_start = std::time::Instant::now();
         let (tool_definitions, mcp_wait_ms) = self.prepare_tool_definitions_timed().await;
         let total_prep_ms = tool_prep_start.elapsed().as_millis() as u64;
+        self.maybe_inject_mcp_connecting_reminder().await;
+        self.maybe_inject_mcp_reminder().await;
         if let Some(ref mut pt) = prompt_timing {
             pt.record_tool_prep(mcp_wait_ms, total_prep_ms);
         }
@@ -2580,8 +2714,7 @@ impl SessionActor {
                 .and_then(|config| config.rate_limit_retry_threshold),
         );
         let mut transient_retry_attempts: u32 = 0;
-        let transient_retry_enabled =
-            self.transient_retry_enabled && !self.attach_non_interactive.get();
+        let transient_retry_enabled = self.transient_retry_enabled;
         let mut turn_span_totals = TurnSpanTotals::default();
         let mut structured_output_retries: u32 = 0;
         let mut media_gen_resamples: u32 = 0;
@@ -2744,31 +2877,66 @@ impl SessionActor {
                     return Err(self.surface_compact_auth_failure(e).await);
                 }
             }
+            let due_reminder = {
+                let mut state = self.long_reasoning_turn_state.lock();
+                if salvage.awaiting_continuation() {
+                    state.defer_due_reminder(self.long_reasoning_reminder);
+                    None
+                } else {
+                    state.take_due_reminder(self.long_reasoning_reminder)
+                }
+            };
+            if let Some(long_call_tokens) = due_reminder {
+                xai_grok_telemetry::unified_log::info(
+                    "shell.turn.long_reasoning_reminder",
+                    Some(self.session_info.id.0.as_ref()),
+                    Some(serde_json::json!({
+                        "loop_index": loop_index,
+                        "reasoning_tokens": long_call_tokens,
+                        "threshold": self.long_reasoning_reminder.tokens,
+                        "delay": self.long_reasoning_reminder.delay,
+                    })),
+                );
+                self.push_system_reminder(crate::session::long_reasoning_reminder::REMINDER);
+            }
             let backend_search_active = self.backend_search_active();
             tracing::debug!(
                 backend_search_active,
                 "backend_search: turn tool resolution"
             );
+            let bridge = self.agent.borrow().tool_bridge().clone();
+            let messaging_grant = if bridge
+                .read_resource::<
+                    xai_grok_tools::implementations::grok_build::task::types::AgentMessageSenderResource,
+                >()
+                .await
+                .is_some()
+                && bridge
+                    .tool_for_kind(
+                        xai_grok_tools::types::tool::ToolKind::ActiveAgentMessage,
+                    )
+                    .await
+                    .is_some()
+            {
+                child_tool_projection::ChildMessagingGrant::Granted
+            } else {
+                child_tool_projection::ChildMessagingGrant::Ungranted
+            };
             let mut effective_tools: Vec<ToolSpec> =
                 if let Some(ref override_tools) = self.forked_tool_override {
-                    let bridge = self.agent.borrow().tool_bridge().clone();
-                    let mut tools = child_tool_projection::child_safe_tool_specs(
+                    child_tool_projection::child_safe_tool_specs(
                         override_tools.clone(),
                         child_tool_projection::ChildToolProjection::VerbatimMirror,
+                        messaging_grant,
                         |name| bridge.tool_kind(name),
-                    );
-                    if self.startup_hints.is_subagent {
-                        crate::agent::subagent::strip_ask_user_question_tool(&mut tools);
-                        crate::agent::subagent::strip_workflow_tool(&mut tools);
-                    }
-                    tools
+                    )
                 } else {
                     let tools = self.turn_base_tool_specs(&tool_definitions);
                     if self.startup_hints.is_subagent {
-                        let bridge = self.agent.borrow().tool_bridge().clone();
                         child_tool_projection::child_safe_tool_specs(
                             tools,
                             child_tool_projection::ChildToolProjection::Rebuilt,
+                            messaging_grant,
                             |name| bridge.tool_kind(name),
                         )
                     } else {
@@ -2786,6 +2954,8 @@ impl SessionActor {
                     parameters: schema,
                 });
             }
+            self.persist_tool_definitions_artifact(&effective_tools)
+                .await;
             let build_req_start = std::time::Instant::now();
             let build_request_span =
                 xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
@@ -2836,9 +3006,10 @@ impl SessionActor {
             request.x_grok_transient_retry =
                 (transient_retry_attempts > 0).then(|| transient_retry_attempts.to_string());
             if request.x_grok_deployment_id.is_none() {
-                request.x_grok_deployment_id = crate::managed_config::resolve_deployment_id(
-                    crate::managed_config::resolve_deployment_key().as_deref(),
-                );
+                request.x_grok_deployment_id =
+                    xai_grok_cloud_config::managed_config::resolve_deployment_id(
+                        xai_grok_cloud_config::managed_config::resolve_deployment_key().as_deref(),
+                    );
             }
             if structured_output_native {
                 request.json_schema = json_schema.clone();
@@ -2873,6 +3044,8 @@ impl SessionActor {
                     "transient_retry_attempts": transient_retry_attempts,
                 })),
             );
+            let requested_model =
+                crate::session::telemetry::requested_model_snapshot(request.model.as_deref());
             let model_timer = std::time::Instant::now();
             let model_sampler_outcome = self
                 .run_turn_via_sampler(
@@ -3142,6 +3315,11 @@ impl SessionActor {
             let cached_prompt_tokens = usage.map(|u| u.cached_prompt_tokens);
             let completion_tokens = usage.map(|u| u.completion_tokens);
             let reasoning_tokens = usage.map(|u| u.reasoning_tokens);
+            self.long_reasoning_turn_state.lock().record_call(
+                self.long_reasoning_reminder,
+                reasoning_tokens.unwrap_or(0),
+                completion_tokens.unwrap_or(0),
+            );
             let ttft_ms = latency.time_to_first_token_ms;
             let tokens_per_sec = match completion_tokens {
                 Some(ct) if ct > 0 => {
@@ -3209,6 +3387,7 @@ impl SessionActor {
                             .usage
                             .as_ref()
                             .map(|u| u.cache_creation_prompt_tokens),
+                        context_tokens: response.usage.as_ref().map(|u| u.total_tokens),
                         cost_usd_ticks: response.cost_usd_ticks,
                     },
                 );
@@ -3236,11 +3415,6 @@ impl SessionActor {
                     .get_prompt_index()
                     .await
                     .saturating_sub(1) as u32;
-                if turn_index == 0
-                    && let Some(repo_status_wait_ms) = self.repo_status_prefetch.take_wait_ms()
-                {
-                    pt.record_repo_status_wait(repo_status_wait_ms);
-                }
                 turn_phases.arm_latency(pt.build(
                     model_duration_ms,
                     turn_index,
@@ -3643,7 +3817,8 @@ impl SessionActor {
                 .await;
             let execute_tool_calls_result = {
                 let _tool_phase = turn_phases.begin_tool_blocking();
-                self.execute_tool_calls(tool_call_responses).await
+                self.execute_tool_calls(tool_call_responses, requested_model)
+                    .await
             };
             match execute_tool_calls_result {
                 Ok(ToolLoop::PermissionReject { tool_name, reason }) => {
@@ -4095,7 +4270,10 @@ mod structured_output_validation_tests {
     #[test]
     fn accepts_conforming_json() {
         let v = validate_structured_output(&validator(), r#"{"name":"alice","age":30}"#).unwrap();
-        assert_eq!(v["name"], "alice");
+        assert_eq!(
+            v.pointer("/name").unwrap_or(&serde_json::Value::Null),
+            "alice"
+        );
     }
     #[test]
     fn rejects_non_json() {

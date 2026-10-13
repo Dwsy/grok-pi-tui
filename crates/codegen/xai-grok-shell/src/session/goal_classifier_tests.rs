@@ -3,6 +3,40 @@ use crate::session::goal_role_tools::tests::{assert_no_tool_placeholders, summar
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
+/// A miss here silently re-runs a cancelled explicit-pair skeptic on the current model.
+#[test]
+fn spawn_error_is_retryable_truth_table() {
+    use crate::session::goal_planner::RetryableSpawnError;
+    assert!(SpawnError::Transport(String::new()).is_retryable());
+    assert!(
+        SpawnError::Runtime {
+            message: String::new(),
+            cancelled: false,
+        }
+        .is_retryable()
+    );
+    assert!(
+        !SpawnError::Runtime {
+            message: String::new(),
+            cancelled: true,
+        }
+        .is_retryable()
+    );
+}
+
+const JSON_NULL: serde_json::Value = serde_json::Value::Null;
+
+fn j<'a>(v: &'a serde_json::Value, k: &str) -> &'a serde_json::Value {
+    v.get(k).unwrap_or(&JSON_NULL)
+}
+
+fn at<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected index {i}, len {}", xs.len());
+    };
+    x
+}
+
 /// A `RoleRenderedPrompt` whose two renders are identical (the inherit / same-toolset case), for direct `spawn_classifier` test calls.
 fn role_prompt(p: &str) -> RoleRenderedPrompt {
     RoleRenderedPrompt {
@@ -49,6 +83,10 @@ async fn channel_spawner_request_is_harness_internal() {
         request.resume_from.as_deref(),
         Some("prior-child"),
         "resume_from must propagate to the SubagentRequest",
+    );
+    assert!(
+        request.await_to_completion,
+        "verifier subagent must never be auto-backgrounded"
     );
     let _ = request.result_tx.send(SubagentResult::default());
     handle.await.unwrap();
@@ -178,19 +216,19 @@ fn build_subagent_trace_items_shapes_a_task_call_pair() {
     );
     assert_eq!(items.len(), 2);
 
-    let ConversationItem::Assistant(asst) = &items[0] else {
+    let ConversationItem::Assistant(asst) = &at(&items, 0) else {
         panic!("first item must be an assistant tool-call message");
     };
     assert_eq!(asst.tool_calls.len(), 1);
-    let call = &asst.tool_calls[0];
+    let call = &at(&asst.tool_calls, 0);
     assert_eq!(&*call.id, "verifier-7");
     assert_eq!(call.name, "spawn_subagent");
     let args: serde_json::Value = serde_json::from_str(&call.arguments).unwrap();
-    assert_eq!(args["subagent_type"], "goal-verifier");
-    assert_eq!(args["description"], "Verify goal completion");
-    assert_eq!(args["prompt"], "Adversarially verify the objective.");
+    assert_eq!(j(&args, "subagent_type"), "goal-verifier");
+    assert_eq!(j(&args, "description"), "Verify goal completion");
+    assert_eq!(j(&args, "prompt"), "Adversarially verify the objective.");
 
-    let ConversationItem::ToolResult(res) = &items[1] else {
+    let ConversationItem::ToolResult(res) = &at(&items, 1) else {
         panic!("second item must be a tool result");
     };
     assert_eq!(&*res.tool_call_id, "verifier-7");
@@ -407,9 +445,9 @@ fn parse_verdict_json_parses_findings_and_drops_empty() {
         }"##;
     let v = parse_verdict_json(body).expect("parses");
     assert_eq!(v.findings.len(), 2, "the all-empty finding is dropped");
-    assert_eq!(v.findings[0].kind, "bug");
-    assert_eq!(v.findings[0].location, "src/foo.rs:42");
-    assert_eq!(v.findings[1].kind, "gap");
+    assert_eq!(at(&v.findings, 0).kind, "bug");
+    assert_eq!(at(&v.findings, 0).location, "src/foo.rs:42");
+    assert_eq!(at(&v.findings, 1).kind, "gap");
 }
 
 #[test]
@@ -690,7 +728,7 @@ fn aggregate_required_cold_approvals_monotone_in_n() {
     let req: Vec<u32> = (2..=5).map(min_cold_approvals).collect();
     assert_eq!(req, vec![1, 2, 2, 3], "required cold approvals per N=2..5");
     assert!(
-        req.windows(2).all(|w| w[1] >= w[0]),
+        req.windows(2).all(|w| matches!(w, [a, b] if b >= a)),
         "required cold approvals must be monotone non-decreasing: {req:?}",
     );
 }
@@ -1341,7 +1379,7 @@ async fn verification_stage_renders_per_index_tool_names() {
             .iter()
             .position(|i| *i == want)
             .unwrap_or_else(|| panic!("skeptic {want} never spawned: {:?}", *idxs));
-        prompts[pos].as_str()
+        at(&prompts, pos).as_str()
     };
 
     let p0 = prompt_for(0);
@@ -1726,7 +1764,7 @@ fn expand_assignment_round_robin_over_clamped_n() {
     let models: Vec<&str> = out.iter().map(|p| p.model.as_str()).collect();
     assert_eq!(models, vec!["a", "b", "a"]);
     // Skeptic-0 always gets pool[0].
-    assert_eq!(out[0].model, "a");
+    assert_eq!(at(&out, 0).model, "a");
 }
 
 #[test]
@@ -1741,7 +1779,11 @@ fn expand_assignment_reuses_frozen_prefix_on_resume() {
     // A later attempt with the SAME n reuses it verbatim (resume stable).
     let again = expand_skeptic_assignment(&frozen, &[pair("a"), pair("b")], 3);
     assert_eq!(again, frozen, "resume must reuse the frozen assignment");
-    assert_eq!(again[0].model, "a", "skeptic-0 keeps pool[0] on resume");
+    assert_eq!(
+        at(&again, 0).model,
+        "a",
+        "skeptic-0 keeps pool[0] on resume"
+    );
 }
 
 #[test]
@@ -1751,7 +1793,7 @@ fn expand_assignment_grows_without_rewriting_existing_indices() {
     let grown = expand_skeptic_assignment(&frozen, &[pair("a"), pair("b")], 4);
     let models: Vec<&str> = grown.iter().map(|p| p.model.as_str()).collect();
     assert_eq!(models, vec!["a", "b", "a", "b"]);
-    assert_eq!(&grown[..2], &frozen[..]);
+    assert_eq!(grown.get(..2), Some(frozen.as_slice()));
 }
 
 #[test]
@@ -1984,7 +2026,7 @@ async fn verification_stage_n1_not_refuted_returns_achieved() {
     assert!(body.contains("Per-skeptic reports:"));
     // Prompt substitution sanity: every placeholder must be resolved and the adversarial framing must be present
     let prompts = observed.prompts.lock().unwrap();
-    let p = &prompts[0];
+    let p = &at(&prompts, 0);
     assert!(
         p.contains(&format_verdict_path(&vid, 1, 0)),
         "VERDICT_FILE missing in prompt"
@@ -2028,12 +2070,12 @@ async fn verification_stage_threads_prior_gaps_into_skeptic_prompts() {
     let _ = run_verification_stage(spawner, inputs, &emit).await;
     let prompts = observed.prompts.lock().unwrap();
     assert!(
-        prompts[0].contains("gap · src/foo.rs:12 — no test for criterion 2"),
+        at(&prompts, 0).contains("gap · src/foo.rs:12 — no test for criterion 2"),
         "prior gaps must be substituted into the skeptic prompt",
     );
     assert!(
-        !prompts[0].contains("{PRIOR_GAPS}")
-            && !prompts[0].contains("(none — first verification round)"),
+        !at(&prompts, 0).contains("{PRIOR_GAPS}")
+            && !at(&prompts, 0).contains("(none — first verification round)"),
         "placeholder/sentinel must not render when gaps are present",
     );
 }

@@ -133,7 +133,10 @@ mod tests {
         assert!(collector.absorb(DOOM_LOOP_CHECK_EVENT_TYPE, SAMPLE_CHECK_EVENT_DATA));
         let signals = collector.take();
         assert_eq!(signals.len(), 1);
-        assert_eq!(signals[0].kind, DoomLoopSignalKind::TailRepetition(4));
+        let Some(signal) = signals.first() else {
+            panic!("expected a signal");
+        };
+        assert_eq!(signal.kind, DoomLoopSignalKind::TailRepetition(4));
     }
 
     /// Servers that omit the SSE `event:` name are still handled by the payload `type` check.
@@ -154,8 +157,14 @@ mod tests {
         ));
         let signals = collector.take();
         assert_eq!(signals.len(), 2);
-        assert_eq!(signals[0].raw, "tail_repetition:4@response");
-        assert_eq!(signals[1].raw, "tail_repetition:2@response");
+        let Some(first) = signals.first() else {
+            panic!("expected first signal");
+        };
+        let Some(second) = signals.get(1) else {
+            panic!("expected second signal");
+        };
+        assert_eq!(first.raw, "tail_repetition:4@response");
+        assert_eq!(second.raw, "tail_repetition:2@response");
     }
 
     #[test]

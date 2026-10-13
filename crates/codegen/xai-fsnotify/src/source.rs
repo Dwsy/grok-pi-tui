@@ -432,8 +432,8 @@ mod tests {
         );
         let events = collect_events(&mut rx);
         assert_eq!(events.len(), 1);
-        match &events[0] {
-            FsEvent::FilesChanged { paths, kind } => {
+        match events.first() {
+            Some(FsEvent::FilesChanged { paths, kind }) => {
                 assert_eq!(paths.len(), 1);
                 assert_eq!(*kind, FsEventKind::Modified);
             }

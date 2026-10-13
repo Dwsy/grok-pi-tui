@@ -448,8 +448,14 @@ fn push_link_segments(
         if start >= end {
             continue;
         }
-        let col_start = UnicodeWidthStr::width(&text[row.start..start]);
-        let col_end = col_start + UnicodeWidthStr::width(&text[start..end]);
+        let Some(before) = text.get(row.start..start) else {
+            continue;
+        };
+        let Some(matched) = text.get(start..end) else {
+            continue;
+        };
+        let col_start = UnicodeWidthStr::width(before);
+        let col_end = col_start + UnicodeWidthStr::width(matched);
         let (Some(cs), Some(ce)) = (
             to_overlay_col(content_x, col_start),
             to_overlay_col(content_x, col_end),
@@ -536,7 +542,10 @@ fn scan_logical_line(
         let path_m = caps.get(2).expect("path group");
         // Require a matching closing quote immediately after the path.
         let close_idx = path_m.end();
-        if text.as_bytes().get(close_idx) != Some(&open_q.as_str().as_bytes()[0]) {
+        let Some(&open_byte) = open_q.as_str().as_bytes().first() else {
+            continue;
+        };
+        if text.as_bytes().get(close_idx) != Some(&open_byte) {
             continue;
         }
         if range_overlaps_urls(path_m.start(), path_m.end()) {
@@ -570,7 +579,13 @@ fn scan_logical_line(
             continue;
         }
         if m.start() > 0 {
-            let prev = text.as_bytes()[m.start() - 1];
+            let Some(&prev) = m
+                .start()
+                .checked_sub(1)
+                .and_then(|i| text.as_bytes().get(i))
+            else {
+                continue;
+            };
             if prev.is_ascii_alphanumeric()
                 || matches!(prev, b'_' | b'.' | b'+' | b'@' | b'-' | b':' | b'/' | b'~')
             {
@@ -613,7 +628,13 @@ fn scan_logical_line(
                 continue;
             }
             if m.start() > 0 {
-                let prev = text.as_bytes()[m.start() - 1];
+                let Some(&prev) = m
+                    .start()
+                    .checked_sub(1)
+                    .and_then(|i| text.as_bytes().get(i))
+                else {
+                    continue;
+                };
                 if prev.is_ascii_alphanumeric()
                     || matches!(
                         prev,
@@ -653,6 +674,13 @@ mod tests {
 
     use ratatui::style::Color;
 
+    fn nth_link(overlay: &LinkOverlay, i: usize) -> &OverlayLink {
+        let Some(link) = overlay.links().get(i) else {
+            panic!("expected link {i}, got {:?}", overlay.links());
+        };
+        link
+    }
+
     /// Scan rows as independent logical lines (hard breaks between rows), the common shape for tests that don't exercise soft-wrap joining.
     fn scan_unjoined<'a>(
         lines: impl Iterator<Item = (u16, &'a Line<'static>)>,
@@ -676,7 +704,10 @@ mod tests {
 
         // Short session-relative path matches the generated media by suffix.
         let target = local_link_to_file_target("images/1.jpg", &media, None).unwrap();
-        assert_eq!(target, LinkTarget::File(Arc::from(media[0].as_path())));
+        let Some(media_path) = media.first() else {
+            panic!("expected media path");
+        };
+        assert_eq!(target, LinkTarget::File(Arc::from(media_path.as_path())));
         let resolved = resolve_link_target(&target).expect("resolved target");
         let url = resolved.osc8_url.expect("OSC 8 URL");
         assert!(
@@ -761,7 +792,10 @@ mod tests {
         std::fs::write(cwd.path().join("images/1.jpg"), b"cwd").unwrap();
 
         let target = local_link_to_file_target("images/1.jpg", &media, Some(cwd.path())).unwrap();
-        assert_eq!(target, LinkTarget::File(Arc::from(media[0].as_path())));
+        let Some(media_path) = media.first() else {
+            panic!("expected media path");
+        };
+        assert_eq!(target, LinkTarget::File(Arc::from(media_path.as_path())));
     }
 
     // ── tool_path_file_target ──
@@ -1063,7 +1097,7 @@ mod tests {
         });
         assert!(!overlay.is_empty());
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(overlay.links()[0].screen_row, 5);
+        assert_eq!(nth_link(&overlay, 0).screen_row, 5);
     }
 
     // ── scan_lines_for_url_overlays ──
@@ -1090,7 +1124,7 @@ mod tests {
         scan_unjoined(std::iter::once((5, &line)), 2, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        let link = &overlay.links()[0];
+        let link = &nth_link(&overlay, 0);
         assert_eq!(
             &*resolve_link_target(&link.target)
                 .and_then(|resolved| resolved.osc8_url)
@@ -1112,19 +1146,19 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 2);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "https://a.example"
         );
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[1].target)
+            &*resolve_link_target(&nth_link(&overlay, 1).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "https://b.example"
         );
-        assert!(overlay.links()[0].col_end <= overlay.links()[1].col_start);
-        assert_ne!(overlay.links()[0].id, overlay.links()[1].id);
+        assert!(nth_link(&overlay, 0).col_end <= nth_link(&overlay, 1).col_start);
+        assert_ne!(nth_link(&overlay, 0).id, nth_link(&overlay, 1).id);
     }
 
     #[test]
@@ -1139,13 +1173,13 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "https://example.com"
         );
         // "Visit " = 6 display cols (in first span)
-        assert_eq!(overlay.links()[0].col_start, 6);
+        assert_eq!(nth_link(&overlay, 0).col_start, 6);
     }
 
     #[test]
@@ -1157,8 +1191,8 @@ mod tests {
         scan_unjoined(lines.into_iter(), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 2);
-        assert_eq!(overlay.links()[0].screen_row, 10);
-        assert_eq!(overlay.links()[1].screen_row, 11);
+        assert_eq!(nth_link(&overlay, 0).screen_row, 10);
+        assert_eq!(nth_link(&overlay, 1).screen_row, 11);
     }
 
     #[test]
@@ -1181,14 +1215,14 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "mailto:foo@bar.com"
         );
-        assert_eq!(overlay.links()[0].col_start, 6); // "Email "
+        assert_eq!(nth_link(&overlay, 0).col_start, 6); // "Email "
         assert_eq!(
-            overlay.links()[0].col_end,
+            nth_link(&overlay, 0).col_end,
             6 + UnicodeWidthStr::width("foo@bar.com") as u16
         );
     }
@@ -1201,7 +1235,7 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "mailto:foo@bar.com"
@@ -1242,7 +1276,7 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "https://example.com",
@@ -1258,7 +1292,7 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "https://example.com/path?key=val#sec"
@@ -1272,8 +1306,8 @@ mod tests {
         scan_unjoined(std::iter::once((0, &line)), 10, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        assert_eq!(overlay.links()[0].col_start, 10);
-        assert_eq!(overlay.links()[0].col_end, 10 + 12);
+        assert_eq!(nth_link(&overlay, 0).col_start, 10);
+        assert_eq!(nth_link(&overlay, 0).col_end, 10 + 12);
     }
 
     // ── File path detection ──
@@ -1286,7 +1320,7 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "file:///Users/foo/src/main.rs"
@@ -1314,7 +1348,7 @@ mod tests {
             let mut overlay = LinkOverlay::new();
             scan_unjoined(std::iter::once((0, &line)), 0, &media, &mut overlay);
             assert_eq!(overlay.links().len(), 1, "{line_text}");
-            let url = resolve_link_target(&overlay.links()[0].target)
+            let url = resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url");
             assert!(
@@ -1352,7 +1386,7 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             // `%` is itself percent-encoded (`%25`) when building the file URL.
@@ -1385,7 +1419,7 @@ mod tests {
         }
         // Row 0: path starts after the prose and runs to the row's end.
         let prose = "Image generated and saved to ";
-        let l0 = &overlay.links()[0];
+        let l0 = &nth_link(&overlay, 0);
         assert_eq!(l0.screen_row, 3);
         assert_eq!(l0.col_start, 2 + UnicodeWidthStr::width(prose) as u16);
         assert_eq!(
@@ -1395,7 +1429,7 @@ mod tests {
             ) as u16
         );
         // Row 1: the continuation fragment covers the entire row.
-        let l1 = &overlay.links()[1];
+        let l1 = &nth_link(&overlay, 1);
         assert_eq!(l1.screen_row, 4);
         assert_eq!(l1.col_start, 2);
         assert_eq!(
@@ -1425,9 +1459,9 @@ mod tests {
                 "file:///Users/me/.grok/sessions/%252Fabc/019f3a86/images/1.jpg"
             );
         }
-        assert_eq!(overlay.links()[1].col_start, 0);
+        assert_eq!(nth_link(&overlay, 1).col_start, 0);
         assert_eq!(
-            overlay.links()[1].col_end,
+            nth_link(&overlay, 1).col_end,
             UnicodeWidthStr::width("ges/1.jpg") as u16
         );
     }
@@ -1475,9 +1509,9 @@ mod tests {
                 "https://example.com/some/long/path?key=val"
             );
         }
-        assert_eq!(overlay.links()[0].id, overlay.links()[1].id);
+        assert_eq!(nth_link(&overlay, 0).id, nth_link(&overlay, 1).id);
         assert!(
-            overlay.links()[0].id.is_some(),
+            nth_link(&overlay, 0).id.is_some(),
             "wrap fragments must share a nonempty OSC 8 id"
         );
     }
@@ -1501,14 +1535,14 @@ mod tests {
         scan_lines_for_url_overlays(rows.into_iter(), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 2);
-        assert_eq!(overlay.links()[1].screen_row, 1);
-        assert_eq!(overlay.links()[1].col_start, 0);
+        assert_eq!(nth_link(&overlay, 1).screen_row, 1);
+        assert_eq!(nth_link(&overlay, 1).col_start, 0);
         assert_eq!(
-            overlay.links()[1].col_end,
+            nth_link(&overlay, 1).col_end,
             UnicodeWidthStr::width("ng/path?key=val") as u16
         );
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[1].target)
+            &*resolve_link_target(&nth_link(&overlay, 1).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "https://example.com/some/long/path?key=val"
@@ -1532,7 +1566,7 @@ mod tests {
         scan_unjoined(std::iter::once((1, &line)), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 2);
-        let scanned = &overlay.links()[1];
+        let scanned = &nth_link(&overlay, 1);
         assert!(
             scanned.id.is_some_and(|id| id >= SCANNER_ID_BASE),
             "scanned id must come from the scanner namespace, got {:?}",
@@ -1561,9 +1595,9 @@ mod tests {
             );
         }
         // Row 1's region covers only `App.app` (the joiner space belongs to no row)
-        assert_eq!(overlay.links()[1].col_start, 0);
+        assert_eq!(nth_link(&overlay, 1).col_start, 0);
         assert_eq!(
-            overlay.links()[1].col_end,
+            nth_link(&overlay, 1).col_end,
             UnicodeWidthStr::width("App.app") as u16
         );
     }
@@ -1580,12 +1614,12 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "file:///Users/alice"
         );
-        assert_eq!(overlay.links()[0].screen_row, 0);
+        assert_eq!(nth_link(&overlay, 0).screen_row, 0);
     }
 
     #[test]
@@ -1601,13 +1635,13 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "file:///Users/foo/images/1.jpg"
         );
         assert_eq!(
-            overlay.links()[0].col_start,
+            nth_link(&overlay, 0).col_start,
             UnicodeWidthStr::width("Saved to ") as u16
         );
     }
@@ -1620,7 +1654,7 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "file:///Users/foo/bar.rs",
@@ -1649,7 +1683,7 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "https://example.com/foo/bar",
@@ -1688,7 +1722,7 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "file:///tmp/grok-impl-summary.md"
@@ -1703,7 +1737,7 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "file:///node_modules/@scope/package/index.js"
@@ -1723,7 +1757,7 @@ mod tests {
             1,
             "expected one link for spaced path"
         );
-        let link = &overlay.links()[0];
+        let link = &nth_link(&overlay, 0);
         assert_eq!(
             &*resolve_link_target(&link.target)
                 .and_then(|resolved| resolved.osc8_url)
@@ -1750,14 +1784,14 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "file:///tmp/release/Demo%20App.app"
         );
-        assert_eq!(overlay.links()[0].col_start, 5); // "open "
+        assert_eq!(nth_link(&overlay, 0).col_start, 5); // "open "
         assert_eq!(
-            overlay.links()[0].col_end,
+            nth_link(&overlay, 0).col_end,
             5 + UnicodeWidthStr::width(path) as u16
         );
     }
@@ -1771,14 +1805,14 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             "file:///tmp/foo/bar"
         );
         // "See " = 4 cols; path is 12 cols (`/tmp/foo/bar`).
-        assert_eq!(overlay.links()[0].col_start, 4);
-        assert_eq!(overlay.links()[0].col_end, 4 + 12);
+        assert_eq!(nth_link(&overlay, 0).col_start, 4);
+        assert_eq!(nth_link(&overlay, 0).col_end, 4 + 12);
     }
 
     // ── Home-relative (`~/`) path detection ──
@@ -1797,7 +1831,7 @@ mod tests {
         scan_unjoined(std::iter::once((0, &line)), 0, &[], &mut overlay);
 
         assert_eq!(overlay.links().len(), 1);
-        let link = &overlay.links()[0];
+        let link = &nth_link(&overlay, 0);
         // `~` is expanded to the home directory in the file URL.
         let url = resolve_link_target(&link.target)
             .and_then(|resolved| resolved.osc8_url)
@@ -1823,12 +1857,12 @@ mod tests {
 
         assert_eq!(overlay.links().len(), 1);
         assert_eq!(
-            &*resolve_link_target(&overlay.links()[0].target)
+            &*resolve_link_target(&nth_link(&overlay, 0).target)
                 .and_then(|resolved| resolved.osc8_url)
                 .expect("url"),
             expected.as_str()
         );
-        assert_eq!(overlay.links()[0].col_start, 0);
+        assert_eq!(nth_link(&overlay, 0).col_start, 0);
     }
 
     #[test]

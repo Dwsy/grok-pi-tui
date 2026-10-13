@@ -81,7 +81,10 @@ impl WelcomeWorkspaceMode {
     }
 
     pub fn from_index(i: usize) -> Self {
-        Self::ALL[i % Self::ALL.len()]
+        match Self::ALL.get(i % Self::ALL.len()) {
+            Some(&mode) => mode,
+            None => Self::Sandbox,
+        }
     }
 }
 
@@ -283,7 +286,9 @@ pub fn render_workspace_mode_picker(
         buf.set_span(x, row.y, &Span::styled(text, style), w);
         if slot < options.len() {
             // Map by mode index so hit-test stays stable.
-            options[mode.index()] = Some(rect);
+            if let Some(hit) = options.get_mut(mode.index()) {
+                *hit = Some(rect);
+            }
         }
         x = x.saturating_add(w);
         if slot + 1 < modes.len() && x + 1 < row.x + row.width {
@@ -587,12 +592,14 @@ mod tests {
             false,
             false,
         );
-        assert!(hits.options[0].is_some());
-        assert!(hits.options[1].is_some());
+        assert!(hits.options.first().is_some_and(Option::is_some));
+        assert!(hits.options.get(1).is_some_and(Option::is_some));
         assert!(hits.row.is_some());
         let cell = buf.cell((0, 0)).expect("cell");
         assert_eq!(cell.symbol(), "W");
-        let selected = hits.options[1].expect("local selected rect");
+        let Some(Some(selected)) = hits.options.get(1).copied() else {
+            panic!("local selected rect");
+        };
         let selected_text = format!(" • {} ", WelcomeWorkspaceMode::LocalWorkspace.label());
         assert_eq!(
             selected.width,

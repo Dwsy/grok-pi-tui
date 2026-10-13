@@ -381,7 +381,7 @@ impl SuggestionController {
                 if accept_end == 0 {
                     return None;
                 }
-                let accepted = self.ghost.text[..accept_end].to_owned();
+                let accepted = self.ghost.text.get(..accept_end)?.to_owned();
                 self.ghost.text.drain(..accept_end);
                 if self.ghost.text.is_empty() {
                     self.ghost.full_text.clear();
@@ -401,7 +401,7 @@ impl SuggestionController {
             return None;
         }
         let idx = self.dropdown.selected.min(self.dropdown.items.len() - 1);
-        let item = &self.dropdown.items[idx];
+        let item = self.dropdown.items.get(idx)?;
         Some(match item.replace_range.clone() {
             None => CompletionSplice::WholeLine(item.insert_text.clone()),
             Some(range) => {
@@ -525,15 +525,17 @@ impl SuggestionController {
         if items.len() < 2 {
             return None;
         }
-        let range = items[0].replace_range.clone()?;
-        if items[1..]
+        let first = items.first()?;
+        let range = first.replace_range.clone()?;
+        if items
             .iter()
+            .skip(1)
             .any(|i| i.replace_range.as_ref() != Some(&range))
         {
             return None;
         }
-        let mut lcp = items[0].span_replacement();
-        for item in &items[1..] {
+        let mut lcp = first.span_replacement();
+        for item in items.iter().skip(1) {
             lcp = common_str_prefix(lcp, item.span_replacement());
             if lcp.is_empty() {
                 return None;
@@ -543,10 +545,11 @@ impl SuggestionController {
         // Filling that would write a dangling backslash (line continuation)
         // Trim the incomplete escape; the strict-extension check below then decides whether anything is left to fill
         if lcp.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1 {
-            lcp = &lcp[..lcp.len() - 1];
+            let n = lcp.len().checked_sub(1)?;
+            lcp = lcp.get(..n)?;
         }
         let range = self.validated_replace_range(range, lcp, current_text)?;
-        let typed = &current_text[range.clone()];
+        let typed = current_text.get(range.clone())?;
         (lcp.len() > typed.len() && lcp.starts_with(typed)).then(|| (range, lcp.to_owned()))
     }
 
@@ -569,7 +572,9 @@ impl SuggestionController {
         let mut end = range.end;
         if range.end == request.len() && current_text.len() > request.len() {
             if !current_text.is_char_boundary(range.start)
-                || !replacement.starts_with(&current_text[range.start..])
+                || !current_text
+                    .get(range.start..)
+                    .is_some_and(|rest| replacement.starts_with(rest))
             {
                 return None;
             }
@@ -693,14 +698,16 @@ fn common_str_prefix<'a>(a: &'a str, b: &str) -> &'a str {
     while n > 0 && !a.is_char_boundary(n) {
         n -= 1;
     }
-    &a[..n]
+    a.get(..n).unwrap_or("")
 }
 
 /// Find the byte offset after the first word in `s`.
 /// A "word" is optional leading whitespace followed by a run of non-whitespace characters.
 fn one_word_end(s: &str) -> usize {
     let leading_ws = s.len() - s.trim_start().len();
-    let after_ws = &s[leading_ws..];
+    let Some(after_ws) = s.get(leading_ws..) else {
+        return s.len();
+    };
     let word_len = after_ws.find(char::is_whitespace).unwrap_or(after_ws.len());
     leading_ws + word_len
 }

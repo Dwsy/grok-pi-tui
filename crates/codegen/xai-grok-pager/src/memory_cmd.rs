@@ -60,13 +60,12 @@ fn global_target(storage: &MemoryStorage) -> ClearTarget {
     }
 }
 
-pub fn run(args: MemoryArgs) -> Result<()> {
+pub fn run(args: MemoryArgs, mode: xai_grok_shell::config::MemoryMode) -> Result<()> {
     match args.command {
         MemoryCommand::Clear {
             global, all, yes, ..
         } => {
             let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-            let mode = xai_grok_shell::config::load_memory_mode()?;
             let storage = MemoryStorage::new_for_mode(&cwd, None, mode);
 
             let targets = if all {

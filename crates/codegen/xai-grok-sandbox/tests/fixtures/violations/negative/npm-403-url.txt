@@ -1,0 +1,2 @@
+npm ERR! code E403
+npm ERR! 403 403 Forbidden - PUT https://registry.npmjs.org/pkg - Permission denied

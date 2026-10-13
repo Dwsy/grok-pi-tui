@@ -101,7 +101,13 @@ impl AgentView {
         let tick = self.scrollback.animation_tick();
         let spinner = {
             let frames = crate::glyphs::braille_spinner_frames();
-            frames[(tick / crate::views::turn_status::SPINNER_DIVISOR) as usize % frames.len()]
+            match frames.len() {
+                0 => "",
+                n => frames
+                    .get((tick / crate::views::turn_status::SPINNER_DIVISOR) as usize % n)
+                    .copied()
+                    .unwrap_or(""),
+            }
         };
         let secondary = Style::default().fg(theme.text_secondary);
         let name_style = Style::default().fg(theme.accent_model);
@@ -210,7 +216,10 @@ impl AgentView {
             Style::default().fg(theme.text_secondary)
         };
         if show_hint {
-            let button = format!("{}{KEY_HINT}]", &connect_label[..connect_label.len() - 1]);
+            let button = match connect_label.strip_suffix(']') {
+                Some(stem) => format!("{stem}{KEY_HINT}]"),
+                None => connect_label.to_owned(),
+            };
             buf.set_span_safe(
                 connect_x,
                 area.y,
@@ -677,7 +686,11 @@ mod plugin_cta_notify_tests {
             other => panic!("expected Installing, got {other:?}"),
         }
         assert_eq!(agent.pending_effects.len(), 1);
-        match &agent.pending_effects[0] {
+        match &agent
+            .pending_effects
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+        {
             Effect::InstallPluginFromCta {
                 source_url_or_path,
                 plugin_relative_path,
@@ -707,7 +720,11 @@ mod plugin_cta_notify_tests {
         agent.connect_matched_plugin();
 
         assert_eq!(agent.pending_effects.len(), 1);
-        match &agent.pending_effects[0] {
+        match &agent
+            .pending_effects
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+        {
             Effect::InstallPluginFromCta {
                 source_url_or_path, ..
             } => assert_eq!(source_url_or_path, "/srv/spacex-marketplace"),
@@ -730,7 +747,11 @@ mod plugin_cta_notify_tests {
         assert!(matches!(agent.plugin_cta.phase, CtaPhase::Hidden));
         assert!(agent.plugin_cta.dismissed.contains("figma"));
         assert_eq!(agent.pending_effects.len(), 1);
-        match &agent.pending_effects[0] {
+        match &agent
+            .pending_effects
+            .first()
+            .unwrap_or_else(|| panic!("missing index"))
+        {
             Effect::PersistPluginCtaDismissed { plugin_id } => assert_eq!(plugin_id, "figma"),
             other => panic!("expected PersistPluginCtaDismissed, got {other:?}"),
         }
@@ -875,7 +896,12 @@ mod plugin_cta_notify_tests {
         assert!(row.contains("Installing figma"), "row = {row:?}");
         // Leading braille spinner (frame 0 at tick 0).
         assert!(
-            row.contains(crate::glyphs::braille_spinner_frames()[0]),
+            row.contains(
+                crate::glyphs::braille_spinner_frames()
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| panic!("missing spinner frame")),
+            ),
             "row = {row:?}"
         );
         assert!(agent.plugin_cta.hit_connect.rect.is_none());
@@ -902,7 +928,12 @@ mod plugin_cta_notify_tests {
             let row = cta_row_text(&buf, area);
             assert!(row.contains("Setting up figma"), "row = {row:?}");
             assert!(
-                row.contains(crate::glyphs::braille_spinner_frames()[0]),
+                row.contains(
+                    crate::glyphs::braille_spinner_frames()
+                        .first()
+                        .copied()
+                        .unwrap_or_else(|| panic!("missing spinner frame")),
+                ),
                 "row = {row:?}"
             );
             assert!(agent.plugin_cta.hit_connect.rect.is_none());

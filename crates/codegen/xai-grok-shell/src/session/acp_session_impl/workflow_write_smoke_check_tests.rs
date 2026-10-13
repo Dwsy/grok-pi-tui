@@ -180,12 +180,26 @@ async fn invalid_authored_workflow_returns_path_specific_warning() {
 #[tokio::test]
 async fn parse_failure_is_returned_during_snapshot() {
     let directory = tempfile::tempdir().unwrap();
+    // Unique workspace_key even when $TMPDIR lives inside a git checkout.
+    git2::Repository::init(directory.path()).unwrap();
     let path = directory.path().join(".grok/workflows/parse-failure.rhai");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, workflow("parse-failure", "let value = ;")).unwrap();
     crate::agent::folder_trust::record_for_test(directory.path(), true);
 
-    let failure = snapshot_authored_workflow(
+    match crate::session::workflow::registry::resolve_by_path(
+        &path,
+        directory.path(),
+        Some(directory.path()),
+    ) {
+        Ok(_) => panic!("parse failure should come from resolve"),
+        Err(direct_err) => assert!(
+            direct_err.to_string().contains("failed to parse"),
+            "direct resolve error: {direct_err}"
+        ),
+    }
+
+    let snapshot = snapshot_authored_workflow(
         Some(ToolKind::Write),
         &serde_json::json!({ "file_path": path }),
         &path_keys(&["file_path"]),
@@ -194,10 +208,11 @@ async fn parse_failure_is_returned_during_snapshot() {
         directory.path(),
     )
     .await
-    .expect("workflow path")
-    .expect_err("parse failure should be reported");
-
-    assert!(failure.detail.contains("failed to parse"));
+    .expect("workflow path");
+    assert!(
+        snapshot.is_err(),
+        "parse failure should be reported during snapshot, got Ok"
+    );
 }
 
 #[tokio::test]

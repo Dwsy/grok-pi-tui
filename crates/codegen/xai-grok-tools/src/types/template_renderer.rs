@@ -31,8 +31,11 @@
 
 use std::collections::HashMap;
 
+use crate::types::context::WholeReadPolicy;
+use crate::types::definition::ToolDefinition;
 use crate::types::description::make_desc_env;
 use crate::types::tool::ToolKind;
+use crate::util::truncate_str;
 
 /// Nested map under `tools` — holds `by_kind` so templates write
 /// `${{ tools.by_kind.read }}` instead of `${{ tools.read }}`.
@@ -64,6 +67,8 @@ struct TemplateContext {
     system_reminders_enabled: bool,
     /// Absolute path to this session's drafts file, when known.
     feedback_drafts_path: String,
+    /// Which file classes `read_file` returns whole; read descriptions only promise it for classes that are on.
+    whole_read: WholeReadPolicy,
 }
 
 /// Shared render implementation: fast-path check + MiniJinja render.
@@ -71,7 +76,7 @@ fn render_with_env(
     template: &str,
     ctx: &impl serde::Serialize,
 ) -> Result<String, TemplateRenderError> {
-    if !template.contains("${{") && !template.contains("${%") {
+    if !has_template_markers(template) {
         return Ok(template.to_string());
     }
     let env = make_desc_env();
@@ -131,7 +136,9 @@ pub fn strip_template_markers(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
     while let Some(start) = rest.find("${") {
-        let after = &rest[start + 2..];
+        let Some(after) = rest.get(start + 2..) else {
+            break;
+        };
         let close: Option<usize> = if after.starts_with('{') {
             after.find("}}").map(|i| i + 2)
         } else if after.starts_with('%') {
@@ -141,18 +148,81 @@ pub fn strip_template_markers(raw: &str) -> String {
         };
         match close {
             Some(end_in_after) => {
-                out.push_str(&rest[..start]);
-                rest = &rest[start + 2 + end_in_after..];
+                out.push_str(rest.get(..start).unwrap_or(""));
+                rest = rest.get(start + 2 + end_in_after..).unwrap_or("");
             }
             None => {
                 // `${` that is not a marker (or unterminated) — keep as-is.
-                out.push_str(&rest[..start + 2]);
-                rest = &rest[start + 2..];
+                out.push_str(rest.get(..start + 2).unwrap_or(""));
+                rest = rest.get(start + 2..).unwrap_or("");
             }
         }
     }
     out.push_str(rest);
     out
+}
+
+/// Byte cap on the snippet [`unresolved_template_markers`] reports per offending description.
+const MARKER_SNIPPET_BYTES: usize = 80;
+
+/// Byte offset of the first `${{` or `${%`; shell-style `${VAR}` is not a marker. This is not a parser: it names the two
+/// delimiters the renderer has always special-cased inline, so callers can ask whether a final text still contains one.
+fn first_template_marker(text: &str) -> Option<usize> {
+    match (text.find("${{"), text.find("${%")) {
+        (Some(interp), Some(tag)) => Some(interp.min(tag)),
+        (interp, tag) => interp.or(tag),
+    }
+}
+
+fn has_template_markers(text: &str) -> bool {
+    first_template_marker(text).is_some()
+}
+
+/// The one walk over a JSON Schema's `description` strings: an object's own description first, then every object value
+/// and array item, so `$defs`, `items`, `anyOf`, … are all reached.
+fn for_each_schema_description_mut(
+    schema: &mut serde_json::Value,
+    visit: &mut impl FnMut(&mut String),
+) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(desc)) = map.get_mut("description") {
+                visit(desc);
+            }
+            for value in map.values_mut() {
+                for_each_schema_description_mut(value, visit);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                for_each_schema_description_mut(item, visit);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `(tool name, snippet)` for every finalized tool description or schema `description` that still carries an unrendered
+/// `${{` / `${%` marker. Hosts run it over the exact definitions they send the model, so a template regression shows up
+/// in their logs rather than in the model's context.
+pub fn unresolved_template_markers(defs: &[ToolDefinition]) -> Vec<(String, String)> {
+    let mut offenders = Vec::new();
+    for def in defs {
+        let mut check = |text: &str| {
+            if let Some(start) = first_template_marker(text) {
+                let snippet = truncate_str(&text[start..], MARKER_SNIPPET_BYTES).to_owned();
+                offenders.push((def.function.name.clone(), snippet));
+            }
+        };
+        if let Some(desc) = def.function.description.as_deref() {
+            check(desc);
+        }
+        // The walker is the renderer's mutable one; cloning the schema keeps a single walk in the file, and this runs
+        // only when a session's toolset changes
+        let mut parameters = def.function.parameters.clone();
+        for_each_schema_description_mut(&mut parameters, &mut |desc| check(desc.as_str()));
+    }
+    offenders
 }
 
 /// Created once at finalize time and available to all tools and reminders via `resources.get::<TemplateRenderer>()`.
@@ -192,8 +262,16 @@ impl TemplateRenderer {
                 has_unix_utilities: xai_grok_config::shell::has_unix_utilities(),
                 system_reminders_enabled: true,
                 feedback_drafts_path: String::new(),
+                whole_read: WholeReadPolicy::default(),
             },
         }
+    }
+
+    /// Set from the finalized `TruncationConfig`; every other construction site keeps the default (both on).
+    #[must_use]
+    pub fn with_whole_read(mut self, policy: WholeReadPolicy) -> Self {
+        self.ctx.whole_read = policy;
+        self
     }
 
     /// Absolute drafts file for this session. Session id and cwd are already
@@ -237,36 +315,13 @@ impl TemplateRenderer {
     /// nested objects, array `items`, and `$defs`. Untemplated descriptions are left as-is; a render failure logs and
     /// strips the template markers so raw syntax never reaches the model.
     pub fn render_schema_descriptions(&self, schema: &mut serde_json::Value) {
-        match schema {
-            serde_json::Value::Object(map) => {
-                let rendered = match map.get("description") {
-                    Some(serde_json::Value::String(desc))
-                        if desc.contains("${{") || desc.contains("${%") =>
-                    {
-                        match self.render(desc) {
-                            Ok(r) => Some(r),
-                            Err(e) => Some(strip_markers_on_render_failure(desc, &e)),
-                        }
-                    }
-                    _ => None,
-                };
-                if let Some(rendered) = rendered {
-                    map.insert(
-                        "description".to_string(),
-                        serde_json::Value::String(rendered),
-                    );
-                }
-                for value in map.values_mut() {
-                    self.render_schema_descriptions(value);
-                }
+        for_each_schema_description_mut(schema, &mut |desc| {
+            if has_template_markers(desc.as_str()) {
+                *desc = self
+                    .render(desc.as_str())
+                    .unwrap_or_else(|e| strip_markers_on_render_failure(desc.as_str(), &e));
             }
-            serde_json::Value::Array(items) => {
-                for item in items.iter_mut() {
-                    self.render_schema_descriptions(item);
-                }
-            }
-            _ => {}
-        }
+        });
     }
 
     /// Returns the client-facing tool name for the given `ToolKind` if a tool of that kind is registered in the finalized
@@ -315,7 +370,7 @@ impl TemplateRenderer {
         template: &str,
         placeholders: &serde_json::Value,
     ) -> Result<String, TemplateRenderError> {
-        if !template.contains("${{") && !template.contains("${%") {
+        if !has_template_markers(template) {
             return Ok(template.to_string());
         }
         // Merge: start with renderer context, overlay caller placeholders.
@@ -361,6 +416,50 @@ mod tests {
         assert_eq!(strip_template_markers("echo ${VAR}"), "echo ${VAR}");
         // Unterminated marker is preserved rather than eating the rest.
         assert_eq!(strip_template_markers("broken ${{ tail"), "broken ${{ tail");
+    }
+
+    fn offender(tool: &str, snippet: &str) -> (String, String) {
+        (tool.to_owned(), snippet.to_owned())
+    }
+
+    #[test]
+    fn unresolved_template_markers_flags_descriptions_and_schemas_but_not_shell_vars() {
+        let object = serde_json::json!({"type": "object", "properties": {}});
+        let defs = [
+            ToolDefinition::function(
+                "interp",
+                Some("Use ${{ tools.by_kind.read }} first."),
+                object.clone(),
+            ),
+            ToolDefinition::function(
+                "tag",
+                Some("${% if has_unix_utilities %}grep${% endif %}"),
+                object.clone(),
+            ),
+            ToolDefinition::function(
+                "shell",
+                Some("Expands ${HOME} and $PATH literally."),
+                object.clone(),
+            ),
+            ToolDefinition::function(
+                "schema",
+                Some("Clean."),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative to ${{ params.read.path }}"}
+                    }
+                }),
+            ),
+        ];
+        assert_eq!(
+            vec![
+                offender("interp", "${{ tools.by_kind.read }} first."),
+                offender("tag", "${% if has_unix_utilities %}grep${% endif %}"),
+                offender("schema", "${{ params.read.path }}"),
+            ],
+            unresolved_template_markers(&defs)
+        );
     }
 
     fn make_renderer(
@@ -480,17 +579,23 @@ mod tests {
         });
         r.render_schema_descriptions(&mut schema);
         assert_eq!(
-            schema["properties"]["new_string"]["description"],
-            "The text to replace it with (must be different from find)"
+            schema
+                .pointer("/properties/new_string/description")
+                .and_then(|v| v.as_str()),
+            Some("The text to replace it with (must be different from find)")
         );
         assert_eq!(
-            schema["properties"]["replace_all"]["description"],
-            "Replace all occurrences of find (default false)"
+            schema
+                .pointer("/properties/replace_all/description")
+                .and_then(|v| v.as_str()),
+            Some("Replace all occurrences of find (default false)")
         );
         // Untemplated descriptions are left untouched.
         assert_eq!(
-            schema["properties"]["file_path"]["description"],
-            "The path to the file to modify."
+            schema
+                .pointer("/properties/file_path/description")
+                .and_then(|v| v.as_str()),
+            Some("The path to the file to modify.")
         );
     }
 
@@ -526,8 +631,10 @@ mod tests {
         });
         r.render_schema_descriptions(&mut schema);
         assert_eq!(
-            schema["properties"]["items"]["items"]["properties"]["note"]["description"],
-            "compare against find"
+            schema
+                .pointer("/properties/items/items/properties/note/description")
+                .and_then(|v| v.as_str()),
+            Some("compare against find")
         );
     }
 
@@ -547,6 +654,40 @@ mod tests {
             .render("${%- if tools.by_kind.search %}Use ${{ tools.by_kind.search }}.${%- endif %}")
             .unwrap();
         assert_eq!(result, "Use Grep.");
+    }
+
+    #[test]
+    fn read_description_whole_read_note_follows_policy_and_param_names() {
+        let base = make_renderer(
+            &[(ToolKind::Read, "read_file")],
+            &[(
+                ToolKind::Read,
+                &[("offset", "start_line"), ("limit", "num_lines")],
+            )],
+        );
+        let template = crate::implementations::grok_build::read_file::DESCRIPTION_FULL;
+
+        let on = base.clone().render(template).unwrap();
+        assert!(
+            on.contains("start_line and num_lines are ignored for them"),
+            "note must use the client-facing param names, got: {on}"
+        );
+
+        let off = base
+            .with_whole_read(WholeReadPolicy {
+                skill_markdown: false,
+                instruction_files: false,
+            })
+            .render(template)
+            .unwrap();
+        assert!(
+            !off.contains("returned whole"),
+            "note must vanish with both bits off, got: {off}"
+        );
+        assert!(
+            off.contains("beginning of the file\n"),
+            "bullet must end cleanly, got: {off}"
+        );
     }
 
     #[test]
@@ -620,22 +761,24 @@ mod tests {
                 (ToolKind::Task, "spawn_subagent"),
             ],
             &[
-                (ToolKind::Execute, &[("is_background", "background")]),
+                (ToolKind::Execute, &[("block_until_ms", "block_until_ms")]),
                 (ToolKind::Task, &[("run_in_background", "background")]),
             ],
         );
         let desc = r#"Get output and status from a background task or subagent.
 
 Usage notes:
-- Use the task_id from a command run with ${{ params.execute.is_background }}=true, or a subagent launched with ${{ params.task.run_in_background }}=true
+- Use the task_id from a command run with ${{ params.execute.block_until_ms }}=0, or a subagent launched with ${{ params.task.run_in_background }}=true
 - Omit timeout_ms (or pass 0) for a non-blocking status poll; set a positive timeout_ms to wait up to that many milliseconds for completion (capped at ~10 min)."#;
+
         let rendered = r.render(desc).expect("task_output description must render");
         let _ = std::fs::write("/tmp/task_output_tool_description.txt", &rendered);
+
         assert!(
             !rendered.contains("${{"),
             "must not leak raw template source: {rendered}"
         );
-        assert!(rendered.contains("background=true"));
+        assert!(rendered.contains("block_until_ms=0") && rendered.contains("background=true"));
         assert!(rendered.contains("Omit timeout_ms") || rendered.contains("positive timeout_ms"));
     }
 

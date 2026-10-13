@@ -60,7 +60,9 @@ fn render_with_modal(
     let mut content = String::new();
     for y in 0..area.height {
         for x in 0..area.width {
-            content.push_str(buf[(x, y)].symbol());
+            if let Some(cell) = buf.cell((x, y)) {
+                content.push_str(cell.symbol());
+            }
         }
         content.push('\n');
     }

@@ -70,7 +70,10 @@ impl SessionId {
 
 fn is_windows_reserved_name(raw: &str) -> bool {
     let stem_end = raw.find('.').unwrap_or(raw.len());
-    let stem = raw[..stem_end].trim_end_matches(' ');
+    let Some(stem) = raw.get(..stem_end) else {
+        return false;
+    };
+    let stem = stem.trim_end_matches(' ');
     if ["CON", "PRN", "AUX", "NUL"]
         .iter()
         .any(|reserved| stem.eq_ignore_ascii_case(reserved))
@@ -81,7 +84,7 @@ fn is_windows_reserved_name(raw: &str) -> bool {
     let Some(prefix) = stem.get(..3) else {
         return false;
     };
-    let mut suffix = stem[3..].chars();
+    let mut suffix = stem.get(3..).unwrap_or("").chars();
     (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
         && matches!(suffix.next(), Some('1'..='9' | '¹' | '²' | '³'))
         && suffix.next().is_none()
@@ -356,7 +359,7 @@ fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    &text[..end]
+    text.get(..end).unwrap_or("")
 }
 
 /// Payload for `insert_member`.

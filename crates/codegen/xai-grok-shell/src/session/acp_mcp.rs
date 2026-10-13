@@ -108,9 +108,11 @@ mod tests {
             ]
         });
         let servers = parse_acp_mcp_servers(meta.as_object());
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].name, "harness-tools");
-        assert_eq!(servers[0].server_id, "srv_0");
+        let [server] = servers.as_slice() else {
+            panic!("expected one MCP server: {servers:?}");
+        };
+        assert_eq!(server.name, "harness-tools");
+        assert_eq!(server.server_id, "srv_0");
     }
 
     #[test]
@@ -122,8 +124,10 @@ mod tests {
             ]
         });
         let servers = parse_acp_mcp_servers(meta.as_object());
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].server_id, "srv_0");
+        let [server] = servers.as_slice() else {
+            panic!("expected one MCP server: {servers:?}");
+        };
+        assert_eq!(server.server_id, "srv_0");
     }
 
     #[test]

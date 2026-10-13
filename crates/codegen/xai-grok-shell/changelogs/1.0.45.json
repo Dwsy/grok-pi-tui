@@ -1,0 +1,22 @@
+[
+  {
+    "category": "fixes",
+    "description": "**Subagent wait status** now correctly shows \"Waiting for N subagents…\" when the parent turn is blocked.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Custom agents** from plugins or your config can now be chosen directly with spawn_subagent.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**MCP servers** can now use a token file that is re-read on every request so rotating credentials stay fresh.",
+    "breaking_change": false
+  },
+  {
+    "category": "features",
+    "description": "**Models can now show** a colored notice banner above the prompt while selected.",
+    "breaking_change": false
+  }
+]

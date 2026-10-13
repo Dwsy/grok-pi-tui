@@ -10,15 +10,10 @@
 //! Resolution lives here (not in `acp_session`) so the session core stays free of feature logic.
 //! The loaders only call [`project_scope_allowed`].
 //!
-//! The DECISION side lives in `xai-grok-workspace` (client-side).
-//! It holds the workspace scan, the pure [`decide`] precedence, and the interactive prompt.
-//! It also owns the durable [`xai_grok_workspace::trust::TrustStore`] reads/writes.
-//! This module keeps the CONSUME/gating side: the `DECISIONS` cache, [`resolve_and_record`], and the loader filters.
-//! The ordered trust precedence is documented canonically on [`xai_grok_workspace::folder_trust::decide`].
 //! The consume-side nuance is that two allows are PROVISIONAL (NOT cached).
 //! The first is the "no repo configs" allow.
-//! Configs appearing after the first resolve (git pull / agent write) are re-checked on the next resolve rather than riding a stale grant.
-//! The second is the unrecordable-key allow (cwd is $HOME / fs-root), which can never be persisted (see [`resolve_and_record_inner`] / [`compute`]).
+//! Configs that appear after the first resolve are checked on the next resolve.
+//! The second is the unrecordable-key allow, when cwd is $HOME or the filesystem root (see [`resolve_and_record_inner`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -28,12 +23,11 @@ use agent_client_protocol as acp;
 use parking_lot::Mutex;
 use xai_grok_workspace::trust::{is_unsafe_trust_root, workspace_key};
 
-// Decision-side (scan/decide/prompt/store) lives in `xai-grok-workspace` (client crate)
-// Only the helpers used by this consume-side module are imported; callers should use the workspace API for explicit trust decisions
+// The workspace scan, `decide`, and the trust store live in `xai-grok-workspace`
 use xai_grok_workspace::folder_trust::{
-    DecideInputs, GrantOutcome, PersistStatus, TrustOutcome, claude_project_mcp_names, decide,
-    decide_inputs, decide_inputs_with_interactive, feature_enabled, folder_trust_inert,
-    grant_folder_trust_key, prompt_for_trust,
+    DecideInputs, PromptPolicy, TrustDecision, TrustDurability, TrustOutcome, TrustResolution,
+    claude_project_mcp_names, decide, decide_inputs, decide_inputs_with_interactive,
+    feature_enabled, finish_prompt, folder_trust_inert, resolve_trust,
 };
 
 use crate::session::managed_mcp::mcp_server_name;
@@ -81,7 +75,7 @@ pub(crate) fn revoke_folder_trust(cwd: &Path) -> bool {
 /// Authoritative and fail-closed, mirroring [`resolve_and_record_inner`]'s arms. A cached **grant** short-circuits (allow).
 /// A cached **untrusted** verdict is RE-READ against the store so a `grant_folder_trust` issued AFTER the untrusted resolve is honored. That re-read records the upgrade and allows.
 /// So this never over-denies the common no-configs case, whose Trusted verdict is provisional and therefore never cached. There [`resolve_and_record`] would short-circuit to allow before reaching the cache. `DECISIONS` uses `parking_lot::Mutex` (no poisoning), so this gate cannot fail OPEN on a poisoned lock.
-pub(crate) fn project_scope_allowed(cwd: &Path) -> bool {
+pub fn project_scope_allowed(cwd: &Path) -> bool {
     let key = workspace_key(cwd);
     // Copy out of the lock so the Some(false) reconcile can re-acquire it (parking_lot mutexes are not re-entrant)
     let cached = DECISIONS.lock().get(&key).copied();
@@ -164,7 +158,14 @@ pub(crate) fn resolve_and_record(
     resolve_and_record_inner(
         &key,
         || xai_grok_workspace::folder_trust::is_trusted_this_process(&key),
-        || compute(cwd, &key, remote, allow_prompt),
+        || {
+            compute_from_inputs(
+                &decide_inputs(cwd, &key),
+                feature_enabled(remote),
+                &key,
+                allow_prompt,
+            )
+        },
     )
 }
 
@@ -283,67 +284,56 @@ fn resolve_and_record_inner(
     }
 }
 
-/// Two allows are NON-durable. (1) The "no repo configs" allow: repo-local code-exec config can appear after this resolve (git pull / agent write).
-/// Caching that provisional grant would let a later `/hooks reload` or new session run the new code with no trust decision (TOCTOU).
-/// (2) The unrecordable-key allow (cwd is $HOME / fs-root), which the store can never persist anyway. Store-trusted, feature-off, and an accepted prompt are durable. An untrusted verdict is recorded so a later `--trust` grant can reconcile it (see [`resolve_and_record_inner`]).
-fn compute(
-    cwd: &Path,
-    key: &Path,
-    remote: Option<&RemoteSettings>,
-    allow_prompt: bool,
-) -> (bool, bool) {
-    let feature = feature_enabled(remote);
-    let inputs = decide_inputs(cwd, key);
-    compute_from_inputs(&inputs, feature, key, allow_prompt)
+fn decision_pair(decision: TrustDecision) -> (bool, bool) {
+    (
+        decision.level.is_trusted(),
+        matches!(decision.durability, TrustDurability::Durable),
+    )
 }
 
-/// [`compute`] split at the gather: derive `(allowed, durable)` from an already-gathered [`DecideInputs`].
-/// A caller needing more than one verdict (see [`resolve_launch_dir_trust`]) then pays for the expensive `decide_inputs` gather only ONCE.
-/// That gather is the store read plus the `repo_configs_present` scan.
 fn compute_from_inputs(
     inputs: &DecideInputs,
     feature: bool,
     key: &Path,
     allow_prompt: bool,
 ) -> (bool, bool) {
-    match decide(feature, inputs) {
-        TrustOutcome::Trusted => {
-            // Within the Trusted arm the non-durable ("provisional") allows are the "no repo configs" rule and the unrecordable-key rule The latter is Case 2: cwd is $HOME / fs-root, which can never be persisted
-            // Both are feature-on and not store-trusted; feature-off and store-trusted are durable Leave the non-durable allows uncached.
-            let durable = !feature || inputs.store_trusted;
-            (true, durable)
-        }
-        TrustOutcome::Prompt if allow_prompt => {
-            if !prompt_for_trust(key) {
-                return (false, true);
-            }
-            // Unreadable store is Refused and must not be reported durable-trusted.
-            // ProcessLocalOnly is not a durable grant and must not dismiss the gate.
-            let outcome = grant_folder_trust_key(key);
-            if outcome.dismisses_gate() {
-                (true, true)
-            } else {
-                match outcome {
-                    GrantOutcome::Granted {
-                        persist: PersistStatus::ProcessLocalOnly { error },
-                        ..
-                    } => {
-                        tracing::warn!(
-                            error = %error,
-                            "folder trust: grant is process-local only and will not survive restart"
-                        );
-                        (false, false)
-                    }
-                    GrantOutcome::Refused { .. }
-                    | GrantOutcome::Granted { .. }
-                    | GrantOutcome::AlreadyDurable { .. } => (false, true),
-                }
-            }
-        }
-        // Untrusted, OR interactive where prompting is unsafe here (TUI owns stdin); the agent-`initialize` path owns the launch-dir prompt
-        // Both resolve fail-closed
-        TrustOutcome::Untrusted | TrustOutcome::Prompt => (false, true),
+    let prompt = if allow_prompt {
+        PromptPolicy::MayPrompt
+    } else {
+        PromptPolicy::FailClosed
+    };
+    match resolve_trust(feature, inputs, prompt) {
+        TrustResolution::Decided(decision) => decision_pair(decision),
+        TrustResolution::NeedsPrompt => decision_pair(finish_prompt(key, prompt_for_trust(key))),
     }
+}
+
+fn prompt_for_trust(key: &Path) -> bool {
+    use std::io::{BufRead, Write};
+
+    let mut err = std::io::stderr();
+    let _ = writeln!(err);
+    let _ = writeln!(
+        err,
+        "This folder contains repo-local config (MCP/LSP servers, hooks, permission rules) \
+         or project instructions/skills that Grok would otherwise apply automatically."
+    );
+    let _ = writeln!(err, "  Folder: {}", key.display());
+    let _ = write!(
+        err,
+        "Trust the authors of this folder and apply them? [y/N] "
+    );
+    let _ = err.flush();
+
+    let mut line = String::new();
+    match std::io::stdin().lock().read_line(&mut line) {
+        Ok(0) | Err(_) => false,
+        Ok(_) => is_yes_answer(&line),
+    }
+}
+
+fn is_yes_answer(line: &str) -> bool {
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// It MUST enumerate every project MCP source the loaders read. Name-based (not `ConfigSource`-based) ON PURPOSE. Sources: project `.grok/config.toml [mcp_servers]` (NOT the user-tier global config).
@@ -884,6 +874,7 @@ mod tests {
         let instructions = xai_grok_agent::prompt::agents_md::read_agents_config_with_paths(
             &cwd,
             xai_grok_agent::prompt::skills::CompatConfig::default(),
+            &xai_grok_agent::prompt::paths::PathsConfig::default(),
             verdict,
         )
         .await;
@@ -911,6 +902,7 @@ mod tests {
         let instructions = xai_grok_agent::prompt::agents_md::read_agents_config_with_paths(
             &cwd,
             xai_grok_agent::prompt::skills::CompatConfig::default(),
+            &xai_grok_agent::prompt::paths::PathsConfig::default(),
             verdict,
         )
         .await;
@@ -1056,9 +1048,10 @@ mod tests {
         // Mirror the production startup/reload path via the single load entry point.
         let git_root = xai_grok_workspace::session::git::find_git_root_from_path(tmp.path()).ok();
         let (reg, _errs) = crate::util::hooks::discover_hooks(
+            &crate::util::hooks::process_hook_inputs(),
             git_root.as_deref(),
             &xai_grok_tools::types::compat::CompatConfig::default(),
-            untrusted,
+            xai_grok_hooks::trust::Trust::from_verdict(untrusted),
         );
         assert!(
             !has_project_hook(&reg),
@@ -1070,9 +1063,10 @@ mod tests {
         let trusted = resolve_and_record(tmp.path(), None, false);
         assert!(trusted, "granted repo must resolve the gate true");
         let (reg, _errs) = crate::util::hooks::discover_hooks(
+            &crate::util::hooks::process_hook_inputs(),
             git_root.as_deref(),
             &xai_grok_tools::types::compat::CompatConfig::default(),
-            trusted,
+            xai_grok_hooks::trust::Trust::from_verdict(trusted),
         );
         assert!(
             has_project_hook(&reg),
@@ -1250,7 +1244,7 @@ mod tests {
         record_for_test(untrusted.path(), false);
         let kept = filter_untrusted_project_mcp(untrusted.path(), merged());
         let names: HashSet<&str> = kept.iter().map(mcp_server_name).collect();
-        assert_eq!(names, ["client", "global"].into_iter().collect());
+        assert_eq!(names, HashSet::from(["client", "global"]));
 
         // Trusted: every server is retained even with project configs present.
         let trusted = repo_with_project_mcp();

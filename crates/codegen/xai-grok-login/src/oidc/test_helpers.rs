@@ -38,8 +38,9 @@ pub(super) async fn mock_idp_token() -> (String, String, Discovery, tokio::task:
         .json()
         .await
         .unwrap();
-    let id_token = resp["id_token"]
-        .as_str()
+    let id_token = resp
+        .get("id_token")
+        .and_then(|v| v.as_str())
         .expect("mock missing id_token")
         .to_string();
     (issuer, id_token, discovery, handle)

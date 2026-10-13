@@ -530,10 +530,17 @@ pub(crate) mod chat_rebuild {
                 return None;
             }
             let content = std::mem::take(&mut self.user_parts);
+            let synthetic_reason = if interjection {
+                SyntheticReason::Interjection
+            } else {
+                SyntheticReason::Human
+            };
             let item = ConversationItem::User(UserItem {
                 content,
-                synthetic_reason: interjection.then_some(SyntheticReason::Interjection),
-                ..Default::default()
+                synthetic_reason,
+                cwd_generation: None,
+                prior_turn_interrupt: None,
+                prompt_index: None,
             });
             self.item_count += 1;
             Some(item)
@@ -1183,6 +1190,13 @@ pub trait StorageAdapter: Send + Sync {
         session_title: String,
     ) -> io::Result<bool>;
 
+    /// Persist the winning root identity atomically under the summary lock.
+    async fn stamp_session_identity(
+        &self,
+        info: &Info,
+        identity: crate::session::persistence::SessionIdentity,
+    ) -> io::Result<crate::session::persistence::SessionIdentity>;
+
     /// Stamp `session_kind` only if the session has none yet, atomically under the summary lock.
     /// A kind already on disk (crash-recovered dir, concurrent writer) is preserved.
     async fn set_session_kind_if_absent(&self, info: &Info, kind: String) -> io::Result<()>;
@@ -1256,21 +1270,21 @@ pub trait StorageAdapter: Send + Sync {
         )))
     }
 
-    /// Update the current model in summary (delegates to `update_current_model_and_agent` with `agent_name = None`).
+    /// Update the current model in summary (delegates to `update_current_model_and_agent` with no agent change).
     async fn update_current_model(&self, info: &Info, model_id: &acp::ModelId) -> io::Result<()> {
-        self.update_current_model_and_agent(info, model_id, None, None)
+        self.update_current_model_and_agent(info, model_id, None, None, None)
             .await
     }
 
-    /// Update the current model and agent name in summary.
-    /// `agent_name` is the resolved agent definition name, persisted so session resume doesn't depend on the mutable model catalog.
-    /// `None` leaves the existing `agent_name` unchanged (used by legacy callers that only update the model ID).
+    /// Update the current model and, when `agent` is set, the session's selected agent.
+    /// Persisted so session resume doesn't depend on the mutable model catalog.
     async fn update_current_model_and_agent(
         &self,
         info: &Info,
         model_id: &acp::ModelId,
-        agent_name: Option<&str>,
+        agent: Option<&crate::session::persistence::PersistedAgent>,
         reasoning_effort: Option<Option<ReasoningEffort>>,
+        context_window: Option<Option<std::num::NonZeroU64>>,
     ) -> io::Result<()>;
 
     /// Update the collection ID for telemetry tracing
@@ -1673,11 +1687,18 @@ pub fn strip_context_wrappers(update: acp::SessionUpdate) -> acp::SessionUpdate 
             let open = format!("<{tag}>");
             let close = format!("</{tag}>");
             if let Some(start) = t.text.find(&open)
-                && let Some(rel_end) = t.text[start + open.len()..].find(&close)
+                && let Some(rel_end) = t
+                    .text
+                    .get(start + open.len()..)
+                    .and_then(|s| s.find(&close))
             {
                 let end = start + open.len() + rel_end;
                 let remove_end = end + close.len();
-                t.text = format!("{}{}", &t.text[..start], t.text[remove_end..].trim_start());
+                t.text = format!(
+                    "{}{}",
+                    t.text.get(..start).unwrap_or(""),
+                    t.text.get(remove_end..).unwrap_or("").trim_start()
+                );
             }
         }
     }
@@ -1920,7 +1941,7 @@ pub fn collect_assistant_text(
                                 while end > 0 && !text_content.text.is_char_boundary(end) {
                                     end -= 1;
                                 }
-                                &text_content.text[..end]
+                                text_content.text.get(..end).unwrap_or("")
                             } else {
                                 &text_content.text
                             };
@@ -1998,7 +2019,8 @@ pub fn collect_tool_metadata(iter: impl Iterator<Item = io::Result<SessionUpdate
                             if budget == 0 {
                                 continue;
                             }
-                            let truncated = &tc.title[..tc.title.len().min(budget)];
+                            let truncated =
+                                tc.title.get(..tc.title.len().min(budget)).unwrap_or("");
                             chars_emitted += truncated.len();
                             meta.push(truncated.to_string());
                         }
@@ -2012,7 +2034,8 @@ pub fn collect_tool_metadata(iter: impl Iterator<Item = io::Result<SessionUpdate
                                 if budget == 0 {
                                     continue;
                                 }
-                                let truncated = &path_str[..path_str.len().min(budget)];
+                                let truncated =
+                                    path_str.get(..path_str.len().min(budget)).unwrap_or("");
                                 meta.push(truncated.to_string());
                                 chars_emitted += truncated.len();
                             }
@@ -2229,7 +2252,7 @@ mod tests {
                                 _ => None,
                             })
                             .collect(),
-                        u.synthetic_reason == Some(SyntheticReason::Interjection),
+                        u.synthetic_reason == SyntheticReason::Interjection,
                     )),
                     _ => None,
                 })
@@ -2826,8 +2849,11 @@ mod tests {
         let f = write_updates_file(&[&chunk, &other]);
 
         let events = collect_events(f.path());
-        assert_eq!(events[0], PromptExtractEvent::user_text("hello world"));
-        assert_eq!(events[1], PromptExtractEvent::NotUserMessage);
+        assert_eq!(
+            events.first(),
+            Some(&PromptExtractEvent::user_text("hello world"))
+        );
+        assert_eq!(events.get(1), Some(&PromptExtractEvent::NotUserMessage));
     }
 
     #[test]
@@ -2844,9 +2870,12 @@ mod tests {
         let f = write_updates_file(&[&c1, &c2, &end]);
 
         let events = collect_events(f.path());
-        assert_eq!(events[0], PromptExtractEvent::user_text("part1 "));
-        assert_eq!(events[1], PromptExtractEvent::user_text("part2"));
-        assert_eq!(events[2], PromptExtractEvent::NotUserMessage);
+        assert_eq!(
+            events.first(),
+            Some(&PromptExtractEvent::user_text("part1 "))
+        );
+        assert_eq!(events.get(1), Some(&PromptExtractEvent::user_text("part2")));
+        assert_eq!(events.get(2), Some(&PromptExtractEvent::NotUserMessage));
     }
 
     #[test]
@@ -2863,9 +2892,9 @@ mod tests {
         let f = write_updates_file(&[&chunk, &end, &rewind]);
 
         let events = collect_events(f.path());
-        assert_eq!(events[0], PromptExtractEvent::user_text("p1"));
-        assert_eq!(events[1], PromptExtractEvent::NotUserMessage);
-        assert_eq!(events[2], PromptExtractEvent::RewindTo(0));
+        assert_eq!(events.first(), Some(&PromptExtractEvent::user_text("p1")));
+        assert_eq!(events.get(1), Some(&PromptExtractEvent::NotUserMessage));
+        assert_eq!(events.get(2), Some(&PromptExtractEvent::RewindTo(0)));
     }
 
     #[test]
@@ -2877,7 +2906,10 @@ mod tests {
 
         let events = collect_events(f.path());
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0], PromptExtractEvent::user_text("hello"));
+        assert_eq!(
+            events.first(),
+            Some(&PromptExtractEvent::user_text("hello"))
+        );
     }
 
     #[test]
@@ -2890,8 +2922,8 @@ mod tests {
 
         let events = collect_events(f.path());
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0], PromptExtractEvent::NotUserMessage);
-        assert_eq!(events[1], PromptExtractEvent::user_text("ok"));
+        assert_eq!(events.first(), Some(&PromptExtractEvent::NotUserMessage));
+        assert_eq!(events.get(1), Some(&PromptExtractEvent::user_text("ok")));
     }
 
     #[test]
@@ -3071,8 +3103,11 @@ mod tests {
         // Keep through P1 (indices 0,1); cut at start of P2 run.
         let cut = truncate_for_prompt_by(&updates, 1, rewind_step_for_update);
         assert_eq!(cut, 6);
+        let Some(cut_update) = updates.get(cut) else {
+            panic!("expected update at cut {cut}: {updates:?}");
+        };
         assert!(matches!(
-            &updates[cut],
+            cut_update,
             SessionUpdate::Acp(n) if matches!(
                 &n.update,
                 acp::SessionUpdate::UserMessageChunk(c)
@@ -3292,10 +3327,10 @@ mod tests {
         let result = filter_rewind_lines(lines);
 
         assert_eq!(result.len(), 4);
-        assert!(result[0].contains("first"));
-        assert!(result[1].contains("resp1"));
-        assert!(result[2].contains("replacement"));
-        assert!(result[3].contains("resp3"));
+        assert!(result.first().is_some_and(|s| s.contains("first")));
+        assert!(result.get(1).is_some_and(|s| s.contains("resp1")));
+        assert!(result.get(2).is_some_and(|s| s.contains("replacement")));
+        assert!(result.get(3).is_some_and(|s| s.contains("resp3")));
     }
 
     #[test]
@@ -3352,7 +3387,7 @@ mod tests {
         let result = filter_rewind_lines(lines);
 
         assert_eq!(result.len(), 1);
-        assert!(result[0].contains("fresh start"));
+        assert!(result.first().is_some_and(|s| s.contains("fresh start")));
     }
 
     #[test]
@@ -3409,9 +3444,9 @@ mod tests {
         let result = filter_rewind_lines(lines);
 
         assert_eq!(result.len(), 3);
-        assert!(result[0].contains("p1"));
-        assert!(result[1].contains("r1"));
-        assert!(result[2].contains("final"));
+        assert!(result.first().is_some_and(|s| s.contains("p1")));
+        assert!(result.get(1).is_some_and(|s| s.contains("r1")));
+        assert!(result.get(2).is_some_and(|s| s.contains("final")));
     }
 
     /// The raw-line filter and the typed filter must truncate an identical rewind timeline to the same surviving updates, in the same order.
@@ -3493,9 +3528,9 @@ mod tests {
         let result = filter_rewind_lines(lines);
 
         assert_eq!(result.len(), 3);
-        assert!(result[0].contains("p1"));
-        assert!(result[1].contains("r1"));
-        assert!(result[2].contains("p2"));
+        assert!(result.first().is_some_and(|s| s.contains("p1")));
+        assert!(result.get(1).is_some_and(|s| s.contains("r1")));
+        assert!(result.get(2).is_some_and(|s| s.contains("p2")));
     }
 
     // ── collect_assistant_text / collect_tool_metadata tests ──────────────────

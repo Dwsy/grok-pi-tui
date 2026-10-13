@@ -1,32 +1,26 @@
 # ratatui-inline
 
-A Rust library for building terminal applications with inline viewports - dynamic UI elements that stay at the bottom of the terminal while preserving scrollback history above them. Perfect for building chat-like interfaces, command prompts, and interactive terminal tools.
+A Rust library for terminal applications with an inline viewport: a UI pinned to the bottom of the terminal, with history in native scrollback above it.
 
 ## What is this?
 
-This crate provides tools for creating terminal applications where:
+This crate is for terminal applications where:
+
 - A viewport (UI element) is pinned to the bottom of the terminal
 - Content above the viewport becomes part of the terminal's native scrollback
-- Users can scroll through history using their terminal's built-in scroll functionality
-- Long lines wrap naturally without truncation
-- The viewport remains visible and interactive while history accumulates above
-
-Think of applications like:
-- Chat interfaces with an input box at the bottom
-- Interactive REPLs with command history
-- Log viewers with controls at the bottom
-- Any TUI that needs to preserve output history
+- Users scroll history with the terminal's built-in scroll
+- Long lines wrap without truncation
+- The viewport stays visible and interactive while history accumulates above
 
 ## Key Features
 
-- **Inline viewport** - UI stays at bottom while content flows above into scrollback
-- **Natural text flow** - Content is printed normally, leveraging terminal's native behavior
-- **Zero-copy text processing** - Efficient ANSI-aware text segmentation without allocations
-- **Proper line wrapping** - Handles terminal width boundaries correctly with ANSI sequences
-- **Unicode support** - Correct handling of emoji, CJK characters, combining characters
-- **Terminal resize handling** - Robust resize support using RIS (Reset to Initial State)
-- **Synchronized output** - Flicker-free rendering using DCS protocol
-- **Cross-platform** - Works in all terminals and multiplexers (tmux, screen, etc.)
+- **Inline viewport** - UI stays at the bottom; content above it goes into scrollback
+- **Natural text flow** - Content is printed normally; the terminal wraps and scrolls
+- **Zero-copy text processing** - ANSI-aware text segmentation without allocations
+- **Line wrapping** - Width boundaries with ANSI sequences
+- **Unicode support** - Emoji, CJK, combining characters
+- **Terminal resize handling** - CSI `ESC [2J` (clear screen), `ESC [3J` (clear scrollback), `ESC [H` (cursor home), then re-output history
+- **Synchronized output** - DCS protocol so the terminal updates once per batch
 
 ## Usage
 
@@ -36,60 +30,63 @@ See `examples/inline.rs` for a complete working example.
 
 ### Text Processing
 
-The library uses a zero-copy approach for ANSI-aware text segmentation:
-- **anstyle-parse** - ANSI/SGR-aware segmentation for zero-copy line splitting
-- **Zero allocations** - Returns string slices without copying or allocating
-- **Single-pass parsing** - Processes input once with proper escape sequence tracking
-- **Unicode support** - Correct width calculation for emoji, CJK, combining characters
+ANSI-aware segmentation is zero-copy:
+
+- **anstyle-parse** - ANSI/SGR-aware segmentation for line splitting
+- **Zero allocations** - Returns string slices; no copy
+- **Single-pass parsing** - One pass with escape-sequence tracking
+- **Unicode support** - Width calculation for emoji, CJK, combining characters
 
 ### Scrollback Implementation
 
-The library uses a "natural flow" approach for scrollback:
-1. Position cursor at viewport top
-2. Print content, letting terminal handle wrapping naturally
+Natural-flow scrollback:
+
+1. Position the cursor at the viewport top
+2. Print content; the terminal wraps
 3. Add viewport-height newlines to reserve space
 4. Clear and render the viewport
 
-This single implementation works universally across all terminals and multiplexers without special modes or workarounds.
+No alternate-screen mode or per-terminal workarounds.
 
 ### Line Ending Handling
 
-- **LF (`\n`)** - Standard line ending, moves to next line
-- **CRLF (`\r\n`)** - Windows-style line ending, treated as single line break
-- **CR (`\r`)** - Carriage return only, resets cursor to line start (overwrites)
+- **LF (`\n`)** - Next line
+- **CRLF (`\r\n`)** - One line break
+- **CR (`\r`)** - Cursor to line start (overwrite)
 
 ## Design Decisions
 
 ### Why Fork ratatui's Terminal?
 
-The standard ratatui Terminal API doesn't expose internals needed for inline viewport manipulation:
-- **Viewport area access** - Need to know current position and dimensions
-- **Direct viewport positioning** - Must be able to set viewport location
-- **Buffer management** - Need back buffer reset and previous buffer access
-- **Resize calculations** - Require access to buffer state during resize
+The standard ratatui Terminal API does not expose internals needed for inline viewport manipulation:
 
-Our forked Terminal provides these capabilities while maintaining compatibility with ratatui's API.
+- **Viewport area access** - Current position and dimensions
+- **Direct viewport positioning** - Set viewport location
+- **Buffer management** - Back-buffer reset and previous-buffer access
+- **Resize calculations** - Buffer state during resize
+
+The forked Terminal adds these while keeping ratatui's API.
 
 ### Synchronized Output
 
-Flicker-free rendering using the DCS synchronized output protocol:
-- All operations between begin/end markers are atomic
-- Terminal only updates display once per batch
-- Eliminates partial render states
+DCS synchronized output:
+
+- Operations between begin/end markers are atomic
+- The terminal updates the display once per batch
+- Partial render states are not shown
 
 ## Performance
 
 - **Colored JSON**: ~186μs per operation
-- **Plain text**: ~75μs per operation  
+- **Plain text**: ~75μs per operation
 - **Zero allocations** in hot path
 - **Single-pass parsing** for all text processing
 
 ## Testing
 
-Comprehensive test coverage including:
 - Text segmentation with ANSI sequences
 - Line wrapping and Unicode handling
-- All line ending types (LF, CRLF, CR)
+- Line endings (LF, CRLF, CR)
 - Viewport positioning and resizing
 - Terminal resize with history re-rendering
 - Mock terminal infrastructure for unit testing
@@ -98,26 +95,17 @@ Comprehensive test coverage including:
 
 #### The Problem
 
-When using inline viewports on the main screen (not alternate screen), terminal resize causes issues:
-- Terminal reflows content automatically BEFORE the app receives SIGWINCH
-- Old viewport borders get reflowed as garbage text
-- Built-in `autoresize()` corrupts scrollback history
-- Cursor position queries (DSR) have race conditions during rapid resize
-- Different terminals handle reflow unpredictably
+On the main screen (not alternate screen), resize happens before the app receives SIGWINCH:
 
-#### The Solution: RIS (Reset to Initial State)
+- The terminal reflows content before the app sees the signal
+- Old viewport borders reflow as garbage text
+- Built-in `autoresize()` corrupts scrollback
+- Cursor position queries (DSR) race during rapid resize
+- Terminals reflow differently
 
-We use the "nuclear option" - completely reset and re-render:
-1. Send RIS (`ESC c`) to clear everything
-2. Re-output entire scrollback history
-3. Position viewport based on content amount
+#### The Solution: clear, then re-render
 
-This approach:
-- **Works consistently** across all terminals
-- **Preserves scrollback** by re-outputting history
-- **Avoids artifacts** from unpredictable reflow
-- **No race conditions** from cursor queries
-- **Handles all resize types** (horizontal and vertical)
+`resize_purge_rerender` writes `\x1b[2J\x1b[3J\x1b[H` (clear screen, clear scrollback, cursor home), re-outputs the full history, and places the viewport from the content height. RIS (`ESC c`) is not used: it does not clear scrollback in iTerm and Terminal.app.
 
 ## Dependencies
 
@@ -132,7 +120,6 @@ This approach:
 
 - [anstyle-parse](https://crates.io/crates/anstyle-parse)
 - [Ratatui wrapping discussion](https://github.com/ratatui/ratatui/issues/1426)
-
 
 ## License / attribution
 

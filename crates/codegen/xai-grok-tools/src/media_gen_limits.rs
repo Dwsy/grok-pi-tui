@@ -122,8 +122,8 @@ pub fn resample_reminder(egregious: &[MediaGenOverCap]) -> String {
     let names = join_backticked_names(egregious.iter().map(|o| o.name.as_str()));
     let limit = match egregious {
         [one] => format!("the max limit for {names} is {}", one.max),
-        many if many.iter().all(|o| o.max == many[0].max) => {
-            format!("the max limit for {names} is {}", many[0].max)
+        [first, rest @ ..] if rest.iter().all(|o| o.max == first.max) => {
+            format!("the max limit for {names} is {}", first.max)
         }
         many => {
             let parts = many
@@ -283,13 +283,15 @@ mod tests {
             allowed.iter().map(|c| c.id).collect::<Vec<_>>(),
             (0..limits.max_image as u32).collect::<Vec<_>>()
         );
-        assert_eq!(rejected.len(), 2);
-        assert!(rejected[0].1.contains(&format!(
+        let [(_, msg), _] = rejected.as_slice() else {
+            panic!("expected exactly two rejections, got {}", rejected.len());
+        };
+        assert!(msg.contains(&format!(
             "at most {} `image_gen` tool calls are allowed",
             limits.max_image
         )));
-        assert!(rejected[0].1.contains(&format!("this batch had {total}")));
-        assert!(rejected[0].1.contains("This extra call was skipped"));
+        assert!(msg.contains(&format!("this batch had {total}")));
+        assert!(msg.contains("This extra call was skipped"));
     }
 
     #[test]
@@ -338,9 +340,11 @@ mod tests {
             allowed.iter().map(|c| c.id).collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 10]
         );
-        assert_eq!(rejected.len(), 1);
-        assert_eq!(rejected[0].0.id, 9);
-        assert_eq!(rejected[0].0.name, "image_gen");
+        let [(call, _)] = rejected.as_slice() else {
+            panic!("expected one rejection: {rejected:?}");
+        };
+        assert_eq!(call.id, 9);
+        assert_eq!(call.name, "image_gen");
     }
 
     #[test]
@@ -448,10 +452,12 @@ mod tests {
             ("image_edit", Some(ToolKind::ImageGen)),
         ];
         let over = over_cap_by_name(calls, &limits);
-        assert_eq!(over.len(), 1);
-        assert_eq!(over[0].name, "image_gen");
-        assert_eq!(over[0].total, 3);
-        assert_eq!(over[0].max, 2);
+        let [item] = over.as_slice() else {
+            panic!("expected one over-cap: {over:?}");
+        };
+        assert_eq!(item.name, "image_gen");
+        assert_eq!(item.total, 3);
+        assert_eq!(item.max, 2);
     }
 
     #[test]

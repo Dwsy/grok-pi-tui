@@ -67,7 +67,7 @@ impl SessionActor {
                 item,
                 ConversationItem::User(u)
                     if u.synthetic_reason
-                        == Some(xai_grok_sampling_types::SyntheticReason::SystemReminder)
+                        == xai_grok_sampling_types::SyntheticReason::SystemReminder
             )
         });
         let effects = bridge.apply_pending_skill_update().await;
@@ -178,7 +178,7 @@ impl SessionActor {
                     conversation
                         .iter()
                         .position(|item| {
-                            matches!(item, ConversationItem::User(u) if u.synthetic_reason.is_none())
+                            matches!(item, ConversationItem::User(u) if u.synthetic_reason.is_human())
                         })
                         .unwrap_or(conversation.len()),
                 );
@@ -479,7 +479,7 @@ impl SessionActor {
         let mut config_changed = false;
         let mut updated_config = current_config.clone();
         if current_config.context_window != new_context_window
-            && self.compaction.context_window_override.is_none()
+            && !self.is_context_window_fixed(current_config.context_window)
         {
             tracing::info!(
                 old_context_window = current_config.context_window.get(),
@@ -523,7 +523,7 @@ impl SessionActor {
         let mut new_max_completion_tokens = current_config.max_completion_tokens;
         if let Some(new_cw) = metadata.context_window.and_then(std::num::NonZeroU64::new)
             && current_config.context_window != new_cw
-            && self.compaction.context_window_override.is_none()
+            && !self.is_context_window_fixed(current_config.context_window)
         {
             if new_cw < current_config.context_window {
                 tracing::warn!(
@@ -562,6 +562,37 @@ impl SessionActor {
         };
         self.chat_state_handle
             .update_sampling_config(updated_config);
+    }
+    /// Uses a kept selection once the catalog lists it, as after a resume without a catalog.
+    pub(super) async fn apply_supported_context_window_selection(&self) {
+        let Some(selection) = crate::session::handle::load_context_window_selection(
+            &self.compaction.context_window_selection,
+        ) else {
+            return;
+        };
+        let Some(cfg) = self.chat_state_handle.get_sampling_config().await else {
+            return;
+        };
+        if cfg.context_window == selection
+            || self.compaction.context_window_override.is_some()
+            || !self
+                .models_manager
+                .model_supports_context_window(&cfg.model, selection)
+        {
+            return;
+        }
+        self.chat_state_handle
+            .update_sampling_config(xai_grok_sampling_types::SamplingConfig {
+                context_window: selection,
+                ..cfg
+            });
+    }
+    /// True when the debug override or the selection in use set `current`.
+    pub(super) fn is_context_window_fixed(&self, current: std::num::NonZeroU64) -> bool {
+        self.compaction.context_window_override.is_some()
+            || crate::session::handle::load_context_window_selection(
+                &self.compaction.context_window_selection,
+            ) == Some(current)
     }
     /// Inject the actor's managed Read-deny globs into the current ToolBridge so the Grep tool excludes policy-forbidden paths.
     /// No-op when empty.

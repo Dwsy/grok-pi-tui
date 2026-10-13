@@ -6,9 +6,9 @@
 //!
 //! Also covers shell-rc rewrite: stowed/symlinked `~/.bashrc` etc. must survive reinstall without being replaced by a plain file.
 //!
-//! The installer lives in the sibling `xai-grok-pager` crate; it is resolved by relative path.
-//! If it cannot be found (e.g. a sandbox that does not vendor it) the test skips rather than fail.
-//! Under the repo's `cargo nextest` workflow the path resolves and the installer is exercised end to end.
+//! The installer lives in the sibling `xai-grok-pager` crate. Under Bazel it is a declared `data`
+//! dependency resolved through runfiles; under `cargo nextest` it is resolved relative to this crate.
+//! If it cannot be found the test skips rather than fail.
 
 #![cfg(unix)]
 
@@ -16,12 +16,21 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Resolve a workspace-relative path: Bazel runfiles when present, else relative to this crate.
+fn workspace_file(rel: &str) -> Option<PathBuf> {
+    let candidate = if let Ok(srcdir) = std::env::var("TEST_SRCDIR") {
+        let workspace = std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into());
+        PathBuf::from(srcdir).join(workspace).join(rel)
+    } else {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join(rel)
+    };
+    dunce::canonicalize(candidate).ok().filter(|p| p.exists())
+}
+
 fn script_path(name: &str) -> Option<PathBuf> {
-    dunce::canonicalize(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../xai-grok-pager/scripts/{name}")),
-    )
-    .ok()
-    .filter(|p| p.exists())
+    workspace_file(&format!("crates/codegen/xai-grok-pager/scripts/{name}"))
 }
 
 fn install_sh_path() -> Option<PathBuf> {
@@ -29,12 +38,7 @@ fn install_sh_path() -> Option<PathBuf> {
 }
 
 fn desktop_install_sh_path() -> Option<PathBuf> {
-    dunce::canonicalize(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../frontend/apps/grok-desktop/scripts/install.sh"),
-    )
-    .ok()
-    .filter(|p| p.exists())
+    workspace_file("frontend/apps/grok-desktop/scripts/install.sh")
 }
 
 fn host_platform() -> String {

@@ -132,6 +132,9 @@ fn parse_plugin_name(source_label: &str) -> Option<String> {
 #[serde(rename_all = "camelCase")]
 pub struct McpsListResponse {
     pub servers: Vec<McpsServerEntry>,
+    /// Session-scoped. True when session MCP init reports `is_initialized`.
+    #[serde(default)]
+    pub session_mcp_resolved: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -457,6 +460,7 @@ mod tests {
                     blocked_reason: None,
                 }),
             }],
+            session_mcp_resolved: None,
         })
         .into_iter()
         .next()
@@ -473,6 +477,7 @@ mod tests {
                     .unwrap();
             convert_list_response(McpsListResponse {
                 servers: vec![entry],
+                session_mcp_resolved: None,
             })
             .remove(0)
         };
@@ -509,22 +514,25 @@ mod tests {
     #[test]
     fn section_description_lines_managed_includes_connectors_url() {
         let lines = section_description_lines(&McpSectionId::Managed, None);
-        assert_eq!(lines.len(), 2);
+        let [first, second] = lines.as_slice() else {
+            panic!("expected two lines: {lines:?}");
+        };
         // Instruction leads; Ctrl+O hint lives on the first line.
         assert!(
-            lines[0].contains("Ctrl+O"),
-            "should mention Ctrl+O shortcut: {}",
-            lines[0]
+            first.contains("Ctrl+O"),
+            "should mention Ctrl+O shortcut: {first}"
         );
         // URL sits alone on the second line, scheme-stripped and bracket-highlighted.
-        assert_eq!(lines[1], "[grok.com/connectors]");
+        assert_eq!(second, "[grok.com/connectors]");
         assert!(
-            !lines[1].contains("https://"),
-            "displayed URL should drop the scheme: {}",
-            lines[1]
+            !second.contains("https://"),
+            "displayed URL should drop the scheme: {second}"
         );
         let with_team = section_description_lines(&McpSectionId::Managed, Some("team-1"));
-        assert_eq!(with_team[1], "[grok.com/connectors?teamId=team-1]");
+        assert_eq!(
+            with_team.get(1).map(String::as_str),
+            Some("[grok.com/connectors?teamId=team-1]")
+        );
     }
 
     #[test]
@@ -665,10 +673,14 @@ mod tests {
                 gateway_entry("managed_gateway:zeta", "Alpha"),
                 gateway_entry("managed_gateway:alpha", "Zeta"),
             ],
+            session_mcp_resolved: None,
         });
-        assert_eq!(servers[0].display_name.as_deref(), Some("Alpha"));
-        assert_eq!(servers[0].name, "managed_gateway:zeta");
-        assert_eq!(servers[1].display_name.as_deref(), Some("Zeta"));
+        let [first, second, ..] = servers.as_slice() else {
+            panic!("expected two servers: {servers:?}");
+        };
+        assert_eq!(first.display_name.as_deref(), Some("Alpha"));
+        assert_eq!(first.name, "managed_gateway:zeta");
+        assert_eq!(second.display_name.as_deref(), Some("Zeta"));
     }
 
     #[test]
@@ -703,12 +715,15 @@ mod tests {
                     blocked_reason: None,
                 }),
             }],
+            session_mcp_resolved: None,
         });
-        assert_eq!(servers.len(), 1);
-        assert!(servers[0].setup_required);
-        assert!(!servers[0].auth_required);
-        assert_eq!(servers[0].status, McpServerDisplayStatus::SetupRequired);
-        assert!(servers[0].setup.is_some());
+        let [server] = servers.as_slice() else {
+            panic!("expected one server: {servers:?}");
+        };
+        assert!(server.setup_required);
+        assert!(!server.auth_required);
+        assert_eq!(server.status, McpServerDisplayStatus::SetupRequired);
+        assert!(server.setup.is_some());
     }
 
     #[test]
@@ -738,11 +753,14 @@ mod tests {
             Some(new_tools),
         );
         assert!(mutated, "named row must be reported as mutated");
-        assert_eq!(servers[0].status, McpServerDisplayStatus::Initializing);
-        assert_eq!(servers[1].status, McpServerDisplayStatus::Ready);
-        assert_eq!(servers[1].tool_count, 2);
-        assert_eq!(servers[1].tools.len(), 2);
-        assert_eq!(servers[1].tools[0].name, "t1");
+        let [first, second, ..] = servers.as_slice() else {
+            panic!("expected two servers: {servers:?}");
+        };
+        assert_eq!(first.status, McpServerDisplayStatus::Initializing);
+        assert_eq!(second.status, McpServerDisplayStatus::Ready);
+        assert_eq!(second.tool_count, 2);
+        assert_eq!(second.tools.len(), 2);
+        assert_eq!(second.tools.first().map(|t| t.name.as_str()), Some("t1"));
     }
 
     #[test]
@@ -756,9 +774,11 @@ mod tests {
         );
         assert!(!mutated, "missing-name push must be a silent no-op");
         // Existing row must be untouched.
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].name, "alpha");
-        assert_eq!(servers[0].status, McpServerDisplayStatus::Ready);
+        let [server] = servers.as_slice() else {
+            panic!("expected one server: {servers:?}");
+        };
+        assert_eq!(server.name, "alpha");
+        assert_eq!(server.status, McpServerDisplayStatus::Ready);
     }
 
     #[test]
@@ -792,10 +812,16 @@ mod tests {
             None,
         );
         assert!(mutated);
-        assert_eq!(servers[0].status, McpServerDisplayStatus::Unavailable);
+        let [server] = servers.as_slice() else {
+            panic!("expected one server: {servers:?}");
+        };
+        assert_eq!(server.status, McpServerDisplayStatus::Unavailable);
         // Tools are left untouched when the caller passes None
-        assert_eq!(servers[0].tool_count, 3);
-        assert_eq!(servers[0].tools.len(), 1);
-        assert_eq!(servers[0].tools[0].name, "existing");
+        assert_eq!(server.tool_count, 3);
+        assert_eq!(server.tools.len(), 1);
+        assert_eq!(
+            server.tools.first().map(|t| t.name.as_str()),
+            Some("existing")
+        );
     }
 }

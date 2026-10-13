@@ -12,6 +12,8 @@ use super::blocks::mermaid_content::DiagramAffordance;
 use super::blocks::{
     AgentMessageBlock, BgTaskBlock, BtwBlock, ContextInfoBlock, CreditLimitBlock,
     EditToolCallBlock, ExecuteToolCallBlock, LineRange, ListDirToolCallBlock, OtherToolCallBlock,
+    AgentMessageBlock, BgTaskBlock, BtwBlock, ContextInfoBlock, EditToolCallBlock,
+    ExecuteToolCallBlock, LineRange, ListDirToolCallBlock, MemoryCaptureBlock, OtherToolCallBlock,
     ReadToolCallBlock, SearchFileMatch, SearchToolCallBlock, SessionEvent, SessionEventBlock,
     SubagentBlock, SubagentBlockKind, SystemMessageBlock, ThinkingBlock, ToolCallBlock,
     UserPromptBlock, WorkflowBlock,
@@ -332,6 +334,8 @@ pub enum RenderBlock {
     ContextInfo(ContextInfoBlock),
     /// Credit-limit card for max-tier users (red accent, single action).
     CreditLimit(CreditLimitBlock),
+    /// Debug-only generated memory details.
+    MemoryCapture(MemoryCaptureBlock),
 }
 
 /// Delegate a method call to the inner block variant.
@@ -351,6 +355,7 @@ macro_rules! delegate_block {
             RenderBlock::Btw(b) => b.$method($($arg),*),
             RenderBlock::ContextInfo(b) => b.$method($($arg),*),
             RenderBlock::CreditLimit(b) => b.$method($($arg),*),
+            RenderBlock::MemoryCapture(b) => b.$method($($arg),*),
         }
     };
 }
@@ -559,6 +564,14 @@ impl RenderBlock {
 
     pub fn agent_message(text: impl Into<String>) -> Self {
         RenderBlock::AgentMessage(AgentMessageBlock::new(text))
+    }
+
+    pub fn memory_capture(
+        from_turn: u32,
+        through_turn: u32,
+        entries: Vec<xai_grok_shell::extensions::notification::MemoryCaptureDebugEntry>,
+    ) -> Self {
+        RenderBlock::MemoryCapture(MemoryCaptureBlock::new(from_turn, through_turn, entries))
     }
 
     /// Create an empty streaming agent message block.
@@ -927,6 +940,7 @@ impl RenderBlock {
             | RenderBlock::SessionEvent(_)
             | RenderBlock::ContextInfo(_)
             | RenderBlock::CreditLimit(_) => None,
+            | RenderBlock::MemoryCapture(_) => None,
             RenderBlock::Btw(_) => Some(theme.accent_plan),
             RenderBlock::Stub(block) => Some(block.accent_color),
         }
@@ -961,6 +975,18 @@ impl RenderBlock {
         self.has_normal_fullscreen_viewer()
             || !self.image_references().is_empty()
             || !self.video_references().is_empty()
+    }
+
+    /// The child session this row can open in the takeover: a Subagent row, or a sent-message row whose target
+    /// resolved through a spawn. The caller still has to own that child view.
+    pub(crate) fn child_session_id(&self) -> Option<&str> {
+        if let RenderBlock::Subagent(block) = self {
+            Some(&block.child_session_id)
+        } else if let RenderBlock::ToolCall(ToolCallBlock::SentMessage(block)) = self {
+            block.child_session_id()
+        } else {
+            None
+        }
     }
 
     pub fn supports_copy(&self) -> bool {
@@ -1063,6 +1089,7 @@ impl RenderBlock {
             RenderBlock::CreditLimit(b) => {
                 join_searchable([Some(b.heading.clone()), Some(b.url.clone())])
             }
+            RenderBlock::MemoryCapture(b) => join_searchable([Some(b.searchable_text())]),
             RenderBlock::ToolCall(tc) => tc.searchable_text(),
         }
     }
@@ -1197,7 +1224,9 @@ mod tests {
         let c = ctx(DisplayMode::Expanded, false);
         let placements = block.inline_media_placements(&c);
         assert_eq!(placements.len(), 1);
-        let p = &placements[0];
+        let Some(p) = placements.first() else {
+            panic!("expected one placement: {placements:?}");
+        };
         assert_eq!(
             p.row_offset, 3,
             "image trails the 2 text lines + 1 padding row"
@@ -1419,7 +1448,9 @@ mod tests {
             ],
         };
         prepend_bullet(&mut output, &ctx(DisplayMode::Expanded, false), None);
-        let line = &output.lines[0];
+        let Some(line) = output.lines.first() else {
+            panic!("expected a prepended line: {output:?}");
+        };
 
         assert_eq!(line.selection_range, Some(3));
         assert_eq!(line.selection_text.as_deref(), Some("body"));

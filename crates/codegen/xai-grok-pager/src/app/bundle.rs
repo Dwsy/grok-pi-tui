@@ -2,7 +2,7 @@
 //!
 //! Pager-side cache of what `xai-grok-shell` reports from `x.ai/bundle/status`.
 //! The shell downloads the bundle in the background after auth.
-//! The pager only reads the resulting on-disk catalog so it can populate the welcome-screen subagent pane.
+//! The pager reads that snapshot for the agents modal (`/config-agents`).
 
 use serde::Deserialize;
 
@@ -61,15 +61,6 @@ pub struct RoleDetail {
     pub description: String,
 }
 
-/// Deserialized response from `x.ai/bundle/entry/get`.
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct EntryGetResult {
-    pub kind: String,
-    pub name: String,
-    pub content: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,16 +107,48 @@ mod tests {
         }"#;
         let r: BundleStatusResult = serde_json::from_str(json).expect("parse");
         assert_eq!(r.persona_details.len(), 1);
-        assert_eq!(r.persona_details[0].name, "researcher");
         assert_eq!(
-            r.persona_details[0].description.as_deref(),
+            r.persona_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .name,
+            "researcher"
+        );
+        assert_eq!(
+            r.persona_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .description
+                .as_deref(),
             Some("thorough researcher")
         );
-        assert!(r.persona_details[0].has_inputs);
-        assert!(!r.persona_details[0].has_outputs);
+        assert!(
+            r.persona_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .has_inputs
+        );
+        assert!(
+            !r.persona_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .has_outputs
+        );
         assert_eq!(r.role_details.len(), 1);
-        assert_eq!(r.role_details[0].name, "reviewer");
-        assert_eq!(r.role_details[0].description, "code reviewer");
+        assert_eq!(
+            r.role_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .name,
+            "reviewer"
+        );
+        assert_eq!(
+            r.role_details
+                .first()
+                .unwrap_or_else(|| panic!("missing index"))
+                .description,
+            "code reviewer"
+        );
         assert_eq!(r.skills, vec!["commit", "design"]);
     }
 
@@ -156,18 +179,5 @@ mod tests {
         let r: BundleStatusResult = serde_json::from_str(json).expect("parse");
         assert!(!r.has_cache);
         assert!(r.version.is_none());
-    }
-
-    #[test]
-    fn deserialize_entry_get_result() {
-        let json = r#"{
-            "kind": "persona",
-            "name": "researcher",
-            "content": "instructions = \"dig deep\""
-        }"#;
-        let r: EntryGetResult = serde_json::from_str(json).expect("parse");
-        assert_eq!(r.kind, "persona");
-        assert_eq!(r.name, "researcher");
-        assert_eq!(r.content, "instructions = \"dig deep\"");
     }
 }

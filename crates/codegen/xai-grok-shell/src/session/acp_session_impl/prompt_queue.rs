@@ -696,7 +696,9 @@ impl SessionActor {
             }) else {
                 break;
             };
-            let item = &state.pending_inputs[pos];
+            let Some(item) = state.pending_inputs.get(pos) else {
+                break;
+            };
             let item_owner = item
                 .queue_meta
                 .as_ref()

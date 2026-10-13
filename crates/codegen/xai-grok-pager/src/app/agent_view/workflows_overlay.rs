@@ -97,13 +97,7 @@ impl AgentView {
                     .or_else(|| runs.get(view.selected_run).copied());
                 let outcome = match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => {
-                        if in_detail && runs.len() > 1 {
-                            view.detail_run_id = None;
-                            view.phase_pinned = false;
-                            self.workflows_view = view;
-                        } else {
-                            self.show_workflows = false;
-                        }
+                        self.show_workflows = false;
                         InputOutcome::Changed
                     }
                     KeyCode::Char('g') => {
@@ -369,6 +363,24 @@ mod workflows_overlay_key_tests {
     }
 
     #[test]
+    fn esc_and_q_from_detail_dismiss_overlay_with_multiple_runs() {
+        let reg = ActionRegistry::defaults();
+
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            let mut agent = workflows_agent(&["wf_old", "wf_new"]);
+
+            agent.handle_input(&key(KeyCode::Enter), &reg);
+            assert!(agent.workflows_view.detail_run_id.is_some());
+
+            agent.handle_input(&key(code), &reg);
+            assert!(
+                !agent.show_workflows,
+                "{code:?} must dismiss the overlay, not return to the run list"
+            );
+        }
+    }
+
+    #[test]
     fn left_in_detail_returns_to_runs_list() {
         let mut agent = workflows_agent(&["wf_old", "wf_new"]);
         let reg = ActionRegistry::defaults();
@@ -473,9 +485,7 @@ mod workflows_overlay_key_tests {
                 duration_ms: 0,
             },
         ];
-        agent
-            .subagent_views
-            .insert("child-running".to_owned(), Box::new(make_agent()));
+        agent.insert_test_child("child-running".to_owned(), Box::new(make_agent()));
         let reg = ActionRegistry::defaults();
 
         assert!(matches!(
@@ -513,7 +523,11 @@ mod workflows_overlay_key_tests {
     fn paused_budget_limited_and_failed_runs_are_resumable_others_fail_closed() {
         let mut agent = workflows_agent(&["wf_run"]);
         let reg = ActionRegistry::defaults();
-        agent.workflow_runs[0].status = "user_paused".to_string();
+        agent
+            .workflow_runs
+            .first_mut()
+            .unwrap_or_else(|| panic!("missing index"))
+            .status = "user_paused".to_string();
         agent.workflows_view.detail_run_id = Some("wf_run".to_string());
 
         let out = agent.handle_input(&key(KeyCode::Char('r')), &reg);
@@ -524,7 +538,11 @@ mod workflows_overlay_key_tests {
         ));
 
         agent.show_workflows = true;
-        agent.workflow_runs[0].status = "budget_limited".to_string();
+        agent
+            .workflow_runs
+            .first_mut()
+            .unwrap_or_else(|| panic!("missing index"))
+            .status = "budget_limited".to_string();
         let out = agent.handle_input(&key(KeyCode::Char('r')), &reg);
         assert!(matches!(
             out,
@@ -537,7 +555,11 @@ mod workflows_overlay_key_tests {
         );
 
         agent.show_workflows = true;
-        agent.workflow_runs[0].status = "failed".to_string();
+        agent
+            .workflow_runs
+            .first_mut()
+            .unwrap_or_else(|| panic!("missing index"))
+            .status = "failed".to_string();
         let out = agent.handle_input(&key(KeyCode::Char('r')), &reg);
         assert!(
             matches!(
@@ -553,19 +575,39 @@ mod workflows_overlay_key_tests {
         );
 
         agent.show_workflows = true;
-        agent.workflow_runs[0].status = "complete".to_string();
+        agent
+            .workflow_runs
+            .first_mut()
+            .unwrap_or_else(|| panic!("missing index"))
+            .status = "complete".to_string();
         let out = agent.handle_input(&key(KeyCode::Char('r')), &reg);
         assert!(matches!(out, InputOutcome::Changed));
         assert!(agent.show_workflows, "completed runs must not be resumed");
 
-        agent.workflow_runs[0].status = "user_paused".to_string();
-        agent.workflow_runs[0].management_available = false;
+        agent
+            .workflow_runs
+            .first_mut()
+            .unwrap_or_else(|| panic!("missing index"))
+            .status = "user_paused".to_string();
+        agent
+            .workflow_runs
+            .first_mut()
+            .unwrap_or_else(|| panic!("missing index"))
+            .management_available = false;
         let out = agent.handle_input(&key(KeyCode::Char('r')), &reg);
         assert!(matches!(out, InputOutcome::Changed));
         assert!(agent.show_workflows, "unsupported resume must fail closed");
 
-        agent.workflow_runs[0].status = "budget_limited".to_string();
-        agent.workflow_runs[0].management_available = false;
+        agent
+            .workflow_runs
+            .first_mut()
+            .unwrap_or_else(|| panic!("missing index"))
+            .status = "budget_limited".to_string();
+        agent
+            .workflow_runs
+            .first_mut()
+            .unwrap_or_else(|| panic!("missing index"))
+            .management_available = false;
         let out = agent.handle_input(&key(KeyCode::Char('r')), &reg);
         assert!(matches!(out, InputOutcome::Changed));
         assert!(
@@ -615,9 +657,7 @@ mod workflows_overlay_key_tests {
     fn click_on_roster_agent_opens_transcript_fullscreen_over_overlay() {
         let mut agent = workflows_agent(&["wf_run"]);
         agent.workflows_view.agent_hits = vec![(rect(10, 5, 30, 1), "child-1".to_string())];
-        agent
-            .subagent_views
-            .insert("child-1".to_string(), Box::new(make_agent()));
+        agent.insert_test_child("child-1".to_string(), Box::new(make_agent()));
         let reg = ActionRegistry::defaults();
 
         let out = agent.handle_input(&mouse_down(12, 5), &reg);

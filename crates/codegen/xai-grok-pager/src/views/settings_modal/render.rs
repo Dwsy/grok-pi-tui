@@ -15,13 +15,10 @@ use crate::settings::{
     StringValidator, dynamic_enum_choices,
 };
 use crate::theme::Theme;
+use crate::views::modal_list::render_section_header;
 use crate::views::modal_window::{
     self, ModalContentArea, ModalSizing, ModalWindowConfig, Shortcut,
 };
-
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
 
 /// Overlay for the reset-confirm dialog.
 /// Overrides chrome breadcrumb, footer, and search bar with the confirmation prompt.
@@ -583,15 +580,19 @@ pub(super) fn render_rows(
     let row_heights = compute_filtered_row_heights(state, area.width);
     if let Some(fpos) = selected_fpos {
         if fpos < state.scroll_offset {
-            let new_offset = if fpos > 0 {
-                let prev_idx = state.filtered_cache[fpos - 1];
-                if matches!(state.rows[prev_idx], RowEntry::Header { .. }) {
+            let new_offset = match fpos
+                .checked_sub(1)
+                .and_then(|i| state.filtered_cache.get(i).copied())
+            {
+                Some(prev_idx)
+                    if state
+                        .rows
+                        .get(prev_idx)
+                        .is_some_and(|r| matches!(r, RowEntry::Header { .. })) =>
+                {
                     fpos - 1
-                } else {
-                    fpos
                 }
-            } else {
-                fpos
+                _ => fpos,
             };
             state.scroll_offset = new_offset;
         }
@@ -626,7 +627,11 @@ pub(super) fn render_rows(
     let max_label_w = compute_settings_max_label_w(state.registry.all(), area.width);
 
     // Snapshot visible rows to avoid borrow conflicts in the render loop.
-    let visible_filtered: Vec<usize> = state.filtered_cache[state.scroll_offset..end].to_vec();
+    let visible_filtered: Vec<usize> = state
+        .filtered_cache
+        .get(state.scroll_offset..end)
+        .unwrap_or(&[])
+        .to_vec();
 
     let hover_row_snapshot = state.hover_row;
     let mut values: Vec<Option<SettingValue>> = Vec::with_capacity(visible_filtered.len());
@@ -668,27 +673,15 @@ pub(super) fn render_rows(
             height: 1,
         };
 
-        state.row_rects[row_idx] = label_rect;
+        if let Some(slot) = state.row_rects.get_mut(row_idx) {
+            *slot = label_rect;
+        }
 
         rendered_any = true;
 
         match row {
             RowEntry::Header { category } => {
-                let label = category.label();
-                let header_style = Style::default()
-                    .fg(theme.gray)
-                    .bg(theme.bg_base)
-                    .add_modifier(Modifier::BOLD);
-                let sep_style = Style::default().fg(theme.gray_dim).bg(theme.bg_base);
-                let title = format!(" {label} ");
-                let title_w = title.width();
-                let remaining = (area.width as usize).saturating_sub(title_w);
-                let sep: String = std::iter::repeat_n('\u{2500}', remaining).collect();
-                let line = Line::from(vec![
-                    Span::styled(title, header_style),
-                    Span::styled(sep, sep_style),
-                ]);
-                buf.set_line(area.x, y_cursor, &line, area.width);
+                render_section_header(buf, area.x, area.width, y_cursor, category.label(), theme);
                 y_cursor = y_cursor.saturating_add(1);
             }
             RowEntry::Section { name, .. } => {
@@ -727,7 +720,9 @@ pub(super) fn render_rows(
                         is_expanded,
                         theme,
                     );
-                    state.value_hit_rects[row_idx] = value_rect;
+                    if let Some(slot) = state.value_hit_rects.get_mut(row_idx) {
+                        *slot = value_rect;
+                    }
                     y_cursor = y_cursor.saturating_add(1);
                     // Mirror normal rows: render the description inline when the group's key is expanded (Right/l)
                     // The group has no value, so this is the only place its description can appear
@@ -739,9 +734,12 @@ pub(super) fn render_rows(
                             width: area.width,
                             height: desc_height.min(8),
                         };
-                        render_expanded_description(buf, desc_rect, meta, None, theme);
-                        let consumed =
-                            wrapped_description_height(meta, None, area.width, desc_rect.height);
+                        render_expanded_description(buf, desc_rect, meta.description, theme);
+                        let consumed = wrapped_description_height(
+                            meta.description,
+                            area.width,
+                            desc_rect.height,
+                        );
                         y_cursor = y_cursor.saturating_add(consumed);
                     }
                     continue;
@@ -789,7 +787,9 @@ pub(super) fn render_rows(
                     height: row_height,
                 };
                 // Hit-rect spans both lines for two-line rows.
-                state.row_rects[row_idx] = render_area;
+                if let Some(slot) = state.row_rects.get_mut(row_idx) {
+                    *slot = render_area;
+                }
 
                 let is_hovered = hover_row_snapshot == Some(row_idx);
                 let value_rect = render_setting_row(
@@ -807,7 +807,9 @@ pub(super) fn render_rows(
                     lock,
                     theme,
                 );
-                state.value_hit_rects[row_idx] = value_rect;
+                if let Some(slot) = state.value_hit_rects.get_mut(row_idx) {
+                    *slot = value_rect;
+                }
                 y_cursor = y_cursor.saturating_add(row_height);
 
                 if is_expanded && y_cursor < area_end {
@@ -818,11 +820,10 @@ pub(super) fn render_rows(
                         width: area.width,
                         height: desc_height.min(8), // cap at 8 lines per row to keep scroll sane
                     };
-                    let lock_reason = lock.map(CodingDataSharingLock::reason);
-                    render_expanded_description(buf, desc_rect, meta, lock_reason, theme);
+                    let detail = state.detail_text(key, meta);
+                    render_expanded_description(buf, desc_rect, detail, theme);
                     // Re-measure how many lines the wrapped description actually consumed, so y_cursor advances precisely
-                    let consumed =
-                        wrapped_description_height(meta, lock_reason, area.width, desc_rect.height);
+                    let consumed = wrapped_description_height(detail, area.width, desc_rect.height);
                     y_cursor = y_cursor.saturating_add(consumed);
                 }
             }
@@ -856,11 +857,10 @@ fn compute_min_scroll_offset_for_visibility(
         let candidate_height = row_heights.get(candidate).copied().unwrap_or(1) as usize;
         // Cost of including `candidate` as the new top of the viewport: its own visual height, plus 1 line for the
         // blank above the OLD top (`offset`) when it is a header, since that row is no longer the first rendered
-        let old_first_idx = filtered_cache[offset];
-        let old_first_is_header = matches!(
-            rows[old_first_idx],
-            RowEntry::Header { .. } | RowEntry::Section { .. }
-        );
+        let old_first_is_header = filtered_cache
+            .get(offset)
+            .and_then(|&index| rows.get(index))
+            .is_some_and(|row| matches!(row, RowEntry::Header { .. } | RowEntry::Section { .. }));
         let cost: usize = candidate_height + usize::from(old_first_is_header);
         if lines_used.saturating_add(cost) > visible_h {
             break;
@@ -894,7 +894,11 @@ fn compute_filtered_row_heights(state: &SettingsModalState, area_width: u16) -> 
                 if matches!(meta.kind, SettingKind::Group { .. }) {
                     let mut h: u16 = 1;
                     if state.expanded_keys.contains(key) {
-                        h = h.saturating_add(wrapped_description_height(meta, None, area_width, 8));
+                        h = h.saturating_add(wrapped_description_height(
+                            meta.description,
+                            area_width,
+                            8,
+                        ));
                     }
                     heights.push(h);
                     continue;
@@ -915,8 +919,7 @@ fn compute_filtered_row_heights(state: &SettingsModalState, area_width: u16) -> 
                 if is_expanded {
                     // Cap matches the forward render loop (`desc_rect.height = ... .min(8)`).
                     h = h.saturating_add(wrapped_description_height(
-                        meta,
-                        lock.map(CodingDataSharingLock::reason),
+                        state.detail_text(key, meta),
                         area_width,
                         8,
                     ));
@@ -1044,6 +1047,46 @@ fn compute_max_label_w(state: &SettingsModalState, pane_w: u16) -> u16 {
         .min(cap)
 }
 
+/// Wrapped description height for scroll math (mirrors render path).
+fn wrapped_description_height(text: &str, area_width: u16, cap: u16) -> u16 {
+    wrap_expanded_description(text, Style::default(), area_width, cap)
+        .lines
+        .len() as u16
+}
+
+/// An expanded description laid out under its row: nested 4 columns under the label, at most `cap` lines.
+struct WrappedDescription {
+    indent: u16,
+    wrap_w: u16,
+    lines: Vec<Line<'static>>,
+}
+
+fn wrap_expanded_description(
+    text: &str,
+    style: Style,
+    area_width: u16,
+    cap: u16,
+) -> WrappedDescription {
+    let indent = 4u16.min(area_width);
+    let wrap_w = area_width.saturating_sub(indent);
+    let mut lines = if wrap_w == 0 {
+        Vec::new()
+    } else {
+        // Word wrap only breaks at spaces, so each `\n`-separated paragraph wraps on its own
+        crate::render::wrapping::word_wrap_lines(
+            text.split('\n')
+                .map(|paragraph| Line::from(Span::styled(paragraph, style))),
+            wrap_w as usize,
+        )
+    };
+    lines.truncate(cap as usize);
+    WrappedDescription {
+        indent,
+        wrap_w,
+        lines,
+    }
+}
+
 // Picker prefix width templates (glyphs are drawn separately).
 const PICKER_PREFIX_SELECTED: &str = " \u{25CF}  ";
 const PICKER_PREFIX_UNSELECTED: &str = " \u{25CB}  ";
@@ -1064,7 +1107,6 @@ fn render_sub_pane_header(
     description: &str,
     min_non_desc_rows: u16,
 ) -> u16 {
-    // ── Row 0: title (truncated with `…`). ────────────────────────
     let title_style = Style::default()
         .fg(theme.text_primary)
         .bg(theme.bg_base)
@@ -1082,7 +1124,6 @@ fn render_sub_pane_header(
         title_w,
     );
 
-    // ── Row 1+: word-wrapped description ──────────────────────────
     let description_wrapped = wrap_description(description, area.width);
     let desc_rows: u16 = description_wrapped.len() as u16;
     let has_description =
@@ -1176,14 +1217,12 @@ pub(super) fn render_picking_enum(
         return;
     }
 
-    // ── Per-choice wrapped layout ─────────────────────────────────
     let layouts: Vec<PickerChoiceLayout> = choices
         .iter()
         .map(|choice| compute_picker_choice_layout(choice, area.width))
         .collect();
     let total_h: u16 = layouts.iter().map(|l| l.height).sum();
 
-    // ── Scroll offset (variable per-choice height) ────────────────
     let needs_overflow = total_h as usize > max_choices_h;
     let available_h: u16 = if needs_overflow {
         (max_choices_h as u16).saturating_sub(1).max(1)
@@ -1208,10 +1247,8 @@ pub(super) fn render_picking_enum(
     }
     let _ = consumed_h; // height bookkeeping kept for future tuning
 
-    // ── Hit-rect bookkeeping ──────────────────────────────────────
     let mut picker_choice_rects: Vec<Rect> = vec![Rect::default(); choices.len()];
 
-    // ── Choice rows ───────────────────────────────────────────────
     let fg_primary = theme.text_primary;
     let fg_gray = theme.gray;
     let fg_accent = theme.accent_user;
@@ -1223,7 +1260,10 @@ pub(super) fn render_picking_enum(
         .skip(scroll_offset)
         .take(visible_end - scroll_offset)
     {
-        let choice = &choices[choice_i];
+        let Some(choice) = choices.get(choice_i) else {
+            y_cursor = y_cursor.saturating_add(layout.height);
+            continue;
+        };
         let is_focused = choice_i == choices_idx;
         let is_current = committed_canonical.is_some_and(|c| c == choice.canonical);
 
@@ -1262,9 +1302,10 @@ pub(super) fn render_picking_enum(
         if let Some(ov) = settings_row_overlay(theme, is_focused, is_hovered) {
             buf.set_style(block_rect, ov);
         }
-        picker_choice_rects[choice_i] = block_rect;
+        if let Some(slot) = picker_choice_rects.get_mut(choice_i) {
+            *slot = block_rect;
+        }
 
-        // ── Line 1: prefix, display, then "·" and the first wrap line ──
         let y = y_cursor;
         if area.width > 0 {
             // Leading space (col 0 of the row).
@@ -1356,7 +1397,10 @@ pub(super) fn render_picking_enum(
         }
 
         // Line 1: first wrap line at the description column.
-        let first_line = &layout.wrap_lines[0];
+        let Some(first_line) = layout.wrap_lines.first() else {
+            y_cursor = y_cursor.saturating_add(layout.height);
+            continue;
+        };
         let first_w = (first_line.width() as u16).min(area.x + area.width - desc_x);
         buf.set_span(
             desc_x,
@@ -1383,7 +1427,6 @@ pub(super) fn render_picking_enum(
         y_cursor = y_cursor.saturating_add(layout.height);
     }
 
-    // ── Overflow indicator: "… N more" on the row right below the last rendered choice ──
     if needs_overflow && visible_end < choices.len() {
         let more_count = choices.len() - visible_end;
         let overflow_y = y_cursor;
@@ -1467,7 +1510,6 @@ fn render_picking_group(
     let mut y = area.y + header_rows;
     let area_end = area.y + area.height;
 
-    // ── Child toggle rows. ────────────────────────────────────────
     let mut rects: Vec<Rect> = vec![Rect::default(); children.len()];
     for (i, child_key) in children.iter().enumerate() {
         if y >= area_end {
@@ -1490,7 +1532,9 @@ fn render_picking_group(
         if let Some(ov) = settings_row_overlay(theme, is_focused, is_hovered) {
             buf.set_style(row_rect, ov);
         }
-        rects[i] = row_rect;
+        if let Some(slot) = rects.get_mut(i) {
+            *slot = row_rect;
+        }
 
         let marker = if is_focused {
             crate::glyphs::filled_dot()
@@ -1802,7 +1846,6 @@ pub(super) fn render_editing_value(
     }
     let input_y = area.y + header_rows;
 
-    // ── Row 3: input line. ────────────────────────────────────────
     let has_error = validation_error.is_some();
     let input_bg = theme.bg_visual;
     let input_fg = if has_error {
@@ -1878,7 +1921,7 @@ pub(super) fn render_editing_value(
         );
     } else {
         let viewport = editor.viewport(buffer_room);
-        let visible = &buffer[viewport.visible_byte_range];
+        let visible = buffer.get(viewport.visible_byte_range).unwrap_or("");
         let visible_width = (visible.width() as u16).min(buffer_room as u16);
         buf.set_span(
             input_x,
@@ -1897,7 +1940,6 @@ pub(super) fn render_editing_value(
         );
     }
 
-    // ── Row 4: validation error. ──────────────────────────────────
     if area.height > header_rows + 1
         && let Some(err) = validation_error
     {
@@ -1938,7 +1980,6 @@ fn render_int_stepper(
     }
     let stepper_y = area.y + header_rows;
 
-    // ── Row 3: centered stepper "‹  N  ›". ────────────────────────
     let value_text = if buffer.is_empty() {
         // Defensive: try_enter_editing_value seeds the buffer from the current value, so this branch is unreachable today
         // A blank cell would be confusing if a future refactor dropped the seed
@@ -2098,7 +2139,7 @@ fn render_max_thoughts_width_preview(
         area,
         effective_width,
         clamped,
-        &wrapped[..visible_content],
+        wrapped.get(..visible_content).unwrap_or(&[]),
         theme,
     );
 }
@@ -2124,7 +2165,6 @@ fn render_preview_block(
     // Any rows below the last content row stay blank, except for the optional clamped-note row described at the bottom of this function
     let title_y = area.y.saturating_add(1);
 
-    // ── Title row. ────────────────────────────────────────────────
     let title_bg = theme.bg_visual;
     let content_bg = theme.bg_highlight;
     let title_fg = theme.text_primary;
@@ -2165,7 +2205,6 @@ fn render_preview_block(
         title_w,
     );
 
-    // ── Content rows. ─────────────────────────────────────────────
     let content_style = Style::default()
         .fg(content_fg)
         .bg(content_bg)
@@ -2546,7 +2585,6 @@ pub(super) fn render_setting_row(
     };
     let _ = max_label_w;
 
-    // ── Compute right-side x positions (shared across layouts). ──
     // Layout (right-to-left): [restart pill][space][chevron][space][value]
     // The 1-cell right pad is baked into `restart_x`.
     let restart_x_line1 = (area.x + area.width).saturating_sub(restart_w + 1);
@@ -2608,7 +2646,6 @@ pub(super) fn render_setting_row(
             }
         }
         RowLayout::TwoLine | RowLayout::TwoLineWithLabelTruncation => {
-            // ── Line 1: triangle + label + (restart pill) ──
             // Compute how much horizontal space is available to the label before colliding with the restart pill
             let label_avail = area
                 .width
@@ -2692,41 +2729,21 @@ pub(super) fn render_setting_row(
 }
 
 /// Render the wrapped description for an expanded row.
-fn render_expanded_description(
-    buf: &mut Buffer,
-    area: Rect,
-    meta: &SettingMeta,
-    lock_reason: Option<&'static str>,
-    theme: &Theme,
-) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
+fn render_expanded_description(buf: &mut Buffer, area: Rect, desc_text: &str, theme: &Theme) {
     let desc_style = Style::default()
         .fg(theme.gray)
         .bg(theme.bg_base)
         .add_modifier(Modifier::ITALIC);
-    let desc_text = lock_reason.unwrap_or(meta.description);
-    // Indent 4 cols to nest under the label.
-    let indent = 4u16.min(area.width);
-    let wrap_w = area.width.saturating_sub(indent);
-    if wrap_w == 0 {
-        return;
-    }
-    let line = Line::from(Span::styled(desc_text, desc_style));
-    let wrapped = crate::render::wrapping::word_wrap_line(&line, wrap_w as usize);
-    for (i, wrapped_line) in wrapped.iter().enumerate() {
-        if (i as u16) >= area.height {
-            break;
-        }
+    let wrapped = wrap_expanded_description(desc_text, desc_style, area.width, area.height);
+    for (i, wrapped_line) in wrapped.lines.iter().enumerate() {
         let y = area.y + i as u16;
         // Paint indent bg first so the wrapped text aligns visually.
-        for x in area.x..area.x + indent {
+        for x in area.x..area.x + wrapped.indent {
             if let Some(cell) = buf.cell_mut((x, y)) {
                 cell.set_bg(theme.bg_base);
             }
         }
-        buf.set_line(area.x + indent, y, wrapped_line, wrap_w);
+        buf.set_line(area.x + wrapped.indent, y, wrapped_line, wrapped.wrap_w);
     }
 }
 

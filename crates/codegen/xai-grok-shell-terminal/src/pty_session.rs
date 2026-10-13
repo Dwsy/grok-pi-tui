@@ -410,7 +410,8 @@ async fn run_pty_output_loop(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if data_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                    let Some(read) = buf.get(..n) else { break };
+                    if data_tx.blocking_send(read.to_vec()).is_err() {
                         break;
                     }
                 }
@@ -886,12 +887,15 @@ mod tests {
             .borrow()
             .iter()
             .filter(|(method, params)| {
-                method == NOTIFICATION_METHOD && params["terminalId"] == pty_id
+                method == NOTIFICATION_METHOD
+                    && params.get("terminalId").and_then(|v| v.as_str()) == Some(pty_id)
             })
-            .filter_map(|(_, params)| match params["type"].as_str() {
-                Some(t @ ("process_started" | "process_ended")) => Some(t.to_string()),
-                _ => None,
-            })
+            .filter_map(
+                |(_, params)| match params.get("type").and_then(|v| v.as_str()) {
+                    Some(t @ ("process_started" | "process_ended")) => Some(t.to_string()),
+                    _ => None,
+                },
+            )
             .collect()
     }
 

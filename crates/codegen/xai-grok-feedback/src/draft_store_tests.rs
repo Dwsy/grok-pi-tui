@@ -165,13 +165,13 @@ fn old_stored_wires_load_without_duplicate_text_or_required_type() {
     let store = FeedbackDraftStore::new(session.path());
 
     let drafts = store.list().unwrap();
-    assert_eq!(drafts[0].title, "What happened:");
-    assert_eq!(drafts[0].details, "- The answer was made up.");
-    assert_eq!(drafts[0].r#type, None);
-    assert_eq!(
-        drafts[0].failure_mode,
-        Some(FeedbackFailureMode::Hallucinated)
-    );
+    let [draft] = drafts.as_slice() else {
+        panic!("expected one draft: {drafts:?}");
+    };
+    assert_eq!(draft.title, "What happened:");
+    assert_eq!(draft.details, "- The answer was made up.");
+    assert_eq!(draft.r#type, None);
+    assert_eq!(draft.failure_mode, Some(FeedbackFailureMode::Hallucinated));
 
     store.append(input("new draft")).unwrap();
     let rewritten = std::fs::read_to_string(path).unwrap();

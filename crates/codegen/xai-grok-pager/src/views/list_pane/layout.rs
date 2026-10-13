@@ -38,10 +38,6 @@ pub enum ListLayoutCache {
 }
 
 impl ListLayoutCache {
-    // -----------------------------------------------------------------------
-    // Constructors
-    // -----------------------------------------------------------------------
-
     /// Create a fixed-height cache for `count` items (all height 1).
     pub fn fixed(count: usize) -> Self {
         Self::FixedHeight { count }
@@ -84,10 +80,6 @@ impl ListLayoutCache {
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Queries
-    // -----------------------------------------------------------------------
 
     /// Total height in visual lines.
     pub fn total_height(&self) -> usize {
@@ -158,10 +150,6 @@ impl ListLayoutCache {
         }
     }
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
