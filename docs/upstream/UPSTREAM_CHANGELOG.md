@@ -33,6 +33,134 @@ Each entry records:
 
 <!-- entries below this line -->
 
+## [2bdd1d6a] — 2026-10-13
+
+> **Status:** Pending — recorded before merge; not yet integrated into grok-pi.
+
+- **Sync range:** `37949780..2bdd1d6a` (`37949780c144e37df692e3d669051a21fec24f20` → `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8`)
+- **Upstream commits:** 7 (`Synced from monorepo`)
+- **SOURCE_REV (monorepo SHA):** `559751fdcec02d413e4c57c8832ab275e4f44980` (was `c4ea71cfdbcdb21e32e41bc25a0043d7d4836714`)
+- **Diff size:** 2484 files changed, +335380 / −101458 (rename-aware: 715 added, 25 deleted, 54 renamed, 1690 modified)
+
+### Summary
+
+Seven monorepo syncs contribute 340 authoritative `Changes:` items. The range is dominated by a broader daemon and Remote Control runtime, richer multi-machine sessions, structured and parallel MCP execution, a per-folder workspace sandbox with extracted permission-rule machinery, local-daemon memory/workflow surfaces, and a large Pager pass over plans, queues, subagents, settings, models, and terminal lifecycle. It also adds extensive end-to-end and daemon-parity infrastructure, typed cloud/requirements configuration, and many platform/security fixes. For grok-pi the merge is high risk even though upstream does not directly touch the fork-only `pi-grok-adapter`, `extensions/pi-grok-bash`, or `xai-grok-pager-bin/src/bin/grok_pi` trees: 241 paths changed on both sides since the prior sync, including 194 Pager paths and 24 Shell paths.
+
+### Source commit coverage
+
+- `48271133` (`SOURCE_REV be7ce6e8`): 57 changes — plan review, typed approvals, MCP result lifecycle, per-session daemon clients, plugin registry snapshots, images/interjections, memory controls, and workspace reconciliation.
+- `a28ee2b` (`SOURCE_REV e8563f8f`): 50 changes — prompt/compaction policy, terminal teardown, daemon tool rendering, memory operations, MCP image content, headless status, remote daemon routing, and bounded `read_file` output.
+- `4247f661` (`SOURCE_REV 9bb727cc`): 62 changes — profile/model persistence, local-daemon workflow and memory APIs, synced-worktree creation, file-backed MCP, trace uploads, managed hooks, background-subagent approvals, and daemon parity tests.
+- `07e35a3d` (`SOURCE_REV 84745de9`): 61 changes — remote sessions and Remote Control, bounded locking, project hooks, workspace-daemon execution, API-key hygiene, auth refresh, subagent lifecycle, and tree-sitter upgrade.
+- `f0e3be11` (`SOURCE_REV 036a5d83`): 32 changes — shared send-now semantics, Agent Host routing and status, headless signals, MCP SDK 3.4, session timing/usage, remote sessions, and Windows worktree cleanup.
+- `97f190f6` (`SOURCE_REV f589e31c`): 67 changes — Remote Control lifecycle, permission-rule extraction, cloud config, per-folder sandbox ownership and egress approval, MCP config/parallel lanes, model context-window selection, and test harness expansion.
+- `2bdd1d6a` (`SOURCE_REV 559751fd`): 11 changes — Claude settings import, typed `requirements.toml`, physical-path permission matching, held-prompt cancellation, and clearer remote refusal/tunnel behavior.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Pager (TUI) | 634 | +68434/−30717 | 94/10 | plan review, remote sessions, queue/subagent UX, model/context picker, terminal lifecycle |
+| Shell (agent runtime) | 542 | +58738/−21938 | 132/3 | daemon/Agent Host routes, session recovery, memory/workflow APIs, auth and compaction |
+| Workspace / Permission | 188 | +48054/−10059 | 75/0 | permission-rules extraction, workspace daemon, shared trust, approval policy |
+| Tools | 204 | +21513/−5813 | 53/0 | daemon tool surfaces, workflow/subagent behavior, read budgets |
+| Sandbox | 85 | +22550/−128 | 73/0 | per-folder ownership, egress holds, credentials, violations, symlink hardening |
+| Test support | 74 | +17684/−3779 | 59/1 | headless/terminal E2E builder, daemon parity, scripted models and fixtures |
+| Config | 74 | +17487/−3039 | 46/0 | cloud config, typed requirements, Claude import, shared trust/settings |
+| ACP / Protocol | 38 | +15145/−4742 | 11/0 | auth refresh frames, approval policy, structured MCP and daemon protocol |
+| Memory | 40 | +14933/−430 | 20/0 | delete/list/toggle/flush/dream/rewrite, capture and consolidation fixes |
+| Other crates | 159 | +13837/−955 | 68/0 | daemon, terminal, archive, analytics, and supporting runtime modules |
+| Telemetry / OTEL | 108 | +8188/−5563 | 49/2 | per-turn trace artifacts, analytics errors, startup and lifecycle coverage |
+| Worktree / GC | 40 | +1463/−6481 | 4/9 | synced-worktree base/branch step, Windows cleanup, removal of old artifacts |
+| Markdown / Mermaid | 27 | +2929/−928 | 3/0 | Swift highlighting, Mermaid image opening, presentation fixes |
+| Agent lifecycle | 33 | +2710/−991 | 3/0 | lifecycle broker, subagent activation, production lifetime fixes |
+| MCP | 16 | +3141/−520 | 6/0 | SDK 3.4, config merge, bearer reload, path lanes, result details |
+| Computer Hub | 17 | +2701/−575 | 0/0 | hedged connect, approvals, identity/presence, remote routing |
+| Hooks / Plugins | 22 | +2298/−879 | 0/0 | project/managed hooks and registry snapshot behavior |
+| Models / Sampling | 35 | +2340/−835 | 3/0 | max request bytes, effort/context selection, model notices |
+| Textarea / Inline | 13 | +1724/−421 | 0/0 | composer stash, prompt editing, queue input behavior |
+| Chat state | 17 | +1621/−504 | 2/0 | segment persistence, compact requests and turn metadata |
+| Voice | 15 | +2014/−84 | 4/0 | supporting daemon/session integration |
+| Auth / Login | 31 | +1799/−293 | 4/0 | current-daemon auth, refresh, OAuth scope, login watch updates |
+| Update / Version | 13 | +1664/−228 | 5/0 | release-channel helper install, WinGet upgrade and rollback binding |
+| Shared / file utils | 18 | +968/−445 | 1/0 | shared configuration and binary-safe staged writes |
+| Hunk tracker | 9 | +250/−868 | 0/0 | edit/diff tracking cleanup |
+| Third-party / vendored | 8 | +570/−69 | 0/0 | platform/runtime dependency updates |
+| Root / meta | 5 | +346/−120 | 0/0 | workspace dependencies, lockfile and `SOURCE_REV` |
+| Other / scripts | 10 | +168/−31 | 0/0 | generation, packaging and support scripts |
+| Compaction | 2 | +55/−4 | 0/0 | model effort and carrier changes |
+| Prompt queue | 2 | +37/−11 | 0/0 | cross-device held-prompt handling |
+| Workflow | 4 | +17/−8 | 0/0 | bundled source kind and daemon exposure |
+| Token estimation | 1 | +2/−0 | 0/0 | request-budget support |
+| **Total** | **2484** | **+335380/−101458** | **715/25** | 54 renames |
+
+### Added
+
+- **Plan/session control:** typed `PlanKept` and `PlanCleared` notifications; post-turn plan review; CreatePlan keep/review/`execute_plan`; slash commands in approval notes; a base-checkpoint rewind rule; minimal `/new` and `/delete` session behavior; and explicit cancellation of held prompts when a tab closes.
+- **Daemon and Agent Host surfaces:** typed workspace-daemon stop reasons, one daemon client per active session, current-daemon authentication, a thumbprint-named workspace device key, hub-only workspaces for non-sandbox hosts, daemon approval cards through the TUI, remote daemon clients, daemon turn-start/model/header/compaction status, session-ID Agent Host tabs, controller-key signing, and login propagation.
+- **Local-daemon parity:** workflow list/client support; memory list/toggle/forget/flush/dream/rewrite; local and cross-machine session lists; remote badges; background shell task rows; web search, MCP search/calls, glob, grep, read lines, edit diffs, feedback drafts, and truthful headless MCP status; plus daemon/subagent end-to-end coverage.
+- **Remote Control and multi-machine sessions:** durable remote titles and checkpoints, remote fork and resume routes, web-controller connectivity, remote-device queues/questions/images, turn/prompt identity, pairing and unpairing state, tunnel claim/reconnect behavior, machine-aware refusal text, remote session routing, and bounded replay for another machine.
+- **MCP:** structured `structuredContent` delivery, abandonment notification and terminal-state recording, direct-call labels/errors, image-preserving content blocks, file-backed invocations, bridged-server respawn, merged multi-source server config, settings server details, per-request bearer-file reload, argument coercion, per-path parallel lanes, plugin OAuth client-id preservation, and `rmcp` 3.4.
+- **Workspace permissions and sandbox:** typed tool-approval policy and permission channels, signed computer-use helper distribution, a dedicated permission-rules crate, managed-policy trust/tamper classification, a shared folder-trust decision, per-folder daemon-owned sandboxes, held egress requests with per-call credentials, permission-hook sandbox violation cards, and physical as well as lexical relative-path matching.
+- **Memory:** deletion and disabled/empty modal states, automatic legacy `MEMORY.md` carry-over, JSON-Schema-constrained dreams, cancelled-turn capture, encrypted-reasoning stripping, local-daemon management operations, and cleanup/plan-conflict recovery for batch consolidation.
+- **Subagents:** catalog-latched model selection, configurable model-argument hiding and automatic inheritance, TUI/stdio activation parity, target/delivery rows, direct child transcript opening, completion/cancellation rows, background-task rows with stop controls, background/wakeup approvals, selectable plugin/user agent types, and a blocked-parent waiting indicator.
+- **Models and configuration:** Claude settings import, typed `requirements.toml` sections, `[agent]` startup settings, per-model `max_request_bytes`, per-model notices, mixed-case effort parsing, default-effort picker positioning, and a context-window step between model and effort.
+- **Images and interjections:** images in `/btw`, interjections, ordinary user messages, prompts, local daemon delivery, and remote sessions; orphan image-chip rebinding and unsent-image notices; and older-client image refusal guidance.
+- **Worktree/clone:** in-place clone progress with JSON events, optional base-ref fetch and branch creation for synced worktrees, a safe empty-file global Git config, and offline Windows fast-worktree cleanup.
+- **Hooks/plugins/workflows:** project-hook discovery, managed-only hook filtering, requirements-cache hooks as managed policy, a disk-built shared plugin registry snapshot, bundled workflow source identity, and workspace-task binding to a single subagent registry entry.
+- **Read/tool budgets:** opt-in `read_file max_output_bytes` with continuation markers, ordinary read-cap recording, whole-read project-instruction exemptions, and configurable truncation policy.
+- **Observability/testing:** end-to-end headless/terminal builders with shared fixtures and scripted models, backend tool-round-trip smoke tests, daemon parity lanes, per-turn trace artifact upload and local reconstruction, CLI startup timing, tool-call identity/grep outcomes, and explicit Agent Host test-gap status.
+- **Auth/protocol:** `grok-workspace:serve` OAuth scope, in-band refreshed bearer delivery with a wider OIDC margin, and `auth.refresh` protocol method/frames.
+- **Terminal/platform primitives:** DA1-fenced keyboard-pop and deadline-bounded probe primitives, a dedicated terminal restore module, and updated tree-sitter support.
+
+### Changed
+
+- **Prompt and compaction policy:** require grounded person names, use the nine-section prompt and grok-build carrier for two-pass compaction, retain every turn in the segment store, inject long-reasoning reminders after auto-compaction, route built-in guidance through user rules, add direct-prose/scannable-response guidance, and send compact recap/summary slices at low effort.
+- **Session lifecycle:** persist agent profile and cached team capability, keep cwd-local sessions, disable session-folder TTL cleanup by default, record unfinished turns and crash evidence, scope orphan-subagent healing to the loading session, reject duplicate cross-machine ownership, wait out busy fork parents, and bind startup/turn behavior to durable remote state.
+- **Queue and send-now behavior:** share the send-now stop path across prompt and wake turns, keep another device's turn paired with its question card, apply queue actions to remotely held prompts, preserve refused send-now as the Esc target, flush steered follow-ups before blocking waits, and return focus after queued-prompt edits.
+- **Pager/UI:** clean up overlays, settings, notifications, diagnostics, dispatch, question views, banners, dashboard and prompt widgets; keep pinned rows stable; remove the completed-subagent dock summary; add dashboard preview; align prompt borders; preserve queue-row copy; improve minimal-mode commits/history/anchoring; and color Ask-mode chrome green.
+- **Terminal handling:** fence Kitty keyboard teardown with DA1, centralize restore, serialize Windows clipboard operations, skip clipboard-image probing for non-clipboard bracketed pastes, and re-send inline images after full repaint.
+- **Daemon execution:** wait for daemon prompt decisions, show write/re-pushed cards, run workspace-daemon tool calls without interactive permission prompts, map Agent Host wait/shell rows to the base-path UI, answer headless questions like Shell, and keep desktop/local execution on the owning machine.
+- **MCP lifecycle:** hand results to the gateway as content blocks, render structured content only once when text already carries it, record every call ending, improve auth retry classification, retain plugin OAuth ids, and expose merged server details through settings.
+- **Permission/config structure:** extract shell parsing and policy compilation into permission-rules, move remote settings into cloud config, apply configured Bash rules to unresolved filename arguments, parse workspace settings as typed values, and use shared config types for trust.
+- **Sandbox ownership:** move per-folder sandbox/proxy lifecycle and violation reporting under the workspace daemon, ask before egress with scoped credentials, keep Always-reject sticky, and run sandbox tests only on applicable platforms.
+- **Subagent behavior:** keep subagents alive for the full task, wake/settle rows on child completion, answer blocking spawn honestly after send-now, remove then re-expose selectable subagent type through the unified catalog, and inherit models from the effective catalog.
+- **Model selection:** carry model choice as one type, preserve context-window selection, match effort by option label, open on the model default, and hide unsupported tool forms from Messages-backed models.
+- **Memory:** remove the standalone status feature, make `/memory` states and progress truthful, and constrain generation/capture inputs while keeping legacy notes.
+- **Remote Control:** hold the tunnel claim across reconnects, publish login/privacy changes, keep paired-device UI current, route target-machine-only actions correctly, and age out dropped relay listings after longer retries.
+- **Workflows/hooks:** expose workflows on the daemon, discover project hooks, enforce signed managed hooks when configured, and remove agent counts from workflow list rows.
+- **Telemetry/analytics:** drive deduplicated uploads from process-lifetime runtime, attach subagent spawn spans, surface non-2xx analytics errors, report helper mount state, and upload bounded per-turn archives without oversized logs.
+- **Build/runtime:** raise runtime thread stacks to 8 MiB, use `ring` on Windows ARM64 and disable aws-lc jitter entropy there, limit computer-use tools to `browser_execute`, hand WinGet installs to upgrade, and route helper installs through the desktop release channel.
+
+### Fixed
+
+- **Clipboard/platform:** stop macOS `osascript` fallback from attaching the wrong image; fix aarch64-musl SHA-512 SIGILL; fix Windows ARM64 crypto selection; and preserve config symlinks on save.
+- **Terminal/rendering:** close Swift multiline strings and nested interpolation correctly, fix Mermaid Open Image, stop the dashboard Enter echo, keep pinned rows stable, restore minimal history/live-region placement on resize, and bound debug Tokio hub dials within their stack.
+- **Memory:** fix delete/enable behavior, make flush/dream progress reliable, recover consolidation after cleanup/plan conflicts, and prevent repeated search hits.
+- **Session/runtime safety:** fix production teardown use-after-free, stop upload-queue sampler leaks, keep the agent alive beyond production runtime locals, bound leader/session-registry locks including stranded NFS locks, and keep the session leader from dropping client messages.
+- **Security/environment:** drop interior-NUL variables before PTY spawn, keep runtime-loaded API keys out of the process environment, close symlink-following sandbox paths, preserve Always-reject, and avoid blaming the target in blank/empty refusal messages.
+- **Remote Control:** ignore unrequested tunnel stops, release failed tunnel claims once, preserve claims through reconnects, identify the refusing/outdated computer, move approved devices immediately, record unpair requests, and make connection state visible throughout the crate.
+- **Prompts/queues:** cancel held prompts with closed sessions, keep refused send-now prompts cancelable, preserve empty/remote refusal status, and avoid losing question cards or remote turn updates.
+- **Subagents:** clear stale Cancelling state, show cutoff sessions as cancelled, complete background rows when children finish, keep fork children scoped correctly, and handle child activation consistently across hosts.
+- **MCP/daemon:** fix stale connecting reminders, malformed approval-policy fallback, auth-retry classification, dead bridged-child recovery, structured-content duplication, and daemon tool-result presentation.
+- **Files/worktrees:** emit root-relative file-change paths while dropping off-root paths, use binary-safe staged writes, clean Windows worktree artifacts offline, and prevent old rolled-back installs from retaining bindings.
+- **Usage/timing:** wait for `usage.json` before turn completion, anchor Worked-for timing at every turn start, and report precise session-creation timeout stages.
+
+### Removed / Deprecated
+
+- Remove the disabled inline edit-and-resubmit feature, the memory-status feature, hidden dashboard subagent rows, the unreachable subagent catalog pane, the unclickable completed-subagent dock row, compact instructions from Grok Build, eager codebase-index warm-up on hub connect, and the specialized-tools prompt rule.
+- Delete old idle dumps, month-old document dumps, leftover Unicode tables of contents, stale terminal helpers/tests, and obsolete fast-worktree artifacts; retarget surviving documentation and agent keep-rules to current sources.
+
+### Merge risk for grok-pi
+
+- **241 overlapping paths:** 194 Pager, 24 Shell, 3 root/meta, 3 agent-lifecycle, 3 tools, 3 workspace/permission, and smaller overlaps in config, update, login, sandbox, telemetry, voice, and shared UI config.
+- **Pager is the primary conflict zone:** fork seams in `app/acp_handler`, `app/dispatch`, `agent_view`, `event_loop`, queue/session/plan handling, scrollback tool cards, model state, settings, dashboard, task panes, and remote-session UI all overlap upstream changes.
+- **Shell/ACP risk:** overlapping `acp_session_impl` run-loop/spawn/tool-call paths, `notification_bridge`, `acp_types`, MCP config, workflow hosting, and session commands can affect Pi RPC projection, native command bridges, Eval display, and cancellation semantics.
+- **Model-picker seam:** upstream changes `xai-grok-pager/src/acp/model_state.rs` and model/context selection while grok-pi just changed provider-qualified model labels; preserve `selected_model_info()` as the source of truth and patch the selected provider before constructing the agent.
+- **Build seam:** upstream changes root manifests/lockfile plus `xai-grok-pager-bin/Cargo.toml` and `build.rs`. The fork-only `src/bin/grok_pi` source tree is not directly changed upstream, but its embedding/bootstrap dependencies must be reconciled deliberately.
+- **MCP/Eval seam:** upstream adds structured MCP content, config merging, bearer reload, cancellation/end-state notification, and per-path parallel calls while grok-pi adds a resident mcpeval daemon. Keep the fork extension boundary isolated and rerun its Node/ESBuild suites after the merge.
+- The fork-only `crates/codegen/pi-grok-adapter`, `extensions/pi-grok-bash`, and `crates/codegen/xai-grok-pager-bin/src/bin/grok_pi` paths have no direct upstream edits; any loss there would therefore be an integration regression rather than an unavoidable conflict.
+
 ## [37949780] — 2026-09-12
 
 > **Status:** Merged into grok-pi on isolated branch `merge/upstream-37949780`, pending merge back to `main`. This entry **supersedes the [9684fa3c] entry below**: that entry covered the first 3 commits of this same range; all 8 commits here were integrated together. Conflict resolution followed [`MERGE_ANALYSIS_37949780/REPORT.md`](MERGE_ANALYSIS_37949780/REPORT.md); the final index has 0 unresolved conflicts, `git diff --check` passes, and the manually merged Rust files pass `rustfmt --edition 2024 --check`. Cargo/build/test gates were intentionally not run in this integration session, so full verification is not claimed green; the existing verifier baseline blockers remain documented in [`docs/VERIFICATION.md`](../VERIFICATION.md) and no source-identity allowlist was broadened.
