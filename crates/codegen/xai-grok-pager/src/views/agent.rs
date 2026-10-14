@@ -35,6 +35,8 @@ pub enum ActivePane {
     Queue,
     Prompt,
     Tasks,
+    /// Consolidated subagent catalog overlay (F12).
+    Catalog,
     /// Consolidated panel dock above the prompt (remote `dock_enabled`).
     Dock,
 }

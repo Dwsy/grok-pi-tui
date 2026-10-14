@@ -656,6 +656,13 @@ impl ScrollbackState {
             .width
     }
 
+    /// Content-column width (excluding accent bar and block padding) for a full scrollback width.
+    /// Used to size the inline edit textarea.
+    pub fn entry_text_column_width(&self, width: u16) -> u16 {
+        let simulated_area = Rect::new(0, 0, width, 1);
+        HorizontalLayout::new(simulated_area, &self.appearance.scrollback.layout).content_width()
+    }
+
     /// Measure exact heights for not-yet-measured entries in `[start, end]`. Returns `(entry_index, height_delta)` for
     /// each estimate replaced by an exact height. Hidden (group-truncated, height 0) and synthetic group-header rows
     /// render no markdown, so they are skipped. Their height is owned by group truncation, not measurement.

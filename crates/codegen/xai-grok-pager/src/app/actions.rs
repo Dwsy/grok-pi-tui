@@ -555,6 +555,11 @@ pub enum Action {
     DemoteToBackground,
     /// Request current bundle cache status via `x.ai/bundle/status`.
     RequestBundleStatus,
+    /// View a catalog entry's raw content in the block viewer.
+    ViewCatalogEntry {
+        kind: String,
+        name: String,
+    },
     /// Hide the announcements banner.
     AnnouncementsHide,
     /// Show the announcements banner.
@@ -1230,6 +1235,8 @@ pub enum Action {
     RewindCancelOffer,
     RewindDismiss,
     RewindDismissError,
+    /// Submit an inline edit: conversation-only rewind to that prompt, then resubmit the edited text (state lives on `AgentView::inline_edit`).
+    InlineEditSubmit,
     /// Open the `/jump` turn picker.
     JumpShowPicker,
     /// Jump to a turn by its prompt's stable id and close the picker.
@@ -2369,6 +2376,8 @@ pub enum Effect {
     },
     /// Fetch current bundle cache status via `x.ai/bundle/status`.
     FetchBundleStatus,
+    /// Fetch a bundled entry's raw content via `x.ai/bundle/entry/get`.
+    FetchCatalogEntry { kind: String, name: String },
     /// Send feedback about the current session (fire-and-forget POST).
     /// `origin` rides through to the completion so a modal send's parked consent can be matched or dropped.
     SendFeedback {
@@ -3566,6 +3575,14 @@ pub enum TaskResult {
         error: String,
     },
     /// Side question (/btw) response received.
+    CatalogEntryReady {
+        kind: String,
+        name: String,
+        content: String,
+    },
+    CatalogEntryFailed {
+        error: String,
+    },
     BtwResponse {
         agent_id: AgentId,
         result: Result<String, String>,

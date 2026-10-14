@@ -212,6 +212,8 @@ pub(super) fn dispatch_review_ask(app: &mut AppView, question: String) -> Vec<Ef
         session_id,
         question: enriched_question,
         models,
+        images: Vec::new(),
+        cwd: agent.session.cwd.clone(),
         minimal_request_id: None,
     }]
 }

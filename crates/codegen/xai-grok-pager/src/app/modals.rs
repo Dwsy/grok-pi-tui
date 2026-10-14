@@ -687,10 +687,9 @@ impl AgentView {
                         ));
                         return InputOutcome::Changed;
                     };
-                    InputOutcome::Action(Action::SwitchModel {
-                        model_id,
-                        effort: None,
-                    })
+                    InputOutcome::Action(Action::SwitchModel(
+                        crate::app::actions::ModelChoice::new(model_id),
+                    ))
                 }
             };
         }

@@ -2159,6 +2159,32 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             tracing::warn!(error = %error, "bundle status fetch failed");
             vec![]
         }
+        TaskResult::CatalogEntryReady {
+            kind,
+            name,
+            content,
+        } => {
+            if let ActiveView::Agent(id) = app.active_view
+                && let Some(agent) = app.agents.get_mut(&id)
+            {
+                let title = format!("{kind}: {name}");
+                agent.show_block_viewer(
+                    crate::views::block_viewer::BlockViewerPane::for_plain_text(&title, &content),
+                );
+            }
+            vec![]
+        }
+        TaskResult::CatalogEntryFailed { error } => {
+            tracing::warn!(error = %error, "catalog entry fetch failed");
+            if let ActiveView::Agent(id) = app.active_view
+                && let Some(agent) = app.agents.get_mut(&id)
+            {
+                agent
+                    .scrollback
+                    .push_block(RenderBlock::system(format!("Couldn't load entry: {error}")));
+            }
+            vec![]
+        }
         TaskResult::BtwResponse {
             agent_id,
             result,

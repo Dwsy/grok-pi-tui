@@ -353,6 +353,57 @@ fn begin_rewind(
     enter_executing(agent, agent_id, target, anchor, draft)
 }
 
+pub(super) fn dispatch_inline_edit_submit(app: &mut AppView) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let Some(session_id) = agent.session.session_id.clone() else {
+        app.show_toast(NO_SESSION_NOTICE);
+        return vec![];
+    };
+    let Some(edit) = agent.inline_edit.as_ref() else {
+        return vec![];
+    };
+
+    // Unchanged/empty edits have nothing to submit: just close the editor.
+    let text = edit.textarea.text().trim().to_string();
+    if text.is_empty() || text == edit.original.trim() {
+        agent.exit_inline_edit();
+        return vec![];
+    }
+
+    let target = edit.prompt_index;
+    let anchor = agent
+        .scrollback
+        .index_of_id(edit.entry_id)
+        .or_else(|| agent.scrollback.selected())
+        .unwrap_or(0);
+    let draft = stash_prompt(&mut agent.prompt);
+
+    if agent.session.state.is_busy() {
+        // Mid-turn submit: the same cancel-offer `/rewind` raises, over the
+        // still-open editor. Confirm cancels the turn and re-enters the
+        // flow; dismiss returns to the editor.
+        agent.rewind_state = Some(RewindState::new_cancel_offer(anchor, draft, Some(target)));
+        return vec![];
+    }
+
+    agent.rewind_state = Some(RewindState {
+        phase: RewindPhase::Loading,
+        anchor_entry_idx: anchor,
+        stashed_draft: draft,
+        selected_prompt_index: Some(target),
+    });
+
+    vec![Effect::FetchRewindPoints {
+        agent_id: id,
+        session_id,
+    }]
+}
+
 pub(super) fn dispatch_rewind_success(
     app: &mut AppView,
     agent_id: crate::app::agent::AgentId,

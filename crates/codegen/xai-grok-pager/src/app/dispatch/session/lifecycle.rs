@@ -4,6 +4,7 @@ use super::load::dispatch_load_session;
 use super::modal::{drop_other_agents_in_minimal, remove_agent_and_cleanup};
 use crate::acp::model_state::{EffortTokenError, ModelState};
 use crate::acp::tracker::AcpUpdateTracker;
+use crate::app::agent_view::McpInitProgress;
 use crate::app::actions::{
     Action, AfterSessionDelete, Effect, ModelChoice, PermissionModePersist, SwitchModelError,
 };

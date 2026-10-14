@@ -133,6 +133,7 @@ use crate::views::plan_approval_view::{PlanApprovalViewState, PlanComment};
 use crate::views::prompt_widget::{PromptWidget, StashedPrompt};
 use crate::views::question_view::QuestionViewState;
 use crate::views::queue_pane::QueuePane;
+use crate::views::subagent_catalog_pane::SubagentCatalogPane;
 use crate::views::tasks_pane::TasksPane;
 use crate::views::todo_pane::TodoPane;
 use ratatui::buffer::Buffer;
@@ -750,6 +751,8 @@ pub struct AgentView {
     pub tip_typing_dismissed: bool,
     pub todo: TodoPane,
     pub tasks: TasksPane,
+    /// Consolidated subagent catalog overlay (F12). See `views/subagent_catalog_pane.rs`.
+    pub catalog: SubagentCatalogPane,
     pub queue: QueuePane,
     /// Per-agent mirror of the server-authoritative shared prompt queue
     /// (`AppView::shared_prompt_queues[sid]`), kept in sync by `handle_queue_changed` and the immediate-send path. The queue pane renders the union of this and the local `pending_prompts`; the edit handlers read it to route remove/reorder by origin. Empty unless a plain prompt was queued server-side while a turn was running.

@@ -63,6 +63,7 @@ pub mod shortcuts_help;
 pub mod slash_dropdown;
 pub mod status_bar;
 pub mod status_line;
+pub mod subagent_catalog_pane;
 pub mod suggestion_controller;
 pub mod tasks_pane;
 pub mod timeline;

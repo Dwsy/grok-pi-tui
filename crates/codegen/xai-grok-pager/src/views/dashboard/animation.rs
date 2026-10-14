@@ -53,6 +53,8 @@ impl RowState {
             Self::Working => Some(Animation::Spinner),
             Self::NeedsInput => Some(Animation::Blink),
             Self::Idle | Self::Inactive | Self::Completed | Self::Failed => None,
+            // fork seam: /goal blocked rows are dormant — no spinner or blink.
+            Self::Blocked => None,
         }
     }
 }

@@ -695,6 +695,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             },
             restart_required: false,
             hidden_in_minimal: true,
+            external_only: false,
         },
         SettingMeta {
             key: "page_flip_on_send",
@@ -1067,6 +1068,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             },
             restart_required: true,
             hidden_in_minimal: false,
+            external_only: false,
         },
         // SHARED. `u16` in UiConfig, widened to `i64` for registry.
         // Width changes apply on the next render frame.

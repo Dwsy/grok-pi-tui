@@ -1067,6 +1067,7 @@ pub(super) fn session_picker_entry_to_roster(
         is_worktree: e.worktree_label.is_some(),
         model_id: e.model_id.clone(),
         yolo: false,
+        session_kind: None,
         activity: RosterActivity::Dormant,
         last_turn_summary: e.last_turn_summary.clone(),
         resident: false,

@@ -2320,23 +2320,6 @@ pub(super) fn wrap_description(description: &str, width: u16) -> Vec<String> {
         .collect()
 }
 
-/// Wrapped description height for scroll math (mirrors render path).
-fn wrapped_description_height(
-    meta: &SettingMeta,
-    lock_reason: Option<&'static str>,
-    area_width: u16,
-    cap: u16,
-) -> u16 {
-    let indent = 4u16.min(area_width);
-    let wrap_w = area_width.saturating_sub(indent);
-    if wrap_w == 0 {
-        return 0;
-    }
-    let text = lock_reason.unwrap_or(meta.description);
-    let line = Line::from(Span::raw(text));
-    let wrapped = crate::render::wrapping::word_wrap_line(&line, wrap_w as usize);
-    (wrapped.len() as u16).min(cap)
-}
 
 // Row layout: triangle on left, value right-aligned
 // The two-line layout kicks in when label + value exceed the area width

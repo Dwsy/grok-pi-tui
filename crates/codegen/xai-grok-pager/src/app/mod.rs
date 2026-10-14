@@ -808,7 +808,12 @@ pub async fn run_external_deferred(
         Ok(ready) => ready,
         Err(error) => {
             crate::unified_log::flush_blocking().await;
-            let _ = restore_terminal(terminal, writer_thread, screen_mode);
+            let _ = restore_terminal(
+                terminal,
+                writer_thread,
+                ReaderThread::detached(),
+                screen_mode,
+            );
             xai_tty_utils::global_process_scope().kill_all();
             return Err(error);
         }
@@ -864,6 +869,7 @@ pub async fn run_external_deferred(
     let cancel = connection.cancel.clone();
     let pending_startup = xai_grok_telemetry::startup::PendingStartup::new();
     let tracing_handle = crate::tracing::init_tracing();
+    let mut reader_thread = ReaderThread::detached();
     let result = event_loop::run(
         &mut terminal,
         connection,
@@ -877,11 +883,12 @@ pub async fn run_external_deferred(
         materialized,
         bg_update_rx,
         writer_event_rx,
+        &mut reader_thread,
     )
     .await;
 
     crate::unified_log::flush_blocking().await;
-    let _ = restore_terminal(terminal, writer_thread, screen_mode);
+    let _ = restore_terminal(terminal, writer_thread, reader_thread, screen_mode);
     cancel.cancel();
     xai_tty_utils::global_process_scope().kill_all();
     // Ctrl+U on Welcome (pending update) → quit, then run the real installer.

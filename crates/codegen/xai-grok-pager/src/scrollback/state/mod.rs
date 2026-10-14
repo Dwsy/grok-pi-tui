@@ -222,6 +222,11 @@ pub struct ScrollbackState {
     #[cfg(test)]
     layout_rebuilds: usize,
 
+    /// Inline-edit height override (entry id, reserved height) for the entry being edited.
+    /// The layout then reserves room for the live edit textarea.
+    /// Cleared when editing ends.
+    pub(super) inline_edit_height: Option<(EntryId, u16)>,
+
     /// Session/worktree cwd (`AgentSession.cwd`) for Expanded tool paths.
     cwd: Option<std::path::PathBuf>,
 
@@ -283,6 +288,7 @@ impl ScrollbackState {
             content_generation: 0,
             #[cfg(test)]
             layout_rebuilds: 0,
+            inline_edit_height: None,
             cwd: None,
             suppress_sticky_headers: false,
         }
@@ -874,6 +880,26 @@ impl ScrollbackState {
         self.dirty_heights.insert(id);
         self.gaps_may_be_dirty = true;
         self.bump_content_generation();
+    }
+
+    /// Set (or clear) the inline-edit height override for an entry.
+    /// Marks affected entries height-dirty; no-op when unchanged (called per frame).
+    pub fn set_inline_edit_height(&mut self, override_h: Option<(EntryId, u16)>) {
+        if self.inline_edit_height == override_h {
+            return;
+        }
+        if let Some((old_id, _)) = self.inline_edit_height {
+            self.mark_height_dirty(old_id);
+        }
+        if let Some((new_id, _)) = override_h {
+            self.mark_height_dirty(new_id);
+        }
+        self.inline_edit_height = override_h;
+    }
+
+    /// Current inline-edit height override, if any.
+    pub fn inline_edit_height(&self) -> Option<(EntryId, u16)> {
+        self.inline_edit_height
     }
 
     /// Get number of entries.

@@ -39,7 +39,8 @@ pub(crate) fn top_level_secondary_line(
         | RowState::Idle
         | RowState::Inactive
         | RowState::Completed
-        | RowState::Failed => {
+        | RowState::Failed
+        | RowState::Blocked => {
             // The local model already appears in peek; it is not a last-turn preview.
             agent
                 .last_turn_summary
@@ -95,7 +96,8 @@ pub(crate) fn top_level_activity(agent: &AgentView, state: RowState) -> Option<S
         | RowState::Idle
         | RowState::Inactive
         | RowState::Completed
-        | RowState::Failed => None,
+        | RowState::Failed
+        | RowState::Blocked => None,
     }
 }
 

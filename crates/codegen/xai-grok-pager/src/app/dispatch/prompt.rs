@@ -1548,7 +1548,8 @@ pub(super) fn handle_subagent_prompt_response(
     child.session.finish_turn(&mut child.scrollback);
     let event = match &result {
         Ok(_) if was_cancelling => Some(SessionEvent::TurnCancelled {
-            elapsed: elapsed.unwrap_or_default(),
+            elapsed,
+            cause: crate::scrollback::blocks::CancelledBy::Unspecified,
         }),
         Ok(_) => Some(SessionEvent::TurnCompleted {
             elapsed: Some(elapsed.unwrap_or_default()),
@@ -1568,7 +1569,7 @@ pub(super) fn handle_subagent_prompt_response(
     if let Err(ref err) = result {
         tracing::error!(parent_agent = ?parent_agent_id, child_session = %child_session_id.0, error = %err, "Subagent prompt failed");
     }
-    let drain = maybe_drain_queue(child);
+    let drain = maybe_drain_queue(child, &mut app.pending_image_notices);
     drain
         .effects
         .into_iter()

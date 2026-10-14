@@ -6,6 +6,7 @@ use super::{
     PluginCtaState, PromptInputMode, PromptMode, REWOUND_PROMPT_ID_CAP, ReplayRebuiltState,
     SELF_ORIGINATED_PROMPT_CAP, SessionReload, ViewSurface,
 };
+use agent_client_protocol as acp;
 use crate::app::agent::{AgentSession, GoalDisplayStatus};
 use crate::app::app_view::InputOutcome;
 use crate::app::cancel_latency::{CancelLatency, CancelOrigin, TurnEnd};
@@ -16,6 +17,7 @@ use crate::scrollback::text_selection::ResolvedSelectionModel;
 use crate::views::prompt_widget::PromptWidget;
 use crate::views::queue_mutation::QueueMutation;
 use crate::views::queue_pane::QueuePane;
+use crate::views::subagent_catalog_pane::SubagentCatalogPane;
 use crate::views::tasks_pane::TasksPane;
 use crate::views::todo_pane::TodoPane;
 use ratatui::layout::Rect;
@@ -139,6 +141,7 @@ impl AgentView {
             tip_typing_dismissed: false,
             todo: TodoPane::new(),
             tasks: TasksPane::new(),
+            catalog: SubagentCatalogPane::new(),
             queue: QueuePane::new(),
             shared_queue: Vec::new(),
             attached_as_viewer: false,

@@ -260,6 +260,17 @@ fn render_diff_hunks_core(
     lines
 }
 
+/// Unchanged new-file lines hidden between two hunks, when computable. Each call's hunks are numbered against its
+/// own file snapshot, so a count would be wrong there.
+fn hunk_gap_lines(prev: &DiffHunk, next: &DiffHunk) -> Option<usize> {
+    let prev_last = prev.iter().rev().find(|l| l.tag != ChangeTag::Delete)?.ln;
+    let next_first = next.iter().find(|l| l.tag != ChangeTag::Delete)?.ln;
+    next_first
+        .checked_sub(prev_last)
+        .and_then(|d| d.checked_sub(1))
+        .filter(|n| *n > 0)
+}
+
 /// Tab-expanded text for Equal/Insert hunk lines, keyed by 1-based ln.
 fn hunk_new_line_texts(hunks: &[DiffHunk]) -> HashMap<usize, String> {
     let mut out = HashMap::new();

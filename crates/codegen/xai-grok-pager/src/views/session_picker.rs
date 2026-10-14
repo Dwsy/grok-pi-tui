@@ -836,14 +836,20 @@ pub(crate) fn build_session_entry_data(
         .map(|(fi, &orig_idx)| {
             let Some(entry) = entries_data.get(orig_idx) else {
                 return SessionEntryData {
+                    display_label: String::new(),
                     summary: String::new(),
                     right_text: String::new(),
                     is_selected: false,
                     is_expanded: false,
                     field_data: Vec::new(),
                     snippet_preview: None,
+                    label_color: None,
                     badge: "",
+                    badge_color: None,
                     collapsible: false,
+                    tree_prefix: String::new(),
+                    tree_depth: 0,
+                    has_children: false,
                 };
             };
             let summary = if entry.summary.is_empty() {

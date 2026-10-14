@@ -19,7 +19,7 @@ use crate::scrollback::render::ScratchBuffer;
 use crate::views::prompt_widget::PromptWidget;
 use crate::views::welcome::WelcomePromptFocus;
 use agent_client_protocol as acp;
-use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -506,6 +506,7 @@ fn session_picker_entry_to_dashboard_roster(
         is_worktree: entry.worktree_label.is_some(),
         model_id: entry.model_id.clone(),
         yolo: false,
+        session_kind: None,
         activity: RosterActivity::Dormant,
         resident: false,
         last_change_unix_ms: last_change.timestamp_millis(),
@@ -2070,7 +2071,7 @@ impl AppView {
         }
         self.import_claude_modal.is_some()
             || self.voice_listening()
-            || self.voice_state.pending_cold_start()
+            || self.voice_state.is_pending_cold_start()
     }
     /// The agent tab on screen.
     /// Always the root agent, even when a subagent view is focused within the tab.

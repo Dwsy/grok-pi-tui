@@ -61,6 +61,15 @@ pub struct RoleDetail {
     pub description: String,
 }
 
+/// Deserialized response from `x.ai/bundle/entry/get`.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryGetResult {
+    pub kind: String,
+    pub name: String,
+    pub content: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

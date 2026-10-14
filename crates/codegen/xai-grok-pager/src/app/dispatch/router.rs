@@ -51,7 +51,7 @@ use super::prompt::{
 use super::queue;
 use super::queue::dispatch_drain_queue;
 use super::rewind::{
-    dispatch_rewind, dispatch_rewind_cancel_offer, dispatch_rewind_confirm,
+    dispatch_inline_edit_submit, dispatch_rewind, dispatch_rewind_cancel_offer, dispatch_rewind_confirm,
     dispatch_rewind_confirm_never_ask, dispatch_rewind_dismiss, dispatch_rewind_dismiss_error,
     dispatch_rewind_picker_select, dispatch_rewind_show_picker,
 };
@@ -1959,6 +1959,10 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::RewindCancelOffer => dispatch_rewind_cancel_offer(app),
         Action::RewindDismiss => dispatch_rewind_dismiss(app),
         Action::RewindDismissError => dispatch_rewind_dismiss_error(app),
+        Action::ViewCatalogEntry { kind, name } => {
+            vec![Effect::FetchCatalogEntry { kind, name }]
+        }
+        Action::InlineEditSubmit => dispatch_inline_edit_submit(app),
     };
     restore_stash_where_the_draft_was_consumed(app);
     app.reconcile_foreign_resume_launch();
