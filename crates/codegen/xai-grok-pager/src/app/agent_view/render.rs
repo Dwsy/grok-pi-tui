@@ -698,7 +698,9 @@ impl AgentView {
             .selected()
             .is_some_and(|idx| self.scrollback.entry_content_hidden_by_group(idx));
         let (selected_supports_copy, selected_meta_label, selected_supports_fullscreen) =
-            if self.active_pane == ActivePane::Tasks {
+            if self.active_pane == ActivePane::Catalog {
+                (false, None, self.catalog.selected_entry().is_some())
+            } else if self.active_pane == ActivePane::Tasks {
                 let has_selected = self.tasks.selected_task_id().is_some_and(|tid| {
                     self.session
                         .bg_tasks
@@ -1459,6 +1461,11 @@ impl AgentView {
         } else {
             self.tasks.desired_height(area.height)
         };
+        let catalog_height = if viewer_open || dock_on {
+            0
+        } else {
+            self.catalog.desired_height(area.height)
+        };
         let todo_height = if viewer_open {
             0
         } else {
@@ -1566,6 +1573,7 @@ impl AgentView {
             timeline_width,
             prompt_height,
             tasks_height,
+            catalog_height,
             todo_height,
             queue_height,
             btw_height,
@@ -2356,6 +2364,24 @@ impl AgentView {
             )
             .and_then(|sel| sel.close_button_rect());
             self.hit_bg_close.set(close_rect);
+        }
+        if catalog_height > 0 {
+            let cat_focused = self.active_pane == ActivePane::Catalog && !overlay_focused;
+            self.catalog
+                .render(layout.catalog, buf, cat_focused, layout_cfg);
+            let close_rect = agent::render_todo_chrome(
+                buf,
+                layout.catalog,
+                layout_cfg,
+                cat_focused,
+                false,
+                self.hit_catalog_close.hovered,
+                &theme,
+            )
+            .and_then(|sel| sel.close_button_rect());
+            self.hit_catalog_close.set(close_rect);
+        } else {
+            self.hit_catalog_close.clear();
         }
         if todo_height > 0 {
             let todo_focused = self.active_pane == ActivePane::Todo && !overlay_focused;

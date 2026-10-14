@@ -418,6 +418,16 @@ impl AgentView {
                     return InputOutcome::Unchanged;
                 }
                 match self.pane_areas.hit_test(mouse.column, mouse.row) {
+                    Some(AgentPane::Catalog) => {
+                        self.set_active_pane(AgentPane::Catalog, false);
+                        self.catalog.handle_mouse(
+                            mouse.kind,
+                            mouse.column,
+                            mouse.row,
+                            self.pane_areas.catalog,
+                        );
+                        InputOutcome::Changed
+                    }
                     Some(AgentPane::Dock) => {
                         let item = self.dock_item_at(self.pane_areas.dock, mouse.row);
                         if let Some(hit) = self
@@ -978,6 +988,7 @@ impl AgentView {
                         | AgentPane::Queue
                         | AgentPane::Prompt
                         | AgentPane::Tasks
+                        | AgentPane::Catalog
                         | AgentPane::Dock => None,
                     })
                 };

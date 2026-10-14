@@ -54,6 +54,7 @@ pub struct PaneAreas {
     pub queue: Rect,
     pub prompt: Rect,
     pub tasks: Rect,
+    pub catalog: Rect,
     /// Consolidated panel dock (remote `dock_enabled`); the embedded
     /// queue body inside it hit-tests as `Queue` (checked first).
     pub dock: Rect,
@@ -64,6 +65,9 @@ impl PaneAreas {
         let pos = (col, row).into();
         if self.tasks.area() > 0 && self.tasks.contains(pos) {
             return Some(ActivePane::Tasks);
+        }
+        if self.catalog.area() > 0 && self.catalog.contains(pos) {
+            return Some(ActivePane::Catalog);
         }
         if self.todo.area() > 0 && self.todo.contains(pos) {
             return Some(ActivePane::Todo);
@@ -111,6 +115,7 @@ pub struct AgentViewLayoutParams {
     pub timeline_width: u16,
     pub prompt_height: u16,
     pub tasks_height: u16,
+    pub catalog_height: u16,
     pub todo_height: u16,
     pub queue_height: u16,
     pub btw_height: u16,
@@ -143,6 +148,7 @@ pub struct AgentViewLayout {
     pub status_bar: Rect,
     pub startup_warnings: Rect,
     pub tasks: Rect,
+    pub catalog: Rect,
     pub scrollback: Rect,
     pub todo: Rect,
     pub queue: Rect,
@@ -191,6 +197,7 @@ impl AgentViewLayout {
             timeline_width,
             prompt_height,
             tasks_height,
+            catalog_height,
             todo_height,
             queue_height,
             btw_height,
@@ -243,6 +250,10 @@ impl AgentViewLayout {
         if tasks_height > 0 {
             constraints.push(Constraint::Length(pane_gap));
             constraints.push(Constraint::Length(tasks_height));
+        }
+        if catalog_height > 0 {
+            constraints.push(Constraint::Length(pane_gap));
+            constraints.push(Constraint::Length(catalog_height));
         }
         if todo_height > 0 {
             constraints.push(Constraint::Length(pane_gap));
@@ -323,6 +334,12 @@ impl AgentViewLayout {
             Rect::default()
         };
         let tasks = if tasks_height > 0 {
+            chunks.next();
+            chunks.next().unwrap_or_default()
+        } else {
+            Rect::default()
+        };
+        let catalog = if catalog_height > 0 {
             chunks.next();
             chunks.next().unwrap_or_default()
         } else {
@@ -438,6 +455,7 @@ impl AgentViewLayout {
             status_bar,
             startup_warnings,
             tasks,
+            catalog,
             scrollback,
             todo,
             queue,
@@ -490,6 +508,7 @@ impl AgentViewLayout {
             queue: self.queue,
             prompt: self.prompt,
             tasks: self.tasks,
+            catalog: self.catalog,
             dock: self.dock,
         }
     }
@@ -1149,6 +1168,7 @@ pub(crate) fn build_hints(
     selected_has_trace: bool,
 ) -> Vec<HintItem> {
     let mut hints = match active_pane {
+        ActivePane::Catalog => vec![],
         ActivePane::Todo => {
             let mut hints = Vec::new();
             hints.push(HintItem::new(

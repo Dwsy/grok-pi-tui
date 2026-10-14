@@ -280,6 +280,7 @@ impl AgentView {
             hit_context: Default::default(),
             hit_credits: Default::default(),
             hit_todo_close: Default::default(),
+            hit_catalog_close: Default::default(),
             hit_bg_close: Default::default(),
             hit_subagent_close: Default::default(),
             hit_bg_status: Default::default(),
@@ -1472,6 +1473,7 @@ impl AgentView {
             ActivePane::Queue => ActivePaneSnapshot::Queue,
             ActivePane::Prompt => ActivePaneSnapshot::Prompt,
             ActivePane::Tasks => ActivePaneSnapshot::Tasks,
+            ActivePane::Catalog => ActivePaneSnapshot::Catalog,
             ActivePane::Dock => ActivePaneSnapshot::Other,
         };
         let outcome_snap = match outcome {

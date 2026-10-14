@@ -1484,6 +1484,9 @@ impl AgentView {
             ActivePane::Tasks => {
                 self.tasks.handle_scroll(lines, col, row);
             }
+            ActivePane::Catalog => {
+                self.catalog.handle_scroll(lines, col, row);
+            }
             ActivePane::Dock => match self.dock_section_at(self.pane_areas.dock, row) {
                 Some(crate::views::dock::Section::Queued) | None => {
                     self.queue.handle_scroll(lines, col, row);

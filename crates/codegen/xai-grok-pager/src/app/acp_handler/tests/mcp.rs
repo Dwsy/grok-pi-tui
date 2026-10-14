@@ -119,6 +119,7 @@
         agent.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
             total: 3,
             connected: 3,
+            started_at: std::time::Instant::now(),
         });
 
         let notif = make_mcp_initialized_notif("sess-1");
@@ -215,6 +216,7 @@
                 Some(crate::app::agent_view::McpInitProgress {
                     total: 2,
                     connected: 0,
+                    started_at: std::time::Instant::now(),
                 });
         }
 
@@ -242,6 +244,7 @@
             Some(crate::app::agent_view::McpInitProgress {
                 total: 1,
                 connected: 0,
+                started_at: std::time::Instant::now(),
             });
 
         let notif = make_mcp_initialized_notif_for("sess-unknown");
@@ -263,6 +266,7 @@
             Some(crate::app::agent_view::McpInitProgress {
                 total: 2,
                 connected: 1,
+                started_at: std::time::Instant::now(),
             });
         // Register a subagent child view keyed by the child session id.
         app.agents
@@ -600,6 +604,7 @@
             owner.mcp_init_progress = Some(McpInitProgress {
                 total: 5,
                 connected: 3,
+                started_at: std::time::Instant::now(),
             });
         }
         {
@@ -607,6 +612,7 @@
             active.mcp_init_progress = Some(McpInitProgress {
                 total: 5,
                 connected: 3,
+                started_at: std::time::Instant::now(),
             });
         }
 

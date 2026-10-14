@@ -219,6 +219,17 @@ pub type AgentPane = ActivePane;
 pub struct McpInitProgress {
     pub total: u32,
     pub connected: u32,
+    pub started_at: Instant,
+}
+impl McpInitProgress {
+    /// Max age for a `total == 0` seed before it auto-expires.
+    pub const SEED_EXPIRE: std::time::Duration = std::time::Duration::from_secs(30);
+    /// Whether the progress indicator should be visible in the UI.
+    /// `total > 0` (real servers): always visible until
+    /// `total == 0` (seed / 0-server): visible for at most
+    pub fn is_visible(&self) -> bool {
+        self.total > 0 || self.started_at.elapsed() < Self::SEED_EXPIRE
+    }
 }
 /// Current voice record-dot pulse: `(filled, brightness)`.
 /// A smooth sine "breathing" on a fixed ~0.7s wall-clock period (not the animation tick), so the dot animates like a studio recording light and never speeds up or syncs with streaming-text redraws. `filled` picks the FISHEYE/BULLSEYE glyph; `brightness` (0.4–1.0) fades the red color.
@@ -1079,6 +1090,7 @@ pub struct AgentView {
     pub hit_context: HitArea,
     pub hit_credits: HitArea,
     pub hit_todo_close: HitArea,
+    pub hit_catalog_close: HitArea,
     pub hit_bg_close: HitArea,
     pub hit_subagent_close: HitArea,
     pub hit_bg_status: HitArea,

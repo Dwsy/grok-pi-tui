@@ -31,6 +31,7 @@ pub(super) fn handle_mcp_init_progress(notif: &acp::ExtNotification, app: &mut A
     agent.mcp_init_progress = Some(super::super::agent_view::McpInitProgress {
         total: payload.total,
         connected: payload.connected,
+        started_at: std::time::Instant::now(),
     });
     is_active
 }
