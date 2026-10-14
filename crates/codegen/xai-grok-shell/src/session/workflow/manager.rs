@@ -971,6 +971,7 @@ mod tests {
             Arc::new(crate::session::workflow::backend::GrokSubagentBackend {
                 subagent_event_tx: subagent_tx,
                 parent_session_id: "test-session".into(),
+                task_model_selection: LatchedTaskModelSelection::default(),
             }),
             Arc::new(|_, _, _| {}),
             mpsc::unbounded_channel().0,

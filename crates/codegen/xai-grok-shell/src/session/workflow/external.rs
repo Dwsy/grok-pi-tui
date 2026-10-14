@@ -56,6 +56,9 @@ impl ExternalWorkflowRuntime {
             config.session_cmd_tx,
             config.templates,
             super::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
+            // ponytail: Pi runtime keeps the default latch (Selectable); thread a
+            // session-latched value here if workflow model inheritance ever needs it.
+            crate::agent::remote_config::task_model_policy::LatchedTaskModelSelection::default(),
         )));
         Self {
             manager,

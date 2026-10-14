@@ -15,6 +15,8 @@ use xai_grok_tools::implementations::grok_build::task::types::{
 use xai_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
 use xai_workflow::HostError;
 
+use crate::agent::remote_config::task_model_policy::LatchedTaskModelSelection;
+
 /// Outcome of draining workflow child agents after cancel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostDrainOutcome {
@@ -87,6 +89,8 @@ pub trait WorkflowAgentBackend: Send + Sync {
 pub struct GrokSubagentBackend {
     pub subagent_event_tx: mpsc::UnboundedSender<SubagentEvent>,
     pub parent_session_id: String,
+    /// Session-latched task model selection so workflow spawns never reclassify.
+    pub(crate) task_model_selection: LatchedTaskModelSelection,
 }
 
 #[async_trait]
@@ -108,7 +112,9 @@ impl WorkflowAgentBackend for GrokSubagentBackend {
             runtime_overrides: SubagentRuntimeOverrides {
                 model: request.model,
                 output_token_budget: None,
-                model_override_provenance: ModelOverrideProvenance::Tool,
+                model_override_provenance: ModelOverrideProvenance::Tool {
+                    selection: self.task_model_selection.get(),
+                },
                 capability_mode: request.capability_mode,
                 isolation: request.isolation,
                 output_schema: None,
@@ -121,6 +127,7 @@ impl WorkflowAgentBackend for GrokSubagentBackend {
             owner: SubagentOwner::workflow(&request.run_id),
             cancel_token: request.cancel_token,
             spawn_root: Default::default(),
+            tool_call_id: None,
         };
 
         if self

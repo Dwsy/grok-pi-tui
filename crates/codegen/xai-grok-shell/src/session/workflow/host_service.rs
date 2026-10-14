@@ -1152,6 +1152,7 @@ mod tests {
             Arc::new(crate::session::workflow::backend::GrokSubagentBackend {
                 subagent_event_tx: subagent_tx,
                 parent_session_id: "parent".into(),
+                task_model_selection: LatchedTaskModelSelection::default(),
             }),
         );
         let cancel = params.cancel.clone();

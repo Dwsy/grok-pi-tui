@@ -1711,6 +1711,7 @@ pub(crate) async fn spawn_session_actor(
                     tokio::sync::mpsc::unbounded_channel().0
                 }),
                 parent_session_id: session_info.id.0.to_string(),
+                task_model_selection: task_model_selection.clone(),
             }),
             Arc::new(|name: &str, fields: &serde_json::Value, replayed: bool| {
                 if !replayed {

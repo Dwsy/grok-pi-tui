@@ -71,63 +71,6 @@ pub fn scan_importable_settings(cwd: &Path) -> ImportPlan {
     )
 }
 
-/// Apply an import plan by writing TOML patches to the appropriate config files. This is additive-only: existing entries are never removed.
-/// New permission rules are appended; new env vars and MCP servers are added without overwriting existing keys or names.
-/// Project items are written to the discovered repository root's product config directory, not the current subdirectory.
-pub fn apply_import(plan: &ImportPlan, cwd: &Path) -> anyhow::Result<ImportResult> {
-    let mut result = ImportResult::default();
-
-    if !plan.global_items.is_empty() {
-        let global_path = crate::util::grok_home::grok_home().join("config.toml");
-        let count = apply_items_to_config(&global_path, &plan.global_items)?;
-        result.global_count = count;
-        if count > 0 {
-            result
-                .modified_files
-                .push(global_path.to_string_lossy().to_string());
-        }
-
-        let hooks_dir = crate::util::grok_home::grok_home().join("hooks");
-        let hook_count = apply_hooks_to_dir(&hooks_dir, &plan.global_items)?;
-        result.global_count += hook_count;
-        if hook_count > 0 {
-            result.modified_files.push(
-                hooks_dir
-                    .join("imported-from-claude.json")
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
-    }
-
-    if !plan.project_items.is_empty() {
-        let project_root = find_project_root(cwd);
-        let project_path = xai_grok_config::project_config_dir(&project_root).join("config.toml");
-        let count = apply_items_to_config(&project_path, &plan.project_items)?;
-        result.project_count = count;
-        if count > 0 {
-            result
-                .modified_files
-                .push(project_path.to_string_lossy().to_string());
-        }
-
-        let hooks_dir = xai_grok_config::project_config_dir(&project_root).join("hooks");
-        let hook_count = apply_hooks_to_dir(&hooks_dir, &plan.project_items)?;
-        result.project_count += hook_count;
-        if hook_count > 0 {
-            result.modified_files.push(
-                hooks_dir
-                    .join("imported-from-claude.json")
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
-    }
-
-    // The slash command writes the import marker even when the plan is empty.
-    Ok(result)
-}
-
 fn snapshot_at(path: &Path) -> Option<ClaudeSettingsSnapshot> {
     let settings = load_claude_settings(path)?;
     let mut permissions = Vec::new();
