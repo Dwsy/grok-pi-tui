@@ -9,6 +9,24 @@
 
 ## [Unreleased]
 
+## [0.1.11-beta.1] - 2026-10-13
+
+上游静态合入的 Beta 测试构建（`37949780..2bdd1d6a`，7 个上游提交；见 [`docs/upstream/UPSTREAM_CHANGELOG.md`](../upstream/UPSTREAM_CHANGELOG.md)）。grok-pi/frok 缝合点全部保留：Pi 仍是唯一 Agent Core、`pi-grok-adapter` 保持 headless、Grok Pager 仍是唯一终端 UI、`~/.grok-pi` / `<repo>/.grok-pi` 产品状态隔离不变。
+
+### 新增
+
+- **上游功能合入** — Claude 设置导入、类型化 `requirements.toml`、按模型 `max_request_bytes`、`/btw` 与插话带图、项目级 hook 发现、`read_file max_output_bytes` 续读标记（可选）、类型化 `PlanKept`/`PlanCleared` 计划通知与回合后计划复核、`auth.refresh` 协议方法/帧。
+- **上游 MCP 与权限** — `structuredContent` 投递与保留图片的内容块、多源服务器配置合并与按请求 bearer 文件重载、`rmcp` 3.4、独立 permission-rules crate、物理路径（而非仅词法）相对路径权限匹配。
+
+### 变更
+
+- **远程、Daemon 与子代理行为** — 关闭标签页时取消挂起 prompt、更清晰的远程拒绝/隧道声明文案、持久化远程标题与检查点及远程 fork/resume 路由、子代理模型目录锁定与自动继承、后台任务行与停止控制。
+- **会话生命周期** — 持久化 agent profile、cwd 本地会话、记录未完成回合与崩溃证据、拒绝重复的跨机器所有权、默认关闭会话目录 TTL 清理。
+
+### 验证
+
+- 静态合入树的首次完整构建：GitHub Actions `release.yml` 从 tag 提交编译全部六个平台目标（`--locked`、`release-dist` profile）。grok-pi 架构断言（唯一 Pager TUI、headless adapter、产品状态隔离、Pi 会话/树缝合点）在打 tag 前通过静态复核；本地未运行 Cargo。
+
 ## [0.1.10] - 2026-10-06
 
 ### 新增

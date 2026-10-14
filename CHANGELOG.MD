@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.11-beta.1] - 2026-10-13
+
+Beta test build of the static upstream integration (`37949780..2bdd1d6a`, 7 upstream commits; see [`docs/upstream/UPSTREAM_CHANGELOG.md`](docs/upstream/UPSTREAM_CHANGELOG.md)). The grok-pi/frok seams survive the merge: Pi remains the only agent core, `pi-grok-adapter` stays headless, Grok Pager stays the only terminal UI, and grok-pi keeps its isolated `~/.grok-pi` / `<repo>/.grok-pi` state trees.
+
+### Added
+
+- **Upstream feature intake** — Claude settings import, typed `requirements.toml` sections, per-model `max_request_bytes`, images in `/btw` and interjections, project-hook discovery, opt-in `read_file max_output_bytes` with continuation markers, typed `PlanKept`/`PlanCleared` plan notifications with post-turn plan review, and `auth.refresh` protocol method/frames.
+- **Upstream MCP and permissions** — `structuredContent` delivery with image-preserving content blocks, merged multi-source server config with per-request bearer-file reload, `rmcp` 3.4, a dedicated permission-rules crate, and physical as well as lexical relative-path permission matching.
+
+### Changed
+
+- **Remote, daemon, and subagent behavior** — held-prompt cancellation when a tab closes, clearer remote refusal/tunnel claim text, durable remote titles and checkpoints with remote fork/resume routes, catalog-latched subagent model selection with automatic inheritance, and background-task rows with stop controls.
+- **Session lifecycle** — persistent agent profile, cwd-local sessions, recorded unfinished turns and crash evidence, duplicate cross-machine ownership rejection, and session-folder TTL cleanup disabled by default.
+
+### Verification
+
+- First full build of the statically merged tree: GitHub Actions `release.yml` compiles all six platform targets from the tagged commit (`--locked`, `release-dist` profile). grok-pi architecture assertions (single Pager TUI, headless adapter, product-state isolation, Pi session/tree seams) passed static review before tagging; no local Cargo run was used.
+
 ## [0.1.10] - 2026-10-06
 
 ### Added
