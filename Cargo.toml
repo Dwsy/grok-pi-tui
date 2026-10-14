@@ -370,6 +370,7 @@ xai-grok-secrets = { path = "crates/codegen/xai-grok-secrets" }
 xai-grok-session-events = { path = "crates/codegen/xai-grok-session-events" }
 xai-grok-session-search = { path = "crates/codegen/xai-grok-session-search" }
 xai-grok-shared = { path = "crates/codegen/xai-grok-shared" }
+xai-grok-shell = { path = "crates/codegen/xai-grok-shell" }
 xai-grok-shell-base = { path = "crates/codegen/xai-grok-shell-base" }
 xai-grok-shell-session-support = { path = "crates/codegen/xai-grok-shell-session-support" }
 xai-grok-shell-terminal = { path = "crates/codegen/xai-grok-shell-terminal" }
