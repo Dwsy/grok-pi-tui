@@ -1,0 +1,2382 @@
+# Language Icons and Colors Configuration
+# Based on nvim-web-devicons standard colors and Nerd Font glyphs
+# This file is loaded at runtime to provide colored file icons in the review file tree.
+
+# Format:
+# [[language]]
+# extensions = ["rs", "toml"]        # File extensions (without dot)
+# filenames = ["Cargo.toml", "Cargo.lock"]  # Exact filenames (case-insensitive)
+# icon = "\u{e68b}"                    # Nerd Font glyph (Unicode escape)
+# color_dark = "#dea584"               # Color for dark themes (hex RGB)
+# color_light = "#b86c3a"              # Color for light themes (hex RGB, typically darker/more saturated)
+#
+# If only `color` is provided, it's used for both themes.
+
+# ─── Core Languages ────────────────────────────────────────────────
+
+[[language]]
+extensions = ["rs"]
+filenames = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rustfmt.toml", "clippy.toml"]
+icon = "\u{e68b}"
+color_dark = "#dea584"
+color_light = "#b86c3a"
+
+[[language]]
+extensions = ["ts", "tsx", "mts", "cts"]
+filenames = ["tsconfig.json", "jsconfig.json"]
+icon = "\u{e628}"
+color_dark = "#3178c6"
+color_light = "#1a5a9e"
+
+[[language]]
+extensions = ["js", "jsx", "mjs", "cjs"]
+filenames = ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", ".eslintrc.js", ".prettierrc.js"]
+icon = "\u{e781}"
+color_dark = "#f7df1e"
+color_light = "#c9b018"
+
+[[language]]
+extensions = ["py"]
+filenames = ["requirements.txt", "setup.py", "pyproject.toml", "Pipfile", "poetry.lock"]
+icon = "\u{e73c}"
+color_dark = "#3776ab"
+color_light = "#2a5a8a"
+
+[[language]]
+extensions = ["go"]
+filenames = ["go.mod", "go.sum", "Makefile"]
+icon = "\u{e724}"
+color_dark = "#00add8"
+color_light = "#0088aa"
+
+[[language]]
+extensions = ["java"]
+filenames = ["pom.xml", "build.gradle", "gradle.properties", "gradlew", "gradlew.bat"]
+icon = "\u{e738}"
+color_dark = "#b07219"
+color_light = "#8a5712"
+
+[[language]]
+extensions = ["kt", "kts"]
+filenames = ["build.gradle.kts", "settings.gradle.kts"]
+icon = "\u{e634}"
+color_dark = "#7f52ff"
+color_light = "#5a3acc"
+
+[[language]]
+extensions = ["c", "h"]
+icon = "\u{e61e}"
+color_dark = "#555555"
+color_light = "#3a3a3a"
+
+[[language]]
+extensions = ["cpp", "cc", "cxx", "hpp", "hxx"]
+icon = "\u{e61d}"
+color_dark = "#f34b7d"
+color_light = "#c93a63"
+
+[[language]]
+extensions = ["cs"]
+filenames = ["*.csproj", "*.sln"]
+icon = "\u{f81a}"
+color_dark = "#178600"
+color_light = "#106600"
+
+[[language]]
+extensions = ["rb"]
+filenames = ["Gemfile", "Gemfile.lock", "Rakefile", ".ruby-version"]
+icon = "\u{e739}"
+color_dark = "#701516"
+color_light = "#551011"
+
+[[language]]
+extensions = ["php"]
+filenames = ["composer.json", "composer.lock", "phpunit.xml"]
+icon = "\u{e73d}"
+color_dark = "#777bb4"
+color_light = "#5a5e90"
+
+[[language]]
+extensions = ["swift"]
+filenames = ["Package.swift", "Podfile", "Podfile.lock"]
+icon = "\u{e755}"
+color_dark = "#fa7343"
+color_light = "#c85a33"
+
+[[language]]
+extensions = ["md", "mdx", "markdown"]
+filenames = ["README.md", "README", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE.md", "SECURITY.md"]
+icon = "\u{f48a}"
+color_dark = "#083fa1"
+color_light = "#063080"
+
+[[language]]
+extensions = ["json", "jsonc"]
+filenames = [".gitignore", ".gitattributes", ".gitmodules", "tsconfig.json", "jsconfig.json"]
+icon = "\u{e60b}"
+color_dark = "#cbcb41"
+color_light = "#a3a333"
+
+[[language]]
+extensions = ["toml", "yaml", "yml", "ini", "cfg", "conf"]
+filenames = [".gitlab-ci.yml", ".github/workflows/*.yml", ".github/workflows/*.yaml", "docker-compose.yml", "docker-compose.yaml"]
+icon = "\u{e615}"
+color_dark = "#9c4221"
+color_light = "#7a341a"
+
+[[language]]
+extensions = ["xml", "html", "htm", "xhtml"]
+icon = "\u{e736}"
+color_dark = "#e34f26"
+color_light = "#b83f1f"
+
+[[language]]
+extensions = ["css", "scss", "sass", "less"]
+icon = "\u{e749}"
+color_dark = "#1572b6"
+color_light = "#105a90"
+
+[[language]]
+extensions = ["vue"]
+icon = "\u{e6a0}"
+color_dark = "#42b883"
+color_light = "#349369"
+
+[[language]]
+extensions = ["svelte"]
+icon = "\u{e697}"
+color_dark = "#ff3e00"
+color_light = "#cc3200"
+
+[[language]]
+extensions = ["sh", "bash", "zsh", "fish", "ps1"]
+filenames = [".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"]
+icon = "\u{f489}"
+color_dark = "#4eaa25"
+color_light = "#3d881e"
+
+[[language]]
+extensions = ["sql"]
+icon = "\u{f1c0}"
+color_dark = "#dad8d8"
+color_light = "#a09e9e"
+
+[[language]]
+extensions = ["svg", "png", "jpg", "jpeg", "gif", "webp", "ico"]
+icon = "\u{f1c5}"
+color_dark = "#ffa500"
+color_light = "#cc8400"
+
+[[language]]
+extensions = ["pdf"]
+icon = "\u{f1c1}"
+color_dark = "#ff0000"
+color_light = "#cc0000"
+
+[[language]]
+extensions = ["txt", "log", "text"]
+icon = "\u{f15c}"
+color_dark = "#ffffff"
+color_light = "#333333"
+
+[[language]]
+extensions = ["lock"]
+icon = "\u{f023}"
+color_dark = "#ffcc00"
+color_light = "#cc9900"
+
+[[language]]
+extensions = ["zip", "tar", "gz", "tgz", "7z", "rar", "xz", "bz2"]
+icon = "\u{f1c6}"
+color_dark = "#ff6b35"
+color_light = "#cc552a"
+
+[[language]]
+extensions = ["wasm"]
+icon = "\u{e6a1}"
+color_dark = "#654ff0"
+color_light = "#4d3ac0"
+
+[[language]]
+extensions = ["proto"]
+icon = "\u{e60a}"
+color_dark = "#a91550"
+color_light = "#871040"
+
+[[language]]
+extensions = ["graphql", "gql"]
+icon = "\u{e662}"
+color_dark = "#e10098"
+color_light = "#b3007a"
+
+[[language]]
+extensions = ["dockerfile"]
+filenames = ["Dockerfile", "docker-compose.yml", "docker-compose.yaml", ".dockerignore"]
+icon = "\u{f308}"
+color_dark = "#2496ed"
+color_light = "#1d78c0"
+
+[[language]]
+extensions = ["make", "mk"]
+filenames = ["Makefile", "makefile", "GNUmakefile", "Justfile", "justfile"]
+icon = "\u{f489}"
+color_dark = "#e37921"
+color_light = "#b5601a"
+
+# ─── Additional Languages ────────────────────────────────────────────────
+
+[[language]]
+extensions = ["lua"]
+filenames = [".luarc.json", "luacheckrc", "stylua.toml", ".stylua.toml"]
+icon = "\u{e620}"
+color_dark = "#000080"
+color_light = "#000060"
+
+[[language]]
+extensions = ["r"]
+filenames = [".Rprofile", "renv.lock"]
+icon = "\u{e737}"
+color_dark = "#276dc3"
+color_light = "#1e569c"
+
+[[language]]
+extensions = ["r", "R"]
+filenames = ["DESCRIPTION", "NAMESPACE"]
+icon = "\u{e737}"
+color_dark = "#276dc3"
+color_light = "#1e569c"
+
+[[language]]
+extensions = ["jl"]
+filenames = ["Project.toml", "Manifest.toml", "JuliaProject.toml"]
+icon = "\u{e624}"
+color_dark = "#9558b2"
+color_light = "#76468e"
+
+[[language]]
+extensions = ["nim"]
+filenames = ["nim.cfg", "nimble"]
+icon = "\u{e699}"
+color_dark = "#ffec25"
+color_light = "#ccbd1e"
+
+[[language]]
+extensions = ["cr", "ec"]
+filenames = ["shard.yml", "shard.lock"]
+icon = "\u{f25b}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["ex", "exs", "eex", "leex"]
+filenames = ["mix.exs", "mix.lock", ".formatter.exs"]
+icon = "\u{e62d}"
+color_dark = "#a074c4"
+color_light = "#805c9d"
+
+[[language]]
+extensions = ["erl", "hrl", "app", "appup", "rel"]
+filenames = ["rebar.config", "rebar.lock", "erlang.mk"]
+icon = "\u{e7b1}"
+color_dark = "#b83998"
+color_light = "#932e7a"
+
+[[language]]
+extensions = ["clj", "cljs", "cljc", "edn"]
+filenames = ["project.clj", "deps.edn", "build.boot", "shadow-cljs.edn"]
+icon = "\u{e768}"
+color_dark = "#5881d8"
+color_light = "#4667ad"
+
+[[language]]
+extensions = ["fs", "fsi", "fsx", "ml", "mli"]
+filenames = ["*.fsproj", "paket.dependencies", "paket.lock"]
+icon = "\u{e7a7}"
+color_dark = "#b845fc"
+color_light = "#9236c9"
+
+[[language]]
+extensions = ["scala", "sc", "sbt"]
+filenames = ["build.sbt", "build.sc", "project/build.properties", "project/plugins.sbt"]
+icon = "\u{e737}"
+color_dark = "#dc322f"
+color_light = "#af2825"
+
+[[language]]
+extensions = ["groovy", "gradle"]
+filenames = ["Jenkinsfile", "gradle.properties", "settings.gradle"]
+icon = "\u{e76e}"
+color_dark = "#e69f56"
+color_light = "#b87f44"
+
+[[language]]
+extensions = ["cl", "lisp", "lsp", "asd"]
+icon = "\u{e769}"
+color_dark = "#f49834"
+color_light = "#c47828"
+
+[[language]]
+extensions = ["scm", "ss", "rkt"]
+icon = "\u{e76a}"
+color_dark = "#de5030"
+color_light = "#b14026"
+
+[[language]]
+extensions = ["ml", "mli", "re", "rei"]
+filenames = ["dune", "dune-project", "opam"]
+icon = "\u{e62e}"
+color_dark = "#ec6813"
+color_light = "#bd530f"
+
+[[language]]
+extensions = ["hs", "lhs", "cabal"]
+filenames = ["stack.yaml", "hie.yaml", "cabal.project"]
+icon = "\u{e777}"
+color_dark = "#5e5086"
+color_light = "#4b406a"
+
+[[language]]
+extensions = ["elm"]
+filenames = ["elm.json", "elm-package.json"]
+icon = "\u{e62c}"
+color_dark = "#60b5cc"
+color_light = "#4d91a3"
+
+[[language]]
+extensions = ["purescript", "purs"]
+filenames = ["spago.dhall", "packages.dhall", "bower.json"]
+icon = "\u{e62f}"
+color_dark = "#1d222d"
+color_light = "#161a22"
+
+[[language]]
+extensions = ["reason", "re"]
+filenames = ["bsconfig.json"]
+icon = "\u{e62e}"
+color_dark = "#ff5847"
+color_light = "#cc4639"
+
+[[language]]
+extensions = ["res", "resi"]
+filenames = ["rescript.json"]
+icon = "\u{e62e}"
+color_dark = "#ed503f"
+color_light = "#be4032"
+
+[[language]]
+extensions = ["dart"]
+filenames = ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml"]
+icon = "\u{e798}"
+color_dark = "#0175c2"
+color_light = "#015d9b"
+
+[[language]]
+extensions = ["flutter"]
+icon = "\u{e798}"
+color_dark = "#02569b"
+color_light = "#01437a"
+
+[[language]]
+extensions = ["zig"]
+filenames = ["build.zig", "build.zig.zon"]
+icon = "\u{e627}"
+color_dark = "#f7a41d"
+color_light = "#c68317"
+
+[[language]]
+extensions = ["v", "vh"]
+icon = "\u{e629}"
+color_dark = "#4f87c7"
+color_light = "#3f6ca3"
+
+[[language]]
+extensions = ["odin"]
+icon = "\u{e626}"
+color_dark = "#60a3bc"
+color_light = "#4d8296"
+
+[[language]]
+extensions = ["carbon"]
+icon = "\u{e623}"
+color_dark = "#2a2a2a"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["move"]
+icon = "\u{e625}"
+color_dark = "#0091ea"
+color_light = "#0074bb"
+
+[[language]]
+extensions = ["sol"]
+filenames = ["foundry.toml", "hardhat.config.js", "hardhat.config.ts", "truffle-config.js"]
+icon = "\u{e61f}"
+color_dark = "#363636"
+color_light = "#2a2a2a"
+
+[[language]]
+extensions = ["vy", "vyper"]
+icon = "\u{e61f}"
+color_dark = "#2980b9"
+color_light = "#216793"
+
+[[language]]
+extensions = ["cairo"]
+icon = "\u{e621}"
+color_dark = "#ff6b35"
+color_light = "#cc552a"
+
+[[language]]
+extensions = ["rust", "rs"]
+icon = "\u{e68b}"
+color_dark = "#dea584"
+color_light = "#b86c3a"
+
+[[language]]
+extensions = ["ron"]
+icon = "\u{e68b}"
+color_dark = "#e4a073"
+color_light = "#b6805c"
+
+[[language]]
+extensions = ["toml"]
+icon = "\u{e615}"
+color_dark = "#9c4221"
+color_light = "#7a341a"
+
+[[language]]
+extensions = ["ini", "cfg", "conf", "config"]
+icon = "\u{e615}"
+color_dark = "#9c4221"
+color_light = "#7a341a"
+
+[[language]]
+extensions = ["properties"]
+filenames = ["application.properties", "gradle.properties", "local.properties"]
+icon = "\u{e615}"
+color_dark = "#9c4221"
+color_light = "#7a341a"
+
+[[language]]
+extensions = ["env", "dotenv"]
+filenames = [".env", ".env.local", ".env.development", ".env.production", ".env.test", ".env.example"]
+icon = "\u{f0e7}"
+color_dark = "#faf743"
+color_light = "#c8c536"
+
+[[language]]
+extensions = ["yaml", "yml"]
+filenames = ["docker-compose.yml", "docker-compose.yaml", ".github/workflows/*.yml", ".github/workflows/*.yaml", ".gitlab-ci.yml", ".travis.yml", "cloudbuild.yaml", "serverless.yml", "helmfile.yaml", "kustomization.yaml", "skaffold.yaml", "Chart.yaml", "values.yaml"]
+icon = "\u{e615}"
+color_dark = "#cb171e"
+color_light = "#a21218"
+
+[[language]]
+extensions = ["json", "jsonc", "json5"]
+filenames = ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "tsconfig.json", "jsconfig.json", ".eslintrc.json", ".prettierrc", "launch.json", "tasks.json", "cSpell.json", ".swcrc", "babel.config.json", "jest.config.json", "vitest.config.json"]
+icon = "\u{e60b}"
+color_dark = "#cbcb41"
+color_light = "#a3a333"
+
+[[language]]
+extensions = ["xml", "xsd", "xsl", "xslt", "svg"]
+icon = "\u{e736}"
+color_dark = "#e34f26"
+color_light = "#b83f1f"
+
+[[language]]
+extensions = ["html", "htm", "xhtml", "pug", "jade", "ejs", "hbs", "handlebars", "mustache", "njk", "nunjucks", "liquid"]
+icon = "\u{e736}"
+color_dark = "#e34f26"
+color_light = "#b83f1f"
+
+[[language]]
+extensions = ["css", "scss", "sass", "less", "styl", "stylus", "pcss", "postcss"]
+icon = "\u{e749}"
+color_dark = "#1572b6"
+color_light = "#105a90"
+
+[[language]]
+extensions = ["vue", "svelte", "astro"]
+icon = "\u{e6a0}"
+color_dark = "#42b883"
+color_light = "#349369"
+
+[[language]]
+extensions = ["tsx", "jsx"]
+icon = "\u{e7ba}"
+color_dark = "#61dafb"
+color_light = "#4daec9"
+
+[[language]]
+extensions = ["md", "mdx", "markdown", "mkd", "mkdn"]
+icon = "\u{f48a}"
+color_dark = "#083fa1"
+color_light = "#063080"
+
+[[language]]
+extensions = ["txt", "text", "log", "out", "err"]
+icon = "\u{f15c}"
+color_dark = "#ffffff"
+color_light = "#333333"
+
+[[language]]
+extensions = ["csv", "tsv"]
+icon = "\u{f1c3}"
+color_dark = "#217346"
+color_light = "#1a5c38"
+
+[[language]]
+extensions = ["sql", "ddl", "dml"]
+filenames = ["schema.sql", "migrations/*.sql", "V*.sql"]
+icon = "\u{f1c0}"
+color_dark = "#dad8d8"
+color_light = "#a09e9e"
+
+[[language]]
+extensions = ["sh", "bash", "zsh", "fish", "ksh", "csh", "tcsh", "ps1", "psm1", "psd1", "bat", "cmd"]
+icon = "\u{f489}"
+color_dark = "#4eaa25"
+color_light = "#3d881e"
+
+[[language]]
+extensions = ["make", "mk", "mak"]
+filenames = ["Makefile", "makefile", "GNUmakefile", "Justfile", "justfile", "build.mk"]
+icon = "\u{f489}"
+color_dark = "#e37921"
+color_light = "#b5601a"
+
+[[language]]
+extensions = ["cmake", "ctest"]
+filenames = ["CMakeLists.txt", "CMakePresets.json", "ctest.cmake"]
+icon = "\u{e613}"
+color_dark = "#064f8c"
+color_light = "#053f70"
+
+[[language]]
+extensions = ["meson", "meson.build", "meson_options.txt"]
+icon = "\u{e614}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["bazel", "bzl"]
+filenames = ["WORKSPACE", "WORKSPACE.bazel", "BUILD", "BUILD.bazel", ".bazelrc"]
+icon = "\u{e7b3}"
+color_dark = "#4a87d4"
+color_light = "#3b6ca8"
+
+[[language]]
+extensions = ["gradle", "gradle.kts"]
+filenames = ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradle.properties", "gradle-wrapper.properties"]
+icon = "\u{e76e}"
+color_dark = "#02303a"
+color_light = "#01252d"
+
+[[language]]
+extensions = ["maven", "pom"]
+filenames = ["pom.xml", "settings.xml", "mvnw", "mvnw.cmd"]
+icon = "\u{e738}"
+color_dark = "#c71a36"
+color_light = "#9f152b"
+
+[[language]]
+extensions = ["npm", "yarn", "pnpm"]
+filenames = ["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json", ".npmrc", ".yarnrc", ".pnpmrc"]
+icon = "\u{e718}"
+color_dark = "#cb3837"
+color_light = "#a22d2c"
+
+[[language]]
+extensions = ["dockerfile", "dockerignore"]
+filenames = ["Dockerfile", "docker-compose.yml", "docker-compose.yaml", ".dockerignore", "Dockerfile.*", "docker-bake.hcl"]
+icon = "\u{f308}"
+color_dark = "#2496ed"
+color_light = "#1d78c0"
+
+[[language]]
+extensions = ["k8s", "kube", "kustomization"]
+filenames = ["kustomization.yaml", "kustomization.yml", "Chart.yaml", "values.yaml", "values.yml", "Chart.lock", "helmfile.yaml", "helmfile.yml", "skaffold.yaml", "skaffold.yml"]
+icon = "\u{f308}"
+color_dark = "#326ce5"
+color_light = "#2856b8"
+
+[[language]]
+extensions = ["tf", "tfvars", "hcl"]
+filenames = ["main.tf", "variables.tf", "outputs.tf", "terraform.tfvars", "terraform.tfstate", "terraform.tfstate.backup", ".terraform.lock.hcl"]
+icon = "\u{e7b4}"
+color_dark = "#7b42bc"
+color_light = "#623496"
+
+[[language]]
+extensions = ["ansible", "playbook"]
+filenames = ["playbook.yml", "playbook.yaml", "site.yml", "site.yaml", "requirements.yml", "ansible.cfg", "inventory", "hosts", "group_vars", "host_vars"]
+icon = "\u{e7b5}"
+color_dark = "#ee0000"
+color_light = "#bf0000"
+
+[[language]]
+extensions = ["vagrant"]
+filenames = ["Vagrantfile"]
+icon = "\u{e7b6}"
+color_dark = "#1563ff"
+color_light = "#104fcc"
+
+[[language]]
+extensions = ["packer"]
+filenames = ["packer.json", "packer.pkr.hcl", "variables.pkr.hcl"]
+icon = "\u{e7b7}"
+color_dark = "#41b883"
+color_light = "#349369"
+
+[[language]]
+extensions = ["nomad"]
+filenames = ["*.nomad", "job.nomad"]
+icon = "\u{e7b8}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+[[language]]
+extensions = ["consul"]
+filenames = ["consul.hcl", "consul.json"]
+icon = "\u{e7b9}"
+color_dark = "#e8702a"
+color_light = "#b95922"
+
+[[language]]
+extensions = ["vault"]
+filenames = ["vault.hcl", "vault.json"]
+icon = "\u{e7ba}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+[[language]]
+extensions = ["prometheus", "prom"]
+filenames = ["prometheus.yml", "prometheus.yaml", "alerts.yml", "rules.yml"]
+icon = "\u{e7bb}"
+color_dark = "#e6522c"
+color_light = "#b84123"
+
+[[language]]
+extensions = ["grafana"]
+filenames = ["grafana.ini", "dashboards/*.json", "dashboards/*.yaml"]
+icon = "\u{e7bc}"
+color_dark = "#f46800"
+color_light = "#c35300"
+
+[[language]]
+extensions = ["nginx", "conf"]
+filenames = ["nginx.conf", "nginx.conf.default", "mime.types", "fastcgi_params"]
+icon = "\u{e7bd}"
+color_dark = "#009639"
+color_light = "#00772e"
+
+[[language]]
+extensions = ["apache", "htaccess", "htpasswd"]
+filenames = [".htaccess", "httpd.conf", "apache2.conf", "vhost.conf"]
+icon = "\u{e7be}"
+color_dark = "#d22128"
+color_light = "#a81a20"
+
+[[language]]
+extensions = ["systemd", "service", "timer", "socket", "target", "mount", "automount", "swap", "path", "slice", "scope"]
+icon = "\u{e7bf}"
+color_dark = "#ec9901"
+color_light = "#bd7a01"
+
+[[language]]
+extensions = ["cron", "crontab"]
+icon = "\u{f017}"
+color_dark = "#ffcc00"
+color_light = "#cc9900"
+
+[[language]]
+extensions = ["gitignore", "gitattributes", "gitmodules", "gitkeep", "gitconfig", "gitmessage"]
+filenames = [".gitignore", ".gitattributes", ".gitmodules", ".gitkeep", ".gitconfig", ".gitmessage", "gitignore_global"]
+icon = "\u{f1d3}"
+color_dark = "#f05032"
+color_light = "#c04028"
+
+[[language]]
+extensions = ["github", "gitlab", "bitbucket"]
+filenames = [".github/**", ".gitlab/**", "bitbucket-pipelines.yml", "bitbucket-pipelines.yaml"]
+icon = "\u{e709}"
+color_dark = "#181717"
+color_light = "#2a2929"
+
+[[language]]
+extensions = ["jenkins", "jenkinsfile"]
+filenames = ["Jenkinsfile", "jenkins.yaml", "jenkins.yml", "Jenkinsfile.*"]
+icon = "\u{e76e}"
+color_dark = "#d24939"
+color_light = "#a83a2e"
+
+[[language]]
+extensions = ["circleci"]
+filenames = [".circleci/config.yml", ".circleci/config.yaml"]
+icon = "\u{e7cd}"
+color_dark = "#343434"
+color_light = "#282828"
+
+[[language]]
+extensions = ["travis", "travisci"]
+filenames = [".travis.yml", ".travis.yaml"]
+icon = "\u{e7ce}"
+color_dark = "#3eaa4f"
+color_light = "#31883f"
+
+[[language]]
+extensions = ["appveyor"]
+filenames = ["appveyor.yml", "appveyor.yaml"]
+icon = "\u{e7cf}"
+color_dark = "#16b7c1"
+color_light = "#129299"
+
+[[language]]
+extensions = ["azure", "pipelines"]
+filenames = ["azure-pipelines.yml", "azure-pipelines.yaml", ".azure-pipelines/**"]
+icon = "\u{e7d0}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["github-actions", "workflow"]
+filenames = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+icon = "\u{e709}"
+color_dark = "#2671e5"
+color_light = "#1e5ab8"
+
+[[language]]
+extensions = ["vercel", "now"]
+filenames = ["vercel.json", "now.json", ".vercelignore"]
+icon = "\u{e7d1}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["netlify"]
+filenames = ["netlify.toml", "netlify.yml", "netlify.yaml", "_redirects", "_headers"]
+icon = "\u{e7d2}"
+color_dark = "#00c7b7"
+color_light = "#009f92"
+
+[[language]]
+extensions = ["heroku"]
+filenames = ["Procfile", "app.json", "heroku.yml", ".buildpacks"]
+icon = "\u{e7d3}"
+color_dark = "#430098"
+color_light = "#34007a"
+
+[[language]]
+extensions = ["aws", "cloudformation", "cfn", "sam"]
+filenames = ["template.yml", "template.yaml", "serverless.yml", "serverless.yaml", "samconfig.toml", "cfn.yaml", "cfn.yml"]
+icon = "\u{e7d4}"
+color_dark = "#ff9900"
+color_light = "#cc7700"
+
+[[language]]
+extensions = ["gcp", "google-cloud"]
+filenames = ["app.yaml", "app.yml", "cron.yaml", "cron.yml", "dispatch.yaml", "dispatch.yml", "index.yaml", "index.yml", "queue.yaml", "queue.yml", "cloudbuild.yaml", "cloudbuild.yml"]
+icon = "\u{e7d5}"
+color_dark = "#4285f4"
+color_light = "#3369c8"
+
+[[language]]
+extensions = ["firebase"]
+filenames = ["firebase.json", ".firebaserc", "firestore.rules", "firestore.indexes.json", "storage.rules"]
+icon = "\u{e7d6}"
+color_dark = "#ffca28"
+color_light = "#cca120"
+
+[[language]]
+extensions = ["supabase"]
+filenames = ["supabase/config.toml", "supabase/migrations/*.sql", "supabase/seed.sql"]
+icon = "\u{e7d7}"
+color_dark = "#3ecf8e"
+color_light = "#32a671"
+
+[[language]]
+extensions = ["prisma"]
+filenames = ["schema.prisma", "prisma/schema.prisma"]
+icon = "\u{e7d8}"
+color_dark = "#2d3748"
+color_light = "#242c3a"
+
+[[language]]
+extensions = ["graphql", "gql", "graphqls"]
+filenames = ["schema.graphql", "schema.gql", ".graphqlconfig", "graphql.config.js", "graphql.config.ts"]
+icon = "\u{e662}"
+color_dark = "#e10098"
+color_light = "#b3007a"
+
+[[language]]
+extensions = ["proto", "protobuf"]
+filenames = ["*.proto", "buf.yaml", "buf.lock", "buf.gen.yaml", "buf.work.yaml"]
+icon = "\u{e60a}"
+color_dark = "#a91550"
+color_light = "#871040"
+
+[[language]]
+extensions = ["avro", "avsc"]
+icon = "\u{e60c}"
+color_dark = "#e6522c"
+color_light = "#b84123"
+
+[[language]]
+extensions = ["thrift"]
+icon = "\u{e60d}"
+color_dark = "#00a3e0"
+color_light = "#0082b3"
+
+[[language]]
+extensions = ["capnp", "capnproto"]
+icon = "\u{e60e}"
+color_dark = "#0074c1"
+color_light = "#005d9a"
+
+[[language]]
+extensions = ["flatbuffers", "fbs"]
+icon = "\u{e60f}"
+color_dark = "#1e90ff"
+color_light = "#1873cc"
+
+[[language]]
+extensions = ["msgpack", "mpac"]
+icon = "\u{e610}"
+color_dark = "#dd5700"
+color_light = "#b04500"
+
+[[language]]
+extensions = ["bson"]
+icon = "\u{e611}"
+color_dark = "#47a248"
+color_light = "#39823a"
+
+[[language]]
+extensions = ["parquet", "pq"]
+icon = "\u{e612}"
+color_dark = "#4d9de0"
+color_light = "#3e7eb3"
+
+[[language]]
+extensions = ["orc"]
+icon = "\u{e613}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["arrow", "feather"]
+icon = "\u{e614}"
+color_dark = "#0db7ed"
+color_light = "#0b92be"
+
+[[language]]
+extensions = ["db", "sqlite", "sqlite3", "sqlitedb"]
+icon = "\u{f1c0}"
+color_dark = "#003b57"
+color_light = "#002d44"
+
+[[language]]
+extensions = ["redis", "rdb", "aof"]
+icon = "\u{e7db}"
+color_dark = "#dc382d"
+color_light = "#af2d24"
+
+[[language]]
+extensions = ["mongo", "bson"]
+filenames = ["mongod.conf", "mongos.conf"]
+icon = "\u{e7dc}"
+color_dark = "#47a248"
+color_light = "#39823a"
+
+[[language]]
+extensions = ["postgres", "postgresql", "psql"]
+filenames = ["postgresql.conf", "pg_hba.conf", "pg_ident.conf"]
+icon = "\u{e7dd}"
+color_dark = "#336791"
+color_light = "#285274"
+
+[[language]]
+extensions = ["mysql", "mariadb"]
+filenames = ["my.cnf", "my.ini", "my.cnf.d/"]
+icon = "\u{e7de}"
+color_dark = "#4479a1"
+color_light = "#366081"
+
+[[language]]
+extensions = ["elasticsearch", "es"]
+filenames = ["elasticsearch.yml", "elasticsearch.yaml", "logstash.yml", "logstash.yaml", "kibana.yml", "kibana.yaml"]
+icon = "\u{e7df}"
+color_dark = "#005571"
+color_light = "#00445a"
+
+[[language]]
+extensions = ["kafka"]
+filenames = ["server.properties", "producer.properties", "consumer.properties", "zookeeper.properties"]
+icon = "\u{e7e0}"
+color_dark = "#231f20"
+color_light = "#1a1816"
+
+[[language]]
+extensions = ["rabbitmq"]
+filenames = ["rabbitmq.conf", "definitions.json", "enabled_plugins"]
+icon = "\u{e7e1}"
+color_dark = "#ff6600"
+color_light = "#cc5200"
+
+[[language]]
+extensions = ["nginx", "conf"]
+icon = "\u{e7bd}"
+color_dark = "#009639"
+color_light = "#00772e"
+
+[[language]]
+extensions = ["apache", "httpd"]
+icon = "\u{e7be}"
+color_dark = "#d22128"
+color_light = "#a81a20"
+
+[[language]]
+extensions = ["lighttpd"]
+icon = "\u{e7c0}"
+color_dark = "#ffffff"
+color_light = "#333333"
+
+[[language]]
+extensions = ["caddy"]
+filenames = ["Caddyfile", "caddy.json"]
+icon = "\u{e7c1}"
+color_dark = "#2c3e50"
+color_light = "#23313f"
+
+[[language]]
+extensions = ["traefik"]
+filenames = ["traefik.yml", "traefik.yaml", "traefik.toml", "traefik_dynamic.toml"]
+icon = "\u{e7c2}"
+color_dark = "#24a1c1"
+color_light = "#1d819a"
+
+[[language]]
+extensions = ["envoy"]
+filenames = ["envoy.yaml", "envoy.json"]
+icon = "\u{e7c3}"
+color_dark = "#1a73e8"
+color_light = "#155cb8"
+
+[[language]]
+extensions = ["haproxy"]
+icon = "\u{e7c4}"
+color_dark = "#00a3e0"
+color_light = "#0082b3"
+
+[[language]]
+extensions = ["varnish", "vcl"]
+icon = "\u{e7c5}"
+color_dark = "#0066cc"
+color_light = "#0052a3"
+
+[[language]]
+extensions = ["cert", "crt", "pem", "key", "csr", "p12", "pfx", "p7b", "p7c"]
+icon = "\u{f023}"
+color_dark = "#ffcc00"
+color_light = "#cc9900"
+
+[[language]]
+extensions = ["ssh", "pub", "pem", "ppk"]
+filenames = ["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "authorized_keys", "known_hosts", "config"]
+icon = "\u{f842}"
+color_dark = "#4eaa25"
+color_light = "#3d881e"
+
+[[language]]
+extensions = ["gpg", "asc", "sig"]
+filenames = [".gnupg/**", "pubring.gpg", "secring.gpg", "trustdb.gpg"]
+icon = "\u{f023}"
+color_dark = "#ffffff"
+color_light = "#333333"
+
+[[language]]
+extensions = ["license", "licence"]
+filenames = ["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "LICENCE.md", "LICENCE.txt", "COPYING", "COPYING.md", "COPYING.txt"]
+icon = "\u{f02d}"
+color_dark = "#d4a51d"
+color_light = "#a98317"
+
+[[language]]
+extensions = ["readme", "readme.md", "readme.txt", "readme.rst", "readme.adoc"]
+filenames = ["README", "README.md", "README.txt", "README.rst", "README.adoc", "Readme.md", "readme.md"]
+icon = "\u{f48a}"
+color_dark = "#083fa1"
+color_light = "#063080"
+
+[[language]]
+extensions = ["changelog", "changes", "history", "news"]
+filenames = ["CHANGELOG", "CHANGELOG.md", "CHANGES", "CHANGES.md", "HISTORY", "HISTORY.md", "NEWS", "NEWS.md", "RELEASES", "RELEASES.md"]
+icon = "\u{f48a}"
+color_dark = "#083fa1"
+color_light = "#063080"
+
+[[language]]
+extensions = ["contributing", "contributors", "authors", "credits"]
+filenames = ["CONTRIBUTING", "CONTRIBUTING.md", "CONTRIBUTORS", "CONTRIBUTORS.md", "AUTHORS", "AUTHORS.md", "CREDITS", "CREDITS.md"]
+icon = "\u{f48a}"
+color_dark = "#083fa1"
+color_light = "#063080"
+
+[[language]]
+extensions = ["security", "security.md"]
+filenames = ["SECURITY", "SECURITY.md", "SECURITY.txt"]
+icon = "\u{f21b}"
+color_dark = "#dc3545"
+color_light = "#af2a37"
+
+[[language]]
+extensions = ["codeowners", "codeowners.md"]
+filenames = ["CODEOWNERS", "CODEOWNERS.md", ".github/CODEOWNERS"]
+icon = "\u{f0c0}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["dockerfile", "dockerignore"]
+icon = "\u{f308}"
+color_dark = "#2496ed"
+color_light = "#1d78c0"
+
+[[language]]
+extensions = ["wasm", "wat"]
+icon = "\u{e6a1}"
+color_dark = "#654ff0"
+color_light = "#4d3ac0"
+
+[[language]]
+extensions = ["wast", "wat"]
+icon = "\u{e6a1}"
+color_dark = "#654ff0"
+color_light = "#4d3ac0"
+
+[[language]]
+extensions = ["asm", "s", "S"]
+icon = "\u{e7a8}"
+color_dark = "#999999"
+color_light = "#777777"
+
+[[language]]
+extensions = ["ll", "bc"]
+icon = "\u{e7a9}"
+color_dark = "#999999"
+color_light = "#777777"
+
+[[language]]
+extensions = ["ir", "mlir"]
+icon = "\u{e7aa}"
+color_dark = "#999999"
+color_light = "#777777"
+
+[[language]]
+extensions = ["cmake", "ctest"]
+icon = "\u{e613}"
+color_dark = "#064f8c"
+color_light = "#053f70"
+
+[[language]]
+extensions = ["ninja", "build.ninja"]
+icon = "\u{e7c6}"
+color_dark = "#4a4a4a"
+color_light = "#3a3a3a"
+
+[[language]]
+extensions = ["gn", "gni"]
+icon = "\u{e7c7}"
+color_dark = "#4a4a4a"
+color_light = "#3a3a3a"
+
+[[language]]
+extensions = ["bazel", "bzl", "sky"]
+icon = "\u{e7b3}"
+color_dark = "#4a87d4"
+color_light = "#3b6ca8"
+
+[[language]]
+extensions = ["buck", "buckconfig"]
+icon = "\u{e7c8}"
+color_dark = "#4a4a4a"
+color_light = "#3a3a3a"
+
+[[language]]
+extensions = ["make", "mk", "mak"]
+icon = "\u{f489}"
+color_dark = "#e37921"
+color_light = "#b5601a"
+
+[[language]]
+extensions = ["just", "justfile"]
+filenames = ["justfile", "Justfile", ".justfile"]
+icon = "\u{f489}"
+color_dark = "#e37921"
+color_light = "#b5601a"
+
+[[language]]
+extensions = ["task", "taskfile"]
+filenames = ["Taskfile.yml", "Taskfile.yaml", "taskfile.yml", "taskfile.yaml"]
+icon = "\u{f489}"
+color_dark = "#e37921"
+color_light = "#b5601a"
+
+[[language]]
+extensions = ["mage"]
+filenames = ["magefile.go", "mage.go"]
+icon = "\u{e724}"
+color_dark = "#00add8"
+color_light = "#0088aa"
+
+[[language]]
+extensions = ["npm", "npx"]
+icon = "\u{e718}"
+color_dark = "#cb3837"
+color_light = "#a22d2c"
+
+[[language]]
+extensions = ["yarn"]
+icon = "\u{e718}"
+color_dark = "#2c8ebb"
+color_light = "#237196"
+
+[[language]]
+extensions = ["pnpm"]
+icon = "\u{e718}"
+color_dark = "#f69220"
+color_light = "#c57519"
+
+[[language]]
+extensions = ["bun"]
+filenames = ["bun.lockb", "bunfig.toml"]
+icon = "\u{e718}"
+color_dark = "#fbf0df"
+color_light = "#c9c0b1"
+
+[[language]]
+extensions = ["deno"]
+filenames = ["deno.json", "deno.jsonc", "import_map.json", "lock.json", "deno.lock"]
+icon = "\u{e62b}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["node", "nodejs"]
+icon = "\u{e718}"
+color_dark = "#339933"
+color_light = "#287a28"
+
+[[language]]
+extensions = ["eslint", "eslintrc"]
+filenames = [".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.yaml", ".eslintrc.yml", ".eslintrc.json", "eslint.config.js", "eslint.config.mjs", "eslint.config.ts", ".eslintignore"]
+icon = "\u{e7c9}"
+color_dark = "#4b32c3"
+color_light = "#3c289c"
+
+[[language]]
+extensions = ["prettier", "prettierrc"]
+filenames = [".prettierrc", ".prettierrc.js", ".prettierrc.cjs", ".prettierrc.yaml", ".prettierrc.yml", ".prettierrc.json", ".prettierrc.toml", "prettier.config.js", "prettier.config.mjs", "prettier.config.ts", ".prettierignore"]
+icon = "\u{e7ca}"
+color_dark = "#f7b93e"
+color_light = "#c59432"
+
+[[language]]
+extensions = ["stylelint", "stylelintrc"]
+filenames = [".stylelintrc", ".stylelintrc.js", ".stylelintrc.cjs", ".stylelintrc.yaml", ".stylelintrc.yml", ".stylelintrc.json", "stylelint.config.js", "stylelint.config.mjs", "stylelint.config.ts", ".stylelintignore"]
+icon = "\u{e7cb}"
+color_dark = "#263238"
+color_light = "#1e272c"
+
+[[language]]
+extensions = ["typescript", "tsconfig"]
+filenames = ["tsconfig.json", "tsconfig.base.json", "tsconfig.build.json", "tsconfig.app.json", "tsconfig.lib.json", "tsconfig.spec.json", "tsconfig.node.json", "jsconfig.json"]
+icon = "\u{e628}"
+color_dark = "#3178c6"
+color_light = "#1a5a9e"
+
+[[language]]
+extensions = ["babel", "babelrc"]
+filenames = ["babel.config.js", "babel.config.json", "babel.config.ts", ".babelrc", ".babelrc.js", ".babelrc.json", ".babelrc.cjs"]
+icon = "\u{e7cc}"
+color_dark = "#f9dc3e"
+color_light = "#c7b032"
+
+[[language]]
+extensions = ["webpack", "webpack.config"]
+filenames = ["webpack.config.js", "webpack.config.ts", "webpack.config.mjs", "webpack.common.js", "webpack.dev.js", "webpack.prod.js", "webpack.dll.js", "webpack.renderer.js", "webpack.main.js"]
+icon = "\u{e7cd}"
+color_dark = "#8dd6f9"
+color_light = "#71abc6"
+
+[[language]]
+extensions = ["vite", "vite.config"]
+filenames = ["vite.config.js", "vite.config.ts", "vite.config.mjs", "vitest.config.js", "vitest.config.ts", "vitest.config.mjs"]
+icon = "\u{e7ce}"
+color_dark = "#646cff"
+color_light = "#5056cc"
+
+[[language]]
+extensions = ["rollup", "rollup.config"]
+filenames = ["rollup.config.js", "rollup.config.ts", "rollup.config.mjs"]
+icon = "\u{e7cf}"
+color_dark = "#ec4a3f"
+color_light = "#bd3b32"
+
+[[language]]
+extensions = ["parcel"]
+filenames = [".parcelrc", "parcel.config.js"]
+icon = "\u{e7d0}"
+color_dark = "#00c58e"
+color_light = "#009d71"
+
+[[language]]
+extensions = ["esbuild"]
+filenames = ["esbuild.js", "esbuild.mjs", "esbuild.config.js", "esbuild.config.mjs"]
+icon = "\u{e7d1}"
+color_dark = "#f1462c"
+color_light = "#c13823"
+
+[[language]]
+extensions = ["turbo", "turbo.json"]
+filenames = ["turbo.json", "turbo.yml", "turbo.yaml"]
+icon = "\u{e7d2}"
+color_dark = "#ef4444"
+color_light = "#bf3636"
+
+[[language]]
+extensions = ["nx", "nx.json"]
+filenames = ["nx.json", "workspace.json", "project.json"]
+icon = "\u{e7d3}"
+color_dark = "#1a1a2e"
+color_light = "#151525"
+
+[[language]]
+extensions = ["lerna", "lerna.json"]
+filenames = ["lerna.json", "lerna.yml", "lerna.yaml"]
+icon = "\u{e7d4}"
+color_dark = "#ef4444"
+color_light = "#bf3636"
+
+[[language]]
+extensions = ["rush", "rush.json"]
+filenames = ["rush.json", "pnpm-workspace.yaml", "common/config/rush/*.json"]
+icon = "\u{e7d5}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["pnpm-workspace", "pnpm-workspace.yaml"]
+filenames = ["pnpm-workspace.yaml", "pnpm-workspace.yml"]
+icon = "\u{e718}"
+color_dark = "#f69220"
+color_light = "#c57519"
+
+[[language]]
+extensions = ["yarn-workspace", "workspaces"]
+filenames = ["package.json", "yarn.lock"]
+icon = "\u{e718}"
+color_dark = "#2c8ebb"
+color_light = "#237196"
+
+[[language]]
+extensions = ["npm-workspace", "workspaces"]
+filenames = ["package.json", "package-lock.json"]
+icon = "\u{e718}"
+color_dark = "#cb3837"
+color_light = "#a22d2c"
+
+[[language]]
+extensions = ["cargo", "rust"]
+filenames = ["Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml", "rustfmt.toml", "clippy.toml", ".cargo/config.toml", ".cargo/config"]
+icon = "\u{e68b}"
+color_dark = "#dea584"
+color_light = "#b86c3a"
+
+[[language]]
+extensions = ["go", "mod", "sum"]
+filenames = ["go.mod", "go.sum", "go.work", "go.work.sum", "Makefile", "Taskfile.yml", "Taskfile.yaml"]
+icon = "\u{e724}"
+color_dark = "#00add8"
+color_light = "#0088aa"
+
+[[language]]
+extensions = ["python", "pip", "poetry", "pipenv", "conda", "uv"]
+filenames = ["requirements.txt", "requirements-dev.txt", "requirements.in", "setup.py", "setup.cfg", "pyproject.toml", "Pipfile", "Pipfile.lock", "poetry.lock", "environment.yml", "environment.yaml", "conda-lock.yml", "uv.lock", "pyvenv.cfg"]
+icon = "\u{e73c}"
+color_dark = "#3776ab"
+color_light = "#2a5a8a"
+
+[[language]]
+extensions = ["java", "maven", "gradle", "kotlin", "scala", "groovy"]
+filenames = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradle.properties", "gradle-wrapper.properties", "gradlew", "gradlew.bat", "mvnw", "mvnw.cmd", "settings.xml"]
+icon = "\u{e738}"
+color_dark = "#b07219"
+color_light = "#8a5712"
+
+[[language]]
+extensions = ["cs", "vb", "fs", "fsx", "fsi", "csproj", "sln", "props", "targets"]
+filenames = ["*.csproj", "*.fsproj", "*.vbproj", "*.sln", "Directory.Build.props", "Directory.Build.targets", "global.json", "NuGet.Config", "packages.config", "paket.dependencies", "paket.lock"]
+icon = "\u{f81a}"
+color_dark = "#178600"
+color_light = "#106600"
+
+[[language]]
+extensions = ["cpp", "cc", "cxx", "hpp", "hxx", "h", "inl", "tcc"]
+icon = "\u{e61d}"
+color_dark = "#f34b7d"
+color_light = "#c93a63"
+
+[[language]]
+extensions = ["c", "h"]
+icon = "\u{e61e}"
+color_dark = "#555555"
+color_light = "#3a3a3a"
+
+[[language]]
+extensions = ["objc", "mm", "m", "h"]
+icon = "\u{e73b}"
+color_dark = "#438eff"
+color_light = "#3572cc"
+
+[[language]]
+extensions = ["swift", "swiftinterface", "swiftmodule", "swiftdoc"]
+filenames = ["Package.swift", "Podfile", "Podfile.lock", "Cartfile", "Cartfile.resolved", "Package.resolved", ".swiftlint.yml", ".swiftformat"]
+icon = "\u{e755}"
+color_dark = "#fa7343"
+color_light = "#c85a33"
+
+[[language]]
+extensions = ["kt", "kts", "ktm"]
+filenames = ["build.gradle.kts", "settings.gradle.kts", "gradle.properties"]
+icon = "\u{e634}"
+color_dark = "#7f52ff"
+color_light = "#5a3acc"
+
+[[language]]
+extensions = ["scala", "sc", "sbt"]
+filenames = ["build.sbt", "build.sc", "project/build.properties", "project/plugins.sbt", "project/Dependencies.scala"]
+icon = "\u{e737}"
+color_dark = "#dc322f"
+color_light = "#af2825"
+
+[[language]]
+extensions = ["groovy", "gradle"]
+filenames = ["Jenkinsfile", "gradle.properties", "settings.gradle", "build.gradle"]
+icon = "\u{e76e}"
+color_dark = "#e69f56"
+color_light = "#b87f44"
+
+[[language]]
+extensions = ["clojure", "clj", "cljs", "cljc", "edn"]
+filenames = ["project.clj", "deps.edn", "build.boot", "shadow-cljs.edn", "bb.edn"]
+icon = "\u{e768}"
+color_dark = "#5881d8"
+color_light = "#4667ad"
+
+[[language]]
+extensions = ["elixir", "ex", "exs", "eex", "leex", "heex"]
+filenames = ["mix.exs", "mix.lock", ".formatter.exs", "mix.exs", "mix.lock"]
+icon = "\u{e62d}"
+color_dark = "#a074c4"
+color_light = "#805c9d"
+
+[[language]]
+extensions = ["erlang", "erl", "hrl", "app", "appup", "rel"]
+filenames = ["rebar.config", "rebar.lock", "erlang.mk", "rebar3"]
+icon = "\u{e7b1}"
+color_dark = "#b83998"
+color_light = "#932e7a"
+
+[[language]]
+extensions = ["haskell", "hs", "lhs", "cabal"]
+filenames = ["stack.yaml", "hie.yaml", "cabal.project", "package.yaml", "hpack.yaml", "*.cabal"]
+icon = "\u{e777}"
+color_dark = "#5e5086"
+color_light = "#4b406a"
+
+[[language]]
+extensions = ["ocaml", "ml", "mli", "re", "rei", "dune"]
+filenames = ["dune", "dune-project", "opam", "opam.locked", ".merlin"]
+icon = "\u{e62e}"
+color_dark = "#ec6813"
+color_light = "#bd530f"
+
+[[language]]
+extensions = ["fsharp", "fs", "fsi", "fsx", "ml", "mli"]
+filenames = ["*.fsproj", "paket.dependencies", "paket.lock", "fake.build"]
+icon = "\u{e7a7}"
+color_dark = "#b845fc"
+color_light = "#9236c9"
+
+[[language]]
+extensions = ["reason", "re"]
+filenames = ["bsconfig.json"]
+icon = "\u{e62e}"
+color_dark = "#ff5847"
+color_light = "#cc4639"
+
+[[language]]
+extensions = ["rescript", "res", "resi"]
+filenames = ["rescript.json", "bsconfig.json"]
+icon = "\u{e62e}"
+color_dark = "#ed503f"
+color_light = "#be4032"
+
+[[language]]
+extensions = ["dart", "flutter"]
+filenames = ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml", "pubspec.yaml", "pubspec.lock"]
+icon = "\u{e798}"
+color_dark = "#0175c2"
+color_light = "#015d9b"
+
+[[language]]
+extensions = ["zig"]
+filenames = ["build.zig", "build.zig.zon", "build.zig"]
+icon = "\u{e627}"
+color_dark = "#f7a41d"
+color_light = "#c68317"
+
+[[language]]
+extensions = ["v", "vh"]
+icon = "\u{e629}"
+color_dark = "#4f87c7"
+color_light = "#3f6ca3"
+
+[[language]]
+extensions = ["odin"]
+icon = "\u{e626}"
+color_dark = "#60a3bc"
+color_light = "#4d8296"
+
+[[language]]
+extensions = ["nim", "nims"]
+filenames = ["nim.cfg", "nimble", "*.nimble"]
+icon = "\u{e699}"
+color_dark = "#ffec25"
+color_light = "#ccbd1e"
+
+[[language]]
+extensions = ["crystal", "cr", "ec"]
+filenames = ["shard.yml", "shard.lock", "shard.yml"]
+icon = "\u{f25b}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["lua"]
+filenames = [".luarc.json", "luacheckrc", "stylua.toml", ".stylua.toml", "init.lua", "main.lua", "lua_ls.lua"]
+icon = "\u{e620}"
+color_dark = "#000080"
+color_light = "#000060"
+
+[[language]]
+extensions = ["ruby", "rb", "gemspec", "rake", "thor"]
+filenames = ["Gemfile", "Gemfile.lock", "Rakefile", ".ruby-version", ".ruby-gemset", "*.gemspec", "config.ru", "Guardfile", "Thorfile"]
+icon = "\u{e739}"
+color_dark = "#701516"
+color_light = "#551011"
+
+[[language]]
+extensions = ["php", "phtml", "php3", "php4", "php5", "php7", "php8", "phar"]
+filenames = ["composer.json", "composer.lock", "phpunit.xml", "phpunit.xml.dist", "phpcs.xml", "phpcs.xml.dist", "phpstan.neon", "phpstan.neon.dist", "psalm.xml", "psalm.xml.dist", ".php-cs-fixer.php", ".php-cs-fixer.dist.php", "php-cs-fixer.php", "php-cs-fixer.dist.php"]
+icon = "\u{e73d}"
+color_dark = "#777bb4"
+color_light = "#5a5e90"
+
+[[language]]
+extensions = ["perl", "pl", "pm", "pod", "t"]
+icon = "\u{e767}"
+color_dark = "#0298c3"
+color_light = "#02799a"
+
+[[language]]
+extensions = ["python", "py", "pyw", "pyc", "pyo", "pyd", "pyi", "pyx", "pxd", "pxi"]
+icon = "\u{e73c}"
+color_dark = "#3776ab"
+color_light = "#2a5a8a"
+
+[[language]]
+extensions = ["r", "R", "rproj"]
+filenames = [".Rprofile", "renv.lock", "DESCRIPTION", "NAMESPACE", "*.Rproj"]
+icon = "\u{e737}"
+color_dark = "#276dc3"
+color_light = "#1e569c"
+
+[[language]]
+extensions = ["julia", "jl"]
+filenames = ["Project.toml", "Manifest.toml", "JuliaProject.toml"]
+icon = "\u{e624}"
+color_dark = "#9558b2"
+color_light = "#76468e"
+
+[[language]]
+extensions = ["matlab", "m"]
+icon = "\u{e7a5}"
+color_dark = "#e16737"
+color_light = "#b3522c"
+
+[[language]]
+extensions = ["octave", "m"]
+icon = "\u{e7a5}"
+color_dark = "#e16737"
+color_light = "#b3522c"
+
+[[language]]
+extensions = ["scilab", "sce", "sci"]
+icon = "\u{e7a6}"
+color_dark = "#e16737"
+color_light = "#b3522c"
+
+[[language]]
+extensions = ["mathematica", "nb", "wl", "wls"]
+icon = "\u{e7a7}"
+color_dark = "#dd1100"
+color_light = "#b00d00"
+
+[[language]]
+extensions = ["idl", "pro"]
+icon = "\u{e7a8}"
+color_dark = "#a0a0a0"
+color_light = "#7d7d7d"
+
+[[language]]
+extensions = ["labview", "vi"]
+icon = "\u{e7a9}"
+color_dark = "#fbb03b"
+color_light = "#c98d2f"
+
+[[language]]
+extensions = ["simulink", "slx", "mdl"]
+icon = "\u{e7aa}"
+color_dark = "#e16737"
+color_light = "#b3522c"
+
+[[language]]
+extensions = ["vhdl", "vhd"]
+icon = "\u{e7ab}"
+color_dark = "#008b8b"
+color_light = "#006f6f"
+
+[[language]]
+extensions = ["verilog", "v", "sv", "svh"]
+icon = "\u{e7ac}"
+color_dark = "#008b8b"
+color_light = "#006f6f"
+
+[[language]]
+extensions = ["systemverilog", "sv", "svh"]
+icon = "\u{e7ac}"
+color_dark = "#008b8b"
+color_light = "#006f6f"
+
+[[language]]
+extensions = ["tcl", "tk", "itcl", "itk"]
+icon = "\u{e7ad}"
+color_dark = "#008b8b"
+color_light = "#006f6f"
+
+[[language]]
+extensions = ["scheme", "scm", "ss", "rkt", "rktd", "rktl"]
+icon = "\u{e76a}"
+color_dark = "#de5030"
+color_light = "#b14026"
+
+[[language]]
+extensions = ["racket", "rkt", "rktd", "rktl"]
+icon = "\u{e76a}"
+color_dark = "#de5030"
+color_light = "#b14026"
+
+[[language]]
+extensions = ["common-lisp", "cl", "lisp", "lsp", "asd", "fasl"]
+icon = "\u{e769}"
+color_dark = "#f49834"
+color_light = "#c47828"
+
+[[language]]
+extensions = ["elisp", "el"]
+icon = "\u{e769}"
+color_dark = "#f49834"
+color_light = "#c47828"
+
+[[language]]
+extensions = ["vim", "vimrc", "viminfo"]
+filenames = [".vimrc", "_vimrc", "init.vim", "gvimrc", ".viminfo", ".vim/**"]
+icon = "\u{e7c5}"
+color_dark = "#019733"
+color_light = "#017829"
+
+[[language]]
+extensions = ["nvim", "lua"]
+filenames = ["init.lua", "lazy-lock.json", "stylua.toml", ".stylua.toml", ".luarc.json", "lua/**", "lazy/**", "config/**", "plugin/**", "ftdetect/**", "ftplugin/**", "syntax/**"]
+icon = "\u{e620}"
+color_dark = "#000080"
+color_light = "#000060"
+
+[[language]]
+extensions = ["emacs", "el", "elc"]
+filenames = ["init.el", ".emacs", ".emacs.d/**", "doom.d/**", "spacemacs.d/**", "config.el", "packages.el"]
+icon = "\u{e769}"
+color_dark = "#f49834"
+color_light = "#c47828"
+
+[[language]]
+extensions = ["vscode", "code"]
+filenames = [".vscode/**", "settings.json", "launch.json", "tasks.json", "keybindings.json", "snippets/**", "extensions.json", "cSpell.json"]
+icon = "\u{e7c4}"
+color_dark = "#007acc"
+color_light = "#0061a3"
+
+[[language]]
+extensions = ["sublime", "sublime-project", "sublime-workspace"]
+filenames = ["*.sublime-project", "*.sublime-workspace", "Preferences.sublime-settings", "Package Control.sublime-settings"]
+icon = "\u{e7c5}"
+color_dark = "#ff9800"
+color_light = "#cc7a00"
+
+[[language]]
+extensions = ["atom", "apm"]
+icon = "\u{e7c6}"
+color_dark = "#66599c"
+color_light = "#51477d"
+
+[[language]]
+extensions = ["intellij", "idea"]
+filenames = [".idea/**", "*.iml", "*.ipr", "*.iws", "pom.xml", "build.gradle", "build.gradle.kts"]
+icon = "\u{e7c7}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["android", "gradle"]
+filenames = ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradle.properties", "local.properties", "gradlew", "gradlew.bat", "AndroidManifest.xml", "proguard-rules.pro", "lint.xml", "keystore.properties"]
+icon = "\u{e7c8}"
+color_dark = "#3ddc84"
+color_light = "#31b06a"
+
+[[language]]
+extensions = ["ios", "swift", "objc", "xcode"]
+filenames = ["Podfile", "Podfile.lock", "Cartfile", "Cartfile.resolved", "Package.swift", "Package.resolved", "*.xcodeproj", "*.xcworkspace", "project.pbxproj", "Info.plist", "*.entitlements", "*.mobileprovision", "Pods/**"]
+icon = "\u{e7c9}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["flutter", "dart"]
+filenames = ["pubspec.yaml", "pubspec.lock", "analysis_options.yaml", "flutter_launcher_icons.yaml", "flutter_native_splash.yaml"]
+icon = "\u{e798}"
+color_dark = "#02569b"
+color_light = "#01437a"
+
+[[language]]
+extensions = ["react", "react-native", "rn"]
+filenames = ["package.json", "metro.config.js", "metro.config.ts", "babel.config.js", "babel.config.json", "jest.config.js", "jest.config.ts", "react-native.config.js", ".watchmanconfig"]
+icon = "\u{e7ba}"
+color_dark = "#61dafb"
+color_light = "#4daec9"
+
+[[language]]
+extensions = ["next", "nextjs"]
+filenames = ["next.config.js", "next.config.ts", "next.config.mjs", "next-env.d.ts", ".next/**"]
+icon = "\u{e7bb}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["nuxt", "nuxtjs"]
+filenames = ["nuxt.config.js", "nuxt.config.ts", "nuxt.config.mjs", ".nuxt/**"]
+icon = "\u{e7bc}"
+color_dark = "#00c58e"
+color_light = "#009d71"
+
+[[language]]
+extensions = ["svelte", "sveltekit"]
+filenames = ["svelte.config.js", "svelte.config.ts", "svelte.config.mjs", ".svelte-kit/**"]
+icon = "\u{e697}"
+color_dark = "#ff3e00"
+color_light = "#cc3200"
+
+[[language]]
+extensions = ["astro"]
+filenames = ["astro.config.js", "astro.config.ts", "astro.config.mjs", ".astro/**"]
+icon = "\u{e6a0}"
+color_dark = "#ff5d01"
+color_light = "#cc4a01"
+
+[[language]]
+extensions = ["solid", "solidjs"]
+filenames = ["package.json", "vite.config.ts", "tsconfig.json"]
+icon = "\u{e7bd}"
+color_dark = "#2c4f7c"
+color_light = "#233f63"
+
+[[language]]
+extensions = ["qwik"]
+filenames = ["package.json", "vite.config.ts", "tsconfig.json"]
+icon = "\u{e7be}"
+color_dark = "#00c896"
+color_light = "#009f77"
+
+[[language]]
+extensions = ["remix", "remix.run"]
+filenames = ["remix.config.js", "remix.config.ts", "remix.config.mjs", ".remix/**"]
+icon = "\u{e7bf}"
+color_dark = "#ffffff"
+color_light = "#333333"
+
+[[language]]
+extensions = ["gatsby"]
+filenames = ["gatsby-config.js", "gatsby-config.ts", "gatsby-node.js", "gatsby-node.ts", "gatsby-browser.js", "gatsby-browser.ts", "gatsby-ssr.js", "gatsby-ssr.ts", ".cache/**", "public/**"]
+icon = "\u{e7c0}"
+color_dark = "#663399"
+color_light = "#51287a"
+
+[[language]]
+extensions = ["eleventy", "11ty"]
+filenames = [".eleventy.js", ".eleventy.ts", "eleventy.config.js", "eleventy.config.ts", "_site/**"]
+icon = "\u{e7c1}"
+color_dark = "#0d0d0d"
+color_light = "#0a0a0a"
+
+[[language]]
+extensions = ["hugo"]
+filenames = ["config.toml", "config.yaml", "config.json", "hugo.toml", "hugo.yaml", "hugo.json", "content/**", "layouts/**", "static/**", "themes/**", "archetypes/**", "data/**", "static/**", "resources/**"]
+icon = "\u{e7c2}"
+color_dark = "#ff4088"
+color_light = "#cc336d"
+
+[[language]]
+extensions = ["jekyll"]
+filenames = ["_config.yml", "_config.yaml", "Gemfile", "Gemfile.lock", "_site/**", "_posts/**", "_layouts/**", "_includes/**", "_sass/**", "assets/**"]
+icon = "\u{e7c3}"
+color_dark = "#cc0000"
+color_light = "#a30000"
+
+[[language]]
+extensions = ["hexo"]
+filenames = ["_config.yml", "_config.yaml", "package.json", "themes/**", "source/**", "scaffolds/**", "scripts/**", "public/**", ".deploy_git/**"]
+icon = "\u{e7c4}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["pelican"]
+filenames = ["pelicanconf.py", "publishconf.py", "settings.py", "content/**", "output/**", "themes/**"]
+icon = "\u{e7c5}"
+color_dark = "#339933"
+color_light = "#287a28"
+
+[[language]]
+extensions = ["mkdocs"]
+filenames = ["mkdocs.yml", "mkdocs.yaml", "docs/**", "site/**"]
+icon = "\u{e7c6}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["sphinx", "rst"]
+filenames = ["conf.py", "index.rst", "Makefile", "make.bat", "_build/**", "_templates/**", "_static/**"]
+icon = "\u{e7c7}"
+color_dark = "#339933"
+color_light = "#287a28"
+
+[[language]]
+extensions = ["docusaurus"]
+filenames = ["docusaurus.config.js", "docusaurus.config.ts", "sidebars.js", "sidebars.ts", "blog/**", "docs/**", "src/**", "static/**", "build/**"]
+icon = "\u{e7c8}"
+color_dark = "#3d2d6b"
+color_light = "#302456"
+
+[[language]]
+extensions = ["gitbook"]
+filenames = ["book.json", "book.js", "SUMMARY.md", "README.md", "_book/**"]
+icon = "\u{e7c9}"
+color_dark = "#2c3e50"
+color_light = "#23313f"
+
+[[language]]
+extensions = ["vuepress"]
+filenames = ["vuepress.config.js", "vuepress.config.ts", ".vuepress/**", "docs/**", ".vuepress/dist/**"]
+icon = "\u{e6a0}"
+color_dark = "#42b883"
+color_light = "#349369"
+
+[[language]]
+extensions = ["vitepress"]
+filenames = ["vitepress.config.js", "vitepress.config.ts", ".vitepress/**", "docs/**", ".vitepress/dist/**"]
+icon = "\u{e7ce}"
+color_dark = "#646cff"
+color_light = "#5056cc"
+
+[[language]]
+extensions = ["mdbook"]
+filenames = ["book.toml", "book.toml.example", "SUMMARY.md", "book/**", "src/**", "theme/**", "book/**"]
+icon = "\u{e68b}"
+color_dark = "#dea584"
+color_light = "#b86c3a"
+
+[[language]]
+extensions = ["gitbook", "book"]
+filenames = ["book.json", "book.js", "SUMMARY.md", "README.md", "_book/**"]
+icon = "\u{e7c9}"
+color_dark = "#2c3e50"
+color_light = "#23313f"
+
+[[language]]
+extensions = ["pdf", "epub", "mobi", "azw", "azw3", "fb2"]
+icon = "\u{f1c1}"
+color_dark = "#ff0000"
+color_light = "#cc0000"
+
+[[language]]
+extensions = ["doc", "docx", "dot", "dotx"]
+icon = "\u{f1c2}"
+color_dark = "#2b579a"
+color_light = "#22467b"
+
+[[language]]
+extensions = ["xls", "xlsx", "xlsm", "xlsb", "xlt", "xltx", "xltm", "csv"]
+icon = "\u{f1c3}"
+color_dark = "#217346"
+color_light = "#1a5c38"
+
+[[language]]
+extensions = ["ppt", "pptx", "pptm", "pot", "potx", "potm", "pps", "ppsx", "ppsm"]
+icon = "\u{f1c4}"
+color_dark = "#d24726"
+color_light = "#a8391f"
+
+[[language]]
+extensions = ["odt", "ods", "odp", "odg", "odf", "odi", "odm"]
+icon = "\u{f1c2}"
+color_dark = "#2b579a"
+color_light = "#22467b"
+
+[[language]]
+extensions = ["rtf"]
+icon = "\u{f1c2}"
+color_dark = "#2b579a"
+color_light = "#22467b"
+
+[[language]]
+extensions = ["tex", "latex", "sty", "cls", "bib", "bst"]
+filenames = ["main.tex", "main.latex", "thesis.tex", "paper.tex", "article.tex", "report.tex", "book.tex", "beamer.tex", "*.bib", "*.bst"]
+icon = "\u{e7d6}"
+color_dark = "#3d6117"
+color_light = "#314d12"
+
+[[language]]
+extensions = ["bib", "bibtex"]
+icon = "\u{e7d6}"
+color_dark = "#3d6117"
+color_light = "#314d12"
+
+[[language]]
+extensions = ["asciidoc", "adoc", "asciidoctor"]
+filenames = ["*.adoc", "*.asciidoc", "index.adoc", "README.adoc"]
+icon = "\u{e7d7}"
+color_dark = "#cc0000"
+color_light = "#a30000"
+
+[[language]]
+extensions = ["rst", "rest"]
+icon = "\u{e7d8}"
+color_dark = "#339933"
+color_light = "#287a28"
+
+[[language]]
+extensions = ["org", "orgmode"]
+icon = "\u{e7d9}"
+color_dark = "#77aa77"
+color_light = "#5f885f"
+
+[[language]]
+extensions = ["markdown", "md", "mdx", "mkd", "mkdn", "mdown", "markdn"]
+icon = "\u{f48a}"
+color_dark = "#083fa1"
+color_light = "#063080"
+
+[[language]]
+extensions = ["textile"]
+icon = "\u{e7da}"
+color_dark = "#ff6600"
+color_light = "#cc5200"
+
+[[language]]
+extensions = ["creole"]
+icon = "\u{e7db}"
+color_dark = "#ff6600"
+color_light = "#cc5200"
+
+[[language]]
+extensions = ["mediawiki", "wiki"]
+icon = "\u{e7dc}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["confluence", "wiki"]
+icon = "\u{e7dd}"
+color_dark = "#0052cc"
+color_light = "#0042a3"
+
+[[language]]
+extensions = ["notion"]
+icon = "\u{e7de}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["obsidian"]
+filenames = [".obsidian/**", "*.md", "*.canvas"]
+icon = "\u{e7df}"
+color_dark = "#483699"
+color_light = "#392b7a"
+
+[[language]]
+extensions = ["roam", "roamresearch"]
+icon = "\u{e7e0}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["logseq"]
+filenames = ["logseq/**", "config.edn", "custom.css"]
+icon = "\u{e7e1}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["foswiki", "twiki"]
+icon = "\u{e7e2}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["dokuwiki"]
+icon = "\u{e7e3}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["tiddlywiki", "tw5"]
+icon = "\u{e7e4}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+[[language]]
+extensions = ["bookstack"]
+icon = "\u{e7e5}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["wiki", "wikijs"]
+icon = "\u{e7e6}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["outline"]
+icon = "\u{e7e7}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["appflowy"]
+icon = "\u{e7e8}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["affine"]
+icon = "\u{e7e9}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["joplin"]
+icon = "\u{e7ea}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["standard-notes", "sn"]
+icon = "\u{e7eb}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["trilium"]
+icon = "\u{e7ec}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["anytype"]
+icon = "\u{e7ed}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["capacities"]
+icon = "\u{e7ee}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["heptabase"]
+icon = "\u{e7ef}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["tana"]
+icon = "\u{e7f0}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["remnote"]
+icon = "\u{e7f1}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["craft"]
+icon = "\u{e7f2}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["notion", "notion.so"]
+icon = "\u{e7de}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["clickup"]
+icon = "\u{e7f3}"
+color_dark = "#7b68ee"
+color_light = "#6252be"
+
+[[language]]
+extensions = ["notion", "notion.so"]
+icon = "\u{e7de}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["linear"]
+icon = "\u{e7f4}"
+color_dark = "#5e6ad2"
+color_light = "#4b55a8"
+
+[[language]]
+extensions = ["jira", "confluence"]
+icon = "\u{e7f5}"
+color_dark = "#0052cc"
+color_light = "#0042a3"
+
+[[language]]
+extensions = ["trello"]
+icon = "\u{e7f6}"
+color_dark = "#0079bf"
+color_light = "#006199"
+
+[[language]]
+extensions = ["asana"]
+icon = "\u{e7f7}"
+color_dark = "#ff6b6b"
+color_light = "#cc5555"
+
+[[language]]
+extensions = ["monday"]
+icon = "\u{e7f8}"
+color_dark = "#ff6b6b"
+color_light = "#cc5555"
+
+[[language]]
+extensions = ["airtable"]
+icon = "\u{e7f9}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+[[language]]
+extensions = ["notion", "notion.so"]
+icon = "\u{e7de}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["figma"]
+icon = "\u{e7fa}"
+color_dark = "#f24e1e"
+color_light = "#c23e18"
+
+[[language]]
+extensions = ["sketch"]
+icon = "\u{e7fb}"
+color_dark = "#f7b500"
+color_light = "#c59100"
+
+[[language]]
+extensions = ["adobe", "xd", "psd", "ai", "indd", "prproj", "aep"]
+icon = "\u{e7fc}"
+color_dark = "#ff0000"
+color_light = "#cc0000"
+
+[[language]]
+extensions = ["blender", "blend"]
+icon = "\u{e7fd}"
+color_dark = "#f5792a"
+color_light = "#c46122"
+
+[[language]]
+extensions = ["unity", "unity3d"]
+filenames = ["*.unity", "*.unity3d", "ProjectSettings/**", "Assets/**", "Packages/**"]
+icon = "\u{e7fe}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["unreal", "ue4", "ue5", "uproject"]
+filenames = ["*.uproject", "*.uasset", "*.umap", "Config/**", "Content/**", "Source/**", "Plugins/**"]
+icon = "\u{e7ff}"
+color_dark = "#0e1128"
+color_light = "#0b0d1f"
+
+[[language]]
+extensions = ["godot", "gdscript"]
+filenames = ["project.godot", "project.binary", "export_presets.cfg", "*.gd", "*.tscn", "*.tres"]
+icon = "\u{e800}"
+color_dark = "#478cb1"
+color_light = "#38708d"
+
+[[language]]
+extensions = ["gamemaker", "gml", "yyp"]
+filenames = ["*.yyp", "*.gml", "*.yy"]
+icon = "\u{e801}"
+color_dark = "#f14e2a"
+color_light = "#c13e22"
+
+[[language]]
+extensions = ["rpgmaker", "rvdata2", "rvdata"]
+icon = "\u{e802}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["construct", "c3p"]
+icon = "\u{e803}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["defold"]
+filenames = ["game.project", "*.collection", "*.go", "*.script", "*.gui", "*.render", "*.material", "*.shader", "*.font", "*.atlas", "*.tilemap", "*.particlefx", "*.model", "*.collisionobject", "*.physics"]
+icon = "\u{e804}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["love", "love2d"]
+filenames = ["main.lua", "conf.lua", "love.exe", "love.app"]
+icon = "\u{e620}"
+color_dark = "#000080"
+color_light = "#000060"
+
+[[language]]
+extensions = ["pico8", "p8"]
+icon = "\u{e805}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["tic80", "tic"]
+icon = "\u{e806}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["gb", "gbc", "gba", "nds", "3ds", "wii", "wiiu", "switch", "ps1", "ps2", "ps3", "ps4", "ps5", "xbox", "xbox360", "xboxone", "xboxseries"]
+icon = "\u{e807}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["rom", "iso", "cia", "3ds", "nds", "gba", "gbc", "gb", "nes", "snES", "n64", "wii", "wiiu", "switch", "ps1", "ps2", "ps3", "ps4", "ps5", "xbox", "xbox360", "xboxone", "xboxseries"]
+icon = "\u{e807}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["exe", "dll", "so", "dylib", "a", "lib", "o", "obj", "bin", "out", "app", "ipa", "apk", "aab", "xapk", "apks"]
+icon = "\u{e7a8}"
+color_dark = "#999999"
+color_light = "#777777"
+
+[[language]]
+extensions = ["msi", "msix", "appx", "appxbundle"]
+icon = "\u{e808}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["deb", "rpm", "apk", "pkg", "tgz", "txz", "tbz2", "tlz", "snap", "flatpak", "appimage"]
+icon = "\u{e809}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["iso", "img", "vhd", "vhdx", "vmdk", "vdi", "qcow2", "qcow", "ova", "ovf"]
+icon = "\u{e80a}"
+color_dark = "#0078d4"
+color_light = "#005fa0"
+
+[[language]]
+extensions = ["tar", "gz", "bz2", "xz", "lz", "lz4", "lzma", "zst", "zip", "rar", "7z", "tgz", "tbz2", "txz", "tlz", "z", "Z"]
+icon = "\u{f1c6}"
+color_dark = "#ff6b35"
+color_light = "#cc552a"
+
+[[language]]
+extensions = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif", "ico", "svg", "avif", "heic", "heif", "jxl", "jp2", "jxr", "wdp"]
+icon = "\u{f1c5}"
+color_dark = "#ffa500"
+color_light = "#cc8400"
+
+[[language]]
+extensions = ["mp4", "mov", "avi", "mkv", "webm", "flv", "wmv", "mpg", "mpeg", "m4v", "3gp", "3g2", "ogv", "ogm", "ts", "m2ts", "mts"]
+icon = "\u{f03d}"
+color_dark = "#e63946"
+color_light = "#b82e38"
+
+[[language]]
+extensions = ["mp3", "wav", "flac", "ogg", "oga", "opus", "m4a", "aac", "wma", "alac", "aiff", "aif", "au", "ra", "ram", "mid", "midi", "rmi"]
+icon = "\u{f001}"
+color_dark = "#1db954"
+color_light = "#179444"
+
+[[language]]
+extensions = ["ttf", "otf", "woff", "woff2", "eot", "fon", "pfb", "pfm", "afm", "bdf", "pcf", "snf", "ttc", "otc"]
+icon = "\u{f031}"
+color_dark = "#999999"
+color_light = "#777777"
+
+[[language]]
+extensions = ["psd", "psb", "psdt"]
+icon = "\u{e7fc}"
+color_dark = "#31a8ff"
+color_light = "#2786cc"
+
+[[language]]
+extensions = ["ai", "eps", "pdf"]
+icon = "\u{e7fc}"
+color_dark = "#ff9a00"
+color_light = "#cc7b00"
+
+[[language]]
+extensions = ["indd", "indt", "idml"]
+icon = "\u{e7fc}"
+color_dark = "#f74899"
+color_light = "#c53a7a"
+
+[[language]]
+extensions = ["prproj", "prtl", "prsl"]
+icon = "\u{e7fc}"
+color_dark = "#9999ff"
+color_light = "#7a7acc"
+
+[[language]]
+extensions = ["aep", "aepx", "aet"]
+icon = "\u{e7fc}"
+color_dark = "#9999ff"
+color_light = "#7a7acc"
+
+[[language]]
+extensions = ["blend"]
+icon = "\u{e7fd}"
+color_dark = "#f5792a"
+color_light = "#c46122"
+
+[[language]]
+extensions = ["c4d"]
+icon = "\u{e80b}"
+color_dark = "#000000"
+color_light = "#1a1a1a"
+
+[[language]]
+extensions = ["ma", "mb", "ml"]
+icon = "\u{e80c}"
+color_dark = "#00ffff"
+color_light = "#00cccc"
+
+[[language]]
+extensions = ["max", "3ds"]
+icon = "\u{e80d}"
+color_dark = "#00ffff"
+color_light = "#00cccc"
+
+[[language]]
+extensions = ["skp", "skb"]
+icon = "\u{e7fb}"
+color_dark = "#f7b500"
+color_light = "#c59100"
+
+[[language]]
+extensions = ["fbx", "obj", "stl", "ply", "gltf", "glb", "dae", "3ds", "ase", "dxf", "dwg", "dwf", "iges", "igs", "step", "stp", "sat", "sab", "x_t", "x_b", "xmt", "xmt_txt"]
+icon = "\u{e80e}"
+color_dark = "#999999"
+color_light = "#777777"
+
+[[language]]
+extensions = ["glb", "gltf"]
+icon = "\u{e80f}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+[[language]]
+extensions = ["usd", "usda", "usdc", "usdz"]
+icon = "\u{e810}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+[[language]]
+extensions = ["abc", "alembic"]
+icon = "\u{e811}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+[[language]]
+extensions = ["vdb", "openvdb"]
+icon = "\u{e812}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+[[language]]
+extensions = ["exr", "hdr", "pic", "tx"]
+icon = "\u{e813}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+[[language]]
+extensions = ["dpx", "cin", "dpx"]
+icon = "\u{e814}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+[[language]]
+extensions = ["ari", "arw", "cr2", "cr3", "crw", "dng", "erf", "k25", "kdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "pef", "raf", "raw", "rw2", "rwl", "rwz", "sr2", "srw", "x3f"]
+icon = "\u{e815}"
+color_dark = "#00b4d8"
+color_light = "#0090ad"
+
+# Default fallback
+[[language]]
+extensions = ["*"]
+icon = "\u{f15b}"
+color_dark = "#7f848e"
+color_light = "#5a5e66"

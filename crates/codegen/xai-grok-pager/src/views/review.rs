@@ -6,7 +6,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use similar::ChangeTag;
@@ -19,6 +19,150 @@ use crate::scrollback::entry::{EntryId, ScrollbackEntry};
 use crate::scrollback::state::ScrollbackState;
 use crate::theme::Theme;
 use crate::views::block_viewer::BlockViewerPane;
+use std::sync::OnceLock;
+
+// ─── Language Icon Configuration ────────────────────────────────────────
+
+/// A single language icon entry from the TOML config.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct LanguageIconConfig {
+    extensions: Option<Vec<String>>,
+    filenames: Option<Vec<String>>,
+    icon: String,
+    /// Color for dark themes (used when theme is dark).
+    color_dark: Option<String>,
+    /// Color for light themes (used when theme is light).
+    color_light: Option<String>,
+    /// Fallback color used for both themes if color_dark/color_light not specified.
+    color: Option<String>,
+}
+
+/// Parsed language icons configuration.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct LanguageIconsConfig {
+    language: Vec<LanguageIconConfig>,
+}
+
+/// Resolved icon + color for a file.
+#[derive(Debug, Clone, Copy)]
+pub struct FileIcon {
+    pub glyph: &'static str,
+    pub color: Color,
+}
+
+/// Global language icons registry (lazy-loaded from TOML).
+static LANGUAGE_ICONS: OnceLock<Vec<LanguageIconConfig>> = OnceLock::new();
+
+/// Load language icons from embedded TOML.
+fn load_language_icons() -> &'static Vec<LanguageIconConfig> {
+    LANGUAGE_ICONS.get_or_init(|| {
+        let toml_str = include_str!("language_icons.toml");
+        match toml::from_str::<LanguageIconsConfig>(toml_str) {
+            Ok(cfg) => cfg.language,
+            Err(e) => {
+                eprintln!("Failed to parse language_icons.toml: {e}");
+                Vec::new()
+            }
+        }
+    })
+}
+
+/// Parse a hex color string (e.g., "#dea584") into a ratatui Color.
+fn parse_hex_color(hex: &str) -> Color {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() != 6 {
+        return Color::Rgb(127, 132, 142); // default gray
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(127);
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(132);
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(142);
+    Color::Rgb(r, g, b)
+}
+
+/// Get the icon and color for a file path, adapting to the current theme.
+fn file_icon_for(path: &str, is_dir: bool) -> FileIcon {
+    if is_dir {
+        // Folder color adapts to theme: yellow on dark, orange-brown on light
+        let theme = Theme::current();
+        let is_dark = theme.is_dark();
+        return FileIcon {
+            glyph: "\u{f07b}", // nf-fa-folder
+            color: if is_dark {
+                Color::Rgb(255, 203, 40)  // folder yellow for dark
+            } else {
+                Color::Rgb(180, 120, 30)  // folder orange-brown for light
+            },
+        };
+    }
+    let icons = load_language_icons();
+    let name = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+
+    // Determine current theme polarity
+    let theme = Theme::current();
+    let is_dark = theme.is_dark();
+
+    // First try exact filename match
+    for entry in icons {
+        if let Some(filenames) = &entry.filenames {
+            for fname in filenames {
+                if fname.eq_ignore_ascii_case(&name) {
+                    let color = pick_color(&entry, is_dark);
+                    return FileIcon {
+                        glyph: Box::leak(entry.icon.clone().into_boxed_str()),
+                        color,
+                    };
+                }
+            }
+        }
+    }
+
+    // Then try extension match
+    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    for entry in icons {
+        if let Some(extensions) = &entry.extensions {
+            for e in extensions {
+                if e == "*" || e.eq_ignore_ascii_case(ext) {
+                    let color = pick_color(&entry, is_dark);
+                    return FileIcon {
+                        glyph: Box::leak(entry.icon.clone().into_boxed_str()),
+                        color,
+                    };
+                }
+            }
+        }
+    }
+
+    // Default fallback - adapts to theme
+    FileIcon {
+        glyph: "\u{f15b}", // default file
+        color: if is_dark {
+            Color::Rgb(127, 132, 142)  // gray for dark
+        } else {
+            Color::Rgb(90, 95, 105)    // darker gray for light
+        },
+    }
+}
+
+/// Pick the appropriate color for the current theme polarity.
+fn pick_color(entry: &LanguageIconConfig, is_dark: bool) -> Color {
+    if is_dark {
+        entry.color_dark
+            .as_ref()
+            .or(entry.color.as_ref())
+            .map(|c| parse_hex_color(c))
+            .unwrap_or(Color::Rgb(127, 132, 142))
+    } else {
+        entry.color_light
+            .as_ref()
+            .or(entry.color.as_ref())
+            .map(|c| parse_hex_color(c))
+            .unwrap_or(Color::Rgb(90, 95, 105))
+    }
+}
 
 /// Which tool ops appear in the review list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1465,10 +1609,10 @@ fn render_flat_row(
         format!("{kind_tag} "),
         Style::default().fg(kind_fg).bg(row_bg),
     )];
-    if let Some(ic) = icon {
+    if let Some(icon) = icon {
         spans.push(Span::styled(
-            format!("{ic} "),
-            Style::default().fg(theme.accent_tool).bg(row_bg),
+            format!("{} ", icon.glyph),
+            Style::default().fg(icon.color).bg(row_bg),
         ));
     }
     spans.push(Span::styled(
@@ -1518,7 +1662,7 @@ fn render_tree_row(
     // Tree leaf labels are basenames; dirs use folder glyph.
     let icon = file_type_icon(&row.label, row.is_dir);
     let kind_part = format!("{tag} ");
-    let icon_part = icon.map(|ic| format!("{ic} ")).unwrap_or_default();
+    let icon_part = icon.map(|ic| format!("{} ", ic.glyph)).unwrap_or_default();
     let prefix = format!("{gutter}{glyph}");
     let name_w =
         width.saturating_sub(prefix.len() as u16 + kind_part.len() as u16 + icon_part.len() as u16);
@@ -1531,16 +1675,10 @@ fn render_tree_row(
         Span::styled(prefix, Style::default().fg(theme.gray_dim).bg(row_bg)),
         Span::styled(kind_part, Style::default().fg(kind_fg).bg(row_bg)),
     ];
-    if !icon_part.is_empty() {
+    if let Some(icon) = icon {
         spans.push(Span::styled(
-            icon_part,
-            Style::default()
-                .fg(if row.is_dir {
-                    theme.warning
-                } else {
-                    theme.accent_tool
-                })
-                .bg(row_bg),
+            format!("{} ", icon.glyph),
+            Style::default().fg(icon.color).bg(row_bg),
         ));
     }
     spans.push(Span::styled(
@@ -1581,72 +1719,13 @@ fn kind_fg(kind: ReviewFileKind, theme: &Theme) -> ratatui::style::Color {
     }
 }
 
-/// Nerd Font file/dir glyph when ambient probe says PUA is safe; else `None`.
+/// Nerd Font file/dir glyph with color when ambient probe says PUA is safe; else `None`.
 /// Uses [`crate::git_info::nerd_fonts_available`] (env `GROK_NERD_FONTS` override).
-fn file_type_icon(path: &str, is_dir: bool) -> Option<&'static str> {
+fn file_type_icon(path: &str, is_dir: bool) -> Option<FileIcon> {
     if !crate::git_info::nerd_fonts_available() {
         return None;
     }
-    Some(nerd_file_icon(path, is_dir))
-}
-
-/// Minimal nvim-web-devicons-style map (common review paths only).
-fn nerd_file_icon(path: &str, is_dir: bool) -> &'static str {
-    if is_dir {
-        return "\u{f07b}"; // nf-fa-folder
-    }
-    let name = path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(path)
-        .to_ascii_lowercase();
-    match name.as_str() {
-        // Match nvim-web-devicons: nf-seti-rust U+E68B (), not nf-dev-rust U+E7A8 (often a blob).
-        "cargo.toml" | "cargo.lock" => return "\u{e68b}",
-        "license" | "license.md" | "license.txt" => return "\u{f02d}",
-        ".gitignore" | ".gitattributes" | ".gitmodules" => return "\u{f1d3}",
-        "dockerfile" | "docker-compose.yml" | "docker-compose.yaml" => return "\u{f308}",
-        "makefile" | "justfile" => return "\u{f489}",
-        "package.json" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" => return "\u{e718}",
-        "tsconfig.json" | "jsconfig.json" => return "\u{e628}",
-        "readme.md" | "readme" => return "\u{f48a}",
-        "security.md" => return "\u{f21b}",
-        _ => {}
-    }
-    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    match ext {
-        "rs" => "\u{e68b}", // nf-seti-rust 
-        "ts" | "tsx" | "mts" | "cts" => "\u{e628}",
-        "js" | "jsx" | "mjs" | "cjs" => "\u{e781}",
-        "py" => "\u{e73c}",
-        "go" => "\u{e724}",
-        "java" => "\u{e738}",
-        "kt" | "kts" => "\u{e634}",
-        "c" | "h" => "\u{e61e}",
-        "cpp" | "cc" | "cxx" | "hpp" => "\u{e61d}",
-        "cs" => "\u{f81a}",
-        "rb" => "\u{e739}",
-        "php" => "\u{e73d}",
-        "swift" => "\u{e755}",
-        "md" | "mdx" | "markdown" => "\u{f48a}",
-        "json" | "jsonc" => "\u{e60b}",
-        "toml" | "yaml" | "yml" | "ini" | "cfg" | "conf" => "\u{e615}",
-        "xml" | "html" | "htm" => "\u{e736}",
-        "css" | "scss" | "sass" | "less" => "\u{e749}",
-        "vue" => "\u{e6a0}",
-        "svelte" => "\u{e697}",
-        "sh" | "bash" | "zsh" | "fish" | "ps1" => "\u{f489}",
-        "sql" => "\u{f1c0}",
-        "svg" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" => "\u{f1c5}",
-        "pdf" => "\u{f1c1}",
-        "txt" | "log" => "\u{f15c}",
-        "lock" => "\u{f023}",
-        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" => "\u{f1c6}",
-        "wasm" => "\u{e6a1}",
-        "proto" => "\u{e60a}",
-        "graphql" | "gql" => "\u{e662}",
-        _ => "\u{f15b}", // default file
-    }
+    Some(file_icon_for(path, is_dir))
 }
 
 fn render_preview_pane(
