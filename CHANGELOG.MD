@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.11-beta.2] - 2026-10-20
+
+### Changed
+
+- Align the max-reasoning prompt border with Pi's current built-in palette: dark `#FE5462`, light `#FE7479`.
+- Update the optional `pi-main` source submodule to upstream commit `26293e74f`.
+- Include colored language icons with dark/light theme support in session code review.
+
+### Verification
+
+- Compared max colors with Pi's own color parser; checked the prompt mapping, change scope, Rust formatting, and diff whitespace. No local Cargo build or Rust test suite was run; platform builds are delegated to release CI.
+
 ## [0.1.10] - 2026-10-06
 
 ### Added

@@ -49,14 +49,14 @@ fn pi_thinking_border_color(dark: bool, level: ThinkingLevel) -> ratatui::style:
         (true, ThinkingLevel::Medium) => Color::Rgb(129, 162, 190),
         (true, ThinkingLevel::High) => Color::Rgb(178, 148, 187),
         (true, ThinkingLevel::Xhigh) => Color::Rgb(209, 131, 232),
-        (true, ThinkingLevel::Max) => Color::Rgb(255, 95, 255),
+        (true, ThinkingLevel::Max) => Color::Rgb(254, 84, 98),
         (false, ThinkingLevel::Off) => Color::Gray,
         (false, ThinkingLevel::Minimal) => Color::Rgb(118, 118, 118),
         (false, ThinkingLevel::Low) => Color::Blue,
         (false, ThinkingLevel::Medium) => Color::Rgb(90, 128, 128),
         (false, ThinkingLevel::High) => Color::Rgb(135, 95, 135),
         (false, ThinkingLevel::Xhigh) => Color::Rgb(139, 0, 139),
-        (false, ThinkingLevel::Max) => Color::Rgb(175, 0, 95),
+        (false, ThinkingLevel::Max) => Color::Rgb(254, 116, 121),
     }
 }
 
@@ -911,7 +911,7 @@ mod tests {
             (ThinkingLevel::Medium, Color::Rgb(129, 162, 190)),
             (ThinkingLevel::High, Color::Rgb(178, 148, 187)),
             (ThinkingLevel::Xhigh, Color::Rgb(209, 131, 232)),
-            (ThinkingLevel::Max, Color::Rgb(255, 95, 255)),
+            (ThinkingLevel::Max, Color::Rgb(254, 84, 98)),
         ];
         for (level, color) in expected {
             assert_eq!(pi_thinking_border_color(true, level), color);
@@ -929,7 +929,7 @@ mod tests {
             (ThinkingLevel::Medium, Color::Rgb(90, 128, 128)),
             (ThinkingLevel::High, Color::Rgb(135, 95, 135)),
             (ThinkingLevel::Xhigh, Color::Rgb(139, 0, 139)),
-            (ThinkingLevel::Max, Color::Rgb(175, 0, 95)),
+            (ThinkingLevel::Max, Color::Rgb(254, 116, 121)),
         ];
         for (level, color) in expected {
             assert_eq!(pi_thinking_border_color(false, level), color);
