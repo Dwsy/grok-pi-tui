@@ -63,6 +63,9 @@ mod tests {
         assert!(source.contains("exit_plan_mode"));
         assert!(source.contains("tool_call"));
         assert!(source.contains("PI_GROK_PLAN_CONTROL"));
+        // Inactive-state calls must stay idempotent (no throw) so a model
+        // retry racing the approved exit never produces a failed tool trace.
+        assert!(source.contains("Plan mode is not active"));
         assert_eq!(
             std::fs::read_to_string(extension.control_path()).expect("read control"),
             r#"{"active":false,"planFilePath":""}"#

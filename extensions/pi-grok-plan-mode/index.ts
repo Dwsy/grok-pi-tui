@@ -78,7 +78,19 @@ export default function (pi: {
     async execute() {
       const control = await readControl();
       if (!control?.active) {
-        throw new Error("exit_plan_mode is only available while Plan mode is active");
+        // The adapter approves exit_plan_mode mid-turn and immediately flips
+        // the control file to inactive. A model retry racing that transition
+        // must observe idempotent success, not a thrown error, or it loops
+        // under the stale "Plan mode is active" reminder.
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Plan mode is not active. Nothing to submit; continue in the current mode.",
+            },
+          ],
+          details: {},
+        };
       }
       return {
         content: [{ type: "text", text: "Plan submitted for user approval." }],

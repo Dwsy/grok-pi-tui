@@ -435,6 +435,15 @@ impl PiAgent {
                 ))
                 .await;
             }
+            // The turn that called exit_plan_mode is still in flight, so it
+            // never sees the mode change through build_reminder_for_prompt.
+            // Without this notice the model keeps acting (and may re-call
+            // exit_plan_mode) under the last injected "Plan mode is still
+            // active" reminder.
+            let _ = self.rpc.notify(json!({
+                "type": "follow_up",
+                "message": "The user approved the plan. Plan mode is now OFF: you can make edits and run tools normally. Do not call exit_plan_mode again.",
+            }));
             return;
         }
         self.state
