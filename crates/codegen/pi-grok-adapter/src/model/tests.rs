@@ -2,31 +2,30 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn parse_session_tree_flattens_depth_and_marks_current_leaf() {
-    let tree = parse_session_tree(&json!({
-        "leafId": "a2",
-        "tree": [{
-            "entry": {
+fn build_session_tree_flattens_depth_and_marks_current_leaf() {
+    let tree = build_session_tree(
+        &[
+            json!({
                 "type": "message",
                 "id": "u1",
+                "parentId": null,
                 "message": { "role": "user", "content": "first\nline" }
-            },
-            "children": [{
-                "entry": {
-                    "type": "message",
-                    "id": "a2",
-                    "message": {
-                        "role": "assistant",
-                        "content": [{ "type": "text", "text": "reply" }]
-                    }
-                },
-                "children": [],
-                "label": "checkpoint"
-            }]
-        }]
-    }));
+            }),
+            json!({
+                "type": "message",
+                "id": "a2",
+                "parentId": "u1",
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "reply" }]
+                }
+            }),
+            json!({ "type": "label", "id": "l1", "parentId": "a2", "targetId": "a2", "label": "checkpoint" }),
+        ],
+        Some("a2"),
+    );
     assert_eq!(tree.leaf_id.as_deref(), Some("a2"));
-    assert_eq!(tree.rows.len(), 2);
+    assert_eq!(tree.rows.len(), 3);
     assert_eq!(tree.rows[0].id, "u1");
     assert_eq!(tree.rows[0].depth, 0);
     assert_eq!(tree.rows[0].role, "user");
@@ -44,54 +43,126 @@ fn parse_session_tree_flattens_depth_and_marks_current_leaf() {
     assert_eq!(tree.rows[1].preview, "reply");
     assert_eq!(tree.rows[1].detail, "reply");
     assert!(tree.rows[1].has_text);
+    // Label entries stay visible in the tree like Pi's `getTree()` projection.
+    assert_eq!(tree.rows[2].id, "l1");
+    assert_eq!(tree.rows[2].parent_id.as_deref(), Some("a2"));
+    assert_eq!(tree.rows[2].depth, 2);
+    assert!(tree.rows[2].is_leaf);
 }
 
 #[test]
-fn tree_entry_editor_text_preserves_full_user_message() {
-    let tree = json!({
-        "tree": [{
-            "entry": {
+fn build_session_tree_treats_orphans_and_self_parents_as_roots() {
+    let tree = build_session_tree(
+        &[
+            json!({
+                "type": "message",
+                "id": "orphan",
+                "parentId": "missing",
+                "message": { "role": "user", "content": "orphan" }
+            }),
+            json!({
+                "type": "message",
+                "id": "self",
+                "parentId": "self",
+                "message": { "role": "user", "content": "self" }
+            }),
+        ],
+        None,
+    );
+    assert_eq!(tree.rows.len(), 2);
+    assert_eq!(tree.rows[0].depth, 0);
+    assert!(tree.rows[0].parent_id.is_none());
+    assert_eq!(tree.rows[1].depth, 0);
+    assert!(tree.rows[1].parent_id.is_none());
+}
+
+#[test]
+fn build_session_tree_clears_label_with_undefined_label_entry() {
+    let tree = build_session_tree(
+        &[
+            json!({
                 "type": "message",
                 "id": "u1",
-                "message": {
-                    "role": "user",
-                    "content": [
-                        { "type": "text", "text": "first line\n" },
-                        { "type": "image", "data": "ignored" },
-                        { "type": "text", "text": "second line" }
-                    ]
-                }
-            },
-            "children": [{
-                "entry": {
-                    "type": "custom_message",
-                    "id": "c1",
-                    "content": "custom text"
-                },
-                "children": []
-            }]
-        }]
-    });
-
-    assert_eq!(
-        tree_entry_editor_text(&tree, "u1").as_deref(),
-        Some("first line\nsecond line")
+                "parentId": null,
+                "message": { "role": "user", "content": "hi" }
+            }),
+            json!({ "type": "label", "id": "l1", "parentId": "u1", "targetId": "u1", "label": "first" }),
+            json!({ "type": "label", "id": "l2", "parentId": "l1", "targetId": "u1" }),
+        ],
+        Some("u1"),
     );
-    assert_eq!(
-        tree_entry_editor_text(&tree, "c1").as_deref(),
-        Some("custom text")
-    );
-    assert_eq!(tree_entry_editor_text(&tree, "missing"), None);
+    assert_eq!(tree.rows[0].label, None);
 }
 
 #[test]
-fn parse_session_tree_formats_tool_results_from_tool_calls() {
-    let tree = parse_session_tree(&json!({
-        "leafId": "tr1",
-        "tree": [{
-            "entry": {
+fn build_session_tree_handles_chains_deeper_than_the_js_stack() {
+    // 4000 linear entries reproduce the payload shape that made Pi's own
+    // `get_tree` JSON.stringify throw "Maximum call stack size exceeded".
+    let entries: Vec<Value> = (0..4000)
+        .map(|index| {
+            json!({
+                "type": "message",
+                "id": format!("e{index}"),
+                "parentId": if index == 0 { None } else { Some(format!("e{}", index - 1)) },
+                "message": { "role": "user", "content": "x" }
+            })
+        })
+        .collect();
+    let tree = build_session_tree(&entries, Some("e3999"));
+    assert_eq!(tree.rows.len(), 4000);
+    assert_eq!(tree.rows[0].depth, 0);
+    assert_eq!(tree.rows[3999].depth, 3999);
+    assert!(tree.rows[3999].is_current);
+    assert!(tree.rows.iter().all(|row| row.on_active_path));
+}
+
+#[test]
+fn cache_editor_text_preserves_full_user_message() {
+    let mut cache = PiEntryReplayCache::default();
+    cache.reset(
+        "session-1",
+        &json!({
+            "entries": [
+                {
+                    "type": "message",
+                    "id": "u1",
+                    "parentId": null,
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            { "type": "text", "text": "first line\n" },
+                            { "type": "image", "data": "ignored" },
+                            { "type": "text", "text": "second line" }
+                        ]
+                    }
+                },
+                {
+                    "type": "custom_message",
+                    "id": "c1",
+                    "parentId": "u1",
+                    "content": "custom text"
+                }
+            ],
+            "leafId": "c1"
+        }),
+    );
+
+    assert_eq!(
+        cache.editor_text("u1").as_deref(),
+        Some("first line\nsecond line")
+    );
+    assert_eq!(cache.editor_text("c1").as_deref(), Some("custom text"));
+    assert_eq!(cache.editor_text("missing"), None);
+}
+
+#[test]
+fn build_session_tree_formats_tool_results_from_tool_calls() {
+    let tree = build_session_tree(
+        &[
+            json!({
                 "type": "message",
                 "id": "a1",
+                "parentId": null,
                 "message": {
                     "role": "assistant",
                     "content": [{
@@ -101,22 +172,21 @@ fn parse_session_tree_formats_tool_results_from_tool_calls() {
                         "arguments": { "command": "echo hi" }
                     }]
                 }
-            },
-            "children": [{
-                "entry": {
-                    "type": "message",
-                    "id": "tr1",
-                    "message": {
-                        "role": "toolResult",
-                        "toolCallId": "call-1",
-                        "toolName": "bash",
-                        "content": [{ "type": "text", "text": "hi" }]
-                    }
-                },
-                "children": []
-            }]
-        }]
-    }));
+            }),
+            json!({
+                "type": "message",
+                "id": "tr1",
+                "parentId": "a1",
+                "message": {
+                    "role": "toolResult",
+                    "toolCallId": "call-1",
+                    "toolName": "bash",
+                    "content": [{ "type": "text", "text": "hi" }]
+                }
+            }),
+        ],
+        Some("tr1"),
+    );
     assert_eq!(tree.rows.len(), 2);
     assert!(!tree.rows[0].has_text);
     assert_eq!(tree.rows[0].preview, "(no content)");

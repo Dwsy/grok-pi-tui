@@ -48,8 +48,8 @@ pub fn parse_session_switch(value: &Value) -> PiSessionSwitch {
 
 /// One flattened Pi session-tree row for Grok's native tree surface.
 ///
-/// Tree ownership stays in Pi (`get_tree` / `navigateTree`); this is only a
-/// display projection of `{entry, children, label?, labelTimestamp?}`.
+/// Tree ownership stays in Pi (append log + `navigateTree`); this is only a
+/// display projection of the flat `get_entries` append log.
 ///
 /// `depth` is the structural parent-chain length from the root (not the
 /// visual indent). Visual indent/connectors are recomputed in the Pager
@@ -76,98 +76,128 @@ pub struct PiTreeRow {
     pub has_text: bool,
 }
 
-/// Parsed Pi `get_tree` response.
+/// Parsed Pi session tree projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PiSessionTree {
     pub leaf_id: Option<String>,
     pub rows: Vec<PiTreeRow>,
 }
 
-pub fn parse_session_tree(value: &Value) -> PiSessionTree {
-    let leaf_id = string(value, &["leafId", "leaf_id"]).map(str::to_owned);
-    let tree = value.get("tree").and_then(Value::as_array);
-    let mut rows = Vec::new();
-    if let Some(roots) = tree {
-        for root in roots {
-            flatten_tree_node(root, 0, None, leaf_id.as_deref(), &mut rows);
-        }
-    }
-    // Mark the path from leaf to roots (Pi highlights active branch).
-    // Guard against cycles so a corrupt parent chain cannot hang /tree forever.
-    if let Some(leaf) = leaf_id.as_deref() {
-        let parents: HashMap<String, Option<String>> = rows
-            .iter()
-            .map(|row| (row.id.clone(), row.parent_id.clone()))
-            .collect();
-        let mut cursor = Some(leaf.to_string());
-        let mut seen = HashSet::new();
-        while let Some(id) = cursor {
-            if !seen.insert(id.clone()) {
-                break;
-            }
-            if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
-                row.on_active_path = true;
-            }
-            cursor = parents.get(&id).cloned().flatten();
-        }
-    }
-    PiSessionTree { leaf_id, rows }
+/// One cached append-log entry projected for the tree builder.
+struct FlatEntry<'a> {
+    entry: &'a Value,
+    id: &'a str,
+    parent: Option<&'a str>,
 }
 
-fn flatten_tree_node(
-    root: &Value,
-    depth: usize,
-    parent_id: Option<&str>,
-    leaf_id: Option<&str>,
-    out: &mut Vec<PiTreeRow>,
-) {
-    // Iterative DFS: deep sessions must not blow the stack or hang the adapter.
-    // toolCallMap is filled while walking assistant messages so toolResult
-    // rows can show `[bash: cmd]` like Pi TreeSelector, not bare `[bash]`.
-    let mut stack: Vec<(Value, usize, Option<String>)> =
-        vec![(root.clone(), depth, parent_id.map(str::to_owned))];
-    let mut visiting = HashSet::new();
-    let mut tool_calls: HashMap<String, (String, Value)> = HashMap::new();
-    while let Some((node, depth, parent_id)) = stack.pop() {
-        let entry = node.get("entry").cloned().unwrap_or_else(|| node.clone());
-        let Some(id) = string(&entry, &["id"]).map(str::to_owned) else {
+/// Rebuild Pi's tree display projection from the flat append log.
+///
+/// Pi's own `get_tree` RPC serializes a recursively nested `{entry, children}`
+/// graph. `JSON.stringify` walks that graph recursively, so a long linear
+/// session (one entry per turn — a few thousand is enough) dies with
+/// `RangeError: Maximum call stack size exceeded` inside Pi itself, before the
+/// adapter ever sees a payload. The append log carries the same `parentId`
+/// links and serializes as a flat array, so the tree is rebuilt here instead.
+///
+/// Ordering matches Pi's `getTree()`: roots and siblings in append order
+/// (monotonic timestamps, so this equals Pi's timestamp sort), orphans and
+/// self-parented entries treated as roots.
+pub fn build_session_tree(entries: &[Value], leaf_id: Option<&str>) -> PiSessionTree {
+    let nodes: Vec<FlatEntry<'_>> = entries
+        .iter()
+        .filter_map(|entry| {
+            Some(FlatEntry {
+                entry,
+                id: string(entry, &["id"])?,
+                parent: entry
+                    .get("parentId")
+                    .or_else(|| entry.get("parent_id"))
+                    .and_then(Value::as_str),
+            })
+        })
+        .collect();
+    let index_by_id: HashMap<&str, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.id, index))
+        .collect();
+    // Self-parented entries are roots in Pi's getTree(); unresolved parents are
+    // orphans and become roots too, so a corrupt chain cannot hide a subtree.
+    let parent_of: Vec<Option<usize>> = nodes
+        .iter()
+        .map(|node| {
+            let parent = node.parent.filter(|parent| *parent != node.id)?;
+            index_by_id.get(parent).copied()
+        })
+        .collect();
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    let mut roots: Vec<usize> = Vec::new();
+    for (index, parent) in parent_of.iter().enumerate() {
+        match parent {
+            Some(parent) => children[*parent].push(index),
+            None => roots.push(index),
+        }
+    }
+
+    // Pi resolves labels through its own index: last label entry wins, an
+    // explicit `label: undefined` clears. Mirror that instead of reading a
+    // `label` field the append log never stores on the target entry.
+    let mut labels: HashMap<&str, (&str, Option<&str>)> = HashMap::new();
+    for node in &nodes {
+        if string(node.entry, &["type"]) != Some("label") {
+            continue;
+        }
+        let Some(target) = string(node.entry, &["targetId"]) else {
             continue;
         };
-        if !visiting.insert(id.clone()) {
-            // Cycle / duplicate id in tree payload.
-            continue;
+        match string(node.entry, &["label"]) {
+            Some(label) => {
+                labels.insert(target, (label, string(node.entry, &["timestamp"])));
+            }
+            None => {
+                labels.remove(target);
+            }
         }
-        let entry_type = string(&entry, &["type"]).unwrap_or("unknown").to_string();
-        if entry_type == "message" {
-            collect_tool_calls(entry.get("message").unwrap_or(&entry), &mut tool_calls);
+    }
+
+    // toolCallMap is filled in append order so toolResult rows can show
+    // `[bash: cmd]` like Pi TreeSelector, not bare `[bash]`.
+    let mut tool_calls: HashMap<String, (String, Value)> = HashMap::new();
+    for node in &nodes {
+        if string(node.entry, &["type"]) == Some("message") {
+            collect_tool_calls(
+                node.entry.get("message").unwrap_or(node.entry),
+                &mut tool_calls,
+            );
         }
-        let label = string(&node, &["label"])
-            .or_else(|| string(&entry, &["label"]))
-            .map(str::to_owned);
-        let label_timestamp =
-            string(&node, &["labelTimestamp", "label_timestamp"]).map(str::to_owned);
-        let timestamp = string(&entry, &["timestamp"]).map(str::to_owned);
+    }
+
+    // Iterative DFS: deep sessions must not blow the stack.
+    let mut rows: Vec<PiTreeRow> = Vec::with_capacity(nodes.len());
+    let mut row_index_by_node: Vec<Option<usize>> = vec![None; nodes.len()];
+    let mut stack: Vec<(usize, usize)> = roots.iter().rev().map(|&index| (index, 0)).collect();
+    while let Some((index, depth)) = stack.pop() {
+        let node = &nodes[index];
+        let entry_type = string(node.entry, &["type"])
+            .unwrap_or("unknown")
+            .to_string();
         let (role, preview, detail, has_text) =
-            tree_entry_display(&entry, &entry_type, &tool_calls);
-        let children = node
-            .get("children")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let child_ids: Vec<String> = children
+            tree_entry_display(node.entry, &entry_type, &tool_calls);
+        let (label, label_timestamp) = labels
+            .get(node.id)
+            .map(|(label, timestamp)| (Some((*label).to_owned()), timestamp.map(str::to_owned)))
+            .unwrap_or((None, None));
+        let child_ids: Vec<String> = children[index]
             .iter()
-            .filter_map(|child| {
-                let entry = child.get("entry").unwrap_or(child);
-                string(entry, &["id"]).map(str::to_owned)
-            })
+            .map(|&child| nodes[child].id.to_owned())
             .collect();
-        let is_current = leaf_id == Some(id.as_str());
-        out.push(PiTreeRow {
-            id: id.clone(),
-            parent_id,
+        row_index_by_node[index] = Some(rows.len());
+        rows.push(PiTreeRow {
+            id: node.id.to_owned(),
+            parent_id: parent_of[index].map(|parent| nodes[parent].id.to_owned()),
             depth,
-            is_leaf: children.is_empty(),
-            is_current,
+            is_leaf: child_ids.is_empty(),
+            is_current: leaf_id == Some(node.id),
             on_active_path: false,
             role,
             preview,
@@ -175,14 +205,35 @@ fn flatten_tree_node(
             label,
             label_timestamp,
             entry_type,
-            timestamp,
+            timestamp: string(node.entry, &["timestamp"]).map(str::to_owned),
             child_ids,
             has_text,
         });
         // Push children in reverse so left-to-right order is preserved.
-        for child in children.into_iter().rev() {
-            stack.push((child, depth + 1, Some(id.clone())));
+        for &child in children[index].iter().rev() {
+            stack.push((child, depth + 1));
         }
+    }
+
+    // Mark the path from leaf to roots (Pi highlights the active branch).
+    // Guard against cycles so a corrupt parent chain cannot hang /tree forever.
+    if let Some(leaf) = leaf_id {
+        let mut cursor = index_by_id.get(leaf).copied();
+        let mut seen: HashSet<usize> = HashSet::new();
+        while let Some(index) = cursor {
+            if !seen.insert(index) {
+                break;
+            }
+            if let Some(row_index) = row_index_by_node[index] {
+                rows[row_index].on_active_path = true;
+            }
+            cursor = parent_of[index];
+        }
+    }
+
+    PiSessionTree {
+        leaf_id: leaf_id.map(str::to_owned),
+        rows,
     }
 }
 
@@ -208,7 +259,7 @@ fn collect_tool_calls(message: &Value, out: &mut HashMap<String, (String, Value)
 
 /// Returns `(role, one-line preview, short detail, has_text)`.
 ///
-/// Keep this deliberately small: Pi `get_tree` already returns full entries
+/// Keep this deliberately small: the append log carries full entries
 /// (often multi-MB). Shipping full message bodies over ACP freezes the
 /// SessionTree loading UI. List/detail use short projections; full text can
 /// be re-fetched later if needed.
@@ -418,23 +469,6 @@ fn format_tool_call(name: &str, args: &Value) -> String {
             }
         }
     }
-}
-
-/// Return the complete text Pi restores into its editor after tree navigation.
-/// Unlike the tree projection, this is called only for the selected entry.
-pub fn tree_entry_editor_text(value: &Value, entry_id: &str) -> Option<String> {
-    let roots = value.get("tree")?.as_array()?;
-    let mut stack: Vec<&Value> = roots.iter().rev().collect();
-    while let Some(node) = stack.pop() {
-        let entry = node.get("entry").unwrap_or(node);
-        if string(entry, &["id"]) == Some(entry_id) {
-            return session_entry_editor_text(entry);
-        }
-        if let Some(children) = node.get("children").and_then(Value::as_array) {
-            stack.extend(children.iter().rev());
-        }
-    }
-    None
 }
 
 fn session_entry_editor_text(entry: &Value) -> Option<String> {
@@ -960,6 +994,11 @@ impl PiEntryReplayCache {
             .get(entry_id)
             .and_then(|index| self.entries.get(*index))
             .and_then(session_entry_editor_text)
+    }
+
+    /// Tree projection of the retained append log (see [`build_session_tree`]).
+    pub fn session_tree(&self) -> PiSessionTree {
+        build_session_tree(&self.entries, self.leaf_id.as_deref())
     }
 
     fn apply_payload(&mut self, value: &Value, incremental: bool) {

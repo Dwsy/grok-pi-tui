@@ -66,7 +66,7 @@ impl TreeMapState {
             selected: 0,
             scroll: 0,
             loading: true,
-            status: Some("Fetching Pi get_tree…".into()),
+            status: Some("Fetching Pi session tree…".into()),
             list_rect: None,
         }
     }
@@ -342,7 +342,7 @@ pub fn render_tree_map(buf: &mut Buffer, area: Rect, state: &mut TreeMapState, t
 
     if state.loading {
         lines.push(Line::from(Span::styled(
-            "  Waiting for Pi get_tree…",
+            "  Waiting for Pi session tree…",
             Style::default().fg(theme.text_secondary),
         )));
     } else if state.rows.is_empty() {

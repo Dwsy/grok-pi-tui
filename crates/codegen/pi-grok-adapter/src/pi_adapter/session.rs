@@ -84,34 +84,18 @@ impl PiAgent {
         Ok(result)
     }
 
-    /// Read-only projection of Pi's current entry tree (`get_tree`).
+    /// Read-only projection of Pi's current entry tree.
     ///
-    /// Parse + flatten + drop of the nested Value happen on a large-stack
-    /// worker: long sessions produce trees deep enough to overflow the default
-    /// Tokio worker stack even after serde_json recursion limits are disabled.
+    /// Built from Pi's flat `get_entries` append log rather than `get_tree`:
+    /// Pi's `get_tree` serializes a recursively nested `{entry, children}` graph
+    /// and blows the JS call stack on long linear sessions (a few thousand
+    /// entries), failing the whole request before any payload exists.
     pub(super) async fn fetch_session_tree(&self) -> Result<PiSessionTree> {
-        let (tree, _) = self.fetch_session_tree_with_editor_text(None).await?;
-        Ok(tree)
-    }
-
-    pub(super) async fn fetch_session_tree_with_editor_text(
-        &self,
-        entry_id: Option<&str>,
-    ) -> Result<(PiSessionTree, Option<String>)> {
-        let entry_id = entry_id.map(str::to_owned);
-        let data = self.rpc.request(json!({ "type": "get_tree" })).await?;
-        tokio::task::spawn_blocking(move || {
-            crate::pi_rpc::with_large_stack(move || {
-                let editor_text = entry_id
-                    .as_deref()
-                    .and_then(|entry_id| tree_entry_editor_text(&data, entry_id));
-                let tree = parse_session_tree(&data);
-                drop(data);
-                (tree, editor_text)
-            })
-        })
-        .await
-        .map_err(|error| anyhow!("Pi get_tree worker failed: {error}"))
+        self.refresh_entry_replay_cache().await?;
+        let cache = self.state.borrow().entry_replay_cache.clone();
+        Ok(tokio::task::spawn_blocking(move || cache.session_tree())
+            .await
+            .map_err(|error| anyhow!("Pi session tree worker failed: {error}"))?)
     }
 
     /// Refresh the retained flat entry log. Once a session has been loaded,

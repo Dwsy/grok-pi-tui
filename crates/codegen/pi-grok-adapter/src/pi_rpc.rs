@@ -911,38 +911,52 @@ mod tests {
     }
 
     #[test]
-    fn parse_pi_rpc_json_large_get_tree_fixture() {
-        let path = std::path::Path::new("/tmp/pi-get-tree.json");
+    fn parse_pi_rpc_json_large_entries_fixture() {
+        let path = std::path::Path::new("/tmp/pi-get-entries.json");
         if !path.exists() {
             return;
         }
         let data = std::fs::read_to_string(path).unwrap();
-        // Wrap as a full RPC response line like Pi emits.
+        // Wrap as a full RPC response line like Pi emits for `get_entries`.
         let line = format!(
-            "{{\"type\":\"response\",\"command\":\"get_tree\",\"success\":true,\"id\":\"x\",\"data\":{data}}}"
+            "{{\"type\":\"response\",\"command\":\"get_entries\",\"success\":true,\"id\":\"x\",\"data\":{data}}}"
         );
         let start = std::time::Instant::now();
         let value = parse_pi_rpc_json(&line).expect("deep parse");
-        let elapsed = start.elapsed();
-        eprintln!("fixture parse elapsed_ms={}", elapsed.as_millis());
-        assert_eq!(value["command"], "get_tree");
-        assert!(value["data"]["tree"].as_array().is_some());
-        // Flatten projection must also finish quickly on large stack.
-        let tree = with_large_stack({
-            let value = value;
-            move || crate::model::parse_session_tree(&value["data"])
-        });
+        eprintln!("fixture parse elapsed_ms={}", start.elapsed().as_millis());
+        assert_eq!(value["command"], "get_entries");
+        let entries = value["data"]["entries"]
+            .as_array()
+            .expect("entries array")
+            .clone();
+        let leaf = value["data"]["leafId"].as_str().map(str::to_owned);
+        // Tree projection must be flat-log based and stack safe on long chains.
+        let build_start = std::time::Instant::now();
+        let tree = crate::model::build_session_tree(&entries, leaf.as_deref());
         eprintln!(
-            "fixture flatten nodes={} elapsed_ms_total={}",
+            "fixture tree nodes={} build_ms={} elapsed_ms_total={}",
             tree.rows.len(),
+            build_start.elapsed().as_millis(),
             start.elapsed().as_millis()
         );
         assert!(!tree.rows.is_empty());
         assert!(start.elapsed().as_secs() < 30);
+        let roots = tree
+            .rows
+            .iter()
+            .filter(|row| row.parent_id.is_none())
+            .count();
+        let max_depth = tree.rows.iter().map(|row| row.depth).max().unwrap_or(0);
+        let active = tree.rows.iter().filter(|row| row.on_active_path).count();
+        eprintln!(
+            "fixture rows={} roots={roots} max_depth={max_depth} active_path={active} leaf={:?}",
+            tree.rows.len(),
+            tree.leaf_id
+        );
     }
 
     #[test]
-    fn parse_pi_rpc_json_accepts_deeply_nested_trees() {
+    fn parse_pi_rpc_json_accepts_deeply_nested_json() {
         // Build a chain deeper than serde_json's default recursion limit.
         let mut node =
             String::from("{\"entry\":{\"id\":\"leaf\",\"type\":\"message\"},\"children\":[]}");

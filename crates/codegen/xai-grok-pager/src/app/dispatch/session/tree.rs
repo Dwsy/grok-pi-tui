@@ -27,7 +27,7 @@ pub(in crate::app::dispatch) fn dispatch_show_session_tree(app: &mut AppView) ->
     let skip_summary = app.current_ui.pi_tree_skip_summary_prompt;
     with_active_agent(app, |agent| {
         let mut state = SessionTreeState::loading();
-        state.status = Some("Fetching Pi get_tree…".into());
+        state.status = Some("Fetching Pi session tree…".into());
         state.skip_summary_prompt = skip_summary;
         agent.active_modal = Some(ActiveModal::SessionTree {
             state,

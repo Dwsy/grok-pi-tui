@@ -128,7 +128,7 @@ impl SessionTreeState {
             focus: SessionTreeFocus::List,
             label_draft: String::new(),
             loading: true,
-            status: Some("Fetching Pi get_tree…".into()),
+            status: Some("Fetching Pi session tree…".into()),
             content_rect: None,
             list_rect: None,
             list_start_y: 0,
@@ -252,32 +252,46 @@ impl SessionTreeState {
             .map(|(i, n)| (n.id.as_str(), i))
             .collect();
 
-        let find_visible_ancestor = |node_id: &str| -> Option<String> {
-            let mut current = self
-                .nodes
-                .iter()
-                .find(|n| n.id == node_id)
-                .and_then(|n| n.parent_id.clone());
-            while let Some(id) = current {
-                if visible_ids.contains(id.as_str()) {
-                    return Some(id);
-                }
-                current = id_to_index
-                    .get(id.as_str())
-                    .and_then(|&i| self.nodes[i].parent_id.clone());
-            }
-            None
-        };
-
+        // Memoize nearest visible ancestor per node id. A long session is a
+        // single-child chain, so resolving each node by walking to the root is
+        // O(n²) and made every frame scale with session length. Filling the
+        // whole chain on first touch makes it amortized O(n).
+        let mut nearest_visible: HashMap<&str, Option<&str>> = HashMap::new();
         // visible children in filtered order
-        let mut visible_parent: HashMap<String, Option<String>> = HashMap::new();
         let mut visible_children: HashMap<Option<String>, Vec<String>> = HashMap::new();
         visible_children.insert(None, Vec::new());
         for &idx in &filtered {
-            let id = self.nodes[idx].id.clone();
-            let ancestor = find_visible_ancestor(&id);
-            visible_parent.insert(id.clone(), ancestor.clone());
-            visible_children.entry(ancestor).or_default().push(id);
+            let id = self.nodes[idx].id.as_str();
+            if !nearest_visible.contains_key(id) {
+                let mut chain = vec![id];
+                let mut cursor = self.nodes[idx].parent_id.as_deref();
+                let resolved = loop {
+                    let Some(pid) = cursor else { break None };
+                    if visible_ids.contains(pid) {
+                        break Some(pid);
+                    }
+                    if let Some(&known) = nearest_visible.get(pid) {
+                        break known;
+                    }
+                    let Some(&parent_index) = id_to_index.get(pid) else {
+                        break None;
+                    };
+                    chain.push(pid);
+                    cursor = self.nodes[parent_index].parent_id.as_deref();
+                };
+                for chain_id in chain {
+                    nearest_visible.insert(chain_id, resolved);
+                }
+            }
+            let ancestor = nearest_visible
+                .get(id)
+                .copied()
+                .flatten()
+                .map(str::to_owned);
+            visible_children
+                .entry(ancestor)
+                .or_default()
+                .push(id.to_owned());
         }
 
         let visible_roots = visible_children.get(&None).cloned().unwrap_or_default();
@@ -984,7 +998,7 @@ pub fn render_session_tree(
     let mut lines: Vec<Line> = Vec::new();
     if state.loading {
         lines.push(Line::from(Span::styled(
-            "  Waiting for Pi get_tree (large sessions can take a few seconds)…",
+            "  Waiting for Pi session tree (large sessions can take a few seconds)…",
             Style::default().fg(theme.text_secondary),
         )));
     } else if rows.is_empty() {
@@ -1472,6 +1486,37 @@ mod tests {
         assert!(ids.contains(&"u"));
         assert!(ids.contains(&"t"));
         assert!(!ids.contains(&"a"));
+    }
+
+    #[test]
+    fn deep_linear_session_stays_responsive() {
+        // A long session is one entry per turn: thousands of single-child
+        // links. `visible_rows` must stay usable at that size because the
+        // renderer calls it every frame (and once per visible row via
+        // `is_foldable`).
+        let mut nodes: Vec<SessionTreeNode> = Vec::new();
+        for index in 0..4000usize {
+            let id = format!("e{index}");
+            let parent = (index > 0).then(|| format!("e{}", index - 1));
+            let mut entry = node(&id, parent.as_deref(), index, "user", "message", true);
+            entry.is_leaf = false;
+            if index > 0 {
+                let previous = &mut nodes[index - 1];
+                previous.child_ids = vec![id.clone()];
+            }
+            nodes.push(entry);
+        }
+        let state = SessionTreeState::with_nodes(nodes, Some("e3999".into()));
+        let start = std::time::Instant::now();
+        let rows = state.visible_rows();
+        let elapsed = start.elapsed();
+        assert_eq!(rows.len(), 4000);
+        assert_eq!(rows[0].indent, 0);
+        assert_eq!(rows[3999].indent, 0);
+        assert!(
+            elapsed.as_millis() < 500,
+            "visible_rows took {elapsed:?} for 4000 nodes"
+        );
     }
 
     #[test]

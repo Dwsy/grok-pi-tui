@@ -15,8 +15,8 @@ use crate::{
     model::{
         PiCommand, PiEntryReplayCache, PiHistoryItem, PiModel, PiReplayEntry, PiSessionSwitch,
         PiSessionTree, PiState, PiToolContent, extract_delta, json_text, parse_commands,
-        parse_messages, parse_models, parse_session_switch, parse_session_tree, parse_state,
-        scan_local_sessions, scan_local_sessions_for_cwd, string, tree_entry_editor_text,
+        parse_messages, parse_models, parse_session_switch, parse_state, scan_local_sessions,
+        scan_local_sessions_for_cwd, string,
     },
     pi_rpc::PiRpc,
     pi_workflow_backend::{
