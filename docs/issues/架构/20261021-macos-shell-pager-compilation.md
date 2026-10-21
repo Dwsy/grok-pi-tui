@@ -44,6 +44,7 @@ The Cargo reference supports `[profile.<name>.package.<crate>]` settings for `op
 
 - Static project scan: completed.
 - Reference timing analysis: completed.
-- Isolated experiment workflow: authored; status and run link to be updated after CI trigger.
+- Isolated experiment workflow: committed as `c482d052` and pushed to `main`, GitHub Actions run **https://github.com/Dwsy/grok-pi-tui/actions/runs/39563709999** (workflow_dispatch, source tag `v0.1.11`, four experiment jobs, two running/two queued when last checked). Actual build results and binary sizes remain pending; do not imply a performance win before measurement.
+- Local static validation PASS: manual-only workflow, 4 unique target+variant jobs, no publishing action, Bash syntax, and real beta.3 Cargo timing HTML parsed to exactly two crate metrics. No local Rust compilation.
 - Source-level refactor: deliberately not undertaken without per-crate experimental measurements.
 - User requirement: **no local Cargo build/check/test**; only GitHub-hosted release/experiment compilation.
