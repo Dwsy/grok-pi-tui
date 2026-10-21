@@ -240,6 +240,8 @@ pub struct BlockViewerPane {
     edit_review: bool,
     /// F2 side-by-side state used for the last edit-item build.
     last_edit_side_by_side: bool,
+    /// F2 word/line granularity, tracked separately to rebuild open viewers.
+    last_edit_word_highlight: bool,
 
     /// Set by handle_key when 'r' is pressed. Caller should toggle raw mode on the entry and call rebuild_items().
     pub raw_toggle_pending: bool,
@@ -319,6 +321,7 @@ impl BlockViewerPane {
             last_content_area: Rect::default(),
             edit_review: false,
             last_edit_side_by_side: false,
+            last_edit_word_highlight: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -380,6 +383,7 @@ impl BlockViewerPane {
             last_content_area: Rect::default(),
             edit_review: false,
             last_edit_side_by_side: false,
+            last_edit_word_highlight: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -440,6 +444,7 @@ impl BlockViewerPane {
             last_content_area: Rect::default(),
             edit_review: false,
             last_edit_side_by_side: false,
+            last_edit_word_highlight: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -873,6 +878,7 @@ impl BlockViewerPane {
             last_content_area: Rect::default(),
             edit_review: false,
             last_edit_side_by_side: false,
+            last_edit_word_highlight: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -949,6 +955,7 @@ impl BlockViewerPane {
             last_content_area: Rect::default(),
             edit_review: false,
             last_edit_side_by_side: false,
+            last_edit_word_highlight: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -1076,6 +1083,7 @@ impl BlockViewerPane {
             last_content_area: Rect::default(),
             edit_review,
             last_edit_side_by_side: false,
+            last_edit_word_highlight: false,
 
             raw_toggle_pending: false,
             copy_meta_pending: false,
@@ -1713,8 +1721,10 @@ impl BlockViewerPane {
         if self.kind == ViewerKind::Edit {
             let side_by_side =
                 !self.edit_review && crate::appearance::cache::load_side_by_side_edit();
+            let word_highlight = crate::appearance::cache::load_side_by_side_word_highlight();
             let layout_changed = self.last_content_area.width != content_area.width
-                || self.last_edit_side_by_side != side_by_side;
+                || self.last_edit_side_by_side != side_by_side
+                || self.last_edit_word_highlight != word_highlight;
             if theme_changed || layout_changed {
                 if let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &entry.block {
                     let (items, diff_meta) = Self::build_edit_items(
@@ -1728,6 +1738,7 @@ impl BlockViewerPane {
                     self.list_state.invalidate_layout();
                 }
                 self.last_edit_side_by_side = side_by_side;
+                self.last_edit_word_highlight = word_highlight;
             }
         }
 

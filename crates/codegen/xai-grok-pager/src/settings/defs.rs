@@ -1232,6 +1232,29 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: true,
         },
+        // PAGER-owned and grok-pi-only. Word-level is the default;
+        // disabled restores the original line-wide background.
+        SettingMeta {
+            key: "side_by_side_word_highlight",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Pager,
+            label: "Word-level side-by-side highlight",
+            description: "Highlight only changed words (default) instead of shading entire old/new lines. Disable to restore full-line backgrounds.",
+            keywords: &[
+                "diff",
+                "word",
+                "line",
+                "highlight",
+                "side-by-side",
+                "granularity",
+            ],
+            kind: SettingKind::Bool {
+                default: crate::appearance::cache::SIDE_BY_SIDE_WORD_HIGHLIGHT_DEFAULT,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
         // SHELL-owned: `[ui].ctrl_o_tool_expansion`. Only grok-pi consumes this
         // setting; normal Grok retains its existing Ctrl+O behavior.
         SettingMeta {

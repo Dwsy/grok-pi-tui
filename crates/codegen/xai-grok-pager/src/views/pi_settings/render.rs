@@ -6,6 +6,8 @@
 //! ┌─ Settings ─────────────────────────────────────────────┐
 //! │  Appearance  Mouse  Editor  Agent  …                    │  native tab bar
 //! │ ──────────────────────────────────────────────────────  │
+//! │ search: _                                               │  always-on search bar
+//! │ ──────────────────────────────────────────────────────  │
 //! │  Theme       │ Theme                     Grok Night ›   │  sidebar │ pane
 //! │  Display     │ Auto dark theme           Grok Night ›   │
 //! │  Thinking    │ Compact mode                       on    │  dimmed: other section
@@ -175,33 +177,38 @@ pub fn render_pi_settings(
 // ---------------------------------------------------------------------------
 
 fn render_browse(buf: &mut Buffer, content: Rect, state: &mut PiSettingsState, theme: &Theme) {
-    let mut area = content;
-
-    // The search banner exists only while a query is live; browsing is entered
-    // with `/`, so an always-on empty bar would just cost a row.
-    if state.searching() && area.height >= 3 {
-        crate::views::picker::render_line_editor_search_bar(
+    // The search bar is part of the surface, not a transient banner: an empty
+    // field is the affordance for `/`, matching the native settings modal.
+    // The caller guarantees `content.height >= 2`, so the bar always has a row.
+    crate::views::picker::render_line_editor_search_bar(
+        buf,
+        content.x,
+        content.y,
+        content.width,
+        theme,
+        &state.query,
+        state.mode.kind() == ModeKind::Search,
+        true,
+        Some(theme.bg_base),
+    );
+    let mut area = Rect {
+        y: content.y + 1,
+        height: content.height - 1,
+        ..content
+    };
+    // A one-row remainder cannot spare a line for the divider.
+    if area.height >= 2 {
+        crate::views::picker::render_divider(
             buf,
             area.x,
             area.y,
             area.width,
             theme,
-            &state.query,
-            state.mode.kind() == ModeKind::Search,
-            true,
-            Some(theme.bg_base),
-        );
-        crate::views::picker::render_divider(
-            buf,
-            area.x,
-            area.y + 1,
-            area.width,
-            theme,
             Some(theme.bg_base),
         );
         area = Rect {
-            y: area.y + 2,
-            height: area.height - 2,
+            y: area.y + 1,
+            height: area.height - 1,
             ..area
         };
     }

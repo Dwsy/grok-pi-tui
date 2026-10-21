@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Codemode cards open with the script and results** — a new Codemode card now shows the script, the nested-call list and the output preview by default instead of the title alone, and the blank line between the title and the script is gone. Left-arrow folding still returns to the title-only row.
+- **F2 settings restore the always-on search field** — the grok-pi settings panel shows the native `search:` row (with the `/ to search` hint when empty) at all times again instead of only after a query started; `/` or `i` still focuses it and Esc clears the query.
+
 ## [0.1.11] - 2026-10-21
 
 ### Changed

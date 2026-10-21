@@ -102,6 +102,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "group_tool_verbs" => Action::SetGroupToolVerbs(new),
         "collapsed_edit_blocks" => Action::SetCollapsedEditBlocks(new),
         "side_by_side_edit" => Action::SetSideBySideEdit(new),
+        "side_by_side_word_highlight" => Action::SetSideBySideWordHighlight(new),
         "prompt_suggestions" => Action::SetPromptSuggestions(new),
         "respect_manual_folds" => Action::SetRespectManualFolds(new),
         "page_flip_on_send" => Action::SetPageFlipOnSend(new),

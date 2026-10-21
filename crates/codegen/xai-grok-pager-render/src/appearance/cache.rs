@@ -520,6 +520,19 @@ pub fn set_side_by_side_edit(enabled: bool) {
     SIDE_BY_SIDE_EDIT_CURRENT.store(enabled, Ordering::Relaxed);
 }
 
+/// Default to word-only background in side-by-side diffs.
+pub const SIDE_BY_SIDE_WORD_HIGHLIGHT_DEFAULT: bool = true;
+static SIDE_BY_SIDE_WORD_HIGHLIGHT_CURRENT: AtomicBool =
+    AtomicBool::new(SIDE_BY_SIDE_WORD_HIGHLIGHT_DEFAULT);
+
+pub fn load_side_by_side_word_highlight() -> bool {
+    SIDE_BY_SIDE_WORD_HIGHLIGHT_CURRENT.load(Ordering::Relaxed)
+}
+
+pub fn set_side_by_side_word_highlight(enabled: bool) {
+    SIDE_BY_SIDE_WORD_HIGHLIGHT_CURRENT.store(enabled, Ordering::Relaxed);
+}
+
 // -- Prompt suggestions (tab autocomplete) -----------------------------------
 
 thread_local! {

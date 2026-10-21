@@ -560,6 +560,37 @@ fn the_tab_bar_lists_every_tab_label() {
     }
 }
 
+/// The search field is part of the surface, not a transient banner: it must be
+/// visible before any query exists, exactly like the native settings modal.
+#[test]
+fn the_search_bar_is_always_present_while_browsing() {
+    let mut state = state();
+    assert!(!state.searching());
+    let lines = render_lines(&mut state, 140, 40);
+    let body = lines.join("\n");
+    assert!(
+        lines.iter().any(|line| line.contains("/ to search")),
+        "an empty query must still show the search affordance:\n{body}",
+    );
+}
+
+#[test]
+fn a_live_query_renders_in_the_always_present_search_bar() {
+    let mut state = state();
+    state.to_search();
+    for character in "compact".chars() {
+        press(&mut state, KeyCode::Char(character));
+    }
+    let lines = render_lines(&mut state, 140, 40);
+    let body = lines.join("\n");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("search:") && line.contains("compact")),
+        "the typed query must render in the search bar:\n{body}",
+    );
+}
+
 /// `Group` rows carry no scalar value — the registry deliberately gives
 /// `current_value_for` no arm for them. They must render as navigation rows,
 /// not as the marker that flags a genuinely missing read mapping.

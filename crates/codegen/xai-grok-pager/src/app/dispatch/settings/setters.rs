@@ -558,6 +558,34 @@ pub(in crate::app::dispatch) fn set_side_by_side_edit(app: &mut AppView, new: bo
     vec![]
 }
 
+/// Change side-by-side highlight granularity, without touching shell settings.
+/// PAGER-owned and process-local, like `side_by_side_edit`.
+pub(in crate::app::dispatch) fn set_side_by_side_word_highlight(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    if crate::appearance::cache::load_side_by_side_word_highlight() == new {
+        return vec![];
+    }
+    set_side_by_side_word_highlight_inner(new);
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "side_by_side_word_highlight",
+        value = new,
+        "setting changed",
+    );
+    app.show_toast(&save_success_toast(
+        "Word-level side-by-side highlight",
+        new,
+    ));
+    vec![]
+}
+
+pub(super) fn set_side_by_side_word_highlight_inner(new: bool) {
+    crate::appearance::cache::set_side_by_side_word_highlight(new);
+}
+
 /// Set grok-pi's Ctrl+O expansion scope. SHELL-owned: persists to
 /// `[ui].ctrl_o_tool_expansion` and is read on the hot key path.
 pub(in crate::app::dispatch) fn set_ctrl_o_tool_expansion(

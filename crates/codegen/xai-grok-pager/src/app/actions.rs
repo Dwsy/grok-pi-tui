@@ -599,6 +599,8 @@ pub enum Action {
     /// Set the grok-pi-only side-by-side edit renderer preference. PAGER-owned,
     /// process-local, default off, and applied on the next render frame.
     SetSideBySideEdit(bool),
+    /// Default true: only changed words get backgrounds; false: full lines.
+    SetSideBySideWordHighlight(bool),
     /// Set the grok-pi Ctrl+O tool expansion scope (`write_edit` or `all_tools`).
     SetCtrlOToolExpansion(String),
     /// Set which fields grok-pi Bash/run headers render.
@@ -1725,7 +1727,7 @@ pub enum Effect {
         all: bool,
         use_psm_index: bool,
     },
-    /// Fetch Pi `get_tree` for the active agent and open ArgPicker.
+    /// Fetch the Pi session tree for the active agent and open ArgPicker.
     FetchSessionTree {
         agent_id: crate::app::agent::AgentId,
         session_id: String,

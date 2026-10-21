@@ -684,6 +684,9 @@ pub fn current_value_for(
         "side_by_side_edit" => Some(SettingValue::Bool(
             crate::appearance::cache::load_side_by_side_edit(),
         )),
+        "side_by_side_word_highlight" => Some(SettingValue::Bool(
+            crate::appearance::cache::load_side_by_side_word_highlight(),
+        )),
         "ctrl_o_tool_expansion" => Some(SettingValue::Enum(
             match ui.ctrl_o_tool_expansion.as_deref() {
                 Some("all_tools") => "all_tools",
@@ -1747,6 +1750,13 @@ mod tests {
                         *default,
                         crate::appearance::cache::SIDE_BY_SIDE_EDIT_DEFAULT,
                         "side_by_side_edit default drifts from the process-local cache initializer"
+                    );
+                }
+                ("side_by_side_word_highlight", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default,
+                        crate::appearance::cache::SIDE_BY_SIDE_WORD_HIGHLIGHT_DEFAULT,
+                        "word highlight default drifts from the renderer cache"
                     );
                 }
                 // plan_mode: per-session, not persisted.

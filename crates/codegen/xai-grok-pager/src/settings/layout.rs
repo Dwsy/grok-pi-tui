@@ -60,6 +60,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         "group_tool_verbs"
         | "collapsed_edit_blocks"
         | "side_by_side_edit"
+        | "side_by_side_word_highlight"
         | "ctrl_o_tool_expansion"
         | "pi_bash_run_display"
         | "pi_bash_command_format"

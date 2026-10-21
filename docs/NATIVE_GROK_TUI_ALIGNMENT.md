@@ -13,7 +13,7 @@ The current entry point is not a self-drawn Ratatui shell. `grok-pi` lives insid
 | Input editor | `views/prompt_widget` | Pi prompt and `set_editor_text` enter the PromptWidget |
 | Slash completion | `slash` + `views/completion_dropdown` | Pi `get_commands` converted to ACP `AvailableCommand` then merged |
 | Markdown / code | `xai-grok-markdown` | `AgentMessageChunk`/`AgentThoughtChunk` enter the native scrollback pipeline |
-| Tools and diffs | `acp/tracker`, native `RenderBlock`/`EditToolCallBlock` | Pi tool lifecycle converted to ACP `ToolCall`/`ToolCallUpdate`; an external-only F2 opt-in (default off) delegates edit rows to a sibling side-by-side layout renderer when wide enough, while disabled/narrow layouts stay on the native unified renderer |
+| Tools and diffs | `acp/tracker`, native `RenderBlock`/`EditToolCallBlock` | Pi tool lifecycle converted to ACP `ToolCall`/`ToolCallUpdate`; an external-only F2 opt-in (default off) delegates edit rows to a sibling side-by-side layout renderer when wide enough, while disabled/narrow layouts stay on the native unified renderer. The parallel renderer defaults to changed-word-only backgrounds via another external-only F2 switch, with the original full-line style available on toggle-off |
 | Q&A overlay | `views/question_view` | `select`/`confirm`/`input`/`editor` converted to `x.ai/ask_user_question` |
 | Status and notifications | native toast / sticky surface | `notify`/`setStatus`/`setWidget` converted to narrow ACP notifications |
 | Voice dictation | native Pager Voice pipeline | opt-in external profile captures speech through xAI STT and inserts text into PromptWidget; Pi receives only the user-submitted prompt |

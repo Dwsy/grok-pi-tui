@@ -2351,6 +2351,12 @@ fn pager_registry_default_matches_agent_view_new_initializer() {
                          truth.",
                 );
             }
+            ("side_by_side_word_highlight", SettingKind::Bool { default }) => {
+                assert_eq!(
+                    *default,
+                    crate::appearance::cache::SIDE_BY_SIDE_WORD_HIGHLIGHT_DEFAULT,
+                );
+            }
             ("side_by_side_edit", SettingKind::Bool { default }) => {
                 assert_eq!(
                     *default,

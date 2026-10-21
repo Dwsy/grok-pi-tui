@@ -370,7 +370,6 @@ impl CodemodeToolCallBlock {
         ];
 
         if !self.code.is_empty() {
-            lines.push(Line::from("").into());
             let mut code_lines = self.highlighted_code(&theme);
             if !expanded && code_lines.len() > CODE_PREVIEW_LINES {
                 let hidden = code_lines.len() - CODE_PREVIEW_LINES;
@@ -506,7 +505,7 @@ impl BlockContent for CodemodeToolCallBlock {
     }
 
     fn default_display_mode(&self) -> DisplayMode {
-        DisplayMode::Collapsed
+        DisplayMode::Truncated
     }
 
     fn next_fold_mode(&self, current: DisplayMode, _is_running: bool) -> DisplayMode {
@@ -710,7 +709,7 @@ mod tests {
     #[test]
     fn fold_mode_cycles_through_preview_and_expanded() {
         let block = CodemodeToolCallBlock::new("return 1;");
-        assert_eq!(block.default_display_mode(), DisplayMode::Collapsed);
+        assert_eq!(block.default_display_mode(), DisplayMode::Truncated);
         assert_eq!(
             block.next_fold_mode(DisplayMode::Collapsed, false),
             DisplayMode::Truncated
@@ -723,6 +722,24 @@ mod tests {
             block.next_fold_mode(DisplayMode::Expanded, false),
             DisplayMode::Collapsed
         );
+    }
+
+    #[test]
+    fn script_follows_header_without_blank_line() {
+        let block = CodemodeToolCallBlock::new("const a = 1;").with_output("done");
+        let lines = lines_text(&block.output(&ctx_mode(DisplayMode::Truncated)));
+        assert!(lines[0].contains("Codemode"));
+        assert!(lines[1].contains("const a = 1;"));
+    }
+
+    #[test]
+    fn default_mode_shows_script_and_results() {
+        let block = sample_block();
+        assert_eq!(block.default_display_mode(), DisplayMode::Truncated);
+        let text = lines_text(&block.output(&ctx_mode(block.default_display_mode()))).join("\n");
+        assert!(text.contains("const a = await tools.read"));
+        assert!(text.contains("read"));
+        assert!(text.contains("a.rs: fn main() {}"));
     }
 
     #[test]

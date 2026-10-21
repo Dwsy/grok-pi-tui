@@ -102,9 +102,9 @@ use super::settings::setters::{
     set_remote_tui_footer, set_render_mermaid, set_respect_manual_folds, set_review_file_tree,
     set_review_include_reads, set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed,
     set_session_recap, set_show_other_tool_args, set_show_thinking_blocks, set_show_tips,
-    set_side_by_side_edit, set_simple_mode, set_theme, set_thinking_border_colors, set_timeline,
-    set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled,
-    set_voice_stt_language, set_write_edit_hover_popups,
+    set_side_by_side_edit, set_side_by_side_word_highlight, set_simple_mode, set_theme,
+    set_thinking_border_colors, set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode,
+    set_voice_keybind_enabled, set_voice_stt_language, set_write_edit_hover_popups,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
@@ -1278,6 +1278,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetGroupToolVerbs(v) => set_group_tool_verbs(app, v),
         Action::SetCollapsedEditBlocks(v) => set_collapsed_edit_blocks(app, v),
         Action::SetSideBySideEdit(v) => set_side_by_side_edit(app, v),
+        Action::SetSideBySideWordHighlight(v) => set_side_by_side_word_highlight(app, v),
         Action::SetCtrlOToolExpansion(v) => set_ctrl_o_tool_expansion(app, v),
         Action::SetPiBashRunDisplay(v) => set_pi_bash_run_display(app, v),
         Action::SetPiBashCommandFormat(v) => set_pi_bash_command_format(app, v),
