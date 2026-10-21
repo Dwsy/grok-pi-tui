@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-10-21
+
+### Changed
+
+- Promote the tested 0.1.11 beta series to the new **0.1.11 stable release**, with six freshly built platform binaries and installers. The shipped `grok-pi --version` is stamped `0.1.11` (without `-beta`).
+- Carry forward the beta.2 theme and session code-review improvements, including current Pi maximum-reasoning colors and dark/light language icons.
+- Preserve the beta.3 release-build optimizations: faster cross-platform Rust code generation, smaller stripped Linux archives, removal of wasteful per-tag target-cache uploads, and separate CI timing diagnostics.
+
+### Verification
+
+- The immediately preceding `v0.1.11-beta.3` release passed all six GitHub Actions builds and completed release publication; measured end-to-end release time dropped from about 64 to 42 minutes and six downloadable archives from about 337 MB to 155 MB.
+- Stable `v0.1.11` will be built and published exclusively by GitHub Actions. No local Rust build is run; any uncommitted development features remain excluded.
+
 ## [0.1.11-beta.3] - 2026-10-21
 
 ### Changed
