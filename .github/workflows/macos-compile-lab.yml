@@ -1,0 +1,198 @@
+name: macOS Rust compile lab (non-release)
+
+# Intentionally opt-in only. Never tags, releases, or package publishing.
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "Existing immutable release tag to benchmark (same source for every variant)"
+        type: string
+        required: true
+        default: v0.1.11
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: ${{ matrix.platform }} / ${{ matrix.variant }}
+    runs-on: macos-14
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - platform: macOS ARM64
+            target: aarch64-apple-darwin
+            variant: cgu32
+            codegen_units: 32
+          - platform: macOS ARM64
+            target: aarch64-apple-darwin
+            variant: shell-o2
+            codegen_units: 16
+          - platform: macOS Intel
+            target: x86_64-apple-darwin
+            variant: cgu32
+            codegen_units: 32
+          - platform: macOS Intel
+            target: x86_64-apple-darwin
+            variant: shell-o2
+            codegen_units: 16
+
+    steps:
+      - name: Validate requested release tag
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Use an existing stable release tag, e.g. v0.1.11" >&2
+            exit 1
+          }
+          echo "GROK_PI_VERSION=${SOURCE_TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Check out benchmark source (not main)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_tag }}
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install protobuf
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      - name: Apply experiment-only Cargo settings
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          # Per-package profile overrides are not supported through Cargo
+          # environment variables. Append to the checked-out tag's Cargo
+          # config only on this disposable runner; never commit the delta.
+          if [[ "$VARIANT" == "shell-o2" ]]; then
+            cat >> .cargo/config.toml <<'EOF'
+
+          # Experimental only: reduce optimization cost of the codegen-heavy
+          # shell library while preserving the other packages' release profile.
+          [profile.release-dist.package.xai-grok-shell]
+          opt-level = 2
+          EOF
+          fi
+          python3 -c 'import tomllib; from pathlib import Path; tomllib.loads(Path(".cargo/config.toml").read_text())'
+          echo "Platform: ${{ matrix.platform }}"
+          echo "Variant: $VARIANT"
+          echo "Target: ${{ matrix.target }}"
+          echo "Host CPU: $(sysctl -n hw.logicalcpu)"
+          echo "Host RAM bytes: $(sysctl -n hw.memsize)"
+          echo "Host arch: $(uname -m)"
+          echo "Source commit: $(git rev-parse HEAD)"
+          git diff -- .cargo/config.toml
+
+      - name: Build (GitHub hosted only)
+        id: build
+        shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: ${{ matrix.codegen_units }}
+          CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+          CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
+          CARGO_PROFILE_RELEASE_DIST_STRIP: "none"
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -uo pipefail
+          echo "Free space before:"
+          df -h .
+          start=$SECONDS
+          cargo build --locked --timings \
+            --profile release-dist \
+            -p xai-grok-pager-bin --bin grok-pi \
+            --features release-dist \
+            --target "${{ matrix.target }}"
+          result=$?
+          elapsed=$((SECONDS - start))
+          echo "elapsed_seconds=$elapsed" >> "$GITHUB_OUTPUT"
+          echo "Build result: $result; elapsed: ${elapsed}s"
+          echo "Free space after:"
+          df -h .
+          du -sh target || true
+          exit "$result"
+
+      - name: Verify macOS artifact
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          set -euo pipefail
+          bin="target/$TARGET/release-dist/grok-pi"
+          test -f "$bin"
+          file "$bin"
+          ls -lh "$bin"
+          if [[ "$TARGET" == aarch64-apple-darwin && "$(uname -m)" == arm64 ]]; then
+            "$bin" --version | tee "$RUNNER_TEMP/grok-pi-version.txt"
+            "$bin" --help > /dev/null
+            grep -F "${SOURCE_TAG#v}" "$RUNNER_TEMP/grok-pi-version.txt"
+          fi
+
+      - name: Summarize per-crate timings
+        if: always()
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          VARIANT: ${{ matrix.variant }}
+          ELAPSED_SECONDS: ${{ steps.build.outputs.elapsed_seconds }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import html, json, os, re
+          files = sorted(Path("target/cargo-timings").glob("cargo-timing-*.html"))
+          rows = []
+          total = None
+          if files:
+              page = files[-1].read_text(encoding="utf-8", errors="replace")
+              total_match = re.search(r"Total time:</td><td>([0-9.]+)s", page)
+              total = float(total_match.group(1)) if total_match else None
+              pattern = r"<td>\d+\.</td>\s*<td>(.*?)</td>\s*<td>([0-9.]+)s</td>\s*<td>(.*?)</td>\s*<td>(.*?)</td>"
+              for name, duration, frontend, codegen in re.findall(pattern, page, re.S):
+                  name = html.unescape(re.sub(r"<[^>]+>", "", name)).strip()
+                  if re.fullmatch(r"xai-grok-(?:shell|pager) v[0-9.]+", name):
+                      def seconds(value):
+                          match = re.search(r"([0-9.]+)s", value)
+                          return float(match.group(1)) if match else None
+                      rows.append({"crate": name, "total_s": float(duration),
+                                   "frontend_s": seconds(frontend),
+                                   "codegen_s": seconds(codegen)})
+          result = {"platform": os.environ["PLATFORM"], "variant": os.environ["VARIANT"],
+                    "elapsed_seconds": os.environ.get("ELAPSED_SECONDS"),
+                    "cargo_total_s": total, "hot_crates": rows}
+          Path("compile-metrics.json").write_text(json.dumps(result, indent=2) + "\n")
+          summary = [f"### ${{ matrix.platform }} / ${{ matrix.variant }}", "",
+                     f"Cargo time: {total if total is not None else 'missing'}s", "",
+                     "| Crate | Total (s) | Frontend (s) | Codegen (s) |",
+                     "| --- | ---: | ---: | ---: |"]
+          summary += [f"| {x['crate']} | {x['total_s']} | {x['frontend_s']} | {x['codegen_s']} |" for x in rows]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("\n".join(summary) + "\n")
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Upload timing and metrics (never publish)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-lab-${{ matrix.target }}-${{ matrix.variant }}
+          path: |
+            target/cargo-timings/*.html
+            compile-metrics.json
+          if-no-files-found: ignore
+          retention-days: 7
