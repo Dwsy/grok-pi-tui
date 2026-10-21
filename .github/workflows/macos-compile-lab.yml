@@ -25,11 +25,19 @@ jobs:
         include:
           - platform: macOS ARM64
             target: aarch64-apple-darwin
+            variant: cgu16-baseline
+            codegen_units: 16
+          - platform: macOS ARM64
+            target: aarch64-apple-darwin
             variant: cgu32
             codegen_units: 32
           - platform: macOS ARM64
             target: aarch64-apple-darwin
             variant: shell-o2
+            codegen_units: 16
+          - platform: macOS Intel
+            target: x86_64-apple-darwin
+            variant: cgu16-baseline
             codegen_units: 16
           - platform: macOS Intel
             target: x86_64-apple-darwin
@@ -77,19 +85,32 @@ jobs:
           VARIANT: ${{ matrix.variant }}
         run: |
           set -euo pipefail
-          # Per-package profile overrides are not supported through Cargo
-          # environment variables. Append to the checked-out tag's Cargo
-          # config only on this disposable runner; never commit the delta.
+          # Per-package profiles belong in the workspace-root Cargo.toml,
+          # not .cargo/config.toml. This edit exists only on this disposable
+          # GitHub runner; no production source/profile is committed.
           if [[ "$VARIANT" == "shell-o2" ]]; then
-            cat >> .cargo/config.toml <<'EOF'
+            cat >> Cargo.toml <<'EOF'
 
-          # Experimental only: reduce optimization cost of the codegen-heavy
-          # shell library while preserving the other packages' release profile.
+          # Compile-lab experiment only: reduce optimization cost for Shell.
           [profile.release-dist.package.xai-grok-shell]
           opt-level = 2
           EOF
           fi
-          python3 -c 'import tomllib; from pathlib import Path; tomllib.loads(Path(".cargo/config.toml").read_text())'
+          python3 - <<'PY'
+          import os, tomllib
+          from pathlib import Path
+          root = tomllib.loads(Path("Cargo.toml").read_text())
+          config = tomllib.loads(Path(".cargo/config.toml").read_text())
+          variant = os.environ["VARIANT"]
+          assert "profile" not in config, "Do not configure Cargo profiles in .cargo/config.toml"
+          if variant == "shell-o2":
+              actual = root["profile"]["release-dist"]["package"]["xai-grok-shell"]["opt-level"]
+              assert actual == 2, f"Shell override did not parse as opt-level=2: {actual!r}"
+              print("Verified workspace package override: xai-grok-shell opt-level=2")
+          else:
+              assert "profile" not in root or "package" not in root["profile"].get("release-dist", {}) or "xai-grok-shell" not in root["profile"]["release-dist"].get("package", {}), "Baseline must not override Shell opt-level"
+              print("Verified baseline has no Shell package profile override")
+          PY
           echo "Platform: ${{ matrix.platform }}"
           echo "Variant: $VARIANT"
           echo "Target: ${{ matrix.target }}"
@@ -97,7 +118,7 @@ jobs:
           echo "Host RAM bytes: $(sysctl -n hw.memsize)"
           echo "Host arch: $(uname -m)"
           echo "Source commit: $(git rev-parse HEAD)"
-          git diff -- .cargo/config.toml
+          git diff -- Cargo.toml .cargo/config.toml
 
       - name: Build (GitHub hosted only)
         id: build
@@ -150,6 +171,7 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           VARIANT: ${{ matrix.variant }}
+          TARGET: ${{ matrix.target }}
           ELAPSED_SECONDS: ${{ steps.build.outputs.elapsed_seconds }}
         run: |
           python3 - <<'PY'
@@ -172,12 +194,20 @@ jobs:
                       rows.append({"crate": name, "total_s": float(duration),
                                    "frontend_s": seconds(frontend),
                                    "codegen_s": seconds(codegen)})
+          binary = Path("target") / os.environ["TARGET"] / "release-dist" / "grok-pi"
+          binary_bytes = binary.stat().st_size if binary.is_file() else None
+          import hashlib
+          binary_sha256 = hashlib.sha256(binary.read_bytes()).hexdigest() if binary.is_file() else None
           result = {"platform": os.environ["PLATFORM"], "variant": os.environ["VARIANT"],
+                    "target": os.environ["TARGET"], "source_sha": os.popen("git rev-parse HEAD").read().strip(),
                     "elapsed_seconds": os.environ.get("ELAPSED_SECONDS"),
+                    "binary_bytes": binary_bytes, "binary_sha256": binary_sha256,
                     "cargo_total_s": total, "hot_crates": rows}
           Path("compile-metrics.json").write_text(json.dumps(result, indent=2) + "\n")
-          summary = [f"### ${{ matrix.platform }} / ${{ matrix.variant }}", "",
-                     f"Cargo time: {total if total is not None else 'missing'}s", "",
+          summary = [f"### {os.environ['PLATFORM']} / {os.environ['VARIANT']}", "",
+                     f"Source SHA: {result['source_sha']}",
+                     f"Build wall time: {result['elapsed_seconds']}s; Cargo timing: {total if total is not None else 'missing'}s",
+                     f"Binary size: {binary_bytes if binary_bytes is not None else 'missing'} bytes", "",
                      "| Crate | Total (s) | Frontend (s) | Codegen (s) |",
                      "| --- | ---: | ---: | ---: |"]
           summary += [f"| {x['crate']} | {x['total_s']} | {x['frontend_s']} | {x['codegen_s']} |" for x in rows]
