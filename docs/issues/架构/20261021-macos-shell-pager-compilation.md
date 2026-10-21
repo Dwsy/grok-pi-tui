@@ -14,6 +14,13 @@ Reduce GitHub-hosted macOS release compile wall time without changing product be
 - The unit durations are not additive. Cargo compiles multiple units concurrently, and target crates share dependencies. All numbers are direct reads from the uploaded Cargo timing HTML.
 - Existing code organization (including tests): Shell `src/` ~16 MB and 594 `.rs` files, with ~9 MB in `session/` and ~3.6 MB in `agent/`. Pager `src/` ~22 MB and 634 `.rs` files, with ~10.4 MB in `app/`, ~6.4 MB in `views/`, and ~2.3 MB in `scrollback/`. These file sizes include test code and are **not** a measurement of compiled release LOC.
 
+## Other observed release-build costs
+
+- In the first ARM64 timing reports, other large compilation units were `pdf_oxide` (259.8–275.0s), `aws-sdk-s3` (181.3–197.1s), `xai-grok-workspace` (125.9–136.3s), and `rmcp` (99.6–115.2s). These package timings overlap with each other and with the overall build; do not sum them as wall-clock time.
+- `pdf_oxide` is used by `xai-grok-tools` for PDF text extraction **and** page rendering, so it cannot be removed without losing user-facing functionality. The workspace dependency enables `rendering` but currently retains upstream defaults; the resolved feature set also includes ICC color management and legacy crypto. Do not disable those without checking encrypted-PDF compatibility and rendered color fidelity.
+- The pinned registry manifest for `pdf_oxide 0.3.74` declares `crate-type = ["cdylib", "rlib", "staticlib"]`. This is a candidate for investigating unnecessary FFI artifacts, but the current evidence does not prove that Cargo emits every crate type when the package is used only as a dependency. Confirm the actual rustc command/output files on a GitHub runner before considering a fork or patch.
+- The first ARM64 CI log measured `target/` at **3.7 GB** and the final `grok-pi` executable at **71–73 MB**. Keep intermediate Cargo targets, build caches, and release artifacts as separate size metrics.
+
 ## Hypotheses and constrained experiments
 
 | Hypothesis | Predicted change | Controlled test | Risk |
