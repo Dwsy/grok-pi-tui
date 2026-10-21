@@ -1,0 +1,158 @@
+name: Pager Rust compiler self-profile (non-release)
+
+# Nightly profiling is isolated from stable release builds and runs only on demand.
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "Immutable stable source tag to profile"
+        type: string
+        required: true
+        default: v0.1.11
+
+permissions:
+  contents: read
+
+jobs:
+  profile-pager:
+    name: Pager frontend self-profile (macOS ARM64 target)
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - name: Validate source tag
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Use an existing stable release tag, e.g. v0.1.11" >&2
+            exit 1
+          }
+
+      - name: Check out stable source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_tag }}
+          persist-credentials: false
+
+      - name: Install nightly Rust and target
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install protobuf
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      - name: Record environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc +nightly --version --verbose
+          cargo +nightly --version
+          echo "Source SHA: $(git rev-parse HEAD)"
+          echo "Host architecture: $(uname -m)"
+          echo "Host CPU count: $(sysctl -n hw.logicalcpu)"
+          echo "Host RAM bytes: $(sysctl -n hw.memsize)"
+          df -h .
+
+      - name: Profile Pager rustc queries (GitHub hosted only)
+        id: profile
+        shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+          CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
+          CARGO_PROFILE_RELEASE_DIST_STRIP: "none"
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -uo pipefail
+          profile_dir="$RUNNER_TEMP/pager-self-profile"
+          mkdir -p "$profile_dir"
+          start=$SECONDS
+          cargo +nightly rustc --locked --timings \
+            --profile release-dist \
+            -p xai-grok-pager --features release-dist \
+            --target aarch64-apple-darwin \
+            -- -Zself-profile="$profile_dir" -Zself-profile-events=default,args \
+            > "$RUNNER_TEMP/pager-profile-build.log" 2>&1
+          result=$?
+          elapsed=$((SECONDS - start))
+          echo "elapsed_seconds=$elapsed" >> "$GITHUB_OUTPUT"
+          if [[ "$result" -ne 0 ]]; then
+            tail -n 160 "$RUNNER_TEMP/pager-profile-build.log"
+            exit "$result"
+          fi
+          echo "Profiled Pager library in ${elapsed}s"
+          find "$profile_dir" -type f -print
+          shopt -s nullglob
+          profiles=("$profile_dir"/*.mm_profdata ./*.mm_profdata)
+          if ((${#profiles[@]} == 0)); then
+            echo "ERROR: rustc succeeded but no self-profile data was emitted." >&2
+            tail -n 120 "$RUNNER_TEMP/pager-profile-build.log"
+            exit 1
+          fi
+          grep -E -- '--crate-name xai_grok_pager|self-profile' "$RUNNER_TEMP/pager-profile-build.log" | tail -n 8 || true
+          echo "Build output:"
+          ls -lh target/aarch64-apple-darwin/release-dist/deps/libxai_grok_pager-* 2>/dev/null | tail -n 5 || true
+          df -h .
+
+      - name: Install measureme summarize tool
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +nightly install --locked --git https://github.com/rust-lang/measureme --branch stable summarize
+
+      - name: Summarize rustc query costs
+        if: success()
+        shell: bash
+        env:
+          PROFILE_SECONDS: ${{ steps.profile.outputs.elapsed_seconds }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/pager-self-profile-summary.txt"
+          : > "$out"
+          shopt -s nullglob
+          profiles=("$RUNNER_TEMP/pager-self-profile"/*.mm_profdata ./*.mm_profdata)
+          for profile in "${profiles[@]}"; do
+            echo "===== $profile =====" | tee -a "$out"
+            summarize summarize "$profile" 2>&1 | tee -a "$out"
+          done
+          test -s "$out"
+          {
+            echo "### Pager rustc self-profile"
+            echo
+            echo "- Source SHA: $(git rev-parse HEAD)"
+            echo "- Rust toolchain: $(rustc +nightly --version)"
+            echo "- Instrumented Pager compile wall time: ${PROFILE_SECONDS}s (not comparable to normal release timing; profiler adds overhead)"
+            echo
+            echo "Top compiler query costs (full output is in the artifact):"
+            head -n 70 "$out"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cp "$out" pager-self-profile-summary.txt
+
+      - name: Collect profile data and build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p pager-self-profile-artifacts
+          cp "$RUNNER_TEMP/pager-profile-build.log" pager-self-profile-artifacts/ 2>/dev/null || true
+          cp "$RUNNER_TEMP/pager-self-profile-summary.txt" pager-self-profile-artifacts/ 2>/dev/null || true
+          if [[ -d "$RUNNER_TEMP/pager-self-profile" ]]; then cp -R "$RUNNER_TEMP/pager-self-profile/." pager-self-profile-artifacts/ 2>/dev/null || true; fi
+          cp ./*.mm_profdata ./*.events ./*.string_data ./*.string_index pager-self-profile-artifacts/ 2>/dev/null || true
+          cp target/cargo-timings/*.html pager-self-profile-artifacts/ 2>/dev/null || true
+          find pager-self-profile-artifacts -type f -exec ls -lh {} \; || true
+
+      - name: Upload self-profile artifact (never publish)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pager-self-profile-${{ inputs.source_tag }}
+          path: pager-self-profile-artifacts/
+          if-no-files-found: warn
+          retention-days: 3
