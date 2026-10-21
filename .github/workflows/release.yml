@@ -124,21 +124,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache Rust build
-        if: runner.os != 'Linux'
-        uses: Swatinem/rust-cache@v2
-        with:
-          # Cache local workspace crates on the slower macOS/Windows builders.
-          # Six ~2 GiB target caches exceed GitHub's per-repository cache quota,
-          # so Linux builds intentionally skip the persistent target cache.
-          cache-workspace-crates: true
-          # Do not spend additional time uploading multi-GiB target caches after
-          # a failed build; failed caches are also poor inputs for later releases.
-          cache-on-failure: false
-          # Bump the prefix when changing cache contents so GitHub does not keep
-          # serving an older immutable cache entry without workspace artifacts.
-          prefix-key: "v4-release"
-          shared-key: release-${{ matrix.target }}
+      # Releases run on distinct v* tag refs. Actions target caches written by
+      # one tag are not readable by the next tag, yet macOS/Windows previously
+      # uploaded ~1.4-2.1 GB per matrix job. Avoid paying to upload caches
+      # that the next beta/stable tag cannot reuse. Revisit using a shared
+      # default-branch build context or an external sccache backend.
 
       - name: Install protoc on Linux
         if: runner.os == 'Linux'
@@ -189,25 +179,59 @@ jobs:
           # Keep the grok-pi product version independent from Grok's
           # release-only GROK_VERSION stamp.
           GROK_PI_VERSION: ${{ steps.version.outputs.version }}
-          # beta.9 macOS ARM64/Intel hit the 90-minute job limit during
-          # codegen of the large xai-grok-pager crate. CGU=1 + Thin LTO
-          # + DWARF=1 costs 50+ minutes in that final library alone.
-          # Parallelize LLVM codegen and skip LTO/debug info on macOS only.
-          # Linux/Windows keep the original release-dist profile unchanged.
-          CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: ${{ runner.os == 'macOS' && '16' || '1' }}
-          CARGO_PROFILE_RELEASE_DIST_LTO: ${{ runner.os == 'macOS' && 'off' || 'thin' }}
-          CARGO_PROFILE_RELEASE_DIST_DEBUG: ${{ runner.os == 'macOS' && '0' || '1' }}
+          # Optimize build throughput across all six targets. The old
+          # CGU=1/Thin LTO/DWARF profile cost 26-59 minutes per cold build
+          # in beta.2; macOS has already used these faster settings.
+          # Keep production hardening (panic=abort, linker flags, sandbox).
+          CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+          CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
+          # Strip Linux distribution symbols (Linux archives were >100 MB).
+          # Other targets keep their existing symbol-stripping behavior.
+          CARGO_PROFILE_RELEASE_DIST_STRIP: ${{ runner.os == 'Linux' && 'symbols' || 'none' }}
+          CARGO_INCREMENTAL: "0"
         run: |
+          set -uo pipefail
           echo "Release tag: ${GROK_PI_RELEASE_TAG}; pinned source commit: $(git rev-parse HEAD)"
           echo "Release target: ${{ matrix.target }}"
-          echo "Cargo profile: codegen-units=${CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS}, lto=${CARGO_PROFILE_RELEASE_DIST_LTO}, debug=${CARGO_PROFILE_RELEASE_DIST_DEBUG}"
+          echo "Cargo profile: codegen-units=${CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS}, lto=${CARGO_PROFILE_RELEASE_DIST_LTO}, debug=${CARGO_PROFILE_RELEASE_DIST_DEBUG}, strip=${CARGO_PROFILE_RELEASE_DIST_STRIP}"
+          echo "Disk space before build:"
+          df -h . || true
+          started=$SECONDS
           cargo build \
             --locked \
+            --timings \
             --profile release-dist \
             -p xai-grok-pager-bin \
             --bin grok-pi \
             --features release-dist \
             --target "${{ matrix.target }}"
+          build_status=$?
+          duration=$((SECONDS - started))
+          echo "Cargo exit status: ${build_status}; build duration: ${duration}s"
+          echo "Disk space after build:"
+          df -h . || true
+          du -sh target 2>/dev/null || true
+          du -sh "target/${{ matrix.target }}/release-dist" 2>/dev/null || true
+          {
+            echo "### ${{ matrix.name }} — release build"
+            echo ""
+            echo "- Cargo exit status: ${build_status}"
+            echo "- Build duration: ${duration}s"
+            echo "- CGU: ${CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS}, LTO: ${CARGO_PROFILE_RELEASE_DIST_LTO}, debug: ${CARGO_PROFILE_RELEASE_DIST_DEBUG}, strip: ${CARGO_PROFILE_RELEASE_DIST_STRIP}"
+            echo ""
+            echo 'Run the cargo-timings artifact for the per-crate compile critical path.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${build_status}"
+
+      - name: Upload compiler timing report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-timings-${{ matrix.target }}
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Package Unix binary
         if: runner.os != 'Windows'
@@ -263,6 +287,8 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-assets
+          # Keep build-timings-* diagnostics out of the user-facing release.
+          pattern: grok-pi-*
           merge-multiple: true
 
       - name: Add installer scripts

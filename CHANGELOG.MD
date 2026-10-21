@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.11-beta.3] - 2026-10-21
+
+### Changed
+
+- Speed up six-platform GitHub release builds: use 16 Rust codegen units, disable Thin LTO and emitted DWARF, and keep Cargo incremental compilation off in CI. Retain existing panic, linker hardening, sandbox and product features.
+- Strip symbols from Linux distribution binaries to shrink the unusually large Linux download archives. macOS and Windows retain their previous symbol-stripping behavior.
+- Stop uploading multi-gigabyte Rust build caches from tag releases: a new release tag cannot reuse caches scoped to a different release tag, so the old uploads added substantial churn without cross-release reuse.
+- Collect per-platform Cargo timing reports, elapsed build times and post-build disk usage in GitHub Actions. Keep diagnostic artifacts separate from downloadable release binaries.
+
+### Verification
+
+- Static GitHub Actions configuration and changelog checks only on the development machine. No local Rust build, check, or tests; the six-platform beta build is delegated exclusively to GitHub Actions.
+- Release performance and artifact-size outcomes are pending actual CI measurements against the 0.1.11-beta.2 baseline.
+
 ## [0.1.11-beta.2] - 2026-10-20
 
 ### Changed
