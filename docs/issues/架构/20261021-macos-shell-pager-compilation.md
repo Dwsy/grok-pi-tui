@@ -21,6 +21,13 @@ Reduce GitHub-hosted macOS release compile wall time without changing product be
 - The pinned registry manifest for `pdf_oxide 0.3.74` declares `crate-type = ["cdylib", "rlib", "staticlib"]`. This is a candidate for investigating unnecessary FFI artifacts, but the current evidence does not prove that Cargo emits every crate type when the package is used only as a dependency. Confirm the actual rustc command/output files on a GitHub runner before considering a fork or patch.
 - The first ARM64 CI log measured `target/` at **3.7 GB** and the final `grok-pi` executable at **71–73 MB**. Keep intermediate Cargo targets, build caches, and release artifacts as separate size metrics.
 
+## Source-level extraction constraints
+
+- A filename-based source scan counted about **425,600 lines in 515 Pager Rust files** after excluding files whose paths/names identify them as tests. This is an approximate source-size signal, not exact compiled LOC: inline `#[cfg(test)]` blocks remain.
+- The Pager's `app` and `views` are strongly intertwined: static scan found 2,359 `crate::app::` references across 257 files, 2,230 `crate::views::` references across 165 files, and 772 `crate::scrollback::` references across 140 files. Splitting `app` or `views` wholesale into new crates would create a large API/cycle risk. Extract leaf crates only after a dependency graph proves a stable boundary.
+- Shell's filename-based non-test source scan counted about **133,800 lines in `session/`**, **62,000 in `agent/`**, and **26,100 in `extensions/`**. `session/` and `agent/` are possible future boundaries, but the current data does not prove they can be separated without broad shared types and cycles.
+- If the matched CGU experiments confirm that Pager frontend remains the wall-time bottleneck, run a **separate GitHub-hosted nightly `-Zself-profile` experiment** against only the Pager target to identify type-checking/trait-selection hotspots. Do not introduce nightly into stable release builds and do not do local Rust compilation.
+
 ## Hypotheses and constrained experiments
 
 | Hypothesis | Predicted change | Controlled test | Risk |
