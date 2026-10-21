@@ -1,0 +1,200 @@
+name: macOS Cargo jobs lab (non-release)
+
+# Compare Cargo worker counts on the same stable source; never publishes artifacts.
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "Immutable stable source tag to benchmark"
+        type: string
+        required: true
+        default: v0.1.11
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: macOS ARM64 target / jobs-${{ matrix.cargo_jobs }}
+    runs-on: macos-14
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - variant: jobs8
+            cargo_jobs: "8"
+          - variant: jobs3
+            cargo_jobs: "3"
+
+    steps:
+      - name: Validate stable source tag
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Use an existing stable release tag, e.g. v0.1.11" >&2
+            exit 1
+          }
+
+      - name: Check out benchmark source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_tag }}
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install protobuf
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      - name: Record runner and Cargo concurrency
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: ${{ matrix.cargo_jobs }}
+        run: |
+          set -euo pipefail
+          rustc --version --verbose
+          echo "Source SHA: $(git rev-parse HEAD)"
+          echo "Host architecture: $(uname -m)"
+          echo "Host CPU count: $(sysctl -n hw.logicalcpu)"
+          echo "CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS"
+          df -h .
+
+      - name: Build (GitHub hosted only)
+        id: build
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: ${{ matrix.cargo_jobs }}
+          CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+          CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
+          CARGO_PROFILE_RELEASE_DIST_STRIP: "none"
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -uo pipefail
+          echo "Worker count: $CARGO_BUILD_JOBS"
+          start=$SECONDS
+          cargo build -vv --locked --timings \
+            --profile release-dist \
+            -p xai-grok-pager-bin --bin grok-pi \
+            --features release-dist \
+            --target aarch64-apple-darwin \
+            > "$RUNNER_TEMP/cargo-build.log" 2>&1
+          result=$?
+          elapsed=$((SECONDS - start))
+          echo "elapsed_seconds=$elapsed" >> "$GITHUB_OUTPUT"
+          if [[ "$result" -eq 0 ]]; then
+            python3 - "$CARGO_BUILD_JOBS" "$RUNNER_TEMP/cargo-build.log" <<'PY'
+          import re, sys
+          jobs, filename = sys.argv[1:]
+          lines = open(filename, encoding="utf-8", errors="replace").read().splitlines()
+          for crate in ("xai_grok_shell", "xai_grok_pager"):
+              matches = [line for line in lines if f"--crate-name {crate} " in line]
+              if not any(re.search(r"-C codegen-units=(\d+)", line) and
+                         int(re.search(r"-C codegen-units=(\d+)", line).group(1)) == 16
+                         for line in matches):
+                  raise SystemExit(f"{crate}: expected codegen-units=16")
+          print(f"Verified Shell/Pager CGU=16; Cargo jobs={jobs}")
+          PY
+            check_result=$?
+            if [[ "$check_result" -ne 0 ]]; then result=$check_result; fi
+          else
+            tail -n 120 "$RUNNER_TEMP/cargo-build.log"
+          fi
+          echo "Build result=$result; elapsed=${elapsed}s"
+          du -sh target || true
+          df -h .
+          exit "$result"
+
+      - name: Verify binary
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=target/aarch64-apple-darwin/release-dist/grok-pi
+          test -f "$bin"
+          file "$bin"
+          ls -lh "$bin"
+          if [[ "$(uname -m)" == arm64 ]]; then
+            "$bin" --version
+            "$bin" --help >/dev/null
+          fi
+
+      - name: Summarize timing
+        if: always()
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+          CARGO_BUILD_JOBS: ${{ matrix.cargo_jobs }}
+          ELAPSED_SECONDS: ${{ steps.build.outputs.elapsed_seconds }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, html, json, os, re
+          files = sorted(Path("target/cargo-timings").glob("cargo-timing-*.html"))
+          total = None
+          jobs_seen = None
+          ncpu = None
+          rows = []
+          if files:
+              page = files[-1].read_text(encoding="utf-8", errors="replace")
+              m = re.search(r"Total time:</td><td>([0-9.]+)s", page)
+              total = float(m.group(1)) if m else None
+              m = re.search(r"Max concurrency:</td><td>\d+ \(jobs=(\d+) ncpu=(\d+)\)", page)
+              if m: jobs_seen, ncpu = int(m.group(1)), int(m.group(2))
+              pattern = r"<td>\d+\.</td>\s*<td>(.*?)</td>\s*<td>([0-9.]+)s</td>\s*<td>(.*?)</td>\s*<td>(.*?)</td>"
+              for name, duration, frontend, codegen in re.findall(pattern, page, re.S):
+                  name = html.unescape(re.sub(r"<[^>]+>", "", name)).strip()
+                  if re.fullmatch(r"xai-grok-(?:shell|pager) v[0-9.]+", name):
+                      def seconds(value):
+                          x = re.search(r"([0-9.]+)s", value)
+                          return float(x.group(1)) if x else None
+                      rows.append({"crate": name, "total_s": float(duration),
+                                   "frontend_s": seconds(frontend), "codegen_s": seconds(codegen)})
+          binary = Path("target/aarch64-apple-darwin/release-dist/grok-pi")
+          result = {
+              "variant": os.environ["VARIANT"], "cargo_build_jobs": int(os.environ["CARGO_BUILD_JOBS"]),
+              "cargo_timing_jobs": jobs_seen, "runner_ncpu": ncpu,
+              "source_sha": os.popen("git rev-parse HEAD").read().strip(),
+              "elapsed_seconds": os.environ.get("ELAPSED_SECONDS"), "cargo_total_s": total,
+              "binary_bytes": binary.stat().st_size if binary.is_file() else None,
+              "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest() if binary.is_file() else None,
+              "hot_crates": rows
+          }
+          Path("compile-metrics.json").write_text(json.dumps(result, indent=2) + "\n")
+          summary = [
+              f"### {result['variant']}", "",
+              f"Source SHA: {result['source_sha']}",
+              f"Cargo jobs requested/observed: {result['cargo_build_jobs']} / {jobs_seen}; runner ncpu={ncpu}",
+              f"Wall time: {result['elapsed_seconds']}s; Cargo timing: {total}s",
+              f"Binary size: {result['binary_bytes']} bytes", "",
+              "| Crate | Total (s) | Frontend (s) | Codegen (s) |",
+              "| --- | ---: | ---: | ---: |"
+          ]
+          summary += [f"| {x['crate']} | {x['total_s']} | {x['frontend_s']} | {x['codegen_s']} |" for x in rows]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("\n".join(summary) + "\n")
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Upload timing metrics (never publish)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-jobs-${{ matrix.variant }}
+          path: |
+            compile-metrics.json
+            target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7
