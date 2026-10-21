@@ -124,6 +124,8 @@ jobs:
         id: build
         shell: bash
         env:
+          VARIANT: ${{ matrix.variant }}
+          TARGET: ${{ matrix.target }}
           CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: ${{ matrix.codegen_units }}
           CARGO_PROFILE_RELEASE_DIST_LTO: "off"
           CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
@@ -134,12 +136,40 @@ jobs:
           echo "Free space before:"
           df -h .
           start=$SECONDS
-          cargo build --locked --timings \
+          echo "Variant=$VARIANT; target=$TARGET; CGU=$CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS"
+          cargo build -vv --locked --timings \
             --profile release-dist \
             -p xai-grok-pager-bin --bin grok-pi \
             --features release-dist \
-            --target "${{ matrix.target }}"
+            --target "$TARGET" > "$RUNNER_TEMP/cargo-build.log" 2>&1
           result=$?
+          if [[ "$result" -eq 0 ]]; then
+            # Assert the actual rustc command-line flags, not just TOML parsing.
+            python3 - "$VARIANT" "$CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS" "$RUNNER_TEMP/cargo-build.log" <<'PY'
+          import re, sys
+          variant, cgu, filename = sys.argv[1:]
+          lines = open(filename, encoding="utf-8", errors="replace").read().splitlines()
+          expected = {"xai_grok_shell": 2 if variant == "shell-o2" else 3,
+                      "xai_grok_pager": 3}
+          for crate, opt in expected.items():
+              matches = [line for line in lines if f"--crate-name {crate} " in line]
+              if not matches:
+                  raise SystemExit(f"Missing verbose rustc invocation for {crate}")
+              flags = []
+              for line in matches:
+                  level = re.search(r"-C opt-level=(\d+)", line)
+                  units = re.search(r"-C codegen-units=(\d+)", line)
+                  if level and units:
+                      flags.append((int(level.group(1)), int(units.group(1))))
+              if (opt, int(cgu)) not in flags:
+                  raise SystemExit(f"{crate}: expected opt-level={opt}, codegen-units={cgu}; saw {flags}")
+              print(f"Verified rustc: {crate} opt-level={opt}, codegen-units={cgu}")
+          PY
+            check_result=$?
+            if [[ "$check_result" -ne 0 ]]; then result=$check_result; fi
+          else
+            tail -n 120 "$RUNNER_TEMP/cargo-build.log"
+          fi
           elapsed=$((SECONDS - start))
           echo "elapsed_seconds=$elapsed" >> "$GITHUB_OUTPUT"
           echo "Build result: $result; elapsed: ${elapsed}s"
