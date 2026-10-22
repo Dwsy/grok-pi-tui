@@ -730,6 +730,59 @@ fn delta_parser_ignores_toolcall_stream_fragments() {
 }
 
 #[test]
+fn partial_tool_arguments_stream_open_strings_and_nested_containers() {
+    let mut stream = PiToolCallStream::new("tool-1".into(), "write".into());
+    let start = std::time::Instant::now();
+    assert_eq!(
+        stream.push_delta_at(r#"{"path":"src/main.rs","content":"fn main() {\n"#, start,),
+        Some(json!({ "path": "src/main.rs", "content": "fn main() {\n" }))
+    );
+    assert_eq!(
+        stream.push_delta_at(
+            r#"  println!(\"hello\");"#,
+            start + std::time::Duration::from_millis(120)
+        ),
+        Some(json!({
+            "path": "src/main.rs",
+            "content": "fn main() {\n  println!(\"hello\");"
+        }))
+    );
+    assert_eq!(
+        parse_partial_json_object(r#"{"edits":[{"path":"src/main.rs","lines":["one","two"#),
+        Some(json!({ "edits": [{ "path": "src/main.rs", "lines": ["one", "two"] }] }))
+    );
+}
+
+#[test]
+fn partial_tool_arguments_keep_last_complete_fields_when_suffix_is_incomplete() {
+    assert_eq!(
+        parse_partial_json_object(r#"{"path":"src/main.rs","content":"ready","metadata": "#),
+        Some(json!({ "path": "src/main.rs", "content": "ready" }))
+    );
+    assert_eq!(parse_partial_json_object(r#"{"pa"#), None);
+}
+
+#[test]
+fn interleaved_tool_argument_streams_remain_independent_and_final_args_win() {
+    let start = std::time::Instant::now();
+    let mut first = PiToolCallStream::new("tool-a".into(), "write".into());
+    let mut second = PiToolCallStream::new("tool-b".into(), "read".into());
+    assert_eq!(
+        first.push_delta_at(r#"{"path":"a.txt","content":"A""#, start),
+        Some(json!({ "path": "a.txt", "content": "A" }))
+    );
+    assert_eq!(
+        second.push_delta_at(r#"{"path":"b.txt","offset":1"#, start),
+        Some(json!({ "path": "b.txt", "offset": 1 }))
+    );
+    assert_eq!(first.id, "tool-a");
+    assert_eq!(second.id, "tool-b");
+    let final_args = json!({ "path": "a.txt", "content": "authoritative" });
+    assert_eq!(first.finish(final_args.clone()), Some(final_args.clone()));
+    assert_eq!(first.finish(final_args), None);
+}
+
+#[test]
 fn parse_model_keeps_provider_and_api_separate_with_cost() {
     let model = parse_model(&json!({
         "id": "claude-haiku-4-5",
