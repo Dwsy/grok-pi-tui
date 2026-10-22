@@ -177,6 +177,68 @@ fn tool_trace_preserves_acp_input_output_usage_and_timing() {
 }
 
 #[test]
+fn repeated_tool_call_id_reconciles_streaming_placeholder_in_place() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    let early = acp::SessionUpdate::ToolCall(
+        acp::ToolCall::new(acp::ToolCallId::new("streamed-write".to_string()), "write")
+            .kind(acp::ToolKind::Edit)
+            .status(acp::ToolCallStatus::InProgress)
+            .content(vec![])
+            .locations(vec![])
+            .raw_input(Some(serde_json::json!({
+                "path": "src/main.rs",
+                "content": "partial"
+            }))),
+    );
+    assert!(tracker.handle_update(early, &meta(), &mut sb));
+    assert!(sb.get(0).is_some());
+    assert!(sb.get(1).is_none());
+
+    let mut tool_meta = acp::Meta::new();
+    tool_meta.insert(
+        "piToolUsage".into(),
+        serde_json::json!({ "input": 101, "output": 23, "cost": 0.01 }),
+    );
+    let canonical = acp::SessionUpdate::ToolCall(
+        acp::ToolCall::new(acp::ToolCallId::new(Arc::from("streamed-write")), "write")
+            .kind(acp::ToolKind::Edit)
+            .status(acp::ToolCallStatus::InProgress)
+            .content(vec![])
+            .locations(vec![])
+            .raw_input(Some(serde_json::json!({
+                "path": "src/main.rs",
+                "content": "complete"
+            })))
+            .meta(Some(tool_meta)),
+    );
+    assert!(tracker.handle_update(canonical, &meta(), &mut sb));
+    assert!(
+        sb.get(1).is_none(),
+        "a repeated tool id must not add a second block"
+    );
+
+    let entry = sb.get(0).expect("original streaming block remains");
+    assert_eq!(entry.tool_traces.len(), 1);
+    assert_eq!(
+        entry.tool_traces[0]
+            .raw_input
+            .as_ref()
+            .and_then(|input| input.get("content"))
+            .and_then(serde_json::Value::as_str),
+        Some("complete")
+    );
+    assert_eq!(
+        entry.tool_traces[0]
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.get("output"))
+            .and_then(serde_json::Value::as_u64),
+        Some(23)
+    );
+}
+
+#[test]
 fn replayed_codemode_completion_durations_use_agent_stamp_delta() {
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();

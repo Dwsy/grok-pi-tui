@@ -1345,6 +1345,31 @@ impl AcpUpdateTracker {
             }
         }
         let tc_id = tc.tool_call_id.0.to_string();
+        // Pi-Grok projects toolcall_start before the arguments are complete,
+        // then emits the canonical ToolCall when execution begins. Reconcile
+        // the same ID in place instead of adding a duplicate scrollback block.
+        if let Some(pending) = self.pending_tools.get_mut(&tc_id) {
+            let entry_id = pending.entry_id;
+            let started_at = pending.started_at;
+            let mut canonical = tc;
+            if canonical.raw_input.is_none() {
+                canonical.raw_input = pending.base.raw_input.clone();
+            }
+            if canonical.raw_output.is_none() {
+                canonical.raw_output = pending.base.raw_output.clone();
+            }
+            if canonical.meta.is_none() {
+                canonical.meta = pending.base.meta.clone();
+            }
+            pending.base = canonical;
+            if let Some(entry_id) = entry_id {
+                let block = tool_call_to_block(&pending.base, self.session_cwd.as_deref());
+                scrollback.replace_tool_block(entry_id, block, started_at);
+                refresh_tool_trace(scrollback, entry_id, &pending.base, meta);
+                return true;
+            }
+            return false;
+        }
         if let Some(orphan) = self.orphan_updates.remove(&tc_id) {
             let merged = merge_tool_call_update(tc, orphan);
             let block = tool_call_to_block(&merged, self.session_cwd.as_deref());
