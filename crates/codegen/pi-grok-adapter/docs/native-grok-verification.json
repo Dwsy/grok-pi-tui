@@ -35,19 +35,19 @@
     },
     "uploaded_grok_tree_is_byte_identical_outside_declared_seams": {
       "passed": false,
-      "detail": "missing=['crates/codegen/xai-grok-pager/src/diagnostics.rs', 'crates/codegen/xai-grok-pager/src/slash/commands/terminal_setup.rs', 'crates/codegen/xai-grok-pager/src/views/settings_modal.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/endline_wake_markers_close_each_wakeup.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/esc_mid_turn_from_prompt_is_swallowed_preserves_draft.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/esc_mid_turn_from_scrollback_is_swallowed.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_esc_mid_turn_is_swallowed.rs', 'crates/codegen/xai-grok-pager/tests/pty_e2e/minimal/minimal_transcript_expands_collapsed_thinking.rs', 'crates/codegen/xai-grok-shell/skills/best-of-n/SKILL.md', 'crates/codegen/xai-grok-shell/skills/check-work/SKILL.md']; mismatched=['.gitignore', 'LICENSE', 'README.md', 'crates/build/xai-proto-build/src/find_protoc.rs', 'crates/build/xai-proto-build/src/lib.rs', 'crates/codegen/xai-chat-state/src/actor/mod.rs', 'crates/codegen/xai-chat-state/src/actor/mutations.rs', 'crates/codegen/xai-chat-state/src/actor/queries.rs', 'crates/codegen/xai-chat-state/src/actor/request_builder.rs', 'crates/codegen/xai-chat-state/src/actor/tests.rs']; unexpected additions=['.DS_Store', '.github/workflows/release.yml', '.github/workflows/website.yml', '.gitmodules', '.grok-pi/pi-resources.toml', '.pi/fabric.json', '.pi/fabric/mesh/state.json', '.pi/skills/upstream-changelog/SKILL.md', '.pi/skills/upstream-changelog/assets/entry-template.md', '.pi/skills/upstream-changelog/references/area-map.md']"
+      "detail": "missing=['crates/codegen/xai-chat-state/src/compaction_transcript.rs', 'crates/codegen/xai-codebase-graph/tests/incremental_memory.rs', 'crates/codegen/xai-file-utils/src/events/log.rs', 'crates/codegen/xai-file-utils/src/events/mod.rs', 'crates/codegen/xai-file-utils/src/events/tracker.rs', 'crates/codegen/xai-file-utils/src/events/types.rs', 'crates/codegen/xai-file-utils/src/trace_context.rs', 'crates/codegen/xai-grok-config-types/src/pool.rs', 'crates/codegen/xai-grok-pager-render/src/gboom/assets.rs', 'crates/codegen/xai-grok-pager-render/src/gboom/engine.rs']; mismatched=['.cargo/config.toml', '.gitignore', 'LICENSE', 'README.md', 'clippy.toml', 'crates/build/xai-proto-build/Cargo.toml', 'crates/build/xai-proto-build/src/find_protoc.rs', 'crates/build/xai-proto-build/src/lib.rs', 'crates/codegen/ptyctl/src/keys.rs', 'crates/codegen/ptyctl/src/pty.rs']; unexpected additions=['.DS_Store', '.github/workflows/macos-cargo-jobs-lab.yml', '.github/workflows/macos-compile-lab.yml', '.github/workflows/pager-self-profile.yml', '.github/workflows/release.yml', '.github/workflows/website.yml', '.gitmodules', '.grok-pi/pi-resources.toml', '.impeccable/review/desktop.png', '.impeccable/review/host.png']"
     },
     "message_animation_renderer_seams_are_declared": {
       "passed": true,
-      "detail": "three exact native message-animation renderer/state seams are declared"
+      "detail": "8 modified and 2 added native renderer/state seams are declared"
     },
     "native_renderer_input_markdown_hashes_match_outside_declared_seams": {
       "passed": false,
-      "detail": "renderer mismatches: ['crates/codegen/xai-grok-markdown/src/colors.rs', 'crates/codegen/xai-grok-markdown/src/lib.rs', 'crates/codegen/xai-grok-pager-minimal/Cargo.toml', 'crates/codegen/xai-grok-pager-minimal/src/auth.rs', 'crates/codegen/xai-grok-pager-minimal/src/commit.rs', 'crates/codegen/xai-grok-pager-minimal/src/lib.rs', 'crates/codegen/xai-grok-pager-minimal/src/live.rs', 'crates/codegen/xai-grok-pager-minimal/src/overlay.rs', 'crates/codegen/xai-grok-pager-minimal/src/panel.rs', 'crates/codegen/xai-grok-pager-minimal/src/welcome.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/input.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/interactions.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/links.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/media.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/modals.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/notices.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/panes.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs', 'crates/codegen/xai-grok-pager/src/app/agent_view/plan.rs']"
+      "detail": "renderer mismatches: ['crates/codegen/xai-grok-markdown-core/Cargo.toml', 'crates/codegen/xai-grok-markdown-core/src/lib.rs', 'crates/codegen/xai-grok-markdown/Cargo.toml', 'crates/codegen/xai-grok-markdown/benches/bench.rs', 'crates/codegen/xai-grok-markdown/bin/md_table_test.rs', 'crates/codegen/xai-grok-markdown/src/buffers.rs', 'crates/codegen/xai-grok-markdown/src/checkpoint.rs', 'crates/codegen/xai-grok-markdown/src/colors.rs', 'crates/codegen/xai-grok-markdown/src/hyperlinks.rs', 'crates/codegen/xai-grok-markdown/src/latex/commands.rs', 'crates/codegen/xai-grok-markdown/src/latex/cursor.rs', 'crates/codegen/xai-grok-markdown/src/latex/environments.rs', 'crates/codegen/xai-grok-markdown/src/latex/math_box.rs', 'crates/codegen/xai-grok-markdown/src/latex/mod.rs', 'crates/codegen/xai-grok-markdown/src/latex/tests.rs', 'crates/codegen/xai-grok-markdown/src/latex_delimiters.rs', 'crates/codegen/xai-grok-markdown/src/lib.rs', 'crates/codegen/xai-grok-markdown/src/mermaid.rs', 'crates/codegen/xai-grok-markdown/src/open_code_highlighter.rs', 'crates/codegen/xai-grok-markdown/src/output.rs']"
     },
     "modified_surface_is_exact_and_semantic": {
       "passed": true,
-      "detail": "exactly 54 workspace/ACP/state/dispatch/slash/logo/message-animation seams are declared; no second TUI or broad renderer rewrite"
+      "detail": "exactly 63 workspace/ACP/state/dispatch/slash/tutorial/logo/message-animation seams are declared; no second TUI or broad renderer rewrite"
     },
     "no_fallback_or_old_custom_tui": {
       "passed": true,
@@ -55,11 +55,12 @@
     },
     "slash_surface_uses_grok_native_commands_and_pi_catalog": {
       "passed": false,
-      "detail": "builtins=['exit', 'help', 'hotkeys', 'new', 'compact', 'model', 'effort', 'rename', 'resume', 'session-info', 'tree', 'tree-map', 'fork', 'clone', 'reload', 'notify', 'dashboard', 'recap', 'btw', 'copy', 'find', 'jump', 'review-session', 'review-message', 'transcript', 'export', 'expand', 'queue', 'multiline', 'compact-mode', 'vim-mode', 'theme', 'timestamps', 'timeline', 'toggle-mouse-reporting', 'voice', 'doctor', 'pi-config', 'pi-shortcut-manager']; forbidden local commands=['fork', 'voice']",
+      "detail": "builtins=['exit', 'help', 'hotkeys', 'tutorial', 'new', 'compact', 'model', 'effort', 'rename', 'resume', 'session-info', 'tree', 'tree-map', 'fork', 'clone', 'reload', 'notify', 'dashboard', 'recap', 'btw', 'copy', 'find', 'jump', 'review-session', 'review-message', 'transcript', 'export', 'expand', 'queue', 'plan', 'plan-mode', 'view-plan', 'multiline', 'compact-mode', 'eval-display', 'vim-mode', 'theme', 'timestamps', 'timeline', 'toggle-mouse-reporting', 'voice', 'doctor', 'debug', 'pi-config', 'pi-models', 'pi-shortcut-manager']; forbidden local commands=['fork', 'voice', 'debug']",
       "evidence": [
         "exit",
         "help",
         "hotkeys",
+        "tutorial",
         "new",
         "compact",
         "model",
@@ -85,8 +86,12 @@
         "export",
         "expand",
         "queue",
+        "plan",
+        "plan-mode",
+        "view-plan",
         "multiline",
         "compact-mode",
+        "eval-display",
         "vim-mode",
         "theme",
         "timestamps",
@@ -94,12 +99,14 @@
         "toggle-mouse-reporting",
         "voice",
         "doctor",
+        "debug",
         "pi-config",
+        "pi-models",
         "pi-shortcut-manager"
       ]
     },
     "pi_commands_are_dynamic_acp_commands": {
-      "passed": true,
+      "passed": false,
       "detail": "Pi extension/prompt/skill commands are discovered from get_commands and merged by Grok's native ACP slash registry"
     },
     "adapter_rpc_calls_exist_in_uploaded_pi": {
@@ -107,24 +114,24 @@
       "detail": "validated 13 adapter RPC calls against Pi rpc-types.ts"
     },
     "all_pi_extension_ui_methods_use_native_grok_surfaces": {
-      "passed": true,
-      "detail": "all 9 Pi Extension UI methods map to Grok toast/status/widget/title/prompt/question surfaces"
+      "passed": false,
+      "detail": "missing Pi=[]; adapter=['confirm', 'notify', 'select', 'setStatus', 'setTitle', 'setWidget', 'set_editor_text']; native routes=[]"
     },
     "pi_runtime_events_are_projected_to_acp": {
-      "passed": true,
-      "detail": "validated 20 Pi lifecycle, stream, tool, queue, compaction, retry and UI event routes"
+      "passed": false,
+      "detail": "missing event routes: ['agent_end', 'agent_settled', 'agent_start', 'auto_retry_end', 'auto_retry_start', 'compaction_end', 'compaction_start', 'extension_error', 'extension_ui_request', 'message_end', 'message_start', 'message_update', 'queue_update', 'session_info_changed', 'thinking_level_changed', 'tool_execution_end', 'tool_execution_start', 'tool_execution_update', 'turn_start']"
     },
     "adapter_event_routes_exist_in_uploaded_pi": {
       "passed": true,
       "detail": "all 20 routed events exist in the uploaded Pi source contract"
     },
     "pi_semantics_feed_grok_native_views": {
-      "passed": true,
-      "detail": "history, Markdown/reasoning streams, images, tools, model/effort, steer/follow-up and Bash are mapped into ACP"
+      "passed": false,
+      "detail": "missing semantic mappings: ['history_replay', 'steer', 'direct_bash', 'completion_barrier']"
     },
     "extension_dialog_semantics_match_pi": {
-      "passed": true,
-      "detail": "Pi timeouts cancel Grok QuestionView; confirm/value/cancel response shapes match rpc-types.ts"
+      "passed": false,
+      "detail": "missing dialog semantics: ['timeout', 'native_cancel', 'pi_cancel_response', 'confirm_response']"
     },
     "documentation_describes_native_grok_architecture": {
       "passed": true,
