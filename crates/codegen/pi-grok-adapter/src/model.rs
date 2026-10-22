@@ -1760,6 +1760,151 @@ pub fn extract_delta(value: &Value) -> (String, String) {
     }
 }
 
+const TOOL_ARGUMENT_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Rebuild a model-generated tool call from Pi RPC's delta-only JSON events.
+/// This state is presentation-only: Pi's final `toolCall.arguments` remains
+/// authoritative and is applied at `toolcall_end`.
+#[derive(Debug, Clone)]
+pub(crate) struct PiToolCallStream {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    raw_arguments: String,
+    last_emitted: Option<Value>,
+    last_parse_at: Option<std::time::Instant>,
+}
+
+impl PiToolCallStream {
+    pub(crate) fn new(id: String, name: String) -> Self {
+        Self {
+            id,
+            name,
+            raw_arguments: String::new(),
+            last_emitted: None,
+            last_parse_at: None,
+        }
+    }
+
+    pub(crate) fn push_delta(&mut self, delta: &str) -> Option<Value> {
+        self.push_delta_at(delta, std::time::Instant::now())
+    }
+
+    fn push_delta_at(&mut self, delta: &str, now: std::time::Instant) -> Option<Value> {
+        if delta.is_empty() {
+            return None;
+        }
+        self.raw_arguments.push_str(delta);
+        // Throttle parsing as well as ACP notifications. Otherwise each tiny
+        // token delta reparses the entire accumulated JSON and becomes
+        // quadratic for large write/edit arguments.
+        if self
+            .last_parse_at
+            .is_some_and(|last| now.saturating_duration_since(last) < TOOL_ARGUMENT_UPDATE_INTERVAL)
+        {
+            return None;
+        }
+        self.last_parse_at = Some(now);
+        let parsed = parse_partial_json_object(&self.raw_arguments)?;
+        if self.last_emitted.as_ref() == Some(&parsed) {
+            return None;
+        }
+        self.last_emitted = Some(parsed.clone());
+        Some(parsed)
+    }
+
+    /// Apply the final authoritative arguments, even when the stream was
+    /// throttled immediately before completion.
+    pub(crate) fn finish(&mut self, arguments: Value) -> Option<Value> {
+        if self.last_emitted.as_ref() == Some(&arguments) {
+            return None;
+        }
+        self.last_emitted = Some(arguments.clone());
+        Some(arguments)
+    }
+}
+
+/// Parse a complete object or repair a streamed JSON prefix for display.
+/// If the current field is still syntactically incomplete, fall back to the
+/// last complete top-level field boundary rather than hiding earlier values.
+fn parse_partial_json_object(raw: &str) -> Option<Value> {
+    if let Ok(value) = serde_json::from_str::<Value>(raw) {
+        return value.is_object().then_some(value);
+    }
+    if raw.trim().is_empty() {
+        return None;
+    }
+
+    let (candidate, commas) = close_partial_json(raw)?;
+    if let Some(value) = parse_json_object(&candidate) {
+        return Some(value);
+    }
+
+    for comma in commas.into_iter().rev() {
+        let prefix = raw.get(..comma)?.trim_end();
+        let (candidate, _) = close_partial_json(prefix)?;
+        if let Some(value) = parse_json_object(&candidate) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn parse_json_object(candidate: &str) -> Option<Value> {
+    let value = serde_json::from_str::<Value>(candidate).ok()?;
+    value.is_object().then_some(value)
+}
+
+/// Close open strings/containers in a JSON prefix and locate commas between
+/// top-level fields. Invalid container ordering is rejected, not guessed at.
+fn close_partial_json(raw: &str) -> Option<(String, Vec<usize>)> {
+    let mut closers = Vec::new();
+    let mut top_level_commas = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (byte_index, ch) in raw.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => closers.push('}'),
+            '[' => closers.push(']'),
+            '}' | ']' => {
+                if closers.pop() != Some(ch) {
+                    return None;
+                }
+            }
+            ',' if closers.len() == 1 && closers.last() == Some(&'}') => {
+                top_level_commas.push(byte_index);
+            }
+            _ => {}
+        }
+    }
+
+    let mut candidate = raw.to_string();
+    if in_string {
+        // Preserve a trailing backslash as a literal instead of letting it
+        // escape the synthetic closing quote.
+        if escaped {
+            candidate.push('\\');
+        }
+        candidate.push('"');
+    }
+    for closer in closers.iter().rev() {
+        candidate.push(*closer);
+    }
+    Some((candidate, top_level_commas))
+}
+
 pub fn string<'a>(value: &'a Value, names: &[&str]) -> Option<&'a str> {
     names
         .iter()

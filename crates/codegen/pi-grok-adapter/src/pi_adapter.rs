@@ -14,9 +14,9 @@ use crate::{
     loop_host,
     model::{
         PiCommand, PiEntryReplayCache, PiHistoryItem, PiModel, PiReplayEntry, PiSessionSwitch,
-        PiSessionTree, PiState, PiToolContent, extract_delta, json_text, parse_commands,
-        parse_messages, parse_models, parse_session_switch, parse_state, scan_local_sessions,
-        scan_local_sessions_for_cwd, string,
+        PiSessionTree, PiState, PiToolCallStream, PiToolContent, extract_delta, json_text, number,
+        parse_commands, parse_messages, parse_models, parse_session_switch, parse_state,
+        scan_local_sessions, scan_local_sessions_for_cwd, string,
     },
     pi_rpc::PiRpc,
     pi_workflow_backend::{
@@ -197,6 +197,9 @@ struct AdapterState {
     cancelling: bool,
     bash_running: bool,
     live_assistant: Option<StreamSeen>,
+    /// Model-generated tool arguments keyed by Pi's contentIndex until
+    /// toolcall_end provides the authoritative arguments object.
+    streaming_tool_calls: HashMap<usize, PiToolCallStream>,
     session_dir: PathBuf,
     session_paths: HashMap<String, PathBuf>,
     /// Pi tool args keyed by toolCallId. End events may omit args; the pager
@@ -342,6 +345,7 @@ impl PiAgent {
                 cancelling: false,
                 bash_running: false,
                 live_assistant: None,
+                streaming_tool_calls: HashMap::new(),
                 session_dir: session_dir.clone(),
                 session_paths: HashMap::new(),
                 tool_args: HashMap::new(),

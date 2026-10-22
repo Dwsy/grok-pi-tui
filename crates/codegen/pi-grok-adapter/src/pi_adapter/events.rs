@@ -1,3 +1,4 @@
+use super::tools::eval_top_level_hidden;
 use super::*;
 
 const CANCEL_IDLE_CONFIRMATIONS: u8 = 3;
@@ -13,6 +14,24 @@ fn cancellation_idle_confirmed(idle_polls: &mut u8, is_streaming: bool) -> bool 
 
 fn cancellation_probe_still_current(cancelling: bool, has_running_prompt: bool) -> bool {
     cancelling && !has_running_prompt
+}
+
+fn streamed_tool_call_input_update(
+    id: &str,
+    args: Value,
+    content: Option<Vec<acp::ToolCallContent>>,
+) -> acp::SessionUpdate {
+    let fields = acp::ToolCallUpdateFields::new()
+        .status(Some(acp::ToolCallStatus::InProgress))
+        .raw_input(Some(args));
+    let fields = match content {
+        Some(content) => fields.content(Some(content)),
+        None => fields,
+    };
+    acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+        acp::ToolCallId::new(id.to_string()),
+        fields,
+    ))
 }
 
 impl PiAgent {
@@ -98,6 +117,7 @@ impl PiAgent {
                     state.stream_start_ms = None;
                     state.live_prompt_id = None;
                     state.bash_stream_output.clear();
+                    state.streaming_tool_calls.clear();
                     let running = state.queue_mirror.clear_running();
                     let mode_update = if matches!(
                         state.plan_mode.state(),
@@ -300,6 +320,7 @@ impl PiAgent {
             let now = utc_now_ms();
             let mut state = self.state.borrow_mut();
             state.live_assistant = Some(StreamSeen::default());
+            state.streaming_tool_calls.clear();
             // New assistant message = new LLM stream segment (same semantics
             // as Grok shell StreamStarted → record_stream_start).
             if state.turn_start_ms.is_none() {
@@ -310,6 +331,7 @@ impl PiAgent {
     }
 
     pub(super) async fn handle_message_update(&self, event: &Value) {
+        self.handle_tool_call_stream_update(event).await;
         let (text, thought) = extract_delta(event);
         {
             let mut state = self.state.borrow_mut();
@@ -327,10 +349,127 @@ impl PiAgent {
         }
     }
 
+    /// Project Pi's model-generation tool-call stream into the same ACP row
+    /// later completed by tool_execution_start/update/end. The RPC wire format
+    /// strips cumulative partial messages, so deltas are keyed by contentIndex.
+    async fn handle_tool_call_stream_update(&self, event: &Value) {
+        let streamed = event
+            .get("assistantMessageEvent")
+            .or_else(|| event.get("messageEvent"))
+            .unwrap_or(event);
+        let kind = string(streamed, &["type", "kind"])
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(
+            kind.as_str(),
+            "toolcall_start" | "toolcall_delta" | "toolcall_end"
+        ) {
+            return;
+        }
+        let Some(content_index) =
+            number(streamed, &["contentIndex"]).and_then(|index| usize::try_from(index).ok())
+        else {
+            return;
+        };
+
+        match kind.as_str() {
+            "toolcall_start" => {
+                let Some(id) = string(streamed, &["id"]).filter(|id| !id.is_empty()) else {
+                    return;
+                };
+                let Some(name) = string(streamed, &["toolName"]).filter(|name| !name.is_empty())
+                else {
+                    return;
+                };
+                if eval_top_level_hidden(self.eval_v2_only, name) {
+                    return;
+                }
+
+                let args = normalize_tool_raw_input(name, Some(json!({})));
+                let content = edit_diff_content(name, args.as_ref(), None).unwrap_or_default();
+                let tool_call =
+                    acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
+                        .kind(tool_kind(name))
+                        .status(acp::ToolCallStatus::InProgress)
+                        .content(content)
+                        .locations(Vec::new())
+                        .raw_input(args);
+                self.state.borrow_mut().streaming_tool_calls.insert(
+                    content_index,
+                    PiToolCallStream::new(id.to_string(), name.to_string()),
+                );
+                self.send_update(acp::SessionUpdate::ToolCall(tool_call))
+                    .await;
+            }
+            "toolcall_delta" => {
+                let Some(delta) = string(streamed, &["delta"]) else {
+                    return;
+                };
+                let update = {
+                    let mut state = self.state.borrow_mut();
+                    let Some(stream) = state.streaming_tool_calls.get_mut(&content_index) else {
+                        return;
+                    };
+                    let Some(partial_args) = stream.push_delta(delta) else {
+                        return;
+                    };
+                    let Some(args) = normalize_tool_raw_input(&stream.name, Some(partial_args))
+                    else {
+                        return;
+                    };
+                    let content = edit_diff_content(&stream.name, Some(&args), None);
+                    (stream.id.clone(), args, content)
+                };
+                self.send_update(streamed_tool_call_input_update(
+                    &update.0, update.1, update.2,
+                ))
+                .await;
+            }
+            "toolcall_end" => {
+                let Some(tool_call) = streamed.get("toolCall") else {
+                    return;
+                };
+                let stream = self
+                    .state
+                    .borrow_mut()
+                    .streaming_tool_calls
+                    .remove(&content_index);
+                let Some(mut stream) = stream else {
+                    return;
+                };
+                if let Some(final_id) = string(tool_call, &["id"])
+                    && final_id != stream.id
+                {
+                    tracing::warn!(
+                        streamed_id = %stream.id,
+                        final_id,
+                        "Pi tool-call id changed during argument streaming"
+                    );
+                    return;
+                }
+                let Some(final_args) = tool_call.get("arguments").cloned() else {
+                    return;
+                };
+                let Some(final_args) = stream.finish(final_args) else {
+                    return;
+                };
+                let name = string(tool_call, &["name"]).unwrap_or(&stream.name);
+                let Some(args) = normalize_tool_raw_input(name, Some(final_args)) else {
+                    return;
+                };
+                let content = edit_diff_content(name, Some(&args), None);
+                self.send_update(streamed_tool_call_input_update(&stream.id, args, content))
+                    .await;
+            }
+            _ => {}
+        }
+    }
+
     pub(super) async fn handle_message_end(&self, event: &Value) {
         if message_role(event) != Some("assistant") {
             return;
         }
+        self.state.borrow_mut().streaming_tool_calls.clear();
         let seen = self
             .state
             .borrow_mut()
@@ -386,6 +525,7 @@ impl PiAgent {
             state.live_prompt_id = None;
             state.bash_stream_output.clear();
             state.tool_usage.clear();
+            state.streaming_tool_calls.clear();
             std::mem::take(&mut state.active_prompts)
         };
         for active in active_prompts {
