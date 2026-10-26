@@ -27,7 +27,7 @@ V2 是进程级开关，不会热加载到已经运行的 grok-pi。
 ## 快速使用
 
 1. 开启 V2 并启动 grok-pi。
-2. 执行 `/subagent-teams` 查看发现到的 preset。
+2. 执行 `/subagent-teams` 配置 preset、成员模型与思考强度。
 3. 让 root agent 用 `spawn_team` 启动 `research`、`implementation`、`review` 等 preset，或用 `spawn_team_agent` 单独创建协作者。
 4. 用 `team_list` 查看 team tree 和状态。
 5. 只需要把事实/上下文交给另一个 agent、但不想唤醒 idle agent 时，用 `team_send_message`。
@@ -131,7 +131,8 @@ Team preset 是 JSON 文件，发现顺序如下；同名定义由后加载的�
       "description": "Primary implementer",
       "task": "Implement the objective: {{task}}",
       "model": "openai/gpt-5.6",
-      "max_turns": 12
+      "max_turns": 12,
+      "thinking_level": "high"
     },
     {
       "name": "reviewer",
@@ -151,9 +152,27 @@ Team preset 是 JSON 文件，发现顺序如下；同名定义由后加载的�
 - member `agent` 是外置 agent definition 名，默认 `general-purpose`。
 - member `model` 可选；如果 agent definition 有 model allowlist，则必须在 allowlist 中。
 - member `max_turns` 是可选非负整数；agent definition 自己的 `max_turns` 优先级更高。
+- member `thinking_level` 可选，取值 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`。省略时先看 agent definition 的 `thinking_level`，再看 Pi 全局设置。模型不支持该等级时会自动 clamp 到最接近的支持等级，不会让整组启动失败。
 - member `task` 支持 `{{task}}`、`{{team}}`、`{{agent_path}}`、`{{parent_path}}`。
 
-Malformed preset 采用 fail-closed 语义：它不会阻断其它无关 preset 加载，但高优先级 scope 中损坏的文件会按同名文件 stem 遮蔽低优先级 preset，而不是静默 fallback。例如 project `implementation.json` 无效时，bundled `implementation` 会保持隐藏，直到该 project 文件被修复或删除。`/subagent-teams` 只列出已接受定义；preset 意外缺失也可能表示被 malformed 高优先级文件遮蔽。
+Malformed preset 采用 fail-closed 语义：它不会阻断其它无关 preset 加载，但高优先级 scope 中损坏的文件会按同名文件 stem 遮蔽低优先级 preset，而不是静默 fallback。例如 project `implementation.json` 无效时，bundled `implementation` 会保持隐藏，直到该 project 文件被修复或删除。`/subagent-teams` 只显示已接受定义；preset 意外缺失也可能表示被 malformed 高优先级文件遮蔽。
+
+## 用 `/subagent-teams` 配置模型与思考强度
+
+`/subagent-teams` 是完整交互式编辑器，不是只读列表：
+
+1. 选择 `New project team` / `New global team`，或已有 preset。
+2. 进入 `Members`，`Add member` 后用成员名创建（小写字母、数字、下划线）。
+3. 选择成员 → `Edit settings`：
+   - `Agent`：agent definition 名。
+   - `Model`：首项是 **All available models (default)**，其后是所有当前可用模型 `provider/model`。选择默认时不会写入 `model`，由 agent definition / Pi 决定。
+   - `Thinking level`：首项是 **Inherit Pi settings (default)**，其后只列出所选模型真正支持的等级（按 `reasoning` 与 `thinkingLevelMap` 推导）。未选模型时列出全部可用模型的等级并集。
+   - `Max turns`：留空继承 agent definition，`0` 表示不限制。
+4. `Save and close` 写入 project / global scope。
+
+bundled preset（`research`、`implementation`、`review`）是只读的：编辑时会先要求选择 **Project override** 或 **Global override**，不会原地改写安装目录里的文件。
+
+模型与思考强度的发现完全发生在 TUI 里——本扩展**不注册任何向模型暴露的模型/思考强度列表工具**，所以不会占用模型上下文。
 
 ## Agent definition
 
@@ -172,6 +191,7 @@ description: Read-only architecture reviewer
 enabled: true
 tools: ["read", "grep", "find", "ls"]
 models: ["openai/gpt-5.6"]
+thinking_level: high
 extensions: []
 skills: []
 max_turns: 10
@@ -180,7 +200,7 @@ max_turns: 10
 Review architecture and correctness. Do not edit files. Return evidence with file paths.
 ```
 
-Markdown definition 控制 system prompt、业务 tools、最多 3 个 models、extensions、skills 和 max turns。V2 control-plane tools 独立注入，所以 read-only reviewer 仍能参与 team 通信，但不会因此获得 edit/write 权限。
+Markdown definition 控制 system prompt、业务 tools、最多 3 个 models、extensions、skills、max turns 和默认 `thinking_level`。V2 control-plane tools 独立注入，所以 read-only reviewer 仍能参与 team 通信，但不会因此获得 edit/write 权限。
 
 使用 `/subagents` 管理原生 agent definition。
 

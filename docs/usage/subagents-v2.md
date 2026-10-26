@@ -27,7 +27,7 @@ To roll back immediately, start the next process without `PI_GROK_SUBAGENTS_V2=1
 ## Quick start
 
 1. Enable V2 and start grok-pi.
-2. Run `/subagent-teams` to inspect discovered presets.
+2. Run `/subagent-teams` to configure presets, per-member models, and thinking levels.
 3. Ask the root agent to use `spawn_team` with a preset such as `research`, `implementation`, or `review`, or use `spawn_team_agent` for a single named collaborator.
 4. Use `team_list` to inspect the team tree and statuses.
 5. Use `team_send_message` for information that should enter another agent's context without waking an idle agent.
@@ -127,7 +127,8 @@ Bundled presets are `research`, `implementation`, and `review`.
       "description": "Primary implementer",
       "task": "Implement the objective: {{task}}",
       "model": "openai/gpt-5.6",
-      "max_turns": 12
+      "max_turns": 12,
+      "thinking_level": "high"
     },
     {
       "name": "reviewer",
@@ -147,9 +148,27 @@ Contract:
 - member `agent`: external agent definition name; defaults to `general-purpose`.
 - member `model`: optional Pi model key. If the referenced agent definition has a model allowlist, the value must be in it.
 - member `max_turns`: optional non-negative integer. The external agent definition's `max_turns` takes precedence.
+- member `thinking_level`: optional `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Omitted falls back to the agent definition's `thinking_level`, then Pi settings. A level the selected model does not accept is clamped to the nearest supported level instead of failing the whole team startup.
 - member `task`: optional template. Supported variables are `{{task}}`, `{{team}}`, `{{agent_path}}`, and `{{parent_path}}`.
 
-Malformed preset files fail closed. They do not prevent unrelated presets from loading, but a malformed higher-priority file shadows an inherited preset with the same filename stem instead of silently falling back. For example, an invalid project `implementation.json` hides the bundled `implementation` preset until the project file is fixed or removed. `/subagent-teams` lists accepted definitions; an unexpectedly absent preset can therefore indicate a malformed higher-scope shadow.
+Malformed preset files fail closed. They do not prevent unrelated presets from loading, but a malformed higher-priority file shadows an inherited preset with the same filename stem instead of silently falling back. For example, an invalid project `implementation.json` hides the bundled `implementation` preset until the project file is fixed or removed. `/subagent-teams` shows accepted definitions; an unexpectedly absent preset can therefore indicate a malformed higher-scope shadow.
+
+## Configure models and thinking levels with `/subagent-teams`
+
+`/subagent-teams` is a full interactive editor, not a read-only list:
+
+1. Choose `New project team` / `New global team`, or an existing preset.
+2. Open `Members`, then `Add member` with a member name (lowercase letters, digits, underscores).
+3. Select a member → `Edit settings`:
+   - `Agent`: agent definition name.
+   - `Model`: the first entry is **All available models (default)**, followed by every currently available `provider/model`. Choosing the default writes no `model`, so the agent definition or Pi decides.
+   - `Thinking level`: the first entry is **Inherit Pi settings (default)**; the rest are only the levels the selected model actually accepts, derived from `reasoning` and `thinkingLevelMap`. With no explicit model, the list is the union across the catalog.
+   - `Max turns`: leave empty to inherit the agent definition; `0` means unlimited.
+4. `Save and close` writes to project or global scope.
+
+Bundled presets (`research`, `implementation`, `review`) are read-only: editing asks for a **Project override** or **Global override** first and never rewrites files inside the installation directory.
+
+Model and thinking-level discovery happens entirely in the TUI. This extension registers **no model-facing tool** that lists models or thinking levels, so none of it consumes model context.
 
 ## Agent definitions
 
@@ -168,6 +187,7 @@ description: Read-only architecture reviewer
 enabled: true
 tools: ["read", "grep", "find", "ls"]
 models: ["openai/gpt-5.6"]
+thinking_level: high
 extensions: []
 skills: []
 max_turns: 10
@@ -176,7 +196,7 @@ max_turns: 10
 Review architecture and correctness. Do not edit files. Return evidence with file paths.
 ```
 
-The Markdown definition controls the system prompt, business tools, up to three models, extensions, skills and max turns. V2 control-plane tools are injected separately so a read-only reviewer can still communicate with the team without gaining edit/write capability.
+The Markdown definition controls the system prompt, business tools, up to three models, extensions, skills, max turns and the default `thinking_level`. V2 control-plane tools are injected separately so a read-only reviewer can still communicate with the team without gaining edit/write capability.
 
 Use `/subagents` for the native agent-definition management surface.
 
