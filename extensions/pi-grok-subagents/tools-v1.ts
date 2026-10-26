@@ -101,7 +101,7 @@ export function registerV1Tools(pi: ExtensionAPI, runtime: SubagentRuntime): voi
     parameters: Type.Object({
       prompt: Type.String({ description: "Self-contained task for the child agent. Include all context needed — the child cannot see your conversation." }),
       description: Type.String({ description: "Short 3-5 word task label shown in the subagent UI." }),
-      subagent_type: Type.Optional(Type.String({ description: "Agent profile: general-purpose (default), explore (read-only research), or plan (planning only)." })),
+      subagent_type: Type.Optional(Type.String({ description: "Agent profile: general-purpose (default), explore (evidence gathering with bash, python3 and node; no file edits), or plan (planning only)." })),
       background: Type.Optional(Type.Boolean({ description: "Run asynchronously and return the child ID immediately. Use get_command_or_subagent_output(task_ids, timeout_ms) to collect results." })),
       model: Type.Optional(Type.String({ description: "Optional Pi model callback. When the selected subagent Markdown definition has models, it must be one of its up-to-three enabled models." })),
       max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Soft maximum child turns. At the limit Pi receives one end-and-summarize steering message; 0 means unlimited. A Markdown definition takes precedence." })),

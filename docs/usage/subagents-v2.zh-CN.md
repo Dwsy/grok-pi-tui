@@ -204,6 +204,19 @@ Markdown definition 控制 system prompt、业务 tools、最多 3 个 models、
 
 使用 `/subagents` 管理原生 agent definition。
 
+### 内置 profile 的工具权限
+
+| profile | capabilityMode | 可用工具 | 行为约束 |
+|---|---|---|---|
+| `general-purpose` | `all` | `read` `bash` `edit` `write` `grep` `find` `ls` | 可完整实施改动 |
+| `explore` | `execute`（下限） | `read` `bash` `grep` `find` `ls` | **有 bash**，可跑 `python3` / `node`；即使调用方传 `capability_mode: "read-only"` 也会被提升到 `execute`。由 system prompt 约束为只做检视与度量：不写文件、不原地修改、不装依赖、不跑破坏性命令 |
+| `plan` | `execute` | `read` `bash` `grep` `find` `ls` | 只做规划，不改文件 |
+
+`explore` 有 **capability floor（能力下限）**：即使调用方显式传 `capability_mode: "read-only"`，也会被提升到 `execute`，因为该 profile 的契约依赖 bash。这样它总能 `rg`/`git log`/`tree`/`wc` 阅读全量与统计，也能 `python3 -c`、`node -e` 分析数据或验证行为。
+
+`explore` 对「不写文件」的约束是**提示词级**约定，不是工具级强制（它的工具集里本来就没有 `edit`/`write`，但 bash 可以执行任意命令）。需要硬隔离时应改用自定义 definition 把 `tools` 收窄到 `["read", "grep", "find", "ls"]`。
+
+
 ## 消息与持久化边界
 
 V2 语义消息使用 `pi-grok-team-message/v2` custom message，并且有意进入 recipient 的模型上下文。

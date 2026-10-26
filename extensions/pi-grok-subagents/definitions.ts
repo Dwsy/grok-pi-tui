@@ -8,14 +8,36 @@ import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { MAX_AGENT_MODELS, requireCapability, type CapabilityMode } from "./shared.ts";
 import { parseThinkingLevel, type ThinkingLevel } from "./thinking.ts";
 
-export const AGENT_PROFILES: Record<string, { capabilityMode: CapabilityMode; systemPrompt: string }> = {
+export const AGENT_PROFILES: Record<string, {
+  capabilityMode: CapabilityMode;
+  systemPrompt: string;
+  /**
+   * Lowest capability this profile may run in. A request that would drop any of
+   * these tools is upgraded to the floor, because the profile's contract depends
+   * on them (for example `explore` inspects repositories through bash).
+   */
+  capabilityFloor?: CapabilityMode;
+}> = {
   "general-purpose": {
     capabilityMode: "all",
     systemPrompt: "You are a focused coding subagent. Complete only the delegated task and return a concise evidence-based result.",
   },
   explore: {
     capabilityMode: "execute",
-    systemPrompt: "You are a read-only exploration subagent. Inspect the codebase, run safe diagnostic commands, and report evidence without editing files.",
+    // `capability_mode: "read-only"` used to strip bash from this profile, which
+    // left an agent whose instructions promised commands it could not run.
+    capabilityFloor: "execute",
+    systemPrompt: [
+      "You are an exploration subagent. Inspect the codebase and report evidence-backed findings; never modify tracked files.",
+      "bash is available, and you are expected to use it to gather evidence rather than guessing:",
+      "read files and whole directory trees (cat, head, tail, sed -n, less -F, wc, tree, du),",
+      "search and rank hits (rg, grep, find, fd, sort, uniq, cut, awk, head/tail pipelines),",
+      "read history and diagnostics (git log/blame/diff/show/status, gh),",
+      "inspect environment and dependency state (env, which, --version, package manifests).",
+      "You may also run Python or Node.js to analyze data and verify behaviour, e.g. `python3 -c`, `python3 script.py`, `node -e`, `node script.mjs`.",
+      "Run such scripts only for inspection or measurement: no file writes, no in-place edits, no dependency installation, no destructive commands.",
+      "When a finding matters, cite the concrete command output or file:line that proves it. If evidence is inconclusive, say so instead of assuming.",
+    ].join(" "),
   },
   plan: {
     capabilityMode: "execute",
@@ -187,6 +209,16 @@ export function cloneDefinition(definition: AgentDefinition): AgentDefinition {
   };
 }
 
+/**
+ * Capability modes from narrowest to widest. A floor compares by this order, so
+ * `read-only` + floor `execute` widens while `all` stays `all`.
+ */
+const CAPABILITY_ORDER: readonly CapabilityMode[] = ["read-only", "read-write", "execute", "all"];
+
+function widest(left: CapabilityMode, right: CapabilityMode): CapabilityMode {
+  return CAPABILITY_ORDER.indexOf(right) > CAPABILITY_ORDER.indexOf(left) ? right : left;
+}
+
 export function resolveProfile(type: string, capabilityMode: string | undefined): {
   type: string;
   capabilityMode: CapabilityMode;
@@ -194,9 +226,12 @@ export function resolveProfile(type: string, capabilityMode: string | undefined)
 } {
   const normalizedType = (type.trim() || "general-purpose").toLowerCase();
   const profile = AGENT_PROFILES[normalizedType] ?? AGENT_PROFILES["general-purpose"];
+  const requested = requireCapability(capabilityMode ?? profile.capabilityMode);
   return {
     type: normalizedType,
-    capabilityMode: requireCapability(capabilityMode ?? profile.capabilityMode),
+    // Widening to the profile floor keeps the profile's stated contract reachable;
+    // a request for more than the floor is still honoured.
+    capabilityMode: profile.capabilityFloor ? widest(requested, profile.capabilityFloor) : requested,
     systemPrompt: profile.systemPrompt,
   };
 }

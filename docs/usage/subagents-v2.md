@@ -200,6 +200,19 @@ The Markdown definition controls the system prompt, business tools, up to three 
 
 Use `/subagents` for the native agent-definition management surface.
 
+### Built-in profile tool access
+
+| profile | capabilityMode | tools | behaviour |
+|---|---|---|---|
+| `general-purpose` | `all` | `read` `bash` `edit` `write` `grep` `find` `ls` | Full implementation |
+| `explore` | `execute` (floor) | `read` `bash` `grep` `find` `ls` | **Has bash**, so it can run `python3` and `node`. A caller-supplied `capability_mode: "read-only"` is widened to `execute`. The system prompt restricts it to inspection and measurement: no file writes, no in-place edits, no dependency installation, no destructive commands |
+| `plan` | `execute` | `read` `bash` `grep` `find` `ls` | Planning only, no file changes |
+
+`explore` carries a **capability floor**: a narrower request is widened to `execute` because the profile's contract depends on bash. This lets it read whole trees and produce counts with `rg`, `git log`, `tree`, `wc`, and analyze data or verify behaviour with `python3 -c` and `node -e`.
+
+The "no file edits" rule for `explore` is a **prompt-level** convention, not tool-level enforcement: its tool set has no `edit` or `write`, but bash can run arbitrary commands. Use a custom definition with `tools: ["read", "grep", "find", "ls"]` when you need a hard boundary.
+
+
 ## Message and persistence boundaries
 
 V2 semantic messages use the custom message type `pi-grok-team-message/v2` and are intentionally model-visible in the recipient session.

@@ -2,7 +2,7 @@
   "name": "implementation",
   "description": "Implementation plus independent review team",
   "enabled": true,
-  "instructions": "The implementer owns edits. The reviewer stays read-only and reviews shared working-tree state. Communicate concrete file paths, test results, and blockers.",
+  "instructions": "The implementer owns edits. The reviewer makes no file changes but may run bash, python3 and node to gather evidence and verify claims. Communicate concrete file paths, test results, and blockers.",
   "members": [
     {
       "name": "implementer",

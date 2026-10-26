@@ -2,7 +2,7 @@
   "name": "review",
   "description": "Exploration, adversarial review, and verification team",
   "enabled": true,
-  "instructions": "Do not edit files. Divide evidence gathering, correctness review, and verification. Send only actionable findings with file/line or command evidence.",
+  "instructions": "Do not edit files. Divide evidence gathering, correctness review, and verification; bash, python3 and node are available for inspection and measurement. Send only actionable findings with file/line or command evidence.",
   "members": [
     {
       "name": "explorer",
