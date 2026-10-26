@@ -10,7 +10,8 @@ import {
 import type { SubagentRecord } from "./bridge.ts";
 import { requireText } from "./shared.ts";
 import { SubagentRuntime } from "./runtime.ts";
-import { loadTeamDefinitions, renderTeamTemplate, selectedTeam, type TeamDefinition } from "./teams.ts";
+import { renderTeamTemplate, selectedTeam } from "./teams.ts";
+import { configureTeamPresets } from "./team-ui.ts";
 
 const ROOT_PATH = "/root";
 const TEAM_MESSAGE_TYPE = "pi-grok-team-message/v2";
@@ -47,6 +48,7 @@ type SpawnAgentArgs = {
   agent_type?: string;
   model?: string;
   max_turns?: number;
+  thinking_level?: string;
 };
 
 function pathSegment(value: string): string {
@@ -93,18 +95,9 @@ export class TeamCoordinator {
     for (const tool of this.controlTools(ROOT_PATH)) this.pi.registerTool(tool);
     this.pi.registerTool(this.spawnTeamTool());
     this.pi.registerCommand("subagent-teams", {
-      description: "List external Subagents V2 team presets",
+      description: "Configure Subagents V2 team presets, per-member models and thinking levels",
       handler: async (_args, ctx) => {
-        const teams = [...loadTeamDefinitions(ctx.cwd).values()].sort((a, b) => a.name.localeCompare(b.name));
-        if (teams.length === 0) {
-          ctx.ui.notify("No Subagents V2 team presets were found.", "warning");
-          return;
-        }
-        const lines = teams.map((team) => {
-          const members = team.members.map((member) => `${member.name}:${member.agent}`).join(", ") || "disabled";
-          return `${team.enabled ? "✓" : "×"} ${team.name} [${team.scope}] — ${team.description} — ${members}`;
-        });
-        ctx.ui.notify(lines.join("\n"), "info");
+        await configureTeamPresets(ctx);
       },
     });
   }
@@ -288,6 +281,7 @@ export class TeamCoordinator {
           background: true,
           model: args.model,
           max_turns: args.max_turns,
+          thinking_level: args.thinking_level,
         },
         signal,
         ctx,
@@ -372,6 +366,7 @@ export class TeamCoordinator {
         agent_type: Type.Optional(Type.String({ description: "External agent definition/profile name. Defaults to general-purpose." })),
         model: Type.Optional(Type.String({ description: "Optional model allowed by the selected external agent definition." })),
         max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Optional soft turn cap; external agent definition takes precedence." })),
+        thinking_level: Type.Optional(Type.String({ description: "Optional thinking level: off, minimal, low, medium, high, xhigh, or max. Clamped to what the model supports; omitted inherits Pi settings." })),
       }),
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
         const agent = await this.spawnAgent(senderPath, params, toolCallId, signal, ctx);
@@ -557,6 +552,7 @@ export class TeamCoordinator {
                 agent_type: member.agent,
                 model: member.model,
                 max_turns: member.maxTurns,
+                thinking_level: member.thinkingLevel,
               },
               `${toolCallId}:${member.name}`,
               signal,

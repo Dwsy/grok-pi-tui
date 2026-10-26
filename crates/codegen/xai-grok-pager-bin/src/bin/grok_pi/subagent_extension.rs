@@ -88,6 +88,16 @@ pub(super) fn write_subagent_extension() -> Result<SubagentExtension> {
     )?;
     write_source_file(
         source_dir.path(),
+        "thinking.ts",
+        include_str!("../../../../../../extensions/pi-grok-subagents/thinking.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "team-ui.ts",
+        include_str!("../../../../../../extensions/pi-grok-subagents/team-ui.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
         "v2.ts",
         include_str!("../../../../../../extensions/pi-grok-subagents/v2.ts"),
     )?;

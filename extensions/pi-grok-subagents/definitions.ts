@@ -6,6 +6,7 @@ import { basename, isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { MAX_AGENT_MODELS, requireCapability, type CapabilityMode } from "./shared.ts";
+import { parseThinkingLevel, type ThinkingLevel } from "./thinking.ts";
 
 export const AGENT_PROFILES: Record<string, { capabilityMode: CapabilityMode; systemPrompt: string }> = {
   "general-purpose": {
@@ -36,6 +37,8 @@ export type AgentDefinition = {
   extensions?: string[];
   skills?: string[];
   maxTurns?: number;
+  /** Default thinking level for this definition; undefined inherits Pi settings. */
+  thinkingLevel?: ThinkingLevel;
 };
 
 export function productProjectDir(cwd: string): string {
@@ -111,6 +114,7 @@ function loadDefinitionsFromDir(
         extensions: optionalList(frontmatter.extensions),
         skills: optionalList(frontmatter.skills),
         maxTurns: optionalMaxTurns(frontmatter.max_turns),
+        thinkingLevel: parseThinkingLevel(frontmatter.thinking_level, `subagent ${name}`),
       });
     } catch {
       // A malformed higher-priority definition shadows an inherited definition
@@ -152,6 +156,7 @@ function serializeDefinition(definition: AgentDefinition): string {
     yamlList(definition.extensions) && `extensions: ${yamlList(definition.extensions)}`,
     yamlList(definition.skills) && `skills: ${yamlList(definition.skills)}`,
     definition.maxTurns !== undefined && `max_turns: ${definition.maxTurns}`,
+    definition.thinkingLevel !== undefined && `thinking_level: ${definition.thinkingLevel}`,
   ].filter((field): field is string => Boolean(field));
   return `---\n${fields.join("\n")}\n---\n\n${definition.systemPrompt.trim()}\n`;
 }

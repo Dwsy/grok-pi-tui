@@ -23,6 +23,7 @@ import {
   textFromContent,
 } from "./shared.ts";
 import { profileFor, selectedDefinition } from "./definitions.ts";
+import { clampThinkingLevel, isThinkingLevel, type ThinkingLevel } from "./thinking.ts";
 import {
   appendPersistedRecord,
   createBridgeEmitter,
@@ -44,9 +45,29 @@ export type SpawnParams = {
   capability_mode?: string;
   model?: string;
   max_turns?: number;
+  /** Requested Pi thinking level. Undefined inherits the agent definition, then Pi settings. */
+  thinking_level?: string;
 };
 
 export type MessageDelivery = "steer" | "follow_up";
+
+/**
+ * Explicit spawn parameter wins over the agent definition default. Both are
+ * optional: undefined keeps Pi's own settings-derived thinking level.
+ */
+function resolveThinkingLevel(
+  requested: string | undefined,
+  definitionDefault: ThinkingLevel | undefined,
+): ThinkingLevel | undefined {
+  const explicit = requested?.trim();
+  if (!explicit) return definitionDefault;
+  if (!isThinkingLevel(explicit.toLowerCase())) {
+    throw new Error(
+      `thinking_level must be one of off, minimal, low, medium, high, xhigh, max (got "${explicit}").`,
+    );
+  }
+  return explicit.toLowerCase() as ThinkingLevel;
+}
 
 export type RecordFinishHandler = (
   record: SubagentRecord,
@@ -157,6 +178,7 @@ export class SubagentRuntime {
           background: snapshot.background,
           capabilityMode: snapshot.capabilityMode,
           model: snapshot.modelId,
+          thinkingLevel: snapshot.thinkingLevel,
           prompt: snapshot.prompt,
           reconcile: mode === "recovery",
         }, replay);
@@ -383,6 +405,13 @@ export class SubagentRuntime {
       : ctx.model;
     if (!model) throw new Error("no Pi model is selected");
 
+    // A preset is a shareable file, so an unsupported level degrades to the
+    // closest level this model accepts instead of failing the whole spawn.
+    const requestedThinkingLevel = resolveThinkingLevel(params.thinking_level, definition?.thinkingLevel);
+    const thinkingLevel: ThinkingLevel | undefined = requestedThinkingLevel
+      ? clampThinkingLevel(model, requestedThinkingLevel)
+      : undefined;
+
     const parentSessionFile = ctx.sessionManager.getSessionFile();
     if (!parentSessionFile) throw new Error("parent session persistence is unavailable");
 
@@ -419,6 +448,7 @@ export class SubagentRuntime {
       sessionManager: SessionManager.create(ctx.cwd, join(dirname(parentSessionFile), "subagent")),
       settingsManager,
       model,
+      ...(thinkingLevel ? { thinkingLevel } : {}),
       tools: activeTools,
       customTools,
       resourceLoader,
@@ -447,6 +477,7 @@ export class SubagentRuntime {
       type: profile.type,
       capabilityMode: profile.capabilityMode,
       modelId: model.id,
+      thinkingLevel: session.thinkingLevel,
       background: params.background === true,
       startedAt: Date.now(),
       session,
@@ -483,6 +514,7 @@ export class SubagentRuntime {
       background: completeRecord.background,
       capabilityMode: profile.capabilityMode,
       model: model.id,
+      thinkingLevel: completeRecord.thinkingLevel,
       prompt,
       agentPath: completeRecord.agentPath,
       parentAgentPath: completeRecord.parentAgentPath,
@@ -519,6 +551,9 @@ export class SubagentRuntime {
       type: previous.type,
       capabilityMode: previous.capabilityMode,
       modelId: previous.modelId,
+      // The child AgentSession is reused, so its live thinking level already
+      // carries any earlier override; re-record it instead of re-resolving.
+      thinkingLevel: previous.session.thinkingLevel,
       background: previous.background,
       startedAt: Date.now(),
       session: previous.session,
@@ -554,6 +589,7 @@ export class SubagentRuntime {
       background: record.background,
       capabilityMode: record.capabilityMode,
       model: record.modelId,
+      thinkingLevel: record.thinkingLevel,
       prompt,
       resumed: true,
       resumedFromSubagentId: previous.id,

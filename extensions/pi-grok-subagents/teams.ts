@@ -1,9 +1,11 @@
 /** External team preset discovery and validation for Subagents V2. */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { definitionName, productGlobalDir, productProjectDir } from "./definitions.ts";
+import { parseThinkingLevel, type ThinkingLevel } from "./thinking.ts";
 
 export type TeamDefinitionScope = "bundled" | "global" | "project";
 
@@ -14,6 +16,8 @@ export type TeamMemberDefinition = {
   task?: string;
   model?: string;
   maxTurns?: number;
+  /** Thinking level for this member; undefined inherits the agent definition, then Pi settings. */
+  thinkingLevel?: ThinkingLevel;
 };
 
 export type TeamDefinition = {
@@ -66,6 +70,7 @@ function parseMember(value: unknown): TeamMemberDefinition {
     task: optionalString(raw.task),
     model: optionalString(raw.model),
     maxTurns,
+    thinkingLevel: parseThinkingLevel(raw.thinking_level, `team member ${name}`),
   };
 }
 
@@ -147,4 +152,83 @@ export function renderTeamTemplate(
     .replaceAll("{{team}}", values.team)
     .replaceAll("{{agent_path}}", values.agentPath)
     .replaceAll("{{parent_path}}", values.parentPath);
+}
+
+function memberFileValue(value: string | undefined): string | undefined {
+  return value?.trim() ? value.trim() : undefined;
+}
+
+function serializeTeam(team: TeamDefinition): string {
+  const members = team.members.map((member) => ({
+    name: member.name,
+    agent: member.agent,
+    ...(memberFileValue(member.description) ? { description: member.description } : {}),
+    ...(memberFileValue(member.task) ? { task: member.task } : {}),
+    ...(memberFileValue(member.model) ? { model: member.model } : {}),
+    ...(member.maxTurns !== undefined ? { max_turns: member.maxTurns } : {}),
+    ...(member.thinkingLevel !== undefined ? { thinking_level: member.thinkingLevel } : {}),
+  }));
+  const payload = {
+    name: team.name,
+    description: team.description,
+    enabled: team.enabled,
+    ...(team.instructions?.trim() ? { instructions: team.instructions.trim() } : {}),
+    members,
+  };
+  return `${JSON.stringify(payload, null, 2)}\n`;
+}
+
+function teamScopeDir(cwd: string, scope: Exclude<TeamDefinitionScope, "bundled">): string {
+  return scope === "project" ? join(productProjectDir(cwd), "teams") : join(productGlobalDir(), "teams");
+}
+
+/**
+ * Write an external preset into the requested scope. Bundled presets are never
+ * mutated: callers must clone into project or global scope first.
+ */
+export function saveTeamDefinition(cwd: string, team: TeamDefinition): string {
+  if (team.scope === "bundled") {
+    throw new Error("Choose project or global scope before saving a bundled team preset.");
+  }
+  const dir = teamScopeDir(cwd, team.scope);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const destination = join(dir, `${team.name}.json`);
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, serializeTeam(team), { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, destination);
+  return destination;
+}
+
+export function deleteTeamDefinition(cwd: string, team: TeamDefinition): void {
+  if (team.scope === "bundled") return;
+  const path = join(teamScopeDir(cwd, team.scope), `${team.name}.json`);
+  if (existsSync(path)) unlinkSync(path);
+}
+
+export function cloneTeamDefinition(
+  cwd: string,
+  team: TeamDefinition,
+  scope: Exclude<TeamDefinitionScope, "bundled">,
+): TeamDefinition {
+  return {
+    ...team,
+    scope,
+    sourcePath: join(teamScopeDir(cwd, scope), `${team.name}.json`),
+    members: team.members.map((member) => ({ ...member })),
+  };
+}
+
+export function newTeamDefinition(
+  cwd: string,
+  scope: Exclude<TeamDefinitionScope, "bundled">,
+  name: string,
+): TeamDefinition {
+  return {
+    name,
+    scope,
+    enabled: true,
+    description: name,
+    members: [],
+    sourcePath: join(teamScopeDir(cwd, scope), `${name}.json`),
+  };
 }

@@ -105,6 +105,7 @@ export function registerV1Tools(pi: ExtensionAPI, runtime: SubagentRuntime): voi
       background: Type.Optional(Type.Boolean({ description: "Run asynchronously and return the child ID immediately. Use get_command_or_subagent_output(task_ids, timeout_ms) to collect results." })),
       model: Type.Optional(Type.String({ description: "Optional Pi model callback. When the selected subagent Markdown definition has models, it must be one of its up-to-three enabled models." })),
       max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Soft maximum child turns. At the limit Pi receives one end-and-summarize steering message; 0 means unlimited. A Markdown definition takes precedence." })),
+      thinking_level: Type.Optional(Type.String({ description: "Optional Pi thinking level: off, minimal, low, medium, high, xhigh, or max. Clamped to what the selected model supports. Omitted uses the agent definition, then Pi settings." })),
       capability_mode: Type.Optional(Type.String({ description: "Tool access: read-only, read-write, execute, or all. Defaults to profile capability." })),
     }),
     async execute(toolCallId, params, signal, _onUpdate, ctx) {

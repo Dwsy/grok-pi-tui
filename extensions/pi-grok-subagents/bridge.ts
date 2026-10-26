@@ -37,6 +37,8 @@ export type PersistedRecord = {
   type: string;
   capabilityMode: CapabilityMode;
   modelId: string;
+  /** Effective Pi thinking level for this run; absent when Pi settings drive it. */
+  thinkingLevel?: string;
   background: boolean;
   startedAt: number;
   status: "running" | "completed" | "failed" | "cancelled";
@@ -69,6 +71,8 @@ export type SubagentRecord = {
   type: string;
   capabilityMode: CapabilityMode;
   modelId: string;
+  /** Effective Pi thinking level for this run; absent when Pi settings drive it. */
+  thinkingLevel?: string;
   background: boolean;
   startedAt: number;
   session: AgentSession;
@@ -196,6 +200,7 @@ export function persistedRecord(value: unknown): PersistedRecord | undefined {
     (candidate.agentPath !== undefined && typeof candidate.agentPath !== "string") ||
     (candidate.parentAgentPath !== undefined && typeof candidate.parentAgentPath !== "string") ||
     (candidate.team !== undefined && typeof candidate.team !== "string") ||
+    (candidate.thinkingLevel !== undefined && typeof candidate.thinkingLevel !== "string") ||
     (candidate.lastError !== undefined && typeof candidate.lastError !== "string")
   ) {
     return undefined;
@@ -416,6 +421,7 @@ export function persist(record: SubagentRecord, status: PersistedRecord["status"
     type: record.type,
     capabilityMode: record.capabilityMode,
     modelId: record.modelId,
+    thinkingLevel: record.thinkingLevel,
     background: record.background,
     startedAt: record.startedAt,
     status,
