@@ -74,7 +74,7 @@ mod web_config_extension;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use pi_grok_adapter::{PiAgent, SubagentEventTransport};
+use pi_grok_adapter::{PiAgent, PiBootstrap, SubagentEventTransport};
 use std::rc::Rc;
 use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
@@ -102,9 +102,9 @@ use cli::{Args, Command, normalize_compound_short_flags, pi_args_with_startup_fl
 use config_skill::{config_skill_enabled, sync_config_skill_cache};
 use context_extension::write_context_extension;
 use export_extension::write_export_extension;
-use extension_self_heal::spawn_with_extension_self_heal;
 #[cfg(test)]
 use extension_self_heal::{bootstrap_with_deadline, disable_all_extensions};
+use extension_self_heal::{extract_extension_paths, spawn_with_extension_self_heal};
 use goal_extension::write_goal_extension;
 use herdr_extension::{is_managed_pi_integration, write_herdr_extension};
 use host_feature_extension::write_host_feature_extension;
@@ -1219,130 +1219,295 @@ async fn run(mut args: Args) -> Result<()> {
         product_version: GROK_PI_VERSION.to_string(),
     };
 
-    let ready = async move {
-        // Keep OS/process probing behind Pager terminal initialization. On
-        // Windows this also rewrites bare `pi` → absolute `pi.cmd`.
-        let (_pi_version, resolved_pi_bin) =
-            ensure_compatible_pi_host(&args.pi_bin).context("Pi host version check failed")?;
-        args.pi_bin = resolved_pi_bin;
-
-        // Extension self-heal still owns Pi bootstrap semantics; only the wait
-        // moved behind the native Pager startup surface.
-        let (process, bootstrap, _pi_args) =
-            spawn_with_extension_self_heal(&args, &cwd, pi_args, &env).await?;
-
-        if btw_enabled {
-            env.push(("PI_GROK_BTW".to_string(), "1".to_string()));
-            unsafe {
-                std::env::set_var("PI_GROK_BTW", "1");
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("PI_GROK_BTW");
-            }
-        }
-
-        let initial_models = bootstrap.acp_models();
-        let initial_commands = bootstrap.acp_commands(workflows_enabled);
-        let session_id = bootstrap.session_id().to_string();
-        let session_title = bootstrap
-            .session_title()
-            .map(str::to_owned)
-            .or_else(|| Some("Pi".to_string()));
-
-        let (client_channel, mut agent_channel) = acp_channels();
-        let adapter = Rc::new(
-            PiAgent::new(
-                process.rpc,
-                agent_channel.tx.clone(),
-                bootstrap,
-                pi_session_dir,
-                bash_control_meta,
-                context_breakdown,
-                plan_mode_control,
-                goal_control,
-                subagent_transport,
-                workflows_enabled,
-                eval_v2_only_tool_policy_applied,
-            )
-            .context("failed to restore Pi plan-mode state")?,
-        );
-
-        let event_adapter = adapter.clone();
-        tokio::task::spawn_local(async move {
-            event_adapter.run_events(process.events).await;
-        });
-
-        let route_adapter = adapter.clone();
-        tokio::task::spawn_local(async move {
-            while let Some(message) = agent_channel.rx.recv().await {
-                if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = &message
-                    && matches!(
-                        args.request.method.as_ref(),
-                        "pi/ui/remote_tui/input" | "pi/ui/remote_tui/cancel"
-                    )
-                {
-                    // Keyboard notifications are ordered, short synchronous
-                    // keyfile writes. Do not schedule each key independently.
-                    if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = message {
-                        let result = agent_client_protocol::Agent::ext_notification(
-                            route_adapter.as_ref(),
-                            args.request,
-                        )
-                        .await;
-                        let _ = args.response_tx.send(result);
-                    }
-                    continue;
-                }
-                message.route_to_agent(route_adapter.clone(), |future| {
-                    tokio::task::spawn_local(future);
-                });
-            }
-        });
-
-        let command_profile = PI_GROK_NATIVE_COMMANDS
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect::<Vec<_>>();
-        // External ACP skips shell `initialize`, so recap must be enabled here.
-        let mut connection = AcpConnection::external(
-            client_channel.tx,
-            client_channel.rx,
-            initial_models,
-            initial_commands,
-            CancellationToken::new(),
-            ExternalUiProfile {
-                agent_name: "Pi".to_string(),
-                builtin_commands: command_profile.clone(),
-                logo: Some(ExternalLogoArt {
-                    full: PI_LOGO,
-                    small: PI_LOGO,
-                }),
-                welcome_brand: Some(ExternalWelcomeBrand {
-                    title: "grok-pi",
-                    subtitle: PI_WELCOME_SUBTITLE,
-                    version: GROK_PI_VERSION,
-                }),
-                // Grok worktree product flow is not wired for Pi yet.
-                hide_new_worktree: true,
-                changelog_url: Some("https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD"),
-                enable_voice_dictation: true,
-                host_features: host_feature_manifest.clone(),
-            },
-        );
-        connection.session_recap_available = true;
-
-        Ok(ExternalRunReady {
-            connection,
-            session_id,
-            session_title,
-            resume_existing_session,
-            emit_resume_hint,
-            resume_session_dir,
-        })
+    // ── Pi backend attach ──────────────────────────────────────────────────
+    // The ACP channel pair exists before the backend so the Pager paints its
+    // native surface while Pi RPC + extensions boot. Requests emitted before
+    // the adapter attaches (for example the Welcome prewarm `session/new`)
+    // queue on the unbounded channel and drain in order once it is wired.
+    let (client_channel, agent_channel) = acp_channels();
+    let command_profile = PI_GROK_NATIVE_COMMANDS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    // External ACP skips shell `initialize`, so recap must be enabled here.
+    let ui_profile = ExternalUiProfile {
+        agent_name: "Pi".to_string(),
+        builtin_commands: command_profile,
+        logo: Some(ExternalLogoArt {
+            full: PI_LOGO,
+            small: PI_LOGO,
+        }),
+        welcome_brand: Some(ExternalWelcomeBrand {
+            title: "grok-pi",
+            subtitle: PI_WELCOME_SUBTITLE,
+            version: GROK_PI_VERSION,
+        }),
+        // Grok worktree product flow is not wired for Pi yet.
+        hide_new_worktree: true,
+        changelog_url: Some("https://github.com/Dwsy/grok-pi/blob/main/CHANGELOG.MD"),
+        enable_voice_dictation: true,
+        host_features: host_feature_manifest.clone(),
+    };
+    let attach_spec = PiAttachSpec {
+        cwd,
+        pi_args,
+        env,
+        pi_session_dir,
+        bash_control_meta,
+        context_breakdown,
+        plan_mode_control,
+        goal_control,
+        subagent_transport,
+        workflows_enabled,
+        eval_v2_only: eval_v2_only_tool_policy_applied,
+        btw_enabled,
     };
 
-    run_external_deferred(start, ready).await
+    if resume_existing_session {
+        // Resume/fork materializes `LoadSession` from the real Pi session id,
+        // so it keeps the blocking attach (the Pager terminal is already up;
+        // this remains the historical startup order).
+        let ready = async move {
+            let mut args = args;
+            let bootstrap = attach_pi_backend(&mut args, attach_spec, agent_channel, false).await?;
+            let session_id = bootstrap.session_id().to_string();
+            let session_title = bootstrap
+                .session_title()
+                .map(str::to_owned)
+                .or_else(|| Some("Pi".to_string()));
+            let mut connection = AcpConnection::external(
+                client_channel.tx,
+                client_channel.rx,
+                bootstrap.acp_models(),
+                bootstrap.acp_commands(workflows_enabled),
+                CancellationToken::new(),
+                ui_profile,
+            );
+            connection.session_recap_available = true;
+            Ok(ExternalRunReady {
+                connection,
+                session_id,
+                session_title,
+                resume_existing_session,
+                emit_resume_hint,
+                resume_session_dir,
+                backend_attach: None,
+            })
+        };
+        run_external_deferred(start, ready).await
+    } else {
+        // Fresh start: the Welcome surface paints immediately and Pi attaches
+        // behind it. Attach failures abort the run through `backend_attach`.
+        let (attach_tx, attach_rx) = tokio::sync::oneshot::channel();
+        tokio::task::spawn_local(async move {
+            let mut args = args;
+            let attached = attach_pi_backend(&mut args, attach_spec, agent_channel, true)
+                .await
+                .map(|_bootstrap| ());
+            let _ = attach_tx.send(attached);
+        });
+        let ready = async move {
+            let mut connection = AcpConnection::external(
+                client_channel.tx,
+                client_channel.rx,
+                None,
+                Vec::new(),
+                CancellationToken::new(),
+                ui_profile,
+            );
+            connection.session_recap_available = true;
+            Ok(ExternalRunReady {
+                connection,
+                session_id: String::new(),
+                session_title: Some("Pi".to_string()),
+                resume_existing_session,
+                emit_resume_hint,
+                resume_session_dir,
+                backend_attach: Some(attach_rx),
+            })
+        };
+        run_external_deferred(start, ready).await
+    }
+}
+
+/// Everything the Pi adapter needs once its child process has bootstrapped.
+/// Computed by `run` before either attach path starts so both paths share one
+/// wiring routine.
+struct PiAttachSpec {
+    cwd: std::path::PathBuf,
+    pi_args: Vec<String>,
+    env: Vec<(String, String)>,
+    pi_session_dir: std::path::PathBuf,
+    bash_control_meta: Option<std::path::PathBuf>,
+    context_breakdown: Option<std::path::PathBuf>,
+    plan_mode_control: Option<std::path::PathBuf>,
+    goal_control: Option<std::path::PathBuf>,
+    subagent_transport: Option<SubagentEventTransport>,
+    workflows_enabled: bool,
+    eval_v2_only: bool,
+    btw_enabled: bool,
+}
+
+/// Spawn the Pi child (with extension self-heal) and wire `PiAgent` into the
+/// Pager's agent-side ACP channel. Returns the bootstrap snapshot so blocking
+/// callers can seed the connection before the event loop starts; deferred
+/// callers only need the wiring to have happened.
+///
+/// `behind_live_tui` says the Pager event loop already runs beside this
+/// attach. It gates both sides of the same coin: self-heal must not steal
+/// keystrokes from a live TUI, and host notifications (`pi/ui/*`, `x.ai/*`)
+/// may only be published when that loop exists to consume and answer them.
+async fn attach_pi_backend(
+    args: &mut Args,
+    mut spec: PiAttachSpec,
+    agent_channel: xai_acp_lib::AcpAgentChannel,
+    behind_live_tui: bool,
+) -> Result<PiBootstrap> {
+    // Keep OS/process probing behind Pager terminal initialization. On
+    // Windows this also rewrites bare `pi` → absolute `pi.cmd`.
+    let (_pi_version, resolved_pi_bin) =
+        ensure_compatible_pi_host(&args.pi_bin).context("Pi host version check failed")?;
+    args.pi_bin = resolved_pi_bin;
+
+    // Extension self-heal still owns Pi bootstrap semantics; only the wait
+    // moved behind the native Pager startup surface.
+    let original_ext_paths = extract_extension_paths(&spec.pi_args);
+    let (process, bootstrap, healed_pi_args) = spawn_with_extension_self_heal(
+        args,
+        &spec.cwd,
+        spec.pi_args,
+        &spec.env,
+        // Self-heal prompts read stdin; behind a live TUI the Pager owns it.
+        !behind_live_tui,
+    )
+    .await?;
+
+    if spec.btw_enabled {
+        spec.env.push(("PI_GROK_BTW".to_string(), "1".to_string()));
+        unsafe {
+            std::env::set_var("PI_GROK_BTW", "1");
+        }
+    } else {
+        unsafe {
+            std::env::remove_var("PI_GROK_BTW");
+        }
+    }
+
+    let adapter = Rc::new(
+        PiAgent::new(
+            process.rpc,
+            agent_channel.tx.clone(),
+            bootstrap.clone(),
+            spec.pi_session_dir,
+            spec.bash_control_meta,
+            spec.context_breakdown,
+            spec.plan_mode_control,
+            spec.goal_control,
+            spec.subagent_transport,
+            spec.workflows_enabled,
+            spec.eval_v2_only,
+        )
+        .context("failed to restore Pi plan-mode state")?,
+    );
+    let client_tx = agent_channel.tx.clone();
+
+    let event_adapter = adapter.clone();
+    tokio::task::spawn_local(async move {
+        event_adapter.run_events(process.events).await;
+    });
+
+    let route_adapter = adapter.clone();
+    tokio::task::spawn_local(async move {
+        let mut agent_channel = agent_channel;
+        while let Some(message) = agent_channel.rx.recv().await {
+            if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = &message
+                && matches!(
+                    args.request.method.as_ref(),
+                    "pi/ui/remote_tui/input" | "pi/ui/remote_tui/cancel"
+                )
+            {
+                // Keyboard notifications are ordered, short synchronous
+                // keyfile writes. Do not schedule each key independently.
+                if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = message {
+                    let result = agent_client_protocol::Agent::ext_notification(
+                        route_adapter.as_ref(),
+                        args.request,
+                    )
+                    .await;
+                    let _ = args.response_tx.send(result);
+                }
+                continue;
+            }
+            message.route_to_agent(route_adapter.clone(), |future| {
+                tokio::task::spawn_local(future);
+            });
+        }
+    });
+
+    // Host notifications need the Pager event loop to consume and answer
+    // them. The blocking attach runs before that loop exists (its connection
+    // already carries the model seed), so only the deferred attach publishes.
+    if behind_live_tui {
+        // Seed the model catalog as soon as the adapter is wired. The Pager
+        // can hold on Welcome (folder trust question) without creating a
+        // session for a while, and `publish_bootstrap` only fires with
+        // `session/new`.
+        if let Some(models) = bootstrap.acp_models()
+            && let Ok(value) = serde_json::to_value(models)
+            && let Ok(raw) = serde_json::value::to_raw_value(&value)
+        {
+            let notification =
+                agent_client_protocol::ExtNotification::new("x.ai/models/update", raw.into());
+            let _ = xai_acp_lib::acp_send(notification, &client_tx).await;
+        }
+
+        // Surface a self-heal drop: the bisection report goes to a stderr that
+        // is redirected while the Pager owns the terminal, so without this
+        // notice the user never learns an extension was disabled.
+        let healed_ext_paths = extract_extension_paths(&healed_pi_args);
+        if healed_ext_paths != original_ext_paths {
+            let dropped_names = original_ext_paths
+                .iter()
+                .filter(|path| !healed_ext_paths.contains(path))
+                .map(|path| {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.clone())
+                })
+                .collect::<Vec<_>>();
+            let details = format!(
+                "Details: {}/logs/pi-rpc-stderr.log",
+                home::display_home(&home::effective_grok_home())
+            );
+            let message = if dropped_names.len() == 1 {
+                format!(
+                    "Self-heal: startup extension {} crashed Pi and was disabled for this run. {details}",
+                    dropped_names[0]
+                )
+            } else {
+                format!(
+                    "Self-heal: {} startup extensions crashed Pi at startup and were disabled for this run. {details}",
+                    dropped_names.len()
+                )
+            };
+            notify_host_message(&client_tx, &message).await;
+        }
+    }
+
+    Ok(bootstrap)
+}
+
+/// Push a `pi/ui/notify` message into the Pager. `notifyType: "info"` renders
+/// as a system block in the first agent scrollback (queued while no agent
+/// view exists yet), so startup notices survive the Welcome handover.
+async fn notify_host_message(client_tx: &xai_acp_lib::AcpClientTx, message: &str) {
+    let params = serde_json::json!({ "message": message, "notifyType": "info" });
+    let Ok(raw) = serde_json::value::to_raw_value(&params) else {
+        return;
+    };
+    let notification = agent_client_protocol::ExtNotification::new("pi/ui/notify", raw.into());
+    let _ = xai_acp_lib::acp_send(notification, client_tx).await;
 }
 
 #[cfg(test)]

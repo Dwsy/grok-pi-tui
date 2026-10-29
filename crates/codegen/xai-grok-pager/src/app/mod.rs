@@ -628,6 +628,12 @@ pub struct ExternalRunReady {
     pub resume_existing_session: bool,
     pub emit_resume_hint: bool,
     pub resume_session_dir: Option<String>,
+    /// Deferred backend attach for hosts that boot the agent behind a running
+    /// Pager (see [`ExternalRunStartConfig`]). Resolves `Ok(())` once the
+    /// backend is wired into `connection`'s channels; `Err` aborts the run
+    /// with that error after terminal teardown. `None` keeps the historical
+    /// order: the backend is complete before the event loop starts.
+    pub backend_attach: Option<tokio::sync::oneshot::Receiver<anyhow::Result<()>>>,
 }
 
 /// Run the native Grok pager against an external ACP backend.
@@ -663,6 +669,7 @@ pub async fn run_external(config: ExternalRunConfig) -> anyhow::Result<()> {
                 resume_existing_session,
                 emit_resume_hint,
                 resume_session_dir,
+                backend_attach: None,
             })
         },
     )
@@ -756,6 +763,7 @@ pub async fn run_external_deferred(
         resume_existing_session,
         emit_resume_hint,
         resume_session_dir,
+        backend_attach,
     } = match ready.await {
         Ok(ready) => ready,
         Err(error) => {
@@ -816,7 +824,29 @@ pub async fn run_external_deferred(
     let cancel = connection.cancel.clone();
     let pending_startup = xai_grok_telemetry::startup::PendingStartup::new();
     let tracing_handle = crate::tracing::init_tracing();
-    let result = event_loop::run(
+    // Deferred backend attach runs beside the event loop so the native
+    // surface paints before the backend is ready. `Ok` keeps the loop running;
+    // `Err` cancels the connection (the loop exits through its
+    // connection-cancel arm) and is returned after terminal teardown.
+    let deferred_attach = backend_attach.is_some();
+    let attach = async move {
+        match backend_attach {
+            Some(receiver) => match receiver.await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error),
+                Err(_) => Some(anyhow::anyhow!(
+                    "Pi backend attach task ended before signalling readiness"
+                )),
+            },
+            // Blocking hosts resolve `ready` fully before this point.
+            None => std::future::pending::<Option<anyhow::Error>>().await,
+        }
+    };
+    tokio::pin!(attach);
+    let mut attach_pending = true;
+    let mut attach_ok = false;
+    let mut attach_error: Option<anyhow::Error> = None;
+    let loop_run = event_loop::run(
         &mut terminal,
         connection,
         pending_startup,
@@ -829,13 +859,40 @@ pub async fn run_external_deferred(
         materialized,
         bg_update_rx,
         writer_event_rx,
-    )
-    .await;
+    );
+    tokio::pin!(loop_run);
+    let result = loop {
+        tokio::select! {
+            biased;
+            run_result = &mut loop_run => break run_result,
+            attach_result = &mut attach, if attach_pending => {
+                attach_pending = false;
+                if let Some(error) = attach_result {
+                    attach_error = Some(error);
+                    cancel.cancel();
+                } else {
+                    attach_ok = true;
+                }
+            }
+        }
+    };
 
-    crate::unified_log::flush_blocking().await;
+    // Log flush needs a live agent-side router to answer the notification.
+    // A deferred attach that never completed left none, and `flush_blocking`
+    // would wait forever for a response that cannot arrive.
+    if !deferred_attach || attach_ok {
+        crate::unified_log::flush_blocking().await;
+    } else {
+        crate::unified_log::flush();
+    }
     let _ = restore_terminal(terminal, writer_thread, screen_mode);
     cancel.cancel();
     xai_tty_utils::global_process_scope().kill_all();
+    // A failed deferred attach leaves no usable backend: fail fast with the
+    // host error instead of printing exit/telemetry tails for a dead run.
+    if let Some(error) = attach_error {
+        return Err(error);
+    }
     // Ctrl+U on Welcome (pending update) → quit, then run the real installer.
     if let Ok(run_result) = &result {
         if run_result.quit_for_update {

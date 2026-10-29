@@ -31,11 +31,16 @@ pub(super) async fn bootstrap_with_deadline<T>(
 
 /// Spawn Pi with the full extension set. If bootstrap fails, run the
 /// self-heal bisection and return a working process.
+///
+/// `interactive` gates the self-heal stdin prompts (upgrade offer, crash
+/// report). A background attach runs behind a live TUI and must never steal
+/// keystrokes from the Pager input loop, so it passes `false`.
 pub(super) async fn spawn_with_extension_self_heal(
     args: &Args,
     cwd: &std::path::Path,
     pi_args: Vec<String>,
     env: &[(String, String)],
+    interactive: bool,
 ) -> Result<(pi_grok_adapter::PiProcess, PiBootstrap, Vec<String>)> {
     let config = SpawnConfig {
         program: args.pi_bin.clone(),
@@ -103,7 +108,7 @@ pub(super) async fn spawn_with_extension_self_heal(
             eprintln!("  Culprit: \x1b[1m{display}\x1b[0m");
             eprintln!("  Path:    {bad_path}");
             eprintln!();
-            if offer_grok_pi_upgrade().await? {
+            if offer_grok_pi_upgrade(interactive).await? {
                 anyhow::bail!("grok-pi was upgraded; restart grok-pi to retry extensions");
             }
             eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching without this extension.");
@@ -121,7 +126,7 @@ pub(super) async fn spawn_with_extension_self_heal(
             eprintln!();
 
             // After successful bisection: Y / any key = report, only N = skip.
-            prompt_and_maybe_report_ext_crash(&bad_path, "crash");
+            prompt_and_maybe_report_ext_crash(interactive, &bad_path, "crash");
 
             // Step 3: Relaunch without the culprit.
             let healed_args = remove_extension_path(&pi_args, &bad_path);
@@ -146,14 +151,14 @@ pub(super) async fn spawn_with_extension_self_heal(
             eprintln!("\x1b[1;31m✗ Extension conflict detected\x1b[0m");
             eprintln!("  Could not isolate a single culprit (possible combination conflict).");
             eprintln!();
-            if offer_grok_pi_upgrade().await? {
+            if offer_grok_pi_upgrade(interactive).await? {
                 anyhow::bail!("grok-pi was upgraded; restart grok-pi to retry extensions");
             }
             eprintln!("  \x1b[1mSelf-healing:\x1b[0m relaunching with all extensions disabled.");
             eprintln!("  To do this manually:  \x1b[1mgrok-pi -ne --no-bridge-extensions\x1b[0m");
             eprintln!();
 
-            prompt_and_maybe_report_ext_crash("combo", "combo");
+            prompt_and_maybe_report_ext_crash(interactive, "combo", "combo");
 
             let process = PiRpc::spawn(SpawnConfig {
                 program: args.pi_bin.clone(),
@@ -172,10 +177,12 @@ pub(super) async fn spawn_with_extension_self_heal(
     }
 }
 
-async fn offer_grok_pi_upgrade() -> Result<bool> {
+async fn offer_grok_pi_upgrade(interactive: bool) -> Result<bool> {
     use std::io::{IsTerminal, Write};
 
-    if !std::io::stdin().is_terminal() {
+    // Background attach runs behind a live TUI: never steal stdin or write
+    // prompts over the Pager surface; skip the upgrade offer entirely.
+    if !interactive || !std::io::stdin().is_terminal() {
         return Ok(false);
     }
 
@@ -215,10 +222,12 @@ const DEFAULT_EXT_TELEMETRY_URL: &str = "https://ext-crash-telemetry.dwsycode.wo
 /// - `N` / `n` → do **not** report
 /// - `Y` / any other key → report
 /// Non-TTY → skip (never block CI / piped stdin).
-fn prompt_and_maybe_report_ext_crash(path_or_label: &str, kind: &str) {
+fn prompt_and_maybe_report_ext_crash(interactive: bool, path_or_label: &str, kind: &str) {
     use std::io::{IsTerminal, Write};
 
-    if !std::io::stdin().is_terminal() {
+    // Background attach runs behind a live TUI: never steal stdin or write
+    // prompts over the Pager surface; skip the opt-in crash report prompt.
+    if !interactive || !std::io::stdin().is_terminal() {
         return;
     }
 
@@ -392,7 +401,7 @@ fn read_one_key_raw_unix() -> Option<char> {
 }
 
 /// Extract all `--extension <path>` values from pi_args.
-fn extract_extension_paths(pi_args: &[String]) -> Vec<String> {
+pub(super) fn extract_extension_paths(pi_args: &[String]) -> Vec<String> {
     let mut paths = Vec::new();
     let mut i = 0;
     while i < pi_args.len() {
