@@ -872,6 +872,20 @@ impl acp::Agent for PiAgent {
                 }
                 Ok(())
             }
+            "pi/ui/remote_tui/mouse" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                if let Some(event) = params.get("event") {
+                    if let Err(error) = append_remote_tui_key_event(json!({
+                        "id": params.get("id"),
+                        "op": "mouse",
+                        "event": event,
+                    })) {
+                        tracing::debug!(%error, "remote_tui keyfile mouse event failed");
+                    }
+                }
+                Ok(())
+            }
             "pi/ui/remote_tui/cancel" => {
                 let params: Value =
                     serde_json::from_str(arguments.params.get()).unwrap_or_default();

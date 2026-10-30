@@ -5,7 +5,7 @@
  * (`pi_adapter.rs`, `acp_handler/mod.rs`) — rename only in lockstep.
  */
 
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { FSWatcher } from "node:fs";
 
 export const WIDGET_KEY = "remote_tui";
@@ -44,7 +44,9 @@ export type ActiveHost = {
   keysPath: string;
   watcher: FSWatcher | null;
   keyOffset: number;
+  keyBuffer: Buffer;
   close: (result: unknown) => void;
   pushFrame: () => void;
   handleInput: (data: string) => void;
+  handleMouse: (event: TuiMouseEvent) => void;
 };

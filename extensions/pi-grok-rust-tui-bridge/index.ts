@@ -59,6 +59,10 @@ type ActiveSession = {
 // Globals
 // ============================================================================
 
+// Pi does not export its fake-cursor APC markers; Pager needs visible SGR cursors.
+const FAKE_CURSOR_START = "\x1b_pi:fc\x07";
+const FAKE_CURSOR_END = "\x1b_pi:/fc\x07";
+
 let active: ActiveSession | null = null;
 const patchedUIs = new WeakSet<object>();
 
@@ -135,7 +139,12 @@ function installBridge(ui: BridgeUi): void {
         try {
           const lines = component
             .render(width)
-            .map((line) => String(line).replaceAll(CURSOR_MARKER, ""));
+            .map((line) =>
+              String(line)
+                .replaceAll(CURSOR_MARKER, "")
+                .replaceAll(FAKE_CURSOR_START, "\x1b[7m")
+                .replaceAll(FAKE_CURSOR_END, "\x1b[27m"),
+            );
           notifyRust("frame", { id, lines });
         } catch (error) {
           if (closed) return;

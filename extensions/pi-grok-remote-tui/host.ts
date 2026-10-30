@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
+import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import {
   CURSOR_MARKER,
@@ -17,12 +18,18 @@ import {
   setKeybindings,
   TUI_KEYBINDINGS,
   type Component,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import { ensurePiTheme, shouldInstallRemoteHost } from "./env.ts";
 import { resolveRemoteTuiLayout, resolveViewport } from "./layout.ts";
 import { drainKeys, ensureKeyFile, publishRemoteTuiLayout, writeMeta } from "./transport.ts";
 import type { ActiveHost, ComponentLike, RemoteTuiDemoUi, RemoteTuiLayout } from "./shared.ts";
 import { SESSION_WIDGET_KEY, WIDGET_KEY } from "./shared.ts";
+
+// Pi does not export its fake-cursor APC markers; Pager needs visible SGR cursors.
+const FAKE_CURSOR_START = "\x1b_pi:fc\x07";
+const FAKE_CURSOR_END = "\x1b_pi:/fc\x07";
 
 let active: ActiveHost | null = null;
 /** Track which uiContext objects already have our custom() host. */
@@ -38,6 +45,90 @@ export function dispatchComponentInput(target: ComponentLike | null | undefined,
   if (!target?.handleInput) return;
   if (isKeyRelease(data) && !target.wantsKeyRelease) return;
   target.handleInput(data);
+}
+
+type MouseDispatchTarget = {
+  component: Component;
+  originX: number;
+  originY: number;
+  width: number;
+  height: number;
+};
+
+type MouseDispatchResult = TuiMouseEventResult & {
+  handled: true;
+  target: MouseDispatchTarget;
+  focusTarget?: Component;
+};
+
+/** Mirror Pi TUI's component-level mouse dispatch without owning a terminal. */
+function dispatchComponentMouse(component: Component, event: TuiMouseEvent): MouseDispatchResult | undefined {
+  const result = component.handleMouse?.(event) as
+    | (TuiMouseEventResult & { target?: MouseDispatchTarget; focusTarget?: Component })
+    | undefined;
+  if (!result) return undefined;
+  if (result.target) {
+    const forwarded = result as MouseDispatchResult;
+    return forwarded.focus && component.handleInput
+      ? { ...forwarded, focusTarget: component }
+      : forwarded;
+  }
+  if (!result.handled && !result.capture && !result.focus) return undefined;
+  return {
+    ...result,
+    handled: true,
+    ...(result.focus ? { focusTarget: component } : {}),
+    target: {
+      component,
+      originX: event.screenX - event.x,
+      originY: event.screenY - event.y,
+      width: event.width,
+      height: event.height,
+    },
+  };
+}
+
+function retargetMouseEvent(event: TuiMouseEvent, target: MouseDispatchTarget): TuiMouseEvent {
+  return {
+    ...event,
+    x: event.screenX - target.originX,
+    y: event.screenY - target.originY,
+    width: target.width,
+    height: target.height,
+  };
+}
+
+/** Pi fullscreen TUI's default auto wheel-line acceleration. */
+class RemoteWheelScrollAccelerator {
+  private lastTime = Number.NEGATIVE_INFINITY;
+  private lastDirection = 0;
+  private averageGap: number | undefined;
+  private carry = 0;
+  private readonly accelerate = !(
+    process.platform === "darwin" &&
+    !process.env.SSH_CONNECTION &&
+    !process.env.SSH_CLIENT &&
+    !process.env.SSH_TTY
+  );
+
+  next(direction: -1 | 1, now: number): number {
+    if (!this.accelerate) return 1;
+    const gap = now - this.lastTime;
+    const sameGesture = direction === this.lastDirection && gap <= 200;
+    this.lastTime = now;
+    this.lastDirection = direction;
+    if (!sameGesture) {
+      this.averageGap = undefined;
+      this.carry = 0;
+      return 1;
+    }
+    if (gap < 5) return 1;
+    this.averageGap = this.averageGap === undefined ? gap : (this.averageGap + gap) / 2;
+    const lines = Math.min(6, Math.max(1, 100 / this.averageGap)) + this.carry;
+    const whole = Math.floor(lines);
+    this.carry = lines - whole;
+    return whole;
+  }
 }
 
 export function installCustomPatch(ui: PatchableUi): void {
@@ -80,6 +171,20 @@ export function installCustomPatch(ui: PatchableUi): void {
         if (next && "focused" in next) (next as Component & { focused: boolean }).focused = true;
       };
       let frameWidth = width;
+      let mouseCapture: MouseDispatchTarget | undefined;
+      let mousePressTarget: MouseDispatchTarget | undefined;
+      let mousePressPoint: { x: number; y: number } | undefined;
+      let mousePressMoved = false;
+      let lastComponentClick:
+        | { timestamp: number; count: number; component: Component; x: number; y: number }
+        | undefined;
+      const wheelScroll = new RemoteWheelScrollAccelerator();
+      const clearMouseGesture = () => {
+        mouseCapture = undefined;
+        mousePressTarget = undefined;
+        mousePressPoint = undefined;
+        mousePressMoved = false;
+      };
       // Auth select overlays LoginDialog; hide must restore the previous root.
       let previousComponent: ComponentLike | undefined;
       let previousFocus: Component | null = null;
@@ -91,6 +196,8 @@ export function installCustomPatch(ui: PatchableUi): void {
 
       const cleanup = () => {
         if (pollTimer) clearInterval(pollTimer);
+        clearMouseGesture();
+        lastComponentClick = undefined;
         try {
           host.watcher?.close();
         } catch {
@@ -127,12 +234,16 @@ export function installCustomPatch(ui: PatchableUi): void {
       const pushFrame = () => {
         if (closed || !component) return;
         try {
-          // Pi components emit this APC sequence only for their in-process
-          // terminal renderer to position a hardware cursor. Pager renders the
-          // projected frame itself, so forwarding it leaks its `pi:c` payload.
+          // Resolve Pi's terminal-only cursor markers before projecting to Pager:
+          // discard hardware positioning and preserve fake cursors as reverse video.
           const lines = component
             .render(frameWidth)
-            .map((line) => String(line).replaceAll(CURSOR_MARKER, ""));
+            .map((line) =>
+              String(line)
+                .replaceAll(CURSOR_MARKER, "")
+                .replaceAll(FAKE_CURSOR_START, "\x1b[7m")
+                .replaceAll(FAKE_CURSOR_END, "\x1b[27m"),
+            );
           ui.setWidget(WIDGET_KEY, lines, { placement: "aboveEditor" });
         } catch (error) {
           if (closed) return;
@@ -162,6 +273,107 @@ export function installCustomPatch(ui: PatchableUi): void {
           return;
         }
         pushFrame();
+      };
+
+      const applyMouseDispatchResult = (event: TuiMouseEvent, result: MouseDispatchResult): boolean => {
+        const focusTarget = result.focusTarget ?? result.target.component;
+        const focusChanged = result.focus === true && focused !== focusTarget;
+        if (result.focus) setFocus(focusTarget);
+        if (result.capture) mouseCapture = result.target;
+        return (
+          result.render ??
+          (focusChanged ||
+            event.type === "press" ||
+            event.type === "click" ||
+            event.type === "drag" ||
+            event.type === "wheel")
+        );
+      };
+
+      const getComponentClickCount = (target: MouseDispatchTarget, x: number, y: number): number => {
+        const now = Date.now();
+        const previous = lastComponentClick;
+        const count =
+          previous &&
+          now - previous.timestamp <= 500 &&
+          previous.component === target.component &&
+          previous.x === x &&
+          previous.y === y
+            ? (previous.count % 3) + 1
+            : 1;
+        lastComponentClick = { timestamp: now, count, component: target.component, x, y };
+        return count;
+      };
+
+      const handleMouse = (incoming: TuiMouseEvent) => {
+        if (closed || !component) return;
+        let event = incoming;
+        if (event.type === "wheel" && event.wheelDelta) {
+          const direction: -1 | 1 = event.wheelDelta < 0 ? -1 : 1;
+          const lines = wheelScroll.next(direction, performance.now());
+          event = {
+            ...event,
+            wheelDelta: direction * lines * (event.alt ? 5 : 1),
+          };
+        }
+
+        try {
+          let render = false;
+          if (mouseCapture || mousePressTarget) {
+            const target = mouseCapture ?? mousePressTarget!;
+            if (
+              mousePressPoint &&
+              (event.screenX !== mousePressPoint.x || event.screenY !== mousePressPoint.y)
+            ) {
+              mousePressMoved = true;
+              lastComponentClick = undefined;
+            }
+            const targetResult = dispatchComponentMouse(
+              target.component,
+              retargetMouseEvent(event, target),
+            );
+            if (targetResult) render = applyMouseDispatchResult(event, targetResult);
+            if (event.type === "release") {
+              if (
+                !mousePressMoved &&
+                mousePressPoint?.x === event.screenX &&
+                mousePressPoint.y === event.screenY
+              ) {
+                const clickEvent: TuiMouseEvent = {
+                  ...event,
+                  type: "click",
+                  clickCount: getComponentClickCount(target, event.screenX, event.screenY),
+                };
+                const clickResult = dispatchComponentMouse(
+                  target.component,
+                  retargetMouseEvent(clickEvent, target),
+                );
+                if (clickResult) {
+                  render = applyMouseDispatchResult(clickEvent, clickResult) || render;
+                }
+              }
+              clearMouseGesture();
+            }
+          } else {
+            const target = focused ?? component;
+            const result = dispatchComponentMouse(target, event);
+            if (result) {
+              render = applyMouseDispatchResult(event, result);
+              if (event.type === "press") {
+                mousePressTarget = result.target;
+                mousePressPoint = { x: event.screenX, y: event.screenY };
+                mousePressMoved = false;
+              }
+            }
+          }
+          if (render) pushFrame();
+        } catch (error) {
+          if (closed) return;
+          closed = true;
+          host.closed = true;
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
       };
 
       const tuiStub = {
@@ -232,9 +444,11 @@ export function installCustomPatch(ui: PatchableUi): void {
         keysPath,
         watcher: null,
         keyOffset: 0,
+        keyBuffer: Buffer.alloc(0),
         close,
         pushFrame,
         handleInput,
+        handleMouse,
       };
       active = host;
 

@@ -1423,11 +1423,11 @@ async fn attach_pi_backend(
             if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = &message
                 && matches!(
                     args.request.method.as_ref(),
-                    "pi/ui/remote_tui/input" | "pi/ui/remote_tui/cancel"
+                    "pi/ui/remote_tui/input" | "pi/ui/remote_tui/mouse" | "pi/ui/remote_tui/cancel"
                 )
             {
-                // Keyboard notifications are ordered, short synchronous
-                // keyfile writes. Do not schedule each key independently.
+                // Remote TUI input notifications are ordered, short synchronous
+                // keyfile writes. Do not schedule each event independently.
                 if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = message {
                     let result = agent_client_protocol::Agent::ext_notification(
                         route_adapter.as_ref(),

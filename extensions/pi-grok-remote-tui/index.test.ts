@@ -2,75 +2,12 @@ import { afterAll, beforeAll, expect, mock, test } from "bun:test";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TuiMouseEvent } from "@earendil-works/pi-tui";
 import { metaPath } from "./transport.ts";
 
-type SettingItem = {
-  id: string;
-  label: string;
-  description?: string;
-  currentValue: string;
-  values?: string[];
-};
+import { piTuiMock } from "./test-fixtures.ts";
 
-/** Minimal SettingsList stand-in: space/enter cycles, esc cancels. */
-class MockSettingsList {
-  private items: SettingItem[];
-  private index = 0;
-  private onChange: (id: string, newValue: string) => void;
-  private onCancel: () => void;
-
-  constructor(
-    items: SettingItem[],
-    _maxVisible: number,
-    _theme: unknown,
-    onChange: (id: string, newValue: string) => void,
-    onCancel: () => void,
-  ) {
-    this.items = items;
-    this.onChange = onChange;
-    this.onCancel = onCancel;
-  }
-
-  invalidate() {}
-  render() {
-    return this.items.map((item) => `${item.label}=${item.currentValue}`);
-  }
-
-  handleInput(data: string) {
-    if (data === "\x1b[A") {
-      this.index = this.index === 0 ? this.items.length - 1 : this.index - 1;
-      return;
-    }
-    if (data === "\x1b[B") {
-      this.index = this.index === this.items.length - 1 ? 0 : this.index + 1;
-      return;
-    }
-    if (data === " " || data === "\r") {
-      const item = this.items[this.index]!;
-      const values = item.values ?? ["on", "off"];
-      const next = values[(values.indexOf(item.currentValue) + 1) % values.length]!;
-      item.currentValue = next;
-      this.onChange(item.id, next);
-      return;
-    }
-    if (data === "\x1b") {
-      this.onCancel();
-    }
-  }
-}
-
-mock.module("@earendil-works/pi-tui", () => ({
-  CURSOR_MARKER: "\x1b_pi:c\x07",
-  isKeyRelease: (data: string) => /:3(?:u|~|[ABCDHF])/.test(data),
-  KeybindingsManager: class {
-    matches() {
-      return false;
-    }
-  },
-  TUI_KEYBINDINGS: {},
-  setKeybindings: () => {},
-  SettingsList: MockSettingsList,
-}));
+mock.module("@earendil-works/pi-tui", () => piTuiMock);
 
 const {
   default: registerRemoteTui,
@@ -139,6 +76,89 @@ test("focused custom child gets letters and Escape without global shortcut inter
   } finally {
     finish?.("cancelled");
     globals.__piGrokShortcutIntercept = previous;
+  }
+});
+
+test("remote custom host dispatches clicks, captured drags, modifiers and wheel deltas", async () => {
+  const mouseEvents: TuiMouseEvent[] = [];
+  const inputs: string[] = [];
+  const ui = { custom: async (..._args: any[]): Promise<any> => undefined, setWidget() {} };
+  installCustomPatch(ui);
+  let finish!: (result: string) => void;
+  const result = ui.custom((_tui: unknown, _theme: unknown, _kb: unknown, done: typeof finish) => {
+    finish = done;
+    return {
+      invalidate() {},
+      render: () => ["frame"],
+      focused: false,
+      handleInput: (data: string) => inputs.push(data),
+      handleMouse: (event: TuiMouseEvent) => {
+        mouseEvents.push(event);
+        if (event.type === "press") return { handled: true, capture: true, focus: true };
+        if (event.type === "release") return { handled: true, render: false };
+        return { handled: true };
+      },
+    };
+  });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    const { id, keysPath } = JSON.parse(readFileSync(metaPath(), "utf8"));
+    const event = (
+      type: TuiMouseEvent["type"],
+      x: number,
+      y: number,
+      screenX: number,
+      screenY: number,
+      extra: Partial<TuiMouseEvent> = {},
+    ): TuiMouseEvent => ({
+      type,
+      button: type === "wheel" || type === "move" ? "none" : "left",
+      x,
+      y,
+      screenX,
+      screenY,
+      width: 80,
+      height: 4,
+      shift: false,
+      alt: false,
+      ctrl: false,
+      ...extra,
+    });
+    appendFileSync(keysPath, [
+      { id, op: "mouse", event: event("press", 3, 1, 5, 2, { shift: true }) },
+      { id, op: "mouse", event: event("release", 3, 1, 5, 2, { shift: true }) },
+      { id, op: "mouse", event: event("press", 3, 1, 5, 2) },
+      { id, op: "mouse", event: event("release", 3, 1, 5, 2) },
+      { id, op: "mouse", event: event("press", 3, 1, 5, 2) },
+      { id, op: "mouse", event: event("drag", 90, 9, 92, 10) },
+      { id, op: "mouse", event: event("release", 90, 9, 92, 10) },
+      { id, op: "mouse", event: event("wheel", 3, 1, 5, 2, { wheelDelta: -1, alt: true }) },
+      { id, op: "mouse", event: event("press", 4, 1, 6, 2, { button: "middle" }) },
+      { id, op: "mouse", event: event("release", 4, 1, 6, 2, { button: "middle" }) },
+      { id, op: "mouse", event: event("press", 7, 1, 9, 2, { button: "right" }) },
+      { id, op: "mouse", event: event("release", 7, 1, 9, 2, { button: "right" }) },
+      { id, op: "mouse", event: event("wheel", 3, 1, 5, 2, { wheelDelta: 1 }) },
+    ].map((entry) => JSON.stringify(entry) + "\n").join(""));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(mouseEvents.map((entry) => entry.type)).toEqual([
+      "press", "release", "click", "press", "release", "click", "press", "drag", "release", "wheel",
+      "press", "release", "click", "press", "release", "click", "wheel",
+    ]);
+    expect(mouseEvents[0]).toMatchObject({ x: 3, y: 1, screenX: 5, screenY: 2, shift: true });
+    expect(mouseEvents[2]?.clickCount).toBe(1);
+    expect(mouseEvents[5]?.clickCount).toBe(2);
+    expect(mouseEvents[7]).toMatchObject({ x: 90, y: 9, width: 80, height: 4 });
+    expect(mouseEvents[9]?.wheelDelta).toBe(-5);
+    expect(mouseEvents[10]).toMatchObject({ type: "press", button: "middle" });
+    expect(mouseEvents[12]).toMatchObject({ type: "click", button: "middle", clickCount: 1 });
+    expect(mouseEvents[13]).toMatchObject({ type: "press", button: "right" });
+    expect(mouseEvents[15]).toMatchObject({ type: "click", button: "right", clickCount: 1 });
+    expect(mouseEvents[16]?.wheelDelta).toBe(1);
+    expect(inputs).toEqual([]);
+  } finally {
+    finish?.("done");
+    expect(await result).toBe("done");
   }
 });
 
@@ -374,7 +394,7 @@ test("custom host keeps Pi custom inline by default", async () => {
   }
 });
 
-test("custom host removes Pi hardware cursor markers from projected frames", async () => {
+test("custom host resolves Pi hardware and fake cursor markers in projected frames", async () => {
   const previous = process.env.PI_GROK_REMOTE_TUI;
   process.env.PI_GROK_REMOTE_TUI = "1";
 
@@ -400,7 +420,10 @@ test("custom host removes Pi hardware cursor markers from projected frames", asy
     sessionStart?.({}, { ui });
     void ui.custom((_tui, _theme, _kb, _done) => ({
       invalidate() {},
-      render: () => ["before\x1b_pi:c\x07\x1b[7m \x1b[27mafter"],
+      render: () => [
+        "before\x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07after\x1b_pi:fc\x07X\x1b_pi:/fc\x07",
+        "\x1b[31malready\x1b[7m \x1b[27mresolved\x1b[39m",
+      ],
       handleInput() {},
     }));
     await new Promise((resolve) => setImmediate(resolve));
@@ -408,6 +431,12 @@ test("custom host removes Pi hardware cursor markers from projected frames", asy
 
     expect(frame).toBeDefined();
     expect(frame?.join("\n")).not.toContain("pi:c");
+    expect(frame?.join("\n")).not.toContain("pi:fc");
+    expect(frame?.join("\n")).not.toContain("pi:/fc");
+    expect(frame).toEqual([
+      "before\x1b[7m \x1b[27mafter\x1b[7mX\x1b[27m",
+      "\x1b[31malready\x1b[7m \x1b[27mresolved\x1b[39m",
+    ]);
   } finally {
     if (previous === undefined) delete process.env.PI_GROK_REMOTE_TUI;
     else process.env.PI_GROK_REMOTE_TUI = previous;

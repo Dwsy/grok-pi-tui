@@ -60,3 +60,7 @@ Validation: standalone key integration tests failed 2/3 before the fix and
 passed 3/3 after it; product build passed. PTY runs of the real Shop panel
 returned `save` for `s`, raw `S` and Kitty `Shift+S`. No configuration was saved
 by the probe. Full Shop transport/lifecycle behavior is outside this key test.
+
+## Follow-up: fake cursor frame projection (2026-10-30)
+
+Pi 1.4.0 Input/Editor fake-cursor APC markers leaked as printable `_pi:fc` / `_pi:/fc` in Pager. Both active projection paths now remove the hardware marker and convert fake-cursor boundaries to SGR 7/27 without changing input ownership. The regression, real-component RPC evidence and remaining acceptance boundary are recorded in [the Remote TUI issue](adapter/20260719-Remote-TUI-实验轨-RPC-custom-帧投影.md#fake-cursor-apc-修复2026-10-30).

@@ -13,8 +13,23 @@ fn remote_tui_transport_isolates_instances_and_rejects_stale_input() {
         assert_eq!(std::fs::read_to_string(&keys).unwrap(), "");
         append_remote_tui_key_event_at(&meta, json!({"id": id, "op": "input", "data": id}))
             .unwrap();
-        let entry: Value = serde_json::from_str(&std::fs::read_to_string(keys).unwrap()).unwrap();
+        append_remote_tui_key_event_at(
+            &meta,
+            json!({
+                "id": id,
+                "op": "mouse",
+                "event": {"type": "press", "button": "left", "x": 1, "y": 2}
+            }),
+        )
+        .unwrap();
+        let entries = std::fs::read_to_string(keys).unwrap();
+        let lines = entries.lines().collect::<Vec<_>>();
+        let entry: Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(entry["data"], id);
+        let mouse: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(mouse["op"], "mouse");
+        assert_eq!(mouse["event"]["type"], "press");
+        assert_eq!(mouse["event"]["button"], "left");
     }
 }
 
@@ -221,7 +236,11 @@ fn model_display_label_appends_provider_once() {
     };
 
     assert_eq!(
-        model_display_label(&model("magpie", "xiaomi/mimo-v2.6-flash", "MiMo-V2.6-Flash")),
+        model_display_label(&model(
+            "magpie",
+            "xiaomi/mimo-v2.6-flash",
+            "MiMo-V2.6-Flash"
+        )),
         "MiMo-V2.6-Flash · magpie"
     );
     // Already carries the provider suffix: keep the richer label as-is.
