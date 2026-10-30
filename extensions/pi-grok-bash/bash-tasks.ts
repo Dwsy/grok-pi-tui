@@ -16,7 +16,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
 import {
 	MAX_OUTPUT_BYTES,
@@ -27,6 +27,12 @@ import {
 } from "./shared.ts";
 
 const BRIDGE_TYPE = "pi-grok-background-bash/v1";
+export type BashCompletionMessage = {
+	customType: string;
+	content: string;
+	display: boolean;
+	details: unknown;
+};
 /**
  * Out-of-band terminal-state channel. `ui.setStatus` is a synchronous
  * fire-and-forget `extension_ui_request` in RPC mode, so it reaches the adapter
@@ -82,6 +88,7 @@ export type BackgroundTask = {
 	foregroundSettler?: (outcome: "completed" | "backgrounded") => void;
 	promote?: () => void;
 	stateChanged?: () => void;
+	onCompleted: (message: BashCompletionMessage) => void;
 	/**
 	 * UI context captured at launch. The context object itself is held (not the
 	 * surrounding `ctx`) so publishing after a session replacement cannot hit
@@ -194,40 +201,34 @@ export function waitForCompletion(task: BackgroundTask, timeoutMs: number | unde
 	});
 }
 
-function emitCompleted(pi: ExtensionAPI, task: BackgroundTask) {
+function completedMessage(task: BackgroundTask): BashCompletionMessage {
 	const snapshot = taskSnapshot(task);
 	const failed = !snapshot.explicitly_killed && (snapshot.exit_code !== 0 || Boolean(snapshot.signal));
-	const shouldWake = !snapshot.explicitly_killed;
 	const modelOutput = formatTaskOutput(snapshot.output, snapshot.truncated, snapshot.output_file);
 	const content = snapshot.explicitly_killed
 		? `Background Bash task cancelled: ${task.command}`
 		: failed
 			? `Background Bash task failed: ${task.command}\n\n${modelOutput || "(no output)"}\n\nExit code: ${snapshot.exit_code ?? "none"}${snapshot.signal ? `; signal: ${snapshot.signal}` : ""}`
 			: `Background Bash task completed: ${task.command}\n\n${modelOutput || "(no output)"}\n\nExit code: ${snapshot.exit_code ?? "none"}`;
-	pi.sendMessage(
-		{
-			customType: BRIDGE_TYPE,
-			content,
-			display: false,
-			details: {
-				version: 1,
-				event: "completed",
-				taskId: task.taskId,
-				toolCallId: task.toolCallId,
-				taskSnapshot: snapshot,
-			},
+	return {
+		customType: BRIDGE_TYPE,
+		content,
+		display: false,
+		details: {
+			version: 1,
+			event: "completed",
+			taskId: task.taskId,
+			toolCallId: task.toolCallId,
+			taskSnapshot: snapshot,
 		},
-		shouldWake ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: false },
-	);
+	};
 }
 
 /**
  * Publish the task's terminal state on the private status channel.
  *
- * This is what the native task UI converges on. It is deliberately independent
- * of `emitCompleted`: the bridge message is a conversation message and shares
- * the agent's queue lifetime, so it can be delayed for a whole turn or dropped
- * outright when the user aborts.
+ * This is what the native task UI converges on. It is independent of the
+ * model-context completion drafted by the extension at Pi's turn boundary.
  */
 function publishTerminalState(task: BackgroundTask) {
 	try {
@@ -247,7 +248,7 @@ function publishTerminalState(task: BackgroundTask) {
 	}
 }
 
-function finishTask(pi: ExtensionAPI, task: BackgroundTask, code: number | null, signal: NodeJS.Signals | null) {
+function finishTask(task: BackgroundTask, code: number | null, signal: NodeJS.Signals | null) {
 	if (task.completed) return;
 	task.completed = true;
 	task.endedAt = Date.now();
@@ -261,11 +262,13 @@ function finishTask(pi: ExtensionAPI, task: BackgroundTask, code: number | null,
 			try {
 				// kill_task already returns the cancellation result; do not inject a
 				// user message between the kill call and its tool result.
-				if (!task.explicitlyKilled) emitCompleted(pi, task);
+				if (!task.explicitlyKilled) {
+					const message = completedMessage(task);
+					task.onCompleted(message);
+				}
 			} catch {
-				// `pi.sendMessage` throws on a stale extension instance (session
-				// replacement / reload). Waking the model is best effort; the
-				// bookkeeping below must still run or the task never settles.
+				// Context injection can fail after session replacement / reload.
+				// Finalizing the task and its waiters must still succeed.
 			}
 		}
 		const settleForeground = task.foregroundSettler;
@@ -296,7 +299,6 @@ function validateTimeout(timeout: number | undefined) {
 }
 
 export async function startTask(
-	pi: ExtensionAPI,
 	params: {
 		toolCallId: string;
 		command: string;
@@ -308,6 +310,7 @@ export async function startTask(
 		env: NodeJS.ProcessEnv;
 		onData?: (chunk: Buffer) => void;
 		stateChanged?: () => void;
+		onCompleted: (message: BashCompletionMessage) => void;
 		ui?: TaskStatusChannel;
 	},
 ): Promise<BackgroundTask> {
@@ -332,6 +335,7 @@ export async function startTask(
 		timedOut: false,
 		waiters: new Set(),
 		stateChanged: params.stateChanged,
+		onCompleted: params.onCompleted,
 		ui: params.ui,
 	};
 	const recordOutput = (chunk: Buffer) => {
@@ -346,9 +350,9 @@ export async function startTask(
 	});
 	task.child.once("error", (error) => {
 		task.signal = error.message;
-		finishTask(pi, task, null, null);
+		finishTask(task, null, null);
 	});
-	task.child.once("close", (code, childSignal) => finishTask(pi, task, code, childSignal));
+	task.child.once("close", (code, childSignal) => finishTask(task, code, childSignal));
 	if (params.timeout) {
 		task.timeoutHandle = setTimeout(() => {
 			task.timedOut = true;

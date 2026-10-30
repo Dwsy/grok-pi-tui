@@ -15,10 +15,12 @@ import {
 	createBashToolDefinition,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type BoundaryState,
 } from "@earendil-works/pi-coding-agent";
 
 import {
 	type BackgroundTask,
+	type BashCompletionMessage,
 	type BashParams,
 	ORPHANED_SIGNAL,
 	createBashControl,
@@ -104,6 +106,51 @@ export default async function (pi: ExtensionAPI) {
 	const maxWaitMs = resolveMaxWaitMs();
 	const tasks = new Map<string, BackgroundTask>();
 	const evalTasks = new Map<string, EvalBackgroundTask>();
+	// Busy completions are appended to Pi's canonical model context at the next
+	// turn boundary, rather than waiting in its steer/follow-up message queue.
+	let agentRunning = false;
+	const pendingBashCompletions: BashCompletionMessage[] = [];
+	if (bashEnabled) {
+		pi.on("agent_start", () => {
+			agentRunning = true;
+		});
+		const appendBashCompletions = (event: BoundaryState) => {
+			if (pendingBashCompletions.length === 0) return;
+			const entries = pendingBashCompletions.splice(0).map((message) => ({
+				type: "custom_message" as const,
+				customType: message.customType,
+				content: message.content,
+				display: message.display,
+				details: message.details,
+			}));
+			return {
+				entries: [...event.entries, ...entries],
+				continue: event.continue || event.outcome === "completed",
+			};
+		};
+		pi.on("turn_end", appendBashCompletions);
+		pi.on("agent_before_settle", appendBashCompletions);
+		pi.on("agent_settled", ({ aborted }) => {
+			agentRunning = false;
+			// A child can exit after the last boundary but before agent_settled.
+			// Persist that late result instead of leaving it stranded until another run.
+			const late = pendingBashCompletions.splice(0);
+			if (late.length === 0) return;
+			// One wake for the batch: multiple triggerTurn calls during the
+			// first new run would otherwise steer the remaining messages.
+			const message = late.length === 1 ? late[0] : {
+				customType: "pi-grok-background-bash/batch-v1",
+				content: late.map((item) => item.content).join("\n\n"),
+				display: false,
+				details: { event: "completed_batch", tasks: late.map((item) => item.details) },
+			};
+			pi.sendMessage(message, { triggerTurn: !aborted });
+		});
+	}
+	const notifyBashCompletion = (message: BashCompletionMessage) => {
+		if (agentRunning) pendingBashCompletions.push(message);
+		else pi.sendMessage(message, { triggerTurn: true });
+	};
 	const control = bashEnabled ? createBashControl(tasks) : { sync: () => {}, close: () => {} };
 	const publishTodoBacking = () => {
 		const count = [...tasks.values()].filter((task) => task.backgrounded && !task.completed).length;
@@ -500,7 +547,7 @@ export default async function (pi: ExtensionAPI) {
 			if (signal?.aborted) throw new Error("aborted");
 			const taskName = params.task_name?.trim() || undefined;
 			if (params.is_background) {
-				const task = await startTask(pi, {
+				const task = await startTask({
 					toolCallId,
 					command: params.command,
 					description: taskName,
@@ -509,6 +556,7 @@ export default async function (pi: ExtensionAPI) {
 					backgrounded: true,
 					env: process.env,
 					stateChanged: syncTaskState,
+					onCompleted: notifyBashCompletion,
 					ui: ctx.ui,
 				});
 				tasks.set(task.toolCallId, task);
@@ -530,7 +578,7 @@ export default async function (pi: ExtensionAPI) {
 			const managedBash = createBashToolDefinition(ctx.cwd, {
 				operations: {
 					exec: async (command, cwd, options) => {
-						task = await startTask(pi, {
+						task = await startTask({
 							toolCallId,
 							command,
 							cwd,
@@ -541,6 +589,7 @@ export default async function (pi: ExtensionAPI) {
 							env: options.env ?? process.env,
 							onData: options.onData,
 							stateChanged: syncTaskState,
+							onCompleted: notifyBashCompletion,
 							ui: ctx.ui,
 						});
 						tasks.set(toolCallId, task);

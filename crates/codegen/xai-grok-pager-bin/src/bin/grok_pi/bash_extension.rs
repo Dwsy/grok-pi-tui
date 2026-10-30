@@ -94,14 +94,38 @@ pub(super) fn write_bash_extension() -> Result<BashExtension> {
         include_str!("../../../../../../extensions/pi-grok-bash/eval-token-count.ts"),
     )?;
     for (name, source) in [
-        ("mcpeval-daemon.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-daemon.ts")),
-        ("mcpeval-client.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-client.ts")),
-        ("mcpeval-protocol.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-protocol.ts")),
-        ("mcpeval-events.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-events.ts")),
-        ("mcpeval-registry.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-registry.ts")),
-        ("mcpeval-mcp-facade.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-mcp-facade.ts")),
-        ("mcpeval-web.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-web.ts")),
-        ("mcpeval-oauth.ts", include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-oauth.ts")),
+        (
+            "mcpeval-daemon.ts",
+            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-daemon.ts"),
+        ),
+        (
+            "mcpeval-client.ts",
+            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-client.ts"),
+        ),
+        (
+            "mcpeval-protocol.ts",
+            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-protocol.ts"),
+        ),
+        (
+            "mcpeval-events.ts",
+            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-events.ts"),
+        ),
+        (
+            "mcpeval-registry.ts",
+            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-registry.ts"),
+        ),
+        (
+            "mcpeval-mcp-facade.ts",
+            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-mcp-facade.ts"),
+        ),
+        (
+            "mcpeval-web.ts",
+            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-web.ts"),
+        ),
+        (
+            "mcpeval-oauth.ts",
+            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-oauth.ts"),
+        ),
     ] {
         write_source_file(source_dir.path(), name, source)?;
     }
@@ -153,7 +177,10 @@ mod tests {
             "mcpeval-web.ts",
             "mcpeval-oauth.ts",
         ] {
-            assert!(source_dir.join(module).is_file(), "missing embedded {module}");
+            assert!(
+                source_dir.join(module).is_file(),
+                "missing embedded {module}"
+            );
         }
 
         assert!(source.contains("const nativeBash = createBashToolDefinition"));
@@ -192,11 +219,14 @@ mod tests {
         assert!(bash_source.contains("pi-grok-background-bash/v1"));
         assert!(bash_source.contains("Background Bash task failed:"));
         assert!(bash_source.contains("autoBackgroundHandle"));
-        assert!(bash_source.contains(
-            "shouldWake ? { triggerTurn: true, deliverAs: \"followUp\" } : { triggerTurn: false }"
-        ));
-        // Terminal state must reach the adapter out of band: the bridge message
-        // above shares the agent's queue lifetime and is dropped on abort.
+        assert!(source.contains("onCompleted: notifyBashCompletion"));
+        assert!(source.contains("pi.on(\"turn_end\", appendBashCompletions)"));
+        assert!(source.contains("pi.on(\"agent_before_settle\", appendBashCompletions)"));
+        assert!(source.contains("type: \"custom_message\""));
+        assert!(bash_source.contains("task.onCompleted(message)"));
+        assert!(!bash_source.contains("deliverAs: \"followUp\""));
+        // Terminal state still reaches Pager out of band before the independent
+        // model-context callback, so UI convergence never waits on an LLM turn.
         assert!(bash_source.contains("__pi_grok_bash_task__"));
         assert!(bash_source.contains("publishTerminalState(task)"));
         assert!(eval_tasks_source.contains("startEvalBackgroundTask"));

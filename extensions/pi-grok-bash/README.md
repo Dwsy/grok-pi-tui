@@ -407,6 +407,7 @@ Important behavior:
 - output is retained in memory up to `MAX_OUTPUT_BYTES` and also written to a task output file;
 - process groups are killed when possible so cancellation terminates the command tree rather than only the direct child;
 - terminal task state is published through an out-of-band `ui.setStatus` channel so Pager can converge even when conversation follow-up delivery is aborted or detached.
+- model-facing Bash completion is **not** queued as `followUp` during an active agent run. At `turn_end` (or `agent_before_settle` for a late completion), the extension appends `custom_message` drafts to Pi's canonical session context and requests the next model call; a completion while idle starts a new turn normally. Abort persists completion context without restarting the aborted run. This is distinct from `pi.appendEntry`, which never enters LLM context.
 
 `task_name` is required for Bash calls and is the short human-readable label displayed by the terminal UI.
 

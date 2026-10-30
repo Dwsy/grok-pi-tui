@@ -123,7 +123,9 @@ async function createHarness(register, version, options = {}) {
       );
     },
     async emit(event, payload) {
-      for (const handler of handlers.get(event) ?? []) await handler(payload);
+      const results = [];
+      for (const handler of handlers.get(event) ?? []) results.push(await handler(payload));
+      return results;
     },
     async close() {
       for (const handler of handlers.get("session_shutdown") ?? []) await handler();
@@ -572,6 +574,123 @@ console.log(JSON.stringify({
       0,
     );
     console.log("PASS 11b.1 killed background Bash does not inject a context message");
+
+    // During a running agent turn, completions must enter Pi's canonical
+    // custom_message context at the next boundary (not its follow-up queue).
+    await v2.emit("agent_start");
+    const contextStatuses = [];
+    const contextTasks = [];
+    for (const [command, exitCode] of [["printf context-ok", 0], ["printf context-failed; exit 7", 7]]) {
+      const result = await bashTool.execute(
+        `context-bash-${exitCode}`,
+        { command, task_name: "context injection", is_background: true },
+        new AbortController().signal,
+        undefined,
+        { cwd: repoRoot, ui: { setStatus(key, text) { contextStatuses.push({ key, data: JSON.parse(text) }); } } },
+      );
+      const taskId = JSON.parse(result.content[0].text).task_id;
+      contextTasks.push({ taskId, exitCode });
+      await bashWaitTool.execute(
+        `wait-context-bash-${exitCode}`,
+        { task_ids: [taskId], mode: "wait_all", timeout_ms: 3000 },
+        new AbortController().signal,
+      );
+    }
+    assert.equal(contextStatuses.length, 2, "UI terminal updates must remain immediate while agent is busy");
+    assert.equal(contextStatuses.every(({ key }) => key === "__pi_grok_bash_task__"), true);
+    for (const { taskId } of contextTasks) {
+      assert.equal(v2.customMessages.some(({ message }) => message?.details?.taskId === taskId), false,
+        "busy completion must not enter Pi's delayed follow-up queue");
+    }
+    const boundaryResults = await v2.emit("turn_end", {
+      entries: [{ type: "custom", customType: "previous-extension", data: {} }],
+      continue: false,
+      outcome: "completed",
+    });
+    const boundary = boundaryResults.find((result) => result?.entries?.length === 3);
+    assert(boundary, "turn_end must append both completed tasks");
+    assert.equal(boundary.continue, true, "continue to the next model request with injected results");
+    assert.equal(boundary.entries[0].customType, "previous-extension", "preserve preceding boundary drafts");
+    for (const { taskId, exitCode } of contextTasks) {
+      const injected = boundary.entries.find((entry) => entry.details?.taskId === taskId);
+      assert(injected, `missing context injection for ${taskId}`);
+      assert.equal(injected.type, "custom_message", "custom entries alone are invisible to the model");
+      assert.equal(injected.display, false);
+      assert.equal(injected.details.taskSnapshot.exit_code, exitCode);
+      assert.match(injected.content, exitCode === 0 ? /completed:.*context-ok/ : /failed:.*context-failed/);
+    }
+    const drainedBoundary = await v2.emit("agent_before_settle", {
+      entries: [],
+      continue: false,
+      outcome: "completed",
+    });
+    assert.equal(drainedBoundary.every((result) => result === undefined), true, "no duplicate context injection");
+    await v2.emit("agent_settled", { aborted: false });
+    assert.equal(v2.customMessages.some(({ message }) => contextTasks.some(({ taskId }) => message?.details?.taskId === taskId)), false);
+    console.log("PASS 11b.2 busy Bash success/failure append real model context at turn_end, preserve other drafts, no follow-up/duplicate");
+
+    await v2.emit("agent_start");
+    const killedWhileBusy = await bashTool.execute(
+      "context-killed",
+      { command: "sleep 30", task_name: "killed in turn", is_background: true },
+      new AbortController().signal,
+      undefined,
+      { cwd: repoRoot },
+    );
+    const busyKilledId = JSON.parse(killedWhileBusy.content[0].text).task_id;
+    await killTool.execute("kill-context-busy", { task_id: busyKilledId }, new AbortController().signal);
+    await bashWaitTool.execute("wait-context-killed",
+      { task_ids: [busyKilledId], mode: "wait_all", timeout_ms: 3000 },
+      new AbortController().signal);
+    const killedDrafts = await v2.emit("turn_end", { entries: [], continue: false, outcome: "completed" });
+    assert.equal(killedDrafts.every((result) => result === undefined), true,
+      "explicit kill must not create a second model notification");
+    await v2.emit("agent_settled", { aborted: false });
+
+    await v2.emit("agent_start");
+    const abortedResult = await bashTool.execute(
+      "context-aborted",
+      { command: "printf abort-context", task_name: "abort context", is_background: true },
+      new AbortController().signal,
+      undefined,
+      { cwd: repoRoot },
+    );
+    const abortedId = JSON.parse(abortedResult.content[0].text).task_id;
+    await bashWaitTool.execute("wait-context-aborted",
+      { task_ids: [abortedId], mode: "wait_all", timeout_ms: 3000 },
+      new AbortController().signal);
+    const abortedBoundary = (await v2.emit("turn_end", {
+      entries: [], continue: false, outcome: "aborted",
+    })).find((result) => result?.entries?.length === 1);
+    assert.equal(abortedBoundary.entries[0].type, "custom_message");
+    assert.equal(abortedBoundary.continue, false, "ESC must not restart an aborted agent turn");
+    await v2.emit("agent_settled", { aborted: true });
+    console.log("PASS 11b.3 aborted turns persist Bash completion context without auto-restarting");
+
+    await v2.emit("agent_start");
+    const lateIds = [];
+    for (const i of [1, 2]) {
+      const result = await bashTool.execute(
+        `context-late-${i}`,
+        { command: `printf late-context-${i}`, task_name: "late context", is_background: true },
+        new AbortController().signal,
+        undefined,
+        { cwd: repoRoot },
+      );
+      const id = JSON.parse(result.content[0].text).task_id;
+      lateIds.push(id);
+      await bashWaitTool.execute(`wait-context-late-${i}`,
+        { task_ids: [id], mode: "wait_all", timeout_ms: 3000 },
+        new AbortController().signal);
+    }
+    // Simulate a completion that missed the final boundary of an agent run.
+    await v2.emit("agent_settled", { aborted: false });
+    const lateMessages = v2.customMessages.filter(({ message }) =>
+      message?.details?.event === "completed_batch");
+    assert.equal(lateMessages.length, 1, "late completions must share one wake");
+    assert.equal(lateMessages[0].options.triggerTurn, true);
+    assert.deepEqual(lateMessages[0].message.details.tasks.map((task) => task.taskId), lateIds);
+    console.log("PASS 11b.4 late Bash completion batches one agent_settled wake rather than steering/stranding tasks");
   } finally {
     await v2.close();
   }
