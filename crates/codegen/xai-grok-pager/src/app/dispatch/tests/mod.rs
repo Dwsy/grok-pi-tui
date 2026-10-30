@@ -85,6 +85,8 @@ fn test_app() -> AppView {
         pending_startup: None,
         active_view: ActiveView::Welcome,
         auth_return_view: None,
+        session_picker_detail_generation: 0,
+        screen_mode_switch_hint: None,
         agents: IndexMap::new(),
         next_agent_id: 0,
         models: ModelState::default(),

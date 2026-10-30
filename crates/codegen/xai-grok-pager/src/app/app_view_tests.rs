@@ -539,6 +539,275 @@ fn remote_tui_forwards_key_release_to_component() {
 }
 
 #[test]
+fn remote_tui_forwards_mouse_coordinates_modifiers_wheel_and_captured_release() {
+    use crate::app::actions::Effect;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    assert!(app.apply_remote_tui(
+        "open",
+        Some("sess-1".into()),
+        Some(vec!["frame".into()]),
+        None
+    ));
+    let agent_id = super::super::agent::AgentId(0);
+    app.agents.get_mut(&agent_id).unwrap().remote_tui_rect = Some(Rect::new(2, 1, 20, 3));
+
+    let down = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 5,
+        row: 2,
+        modifiers: KeyModifiers::SHIFT | KeyModifiers::ALT,
+    };
+    assert!(matches!(
+        app.handle_input(&Event::Mouse(down)),
+        InputOutcome::Changed
+    ));
+    let first = app
+        .pending_effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::RemoteTuiMouse { id, event } if id == "sess-1" => Some(event),
+            _ => None,
+        })
+        .expect("mouse press effect");
+    assert_eq!(first["type"], "press");
+    assert_eq!(first["button"], "left");
+    assert_eq!(first["x"], 3);
+    assert_eq!(first["y"], 1);
+    assert_eq!(first["screenX"], 5);
+    assert_eq!(first["screenY"], 2);
+    assert_eq!(first["width"], 20);
+    assert_eq!(first["height"], 3);
+    assert_eq!(first["shift"], true);
+    assert_eq!(first["alt"], true);
+    assert_eq!(first["ctrl"], false);
+
+    let drag = MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: 30,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    };
+    assert!(matches!(
+        app.handle_input(&Event::Mouse(drag)),
+        InputOutcome::Changed
+    ));
+    let drag_event = app
+        .pending_effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::RemoteTuiMouse { event, .. } if event["type"] == "drag" => Some(event),
+            _ => None,
+        })
+        .expect("captured drag effect");
+    assert_eq!(drag_event["x"], 28);
+    assert_eq!(drag_event["y"], 4);
+
+    let captured_wheel = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 30,
+        row: 5,
+        modifiers: KeyModifiers::ALT,
+    };
+    assert!(matches!(
+        app.handle_input(&Event::Mouse(captured_wheel)),
+        InputOutcome::Changed
+    ));
+    let captured_wheel_event = app
+        .pending_effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::RemoteTuiMouse { event, .. }
+                if event["type"] == "wheel" && event["wheelDelta"] == 1 =>
+            {
+                Some(event)
+            }
+            _ => None,
+        })
+        .expect("captured wheel effect");
+    assert_eq!(captured_wheel_event["x"], 28);
+    assert_eq!(captured_wheel_event["y"], 4);
+    assert_eq!(captured_wheel_event["alt"], true);
+
+    let release = MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 30,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    };
+    assert!(matches!(
+        app.handle_input(&Event::Mouse(release)),
+        InputOutcome::Changed
+    ));
+    assert!(app.external_ui.remote_tui_mouse_gesture.is_none());
+
+    let wheel = MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 5,
+        row: 2,
+        modifiers: KeyModifiers::CONTROL,
+    };
+    assert!(matches!(
+        app.handle_input(&Event::Mouse(wheel)),
+        InputOutcome::Changed
+    ));
+    let wheel_event = app
+        .pending_effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::RemoteTuiMouse { event, .. }
+                if event["type"] == "wheel" && event["wheelDelta"] == -1 =>
+            {
+                Some(event)
+            }
+            _ => None,
+        })
+        .expect("wheel effect");
+    assert_eq!(wheel_event["wheelDelta"], -1);
+    assert_eq!(wheel_event["ctrl"], true);
+}
+
+#[test]
+fn remote_tui_inline_offset_is_exact_when_other_widgets_repeat_the_same_frame_text() {
+    let widgets = std::collections::BTreeMap::from([
+        (
+            "a_header".to_string(),
+            ExternalWidget {
+                lines: vec!["same".to_string(), "same".to_string()],
+                placement: ExternalWidgetPlacement::AboveEditor,
+            },
+        ),
+        (
+            "remote_tui".to_string(),
+            ExternalWidget {
+                lines: vec!["same".to_string(), "".to_string(), "same".to_string()],
+                placement: ExternalWidgetPlacement::AboveEditor,
+            },
+        ),
+    ]);
+    let mut lines = Vec::new();
+    let offset = append_external_widgets(
+        &mut lines,
+        &widgets,
+        ExternalWidgetPlacement::AboveEditor,
+        false,
+    );
+
+    assert_eq!(offset, Some(2));
+    assert_eq!(
+        lines,
+        vec![
+            "same".to_string(),
+            "same".to_string(),
+            "same".to_string(),
+            "".to_string(),
+            "same".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn remote_tui_mouse_outside_frame_falls_through_and_closed_session_drops_drag() {
+    use crate::app::actions::Effect;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    app.apply_remote_tui(
+        "open",
+        Some("sess-1".into()),
+        Some(vec!["frame".into()]),
+        None,
+    );
+    let agent_id = super::super::agent::AgentId(0);
+    app.agents.get_mut(&agent_id).unwrap().remote_tui_rect = Some(Rect::new(2, 1, 20, 3));
+
+    let outside = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 40,
+        row: 10,
+        modifiers: KeyModifiers::NONE,
+    };
+    let _ = app.handle_input(&Event::Mouse(outside));
+    assert!(
+        !app.pending_effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::RemoteTuiMouse { .. }))
+    );
+
+    let inside = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 5,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    };
+    let _ = app.handle_input(&Event::Mouse(inside));
+    assert!(app.external_ui.remote_tui_mouse_gesture.is_some());
+    let mouse_effects_before_close = app
+        .pending_effects
+        .iter()
+        .filter(|effect| matches!(effect, Effect::RemoteTuiMouse { .. }))
+        .count();
+    assert_eq!(
+        mouse_effects_before_close, 1,
+        "inside press should be forwarded"
+    );
+
+    app.apply_remote_tui("close", Some("sess-1".into()), None, None);
+    assert!(app.external_ui.remote_tui_mouse_gesture.is_none());
+    let outside_release = MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 40,
+        row: 10,
+        modifiers: KeyModifiers::NONE,
+    };
+    let _ = app.handle_input(&Event::Mouse(outside_release));
+    assert_eq!(
+        app.pending_effects
+            .iter()
+            .filter(|effect| matches!(effect, Effect::RemoteTuiMouse { .. }))
+            .count(),
+        mouse_effects_before_close,
+        "a release after close must not enqueue another remote mouse event"
+    );
+}
+
+#[test]
+fn remote_tui_release_without_current_hitbox_clears_gesture() {
+    use crate::app::actions::Effect;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    app.apply_remote_tui(
+        "open",
+        Some("sess-1".into()),
+        Some(vec!["frame".into()]),
+        None,
+    );
+    app.external_ui.remote_tui_mouse_gesture = Some(("sess-1".into(), MouseButton::Left));
+
+    let release = MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 40,
+        row: 10,
+        modifiers: KeyModifiers::NONE,
+    };
+    let _ = app.handle_input(&Event::Mouse(release));
+
+    assert!(app.external_ui.remote_tui_mouse_gesture.is_none());
+    assert!(
+        !app.pending_effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::RemoteTuiMouse { .. }))
+    );
+}
+
+#[test]
 fn remote_tui_lifecycle_owns_letters_before_frame_and_ignores_stale_close() {
     use crate::app::actions::Effect;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -3762,7 +4031,6 @@ fn esc_running_turn_is_swallowed_when_ctrl_c_is_required() {
         "disabled mid-turn Esc must not clear the draft or arm idle clear"
     );
 }
-#[test]
 #[test]
 fn esc_from_scrollback_pane_running_turn_vim_mode_still_cancels_by_default() {
     let mut app = test_app_with_agent();

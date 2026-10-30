@@ -15,6 +15,7 @@ fn session_less_modal(tab: UsageInfoTab) -> Box<UsageInfoModalState> {
         tab,
         UsageInfoContext {
             session_id: None,
+            session_file: None,
             usage_visible: true,
             chat_kind: false,
             billing_redirect_url: None,

@@ -433,7 +433,7 @@ fn blocked_prompt_card_refuses_skip() {
 
     // The focused card's footer must not advertise the refused dismissal.
     let labels: Vec<String> = agent
-        .current_shortcut_hints(&crate::actions::ActionRegistry::defaults())
+        .current_shortcut_hints(&crate::actions::ActionRegistry::defaults(), false)
         .iter()
         .map(|hint| hint.label.to_string())
         .collect();

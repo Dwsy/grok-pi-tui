@@ -1546,6 +1546,13 @@ mod tests {
         ]
     }
 
+    fn dual_config() -> DiffRenderConfig {
+        DiffRenderConfig {
+            dual_line_numbers: true,
+            ..DiffRenderConfig::default()
+        }
+    }
+
     fn line_to_string(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }

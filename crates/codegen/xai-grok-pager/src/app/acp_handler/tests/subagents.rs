@@ -471,8 +471,8 @@
 
         let agent = app.agents.get(&AgentId(0)).unwrap();
         let info = agent.subagent_sessions.get(child_sid).unwrap();
-        assert!(info.is_background);
-        let entry_id = info.scrollback_entry_id.unwrap();
+        assert!(info.attempt.is_background);
+        let entry_id = info.attempt.scrollback_entry_id.unwrap();
         let entry = agent.scrollback.get_by_id(entry_id).unwrap();
         let RenderBlock::Subagent(block) = &entry.block else {
             panic!("expected background SubagentBlock");
@@ -848,7 +848,7 @@
         assert!(changed, "first delta must request a redraw");
         let agent = app.agents.get(&AgentId(0)).unwrap();
         let info = agent.subagent_sessions.get(child_sid).unwrap();
-        assert_eq!(info.activity_label.as_deref(), Some("Preparing write…"));
+        assert_eq!(info.attempt.activity_label.as_deref(), Some("Preparing write…"));
     }
 
     #[test]
@@ -890,6 +890,7 @@
                 .subagent_sessions
                 .get(child_sid)
                 .unwrap()
+                .attempt
                 .activity_label
                 .is_none()
         );
@@ -973,6 +974,7 @@
                 .subagent_sessions
                 .get(child_sid)
                 .unwrap()
+                .attempt
                 .activity_label
                 .is_none(),
             "finished row must not be re-stamped by the child ACP fan-out"
@@ -1014,6 +1016,7 @@
                 .subagent_sessions
                 .get(child_sid)
                 .unwrap()
+                .attempt
                 .activity_label
                 .is_none(),
             "finished row must keep its cleared label"

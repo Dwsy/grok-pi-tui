@@ -1244,6 +1244,11 @@ pub struct AgentView {
     pub(crate) remote_tui_lines: Vec<String>,
     /// Pi `ctx.ui.custom()` layout metadata.
     pub(crate) remote_tui_layout: Option<crate::app::app_view::RemoteTuiLayout>,
+    /// Exact line offset of the inline Remote TUI frame in the above-editor widget stack.
+    pub(crate) remote_tui_inline_offset: Option<usize>,
+    /// Hit box for the last rendered Remote TUI frame (inline or overlay).
+    /// Used to map terminal mouse coordinates back to component-local cells.
+    pub(crate) remote_tui_rect: Option<Rect>,
     /// Pi RPC widgets placed below the native editor.
     pub(crate) external_widgets_below_editor: Vec<String>,
     /// Pi RPC keyed statuses, rendered by the native status bar.

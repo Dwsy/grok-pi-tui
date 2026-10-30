@@ -116,6 +116,9 @@ pub(crate) fn execute(
         Effect::RemoteTuiInput { id, data } => {
             enqueue_remote_tui(acp_tx, "pi/ui/remote_tui/input", serde_json::json!({ "id": id, "data": data }));
         }
+        Effect::RemoteTuiMouse { id, event } => {
+            enqueue_remote_tui(acp_tx, "pi/ui/remote_tui/mouse", serde_json::json!({ "id": id, "event": event }));
+        }
         Effect::RemoteTuiCancel { id } => {
             enqueue_remote_tui(acp_tx, "pi/ui/remote_tui/cancel", serde_json::json!({ "id": id }));
         }

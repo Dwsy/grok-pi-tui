@@ -2404,6 +2404,11 @@ pub enum Effect {
     UnregisterActiveSession { session_id: acp::SessionId },
     /// Experimental Remote TUI: forward a key sequence to the Pi process host.
     RemoteTuiInput { id: String, data: String },
+    /// Experimental Remote TUI: forward a normalized Pi-TUI mouse event.
+    RemoteTuiMouse {
+        id: String,
+        event: serde_json::Value,
+    },
     /// Experimental Remote TUI: cancel the active remote component session.
     RemoteTuiCancel { id: String },
     /// Extension shortcut matched: dispatch to Pi extension handler via RPC.

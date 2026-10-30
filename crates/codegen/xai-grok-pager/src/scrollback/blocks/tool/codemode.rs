@@ -661,7 +661,7 @@ mod tests {
     fn expanded_shows_all_calls_errors_and_full_output() {
         let mut block = sample_block();
         block.calls.push(CodemodeCallRow {
-            name: "grep",
+            name: "grep".to_string(),
             args: "{ \"pattern\": \"todo\" }".to_string(),
             status: CodemodeCallStatus::Error,
             duration_ms: Some(2100),

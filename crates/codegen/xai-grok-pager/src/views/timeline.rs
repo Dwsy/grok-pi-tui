@@ -384,8 +384,8 @@ mod tests {
         assert_eq!(mid_rail.window.start, 25 - 9);
 
         // Active at the end clamps the window to the tail.
-        let rail = rail(50, Some(49)).unwrap();
-        assert_eq!(rail.window, 32..50);
+        let tail_rail = rail(50, Some(49)).unwrap();
+        assert_eq!(tail_rail.window, 32..50);
 
         // No active turn anchors to the newest.
         let rail = rail(50, None).unwrap();

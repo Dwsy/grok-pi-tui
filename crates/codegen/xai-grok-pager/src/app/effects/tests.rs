@@ -2762,9 +2762,10 @@ fn session_picker_entry_maps_to_dormant_roster_row() {
         parent_session_path: None,
         last_turn_summary: Some("Fixed the parser".to_string()),
         last_recap: None,
+        session_kind: None,
         card_detail: None,
     };
-    let roster = session_picker_entry_to_roster(&entry);
+    let roster = session_picker_entry_to_roster(entry);
     assert_eq!(roster.session_id, "sess-1");
     assert_eq!(roster.title.as_deref(), Some("Wire up dashboard"));
     assert_eq!(roster.cwd, "/repo/app");
@@ -2835,4 +2836,38 @@ fn remote_tui_enqueues_rapid_keys_in_order_before_tasks_run() {
         received.push_str(value["data"].as_str().unwrap());
     }
     assert_eq!(received, "deepseek");
+}
+
+#[test]
+fn remote_tui_mouse_notification_preserves_normalized_event_payload() {
+    let (client, mut agent) = xai_acp_lib::acp_channels();
+    let event = serde_json::json!({
+        "type": "wheel",
+        "button": "none",
+        "x": 3,
+        "y": 1,
+        "screenX": 5,
+        "screenY": 2,
+        "width": 80,
+        "height": 4,
+        "shift": true,
+        "alt": false,
+        "ctrl": true,
+        "wheelDelta": -1,
+    });
+    super::enqueue_remote_tui(
+        &client.tx,
+        "pi/ui/remote_tui/mouse",
+        serde_json::json!({ "id": "picker", "event": event }),
+    );
+    let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = agent.rx.try_recv().unwrap() else {
+        panic!("expected mouse notification");
+    };
+    assert_eq!(args.request.method.as_ref(), "pi/ui/remote_tui/mouse");
+    let value: serde_json::Value = serde_json::from_str(args.request.params.get()).unwrap();
+    assert_eq!(value["id"], "picker");
+    assert_eq!(value["event"]["type"], "wheel");
+    assert_eq!(value["event"]["wheelDelta"], -1);
+    assert_eq!(value["event"]["shift"], true);
+    assert_eq!(value["event"]["ctrl"], true);
 }

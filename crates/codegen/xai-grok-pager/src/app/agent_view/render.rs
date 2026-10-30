@@ -216,6 +216,19 @@ fn remote_tui_overlay_rect(
     Some(Rect::new(area.x + x, area.y + y, width, height))
 }
 
+fn remote_tui_inline_rect(area: Rect, line_offset: usize, frame_lines: &[String]) -> Option<Rect> {
+    if area.width == 0 || area.height == 0 || frame_lines.is_empty() {
+        return None;
+    }
+    let offset = u16::try_from(line_offset).ok()?;
+    if offset >= area.height {
+        return None;
+    }
+    let y = area.y.saturating_add(offset);
+    let visible_height = frame_lines.len().min(usize::from(area.height - offset)) as u16;
+    (visible_height > 0).then_some(Rect::new(area.x, y, area.width, visible_height))
+}
+
 #[cfg(test)]
 mod remote_tui_layout_tests {
     use super::*;
@@ -249,6 +262,27 @@ mod remote_tui_layout_tests {
         assert_eq!(
             remote_tui_overlay_rect(Rect::new(0, 0, 80, 24), &layout, 4),
             Some(Rect::new(32, 9, 20, 4))
+        );
+    }
+    #[test]
+    fn inline_hit_box_tracks_frame_after_other_widgets_and_preserves_blank_rows() {
+        let frame_lines = vec![
+            "row-one".to_string(),
+            "".to_string(),
+            "row-three".to_string(),
+        ];
+        assert_eq!(
+            remote_tui_inline_rect(Rect::new(2, 10, 70, 5), 1, &frame_lines),
+            Some(Rect::new(2, 11, 70, 3))
+        );
+    }
+
+    #[test]
+    fn inline_hit_box_rejects_a_frame_beyond_the_visible_widget_area() {
+        let frame_lines = vec!["one".to_string(), "two".to_string()];
+        assert_eq!(
+            remote_tui_inline_rect(Rect::new(2, 10, 70, 3), 3, &frame_lines),
+            None
         );
     }
 }
@@ -1180,6 +1214,7 @@ impl AgentView {
         let Some(rect) = remote_tui_overlay_rect(area, &layout, self.remote_tui_lines.len()) else {
             return;
         };
+        self.remote_tui_rect = Some(rect);
 
         let surface = Style::default().bg(theme.bg_base);
         for y in rect.y..rect.bottom() {
@@ -1285,6 +1320,7 @@ impl AgentView {
             crate::views::announcements::promo_cta(banner_announcements, hidden_announcement_ids)
                 .is_some_and(|(owner, _, _)| !crate::views::announcements::is_dismissible(owner));
         self.frame_occluder_rects.clear();
+        self.remote_tui_rect = None;
         self.clear_scrollback_selection_state();
         self.refresh_prompt_suggestion_gate();
         let theme = Theme::current();
@@ -2852,6 +2888,18 @@ impl AgentView {
             self.hit_bg_button.clear();
             self.hit_watching_cue.clear();
             self.hit_plan_approval_status.clear();
+        }
+        if !self
+            .remote_tui_layout
+            .as_ref()
+            .is_some_and(|layout| layout.overlay)
+            && let Some(offset) = self.remote_tui_inline_offset
+        {
+            self.remote_tui_rect = remote_tui_inline_rect(
+                layout.external_widgets_above_editor,
+                offset,
+                &self.remote_tui_lines,
+            );
         }
         for (index, line) in self.external_widgets_above_editor.iter().enumerate() {
             if index >= layout.external_widgets_above_editor.height as usize {

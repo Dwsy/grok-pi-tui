@@ -750,6 +750,7 @@ mod tests {
             selectable: Selectable::All,
             selection_range: None,
             selection_text: None,
+            indent_width: 0,
             joiner: None,
             link_target: None,
         };

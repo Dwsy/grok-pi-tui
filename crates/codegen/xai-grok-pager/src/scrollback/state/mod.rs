@@ -1060,6 +1060,91 @@ impl ScrollbackState {
         self.entries.get_mut(&id)
     }
 
+    /// Attach hook data to a tool-call entry and rebuild structural grouping.
+    #[cfg(test)]
+    pub(crate) fn attach_hooks(
+        &mut self,
+        id: EntryId,
+        phase: super::blocks::tool::HookPhase,
+        hook_entries: Vec<super::blocks::tool::HookRunEntry>,
+    ) {
+        if let Some(entry) = self.entries.get_mut(&id) {
+            let data = entry.hook_data.get_or_insert_with(Default::default);
+            match phase {
+                super::blocks::tool::HookPhase::Pre => data.pre_hooks = hook_entries,
+                super::blocks::tool::HookPhase::Post => data.post_hooks = hook_entries,
+            }
+            entry.invalidate_cache();
+            self.mark_structurally_dirty(id);
+        }
+    }
+
+    /// Find the latest terminal-turn marker that can accept a stop-hook batch.
+    /// Unstamped batches are positional (tail-only); stamped batches must match
+    /// the marker's prompt id. A duplicate event name is never merged twice.
+    #[cfg(test)]
+    pub(crate) fn latest_turn_marker_accepting(
+        &self,
+        event_name: &str,
+        batch_prompt_id: Option<&str>,
+    ) -> Option<EntryId> {
+        for (position_from_tail, (id, entry)) in self.entries.iter().rev().enumerate() {
+            let RenderBlock::SessionEvent(block) = &entry.block else {
+                continue;
+            };
+            if !block.event.is_turn_terminal() {
+                continue;
+            }
+            if block.stop_hooks.iter().any(|(name, _)| name == event_name) {
+                return None;
+            }
+            let accept = match (batch_prompt_id, block.prompt_id.as_deref()) {
+                (Some(batch), Some(marker)) => batch == marker,
+                (Some(_), None) => false,
+                (None, _) => position_from_tail == 0,
+            };
+            return accept.then_some(*id);
+        }
+        None
+    }
+
+    /// Merge a stop-hook batch into its terminal-turn marker. Re-check the
+    /// attribution at mutation time so a stale caller cannot attach it to a
+    /// different turn.
+    #[cfg(test)]
+    pub(crate) fn attach_stop_hooks_to_marker(
+        &mut self,
+        id: EntryId,
+        event_name: String,
+        hook_entries: Vec<super::blocks::tool::HookRunEntry>,
+        batch_prompt_id: Option<&str>,
+    ) -> bool {
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return false;
+        };
+        let RenderBlock::SessionEvent(block) = &mut entry.block else {
+            return false;
+        };
+        if !block.event.is_turn_terminal() {
+            return false;
+        }
+        let attributable = match (batch_prompt_id, block.prompt_id.as_deref()) {
+            (Some(batch), Some(marker)) => batch == marker,
+            (Some(_), None) => false,
+            (None, _) => true,
+        };
+        if !attributable || block.stop_hooks.iter().any(|(name, _)| name == &event_name) {
+            return false;
+        }
+        block.stop_hooks.push((event_name, hook_entries));
+        if !entry.display_mode_pinned {
+            entry.display_mode = DisplayMode::Collapsed;
+        }
+        entry.invalidate_cache();
+        self.mark_structurally_dirty(id);
+        true
+    }
+
     /// The escalation fires only on that rising edge, so a user's collapse of an already-untrusted block sticks. A row
     /// already awaiting a permission then opens once if the new Edit has hunks, unless the fold is pinned. Stamps
     /// `started_at` on the new block and invalidates the entry's render cache.

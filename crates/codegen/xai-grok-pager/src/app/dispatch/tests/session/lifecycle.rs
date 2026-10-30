@@ -26,7 +26,6 @@ fn external_session_created_clears_starting_session_indicator() {
             agent_id: id,
             session_id: "pi-session-ready".into(),
             models: None,
-            scheduler_background_loops: None,
         }),
         &mut app,
     );

@@ -88,9 +88,9 @@ fn file_icon_for(path: &str, is_dir: bool) -> FileIcon {
         return FileIcon {
             glyph: "\u{f07b}", // nf-fa-folder
             color: if is_dark {
-                Color::Rgb(255, 203, 40)  // folder yellow for dark
+                Color::Rgb(255, 203, 40) // folder yellow for dark
             } else {
-                Color::Rgb(180, 120, 30)  // folder orange-brown for light
+                Color::Rgb(180, 120, 30) // folder orange-brown for light
             },
         };
     }
@@ -140,9 +140,9 @@ fn file_icon_for(path: &str, is_dir: bool) -> FileIcon {
     FileIcon {
         glyph: "\u{f15b}", // default file
         color: if is_dark {
-            Color::Rgb(127, 132, 142)  // gray for dark
+            Color::Rgb(127, 132, 142) // gray for dark
         } else {
-            Color::Rgb(90, 95, 105)    // darker gray for light
+            Color::Rgb(90, 95, 105) // darker gray for light
         },
     }
 }
@@ -150,13 +150,15 @@ fn file_icon_for(path: &str, is_dir: bool) -> FileIcon {
 /// Pick the appropriate color for the current theme polarity.
 fn pick_color(entry: &LanguageIconConfig, is_dark: bool) -> Color {
     if is_dark {
-        entry.color_dark
+        entry
+            .color_dark
             .as_ref()
             .or(entry.color.as_ref())
             .map(|c| parse_hex_color(c))
             .unwrap_or(Color::Rgb(127, 132, 142))
     } else {
-        entry.color_light
+        entry
+            .color_light
             .as_ref()
             .or(entry.color.as_ref())
             .map(|c| parse_hex_color(c))
@@ -2631,13 +2633,13 @@ mod tests {
 
     #[test]
     fn nerd_file_icon_maps_common_extensions() {
-        assert_eq!(nerd_file_icon("foo.rs", false), "\u{e68b}");
-        assert_eq!(nerd_file_icon("App.tsx", false), "\u{e628}");
-        assert_eq!(nerd_file_icon("Cargo.toml", false), "\u{e68b}");
-        assert_eq!(nerd_file_icon("README.md", false), "\u{f48a}");
-        assert_eq!(nerd_file_icon("src", true), "\u{f07b}");
+        assert_eq!(file_icon_for("foo.rs", false).glyph, "\u{e68b}");
+        assert_eq!(file_icon_for("App.tsx", false).glyph, "\u{e628}");
+        assert_eq!(file_icon_for("Cargo.toml", false).glyph, "\u{e68b}");
+        assert_eq!(file_icon_for("README.md", false).glyph, "\u{f48a}");
+        assert_eq!(file_icon_for("src", true).glyph, "\u{f07b}");
         // Unknown still returns a default file glyph (caller gates on probe).
-        assert_eq!(nerd_file_icon("weird.xyz", false), "\u{f15b}");
+        assert_eq!(file_icon_for("weird.xyz", false).glyph, "\u{f15b}");
     }
 
     #[test]

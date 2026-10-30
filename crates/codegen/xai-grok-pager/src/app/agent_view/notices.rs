@@ -228,18 +228,29 @@ impl AgentView {
         widgets_above_editor: &[String],
         widgets_below_editor: &[String],
         statuses: &[String],
+        remote_tui_inline_offset: Option<usize>,
     ) -> bool {
-        let changed = self.external_widgets_above_editor != widgets_above_editor
+        let geometry_changed = self.external_widgets_above_editor != widgets_above_editor
+            || self.remote_tui_inline_offset != remote_tui_inline_offset;
+        let changed = geometry_changed
             || self.external_widgets_below_editor != widgets_below_editor
             || self.external_statuses != statuses;
         self.external_widgets_above_editor = widgets_above_editor.to_vec();
         self.external_widgets_below_editor = widgets_below_editor.to_vec();
         self.external_statuses = statuses.to_vec();
+        self.remote_tui_inline_offset = remote_tui_inline_offset;
+        if geometry_changed {
+            self.remote_tui_rect = None;
+        }
         self.subagent_views
             .values_mut()
             .fold(changed, |changed, child| {
-                child.set_external_ui_surface(widgets_above_editor, widgets_below_editor, statuses)
-                    || changed
+                child.set_external_ui_surface(
+                    widgets_above_editor,
+                    widgets_below_editor,
+                    statuses,
+                    remote_tui_inline_offset,
+                ) || changed
             })
     }
 
@@ -253,6 +264,9 @@ impl AgentView {
         let changed = self.remote_tui_lines != lines || self.remote_tui_layout != layout;
         self.remote_tui_lines = lines.to_vec();
         self.remote_tui_layout = layout.clone();
+        if changed {
+            self.remote_tui_rect = None;
+        }
         self.subagent_views
             .values_mut()
             .fold(changed, |changed, child| {

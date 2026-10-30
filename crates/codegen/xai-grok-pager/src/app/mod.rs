@@ -846,32 +846,36 @@ pub async fn run_external_deferred(
     let mut attach_pending = true;
     let mut attach_ok = false;
     let mut attach_error: Option<anyhow::Error> = None;
-    let loop_run = event_loop::run(
-        &mut terminal,
-        connection,
-        pending_startup,
-        tracing_handle,
-        &mut config_watcher,
-        &effective_args,
-        session_cwd,
-        None,
-        term_state,
-        materialized,
-        bg_update_rx,
-        writer_event_rx,
-    );
-    tokio::pin!(loop_run);
-    let result = loop {
-        tokio::select! {
-            biased;
-            run_result = &mut loop_run => break run_result,
-            attach_result = &mut attach, if attach_pending => {
-                attach_pending = false;
-                if let Some(error) = attach_result {
-                    attach_error = Some(error);
-                    cancel.cancel();
-                } else {
-                    attach_ok = true;
+    let result = {
+        // Keep the pinned future in a narrower scope so its borrow of the
+        // terminal is dropped before terminal ownership is restored below.
+        let loop_run = event_loop::run(
+            &mut terminal,
+            connection,
+            pending_startup,
+            tracing_handle,
+            &mut config_watcher,
+            &effective_args,
+            session_cwd,
+            None,
+            term_state,
+            materialized,
+            bg_update_rx,
+            writer_event_rx,
+        );
+        tokio::pin!(loop_run);
+        loop {
+            tokio::select! {
+                biased;
+                run_result = &mut loop_run => break run_result,
+                attach_result = &mut attach, if attach_pending => {
+                    attach_pending = false;
+                    if let Some(error) = attach_result {
+                        attach_error = Some(error);
+                        cancel.cancel();
+                    } else {
+                        attach_ok = true;
+                    }
                 }
             }
         }

@@ -18,7 +18,9 @@ use crate::scrollback::render::ScratchBuffer;
 use crate::views::prompt_widget::PromptWidget;
 use crate::views::welcome::WelcomePromptFocus;
 use agent_client_protocol as acp;
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -132,6 +134,9 @@ pub struct ExternalUiState {
     /// Experimental Remote TUI session id (PI_GROK_REMOTE_TUI). When set,
     /// keyboard input is forwarded as Pi key sequences instead of prompt edit.
     pub remote_tui_id: Option<String>,
+    /// Mouse gesture that began inside the current Remote TUI frame. Keep
+    /// forwarding drag/release even after the pointer leaves the frame.
+    pub remote_tui_mouse_gesture: Option<(String, MouseButton)>,
     /// New hosts publish lifecycle separately from display-only frames.
     pub remote_tui_session_managed: bool,
     /// Overlay stack for Remote TUI components (push/pop/focus).
@@ -266,7 +271,8 @@ fn append_external_widgets(
     widgets: &std::collections::BTreeMap<String, ExternalWidget>,
     placement: ExternalWidgetPlacement,
     skip_remote_tui: bool,
-) {
+) -> Option<usize> {
+    let mut remote_tui_offset = None;
     for (key, widget) in widgets {
         if skip_remote_tui && key == "remote_tui" {
             continue;
@@ -274,14 +280,20 @@ fn append_external_widgets(
         if widget.placement != placement {
             continue;
         }
+        if key == "remote_tui" {
+            remote_tui_offset = Some(output.len());
+        }
         // Align with Pi interactive setWidget: each widget keeps its own
         // multi-line frame. Do not join lines or prefix keys.
         for line in &widget.lines {
-            if !line.trim().is_empty() {
+            // Blank rows inside a Remote TUI frame are layout, not empty
+            // status content. Preserve them so mouse y coordinates line up.
+            if key == "remote_tui" || !line.trim().is_empty() {
                 output.push(line.clone());
             }
         }
     }
+    remote_tui_offset
 }
 
 /// Per-visit announcement UI state on the welcome screen. Reset on every
@@ -2562,6 +2574,7 @@ impl AppView {
         self.external_ui.widgets.clear();
         self.external_ui.remote_tui_layout = None;
         self.external_ui.remote_tui_id = None;
+        self.external_ui.remote_tui_mouse_gesture = None;
         self.external_ui.remote_tui_overlays.clear();
         self.external_ui.extension_shortcuts = Default::default();
         self.pending_effects
@@ -2600,9 +2613,15 @@ impl AppView {
                 && let Some(id) = message.get("id").and_then(serde_json::Value::as_str)
             {
                 match message.get("op").and_then(serde_json::Value::as_str) {
-                    Some("open") => self.external_ui.remote_tui_id = Some(id.to_owned()),
+                    Some("open") => {
+                        if self.external_ui.remote_tui_id.as_deref() != Some(id) {
+                            self.external_ui.remote_tui_mouse_gesture = None;
+                        }
+                        self.external_ui.remote_tui_id = Some(id.to_owned());
+                    }
                     Some("close") if self.external_ui.remote_tui_id.as_deref() == Some(id) => {
                         self.external_ui.remote_tui_id = None;
+                        self.external_ui.remote_tui_mouse_gesture = None;
                     }
                     _ => {}
                 }
@@ -2724,6 +2743,9 @@ impl AppView {
         match op {
             "open" => {
                 let overlay_id = id.unwrap_or_else(|| "default".to_string());
+                if self.external_ui.remote_tui_id.as_deref() != Some(&overlay_id) {
+                    self.external_ui.remote_tui_mouse_gesture = None;
+                }
                 self.external_ui.remote_tui_id = Some(overlay_id.clone());
                 self.external_ui.remote_tui_overlays.push(RemoteTuiOverlay {
                     id: overlay_id,
@@ -2735,6 +2757,9 @@ impl AppView {
             }
             "frame" => {
                 if let Some(id) = &id {
+                    if self.external_ui.remote_tui_id.as_deref() != Some(id) {
+                        self.external_ui.remote_tui_mouse_gesture = None;
+                    }
                     self.external_ui.remote_tui_id = Some(id.clone());
                 }
                 // Update the top overlay's lines (or create one if stack is empty)
@@ -2761,6 +2786,9 @@ impl AppView {
                 let overlay_id = id.unwrap_or_else(|| {
                     format!("overlay-{}", self.external_ui.remote_tui_overlays.len())
                 });
+                if self.external_ui.remote_tui_id.as_deref() != Some(&overlay_id) {
+                    self.external_ui.remote_tui_mouse_gesture = None;
+                }
                 self.external_ui.remote_tui_id = Some(overlay_id.clone());
                 self.external_ui.remote_tui_overlays.push(RemoteTuiOverlay {
                     id: overlay_id,
@@ -2774,11 +2802,15 @@ impl AppView {
                 // hideOverlay: pop the top overlay, restore previous
                 self.external_ui.remote_tui_overlays.pop();
                 if let Some(top) = self.external_ui.remote_tui_overlays.last() {
+                    if self.external_ui.remote_tui_id.as_deref() != Some(&top.id) {
+                        self.external_ui.remote_tui_mouse_gesture = None;
+                    }
                     self.external_ui.remote_tui_id = Some(top.id.clone());
                     self.project_remote_tui_frame()
                 } else {
                     // Stack empty — close entirely
                     self.external_ui.remote_tui_id = None;
+                    self.external_ui.remote_tui_mouse_gesture = None;
                     let _ = self.set_external_widget(
                         "remote_tui".to_string(),
                         None,
@@ -2795,10 +2827,14 @@ impl AppView {
                     self.external_ui.remote_tui_overlays.pop();
                 }
                 if let Some(top) = self.external_ui.remote_tui_overlays.last() {
+                    if self.external_ui.remote_tui_id.as_deref() != Some(&top.id) {
+                        self.external_ui.remote_tui_mouse_gesture = None;
+                    }
                     self.external_ui.remote_tui_id = Some(top.id.clone());
                     self.project_remote_tui_frame()
                 } else {
                     self.external_ui.remote_tui_id = None;
+                    self.external_ui.remote_tui_mouse_gesture = None;
                     let _ = self.set_external_widget(
                         "remote_tui".to_string(),
                         None,
@@ -2939,6 +2975,106 @@ impl AppView {
         }
     }
 
+    /// Convert a terminal mouse event to Pi's normalized component contract.
+    /// The hit box comes from the last rendered frame so inline widgets and
+    /// positioned overlays use the same coordinate transform as the renderer.
+    fn remote_tui_mouse_event(
+        &mut self,
+        id: &str,
+        mouse: &MouseEvent,
+    ) -> Option<serde_json::Value> {
+        fn button_name(button: MouseButton) -> &'static str {
+            match button {
+                MouseButton::Left => "left",
+                MouseButton::Middle => "middle",
+                MouseButton::Right => "right",
+            }
+        }
+
+        if self
+            .external_ui
+            .remote_tui_mouse_gesture
+            .as_ref()
+            .is_some_and(|(gesture_id, _)| gesture_id != id)
+        {
+            self.external_ui.remote_tui_mouse_gesture = None;
+        }
+        let gesture_button = self
+            .external_ui
+            .remote_tui_mouse_gesture
+            .as_ref()
+            .filter(|(gesture_id, _)| gesture_id == id)
+            .map(|(_, button)| *button);
+        let rect = self.active_agent().and_then(|agent| agent.remote_tui_rect);
+        let Some(rect) = rect else {
+            if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::Up(_)) {
+                self.external_ui.remote_tui_mouse_gesture = None;
+            }
+            return None;
+        };
+        let inside = rect.contains((mouse.column, mouse.row).into());
+        let (event_type, button, wheel_delta) = match mouse.kind {
+            MouseEventKind::Down(button) => {
+                if !inside {
+                    self.external_ui.remote_tui_mouse_gesture = None;
+                    return None;
+                }
+                self.external_ui.remote_tui_mouse_gesture = Some((id.to_owned(), button));
+                ("press", button_name(button), None)
+            }
+            MouseEventKind::Up(button) => {
+                if !inside && gesture_button.is_none() {
+                    return None;
+                }
+                self.external_ui.remote_tui_mouse_gesture = None;
+                ("release", button_name(button), None)
+            }
+            MouseEventKind::Drag(button) => {
+                if !inside && gesture_button.is_none() {
+                    return None;
+                }
+                ("drag", button_name(gesture_button.unwrap_or(button)), None)
+            }
+            MouseEventKind::Moved => {
+                if !inside && gesture_button.is_none() {
+                    return None;
+                }
+                match gesture_button {
+                    Some(button) => ("drag", button_name(button), None),
+                    None => ("move", "none", None),
+                }
+            }
+            MouseEventKind::ScrollUp if inside || gesture_button.is_some() => {
+                ("wheel", "none", Some(-1))
+            }
+            MouseEventKind::ScrollDown if inside || gesture_button.is_some() => {
+                ("wheel", "none", Some(1))
+            }
+            // Pi's TuiMouseEvent contract models vertical logical-line scrolling.
+            // Do not misrepresent horizontal touchpad scroll as vertical input.
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => return None,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => return None,
+        };
+
+        let mut event = serde_json::json!({
+            "type": event_type,
+            "button": button,
+            "x": i32::from(mouse.column) - i32::from(rect.x),
+            "y": i32::from(mouse.row) - i32::from(rect.y),
+            "screenX": mouse.column,
+            "screenY": mouse.row,
+            "width": self.external_ui.remote_tui_layout.as_ref().map_or(rect.width, |layout| layout.width),
+            "height": rect.height,
+            "shift": mouse.modifiers.contains(KeyModifiers::SHIFT),
+            "alt": mouse.modifiers.contains(KeyModifiers::ALT),
+            "ctrl": mouse.modifiers.contains(KeyModifiers::CONTROL),
+        });
+        if let Some(wheel_delta) = wheel_delta {
+            event["wheelDelta"] = serde_json::json!(wheel_delta);
+        }
+        Some(event)
+    }
+
     /// Replace the text in whichever native Grok composer currently owns
     /// keyboard input.
     pub fn set_external_editor_text(&mut self, text: String) -> bool {
@@ -3000,7 +3136,7 @@ impl AppView {
             .as_ref()
             .is_some_and(|layout| layout.overlay);
         let mut widgets_above_editor = Vec::new();
-        append_external_widgets(
+        let remote_tui_inline_offset = append_external_widgets(
             &mut widgets_above_editor,
             &self.external_ui.widgets,
             ExternalWidgetPlacement::AboveEditor,
@@ -3019,7 +3155,7 @@ impl AppView {
             })
             .collect::<Vec<_>>();
         let mut widgets_below_editor = Vec::new();
-        append_external_widgets(
+        let _ = append_external_widgets(
             &mut widgets_below_editor,
             &self.external_ui.widgets,
             ExternalWidgetPlacement::BelowEditor,
@@ -3053,6 +3189,7 @@ impl AppView {
                 &widgets_above_editor,
                 &widgets_below_editor,
                 &statuses,
+                remote_tui_inline_offset,
             ) || changed;
             agent.set_remote_tui_surface(remote_tui_lines, remote_tui_layout.clone()) || changed
         })
@@ -3456,6 +3593,13 @@ impl AppView {
             && !native_dialog
             && let Some(id) = self.external_ui.remote_tui_id.clone()
         {
+            if let Event::Mouse(mouse) = ev
+                && let Some(event) = self.remote_tui_mouse_event(&id, mouse)
+            {
+                self.pending_effects
+                    .push(crate::app::actions::Effect::RemoteTuiMouse { id, event });
+                return InputOutcome::Changed;
+            }
             // Bracketed paste: forward as a Pi-TUI paste sequence so remote
             // input components treat it as a paste (newlines insert instead
             // of submitting). Without this, Event::Paste falls through to the
@@ -3479,6 +3623,7 @@ impl AppView {
                         .push(crate::app::actions::Effect::RemoteTuiCancel { id });
                     self.external_ui.remote_tui_id = None;
                     self.external_ui.remote_tui_layout = None;
+                    self.external_ui.remote_tui_mouse_gesture = None;
                     self.external_ui.remote_tui_overlays.clear();
                     self.external_ui.widgets.remove("remote_tui");
                     self.refresh_external_ui_surface();
@@ -3492,7 +3637,7 @@ impl AppView {
             }
             // Even an unsupported key or mouse click must not edit the hidden
             // composer. Resize/focus events still reach the normal host path.
-            if matches!(ev, Event::Key(_) | Event::Paste(_) | Event::Mouse(_)) {
+            if matches!(ev, Event::Key(_) | Event::Paste(_)) {
                 return InputOutcome::Changed;
             }
         }

@@ -2752,6 +2752,7 @@ fn is_task_tool(tc: &acp::ToolCall) -> bool {
 }
 fn is_goal_tool(tc: &acp::ToolCall) -> bool {
     tc.title == "update_goal"
+        || tc.title == "create_goal"
         || tc.title.starts_with("Goal:")
         || matches!(extract_variant(tc), Some("UpdateGoal" | "WorkflowSignal"))
 }

@@ -4385,7 +4385,7 @@ fn dashboard_attach_subagent_switches_to_parent_with_subagent_focused() {
     );
     assert!(
         !parent_view.subagent_views[&child_sid]
-            .current_shortcut_hints(&app.registry)
+            .current_shortcut_hints(&app.registry, false)
             .iter()
             .any(|hint| hint.label == "send to bg")
     );
