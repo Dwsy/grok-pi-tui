@@ -60,6 +60,7 @@ mod tests {
         let ext = write_goal_extension().expect("write");
         let source = std::fs::read_to_string(ext.source_path()).expect("read");
         assert!(source.contains("update_goal"));
+        assert!(source.contains("create_goal"));
         assert!(source.contains("registerCommand(\"goal\""));
         assert!(source.contains("PI_GROK_GOAL_CONTROL"));
         assert!(source.contains("pi-grok-goal/v1"));

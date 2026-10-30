@@ -574,15 +574,13 @@ impl PiAgent {
             // instead of disappearing behind its absent effects. The completed
             // update below then fills in output and status.
             let args = self.state.borrow_mut().tool_args.remove(id);
-            let tool_call = acp::ToolCall::new(
-                acp::ToolCallId::new(id.to_string()),
-                name.to_string(),
-            )
-            .kind(tool_kind(name))
-            .status(acp::ToolCallStatus::InProgress)
-            .content(Vec::new())
-            .locations(Vec::new())
-            .raw_input(args);
+            let tool_call =
+                acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
+                    .kind(tool_kind(name))
+                    .status(acp::ToolCallStatus::InProgress)
+                    .content(Vec::new())
+                    .locations(Vec::new())
+                    .raw_input(args);
             self.send_update(acp::SessionUpdate::ToolCall(tool_call))
                 .await;
         }
@@ -607,7 +605,7 @@ impl PiAgent {
         self.handle_background_bash_tool_end(name, id, args.as_ref(), &output)
             .await;
         // Goal control file is the SSOT; tool_end reloads if bridge entry lags.
-        if name.eq_ignore_ascii_case("update_goal")
+        if is_goal_tool_name(name)
             && let Some(control) = self.refresh_goal_from_disk().await
         {
             self.emit_goal_updated_from_control(&control).await;

@@ -34,8 +34,9 @@ use crate::{
     subagent_transport::SubagentEventTransport,
     todo_bridge::plan_update_for_tool,
     tool_projection::{
-        bash_tool_output, edit_diff_content, history_tool_content, normalize_tool_raw_input,
-        normalize_tool_raw_output, pi_result_text, tool_content, tool_kind,
+        bash_tool_output, edit_diff_content, history_tool_content, is_goal_tool_name,
+        normalize_tool_raw_input, normalize_tool_raw_output, pi_result_text, tool_content,
+        tool_kind,
     },
     workflow_host::{
         WorkflowHost, WorkflowRequest, format_outcome_for_tool, outcome_to_json,

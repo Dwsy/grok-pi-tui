@@ -64,6 +64,31 @@ tags: ["goal", "pi-grok", "f2", "extension"]
 - [x] A8 cancel idle probe 不得清除刚启动的 Goal successor turn
 - [x] A9 Goal 自动续作期间 Pager 保持 Working/Waiting；用户消息进入 follow-up，不触发 `already processing`
 
+## S7（2026-10-29）：模型自设目标 `create_goal`
+
+对齐 codex `codex-rs/ext/goal`：模型可通过工具自行创建 goal，而不只依赖用户输入 `/goal`。
+
+| 项 | 实现 |
+|----|------|
+| 工具 | `create_goal({ objective, token_budget? })`，与 `/goal` 共用 `activateGoal`（control 文件 + bridge entry） |
+| 前置条件 | 仅当用户显式要求设目标时调用；工具描述已写明，不推断普通任务 |
+| 冲突策略 | 已有 `active` goal 时拒绝（`goal_in_progress`），返回提示让模型完成或用 `/goal` 替换 |
+| 校验 | 空 objective 拒绝；上限 4000 字符（对齐 codex `MAX_THREAD_GOAL_OBJECTIVE_CHARS`）；`token_budget` 必须为正 |
+| 投递 | 工具在 turn 内执行，reminder 用 `triggerTurn:false`（不额外起 turn），由 adapter `agent_settled` continuation 续跑 |
+| UI | adapter `is_goal_tool_name` 覆盖 create/update，tool end 刷新 control → `GoalUpdated`；Pager `is_goal_tool` 同样归入 goal 面，不新增卡片 |
+
+## Verification (2026-10-29)
+
+| Command / scenario | Result |
+|---|---|
+| `./scripts/cargo-shared.sh test -p pi-grok-adapter goal_tool` | PASS 1（`is_goal_tool_name`） |
+| `./scripts/cargo-shared.sh test -p pi-grok-adapter` | PASS 198 |
+| `./scripts/cargo-shared.sh test -p xai-grok-pager-bin --bin grok-pi` | PASS 96（含 `goal_extension_source_loads` 断言 `create_goal`） |
+| `./scripts/cargo-shared.sh check -p pi-grok-adapter` | PASS（既有 warnings） |
+| `./scripts/cargo-shared.sh check -p xai-grok-pager-bin --bin grok-pi` | PASS（既有 warnings） |
+| Bun 探测 `create_goal` 分支 | PASS：注册名 `create_goal,update_goal`；空 objective→`invalid_objective`；`token_budget:0`→`invalid_budget`；正常→`ok:true` 且 control 写入 `goal_created`+budget；active 时再建→`goal_in_progress` |
+| Pi RPC `-ne --extension extensions/pi-grok-goal/index.ts` | PASS：扩展可加载，`/goal` 出现在 command catalog |
+
 ## Residual（后续）
 
 | 项 | 说明 |
@@ -82,6 +107,7 @@ tags: ["goal", "pi-grok", "f2", "extension"]
 - [x] S4 adapter bridge + continuation + grok-pi inject
 - [x] S5 窄测 + cargo check 结果回写
 - [x] S6 修复 cancel idle probe 覆盖 Goal successor 状态的竞态
+- [x] S7 `create_goal` 工具（模型自设目标，对齐 codex goal 扩展）
 
 ## Regression: cancel → Goal successor 状态丢失（2026-08-15）
 

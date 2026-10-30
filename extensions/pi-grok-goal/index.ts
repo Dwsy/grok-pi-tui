@@ -16,6 +16,8 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 
 const BRIDGE_TYPE = "pi-grok-goal/v1";
 const GOAL_MESSAGE_TYPE = "pi-grok-goal/message/v1";
+/** Mirrors codex MAX_THREAD_GOAL_OBJECTIVE_CHARS so both paths reject the same input. */
+const MAX_OBJECTIVE_CHARS = 4000;
 
 type GoalEvent =
   | "goal_created"
@@ -68,14 +70,57 @@ function writeControl(control: GoalControl): void {
   writeFileSync(path, JSON.stringify(control, null, 2), "utf8");
 }
 
+/** Codex rejects non-positive budgets; keep one rule for `/goal` and `create_goal`. */
+function normalizeBudget(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const budget = Math.floor(value);
+  return budget > 0 ? budget : undefined;
+}
+
+function validateObjective(value: string): string | undefined {
+  if (!value) return "goal objective must not be empty";
+  if ([...value].length > MAX_OBJECTIVE_CHARS) {
+    return `goal objective must be at most ${MAX_OBJECTIVE_CHARS} characters`;
+  }
+  return undefined;
+}
+
+/**
+ * Create or replace the goal: control file + bridge entry are the shared state
+ * writes. Callers own the model-facing reminder because delivery differs
+ * (`/goal` runs outside a turn; `create_goal` runs inside one).
+ */
+function activateGoal(
+  pi: ExtensionAPI,
+  objective: string,
+  budget?: number,
+): { control: GoalControl; replacing: boolean } {
+  // Upstream create_goal replaces any existing orchestration; re-set is set, not error.
+  const prev = readControl();
+  const replacing = !!(prev && prev.status !== "cleared");
+  const control: GoalControl = {
+    goalId: randomUUID(),
+    objective,
+    status: "active",
+    phase: "executing",
+    tokenBudget: budget,
+    tokenBaseline: 0,
+    tokensUsed: 0,
+    createdAt: new Date().toISOString(),
+    lastEvent: replacing ? "goal_replaced" : "goal_created",
+  };
+  writeControl(control);
+  emitBridge(pi, control, replacing ? "goal_replaced" : "goal_created");
+  return { control, replacing };
+}
+
 function parseSetArgs(args: string): { objective: string; budget?: number } {
   const tokens = args.trim().split(/\s+/).filter(Boolean);
   let budget: number | undefined;
   const parts: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] === "--budget" && tokens[i + 1]) {
-      const n = Number(tokens[i + 1]);
-      if (Number.isFinite(n) && n >= 0) budget = Math.floor(n);
+      budget = normalizeBudget(Number(tokens[i + 1]));
       i++;
       continue;
     }
@@ -101,6 +146,7 @@ function goalStateReminder(control: GoalControl, event: GoalEvent, detail?: stri
           "Goal mode is active.",
           "Work until the objective is fully achieved with verifiable evidence.",
           "Prefer concrete checks (tests, builds, file inspection) over claims.",
+          'Call create_goal({ objective: "..." }) when the user explicitly asks you to set a goal.',
           'Call update_goal({ completed: true, message: "..." }) ONLY when done.',
           'Call update_goal({ blocked_reason: "..." }) only after repeated failures.',
           'Optional progress: update_goal({ message: "..." }).',
@@ -260,22 +306,13 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         return;
       }
 
-      // Upstream create_goal replaces any existing orchestration; re-/goal is set, not error.
-      const prev = readControl();
-      const replacing = !!(prev && prev.status !== "cleared");
-      const control: GoalControl = {
-        goalId: randomUUID(),
-        objective,
-        status: "active",
-        phase: "executing",
-        tokenBudget: budget,
-        tokenBaseline: 0,
-        tokensUsed: 0,
-        createdAt: new Date().toISOString(),
-        lastEvent: replacing ? "goal_replaced" : "goal_created",
-      };
-      writeControl(control);
-      emitBridge(pi, control, replacing ? "goal_replaced" : "goal_created");
+      const invalid = validateObjective(objective);
+      if (invalid) {
+        ctx.ui.notify(invalid, "warning");
+        return;
+      }
+
+      const { control, replacing } = activateGoal(pi, objective, budget);
       ctx.ui.notify(
         replacing ? `Goal updated: ${objective}` : `Goal set: ${objective}`,
         "info",
@@ -285,6 +322,87 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         triggerTurn: true,
         deliverAs: "followUp",
       });
+    },
+  });
+
+  pi.registerTool({
+    name: "create_goal",
+    label: "Create Goal",
+    description:
+      "Create a persistent goal for this session. Use only when the user explicitly asks you to set a goal; do not infer goals from ordinary tasks. Starts a new active goal when no goal exists, or replaces a completed one. Fails while an unfinished goal exists; use update_goal for status. Set token_budget only when an explicit budget is requested.",
+    parameters: Type.Object({
+      objective: Type.String({
+        description:
+          "Required. The concrete objective to pursue. This starts a new active goal, or replaces the current goal.",
+      }),
+      token_budget: Type.Optional(
+        Type.Integer({
+          description:
+            "Positive token budget for the new goal. Omit unless explicitly requested.",
+        }),
+      ),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: { objective?: string; token_budget?: number },
+    ) {
+      const objective = params.objective?.trim() ?? "";
+      const invalid = validateObjective(objective);
+      if (invalid) {
+        return {
+          content: [{ type: "text", text: `Goal not created: ${invalid}.` }],
+          details: { ok: false, reason: "invalid_objective" },
+        };
+      }
+
+      const prev = readControl();
+      if (prev?.status === "active") {
+        // Codex refuses to shadow an unfinished goal; /goal remains the replace path.
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Cannot create a new goal while the current goal is still active: ${prev.objective}\nFinish it with update_goal, or ask the user to replace it with /goal.`,
+            },
+          ],
+          details: { ok: false, reason: "goal_in_progress" },
+        };
+      }
+
+      const budget = normalizeBudget(params.token_budget);
+      if (params.token_budget !== undefined && budget === undefined) {
+        return {
+          content: [
+            { type: "text", text: "Goal not created: goal budgets must be positive." },
+          ],
+          details: { ok: false, reason: "invalid_budget" },
+        };
+      }
+
+      const { control, replacing } = activateGoal(pi, objective, budget);
+      // Inside a running turn: defer the reminder to turn end instead of starting
+      // an extra turn; the adapter's settle-time continuation drives goal work.
+      sendGoalMessage(pi, control, replacing ? "goal_replaced" : "goal_created", undefined, {
+        triggerTurn: false,
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `Goal created: ${control.objective}`,
+              `Status: ${control.status} | Phase: ${control.phase}`,
+              control.tokenBudget !== undefined
+                ? `Token budget: ${control.tokenBudget}`
+                : undefined,
+              "Continue working toward it; call update_goal only when done or blocked.",
+            ]
+              .filter((line): line is string => Boolean(line))
+              .join("\n"),
+          },
+        ],
+        details: { ok: true, status: "active", goalId: control.goalId },
+      };
     },
   });
 

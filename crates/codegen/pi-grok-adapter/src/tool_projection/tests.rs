@@ -243,6 +243,15 @@ fn pi_edit_without_matching_patch_keeps_line_metadata_empty() {
 }
 
 #[test]
+fn goal_tool_names_cover_create_and_update() {
+    assert!(is_goal_tool_name("create_goal"));
+    assert!(is_goal_tool_name("update_goal"));
+    assert!(is_goal_tool_name("Create_Goal"));
+    assert!(!is_goal_tool_name("goal"));
+    assert!(!is_goal_tool_name("todo"));
+}
+
+#[test]
 fn pi_builtin_tool_kinds() {
     assert_eq!(tool_kind("read"), acp::ToolKind::Read);
     assert_eq!(tool_kind("bash"), acp::ToolKind::Execute);
