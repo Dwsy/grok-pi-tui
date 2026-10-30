@@ -1,5 +1,63 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-10-30 Beta candidate v0.1.12-beta.1
+
+Focused checks for the release candidate:
+
+- Remote TUI host, transport and Rust bridge: 15 passed.
+- Pager Remote TUI layout/input/render tests: 23 passed.
+- Pager Codemode viewer/render tests: 17 passed.
+- Pager always-active picker search tests: 4 passed; feedback draft search bar: 1 passed.
+- Pager side-by-side Edit diff tests: 7 passed.
+- grok-pi binary: 96 passed, including the embedded Bash source-contract test for
+  Pi turn-boundary `custom_message` injection.
+- Pi adapter: 198 passed.
+- Background Bash / Eval v2 production regression: passed.
+- Every modified Rust source passes an individual rustfmt check; `git diff
+  --check` and strict beta changelog extraction pass.
+
+The unfiltered Pager suite is **not claimed green**. The integration-test target
+`cargo test -p xai-grok-pager` is blocked by existing
+`include_str!` references to missing
+`crates/codegen/xai-grok-pager/docs/internal/25-enterprise.md` and
+`22-environment-variables.md`. An unfiltered `--lib` run also surfaced
+failures in unrelated subagent, ESC/input and selection tests; the run was
+stopped before a complete summary. One ESC grace test reproduces when run
+alone. The focused tests listed above pass; the broader failures remain open
+and are not represented as fixed by this release.
+
+Verification date: 2026-10-30
+
+## 2026-10-30 Remote TUI fake-cursor APC
+
+Both active frame projectors now remove Pi's hardware cursor marker and resolve
+fake-cursor boundaries to ANSI SGR 7/27. Pager's existing highlight mapping is
+unchanged. See [the Remote TUI issue](issues/adapter/20260719-Remote-TUI-实验轨-RPC-custom-帧投影.md).
+
+- Bun projection/transport suites: 15 passed, 0 failed, including the default-off
+  Rust TUI bridge. Regression fixtures failed on both paths before the fix.
+- Freshly compiled grok-pi bin test executable: exit 0, 96 passed, 0 failed,
+  including Remote TUI module-closure materialization and bridge source tests.
+- Installed Pi 1.4.0 isolated RPC: real Input and Editor each passed submit and
+  Escape scenarios (4/4), with letter/uppercase/Left handling, no cursor APC
+  payloads in frames and visible SGR 7/27 cursors. No model inference or user
+  configuration changes were involved.
+- Production Rust check passed; direct `cargo-shared.sh build -p
+  xai-grok-pager-bin --bin grok-pi` exited 0 and rebuilt the embedded extension.
+- The new binary with system Pi 1.4.0 passed isolated PTY Input/Editor ×
+  Enter/Escape acceptance (4/4), including letter/uppercase/Left input and
+  repeated component open/close. Terminal output contained no fake-cursor
+  payloads. The probe used the embedded host rather than loading a separate
+  worktree copy of the remote-tui extension.
+- `./build.sh` remains blocked: its optional pi-main coding-agent TypeScript
+  build exited 2 because dependency outputs lack TuiMainScreen,
+  setCapabilityOverrides, AgentToolCallOutcome and other required exports/types.
+  Pi source was not changed and its Git status stayed clean. The direct Rust
+  build and system-Pi acceptance above are separate passing checks.
+- The original third-party Compaction model dialog was not separately handtested;
+  these results do not establish universal third-party component compatibility.
+
+
 ## 2026-09-21 Remote TUI input ownership
 
 Follow-up modified-key regression: the encoder returned `None` for modified

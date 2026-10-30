@@ -6,10 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.12-beta.1] - 2026-10-30
+
+### Added
+
+- **Goal mode: the agent can set its own goal** — the injected goal extension now registers `create_goal({ objective, token_budget? })` alongside `update_goal`, mirroring codex's `create_goal`/`get_goal`/`update_goal` tool family. The tool only fires on an explicit user request, rejects empty or >4000-character objectives and non-positive budgets, and refuses to shadow an already-active goal so `/goal` stays the replace path. Adapter and Pager treat both goal tools as goal-surface tools, so a model-created goal refreshes the native `GoalUpdated` status bar without adding a second UI.
+- **Remote TUI mouse input** — inline and overlay components now receive normalized Pi mouse events, including pointer capture, drag/release, click counts, modifier keys and accelerated wheel scrolling. Events outside the component continue through Pager's normal input path.
+- **Pi background Bash context injection** — completed background tasks are appended as native `custom_message` entries at Pi turn boundaries, so the next model request sees their result without waiting behind the follow-up queue. Pager task status remains on its immediate out-of-band channel.
+- **Per-agent subagent model settings** — configure each Pi subagent's model and thinking level independently, with an explicit Bash capability floor for the explore profile.
+
 ### Changed
 
+- **Live Pi tool arguments** — partial JSON arguments stream into the existing tool card and update in place when the final call arrives.
+- **Pager session replay** — rebuild the Pi session tree from the flat append log, preserving the active parent chain and replayed tool-call updates.
+- **Plan mode exit** — the running turn now receives an explicit reminder when Plan mode is switched off.
+- **Faster first paint** — render the native Pager before attaching the Pi RPC backend, reducing the startup black screen.
+- **Code review and settings** — side-by-side edit diffs support word-level highlights; F2 search remains visible even before a query is entered.
 - **Codemode cards open with the script and results** — a new Codemode card now shows the script, the nested-call list and the output preview by default instead of the title alone, and the blank line between the title and the script is gone. Left-arrow folding still returns to the title-only row.
-- **F2 settings restore the always-on search field** — the grok-pi settings panel shows the native `search:` row (with the `/ to search` hint when empty) at all times again instead of only after a query started; `/` or `i` still focuses it and Esc clears the query.
+- **Pi fake-cursor rendering** — Remote TUI frame projection converts Pi's fake-cursor APC markers to ANSI reverse-video spans and removes hardware-cursor markers before Pager renders the frame.
+
+### Verification
+
+- Remote TUI host, transport and Rust bridge: `bun test extensions/pi-grok-remote-tui/index.test.ts extensions/pi-grok-remote-tui/transport.test.ts extensions/pi-grok-rust-tui-bridge/index.test.ts` — 15 passed.
+- Background Bash / Eval v2 production regression: `node extensions/pi-grok-bash/test-v2.1.mjs` — PASS.
+- Pi adapter: `./scripts/cargo-shared.sh test -p pi-grok-adapter` — 198 passed.
+- grok-pi binary: `./scripts/cargo-shared.sh test -p xai-grok-pager-bin --bin grok-pi` — 96 passed.
+- Focused Pager tests: Remote TUI 23, Codemode 17, always-active search 4, feedback search bar 1, side-by-side diff 7 — 52 passed.
+- Rust formatting for every modified Rust source and `git diff --check` — PASS.
 
 ## [0.1.11] - 2026-10-21
 

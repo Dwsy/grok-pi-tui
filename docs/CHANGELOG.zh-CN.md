@@ -9,6 +9,37 @@
 
 ## [Unreleased]
 
+## [0.1.12-beta.1] - 2026-10-30
+
+### Added
+
+- **Goal 模式：Agent 可自行设置目标** — 注入的 goal 扩展除 `update_goal` 外新增 `create_goal({ objective, token_budget? })`，对齐 codex 的 `create_goal`/`get_goal`/`update_goal` 工具族。仅响应用户显式要求；拒绝空目标、超 4000 字符目标与非正预算；已有 active goal 时拒绝，替换仍走 `/goal`。adapter 与 Pager 都把两个 goal 工具归入 goal 面，模型自建 goal 同样刷新原生 `GoalUpdated`，不新增第二套 UI。
+- **Remote TUI 鼠标输入** — inline 与 overlay 组件现可收到 Pi 归一化鼠标事件，支持指针捕获、拖动/释放、连续点击、修饰键和加速滚轮；组件区域外的事件仍交由 Pager 原有输入路径处理。
+- **后台 Bash 上下文注入** — 后台任务完成后，在 Pi turn boundary 追加原生 `custom_message`，下一次模型请求即可看到结果，不必等待 follow-up 队列；Pager 任务状态仍走即时带外通道。
+- **子代理独立模型设置** — 可分别配置 Pi subagent 的模型与 thinking level；explore profile 保留明确的 Bash 能力下限。
+
+### 变更
+
+- **Pi 工具参数实时显示** — 部分 JSON 参数流式更新现有工具卡，最终调用到达时原位更新。
+- **Pager 会话回放** — 从扁平 append log 重建 Pi session tree，保留活动父链与回放工具调用更新。
+- **退出 Plan mode** — 关闭 Plan mode 时向正在运行的 turn 明确发送状态提醒。
+- **更快首屏** — 先绘制原生 Pager，再连接 Pi RPC，减少启动黑屏。
+- **代码审查与设置** — 并排 Edit diff 支持词级高亮；F2 搜索框在输入查询前也始终可见。
+- **Codemode 卡片默认展开内容** — 新卡片默认展示脚本、嵌套调用和输出预览；左方向键仍可折叠回标题。
+
+### 修复
+
+- **Pi fake-cursor 渲染** — Remote TUI 帧投影将 fake-cursor APC 标记转换为 ANSI 反显，并在 Pager 渲染前清除硬件光标标记。
+
+### 验证
+
+- Remote TUI host、transport 与 Rust bridge：Bun 测试 **15 passed**。
+- 后台 Bash / Eval v2 生产回归：`node extensions/pi-grok-bash/test-v2.1.mjs` — PASS。
+- Pi adapter：`./scripts/cargo-shared.sh test -p pi-grok-adapter` — **198 passed**。
+- grok-pi 二进制：`./scripts/cargo-shared.sh test -p xai-grok-pager-bin --bin grok-pi` — **96 passed**。
+- Pager 定向测试：Remote TUI 23、Codemode 17、always-active search 4、反馈搜索栏 1、并排 diff 7 — **52 passed**。
+- 所有修改的 Rust 源文件格式检查及 `git diff --check` — PASS。
+
 ## [0.1.11-beta.2] - 2026-10-20
 
 ### 变更
@@ -589,7 +620,7 @@
 #### Goal 模式（F2 默认关闭）
 
 - F2 **`[ui].pi_goal`** 默认**关闭**，开启后需重启。
-- 注入 extension：`/goal` + `update_goal` 工具 + control file。
+- 注入 extension：`/goal` + `create_goal` + `update_goal` 工具 + control file。
 - Adapter **`GoalHost`** 状态机投影为原生 `GoalUpdated`（`goal_detail` / status bar）。
 - Active goal 通过 `agent_settled` follow-up 继续执行，不等同于 shell 的完整 multi-agent classifier/planner/strategist 栈。
 
