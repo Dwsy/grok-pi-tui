@@ -20,7 +20,7 @@ use crossterm::event::MouseEvent;
 use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
-/// Two fold/nav double-clicks on assistant text within this window count as a repeated selection attempt and fire the word-select tip.
+/// Two repeated double-click attempts on assistant text within this window fire the word-select tip.
 /// Must be well over [`MULTI_CLICK_TIMEOUT_MS`] so it measures separate gestures.
 /// It is also short enough that the second gesture plausibly continues the first intent.
 const WORD_SELECT_REPEAT_WINDOW: Duration = Duration::from_secs(10);
@@ -872,6 +872,7 @@ impl AgentView {
     pub(in crate::app) fn finish_text_drag(&mut self) -> bool {
         let drag = self.drag_selection;
         let copied = drag.and_then(|d| self.reconstruct_drag_copy(&d));
+        self.pending_scrollback_click = None;
         self.pending_text_drag = None;
         self.drag_selection = None;
         self.drag_autoscroll = None;
@@ -1001,6 +1002,7 @@ impl AgentView {
 
     pub(in crate::app) fn finish_block_drag(&mut self) -> bool {
         let drag = self.block_drag_selection.take();
+        self.pending_scrollback_click = None;
         self.pending_block_drag = None;
         self.drag_autoscroll = None;
         self.last_drag_mouse = None;
@@ -1079,8 +1081,8 @@ impl AgentView {
     }
 
     /// Handle a click on a scrollback entry with multi-click detection.
-    /// It only fires while Text selection is still fold/nav (not `word_select`), so dispatch can teach `/settings → Text selection`.
-    /// A lone double-click, or one on fold-affordance rows (headers, prompts, tool rows), never tips.
+    /// Foldable tool/summary cards toggle on the first click; conversation messages keep their text-selection and double-click behavior.
+    /// Special double-click actions (for example opening a viewer or editing a prompt) remain intact.
     pub(in crate::app) fn handle_scrollback_click(
         &mut self,
         now: Instant,
@@ -1097,6 +1099,7 @@ impl AgentView {
         };
 
         let entry_block = self.scrollback.entry(idx).map(|e| &e.block);
+        let is_agent_message = entry_block.is_some_and(|b| b.is_agent_message());
         let is_bg_task = entry_block
             .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::BgTask(_)));
         let is_subagent = entry_block
@@ -1104,12 +1107,10 @@ impl AgentView {
         let is_workflow = entry_block
             .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::Workflow(_)));
 
-        // Word-select tip probe (see WORD_SELECT_REPEAT_WINDOW): assistant messages only
-        // On headers / prompts / tool rows double-click is the designed fold-nav gesture
-        // Bg-task / subagent double-clicks open a viewer that owns input
-        let word_select_probe = click_count == 2
-            && entry_block.is_some_and(|b| b.is_agent_message())
-            && !super::is_text_selection_on_double_click();
+        // Word-select tip probe (see WORD_SELECT_REPEAT_WINDOW): assistant messages only.
+        // Foldable tool/summary cards use a single-click fold gesture; message text keeps its existing multi-click behavior.
+        let word_select_probe =
+            click_count == 2 && is_agent_message && !super::is_text_selection_on_double_click();
         let show_word_select_tip = word_select_probe
             && self
                 .last_word_select_probe
@@ -1151,6 +1152,7 @@ impl AgentView {
             .scrollback
             .entry(idx)
             .is_some_and(|e| e.block.is_user_prompt());
+        let single_click_foldable = foldable && !is_prompt && !is_agent_message;
 
         // A single click on a plan mode tool call shows the plan preview/toast
         let is_plan_tool = !is_group_header
@@ -1165,6 +1167,9 @@ impl AgentView {
         match click_count {
             1 if is_plan_tool => {
                 self.show_plan_preview();
+            }
+            1 if single_click_foldable => {
+                self.scrollback.toggle_fold_selected();
             }
             2 if is_bg_task => {
                 // Double-click bg task: open block viewer (same as Enter).
@@ -1203,7 +1208,7 @@ impl AgentView {
                 }
             }
             2 if is_prompt => {
-                // Edit in place; bash/cron keep the old fold behavior.
+                // Edit in place; if inline edit is unavailable, retain the existing double-click fold behavior.
                 // Gated OFF for now (unsolved scroll jump on enter; see inline_edit::INLINE_EDIT_ENABLED)
                 // When disabled this is a no-op, so the block below runs
                 if !(crate::app::inline_edit::INLINE_EDIT_ENABLED && self.enter_inline_edit(idx)) {
@@ -1213,13 +1218,11 @@ impl AgentView {
                     self.scrollback.scroll_to_entry_top(idx);
                 }
             }
-            2 => {
-                if foldable {
-                    self.scrollback.toggle_fold_selected();
-                }
+            2 if foldable && !single_click_foldable => {
+                self.scrollback.toggle_fold_selected();
             }
             3.. if !is_prompt => {
-                if foldable {
+                if foldable && !single_click_foldable {
                     self.scrollback.toggle_fold_selected();
                 }
                 self.scrollback.scroll_to_entry_top(idx);
@@ -2104,6 +2107,78 @@ mod tests {
     }
 
     #[test]
+    fn single_click_toggles_foldable_tool_card_once() {
+        use crate::scrollback::block::RenderBlock;
+
+        let mut agent = make_agent();
+        agent
+            .scrollback
+            .push_block(RenderBlock::execute_with_output(
+                "echo hello",
+                "hello",
+                None::<String>,
+            ));
+        assert!(
+            agent
+                .scrollback
+                .get(0)
+                .is_some_and(|entry| entry.is_foldable())
+        );
+        let before = agent.scrollback.get(0).unwrap().display_mode;
+        let now = Instant::now();
+
+        let (last_click, show_tip) = agent.handle_scrollback_click(now, 0, false);
+        assert!(!show_tip);
+        agent.last_click = last_click;
+        let after_first_click = agent.scrollback.get(0).unwrap().display_mode;
+        assert_ne!(after_first_click, before, "one click must toggle the card");
+
+        let (last_click, _) =
+            agent.handle_scrollback_click(now + Duration::from_millis(100), 0, false);
+        agent.last_click = last_click;
+        assert_eq!(
+            agent.scrollback.get(0).unwrap().display_mode,
+            after_first_click,
+            "the second click in a double-click sequence must not toggle the card back"
+        );
+    }
+
+    #[test]
+    fn conversation_message_keeps_double_click_fold_behavior() {
+        use crate::scrollback::block::RenderBlock;
+
+        let mut agent = make_agent();
+        agent
+            .scrollback
+            .push_block(RenderBlock::agent_message("assistant text"));
+        assert!(
+            agent
+                .scrollback
+                .get(0)
+                .is_some_and(|entry| entry.is_foldable())
+        );
+        let before = agent.scrollback.get(0).unwrap().display_mode;
+        let now = Instant::now();
+
+        let (last_click, _) = agent.handle_scrollback_click(now, 0, false);
+        agent.last_click = last_click;
+        assert_eq!(
+            agent.scrollback.get(0).unwrap().display_mode,
+            before,
+            "a plain click on conversation text must not act like a card fold"
+        );
+
+        let (last_click, _) =
+            agent.handle_scrollback_click(now + Duration::from_millis(100), 0, false);
+        agent.last_click = last_click;
+        assert_ne!(
+            agent.scrollback.get(0).unwrap().display_mode,
+            before,
+            "conversation messages retain their existing double-click fold behavior"
+        );
+    }
+
+    #[test]
     fn workflow_double_click_opens_matching_run_id_and_closes_goal_detail() {
         use crate::scrollback::blocks::WorkflowBlock;
         use crate::views::workflows::WorkflowRunSnapshot;
@@ -2152,8 +2227,8 @@ mod tests {
         );
     }
 
-    /// The word-select tip needs a REPEATED double-click on assistant text.
-    /// The first gesture is treated as intentional folding; only a second gesture inside the repeat window tips.
+    /// The word-select tip needs a REPEATED double-click attempt on assistant text.
+    /// A single click on foldable cards is handled as folding; only repeated text attempts inside the repeat window tip.
     /// Fold-affordance rows (tool rows etc.) never tip and never arm the probe.
     #[test]
     fn word_select_tip_requires_repeated_double_click_on_assistant_text() {
@@ -2176,7 +2251,7 @@ mod tests {
         let t0 = Instant::now();
         assert!(
             !double_click_gesture(&mut agent, t0, 0),
-            "first double-click gesture is intentional folding — no tip"
+            "one double-click attempt is not enough to show the tip"
         );
         // A second, separate gesture (past the 300ms multi-click timeout, inside the 10s repeat window) is the repeated-attempt signal
         let t1 = t0 + Duration::from_secs(1);
@@ -2264,6 +2339,35 @@ mod tests {
         assert_eq!(drag.anchor.block_line_idx, 0, "setup: anchor on line 0");
         assert_eq!(drag.head.block_line_idx, 2, "setup: head on line 2");
         assert_eq!(agent.last_drag_mouse, Some((10, 7)), "setup: pointer held");
+    }
+
+    #[test]
+    fn dragging_across_foldable_tool_card_does_not_toggle_it() {
+        use crate::scrollback::block::RenderBlock;
+
+        let mut agent = make_agent();
+        agent
+            .scrollback
+            .push_block(RenderBlock::execute_with_output(
+                "echo hello",
+                "stacked line 0\nstacked line 1\nstacked line 2",
+                None::<String>,
+            ));
+        let before = agent.scrollback.get(0).unwrap().display_mode;
+        let reg = ActionRegistry::defaults();
+        latch_drag_with_mouse_held(&mut agent, &reg);
+
+        let _ = agent.handle_input(&Event::Mouse(mouse_up(10, 7)), &reg);
+
+        assert_eq!(
+            agent.scrollback.get(0).unwrap().display_mode,
+            before,
+            "a promoted text drag must finish as selection/copy, never as a fold click"
+        );
+        assert!(
+            agent.pending_scrollback_click.is_none(),
+            "finishing a drag must discard the pending click latch"
+        );
     }
 
     /// After a scroll the rebuilt model puts different lines under the held pointer; the post-render reclamp must move the head there.

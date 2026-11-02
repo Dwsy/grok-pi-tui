@@ -38,12 +38,12 @@ fn selection_highlight_duration_ms() -> u64 {
     }
 }
 
-/// Whether double-click does terminal-like word/line selection (`word_select`) or fold toggle, per the unified `keep_text_selection` setting.
-fn double_click_action_label() -> &'static str {
+/// Whether double-click selects text in this playground, per the unified `keep_text_selection` setting.
+fn double_click_text_action_label() -> &'static str {
     if xai_grok_pager::appearance::cache::load_keep_text_selection().selects_word() {
-        "word_select"
+        "select_word"
     } else {
-        "toggle_fold"
+        "none"
     }
 }
 
@@ -85,7 +85,7 @@ impl App {
             "I'm Grok Build, an interactive CLI agent built to help with software engineering tasks like coding, debugging, refactoring, and exploring codebases.",
         ));
         scrollback.push_block(RenderBlock::agent_message(
-            "Try drag-selecting text. Double-click toggles fold by default; set Text selection → Word select for double-click word / triple-click line.",
+            "Try drag-selecting text. This playground focuses on selection; the main pager toggles foldable cards on a single click.",
         ));
 
         Self {
@@ -300,14 +300,14 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     .split(area);
 
     // -- Info / help panel --
-    let dbl_click = double_click_action_label();
+    let dbl_click = double_click_text_action_label();
     let info = Paragraph::new(vec![
         Line::from(Span::styled(
             "scrollback-selection-playground",
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(format!(
-            "Ctrl-Q quit | Esc clear selection | double_click_action={dbl_click}"
+            "Ctrl-Q quit | Esc clear selection | double_click_text_action={dbl_click}"
         )),
         Line::from("Double-click: select word/URL | Triple-click: select line"),
     ])

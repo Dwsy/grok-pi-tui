@@ -751,7 +751,7 @@ pub(super) fn set_keep_text_selection_inner(kind: crate::appearance::TextSelecti
     crate::appearance::cache::set_keep_text_selection(kind);
 }
 
-/// Set the unified scrollback text-selection mode (`flash` | `hold` | `word_select`): highlight lifetime and double-click action, kept in sync.
+/// Set the unified scrollback text-selection mode (`flash` | `hold` | `word_select`): highlight lifetime and text multi-click behavior, kept in sync.
 ///
 /// SHELL-OWNED: persisted to `[ui].keep_text_selection` via `Effect::PersistSetting`.
 pub(in crate::app::dispatch) fn set_keep_text_selection(

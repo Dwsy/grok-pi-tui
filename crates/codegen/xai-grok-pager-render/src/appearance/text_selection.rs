@@ -1,21 +1,21 @@
 //! The `keep_text_selection` user setting (`flash` | `hold` | `word_select`).
 //!
 //! This is the single, unified control for scrollback text-selection behavior.
-//! It governs both how long an in-app selection highlight stays on screen and what a double/triple-click does, so the two never drift out of sync.
+//! It governs how long an in-app selection highlight stays on screen and how text multi-clicks behave. Foldable cards use a separate single-click fold gesture.
 //!
 //! The compile-time default is `flash`.
 //! A remote `keep_text_selection_default` soft-default (`flash` | `hold` | `word_select`) can override it at pager startup.
 //! See `apply_remote_keep_text_selection_default`.
 
-/// Scrollback text-selection behavior: highlight lifetime and double-click action.
+/// Scrollback text-selection behavior: highlight lifetime and text multi-click action.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum TextSelection {
-    /// Brief highlight on mouse-up, then clear; double-click toggles fold. Default.
+    /// Brief highlight on mouse-up, then clear; single-click toggles tool/summary cards, double-click toggles foldable conversation messages. Default.
     #[default]
     Flash,
-    /// Stay visible until Esc/click/scroll; double-click toggles fold.
+    /// Stay visible until Esc/click/scroll; single-click toggles tool/summary cards, double-click toggles foldable conversation messages.
     Hold,
-    /// Stay visible until dismissed; double-click selects and copies a word, triple-click a paragraph (terminal-like).
+    /// Stay visible until dismissed; double-click selects and copies a word, triple-click a paragraph on non-card text. Foldable cards still toggle on a single click.
     /// Implies [`TextSelection::holds`].
     WordSelect,
 }
@@ -45,7 +45,7 @@ impl TextSelection {
         matches!(self, Self::Hold | Self::WordSelect)
     }
 
-    /// Whether double-click selects and copies a word (and triple-click a paragraph) instead of toggling a fold (`word_select` only).
+    /// Whether double-click selects and copies a word (and triple-click a paragraph) on non-card text hits (`word_select` only).
     pub const fn selects_word(self) -> bool {
         matches!(self, Self::WordSelect)
     }
@@ -81,7 +81,7 @@ mod tests {
     fn word_select_implies_hold_and_word_select() {
         assert!(TextSelection::WordSelect.holds());
         assert!(TextSelection::WordSelect.selects_word());
-        // Hold persists but leaves double-click as fold-toggle.
+        // Hold persists but leaves foldable-card clicks as fold toggles.
         assert!(TextSelection::Hold.holds());
         assert!(!TextSelection::Hold.selects_word());
         // Flash neither persists nor word-selects.

@@ -307,8 +307,7 @@ pub(super) fn dispatch_show_plan_nudge(app: &mut AppView) -> Vec<Effect> {
     vec![]
 }
 
-/// After a fold/nav double-click on scrollback, tip that Word select lives in `/settings`. Gated by `contextual_hints.word_select` (default ON).
-/// `/settings`. Gated by `contextual_hints.word_select` (default ON).
+/// After repeated double-click attempts on scrollback text in fold/nav mode, tip that Word select lives in `/settings`. Gated by `contextual_hints.word_select` (default ON).
 pub(super) fn dispatch_show_word_select_tip(app: &mut AppView) -> Vec<Effect> {
     if !app.contextual_hints.word_select {
         return vec![];

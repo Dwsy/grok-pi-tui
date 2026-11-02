@@ -807,9 +807,21 @@ impl AgentView {
                     if let Some((click_col, click_row)) = self.pending_scrollback_click.take() {
                         let now = Instant::now();
                         if is_text_selection_on_double_click() {
-                            let exact_text_hit = self
-                                .last_scrollback_selection_model
-                                .hit_test_text_exact(click_col, click_row);
+                            let single_click_foldable_entry = self
+                                .scrollback
+                                .entry_index_at_screen_row(click_row, self.pane_areas.scrollback)
+                                .and_then(|idx| self.scrollback.get(idx))
+                                .is_some_and(|entry| {
+                                    entry.is_foldable()
+                                        && !entry.block.is_user_prompt()
+                                        && !entry.block.is_agent_message()
+                                });
+                            let exact_text_hit = if single_click_foldable_entry {
+                                None
+                            } else {
+                                self.last_scrollback_selection_model
+                                    .hit_test_text_exact(click_col, click_row)
+                            };
                             if let Some(hit) = exact_text_hit {
                                 let text_click_count = self.count_text_click(now, &hit);
                                 let handled = match text_click_count {
@@ -1703,6 +1715,81 @@ mod tests {
             "double-click must expand the chip"
         );
         assert_eq!(agent.prompt.textarea.text(), text);
+    }
+
+    #[test]
+    fn word_select_mode_single_click_still_folds_a_foldable_card() {
+        use crate::app::agent_view::test_fixtures::make_agent;
+        use crate::appearance::TextSelection;
+        use crate::scrollback::block::RenderBlock;
+        use crate::scrollback::text_selection::{
+            ResolvedSelectableLine, ResolvedSelectionModel, VisibleBlockGeometry,
+        };
+
+        let mut agent = make_agent();
+        agent.active_pane = AgentPane::Scrollback;
+        agent.pane_areas.scrollback = Rect::new(0, 0, 80, 24);
+        agent
+            .scrollback
+            .push_block(RenderBlock::execute_with_output(
+                "echo hello",
+                "hello world",
+                None::<String>,
+            ));
+        agent.scrollback.prepare_layout(80, 24);
+        let (entry_area, _, _) = agent
+            .scrollback
+            .entry_screen_area(0, agent.pane_areas.scrollback)
+            .expect("foldable card has a visible screen area");
+        let click_row = entry_area.y + entry_area.height / 2;
+        let mut model = ResolvedSelectionModel::default();
+        model.push_line(ResolvedSelectableLine {
+            entry_idx: 0,
+            range_id: 0,
+            block_line_idx: 0,
+            screen_y: click_row,
+            screen_x: entry_area.x,
+            selectable_cols: 0..11,
+            text: "hello world".into(),
+            painted_region: None,
+            joiner_to_previous: None,
+        });
+        model.visible_blocks.push(VisibleBlockGeometry {
+            entry_idx: 0,
+            area: entry_area,
+            content_area: entry_area,
+            selection_area: entry_area,
+            content_width: entry_area.width,
+            top_clipped: false,
+            bottom_clipped: false,
+            drag_startable: true,
+        });
+        agent.last_scrollback_selection_model = model;
+
+        let previous_text_selection = crate::appearance::cache::load_keep_text_selection();
+        crate::appearance::cache::set_keep_text_selection(TextSelection::WordSelect);
+        let before = agent.scrollback.get(0).unwrap().display_mode;
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: entry_area.x + 1,
+            row: click_row,
+            modifiers: KeyModifiers::empty(),
+        };
+        let release = MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: click.column,
+            row: click.row,
+            modifiers: click.modifiers,
+        };
+        let _ = agent.handle_mouse(&click);
+        let _ = agent.handle_mouse(&release);
+        crate::appearance::cache::set_keep_text_selection(previous_text_selection);
+
+        assert_ne!(
+            agent.scrollback.get(0).unwrap().display_mode,
+            before,
+            "Word Select must not intercept a single click on a foldable card"
+        );
     }
     #[test]
     fn tasks_view_toggle_snapshots_resume() {

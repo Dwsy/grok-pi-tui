@@ -538,9 +538,9 @@ pub(super) fn app_should_open_link_on_click_with(
     }
     !link.looks_like_bare_url_text()
 }
-/// Whether double/triple-click performs terminal-like word/paragraph text selection (and copy) instead of toggling a fold.
+/// Whether double/triple-click performs terminal-like word/paragraph text selection (and copy) on non-card text hits.
 /// Unified into the `keep_text_selection` setting (the `word_select` mode):
-/// reads the live appearance cache, so a Settings-panel change applies without a restart and can never drift from the highlight-persistence behavior. The compile-time default (`flash`) keeps double-click as a fold-toggle; `word_select` is a staged rollout via a remote flag.
+/// reads the live appearance cache, so a Settings-panel change applies without a restart and can never drift from the highlight-persistence behavior. Foldable cards use single-click fold toggling in every mode; `word_select` adds word/paragraph selection for non-card text hits.
 pub(super) fn is_text_selection_on_double_click() -> bool {
     crate::appearance::cache::load_keep_text_selection().selects_word()
 }
@@ -1229,7 +1229,7 @@ pub struct AgentView {
     pub(crate) ephemeral_tip: crate::tips::EphemeralTipState,
     /// Prompt text snapshot taken when the word-select tip was shown. Any divergence (typed, pasted, dropped: every edit path, no per-helper hooks) means the user moved past the double-click moment: the Ctrl+Y intercept refuses and the tick path retires the tip, so the long TTL can never shadow yank mid-edit. `None` while the tip is not showing.
     pub(crate) word_select_tip_prompt_snapshot: Option<String>,
-    /// When the last fold/nav double-click landed on assistant text (a word-select probe). A second probe within the repeat window is the repeated-selection-attempt signal that fires the word-select tip; lone double-clicks (habitual folders) never tip.
+    /// When the last fold/nav double-click attempt landed on assistant text (a word-select probe). A second probe within the repeat window is the repeated-selection-attempt signal that fires the word-select tip; a lone attempt never tips.
     pub(crate) last_word_select_probe: Option<Instant>,
     pub(crate) export_copy_detector: crate::tips::export_copy::ExportCopyDetector,
     /// Persistent status line (e.g. mouse reporting off). Survives transient

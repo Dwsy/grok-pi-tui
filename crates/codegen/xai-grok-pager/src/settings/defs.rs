@@ -324,17 +324,17 @@ const TEXT_SELECTION_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: TextSelection::Flash.as_canonical(),
         display: "Flash after copy",
-        description: "Brief highlight on mouse-up, then clear. Double-click toggles fold. Default.",
+        description: "Brief highlight on mouse-up, then clear. Single-click toggles tool/summary cards; double-click toggles foldable conversation messages. Default.",
     },
     EnumChoice {
         canonical: TextSelection::Hold.as_canonical(),
         display: "Hold until dismissed",
-        description: "Keep the selection visible until Esc, click, or scroll. Double-click toggles fold.",
+        description: "Keep the selection visible until Esc, click, or scroll. Single-click toggles tool/summary cards; double-click toggles foldable conversation messages.",
     },
     EnumChoice {
         canonical: TextSelection::WordSelect.as_canonical(),
         display: "Word select (terminal-like)",
-        description: "Double-click selects & copies a word, triple-click a paragraph; selection stays until dismissed.",
+        description: "Double-click selects & copies a word, triple-click a paragraph on non-card text; foldable cards still toggle on single click.",
     },
 ];
 
@@ -1461,7 +1461,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Mouse,
             owner: SettingOwner::Shell,
             label: "Text selection",
-            description: "How long in-app selection stays on screen and what double-click does (fold vs. select & copy a word). For your terminal or multiplexer's own selection, hold Shift while dragging (native copy).",
+            description: "How long in-app selection stays on screen. Single-click folds tool/summary cards; Flash/Hold keep double-click folding for conversation messages, while Word select uses double/triple-click on message text. For your terminal or multiplexer's own selection, hold Shift while dragging (native copy).",
             keywords: &[
                 "selection",
                 "drag",
