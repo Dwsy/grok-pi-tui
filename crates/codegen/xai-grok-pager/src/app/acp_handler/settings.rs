@@ -1,6 +1,47 @@
 use super::*;
 use serde::Deserialize;
 
+/// Handle `x.ai/commands/update`: Pi's process-level slash catalog changed.
+/// Unlike ACP `AvailableCommandsUpdate`, this is not tied to a session id, so
+/// it can seed Welcome before the first `session/new` has completed.
+pub(super) fn handle_commands_update(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Ok(commands) = serde_json::from_str::<Vec<acp::AvailableCommand>>(notif.params.get())
+    else {
+        tracing::warn!("Failed to parse x.ai/commands/update");
+        return false;
+    };
+
+    app.welcome_prompt
+        .sync_acp_commands(&commands, None, &app.models);
+    if let Some(dashboard) = app.dashboard.as_mut() {
+        dashboard
+            .dispatch
+            .sync_acp_commands(&commands, None, &app.models);
+    }
+    app.bootstrap_acp_commands = commands.clone();
+
+    // Only the session being created during startup may consume this
+    // process-level seed. Inactive agents retain their own session-scoped
+    // catalogs; their next LoadSession/AvailableCommandsUpdate remains
+    // authoritative.
+    let bootstrap_agent_id = match app.active_view {
+        ActiveView::Agent(id) => Some(id),
+        ActiveView::Welcome => app.home_session_agent,
+        ActiveView::AgentDashboard => None,
+    };
+    if let Some(agent_id) = bootstrap_agent_id
+        && let Some(agent) = app.agents.get_mut(&agent_id)
+        && agent.session.session_id.is_none()
+    {
+        agent
+            .session
+            .replace_available_commands(commands, CommandCatalogSource::HostBootstrap);
+        refresh_workflow_run_capabilities(agent);
+    }
+
+    true
+}
+
 /// Handle `x.ai/models/update`: the model list changed (etag-triggered refresh).
 pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
     if let Ok(model_state) = serde_json::from_str::<acp::SessionModelState>(notif.params.get()) {

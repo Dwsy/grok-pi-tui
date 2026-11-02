@@ -8,6 +8,7 @@ use super::agent::AgentSession;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum CommandCatalogSource {
+    HostBootstrap,
     SessionUpdate,
     QueueDrain,
     CommandsList,
@@ -16,6 +17,7 @@ pub(crate) enum CommandCatalogSource {
 impl CommandCatalogSource {
     pub(crate) fn as_label(self) -> &'static str {
         match self {
+            Self::HostBootstrap => "host_bootstrap",
             Self::SessionUpdate => "session_update",
             Self::QueueDrain => "queue_drain",
             Self::CommandsList => "commands_list",

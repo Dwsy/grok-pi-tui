@@ -1411,6 +1411,26 @@ async fn attach_pi_backend(
     );
     let client_tx = agent_channel.tx.clone();
 
+    // A deferred fresh start has no InitializeResponse from which Pager can
+    // seed its bootstrap command catalog. Publish Pi's already-loaded catalog
+    // before routing queued session/new requests: Welcome autocomplete needs
+    // these commands before the first session-scoped update can arrive.
+    if behind_live_tui {
+        // Seed models first because the Welcome slash snapshot is rebuilt
+        // when the command catalog arrives and includes model suggestions.
+        if let Some(models) = bootstrap.acp_models() {
+            let raw = serde_json::value::to_raw_value(&models)
+                .context("failed to serialize Pi bootstrap model catalog")?;
+            let notification =
+                agent_client_protocol::ExtNotification::new("x.ai/models/update", raw.into());
+            xai_acp_lib::acp_send(notification, &client_tx)
+                .await
+                .context("Pager did not acknowledge Pi bootstrap model catalog")?;
+        }
+        let commands = bootstrap.acp_commands(spec.workflows_enabled);
+        notify_host_commands(&client_tx, &commands).await?;
+    }
+
     let event_adapter = adapter.clone();
     tokio::task::spawn_local(async move {
         event_adapter.run_events(process.events).await;
@@ -1446,21 +1466,8 @@ async fn attach_pi_backend(
 
     // Host notifications need the Pager event loop to consume and answer
     // them. The blocking attach runs before that loop exists (its connection
-    // already carries the model seed), so only the deferred attach publishes.
+    // already carries the model/command seed), so only the deferred attach publishes.
     if behind_live_tui {
-        // Seed the model catalog as soon as the adapter is wired. The Pager
-        // can hold on Welcome (folder trust question) without creating a
-        // session for a while, and `publish_bootstrap` only fires with
-        // `session/new`.
-        if let Some(models) = bootstrap.acp_models()
-            && let Ok(value) = serde_json::to_value(models)
-            && let Ok(raw) = serde_json::value::to_raw_value(&value)
-        {
-            let notification =
-                agent_client_protocol::ExtNotification::new("x.ai/models/update", raw.into());
-            let _ = xai_acp_lib::acp_send(notification, &client_tx).await;
-        }
-
         // Surface a self-heal drop: the bisection report goes to a stderr that
         // is redirected while the Pager owns the terminal, so without this
         // notice the user never learns an extension was disabled.
@@ -1496,6 +1503,23 @@ async fn attach_pi_backend(
     }
 
     Ok(bootstrap)
+}
+
+/// Publish Pi's command catalog independently of a session. The Pager uses
+/// this to seed Welcome and future sessions during deferred startup, where no
+/// ACP InitializeResponse exists yet.
+async fn notify_host_commands(
+    client_tx: &xai_acp_lib::AcpClientTx,
+    commands: &[agent_client_protocol::AvailableCommand],
+) -> Result<()> {
+    let raw = serde_json::value::to_raw_value(commands)
+        .context("failed to serialize Pi bootstrap command catalog")?;
+    let notification =
+        agent_client_protocol::ExtNotification::new("x.ai/commands/update", raw.into());
+    xai_acp_lib::acp_send(notification, client_tx)
+        .await
+        .context("Pager did not acknowledge Pi bootstrap command catalog")?;
+    Ok(())
 }
 
 /// Push a `pi/ui/notify` message into the Pager. `notifyType: "info"` renders
@@ -1678,6 +1702,32 @@ mod env_flag_tests {
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"plan-mode"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"view-plan"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"pi-shortcut-manager"));
+    }
+
+    #[test]
+    fn every_grok_pi_native_command_profile_name_resolves() {
+        let names = PI_GROK_NATIVE_COMMANDS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        let commands = xai_grok_pager::slash::commands::builtin_commands_named(&names);
+        let registered = commands
+            .iter()
+            .flat_map(|command| {
+                std::iter::once(command.name().to_string())
+                    .chain(command.aliases().iter().map(|alias| (*alias).to_string()))
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let missing = PI_GROK_NATIVE_COMMANDS
+            .iter()
+            .copied()
+            .filter(|name| !registered.contains(*name))
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing.is_empty(),
+            "Pi's native command profile contains names without a Pager implementation: {missing:?}"
+        );
     }
 
     #[test]

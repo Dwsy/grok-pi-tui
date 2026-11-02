@@ -92,9 +92,48 @@ Scope decisions (user-confirmed):
   `./scripts/cargo-shared.sh check -p xai-grok-pager-bin --bin grok-pi` and the
   focused Pager tests before release.
 
+### 2026-10-30 — Phase 3: seed the process-level slash catalog
+
+The deferred fresh-start path constructed `AcpConnection::external` with an
+empty `available_commands` vector even though `PiBootstrap::load()` had already
+completed `get_commands`. The later `AvailableCommandsUpdate` is session-scoped
+and is emitted from `new_session`; that is too late to populate the Welcome
+prompt while folder trust or the first session is still pending.
+
+Changes:
+
+- Deferred attach now publishes the bootstrap model catalog first, then a new
+  host-level `x.ai/commands/update` notification before starting the ACP route
+  task. This ordering also guarantees a Welcome command snapshot can include
+  the current model catalog before a queued `session/new` is processed. A
+  serialization or Pager acknowledgement error now fails the attach instead
+  of silently continuing with an incomplete slash catalog.
+- Pager handles the host-level update without a session id. It updates the
+  Welcome prompt, dashboard dispatch catalog, future-session bootstrap catalog,
+  and the active pre-session agent if Welcome prewarm has already created one.
+  Inactive agents retain their own session-scoped catalogs. The normal
+  `AvailableCommandsUpdate` remains in place for later per-session changes.
+- Blocking resume/fork attach is unchanged: it still seeds models and commands
+  directly in `AcpConnection::external` before the event loop.
+
+Verification on 2026-10-30:
+
+- Live Pi RPC smoke check (`PI_OFFLINE=1 pi --mode rpc --no-session`):
+  `get_commands` returned 110 commands (50 extension, 9 prompt, 51 skill),
+  confirming the source catalog is populated before the first session.
+- `cargo-shared test -p xai-grok-pager --lib app::acp_handler::tests::settings`:
+  21 passed.
+- `cargo-shared test -p xai-grok-pager --lib sync_acp_commands_`: 3 passed.
+- `cargo-shared test -p xai-grok-pager-bin --bin grok-pi`: 97 passed,
+  including a new assertion that every `PI_GROK_NATIVE_COMMANDS` name resolves
+  to a real Pager builtin or alias.
+- `cargo-shared check -p xai-grok-pager-bin --bin grok-pi`: passed.
+- `rustfmt --edition 2024 --check` and `git diff --check`: passed.
+- Broader ACP-handler lib filter: 521/526 passed; the five failures are the
+  already-known unrelated Subagents tests also listed in `docs/VERIFICATION.md`.
+
 Follow-ups:
 
 - Deferred attach for resume/fork (deferred `LoadSession` after attach).
-- Optional: seed `AvailableCommandsUpdate` pre-session so slash autocomplete
-  carries Pi skills in the short window before the first `session/new`
-  completes (needs an app-level route; the update is session-scoped today).
+- ~~Seed the initial command catalog before the first session-scoped update.~~
+  Resolved in Phase 3 via `x.ai/commands/update`.

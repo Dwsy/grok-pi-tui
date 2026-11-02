@@ -32,12 +32,31 @@ Focused checks for the release candidate:
 - Pager Codemode viewer/render tests: 17 passed.
 - Pager always-active picker search tests: 4 passed; feedback draft search bar: 1 passed.
 - Pager side-by-side Edit diff tests: 7 passed.
-- grok-pi binary: 96 passed, including the embedded Bash source-contract test for
+- grok-pi binary: 97 passed, including the embedded Bash source-contract test for
   Pi turn-boundary `custom_message` injection.
 - Pi adapter: 198 passed.
 - Background Bash / Eval v2 production regression: passed.
 - Every modified Rust source passes an individual rustfmt check; `git diff
   --check` and strict beta changelog extraction pass.
+
+### 2026-10-30 Deferred Pi RPC startup — Slash Catalog handoff
+
+- Live system Pi 1.4.0 RPC smoke (`PI_OFFLINE=1 pi --mode rpc --no-session`):
+  `get_commands` returned 110 entries (50 extension, 9 prompt, 51 skill).
+- Deferred attach now publishes the model catalog followed by a host-level
+  `x.ai/commands/update` before queued `session/new` requests are routed. Pager
+  seeds Welcome, dashboard, future-session bootstrap, and the active pre-session
+  agent without relying on a session id; inactive session catalogs are retained.
+- Pager settings/command handler tests: 21 passed; slash catalog sync tests:
+  3 passed.
+- grok-pi binary suite: 97 passed, including validation that every name in
+  `PI_GROK_NATIVE_COMMANDS` resolves to an implemented Pager builtin or alias.
+- `cargo-shared check -p xai-grok-pager-bin --bin grok-pi`, rustfmt, and
+  `git diff --check`: passed.
+- Broader `app::acp_handler::tests` filter: 521 passed, 5 failed. The five
+  failures are in existing Subagents spawn/rebuild/activity tests, outside the
+  changed files and already covered by the repository's broader known-baseline
+  warning below; they are not represented as fixed by this change.
 
 The unfiltered Pager suite is **not claimed green**. The integration-test target
 `cargo test -p xai-grok-pager` is blocked by existing

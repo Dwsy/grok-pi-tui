@@ -2,6 +2,47 @@
     use super::*;
 
     #[test]
+    fn commands_update_seeds_welcome_and_only_the_pre_session_agent() {
+        let mut app = make_app_with_agent("sess-commands");
+        app.active_view = ActiveView::Welcome;
+        app.home_session_agent = Some(AgentId(0));
+        app.agents
+            .get_mut(&AgentId(0))
+            .unwrap()
+            .session
+            .session_id = None;
+        insert_agent(&mut app, AgentId(1), Some("sess-inactive"));
+        app.agents.get_mut(&AgentId(1)).unwrap().session.available_commands = vec![
+            acp::AvailableCommand::new("keep-old".to_string(), "Inactive session".to_string()),
+        ];
+        let commands = vec![acp::AvailableCommand::new(
+            "pick-best".to_string(),
+            "Parallel tournament".to_string(),
+        )];
+        let notif = acp::ExtNotification::new(
+            "x.ai/commands/update",
+            std::sync::Arc::from(
+                serde_json::value::to_raw_value(&commands).unwrap(),
+            ),
+        );
+
+        assert!(handle_ext_notification(&notif, &mut app));
+        assert_eq!(app.bootstrap_acp_commands.len(), 1);
+        assert_eq!(app.bootstrap_acp_commands[0].name, "pick-best");
+
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        assert_eq!(agent.session.available_commands.len(), 1);
+        assert_eq!(agent.session.available_commands[0].name, "pick-best");
+        assert_eq!(agent.session.available_commands_generation, 1);
+
+        assert_eq!(
+            app.agents[&AgentId(1)].session.available_commands[0].name,
+            "keep-old",
+            "a process-level bootstrap must not overwrite an inactive session's catalog"
+        );
+    }
+
+    #[test]
     fn voice_kill_switch_clears_pending_spawn() {
         // A `/voice` queued a lazy spawn; then the remote flag turns off
         // The teardown must drop the queued spawn so the event loop won't consume it and show a misleading "could not start" toast
