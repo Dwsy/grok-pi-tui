@@ -1056,7 +1056,7 @@ impl BlockViewerPane {
         }
 
         let config = ListPaneConfig {
-            follow_enabled: false,
+            follow_enabled: entry.is_running,
             wrap_toggle_enabled: true,
             search_enabled: true,
             copy_enabled: true,
@@ -1065,7 +1065,8 @@ impl BlockViewerPane {
             filter_enabled: true,
             goto_line_enabled: false,
         };
-        let mut list_state = ListPaneState::new_with_config(WrapMode::Wrap, false, config);
+        let mut list_state =
+            ListPaneState::new_with_config(WrapMode::Wrap, entry.is_running, config);
         list_state.set_clipboard_provider(Box::new(SystemClipboard));
 
         let theme = Theme::current();
@@ -1089,8 +1090,8 @@ impl BlockViewerPane {
             copy_meta_pending: false,
             copy_content_pending: false,
             diff_meta,
-            last_generation: 0,
-            was_running: false,
+            last_generation: edit.content_generation(),
+            was_running: entry.is_running,
             bg_task_id: None,
             last_theme: Theme::current_kind(),
             modal: ModalWindowState::new(),
@@ -1164,6 +1165,7 @@ impl BlockViewerPane {
             RenderBlock::ToolCall(ToolCallBlock::Execute(b)) => {
                 Some(b.output.as_ref().map_or(0, |o| o.len()) as u64)
             }
+            RenderBlock::ToolCall(ToolCallBlock::Edit(b)) => Some(b.content_generation()),
             _ => None,
         }
     }
@@ -1197,7 +1199,20 @@ impl BlockViewerPane {
                     self.clear_stale_selection();
                 }
             }
-            ViewerKind::Edit => {}
+            ViewerKind::Edit => {
+                if let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &entry.block {
+                    let (items, diff_meta) = Self::build_edit_items(
+                        edit,
+                        &Theme::current(),
+                        self.last_content_area.width.max(1),
+                        self.edit_review,
+                    );
+                    self.items = items;
+                    self.diff_meta = diff_meta;
+                    self.list_state.invalidate_layout();
+                    self.clear_stale_selection();
+                }
+            }
             ViewerKind::BgTask => {}
             ViewerKind::Read
             | ViewerKind::Grep

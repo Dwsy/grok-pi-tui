@@ -5460,3 +5460,77 @@ fn hook_gate_survives_a_text_chunk_stamped_before_the_batch() {
         Some(TurnActivity::Waiting(WaitingReason::Hooks { .. }))
     ));
 }
+
+#[test]
+fn streaming_file_diff_is_foldable_viewable_and_preserves_fold_through_execution() {
+    use crate::scrollback::types::DisplayMode;
+    use crate::views::block_viewer::BlockViewerPane;
+    for (name, old_text) in [("write", None), ("edit", Some("old\n"))] {
+        let mut sb = ScrollbackState::new();
+        let mut tracker = AcpUpdateTracker::new();
+        let id = acp::ToolCallId::new(format!("stream-{name}"));
+        assert!(
+            tracker.handle_update(
+                acp::SessionUpdate::ToolCall(
+                    acp::ToolCall::new(id.clone(), name)
+                        .kind(acp::ToolKind::Edit)
+                        .status(acp::ToolCallStatus::InProgress)
+                ),
+                &meta(),
+                &mut sb
+            )
+        );
+        let entry_id = sb.get(0).unwrap().id;
+        let content = |text: &str| {
+            vec![acp::ToolCallContent::Diff(
+                acp::Diff::new("live.rs", text).old_text(old_text.map(str::to_owned)),
+            )]
+        };
+        for text in ["first\n", "first\nsecond\n"] {
+            let update = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                id.clone(),
+                acp::ToolCallUpdateFields::new()
+                    .status(Some(acp::ToolCallStatus::InProgress))
+                    .raw_input(Some(serde_json::json!({"path":"live.rs","content":text})))
+                    .content(Some(content(text))),
+            ));
+            assert!(tracker.handle_update(update, &meta(), &mut sb));
+            let entry = sb.get(0).unwrap();
+            assert_eq!(entry.id, entry_id);
+            assert!(entry.is_running);
+            assert!(entry.is_foldable());
+            assert!(
+                BlockViewerPane::for_edit(entry_id, entry).is_some(),
+                "Enter works before execution starts"
+            );
+            if text == "first\n" {
+                let entry = sb.get_by_id_mut(entry_id).unwrap();
+                entry.set_display_mode(DisplayMode::Collapsed);
+                entry.toggle_fold();
+                assert_eq!(entry.display_mode(), DisplayMode::Expanded);
+            } else {
+                assert_eq!(
+                    entry.display_mode(),
+                    DisplayMode::Expanded,
+                    "stream updates retain user's fold"
+                );
+            }
+        }
+        let canonical = acp::SessionUpdate::ToolCall(
+            acp::ToolCall::new(id.clone(), name)
+                .kind(acp::ToolKind::Edit)
+                .status(acp::ToolCallStatus::InProgress)
+                .content(content("first\nsecond\n")),
+        );
+        assert!(tracker.handle_update(canonical, &meta(), &mut sb));
+        assert!(sb.get(1).is_none());
+        assert_eq!(sb.get(0).unwrap().display_mode(), DisplayMode::Expanded);
+        let finished = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+            id,
+            acp::ToolCallUpdateFields::new().status(Some(acp::ToolCallStatus::Completed)),
+        ));
+        assert!(tracker.handle_update(finished, &meta(), &mut sb));
+        assert_eq!(sb.get(0).unwrap().display_mode(), DisplayMode::Expanded);
+        assert!(BlockViewerPane::for_edit(entry_id, sb.get(0).unwrap()).is_some());
+    }
+}

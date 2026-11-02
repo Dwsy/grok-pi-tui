@@ -433,3 +433,48 @@ fn selected_plain_text_visual_includes_preamble() {
     pane.prepare_for_test(area());
     assert_eq!(pane.selected_plain_text(), "header\nhello");
 }
+
+#[test]
+fn streaming_edit_viewer_refreshes_same_length_changes_without_resize() {
+    use crate::scrollback::blocks::tool::EditToolCallBlock;
+    use xai_grok_pager_diff::diff_hunks_from_strings;
+    let block = |text: &str| {
+        RenderBlock::ToolCall(ToolCallBlock::Edit(EditToolCallBlock::new(
+            "live.rs",
+            diff_hunks_from_strings("before\n", text, 1),
+        )))
+    };
+    let mut entry = ScrollbackEntry::running(block("alpha\n"));
+    let mut pane = BlockViewerPane::for_edit(entry.id, &entry).expect("Enter opens running edit");
+    pane.prepare_for_test(area());
+    let mut buf = Buffer::empty(area());
+    pane.render_content(area(), &mut buf, &entry, true, &[]);
+    assert!(
+        !pane.tick(&entry),
+        "unchanged content must not rebuild each tick"
+    );
+    let text = |pane: &BlockViewerPane| {
+        pane.items
+            .iter()
+            .map(|i| i.plain_text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(text(&pane).contains("alpha"));
+    entry.block = block("bravo\n");
+    assert!(
+        pane.tick(&entry),
+        "same-length replacements must invalidate the viewer"
+    );
+    assert!(text(&pane).contains("bravo"));
+    assert!(!text(&pane).contains("alpha"));
+    assert!(!pane.tick(&entry));
+    if let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &mut entry.block {
+        edit.set_hunks(diff_hunks_from_strings("before\n", "bravo\ncharlie\n", 1));
+    }
+    assert!(pane.tick(&entry));
+    assert!(text(&pane).contains("charlie"));
+    entry.is_running = false;
+    assert!(pane.tick(&entry));
+    assert!(text(&pane).contains("charlie"));
+}

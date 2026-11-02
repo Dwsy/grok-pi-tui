@@ -244,6 +244,9 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/views/tutorial.rs",
     }
     renderer_declared_added = {
+        # Modular native Edit viewer: content revision/follow updates during
+        # Pi file-argument generation; no replacement viewer or renderer.
+        "crates/codegen/xai-grok-pager/src/views/block_viewer/mod.rs",
         "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/side_by_side_edit.rs",
         # Pi codemode card: a Pi-owned tool presentation rendered with the
         # native tool-block machinery; lives in its own added source file.

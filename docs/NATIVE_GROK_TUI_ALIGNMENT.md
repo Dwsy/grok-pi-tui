@@ -45,7 +45,7 @@ The ACP standard does not cover all of Pi's UI/command semantics, so narrow seam
 9. voice dictation: the Pi external profile explicitly opts into the existing Pager-only `/voice` / Ctrl+Space/F8 flow. Its STT bearer comes from the local Grok login or API key; it inserts transcript text into PromptWidget and never changes Pi's model, session, or agent ownership.
 10. tutorial copy profile: stock Grok retains its default onboarding content; grok-pi installs 18 static product-specific capability topics while reusing the native `TutorialState`, modal, picker, Markdown renderer and input routing.
 
-These seams do not create a second TUI or scrollback pipeline, nor copy PromptWidget, QuestionView, Markdown, or tool-card infrastructure. The optional sibling EditTool layout renderer reuses native diff data, highlighting helpers, output rows, unified fallback, selection, and fullscreen viewer behavior.
+These seams do not create a second TUI or scrollback pipeline, nor copy PromptWidget, QuestionView, Markdown, or tool-card infrastructure. The optional sibling EditTool layout renderer reuses native diff data, highlighting helpers, output rows, unified fallback, selection, and fullscreen viewer behavior. Pi file argument generation also reuses this native Edit block and viewer: provisional ACP diffs carry the available old/new text, block revisions refresh the open viewer without recreating its ListPane, and running collapsed headers show current +/- counts. Bash argument-generation events remain silent until the canonical execution-start call; execution output keeps streaming.
 
 ## What Is Not Done
 

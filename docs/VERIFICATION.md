@@ -1,5 +1,28 @@
 # Grok Native TUI × Pi Verification Report
 
+
+## 2026-10-30 Tool argument streaming — Bash stability and live file diffs
+
+- Pi adapter suite: 201 passed, 0 failed
+  (CARGO_MAINTENANCE=0 ./scripts/cargo-shared.sh test -p pi-grok-adapter).
+- Pager streaming suite: 22 passed, 0 failed
+  (CARGO_MAINTENANCE=0 ./scripts/cargo-shared.sh test -p xai-grok-pager --lib streaming_ -- --nocapture).
+  Covers native fold/Enter during file argument generation, preserved fold state
+  at canonical execution start/completion, live collapsed +/- counts, and
+  same-length Edit viewer updates without a resize. Existing Bash execution
+  output streaming tests also pass.
+- Entrypoint compile: check -p xai-grok-pager-bin --bin grok-pi passed;
+  existing dead-code and non-shorthand-pattern warnings remain.
+- Per-file rustfmt --check and git diff --check: passed.
+- Architecture verifier: exact semantic seams and declared native renderer
+  seams pass (8 modified, 3 added). Overall remains failed on the existing
+  uploaded-tree/hash baseline and outdated monolithic slash/event/UI source
+  expectations. Only the exact modular Edit viewer and its regression file
+  were declared; the broad baseline was not reset.
+- Scope: source and focused regression verification complete. No new installed
+  binary, model-driven terminal acceptance, commit, push, or release.
+
+
 ## 2026-10-30 Beta candidate v0.1.12-beta.1
 
 Focused checks for the release candidate:

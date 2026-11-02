@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -775,6 +776,9 @@ pub struct EditToolCallBlock {
     pub summary_untrusted: bool,
     /// Cached `(insertions, deletions)` count, computed eagerly from hunks.
     change_counts: (usize, usize),
+    /// Changes even for same-length replacements and whole-block ACP swaps.
+    /// Clones retain the revision, making viewer tick detection constant-time.
+    content_generation: u64,
     /// Hunk-only first paint; may upgrade to FileScoped via the edit-HL worker.
     pub highlight: EditHighlightPhase,
     /// Whether this ordinary edit targets a memory v2 scope.
@@ -796,7 +800,16 @@ fn workflow_script_name(path: &str) -> Option<String> {
     Some(p.file_stem()?.to_string_lossy().into_owned())
 }
 
+fn next_edit_generation() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 impl EditToolCallBlock {
+    pub(crate) fn content_generation(&self) -> u64 {
+        self.content_generation
+    }
+
     /// Pre-completed blocks have no meaningful local timing, so `started_at` is `None`.
     /// Timing is only set for blocks that enter a running UI state (via `set_last_running(true)` in `ScrollbackState`).
     pub fn new(path: impl Into<String>, hunks: Vec<DiffHunk>) -> Self {
@@ -819,6 +832,7 @@ impl EditToolCallBlock {
             display_name,
             summary_untrusted: false,
             change_counts,
+            content_generation: next_edit_generation(),
             highlight: EditHighlightPhase::HunkOnly,
             is_memory_activity: false,
         }
@@ -899,6 +913,7 @@ impl EditToolCallBlock {
         self.edit_count = hunks.len().max(1);
         self.change_counts = Self::compute_changes(&hunks);
         self.hunks = hunks;
+        self.content_generation = next_edit_generation();
     }
 
     /// Count insertions and deletions across all hunks.
@@ -1234,9 +1249,10 @@ impl EditToolCallBlock {
         let tool_cfg = &ctx.appearance.scrollback.blocks.tool;
         let muted_collapsed = ctx.mute_when_collapsed(tool_cfg.muted_collapsed);
         let dim_details = tool_cfg.dim_details;
-        // Explicit pager.toml value wins; unset follows the shell-owned flag.
-        let show_summary =
-            edit_cfg.effective_line_summary(crate::appearance::cache::load_collapsed_edit_blocks());
+        // Live progress always shows counts; completed cards follow the configured summary policy.
+        let show_summary = ctx.is_running
+            || edit_cfg
+                .effective_line_summary(crate::appearance::cache::load_collapsed_edit_blocks());
 
         let cwd = ctx.cwd.as_deref();
         let link_target = self.path_link_target(cwd);
@@ -1828,6 +1844,32 @@ mod tests {
         assert_eq!(header.content.spans[1].content.as_ref(), "foo.rs");
         assert_eq!(derive_selection_text(header), "foo.rs");
         assert!(header.selection_text.is_none());
+    }
+
+    #[test]
+    fn streaming_collapsed_edit_always_shows_current_change_counts() {
+        let mut ctx = test_ctx();
+        ctx.mode = DisplayMode::Collapsed;
+        ctx.is_running = true;
+        ctx.appearance.scrollback.blocks.edit.line_summary = Some(false);
+        let mut block = EditToolCallBlock::new(
+            "live.rs",
+            xai_grok_pager_diff::diff_hunks_from_strings("old\n", "one\n", 1),
+        );
+        let header =
+            |b: &EditToolCallBlock, c: &BlockContext| b.output(c).lines[0].content.to_string();
+        assert!(header(&block, &ctx).contains("+1/-1"));
+        block.set_hunks(xai_grok_pager_diff::diff_hunks_from_strings(
+            "old\n",
+            "one\ntwo\n",
+            1,
+        ));
+        assert!(header(&block, &ctx).contains("+2/-1"));
+        ctx.is_running = false;
+        assert!(
+            !header(&block, &ctx).contains("+2/-1"),
+            "completed cards retain their summary preference"
+        );
     }
 
     #[test]

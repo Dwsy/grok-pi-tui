@@ -34,6 +34,125 @@ fn streamed_tool_call_input_update(
     ))
 }
 
+/// Reconstruct the presentation stream independently of Pi execution. The
+/// canonical execution lifecycle still owns the tool's final input and status.
+fn project_tool_call_stream(
+    streams: &mut HashMap<usize, PiToolCallStream>,
+    event: &Value,
+    eval_v2_only: bool,
+) -> Option<acp::SessionUpdate> {
+    let streamed = event
+        .get("assistantMessageEvent")
+        .or_else(|| event.get("messageEvent"))
+        .unwrap_or(event);
+    let kind = string(streamed, &["type", "kind"])
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !matches!(
+        kind.as_str(),
+        "toolcall_start" | "toolcall_delta" | "toolcall_end"
+    ) {
+        return None;
+    }
+    let Some(content_index) =
+        number(streamed, &["contentIndex"]).and_then(|index| usize::try_from(index).ok())
+    else {
+        return None;
+    };
+
+    match kind.as_str() {
+        "toolcall_start" => {
+            let Some(id) = string(streamed, &["id"]).filter(|id| !id.is_empty()) else {
+                return None;
+            };
+            let Some(name) = string(streamed, &["toolName"]).filter(|name| !name.is_empty()) else {
+                return None;
+            };
+            // Shell commands remain invisible until execution starts. In particular,
+            // large heredoc arguments must not repeatedly reflow Execute cards.
+            if tool_kind(name) == acp::ToolKind::Execute
+                || eval_top_level_hidden(eval_v2_only, name)
+            {
+                return None;
+            }
+
+            let args = normalize_tool_raw_input(name, Some(json!({})));
+            let content = edit_diff_content(name, args.as_ref(), None).unwrap_or_default();
+            let tool_call =
+                acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
+                    .kind(tool_kind(name))
+                    .status(acp::ToolCallStatus::InProgress)
+                    .content(content)
+                    .locations(Vec::new())
+                    .raw_input(args);
+            streams.insert(
+                content_index,
+                PiToolCallStream::new(id.to_string(), name.to_string()),
+            );
+            Some(acp::SessionUpdate::ToolCall(tool_call))
+        }
+        "toolcall_delta" => {
+            let Some(delta) = string(streamed, &["delta"]) else {
+                return None;
+            };
+            let update = {
+                let Some(stream) = streams.get_mut(&content_index) else {
+                    return None;
+                };
+                let Some(partial_args) = stream.push_delta(delta) else {
+                    return None;
+                };
+                let Some(args) = normalize_tool_raw_input(&stream.name, Some(partial_args)) else {
+                    return None;
+                };
+                let content =
+                    crate::tool_projection::streamed_edit_diff_content(&stream.name, &args);
+                // Path-only updates expose a partly generated filename and
+                // rebuild the card without adding anything the user can view.
+                if tool_kind(&stream.name) == acp::ToolKind::Edit && content.is_none() {
+                    return None;
+                }
+                (stream.id.clone(), args, content)
+            };
+            Some(streamed_tool_call_input_update(
+                &update.0, update.1, update.2,
+            ))
+        }
+        "toolcall_end" => {
+            let Some(tool_call) = streamed.get("toolCall") else {
+                return None;
+            };
+            let stream = streams.remove(&content_index);
+            let Some(mut stream) = stream else {
+                return None;
+            };
+            if let Some(final_id) = string(tool_call, &["id"])
+                && final_id != stream.id
+            {
+                tracing::warn!(
+                    streamed_id = %stream.id,
+                    final_id,
+                    "Pi tool-call id changed during argument streaming"
+                );
+                return None;
+            }
+            let Some(final_args) = tool_call.get("arguments").cloned() else {
+                return None;
+            };
+            let Some(final_args) = stream.finish(final_args) else {
+                return None;
+            };
+            let name = string(tool_call, &["name"]).unwrap_or(&stream.name);
+            let Some(args) = normalize_tool_raw_input(name, Some(final_args)) else {
+                return None;
+            };
+            let content = edit_diff_content(name, Some(&args), None);
+            Some(streamed_tool_call_input_update(&stream.id, args, content))
+        }
+        _ => None,
+    }
+}
+
 impl PiAgent {
     pub(super) async fn handle_event(&self, event: Value) -> Result<()> {
         let event_type = event
@@ -349,119 +468,15 @@ impl PiAgent {
         }
     }
 
-    /// Project Pi's model-generation tool-call stream into the same ACP row
-    /// later completed by tool_execution_start/update/end. The RPC wire format
-    /// strips cumulative partial messages, so deltas are keyed by contentIndex.
+    /// Feed argument-generation updates into the existing native ACP tool row.
     async fn handle_tool_call_stream_update(&self, event: &Value) {
-        let streamed = event
-            .get("assistantMessageEvent")
-            .or_else(|| event.get("messageEvent"))
-            .unwrap_or(event);
-        let kind = string(streamed, &["type", "kind"])
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if !matches!(
-            kind.as_str(),
-            "toolcall_start" | "toolcall_delta" | "toolcall_end"
-        ) {
-            return;
-        }
-        let Some(content_index) =
-            number(streamed, &["contentIndex"]).and_then(|index| usize::try_from(index).ok())
-        else {
-            return;
-        };
-
-        match kind.as_str() {
-            "toolcall_start" => {
-                let Some(id) = string(streamed, &["id"]).filter(|id| !id.is_empty()) else {
-                    return;
-                };
-                let Some(name) = string(streamed, &["toolName"]).filter(|name| !name.is_empty())
-                else {
-                    return;
-                };
-                if eval_top_level_hidden(self.eval_v2_only, name) {
-                    return;
-                }
-
-                let args = normalize_tool_raw_input(name, Some(json!({})));
-                let content = edit_diff_content(name, args.as_ref(), None).unwrap_or_default();
-                let tool_call =
-                    acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
-                        .kind(tool_kind(name))
-                        .status(acp::ToolCallStatus::InProgress)
-                        .content(content)
-                        .locations(Vec::new())
-                        .raw_input(args);
-                self.state.borrow_mut().streaming_tool_calls.insert(
-                    content_index,
-                    PiToolCallStream::new(id.to_string(), name.to_string()),
-                );
-                self.send_update(acp::SessionUpdate::ToolCall(tool_call))
-                    .await;
-            }
-            "toolcall_delta" => {
-                let Some(delta) = string(streamed, &["delta"]) else {
-                    return;
-                };
-                let update = {
-                    let mut state = self.state.borrow_mut();
-                    let Some(stream) = state.streaming_tool_calls.get_mut(&content_index) else {
-                        return;
-                    };
-                    let Some(partial_args) = stream.push_delta(delta) else {
-                        return;
-                    };
-                    let Some(args) = normalize_tool_raw_input(&stream.name, Some(partial_args))
-                    else {
-                        return;
-                    };
-                    let content = edit_diff_content(&stream.name, Some(&args), None);
-                    (stream.id.clone(), args, content)
-                };
-                self.send_update(streamed_tool_call_input_update(
-                    &update.0, update.1, update.2,
-                ))
-                .await;
-            }
-            "toolcall_end" => {
-                let Some(tool_call) = streamed.get("toolCall") else {
-                    return;
-                };
-                let stream = self
-                    .state
-                    .borrow_mut()
-                    .streaming_tool_calls
-                    .remove(&content_index);
-                let Some(mut stream) = stream else {
-                    return;
-                };
-                if let Some(final_id) = string(tool_call, &["id"])
-                    && final_id != stream.id
-                {
-                    tracing::warn!(
-                        streamed_id = %stream.id,
-                        final_id,
-                        "Pi tool-call id changed during argument streaming"
-                    );
-                    return;
-                }
-                let Some(final_args) = tool_call.get("arguments").cloned() else {
-                    return;
-                };
-                let Some(final_args) = stream.finish(final_args) else {
-                    return;
-                };
-                let name = string(tool_call, &["name"]).unwrap_or(&stream.name);
-                let Some(args) = normalize_tool_raw_input(name, Some(final_args)) else {
-                    return;
-                };
-                let content = edit_diff_content(name, Some(&args), None);
-                self.send_update(streamed_tool_call_input_update(&stream.id, args, content))
-                    .await;
-            }
-            _ => {}
+        let update = project_tool_call_stream(
+            &mut self.state.borrow_mut().streaming_tool_calls,
+            event,
+            self.eval_v2_only,
+        );
+        if let Some(update) = update {
+            self.send_update(update).await;
         }
     }
 
@@ -648,6 +663,118 @@ impl PiAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stream_event(
+        streams: &mut HashMap<usize, PiToolCallStream>,
+        event: Value,
+    ) -> Option<acp::SessionUpdate> {
+        project_tool_call_stream(streams, &json!({"assistantMessageEvent": event}), false)
+    }
+
+    #[test]
+    fn bash_argument_stream_never_emits_cards_or_input_updates() {
+        for name in ["bash", "execute", "run_terminal_command", "BASH"] {
+            let mut streams = HashMap::new();
+            for event in [
+                json!({"type":"toolcall_start", "contentIndex":0, "id":"bash-1", "toolName":name}),
+                json!({"type":"toolcall_delta", "contentIndex":0, "delta":"{\"command\":\"cat <<EOF\\nlong body"}),
+                json!({"type":"toolcall_end", "contentIndex":0, "toolCall":{"id":"bash-1", "name":name, "arguments":{"command":"echo done"}}}),
+            ] {
+                assert!(
+                    stream_event(&mut streams, event).is_none(),
+                    "{name} must wait for execution"
+                );
+            }
+            assert!(streams.is_empty());
+        }
+    }
+
+    #[test]
+    fn file_argument_stream_exposes_native_diff_before_json_completes() {
+        for (name, prefix, old, new) in [
+            (
+                "write",
+                r#"{"path":"a.rs","content":"first\nsecond"#,
+                None,
+                "first\nsecond",
+            ),
+            (
+                "edit",
+                r#"{"path":"a.rs","oldText":"old\nline"#,
+                Some("old\nline"),
+                "",
+            ),
+            (
+                "edit",
+                r#"{"path":"a.rs","edits":[{"oldText":"old","newText":"new"#,
+                Some("old"),
+                "new",
+            ),
+        ] {
+            let mut streams = HashMap::new();
+            assert!(matches!(
+                stream_event(
+                    &mut streams,
+                    json!({"type":"toolcall_start", "contentIndex":1, "id":"file-1", "toolName":name})
+                ),
+                Some(acp::SessionUpdate::ToolCall(_))
+            ));
+            let Some(acp::SessionUpdate::ToolCallUpdate(update)) = stream_event(
+                &mut streams,
+                json!({"type":"toolcall_delta", "contentIndex":1, "delta":prefix}),
+            ) else {
+                panic!("{name}: expected an input update before execution");
+            };
+            assert_eq!(update.tool_call_id.0.as_ref(), "file-1");
+            let Some(acp::ToolCallContent::Diff(diff)) =
+                update.fields.content.as_ref().and_then(|c| c.first())
+            else {
+                panic!("{name}: native Edit fold/viewer requires Diff content");
+            };
+            assert_eq!(diff.path.to_string_lossy(), "a.rs");
+            assert_eq!(diff.old_text.as_deref(), old);
+            assert_eq!(diff.new_text, new);
+            let final_args = json!({"path":"a.rs","oldText":"old","newText":"final"});
+            let Some(acp::SessionUpdate::ToolCallUpdate(final_update)) = stream_event(
+                &mut streams,
+                json!({"type":"toolcall_end", "contentIndex":1, "toolCall":{"id":"file-1","name":name,"arguments":final_args}}),
+            ) else {
+                panic!("canonical input must override the provisional prefix");
+            };
+            assert_eq!(
+                final_update.fields.raw_input.as_ref().unwrap()["newText"],
+                "final"
+            );
+            assert!(streams.is_empty());
+        }
+    }
+
+    #[test]
+    fn partial_file_paths_do_not_rebuild_cards_and_final_input_is_flushed() {
+        let mut streams = HashMap::new();
+        stream_event(
+            &mut streams,
+            json!({"type":"toolcall_start","contentIndex":0,"id":"w","toolName":"write"}),
+        );
+        assert!(
+            stream_event(
+                &mut streams,
+                json!({"type":"toolcall_delta","contentIndex":0,"delta":r#"{"path":"src/part"#})
+            )
+            .is_none()
+        );
+        let Some(acp::SessionUpdate::ToolCallUpdate(update)) = stream_event(
+            &mut streams,
+            json!({"type":"toolcall_end","contentIndex":0,"toolCall":{"id":"w","name":"write","arguments":{"path":"src/full.rs","content":"ready\n"}}}),
+        ) else {
+            panic!("final update must bypass throttling");
+        };
+        assert!(matches!(
+            update.fields.content.as_ref().unwrap()[0],
+            acp::ToolCallContent::Diff(_)
+        ));
+        assert_eq!(update.fields.raw_input.unwrap()["path"], "src/full.rs");
+    }
 
     #[test]
     fn cancellation_probe_requires_stable_idle() {

@@ -84,6 +84,24 @@ pub(crate) fn edit_diff_content(
     args: Option<&Value>,
     result: Option<&Value>,
 ) -> Option<Vec<acp::ToolCallContent>> {
+    edit_diff_content_inner(tool_name, args, result, false)
+}
+
+/// Provisional diff while arguments are generated: oldText can arrive before
+/// newText. Expose those deletions immediately instead of a non-foldable card.
+pub(crate) fn streamed_edit_diff_content(
+    tool_name: &str,
+    args: &Value,
+) -> Option<Vec<acp::ToolCallContent>> {
+    edit_diff_content_inner(tool_name, Some(args), None, true)
+}
+
+fn edit_diff_content_inner(
+    tool_name: &str,
+    args: Option<&Value>,
+    result: Option<&Value>,
+    streaming: bool,
+) -> Option<Vec<acp::ToolCallContent>> {
     if tool_kind(tool_name) != acp::ToolKind::Edit {
         return None;
     }
@@ -96,7 +114,8 @@ pub(crate) fn edit_diff_content(
             .enumerate()
             .filter_map(|(index, edit)| {
                 let old_text = string(edit, &["oldText", "old_text"])?;
-                let new_text = string(edit, &["newText", "new_text"])?;
+                let new_text =
+                    string(edit, &["newText", "new_text"]).or_else(|| streaming.then_some(""))?;
                 Some(edit_diff(
                     path,
                     Some(old_text),
@@ -107,8 +126,9 @@ pub(crate) fn edit_diff_content(
             .collect::<Vec<_>>();
         return (!diffs.is_empty()).then_some(diffs);
     }
-    let new_text = string(args, &["newText", "new_text", "content"])?;
     let old_text = string(args, &["oldText", "old_text"]);
+    let new_text = string(args, &["newText", "new_text", "content"])
+        .or_else(|| (streaming && old_text.is_some()).then_some(""))?;
     Some(vec![edit_diff(
         path,
         old_text,
