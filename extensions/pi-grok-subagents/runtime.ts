@@ -1,5 +1,7 @@
 /** Shared Pi child-session runtime used by the V1 and optional V2 tool surfaces. */
 
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   createAgentSession,
@@ -69,6 +71,20 @@ function resolveThinkingLevel(
   return explicit.toLowerCase() as ThinkingLevel;
 }
 
+/**
+ * Extensions every child session gets by default. A child loads no
+ * auto-discovered extensions, so a workspace search extension the operator
+ * installed for the root session would otherwise be missing in every subagent.
+ * Only paths that exist are added, so an uninstalled extension is not an error.
+ */
+const DEFAULT_SUBAGENT_EXTENSIONS = [
+  join(homedir(), ".pi", "agent", "npm", "node_modules", "@ff-labs", "pi-fff"),
+];
+
+export function defaultSubagentExtensions(): string[] {
+  return DEFAULT_SUBAGENT_EXTENSIONS.filter((path) => existsSync(path));
+}
+
 export type RecordFinishHandler = (
   record: SubagentRecord,
   status: "completed" | "failed" | "cancelled",
@@ -79,6 +95,12 @@ export type RecordCreateOptions = {
   customTools?: ToolDefinition[];
   systemPromptSuffix?: string;
   onFinished?: RecordFinishHandler;
+  /**
+   * Parent tool-call id for Pager's Task metadata. Defaults to the spawning
+   * tool call. Pass an empty string for a one-to-many spawner that has no
+   * single parent task id.
+   */
+  parentToolCallId?: string;
   /** Stable Subagents V2 identity persisted alongside the Pi child JSONL path. */
   teamIdentity?: {
     agentPath: string;
@@ -429,7 +451,7 @@ export class SubagentRuntime {
       agentDir,
       noExtensions: true,
       noSkills: true,
-      additionalExtensionPaths: definition?.extensions ?? [],
+      additionalExtensionPaths: [...defaultSubagentExtensions(), ...(definition?.extensions ?? [])],
       additionalSkillPaths: definition?.skills ?? [],
       noPromptTemplates: true,
       noThemes: true,
@@ -453,13 +475,24 @@ export class SubagentRuntime {
       customTools,
       resourceLoader,
     });
-    await session.bindExtensions({});
+    // An extension may append its own tools while binding (the default search
+    // extension does). Set this session's loadout first, then keep exactly the
+    // tools the extension added on top, so a capability limit still holds.
+    const declaredBeforeBind = new Set(session.getAllTools().map((tool) => tool.name));
     session.setActiveToolsByName(activeTools);
+    await session.bindExtensions({});
+    const addedByExtensions = session.getAllTools()
+      .map((tool) => tool.name)
+      .filter((name) => !declaredBeforeBind.has(name));
+    if (addedByExtensions.length > 0) {
+      session.setActiveToolsByName([...new Set([...activeTools, ...addedByExtensions])]);
+    }
 
     const childSessionFile = session.sessionFile;
     if (!childSessionFile) throw new Error("child session persistence is unavailable");
     const parentSessionId = ctx.sessionManager.getSessionId();
     const id = this.allocateRecordId();
+    const parentToolCallId = options.parentToolCallId ?? toolCallId;
     let doneResolve!: () => void;
     const donePromise = new Promise<void>((resolve) => { doneResolve = resolve; });
     const completeRecord: SubagentRecord = {
@@ -471,7 +504,7 @@ export class SubagentRuntime {
       endLeafId: null,
       stateFile: subagentStateFile(parentSessionFile),
       parentSessionId,
-      parentToolCallId: toolCallId,
+      parentToolCallId,
       prompt,
       description,
       type: profile.type,
@@ -508,7 +541,7 @@ export class SubagentRuntime {
     if (completeRecord.background) this.publishTodoBacking();
     this.persistRecord(completeRecord, "running");
     this.emit(completeRecord, "spawned", {
-      parentToolCallId: toolCallId,
+      parentToolCallId,
       description,
       subagentType: completeRecord.type,
       background: completeRecord.background,
@@ -667,6 +700,21 @@ export class SubagentRuntime {
     if (this.runningBackgroundIds.has(record.id)) return "running";
     if (this.queuedBackground.some((entry) => entry.record.id === record.id)) return "queued";
     return "idle";
+  }
+
+  /**
+   * Moves a queued background run to the front of the shared concurrency queue.
+   * A parent that explicitly asks a queued agent for new work should not wait
+   * behind unrelated launches. Returns false when the record is not queued.
+   */
+  prioritizeBackground(record: SubagentRecord): boolean {
+    const index = this.queuedBackground.findIndex((entry) => entry.record.id === record.id);
+    if (index < 0) return false;
+    if (index > 0) {
+      const [entry] = this.queuedBackground.splice(index, 1);
+      this.queuedBackground.unshift(entry);
+    }
+    return true;
   }
 
   scheduleBackground(record: SubagentRecord, prompt: string): void {

@@ -245,7 +245,11 @@ mod tests {
         assert!(config_ui.contains("PI_GROK_SUBAGENT_EXTENSION_CATALOG"));
         assert!(runtime.contains("noExtensions: true"));
         assert!(runtime.contains("noSkills: true"));
-        assert!(runtime.contains("additionalExtensionPaths: definition?.extensions ?? []"));
+        assert!(runtime.contains("additionalExtensionPaths: [...defaultSubagentExtensions(), ...(definition?.extensions ?? [])]"));
+        // Children load no auto-discovered extensions, so the search extension the
+        // operator installed for the root session must be added explicitly.
+        assert!(runtime.contains("\"@ff-labs\", \"pi-fff\""));
+        assert!(runtime.contains("function defaultSubagentExtensions"));
         assert!(runtime.contains("additionalSkillPaths: definition?.skills ?? []"));
         assert!(runtime.contains("customTools"));
         assert!(v2.contains("pi-grok-team-message/v2"));

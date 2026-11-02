@@ -92,7 +92,6 @@ pub(crate) fn parse_bridge_message(
 
     let operations = match kind {
         "spawned" => {
-            let parent_tool_call_id = required_str_value(payload, "parentToolCallId")?.to_string();
             let background = payload
                 .get("background")
                 .and_then(Value::as_bool)
@@ -120,18 +119,27 @@ pub(crate) fn parse_bridge_message(
             let mut lifecycle =
                 session_update_envelope(&parent_session_id, update, replay, &subagent_id, sequence);
             lifecycle["_meta"]["subagentBackground"] = Value::Bool(background);
-            vec![
-                BridgeOperation::ParentTaskMetadata {
-                    tool_call_id: parent_tool_call_id,
+            let mut operations = Vec::new();
+            // A one-to-many spawner (`spawn_team`) has no single parent task id.
+            // Omitting the metadata keeps Pager's own tool-call raw_input intact;
+            // a synthetic per-member id would only land in orphan updates.
+            if let Some(parent_tool_call_id) = payload
+                .get("parentToolCallId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                operations.push(BridgeOperation::ParentTaskMetadata {
+                    tool_call_id: parent_tool_call_id.to_string(),
                     raw_input: json!({
                         "variant": "Task",
                         "task_id": subagent_id,
                         "run_in_background": background,
                         "reconcile": payload.get("reconcile").and_then(Value::as_bool).unwrap_or(false),
                     }),
-                },
-                BridgeOperation::ParentLifecycle(lifecycle),
-            ]
+                });
+            }
+            operations.push(BridgeOperation::ParentLifecycle(lifecycle));
+            operations
         }
         "progress" => {
             let update = json!({
@@ -406,6 +414,28 @@ mod tests {
         assert_eq!(lifecycle["sessionId"], "parent-1");
         assert_eq!(lifecycle["update"]["sessionUpdate"], "subagent_spawned");
         assert_eq!(lifecycle["update"]["child_session_id"], "child-1");
+        assert_eq!(lifecycle["_meta"]["subagentBackground"], true);
+    }
+
+    #[test]
+    fn spawned_projection_skips_task_metadata_for_one_to_many_spawners() {
+        let event = bridge_message(
+            "spawned",
+            json!({
+                "parentToolCallId": "",
+                "description": "Primary researcher",
+                "subagentType": "explore",
+                "background": true,
+            }),
+        );
+        let projection = parse_bridge_message(&event, "parent-1")
+            .unwrap()
+            .expect("bridge event");
+        assert_eq!(projection.operations.len(), 1);
+        let BridgeOperation::ParentLifecycle(lifecycle) = &projection.operations[0] else {
+            panic!("a team member must project only its lifecycle event");
+        };
+        assert_eq!(lifecycle["update"]["sessionUpdate"], "subagent_spawned");
         assert_eq!(lifecycle["_meta"]["subagentBackground"], true);
     }
 

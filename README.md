@@ -153,7 +153,7 @@ Bundled bridge extensions are enabled by default where stable. Experimental nati
 | `PI_GROK_REMOTE_TUI` | `1` | Enable Pi `ctx.ui.custom` components |
 | `PI_GROK_BASH` | `1` | Enable Grok-owned Bash integration |
 | `PI_GROK_NATIVE_COMMANDS` | `0` | Enable experimental `/pi-*` commands |
-| `PI_GROK_SUBAGENTS_V2` | `0` | Enable optional V2 team tools (`spawn_team`, stable agent paths, peer messaging, nested spawn) on top of Pi subagents |
+| `PI_GROK_SUBAGENTS_V2` | `0` | Enable the V2 team surface (`spawn_team`, stable agent paths, peer messaging, nested spawn). V2 replaces the V1 single-agent tools; V1 commands and history stay available |
 | `GROK_HOME` | `~/.grok-pi` | User state root (isolated from stock Grok `~/.grok`) |
 | `GROK_PROJECT_DIR` | `.grok-pi` | Project config/workflows/hooks dir name under repo root |
 | `GROK_PI_NO_AUTO_UPDATE` | unset | Disable background update checks |
@@ -171,7 +171,7 @@ Subagents V2 team presets are JSON files under `<repo>/.grok-pi/teams` or `~/.gr
 }
 ```
 
-Enable V2 before starting grok-pi with the F2 "Pi subagents V2" toggle or `PI_GROK_SUBAGENTS_V2=1`; use `/subagent-teams` to inspect presets. `spawn_team` starts a preset, while `spawn_team_agent`, `team_send_message`, `team_followup_task`, `team_wait`, `team_list`, and `team_interrupt` provide the lower-level collaboration surface. Rhai Workflow remains the deterministic orchestration engine; Team V2 is the session-scoped, run-reusable agent identity/messaging layer.
+Enable V2 before starting grok-pi with the F2 "Pi subagents V2" toggle or `PI_GROK_SUBAGENTS_V2=1`; use `/subagent-teams` to inspect presets. `spawn_team` starts a preset, while `spawn_team_agent`, `team_send_message`, `team_followup_task`, `team_wait`, `team_list`, and `team_interrupt` provide the lower-level collaboration surface. V2 replaces the V1 single-agent tools (`spawn_subagent` and its output/message/cancel/list companions), which are not registered in team mode; `/subagents`, `/subagent-message`, and `/subagent-history` keep working. Rhai Workflow remains the deterministic orchestration engine; Team V2 is the session-scoped, run-reusable agent identity/messaging layer.
 
 Rhai workflows are **off by default** (F2 → Agent → **Pi workflows**, then full restart). Details: [FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md), [AGENTS.md](AGENTS.md#product-state-isolation).
 

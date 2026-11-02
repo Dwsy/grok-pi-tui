@@ -10,7 +10,12 @@ import {
 import type { SubagentRecord } from "./bridge.ts";
 import { requireText } from "./shared.ts";
 import { SubagentRuntime } from "./runtime.ts";
-import { renderTeamTemplate, selectedTeam } from "./teams.ts";
+import {
+  renderTeamTemplate,
+  selectedTeam,
+  type TeamDefinition,
+  type TeamMemberDefinition,
+} from "./teams.ts";
 import { configureTeamPresets } from "./team-ui.ts";
 
 const ROOT_PATH = "/root";
@@ -25,10 +30,24 @@ const CONTROL_TOOL_NAMES = [
   "team_wait",
   "team_list",
   "team_interrupt",
+  "team_report",
 ] as const;
 
 type TeamMessageKind = "MESSAGE" | "NEW_TASK" | "FINAL_ANSWER";
-type TeamAgentStatus = "queued" | "running" | "idle" | "failed" | "cancelled";
+type TeamAgentStatus = "queued" | "running" | "idle" | "waiting_decision" | "failed" | "cancelled";
+
+/**
+ * Semantic result a child declares with `team_report`. Distinct from the runtime
+ * terminal status: `completed` says the turn ended, `ready` says the result is
+ * usable, and `dropped` says the parent has nothing to act on.
+ */
+type TeamReportState = "ready" | "blocked" | "failed" | "dropped";
+
+type TeamReport = {
+  state: TeamReportState;
+  summary: string;
+  question?: string;
+};
 
 type TeamAgent = {
   path: string;
@@ -39,16 +58,32 @@ type TeamAgent = {
   record: SubagentRecord;
   status: TeamAgentStatus;
   team?: string;
+  report?: TeamReport;
+  /** Last time this agent sent or received team traffic; `team_list` reports the quiet gap. */
+  lastActivityAt: number;
   pendingTasks: Array<{ senderPath: string; message: string; toolCallId: string; kind: "NEW_TASK" | "FINAL_ANSWER" }>;
+};
+
+/**
+ * Consecutive `team_send_message` calls from one sender to one target merge into
+ * a single steer, so a chatty agent costs the recipient one context entry
+ * instead of one per message.
+ */
+type MessageBuffer = {
+  senderPath: string;
+  targetPath: string;
+  parts: string[];
 };
 
 type SpawnAgentArgs = {
   task_name: string;
   message: string;
   agent_type?: string;
+  description?: string;
   model?: string;
   max_turns?: number;
   thinking_level?: string;
+  capability_mode?: string;
 };
 
 function pathSegment(value: string): string {
@@ -70,6 +105,26 @@ function childPath(parentPath: string, taskName: string): string {
   return validateAgentPath(`${validateAgentPath(parentPath)}/${pathSegment(taskName)}`);
 }
 
+/**
+ * Restricts a preset to the requested member subset while preserving preset
+ * order: a synthesizer defined last must still start after its producers.
+ */
+function selectTeamMembers(
+  team: TeamDefinition,
+  requested: string[] | undefined,
+): TeamMemberDefinition[] {
+  if (!requested || requested.length === 0) return team.members;
+  const known = new Set(team.members.map((member) => member.name));
+  const unknown = requested.filter((name) => !known.has(name));
+  if (unknown.length > 0) {
+    throw new Error(
+      `team ${team.name} has no member named ${unknown.join(", ")}; available: ${team.members.map((member) => member.name).join(", ")}`,
+    );
+  }
+  const selected = new Set(requested);
+  return team.members.filter((member) => selected.has(member.name));
+}
+
 function renderMessage(kind: TeamMessageKind, target: string, sender: string, payload: string): string {
   return `Message Type: ${kind}\nTask name: ${target}\nSender: ${sender}\nPayload:\n${payload}`;
 }
@@ -82,6 +137,7 @@ export class TeamCoordinator {
   private readonly agents = new Map<string, TeamAgent>();
   private readonly reservedPaths = new Set<string>();
   private readonly waiters = new Set<(version: number) => void>();
+  private readonly messageBuffers = new Map<string, MessageBuffer>();
   private readonly pi: ExtensionAPI;
   private readonly runtime: SubagentRuntime;
   private activityVersion = 0;
@@ -108,6 +164,39 @@ export class TeamCoordinator {
     this.waiters.clear();
   }
 
+  private touch(agent: TeamAgent): void {
+    agent.lastActivityAt = Date.now();
+  }
+
+  /** An idle agent and one waiting on a decision both keep a live child session. */
+  private canReceiveMessage(status: TeamAgentStatus): boolean {
+    return status === "idle" || status === "waiting_decision";
+  }
+
+  private bufferMessage(senderPath: string, targetPath: string, message: string): number {
+    const key = `${senderPath}\u0000${targetPath}`;
+    const existing = this.messageBuffers.get(key);
+    if (existing) {
+      // Repeating the same text inside one turn adds context without adding meaning.
+      if (!existing.parts.includes(message)) existing.parts.push(message);
+      return existing.parts.length;
+    }
+    this.messageBuffers.set(key, { senderPath, targetPath, parts: [message] });
+    return 1;
+  }
+
+  /** Delivers every buffered sender/target pair as one merged steer. */
+  async flushBufferedMessages(): Promise<void> {
+    const buffers = [...this.messageBuffers.values()];
+    this.messageBuffers.clear();
+    for (const buffer of buffers) {
+      const payload = buffer.parts.length === 1
+        ? buffer.parts[0]
+        : buffer.parts.map((part, index) => `${index + 1}. ${part}`).join("\n");
+      await this.deliver(buffer.senderPath, buffer.targetPath, "MESSAGE", payload, false);
+    }
+  }
+
   private resolveTarget(senderPath: string, target: string): string {
     const trimmed = requireText(target, "target");
     const resolved = trimmed.startsWith("/") ? validateAgentPath(trimmed) : childPath(senderPath, trimmed);
@@ -125,17 +214,25 @@ export class TeamCoordinator {
     if (!agent.record.finished) {
       return this.runtime.backgroundState(agent.record) === "queued" ? "queued" : "running";
     }
-    if (agent.record.terminalStatus === "completed") return "idle";
+    if (agent.record.terminalStatus === "completed") {
+      // A finished run that left a decision request is waiting on its parent,
+      // not merely idle: the question stays visible and messages still reach it.
+      return agent.report?.state === "blocked" ? "waiting_decision" : "idle";
+    }
     return agent.record.terminalStatus ?? agent.status;
   }
 
   private usageHint(path: string, parentPath: string, extra?: string): string {
     return [
       `You are ${path}, an agent in a grok-pi Subagents V2 team. Your parent is ${parentPath}.`,
-      "All team agents share the same working directory and can see each other's filesystem changes.",
-      "Use spawn_team_agent to create a nested child, team_send_message for a queue-only semantic message, team_followup_task to trigger a new recipient task, team_wait only while another agent is actively running, team_list to inspect the team tree, and team_interrupt to stop a running agent.",
+      "All team agents share the same working directory and can see each other's filesystem changes. Keep writes inside the boundary your task names.",
+      "Create a nested child with spawn_team_agent only when your own task explicitly requires further decomposition. Having the tool is not permission to fan out; your parent remains the orchestrator.",
+      "Use team_send_message for facts a running peer needs now, team_followup_task to give an agent new work, team_wait only while another agent is genuinely active, team_list to inspect the tree, and team_interrupt to stop an agent.",
+      "A message is worth sending only when the recipient cannot get the fact themselves or must act on it. Do not forward progress. Consecutive team_send_message calls to one agent merge into a single steer, so batch facts in one turn.",
+      "Before you end a turn, call team_report: ready (the requested result is deliverable), blocked (you need one decision; question is mandatory), failed (the work cannot be completed), dropped (there is genuinely nothing for the parent to act on: already fixed, superseded, or out of scope). Your summary replaces your final text in what the parent receives. Never report ready to hide unfinished work.",
       "When no other agent is active, finish your turn instead of waiting; you become IDLE and team_followup_task can reactivate this same child session later.",
-      "Use absolute /root/... paths when messaging siblings. A final response from your turn is automatically delivered to your parent as FINAL_ANSWER.",
+      "Use absolute /root/... paths when messaging siblings.",
+      "Report evidence with concrete file paths and command output; do not assert behaviour you did not verify.",
       extra?.trim() ?? "",
     ].filter(Boolean).join("\n\n");
   }
@@ -157,16 +254,17 @@ export class TeamCoordinator {
     } else {
       const target = this.agentForPath(targetPath);
       const targetStatus = this.status(target);
-      if (target.record.finished && targetStatus !== "idle") {
+      if (target.record.finished && !this.canReceiveMessage(targetStatus)) {
         throw new Error(`team agent ${targetPath} cannot receive messages after ${targetStatus}`);
       }
       if (target.record.finished && triggerTurn) {
-        throw new Error(`team agent ${targetPath} is idle; use team_followup_task to reactivate it`);
+        throw new Error(`team agent ${targetPath} is ${targetStatus}; use team_followup_task to reactivate it`);
       }
       await target.record.session.sendCustomMessage(
         { customType: TEAM_MESSAGE_TYPE, content, display: true, details },
         { triggerTurn, deliverAs: triggerTurn ? "followUp" : "steer" },
       );
+      this.touch(target);
     }
     this.notifyActivity();
   }
@@ -179,9 +277,13 @@ export class TeamCoordinator {
     toolCallId: string,
     signal?: AbortSignal,
   ): Promise<"running" | "queued" | "skipped"> {
-    if (this.status(target) !== "idle") {
+    if (!this.canReceiveMessage(this.status(target))) {
       throw new Error(`team agent ${target.path} cannot be reactivated from ${this.status(target)}`);
     }
+    // A reactivated run must not inherit the previous run's report: a stale
+    // `dropped` would swallow this run's result, and a stale `blocked` would
+    // deliver the old question as if it were new.
+    target.report = undefined;
     const content = renderMessage(kind, target.path, senderPath, payload);
     const details = { version: 2, kind, sender: senderPath, target: target.path };
     target.record = this.runtime.resumeRecord(
@@ -200,6 +302,7 @@ export class TeamCoordinator {
       );
     });
     target.status = scheduled === "queued" ? "queued" : "running";
+    this.touch(target);
     this.notifyActivity();
     return scheduled;
   }
@@ -213,15 +316,62 @@ export class TeamCoordinator {
     const agent = this.agents.get(path);
     if (!agent) return;
     agent.status = status === "completed" ? "idle" : status;
+    this.touch(agent);
     this.notifyActivity();
+    // A turn that ends must not leave buffered messages behind: flush them before
+    // the parent is told the result, so ordering matches what the child said.
+    try {
+      await this.flushBufferedMessages();
+    } catch (flushError) {
+      const detail = flushError instanceof Error ? flushError.message : String(flushError);
+      this.runtime.recordPostFinishError(record, `Buffered message delivery failed: ${detail}`);
+    }
+    // `dropped` is a deliberate no-op result: the child says the parent has
+    // nothing to act on. Keep it for `team_list` and spend no parent turn.
+    if (agent.report?.state !== "dropped") {
+      await this.deliverFinalAnswer(agent, path, record, status, error);
+    }
+    if (status === "completed" && agent.pendingTasks.length > 0) {
+      const next = agent.pendingTasks.shift();
+      if (next) {
+        try {
+          await this.reactivateAgent(agent, next.senderPath, next.kind, next.message, next.toolCallId);
+        } catch (followupError) {
+          const detail = followupError instanceof Error ? followupError.message : String(followupError);
+          this.runtime.recordPostFinishError(record, `Queued follow-up failed: ${detail}`);
+        }
+      }
+    } else if (status !== "completed") {
+      agent.pendingTasks.length = 0;
+    }
+  }
+
+  /**
+   * A declared report replaces the child's free-form final text, so the parent
+   * receives one actionable sentence plus an optional decision request instead
+   * of a transcript tail. Without a report the previous behaviour is kept.
+   */
+  private completedPayload(report: TeamReport | undefined, output: string): string {
+    if (!report) return output || "Agent completed without text output.";
+    const question = report.question ? `\n\nNeeds your decision: ${report.question}` : "";
+    return `Report: ${report.state}\n${report.summary}${question}`;
+  }
+
+  private async deliverFinalAnswer(
+    agent: TeamAgent,
+    path: string,
+    record: SubagentRecord,
+    status: "completed" | "failed" | "cancelled",
+    error?: string,
+  ): Promise<void> {
     const output = this.runtime.finalOutput(record);
     const payload = status === "completed"
-      ? output || "Agent completed without text output."
+      ? this.completedPayload(agent.report, output)
       : `Agent ${status}.${error ? ` Error: ${error}` : ""}${output ? `\n\nLast output:\n${output}` : ""}`;
     try {
       const parent = agent.parentPath === ROOT_PATH ? undefined : this.agents.get(agent.parentPath);
       const parentStatus = parent ? this.status(parent) : undefined;
-      if (parent && parentStatus === "idle") {
+      if (parent && parentStatus && this.canReceiveMessage(parentStatus)) {
         await this.reactivateAgent(parent, path, "FINAL_ANSWER", payload, `team-final:${record.id}`);
       } else if (parent && parentStatus === "queued") {
         parent.pendingTasks.push({
@@ -238,20 +388,6 @@ export class TeamCoordinator {
       const detail = deliveryError instanceof Error ? deliveryError.message : String(deliveryError);
       this.runtime.recordPostFinishError(record, `Final-answer delivery failed: ${detail}`);
     }
-
-    if (status === "completed" && agent.pendingTasks.length > 0) {
-      const next = agent.pendingTasks.shift();
-      if (next) {
-        try {
-          await this.reactivateAgent(agent, next.senderPath, next.kind, next.message, next.toolCallId);
-        } catch (followupError) {
-          const detail = followupError instanceof Error ? followupError.message : String(followupError);
-          this.runtime.recordPostFinishError(record, `Queued follow-up failed: ${detail}`);
-        }
-      }
-    } else if (status !== "completed") {
-      agent.pendingTasks.length = 0;
-    }
   }
 
   private async spawnAgent(
@@ -260,7 +396,7 @@ export class TeamCoordinator {
     toolCallId: string,
     signal: AbortSignal | undefined,
     ctx: ExtensionContext,
-    options: { team?: string; systemPromptExtra?: string; description?: string; deferStart?: boolean } = {},
+    options: { team?: string; systemPromptExtra?: string; description?: string; deferStart?: boolean; parentToolCallId?: string } = {},
   ): Promise<TeamAgent> {
     validateAgentPath(senderPath);
     if (senderPath !== ROOT_PATH && !this.agents.has(senderPath)) throw new Error(`unknown spawning agent: ${senderPath}`);
@@ -276,17 +412,19 @@ export class TeamCoordinator {
         toolCallId,
         {
           prompt: message,
-          description: options.description ?? taskName,
+          description: options.description ?? args.description ?? taskName,
           subagent_type: args.agent_type ?? "general-purpose",
           background: true,
           model: args.model,
           max_turns: args.max_turns,
           thinking_level: args.thinking_level,
+          capability_mode: args.capability_mode,
         },
         signal,
         ctx,
         {
           customTools,
+          parentToolCallId: options.parentToolCallId,
           systemPromptSuffix: this.usageHint(path, senderPath, options.systemPromptExtra),
           teamIdentity: {
             agentPath: path,
@@ -302,10 +440,11 @@ export class TeamCoordinator {
         parentPath: senderPath,
         taskName,
         role: args.agent_type ?? "general-purpose",
-        description: options.description ?? taskName,
+        description: options.description ?? args.description ?? taskName,
         record,
         status: "running",
         team: options.team,
+        lastActivityAt: Date.now(),
         pendingTasks: [],
       };
       this.agents.set(path, agent);
@@ -317,6 +456,14 @@ export class TeamCoordinator {
     }
   }
 
+  private rollbackTeam(spawned: TeamAgent[], reason: string): void {
+    for (const agent of spawned) {
+      this.agents.delete(agent.path);
+      this.runtime.discard(agent.record, reason);
+    }
+    this.notifyActivity();
+  }
+
   private hasActivePeer(senderPath: string): boolean {
     return [...this.agents.values()].some((agent) => {
       if (agent.path === senderPath) return false;
@@ -325,8 +472,15 @@ export class TeamCoordinator {
     });
   }
 
-  private async waitForActivity(timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+  private async waitForActivity(
+    timeoutMs: number,
+    signal?: AbortSignal,
+    sinceVersion = this.activityVersion,
+  ): Promise<boolean> {
     const timeout = Math.min(Math.max(timeoutMs, 1_000), MAX_TEAM_WAIT_MS);
+    // Activity that landed between the caller deciding to wait and this
+    // registration must not be lost, or the wait blocks for its full timeout.
+    if (this.activityVersion !== sinceVersion) return true;
     return await new Promise<boolean>((resolve) => {
       let settled = false;
       const finish = (activity: boolean) => {
@@ -346,13 +500,28 @@ export class TeamCoordinator {
   }
 
   private listText(): string {
+    const now = Date.now();
     const lines = [`• [ROOT] ${ROOT_PATH}`];
     for (const agent of [...this.agents.values()].sort((a, b) => a.path.localeCompare(b.path))) {
-      lines.push(`• [${this.status(agent).toUpperCase()}] ${agent.path} (${agent.role}) — ${agent.description}`);
+      const preset = agent.team ? ` [${agent.team}]` : "";
+      const quiet = this.runtime.formatDuration(Math.max(now - agent.lastActivityAt, 0));
+      const detail = agent.report
+        ? `${agent.report.state}${agent.report.question ? `: ${agent.report.question}` : ` — ${agent.report.summary}`}`
+        : agent.description;
+      lines.push(`• [${this.status(agent).toUpperCase()}] ${agent.path} (${agent.role})${preset} — ${detail} — quiet ${quiet}`);
     }
     return `Team agents (${this.agents.size + 1}):\n${lines.join("\n")}`;
   }
 
+  /**
+   * V2 control-plane tools.
+   *
+   * `promptSnippet` here only reaches the root session's system prompt. A child
+   * session runs with `systemPromptOverride`, and Pi then renders the preamble
+   * alone: the `tools` and `rules` sections are skipped, so snippets and
+   * `promptGuidelines` never reach a child. Everything a child must know about
+   * these tools therefore lives in `usageHint` and in each tool's `description`.
+   */
   private controlTools(senderPath: string): ToolDefinition[] {
     const spawnTool = defineTool({
       name: "spawn_team_agent",
@@ -364,11 +533,14 @@ export class TeamCoordinator {
         task_name: Type.String({ description: "Lowercase path segment for the child, e.g. researcher or verifier_2." }),
         message: Type.String({ description: "Self-contained initial task for the child." }),
         agent_type: Type.Optional(Type.String({ description: "External agent definition/profile name. Defaults to general-purpose." })),
+        description: Type.Optional(Type.String({ description: "Short 3-5 word label shown in the team tree and subagent UI. Defaults to task_name." })),
         model: Type.Optional(Type.String({ description: "Optional model allowed by the selected external agent definition." })),
         max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Optional soft turn cap; external agent definition takes precedence." })),
         thinking_level: Type.Optional(Type.String({ description: "Optional thinking level: off, minimal, low, medium, high, xhigh, or max. Clamped to what the model supports; omitted inherits Pi settings." })),
+        capability_mode: Type.Optional(Type.String({ description: "Tool access for the child: read-only, read-write, execute, or all. Defaults to the agent definition, then all." })),
       }),
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
+        await this.flushBufferedMessages();
         const agent = await this.spawnAgent(senderPath, params, toolCallId, signal, ctx);
         return toolText(`Spawned ${agent.path} (${agent.role}). Final output will be delivered automatically to ${senderPath}.`, {
           agentPath: agent.path,
@@ -381,7 +553,9 @@ export class TeamCoordinator {
     const sendTool = defineTool({
       name: "team_send_message",
       label: "Send Team Message",
-      description: "Send a semantic message to a V2 agent. This does not start an idle recipient turn; a running recipient receives it through the steer queue.",
+      description:
+        "Send a semantic message to a V2 agent without starting an idle recipient turn. " +
+        "Consecutive messages from one sender to one target merge into a single steer and are delivered before your next team action or when your turn ends.",
       promptSnippet: "Send a queue-only message to /root or another V2 agent.",
       parameters: Type.Object({
         target: Type.String({ description: "Absolute /root/... path. A relative name addresses your own child." }),
@@ -390,8 +564,14 @@ export class TeamCoordinator {
       execute: async (_toolCallId, params) => {
         const target = this.resolveTarget(senderPath, params.target);
         const message = requireText(params.message, "message");
-        await this.deliver(senderPath, target, "MESSAGE", message, false);
-        return toolText(`Delivered MESSAGE from ${senderPath} to ${target} without forcing an idle turn.`, { sender: senderPath, target });
+        const buffered = this.bufferMessage(senderPath, target, message);
+        // Buffering is still team activity: a waiting peer must wake even though
+        // the payload leaves on the next flush.
+        this.notifyActivity();
+        return toolText(
+          `Buffered MESSAGE for ${target} (${buffered} pending from ${senderPath}). It merges with your other messages to that agent and is delivered before your next team action or when this turn ends.`,
+          { sender: senderPath, target, buffered },
+        );
       },
     });
 
@@ -405,6 +585,7 @@ export class TeamCoordinator {
         message: Type.String({ description: "New task or follow-up instruction." }),
       }),
       execute: async (toolCallId, params, signal) => {
+        await this.flushBufferedMessages();
         const targetPath = this.resolveTarget(senderPath, params.target);
         const message = requireText(params.message, "message");
         if (targetPath === ROOT_PATH) {
@@ -414,20 +595,24 @@ export class TeamCoordinator {
         const target = this.agentForPath(targetPath);
         if (!target.record.finished) {
           if (this.runtime.backgroundState(target.record) === "queued") {
+            // The parent explicitly asked this queued agent for work, so its
+            // pending run moves ahead of unrelated launches instead of waiting.
+            const promoted = this.runtime.prioritizeBackground(target.record);
             target.pendingTasks.push({ senderPath, message, toolCallId, kind: "NEW_TASK" });
             this.notifyActivity();
-            return toolText(`Queued NEW_TASK for ${targetPath}; it will run after the agent's already-queued work.`, {
-              sender: senderPath,
-              target: targetPath,
-              reactivated: false,
-              queued: true,
-            });
+            return toolText(
+              promoted
+                ? `Queued NEW_TASK for ${targetPath} and promoted its pending run to the front of the concurrency queue.`
+                : `Queued NEW_TASK for ${targetPath}; it will run after the agent's already-queued work.`,
+              { sender: senderPath, target: targetPath, reactivated: false, queued: true, promoted },
+            );
           }
           await this.deliver(senderPath, targetPath, "NEW_TASK", message, true);
           return toolText(`Queued NEW_TASK from ${senderPath} to running agent ${targetPath}.`, { sender: senderPath, target: targetPath, reactivated: false });
         }
-        if (this.status(target) !== "idle") {
-          throw new Error(`team agent ${targetPath} cannot be reactivated after ${this.status(target)}`);
+        const current = this.status(target);
+        if (!this.canReceiveMessage(current)) {
+          throw new Error(`team agent ${targetPath} cannot be reactivated after ${current}`);
         }
         const scheduled = await this.reactivateAgent(target, senderPath, "NEW_TASK", message, toolCallId, signal);
         return toolText(`Reactivated ${targetPath} with NEW_TASK while preserving its child-session history.`, {
@@ -449,6 +634,10 @@ export class TeamCoordinator {
         timeout_ms: Type.Optional(Type.Integer({ minimum: 1_000, maximum: MAX_TEAM_WAIT_MS, description: "Wait timeout in milliseconds. Defaults to 120000." })),
       }),
       execute: async (_toolCallId, params, signal) => {
+        // Recorded before the flush so activity that lands during the flush is
+        // still observed by the wait below.
+        const enteredAt = this.activityVersion;
+        await this.flushBufferedMessages();
         if (senderPath === ROOT_PATH) {
           return toolText(`Root does not block on team_wait. Finish this turn while background agents continue; FINAL_ANSWER will reactivate /root when results arrive.\n\n${this.listText()}`, {
             activity: false,
@@ -464,7 +653,7 @@ export class TeamCoordinator {
             version: this.activityVersion,
           });
         }
-        const activity = await this.waitForActivity(params.timeout_ms ?? DEFAULT_TEAM_WAIT_MS, signal);
+        const activity = await this.waitForActivity(params.timeout_ms ?? DEFAULT_TEAM_WAIT_MS, signal, enteredAt);
         const idle = !this.hasActivePeer(senderPath);
         const status = idle
           ? "No other V2 agent is active now. Finish this turn to become IDLE; a future team_followup_task can reactivate this child session."
@@ -485,9 +674,19 @@ export class TeamCoordinator {
       description: "List the Subagents V2 team tree with stable paths, roles, and status.",
       promptSnippet: "Inspect the current V2 team tree and statuses.",
       parameters: Type.Object({}),
-      execute: async () => toolText(this.listText(), {
-        agents: [...this.agents.values()].map((agent) => ({ path: agent.path, parentPath: agent.parentPath, role: agent.role, status: this.status(agent) })),
-      }),
+      execute: async () => {
+        await this.flushBufferedMessages();
+        return toolText(this.listText(), {
+          agents: [...this.agents.values()].map((agent) => ({
+            path: agent.path,
+            parentPath: agent.parentPath,
+            role: agent.role,
+            status: this.status(agent),
+            report: agent.report,
+            quietMs: Date.now() - agent.lastActivityAt,
+          })),
+        });
+      },
     });
 
     const interruptTool = defineTool({
@@ -497,17 +696,59 @@ export class TeamCoordinator {
       promptSnippet: "Interrupt a running V2 agent.",
       parameters: Type.Object({ target: Type.String({ description: "Absolute /root/... path of the running agent." }) }),
       execute: async (_toolCallId, params) => {
+        await this.flushBufferedMessages();
         const targetPath = this.resolveTarget(senderPath, params.target);
         if (targetPath === ROOT_PATH) throw new Error("team_interrupt cannot abort /root");
         const target = this.agentForPath(targetPath);
         if (target.record.finished) return toolText(`${targetPath} already finished (${this.status(target)}).`, { target: targetPath, finished: true });
         this.runtime.cancel(target.record);
+        this.touch(target);
         this.notifyActivity();
         return toolText(`Interrupt requested for ${targetPath}.`, { target: targetPath, finished: false });
       },
     });
 
-    return [spawnTool, sendTool, followupTool, waitTool, listTool, interruptTool];
+    const reportTool = defineTool({
+      name: "team_report",
+      label: "Report Team Result",
+      description:
+        "Declare how this turn ends so your parent is woken only when it must act. " +
+        "Call it once before finishing. Without it your final text reaches the parent as an unconditional result.",
+      promptSnippet: "Declare ready / blocked / failed / dropped before ending your turn; dropped keeps your parent silent.",
+      parameters: Type.Object({
+        state: Type.Union([
+          Type.Literal("ready"),
+          Type.Literal("blocked"),
+          Type.Literal("failed"),
+          Type.Literal("dropped"),
+        ], { description: "ready: the requested result is deliverable. blocked: you need a parent decision to continue. failed: the work cannot be completed. dropped: the parent has nothing to act on." }),
+        summary: Type.String({ description: "One sentence the parent can act on, not a work report. Your final text is ignored when you report." }),
+        question: Type.Optional(Type.String({ description: "Required with blocked: the single concrete decision the parent must make." })),
+      }),
+      execute: async (_toolCallId, params) => {
+        await this.flushBufferedMessages();
+        const agent = this.agentForPath(senderPath);
+        const state = params.state;
+        const summary = requireText(params.summary, "summary");
+        const question = params.question?.trim() || undefined;
+        if (state === "blocked" && !question) {
+          throw new Error("team_report with state=blocked requires the question the parent must answer");
+        }
+        agent.report = { state, summary, ...(question ? { question } : {}) };
+        this.touch(agent);
+        return toolText(
+          state === "dropped"
+            ? `Recorded dropped. ${senderPath} stays silent and team_list keeps this summary.`
+            : `Recorded ${state}. Your parent is notified when this turn ends.`,
+          { agentPath: senderPath, state, summary, ...(question ? { question } : {}) },
+        );
+      },
+    });
+
+    const tools = [spawnTool, sendTool, followupTool, waitTool, listTool, interruptTool];
+    // The root has no parent, so a result report would be dead weight in its tool list.
+    if (senderPath !== ROOT_PATH) tools.push(reportTool);
+    return tools;
   }
 
   private spawnTeamTool(): ToolDefinition {
@@ -518,25 +759,34 @@ export class TeamCoordinator {
       promptSnippet: "Launch a configured V2 team preset for collaborative work.",
       executionMode: "parallel",
       parameters: Type.Object({
-        team: Type.String({ description: "Team preset name, e.g. research, implementation, or review." }),
+        team: Type.String({ description: "Team preset name as listed by /subagent-teams, e.g. research, implementation, or review." }),
         task: Type.String({ description: "Shared team objective substituted into member task templates as {{task}}." }),
+        members: Type.Optional(Type.Array(Type.String(), { description: "Optional member subset to start. Omitted starts the full preset roster. Preset order is preserved." })),
+        model: Type.Optional(Type.String({ description: "Optional model applied to every selected member, overriding each member's preset model. Must be enabled for the member's agent definition." })),
+        thinking_level: Type.Optional(Type.String({ description: "Optional thinking level applied to every selected member, overriding preset thinking levels. Clamped per model." })),
+        max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Optional soft turn cap applied to every selected member; 0 means unlimited. Agent definitions still take precedence." })),
+        capability_mode: Type.Optional(Type.String({ description: "Tool access for every selected member: read-only, read-write, execute, or all. Defaults to each agent definition, then all." })),
+        instructions: Type.Optional(Type.String({ description: "Extra team-wide instruction appended to the preset instructions and shared with every member's system prompt." })),
+        timeout_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_TEAM_WAIT_MS, description: "Wait this long for members to finish and return their results. 0 or omitted returns immediately and delivers final answers to /root asynchronously." })),
       }),
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
         const team = selectedTeam(ctx.cwd, requireText(params.team, "team"));
         const task = requireText(params.task, "task");
-        const paths = team.members.map((member) => childPath(ROOT_PATH, member.name));
+        const members = selectTeamMembers(team, params.members);
+        const paths = members.map((member) => childPath(ROOT_PATH, member.name));
         for (const path of paths) {
           if (this.agents.has(path) || this.reservedPaths.has(path)) throw new Error(`team agent path already exists: ${path}`);
         }
-        const roster = team.members.map((member, index) => `${paths[index]} (${member.agent})`).join("\n");
+        const roster = members.map((member, index) => `${paths[index]} (${member.agent})`).join("\n");
         const systemPromptExtra = [
           `Team preset: ${team.name}. Objective: ${task}`,
           team.instructions ?? "",
+          params.instructions?.trim() ?? "",
           `Team roster:\n${roster}`,
         ].filter(Boolean).join("\n\n");
         const spawned: TeamAgent[] = [];
         try {
-          for (const [index, member] of team.members.entries()) {
+          for (const [index, member] of members.entries()) {
             const path = paths[index];
             const message = renderTeamTemplate(member.task, {
               task,
@@ -550,29 +800,57 @@ export class TeamCoordinator {
                 task_name: member.name,
                 message,
                 agent_type: member.agent,
-                model: member.model,
-                max_turns: member.maxTurns,
-                thinking_level: member.thinkingLevel,
+                description: member.description,
+                model: params.model ?? member.model,
+                max_turns: params.max_turns ?? member.maxTurns,
+                thinking_level: params.thinking_level ?? member.thinkingLevel,
+                capability_mode: params.capability_mode,
               },
-              `${toolCallId}:${member.name}`,
+              // The real tool-call id is recorded on the child run for history.
+              // Parent task metadata is omitted below because one call starts
+              // many members and has no single parent task id.
+              toolCallId,
               signal,
               ctx,
-              { team: team.name, systemPromptExtra, description: member.description ?? member.name, deferStart: true },
+              {
+                team: team.name,
+                systemPromptExtra,
+                description: member.description ?? member.name,
+                deferStart: true,
+                // One call starts many members, so there is no single parent
+                // task id. Empty means: keep spawn_team's own tool-call metadata.
+                parentToolCallId: "",
+              },
             ));
           }
         } catch (error) {
-          for (const agent of spawned) {
-            this.agents.delete(agent.path);
-            this.runtime.discard(agent.record, `Rolled back partial team ${team.name} startup.`);
-          }
-          this.notifyActivity();
+          this.rollbackTeam(spawned, `Rolled back partial team ${team.name} startup.`);
           throw error;
         }
+        if (signal?.aborted) {
+          this.rollbackTeam(spawned, `Rolled back team ${team.name}: the spawn request was cancelled before members started.`);
+          throw new Error(`spawn_team for ${team.name} was cancelled before any member started`);
+        }
         for (const agent of spawned) this.runtime.scheduleBackground(agent.record, agent.record.prompt);
-        return toolText(
-          `Spawned team ${team.name} [${team.scope}] for: ${task}\n${spawned.map((agent) => `• ${agent.path} (${agent.role})`).join("\n")}\nFinal answers will be delivered automatically to /root.`,
-          { team: team.name, scope: team.scope, agents: spawned.map((agent) => ({ path: agent.path, subagentId: agent.record.id, role: agent.role })) },
-        );
+        const header = [
+          `Spawned team ${team.name} [${team.scope}] for: ${task}`,
+          ...spawned.map((agent) => `• ${agent.path} (${agent.role})`),
+        ].join("\n");
+        const subsetNote = members.length === team.members.length
+          ? ""
+          : `\nStarted ${members.length} of ${team.members.length} preset members; member task templates may reference agents that were not started.`;
+        const details = {
+          team: team.name,
+          scope: team.scope,
+          agents: spawned.map((agent) => ({ path: agent.path, subagentId: agent.record.id, role: agent.role })),
+        };
+        const timeoutMs = params.timeout_ms ?? 0;
+        if (timeoutMs <= 0) {
+          return toolText(`${header}${subsetNote}\nFinal answers will be delivered automatically to /root.`, details);
+        }
+        await this.runtime.waitForRecords(spawned.map((agent) => agent.record.id), timeoutMs, signal);
+        const results = spawned.map((agent) => this.runtime.formatSubagentResult(agent.record)).join("\n\n---\n\n");
+        return toolText(`${header}${subsetNote}\n\n${results}`, details);
       },
     });
   }
@@ -581,6 +859,16 @@ export class TeamCoordinator {
 export function registerV2Tools(pi: ExtensionAPI, runtime: SubagentRuntime): void {
   const coordinator = new TeamCoordinator(pi, runtime);
   coordinator.register();
+  // A root turn has no `handleFinished`; its end is the only reliable flush point
+  // for messages buffered by the last team action of the turn.
+  pi.on("turn_end", async () => {
+    try {
+      await coordinator.flushBufferedMessages();
+    } catch {
+      // A target that ended mid-turn cannot accept the payload; the merge already
+      // saved the context cost, and the tool result reported the buffer count.
+    }
+  });
 }
 
 export { CONTROL_TOOL_NAMES, TEAM_MESSAGE_TYPE };

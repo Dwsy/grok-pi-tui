@@ -1,6 +1,6 @@
 ---
 name: multi-agent-proactive
-description: 为 grok-pi 顶层父会话的 MultiAgentMode::Proactive / Ultra 提供主动委派与协调规范，适配 V1 spawn_subagent 与 V2 team 工具。仅父级编排器因该模式主动 fan-out；子代理不会因为父级启用 Proactive/Ultra 而继承主动模式。用于用户要求主动并行、多代理协作，或需要决定何时 spawn / message / follow-up / wait 时。
+description: 为 grok-pi 顶层父会话的 MultiAgentMode::Proactive / Ultra 提供主动委派与协调规范，适配 V1 spawn_subagent 与 V2 team 工具。仅父级编排器因该模式主动 fan-out；子代理不会因为父级启用 Proactive/Ultra 而继承主动模式。用于用户要求主动并行、多代理协作，或需要决定何时 spawn / message / follow-up / wait / report 时。
 ---
 
 # Multi-Agent Proactive for grok-pi
@@ -38,14 +38,15 @@ V1 适合彼此独立的研究、实现、验证、审查。默认 child 是叶�
 | 目的 | 工具 |
 |---|---|
 | 创建命名 team child | `spawn_team_agent` |
-| 给运行中 agent 发语义消息 | `team_send_message` |
-| 给已有 agent 新任务并触发 turn | `team_followup_task` |
+| 给运行中 agent 发语义消息 | `team_send_message`（连续多条合并成一条 steer） |
+| 给已有 agent 新任务并触发 turn | `team_followup_task`（对排队中 agent 会插队） |
 | 等待 team activity | `team_wait` |
-| 查看 team tree | `team_list` |
+| 查看 team tree | `team_list`（含静默时长与待决问题） |
 | 中断运行中 agent | `team_interrupt` |
-| 启动预设团队（root 可见时） | `spawn_team` |
+| 声明本轮结果 | `team_report`（`ready`/`blocked`/`failed`/`dropped`；只有 `dropped` 不唤醒 parent） |
+| 启动预设团队（root 可见时） | `spawn_team`（可加 `members` 子集、`model`/`thinking_level`/`max_turns`/`capability_mode` 统一覆盖、`instructions`、`timeout_ms`） |
 
-V2 适合 agent 之间需要消息、follow-up、稳定 `/root/...` 身份或预设团队的场景。若 V2 工具未出现，就使用 V1；不要为了“更高级”而绕过实际工具目录。
+V2 适合 agent 之间需要消息、follow-up、稳定 `/root/...` 身份或预设团队的场景。V1 与 V2 工具面互斥：V2 开启时不注册 V1 单代理工具，因此不要在本会话里寻找 `spawn_subagent`。若 V2 工具未出现，就使用 V1；不要为了“更高级”而绕过实际工具目录。
 
 ## 第一原则：委派必须有收益
 
@@ -90,6 +91,8 @@ V2 适合 agent 之间需要消息、follow-up、稳定 `/root/...` 身份或预
 - [具体命令或证据标准]
 
 汇报:
+- 结束前调用 team_report 声明 state：ready（可交付）/ blocked（需父级决定，必附 question）/ failed / dropped（父级无事可做）
+- summary 一句话说清结果，不是工作汇报
 - 结论/根因
 - 修改文件（如有）
 - 验证结果关键输出
@@ -158,12 +161,80 @@ spawn_subagent(research)
 
 只在通信/层级本身有价值时用 V2。
 
+预设结构正好匹配时用 `spawn_team`：
+
+```text
+spawn_team(team="research", task="定位 X 崩溃的根因")
+spawn_team(team="research", task="...", members=["researcher","synthesizer"])
+```
+
+- `members` 子集保留预设声明顺序，synthesizer 仍在其生产者之后启动。但成员任务模板可能引用未启动的 agent，选子集时要在 `task` 或 `instructions` 里说明协作范围。
+- `model` / `thinking_level` / `max_turns` / `capability_mode` 是**本次调用**的统一覆盖，不是 per-member；成员的长期差异写进预设 JSON 或用 `/subagent-teams` 编辑。
+- 默认不传 `timeout_ms`：立即返回，最终答案异步回传。只有确实需要同步收集时才传。
+
+### 并行推进
+
+V2 下 root 的正确做法是**派完就结束 turn**，而不是停下来等：
+
+```text
+spawn_team(team="research", task="...")
+→ 继续本地不依赖它的工作
+→ turn 结束
+→ child 的 FINAL_ANSWER 重新唤醒 root
+```
+
+不要在 root 调 `team_wait` 停车——它对 root 直接返回，写了也不等。也不要为同一个目标重复 spawn。
+
 ### Message vs Follow-up
 
 - `team_send_message`：给**正在运行**的 agent 补事实，不主动制造一个新的 idle turn。
 - `team_followup_task`：已有 agent 完成一轮后，需要利用它已有上下文继续做新的相关任务。
 - `team_wait`：只给 child 做 mailbox 同步屏障；root 启动后台 V2 agent 后不要用它停车，直接结束当前 turn，等待 `FINAL_ANSWER` 自动唤醒。
 - `team_list`：需要确认路径、状态或责任归属时再看，不拿它做高频轮询。
+
+### 消息要合并，不要刷屏
+
+- 同一 sender 到同一 target 的连续 `team_send_message` 会合并成一条 steer，重复文本被丢弃。一个 turn 内要说的事一次说完，不要拆成多条。
+- 合并后的消息在下一个 team 动作前或 turn 结束时发出；`team_list` 会先 flush。
+- `team_followup_task` 发给排队中的 agent 时，会把它的待跑任务提到并发队列最前——父级明确要的工作不该排在无关 launch 后面。
+- `team_list` 每行带 `quiet 42s`。`RUNNING` agent 静默过久是“该去看”而不是“继续等”的信号。
+
+### 什么内容值得发
+
+一条消息只在对方**无法自行获得**或**必须据此行动**时才发：
+
+- 值得发：对方需要的事实（文件路径、复现条件、已排除的假设）、对方向你提出的问题的答案、他正在等的结果。
+- 不值得发：进度汇报（“我在看 X”）、已经发过的内容、对方能自己读到的东西。
+
+判断标准：删掉这条消息，对方会不会做错或做不下去？不会就不发。
+
+### 收尾必须声明结果
+
+child 在结束 turn 前调用 `team_report`，父级只为需要行动的结果付出 turn：
+
+| `state` | 何时用 | 父级被唤醒 |
+|---|---|---|
+| `ready` | 要的结果可交付 | 是 |
+| `blocked` | 需要父级做一个决定，`question` 必填 | 是 |
+| `failed` | 做不成 | 是 |
+| `dropped` | 无需改动、请求已被满足、或已被其他 agent 接管 | **否** |
+
+`dropped` 不是“偷懒退出”，而是“父级无事可做”的诚实声明：它保留 summary 供 `team_list` 查看，但不消耗父级的 turn。没有产出就不要编产出。
+
+不调 `team_report` 时，最终文本仍会无条件回传——这是旧行为，只在确实无法判断状态时使用。
+
+### 父级如何处置 report
+
+收到 child 的 report 后，父级必须做出处置，而不是只读一眼：
+
+| child 报的 | 父级要做的 |
+|---|---|
+| `ready` | 验收 summary 与证据；需要细节再读它的 transcript |
+| `blocked` | 读 `question`。能自己定就定，用 `team_followup_task` 回给同一个 child；要用户定就升级给用户 |
+| `failed` | 判断是任务书问题还是能力问题；修正任务书重派，或自己接手 |
+| `dropped` | 不追问。确认是否真无事可做；若是任务书给错了，重写后重派 |
+
+`blocked` 的 question 是父级的责任，不是可忽略的状态。
 
 ### Child 的边界
 
@@ -177,6 +248,21 @@ child 默认行为：
 4. 只有任务文本、后续 `team_followup_task` 或用户要求明确授权进一步拆分时，才创建自己的 child。
 5. 即使获准继续拆，也不得扩展原任务范围或制造写冲突。
 
+## 状态解读
+
+`team_list` 每行：`[STATUS] path (role) [preset] — detail — quiet Ns`
+
+| 状态 | 含义 | 父级动作 |
+|---|---|---|
+| `QUEUED` | 在等并发额度 | 需要它先跑 → `team_followup_task` 会插队 |
+| `RUNNING` | turn 正在跑 | 看 quiet；过长则 `team_interrupt` 或再等 |
+| `IDLE` | 上一轮成功结束 | 有新工作 → `team_followup_task` |
+| `WAITING_DECISION` | 上一轮 `blocked`，等父级决定 | 读 question → 给决定 |
+| `FAILED` | 上一轮失败 | 不静默复活；重派或自己接手 |
+| `CANCELLED` | 被中断 | 同上 |
+
+`quiet` 是距上次收发 team 消息的时长：`RUNNING` + 长 quiet 可能卡住；`IDLE` + 长 quiet 是正常。
+
 ## 写入纪律
 
 所有并行 agent 可能看到同一工作目录，因此写入必须主动隔离。
@@ -189,6 +275,8 @@ child 默认行为：
 - 阶段：先并行调查，再指定一个 owner 写热点文件
 
 两个 agent 必须改同一个核心文件时，不要并行写；指定一个 owner，另一个只审查或提供建议。
+
+V2 下这一点更严格：所有 agent 共享同一个 cwd（`usageHint` 会明确告知），`spawn_team` 一次起多个成员时先确认写域不重叠，否则并行写入会互相覆盖。只读成员（`explore` / `capability_mode: read-only`）不占写域。
 
 ## 父级必须保留的责任
 
@@ -212,6 +300,7 @@ child 的 final 是证据包，不自动等于最终答案。
 - 声称执行的验证是否有真实输出
 - 路径、函数和错误是否与代码一致
 - 多个 child 是否给出矛盾结论
+- child 的 `team_report` state 与其证据是否一致（说 `ready` 但没验证 = 不成立）
 - 是否暴露新的 blocker
 
 高风险改动由父级亲自复验。
@@ -242,6 +331,18 @@ child 的 final 是证据包，不自动等于最终答案。
 
 V2 child 看得到 `spawn_team_agent` 不代表它应该主动使用。工具权限和主动编排策略是两件事。
 
+### 用 team_report 掩盖没做完
+
+把未完成的工作报成 `ready`。修正：`ready` 只在结果可交付时用；不确定就用 `blocked` 带 question。
+
+### 忽视 WAITING_DECISION
+
+child 报 `blocked` 后父级不回应，agent 一直挂着。修正：每个 blocked 都要有处置——自己决定、升级用户，或 `team_interrupt` 明确终止。
+
+### 为同一目标重复 spawn
+
+已经有一个 agent 在做 X，又起一个做同样的 X。修正：先用 `team_list` 看现有 agent 的职责，再用 `team_followup_task` 复用它的上下文。
+
 ## 最终检查
 
 结束前确认：
@@ -252,6 +353,8 @@ V2 child 看得到 `spawn_team_agent` 不代表它应该主动使用。工具权
 - [ ] child 没有因为父级 Proactive/Ultra 自动继续 fan-out
 - [ ] 没有在仍有本地工作时无意义等待
 - [ ] 关键 child 结论已由父级复核
+- [ ] 每个 `ready` / `blocked` / `failed` / `dropped` 都有处置，没有悬空的 `WAITING_DECISION`
+- [ ] `team_list` 里没有长期 `RUNNING` + 长 quiet 的 agent 被忽略
 - [ ] blocker 和未验证项明确告知用户
 
 **能缩短关键路径或提高质量时，父级主动派；child 专注执行，消息汇合，父级验证并收敛。**

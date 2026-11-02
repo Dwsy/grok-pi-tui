@@ -144,7 +144,7 @@ flowchart LR
 | `PI_GROK_REMOTE_TUI` | `1` | 启用 Pi `ctx.ui.custom` 组件 |
 | `PI_GROK_BASH` | `1` | 启用 Grok-owned Bash 集成 |
 | `PI_GROK_NATIVE_COMMANDS` | `0` | 启用实验性的 `/pi-*` 命令 |
-| `PI_GROK_SUBAGENTS_V2` | `0` | 在 Pi subagents 上启用可选 V2 team tools（`spawn_team`、稳定 agent path、peer messaging、nested spawn）；与 F2「Pi subagents V2」开关等效 |
+| `PI_GROK_SUBAGENTS_V2` | `0` | 启用 V2 team 工具面（`spawn_team`、稳定 agent path、peer messaging、nested spawn）。V2 替换 V1 单代理工具，V1 命令与历史仍可用；与 F2「Pi subagents V2」开关等效 |
 | `GROK_HOME` | `~/.grok-pi` | 用户状态根目录（与 stock Grok 的 `~/.grok` 隔离） |
 | `GROK_PROJECT_DIR` | `.grok-pi` | 仓库内项目配置/workflows/hooks 目录名 |
 | `GROK_PI_NO_AUTO_UPDATE` | 未设置 | 禁用后台更新检查 |
@@ -162,7 +162,7 @@ Subagents V2 的 team preset 使用 JSON，放在 `<repo>/.grok-pi/teams` 或 `~
 }
 ```
 
-启动 grok-pi 前用 F2「Pi subagents V2」开关或设置 `PI_GROK_SUBAGENTS_V2=1`；用 `/subagent-teams` 查看 preset。`spawn_team` 启动整组 preset，`spawn_team_agent`、`team_send_message`、`team_followup_task`、`team_wait`、`team_list`、`team_interrupt` 提供底层协作面。Rhai Workflow 仍负责确定性编排；Team V2 负责 session-scoped、可跨单次 run 复用的 agent identity 和 peer messaging。
+启动 grok-pi 前用 F2「Pi subagents V2」开关或设置 `PI_GROK_SUBAGENTS_V2=1`；用 `/subagent-teams` 查看 preset。`spawn_team` 启动整组 preset，`spawn_team_agent`、`team_send_message`、`team_followup_task`、`team_wait`、`team_list`、`team_interrupt` 提供底层协作面。V2 开启时不再注册 V1 单代理工具（`spawn_subagent` 及其 output/message/cancel/list 配套），`/subagents`、`/subagent-message`、`/subagent-history` 仍可用。Rhai Workflow 仍负责确定性编排；Team V2 负责 session-scoped、可跨单次 run 复用的 agent identity 和 peer messaging。
 
 Rhai Workflow **默认关闭**（F2 → Agent → **Pi workflows**，改完后需**整进程重启**）。细节见 [功能矩阵](FEATURE_MATRIX.zh-CN.md)、[AGENTS.md 产品态隔离](../AGENTS.md#product-state-isolation)。
 

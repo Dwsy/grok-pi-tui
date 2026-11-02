@@ -64,7 +64,12 @@ async function sendMessageFromCommand(
   ctx.ui.notify(`Sent ${delivery === "steer" ? "steer" : "follow-up"} message to ${record.description}.`, "info");
 }
 
-export function registerV1Tools(pi: ExtensionAPI, runtime: SubagentRuntime): void {
+/**
+ * V1 commands only. The Rust adapter requires both hidden bridge commands
+ * (`pi_adapter.rs` gates the subagent bridge on their registration), so V2 team
+ * mode still registers this surface and drops only the single-agent tools.
+ */
+export function registerV1Commands(pi: ExtensionAPI, runtime: SubagentRuntime): void {
   pi.registerCommand("subagents", {
     description: "Configure project/global Pi subagents",
     handler: async (_args, ctx) => {
@@ -86,6 +91,27 @@ export function registerV1Tools(pi: ExtensionAPI, runtime: SubagentRuntime): voi
     },
   });
 
+  pi.registerCommand(SUBAGENT_REPLAY_COMMAND, {
+    description: "Internal Pi-Grok bridge command: replay persisted subagents after session/load",
+    handler: async (args, ctx) => {
+      const request = JSON.parse(args || "{}") as { mode?: unknown; requestId?: unknown };
+      const mode = request.mode === "recovery" ? "recovery" : "load";
+      const requestId = requireText(request.requestId, "replay request id");
+      await runtime.replayPersisted(ctx, mode, requestId);
+    },
+  });
+
+  pi.registerCommand("__pi_grok_subagent_cancel", {
+    description: "Internal Pi-Grok bridge command: cancel a subagent",
+    handler: async (args) => {
+      const id = requireText(args, "subagent id");
+      runtime.cancel(runtime.resolveSubagent(id));
+    },
+  });
+}
+
+/** V1 single-agent tools. V2 team mode skips these so only the team surface is model-visible. */
+export function registerV1AgentTools(pi: ExtensionAPI, runtime: SubagentRuntime): void {
   pi.registerTool({
     name: "spawn_subagent",
     label: "Spawn Subagent",
@@ -254,24 +280,6 @@ export function registerV1Tools(pi: ExtensionAPI, runtime: SubagentRuntime): voi
           })),
         },
       };
-    },
-  });
-
-  pi.registerCommand(SUBAGENT_REPLAY_COMMAND, {
-    description: "Internal Pi-Grok bridge command: replay persisted subagents after session/load",
-    handler: async (args, ctx) => {
-      const request = JSON.parse(args || "{}") as { mode?: unknown; requestId?: unknown };
-      const mode = request.mode === "recovery" ? "recovery" : "load";
-      const requestId = requireText(request.requestId, "replay request id");
-      await runtime.replayPersisted(ctx, mode, requestId);
-    },
-  });
-
-  pi.registerCommand("__pi_grok_subagent_cancel", {
-    description: "Internal Pi-Grok bridge command: cancel a subagent",
-    handler: async (args) => {
-      const id = requireText(args, "subagent id");
-      runtime.cancel(runtime.resolveSubagent(id));
     },
   });
 }

@@ -6,9 +6,11 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { BridgeEmitter, SubagentRecord } from "./bridge.ts";
 import { profileFor, selectedDefinition } from "./definitions.ts";
-import { SubagentRuntime } from "./runtime.ts";
-import { SUBAGENT_REPLAY_COMMAND } from "./shared.ts";
-import { registerV1Tools } from "./tools-v1.ts";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { SubagentRuntime, defaultSubagentExtensions } from "./runtime.ts";
+import { SUBAGENT_REPLAY_COMMAND, MAX_BACKGROUND_CONCURRENCY } from "./shared.ts";
+import { registerV1AgentTools, registerV1Commands } from "./tools-v1.ts";
 
 const noopBridge: BridgeEmitter = Object.assign(() => undefined, { ready: Promise.resolve() });
 const noopPersist = () => undefined;
@@ -83,6 +85,28 @@ test("session_start does not replay before the session/load barrier", () => {
   assert.deepEqual(events, []);
 });
 
+test("prioritizeBackground promotes a queued run and refuses an unknown record", () => {
+  const runtime = new SubagentRuntime(fakePi(), noopBridge, noopPersist);
+  const record = (id: string) => ({ id, finished: false, cancelRequested: false }) as SubagentRecord;
+  // Fill the concurrency budget so later runs wait in the queue.
+  for (let index = 0; index < MAX_BACKGROUND_CONCURRENCY; index += 1) {
+    runtime.scheduleBackgroundTask(record(`run-${index}`), () => new Promise<void>(() => undefined));
+  }
+  const first = record("queued-1");
+  const second = record("queued-2");
+  runtime.scheduleBackgroundTask(first, async () => undefined);
+  runtime.scheduleBackgroundTask(second, async () => undefined);
+
+  assert.equal(runtime.backgroundState(second), "queued");
+  assert.equal(runtime.prioritizeBackground(second), true);
+  assert.equal(runtime.prioritizeBackground(record("missing")), false);
+});
+
+test("default subagent extensions follow the installed search extension", () => {
+  const expected = join(homedir(), ".pi", "agent", "npm", "node_modules", "@ff-labs", "pi-fff");
+  assert.deepEqual(defaultSubagentExtensions().includes(expected), existsSync(expected));
+});
+
 test("V1 registers the hidden post-load replay command", () => {
   const commands: string[] = [];
   const pi = {
@@ -90,8 +114,38 @@ test("V1 registers the hidden post-load replay command", () => {
     registerTool: () => undefined,
   } as unknown as ExtensionAPI;
   const runtime = new SubagentRuntime(fakePi(), noopBridge, noopPersist);
-  registerV1Tools(pi, runtime);
+  registerV1Commands(pi, runtime);
   assert.ok(commands.includes(SUBAGENT_REPLAY_COMMAND));
+});
+
+test("V1 command registration keeps the bridge commands but no agent tools", () => {
+  const commands: string[] = [];
+  const tools: string[] = [];
+  const pi = {
+    registerCommand: (name: string) => { commands.push(name); },
+    registerTool: (tool: { name: string }) => { tools.push(tool.name); },
+  } as unknown as ExtensionAPI;
+  const runtime = new SubagentRuntime(fakePi(), noopBridge, noopPersist);
+  registerV1Commands(pi, runtime);
+  assert.deepEqual(tools, []);
+  assert.ok(commands.includes(SUBAGENT_REPLAY_COMMAND));
+  assert.ok(commands.includes("__pi_grok_subagent_cancel"));
+});
+
+test("V1 agent tools register exactly the five single-agent tools", () => {
+  const tools: string[] = [];
+  const pi = {
+    registerTool: (tool: { name: string }) => { tools.push(tool.name); },
+  } as unknown as ExtensionAPI;
+  const runtime = new SubagentRuntime(fakePi(), noopBridge, noopPersist);
+  registerV1AgentTools(pi, runtime);
+  assert.deepEqual(tools.sort(), [
+    "get_command_or_subagent_output",
+    "kill_command_or_subagent",
+    "list_subagents",
+    "send_message_to_subagent",
+    "spawn_subagent",
+  ]);
 });
 
 test("reactivation keeps the Pi session but rotates the Pager child identity", () => {
