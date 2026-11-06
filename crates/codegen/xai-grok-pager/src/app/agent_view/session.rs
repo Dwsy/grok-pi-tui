@@ -317,6 +317,7 @@ impl AgentView {
             remote_tui_layout: None,
             remote_tui_inline_offset: None,
             remote_tui_rect: None,
+            remote_tui_last_rect: None,
             external_widgets_below_editor: Vec::new(),
             external_statuses: Vec::new(),
             mode_switch_banner: None,

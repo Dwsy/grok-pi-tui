@@ -91,10 +91,11 @@ pub(crate) struct RunScan {
 
 impl RunScan {
     /// Whether the run folds into a verb-group header row. Thought members never count, so a pure-thought run (whose
-    /// label would be empty) never folds. The layout fold and `verb_group_range_of` share this predicate so the two
-    /// can't drift.
+    /// label would be empty) never folds. A single tool call never folds either: a one-row header hides the call it
+    /// summarizes without saving meaningful space. The layout fold and `verb_group_range_of` share this predicate so
+    /// the two can't drift.
     pub(crate) fn folds(&self) -> bool {
-        self.members >= 1
+        self.members >= 2
     }
 }
 

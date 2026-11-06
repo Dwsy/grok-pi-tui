@@ -23,6 +23,24 @@ pub(crate) const MAX_THOUGHTS_WIDTH_MAX: i64 = 500;
 /// Registry key for `max_thoughts_width`; it is shared between the registry definition and the live-wrap-preview gate in the int stepper.
 pub(crate) const MAX_THOUGHTS_WIDTH_KEY: &str = "max_thoughts_width";
 
+const TOOL_CARD_CLICK_ACTION_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "select",
+        display: "Select only",
+        description: "Click to select a tool card without folding it. Default.",
+    },
+    EnumChoice {
+        canonical: "toggle",
+        display: "Expand / collapse",
+        description: "Click to expand or collapse a tool card.",
+    },
+    EnumChoice {
+        canonical: "open_viewer",
+        display: "Open details (Enter)",
+        description: "Click to open the native tool details viewer, just like pressing Enter.",
+    },
+];
+
 const PI_EVAL_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "v1",
@@ -324,17 +342,17 @@ const TEXT_SELECTION_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: TextSelection::Flash.as_canonical(),
         display: "Flash after copy",
-        description: "Brief highlight on mouse-up, then clear. Single-click toggles tool/summary cards; double-click toggles foldable conversation messages. Default.",
+        description: "Brief highlight on mouse-up, then clear. Tool-card clicks follow Tool card click action; other summary cards toggle on single click, conversation messages on double-click. Default.",
     },
     EnumChoice {
         canonical: TextSelection::Hold.as_canonical(),
         display: "Hold until dismissed",
-        description: "Keep the selection visible until Esc, click, or scroll. Single-click toggles tool/summary cards; double-click toggles foldable conversation messages.",
+        description: "Keep the selection visible until Esc, click, or scroll. Tool-card clicks follow Tool card click action; other summary cards toggle on single click, conversation messages on double-click.",
     },
     EnumChoice {
         canonical: TextSelection::WordSelect.as_canonical(),
         display: "Word select (terminal-like)",
-        description: "Double-click selects & copies a word, triple-click a paragraph on non-card text; foldable cards still toggle on single click.",
+        description: "Double-click selects & copies a word, triple-click a paragraph on non-card text; tool-card clicks follow Tool card click action.",
     },
 ];
 
@@ -1162,8 +1180,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shell,
             label: "Group tool calls",
-            description: "Fold consecutive read/search/list tool calls and subagent rows into \
-                          one summary row; finished thoughts fold into the group too.",
+            description: "Fold runs of two or more consecutive read/search/list tool calls and \
+                          subagent rows into one summary row; finished thoughts fold into the group too.",
             keywords: &[
                 "group", "tool", "verbs", "fold", "collapse", "read", "search", "summary",
                 "thinking", "subagent",
@@ -1200,6 +1218,31 @@ pub fn default_settings() -> Vec<SettingMeta> {
             ],
             kind: SettingKind::Bool {
                 default: ui_default.collapsed_edit_blocks.unwrap_or(false),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
+        SettingMeta {
+            key: "codemode_expanded_by_default",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shell,
+            label: "Expand Code Mode cards by default",
+            description: "Show the complete Code Mode script, nested calls, and output by default instead of the truncated preview.",
+            keywords: &[
+                "codemode",
+                "code mode",
+                "tool",
+                "card",
+                "expand",
+                "expanded",
+                "default",
+                "script",
+                "calls",
+                "output",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.codemode_expanded_by_default.unwrap_or(false),
             },
             restart_required: false,
             hidden_in_minimal: false,
@@ -1254,6 +1297,24 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
             external_only: true,
+        },
+        SettingMeta {
+            key: "tool_card_click_action",
+            category: SettingCategory::Mouse,
+            owner: SettingOwner::Shell,
+            label: "Tool card click action",
+            description: "Choose what clicking a tool card does: select only (default), expand/collapse, or open details like Enter.",
+            keywords: &[
+                "tool", "card", "click", "select", "expand", "collapse", "enter", "popup", "viewer",
+            ],
+            kind: SettingKind::Enum {
+                default: "select",
+                choices: TOOL_CARD_CLICK_ACTION_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: true,
+            external_only: false,
         },
         // SHELL-owned: `[ui].ctrl_o_tool_expansion`. Only grok-pi consumes this
         // setting; normal Grok retains its existing Ctrl+O behavior.

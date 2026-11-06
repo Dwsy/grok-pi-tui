@@ -43,6 +43,80 @@
     }
 
     #[test]
+    fn commands_update_seeds_waiting_welcome_prewarm_before_first_key() {
+        let mut app = make_app_with_agent("placeholder");
+        app.external_agent = true;
+        app.active_view = ActiveView::Welcome;
+        app.home_session_agent = None;
+        app.welcome_prewarm_agent = Some(AgentId(0));
+        app.agents.get_mut(&AgentId(0)).unwrap().session.session_id = None;
+        insert_agent(&mut app, AgentId(1), Some("other-session"));
+
+        let commands = vec![acp::AvailableCommand::new("skill:explain", "Explain code")];
+        let notif = acp::ExtNotification::new(
+            "x.ai/commands/update",
+            std::sync::Arc::from(serde_json::value::to_raw_value(&commands).unwrap()),
+        );
+        assert!(handle_ext_notification(&notif, &mut app));
+        assert_eq!(app.agents[&AgentId(0)].session.available_commands[0].name, "skill:explain");
+        assert!(app.agents[&AgentId(1)].session.available_commands.is_empty());
+
+        // Pi finishes while Welcome remains visible. Attaching the already
+        // created agent must not erase the catalog on its first tick.
+        app.agents.get_mut(&AgentId(0)).unwrap()
+            .bind_session_id(acp::SessionId::new("pi-session"));
+        crate::app::dispatch::switch_to_agent(
+            &mut app, AgentId(0), crate::app::dispatch::SwitchCause::New,
+        );
+        app.tick();
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        agent.prompt.textarea.insert_str("/skill:");
+        agent.prompt.refresh_slash(&agent.session.models);
+        assert!(agent.prompt.slash_snapshot().matches.iter()
+            .any(|item| item.display == "/skill:explain"));
+        assert_eq!(app.bootstrap_acp_commands[0].name, "skill:explain");
+    }
+
+    #[test]
+    fn commands_update_does_not_replace_bound_welcome_prewarm_catalog() {
+        let mut app = make_app_with_agent("pi-session");
+        app.active_view = ActiveView::Welcome;
+        app.welcome_prewarm_agent = Some(AgentId(0));
+        app.agents.get_mut(&AgentId(0)).unwrap().session.available_commands = vec![
+            acp::AvailableCommand::new("session-command", "Session catalog"),
+        ];
+        let commands = vec![acp::AvailableCommand::new("host-command", "Host catalog")];
+        let notif = acp::ExtNotification::new(
+            "x.ai/commands/update",
+            std::sync::Arc::from(serde_json::value::to_raw_value(&commands).unwrap()),
+        );
+
+        assert!(handle_ext_notification(&notif, &mut app));
+        assert_eq!(app.agents[&AgentId(0)].session.available_commands[0].name, "session-command");
+    }
+
+    #[test]
+    fn commands_update_seeds_agent_when_user_types_before_attach() {
+        let mut app = make_app_with_agent("placeholder");
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        agent.session.session_id = None;
+        agent.prompt.textarea.insert_str("/skill:");
+        agent.prompt.refresh_slash(&agent.session.models);
+        assert!(!agent.prompt.slash_snapshot().matches.iter()
+            .any(|item| item.display == "/skill:explain"));
+        let commands = vec![acp::AvailableCommand::new("skill:explain", "Explain code")];
+        let notif = acp::ExtNotification::new(
+            "x.ai/commands/update",
+            std::sync::Arc::from(serde_json::value::to_raw_value(&commands).unwrap()),
+        );
+
+        assert!(handle_ext_notification(&notif, &mut app));
+        app.tick();
+        assert!(app.agents[&AgentId(0)].prompt.slash_snapshot().matches.iter()
+            .any(|item| item.display == "/skill:explain"));
+    }
+
+    #[test]
     fn voice_kill_switch_clears_pending_spawn() {
         // A `/voice` queued a lazy spawn; then the remote flag turns off
         // The teardown must drop the queued spawn so the event loop won't consume it and show a misleading "could not start" toast

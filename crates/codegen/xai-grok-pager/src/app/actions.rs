@@ -596,6 +596,9 @@ pub enum Action {
     /// Set whether Edit blocks default to the collapsed one-line diffstat summary.
     /// SHELL-owned: updates the process-wide cache mirror and persists to `[ui].collapsed_edit_blocks` via `Effect::PersistSetting`.
     SetCollapsedEditBlocks(bool),
+    /// Set whether Code Mode cards show their complete content by default.
+    /// SHELL-owned: cache mirror and `[ui].codemode_expanded_by_default` via `Effect::PersistSetting`.
+    SetCodemodeExpandedByDefault(bool),
     /// Set the grok-pi-only side-by-side edit renderer preference. PAGER-owned,
     /// process-local, default off, and applied on the next render frame.
     SetSideBySideEdit(bool),
@@ -603,6 +606,8 @@ pub enum Action {
     SetSideBySideWordHighlight(bool),
     /// Set the grok-pi Ctrl+O tool expansion scope (`write_edit` or `all_tools`).
     SetCtrlOToolExpansion(String),
+    /// Set tool-card mouse behavior (select, toggle, or open_viewer).
+    SetToolCardClickAction(String),
     /// Set which fields grok-pi Bash/run headers render.
     SetPiBashRunDisplay(crate::appearance::ExecuteHeaderContent),
     /// Set whether Bash commands are formatted for display only.
@@ -2330,6 +2335,8 @@ pub enum Effect {
     RefreshAvailableCommands {
         agent_id: AgentId,
         session_id: acp::SessionId,
+        /// Ignore the result if a newer session update arrives while it is in flight.
+        expected_generation: u64,
     },
     /// Fire a /btw side question via x.ai/btw ext method.
     SendBtw {
@@ -3465,7 +3472,10 @@ pub enum TaskResult {
     /// Available commands refreshed from the shell.
     AvailableCommandsRefreshed {
         agent_id: AgentId,
-        commands: Vec<acp::AvailableCommand>,
+        session_id: acp::SessionId,
+        expected_generation: u64,
+        /// None is a failed or malformed request; an empty successful list clears stale commands.
+        commands: Option<Vec<acp::AvailableCommand>>,
     },
     /// Shell acknowledged logout (auth cleared).
     LogoutComplete,

@@ -1777,6 +1777,7 @@ fn catalog_entry_failed_shows_system_message() {
 fn available_commands_refreshed_updates_generation() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
+    let session_id = app.agents[&id].session.session_id.clone().unwrap();
     let gen_before = app.agents[&id].session.available_commands_generation;
 
     let commands = vec![
@@ -1789,7 +1790,9 @@ fn available_commands_refreshed_updates_generation() {
     let effects = dispatch(
         Action::TaskComplete(TaskResult::AvailableCommandsRefreshed {
             agent_id: id,
-            commands,
+            session_id,
+            expected_generation: gen_before,
+            commands: Some(commands),
         }),
         &mut app,
     );
@@ -1803,23 +1806,72 @@ fn available_commands_refreshed_updates_generation() {
 }
 
 #[test]
-fn available_commands_refreshed_empty_is_noop() {
+fn available_commands_refreshed_empty_success_clears_but_failure_preserves() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
+    let session_id = app.agents[&id].session.session_id.clone().unwrap();
+    app.agents.get_mut(&id).unwrap().session.available_commands =
+        vec![acp::AvailableCommand::new("old", "Old command")];
     let gen_before = app.agents[&id].session.available_commands_generation;
 
-    let effects = dispatch(
+    dispatch(
         Action::TaskComplete(TaskResult::AvailableCommandsRefreshed {
             agent_id: id,
-            commands: vec![],
+            session_id: session_id.clone(),
+            expected_generation: gen_before,
+            commands: None,
         }),
         &mut app,
     );
-    assert!(effects.is_empty());
+    assert_eq!(app.agents[&id].session.available_commands[0].name, "old");
     assert_eq!(
         app.agents[&id].session.available_commands_generation,
-        gen_before,
+        gen_before
     );
+
+    dispatch(
+        Action::TaskComplete(TaskResult::AvailableCommandsRefreshed {
+            agent_id: id,
+            session_id,
+            expected_generation: gen_before,
+            commands: Some(vec![]),
+        }),
+        &mut app,
+    );
+    assert!(app.agents[&id].session.available_commands.is_empty());
+    assert_eq!(
+        app.agents[&id].session.available_commands_generation,
+        gen_before + 1
+    );
+}
+
+#[test]
+fn available_commands_refreshed_ignores_stale_session_or_generation() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let session_id = app.agents[&id].session.session_id.clone().unwrap();
+    app.agents.get_mut(&id).unwrap().session.available_commands =
+        vec![acp::AvailableCommand::new("new", "Current catalog")];
+    let generation = app.agents[&id].session.available_commands_generation;
+    for (response_session, response_generation) in [
+        (acp::SessionId::new("old-session"), generation),
+        (session_id, generation.wrapping_sub(1)),
+    ] {
+        dispatch(
+            Action::TaskComplete(TaskResult::AvailableCommandsRefreshed {
+                agent_id: id,
+                session_id: response_session,
+                expected_generation: response_generation,
+                commands: Some(vec![acp::AvailableCommand::new("old", "Stale catalog")]),
+            }),
+            &mut app,
+        );
+        assert_eq!(app.agents[&id].session.available_commands[0].name, "new");
+        assert_eq!(
+            app.agents[&id].session.available_commands_generation,
+            generation
+        );
+    }
 }
 
 // -- Session deletion from the /resume picker -----------------------

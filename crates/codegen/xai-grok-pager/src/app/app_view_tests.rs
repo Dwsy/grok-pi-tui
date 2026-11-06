@@ -808,6 +808,85 @@ fn remote_tui_release_without_current_hitbox_clears_gesture() {
 }
 
 #[test]
+fn remote_tui_drag_survives_content_only_frame_update_and_missing_hitbox() {
+    use crate::app::actions::Effect;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    assert!(app.apply_remote_tui(
+        "open",
+        Some("sess-1".into()),
+        Some(vec!["frame".into()]),
+        None,
+    ));
+    let agent_id = super::super::agent::AgentId(0);
+    app.agents.get_mut(&agent_id).unwrap().remote_tui_rect = Some(Rect::new(2, 1, 20, 3));
+
+    let down = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 5,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    };
+    assert!(matches!(
+        app.handle_input(&Event::Mouse(down)),
+        InputOutcome::Changed
+    ));
+    assert!(app.external_ui.remote_tui_mouse_gesture.is_some());
+
+    {
+        let agent = app.agents.get_mut(&agent_id).unwrap();
+        // Component redraws after press: same geometry, only frame text changes.
+        assert!(agent.set_remote_tui_surface(&["frame ⇢".to_string()], None));
+        assert!(
+            agent.remote_tui_rect.is_some(),
+            "a content-only frame update must not invalidate the hit box"
+        );
+        // Geometry can still be transiently missing before the next draw.
+        agent.remote_tui_rect = None;
+    }
+
+    let drag = MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: 30,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    };
+    assert!(matches!(
+        app.handle_input(&Event::Mouse(drag)),
+        InputOutcome::Changed
+    ));
+    let drag_event = app
+        .pending_effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::RemoteTuiMouse { event, .. } if event["type"] == "drag" => Some(event),
+            _ => None,
+        })
+        .expect("drag must survive a transient missing hit box");
+    assert_eq!(drag_event["x"], 28);
+    assert_eq!(drag_event["y"], 4);
+
+    let release = MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 30,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    };
+    assert!(matches!(
+        app.handle_input(&Event::Mouse(release)),
+        InputOutcome::Changed
+    ));
+    assert!(app.external_ui.remote_tui_mouse_gesture.is_none());
+    assert!(app.pending_effects.iter().any(|effect| matches!(
+        effect,
+        Effect::RemoteTuiMouse { event, .. } if event["type"] == "release"
+    )));
+}
+
+#[test]
 fn remote_tui_lifecycle_owns_letters_before_frame_and_ignores_stale_close() {
     use crate::app::actions::Effect;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

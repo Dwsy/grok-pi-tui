@@ -1362,6 +1362,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "codemode_expanded_by_default" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("codemode_expanded_by_default", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_codemode_expanded_by_default(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "prompt_suggestions" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("prompt_suggestions", "Bool", &value));
@@ -1474,6 +1482,14 @@ pub(crate) async fn persist_setting(
                 return Err(kind_mismatch("thinking_border_colors", "Bool", &value));
             };
             xai_grok_shell::util::config::set_thinking_border_colors(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "tool_card_click_action" => {
+            let SettingValue::Enum(value) = value else {
+                return Err(kind_mismatch("tool_card_click_action", "Enum", &value));
+            };
+            xai_grok_shell::util::config::set_tool_card_click_action(value.to_string())
                 .await
                 .map_err(|e| e.to_string())
         }

@@ -1170,24 +1170,36 @@ impl ScrollbackState {
             new_tc.set_started_at(t);
         }
         let kind_changed = verb_group::verb_group_kind_changed(&entry.block, &block);
-        let (is_same_kind, untrusted_rising) = match (&entry.block, &block) {
+        let (is_same_kind, untrusted_rising, untrusted_falling) = match (&entry.block, &block) {
             (
                 RenderBlock::ToolCall(ToolCallBlock::Edit(old)),
                 RenderBlock::ToolCall(ToolCallBlock::Edit(new)),
             ) => (
                 true,
                 new.is_success() && new.summary_untrusted && !old.summary_untrusted,
+                old.summary_untrusted && !new.summary_untrusted,
             ),
             (RenderBlock::ToolCall(old), RenderBlock::ToolCall(new)) => (
                 std::mem::discriminant(old) == std::mem::discriminant(new),
                 false,
+                false,
             ),
-            _ => (false, false),
+            _ => (false, false, false),
         };
         entry.block = block;
         if is_same_kind {
-            if untrusted_rising && !(respect_manual_folds && entry.display_mode_pinned) {
+            let pinned = respect_manual_folds && entry.display_mode_pinned;
+            if untrusted_rising && !pinned {
                 entry.display_mode = DisplayMode::Expanded;
+            } else if untrusted_falling && !pinned && entry.display_mode == DisplayMode::Expanded {
+                // The summary became trustworthy (canonical args landed after a
+                // title-fallback preview): re-apply the materialize policy so a
+                // preview-time untrusted expand does not stick. A row the user
+                // folded stays folded; an Expanded row that the policy also
+                // wants Expanded is a no-op.
+                if let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &entry.block {
+                    entry.display_mode = edit_default_display_mode(expanded_by_default, edit);
+                }
             }
         } else if respect_manual_folds && entry.display_mode_pinned {
             tracing::debug!(
@@ -1235,6 +1247,44 @@ impl ScrollbackState {
                 if entry.display_mode == edit_default_display_mode(old_expanded, edit) {
                     entry.display_mode = edit_default_display_mode(new_expanded, edit);
                 }
+            }
+        }
+        self.clear_group_expansion();
+        self.invalidate_heights();
+    }
+
+    /// Re-materialize only Code Mode cards still using the previous default mode.
+    /// Manual modes are pinned when they would otherwise become indistinguishable from the new default.
+    pub fn apply_codemode_expanded_by_default_flip(&mut self, old_flag: bool, new_flag: bool) {
+        let old_mode = if old_flag {
+            DisplayMode::Expanded
+        } else {
+            DisplayMode::Truncated
+        };
+        let new_mode = if new_flag {
+            DisplayMode::Expanded
+        } else {
+            DisplayMode::Truncated
+        };
+        if old_mode == new_mode {
+            return;
+        }
+        for entry in self.entries.values_mut() {
+            if !matches!(
+                &entry.block,
+                RenderBlock::ToolCall(ToolCallBlock::Codemode(_))
+            ) {
+                continue;
+            }
+            if entry.display_mode_pinned {
+                continue;
+            }
+            if entry.display_mode == new_mode {
+                // A non-default mode is a manual choice. Pin it now so a later
+                // setting flip cannot mistake it for the then-current default.
+                entry.display_mode_pinned = true;
+            } else if entry.display_mode == old_mode {
+                entry.display_mode = new_mode;
             }
         }
         self.clear_group_expansion();
@@ -2152,6 +2202,69 @@ mod tests {
         );
     }
 
+    /// An untrusted-summary preview expands past the collapse override; when the
+    /// canonical call makes the summary trustworthy, the materialize policy runs
+    /// again so the preview-time expand does not stick. A user's pinned fold
+    /// (respect_manual_folds) is left alone.
+    #[test]
+    fn replace_tool_block_untrusted_falling_edge_reapplies_default() {
+        let mut state = edit_state(false);
+        let id = state.push_block(edit_block(
+            EditToolCallBlock::new("write", vec![]).with_untrusted_summary(),
+        ));
+        assert_eq!(
+            state.get_by_id(id).unwrap().display_mode,
+            DisplayMode::Expanded,
+            "untrusted summary expands past the collapse override"
+        );
+
+        assert!(state.replace_tool_block(
+            id,
+            edit_block(EditToolCallBlock::new("f.rs", vec![])),
+            None
+        ));
+        assert_eq!(
+            state.get_by_id(id).unwrap().display_mode,
+            DisplayMode::Collapsed,
+            "trustworthy summary re-applies the collapse default"
+        );
+
+        // The rising edge already expanded it; a second trustworthy swap is a no-op.
+        assert!(state.replace_tool_block(
+            id,
+            edit_block(EditToolCallBlock::new("f.rs", vec![])),
+            None
+        ));
+        assert_eq!(
+            state.get_by_id(id).unwrap().display_mode,
+            DisplayMode::Collapsed
+        );
+
+        // A pinned manual expand survives the falling edge: the policy must not
+        // re-materialize a row the user explicitly opened.
+        let mut state = edit_state(false);
+        {
+            let mut appearance = crate::appearance::AppearanceConfig::default();
+            appearance.scrollback.blocks.edit.expanded_by_default = Some(false);
+            appearance.scrollback.scroll.respect_manual_folds = true;
+            state.set_appearance(appearance);
+        }
+        let id = state.push_block(edit_block(
+            EditToolCallBlock::new("write", vec![]).with_untrusted_summary(),
+        ));
+        state.get_by_id_mut(id).unwrap().display_mode_pinned = true;
+        assert!(state.replace_tool_block(
+            id,
+            edit_block(EditToolCallBlock::new("f.rs", vec![])),
+            None
+        ));
+        assert_eq!(
+            state.get_by_id(id).unwrap().display_mode,
+            DisplayMode::Expanded,
+            "a pinned expand is never re-materialized by the falling edge"
+        );
+    }
+
     /// Expanded Edit/Write diffs in the viewport drive the live-turn paint
     /// throttle (see `AppView::tick` / `tick_demand`). Collapsed or empty
     /// edits must not trip it; off-screen expanded ones are ignored once a
@@ -2590,6 +2703,112 @@ mod tests {
                 state.get_by_id(id).unwrap().display_mode,
                 DisplayMode::Expanded,
                 "explicit expanded_by_default pins the default across flips"
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn codemode_expansion_flip_updates_defaults_but_preserves_pinned_modes() {
+        std::thread::spawn(|| {
+            use crate::scrollback::blocks::tool::CodemodeToolCallBlock;
+
+            crate::appearance::cache::set_codemode_expanded_by_default(false);
+            let mut state = ScrollbackState::new();
+            state.set_appearance(crate::appearance::AppearanceConfig::default());
+
+            let default_id = state.push_block(RenderBlock::ToolCall(ToolCallBlock::Codemode(
+                CodemodeToolCallBlock::new("return 1;"),
+            )));
+            let collapsed_id = state.push_block(RenderBlock::ToolCall(ToolCallBlock::Codemode(
+                CodemodeToolCallBlock::new("return 2;"),
+            )));
+            let expanded_id = state.push_block(RenderBlock::ToolCall(ToolCallBlock::Codemode(
+                CodemodeToolCallBlock::new("return 3;"),
+            )));
+            state
+                .get_by_id_mut(collapsed_id)
+                .unwrap()
+                .set_display_mode(DisplayMode::Collapsed);
+            state
+                .get_by_id_mut(expanded_id)
+                .unwrap()
+                .set_display_mode(DisplayMode::Expanded);
+
+            assert_eq!(
+                state.get_by_id(default_id).unwrap().display_mode,
+                DisplayMode::Truncated
+            );
+            crate::appearance::cache::set_codemode_expanded_by_default(true);
+            state.apply_codemode_expanded_by_default_flip(false, true);
+            assert_eq!(
+                state.get_by_id(default_id).unwrap().display_mode,
+                DisplayMode::Expanded,
+                "an entry still on the old default follows the new setting"
+            );
+            assert_eq!(
+                state.get_by_id(collapsed_id).unwrap().display_mode,
+                DisplayMode::Collapsed,
+                "a manually collapsed card remains collapsed"
+            );
+            assert_eq!(
+                state.get_by_id(expanded_id).unwrap().display_mode,
+                DisplayMode::Expanded,
+                "a manually expanded card remains expanded"
+            );
+            assert!(
+                state.get_by_id(expanded_id).unwrap().display_mode_pinned,
+                "a manual mode that matches the new default is pinned for later flips"
+            );
+
+            crate::appearance::cache::set_codemode_expanded_by_default(false);
+            state.apply_codemode_expanded_by_default_flip(true, false);
+            assert_eq!(
+                state.get_by_id(default_id).unwrap().display_mode,
+                DisplayMode::Truncated,
+                "turning the setting off restores the truncated default"
+            );
+            assert_eq!(
+                state.get_by_id(collapsed_id).unwrap().display_mode,
+                DisplayMode::Collapsed
+            );
+            assert_eq!(
+                state.get_by_id(expanded_id).unwrap().display_mode,
+                DisplayMode::Expanded
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn manual_codemode_fold_is_pinned_even_when_manual_fold_policy_is_off() {
+        std::thread::spawn(|| {
+            use crate::scrollback::blocks::tool::CodemodeToolCallBlock;
+
+            crate::appearance::cache::set_codemode_expanded_by_default(true);
+            let mut state = ScrollbackState::new();
+            let id = state.push_block(RenderBlock::ToolCall(ToolCallBlock::Codemode(
+                CodemodeToolCallBlock::new("return 1;"),
+            )));
+            state.selected = state.entries.get_index_of(&id);
+
+            state.collapse_selected();
+            assert!(state.get_by_id(id).unwrap().display_mode_pinned);
+            state.expand_selected();
+            assert_eq!(
+                state.get_by_id(id).unwrap().display_mode,
+                DisplayMode::Expanded
+            );
+            assert!(state.get_by_id(id).unwrap().display_mode_pinned);
+
+            crate::appearance::cache::set_codemode_expanded_by_default(false);
+            state.apply_codemode_expanded_by_default_flip(true, false);
+            assert_eq!(
+                state.get_by_id(id).unwrap().display_mode,
+                DisplayMode::Expanded,
+                "a manual expansion made while ON stays expanded after turning the default off"
             );
         })
         .join()

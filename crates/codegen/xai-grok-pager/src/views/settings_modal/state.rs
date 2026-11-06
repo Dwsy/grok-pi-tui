@@ -1224,6 +1224,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "thinking_border_colors" => Some(Action::SetThinkingBorderColors(new)),
         "group_tool_verbs" => Some(Action::SetGroupToolVerbs(new)),
         "collapsed_edit_blocks" => Some(Action::SetCollapsedEditBlocks(new)),
+        "codemode_expanded_by_default" => Some(Action::SetCodemodeExpandedByDefault(new)),
         "side_by_side_edit" => Some(Action::SetSideBySideEdit(new)),
         "side_by_side_word_highlight" => Some(Action::SetSideBySideWordHighlight(new)),
         "prompt_suggestions" => Some(Action::SetPromptSuggestions(new)),
@@ -1293,6 +1294,7 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> O
             "off" => Some(Action::SetPlanMode(crate::app::actions::PlanModeKind::Off)),
             _ => None,
         },
+        "tool_card_click_action" => Some(Action::SetToolCardClickAction(choice.to_string())),
         "ctrl_o_tool_expansion" => Some(Action::SetCtrlOToolExpansion(choice.to_string())),
         "pi_eval" => match choice {
             "v1" | "v2" => Some(Action::SetPiEval(choice.to_string())),

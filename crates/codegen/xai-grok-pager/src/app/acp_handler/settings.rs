@@ -21,12 +21,13 @@ pub(super) fn handle_commands_update(notif: &acp::ExtNotification, app: &mut App
     app.bootstrap_acp_commands = commands.clone();
 
     // Only the session being created during startup may consume this
-    // process-level seed. Inactive agents retain their own session-scoped
-    // catalogs; their next LoadSession/AvailableCommandsUpdate remains
-    // authoritative.
+    // process-level seed. A Pi prewarm agent remains hidden behind Welcome
+    // and is distinct from the normal home-session husk. Inactive agents
+    // retain their own session-scoped catalogs; their next
+    // LoadSession/AvailableCommandsUpdate remains authoritative.
     let bootstrap_agent_id = match app.active_view {
         ActiveView::Agent(id) => Some(id),
-        ActiveView::Welcome => app.home_session_agent,
+        ActiveView::Welcome => app.welcome_prewarm_agent.or(app.home_session_agent),
         ActiveView::AgentDashboard => None,
     };
     if let Some(agent_id) = bootstrap_agent_id

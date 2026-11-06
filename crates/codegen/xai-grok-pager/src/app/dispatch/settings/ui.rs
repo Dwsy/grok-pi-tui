@@ -3,14 +3,14 @@
 use super::setters::{
     pr13_effective_default, set_ask_user_question_timeout_enabled_inner, set_auto_dark_theme_inner,
     set_auto_light_theme_inner, set_auto_update_inner, set_cancel_turn_key_inner,
-    set_collapsed_edit_blocks_inner, set_combine_queued_prompts_inner, set_compact_mode,
-    set_compact_mode_inner, set_confirm_before_rewind_inner, set_contextual_hint_inner,
-    set_default_model_inner, set_default_selected_permission_inner,
-    set_display_refresh_auto_cadence_inner, set_follow_up_behavior_inner,
-    set_fork_secondary_model_inner, set_group_tool_verbs_inner, set_hunk_tracker_mode_inner,
-    set_invert_scroll_inner, set_keep_text_selection_inner, set_max_thoughts_width_inner,
-    set_multiline_mode, set_page_flip_on_send_inner, set_pi_at_search_hidden_inner,
-    set_pi_bash_command_format_inner, set_pi_bash_run_display_inner,
+    set_codemode_expanded_by_default_inner, set_collapsed_edit_blocks_inner,
+    set_combine_queued_prompts_inner, set_compact_mode, set_compact_mode_inner,
+    set_confirm_before_rewind_inner, set_contextual_hint_inner, set_default_model_inner,
+    set_default_selected_permission_inner, set_display_refresh_auto_cadence_inner,
+    set_follow_up_behavior_inner, set_fork_secondary_model_inner, set_group_tool_verbs_inner,
+    set_hunk_tracker_mode_inner, set_invert_scroll_inner, set_keep_text_selection_inner,
+    set_max_thoughts_width_inner, set_multiline_mode, set_page_flip_on_send_inner,
+    set_pi_at_search_hidden_inner, set_pi_bash_command_format_inner, set_pi_bash_run_display_inner,
     set_pi_eval_v2_display_mode_inner, set_progress_bar_inner, set_prompt_cursor_inner,
     set_prompt_suggestions_inner, set_recap_mermaid_inner, set_recap_model_inner,
     set_remember_tool_approvals_inner, set_render_mermaid_inner, set_respect_manual_folds_inner,
@@ -18,8 +18,8 @@ use super::setters::{
     set_session_recap_inner, set_show_thinking_blocks_inner, set_show_tips_inner,
     set_side_by_side_edit_inner, set_side_by_side_word_highlight_inner, set_simple_mode_inner,
     set_theme_inner, set_thinking_border_colors_inner, set_timeline_inner, set_timestamps,
-    set_timestamps_inner, set_vim_mode_inner, set_voice_capture_mode_inner,
-    set_voice_keybind_enabled_inner, set_voice_stt_language_inner,
+    set_timestamps_inner, set_tool_card_click_action_inner, set_vim_mode_inner,
+    set_voice_capture_mode_inner, set_voice_keybind_enabled_inner, set_voice_stt_language_inner,
     set_write_edit_hover_popups_inner,
 };
 use crate::app::actions::{Action, Effect};
@@ -1090,9 +1090,15 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("collapsed_edit_blocks", SettingValue::Bool(b)) => {
             Some(Action::SetCollapsedEditBlocks(*b))
         }
+        ("codemode_expanded_by_default", SettingValue::Bool(b)) => {
+            Some(Action::SetCodemodeExpandedByDefault(*b))
+        }
         ("side_by_side_edit", SettingValue::Bool(b)) => Some(Action::SetSideBySideEdit(*b)),
         ("side_by_side_word_highlight", SettingValue::Bool(b)) => {
             Some(Action::SetSideBySideWordHighlight(*b))
+        }
+        ("tool_card_click_action", SettingValue::Enum(s)) => {
+            Some(Action::SetToolCardClickAction((*s).to_string()))
         }
         ("ctrl_o_tool_expansion", SettingValue::Enum(s)) => {
             Some(Action::SetCtrlOToolExpansion((*s).to_string()))
@@ -1495,9 +1501,18 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         ("collapsed_edit_blocks", SettingValue::Bool(b)) => {
             set_collapsed_edit_blocks_inner(app, *b)
         }
+        ("codemode_expanded_by_default", SettingValue::Bool(b)) => {
+            set_codemode_expanded_by_default_inner(app, *b)
+        }
         ("side_by_side_edit", SettingValue::Bool(b)) => set_side_by_side_edit_inner(*b),
         ("side_by_side_word_highlight", SettingValue::Bool(b)) => {
             set_side_by_side_word_highlight_inner(*b)
+        }
+        ("tool_card_click_action", SettingValue::Enum(s)) => {
+            if let Some(value) = crate::appearance::cache::ToolCardClickAction::from_canonical(s)
+            {
+                set_tool_card_click_action_inner(app, value);
+            }
         }
         ("ctrl_o_tool_expansion", SettingValue::Enum(s)) => {
             app.current_ui.ctrl_o_tool_expansion = Some((*s).to_string());

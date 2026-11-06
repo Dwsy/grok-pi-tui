@@ -331,8 +331,35 @@ impl AgentView {
                     {
                         self.prompt.set_slash_hovered(Some(item_idx));
                         if self.prompt.select_slash_hovered() {
+                            // Capture the skill (if any) before accept rewrites the token:
+                            // single-click accepts AND opens the SKILL.md preview.
+                            let skill = self
+                                .prompt
+                                .slash_snapshot()
+                                .selection()
+                                .map(|row| {
+                                    (row.command_name().to_string(), row.display.clone())
+                                })
+                                .and_then(|(name, display)| {
+                                    self.prompt
+                                        .slash_controller
+                                        .registry()
+                                        .get(&name)
+                                        .and_then(|cmd| {
+                                            cmd.skill_path().map(|p| (p.to_string(), display))
+                                        })
+                                });
                             self.prompt.slash_commit_preview();
                             self.prompt.accept_slash_completion(&self.session.models);
+                            if let Some((path, display)) = skill {
+                                if let Some(mut v) = crate::views::file_search::line_viewer::LineViewerState::open_markdown(
+                                    std::path::Path::new(&path),
+                                    None,
+                                ) {
+                                    v.title_override = Some(display);
+                                    self.line_viewer = Some(v);
+                                }
+                            }
                         }
                     }
                     self.set_active_pane(AgentPane::Prompt, false);
@@ -535,6 +562,20 @@ impl AgentView {
                                 if let Some(eff) = self.notify_suggestion_text_changed() {
                                     self.pending_effects.push(eff);
                                 }
+                            }
+                            // Single-click on an @file chip: PromptWidget::handle_mouse_inner
+                            // already began the undo group and stashed the request. Skip when
+                            // the viewer already shows the same path so the second Down of a
+                            // double-click is a no-op instead of a nested reopen.
+                            if let Some(req) = self.prompt.pending_viewer_request.take() {
+                                let same = self
+                                    .line_viewer
+                                    .as_ref()
+                                    .is_some_and(|v| v.path == req.path);
+                                if !same {
+                                    self.open_line_viewer(&req.path, req.initial_range);
+                                }
+                                return InputOutcome::Changed;
                             }
                             if self.prompt_click_is_double() {
                                 if self.prompt.file_ref_near_cursor()
@@ -807,16 +848,17 @@ impl AgentView {
                     if let Some((click_col, click_row)) = self.pending_scrollback_click.take() {
                         let now = Instant::now();
                         if is_text_selection_on_double_click() {
-                            let single_click_foldable_entry = self
+                            let card_click_entry = self
                                 .scrollback
                                 .entry_index_at_screen_row(click_row, self.pane_areas.scrollback)
                                 .and_then(|idx| self.scrollback.get(idx))
                                 .is_some_and(|entry| {
-                                    entry.is_foldable()
-                                        && !entry.block.is_user_prompt()
-                                        && !entry.block.is_agent_message()
+                                    entry.block.is_tool_call()
+                                        || (entry.is_foldable()
+                                            && !entry.block.is_user_prompt()
+                                            && !entry.block.is_agent_message())
                                 });
-                            let exact_text_hit = if single_click_foldable_entry {
+                            let exact_text_hit = if card_click_entry {
                                 None
                             } else {
                                 self.last_scrollback_selection_model
@@ -889,6 +931,12 @@ impl AgentView {
                                 let (last_click, show_word_select_tip) =
                                     self.handle_scrollback_click(now, idx, header_row_click);
                                 self.last_click = last_click;
+                                if self.scrollback.get(idx).is_some_and(|entry| entry.block.is_tool_call())
+                                    && crate::appearance::cache::load_tool_card_click_action()
+                                        == crate::appearance::cache::ToolCardClickAction::OpenViewer
+                                {
+                                    return InputOutcome::Action(Action::OpenBlockViewer);
+                                }
                                 if show_word_select_tip {
                                     return InputOutcome::Action(Action::ShowWordSelectTip);
                                 }
@@ -1718,7 +1766,7 @@ mod tests {
     }
 
     #[test]
-    fn word_select_mode_single_click_still_folds_a_foldable_card() {
+    fn tool_card_click_modes_work_with_each_text_selection_mode() {
         use crate::app::agent_view::test_fixtures::make_agent;
         use crate::appearance::TextSelection;
         use crate::scrollback::block::RenderBlock;
@@ -1726,70 +1774,91 @@ mod tests {
             ResolvedSelectableLine, ResolvedSelectionModel, VisibleBlockGeometry,
         };
 
-        let mut agent = make_agent();
-        agent.active_pane = AgentPane::Scrollback;
-        agent.pane_areas.scrollback = Rect::new(0, 0, 80, 24);
-        agent
-            .scrollback
-            .push_block(RenderBlock::execute_with_output(
-                "echo hello",
-                "hello world",
-                None::<String>,
-            ));
-        agent.scrollback.prepare_layout(80, 24);
-        let (entry_area, _, _) = agent
-            .scrollback
-            .entry_screen_area(0, agent.pane_areas.scrollback)
-            .expect("foldable card has a visible screen area");
-        let click_row = entry_area.y + entry_area.height / 2;
-        let mut model = ResolvedSelectionModel::default();
-        model.push_line(ResolvedSelectableLine {
-            entry_idx: 0,
-            range_id: 0,
-            block_line_idx: 0,
-            screen_y: click_row,
-            screen_x: entry_area.x,
-            selectable_cols: 0..11,
-            text: "hello world".into(),
-            painted_region: None,
-            joiner_to_previous: None,
-        });
-        model.visible_blocks.push(VisibleBlockGeometry {
-            entry_idx: 0,
-            area: entry_area,
-            content_area: entry_area,
-            selection_area: entry_area,
-            content_width: entry_area.width,
-            top_clipped: false,
-            bottom_clipped: false,
-            drag_startable: true,
-        });
-        agent.last_scrollback_selection_model = model;
-
+        use crate::appearance::cache::ToolCardClickAction;
+        let previous_click_action = crate::appearance::cache::load_tool_card_click_action();
         let previous_text_selection = crate::appearance::cache::load_keep_text_selection();
-        crate::appearance::cache::set_keep_text_selection(TextSelection::WordSelect);
-        let before = agent.scrollback.get(0).unwrap().display_mode;
-        let click = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: entry_area.x + 1,
-            row: click_row,
-            modifiers: KeyModifiers::empty(),
-        };
-        let release = MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: click.column,
-            row: click.row,
-            modifiers: click.modifiers,
-        };
-        let _ = agent.handle_mouse(&click);
-        let _ = agent.handle_mouse(&release);
-        crate::appearance::cache::set_keep_text_selection(previous_text_selection);
+        for text_mode in [
+            TextSelection::Flash,
+            TextSelection::Hold,
+            TextSelection::WordSelect,
+        ] {
+            for click_action in [
+                ToolCardClickAction::Select,
+                ToolCardClickAction::Toggle,
+                ToolCardClickAction::OpenViewer,
+            ] {
+                crate::appearance::cache::set_tool_card_click_action(click_action);
+                crate::appearance::cache::set_keep_text_selection(text_mode);
+                let mut agent = make_agent();
+                agent.active_pane = AgentPane::Scrollback;
+                agent.pane_areas.scrollback = Rect::new(0, 0, 80, 24);
+                agent
+                    .scrollback
+                    .push_block(RenderBlock::execute_with_output(
+                        "echo hello",
+                        "hello world",
+                        None::<String>,
+                    ));
+                agent.scrollback.prepare_layout(80, 24);
+                let (entry_area, _, _) = agent
+                    .scrollback
+                    .entry_screen_area(0, agent.pane_areas.scrollback)
+                    .expect("foldable card has a visible screen area");
+                let click_row = entry_area.y + entry_area.height / 2;
+                let mut model = ResolvedSelectionModel::default();
+                model.push_line(ResolvedSelectableLine {
+                    entry_idx: 0,
+                    range_id: 0,
+                    block_line_idx: 0,
+                    screen_y: click_row,
+                    screen_x: entry_area.x,
+                    selectable_cols: 0..11,
+                    text: "hello world".into(),
+                    painted_region: None,
+                    joiner_to_previous: None,
+                });
+                model.visible_blocks.push(VisibleBlockGeometry {
+                    entry_idx: 0,
+                    area: entry_area,
+                    content_area: entry_area,
+                    selection_area: entry_area,
+                    content_width: entry_area.width,
+                    top_clipped: false,
+                    bottom_clipped: false,
+                    drag_startable: true,
+                });
+                agent.last_scrollback_selection_model = model;
 
-        assert_ne!(
-            agent.scrollback.get(0).unwrap().display_mode,
-            before,
-            "Word Select must not intercept a single click on a foldable card"
-        );
+                let before = agent.scrollback.get(0).unwrap().display_mode;
+                let click = MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: entry_area.x + 1,
+                    row: click_row,
+                    modifiers: KeyModifiers::empty(),
+                };
+                let release = MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: click.column,
+                    row: click.row,
+                    modifiers: click.modifiers,
+                };
+                let _ = agent.handle_mouse(&click);
+                let outcome = agent.handle_mouse(&release);
+                assert_eq!(
+                    matches!(outcome, InputOutcome::Action(Action::OpenBlockViewer)),
+                    click_action == ToolCardClickAction::OpenViewer,
+                    "popup dispatch: {text_mode:?} / {click_action:?}"
+                );
+                assert_eq!(
+                    agent.scrollback.get(0).unwrap().display_mode != before,
+                    click_action == ToolCardClickAction::Toggle,
+                    "fold policy: {text_mode:?} / {click_action:?}"
+                );
+                assert_eq!(agent.scrollback.selected(), Some(0));
+            }
+        }
+        crate::appearance::cache::set_keep_text_selection(previous_text_selection);
+        crate::appearance::cache::set_tool_card_click_action(previous_click_action);
     }
     #[test]
     fn tasks_view_toggle_snapshots_resume() {

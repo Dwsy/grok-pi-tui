@@ -293,6 +293,9 @@ fn render_stacked_chart(
 }
 
 /// Render graph body lines for a cache view (not Breakdown).
+///
+/// `content_height` is the modal content area height; the message table
+/// expands to fill it so the modal never leaves a blank tail.
 pub fn render_cache_view_lines(
     theme: &Theme,
     metrics: &CacheSessionMetrics,
@@ -300,18 +303,44 @@ pub fn render_cache_view_lines(
     view: CacheGraphView,
     selected_row: Option<usize>,
     detail_open: bool,
+    content_height: u16,
 ) -> Vec<Line<'static>> {
     match view {
         CacheGraphView::Breakdown => vec![],
-        CacheGraphView::Stats => {
-            render_stats_body(theme, metrics, width, selected_row, detail_open)
-        }
+        CacheGraphView::Stats => render_stats_body(
+            theme,
+            metrics,
+            width,
+            selected_row,
+            detail_open,
+            content_height,
+        ),
         CacheGraphView::PerTurn
         | CacheGraphView::CumulativePercent
-        | CacheGraphView::CumulativeTotal => {
-            render_graph_body(theme, metrics, width, view, selected_row, detail_open)
-        }
+        | CacheGraphView::CumulativeTotal => render_graph_body(
+            theme,
+            metrics,
+            width,
+            view,
+            selected_row,
+            detail_open,
+            content_height,
+        ),
     }
+}
+
+/// Lines the message table reserves: title, hint, header row, divider.
+const TABLE_HEADER_LINES: usize = 4;
+/// Detail block lines (blank + 6 info lines) reserved when Enter details is open.
+const TABLE_DETAIL_LINES: usize = 7;
+
+/// Rows the message table should show to fill the modal content area.
+fn table_visible_rows(lines_so_far: usize, content_height: u16, detail_open: bool) -> usize {
+    let reserve = TABLE_HEADER_LINES
+        + if detail_open { TABLE_DETAIL_LINES } else { 0 };
+    (content_height as usize)
+        .saturating_sub(lines_so_far + reserve)
+        .max(1)
 }
 
 fn render_graph_body(
@@ -321,6 +350,7 @@ fn render_graph_body(
     view: CacheGraphView,
     selected_row: Option<usize>,
     detail_open: bool,
+    content_height: u16,
 ) -> Vec<Line<'static>> {
     let messages = &metrics.all_messages;
     let mut lines = Vec::new();
@@ -432,6 +462,7 @@ fn render_graph_body(
                 "   assistant-message sequence in session append order",
             ));
             lines.push(Line::from(""));
+            let rows = table_visible_rows(lines.len(), content_height, detail_open);
             lines.extend(render_message_table(
                 theme,
                 metrics,
@@ -439,6 +470,7 @@ fn render_graph_body(
                 selected_row,
                 detail_open,
                 None,
+                rows,
             ));
         }
         CacheGraphView::CumulativePercent => {
@@ -454,6 +486,7 @@ fn render_graph_body(
                 ),
             ));
             lines.push(Line::from(""));
+            let rows = table_visible_rows(lines.len(), content_height, detail_open);
             lines.extend(render_message_table(
                 theme,
                 metrics,
@@ -461,6 +494,7 @@ fn render_graph_body(
                 selected_row,
                 detail_open,
                 Some(cum),
+                rows,
             ));
         }
         CacheGraphView::CumulativeTotal => {
@@ -487,6 +521,7 @@ fn render_graph_body(
                 ),
             ));
             lines.push(Line::from(""));
+            let rows = table_visible_rows(lines.len(), content_height, detail_open);
             lines.extend(render_message_table(
                 theme,
                 metrics,
@@ -494,6 +529,7 @@ fn render_graph_body(
                 selected_row,
                 detail_open,
                 Some(cum),
+                rows,
             ));
         }
         _ => {}
@@ -507,6 +543,7 @@ fn render_stats_body(
     width: u16,
     selected_row: Option<usize>,
     detail_open: bool,
+    content_height: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     lines.push(accent_line(theme, "Token/cache stats by assistant message"));
@@ -588,6 +625,7 @@ fn render_stats_body(
         selected_row,
         detail_open,
         None,
+        table_visible_rows(lines.len(), content_height, detail_open),
     ));
     lines
 }
@@ -599,6 +637,7 @@ fn render_message_table(
     selected_row: Option<usize>,
     detail_open: bool,
     cumulative: Option<&CumSeries>,
+    visible_rows: usize,
 ) -> Vec<Line<'static>> {
     let messages = &metrics.all_messages;
     if messages.is_empty() {
@@ -607,7 +646,7 @@ fn render_message_table(
     let selected = selected_row
         .unwrap_or(messages.len() - 1)
         .min(messages.len() - 1);
-    let visible_rows = 8usize;
+    let visible_rows = visible_rows.max(1);
     let start = selected.saturating_add(1).saturating_sub(visible_rows);
     let end = (start + visible_rows).min(messages.len());
     let mut lines = vec![
@@ -618,7 +657,7 @@ fn render_message_table(
         ),
         muted_line(
             theme,
-            " sel    # B model                    prompt      recv       hit     write    hit%",
+            " sel    # B model                    prompt      recv       hit     write    hit%   t/s",
         ),
         dim_line(theme, "─".repeat((width as usize).min(88).max(20))),
     ];
@@ -653,9 +692,13 @@ fn render_message_table(
         } else {
             theme.muted()
         };
+        let speed = m
+            .tokens_per_second
+            .map(|v| format!("{v:.1}"))
+            .unwrap_or_else(|| "—".to_string());
         lines.push(Line::from(Span::styled(
             format!(
-                "  {marker} {:>4} {branch} {:24} {:>9} {:>9} {:>9} {:>9} {:>7}",
+                "  {marker} {:>4} {branch} {:24} {:>9} {:>9} {:>9} {:>9} {:>7} {:>6}",
                 m.sequence,
                 model,
                 format_int(prompt),
@@ -663,6 +706,7 @@ fn render_message_table(
                 format_int(hit),
                 format_int(write),
                 format_percent(hit_pct),
+                speed,
             ),
             style,
         )));
@@ -683,9 +727,10 @@ fn render_message_table(
         lines.push(muted_line(
             theme,
             format!(
-                "Input {} • Output {} • Cache read {} • Cache write {} • Total {} • Hit {}{}",
+                "Input {} • Output {} (incl. reasoning {}) • Cache read {} • Cache write {} • Total {} • Hit {}{}",
                 format_int(m.input),
                 format_int(m.output),
+                m.reasoning.map(format_int).unwrap_or_else(|| "—".into()),
                 format_int(m.cache_read),
                 format_int(m.cache_write),
                 format_int(m.total_tokens),
@@ -697,6 +742,18 @@ fn render_message_table(
                 },
             ),
         ));
+        lines.push(muted_line(
+            theme,
+            format!(
+                "Duration {} • Speed {} (output incl. reasoning, request start → response end)",
+                m.duration_ms
+                    .map(|n| format!("{n} ms"))
+                    .unwrap_or_else(|| "—".into()),
+                m.tokens_per_second
+                    .map(|v| format!("{v:.1} tok/s"))
+                    .unwrap_or_else(|| "—".into()),
+            ),
+        ));
     }
     lines
 }
@@ -704,7 +761,7 @@ fn render_message_table(
 /// Build CSV matching pi-cache-graph export columns (subset sufficient for Excel).
 pub fn build_cache_stats_csv(metrics: &CacheSessionMetrics) -> String {
     let mut out = String::from(
-        "row_type,scope,assistant_messages,sequence,is_on_active_branch,entry_id,timestamp,provider,model,prompt_tokens,received_tokens,cache_hit_tokens,cache_write_tokens,total_tokens,cache_hit_percent,notes\n",
+        "row_type,scope,assistant_messages,sequence,is_on_active_branch,entry_id,timestamp,provider,model,prompt_tokens,received_tokens,cache_hit_tokens,cache_write_tokens,total_tokens,cache_hit_percent,duration_ms,reasoning_tokens,tokens_per_second,notes\n",
     );
     let push_summary = |out: &mut String, scope: &str, totals: &CacheUsageTotals, notes: &str| {
         let prompt = totals
@@ -713,7 +770,7 @@ pub fn build_cache_stats_csv(metrics: &CacheSessionMetrics) -> String {
             .saturating_add(totals.cache_write);
         // sequence,is_on,entry,timestamp,provider,model left empty for summary rows
         out.push_str(&format!(
-            "summary,{scope},{},,,,,,,{},{},{},{},{},{:.4},{}\n",
+            "summary,{scope},{},,,,,,,{},{},{},{},{},{:.4},,,,{}\n",
             totals.assistant_messages,
             prompt,
             totals.output,
@@ -747,7 +804,7 @@ pub fn build_cache_stats_csv(metrics: &CacheSessionMetrics) -> String {
             "other_branch"
         };
         out.push_str(&format!(
-            "message,{scope},,{},{},{},{},{},{},{},{},{},{},{},{:.4},{}\n",
+            "message,{scope},,{},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{}\n",
             m.sequence,
             m.is_on_active_branch,
             csv_escape(&m.entry_id),
@@ -760,6 +817,11 @@ pub fn build_cache_stats_csv(metrics: &CacheSessionMetrics) -> String {
             m.cache_write,
             m.total_tokens,
             m.cache_hit_percent,
+            m.duration_ms.map(|n| n.to_string()).unwrap_or_default(),
+            m.reasoning.map(|n| n.to_string()).unwrap_or_default(),
+            m.tokens_per_second
+                .map(|v| format!("{v:.4}"))
+                .unwrap_or_default(),
             "per-message row",
         ));
     }
@@ -816,6 +878,9 @@ mod tests {
                 cache_hit_percent: 80.0,
                 is_on_active_branch: true,
                 usage_estimated: false,
+                reasoning: Some(2),
+                duration_ms: Some(2500),
+                tokens_per_second: Some(2.0),
             }],
             active_branch_messages: vec![],
             tree_totals: CacheUsageTotals {
@@ -842,6 +907,16 @@ mod tests {
         let csv = build_cache_stats_csv(&metrics);
         assert!(csv.contains("message"));
         assert!(csv.contains("80"));
+        // Column contract: header and every row split into the same 19 fields,
+        // and the timing columns land where the header names them.
+        let rows: Vec<Vec<&str>> = csv.lines().map(|l| l.split(',').collect()).collect();
+        assert_eq!(rows[0].len(), 19);
+        assert!(rows.iter().all(|r| r.len() == rows[0].len()));
+        let message_row = rows.iter().find(|r| r[0] == "message").unwrap();
+        assert_eq!(message_row[3], "1"); // sequence
+        assert_eq!(message_row[15], "2500"); // duration_ms
+        assert_eq!(message_row[16], "2"); // reasoning_tokens
+        assert_eq!(message_row[17], "2.0000"); // tokens_per_second
         assert_eq!(sanitize_export_name("My Session!"), "My-Session");
     }
 
@@ -862,12 +937,15 @@ mod tests {
             cache_hit_percent: 90.0,
             is_on_active_branch: true,
             usage_estimated: false,
+            reasoning: Some(1),
+            duration_ms: Some(1000),
+            tokens_per_second: Some(1.0),
         };
         let metrics = CacheSessionMetrics {
             all_messages: (1..=10).map(row).collect(),
             ..CacheSessionMetrics::default()
         };
-        let lines = render_message_table(&Theme::default(), &metrics, 100, None, true, None);
+        let lines = render_message_table(&Theme::default(), &metrics, 100, None, true, None, 8);
         let text = lines
             .iter()
             .map(ToString::to_string)
@@ -877,5 +955,46 @@ mod tests {
         assert!(text.contains(">   10"));
         assert!(text.contains("Message #10 details"));
         assert!(!text.contains("# 1 "));
+        assert!(text.contains("t/s")); // speed column header
+        assert!(text.contains("Speed 1.0 tok/s")); // detail line
+    }
+
+    #[test]
+    fn table_rows_fill_available_height() {
+        let row = |sequence| AssistantUsageMetric {
+            sequence,
+            active_branch_sequence: Some(sequence),
+            entry_id: format!("a{sequence}"),
+            timestamp: format!("2026-01-01T00:00:{sequence:02}Z"),
+            provider: "xai".into(),
+            model: "grok".into(),
+            input: sequence as u64,
+            output: 1,
+            cache_read: 10,
+            cache_write: 0,
+            total_tokens: sequence as u64 + 11,
+            cache_hit_percent: 90.0,
+            is_on_active_branch: true,
+            usage_estimated: false,
+            reasoning: None,
+            duration_ms: None,
+            tokens_per_second: None,
+        };
+        let metrics = CacheSessionMetrics {
+            all_messages: (1..=50).map(row).collect(),
+            ..CacheSessionMetrics::default()
+        };
+        // 40-row content area, 10 lines already used by the graph header ->
+        // the table must claim the remaining 30 rows (26 data + 4 header lines).
+        assert_eq!(table_visible_rows(10, 40, false), 26);
+        // Detail open reserves its own 7 lines.
+        assert_eq!(table_visible_rows(10, 40, true), 19);
+        // Never collapses to zero rows.
+        assert_eq!(table_visible_rows(39, 40, false), 1);
+
+        let lines = render_message_table(&Theme::default(), &metrics, 100, None, false, None, 26);
+        // 4 table header lines + 26 data rows, and the latest row is selected.
+        assert_eq!(lines.len(), 30);
+        assert!(lines[29].to_string().contains(">   50"));
     }
 }

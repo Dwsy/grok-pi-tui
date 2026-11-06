@@ -681,11 +681,17 @@ pub fn current_value_for(
         "collapsed_edit_blocks" => Some(SettingValue::Bool(
             crate::appearance::cache::load_collapsed_edit_blocks(),
         )),
+        "codemode_expanded_by_default" => Some(SettingValue::Bool(
+            crate::appearance::cache::load_codemode_expanded_by_default(),
+        )),
         "side_by_side_edit" => Some(SettingValue::Bool(
             crate::appearance::cache::load_side_by_side_edit(),
         )),
         "side_by_side_word_highlight" => Some(SettingValue::Bool(
             crate::appearance::cache::load_side_by_side_word_highlight(),
+        )),
+        "tool_card_click_action" => Some(SettingValue::Enum(
+            crate::appearance::cache::load_tool_card_click_action().as_canonical(),
         )),
         "ctrl_o_tool_expansion" => Some(SettingValue::Enum(
             match ui.ctrl_o_tool_expansion.as_deref() {
@@ -1119,6 +1125,16 @@ mod tests {
                         "auto_light_theme default drifts from UiConfig::default()",
                     );
                 }
+                ("tool_card_click_action", SettingKind::Enum { default, .. }) => {
+                    assert_eq!(
+                        *default,
+                        ui.tool_card_click_action.as_deref().unwrap_or("select")
+                    );
+                    assert_eq!(
+                        *default,
+                        crate::appearance::cache::ToolCardClickAction::default().as_canonical()
+                    );
+                }
                 ("ctrl_o_tool_expansion", SettingKind::Enum { default, .. }) => {
                     assert_eq!(
                         *default,
@@ -1238,6 +1254,14 @@ mod tests {
                         "collapsed_edit_blocks default drifts from UiConfig::default()"
                     );
                     assert!(!*default, "collapsed_edit_blocks must default OFF");
+                }
+                ("codemode_expanded_by_default", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default,
+                        ui.codemode_expanded_by_default.unwrap_or(false),
+                        "codemode_expanded_by_default default drifts from UiConfig::default()"
+                    );
+                    assert!(!*default, "codemode_expanded_by_default must default OFF");
                 }
                 // prompt_suggestions: Option<bool>; None reads as true (client default)
                 ("prompt_suggestions", SettingKind::Bool { default }) => {

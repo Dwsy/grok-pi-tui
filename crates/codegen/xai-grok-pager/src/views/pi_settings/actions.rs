@@ -157,6 +157,7 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &str) -> Option<Ac
             "off" => Some(Action::SetPlanMode(PlanModeKind::Off)),
             _ => None,
         },
+        "tool_card_click_action" => Some(Action::SetToolCardClickAction(choice.to_string())),
         "ctrl_o_tool_expansion" => Some(Action::SetCtrlOToolExpansion(choice.to_string())),
         "pi_eval" => match choice {
             "v1" | "v2" => Some(Action::SetPiEval(choice.to_string())),

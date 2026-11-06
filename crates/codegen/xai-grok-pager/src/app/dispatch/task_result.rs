@@ -2147,9 +2147,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
-        TaskResult::AvailableCommandsRefreshed { agent_id, commands } => {
-            if !commands.is_empty()
+        TaskResult::AvailableCommandsRefreshed {
+            agent_id,
+            session_id,
+            expected_generation,
+            commands,
+        } => {
+            if let Some(commands) = commands
                 && let Some(agent) = app.agents.get_mut(&agent_id)
+                && agent.session.session_id.as_ref() == Some(&session_id)
+                && agent.session.available_commands_generation == expected_generation
             {
                 agent
                     .session

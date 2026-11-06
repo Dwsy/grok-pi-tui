@@ -5534,3 +5534,119 @@ fn streaming_file_diff_is_foldable_viewable_and_preserves_fold_through_execution
         assert!(BlockViewerPane::for_edit(entry_id, sb.get(0).unwrap()).is_some());
     }
 }
+
+/// A streaming preview start carries neither raw_input nor content: there is no
+/// one-liner to distrust, so `path_from_title` must not force-expand it over an
+/// explicit collapse override. The summary only becomes (un)trustworthy once
+/// diffs exist; a title-fallback path with real diffs still expands.
+#[test]
+fn streaming_edit_preview_honors_collapse_until_summary_exists() {
+    use crate::scrollback::types::DisplayMode;
+    for (name, old_text) in [("write", None), ("edit", Some("old\n"))] {
+        let mut tracker = AcpUpdateTracker::new();
+        let mut sb = edit_config_scrollback(false);
+        let id = acp::ToolCallId::new(format!("preview-{name}"));
+        assert!(
+            tracker.handle_update(
+                acp::SessionUpdate::ToolCall(
+                    acp::ToolCall::new(id.clone(), name)
+                        .kind(acp::ToolKind::Edit)
+                        .status(acp::ToolCallStatus::InProgress)
+                ),
+                &meta(),
+                &mut sb
+            )
+        );
+        {
+            let entry = sb.get(0).expect("preview card exists");
+            let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &entry.block else {
+                panic!("expected Edit block, got {:?}", entry.block);
+            };
+            assert!(
+                !edit.summary_untrusted,
+                "{name}: an empty preview has no summary to distrust"
+            );
+            assert_eq!(
+                entry.display_mode,
+                DisplayMode::Collapsed,
+                "{name}: preview must honor the collapse override"
+            );
+        }
+
+        // First delta brings path + content together (the adapter only emits
+        // Edit updates once a diff is renderable).
+        let text = "first\n";
+        let content = vec![acp::ToolCallContent::Diff(
+            acp::Diff::new("live.rs", text).old_text(old_text.map(str::to_owned)),
+        )];
+        let delta = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+            id.clone(),
+            acp::ToolCallUpdateFields::new()
+                .status(Some(acp::ToolCallStatus::InProgress))
+                .raw_input(Some(serde_json::json!({"path":"live.rs"})))
+                .content(Some(content.clone())),
+        ));
+        assert!(tracker.handle_update(delta, &meta(), &mut sb));
+        assert_eq!(
+            sb.get(0).unwrap().display_mode(),
+            DisplayMode::Collapsed,
+            "{name}: a path-bearing delta keeps the fold"
+        );
+
+        let canonical = acp::SessionUpdate::ToolCall(
+            acp::ToolCall::new(id.clone(), name)
+                .kind(acp::ToolKind::Edit)
+                .status(acp::ToolCallStatus::InProgress)
+                .raw_input(Some(serde_json::json!({"path":"live.rs"})))
+                .content(content),
+        );
+        assert!(tracker.handle_update(canonical, &meta(), &mut sb));
+        assert!(sb.get(1).is_none());
+        assert_eq!(
+            sb.get(0).unwrap().display_mode(),
+            DisplayMode::Collapsed,
+            "{name}: the canonical call keeps the fold"
+        );
+
+        let finished = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+            id,
+            acp::ToolCallUpdateFields::new().status(Some(acp::ToolCallStatus::Completed)),
+        ));
+        assert!(tracker.handle_update(finished, &meta(), &mut sb));
+        assert_eq!(
+            sb.get(0).unwrap().display_mode(),
+            DisplayMode::Collapsed,
+            "{name}: completion must not snap the card open"
+        );
+    }
+}
+
+/// Title-fallback with real diffs is still a summary the one-liner cannot
+/// truthfully compress: the untrusted escape keeps expanding it.
+#[test]
+fn title_fallback_preview_with_diffs_still_expands() {
+    use crate::scrollback::types::DisplayMode;
+    let mut tracker = AcpUpdateTracker::new();
+    let mut sb = edit_config_scrollback(false);
+    let id = acp::ToolCallId::new("title-fallback-preview");
+    assert!(
+        tracker.handle_update(
+            acp::SessionUpdate::ToolCall(
+                acp::ToolCall::new(id.clone(), "write")
+                    .kind(acp::ToolKind::Edit)
+                    .status(acp::ToolCallStatus::InProgress)
+                    .content(vec![acp::ToolCallContent::Diff(acp::Diff::new(
+                        "live.rs", "new\n"
+                    ))])
+            ),
+            &meta(),
+            &mut sb
+        )
+    );
+    let entry = sb.get(0).expect("card exists");
+    let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &entry.block else {
+        panic!("expected Edit block, got {:?}", entry.block);
+    };
+    assert!(edit.summary_untrusted);
+    assert_eq!(entry.display_mode, DisplayMode::Expanded);
+}

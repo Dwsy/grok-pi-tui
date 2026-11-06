@@ -670,10 +670,10 @@ fn rendered_verb_group_label_stays_tools_only_across_folded_thought() {
     }
 }
 
-/// A single groupable tool call folds on its own: the run renders the aggregated header label, not the tool's own row.
-/// Finished thoughts fold behind it just like in a multi-member run.
+/// A single groupable tool call never folds on its own: the tool keeps its own row and finished thoughts keep theirs.
+/// Runs fold from two members up, so a one-call header can never hide the call it would summarize.
 #[test]
-fn rendered_verb_group_singleton_folds_tool_and_trailing_thoughts() {
+fn rendered_verb_group_singleton_stays_unfolded() {
     use crate::scrollback::ScrollbackState;
 
     crate::appearance::cache::set_group_tool_verbs(true);
@@ -691,9 +691,13 @@ fn rendered_verb_group_singleton_folds_tool_and_trailing_thoughts() {
     state.prepare_layout(viewport.width, viewport.height);
 
     let layouts = state.get_cached_entry_layouts().expect("layout cache");
-    assert!(layouts[0].verb_group_header, "singleton run folds");
-    assert_eq!(layouts[1].height, 0, "thoughts claim into the fold");
-    assert_eq!(layouts[2].height, 0, "thoughts claim into the fold");
+    assert!(
+        !layouts[0].verb_group_header,
+        "a singleton run must not fold into a header"
+    );
+    for (i, info) in layouts.iter().enumerate() {
+        assert!(info.height > 0, "entry {i} keeps its own rows");
+    }
 
     let refs = state.entries_in_range(0..state.len());
     let mut buf = Buffer::empty(viewport);
@@ -717,18 +721,21 @@ fn rendered_verb_group_singleton_folds_tool_and_trailing_thoughts() {
         None,
     );
 
-    let header_row = buffer_row_text(&buf, 0);
+    let rows: Vec<String> = (0..viewport.height)
+        .map(|y| buffer_row_text(&buf, y))
+        .collect();
     assert!(
-        header_row.contains("Listed 1 dir"),
-        "singleton header must render the aggregated label: {header_row:?}"
+        rows.iter().any(|r| r.contains("List src")),
+        "the tool must render its own row: {rows:?}"
     );
-    for y in 0..viewport.height {
-        let row = buffer_row_text(&buf, y);
-        assert!(
-            !row.contains("List src") && !row.contains("Thought"),
-            "neither the raw tool row nor a thought row may render (row {y}): {row:?}"
-        );
-    }
+    assert!(
+        rows.iter().any(|r| r.contains("Thought")),
+        "collapsed thoughts must render their own rows: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|r| !r.contains("Listed")),
+        "no aggregated header may render for one call: {rows:?}"
+    );
 }
 
 /// A subagent lifecycle row folds into the verb group: the collapsed header renders the aggregated label.

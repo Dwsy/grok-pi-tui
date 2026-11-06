@@ -1696,8 +1696,8 @@ mod tests {
         );
     }
 
-    /// Mixed run: a verb-claimed lone read abutting a truncated dense run.
-    /// The dense range walk must stop at the claimed read so reveal and Left-collapse key on the truncation header's id, not the read's.
+    /// Mixed run: a verb-claimed read pair abutting a truncated dense run.
+    /// The dense range walk must stop at the claimed reads so reveal and Left-collapse key on the truncation header's id, not the reads'.
     #[test]
     fn reveal_ungroups_truncated_entry_across_adjacent_verb_fold() {
         crate::appearance::cache::set_group_tool_verbs(true);
@@ -1707,31 +1707,32 @@ mod tests {
         appearance.scrollback.display.group_max_visible = 3;
         state.set_appearance(appearance);
         state.push_block(RenderBlock::read("lone.rs", None));
+        state.push_block(RenderBlock::read("lone2.rs", None));
         push_tool_calls(&mut state, 12);
         state.prepare_layout(80, 40);
 
-        // The read folds on its own; the Others truncate behind entry 1.
+        // The reads fold as a pair; the Others truncate behind entry 2.
         let verb_header = |state: &ScrollbackState, idx: usize| {
             state.get_cached_entry_layouts().unwrap()[idx].verb_group_header
         };
         assert!(verb_header(&state, 0));
-        assert_eq!(cached_height_at(&state, 2), 0, "dense member truncated");
+        assert_eq!(cached_height_at(&state, 3), 0, "dense member truncated");
 
-        state.reveal_entry_line(2, 0);
+        state.reveal_entry_line(3, 0);
 
         assert!(
-            cached_height_at(&state, 2) > 0,
+            cached_height_at(&state, 3) > 0,
             "reveal must key the expansion on the dense run's own header"
         );
-        assert!(verb_header(&state, 0), "the read's fold is untouched");
+        assert!(verb_header(&state, 0), "the reads' fold is untouched");
         assert_eq!(cached_height_at(&state, 0), 1);
 
-        // Left from the revealed entry collapses the DENSE group (same bounded range), leaving the read folded
-        state.set_selected(Some(2));
+        // Left from the revealed entry collapses the DENSE group (same bounded range), leaving the reads folded
+        state.set_selected(Some(3));
         assert!(state.collapse_group_if_expanded());
         state.prepare_layout(80, 40);
-        assert_eq!(cached_height_at(&state, 2), 0, "dense run re-truncates");
-        assert!(verb_header(&state, 0), "the read's fold is untouched");
+        assert_eq!(cached_height_at(&state, 3), 0, "dense run re-truncates");
+        assert!(verb_header(&state, 0), "the reads' fold is untouched");
     }
 
     #[test]

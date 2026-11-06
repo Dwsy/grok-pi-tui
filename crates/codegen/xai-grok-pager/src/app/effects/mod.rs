@@ -5203,11 +5203,11 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::RefreshAvailableCommands { agent_id, session_id } => {
+        Effect::RefreshAvailableCommands { agent_id, session_id, expected_generation } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let params = serde_json::json!({ "sessionId": session_id });
+                    let params = serde_json::json!({ "sessionId": session_id.clone() });
                     let req = acp::ExtRequest::new(
                         "x.ai/commands/list",
                         serde_json::value::to_raw_value(&params)
@@ -5216,17 +5216,20 @@ pub(crate) fn execute(
                     );
                     match acp_send(req, &tx).await {
                         Ok(resp) => {
-                            let wrapper: serde_json::Value = serde_json::from_str(
-                                    resp.0.get(),
-                                )
-                                .unwrap_or_default();
-                            let inner = wrapper.get("result").unwrap_or(&wrapper);
-                            let commands: Vec<acp::AvailableCommand> = inner
-                                .get("commands")
-                                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                                .unwrap_or_default();
+                            let commands = serde_json::from_str::<serde_json::Value>(resp.0.get())
+                                .ok()
+                                .and_then(|wrapper| {
+                                    let inner = wrapper.get("result").unwrap_or(&wrapper);
+                                    inner.get("commands").cloned()
+                                })
+                                .and_then(|value| serde_json::from_value(value).ok());
+                            if commands.is_none() {
+                                tracing::warn!("commands/list returned a malformed catalog");
+                            }
                             TaskResult::AvailableCommandsRefreshed {
                                 agent_id,
+                                session_id,
+                                expected_generation,
                                 commands,
                             }
                         }
@@ -5234,7 +5237,9 @@ pub(crate) fn execute(
                             tracing::warn!("commands/list refresh failed: {e}");
                             TaskResult::AvailableCommandsRefreshed {
                                 agent_id,
-                                commands: vec![],
+                                session_id,
+                                expected_generation,
+                                commands: None,
                             }
                         }
                     }

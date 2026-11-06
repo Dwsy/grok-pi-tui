@@ -505,7 +505,11 @@ impl BlockContent for CodemodeToolCallBlock {
     }
 
     fn default_display_mode(&self) -> DisplayMode {
-        DisplayMode::Truncated
+        if crate::appearance::cache::load_codemode_expanded_by_default() {
+            DisplayMode::Expanded
+        } else {
+            DisplayMode::Truncated
+        }
     }
 
     fn next_fold_mode(&self, current: DisplayMode, _is_running: bool) -> DisplayMode {
@@ -740,6 +744,27 @@ mod tests {
         assert!(text.contains("const a = await tools.read"));
         assert!(text.contains("read"));
         assert!(text.contains("a.rs: fn main() {}"));
+    }
+
+    #[test]
+    fn default_mode_expands_only_when_the_setting_is_enabled() {
+        std::thread::spawn(|| {
+            crate::appearance::cache::set_codemode_expanded_by_default(false);
+            assert_eq!(
+                sample_block().default_display_mode(),
+                DisplayMode::Truncated,
+                "OFF keeps the existing truncated preview"
+            );
+
+            crate::appearance::cache::set_codemode_expanded_by_default(true);
+            assert_eq!(
+                sample_block().default_display_mode(),
+                DisplayMode::Expanded,
+                "ON expands the full Code Mode card"
+            );
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

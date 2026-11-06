@@ -272,7 +272,11 @@ impl ScrollbackState {
             let mode_before = entry.display_mode;
             mutate(entry);
             grew = display_rank(entry.display_mode) > display_rank(mode_before);
-            if respect_manual_folds {
+            let codemode_manual_override = matches!(
+                &entry.block,
+                RenderBlock::ToolCall(ToolCallBlock::Codemode(_))
+            );
+            if respect_manual_folds || codemode_manual_override {
                 entry.display_mode_pinned = true;
                 tracing::debug!(
                     entry_id = id.value(),

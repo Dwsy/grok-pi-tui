@@ -1267,8 +1267,29 @@ pub fn build_hints(
             if shift_enter_unavailable && !multiline_mode && prompt.can_send() {
                 hints.push(HintItem::new(crate::key!(Enter, ALT), "newline"));
             }
-            if prompt.file_ref_near_cursor() {
-                hints.push(HintItem::new(crate::key!(':'), "lines"));
+            let file_preview = prompt.file_ref_near_cursor()
+                || (prompt.file_search_visible()
+                    && prompt
+                        .file_search
+                        .selected_result()
+                        .is_some_and(|r| !r.is_dir));
+            let skill_preview = prompt.selected_skill_path().is_some();
+            if file_preview {
+                hints.push(
+                    HintItem::paired(crate::key!(':'), crate::key!('l', CONTROL), "preview")
+                        .pinned(),
+                );
+            } else if skill_preview {
+                hints.push(HintItem::new(crate::key!('l', CONTROL), "skill preview").pinned());
+            }
+            if prompt.file_ref_near_cursor() || skill_preview {
+                hints.push(HintItem {
+                    keys: Vec::new(),
+                    label: "preview".into(),
+                    custom_display: Some("click"),
+                    description: Some("Click a file chip or skill row to preview it".into()),
+                    pinned: true,
+                });
             }
             if prompt.prompt_suggestion_visible() {
                 hints.push(
@@ -1278,7 +1299,10 @@ pub fn build_hints(
             }
             hints.push(HintItem::new(crate::key!(BackTab), "thinking"));
             for def in registry.hints(&[When::PromptFocused, When::AgentScreen, When::Always]) {
-                if def.id == ActionId::SendPrompt
+                if (def.id == ActionId::ModelPicker
+                    && (file_preview || skill_preview)
+                    && registry.key_for(ActionId::ModelPicker) == Some(crate::key!('l', CONTROL)))
+                    || def.id == ActionId::SendPrompt
                     || def.id == ActionId::CycleThinkingLevel
                     || def.id == ActionId::CommandPalette
                     || def.id == ActionId::Quit
@@ -1657,13 +1681,14 @@ mod tests {
         );
     }
     #[test]
-    fn hook_hover_popup_allows_singleton_verb_header() {
+    fn hook_hover_popup_allows_unfolded_single_tool_row() {
         let viewport = Rect::new(0, 0, 100, 12);
         let state = hooked_read_state(1, viewport);
         let layout = state.get_cached_entry_layouts().expect("layout cache")[0];
-        assert!(layout.verb_group_header);
-        assert_eq!(layout.group_header_count, 1);
-        assert!(!layout.is_expanded_verb_header());
+        assert!(
+            !layout.verb_group_header,
+            "a single tool call never folds into a header"
+        );
         let mut buf = render_hook_frame(&state, viewport);
         hover_hook_badge(&mut buf, &state, viewport, 0);
         assert!(frame_text(&buf).contains("hover-hook"));
@@ -1780,9 +1805,7 @@ mod tests {
             .expect("vim mode should advertise the trace hint too");
         assert_eq!(hint.keys, vec![crate::key!('h')]);
         assert!(
-            args(false, false)
-                .iter()
-                .all(|hint| hint.label != "trace"),
+            args(false, false).iter().all(|hint| hint.label != "trace"),
             "entries without traces must not advertise the trace hint"
         );
     }

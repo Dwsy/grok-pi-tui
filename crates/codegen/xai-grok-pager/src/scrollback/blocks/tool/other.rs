@@ -415,6 +415,15 @@ impl BlockContent for OtherToolCallBlock {
         }
     }
 
+    fn preamble(&self, _ctx: &BlockContext) -> Option<ratatui::text::Text<'static>> {
+        // The fullscreen block viewer prepends this line; without it the
+        // popup shows only Input/Output and never names the tool.
+        let theme = Theme::current();
+        Some(ratatui::text::Text::from(
+            self.collapsed_line(&theme, false, None, false),
+        ))
+    }
+
     fn image_references(&self) -> &[crate::prompt_images::ScrollbackImageRef] {
         &self.image_refs
     }
@@ -586,6 +595,34 @@ mod tests {
             block.compact_input_json().as_deref(),
             Some(r#"{"id":"1","open":true}"#)
         );
+    }
+
+    #[test]
+    fn preamble_names_the_tool_for_the_block_viewer() {
+        let block = OtherToolCallBlock::new("todo_write", "update");
+        let ctx = BlockContext {
+            width: 80,
+            mode: DisplayMode::Collapsed,
+            is_running: false,
+            raw: false,
+            max_lines: None,
+            appearance: AppearanceConfig::default(),
+            is_selected: false,
+            cwd: None,
+        };
+        let text = block.preamble(&ctx).expect("preamble");
+        let joined = text
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("todo_write"), "got: {joined}");
     }
 
     #[test]

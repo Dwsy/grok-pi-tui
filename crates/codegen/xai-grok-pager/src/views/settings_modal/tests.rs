@@ -701,6 +701,8 @@ fn rows_contain_categories_and_settings_through_pr_14() {
             "group_tool_verbs",
             // SHELL-owned collapsed_edit_blocks (Appearance; live cache, default OFF rollout flag)
             "collapsed_edit_blocks",
+            // SHELL-owned Code Mode default expansion (Appearance; live cache, default OFF).
+            "codemode_expanded_by_default",
             // Pi-Grok tool rendering controls retained across upstream syncs.
             "ctrl_o_tool_expansion",
             // SHELL-owned display_refresh_auto_cadence (Appearance).

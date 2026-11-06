@@ -1,5 +1,53 @@
 //! Tests for settings setters, toggles, resets, and rollback.
 use super::*;
+
+#[test]
+fn tool_card_click_action_persists_and_rolls_back_live() {
+    use crate::settings::SettingValue;
+    use crate::appearance::cache::ToolCardClickAction;
+    with_theme_test_env(|| {
+        let previous = crate::appearance::cache::load_tool_card_click_action();
+        let mut app = test_app_with_agent();
+        crate::appearance::cache::set_tool_card_click_action(ToolCardClickAction::Select);
+        app.current_ui.tool_card_click_action = None;
+        assert!(dispatch(Action::SetToolCardClickAction("invalid".into()), &mut app).is_empty());
+        assert_eq!(app.current_ui.tool_card_click_action, None);
+        for canonical in ["toggle", "open_viewer"] {
+            let effects = dispatch(Action::SetToolCardClickAction(canonical.into()), &mut app);
+            assert_eq!(
+                app.current_ui.tool_card_click_action.as_deref(),
+                Some(canonical)
+            );
+            assert_eq!(
+                crate::appearance::cache::load_tool_card_click_action().as_canonical(),
+                canonical
+            );
+            assert!(matches!(effects.as_slice(), [Effect::PersistSetting {
+                key: "tool_card_click_action",
+                value: SettingValue::Enum(value),
+                rollback_value: SettingValue::Enum("select"),
+            }] if *value == canonical));
+            assert!(
+                dispatch(Action::SetToolCardClickAction(canonical.into()), &mut app).is_empty()
+            );
+            let _ = apply_setting_rollback(
+                &mut app,
+                "tool_card_click_action",
+                &SettingValue::Enum("select"),
+            );
+            assert_eq!(
+                app.current_ui.tool_card_click_action.as_deref(),
+                Some("select")
+            );
+            assert_eq!(
+                crate::appearance::cache::load_tool_card_click_action(),
+                ToolCardClickAction::Select
+            );
+        }
+        crate::appearance::cache::set_tool_card_click_action(previous);
+    });
+}
+
 /// `Action::ToggleVimMode` flips the active agent's `vim_mode` field and the in-process pager cache (`load_vim_mode`) that seeds future agents.
 /// It emits `Effect::PersistSetting` so the new value lands in `[ui].vim_mode` in config.toml, and a second toggle restores the original.
 #[test]
@@ -1664,6 +1712,9 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "collapsed_edit_blocks" => {
             let _ = dispatch(Action::SetCollapsedEditBlocks(true), app);
         }
+        "codemode_expanded_by_default" => {
+            let _ = dispatch(Action::SetCodemodeExpandedByDefault(true), app);
+        }
         "prompt_suggestions" => {
             let _ = dispatch(Action::SetPromptSuggestions(false), app);
         }
@@ -2497,6 +2548,81 @@ fn set_collapsed_edit_blocks_refolds_live_edit_rows() {
     );
     crate::appearance::cache::set_collapsed_edit_blocks(false);
 }
+#[test]
+fn set_codemode_expanded_by_default_applies_persists_and_rolls_back() {
+    crate::appearance::cache::set_codemode_expanded_by_default(false);
+    let mut app = test_app_with_agent();
+    let effects = dispatch(Action::SetCodemodeExpandedByDefault(true), &mut app);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::PersistSetting {
+                key: "codemode_expanded_by_default",
+                value: crate::settings::SettingValue::Bool(true),
+                rollback_value: crate::settings::SettingValue::Bool(false),
+            }]
+        ),
+        "expected exactly one PersistSetting effect, got {effects:?}",
+    );
+    assert!(crate::appearance::cache::load_codemode_expanded_by_default());
+    assert!(
+        dispatch(Action::SetCodemodeExpandedByDefault(true), &mut app).is_empty(),
+        "redundant set must be a no-op"
+    );
+    let _ = apply_setting_rollback(
+        &mut app,
+        "codemode_expanded_by_default",
+        &crate::settings::SettingValue::Bool(false),
+    );
+    assert!(!crate::appearance::cache::load_codemode_expanded_by_default());
+}
+
+#[test]
+fn set_codemode_expanded_by_default_updates_live_cards() {
+    use crate::scrollback::block::RenderBlock;
+    use crate::scrollback::blocks::tool::{CodemodeToolCallBlock, ToolCallBlock};
+    use crate::scrollback::types::DisplayMode;
+
+    crate::appearance::cache::set_codemode_expanded_by_default(false);
+    let mut app = test_app_with_agent();
+    let id = app
+        .agents
+        .get_mut(&AgentId(0))
+        .unwrap()
+        .scrollback
+        .push_block(RenderBlock::ToolCall(ToolCallBlock::Codemode(
+            CodemodeToolCallBlock::new("return 1;"),
+        )));
+    assert_eq!(
+        app.agents[&AgentId(0)]
+            .scrollback
+            .get_by_id(id)
+            .unwrap()
+            .display_mode,
+        DisplayMode::Truncated
+    );
+
+    let _ = dispatch(Action::SetCodemodeExpandedByDefault(true), &mut app);
+    assert_eq!(
+        app.agents[&AgentId(0)]
+            .scrollback
+            .get_by_id(id)
+            .unwrap()
+            .display_mode,
+        DisplayMode::Expanded
+    );
+    let _ = dispatch(Action::SetCodemodeExpandedByDefault(false), &mut app);
+    assert_eq!(
+        app.agents[&AgentId(0)]
+            .scrollback
+            .get_by_id(id)
+            .unwrap()
+            .display_mode,
+        DisplayMode::Truncated
+    );
+    crate::appearance::cache::set_codemode_expanded_by_default(false);
+}
+
 #[test]
 fn set_show_thinking_blocks_hides_and_restores_existing_thinking_height() {
     use crate::scrollback::block::RenderBlock;

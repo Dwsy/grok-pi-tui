@@ -2037,13 +2037,16 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                 .or_else(|| extract_raw_field(tc, "path"));
             let path_from_title = raw_path.is_none();
             let path = raw_path.unwrap_or_else(|| tc.title.clone());
-            let untrusted_summary = path_from_title
-                || tc
-                    .content
-                    .iter()
-                    .filter(|c| matches!(c, acp::ToolCallContent::Diff(_)))
-                    .count()
-                    > 1;
+            let diff_count = tc
+                .content
+                .iter()
+                .filter(|c| matches!(c, acp::ToolCallContent::Diff(_)))
+                .count();
+            // Argument streaming pushes the card before any diff exists: an
+            // empty preview has no one-liner to mistrust, so a missing path
+            // there must not force-expand. Once diffs arrive, a title-fallback
+            // path or a multi-file patch still marks the summary untrusted.
+            let untrusted_summary = (path_from_title && diff_count > 0) || diff_count > 1;
             let is_write = is_write_tool(tc);
             let mut block = if success {
                 let (hunks, _count) = xai_grok_pager_diff::extract_edit_hunks(tc);

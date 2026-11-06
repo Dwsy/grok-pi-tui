@@ -266,6 +266,10 @@ impl ModelState {
     /// `parse_reasoning_efforts_meta` returns `None` for absent, non-array, or
     /// present-but-unusable lists, so all of those fall back to the built-in menu
     /// exactly as the shell's session picker does.
+    ///
+    /// The menu is ordered strongest-first (highest effort at the top) regardless
+    /// of wire order, so the picker, [`Self::next_reasoning_effort`]'s cycle, and
+    /// error listings all read highest → lowest.
     pub(crate) fn reasoning_effort_options_for(
         &self,
         id: &acp::ModelId,
@@ -276,7 +280,10 @@ impl ModelState {
         if !supports_reasoning_effort_meta(info.meta.as_ref()) {
             return Vec::new();
         }
-        parse_reasoning_efforts_meta(info.meta.as_ref()).unwrap_or_else(legacy_effort_options)
+        let mut options =
+            parse_reasoning_efforts_meta(info.meta.as_ref()).unwrap_or_else(legacy_effort_options);
+        options.sort_by(|a, b| b.value.cmp(&a.value));
+        options
     }
 
     /// Map a typed/selected effort token to its canonical value for the current
@@ -642,10 +649,13 @@ mod tests {
         })));
         let opts = state.reasoning_effort_options();
         assert_eq!(opts.len(), 2);
-        assert_eq!(opts[0].label, "Balanced");
-        assert_eq!(opts[0].value, ReasoningEffort::Medium);
-        assert_eq!(opts[1].id, "deep");
-        assert_eq!(opts[1].description.as_deref(), Some("Max"));
+        // The menu is strongest-first even though the wire list is weakest-first.
+        assert_eq!(opts[0].id, "deep");
+        assert_eq!(opts[0].value, ReasoningEffort::Xhigh);
+        assert_eq!(opts[0].description.as_deref(), Some("Max"));
+        assert_eq!(opts[1].id, "balanced");
+        assert_eq!(opts[1].label, "Balanced");
+        assert_eq!(opts[1].value, ReasoningEffort::Medium);
     }
 
     #[test]
@@ -659,11 +669,12 @@ mod tests {
             ],
         })));
 
-        assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::None));
-        state.reasoning_effort = Some(ReasoningEffort::Low);
+        // The menu is strongest-first, so cycling walks it downwards.
         assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::High));
-        state.reasoning_effort = Some(ReasoningEffort::High);
+        state.reasoning_effort = Some(ReasoningEffort::Low);
         assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::None));
+        state.reasoning_effort = Some(ReasoningEffort::High);
+        assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::Low));
     }
 
     #[test]

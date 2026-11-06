@@ -201,7 +201,7 @@ impl AgentView {
                 // popup (mirrors the agents-modal ViewAgent path). The line
                 // viewer has higher input priority than the prompt, so it takes
                 // focus until Esc closes it; the slash dropdown stays open
-                // underneath. Non-skill rows are a no-op.
+                // underneath. Non-skill rows keep the global model picker.
                 KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if let Some(path) = self.prompt.selected_skill_path() {
                         let title = self
@@ -218,8 +218,9 @@ impl AgentView {
                             v.title_override = title;
                             self.line_viewer = Some(v);
                         }
+                        return InputOutcome::Changed;
                     }
-                    return InputOutcome::Changed;
+                    // Non-skill rows leave Ctrl-L to the global model picker.
                 }
                 // Esc: close dropdown, revert any live preview.
                 KeyCode::Esc => {
@@ -681,7 +682,11 @@ impl AgentView {
             // Skipping the agent-screen promotion here lets Ctrl+C fall through to the widget's clear path
             let cancel_with_draft =
                 matches!(action_id, ActionId::CancelTurn) && !self.prompt.text().is_empty();
-            if !cancel_with_draft {
+            // A file chip owns its preview chord before the global model picker.
+            // The widget below starts the undo group and creates the viewer request.
+            let file_preview = key!('l', CONTROL).matches(key)
+                && self.prompt.file_ref_element_at_cursor().is_some();
+            if !cancel_with_draft && !file_preview {
                 let outcome = self.handle_agent_action_with_registry(action_id, registry);
                 // Only consume the key if the agent action actually did something
                 // When idle, runtime-guarded actions like CancelTurn return Unchanged so the key can fall through to the prompt widget
@@ -2033,5 +2038,274 @@ mod queue_recall_tests {
 
         assert_eq!(agent.active_pane, AgentPane::Prompt);
         assert_eq!(agent.prompt.text(), "an older prompt");
+    }
+}
+
+#[cfg(test)]
+mod preview_input_routing_tests {
+    use super::*;
+    use crate::views::prompt_widget::KIND_FILE_REF;
+    use crossterm::event::Event;
+    use std::io::Write;
+
+    fn agent_with_file() -> (AgentView, tempfile::NamedTempFile) {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "preview input routing fixture").unwrap();
+        let mut agent = super::test_fixtures::make_agent();
+        agent.set_active_pane(AgentPane::Prompt, true);
+        let text = format!("@{}", file.path().display());
+        agent.prompt.textarea.replace_range_with_element(
+            0..0,
+            &text,
+            KIND_FILE_REF,
+            Some("fixture".into()),
+        );
+        agent.prompt.textarea.insert_str(" ");
+        (agent, file)
+    }
+
+    #[test]
+    fn file_preview_ctrl_l_precedes_model_picker_after_accept() {
+        for registry in [
+            ActionRegistry::non_vscode_for_test(),
+            ActionRegistry::apple_terminal_for_test(),
+        ] {
+            let (mut agent, file) = agent_with_file();
+            assert!(agent.prompt.file_ref_near_cursor());
+            let outcome = agent.handle_input_with_prompt_paging(
+                &Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+                &registry,
+            );
+            assert!(matches!(outcome, InputOutcome::Changed));
+            assert_eq!(
+                agent.line_viewer.as_ref().map(|v| v.path.as_path()),
+                Some(file.path()),
+                "Ctrl-L must reach the file viewer before the model-picker registry",
+            );
+            assert!(agent.active_modal.is_none());
+        }
+    }
+
+    #[test]
+    fn file_preview_colon_after_accept_opens_native_viewer() {
+        for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+            let (mut agent, file) = agent_with_file();
+            agent.handle_input_with_prompt_paging(
+                &Event::Key(KeyEvent::new(KeyCode::Char(':'), modifiers)),
+                &ActionRegistry::non_vscode_for_test(),
+            );
+            assert_eq!(agent.line_viewer.as_ref().unwrap().path, file.path());
+        }
+    }
+
+    #[test]
+    fn skill_preview_ctrl_l_opens_markdown_without_accepting_command() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "# Preview fixture\n\nSkill contents").unwrap();
+        let mut agent = super::test_fixtures::make_agent();
+        agent.set_active_pane(AgentPane::Prompt, true);
+        let command = agent_client_protocol::AvailableCommand::new(
+            "skill:preview-fixture",
+            "preview fixture skill",
+        )
+        .meta(
+            serde_json::json!({"scope":"local","path":file.path()})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        agent
+            .prompt
+            .slash_controller
+            .registry_mut()
+            .set_acp_commands(&[command]);
+        agent.prompt.append_text("/skill:pre");
+        agent.prompt.refresh_slash(&agent.session.models);
+        assert!(agent.prompt.selected_skill_path().is_some());
+        agent.handle_input_with_prompt_paging(
+            &Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            &ActionRegistry::apple_terminal_for_test(),
+        );
+        assert_eq!(agent.line_viewer.as_ref().unwrap().path, file.path());
+        assert_eq!(agent.prompt.text(), "/skill:pre");
+        assert!(agent.prompt.slash_open());
+        assert!(agent.active_modal.is_none());
+    }
+
+    #[test]
+    fn file_preview_single_click_uses_rendered_chip_hitbox() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let (mut agent, file) = agent_with_file();
+        let frame = draw_preview_frame(&mut agent);
+        let painted: String = frame.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(painted.contains("preview") && painted.contains("click"));
+        let ta = agent.prompt.textarea_area();
+        agent.handle_input_with_prompt_paging(
+            &Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: ta.x + 1,
+                row: ta.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &ActionRegistry::non_vscode_for_test(),
+        );
+        assert_eq!(agent.line_viewer.as_ref().unwrap().path, file.path());
+        let draft = agent.prompt.text().to_owned();
+        agent.handle_input_with_prompt_paging(
+            &Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &ActionRegistry::non_vscode_for_test(),
+        );
+        assert!(agent.line_viewer.is_none());
+        assert_eq!(agent.prompt.text(), draft);
+    }
+
+    #[test]
+    fn ctrl_l_outside_preview_context_keeps_model_picker() {
+        for text in ["ordinary draft", "/mod"] {
+            let mut agent = super::test_fixtures::make_agent();
+            agent.set_active_pane(AgentPane::Prompt, true);
+            let id = agent_client_protocol::ModelId::new(std::sync::Arc::from("fixture-model"));
+            agent.session.models.available.insert(
+                id.clone(),
+                agent_client_protocol::ModelInfo::new(id.clone(), "Fixture model"),
+            );
+            agent.session.models.current = Some(id);
+            agent.prompt.set_text(text);
+            agent.prompt.refresh_slash(&agent.session.models);
+            assert!(agent.prompt.selected_skill_path().is_none());
+            agent.handle_input_with_prompt_paging(
+                &Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+                &ActionRegistry::apple_terminal_for_test(),
+            );
+            assert!(
+                matches!(
+                    agent.active_modal.as_ref(),
+                    Some(crate::views::modal::ActiveModal::ArgPicker { command, .. }) if command == "model"
+                ),
+                "Ctrl-L must still open model selection for {text:?}",
+            );
+            assert!(agent.line_viewer.is_none());
+            assert_eq!(agent.prompt.text(), text);
+        }
+    }
+
+    #[test]
+    fn skill_preview_follows_highlight_after_arrow_navigation() {
+        let files = [
+            tempfile::NamedTempFile::new().unwrap(),
+            tempfile::NamedTempFile::new().unwrap(),
+        ];
+        for file in &files {
+            std::fs::write(file.path(), "# Skill preview fixture").unwrap();
+        }
+        let mut agent = super::test_fixtures::make_agent();
+        agent.set_active_pane(AgentPane::Prompt, true);
+        let commands: Vec<_> = ["skill:preview-a", "skill:preview-b"]
+            .iter()
+            .zip(&files)
+            .map(|(name, file)| {
+                agent_client_protocol::AvailableCommand::new(name.to_string(), "preview fixture")
+                    .meta(
+                        serde_json::json!({"scope":"user","path":file.path()})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    )
+            })
+            .collect();
+        agent
+            .prompt
+            .slash_controller
+            .registry_mut()
+            .set_acp_commands(&commands);
+        agent.prompt.append_text("/skill:preview-");
+        agent.prompt.refresh_slash(&agent.session.models);
+        let first = agent.prompt.selected_skill_path().unwrap();
+        agent.handle_input_with_prompt_paging(
+            &Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            &ActionRegistry::apple_terminal_for_test(),
+        );
+        let selected = agent.prompt.selected_skill_path().unwrap();
+        assert_ne!(selected, first);
+        agent.handle_input_with_prompt_paging(
+            &Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            &ActionRegistry::apple_terminal_for_test(),
+        );
+        assert_eq!(
+            agent.line_viewer.as_ref().unwrap().path,
+            std::path::Path::new(&selected)
+        );
+    }
+
+    fn draw_preview_frame(agent: &mut AgentView) -> ratatui::buffer::Buffer {
+        let area = ratatui::layout::Rect::new(0, 0, 140, 42);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        agent.draw(
+            area,
+            &mut buf,
+            &ActionRegistry::non_vscode_for_test(),
+            &mut crate::scrollback::render::ScratchBuffer::new(),
+            None,
+            false,
+            super::super::BannerSlotParams::none(),
+            &crate::app::bundle::BundleState::default(),
+            false,
+            false,
+            &mut Vec::new(),
+            super::super::AppRenderParams::default(),
+        );
+        buf
+    }
+
+    #[test]
+    fn skill_preview_mouse_uses_painted_dropdown_row_without_sending() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "# Mouse preview fixture").unwrap();
+        let mut agent = super::test_fixtures::make_agent();
+        agent.set_active_pane(AgentPane::Prompt, true);
+        let command = agent_client_protocol::AvailableCommand::new(
+            "skill:preview-fixture",
+            "preview fixture skill",
+        )
+        .meta(
+            serde_json::json!({"scope":"local","path":file.path()})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        agent
+            .prompt
+            .slash_controller
+            .registry_mut()
+            .set_acp_commands(&[command]);
+        agent.prompt.append_text("/skill:pre");
+        agent.prompt.refresh_slash(&agent.session.models);
+        let frame = draw_preview_frame(&mut agent);
+        let painted: String = frame.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(painted.contains("skill preview") && painted.contains("click"));
+        let area = agent
+            .slash_dropdown_items_area
+            .expect("painted skill dropdown");
+        let row = agent
+            .slash_dropdown_hit
+            .row_items
+            .iter()
+            .position(|&i| i == agent.prompt.slash_snapshot().selected)
+            .unwrap();
+        let outcome = agent.handle_input_with_prompt_paging(
+            &Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: area.x + 1,
+                row: area.y + row as u16,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &ActionRegistry::non_vscode_for_test(),
+        );
+        assert!(
+            matches!(outcome, InputOutcome::Changed),
+            "a click must not send a prompt"
+        );
+        assert_eq!(agent.line_viewer.as_ref().unwrap().path, file.path());
     }
 }

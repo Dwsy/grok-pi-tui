@@ -1249,6 +1249,8 @@ pub struct AgentView {
     /// Hit box for the last rendered Remote TUI frame (inline or overlay).
     /// Used to map terminal mouse coordinates back to component-local cells.
     pub(crate) remote_tui_rect: Option<Rect>,
+    /// Last valid hit box, kept while a captured mouse gesture may outlive a frame redraw.
+    pub(crate) remote_tui_last_rect: Option<Rect>,
     /// Pi RPC widgets placed below the native editor.
     pub(crate) external_widgets_below_editor: Vec<String>,
     /// Pi RPC keyed statuses, rendered by the native status bar.

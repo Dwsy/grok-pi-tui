@@ -535,6 +535,54 @@ pub(in crate::app::dispatch) fn set_collapsed_edit_blocks(
     }]
 }
 
+pub(super) fn set_codemode_expanded_by_default_inner(app: &mut AppView, new: bool) {
+    let prev = crate::appearance::cache::load_codemode_expanded_by_default();
+    crate::appearance::cache::set_codemode_expanded_by_default(new);
+    app.current_ui.codemode_expanded_by_default = Some(new);
+    if prev == new {
+        return;
+    }
+    for agent in app.agents.values_mut() {
+        agent
+            .scrollback
+            .apply_codemode_expanded_by_default_flip(prev, new);
+        for child in agent.subagent_views.values_mut() {
+            child
+                .scrollback
+                .apply_codemode_expanded_by_default_flip(prev, new);
+        }
+    }
+}
+
+/// Set whether Code Mode cards show the full script, nested calls, and output by default.
+/// SHELL-OWNED: cache mirror and `[ui].codemode_expanded_by_default` via `Effect::PersistSetting`.
+pub(in crate::app::dispatch) fn set_codemode_expanded_by_default(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    let prev = crate::appearance::cache::load_codemode_expanded_by_default();
+    if prev == new {
+        return vec![];
+    }
+    set_codemode_expanded_by_default_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "codemode_expanded_by_default",
+        value = new,
+        "setting changed",
+    );
+    app.show_toast(&save_success_toast(
+        "Expand Code Mode cards by default",
+        new,
+    ));
+    vec![Effect::PersistSetting {
+        key: "codemode_expanded_by_default",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev),
+    }]
+}
+
 pub(super) fn set_side_by_side_edit_inner(new: bool) {
     crate::appearance::cache::set_side_by_side_edit(new);
 }
@@ -614,6 +662,38 @@ pub(in crate::app::dispatch) fn set_ctrl_o_tool_expansion(
         key: "ctrl_o_tool_expansion",
         value: crate::settings::SettingValue::Enum(canonical),
         rollback_value: crate::settings::SettingValue::Enum(prev),
+    }]
+}
+
+pub(super) fn set_tool_card_click_action_inner(
+    app: &mut AppView,
+    new: crate::appearance::cache::ToolCardClickAction,
+) {
+    crate::appearance::cache::set_tool_card_click_action(new);
+    app.current_ui.tool_card_click_action = Some(new.as_canonical().to_string());
+}
+
+pub(in crate::app::dispatch) fn set_tool_card_click_action(
+    app: &mut AppView,
+    new: String,
+) -> Vec<Effect> {
+    let Some(new) = crate::appearance::cache::ToolCardClickAction::from_canonical(&new) else {
+        return vec![];
+    };
+    let prev = crate::appearance::cache::load_tool_card_click_action();
+    if prev == new {
+        return vec![];
+    }
+    set_tool_card_click_action_inner(app, new);
+    refresh_open_settings_modals(app);
+    app.show_toast(&format!(
+        "Tool card click action: {}",
+        new.as_canonical().replace('_', " ")
+    ));
+    vec![Effect::PersistSetting {
+        key: "tool_card_click_action",
+        value: crate::settings::SettingValue::Enum(new.as_canonical()),
+        rollback_value: crate::settings::SettingValue::Enum(prev.as_canonical()),
     }]
 }
 

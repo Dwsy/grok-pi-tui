@@ -2998,6 +2998,9 @@ impl AppView {
             .is_some_and(|(gesture_id, _)| gesture_id != id)
         {
             self.external_ui.remote_tui_mouse_gesture = None;
+            if let Some(agent) = self.active_agent_mut() {
+                agent.remote_tui_last_rect = None;
+            }
         }
         let gesture_button = self
             .external_ui
@@ -3005,11 +3008,18 @@ impl AppView {
             .as_ref()
             .filter(|(gesture_id, _)| gesture_id == id)
             .map(|(_, button)| *button);
-        let rect = self.active_agent().and_then(|agent| agent.remote_tui_rect);
-        let Some(rect) = rect else {
-            if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::Up(_)) {
-                self.external_ui.remote_tui_mouse_gesture = None;
+        let current_rect = self.active_agent().and_then(|agent| agent.remote_tui_rect);
+        if current_rect.is_some() {
+            if let Some(agent) = self.active_agent_mut() {
+                agent.remote_tui_last_rect = current_rect;
             }
+        }
+        let rect = current_rect.or_else(|| {
+            self.active_agent()
+                .and_then(|agent| agent.remote_tui_last_rect)
+        });
+        let Some(rect) = rect else {
+            self.external_ui.remote_tui_mouse_gesture = None;
             return None;
         };
         let inside = rect.contains((mouse.column, mouse.row).into());
@@ -3017,6 +3027,9 @@ impl AppView {
             MouseEventKind::Down(button) => {
                 if !inside {
                     self.external_ui.remote_tui_mouse_gesture = None;
+                    if let Some(agent) = self.active_agent_mut() {
+                        agent.remote_tui_last_rect = None;
+                    }
                     return None;
                 }
                 self.external_ui.remote_tui_mouse_gesture = Some((id.to_owned(), button));
@@ -3024,6 +3037,9 @@ impl AppView {
             }
             MouseEventKind::Up(button) => {
                 if !inside && gesture_button.is_none() {
+                    if let Some(agent) = self.active_agent_mut() {
+                        agent.remote_tui_last_rect = None;
+                    }
                     return None;
                 }
                 self.external_ui.remote_tui_mouse_gesture = None;
@@ -3071,6 +3087,11 @@ impl AppView {
         });
         if let Some(wheel_delta) = wheel_delta {
             event["wheelDelta"] = serde_json::json!(wheel_delta);
+        }
+        if event_type == "release" {
+            if let Some(agent) = self.active_agent_mut() {
+                agent.remote_tui_last_rect = None;
+            }
         }
         Some(event)
     }

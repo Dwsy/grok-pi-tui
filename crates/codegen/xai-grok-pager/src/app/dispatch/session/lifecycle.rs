@@ -1523,6 +1523,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
         effects.push(Effect::RefreshAvailableCommands {
             agent_id,
             session_id: session_id_clone.clone(),
+            expected_generation: agent.session.available_commands_generation,
         });
         effects.push(Effect::CheckMarketplaceUpdates {
             agent_id,
@@ -1657,6 +1658,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         effects.push(Effect::RefreshAvailableCommands {
             agent_id,
             session_id: session_id_clone.clone(),
+            expected_generation: agent.session.available_commands_generation,
         });
         effects.push(Effect::CheckMarketplaceUpdates {
             agent_id,

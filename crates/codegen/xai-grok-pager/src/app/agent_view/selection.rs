@@ -1081,7 +1081,8 @@ impl AgentView {
     }
 
     /// Handle a click on a scrollback entry with multi-click detection.
-    /// Foldable tool/summary cards toggle on the first click; conversation messages keep their text-selection and double-click behavior.
+    /// Tool cards follow the configured click policy; other foldable summary cards toggle on the first click.
+    /// Conversation messages keep their text-selection and double-click behavior.
     /// Special double-click actions (for example opening a viewer or editing a prompt) remain intact.
     pub(in crate::app) fn handle_scrollback_click(
         &mut self,
@@ -1100,6 +1101,7 @@ impl AgentView {
 
         let entry_block = self.scrollback.entry(idx).map(|e| &e.block);
         let is_agent_message = entry_block.is_some_and(|b| b.is_agent_message());
+        let is_tool_card = entry_block.is_some_and(|b| b.is_tool_call());
         let is_bg_task = entry_block
             .is_some_and(|b| matches!(b, crate::scrollback::block::RenderBlock::BgTask(_)));
         let is_subagent = entry_block
@@ -1121,6 +1123,19 @@ impl AgentView {
 
         self.scrollback.set_selected(Some(idx));
 
+        // Tool-card mouse policy is independent of text selection and non-tool cards.
+        // OpenViewer is dispatched by the mouse handler through the same action as Enter.
+        if is_tool_card
+            && crate::appearance::cache::load_tool_card_click_action()
+                != crate::appearance::cache::ToolCardClickAction::Toggle
+        {
+            return (Some((now, idx, click_count.min(2))), false);
+        }
+
+        // Group-header rows are the group's fold affordance; the entry under a header is member 0 / the
+        // first hidden tool call, so header clicks must never reach the member fold toggles below.
+        let is_group_header = self.scrollback.is_selected_group_header();
+
         // Expanded verb-group slot, header row (`header_row_click`): the slot acts as member 0 everywhere else, so the group affordance lives here
         // Double-click on the header row collapses the group; a single click just selects
         // Member rows fall through to the normal foldable path below
@@ -1132,19 +1147,23 @@ impl AgentView {
             if click_count >= 3 {
                 return (None, false);
             }
+            return (Some((now, idx, 1)), show_word_select_tip);
         }
 
-        // Double-click on a group header expands or collapses the group
-        // Both expand ("N more") and collapse ("▾ N tool calls") headers are standalone entries with their own index
-        let is_group_header = self.scrollback.is_selected_group_header();
+        // A single click on a standalone group header toggles the WHOLE group — expand the folded
+        // ("N more" / verb-run) card or collapse the expanded ("▾ N tool calls") one — never the first
+        // member's own fold. Reported count 2 keeps later clicks in the gesture from re-toggling (a verb
+        // header can become an expanded slot after the toggle; its double-click collapse must not undo it).
         if is_group_header {
-            if click_count == 2 {
+            if click_count == 1 {
                 self.scrollback.toggle_group_expansion();
-                return (None, show_word_select_tip);
             }
-            if click_count >= 3 {
-                return (None, false);
-            }
+            let last_click = if click_count >= 3 {
+                None
+            } else {
+                Some((now, idx, click_count.max(2)))
+            };
+            return (last_click, show_word_select_tip);
         }
 
         let foldable = self.scrollback.get(idx).is_some_and(|e| e.is_foldable());
@@ -1569,6 +1588,21 @@ mod tests {
     use super::*;
     use crate::actions::ActionRegistry;
     use crate::app::agent_view::test_fixtures::make_agent;
+    use crate::appearance::cache::ToolCardClickAction;
+
+    struct ToolCardClickGuard(ToolCardClickAction);
+    impl ToolCardClickGuard {
+        fn set(value: ToolCardClickAction) -> Self {
+            let previous = crate::appearance::cache::load_tool_card_click_action();
+            crate::appearance::cache::set_tool_card_click_action(value);
+            Self(previous)
+        }
+    }
+    impl Drop for ToolCardClickGuard {
+        fn drop(&mut self) {
+            crate::appearance::cache::set_tool_card_click_action(self.0);
+        }
+    }
     use crate::scrollback::table_geometry::CellRef;
     use crate::scrollback::text_selection::{ResolvedSelectableLine, VisibleBlockGeometry};
     use crossterm::event::{Event, MouseButton, MouseEventKind};
@@ -2108,6 +2142,7 @@ mod tests {
 
     #[test]
     fn single_click_toggles_foldable_tool_card_once() {
+        let _restore = ToolCardClickGuard::set(ToolCardClickAction::Toggle);
         use crate::scrollback::block::RenderBlock;
 
         let mut agent = make_agent();
@@ -2141,6 +2176,156 @@ mod tests {
             after_first_click,
             "the second click in a double-click sequence must not toggle the card back"
         );
+    }
+
+    /// Regression: a single click on a folded card's count row must expand the WHOLE card (the group).
+    /// It must never unfold the first tool call hidden behind the "N more" header.
+    #[test]
+    fn single_click_on_folded_count_header_expands_whole_card_not_first_tool_call() {
+        let _restore = ToolCardClickGuard::set(ToolCardClickAction::Toggle);
+        use crate::scrollback::block::RenderBlock;
+        use crate::scrollback::types::DisplayMode;
+
+        let mut agent = make_agent();
+        let mut appearance = crate::appearance::AppearanceConfig::default();
+        appearance.scrollback.display.group_max_visible = 3;
+        agent.scrollback.set_appearance(appearance);
+        for i in 0..6 {
+            agent
+                .scrollback
+                .push_block(RenderBlock::tool_call_with_details(
+                    format!("Tool{i}"),
+                    "info",
+                    true,
+                    "output",
+                ));
+        }
+        for i in 0..6 {
+            if let Some(e) = agent.scrollback.entry_mut(i) {
+                e.display_mode = DisplayMode::Collapsed;
+            }
+        }
+        agent.scrollback.prepare_layout(80, 40);
+        assert!(
+            agent
+                .scrollback
+                .get_cached_entry_layouts()
+                .is_some_and(|l| l[0].is_group_header()),
+            "fixture must fold into a count header at entry 0"
+        );
+        let before = agent.scrollback.get(0).unwrap().display_mode;
+
+        let (last_click, show_tip) = agent.handle_scrollback_click(Instant::now(), 0, false);
+        assert!(!show_tip);
+        agent.last_click = last_click;
+
+        assert_eq!(
+            agent.scrollback.get(0).unwrap().display_mode,
+            before,
+            "the count-row click must not unfold the card's first tool call"
+        );
+        let layouts = agent.scrollback.get_cached_entry_layouts().unwrap();
+        assert!(
+            layouts[0].group_collapse_header,
+            "the click must expand the card into its collapse header"
+        );
+        assert!(
+            layouts[1..].iter().all(|l| l.height > 0),
+            "every hidden tool call must show once the card expands"
+        );
+    }
+
+    /// Regression: same contract for a folded verb-run card ("Read N files"): the count-row click expands
+    /// the whole run, never member 0's own fold.
+    #[test]
+    fn single_click_on_folded_verb_run_header_expands_whole_run_not_first_tool_call() {
+        let _restore = ToolCardClickGuard::set(ToolCardClickAction::Toggle);
+        use crate::scrollback::block::RenderBlock;
+        use crate::scrollback::blocks::tool::{ReadToolCallBlock, ToolCallBlock};
+        use crate::scrollback::types::DisplayMode;
+
+        crate::appearance::cache::set_group_tool_verbs(true);
+        crate::appearance::cache::set_show_thinking_blocks(false);
+        let mut agent = make_agent();
+        for i in 0..3 {
+            agent
+                .scrollback
+                .push_block(RenderBlock::ToolCall(ToolCallBlock::Read(
+                    ReadToolCallBlock::new(format!("f{i}.rs"))
+                        .with_content("fn main() {}".to_string(), 1),
+                )));
+        }
+        for i in 0..3 {
+            if let Some(e) = agent.scrollback.entry_mut(i) {
+                e.display_mode = DisplayMode::Collapsed;
+            }
+        }
+        agent.scrollback.prepare_layout(80, 40);
+        assert!(
+            agent
+                .scrollback
+                .get_cached_entry_layouts()
+                .is_some_and(|l| l[0].verb_group_header),
+            "fixture must fold into a verb-run card"
+        );
+        let before = agent.scrollback.get(0).unwrap().display_mode;
+
+        let (last_click, show_tip) = agent.handle_scrollback_click(Instant::now(), 0, false);
+        assert!(!show_tip);
+        agent.last_click = last_click;
+
+        assert_eq!(
+            agent.scrollback.get(0).unwrap().display_mode,
+            before,
+            "the count-row click must not unfold the run's first tool call"
+        );
+        let layouts = agent.scrollback.get_cached_entry_layouts().unwrap();
+        assert!(
+            layouts[0].is_expanded_verb_header(),
+            "the click must expand the whole verb-run card"
+        );
+        assert!(
+            layouts[1..].iter().all(|l| l.height > 0),
+            "all members must show once the card expands"
+        );
+    }
+
+    #[test]
+    fn select_and_viewer_modes_do_not_fold_tool_group_headers() {
+        use crate::scrollback::block::RenderBlock;
+        use crate::scrollback::types::DisplayMode;
+        for mode in [ToolCardClickAction::Select, ToolCardClickAction::OpenViewer] {
+            let _restore = ToolCardClickGuard::set(mode);
+            let mut agent = make_agent();
+            let mut appearance = crate::appearance::AppearanceConfig::default();
+            appearance.scrollback.display.group_max_visible = 3;
+            agent.scrollback.set_appearance(appearance);
+            for i in 0..6 {
+                agent
+                    .scrollback
+                    .push_block(RenderBlock::tool_call_with_details(
+                        format!("Tool{i}"),
+                        "info",
+                        true,
+                        "output",
+                    ));
+                agent.scrollback.entry_mut(i).unwrap().display_mode = DisplayMode::Collapsed;
+            }
+            agent.scrollback.prepare_layout(80, 40);
+            assert!(agent.scrollback.get_cached_entry_layouts().unwrap()[0].is_group_header());
+            let now = Instant::now();
+            for n in 0..2 {
+                let (last_click, _) =
+                    agent.handle_scrollback_click(now + Duration::from_millis(100 * n), 0, false);
+                agent.last_click = last_click;
+                assert_eq!(agent.scrollback.selected(), Some(0));
+                assert_eq!(
+                    agent.scrollback.get(0).unwrap().display_mode,
+                    DisplayMode::Collapsed
+                );
+                assert!(agent.scrollback.get_cached_entry_layouts().unwrap()[0].is_group_header());
+            }
+        }
     }
 
     #[test]
@@ -2345,29 +2530,39 @@ mod tests {
     fn dragging_across_foldable_tool_card_does_not_toggle_it() {
         use crate::scrollback::block::RenderBlock;
 
-        let mut agent = make_agent();
-        agent
-            .scrollback
-            .push_block(RenderBlock::execute_with_output(
-                "echo hello",
-                "stacked line 0\nstacked line 1\nstacked line 2",
-                None::<String>,
+        for mode in [
+            ToolCardClickAction::Select,
+            ToolCardClickAction::Toggle,
+            ToolCardClickAction::OpenViewer,
+        ] {
+            let _restore = ToolCardClickGuard::set(mode);
+            let mut agent = make_agent();
+            agent
+                .scrollback
+                .push_block(RenderBlock::execute_with_output(
+                    "echo hello",
+                    "stacked line 0\nstacked line 1\nstacked line 2",
+                    None::<String>,
+                ));
+            let before = agent.scrollback.get(0).unwrap().display_mode;
+            let reg = ActionRegistry::defaults();
+            latch_drag_with_mouse_held(&mut agent, &reg);
+
+            let outcome = agent.handle_input(&Event::Mouse(mouse_up(10, 7)), &reg);
+            assert!(!matches!(
+                outcome,
+                InputOutcome::Action(crate::app::actions::Action::OpenBlockViewer)
             ));
-        let before = agent.scrollback.get(0).unwrap().display_mode;
-        let reg = ActionRegistry::defaults();
-        latch_drag_with_mouse_held(&mut agent, &reg);
-
-        let _ = agent.handle_input(&Event::Mouse(mouse_up(10, 7)), &reg);
-
-        assert_eq!(
-            agent.scrollback.get(0).unwrap().display_mode,
-            before,
-            "a promoted text drag must finish as selection/copy, never as a fold click"
-        );
-        assert!(
-            agent.pending_scrollback_click.is_none(),
-            "finishing a drag must discard the pending click latch"
-        );
+            assert_eq!(
+                agent.scrollback.get(0).unwrap().display_mode,
+                before,
+                "a promoted text drag must finish as selection/copy, never as a fold click"
+            );
+            assert!(
+                agent.pending_scrollback_click.is_none(),
+                "finishing a drag must discard the pending click latch"
+            );
+        }
     }
 
     /// After a scroll the rebuilt model puts different lines under the held pointer; the post-render reclamp must move the head there.

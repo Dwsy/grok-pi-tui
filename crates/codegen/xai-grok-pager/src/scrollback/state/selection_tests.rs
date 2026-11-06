@@ -906,7 +906,7 @@ fn verb_header_at(state: &ScrollbackState, idx: usize) -> bool {
 }
 
 #[test]
-fn verb_group_folds_multi_member_and_singleton_runs() {
+fn verb_group_folds_multi_member_runs_but_not_singletons() {
     let mut state = verb_state();
     push_reads(&mut state, 3);
     state.push_block(RenderBlock::agent_message("break"));
@@ -920,10 +920,10 @@ fn verb_group_folds_multi_member_and_singleton_runs() {
     assert_eq!(cached_height_at(&state, 1), 0);
     assert_eq!(cached_height_at(&state, 2), 0);
 
-    // A lone read past the break folds too: one compact header row.
-    assert!(verb_header_at(&state, 4));
-    assert_eq!(header_count_at(&mut state, 4), 1);
-    assert_eq!(cached_height_at(&state, 4), 1);
+    // A lone read past the break stays unfolded and keeps its own row.
+    assert!(!verb_header_at(&state, 4));
+    assert_eq!(header_count_at(&mut state, 4), 0);
+    assert!(cached_height_at(&state, 4) > 0);
 }
 
 #[test]
@@ -933,7 +933,7 @@ fn verb_group_separators_break_runs() {
     state.push_block(RenderBlock::execute("cargo test"));
     push_reads(&mut state, 2);
     state.push_block(RenderBlock::edit("f.rs", None));
-    push_reads(&mut state, 1);
+    push_reads(&mut state, 2);
     state.prepare_layout(80, 40);
 
     assert!(verb_header_at(&state, 0));
@@ -941,8 +941,9 @@ fn verb_group_separators_break_runs() {
     assert!(cached_height_at(&state, 2) > 0, "execute stays standalone");
     assert!(verb_header_at(&state, 3));
     assert!(cached_height_at(&state, 5) > 0, "edit stays standalone");
-    // The singleton fold's shape (count/height) is owned by `verb_group_folds_multi_member_and_singleton_runs`
+    // Singleton non-folding is owned by `verb_group_folds_multi_member_runs_but_not_singletons`
     assert!(verb_header_at(&state, 6), "run re-anchors after the Edit");
+    assert_eq!(header_count_at(&mut state, 6), 2);
 }
 
 /// Push a finished thought: collapsed and not running, the shape `finish_thinking`'s auto-collapse leaves behind.
@@ -1075,7 +1076,7 @@ fn verb_group_trailing_thought_claims_and_keeps_boundary_gap() {
 }
 
 #[test]
-fn verb_group_thoughts_never_count_but_fold_behind_one_tool() {
+fn verb_group_thoughts_never_count_and_never_fold_alone() {
     // Pure-thought runs never fold: with no tool member the aggregated header label would be empty
     let mut state = verb_state();
     crate::appearance::cache::set_show_thinking_blocks(true);
@@ -1087,20 +1088,17 @@ fn verb_group_thoughts_never_count_but_fold_behind_one_tool() {
         assert!(cached_height_at(&state, i) > 0);
     }
 
-    // One tool plus finished thoughts is a run: it folds into a single header row that swallows the thoughts, and the count stays tools-only
+    // One tool plus finished thoughts is still a singleton run: nothing folds, the tool keeps its row and the thoughts keep theirs
     let mut state = verb_state();
     crate::appearance::cache::set_show_thinking_blocks(true);
     state.push_block(RenderBlock::list_dir("src"));
     push_thought(&mut state, "scanned the tree");
     push_thought(&mut state, "picked a file");
     state.prepare_layout(80, 40);
-    assert!(verb_header_at(&state, 0));
-    assert_eq!(header_count_at(&mut state, 0), 1, "thoughts never count");
-    assert_eq!(cached_height_at(&state, 0), 1);
-    assert_eq!(cached_height_at(&state, 1), 0, "thought folds behind");
-    assert_eq!(cached_height_at(&state, 2), 0, "thought folds behind");
-    // The folded thought resolves to the singleton run for toggle/reveal.
-    assert_eq!(state.group_range_of(1, true), 0..3);
+    assert!(!verb_header_at(&state, 0), "singleton run never folds");
+    for i in 0..3 {
+        assert!(cached_height_at(&state, i) > 0, "entry {i} keeps its rows");
+    }
     crate::appearance::cache::set_show_thinking_blocks(false);
 }
 
@@ -1162,10 +1160,11 @@ fn verb_group_excludes_pending_input() {
     push_reads(&mut state, 3);
     state.entry_mut(1).unwrap().is_pending_user_input = true;
     state.prepare_layout(80, 40);
-    // The pending entry stays standalone (its prompt must stay visible) while the reads around it fold as singleton runs
-    assert!(verb_header_at(&state, 0));
+    // The pending entry stays standalone (its prompt must stay visible); it splits the run into two singletons,
+    // and singleton runs never fold, so nothing is claimed
+    assert!(!verb_header_at(&state, 0), "split singleton stays unfolded");
     assert!(!verb_header_at(&state, 1), "pending row never claims");
-    assert!(verb_header_at(&state, 2));
+    assert!(!verb_header_at(&state, 2), "split singleton stays unfolded");
     for i in 0..3 {
         assert!(cached_height_at(&state, i) > 0);
     }
@@ -1180,14 +1179,11 @@ fn verb_group_refolds_on_pending_input_transitions() {
     assert_eq!(cached_height_at(&state, 1), 0);
 
     // A permission prompt lands on an already-hidden member: the flag flip alone must re-run the folds so the prompt row shows
-    // The run splits into singleton folds around it
+    // The run splits into two singletons around it, and singletons never fold
     assert!(state.set_pending_user_input(ids[1], true));
     state.prepare_layout(80, 40);
-    assert_eq!(
-        header_count_at(&mut state, 0),
-        1,
-        "run splits at the prompt"
-    );
+    assert!(!verb_header_at(&state, 0), "run splits at the prompt");
+    assert_eq!(header_count_at(&mut state, 0), 0);
     assert!(
         cached_height_at(&state, 1) > 0,
         "pending row must surface out of the fold"
@@ -1306,16 +1302,16 @@ fn verb_group_boundary_gap_follows_pairwise_rule() {
     state.prepare_layout(80, 40);
     assert_eq!(gap(&state, 2), text_boundary, "expanded boundary gap");
 
-    // Singleton: the header is itself the run's last claimed entry, so it keeps the pairwise boundary gap
+    // Singleton: a lone read never folds and keeps the ordinary pairwise boundary gap
     let mut state = verb_state();
     push_reads(&mut state, 1);
     state.push_block(RenderBlock::agent_message("after"));
     state.prepare_layout(80, 40);
-    assert!(verb_header_at(&state, 0));
+    assert!(!verb_header_at(&state, 0), "singleton run stays unfolded");
     assert_eq!(
         gap(&state, 0),
         text_boundary,
-        "singleton header keeps the boundary gap before agent text"
+        "lone read keeps the boundary gap before agent text"
     );
 }
 
@@ -1355,36 +1351,19 @@ fn verb_group_expand_and_collapse_round_trip() {
 }
 
 #[test]
-fn verb_group_singleton_expand_and_collapse_round_trip() {
+fn verb_group_singleton_stays_unfolded_across_expansion_attempts() {
     let mut state = verb_state();
-    let ids = push_reads(&mut state, 1);
+    push_reads(&mut state, 1);
     state.push_block(RenderBlock::agent_message("after"));
     state.prepare_layout(80, 40);
-    assert!(verb_header_at(&state, 0));
-    assert_eq!(cached_height_at(&state, 0), 1);
+    assert!(!verb_header_at(&state, 0), "singleton run never folds");
+    assert!(cached_height_at(&state, 0) > 0);
 
-    // The folded singleton still acts as a group header: selectable, with the expand label
+    // A lone tool row is not a group header and offers no group to expand.
     state.set_selected(Some(0));
-    assert!(state.is_selected_group_header());
-    assert_eq!(state.selected_group_header_fold_label(), Some("expand"));
-
-    // Expand: the slot stacks the header line above the member's own row.
-    assert!(state.toggle_group_expansion());
-    state.prepare_layout(80, 40);
-    assert!(state.expanded_groups.contains(&ids[0]));
-    let info = state.layout_cache.as_ref().unwrap().entries[0];
-    assert!(info.verb_group_header && info.group_collapse_header);
-    assert_eq!(cached_height_at(&state, 0), 2, "header line + member row");
-    // The expanded slot acts as member 0, exactly like a multi-member run.
     assert!(!state.is_selected_group_header());
+    assert_eq!(state.selected_group_header_fold_label(), None);
     assert!(!state.toggle_group_expansion());
-
-    // Left from the header collapses back to the folded header row.
-    assert!(state.collapse_group_if_expanded());
-    state.prepare_layout(80, 40);
-    assert!(!state.expanded_groups.contains(&ids[0]));
-    assert!(verb_header_at(&state, 0));
-    assert_eq!(cached_height_at(&state, 0), 1);
 }
 
 #[test]
@@ -1723,8 +1702,8 @@ fn verb_group_subagent_mid_run_member_folds_and_round_trips() {
     assert_eq!(cached_height_at(&state, 1), 0);
 }
 
-/// Ctrl+E's expand-all re-derives dense runs itself; a verb-claimed lone read must neither start nor extend that walk.
-/// Otherwise the inserted id misses the truncation header: the dense group stays hidden while the read's fold spuriously pops open.
+/// Ctrl+E's expand-all re-derives dense runs itself; a verb-claimed read pair must neither start nor extend that walk.
+/// Otherwise the inserted id misses the truncation header: the dense group stays hidden while the read fold spuriously pops open.
 #[test]
 fn expand_all_thinking_untruncates_dense_run_across_adjacent_verb_fold() {
     let mut state = verb_state();
@@ -1733,11 +1712,11 @@ fn expand_all_thinking_untruncates_dense_run_across_adjacent_verb_fold() {
     state.set_appearance(appearance);
     // A collapsed thought steers the toggle onto its expand leg (hidden while `show_thinking` is off, so it stays outside both runs)
     push_thought(&mut state, "steer");
-    let read_id = state.push_block(RenderBlock::read("lone.rs", None));
+    let read_ids = push_reads(&mut state, 2);
     let other_ids = push_tool_calls(&mut state, 12);
     state.prepare_layout(80, 40);
-    assert!(verb_header_at(&state, 1), "lone read folds");
-    assert_eq!(cached_height_at(&state, 3), 0, "dense member truncated");
+    assert!(verb_header_at(&state, 1), "read pair folds");
+    assert_eq!(cached_height_at(&state, 4), 0, "dense member truncated");
 
     state.expand_all_thinking();
     state.prepare_layout(80, 40);
@@ -1747,11 +1726,11 @@ fn expand_all_thinking_untruncates_dense_run_across_adjacent_verb_fold() {
         "expand-all must key the dense run on its truncation header"
     );
     assert!(
-        !state.expanded_groups.contains(&read_id),
-        "the claimed read must not head the dense walk"
+        !state.expanded_groups.contains(&read_ids[0]),
+        "the claimed reads must not head the dense walk"
     );
     assert!(
-        cached_height_at(&state, 3) > 0,
+        cached_height_at(&state, 4) > 0,
         "dense members surface behind the collapse header"
     );
     let info = state.layout_cache.as_ref().unwrap().entries[1];

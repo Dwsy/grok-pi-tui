@@ -261,10 +261,12 @@ impl AgentView {
         lines: &[String],
         layout: Option<crate::app::app_view::RemoteTuiLayout>,
     ) -> bool {
-        let changed = self.remote_tui_lines != lines || self.remote_tui_layout != layout;
+        let geometry_changed =
+            self.remote_tui_lines.len() != lines.len() || self.remote_tui_layout != layout;
+        let changed = geometry_changed || self.remote_tui_lines != lines;
         self.remote_tui_lines = lines.to_vec();
         self.remote_tui_layout = layout.clone();
-        if changed {
+        if geometry_changed {
             self.remote_tui_rect = None;
         }
         self.subagent_views

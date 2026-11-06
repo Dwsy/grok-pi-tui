@@ -1848,6 +1848,7 @@ pub fn render_context_info_overlay(
                         view,
                         selected_row,
                         detail_open,
+                        content_area.height,
                     )
                 }
             } else {

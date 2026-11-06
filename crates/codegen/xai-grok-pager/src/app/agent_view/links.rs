@@ -2057,7 +2057,13 @@ mod link_click_tests {
         }
         agent.scrollback.prepare_layout(80, 40);
         let _ = agent.handle_scrollback_click(std::time::Instant::now(), 0, false);
-        assert!(agent.scrollback.is_selected_group_header());
+        assert!(
+            agent
+                .scrollback
+                .get_cached_entry_layouts()
+                .is_some_and(|l| l[0].group_collapse_header),
+            "single click on the folded card's count row expands the group"
+        );
         assert!(
             agent.toast.is_none(),
             "single click on a group header must not trigger the plan preview, got toast {:?}",

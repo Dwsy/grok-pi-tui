@@ -59,6 +59,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         "show_thinking_blocks" | "thinking_border_colors" | "max_thoughts_width" => "Thinking",
         "group_tool_verbs"
         | "collapsed_edit_blocks"
+        | "codemode_expanded_by_default"
         | "side_by_side_edit"
         | "side_by_side_word_highlight"
         | "ctrl_o_tool_expansion"
@@ -73,7 +74,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
 
         // -- Mouse -----------------------------------------------------------
         "scroll_speed" | "scroll_mode" | "scroll_lines" | "invert_scroll" => "Scrolling",
-        "keep_text_selection" => "Selection",
+        "keep_text_selection" | "tool_card_click_action" => "Selection",
 
         // -- Editor ----------------------------------------------------------
         "combine_queued_prompts"

@@ -1316,17 +1316,21 @@ impl PromptWidget {
 
     /// Absolute path to the selected slash row's `SKILL.md`, if it is a skill.
     ///
-    /// Resolves the current slash dropdown's command token (`snap.query`, valid
-    /// in both the command and args phase) back to its `SlashCommand` and
-    /// returns [`SlashCommand::skill_path`]. `None` for non-skill rows, unknown
+    /// Resolves the highlighted slash row, including partial command queries,
+    /// back to its `SlashCommand` and returns [`SlashCommand::skill_path`]. `None` for non-skill rows, unknown
     /// commands, or when the dropdown is closed. Used by the `Ctrl-L` preview
     /// affordance to open a read-only popup of the skill definition.
     pub fn selected_skill_path(&self) -> Option<String> {
         let snap = self.slash_state.snapshot();
-        if !snap.open || snap.query.is_empty() {
+        if !snap.open {
             return None;
         }
-        let command = self.slash_controller.registry().get(&snap.query)?;
+        let name = if snap.cursor_in_command {
+            snap.selection()?.command_name()
+        } else {
+            &snap.query
+        };
+        let command = self.slash_controller.registry().get(name)?;
         command.skill_path().map(str::to_string)
     }
 
@@ -1519,13 +1523,14 @@ impl PromptWidget {
 
     /// Whether the cursor is at a file ref element boundary (for shortcuts bar hint).
     ///
-    /// Matches the same positions where `:` or Ctrl-L would trigger: at element start, at element end, but NOT after the trailing space.
+    /// Matches the same positions where `:` or Ctrl-L would trigger: at element start, at element end,
+    /// and right after the trailing space (cursor == end + 1, where Tab leaves it after accept).
     pub fn file_ref_near_cursor(&self) -> bool {
         let cursor = self.textarea.cursor();
-        self.textarea
-            .elements()
-            .iter()
-            .any(|e| e.kind == KIND_FILE_REF && (cursor == e.range.start || cursor == e.range.end))
+        self.textarea.elements().iter().any(|e| {
+            e.kind == KIND_FILE_REF
+                && (cursor == e.range.start || cursor == e.range.end || cursor == e.range.end + 1)
+        })
     }
 
     /// Parse a file ref element into (path, optional line range). Element text is `@path` or `@path:10`
@@ -1560,15 +1565,18 @@ impl PromptWidget {
     }
 
     /// Find a file ref element when cursor is at an element boundary. Used by the ':' trigger: fires
-    /// when the cursor is at element.range.start (on the `@` char) or element.range.end (right after
-    /// the element). Returns `(path, optional_line_range)`.
+    /// when the cursor is at element.range.start (on the `@` char), element.range.end (right after
+    /// the element), or one past it (after the trailing space Tab leaves behind). Returns `(path, optional_line_range)`.
     fn file_ref_at_element_boundary(&self) -> Option<(String, Option<std::ops::Range<usize>>)> {
         let cursor = self.textarea.cursor();
         for elem in self.textarea.elements() {
             if elem.kind != KIND_FILE_REF {
                 continue;
             }
-            if cursor == elem.range.end || cursor == elem.range.start {
+            if cursor == elem.range.end
+                || cursor == elem.range.start
+                || cursor == elem.range.end + 1
+            {
                 let text = self.textarea.get_range(elem.range.clone())?;
                 return Some(Self::parse_file_ref_element(text));
             }
@@ -1803,7 +1811,8 @@ impl PromptWidget {
             self.textarea.begin_undo_group();
             return PromptEvent::Edited;
         }
-        if key!(':').matches(key)
+        // Enhanced keyboard protocols preserve Shift on punctuation such as `:`.
+        if (key!(':').matches(key) || key!(':', SHIFT).matches(key))
             && let Some((path, initial_range)) = self.file_ref_at_element_boundary()
         {
             self.pending_viewer_request = Some(ViewerRequest {
@@ -1989,7 +1998,10 @@ impl PromptWidget {
             } else {
                 FileSearchKeyResult::PassThrough
             }
-        } else if key!(':').matches(key) || key!('l', CONTROL).matches(key) {
+        } else if key!(':').matches(key)
+            || key!(':', SHIFT).matches(key)
+            || key!('l', CONTROL).matches(key)
+        {
             // Accept and open the line viewer, only for files (not dirs)
             let is_file = self
                 .file_search
@@ -2267,7 +2279,28 @@ impl PromptWidget {
                         self.hovered_image_element_id = None;
                     }
                 }
-                TextElementEventKind::Click => {}
+                TextElementEventKind::Click => {
+                    // Single-click on an @file chip opens the preview (same as Ctrl-L / `:`).
+                    // Guarded by `pending_viewer_request.is_none()` so the second Down of a
+                    // double-click does not nest another undo group before the viewer consumes it.
+                    if self.pending_viewer_request.is_none()
+                        && let Some(elem) = self
+                            .textarea
+                            .elements()
+                            .iter()
+                            .find(|e| e.id == event.id && e.kind == KIND_FILE_REF)
+                    {
+                        let range = elem.range.clone();
+                        if let Some(text) = self.textarea.get_range(range) {
+                            let (path, initial_range) = Self::parse_file_ref_element(text);
+                            self.textarea.begin_undo_group();
+                            self.pending_viewer_request = Some(ViewerRequest {
+                                path: std::path::PathBuf::from(path),
+                                initial_range,
+                            });
+                        }
+                    }
+                }
             }
         }
 
