@@ -465,6 +465,23 @@ impl acp::Agent for PiAgent {
 
     async fn ext_method(&self, arguments: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {
         match arguments.method.as_ref() {
+            // `session/new` publishes its session update before its response,
+            // so Pager cannot route that update until it binds the returned id.
+            // Serve the refreshed Pi catalog for Pager's post-bind recovery.
+            "x.ai/commands/list" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).map_err(acp_internal)?;
+                let session_id = string(&params, &["sessionId", "session_id"])
+                    .ok_or_else(|| acp::Error::invalid_params().data("sessionId is required"))?;
+                let state = self.state.borrow();
+                if session_id != state.acp_session_id {
+                    return Err(acp::Error::invalid_params().data("Pi session is no longer active"));
+                }
+                ext_response(json!({
+                    "commands": state.bootstrap.acp_commands(self.workflows_enabled),
+                }))
+                .map_err(acp_internal)
+            }
             "x.ai/interject" => self.handle_steer_message(arguments.params.get()).await,
             "x.ai/terminal/background" => {
                 self.handle_bash_background_request(arguments.params.get())

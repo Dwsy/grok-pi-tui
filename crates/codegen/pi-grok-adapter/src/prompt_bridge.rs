@@ -103,14 +103,41 @@ pub(crate) fn format_bash_result(result: &Value) -> String {
 pub(crate) fn prompt_to_pi(blocks: &[acp::ContentBlock]) -> (String, Vec<Value>) {
     let mut parts = Vec::new();
     let mut images = Vec::new();
+    let mut image_metadata = Vec::new();
     for block in blocks {
         match block {
             acp::ContentBlock::Text(text) => parts.push(text.text.clone()),
-            acp::ContentBlock::Image(image) => images.push(json!({
-                "type": "image",
-                "data": image.data,
-                "mimeType": image.mime_type,
-            })),
+            acp::ContentBlock::Image(image) => {
+                images.push(json!({
+                    "type": "image",
+                    "data": image.data,
+                    "mimeType": image.mime_type,
+                }));
+                // The wire URI may point at a durable copy; keep the user's original path.
+                let path = image
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("xai.dev/imageSourcePath"))
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.is_empty())
+                    .or_else(|| {
+                        image
+                            .uri
+                            .as_deref()
+                            .and_then(|uri| uri.strip_prefix("file://"))
+                            .filter(|path| !path.is_empty())
+                    });
+                if let Some(path) = path {
+                    let number = image
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get("xai.dev/imageDisplayNumber"))
+                        .and_then(Value::as_u64)
+                        .filter(|number| *number > 0)
+                        .unwrap_or(images.len() as u64);
+                    image_metadata.push(format!("[Image #{number}] path: {}", json!(path)));
+                }
+            }
             acp::ContentBlock::ResourceLink(link) => {
                 parts.push(format!("[resource] {}", link.uri));
             }
@@ -122,12 +149,90 @@ pub(crate) fn prompt_to_pi(blocks: &[acp::ContentBlock]) -> (String, Vec<Value>)
             _ => {}
         }
     }
+    if !image_metadata.is_empty() {
+        parts.push(format!(
+            "<image_metadata>\n{}\n</image_metadata>",
+            image_metadata.join("\n")
+        ));
+    }
     (parts.join("\n\n"), images)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_prompt_preserves_original_path_and_display_number() {
+        let path = "/Users/test/截图 \"draft\".png";
+        let mut meta = acp::Meta::new();
+        meta.insert("xai.dev/imageSourcePath".into(), json!(path));
+        meta.insert("xai.dev/imageDisplayNumber".into(), json!(3));
+        let blocks = vec![
+            acp::ContentBlock::Text(acp::TextContent::new("edit [Image #3]")),
+            acp::ContentBlock::Image(
+                acp::ImageContent::new("cG5n", "image/png")
+                    .uri(Some("file:///tmp/session-copy.png".into()))
+                    .meta(Some(meta)),
+            ),
+        ];
+
+        let (message, images) = prompt_to_pi(&blocks);
+        assert_eq!(
+            message,
+            format!(
+                "edit [Image #3]\n\n<image_metadata>\n[Image #3] path: {}\n</image_metadata>",
+                json!(path)
+            )
+        );
+        assert!(!message.contains("session-copy.png"));
+        assert_eq!(
+            images,
+            vec![json!({"type":"image","data":"cG5n","mimeType":"image/png"})]
+        );
+    }
+
+    #[test]
+    fn image_only_prompt_uses_local_uri_and_attachment_order_as_fallbacks() {
+        let mut empty_meta = acp::Meta::new();
+        empty_meta.insert("xai.dev/imageSourcePath".into(), json!(""));
+        let blocks = vec![
+            acp::ContentBlock::Image(acp::ImageContent::new("one", "image/png")),
+            acp::ContentBlock::Image(
+                acp::ImageContent::new("two", "image/jpeg")
+                    .uri(Some("file:///tmp/clipboard image.jpg".into()))
+                    .meta(Some(empty_meta)),
+            ),
+            acp::ContentBlock::Image(
+                acp::ImageContent::new("three", "image/webp")
+                    .uri(Some("https://example.com/image.webp".into())),
+            ),
+        ];
+
+        let (message, images) = prompt_to_pi(&blocks);
+        assert_eq!(
+            message,
+            "<image_metadata>\n[Image #2] path: \"/tmp/clipboard image.jpg\"\n</image_metadata>"
+        );
+        assert_eq!(images.len(), 3);
+        assert_eq!(
+            images[1],
+            json!({"type":"image","data":"two","mimeType":"image/jpeg"})
+        );
+    }
+
+    #[test]
+    fn prompts_without_local_image_paths_keep_their_text() {
+        let blocks = vec![
+            acp::ContentBlock::Text(acp::TextContent::new("hello")),
+            acp::ContentBlock::Image(acp::ImageContent::new("data", "image/png")),
+        ];
+        let (message, images) = prompt_to_pi(&blocks);
+        assert_eq!(message, "hello");
+        assert_eq!(images.len(), 1);
+        assert_eq!(prompt_to_pi(&blocks[..1]), ("hello".into(), vec![]));
+        assert_eq!(prompt_to_pi(&blocks[1..]).0, "");
+    }
 
     #[test]
     fn grok_direct_bash_meta_maps_to_pi_bash() {

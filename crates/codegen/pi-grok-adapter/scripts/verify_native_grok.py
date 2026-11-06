@@ -229,6 +229,9 @@ def main() -> int:
     # TUI, input, slash, scrollback, minimal and Markdown files.
     renderer_manifest = json.loads(read(docs / "native_renderer_sha256.json"))
     renderer_declared_modified = {
+        # Tool-card click policy: reuse native selection/folding and Enter viewer;
+        # no new renderer or input loop.
+        "crates/codegen/xai-grok-pager/src/app/agent_view/selection.rs",
         # Remote TUI overlay visibility yields to native Pi dialogs; no renderer replacement.
         "crates/codegen/xai-grok-pager/src/app/agent_view/render.rs",
         # EditTool hook/viewer seam: delegates to the sibling layout renderer
@@ -286,6 +289,12 @@ def main() -> int:
     # Verify the files allowed to differ really are a narrow integration seam,
     # not a hidden second UI package.
     expected_modified = {
+        # F2 tool-card click policy: native selection/folding/viewer plus settings persistence.
+        "crates/codegen/xai-grok-shared/src/ui_config.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/settings_writes.rs",
+        "crates/codegen/xai-grok-pager/src/app/mouse.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/selection.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs",
         "crates/codegen/xai-grok-pager/src/app/agent_view/render.rs",
         "Cargo.lock",
         "Cargo.toml",
@@ -296,6 +305,9 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/app/actions.rs",
         "crates/codegen/xai-grok-pager/src/app/acp_handler/interactions.rs",
         "crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs",
+        # Pi's deferred-start command seed and its Welcome timing regressions.
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/settings.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/settings.rs",
         "crates/codegen/xai-grok-pager/src/app/app_view.rs",
         "crates/codegen/xai-grok-pager/src/app/agent_view/panes.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/dashboard.rs",
@@ -324,6 +336,8 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/app/dispatch/tests/prompt.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/tests/router.rs",
         "crates/codegen/xai-grok-pager/src/app/dispatch/tests/mod.rs",
+        # Session-scoped command-list recovery regression tests.
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/task_result.rs",
         "crates/codegen/xai-grok-pager/src/app/effects/helpers.rs",
         "crates/codegen/xai-grok-pager/src/app/effects/mod.rs",
         "crates/codegen/xai-grok-pager/src/app/effects/tests.rs",
@@ -351,6 +365,8 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/views/block_viewer.rs",
         "crates/codegen/xai-grok-pager/src/settings/registry.rs",
         "crates/codegen/xai-grok-pager-render/src/appearance/cache.rs",
+        # Preserve original image paths in ACP metadata without changing native rendering.
+        "crates/codegen/xai-grok-pager-render/src/prompt_images.rs",
         # Narrow branding seam: process-wide logo override for external hosts
         # (e.g. grok-pi π art). Layout/shimmer still use the native renderer.
         "crates/codegen/xai-grok-pager/src/scrollback/blocks/context_info.rs",

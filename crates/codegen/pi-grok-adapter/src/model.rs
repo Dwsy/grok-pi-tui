@@ -877,6 +877,9 @@ pub struct PiCommand {
     pub name: String,
     pub description: String,
     pub source: String,
+    /// Resource identity from get_commands.sourceInfo (legacy: path/location).
+    pub path: Option<String>,
+    pub scope: Option<String>,
     /// Prompt-template / builtin argument hint (placeholder only).
     pub argument_hint: Option<String>,
     /// Snapshot of extension `getArgumentCompletions("")` when present.
@@ -1340,6 +1343,17 @@ pub fn parse_commands(value: &Value) -> Vec<PiCommand> {
                 source: string(item, &["source", "origin"])
                     .unwrap_or_default()
                     .to_string(),
+                path: item
+                    .get("sourceInfo")
+                    .and_then(|info| string(info, &["path"]))
+                    .or_else(|| string(item, &["path"]))
+                    .filter(|path| !path.trim().is_empty())
+                    .map(str::to_string),
+                scope: item
+                    .get("sourceInfo")
+                    .and_then(|info| string(info, &["scope"]))
+                    .or_else(|| string(item, &["scope", "location"]))
+                    .map(str::to_string),
                 argument_hint,
                 argument_completions,
             });

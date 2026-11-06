@@ -39,7 +39,7 @@
     },
     "message_animation_renderer_seams_are_declared": {
       "passed": true,
-      "detail": "8 modified and 2 added native renderer/state seams are declared"
+      "detail": "8 modified and 3 added native renderer/state seams are declared"
     },
     "native_renderer_input_markdown_hashes_match_outside_declared_seams": {
       "passed": false,
@@ -47,7 +47,7 @@
     },
     "modified_surface_is_exact_and_semantic": {
       "passed": true,
-      "detail": "exactly 63 workspace/ACP/state/dispatch/slash/tutorial/logo/message-animation seams are declared; no second TUI or broad renderer rewrite"
+      "detail": "exactly 66 workspace/ACP/state/dispatch/slash/tutorial/logo/message-animation seams are declared; no second TUI or broad renderer rewrite"
     },
     "no_fallback_or_old_custom_tui": {
       "passed": true,

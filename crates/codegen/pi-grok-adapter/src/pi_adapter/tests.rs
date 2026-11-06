@@ -299,6 +299,46 @@ fn model_catalog_uses_runtime_thinking_level_ids_and_mappings() {
 }
 
 #[test]
+fn command_catalog_preserves_pi_skill_preview_identity() {
+    for (pi_scope, native_scope) in [
+        ("user", "user"),
+        ("project", "local"),
+        ("temporary", "local"),
+    ] {
+        // Real Pi get_commands shape, including an explicitly loaded CLI skill.
+        let commands = crate::model::parse_commands(&json!({"commands": [
+            {"name":"skill:preview-fixture","source":"skill","sourceInfo":{
+                "path":"/tmp/preview-fixture/SKILL.md","scope":pi_scope,
+                "source":"local","origin":"top-level","baseDir":"/tmp/preview-fixture"
+            }},
+            {"name":"extension-preview","source":"extension","sourceInfo":{
+                "path":"/tmp/extension.ts","scope":pi_scope
+            }},
+            {"name":"legacy-skill","source":"skill",
+             "path":"/tmp/legacy/SKILL.md","location":"user"},
+            {"name":"no-path-skill","source":"skill"}
+        ]}));
+        let catalog = serde_json::to_value(command_catalog(&commands, false)).unwrap();
+        let find = |name: &str| {
+            catalog
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["name"] == name)
+                .unwrap()
+        };
+        let skill = find("skill:preview-fixture");
+        assert_eq!(skill["_meta"]["path"], "/tmp/preview-fixture/SKILL.md");
+        assert_eq!(skill["_meta"]["scope"], native_scope);
+        assert_eq!(skill["_meta"]["piCommandSource"], "skill");
+        assert!(find("extension-preview")["_meta"].get("path").is_none());
+        assert_eq!(find("legacy-skill")["_meta"]["scope"], "user");
+        assert!(find("no-path-skill")["_meta"].get("path").is_none());
+        assert!(find("no-path-skill")["_meta"].get("scope").is_none());
+    }
+}
+
+#[test]
 fn command_catalog_is_pi_owned_and_deduplicated() {
     let commands = vec![
         PiCommand {
@@ -351,6 +391,73 @@ fn command_catalog_is_pi_owned_and_deduplicated() {
     assert!(!text.contains(RELOAD_COMMAND));
 }
 
+#[tokio::test]
+async fn commands_list_returns_current_pi_catalog_and_rejects_stale_sessions() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/mock_pi_rpc.py");
+    let process = PiRpc::spawn(crate::pi_rpc::SpawnConfig {
+        program: "python3".to_string(),
+        prefix_args: vec![fixture.to_string_lossy().into_owned()],
+        cwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        pi_args: vec![],
+        env: vec![],
+    })
+    .await
+    .unwrap();
+    let bootstrap = PiBootstrap::load(&process.rpc).await.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let (client_tx, _client_rx) = mpsc::unbounded_channel();
+    let agent = PiAgent::new(
+        process.rpc.clone(),
+        client_tx,
+        bootstrap,
+        directory.path().to_path_buf(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .unwrap();
+
+    let request = |session_id: &str| {
+        acp::ExtRequest::new(
+            "x.ai/commands/list",
+            serde_json::value::to_raw_value(&json!({ "sessionId": session_id }))
+                .unwrap()
+                .into(),
+        )
+    };
+    let response = acp::Agent::ext_method(&agent, request("mock-pi-session"))
+        .await
+        .expect("current session's catalog");
+    let value: Value = serde_json::from_str(response.0.get()).unwrap();
+    let commands = value["result"]["commands"]
+        .as_array()
+        .expect("commands array");
+    let skill = commands
+        .iter()
+        .find(|cmd| cmd["name"] == "skill:explain")
+        .expect("Pi skill returned");
+    assert_eq!(skill["_meta"]["piCommandSource"], "skill");
+    assert!(commands.iter().any(|cmd| cmd["name"] == "review"));
+    assert!(
+        acp::Agent::ext_method(&agent, request("old-session"))
+            .await
+            .is_err()
+    );
+
+    // The current bootstrap, not the original process seed, owns the result.
+    agent.state.borrow_mut().bootstrap.commands.clear();
+    let response = acp::Agent::ext_method(&agent, request("mock-pi-session"))
+        .await
+        .unwrap();
+    let value: Value = serde_json::from_str(response.0.get()).unwrap();
+    assert!(value["result"]["commands"].as_array().unwrap().is_empty());
+    process.rpc.kill().await;
+}
+
 #[test]
 fn command_catalog_carries_pi_argument_completions_in_meta() {
     let commands = vec![PiCommand {
@@ -363,6 +470,7 @@ fn command_catalog_carries_pi_argument_completions_in_meta() {
             label: "List apps".into(),
             description: String::new(),
         }],
+        ..Default::default()
     }];
     let catalog = command_catalog(&commands, false);
     // Workflows may inject extra slash entries when enabled; assert the gapp row.

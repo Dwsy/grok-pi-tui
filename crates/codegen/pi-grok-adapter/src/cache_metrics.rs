@@ -63,8 +63,16 @@ pub(crate) fn collect_cache_session_metrics(entries_payload: &Value) -> Value {
             continue;
         }
 
-        let (mut input, mut output, cache_read, cache_write, mut total_tokens, mut estimated) =
-            extract_usage(message);
+        let (
+            mut input,
+            mut output,
+            cache_read,
+            cache_write,
+            mut total_tokens,
+            reasoning,
+            duration_ms,
+            mut estimated,
+        ) = extract_usage(message);
 
         // Provider wrote zeros / omitted usage — estimate from content so resume
         // graphs are not a flat zero timeline (context bar already estimates).
@@ -142,6 +150,11 @@ pub(crate) fn collect_cache_session_metrics(entries_payload: &Value) -> Value {
             "cacheHitPercent": hit,
             "isOnActiveBranch": is_on_active_branch,
             "usageEstimated": estimated,
+            "reasoning": reasoning,
+            // Speed uses output alone: Pi's Usage contract makes reasoning a subset of output.
+            // durationMs spans request start -> response end (includes first-token latency).
+            "durationMs": duration_ms,
+            "tokensPerSecond": tokens_per_second(output, duration_ms),
         });
 
         add_to_totals(
@@ -187,9 +200,13 @@ pub(crate) fn collect_cache_session_metrics(entries_payload: &Value) -> Value {
 }
 
 /// Parse usage from message.usage with tolerant number parsing.
-fn extract_usage(message: &Value) -> (u64, u64, u64, u64, u64, bool) {
+///
+/// Returns `(input, output, cache_read, cache_write, total_tokens, reasoning,
+/// duration_ms, estimated)`. `reasoning` is a subset of `output` (Pi usage
+/// contract); `duration_ms` is Pi's request-start -> response-end measurement.
+fn extract_usage(message: &Value) -> (u64, u64, u64, u64, u64, Option<u64>, Option<u64>, bool) {
     let Some(usage) = message.get("usage").filter(|u| u.is_object()) else {
-        return (0, 0, 0, 0, 0, false);
+        return (0, 0, 0, 0, 0, None, duration_ms(message), false);
     };
     let input = usage_field(usage, &["input", "prompt_tokens", "promptTokens"]);
     let output = usage_field(usage, &["output", "completion_tokens", "completionTokens"]);
@@ -204,7 +221,32 @@ fn extract_usage(message: &Value) -> (u64, u64, u64, u64, u64, bool) {
             .saturating_add(cache_read)
             .saturating_add(cache_write),
     );
-    (input, output, cache_read, cache_write, total_tokens, false)
+    let reasoning_tokens = usage_field(usage, &["reasoning", "reasoning_tokens", "reasoningTokens"]);
+    let reasoning = (reasoning_tokens > 0).then_some(reasoning_tokens);
+    (
+        input,
+        output,
+        cache_read,
+        cache_write,
+        total_tokens,
+        reasoning,
+        duration_ms(message),
+        false,
+    )
+}
+
+/// Pi measures `durationMs` (request start -> response end) on the assistant message.
+fn duration_ms(message: &Value) -> Option<u64> {
+    json_u64(message.get("durationMs")).filter(|n| *n > 0)
+}
+
+/// Output tokens (reasoning already included) per second over the measured duration.
+fn tokens_per_second(output: u64, duration_ms: Option<u64>) -> Option<f64> {
+    let duration_ms = duration_ms?;
+    if duration_ms == 0 || output == 0 {
+        return None;
+    }
+    Some((output as f64) * 1000.0 / (duration_ms as f64))
 }
 
 fn usage_field(usage: &Value, names: &[&str]) -> u64 {
@@ -480,6 +522,46 @@ mod tests {
         let metrics = collect_cache_session_metrics(&json!({ "entries": [], "leafId": null }));
         assert!(metrics["allMessages"].as_array().unwrap().is_empty());
         assert_eq!(metrics["treeTotals"]["assistantMessages"], 0);
+    }
+
+    #[test]
+    fn speed_uses_output_over_duration_ms() {
+        let payload = json!({
+            "leafId": "a1",
+            "entries": [{
+                "id": "a1", "parentId": null, "type": "message", "timestamp": "2026-01-01T00:00:00Z",
+                "message": {
+                    "role": "assistant", "provider": "xai", "model": "grok",
+                    "durationMs": 2000,
+                    "usage": { "input": 100, "output": 50, "reasoning": 30, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 150 }
+                }
+            }]
+        });
+        let metrics = collect_cache_session_metrics(&payload);
+        let m = &metrics["allMessages"][0];
+        assert_eq!(m["durationMs"], 2000);
+        assert_eq!(m["reasoning"], 30);
+        // speed = output(50) / 2000ms * 1000 = 25 tok/s; reasoning is a
+        // subset of output so it must not be added a second time.
+        assert!((m["tokensPerSecond"].as_f64().unwrap() - 25.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn missing_duration_yields_null_speed() {
+        let payload = json!({
+            "leafId": "a1",
+            "entries": [{
+                "id": "a1", "parentId": null, "type": "message", "timestamp": "2026-01-01T00:00:00Z",
+                "message": {
+                    "role": "assistant", "provider": "xai", "model": "grok",
+                    "usage": { "input": 100, "output": 50, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 150 }
+                }
+            }]
+        });
+        let metrics = collect_cache_session_metrics(&payload);
+        let m = &metrics["allMessages"][0];
+        assert!(m["durationMs"].is_null());
+        assert!(m["tokensPerSecond"].is_null());
     }
 
     #[test]

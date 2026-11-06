@@ -827,6 +827,20 @@ fn command_catalog(commands: &[PiCommand], workflows_enabled: bool) -> Vec<acp::
                     Value::String(command.source.clone()),
                 );
             }
+            if command.source == "skill"
+                && let Some(path) = command.path.as_deref()
+            {
+                // Native Pager metadata powers skill rendering and preview;
+                // invocation still sends /skill:name to Pi for expansion.
+                meta.insert("path".to_string(), Value::String(path.to_string()));
+                let scope = if command.scope.as_deref() == Some("user") {
+                    "user"
+                } else {
+                    // Pi project/temporary resources are local to this host.
+                    "local"
+                };
+                meta.insert("scope".to_string(), Value::String(scope.to_string()));
+            }
             if !command.argument_completions.is_empty() {
                 meta.insert(
                     "piArgumentCompletions".to_string(),
