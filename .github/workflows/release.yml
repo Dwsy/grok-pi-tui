@@ -60,14 +60,14 @@ jobs:
         include:
           # ── macOS ────────────────────────────────────────────────────────
           - name: macOS ARM64
-            runner: macos-14
+            runner: macos-15
             timeout: 150
             target: aarch64-apple-darwin
             asset: grok-pi-macos-aarch64.tar.gz
             bin: grok-pi
             cross: false
           - name: macOS Intel
-            runner: macos-14
+            runner: macos-15
             timeout: 150
             target: x86_64-apple-darwin
             asset: grok-pi-macos-x86_64.tar.gz
