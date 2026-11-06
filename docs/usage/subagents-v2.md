@@ -4,6 +4,22 @@ Subagents V2 is the opt-in team collaboration layer for grok-pi's built-in Pi su
 
 V2 is **off by default**. Keep it off if you only need `spawn_subagent`, `/subagents`, wait/cancel/history, or parent-to-child messaging.
 
+## Multitask with skills
+
+With Pi subagents and V2 enabled, invoke:
+
+```text
+/skill:multitask Implement CSV export and independently review it.
+```
+
+The bundled skill selects a strategy for this task tree. Each explicitly authorized child can split independent work within its assigned depth and quota. It starts children asynchronously, continues local work, and ends its turn when dependencies are pending. A child uses `team_report(state="waiting", summary="...")` before ending that turn; `team_list` then shows `WAITING_RESULT`, and a nested result resumes the same child session. Root simply ends its current turn and receives the normal asynchronous result.
+
+Reporting alone does not release a slot. Do not park a coordinator on `team_wait` for queued descendants or set a positive `spawn_team.timeout_ms` in this mode. `waiting` requires a pending child of the reporter; a parent decision uses `blocked` with a question. A dropped child still wakes a parent already waiting for its result, and quiet reports never hide runtime failure/cancellation.
+
+V1 does not advertise this skill. Loading it at root does not preload child resources: copy its compact contract into every handoff. Default skill guidance caps depth at two child layers and allocates eight new identities across the whole task; these are model instructions. The existing runtime enforces four concurrent background runs across the tree. Agents share the same cwd, so allocate one writer per file.
+
+For a source build, rebuild grok-pi after changing bundled skills. The skill does not install a session-wide switch, convert the busy input queue, enforce hard tree budgets, isolate worktrees, cascade cancellation, or restore a live team across process restarts. The [design/research record](../issues/adapter/20261102-subagents-v2-multitask.md) separates this implementation from the proposed runtime hardening.
+
 ## Enable V2
 
 The normal **Pi subagents** feature must be enabled. It is on by default and can be controlled with **F2 → Agent → Pi subagents**; changing that host feature requires a full process restart.
@@ -229,7 +245,7 @@ Example:
 ---
 description: Read-only architecture reviewer
 enabled: true
-tools: ["read", "grep", "find", "ls"]
+tools: ["read", "bash", "grep", "find", "ls"]
 models: ["openai/gpt-5.6"]
 thinking_level: high
 extensions: []
@@ -240,21 +256,22 @@ max_turns: 10
 Review architecture and correctness. Do not edit files. Return evidence with file paths.
 ```
 
-The Markdown definition controls the system prompt, business tools, up to three models, extensions, skills, max turns and the default `thinking_level`. V2 control-plane tools are injected separately so a read-only reviewer can still communicate with the team without gaining edit/write capability.
+The Markdown definition controls the system prompt, business tools, up to three models, extensions, skills, max turns, the default `thinking_level`, and inheritance flags. V2 control-plane tools are injected separately so a read-only reviewer can still communicate with the team. The default read-only capability includes Bash for inspection and omits the built-in `edit`/`write` tools. Explicit read-only mode still adds Bash when a definition supplies `tools:`; custom tool lists that omit both `edit` and `write` are also treated as read-only and receive Bash. The mandatory system-prompt contract forbids mutations through Bash or other tools. This is a prompt-level rule, not an OS sandbox.
 
-Use `/subagents` for the native agent-definition management surface.
+Use `/subagents` for the native agent-definition management surface, `/subagent-control` for the unified TUI control center (status/definitions/presets/injection preview).
 
 ### Built-in profile tool access
 
 | profile | capabilityMode | tools | behaviour |
 |---|---|---|---|
 | `general-purpose` | `all` | `read` `bash` `edit` `write` `grep` `find` `ls` | Full implementation |
-| `explore` | `execute` (floor) | `read` `bash` `grep` `find` `ls` | **Has bash**, so it can run `python3` and `node`. A caller-supplied `capability_mode: "read-only"` is widened to `execute`. The system prompt restricts it to inspection and measurement: no file writes, no in-place edits, no dependency installation, no destructive commands |
+| `read-only` capability | `read-only` | `read` `bash` `grep` `find` `ls` | Bash is available for inspection; built-in `edit` and `write` tools are omitted. The system prompt prohibits all file and state mutations |
+| `explore` | `execute` (default) | `read` `bash` `grep` `find` `ls` | **Has bash**, so it can run `python3` and `node`. An explicit `capability_mode: "read-only"` stays read-only because that mode now includes Bash. `read-write` is widened to `execute` to preserve the profile's Bash contract |
 | `plan` | `execute` | `read` `bash` `grep` `find` `ls` | Planning only, no file changes |
 
-`explore` carries a **capability floor**: a narrower request is widened to `execute` because the profile's contract depends on bash. This lets it read whole trees and produce counts with `rg`, `git log`, `tree`, `wc`, and analyze data or verify behaviour with `python3 -c` and `node -e`.
+`explore` carries a **capability floor** for modes that do not provide Bash: `read-write` is widened to `execute`, while `read-only` stays read-only because it now includes Bash. This lets it read whole trees and produce counts with `rg`, `git log`, `tree`, `wc`, and analyze data with `python3 -c` and `node -e`.
 
-The "no file edits" rule for `explore` is a **prompt-level** convention, not tool-level enforcement: its tool set has no `edit` or `write`, but bash can run arbitrary commands. Use a custom definition with `tools: ["read", "grep", "find", "ls"]` when you need a hard boundary.
+The no-mutation rule for read-only loadouts is a **prompt-level** convention, not tool-level enforcement: Bash can run arbitrary commands, so the system prompt explicitly forbids file writes, Git mutations, installs, database writes, and other state changes. For a hard boundary, use an external OS/container sandbox; this extension does not provide one.
 
 
 ### Default child extensions
@@ -266,6 +283,22 @@ A child session loads no auto-discovered extensions, so root-session tooling wou
 | `~/.pi/agent/npm/node_modules/@ff-labs/pi-fff` | FFF fuzzy file and content search |
 
 A missing directory is skipped silently, so an uninstalled extension is not a startup error. `extensions:` in an agent definition adds more on top. When an extension registers tools while binding, those tools are kept on top of the session's own loadout instead of replacing it, so `capability_mode` still holds.
+
+### Child skills and AGENTS.md inheritance (default on)
+
+A child session inherits the root session's global/project skills and AGENTS.md/CLAUDE.md context by default. The definition's explicit `skills:` are merged on top. To restore isolation, set frontmatter flags:
+
+```md
+---
+description: "isolated worker"
+inherit_skills: false
+inherit_context: false
+---
+```
+
+- `inherit_skills: false` → only `skills:` load (`noSkills`).
+- `inherit_context: false` → no AGENTS.md discovery (`noContextFiles`).
+- Extensions stay isolated: only `extensions:` load (plus the default search extension when installed).
 
 ### Child prompt composition
 

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-11-06
+
+### Added
+
+- **Subagents V2 team surface replaces V1 single-agent tools** — under team mode only the team tools register: `spawn_team` gains call-level members/model/thinking_level/max_turns/capability_mode/instructions/timeout_ms overrides, `spawn_team_agent` gains description and capability mode, and the five V1 single-agent tools stay unregistered while V1 commands and Rust bridge commands remain. New `team_report` routes ready/blocked/failed/dropped results (blocked maps to `WAITING_DECISION`); consecutive `team_send_message` calls merge per sender/target with a flush before the next team action or turn end; `team_list` shows quiet gaps and pending questions; queued recipients get priority on `team_followup_task`.
+- **Single-click folding for tool/summary cards** — foldable tool and summary cards toggle on the first click in every selection mode regardless of `keep_text_selection`; conversation messages keep their double-click fold/word-select behavior, and viewer, inline-edit, and plan-preview double-click actions stay intact. Clearing a pending click after drag-end stops stale clicks from re-folding.
+
+### Changed
+
+- **Process-level slash catalog seeding** — deferred fresh-start attach publishes the bootstrap model catalog, then a host-level `x.ai/commands/update`, before routing queued `session/new` requests, so Welcome autocomplete no longer waits for a session-scoped `AvailableCommandsUpdate`. Welcome, dashboard, and the active pre-session agent are seeded while inactive sessions keep their own catalogs; a serialization or acknowledgement failure now fails the attach.
+- **Live native diffs from streamed tool-call arguments** — `toolcall_start/delta/end` project independently of execution: Bash arguments stay hidden until canonical execution start, while file arguments render provisional native diffs (oldText before newText) with path-only prefixes that do not reflow cards; Edit blocks carry a content generation so the open viewer rebuilds in place with live +/- counts. Fold/Enter state survives argument streaming.
+
 ## [0.1.12-beta.1] - 2026-10-30
 
 ### Added
@@ -72,6 +84,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Verification
 
 - Compared max colors with Pi's own color parser; checked the prompt mapping, change scope, Rust formatting, and diff whitespace. No local Cargo build or Rust test suite was run; platform builds are delegated to release CI.
+
+## [0.1.11-beta.1] - 2026-10-14
+
+### Added
+
+- **Resident mcpeval daemon** — the Eval MCP bridge now runs as a resident daemon (`mcpeval-mcp-facade`, OAuth, protocol, registry, and web modules) with daemon/OAuth regression coverage, instead of spawning per-request handlers.
+- **Provider-qualified model labels** — the adapter includes the provider in Pi model labels so same-named models from different providers are distinguishable in the picker.
+
+### Changed
+
+- Statically integrated upstream Grok `2bdd1d6a` (seven monorepo syncs: daemon/Remote Control runtime, structured MCP, permission-rule extraction, memory/workflow APIs, plan/queue/subagent UX), replaying fork seams and upstream API moves across the fused Pager layer and restoring the `xai-grok-shell` workspace dependency dropped by the upstream merge.
+- Windows builds bump `find-msvc-tools` to 0.14 for the `FILE_ATTRIBUTE_TEMPORARY` type.
+
+### Fixed
+
+- Restored the subagent-catalog pane chain and `ActivePane::Catalog` arms lost in the upstream merge.
+
+### Verification
+
+- Test build only: no six-platform release publication; mcpeval daemon/OAuth suites and adapter model-label tests were added alongside. Platform binaries are delegated to later beta tags.
 
 ## [0.1.10] - 2026-10-06
 

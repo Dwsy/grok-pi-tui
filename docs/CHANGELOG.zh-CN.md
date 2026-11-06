@@ -9,6 +9,19 @@
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-11-06
+
+### 新增
+
+- **Subagents V2 team surface 替代 V1 单代理工具** — team 模式下仅注册 team 工具：`spawn_team` 支持调用级 members/model/thinking_level/max_turns/capability_mode/instructions/timeout_ms 覆盖，`spawn_team_agent` 新增 description 与 capability_mode，五个 V1 单代理工具不再注册，V1 命令与 Rust bridge 命令保留。新增 `team_report` 路由 ready/blocked/failed/dropped 结果（blocked 映射为 `WAITING_DECISION`）；同一 sender/target 的连续 `team_send_message` 合并缓冲，在下一次 team action 或 turn 结束前 flush；`team_list` 展示 quiet gap 与待处理问题；`team_followup_task` 优先排队中的接收方。
+- **工具/汇总卡片单击折叠** — 可折叠的工具与汇总卡片在所有选择模式下单击即切换，不受 `keep_text_selection` 影响；会话消息保持双击折叠/选词行为，viewer、行内编辑、plan 预览等双击动作不受影响。拖拽结束后清除 pending click，避免过期点击误折叠。
+- **Code Mode 卡片默认展开配置** — F2 → Appearance → Tool output 新增「Expand Code Mode cards by default」，默认关闭并保留截断预览；开启后新卡片默认完整展开，切换时只更新仍处于旧默认模式的历史卡片；单张 Code Mode 卡片的手动折叠/展开会固定为用户选择。
+
+### 变更
+
+- **进程级 slash 目录预播种** — 延迟的新启动 attach 先发布 bootstrap 模型目录，再下发 host 级 `x.ai/commands/update`，最后才路由排队的 `session/new` 请求，Welcome 联想不再等待 session 级 `AvailableCommandsUpdate`。Welcome、dashboard 与活动 pre-session agent 被预播种，非活动 session 保留各自目录；序列化或确认失败会使本次 attach 直接失败。
+- **流式工具调用参数驱动的实时原生 diff** — `toolcall_start/delta/end` 独立于执行进行投影：Bash 参数在规范执行开始前保持隐藏，文件参数渲染临时原生 diff（oldText 在前、newText 在后），纯路径前缀不引起卡片重排；Edit 块携带 content generation，打开的 viewer 原位重建并实时更新 +/- 计数。折叠/回车状态在参数流式期间保持。
+
 ## [0.1.12-beta.1] - 2026-10-30
 
 ### Added
@@ -40,6 +53,33 @@
 - Pager 定向测试：Remote TUI 23、Codemode 17、always-active search 4、反馈搜索栏 1、并排 diff 7 — **52 passed**。
 - 所有修改的 Rust 源文件格式检查及 `git diff --check` — PASS。
 
+## [0.1.11] - 2026-10-21
+
+### 变更
+
+- 将测试通过的 0.1.11 beta 系列提升为新的 **0.1.11 稳定版**，附带六个新构建的平台二进制与安装器。发版的 `grok-pi --version` 显示 `0.1.11`（不带 `-beta`）。
+- 沿用 beta.2 的主题与会话代码审查改进，包括当前 Pi 最大推理颜色与深浅色语言图标。
+- 保留 beta.3 的发版构建优化：更快的跨平台 Rust 代码生成、更小的 Linux strip 归档、不再上传浪费的 tag 目标缓存，以及独立的 CI 计时诊断。
+
+### 验证
+
+- 紧邻的 `v0.1.11-beta.3` 发版已通过全部六个 GitHub Actions 构建并完成发布；实测端到端发版时间从约 64 分钟降至 42 分钟，六个下载归档从约 337 MB 降至 155 MB。
+- 稳定版 `v0.1.11` 仅由 GitHub Actions 构建发布；本地不运行 Rust 构建；未提交的开发中功能一律排除在外。
+
+## [0.1.11-beta.3] - 2026-10-21
+
+### 变更
+
+- 加速六平台 GitHub 发版构建：使用 16 个 Rust codegen 单元、关闭 Thin LTO 与 DWARF 输出，CI 内保持 Cargo 增量编译关闭。保留既有的 panic、链接器加固、沙箱与产品特性。
+- 对 Linux 发行二进制做 strip 瘦身，解决 Linux 下载包过大的问题；macOS 与 Windows 保持原有符号处理行为。
+- 停止从 tag 发版上传多 GiB 的 Rust 构建缓存：新 tag 无法复用按 tag 隔离的缓存，旧上传只增加流量不带来复用。
+- 收集各平台 Cargo 计时报告、耗时与构建后磁盘占用；诊断产物与可下载发版二进制分离存放。
+
+### 验证
+
+- 仅在开发机做静态 GitHub Actions 配置与 changelog 检查；本地不运行 Rust 构建、check 或测试；六平台 beta 构建完全交由发版 CI。
+- 发版性能与产物瘦身效果待以 0.1.11-beta.2 为基线实测。
+
 ## [0.1.11-beta.2] - 2026-10-20
 
 ### 变更
@@ -51,6 +91,26 @@
 ### 验证
 
 - 已用 Pi 自身颜色解析器核对 max 色值，并检查输入框映射、改动范围、Rust 格式与 diff 空白。本地未运行 Cargo 构建或 Rust 测试套件；各平台构建交由发布 CI 执行。
+
+## [0.1.11-beta.1] - 2026-10-14
+
+### 新增
+
+- **常驻 mcpeval daemon** — Eval MCP 桥接改为常驻 daemon（`mcpeval-mcp-facade`、OAuth、protocol、registry 与 web 模块），附带 daemon/OAuth 回归覆盖，不再按请求现起现灭。
+- **模型标签带 provider** — adapter 在 Pi 模型标签中包含 provider，同名不同源的模型在选择器中可区分。
+
+### 变更
+
+- 静态集成上游 Grok `2bdd1d6a`（七个 monorepo sync：daemon/Remote Control 运行时、结构化 MCP、permission-rule 抽取、memory/workflow API、plan/queue/subagent UX），在融合 Pager 层重放 fork 接缝与上游 API 迁移，并补回被上游合并丢掉的 `xai-grok-shell` workspace 依赖。
+- Windows 构建将 `find-msvc-tools` 升至 0.14，以支持 `FILE_ATTRIBUTE_TEMPORARY` 类型。
+
+### 修复
+
+- 恢复上游合并中丢失的子代理目录面板链路与 `ActivePane::Catalog` 分支。
+
+### 验证
+
+- 本次为测试构建，不做六平台正式发布；mcpeval daemon/OAuth 与 adapter 模型标签 suites 随提交加入。平台二进制交由后续 beta tag。
 
 ## [0.1.10] - 2026-10-06
 
@@ -118,6 +178,34 @@
 ### 验证
 
 - 官方 SDK MCP 端到端、30 个并发及跨进程绑定 ID、实际 Eval v2 嵌套 `read` 图片、URL 鉴权与绑定轮换，以及既有 Eval v2.1 回归、Cargo check 均通过。首次使用需根据说明安装可选 npm 依赖和分词器文件。
+
+## [0.1.10-beta.7] - 2026-09-25
+
+### 修复
+
+- 在 beta.6 构建取消后加固发版 CI：平台构建限时 90 分钟，并禁止失败构建上传多 GiB Rust 缓存，避免陈旧的失败缓存残留与 runner 时间无上限消耗。
+
+## [0.1.10-beta.6] - 2026-09-25
+
+### 变更
+
+- 发版 CI 改为仅为较慢的 macOS 与 Windows 构建保留持久 Rust 缓存，避免六个约 2 GiB 的 target 缓存争抢 GitHub 按仓库配额的 Actions 缓存。
+
+### 修复
+
+- 修正 Pager 中普通工具调用参数渲染与子代理 stdout 处理，包括相关的 ACP session 路由行为与回归覆盖。
+
+## [0.1.10-beta.5] - 2026-09-23
+
+### 变更
+
+- 补完近期的 Pi session follow-up 工作：通知投递、任务面板状态渲染、ACP session 处理、设置及相关 Pager/Shell 集成路径。
+- 补记 follow-up 审计期间沉淀的 scheduler 命令用法与智能排序配置设计说明。
+
+### 修复
+
+- 加固后台任务完成通知的准入、排队、抑制、持久化与回放行为，扩展 deferred 与重复唤醒场景的回归覆盖。
+- 细化任务面板与 session 通知的渲染/状态处理，使后台完成更新在活动、deferred 与恢复会话间保持一致。
 
 ## [0.1.10-beta.4] - 2026-09-12
 

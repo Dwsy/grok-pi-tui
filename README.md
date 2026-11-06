@@ -3,13 +3,9 @@
 
 # grok-pi — Remote TUI bridge for Pi and Grok Build
 
-> Pi agent core in Grok Build's native terminal UI.
+> Pi agent core in Grok Build's native terminal UI. Pi's interactive components render through the native Pager — Pi users get Grok's UI, Grok users get Pi's models, tools, sessions, and extensions.
 
 [Download latest release](https://github.com/Dwsy/grok-pi/releases/latest) · [ZH](docs/README.zh-CN.md) · [Feature matrix](docs/FEATURE_MATRIX.md) · [Architecture](docs/NATIVE_GROK_TUI_ALIGNMENT.md) · [Verification](docs/VERIFICATION.md) · [Changelog](CHANGELOG.MD) · [更新日志](docs/CHANGELOG.zh-CN.md)
-
-> **Remote TUI bridge.** Pi's interactive components render through Grok Build's native Pager, preserving the Grok terminal experience while exposing Pi's extension ecosystem. Pi users get Grok Build's native UI; Grok Build users get Pi's models, tools, sessions, and extensions.
-
-`grok-pi` combines Pi's agent runtime with Grok Build's native Pager. Pi remains responsible for models, tools, extensions, sessions, and agent execution. Grok Pager remains the only terminal UI.
 
 ## Install
 
@@ -102,18 +98,21 @@ Update channels are product-local and persisted in `~/.grok-pi/config.toml` unde
 |---|---|
 | Agent runtime | Pi models, providers, tools, extensions, skills, sessions, retries, and compaction |
 | Model management | `/pi-models` provides a native Provider → Model → Details editor with safe `models.json` transactions, backup/restore, live Pi reload, and typed activation; `/model` remains the fast switcher |
-| Web config workbench | `/pi-config web` / `/pi-models web`: responsive zh/en workbench with global search, model/provider duplication and advanced options, four resource path lists, staged Grok/Pi settings, conflict feedback, and light/dark themes. Served by the Pi extension on a token-gated loopback port. |
-| Terminal UI | Grok Pager input, slash completion, Markdown, tool cards, live file diffs (expand/Enter and running +/- counts), dialogs, and scrollback; Bash arguments appear at execution start |
+| Web config workbench | `/pi-config web` / `/pi-models web`: bilingual workbench with global search, model/provider duplication, staged settings, conflict feedback, and light/dark themes, served on a token-gated loopback port |
+| Terminal UI | Grok Pager input, slash completion, Markdown, tool cards, live file diffs (expand/Enter, running +/- counts), single-click card folding, dialogs, and scrollback; Bash arguments appear at execution start |
+| File and skill preview | Click an accepted `@file` chip or a slash skill row to open the native preview. `:` / Ctrl-L previews the selected file; Ctrl-L previews a selected skill. The footer shows the available gestures; outside these contexts Ctrl-L opens model selection. Restart an existing process after rebuilding. |
 | Product tutorial | `/tutorial` (aliases `/tour`, `/onboarding`) opens 18 grok-pi capability areas: native Pager workflows, Pi providers/models/tools/sessions, the extension/Skill/Package ecosystem, product bridges, optional automation and explicit boundaries |
 | **Remote TUI bridge** | Pi `ctx.ui.custom` components rendered through Grok Build's native Pager, without a second TUI |
 | Shell execution | Bash integration, background tasks, output limits, timeouts, and process-tree cleanup |
-| Parallel work | Pi sub-agents with foreground/background execution and native task views; `/subagents` exposes built-ins plus product-isolated project/global overrides. Optional Subagents V2 (F2 → Agent → "Pi subagents V2", or `PI_GROK_SUBAGENTS_V2=1`) adds root-session-scoped stable `/root/...` agent paths, parent/child + peer messaging, nested spawn, and external team presets under `.grok-pi/teams` / `~/.grok-pi/teams` |
+| Parallel work | Pi subagents with foreground/background execution and native task views; `/subagents` exposes built-ins plus isolated overrides. Opt-in [Team V2](docs/usage/subagents-v2.md) (F2 toggle or `PI_GROK_SUBAGENTS_V2=1`) adds stable agent paths, messaging, nested spawn, and JSON presets |
 | Rhai workflows | Upstream `xai-workflow` host (F2 **Pi workflows**); `/workflow`, `/workflows`, `/create-workflow`; scripts under `~/.grok-pi/workflows` and `<repo>/.grok-pi/workflows` |
 | Session workflow | Resume, tree navigation, labels, recap, context inspection, and session picker |
 | Resource management | Native manager for Pi extensions, skills, prompts, and themes |
-| Updates | Isolated `stable` / `beta` GitHub Release channels, persisted under `~/.grok-pi/config.toml`; channel-aware background checks, `grok-pi update`, `--check --json`, and target-tag installer downloads |
+| Updates | Isolated `stable` / `beta` release channels; channel semantics under Start, above |
 
 For field-level behavior and intentional omissions, see the [feature matrix](docs/FEATURE_MATRIX.md).
+
+Pasted image files keep their original paths in the user prompt's image metadata, so Pi receives both the image content and a path its tools can use.
 
 ## Architecture
 
@@ -133,18 +132,11 @@ The integration has three boundaries:
 
 Pi source is not modified. The Remote TUI bridge connects capabilities unavailable in Pi RPC through the official extension API and projects them onto native Pager surfaces.
 
-Custom components own keyboard input until they close, including letter actions,
-paste, and ordinary `Esc` (handled by the component). Native Pi input/confirmation
-dialogs temporarily take priority. `Ctrl+Shift+Esc` force-closes a stuck remote
-component when the terminal reports that chord distinctly. Transport metadata is
-isolated per Grok-Pi process, and stale component input is discarded. Plugins
-should use Pi's key parsers for modified keys; raw string comparisons do not
-recognize every terminal encoding.
-Plain Shift+letter presses are forwarded as uppercase text (for example, `S`)
-for compatibility with literal Pi component actions. Other modified presses
-retain their modifiers; repeat and release events remain distinct.
+An open custom component owns keyboard input until it closes (letters, paste, plain `Esc`); native Pi input/confirmation dialogs briefly take priority, and `Ctrl+Shift+Esc` force-closes a stuck component when the terminal reports that chord. Transport metadata is isolated per process and stale input is discarded. Shift+letter arrives as uppercase text (e.g. `S`); other modifiers are preserved with distinct repeat/release. Plugins should use Pi's key parsers — raw string comparison misses some terminal encodings.
 
 ## Configuration
+
+**F2 → Mouse → Selection → Tool card click action** selects one of three live modes: **Select only** (default), **Expand / collapse**, or **Open details (Enter)**. The last mode opens the native details viewer directly on click. Set `[ui].tool_card_click_action` to `select`, `toggle`, or `open_viewer`.
 
 Bundled bridge extensions are enabled by default where stable. Experimental native commands are opt-in.
 
@@ -171,7 +163,7 @@ Subagents V2 team presets are JSON files under `<repo>/.grok-pi/teams` or `~/.gr
 }
 ```
 
-Enable V2 before starting grok-pi with the F2 "Pi subagents V2" toggle or `PI_GROK_SUBAGENTS_V2=1`; use `/subagent-teams` to inspect presets. `spawn_team` starts a preset, while `spawn_team_agent`, `team_send_message`, `team_followup_task`, `team_wait`, `team_list`, and `team_interrupt` provide the lower-level collaboration surface. V2 replaces the V1 single-agent tools (`spawn_subagent` and its output/message/cancel/list companions), which are not registered in team mode; `/subagents`, `/subagent-message`, and `/subagent-history` keep working. Rhai Workflow remains the deterministic orchestration engine; Team V2 is the session-scoped, run-reusable agent identity/messaging layer.
+Enable V2 before startup (F2 toggle or `PI_GROK_SUBAGENTS_V2=1`); `/subagent-teams` inspects presets, `spawn_team` starts one. V2 replaces the V1 single-agent tools (unregistered in team mode); V1 commands, history, and the Rhai Workflow engine keep working. Details: [Subagents V2 guide](docs/usage/subagents-v2.md), [multitask](docs/usage/subagents-v2.md#multitask-with-skills).
 
 Rhai workflows are **off by default** (F2 → Agent → **Pi workflows**, then full restart). Details: [FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md), [AGENTS.md](AGENTS.md#product-state-isolation).
 
@@ -243,7 +235,7 @@ flowchart LR
 | **Q&A desktop notifications** (`pi_ask_user_question_notifications`) | F2 → Agent → Q&A desktop notifications | on | — |
 | **Pi goal mode** (`pi_goal`) | F2 → Agent → Pi goal mode (restart) | off | `pi-codex-goal`, `@narumitw/pi-goal`, `@misunders2d/pi-goal`, `pi-goal`, `pi-goal-x` |
 | **Pi workflows** (`pi_workflows`) | F2 → Agent → Pi workflows (restart) | off | `@quintinshaw/pi-dynamic-workflows` |
-| **Pi subagents** (`pi_subagents`) | F2 → Agent → Pi subagents (restart) | on | `pi-subagents`, `@tintinweb/pi-subagents`; native `/subagents` config writes isolated global/project Markdown definitions. Optional V2 is separately enabled with the F2 "Pi subagents V2" toggle or `PI_GROK_SUBAGENTS_V2=1`; `/subagent-teams` discovers project/global/bundled JSON presets |
+| **Pi subagents** (`pi_subagents`) | F2 → Agent → Pi subagents (restart) | on | `pi-subagents`, `@tintinweb/pi-subagents`; the V2 team surface is a separate opt-in (see Configuration) |
 | **`/btw`** (`pi_btw`) | F2 → Agent → Pi /btw (restart); saved answers are viewable with `/btw-history` | off | `pi-btw`, `@narumitw/pi-btw`, `@juicesharp/rpiv-btw` |
 | **Markdown user messages** (`pi_user_markdown`) | F2 → Agent → Markdown user messages | on | — |
 

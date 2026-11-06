@@ -268,7 +268,7 @@ smallvec = "1"
 strip-ansi-escapes = "0.2.1"
 strum = { version = "0.27", features = ["derive"] }
 supports-color = "3.0"
-syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+syntect = "5.3"
 tar = "0.4"
 tempfile = "3"
 terminput = "0.3"

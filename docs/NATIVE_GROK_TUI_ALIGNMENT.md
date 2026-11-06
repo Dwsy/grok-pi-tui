@@ -47,6 +47,8 @@ The ACP standard does not cover all of Pi's UI/command semantics, so narrow seam
 
 These seams do not create a second TUI or scrollback pipeline, nor copy PromptWidget, QuestionView, Markdown, or tool-card infrastructure. The optional sibling EditTool layout renderer reuses native diff data, highlighting helpers, output rows, unified fallback, selection, and fullscreen viewer behavior. Pi file argument generation also reuses this native Edit block and viewer: provisional ACP diffs carry the available old/new text, block revisions refresh the open viewer without recreating its ListPane, and running collapsed headers show current +/- counts. Bash argument-generation events remain silent until the canonical execution-start call; execution output keeps streaming.
 
+The `xai-grok-pager-render/src/prompt_images.rs` image-path seam adds only ACP attachment metadata: original user-visible paths remain distinct from durable attachment URIs. The headless adapter appends those paths to Pi's user prompt; native chips, previews, image bytes, and placeholder rendering keep their existing behavior.
+
 ## What Is Not Done
 
 - Do not re-implement the Grok TUI;
@@ -55,3 +57,5 @@ These seams do not create a second TUI or scrollback pipeline, nor copy PromptWi
 - do not simulate toast, widget, or modal with character art;
 - do not wrongly expose Grok login, cloud session, usage, plugin, voice, or other product features to Pi;
 - do not forge an extension component factory that Pi RPC does not expose.
+
+The tool-card click setting is a narrow native input/configuration seam: F2 selects only, toggles folding, or dispatches the existing `OpenBlockViewer` action. It reuses the native viewer and does not add a second input loop or renderer. Explicit source-identity exceptions cover shared UI config, the shell settings writer, mouse dispatch, click selection, and their settings tests.

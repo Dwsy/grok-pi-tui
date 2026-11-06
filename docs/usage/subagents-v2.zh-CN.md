@@ -4,6 +4,22 @@ Subagents V2 是 grok-pi 内置 Pi 子代理上的**可选团队协作层**。�
 
 V2 **默认关闭**。如果只需要 `spawn_subagent`、`/subagents`、wait/cancel/history 或主→子消息，保持 V2 关闭即可；开启后 `spawn_subagent` 等 5 个 V1 工具不再注册（见下文「V2 模式下不注册 V1 工具」）。
 
+## Multitask 技能模式
+
+开启 Pi subagents 与 V2 后调用：
+
+```text
+/skill:multitask 实现 CSV 导出，并安排独立审查。
+```
+
+技能只对本次任务树选择工作策略。每个 child 经任务书明确授权后，可以在分配的深度和额度内拆分独立工作；派发后继续本地执行。到依赖点且没有本地工作时，child 调用 `team_report(state="waiting", summary="...")` 并结束 turn；`team_list` 显示 `WAITING_RESULT`，下级结果恢复原 child session。root 直接结束当前 turn，等待正常异步结果唤醒。
+
+report 本身不释放槽，必须结束 turn；不要用 `team_wait` 占槽等排队后代，也不要给 `spawn_team.timeout_ms` 传正值。waiting 要求自己的下级仍待完成；需父级决定时使用 blocked + question。child 的 dropped 会恢复已经 waiting 的 parent；waiting/dropped 不会掩盖运行失败或取消。
+
+V1 不暴露该技能。root 读技能不等于 child 已加载，派发时须明确复制精简契约。默认两层 child、全树最多新建八个 identity 是模型软约定；runtime 仍硬限全树四个并发后台 run。所有 Agent 共用 cwd，每个文件应指定唯一 writer。
+
+源码构建修改内置技能后需重新构建 grok-pi。当前能力不包含 session-wide 开关、忙碌输入队列转并行、硬树预算、worktree 隔离、取消级联或跨进程恢复。参见 [设计调研记录](../issues/adapter/20261102-subagents-v2-multitask.md) 中的现有实现与后续硬化方案。
+
 ## 启用与回滚
 
 宿主的 **Pi subagents** 功能必须开启。该功能默认开启，可在 **F2 → Agent → Pi subagents** 控制；修改后需要完整重启进程。
@@ -233,7 +249,7 @@ Project definition 覆盖 global，包括 `enabled: false`。
 ---
 description: Read-only architecture reviewer
 enabled: true
-tools: ["read", "grep", "find", "ls"]
+tools: ["read", "bash", "grep", "find", "ls"]
 models: ["openai/gpt-5.6"]
 thinking_level: high
 extensions: []
@@ -244,21 +260,22 @@ max_turns: 10
 Review architecture and correctness. Do not edit files. Return evidence with file paths.
 ```
 
-Markdown definition 控制 system prompt、业务 tools、最多 3 个 models、extensions、skills、max turns 和默认 `thinking_level`。V2 control-plane tools 独立注入，所以 read-only reviewer 仍能参与 team 通信，但不会因此获得 edit/write 权限。
+Markdown definition 控制 system prompt、业务 tools、最多 3 个 models、extensions、skills、max turns、默认 `thinking_level` 与继承开关。V2 control-plane tools 独立注入，所以 read-only reviewer 仍能参与 team 通信。默认只读 capability 包含 Bash 供检视使用，并省略内置 `edit`/`write`。即使 definition 显式配置 `tools:`，只读模式仍会补入 Bash；自定义工具列表若同时不含 `edit` 和 `write`，也会按只读工具集处理并补入 Bash。统一 system prompt 禁止通过 Bash 或其他工具修改状态。这是提示词约束，不是 OS 沙箱。
 
-使用 `/subagents` 管理原生 agent definition。
+使用 `/subagents` 管理原生 agent definition，`/subagent-control` 打开统一 TUI 控制中心（状态/定义/preset/注入预览）。
 
 ### 内置 profile 的工具权限
 
 | profile | capabilityMode | 可用工具 | 行为约束 |
 |---|---|---|---|
 | `general-purpose` | `all` | `read` `bash` `edit` `write` `grep` `find` `ls` | 可完整实施改动 |
-| `explore` | `execute`（下限） | `read` `bash` `grep` `find` `ls` | **有 bash**，可跑 `python3` / `node`；即使调用方传 `capability_mode: "read-only"` 也会被提升到 `execute`。由 system prompt 约束为只做检视与度量：不写文件、不原地修改、不装依赖、不跑破坏性命令 |
+| `read-only` capability | `read-only` | `read` `bash` `grep` `find` `ls` | Bash 可用于检视；默认不提供内置 `edit`/`write`。system prompt 禁止文件和状态修改 |
+| `explore` | `execute`（默认） | `read` `bash` `grep` `find` `ls` | **有 bash**，可跑 `python3` / `node`；显式传 `capability_mode: "read-only"` 会保持只读模式，因为只读模式现在也包含 Bash。`read-write` 会提升到 `execute` 以保留 Bash |
 | `plan` | `execute` | `read` `bash` `grep` `find` `ls` | 只做规划，不改文件 |
 
-`explore` 有 **capability floor（能力下限）**：即使调用方显式传 `capability_mode: "read-only"`，也会被提升到 `execute`，因为该 profile 的契约依赖 bash。这样它总能 `rg`/`git log`/`tree`/`wc` 阅读全量与统计，也能 `python3 -c`、`node -e` 分析数据或验证行为。
+`explore` 对不提供 Bash 的模式保留 **capability floor（能力下限）**：`read-write` 会提升到 `execute`；`read-only` 因为现在包含 Bash，所以保持只读。这样它总能 `rg`/`git log`/`tree`/`wc` 阅读全量与统计，也能用 `python3 -c`、`node -e` 做内存分析。
 
-`explore` 对「不写文件」的约束是**提示词级**约定，不是工具级强制（它的工具集里本来就没有 `edit`/`write`，但 bash 可以执行任意命令）。需要硬隔离时应改用自定义 definition 把 `tools` 收窄到 `["read", "grep", "find", "ls"]`。
+只读工具集的「不修改」约束是**提示词级**约定，不是工具级或 OS 级强制：Bash 可以执行任意命令，因此 system prompt 明确禁止文件写入、Git 状态修改、依赖安装、数据库写入及其他状态变更。需要硬隔离时必须使用外部 OS/container sandbox；本扩展本身不提供沙箱。
 
 
 ### 子代理默认扩展
@@ -270,6 +287,22 @@ Child session 不加载自动发现的扩展，所以 root 侧装好的工具在
 | `~/.pi/agent/npm/node_modules/@ff-labs/pi-fff` | FFF 模糊文件与内容搜索 |
 
 目录不存在时静默跳过，所以未安装不构成启动错误。agent definition 的 `extensions:` 会在此基础上追加。扩展在绑定时注册的工具会叠加在 session 自身 loadout 之上而不是替换它，因此 `capability_mode` 仍然成立。
+
+### Child 的 skills 与 AGENTS.md 继承（默认开）
+
+Child session 默认继承 root 的全局/项目 skills 与 AGENTS.md/CLAUDE.md 上下文，definition 的显式 `skills:` 在此基础上叠加。恢复隔离：
+
+```md
+---
+description: "isolated worker"
+inherit_skills: false
+inherit_context: false
+---
+```
+
+- `inherit_skills: false` → 只加载 `skills:`（`noSkills`）。
+- `inherit_context: false` → 不做 AGENTS.md 发现（`noContextFiles`）。
+- 扩展保持隔离：只加载 `extensions:`（+ 已安装的默认搜索扩展）。
 
 ### Child 的 prompt 组成
 

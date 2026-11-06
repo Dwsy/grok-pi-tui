@@ -1,5 +1,158 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-11-05 Pasted image original paths (issue #12)
+
+The native image builder carries the user-visible source path in ACP image metadata (`xai.dev/imageSourcePath`), independently of the durable attachment URI. The headless adapter appends numbered, JSON-quoted paths to the Pi user prompt in `<image_metadata>`, preferring the original path and falling back to an existing local `file://` URI. Image bytes, MIME types, display numbers, chips and previews retain their existing behavior.
+
+| Check | Result | Evidence / limits |
+|---|---|---|
+| Adapter prompt bridge | PASS | `./scripts/cargo-shared.sh test -p pi-grok-adapter --lib prompt_bridge::tests`: **7 passed, 0 failed, exit 0**. Original-path precedence, quoting/Unicode, display numbers, local-URI fallback, unchanged image payloads, and prompts without paths. |
+| Native image handling | PASS | `./scripts/cargo-shared.sh test -p xai-grok-pager-render --lib prompt_images::tests -- --quiet`: **156 passed, 0 failed, exit 0**. Includes actual persistence, user-visible symlinks, orphan recovery and existing image handling. Initial dependency compilation exceeded the command wrapper deadline; a cached rerun confirmed normal exit. |
+| Local composition binary | PASS | `./scripts/cargo-shared.sh build -p xai-grok-pager-bin --bin grok-pi` and `./target/debug/grok-pi --version`: **exit 0**, `grok-pi 0.1.12-beta.1+dirty [stable]`. No global installation changes. |
+| Native architecture verifier | EXISTING FAILURES | **13 passed / 8 failed, exit 1**. The failed-check set exactly matches source session `01a1a9ae-6206-7095-941e-706a9259a51d`, JSONL L153, before this change: uploaded-tree and renderer baselines, slash/dynamic-command checks, extension UI, runtime events, semantic mappings and dialog matching. |
+| Source-identity seam | PASS | Baseline hashes and other manifest fields are preserved; only `xai-grok-pager-render/src/prompt_images.rs` was added to the exact modified-file seam list and its verifier counterpart. No existing failing checks were removed or relaxed. |
+| Format and change scope | PASS | Two changed Rust sources pass `rustfmt --check --edition 2024`; `git diff --check` exits 0. Source hashes match the reviewed/tested versions, and comparison with pre-task snapshots confirms existing user changes are preserved. |
+| Live provider / terminal interaction | NOT RUN | Source-level tests and local build only. |
+
+Implementation and acceptance record: [Image source path metadata](issues/adapter/20261105-image-source-path-metadata.md).
+
+## 2026-11-05 Code Mode card default expansion setting
+
+`[ui].codemode_expanded_by_default` is an F2 Appearance → Tool output preference. It defaults OFF (existing Truncated preview); ON selects Expanded for new Code Mode cards. Changing the setting remaps only cards still on the previous default. Per-card Code Mode fold actions are pinned so later default flips do not override them, even when the global `respect_manual_folds` option is off.
+
+| Check | Result | Evidence / limits |
+|---|---|---|
+| Render cache toggle | PASS | `./scripts/cargo-shared.sh test -p xai-grok-pager-render --lib codemode_expanded_by_default -- --nocapture`: **1 passed, 0 failed, exit 0**. |
+| Startup cache prime | PASS | The compiled `xai_grok_pager_render` test binary ran `appearance::cache::tests::prime_seeds_all_caches`: **1 passed, 0 failed, exit 0**; verifies `UiConfig` seeds the new flag. |
+| Formatting / whitespace | PASS (scoped) | Rustfmt 1.94 check passed for the touched Rust files without pre-existing formatting drift; `git diff --check` exits 0. |
+| Pager state and F2 dispatch tests | WAITING | `./scripts/cargo-shared.sh test -p xai-grok-pager --lib codemode -- --nocapture` is queued behind an already-running shared-target Cargo check (`xai-grok-pager --tests` + `grok-pi`); no Pager test result is claimed yet. |
+| Live F2 interaction | NOT RUN | Source and unit tests only; no interactive terminal session. |
+
+Implementation record: [Codemode native rendering](issues/adapter/20260930-Codemode-原生渲染支持.md).
+
+## 2026-11-03 Edit Markdown regex-backend regression
+
+The final fix restores `syntect = "5.3"`, the dependency configuration from before upstream commit `bc7f02ed`. That upstream change disabled the default Oniguruma engine in favor of `default-fancy`. Recent Edit streaming/folding changes did not modify the hunk highlighting algorithm. No Pager rendering behavior is changed by this final fix.
+
+Controlled A/B used the same syntect 5.3.0, two-face 0.4.5, Grok Day theme, unoptimized dev profile, and the original session's three README edit batches. Only the syntect backend feature changed; two-face's original grammar configuration remained the same.
+
+| Input batch (JSONL line) | fancy | Restored original backend | Highlighted lines | Text/RGB/font/segmentation differences |
+|---|---:|---:|---:|---:|
+| English README (129) | 10.354 s | 1.085 s | 37 | 0 |
+| Chinese README (137) | 6.652 s | 0.951 s | 34 | 0 |
+| Chinese README (139) | 5.897 s | 0.986 s | 34 | 0 |
+| Total with runner overhead | 22.904 s | 3.026 s | 105 | 0 |
+
+- **PASS:** both A/B runs exited 0, and all 105 styled lines match exactly. The sampled slow stack ends in `fancy_regex::RegexBuilder::build`.
+- **PASS:** all five Pager source files from the earlier asynchronous workaround were verified against their last task-owned hashes and restored to their original versions. The earlier worker allowlist addition was removed.
+- **PASS:** `Cargo.lock` only adds `onig` / `onig_sys` plus syntect's dependency edge. No other package versions changed.
+- **PASS:** current-workspace Markdown tests: **484 library tests + 1 integration regression passed, 0 failed, command exit 0**. The integration test preserves actual README old/new text and real syntax spans under a one-second bound; a direct run measured 299 ms for both syntax passes.
+- **PASS:** final `git diff --check`, new-test rustfmt, exact source-seam list consistency, and lockfile scope checks.
+
+Reproduce the final tests:
+
+```bash
+./scripts/cargo-shared.sh test -p xai-grok-markdown \
+  --lib --test edit_highlight_regression -- --test-threads=1 --quiet
+```
+- The earlier 64-test result applied to the now-withdrawn asynchronous workaround and is superseded for final acceptance.
+- **NOT RUN:** full workspace build/verification and live terminal interaction with a newly rebuilt application. The running grok-pi binary has not been replaced. The root-cause evidence identifies the backend configuration regression for this input; it does not infer which release the user last observed working.
+
+Issue and experiment record: [Edit expansion freeze](issues/TUI/20261103-edit-expand-freeze.md).
+
+## 2026-11-02 Subagents V2 Multitask P0
+
+Multitask is an explicit, task-scoped skill strategy. It preserves child resource isolation and adds a semantic `waiting` report: the coordinator must then end its run to release a background slot; nested results resume its existing Pi session. `team_list` shows `WAITING_RESULT`. This is not process isolation or a hard budget/DAG scheduler.
+
+| Check | Result | Evidence / limits |
+|---|---:|---|
+| Extension behavior tests | PASS | Node 24.15.0, installed Pi 1.4.0, `index.test.ts bridge.test.ts runtime.test.ts v2.test.ts`: **64 passed, 0 failed**. Includes V1/V2/off discovery with real Pi skill parsing, four-slot saturation/release, waiting/resumption, dropped completion before/after parent turn end, and failure/cancellation delivery. |
+| Reproducible installed-Pi test entry | PASS | `test-installed-pi.mjs` uses Node resolver hooks and an explicit `PI_TEST_NODE_MODULES`; it changes neither production resolution nor repository dependencies. |
+| Production extension TypeScript | PASS (scoped) | `tsgo`, strict/noEmit/skipLibCheck, production extension TS only; temporary config maps Pi exports to the installed 1.4.0 declarations and typebox to its declaration file. Tests excluded; this is not a full workspace typecheck. |
+| Full source-checkout / test typecheck | BLOCKED (baseline/compatibility) | Default Bun imports fail before assertions because optional `pi-main` is missing generated provider data (`meta.json` / `typesafe.json`). A separate all-file typecheck against installed Pi also surfaces existing test fixture/context diagnostics (`PersistedRecord`, `map(JSON.parse)`, `ExtensionToolContext`). No upstream files or unrelated test fixtures were changed. |
+| Skill authoring lint | PASS | `portable=true`, 0 errors, 0 warnings; Pi skill discovery has no format diagnostics. |
+| Skill workflow exercise | PASS (planning only) | Independent read of the actual skill correctly reuses a running reviewer, chooses single-agent spawn without an unverified preset, includes explicit child contracts, and uses waiting + turn end for a queued nested dependency. No real provider task was executed. |
+| Rust bundled injector | PASS | `./scripts/cargo-shared.sh test -p xai-grok-pager-bin --bin grok-pi subagent_extension::tests -- --nocapture`: **4 passed, 0 failed**; includes authored/bundled skill content parity, relative module materialization and preset parity. |
+| Diff and new-file hygiene | PASS | `git diff --check`, new-file trailing whitespace/newline checks, design-link target checks and Node syntax check for the test resolver. |
+| Local binary build | PASS | `./scripts/cargo-shared.sh build -p xai-grok-pager-bin --bin grok-pi` succeeded; `./target/debug/grok-pi --version` exited 0 (`0.1.12-beta.1+dirty [stable]`). No global installation or release promotion. |
+| Native provider/UI E2E | NOT RUN | Not promoted to default-on. Local binary is rebuilt; a real provider handtest remains. Hard tree quotas, dependency locks, cascading cancellation, busy-input queue conversion and live-team restart recovery remain proposed P1 work. |
+
+Reproduce behavior tests from `extensions/pi-grok-subagents` with an installed Pi release:
+
+```bash
+env PI_TEST_NODE_MODULES=/absolute/pi-release/node_modules \
+  node --import ./test-installed-pi.mjs --test index.test.ts bridge.test.ts runtime.test.ts v2.test.ts
+```
+
+Research, design choices, rollout scope and acceptance criteria: [Multitask design record](issues/adapter/20261102-subagents-v2-multitask.md).
+
+
+## 2026-11-02 Effort menu strongest-first; verb folds need two members
+
+- Requirement 1: the model thinking-strength picker listed efforts
+  weakest-first (Minimal → High). `ModelState::reasoning_effort_options_for`
+  now orders the menu strongest-first (stable sort on `ReasoningEffort`,
+  which derives `Ord` in declaration order = strength), and the shell
+  session-config effort rows (`session_config_inputs`) sort the same way.
+  Wire order, catalog default derivation (`derive_reasoning_effort_fields`),
+  and token resolution are untouched. Cycling (`next_reasoning_effort`)
+  follows the menu order (highest first).
+- Requirement 2: `RunScan::folds` required only one member, so a single tool
+  call collapsed behind a one-row header. Runs now fold at two members:
+  `verb_group.rs` `folds()` is `members >= 2`; the shared predicate keeps the
+  layout fold and `verb_group_range_of` aligned. Setting/docs copy updated
+  (`group_tool_verbs`, 26-config-reference).
+- Pager full `--lib` suite: 10011 passed, 133 failed, 4 ignored —
+  byte-identical counts to the pre-change baseline documented above; every
+  failure encountered during focused runs was reproduced at clean `HEAD`
+  (git stash round-trip), so no regressions were introduced.
+- Focused suites: verb/fold tests (`scrollback::` 1086 passed / 3
+  pre-existing failures), effort/reasoning/model_state/slash (82 passed / 1
+  pre-existing failure), shell `session_config` + `mvp_agent` (11 passed),
+  `xai-grok-sampling-types` (all passed). Reworked/added tests:
+  `rendered_verb_group_singleton_stays_unfolded`,
+  `verb_group_folds_multi_member_runs_but_not_singletons`,
+  `verb_group_thoughts_never_count_and_never_fold_alone`,
+  `verb_group_singleton_stays_unfolded_across_expansion_attempts`,
+  updated pending-input / boundary-gap / separator / nav reveal /
+  expand-all-thinking / hook-popup tests, and the strongest-first menu
+  assertions in `model_state` + `mvp_agent::tests`.
+- Per-file rustfmt (pinned 1.94.0, edition 2024) and `git diff --check`:
+  passed.
+- Disk guard: ran with `CARGO_MIN_FREE_GIB=10` because the volume was below
+  the default 20 GiB floor; no `cargo clean` was performed.
+- Scope: source and test verification only. No installed-binary or
+  model-driven terminal acceptance.
+
+
+## 2026-11-02 Streaming edit preview must honor the collapse default
+
+- Cause: `toolcall_start` pushes the Edit card with empty `raw_input`/content,
+  so `path_from_title` marked `summary_untrusted` and force-expanded the card
+  past `[ui].collapsed_edit_blocks`; the trusted canonical replace never
+  re-applied the materialize policy (only the trusted→untrusted rising edge
+  existed).
+- Fix: `tool_call_to_block` no longer treats a missing path as untrusted when
+  no diffs exist yet (title-fallback with real diffs and multi-file patches
+  still expand); `replace_tool_block` gained an untrusted→trusted falling edge
+  that re-runs `edit_default_display_mode` unless the fold is pinned.
+- Pager full `--lib` suite: 10011 passed, 133 failed, 4 ignored. Failure list
+  is byte-identical to the pre-fix baseline captured on the same worktree
+  (133 known failures; `comm` diff empty in both directions), so the change
+  introduces no regressions.
+- Focused new/adjacent tests: `streaming_edit_preview_honors_collapse_until_
+  summary_exists`, `title_fallback_preview_with_diffs_still_expands`,
+  `replace_tool_block_untrusted_falling_edge_reapplies_default`,
+  `streaming_file_diff_is_foldable_viewable_and_preserves_fold_through_
+  execution`, `multi_diff_and_title_fallback_edits_default_expanded`,
+  `push_applies_edit_materialize_policy`, `acp::tracker::tests` (199 passed),
+  `scrollback::state::tests` (61 passed), coalesce suite (40 passed).
+- Per-file rustfmt --check and `git diff --check`: passed.
+- Disk guard: ran with an explicit `CARGO_MIN_FREE_GIB=12/13` floor because the
+  volume was below the default 20 GiB floor; no `cargo clean` was performed.
+- Scope: source and test verification only. No installed-binary or
+  model-driven terminal acceptance.
+
 
 ## 2026-10-30 Tool argument streaming — Bash stability and live file diffs
 

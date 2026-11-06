@@ -104,7 +104,7 @@ Seven monorepo syncs contribute 340 authoritative `Changes:` items. The range is
 - **Workspace permissions and sandbox:** typed tool-approval policy and permission channels, signed computer-use helper distribution, a dedicated permission-rules crate, managed-policy trust/tamper classification, a shared folder-trust decision, per-folder daemon-owned sandboxes, held egress requests with per-call credentials, permission-hook sandbox violation cards, and physical as well as lexical relative-path matching.
 - **Memory:** deletion and disabled/empty modal states, automatic legacy `MEMORY.md` carry-over, JSON-Schema-constrained dreams, cancelled-turn capture, encrypted-reasoning stripping, local-daemon management operations, and cleanup/plan-conflict recovery for batch consolidation.
 - **Subagents:** catalog-latched model selection, configurable model-argument hiding and automatic inheritance, TUI/stdio activation parity, target/delivery rows, direct child transcript opening, completion/cancellation rows, background-task rows with stop controls, background/wakeup approvals, selectable plugin/user agent types, and a blocked-parent waiting indicator.
-- **Models and configuration:** Claude settings import, typed `requirements.toml` sections, `[agent]` startup settings, per-model `max_request_bytes`, per-model notices, mixed-case effort parsing, default-effort picker positioning, and a context-window step between model and effort.
+- **Models and configuration:** Claude settings import, typed `requirements.toml` sections, `[agent]` startup settings, per-model `max_request_bytes`, per-model notices, mixed-case effort parsing, default-effort picker positioning, and a context-window step between model and effort; and request `AvailableModels` in the variant form.
 - **Images and interjections:** images in `/btw`, interjections, ordinary user messages, prompts, local daemon delivery, and remote sessions; orphan image-chip rebinding and unsent-image notices; and older-client image refusal guidance.
 - **Worktree/clone:** in-place clone progress with JSON events, optional base-ref fetch and branch creation for synced worktrees, a safe empty-file global Git config, and offline Windows fast-worktree cleanup.
 - **Hooks/plugins/workflows:** project-hook discovery, managed-only hook filtering, requirements-cache hooks as managed policy, a disk-built shared plugin registry snapshot, bundled workflow source identity, and workspace-task binding to a single subagent registry entry.
@@ -118,11 +118,11 @@ Seven monorepo syncs contribute 340 authoritative `Changes:` items. The range is
 - **Prompt and compaction policy:** require grounded person names, use the nine-section prompt and grok-build carrier for two-pass compaction, retain every turn in the segment store, inject long-reasoning reminders after auto-compaction, route built-in guidance through user rules, add direct-prose/scannable-response guidance, and send compact recap/summary slices at low effort.
 - **Session lifecycle:** persist agent profile and cached team capability, keep cwd-local sessions, disable session-folder TTL cleanup by default, record unfinished turns and crash evidence, scope orphan-subagent healing to the loading session, reject duplicate cross-machine ownership, wait out busy fork parents, and bind startup/turn behavior to durable remote state.
 - **Queue and send-now behavior:** share the send-now stop path across prompt and wake turns, keep another device's turn paired with its question card, apply queue actions to remotely held prompts, preserve refused send-now as the Esc target, flush steered follow-ups before blocking waits, and return focus after queued-prompt edits.
-- **Pager/UI:** clean up overlays, settings, notifications, diagnostics, dispatch, question views, banners, dashboard and prompt widgets; keep pinned rows stable; remove the completed-subagent dock summary; add dashboard preview; align prompt borders; preserve queue-row copy; improve minimal-mode commits/history/anchoring; and color Ask-mode chrome green.
-- **Terminal handling:** fence Kitty keyboard teardown with DA1, centralize restore, serialize Windows clipboard operations, skip clipboard-image probing for non-clipboard bracketed pastes, and re-send inline images after full repaint.
+- **Pager/UI:** clean up overlays, settings, notifications, diagnostics, dispatch, question views, banners, dashboard and prompt widgets; keep pinned rows stable; remove the completed-subagent dock summary; add dashboard preview; align prompt borders; preserve queue-row copy; improve minimal-mode commits/history/anchoring; and color Ask-mode chrome green; stamp assistant transcript entries with the row-update sequence; trim pad cells and emit semantic newlines on minimal commit; lighten the Oscura code-block background; keep the newest Agent line under 24k with a `[truncated]` marker; open the command palette with Ctrl+P on the welcome screen; gate the coding-data banner on the server capability; and a communication-clarity pass.
+- **Terminal handling:** fence Kitty keyboard teardown with DA1, centralize restore, serialize Windows clipboard operations, skip clipboard-image probing for non-clipboard bracketed pastes, and re-send inline images after full repaint; and wait for quit confirm before the second Ctrl+C.
 - **Daemon execution:** wait for daemon prompt decisions, show write/re-pushed cards, run workspace-daemon tool calls without interactive permission prompts, map Agent Host wait/shell rows to the base-path UI, answer headless questions like Shell, and keep desktop/local execution on the owning machine.
 - **MCP lifecycle:** hand results to the gateway as content blocks, render structured content only once when text already carries it, record every call ending, improve auth retry classification, retain plugin OAuth ids, and expose merged server details through settings.
-- **Permission/config structure:** extract shell parsing and policy compilation into permission-rules, move remote settings into cloud config, apply configured Bash rules to unresolved filename arguments, parse workspace settings as typed values, and use shared config types for trust.
+- **Permission/config structure:** extract shell parsing and policy compilation into permission-rules, move remote settings into cloud config, apply configured Bash rules to unresolved filename arguments, parse workspace settings as typed values, and use shared config types for trust; and wrap over-wide quoted arguments in the permission overlay.
 - **Sandbox ownership:** move per-folder sandbox/proxy lifecycle and violation reporting under the workspace daemon, ask before egress with scoped credentials, keep Always-reject sticky, and run sandbox tests only on applicable platforms.
 - **Subagent behavior:** keep subagents alive for the full task, wake/settle rows on child completion, answer blocking spawn honestly after send-now, remove then re-expose selectable subagent type through the unified catalog, and inherit models from the effective catalog.
 - **Model selection:** carry model choice as one type, preserve context-window selection, match effort by option label, open on the model default, and hide unsupported tool forms from Messages-backed models.
@@ -144,7 +144,7 @@ Seven monorepo syncs contribute 340 authoritative `Changes:` items. The range is
 - **Subagents:** clear stale Cancelling state, show cutoff sessions as cancelled, complete background rows when children finish, keep fork children scoped correctly, and handle child activation consistently across hosts.
 - **MCP/daemon:** fix stale connecting reminders, malformed approval-policy fallback, auth-retry classification, dead bridged-child recovery, structured-content duplication, and daemon tool-result presentation.
 - **Files/worktrees:** emit root-relative file-change paths while dropping off-root paths, use binary-safe staged writes, clean Windows worktree artifacts offline, and prevent old rolled-back installs from retaining bindings.
-- **Usage/timing:** wait for `usage.json` before turn completion, anchor Worked-for timing at every turn start, and report precise session-creation timeout stages.
+- **Usage/timing:** wait for `usage.json` before turn completion, anchor Worked-for timing at every turn start, and report precise session-creation timeout stages; and retry the billing seat lookup inside the subscription budget.
 
 ### Removed / Deprecated
 
@@ -1741,3 +1741,117 @@ close RCE and credential-plugin attack vectors.
 - **High:** `xai-grok-shell` (167 files, +19642/−16719) — massive churn in the agent runtime; relocation primitives, model providers, and reasoning tiers may shift APIs the adapter depends on.
 - **Medium:** `xai-grok-pager` (266 files) — doctor, prompt combine, external editor, and diagnostics touch Pager surfaces that Pi-Grok maps to native components.
 - **Low:** `xai-workflow` is a new isolated crate; `xai-prompt-queue/combine` is additive; voice/config changes are self-contained.
+
+## [a881e67] — 2026-11-03
+
+> **Status:** Merged — this is the fork's base history (upstream state at first clone, absorbed long before the first recorded sync on 2026-07-22). Recorded retroactively on 2026-11-03 to close the coverage gap: every upstream commit from the fork root `c68e39f6` ("Publish harness and TUI open-source", no `Changes:` list) through `a881e67` is covered here. No merge action is needed or possible — this state predates all Pi-Grok seams.
+
+- **Sync range:** `c68e39f6..a881e67` (`c68e39f60462f28d9be5e683d9cbe2c57b1a5027` → `a881e6703f46b01d8c7d4a5437683546df30449d`)
+- **Upstream commits:** 5 (`Synced from monorepo`) + the root `Publish harness and TUI open-source` commit (no `Changes:` list)
+- **SOURCE_REV (monorepo SHA):** `c5c4ce03436b4bb2cec43d3feaa27dee0109bf37` (was: none — no `SOURCE_REV` file at the fork root)
+- **Diff size:** 603 files changed, +73206 / −34547 (rename-aware: 57 added, 4 deleted, 540 modified, 2 renamed)
+
+### Summary
+
+Backfill for the fork base: five monorepo syncs (123 authoritative `Changes:` items) that shipped with the initial clone. Headlines: a canonical text-editing core (new `xai-ratatui-textarea` crate) adopted across all Pager inputs; default models moved to grok-4.5; a fail-closed sandbox/permission wave (shell, redirect, script, hook, and `web_fetch` gates plus opt-out data sharing); plugin trust (shared `require_sha` gate, server-signed is-managed claim); durable session append with subagent-output persistence; MCP tool-ID strictness with RFC 9207 `iss`; new ACP session state/import methods; `scheduler_create` upsert; and `MiniSweAgent:bash`. Three security fixes: hook-runner SSRF, `CLAUDE.md` XML-tag injection, and workspace-server LSP-trust hardcoding.
+
+### Source commit coverage
+
+- `8adf9013` (`SOURCE_REV 2ec0f0c8`): 14 changes — OAuth scopes, hook-runner SSRF fix, voice/STT bearer, identity-purge hardening, minimal-mode folder-trust UI, headless drain, settings-modal split.
+- `98c3b243` (`SOURCE_REV 124d85bc`): 41 changes — durable session append, subagent persistence, MiniSweAgent:bash, canonical text-editing core, sandbox gates, plugin `require_sha`, owner-only credentials, single-flight auth.
+- `7cfcb20d` (`SOURCE_REV f9736c7b`): 51 changes — grok-4.5 defaults, canonical-editing rollout, MCP tool-ID rejection, marketplace auto-install removal, queue-drain simplification, `/summarize` alias, permission gates, and security fixes.
+- `ba76b0a6` (`SOURCE_REV ba69d70c`): 9 changes — session-lifecycle stop hooks, ACP session state/import, scheduler upsert, clipboard fallback, OSC 52 kill switch.
+- `a881e670` (`SOURCE_REV c5c4ce03`): 8 changes — feedback submitter identity, rotating tokens for custom models, managed-config replay probe, working-tree startup status.
+
+### Areas touched
+
+| Area | Files | +/− | Added / Deleted | Notes |
+|------|------:|----:|-----------------|-------|
+| Pager (TUI) | 238 | +35116/−20624 | 17/1 | canonical-editing rollout, paste parity, dashboard/queue UX (2 test renames) |
+| Shell (agent runtime) | 169 | +17779/−8535 | 22/3 | OAuth scopes, sandbox gates, session durability, auth |
+| Tools | 48 | +4578/−828 | 3/0 | MiniSweAgent:bash, scheduler upsert |
+| Hooks / Plugins | 19 | +2896/−2185 | 2/0 | hook gates, marketplace trust |
+| Textarea / Inline (new crate) | 9 | +3025/−709 | 7/0 | canonical editing core |
+| Workspace / Permission | 28 | +2627/−564 | 0/0 | website policies, plugin Git hardening |
+| Test support | 7 | +1530/−247 | 1/0 | dhat soak, inference expectations |
+| Config | 14 | +1421/−111 | 2/0 | rules dirs, managed-config hardening |
+| Agent lifecycle | 9 | +1099/−188 | 0/0 | registry counts, SDK self-update guard |
+| Sandbox | 5 | +628/−48 | 1/0 | network inheritance, ready-file removal |
+| Models / Sampling | 6 | +339/−185 | 1/0 | grok-4.5 defaults, rotating tokens |
+| MCP | 3 | +399/−70 | 0/0 | tool-ID strictness, OAuth iss, setup prefs |
+| Other crates | 10 | +348/−36 | 0/0 | proxy types, crash handler, hub SDK |
+| Voice | 3 | +204/−92 | 0/0 | STT bearer/URL |
+| Memory | 6 | +244/−39 | 0/0 | bearer scoping to embedding endpoints |
+| Telemetry | 6 | +257/−15 | 0/0 | Mixpanel skip, OTEL allowlist |
+| Update / Version | 2 | +240/−6 | 0/0 | compressed install plumbing |
+| Markdown | 3 | +172/−4 | 0/0 | rendering |
+| ACP / Protocol | 4 | +101/−19 | 0/0 | session state/import methods |
+| Chat state | 6 | +102/−6 | 0/0 | attachment ids |
+| Root / meta | 4 | +67/−14 | 1/0 | first SOURCE_REV, lockfile |
+| Hunk tracker | 2 | +16/−13 | 0/0 | file utils |
+| Worktree / GC | 2 | +18/−9 | 0/0 | lifecycle |
+| **Total** | **603** | **+73206/−34547** | **57/4** | |
+
+### Added
+
+- **Canonical text editing:** new `xai-ratatui-textarea` crate adopted in dialogs, search bars, Persona views, extension forms, dashboard, settings, and pickers; route `TextArea` through it; complete text-input paste and terminal parity.
+- **Tools:** `MiniSweAgent:bash` for mini-swe-agent parity.
+- **Session durability:** durable session-update append; acknowledged persistence primitives; tightened durable-append internals; persist subagent outputs to disk and bound long-lived agent state.
+- **MCP:** MCP setup preferences for plugin MCPs; pass RFC 9207 `iss` through the MCP OAuth token exchange.
+- **ACP:** new `x.ai/session/state` and `x.ai/session/import` methods.
+- **Scheduler:** `scheduler_create` upsert via `task_id`; retire one-shot tasks.
+- **Slash commands:** `/summarize` as a `/recap` alias; enable `/copy` in minimal mode.
+- **Settings:** snap-prompt-to-top toggle; `GROK_CLIPBOARD_NO_OSC52` kill switch.
+- **Credentials:** owner-only permissions for auth/MCP credentials, crash dumps, and the `agent_id` cache.
+- **Session lifecycle:** stop hooks for session lifecycle; expose agent-registry counts and gate session churn on them.
+- **Gateway/chat:** wire chat attachment ids through gateway prompts.
+- **Feedback:** persist submitter identity for `/feedback`.
+- **Startup:** include the working tree in startup status.
+- **Links:** delegate VS Code SSH file links; preserve semantic link targets.
+- **Tests:** dhat soak gate for session-lifecycle heap steady state; matched inference expectations in test-support; `AuthSingleFlight` cancel/successor gap tests.
+
+### Changed
+
+- **Models:** default models updated to grok-4.5; custom models can use rotating tokens from named auth providers.
+- **OAuth/scopes:** shell requests `workspaces:read/write` scopes; scope the xAI session bearer to first-party memory-embedding endpoints; voice STT bearer from model BYOK `env_key`/`api_key`; enterprise STT WSS URL with API-key voice bearer.
+- **Sandbox gates (fail-closed wave):** exact website policies; gate unsafe shell environments, shell-output redirects, sourced shell scripts, and file-typed project hooks; inherit child network restrictions; fail closed when hook matchers fail to recompile; warn on non-boolean `fail_closed`; block `web_fetch` non-public IPs (explicit-host local opt-in); default coding-data sharing to opt-out until the server preference applies.
+- **Auto mode:** deny-and-continue for classifier blocks with denial limits; classify unvetted env prefixes instead of hard-prompting.
+- **Plugin trust:** shared pin hoist with a single `require_sha` gate; server-signed is-managed claim (closes sidecar-removal downgrade); optional `require_sha` pin for remote plugin installs; harden Git operands for plugins.
+- **Managed config:** defeat clock-rollback on the signed cache; per-fetch signing nonce with a server-side replay probe.
+- **Auth:** single-flight interactive auth; retry on auth-refresh failure; harden identity-change purge and sync-marker invariants.
+- **Turn/session lifecycle:** stop early session/cancel from overtaking the prompt and wedging the turn slot; suppress task wake after cancel; clear orphaned tool-call updates at turn end; `grok wrap` restores terminal modes on child death; release the workspace session binding on session removal; revert taking local sessions off the persistent shell; self-heal a diverged agent entrypoint on startup; keep execution state out of goal scratch; `tool_choice: auto` for compaction; nudge the model to end the turn on no-op bash commands; minimal mode commits thinking in full, lookups as one-liners.
+- **Server-native tool descriptions:** template stale tool/param-name literals and hardcoded param names (two passes).
+- **Queue:** simplify the queue-drain API.
+- **Pager UX:** clipboard delivery-confidence classification with follow-up feedback; clipboard copy-file fallback and honest SSH/Apple-Terminal toasts; contextual tip recommending `grok wrap` on SSH sessions; yank the full queued prompt text; slim live-tail dashboard peek; persistent "watching" status row with quieter turn markers; bound scroll-presentation latency; multi-line highlighting in diffs/file viewer; disable in-place prompt edit (scroll jank); polarity-safe minimal-mode syntax colors; strip the `SamplingError` prefix and Cloudflare HTML from retry copy; strip forced ANSI color from `gh pr view` JSON.
+- **Dashboard/agents:** show the leader roster when the local agents map is empty; restore the previous agent on dashboard exit; harden dashboard peek-lease transitions.
+- **Skills:** stay reachable when a skill name collides with a client builtin.
+- **Exit/resume:** hint shows the session title and last exchange.
+- **Errors/status:** surface capacity and API-key detail on 429s; show the billing URL when the browser cannot open.
+- **Telemetry/privacy:** `SessionMetrics` mode skips Mixpanel profile sync; remove consumer from the external OTEL allowlist and pin scrub coverage; document independent privacy controls and scope `/privacy` output; seed `coding_data_retention_opt_out=false` for OAuth e2es in the PTY harness.
+- **Shell env:** source the login shell once for local bash (env + alias/function snapshot).
+- **API identity:** send `x-grok-client-identifier` on direct API tool calls.
+- **Provenance:** forward preview provenance and computer lifecycle state; plumb the bash tool description onto the `ToolUsageCard` wire.
+- **Policy discovery:** scan home-scope rules dirs at `<root>/rules`; gate project roles and personas.
+- **Minimal mode:** host the `/btw` side panel in a live region.
+- **Structure:** split `settings_modal` into a directory module; stop SDK-spawned agents from staging self-updates they can never adopt.
+
+### Fixed
+
+- **Security:** SSRF bypass via HTTP redirect in the hook runner.
+- **Security:** System-Reminder XML-tag injection in `CLAUDE.md` via `agents_md`.
+- **Security:** remote workspace-server hardcoding LSP trust (repo code-execution risk).
+- Fix enterprise STT WSS URL + API-key voice bearer.
+- Fix folder-trust UI in minimal mode.
+- Fix draining `task_backgrounded` before no-wait headless exit.
+- Unbreak merge-lifecycle e2e after the default-model move to grok-4.5.
+- Fix PageUp/PageDown skipping lines behind the sticky prompt header.
+
+### Removed / Deprecated
+
+- Delete the legacy ready-file arm in sandbox + workspace-server.
+- Remove marketplace default-skills auto-install and purge old installs.
+- Drop `codebase-upload` from the dhat soak test.
+
+### Merge risk for grok-pi
+
+- None — base history; predates all fork seams. No action needed.
