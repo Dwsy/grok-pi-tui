@@ -3260,7 +3260,7 @@ impl MvpAgent {
         let supports_effort = self
             .models_manager
             .model_supports_reasoning_effort(model_id.0.as_ref());
-        let effort_options: Vec<ReasoningEffortOption> = if supports_effort {
+        let mut effort_options: Vec<ReasoningEffortOption> = if supports_effort {
             let options = self
                 .models_manager
                 .model_reasoning_efforts(model_id.0.as_ref());
@@ -3272,6 +3272,8 @@ impl MvpAgent {
         } else {
             Vec::new()
         };
+        // Selection rows read highest → lowest, matching the pager's effort menu.
+        effort_options.sort_by(|a, b| b.value.cmp(&a.value));
         let current_effort = if supports_effort {
             session_id
                 .and_then(|sid| self.resident_handle(sid).map(|h| h.reasoning_effort))

@@ -1706,6 +1706,11 @@ async fn session_config_options_resolves_routing_slug_to_catalog_model() {
         modes.iter().any(|o| o.id == "high" && o.selected),
         "catalog default effort should be selected"
     );
+    assert_eq!(
+        modes.first().map(|o| o.id.as_str()),
+        Some("xhigh"),
+        "effort rows must read strongest-first"
+    );
     assert!(
         opts.iter()
             .any(|o| o.category == "model" && o.id == "catalog-key-model" && o.selected),

@@ -502,9 +502,23 @@ pub async fn set_collapsed_edit_blocks(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.collapsed_edit_blocks = Some(value)).await
 }
 
+/// Persist `[ui].codemode_expanded_by_default` via `update_config`.
+pub async fn set_codemode_expanded_by_default(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.codemode_expanded_by_default = Some(value)).await
+}
+
 /// Persist `[ui].ctrl_o_tool_expansion` (`write_edit` | `all_tools`).
 pub async fn set_ctrl_o_tool_expansion(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.ctrl_o_tool_expansion = Some(value)).await
+}
+
+/// Persist `[ui].tool_card_click_action`.
+pub async fn set_tool_card_click_action(value: String) -> Result<()> {
+    anyhow::ensure!(
+        xai_grok_shared::ui_config::ToolCardClickAction::from_canonical(&value).is_some(),
+        "invalid tool card click action"
+    );
+    update_config(|cfg| cfg.ui.tool_card_click_action = Some(value)).await
 }
 
 /// Persist `[ui].pi_bash_run_display`.

@@ -581,6 +581,15 @@ pub struct AssistantUsageMetric {
     /// True when input/output were estimated from content (provider usage was 0).
     #[serde(default)]
     pub usage_estimated: bool,
+    /// Thinking/reasoning tokens (a subset of `output` per Pi's usage contract).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<u64>,
+    /// Pi-measured milliseconds from request start to response end (monotonic clock).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// `output` (reasoning included) tokens per second over `duration_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_per_second: Option<f64>,
 }
 
 /// Aggregate token totals for cache stats.

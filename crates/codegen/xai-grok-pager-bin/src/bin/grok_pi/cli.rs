@@ -44,8 +44,9 @@ Extension startup recovery:
   If Pi RPC bootstrap fails, grok-pi retries with zero extensions. If that works,
   it automatically binary-searches the loaded extension list for a crashing extension.
   This is automatic recovery, not a separate CLI mode or flag.
-  Single culprit: prints `Extension crash detected`, names the extension/path, and
-  relaunches without that extension.
+  Single culprit: prints `Extension bootstrap failure detected`, names the extension/path,
+  and relaunches without that extension. Duplicate tool registrations fail closed
+  with the original Pi error and actionable guidance (no silent permission bypass).
   Combination conflict: prints `Extension conflict detected` and relaunches with
   all extensions disabled.
   Scope: bootstrap-time extension failures only; crashes after bootstrap are not bisected.

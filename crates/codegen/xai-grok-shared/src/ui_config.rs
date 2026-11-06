@@ -18,6 +18,34 @@ fn default_pi_eval_v2_display_mode() -> String {
 }
 use xai_grok_status_line::StatusLineConfig;
 
+/// Mouse policy for native tool-call cards; Enter keeps its native viewer action.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolCardClickAction {
+    #[default]
+    Select,
+    Toggle,
+    OpenViewer,
+}
+
+impl ToolCardClickAction {
+    pub fn from_canonical(value: &str) -> Option<Self> {
+        match value {
+            "select" => Some(Self::Select),
+            "toggle" => Some(Self::Toggle),
+            "open_viewer" => Some(Self::OpenViewer),
+            _ => None,
+        }
+    }
+
+    pub fn as_canonical(self) -> &'static str {
+        match self {
+            Self::Select => "select",
+            Self::Toggle => "toggle",
+            Self::OpenViewer => "open_viewer",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -86,8 +114,8 @@ pub struct UiConfig {
     pub pi_subagents: bool,
     /// Enable optional Subagents V2 team tools (`spawn_team`, stable agent
     /// paths, peer messaging) on top of Pi subagents.
-    /// Default off; takes effect for new grok-pi sessions only.
-    #[serde(default)]
+    /// Default on; takes effect for new grok-pi sessions only.
+    #[serde(default = "default_true")]
     pub pi_subagents_v2: bool,
     /// Enable upstream-compatible Rhai workflows in grok-pi (xai-workflow + Pi spawn).
     /// Default off; takes effect for new grok-pi sessions only.
@@ -334,10 +362,17 @@ pub struct UiConfig {
     /// `None` means off (client default). Written by the pager's settings modal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collapsed_edit_blocks: Option<bool>,
+    /// Show complete Code Mode scripts, nested calls, and output by default instead of the truncated preview.
+    /// `None` means off (client default). Written by the pager's F2 settings modal and applied live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codemode_expanded_by_default: Option<bool>,
     /// Scope toggled by Ctrl+O in a grok-pi session: `write_edit` (default)
     /// expands write and edit output; `all_tools` expands every tool output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ctrl_o_tool_expansion: Option<String>,
+    /// Tool-card click action: select (default), toggle, or open_viewer (same as Enter).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_card_click_action: Option<String>,
     /// Header content for grok-pi Bash/run tool cards:
     /// `command_only` | `task_name` (default) | `task_name_and_command`.
     /// Written by the pager's F2 settings modal and applied live.
@@ -523,7 +558,7 @@ impl Default for UiConfig {
             pi_tree_skip_summary_prompt: false,
             pi_herdr: false,
             pi_subagents: true,
-            pi_subagents_v2: false,
+            pi_subagents_v2: true,
             pi_workflows: false,
             pi_todo: true,
             pi_todo_v2: false,
@@ -585,7 +620,9 @@ impl Default for UiConfig {
             thinking_border_colors: None,
             group_tool_verbs: None,
             collapsed_edit_blocks: None,
+            codemode_expanded_by_default: None,
             ctrl_o_tool_expansion: None,
+            tool_card_click_action: None,
             pi_bash_run_display: None,
             prompt_suggestions: None,
             cursor_blink: None,

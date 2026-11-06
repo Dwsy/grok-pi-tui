@@ -12,6 +12,7 @@
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub use xai_grok_shared::ui_config::ToolCardClickAction;
 use xai_grok_shared::ui_config::UiConfig;
 
 use super::execute_header_content::ExecuteHeaderContent;
@@ -45,6 +46,8 @@ const GROUP_TOOL_VERBS_DEFAULT: bool = true;
 const WRITE_EDIT_HOVER_POPUPS_DEFAULT: bool = true;
 /// Rollout flag; while it is off, edit blocks render as the legacy expanded diffs.
 const COLLAPSED_EDIT_BLOCKS_DEFAULT: bool = false;
+/// Code Mode cards keep their truncated preview unless the user opts into full expansion.
+const CODEMODE_EXPANDED_BY_DEFAULT_DEFAULT: bool = false;
 /// grok-pi user prompts use the agent markdown renderer by default.
 const PI_USER_MARKDOWN_DEFAULT: bool = true;
 /// "Prompt suggestions" is the ghost text Tab autocompletes.
@@ -471,6 +474,36 @@ pub fn set_collapsed_edit_blocks(enabled: bool) {
     COLLAPSED_EDIT_BLOCKS_LOADED.with(|l| l.set(true));
 }
 
+// -- Code Mode card expansion -------------------------------------------------
+
+thread_local! {
+    static CODEMODE_EXPANDED_BY_DEFAULT_CURRENT: Cell<bool> =
+        const { Cell::new(CODEMODE_EXPANDED_BY_DEFAULT_DEFAULT) };
+    static CODEMODE_EXPANDED_BY_DEFAULT_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read cached `[ui].codemode_expanded_by_default`, defaulting to the existing truncated preview.
+pub fn load_codemode_expanded_by_default() -> bool {
+    CODEMODE_EXPANDED_BY_DEFAULT_LOADED.with(|loaded| {
+        if !loaded.get() {
+            CODEMODE_EXPANDED_BY_DEFAULT_CURRENT.with(|c| {
+                c.set(load_bool_from_effective_config(
+                    "codemode_expanded_by_default",
+                    CODEMODE_EXPANDED_BY_DEFAULT_DEFAULT,
+                ))
+            });
+            loaded.set(true);
+        }
+    });
+    CODEMODE_EXPANDED_BY_DEFAULT_CURRENT.with(|c| c.get())
+}
+
+/// Replace cached `codemode_expanded_by_default`.
+pub fn set_codemode_expanded_by_default(enabled: bool) {
+    CODEMODE_EXPANDED_BY_DEFAULT_CURRENT.with(|c| c.set(enabled));
+    CODEMODE_EXPANDED_BY_DEFAULT_LOADED.with(|l| l.set(true));
+}
+
 // -- Pi user markdown (agent-style user prompts) ------------------------------
 
 thread_local! {
@@ -800,6 +833,32 @@ pub fn set_pi_bash_command_format(value: bool) {
     PI_BASH_COMMAND_FORMAT_LOADED.with(|l| l.set(true));
 }
 
+// -- Tool-card click action -------------------------------------------------
+
+thread_local! {
+    static TOOL_CARD_CLICK_ACTION_CURRENT: Cell<ToolCardClickAction> = const { Cell::new(ToolCardClickAction::Select) };
+    static TOOL_CARD_CLICK_ACTION_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn load_tool_card_click_action() -> ToolCardClickAction {
+    TOOL_CARD_CLICK_ACTION_LOADED.with(|loaded| {
+        if !loaded.get() {
+            let value = load_str_from_effective_config("tool_card_click_action")
+                .as_deref()
+                .and_then(ToolCardClickAction::from_canonical)
+                .unwrap_or_default();
+            TOOL_CARD_CLICK_ACTION_CURRENT.with(|c| c.set(value));
+            loaded.set(true);
+        }
+    });
+    TOOL_CARD_CLICK_ACTION_CURRENT.with(|c| c.get())
+}
+
+pub fn set_tool_card_click_action(value: ToolCardClickAction) {
+    TOOL_CARD_CLICK_ACTION_CURRENT.with(|c| c.set(value));
+    TOOL_CARD_CLICK_ACTION_LOADED.with(|l| l.set(true));
+}
+
 // -- Write/Edit hover popups ------------------------------------------------
 
 thread_local! {
@@ -900,11 +959,21 @@ pub fn prime(ui: &UiConfig) {
     );
     set_pi_bash_command_format(ui.pi_bash_command_format);
     set_write_edit_hover_popups(ui.write_edit_hover_popups);
+    set_tool_card_click_action(
+        ui.tool_card_click_action
+            .as_deref()
+            .and_then(ToolCardClickAction::from_canonical)
+            .unwrap_or_default(),
+    );
     let _ = load_render_mermaid();
     let _ = load_show_thinking_blocks();
     let _ = load_thinking_border_colors();
     let _ = load_group_tool_verbs();
     let _ = load_collapsed_edit_blocks();
+    set_codemode_expanded_by_default(
+        ui.codemode_expanded_by_default
+            .unwrap_or(CODEMODE_EXPANDED_BY_DEFAULT_DEFAULT),
+    );
     set_pi_user_markdown(ui.pi_user_markdown);
     let _ = load_prompt_suggestions();
     // `default_selected_permission` owns its own cache in `permission_cursor`.
@@ -1029,6 +1098,11 @@ mod tests {
             ui.collapsed_edit_blocks
                 .unwrap_or(COLLAPSED_EDIT_BLOCKS_DEFAULT)
         );
+        assert_eq!(
+            CODEMODE_EXPANDED_BY_DEFAULT_DEFAULT,
+            ui.codemode_expanded_by_default
+                .unwrap_or(CODEMODE_EXPANDED_BY_DEFAULT_DEFAULT)
+        );
         assert_eq!(PI_USER_MARKDOWN_DEFAULT, ui.pi_user_markdown);
         // Deliberately asserting on a constant: the rollout contract pins the default off
         #[allow(clippy::assertions_on_constants)]
@@ -1036,6 +1110,10 @@ mod tests {
             assert!(
                 !COLLAPSED_EDIT_BLOCKS_DEFAULT,
                 "collapsed_edit_blocks must default OFF (rollout flag)"
+            );
+            assert!(
+                !CODEMODE_EXPANDED_BY_DEFAULT_DEFAULT,
+                "codemode_expanded_by_default must default OFF"
             );
             assert!(
                 PI_USER_MARKDOWN_DEFAULT,
@@ -1178,6 +1256,18 @@ mod tests {
             assert!(load_collapsed_edit_blocks());
             set_collapsed_edit_blocks(false);
             assert!(!load_collapsed_edit_blocks());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn set_then_load_round_trips_codemode_expanded_by_default() {
+        std::thread::spawn(|| {
+            set_codemode_expanded_by_default(true);
+            assert!(load_codemode_expanded_by_default());
+            set_codemode_expanded_by_default(false);
+            assert!(!load_codemode_expanded_by_default());
         })
         .join()
         .unwrap();
@@ -1384,6 +1474,7 @@ mod tests {
                 show_timestamps: Some(false),
                 simple_mode: Some(false),
                 keep_text_selection: Some("hold".into()),
+                codemode_expanded_by_default: Some(true),
                 ..UiConfig::default()
             };
             prime(&ui);
@@ -1391,6 +1482,7 @@ mod tests {
             assert!(!load_timestamps());
             assert!(!load_simple_mode());
             assert_eq!(load_keep_text_selection(), TextSelection::Hold);
+            assert!(load_codemode_expanded_by_default());
         })
         .join()
         .unwrap();

@@ -1275,6 +1275,21 @@ pub fn load_for_send(img: &PastedImage) -> Option<(Vec<u8>, String)> {
 // ACP content block construction
 // -------------------------------------------------------------------------
 
+/// Keep the original user-visible path separate from the durable attachment URI.
+fn image_content_meta(
+    display_number: usize,
+    source_path: Option<&std::path::Path>,
+) -> agent_client_protocol::Meta {
+    let mut meta = xai_grok_shared::placeholder_images::display_number_meta(display_number);
+    if let Some(path) = source_path {
+        meta.insert(
+            "xai.dev/imageSourcePath".into(),
+            serde_json::Value::String(path.to_string_lossy().into_owned()),
+        );
+    }
+    meta
+}
+
 /// Matching chips supply bytes. Orphans load via the shared helper (same path rules as the server) when `workspace_cwd` is set.
 /// Load failure strips the placeholder (warn only). `None` cwd leaves orphans unchanged.
 pub fn build_content_blocks_with_workspace(
@@ -1377,9 +1392,10 @@ fn build_content_blocks_with_prefixes_and_caps_ref(
             ImageContent::new(data, mime_type)
                 .uri(uri)
                 // Record the `[Image #N]` display number so the server resolves the token by number, not list position. See `AttachedImages`.
-                .meta(Some(
-                    xai_grok_shared::placeholder_images::display_number_meta(img.display_number),
-                )),
+                .meta(Some(image_content_meta(
+                    img.display_number,
+                    img.source_path.as_deref(),
+                ))),
         ));
     }
 
@@ -1444,11 +1460,10 @@ fn resolve_orphan_placeholders(
                     ImageContent::new(data, loaded.mime_type)
                         .uri(uri)
                         // Same `[Image #N]` display-number mapping as inline images
-                        .meta(Some(
-                            xai_grok_shared::placeholder_images::display_number_meta(
-                                ph.display_number,
-                            ),
-                        )),
+                        .meta(Some(image_content_meta(
+                            ph.display_number,
+                            Some(std::path::Path::new(&ph.path)),
+                        ))),
                 );
                 tracing::info!(
                     path = ?ph.path,
@@ -3718,6 +3733,10 @@ mod tests {
             image.uri.as_deref(),
             Some(format!("file://{}", canonical_target.display()).as_str())
         );
+        assert_eq!(
+            image.meta.as_ref().unwrap().get("xai.dev/imageSourcePath"),
+            Some(&serde_json::json!(visible.to_string_lossy()))
+        );
         assert_ne!(visible, target);
     }
 
@@ -3739,16 +3758,27 @@ mod tests {
 
     #[test]
     fn build_blocks_uri_prefers_durable_session_path() {
+        let dir = tempfile::tempdir().unwrap();
         let mut img = make_real_image(100, 80);
-        img.source_path = Some(PathBuf::from("/Users/test/original.png"));
-        img.session_image_path = Some(PathBuf::from("/Users/test/.grok/session/image.png"));
+        let original = dir.path().join("原始 image.png");
+        img.source_path = Some(original.clone());
+        persist_to_session(&mut img, dir.path()).unwrap();
+        let durable_uri = format!(
+            "file://{}",
+            img.session_image_path.as_ref().unwrap().display()
+        );
         let blocks = build_blocks_no_workspace("text".into(), vec![img]);
         assert_eq!(blocks.len(), 2);
         if let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] {
             assert_eq!(
                 ic.uri.as_deref(),
-                Some("file:///Users/test/.grok/session/image.png"),
+                Some(durable_uri.as_str()),
                 "model URI must prefer the durable session path"
+            );
+            assert_eq!(
+                ic.meta.as_ref().unwrap().get("xai.dev/imageSourcePath"),
+                Some(&serde_json::json!(original.to_string_lossy())),
+                "the original path must survive persistence independently of the URI"
             );
         } else {
             panic!("expected Image block");
@@ -3795,6 +3825,12 @@ mod tests {
         let agent_client_protocol::ContentBlock::Image(ic) = &blocks[1] else {
             panic!("expected recovered Image block");
         };
+        assert_eq!(
+            ic.meta.as_ref().unwrap().get("xai.dev/imageSourcePath"),
+            Some(&serde_json::json!(
+                dunce::canonicalize(&path).unwrap().to_string_lossy()
+            ))
+        );
         assert_eq!(ic.mime_type, "image/png");
         assert!(!ic.data.is_empty());
         assert!(

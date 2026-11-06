@@ -5,13 +5,12 @@ use std::future::Future;
 
 // ── Extension self-heal (VSCode-style binary search) ─────────────────────────
 //
-// When an extension crashes the Pi RPC child during bootstrap, grok-pi used to
-// exit with an opaque error. Now we:
-//
-// 1. Confirm Pi boots with zero extensions (sanity check).
-// 2. Binary-search the ordered `--extension` list to isolate the culprit.
-// 3. Print a diagnostic naming the bad extension.
-// 4. Relaunch without it (self-heal) so the user is never stuck.
+// When Pi RPC bootstrap fails:
+// 1. Preserve the original child error (including stderr).
+// 2. Fail closed on fatal tool registration conflicts (avoid dropping sandboxes).
+// 3. For other failures, confirm Pi boots without extensions.
+// 4. Binary-search the ordered `--extension` list and relaunch without the
+//    isolated culprit, or with no extensions if a combination cannot be isolated.
 //
 // The user can run `grok-pi -ne --no-bridge-extensions` to skip all extensions.
 
@@ -51,12 +50,46 @@ pub(super) async fn spawn_with_extension_self_heal(
     };
 
     let process = PiRpc::spawn(config).await?;
-    match bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT).await {
+    let initial_error = match bootstrap_with_deadline(
+        PiBootstrap::load(&process.rpc),
+        PI_BOOTSTRAP_TIMEOUT,
+    )
+    .await
+    {
         Ok(bootstrap) => return Ok((process, bootstrap, pi_args)),
         Err(error) => {
             process.rpc.kill().await;
             tracing::warn!(%error, "Pi bootstrap failed; starting extension self-heal");
+            error
         }
+    };
+
+    // PiRpc includes the exit status and buffered Pi stderr in this error.
+    // Preserve it before any retry, rather than replacing it with an upgrade hint.
+    let initial_failure = format!("{initial_error:#}");
+    eprintln!();
+    eprintln!("\x1b[1;31m✗ Pi RPC bootstrap failed\x1b[0m");
+    eprintln!("  {initial_failure}");
+    eprintln!(
+        "  Full Pi stderr: {}/logs/pi-rpc-stderr.log",
+        home::display_home(&home::effective_grok_home())
+    );
+
+    // Pi 1.4+ exits before RPC bootstrap on duplicate extension tools.
+    // Do not let bisection silently drop a security-critical extension like
+    // pi-permission-modes and thereby remove its OS-level Bash sandbox.
+    if let Some((tool, original_line)) = tool_registration_conflict(&initial_failure) {
+        eprintln!();
+        eprintln!("\x1b[1;31m✗ Duplicate Pi tool registration: {tool}\x1b[0m");
+        let guidance = tool_conflict_guidance(tool, &initial_failure);
+        eprintln!("  {guidance}");
+        // Deferred Pager attaches may hide stderr; keep the actionable advice
+        // in the returned error too, so the user can fix their next launch.
+        anyhow::bail!(
+            "Pi RPC refused duplicate tool registration ({tool}). {original_line}\n\
+             {guidance}\n\
+             No extensions were automatically disabled."
+        );
     }
 
     // Extract extension paths from pi_args (pairs: "--extension" <path>).
@@ -64,7 +97,8 @@ pub(super) async fn spawn_with_extension_self_heal(
     if ext_paths.is_empty() {
         // No extensions to bisect — the failure is not extension-related.
         anyhow::bail!(
-            "Pi RPC bootstrap failed and no extensions are loaded.\n\
+            "Pi RPC bootstrap failed and no explicit extensions are loaded.\n\
+             Original error: {initial_failure}\n\
              Try: grok-pi -ne --no-bridge-extensions"
         );
     }
@@ -88,7 +122,8 @@ pub(super) async fn spawn_with_extension_self_heal(
             anyhow::bail!(
                 "Pi RPC bootstrap fails even with zero extensions.\n\
                  This is not an extension problem.\n\
-                 Error: {e}"
+                 Initial error: {initial_failure}\n\
+                 Probe error: {e}"
             );
         }
     }
@@ -104,7 +139,7 @@ pub(super) async fn spawn_with_extension_self_heal(
                 .unwrap_or_else(|| bad_path.clone());
 
             eprintln!();
-            eprintln!("\x1b[1;31m✗ Extension crash detected\x1b[0m");
+            eprintln!("\x1b[1;31m✗ Extension bootstrap failure detected\x1b[0m");
             eprintln!("  Culprit: \x1b[1m{display}\x1b[0m");
             eprintln!("  Path:    {bad_path}");
             eprintln!();
@@ -125,8 +160,8 @@ pub(super) async fn spawn_with_extension_self_heal(
             eprintln!("  Or project sidecar: .grok-pi/pi-resources.toml  block = [\"...\"]");
             eprintln!();
 
-            // After successful bisection: Y / any key = report, only N = skip.
-            prompt_and_maybe_report_ext_crash(interactive, &bad_path, "crash");
+            // After successful bisection: report automatically (token-gated).
+            report_ext_crash(&bad_path, "crash");
 
             // Step 3: Relaunch without the culprit.
             let healed_args = remove_extension_path(&pi_args, &bad_path);
@@ -141,7 +176,9 @@ pub(super) async fn spawn_with_extension_self_heal(
             let bootstrap =
                 bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT)
                     .await
-                    .context("self-heal relaunch still failed")?;
+                    .with_context(|| {
+                        format!("self-heal relaunch still failed. Initial error: {initial_failure}")
+                    })?;
             Ok((process, bootstrap, healed_args))
         }
         None => {
@@ -158,7 +195,7 @@ pub(super) async fn spawn_with_extension_self_heal(
             eprintln!("  To do this manually:  \x1b[1mgrok-pi -ne --no-bridge-extensions\x1b[0m");
             eprintln!();
 
-            prompt_and_maybe_report_ext_crash(interactive, "combo", "combo");
+            report_ext_crash("combo", "combo");
 
             let process = PiRpc::spawn(SpawnConfig {
                 program: args.pi_bin.clone(),
@@ -171,10 +208,43 @@ pub(super) async fn spawn_with_extension_self_heal(
             let bootstrap =
                 bootstrap_with_deadline(PiBootstrap::load(&process.rpc), PI_BOOTSTRAP_TIMEOUT)
                     .await
-                    .context("fallback no-extension launch failed")?;
+                    .with_context(|| {
+                        format!(
+                            "fallback no-extension launch failed. Initial error: {initial_failure}"
+                        )
+                    })?;
             Ok((process, bootstrap, no_ext_args))
         }
     }
+}
+
+/// Extract the real Pi tool-registration conflict from a multi-line child
+/// error, such as: Failed to load extension "...": Tool "bash" conflicts with ...
+fn tool_registration_conflict(error: &str) -> Option<(&str, &str)> {
+    error.lines().find_map(|line| {
+        let (_, rest) = line.split_once("Tool \"")?;
+        let (tool, other_owner) = rest.split_once("\" conflicts with ")?;
+        if tool.is_empty() || other_owner.trim().is_empty() {
+            return None;
+        }
+        Some((tool, line.trim()))
+    })
+}
+
+fn tool_conflict_guidance(tool: &str, failure: &str) -> &'static str {
+    if tool == "bash" && failure.contains("pi-permission-modes") {
+        "Grok-Pi enhanced Bash and pi-permission-modes both register 'bash'.\n\
+         Keep the permission extension and disable Grok-Pi enhanced Bash:\n\
+         PI_GROK_BASH=0 grok-pi\n\
+         Or set [ui] pi_bash = false in ~/.grok-pi/config.toml.\n\
+         Verify sandbox coverage of other execution tools separately."
+    } else {
+        "Configure only one extension to own the conflicting tool before restarting."
+    }
+}
+
+fn upgrade_requested(key: Option<char>) -> bool {
+    matches!(key, Some('y') | Some('Y'))
 }
 
 async fn offer_grok_pi_upgrade(interactive: bool) -> Result<bool> {
@@ -186,19 +256,16 @@ async fn offer_grok_pi_upgrade(interactive: bool) -> Result<bool> {
         return Ok(false);
     }
 
-    eprintln!("  This may be caused by an outdated grok-pi host.");
-    eprint!("  Upgrade grok-pi before self-healing? [Y/n] ");
+    eprintln!("  An outdated Grok-Pi host is one possible cause.");
+    eprint!("  Try upgrading Grok-Pi before self-healing? [y/N] ");
     let _ = std::io::stderr().flush();
     let key = read_one_key_char();
-    if matches!(key, Some('n') | Some('N')) {
-        eprintln!("n — continuing with extension self-healing.");
+    if !upgrade_requested(key) {
+        eprintln!("No — continuing with extension self-healing.");
         return Ok(false);
     }
 
-    match key {
-        Some(c) => eprintln!("{c} — upgrading grok-pi…"),
-        None => eprintln!("Enter — upgrading grok-pi…"),
-    }
+    eprintln!("Yes — upgrading grok-pi…");
     match xai_grok_update::install_pi_update(env!("GROK_PI_VERSION"), None).await {
         Ok(version) => {
             eprintln!("grok-pi v{version} installed. Restart grok-pi to load extensions.");
@@ -216,18 +283,14 @@ async fn offer_grok_pi_upgrade(interactive: bool) -> Result<bool> {
 
 const DEFAULT_EXT_TELEMETRY_URL: &str = "https://ext-crash-telemetry.dwsycode.workers.dev";
 
-/// After bisection succeeds: interactive confirm then fire-and-forget POST.
+/// After bisection succeeds: fire-and-forget POST, no prompt.
 ///
-/// Key semantics:
-/// - `N` / `n` → do **not** report
-/// - `Y` / any other key → report
-/// Non-TTY → skip (never block CI / piped stdin).
-fn prompt_and_maybe_report_ext_crash(interactive: bool, path_or_label: &str, kind: &str) {
-    use std::io::{IsTerminal, Write};
-
-    // Background attach runs behind a live TUI: never steal stdin or write
-    // prompts over the Pager surface; skip the opt-in crash report prompt.
-    if !interactive || !std::io::stdin().is_terminal() {
+/// Reports on every run shape. The old `[Y/n]` prompt was gated on a TTY, so
+/// background-attach and CI crashes were never counted, and its default was
+/// already "yes". `GROK_PI_NO_TELEMETRY=1` is the opt-out; one stderr line keeps
+/// the send visible.
+fn report_ext_crash(path_or_label: &str, kind: &str) {
+    if telemetry_disabled() {
         return;
     }
 
@@ -237,21 +300,20 @@ fn prompt_and_maybe_report_ext_crash(interactive: bool, path_or_label: &str, kin
         ext_identity_from_path(path_or_label)
     };
 
-    eprint!(
-        "  Report this {kind} to telemetry (name only: {package_dir})? [Y/n]  \
-(N = no, any other key = yes) "
-    );
-    let _ = std::io::stderr().flush();
+    // Token required server-side (fail closed). Prefer env, then `$GROK_HOME` file.
+    let token = std::env::var("REPORT_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(load_ext_telemetry_token_file);
+    let Some(token) = token else {
+        eprintln!("  Crash telemetry token missing; report skipped.");
+        return;
+    };
 
-    let key = read_one_key_char();
-    match key {
-        Some('n') | Some('N') => {
-            eprintln!("n — skipped report.");
-            return;
-        }
-        Some(c) => eprintln!("{c} — reporting…"),
-        None => eprintln!("— reporting…"),
-    }
+    eprintln!(
+        "  Reported {package_dir} ({kind}) to crash telemetry — \
+GROK_PI_NO_TELEMETRY=1 to disable."
+    );
 
     let url = std::env::var("GROK_PI_EXT_TELEMETRY_URL")
         .or_else(|_| std::env::var("REPORT_URL"))
@@ -262,20 +324,9 @@ fn prompt_and_maybe_report_ext_crash(interactive: bool, path_or_label: &str, kin
         "package_dir": package_dir,
         "kind": kind,
         "client": "grok-pi",
+        "grok_pi_ver": env!("GROK_PI_VERSION"),
     })
     .to_string();
-
-    // Token required server-side (fail closed). Prefer env, then ~/.grok-pi file.
-    let token = std::env::var("REPORT_TOKEN")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(load_ext_telemetry_token_file);
-    let Some(token) = token else {
-        eprintln!(
-            "  REPORT_TOKEN missing (set env or ~/.grok-pi/ext-telemetry.token); skip report."
-        );
-        return;
-    };
 
     // Fire-and-forget so self-heal is not blocked on network.
     std::thread::spawn(move || {
@@ -300,6 +351,15 @@ fn prompt_and_maybe_report_ext_crash(interactive: bool, path_or_label: &str, kin
     });
 }
 
+fn telemetry_disabled() -> bool {
+    std::env::var("GROK_PI_NO_TELEMETRY")
+        .map(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
 fn load_ext_telemetry_token_file() -> Option<String> {
     let home = home::effective_grok_home();
     let path = home.join("ext-telemetry.token");
@@ -316,6 +376,14 @@ fn load_ext_telemetry_token_file() -> Option<String> {
 fn ext_identity_from_path(input: &str) -> (String, String) {
     let raw = input.replace('\\', "/");
     let parts: Vec<&str> = raw.split('/').filter(|p| !p.is_empty()).collect();
+
+    // grok-pi injects its own bundles as `$TMPDIR/pi-grok-<name>-<6 random chars>`
+    // (`*_extension.rs` tempdir prefixes). Without this the random suffix splits
+    // reports into one bucket per run, or the macOS `T` tmpdir parent is reported
+    // as the package name.
+    if let Some(label) = parts.iter().find_map(|p| injected_bundle_label(p)) {
+        return (label.to_owned(), label.to_owned());
+    }
 
     if let Some(nm) = parts.iter().rposition(|p| *p == "node_modules") {
         if nm + 1 < parts.len() {
@@ -349,6 +417,17 @@ fn ext_identity_from_path(input: &str) -> (String, String) {
         }
     }
     (name.clone(), name)
+}
+
+/// Collapse a `pi-grok-<name>-<6 random chars>` injected bundle dir to `pi-grok-<name>`.
+fn injected_bundle_label(dir: &str) -> Option<&str> {
+    let rest = dir.strip_prefix("pi-grok-")?;
+    let (stem, suffix) = rest.rsplit_once('-')?;
+    let is_random = suffix.len() == 6 && suffix.chars().all(|c| c.is_ascii_alphanumeric());
+    if !is_random || stem.is_empty() {
+        return None;
+    }
+    Some(&dir[.."pi-grok-".len() + stem.len()])
 }
 
 /// Read a single key (raw mode on Unix). Falls back to first char of a line.
@@ -518,4 +597,99 @@ async fn probe_extensions_ok(
         .is_ok();
     process.rpc.kill().await;
     ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_real_pi_140_duplicate_bash_error() {
+        let original = "Pi RPC child exited with code 1\n\nPi stderr (last 2 lines):\n\
+Error: Failed to load extension \"/tmp/pi-grok-bash-123abc/index.ts\": \
+Tool \"bash\" conflicts with /home/user/.pi/agent/npm/pi-permission-modes/src/index.ts\n\
+Hint: Start without extensions using \"pi -ne\".";
+        let (tool, line) = tool_registration_conflict(original).expect("tool collision");
+        assert_eq!(tool, "bash");
+        assert!(line.contains("pi-grok-bash-123abc/index.ts"));
+        assert!(line.contains("pi-permission-modes/src/index.ts"));
+    }
+
+    #[test]
+    fn detects_duplicate_registration_regardless_of_load_order_or_tool() {
+        assert_eq!(
+            tool_registration_conflict(
+                "Error: Failed to load extension \"permission/index.ts\": \
+Tool \"bash\" conflicts with /tmp/pi-grok-bash-123abc/index.ts"
+            )
+            .map(|(tool, _)| tool),
+            Some("bash")
+        );
+        assert_eq!(
+            tool_registration_conflict(
+                "Error: Failed to load extension \"b/index.ts\": \
+Tool \"search\" conflicts with a/index.ts"
+            )
+            .map(|(tool, _)| tool),
+            Some("search")
+        );
+    }
+
+    #[test]
+    fn permission_mode_conflict_explains_safe_recovery_in_returned_error() {
+        let advice = tool_conflict_guidance(
+            "bash",
+            "Tool \"bash\" conflicts with /npm/pi-permission-modes/src/index.ts",
+        );
+        assert!(advice.contains("PI_GROK_BASH=0 grok-pi"));
+        assert!(advice.contains("pi_bash = false"));
+        assert!(!tool_conflict_guidance("search", "other").contains("PI_GROK_BASH=0"));
+    }
+
+    #[test]
+    fn upgrade_requires_explicit_yes() {
+        assert!(!upgrade_requested(None));
+        assert!(!upgrade_requested(Some('\n')));
+        assert!(!upgrade_requested(Some('n')));
+        assert!(!upgrade_requested(Some(' ')));
+        assert!(upgrade_requested(Some('y')));
+        assert!(upgrade_requested(Some('Y')));
+    }
+
+    #[test]
+    fn ignores_non_registration_extension_failures() {
+        assert!(tool_registration_conflict("Cannot find module './prompts.ts'").is_none());
+        assert!(tool_registration_conflict("Tool \"bash\" failed at runtime").is_none());
+        assert!(tool_registration_conflict("Tool \"bash\" conflicts with ").is_none());
+    }
+
+    #[test]
+    fn injected_bundle_dir_collapses_to_stable_label() {
+        assert_eq!(
+            ext_identity_from_path("/var/folders/ab/cd/T/pi-grok-rpc-compat-Qedt78"),
+            (
+                "pi-grok-rpc-compat".to_owned(),
+                "pi-grok-rpc-compat".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn injected_bundle_entry_file_collapses_to_stable_label() {
+        assert_eq!(
+            ext_identity_from_path("/tmp/pi-grok-bash-8eneBX/index.ts"),
+            ("pi-grok-bash".to_owned(), "pi-grok-bash".to_owned())
+        );
+    }
+
+    #[test]
+    fn third_party_extension_keeps_node_modules_identity() {
+        assert_eq!(
+            ext_identity_from_path("/x/node_modules/@heyhuynhgiabuu/pi-pretty/index.ts"),
+            (
+                "pi-pretty".to_owned(),
+                "@heyhuynhgiabuu/pi-pretty".to_owned()
+            )
+        );
+    }
 }

@@ -733,6 +733,7 @@ impl CompactionsRemaining {
 }
 
 /// `None`/`Minimal` are omitted on the Anthropic Messages API.
+/// Variants are declared weakest → strongest, so `Ord` sorts by reasoning strength.
 #[derive(
     Clone,
     Copy,
@@ -740,6 +741,8 @@ impl CompactionsRemaining {
     Default,
     PartialEq,
     Eq,
+    PartialOrd,
+    Ord,
     serde::Serialize,
     serde::Deserialize,
     strum::AsRefStr,

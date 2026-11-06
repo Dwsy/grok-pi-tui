@@ -68,6 +68,11 @@ pub(super) fn write_subagent_extension() -> Result<SubagentExtension> {
     )?;
     write_source_file(
         source_dir.path(),
+        "control-center.ts",
+        include_str!("../../../../../../extensions/pi-grok-subagents/control-center.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
         "bridge.ts",
         include_str!("../../../../../../extensions/pi-grok-subagents/bridge.ts"),
     )?;
@@ -107,6 +112,11 @@ pub(super) fn write_subagent_extension() -> Result<SubagentExtension> {
         include_str!(
             "../../../../../../extensions/pi-grok-subagents/skills/multi-agent-proactive/SKILL.md"
         ),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "skills/multitask/SKILL.md",
+        include_str!("../../../../../../extensions/pi-grok-subagents/skills/multitask/SKILL.md"),
     )?;
     write_source_file(
         source_dir.path(),
@@ -199,6 +209,28 @@ mod tests {
     }
 
     #[test]
+    fn subagent_extension_materializes_every_bundled_skill() {
+        let extension = write_subagent_extension().expect("write extension");
+        let dir = extension.source_path().parent().expect("source dir");
+        let authored = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../extensions/pi-grok-subagents/skills");
+        for entry in std::fs::read_dir(authored).expect("authored skills") {
+            let entry = entry.expect("skill entry");
+            let source = entry.path().join("SKILL.md");
+            if !source.is_file() {
+                continue;
+            }
+            let bundled = dir.join("skills").join(entry.file_name()).join("SKILL.md");
+            assert_eq!(
+                std::fs::read_to_string(&source).expect("authored skill"),
+                std::fs::read_to_string(&bundled)
+                    .unwrap_or_else(|_| panic!("missing bundled skill {}", bundled.display())),
+                "bundled skill must match its authored content"
+            );
+        }
+    }
+
+    #[test]
     fn subagent_extension_source_is_a_loadable_typescript_module() {
         let extension = write_subagent_extension().expect("write extension");
         let dir = extension.source_path().parent().expect("source dir");
@@ -208,6 +240,7 @@ mod tests {
         let index = read("index.ts");
         let shared = read("shared.ts");
         let config_ui = read("config-ui.ts");
+        let control_center = read("control-center.ts");
         let bridge = read("bridge.ts");
         let runtime = read("runtime.ts");
         let tools_v1 = read("tools-v1.ts");
@@ -242,9 +275,12 @@ mod tests {
         assert!(tools_v1.contains("__pi_grok_subagent_cancel"));
         assert!(shared.contains("__pi_grok_subagent_replay"));
         assert!(tools_v1.contains("pi.registerCommand(\"subagents\""));
+        assert!(tools_v1.contains("pi.registerCommand(\"subagent-control\""));
+        assert!(control_center.contains("openSubagentControlCenter"));
         assert!(config_ui.contains("PI_GROK_SUBAGENT_EXTENSION_CATALOG"));
         assert!(runtime.contains("noExtensions: true"));
-        assert!(runtime.contains("noSkills: true"));
+        assert!(runtime.contains("noSkills: definition?.inheritSkills === false"));
+        assert!(runtime.contains("noContextFiles: definition?.inheritContext === false"));
         assert!(runtime.contains("additionalExtensionPaths: [...defaultSubagentExtensions(), ...(definition?.extensions ?? [])]"));
         // Children load no auto-discovered extensions, so the search extension the
         // operator installed for the root session must be added explicitly.
