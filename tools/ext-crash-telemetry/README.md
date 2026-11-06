@@ -19,9 +19,10 @@ dashboard/    static stats UI
 | Item | Value |
 |------|--------|
 | Worker | https://ext-crash-telemetry.dwsycode.workers.dev |
+| Dashboard | https://ext-crash-telemetry.dwsycode.workers.dev/ (static asset served by the same Worker) |
 | Health | https://ext-crash-telemetry.dwsycode.workers.dev/health |
 | Stats | https://ext-crash-telemetry.dwsycode.workers.dev/v1/stats |
-| Dashboard | open `dashboard/index.html`, paste Worker URL + admin token |
+| Local dashboard | open `dashboard/index.html` directly, then paste the Worker URL |
 | D1 | `ext_crash` (`d85c550a-1808-4a57-b6f9-ef90352f6b74`) |
 
 ## Abuse protection

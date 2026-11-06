@@ -276,6 +276,13 @@ export default {
            ORDER BY updated_at DESC LIMIT 100`,
         ).all();
 
+        const recent = await env.DB.prepare(
+          `SELECT created_at, ext_name, package_dir, kind, client, grok_pi_ver
+           FROM reports
+           ORDER BY created_at DESC
+           LIMIT 50`,
+        ).all();
+
         const total = await env.DB.prepare(
           `SELECT COUNT(*) AS n FROM reports`,
         ).first<{ n: number }>();
@@ -284,6 +291,7 @@ export default {
           total: total?.n ?? 0,
           top: top.results ?? [],
           by_day: byDay.results ?? [],
+          recent: recent.results ?? [],
           triage: triage.results ?? [],
         });
       }
@@ -335,7 +343,8 @@ export default {
         return json({ ok: true, package_dir, status });
       }
 
-      if (req.method === "GET" && (path === "/" || path === "/health")) {
+      // `/` is the static dashboard (assets layer); health lives at `/health`.
+      if (req.method === "GET" && path === "/health") {
         return json({
           ok: true,
           service: "ext-crash-telemetry",

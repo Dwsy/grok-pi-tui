@@ -142,6 +142,21 @@
       </table>
     </div>
     <div class="card" style="grid-column: 1 / -1">
+      <h2 data-i18n="recentTitle">RECENT REPORTS</h2>
+      <table>
+        <thead>
+          <tr>
+            <th data-i18n="colTime">time (UTC)</th>
+            <th data-i18n="colPkg">package_dir</th>
+            <th data-i18n="colKind">kind</th>
+            <th data-i18n="colClient">client</th>
+            <th data-i18n="colVer">grok-pi</th>
+          </tr>
+        </thead>
+        <tbody id="recent"></tbody>
+      </table>
+    </div>
+    <div class="card" style="grid-column: 1 / -1">
       <h2 data-i18n="triageTitle">TRIAGE LOG</h2>
       <table>
         <thead>
@@ -173,6 +188,11 @@
         byDay: "BY DAY (last 30)",
         topTitle: "TOP CRASH EXTENSIONS",
         triageTitle: "TRIAGE LOG",
+        recentTitle: "RECENT REPORTS",
+        colTime: "time (UTC)",
+        colClient: "client",
+        colVer: "grok-pi",
+        emptyRecent: "No reports yet",
         colDay: "Day",
         colCount: "Count",
         colPkg: "package_dir",
@@ -203,6 +223,11 @@
         byDay: "按日统计（近 30 天）",
         topTitle: "崩溃扩展热榜",
         triageTitle: "处理记录",
+        recentTitle: "最近上报",
+        colTime: "时间（UTC）",
+        colClient: "来源",
+        colVer: "grok-pi",
+        emptyRecent: "暂无上报",
         colDay: "日期",
         colCount: "次数",
         colPkg: "package_dir",
@@ -266,7 +291,10 @@
     $("langEn").onclick = () => setLang("en");
     $("langZh").onclick = () => setLang("zh");
 
-    $("api").value = localStorage.getItem(LS_API) || "";
+    // Hosted at the Worker's own origin (`/`): default to it so the dashboard
+    // works with zero configuration. Local `file://` opens keep the manual URL.
+    const defaultApi = location.protocol.startsWith("http") ? location.origin : "";
+    $("api").value = localStorage.getItem(LS_API) || defaultApi;
     $("token").value = localStorage.getItem(LS_TOKEN) || "";
 
     $("saveLocal").onclick = () => {
@@ -338,6 +366,20 @@
           })
           .join("") ||
         `<tr><td colspan="5">${esc(t("empty"))}</td></tr>`;
+
+      $("recent").innerHTML =
+        (data.recent || [])
+          .map(
+            (r) => `<tr>
+          <td>${esc(r.created_at)}</td>
+          <td><code>${esc(r.package_dir)}</code></td>
+          <td class="kind-${esc(r.kind)}">${esc(r.kind)}</td>
+          <td>${esc(r.client || "")}</td>
+          <td>${esc(r.grok_pi_ver || "")}</td>
+        </tr>`
+          )
+          .join("") ||
+        `<tr><td colspan="5">${esc(t("emptyRecent"))}</td></tr>`;
 
       $("triage").innerHTML =
         (data.triage || [])

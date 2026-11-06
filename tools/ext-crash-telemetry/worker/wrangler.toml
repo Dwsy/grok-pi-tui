@@ -2,6 +2,11 @@ name = "ext-crash-telemetry"
 main = "src/index.ts"
 compatibility_date = "2025-07-01"
 
+# The static dashboard is served by this same Worker: matching paths (`/`) go to
+# the asset layer, everything else (`/v1/*`, `/health`) reaches `src/index.ts`.
+[assets]
+directory = "../dashboard"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "ext_crash"
