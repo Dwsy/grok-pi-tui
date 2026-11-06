@@ -15,13 +15,42 @@ export const BUILTIN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "fin
 export const BUILTIN_TOOL_SET = new Set<string>(BUILTIN_TOOL_NAMES);
 
 export const CAPABILITY_TOOLS = {
-  "read-only": ["read", "grep", "find", "ls"],
+  "read-only": ["read", "bash", "grep", "find", "ls"],
   "read-write": ["read", "grep", "find", "ls", "edit", "write"],
   execute: ["read", "bash", "grep", "find", "ls"],
   all: [...BUILTIN_TOOL_NAMES],
 } as const;
 
 export type CapabilityMode = keyof typeof CAPABILITY_TOOLS;
+
+export const READ_ONLY_SUBAGENT_PROMPT = [
+  "READ-ONLY CONTRACT — REQUIRED: This subagent is strictly observational. Bash is available for inspection only; its availability is not permission to modify anything.",
+  "Do not create, edit, overwrite, append to, truncate, delete, rename, move, copy, or otherwise write any file or directory, including temporary files, caches, generated artifacts, or files outside the workspace.",
+  "Do not run commands or scripts that mutate filesystem, Git, database, service, process-control, package, environment, or remote-system state. This includes file redirection, tee, write-producing heredocs, sed -i, perl -i, patch/apply tools, file copy/move/delete commands, permission changes, starting/stopping/killing services or processes, package installation or updates, database writes, remote write requests, and Git mutations such as add, commit, fetch, pull, push, reset, checkout, switch, clean, stash, cherry-pick, merge, rebase, apply, restore, tag, update-ref, or worktree add/remove.",
+  "Python, Node.js, and other scripting runtimes may be used only for in-memory analysis and read-only inspection; never open files for writing or create temporary outputs. Do not run build, test, format, or lint commands when they generate or rewrite artifacts.",
+  "Use only commands whose effects are observational and leave local and external state unchanged. If the task requires a modification or stateful verification, stop and report that a write-enabled agent must handle it; do not attempt the change through Bash.",
+].join(" ");
+
+export function resolveSubagentBusinessTools(
+  configuredTools: readonly string[],
+  capabilityMode: CapabilityMode,
+  explicitToolList = false,
+): { tools: string[]; readOnly: boolean } {
+  const readOnly = capabilityMode === "read-only"
+    || (explicitToolList && !configuredTools.includes("edit") && !configuredTools.includes("write"));
+  return {
+    tools: readOnly ? [...new Set([...configuredTools, "bash"])] : [...configuredTools],
+    readOnly,
+  };
+}
+
+export function composeSubagentSystemPrompt(basePrompt: string, readOnly: boolean, suffix?: string): string {
+  return [
+    basePrompt.trim(),
+    suffix?.trim() ?? "",
+    readOnly ? READ_ONLY_SUBAGENT_PROMPT : "",
+  ].filter(Boolean).join("\n\n");
+}
 
 export type CatalogEntry = {
   id: string;

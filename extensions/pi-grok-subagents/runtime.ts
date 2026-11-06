@@ -19,9 +19,11 @@ import {
   MAX_BACKGROUND_CONCURRENCY,
   MAX_WAIT_MS,
   SHORT_SUBAGENT_ID_LENGTH,
+  composeSubagentSystemPrompt,
   extractUsage,
   newSubagentId,
   requireText,
+  resolveSubagentBusinessTools,
   textFromContent,
 } from "./shared.ts";
 import { profileFor, selectedDefinition } from "./definitions.ts";
@@ -440,29 +442,38 @@ export class SubagentRuntime {
     const agentDir = getAgentDir();
     const settingsManager = SettingsManager.create(ctx.cwd, agentDir);
     const baseSystemPrompt = definition?.systemPrompt || profile.systemPrompt;
-    const systemPrompt = options.systemPromptSuffix?.trim()
-      ? `${baseSystemPrompt}\n\n${options.systemPromptSuffix.trim()}`
-      : baseSystemPrompt;
-    // Parent resources, including the built-in multi-agent-proactive skill, do not
-    // flow into children. Only an agent definition can explicitly opt a child into
-    // extension/skill paths; V1 and V2 both pass through this loader.
+    const configuredTools = definition?.tools ?? [...CAPABILITY_TOOLS[profile.capabilityMode]];
+    const { tools: businessTools, readOnly } = resolveSubagentBusinessTools(
+      configuredTools,
+      profile.capabilityMode,
+      definition?.tools !== undefined,
+    );
+    const systemPrompt = composeSubagentSystemPrompt(baseSystemPrompt, readOnly, options.systemPromptSuffix);
+    // Skills and AGENTS.md context inherit the root session by default:
+    // `noSkills: false` merges Pi global/project `enabledSkills` with the
+    // definition's explicit `skills`; `noContextFiles: false` restores
+    // AGENTS.md/CLAUDE.md discovery. A definition opts back into isolation
+    // with `inherit_skills: false` / `inherit_context: false`.
+    // Extensions stay isolated (only explicit `extensions` load): inheriting
+    // every root extension would re-introduce host-bridge conflicts in children.
+    // The built-in multi-agent-proactive skill still does not flow implicitly;
+    // V2 hands its compact contract explicitly in each handoff.
     const resourceLoader = new DefaultResourceLoader({
       cwd: ctx.cwd,
       agentDir,
       noExtensions: true,
-      noSkills: true,
+      noSkills: definition?.inheritSkills === false,
       additionalExtensionPaths: [...defaultSubagentExtensions(), ...(definition?.extensions ?? [])],
       additionalSkillPaths: definition?.skills ?? [],
       noPromptTemplates: true,
       noThemes: true,
-      noContextFiles: true,
+      noContextFiles: definition?.inheritContext === false,
       systemPromptOverride: () => systemPrompt,
       appendSystemPromptOverride: () => [],
     });
     await resourceLoader.reload();
 
     const customTools = options.customTools ?? [];
-    const businessTools = definition?.tools ?? [...CAPABILITY_TOOLS[profile.capabilityMode]];
     const activeTools = [...new Set([...businessTools, ...customTools.map((tool) => tool.name)])];
     const { session } = await createAgentSession({
       cwd: ctx.cwd,

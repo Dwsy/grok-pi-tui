@@ -20,7 +20,7 @@
       "keywords": ["pi", "subagent", "subagents", "v2", "team", "spawn_team", "peer messaging", "agent"],
       "f2": { "category": "agent", "section": "Pi features", "order": 31 },
       "kind": "bool",
-      "default": false,
+      "default": true,
       "restartRequired": true,
       "configPath": ["ui", "pi_subagents_v2"],
       "startupEnv": { "key": "PI_GROK_SUBAGENTS_V2", "on": "1", "off": "0" }

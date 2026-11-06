@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { MAX_AGENT_MODELS, requireCapability, type CapabilityMode } from "./shared.ts";
+import { CAPABILITY_TOOLS, MAX_AGENT_MODELS, requireCapability, type CapabilityMode } from "./shared.ts";
 import { parseThinkingLevel, type ThinkingLevel } from "./thinking.ts";
 
 export const AGENT_PROFILES: Record<string, {
@@ -13,8 +13,8 @@ export const AGENT_PROFILES: Record<string, {
   systemPrompt: string;
   /**
    * Lowest capability this profile may run in. A request that would drop any of
-   * these tools is upgraded to the floor, because the profile's contract depends
-   * on them (for example `explore` inspects repositories through bash).
+   * these tools is upgraded to the floor. `read-only` is exempt when it already
+   * includes the required Bash tool.
    */
   capabilityFloor?: CapabilityMode;
 }> = {
@@ -24,8 +24,8 @@ export const AGENT_PROFILES: Record<string, {
   },
   explore: {
     capabilityMode: "execute",
-    // `capability_mode: "read-only"` used to strip bash from this profile, which
-    // left an agent whose instructions promised commands it could not run.
+    // Keep execute as the default for command-based inspection. An explicit
+    // read-only request now retains Bash without changing its capability label.
     capabilityFloor: "execute",
     systemPrompt: [
       "You are an exploration subagent. Inspect the codebase and report evidence-backed findings; never modify tracked files.",
@@ -61,6 +61,16 @@ export type AgentDefinition = {
   maxTurns?: number;
   /** Default thinking level for this definition; undefined inherits Pi settings. */
   thinkingLevel?: ThinkingLevel;
+  /**
+   * Inherit global/project skills (Pi `enabledSkills`) on top of explicit
+   * `skills`. Default true; set `inherit_skills: false` to restore isolation.
+   */
+  inheritSkills?: boolean;
+  /**
+   * Inherit AGENTS.md/CLAUDE.md context files. Default true;
+   * set `inherit_context: false` to restore isolation (`noContextFiles`).
+   */
+  inheritContext?: boolean;
 };
 
 export function productProjectDir(cwd: string): string {
@@ -137,6 +147,8 @@ function loadDefinitionsFromDir(
         skills: optionalList(frontmatter.skills),
         maxTurns: optionalMaxTurns(frontmatter.max_turns),
         thinkingLevel: parseThinkingLevel(frontmatter.thinking_level, `subagent ${name}`),
+        inheritSkills: frontmatter.inherit_skills === false ? false : undefined,
+        inheritContext: frontmatter.inherit_context === false ? false : undefined,
       });
     } catch {
       // A malformed higher-priority definition shadows an inherited definition
@@ -179,6 +191,8 @@ function serializeDefinition(definition: AgentDefinition): string {
     yamlList(definition.skills) && `skills: ${yamlList(definition.skills)}`,
     definition.maxTurns !== undefined && `max_turns: ${definition.maxTurns}`,
     definition.thinkingLevel !== undefined && `thinking_level: ${definition.thinkingLevel}`,
+    definition.inheritSkills === false && `inherit_skills: false`,
+    definition.inheritContext === false && `inherit_context: false`,
   ].filter((field): field is string => Boolean(field));
   return `---\n${fields.join("\n")}\n---\n\n${definition.systemPrompt.trim()}\n`;
 }
@@ -210,8 +224,8 @@ export function cloneDefinition(definition: AgentDefinition): AgentDefinition {
 }
 
 /**
- * Capability modes from narrowest to widest. A floor compares by this order, so
- * `read-only` + floor `execute` widens while `all` stays `all`.
+ * Capability modes from narrowest to widest. A profile floor widens requests
+ * whose tool set lacks the required Bash tool; read-only now satisfies it.
  */
 const CAPABILITY_ORDER: readonly CapabilityMode[] = ["read-only", "read-write", "execute", "all"];
 
@@ -227,11 +241,15 @@ export function resolveProfile(type: string, capabilityMode: string | undefined)
   const normalizedType = (type.trim() || "general-purpose").toLowerCase();
   const profile = AGENT_PROFILES[normalizedType] ?? AGENT_PROFILES["general-purpose"];
   const requested = requireCapability(capabilityMode ?? profile.capabilityMode);
+  const requestedTools: readonly string[] = CAPABILITY_TOOLS[requested];
+  const resolvedCapability = profile.capabilityFloor && !requestedTools.includes("bash")
+    ? widest(requested, profile.capabilityFloor)
+    : requested;
   return {
     type: normalizedType,
-    // Widening to the profile floor keeps the profile's stated contract reachable;
-    // a request for more than the floor is still honoured.
-    capabilityMode: profile.capabilityFloor ? widest(requested, profile.capabilityFloor) : requested,
+    // Keep the requested mode when it already supplies Bash. This lets
+    // read-only agents inspect through Bash without being relabelled execute.
+    capabilityMode: resolvedCapability,
     systemPrompt: profile.systemPrompt,
   };
 }

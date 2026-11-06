@@ -7,22 +7,23 @@ import { SubagentRuntime } from "./runtime.ts";
 import { registerV1AgentTools, registerV1Commands } from "./tools-v1.ts";
 import { registerV2Tools } from "./v2.ts";
 
-const BUILTIN_SKILL_PATH = join(
+const BUILTIN_SKILL_ROOT = join(
   dirname(fileURLToPath(import.meta.url)),
   "skills",
-  "multi-agent-proactive",
-  "SKILL.md",
 );
 
 export default function piGrokSubagents(pi: ExtensionAPI): void {
   if (process.env.PI_GROK_SUBAGENTS !== "1") return;
 
-  pi.on("resources_discover", () => ({ skillPaths: [BUILTIN_SKILL_PATH] }));
+  const teamMode = process.env.PI_GROK_SUBAGENTS_V2 === "1";
+  const skillNames = ["multi-agent-proactive", ...(teamMode ? ["multitask"] : [])];
+  pi.on("resources_discover", () => ({
+    skillPaths: skillNames.map((name) => join(BUILTIN_SKILL_ROOT, name, "SKILL.md")),
+  }));
 
   const runtime = new SubagentRuntime(pi);
   // V2 is a pure team surface: the single-agent tools would otherwise compete
   // with team semantics (spawn_subagent blocks the root, team mode must not).
-  const teamMode = process.env.PI_GROK_SUBAGENTS_V2 === "1";
   registerV1Commands(pi, runtime);
   if (teamMode) registerV2Tools(pi, runtime);
   else registerV1AgentTools(pi, runtime);

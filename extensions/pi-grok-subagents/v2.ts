@@ -34,14 +34,15 @@ const CONTROL_TOOL_NAMES = [
 ] as const;
 
 type TeamMessageKind = "MESSAGE" | "NEW_TASK" | "FINAL_ANSWER";
-type TeamAgentStatus = "queued" | "running" | "idle" | "waiting_decision" | "failed" | "cancelled";
+type TeamAgentStatus = "queued" | "running" | "idle" | "waiting_result" | "waiting_decision" | "failed" | "cancelled";
 
 /**
  * Semantic result a child declares with `team_report`. Distinct from the runtime
  * terminal status: `completed` says the turn ended, `ready` says the result is
- * usable, and `dropped` says the parent has nothing to act on.
+ * usable, `waiting` leaves a task pending after its run ends, and `dropped`
+ * says the parent has nothing to act on.
  */
-type TeamReportState = "ready" | "blocked" | "failed" | "dropped";
+type TeamReportState = "ready" | "waiting" | "blocked" | "failed" | "dropped";
 
 type TeamReport = {
   state: TeamReportState;
@@ -168,9 +169,9 @@ export class TeamCoordinator {
     agent.lastActivityAt = Date.now();
   }
 
-  /** An idle agent and one waiting on a decision both keep a live child session. */
+  /** Finished runs keep a live child session while idle or awaiting input. */
   private canReceiveMessage(status: TeamAgentStatus): boolean {
-    return status === "idle" || status === "waiting_decision";
+    return status === "idle" || status === "waiting_result" || status === "waiting_decision";
   }
 
   private bufferMessage(senderPath: string, targetPath: string, message: string): number {
@@ -215,9 +216,11 @@ export class TeamCoordinator {
       return this.runtime.backgroundState(agent.record) === "queued" ? "queued" : "running";
     }
     if (agent.record.terminalStatus === "completed") {
-      // A finished run that left a decision request is waiting on its parent,
-      // not merely idle: the question stays visible and messages still reach it.
-      return agent.report?.state === "blocked" ? "waiting_decision" : "idle";
+      // A completed run may leave a task waiting for a result or a parent
+      // decision. Keep that visible while allowing the same session to resume.
+      if (agent.report?.state === "blocked") return "waiting_decision";
+      if (agent.report?.state === "waiting") return "waiting_result";
+      return "idle";
     }
     return agent.record.terminalStatus ?? agent.status;
   }
@@ -229,7 +232,8 @@ export class TeamCoordinator {
       "Create a nested child with spawn_team_agent only when your own task explicitly requires further decomposition. Having the tool is not permission to fan out; your parent remains the orchestrator.",
       "Use team_send_message for facts a running peer needs now, team_followup_task to give an agent new work, team_wait only while another agent is genuinely active, team_list to inspect the tree, and team_interrupt to stop an agent.",
       "A message is worth sending only when the recipient cannot get the fact themselves or must act on it. Do not forward progress. Consecutive team_send_message calls to one agent merge into a single steer, so batch facts in one turn.",
-      "Before you end a turn, call team_report: ready (the requested result is deliverable), blocked (you need one decision; question is mandatory), failed (the work cannot be completed), dropped (there is genuinely nothing for the parent to act on: already fixed, superseded, or out of scope). Your summary replaces your final text in what the parent receives. Never report ready to hide unfinished work.",
+      "Before you end a turn, call team_report: ready (the requested result is deliverable), waiting (your own children are pending and no local work remains), blocked (you need one decision; question is mandatory), failed (the work cannot be completed), dropped (there is genuinely nothing for the parent to act on: already fixed, superseded, or out of scope). Your summary replaces your final text in what the parent receives. Never report ready to hide unfinished work.",
+      "When your own child results are still pending and no independent work remains, report waiting and END THIS TURN to release the shared execution slot. Reporting alone does not release it. A nested FINAL_ANSWER resumes this same child session; do not park on team_wait for your queued descendants.",
       "When no other agent is active, finish your turn instead of waiting; you become IDLE and team_followup_task can reactivate this same child session later.",
       "Use absolute /root/... paths when messaging siblings.",
       "Report evidence with concrete file paths and command output; do not assert behaviour you did not verify.",
@@ -326,9 +330,16 @@ export class TeamCoordinator {
       const detail = flushError instanceof Error ? flushError.message : String(flushError);
       this.runtime.recordPostFinishError(record, `Buffered message delivery failed: ${detail}`);
     }
-    // `dropped` is a deliberate no-op result: the child says the parent has
-    // nothing to act on. Keep it for `team_list` and spend no parent turn.
-    if (agent.report?.state !== "dropped") {
+    // Waiting coordinators release their run without reporting partial work as
+    // a final result. Descendant results reactivate the same child session.
+    // A stale quiet report must never hide a failed/cancelled run.
+    const parent = this.agents.get(agent.parentPath);
+    // Even a no-op is a dependency completion for a waiting coordinator,
+    // including the interval between reporting waiting and ending its run.
+    const parentNeedsCompletion = parent?.report?.state === "waiting";
+    const quietReport = agent.report?.state === "waiting"
+      || (agent.report?.state === "dropped" && !parentNeedsCompletion);
+    if (status !== "completed" || !quietReport) {
       await this.deliverFinalAnswer(agent, path, record, status, error);
     }
     if (status === "completed" && agent.pendingTasks.length > 0) {
@@ -462,6 +473,14 @@ export class TeamCoordinator {
       this.runtime.discard(agent.record, reason);
     }
     this.notifyActivity();
+  }
+
+  private hasPendingChild(senderPath: string): boolean {
+    return [...this.agents.values()].some((agent) => {
+      if (agent.parentPath !== senderPath) return false;
+      const status = this.status(agent);
+      return status === "running" || status === "queued" || status === "waiting_result";
+    });
   }
 
   private hasActivePeer(senderPath: string): boolean {
@@ -713,15 +732,16 @@ export class TeamCoordinator {
       label: "Report Team Result",
       description:
         "Declare how this turn ends so your parent is woken only when it must act. " +
-        "Call it once before finishing. Without it your final text reaches the parent as an unconditional result.",
-      promptSnippet: "Declare ready / blocked / failed / dropped before ending your turn; dropped keeps your parent silent.",
+        "Call it once before finishing. waiting means your own children are pending: end this turn to release your slot and be resumed by their results. Without a report your final text reaches the parent unconditionally.",
+      promptSnippet: "Declare ready / waiting / blocked / failed / dropped before ending your turn; waiting releases the run after turn end, dropped is a no-op result.",
       parameters: Type.Object({
         state: Type.Union([
           Type.Literal("ready"),
+          Type.Literal("waiting"),
           Type.Literal("blocked"),
           Type.Literal("failed"),
           Type.Literal("dropped"),
-        ], { description: "ready: the requested result is deliverable. blocked: you need a parent decision to continue. failed: the work cannot be completed. dropped: the parent has nothing to act on." }),
+        ], { description: "ready: the requested result is deliverable. waiting: your own children are pending and no local work remains; end the turn. blocked: you need a parent decision to continue. failed: the work cannot be completed. dropped: the parent has nothing to act on." }),
         summary: Type.String({ description: "One sentence the parent can act on, not a work report. Your final text is ignored when you report." }),
         question: Type.Optional(Type.String({ description: "Required with blocked: the single concrete decision the parent must make." })),
       }),
@@ -734,12 +754,17 @@ export class TeamCoordinator {
         if (state === "blocked" && !question) {
           throw new Error("team_report with state=blocked requires the question the parent must answer");
         }
+        if (state === "waiting" && !this.hasPendingChild(senderPath)) {
+          throw new Error("team_report with state=waiting requires your own pending child; handle completed results or report blocked for a parent decision");
+        }
         agent.report = { state, summary, ...(question ? { question } : {}) };
         this.touch(agent);
         return toolText(
           state === "dropped"
-            ? `Recorded dropped. ${senderPath} stays silent and team_list keeps this summary.`
-            : `Recorded ${state}. Your parent is notified when this turn ends.`,
+            ? `Recorded dropped. ${senderPath} requests no parent action; a waiting parent still receives this dependency completion. team_list keeps this summary.`
+            : state === "waiting"
+              ? `Recorded waiting. End this turn to release your execution slot; a child result will resume ${senderPath}. Your parent is not notified of this intermediate state.`
+              : `Recorded ${state}. Your parent is notified when this turn ends.`,
           { agentPath: senderPath, state, summary, ...(question ? { question } : {}) },
         );
       },

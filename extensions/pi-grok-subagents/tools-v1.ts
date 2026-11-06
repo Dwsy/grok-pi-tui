@@ -3,6 +3,7 @@
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { configureSubagents } from "./config-ui.ts";
+import { openSubagentControlCenter } from "./control-center.ts";
 import { showSubagentHistory, type SubagentRecord } from "./bridge.ts";
 import { MAX_WAIT_MS, SUBAGENT_REPLAY_COMMAND, requireText } from "./shared.ts";
 import { SubagentRuntime, type MessageDelivery } from "./runtime.ts";
@@ -74,6 +75,13 @@ export function registerV1Commands(pi: ExtensionAPI, runtime: SubagentRuntime): 
     description: "Configure project/global Pi subagents",
     handler: async (_args, ctx) => {
       await configureSubagents(pi, ctx);
+    },
+  });
+
+  pi.registerCommand("subagent-control", {
+    description: "子代理控制中心（状态/定义/preset/注入预览）: /subagent-control",
+    handler: async (_args, ctx) => {
+      await openSubagentControlCenter(pi, runtime, ctx);
     },
   });
 

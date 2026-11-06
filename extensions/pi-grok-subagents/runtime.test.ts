@@ -9,7 +9,13 @@ import { profileFor, selectedDefinition } from "./definitions.ts";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { SubagentRuntime, defaultSubagentExtensions } from "./runtime.ts";
-import { SUBAGENT_REPLAY_COMMAND, MAX_BACKGROUND_CONCURRENCY } from "./shared.ts";
+import {
+  CAPABILITY_TOOLS,
+  MAX_BACKGROUND_CONCURRENCY,
+  SUBAGENT_REPLAY_COMMAND,
+  composeSubagentSystemPrompt,
+  resolveSubagentBusinessTools,
+} from "./shared.ts";
 import { registerV1AgentTools, registerV1Commands } from "./tools-v1.ts";
 
 const noopBridge: BridgeEmitter = Object.assign(() => undefined, { ready: Promise.resolve() });
@@ -427,10 +433,63 @@ test("queued cancellation removes work before it can start", async () => {
 });
 
 
+test("ending coordinator runs frees a saturated pool for queued descendants", async () => {
+  const runtime = new SubagentRuntime(fakePi(), noopBridge, noopPersist);
+  const release: Array<() => void> = [];
+  const started: string[] = [];
+  const record = (id: string) => ({
+    id, background: true, finished: false, cancelRequested: false,
+  } as unknown as SubagentRecord);
+  for (let index = 0; index < MAX_BACKGROUND_CONCURRENCY; index += 1) {
+    runtime.scheduleBackgroundTask(record(`coordinator-${index}`), () => new Promise<void>((resolve) => release.push(resolve)));
+  }
+  const descendants = Array.from({ length: MAX_BACKGROUND_CONCURRENCY }, (_, index) => record(`descendant-${index}`));
+  for (const child of descendants) {
+    assert.equal(runtime.scheduleBackgroundTask(child, async () => { started.push(child.id); }), "queued");
+  }
+  assert.deepEqual(started, [], "descendants cannot start while coordinators hold every slot");
+  for (const endTurn of release) endTurn();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(started.sort(), descendants.map((child) => child.id).sort());
+  for (const child of descendants) assert.equal(runtime.backgroundState(child), "idle");
+});
+
 test("profile lookup is case-insensitive and unknown agent definitions do not resolve", () => {
   assert.equal(profileFor("Explore").capabilityMode, "execute");
   assert.equal(profileFor("EXPLORE").type, "explore");
   assert.equal(selectedDefinition(process.cwd(), "definitely-not-a-real-agent"), undefined);
+});
+
+test("read-only capability includes Bash but keeps direct edit/write tools unavailable", () => {
+  const resolved = resolveSubagentBusinessTools(CAPABILITY_TOOLS["read-only"], "read-only");
+  assert.deepEqual(resolved.tools, ["read", "bash", "grep", "find", "ls"]);
+  assert.equal(resolved.readOnly, true);
+  assert.ok(!resolved.tools.includes("edit"));
+  assert.ok(!resolved.tools.includes("write"));
+});
+
+test("custom read-only tool definitions also receive Bash and the read-only contract", () => {
+  const resolved = resolveSubagentBusinessTools(["read", "grep", "find", "ls"], "all", true);
+  assert.deepEqual(resolved.tools, ["read", "grep", "find", "ls", "bash"]);
+  assert.equal(resolved.readOnly, true);
+
+  const prompt = composeSubagentSystemPrompt("Custom reviewer instructions.", resolved.readOnly, "Team coordination instructions.");
+  assert.ok(prompt.indexOf("Custom reviewer instructions.") < prompt.indexOf("READ-ONLY CONTRACT"));
+  assert.ok(prompt.indexOf("Team coordination instructions.") < prompt.indexOf("READ-ONLY CONTRACT"));
+  assert.match(prompt, /Bash is available for inspection only/);
+  assert.match(prompt, /Do not create, edit, overwrite/);
+  assert.match(prompt, /Git mutations such as add, commit, fetch, pull, push/);
+});
+
+test("execute mode keeps its existing command-running contract", () => {
+  const resolved = resolveSubagentBusinessTools(CAPABILITY_TOOLS.execute, "execute");
+  assert.equal(resolved.readOnly, false);
+  assert.deepEqual(resolved.tools, ["read", "bash", "grep", "find", "ls"]);
+});
+
+test("read-only Bash satisfies explore's tool floor without widening the requested mode", () => {
+  assert.equal(profileFor("Explore", "read-only").capabilityMode, "read-only");
+  assert.equal(profileFor("Explore", "read-write").capabilityMode, "execute");
 });
 
 test("pre-cancelled background scheduling finalizes instead of leaving a zombie record", () => {

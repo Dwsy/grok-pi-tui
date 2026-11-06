@@ -442,6 +442,133 @@ test("team_report dropped keeps the parent silent", async () => {
   assert.match((listed.content as any)[0].text, /dropped — Nothing to change/);
 });
 
+test("waiting report yields a coordinator and nested results resume its session", async () => {
+  const { fakePi, runtime } = setup();
+  await execute(fakePi.tools.get("spawn_team_agent"), "parent", { task_name: "parent", message: "coordinate" });
+  const parent = runtime.created[0];
+  const tools = parent.options.customTools ?? [];
+  await execute(tools.find((tool) => tool.name === "spawn_team_agent"), "leaf", { task_name: "leaf", message: "verify" });
+  const leaf = runtime.created[1];
+  runtime.backgroundStates.set(leaf.record.id, "queued");
+  const reported = await execute(tools.find((tool) => tool.name === "team_report"), "waiting", {
+    state: "waiting",
+    summary: "Waiting for leaf verification.",
+  });
+  assert.match((reported.content as any)[0].text, /End this turn to release/);
+  assert.equal(parent.record.finished, false, "reporting alone must not finish the run");
+
+  parent.record.finished = true;
+  parent.record.terminalStatus = "completed";
+  await runtime.finishHandlers.get(parent.record.id)!(parent.record, "completed");
+  assert.equal(fakePi.messages.length, 0, "partial coordination must not wake root");
+  const listed = await execute(fakePi.tools.get("team_list"), "list", {});
+  assert.match((listed.content as any)[0].text, /\[WAITING_RESULT\] \/root\/parent/);
+
+  leaf.record.finished = true;
+  leaf.record.terminalStatus = "completed";
+  await runtime.finishHandlers.get(leaf.record.id)!(leaf.record, "completed");
+  const resumed = runtime.resumed.find((entry) => entry.previousId === parent.record.id);
+  assert.ok(resumed, "a result must resume the waiting coordinator");
+  const delivered = runtime.childMessages.get(resumed.nextId)?.find((entry) => entry.message.details.kind === "FINAL_ANSWER");
+  assert.equal(delivered?.message.details.sender, "/root/parent/leaf");
+  assert.equal(fakePi.messages.length, 1, "the resumed run must not inherit a stale waiting report");
+  assert.match((fakePi.messages[0].message as any).content, /final:parent/);
+});
+
+test("waiting rejects unrelated active peers and a child waiting on a decision", async () => {
+  const { fakePi, runtime } = setup();
+  await execute(fakePi.tools.get("spawn_team_agent"), "parent", { task_name: "parent", message: "coordinate" });
+  await execute(fakePi.tools.get("spawn_team_agent"), "peer", { task_name: "peer", message: "unrelated" });
+  const tools = runtime.created[0].options.customTools ?? [];
+  const report = tools.find((tool) => tool.name === "team_report");
+  await assert.rejects(execute(report, "no-child", { state: "waiting", summary: "Waiting." }), /requires your own pending child/);
+
+  await execute(tools.find((tool) => tool.name === "spawn_team_agent"), "leaf", { task_name: "leaf", message: "decide" });
+  const leaf = runtime.created[2];
+  await execute(leaf.options.customTools?.find((tool) => tool.name === "team_report"), "blocked", {
+    state: "blocked", summary: "Need a choice.", question: "Which API?",
+  });
+  leaf.record.finished = true;
+  leaf.record.terminalStatus = "completed";
+  await assert.rejects(execute(report, "blocked-child", { state: "waiting", summary: "Waiting." }), /requires your own pending child/);
+});
+
+test("waiting can propagate through multiple non-running coordinators", async () => {
+  const { fakePi, runtime } = setup();
+  await execute(fakePi.tools.get("spawn_team_agent"), "parent", { task_name: "parent", message: "coordinate" });
+  const parentTools = runtime.created[0].options.customTools ?? [];
+  await execute(parentTools.find((tool) => tool.name === "spawn_team_agent"), "middle", { task_name: "middle", message: "coordinate" });
+  const middle = runtime.created[1];
+  const middleTools = middle.options.customTools ?? [];
+  await execute(middleTools.find((tool) => tool.name === "spawn_team_agent"), "leaf", { task_name: "leaf", message: "work" });
+  await execute(middleTools.find((tool) => tool.name === "team_report"), "middle-waiting", { state: "waiting", summary: "Leaf pending." });
+  middle.record.finished = true;
+  middle.record.terminalStatus = "completed";
+  await runtime.finishHandlers.get(middle.record.id)!(middle.record, "completed");
+  await execute(parentTools.find((tool) => tool.name === "team_report"), "parent-waiting", { state: "waiting", summary: "Middle pending." });
+  assert.equal(fakePi.messages.length, 0);
+});
+
+test("quiet reports cannot hide runtime failure or cancellation", async () => {
+  for (const state of ["waiting", "dropped"] as const) {
+    for (const terminal of ["failed", "cancelled"] as const) {
+      const { fakePi, runtime } = setup();
+      await execute(fakePi.tools.get("spawn_team_agent"), "parent", { task_name: "parent", message: "work" });
+      const parent = runtime.created[0];
+      const tools = parent.options.customTools ?? [];
+      if (state === "waiting") {
+        await execute(tools.find((tool) => tool.name === "spawn_team_agent"), "leaf", { task_name: "leaf", message: "work" });
+      }
+      await execute(tools.find((tool) => tool.name === "team_report"), "report", { state, summary: "Quiet result." });
+      parent.record.finished = true;
+      parent.record.terminalStatus = terminal;
+      await runtime.finishHandlers.get(parent.record.id)!(parent.record, terminal, "synthetic failure");
+      assert.equal(fakePi.messages.length, 1, `${state} must not suppress ${terminal}`);
+      assert.match((fakePi.messages[0].message as any).content, new RegExp(`Agent ${terminal}`));
+    }
+  }
+});
+
+test("a dropped child still resolves a waiting coordinator", async () => {
+  const { fakePi, runtime } = setup();
+  await execute(fakePi.tools.get("spawn_team_agent"), "parent", { task_name: "parent", message: "coordinate" });
+  const parent = runtime.created[0];
+  const parentTools = parent.options.customTools ?? [];
+  await execute(parentTools.find((tool) => tool.name === "spawn_team_agent"), "leaf", { task_name: "leaf", message: "check" });
+  const leaf = runtime.created[1];
+  await execute(parentTools.find((tool) => tool.name === "team_report"), "waiting", { state: "waiting", summary: "Check pending." });
+  parent.record.finished = true;
+  parent.record.terminalStatus = "completed";
+  await runtime.finishHandlers.get(parent.record.id)!(parent.record, "completed");
+  await execute(leaf.options.customTools?.find((tool) => tool.name === "team_report"), "dropped", { state: "dropped", summary: "Already satisfied." });
+  leaf.record.finished = true;
+  leaf.record.terminalStatus = "completed";
+  await runtime.finishHandlers.get(leaf.record.id)!(leaf.record, "completed");
+  const resumed = runtime.resumed.find((entry) => entry.previousId === parent.record.id);
+  assert.ok(resumed, "a no-op result must resolve the parent's pending dependency");
+  const delivery = runtime.childMessages.get(resumed.nextId)?.find((entry) => entry.message.details.kind === "FINAL_ANSWER");
+  assert.match(delivery?.message.content ?? "", /Report: dropped/);
+});
+
+test("a dropped result arriving before the coordinator ends its turn is delivered", async () => {
+  const { fakePi, runtime } = setup();
+  await execute(fakePi.tools.get("spawn_team_agent"), "parent", { task_name: "parent", message: "coordinate" });
+  const parent = runtime.created[0];
+  const tools = parent.options.customTools ?? [];
+  await execute(tools.find((tool) => tool.name === "spawn_team_agent"), "leaf", { task_name: "leaf", message: "check" });
+  const leaf = runtime.created[1];
+  await execute(tools.find((tool) => tool.name === "team_report"), "waiting", { state: "waiting", summary: "Check pending." });
+  await execute(leaf.options.customTools?.find((tool) => tool.name === "team_report"), "dropped", { state: "dropped", summary: "Already satisfied." });
+  leaf.record.finished = true;
+  leaf.record.terminalStatus = "completed";
+  await runtime.finishHandlers.get(leaf.record.id)!(leaf.record, "completed");
+  assert.equal(runtime.resumed.length, 0, "a running coordinator must not get a second run");
+  const delivery = runtime.childMessages.get(parent.record.id)?.find((entry) => entry.message.details.kind === "FINAL_ANSWER");
+  assert.match(delivery?.message.content ?? "", /Report: dropped/);
+  assert.equal(delivery?.options.triggerTurn, true);
+  assert.equal(fakePi.messages.length, 0, "the intermediate result stays at the coordinator");
+});
+
 test("team_report blocked carries the parent decision into the final answer", async () => {
   const { fakePi, runtime } = setup();
   await execute(fakePi.tools.get("spawn_team_agent"), "spawn", { task_name: "worker", message: "pick a design" });
