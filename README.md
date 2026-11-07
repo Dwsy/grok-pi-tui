@@ -171,6 +171,8 @@ Herdr lifecycle reporting is **off by default**. Enable it with F2 → Agent →
 
 Use `--no-extensions` (`-ne`) to disable Pi extension auto-discovery; explicit `-e` paths and grok-pi host bridges still load. Use `--no-bridge-extensions` to disable the bundled host bridges, or combine both flags for a fully extension-free launch. Pi startup options can be passed directly after `--`.
 
+Use `--extensions-dev <DIR>` (or `PI_GROK_EXTENSIONS_DEV`) to load grok-pi's bundled Pi extensions from `<DIR>/<name>/index.ts` instead of the copies compiled into the binary. Feature gates are unchanged, so editing an extension needs a restart but no rebuild.
+
 ```bash
 grok-pi -- --model openai/gpt-4o
 ```

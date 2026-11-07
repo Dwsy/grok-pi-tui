@@ -58,6 +58,11 @@ Extension startup recovery:
   Crash-report prompt sends extension name/package identity and crash kind only;
   it does not send absolute paths, stack traces, or session data.
 
+Extension development:
+  --extensions-dev <DIR>  Load grok-pi's bundled Pi extensions from <DIR>/<name>/index.ts
+                          instead of the copies compiled into this binary (development only).
+                          Env fallback: PI_GROK_EXTENSIONS_DEV. Feature gates are unchanged.
+
 Update (GitHub releases only):
   grok-pi update                    Install latest for the configured channel
   grok-pi update --check            Print current vs channel target
@@ -151,6 +156,12 @@ pub(super) struct Args {
     /// Disable grok-pi's bundled host bridge extensions.
     #[arg(long = "no-bridge-extensions")]
     pub(super) no_bridge_extensions: bool,
+
+    /// Load grok-pi's bundled Pi extensions from this folder instead of the copies
+    /// compiled into the binary (development). Expects `<DIR>/<name>/index.ts`.
+    /// Env fallback: PI_GROK_EXTENSIONS_DEV.
+    #[arg(long = "extensions-dev", value_name = "DIR")]
+    pub(super) extensions_dev: Option<PathBuf>,
 
     /// Minutes before foreground Bash auto-backgrounds and each blocking task wait is capped.
     /// CLI overrides PI_GROK_BASH_MAX_WAIT_MINS; 0 or negative disables both behaviors.

@@ -169,6 +169,8 @@ Herdr 生命周期上报**默认关闭**。可在 F2 → Agent → **Pi Herdr in
 grok-pi -- --model openai/gpt-4o
 ```
 
+插件开发时用 `--extensions-dev <DIR>`（或环境变量 `PI_GROK_EXTENSIONS_DEV`）可让 grok-pi 从 `<DIR>/<name>/index.ts` 加载内置 Pi 扩展，而不是二进制里 `include_str!` 编译进去的临时副本。功能开关不变，因此改完插件只需重启、无需重新编译；`<DIR>` 缺失或缺少某个已启用扩展的 `index.ts` 会直接启动失败。
+
 ## 从源码构建
 
 环境要求：Rust **1.92.0**、Node.js **22.19.0 或更高版本**、npm，以及系统 Pi 安装。

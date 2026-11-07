@@ -20,6 +20,8 @@ mod config_skill;
 mod context_extension;
 #[path = "grok_pi/export_extension.rs"]
 mod export_extension;
+#[path = "grok_pi/ext_dev.rs"]
+mod ext_dev;
 #[path = "grok_pi/extension_self_heal.rs"]
 mod extension_self_heal;
 #[path = "grok_pi/goal_extension.rs"]
@@ -102,6 +104,7 @@ use cli::{Args, Command, normalize_compound_short_flags, pi_args_with_startup_fl
 use config_skill::{config_skill_enabled, sync_config_skill_cache};
 use context_extension::write_context_extension;
 use export_extension::write_export_extension;
+use ext_dev::ExtensionDev;
 #[cfg(test)]
 use extension_self_heal::{bootstrap_with_deadline, disable_all_extensions};
 use extension_self_heal::{extract_extension_paths, spawn_with_extension_self_heal};
@@ -358,6 +361,13 @@ async fn run(mut args: Args) -> Result<()> {
     // Pi's --no-extensions controls auto-discovery only. Bundled host bridges
     // have a separate kill switch because they are passed as explicit paths.
     let bridge_extensions_enabled = !args.no_bridge_extensions;
+    // Dev mode swaps the source origin of those same bridges (on-disk folder
+    // instead of the bundles compiled into this binary); feature gates still apply.
+    let extension_dev = if bridge_extensions_enabled {
+        ExtensionDev::from_arg(args.extensions_dev.as_deref())?
+    } else {
+        None
+    };
     let navigate_tree_extension = bridge_extensions_enabled
         .then(|| write_navigate_tree_extension())
         .transpose()
@@ -601,24 +611,44 @@ async fn run(mut args: Args) -> Result<()> {
     // and its Remote TUI host before any third-party resource is loaded. They
     // bypass the user-resource policy just like the other host bridge files.
     let mut startup_extensions = Vec::new();
-    for path in [
-        rpc_compat_extension
-            .as_ref()
-            .map(|extension| extension.path()),
-        herdr_extension.as_ref().map(|extension| extension.path()),
-        remote_tui_extension
-            .as_ref()
-            .map(|extension| extension.source_path()),
-        shortcut_manager_extension
-            .as_ref()
-            .map(|extension| extension.source_path()),
-        rust_tui_bridge_extension
-            .as_ref()
-            .map(|extension| extension.path()),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    // Dev mode re-points each embedded bundle at `<dev root>/<folder>/index.ts`;
+    // the swap is recorded so the child-extension catalog stays consistent.
+    let mut dev_extension_paths: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    for (folder, embedded) in [
+        (
+            "pi-grok-rpc-compat",
+            rpc_compat_extension
+                .as_ref()
+                .map(|extension| extension.path()),
+        ),
+        (
+            "pi-grok-herdr",
+            herdr_extension.as_ref().map(|extension| extension.path()),
+        ),
+        (
+            "pi-grok-remote-tui",
+            remote_tui_extension
+                .as_ref()
+                .map(|extension| extension.source_path()),
+        ),
+        (
+            "pi-grok-shortcut-manager",
+            shortcut_manager_extension
+                .as_ref()
+                .map(|extension| extension.source_path()),
+        ),
+        (
+            "pi-grok-rust-tui-bridge",
+            rust_tui_bridge_extension
+                .as_ref()
+                .map(|extension| extension.path()),
+        ),
+    ] {
+        let Some(embedded) = embedded else { continue };
+        let path = ext_dev::source_path(extension_dev.as_ref(), Some(folder), embedded)?;
+        if path.as_path() != embedded {
+            dev_extension_paths.push((embedded.to_path_buf(), path.clone()));
+        }
         startup_extensions.extend([
             "--extension".to_string(),
             path.to_string_lossy().into_owned(),
@@ -875,64 +905,97 @@ async fn run(mut args: Args) -> Result<()> {
         add_subagent_extension(&label, Some(path.to_path_buf()));
     }
     // remote_tui before auth/native-commands so custom() host exists first.
-    for path in [
+    for entry in [
         subagent_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
-        todo_extension.as_ref().map(|extension| extension.path()),
+            .map(|extension| (Some("pi-grok-subagents"), extension.source_path())),
+        todo_extension
+            .as_ref()
+            .map(|extension| (Some("pi-grok-todo"), extension.path())),
         workflow_extension
             .as_ref()
-            .map(|extension| extension.path()),
+            .map(|extension| (Some("pi-grok-workflows"), extension.path())),
         goal_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
+            .map(|extension| (Some("pi-grok-goal"), extension.source_path())),
         loop_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
+            .map(|extension| (Some("pi-grok-loop"), extension.source_path())),
         ask_user_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
+            .map(|extension| (Some("pi-grok-ask-user-question"), extension.source_path())),
         btw_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
+            .map(|extension| (Some("pi-grok-btw"), extension.source_path())),
         recap_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
+            .map(|extension| (Some("pi-grok-recap"), extension.source_path())),
         context_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
+            .map(|extension| (Some("pi-grok-context"), extension.source_path())),
         auth_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
-        export_extension.as_ref().map(|extension| extension.path()),
+            .map(|extension| (Some("pi-grok-auth"), extension.source_path())),
+        export_extension
+            .as_ref()
+            .map(|extension| (Some("pi-grok-export"), extension.path())),
         native_commands_extension
             .as_ref()
-            .map(|extension| extension.path()),
+            .map(|extension| (Some("pi-grok-native-commands"), extension.path())),
         web_config_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
+            .map(|extension| (Some("pi-grok-web-config"), extension.source_path())),
         bash_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
-        // Pi's built-in codemode extension; `builtin:` is a Pi resource id, not a filesystem path.
-        codemode_extension_requested.then(|| std::path::Path::new("builtin:codemode")),
-        tools_extension.as_ref().map(|extension| extension.path()),
+            .map(|extension| (Some("pi-grok-bash"), extension.source_path())),
+        // Pi's built-in codemode extension; `builtin:` is a Pi resource id, not a
+        // filesystem path, so it has no grok-pi dev folder to swap in.
+        codemode_extension_requested.then(|| (None, std::path::Path::new("builtin:codemode"))),
+        tools_extension
+            .as_ref()
+            .map(|extension| (Some("pi-grok-tools"), extension.path())),
         // Rollback extension observes the final built-in registrations.
         rollback_ext
             .as_ref()
-            .map(|extension| extension.source_path()),
+            .map(|extension| (Some("pi-grok-rollback"), extension.source_path())),
         // Plan gate runs after all tool registrations and owns no renderer/UI.
         plan_mode_extension
             .as_ref()
-            .map(|extension| extension.source_path()),
+            .map(|extension| (Some("pi-grok-plan-mode"), extension.source_path())),
     ]
     .into_iter()
-    .flatten()
     {
+        let Some((folder, embedded)) = entry else {
+            continue;
+        };
+        let path = ext_dev::source_path(extension_dev.as_ref(), folder, embedded)?;
+        if path.as_path() != embedded {
+            dev_extension_paths.push((embedded.to_path_buf(), path.clone()));
+        }
         pi_args.extend([
             "--extension".to_string(),
             path.to_string_lossy().into_owned(),
         ]);
+    }
+    // Dev mode: children must load the same on-disk copies Pi loads, so re-point
+    // the catalog entries that name an embedded bundle at their dev source.
+    if !dev_extension_paths.is_empty() {
+        for entry in &mut subagent_extension_catalog {
+            let Some(catalogued) = entry
+                .get("path")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let Some((_, dev_path)) = dev_extension_paths
+                .iter()
+                .find(|(embedded, _)| embedded.as_path() == std::path::Path::new(&catalogued))
+            else {
+                continue;
+            };
+            entry["path"] = serde_json::Value::String(dev_path.to_string_lossy().into_owned());
+        }
     }
     // Identifies this Pi child as running under the grok-pi host for user extensions.
     let mut env = vec![("PI_GROK".to_string(), "1".to_string())];
@@ -1789,6 +1852,16 @@ mod env_flag_tests {
             Args::try_parse_from(["grok-pi", "--no-bridge-extensions"]).expect("parse args");
         assert!(!bridges.no_extensions);
         assert!(bridges.no_bridge_extensions);
+    }
+
+    #[test]
+    fn extensions_dev_folder_is_parsed() {
+        let args = Args::try_parse_from(["grok-pi", "--extensions-dev", "/tmp/extensions"])
+            .expect("parse args");
+        assert_eq!(
+            args.extensions_dev.as_deref(),
+            Some(std::path::Path::new("/tmp/extensions"))
+        );
     }
 
     #[test]
