@@ -108,7 +108,7 @@ Root 显示为 `ROOT`。
 | `team`、`task` | preset 名称，以及代入各成员模板 `{{task}}` 的共享目标。 |
 | `members` | 可选的成员子集。保持 preset 声明顺序，因此定义在最后的 synthesizer 仍在其生产者之后启动。出现未知成员名时，在创建任何 child 之前就失败。 |
 | `model`、`thinking_level`、`max_turns` | 覆盖所有选中成员的对应值。不传则保留成员自身的 preset 值。 |
-| `capability_mode` | 所有选中成员的工具权限：`read-only`、`read-write`、`execute` 或 `all`。默认取 agent definition，再回退 `all`。 |
+| `capability_mode` | 所有选中成员的工具权限：`read-only` 或 `all`。两者都含 Bash；`read-only` 省略内置 `edit`/`write` 并注入只读契约。旧的 `execute`/`read-write` 静默映射为 `all`。默认取 agent definition，再回退 `all`。 |
 | `instructions` | 追加到 preset `instructions` 的团队级补充指令，写入每个成员的系统提示。 |
 | `timeout_ms` | `0` 或省略时立即返回，最终答案异步回传 `/root`。正数最多等待 600 秒，并在工具结果里返回各成员状态与输出。 |
 
@@ -260,7 +260,7 @@ max_turns: 10
 Review architecture and correctness. Do not edit files. Return evidence with file paths.
 ```
 
-Markdown definition 控制 system prompt、业务 tools、最多 3 个 models、extensions、skills、max turns、默认 `thinking_level` 与继承开关。V2 control-plane tools 独立注入，所以 read-only reviewer 仍能参与 team 通信。默认只读 capability 包含 Bash 供检视使用，并省略内置 `edit`/`write`。即使 definition 显式配置 `tools:`，只读模式仍会补入 Bash；自定义工具列表若同时不含 `edit` 和 `write`，也会按只读工具集处理并补入 Bash。统一 system prompt 禁止通过 Bash 或其他工具修改状态。这是提示词约束，不是 OS 沙箱。
+Markdown definition 控制 system prompt、业务 tools、最多 3 个 models、extensions、skills、max turns、默认 `thinking_level` 与继承开关。V2 control-plane tools 独立注入，所以 read-only reviewer 仍能参与 team 通信。**只保留两种 capability**：`read-only`（精简工具集 + 注入 `READ_ONLY_CONTRACT`）与 `all`（全量内置工具）。两者都包含 Bash，definition 显式配置 `tools:` 时也会补入。旧的 `execute` / `read-write` 值静默映射为 `all`，既有 preset 与定义照常可用。自定义工具列表若同时不含 `edit` 和 `write`，按只读工具集处理。agent 的限制来自注入的 system prompt（只读契约与各 profile 自身指令），而不是隐藏 Bash；这是提示词级约束，不是 OS 级强制。
 
 使用 `/subagents` 管理原生 agent definition，`/subagent-control` 打开统一 TUI 控制中心（状态/定义/preset/注入预览）。
 
@@ -269,13 +269,13 @@ Markdown definition 控制 system prompt、业务 tools、最多 3 个 models、
 | profile | capabilityMode | 可用工具 | 行为约束 |
 |---|---|---|---|
 | `general-purpose` | `all` | `read` `bash` `edit` `write` `grep` `find` `ls` | 可完整实施改动 |
-| `read-only` capability | `read-only` | `read` `bash` `grep` `find` `ls` | Bash 可用于检视；默认不提供内置 `edit`/`write`。system prompt 禁止文件和状态修改 |
-| `explore` | `execute`（默认） | `read` `bash` `grep` `find` `ls` | **有 bash**，可跑 `python3` / `node`；显式传 `capability_mode: "read-only"` 会保持只读模式，因为只读模式现在也包含 Bash。`read-write` 会提升到 `execute` 以保留 Bash |
-| `plan` | `execute` | `read` `bash` `grep` `find` `ls` | 只做规划，不改文件 |
+| `read-only` capability | `read-only` | `read` `bash` `grep` `find` `ls` | 省略内置 `edit`/`write`；注入 `READ_ONLY_CONTRACT` 禁止文件和状态修改 |
+| `explore` | `all`（默认） | `read` `bash` `edit` `write` `grep` `find` `ls` | 全量工具，但自身 system prompt 禁止修改 tracked files；可用 Bash 跑 `rg`/`git log`/`tree`/`wc`/`python3 -c`/`node -e` |
+| `plan` | `all` | `read` `bash` `edit` `write` `grep` `find` `ls` | 全量工具，但自身 system prompt 明确「Do not edit files」 |
 
-`explore` 对不提供 Bash 的模式保留 **capability floor（能力下限）**：`read-write` 会提升到 `execute`；`read-only` 因为现在包含 Bash，所以保持只读。这样它总能 `rg`/`git log`/`tree`/`wc` 阅读全量与统计，也能用 `python3 -c`、`node -e` 做内存分析。
+`execute` 与 `read-write` 不再是独立模式：`requireCapability()` 把它们静默映射为 `all`，既有 preset 与 agent 定义无需改动即可继续用；旧的持久化快照也仍可加载。
 
-只读工具集的「不修改」约束是**提示词级**约定，不是工具级或 OS 级强制：Bash 可以执行任意命令，因此 system prompt 明确禁止文件写入、Git 状态修改、依赖安装、数据库写入及其他状态变更。需要硬隔离时必须使用外部 OS/container sandbox；本扩展本身不提供沙箱。
+除 `read-only` 省略 `edit`/`write` 的工具级裁剪外，其余约束都是**提示词级**，不是 OS 级强制：Bash 可以执行任意命令，因此注入的 system prompt（只读契约，或各 profile 自身指令）才负责禁止文件写入、Git 状态修改、依赖安装、数据库写入及其他状态变更。需要硬隔离时必须使用外部 OS/container sandbox；本扩展本身不提供沙箱。
 
 
 ### 子代理默认扩展

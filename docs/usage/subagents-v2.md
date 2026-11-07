@@ -108,7 +108,7 @@ The root is shown as `ROOT`.
 | `team`, `task` | Preset name and the shared objective substituted into each member template as `{{task}}`. |
 | `members` | Optional subset of preset member names. Preset order is preserved, so a synthesizer defined last still starts after its producers. An unknown name fails before any child is created. |
 | `model`, `thinking_level`, `max_turns` | Applied to every selected member, overriding that member's preset value. Omitting the parameter keeps the member's own preset value. |
-| `capability_mode` | Tool access for every selected member: `read-only`, `read-write`, `execute`, or `all`. Defaults to each agent definition, then `all`. |
+| `capability_mode` | Tool access for every selected member: `read-only` or `all`. Both include Bash; `read-only` omits built-in `edit`/`write` and injects the read-only contract. Legacy `execute`/`read-write` map to `all`. Defaults to each agent definition, then `all`. |
 | `instructions` | Extra team-wide instruction appended to the preset `instructions` and shared through every member's system prompt. |
 | `timeout_ms` | `0` or omitted returns immediately and delivers final answers to `/root` asynchronously. A positive value waits up to 600 s and returns each member's status and output in the tool result. |
 
@@ -256,7 +256,7 @@ max_turns: 10
 Review architecture and correctness. Do not edit files. Return evidence with file paths.
 ```
 
-The Markdown definition controls the system prompt, business tools, up to three models, extensions, skills, max turns, the default `thinking_level`, and inheritance flags. V2 control-plane tools are injected separately so a read-only reviewer can still communicate with the team. The default read-only capability includes Bash for inspection and omits the built-in `edit`/`write` tools. Explicit read-only mode still adds Bash when a definition supplies `tools:`; custom tool lists that omit both `edit` and `write` are also treated as read-only and receive Bash. The mandatory system-prompt contract forbids mutations through Bash or other tools. This is a prompt-level rule, not an OS sandbox.
+The Markdown definition controls the system prompt, business tools, up to three models, extensions, skills, max turns, the default `thinking_level`, and inheritance flags. V2 control-plane tools are injected separately so a read-only reviewer can still communicate with the team. **There are only two capability modes**: `read-only` (reduced loadout + `READ_ONLY_CONTRACT`) and `all` (every built-in tool). Both include Bash, including definition-supplied `tools:` lists. Legacy `execute` / `read-write` values are silently mapped to `all` so existing presets keep working. Custom tool lists that omit both `edit` and `write` are treated as read-only. Agents are constrained by the injected system prompt (the read-only contract, or each profile's own instructions), not by hiding Bash. This is a prompt-level rule, not an OS-level boundary.
 
 Use `/subagents` for the native agent-definition management surface, `/subagent-control` for the unified TUI control center (status/definitions/presets/injection preview).
 
@@ -265,13 +265,13 @@ Use `/subagents` for the native agent-definition management surface, `/subagent-
 | profile | capabilityMode | tools | behaviour |
 |---|---|---|---|
 | `general-purpose` | `all` | `read` `bash` `edit` `write` `grep` `find` `ls` | Full implementation |
-| `read-only` capability | `read-only` | `read` `bash` `grep` `find` `ls` | Bash is available for inspection; built-in `edit` and `write` tools are omitted. The system prompt prohibits all file and state mutations |
-| `explore` | `execute` (default) | `read` `bash` `grep` `find` `ls` | **Has bash**, so it can run `python3` and `node`. An explicit `capability_mode: "read-only"` stays read-only because that mode now includes Bash. `read-write` is widened to `execute` to preserve the profile's Bash contract |
-| `plan` | `execute` | `read` `bash` `grep` `find` `ls` | Planning only, no file changes |
+| `read-only` capability | `read-only` | `read` `bash` `grep` `find` `ls` | Built-in `edit`/`write` omitted; `READ_ONLY_CONTRACT` forbids all file and state mutations |
+| `explore` | `all` (default) | `read` `bash` `edit` `write` `grep` `find` `ls` | Full loadout, but its system prompt forbids modifying tracked files. Has Bash for `rg`, `git log`, `tree`, `wc`, `python3 -c`, `node -e` |
+| `plan` | `all` | `read` `bash` `edit` `write` `grep` `find` `ls` | Full loadout, but its system prompt says "Do not edit files" |
 
-`explore` carries a **capability floor** for modes that do not provide Bash: `read-write` is widened to `execute`, while `read-only` stays read-only because it now includes Bash. This lets it read whole trees and produce counts with `rg`, `git log`, `tree`, `wc`, and analyze data with `python3 -c` and `node -e`.
+`execute` and `read-write` are no longer modes: `requireCapability()` maps them to `all`, so old presets and agent definitions keep working without a separate tool contract. Persisted snapshots from older runs still load.
 
-The no-mutation rule for read-only loadouts is a **prompt-level** convention, not tool-level enforcement: Bash can run arbitrary commands, so the system prompt explicitly forbids file writes, Git mutations, installs, database writes, and other state changes. For a hard boundary, use an external OS/container sandbox; this extension does not provide one.
+Beyond the `edit`/`write` tools omitted in `read-only`, all agent constraints are **prompt-level**, not OS-level enforcement: Bash can run arbitrary commands, so the injected system prompt (the read-only contract, or the profile's own instructions) is what forbids file writes, Git mutations, installs, database writes, and other state changes. For a hard boundary, use an external OS/container sandbox; this extension does not provide one.
 
 
 ### Default child extensions
