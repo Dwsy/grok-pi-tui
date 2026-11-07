@@ -455,7 +455,7 @@ test("ending coordinator runs frees a saturated pool for queued descendants", as
 });
 
 test("profile lookup is case-insensitive and unknown agent definitions do not resolve", () => {
-  assert.equal(profileFor("Explore").capabilityMode, "execute");
+  assert.equal(profileFor("Explore").capabilityMode, "all");
   assert.equal(profileFor("EXPLORE").type, "explore");
   assert.equal(selectedDefinition(process.cwd(), "definitely-not-a-real-agent"), undefined);
 });
@@ -481,15 +481,38 @@ test("custom read-only tool definitions also receive Bash and the read-only cont
   assert.match(prompt, /Git mutations such as add, commit, fetch, pull, push/);
 });
 
-test("execute mode keeps its existing command-running contract", () => {
-  const resolved = resolveSubagentBusinessTools(CAPABILITY_TOOLS.execute, "execute");
-  assert.equal(resolved.readOnly, false);
-  assert.deepEqual(resolved.tools, ["read", "bash", "grep", "find", "ls"]);
+test("read-only keeps the reduced loadout and all keeps the full loadout", () => {
+  const readOnly = resolveSubagentBusinessTools(CAPABILITY_TOOLS["read-only"], "read-only");
+  assert.equal(readOnly.readOnly, true);
+  assert.deepEqual(readOnly.tools, ["read", "bash", "grep", "find", "ls"]);
+  const all = resolveSubagentBusinessTools(CAPABILITY_TOOLS.all, "all");
+  assert.equal(all.readOnly, false);
+  assert.deepEqual(all.tools, ["read", "bash", "edit", "write", "grep", "find", "ls"]);
 });
 
-test("read-only Bash satisfies explore's tool floor without widening the requested mode", () => {
+test("both capabilities include Bash and only read-only omits edit/write", () => {
+  for (const mode of ["read-only", "all"] as const) {
+    const resolved = resolveSubagentBusinessTools([...CAPABILITY_TOOLS[mode]], mode);
+    assert.ok(resolved.tools.includes("bash"), `${mode} must expose Bash`);
+    const canEdit = mode === "all";
+    assert.equal(resolved.tools.includes("edit"), canEdit, mode);
+    assert.equal(resolved.tools.includes("write"), canEdit, mode);
+  }
+  assert.deepEqual(Object.keys(CAPABILITY_TOOLS), ["read-only", "all"]);
+});
+
+test("explicit definition tool lists keep Bash regardless of capability", () => {
+  const resolved = resolveSubagentBusinessTools(["read", "grep", "edit"], "all", true);
+  assert.deepEqual(resolved.tools, ["read", "grep", "edit", "bash"]);
+  assert.equal(resolved.readOnly, false);
+});
+
+test("legacy capability modes map to all and read-only stays read-only", () => {
   assert.equal(profileFor("Explore", "read-only").capabilityMode, "read-only");
-  assert.equal(profileFor("Explore", "read-write").capabilityMode, "execute");
+  assert.equal(profileFor("Explore", "read-write").capabilityMode, "all");
+  assert.equal(profileFor("Explore", "execute").capabilityMode, "all");
+  assert.equal(profileFor("general-purpose", "execute").capabilityMode, "all");
+  assert.throws(() => profileFor("general-purpose", "bogus"), /unsupported capability_mode/);
 });
 
 test("pre-cancelled background scheduling finalizes instead of leaving a zombie record", () => {

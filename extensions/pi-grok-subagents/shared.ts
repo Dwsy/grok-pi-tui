@@ -14,10 +14,13 @@ export const RESOURCE_PICKER_TITLE_PREFIX = "__pi_grok_resource_picker_v1__:";
 export const BUILTIN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 export const BUILTIN_TOOL_SET = new Set<string>(BUILTIN_TOOL_NAMES);
 
+/**
+ * Two capability modes: `read-only` omits edit/write and injects
+ * READ_ONLY_CONTRACT; `all` gets every built-in tool. Both include Bash;
+ * beyond that reduced loadout, behaviour is constrained by the injected prompt.
+ */
 export const CAPABILITY_TOOLS = {
   "read-only": ["read", "bash", "grep", "find", "ls"],
-  "read-write": ["read", "grep", "find", "ls", "edit", "write"],
-  execute: ["read", "bash", "grep", "find", "ls"],
   all: [...BUILTIN_TOOL_NAMES],
 } as const;
 
@@ -39,7 +42,9 @@ export function resolveSubagentBusinessTools(
   const readOnly = capabilityMode === "read-only"
     || (explicitToolList && !configuredTools.includes("edit") && !configuredTools.includes("write"));
   return {
-    tools: readOnly ? [...new Set([...configuredTools, "bash"])] : [...configuredTools],
+    // Definition-supplied tool lists keep Bash too; the read-only contract is
+    // carried by the injected prompt, not by removing Bash.
+    tools: [...new Set([...configuredTools, "bash"])],
     readOnly,
   };
 }
@@ -88,10 +93,10 @@ export function requireText(value: unknown, name: string): string {
 
 export function requireCapability(value: string | undefined): CapabilityMode {
   const capability = value ?? "all";
-  if (!(capability in CAPABILITY_TOOLS)) {
-    throw new Error(`unsupported capability_mode: ${capability}`);
-  }
-  return capability as CapabilityMode;
+  if (capability === "read-only" || capability === "all") return capability;
+  // Existing presets still pass execute/read-write; collapse them into all.
+  if (capability === "execute" || capability === "read-write") return "all";
+  throw new Error(`unsupported capability_mode: ${capability}`);
 }
 
 export function textFromContent(content: unknown): string {

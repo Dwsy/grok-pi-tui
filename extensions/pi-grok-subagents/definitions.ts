@@ -5,28 +5,19 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { CAPABILITY_TOOLS, MAX_AGENT_MODELS, requireCapability, type CapabilityMode } from "./shared.ts";
+import { MAX_AGENT_MODELS, requireCapability, type CapabilityMode } from "./shared.ts";
 import { parseThinkingLevel, type ThinkingLevel } from "./thinking.ts";
 
 export const AGENT_PROFILES: Record<string, {
   capabilityMode: CapabilityMode;
   systemPrompt: string;
-  /**
-   * Lowest capability this profile may run in. A request that would drop any of
-   * these tools is upgraded to the floor. `read-only` is exempt when it already
-   * includes the required Bash tool.
-   */
-  capabilityFloor?: CapabilityMode;
 }> = {
   "general-purpose": {
     capabilityMode: "all",
     systemPrompt: "You are a focused coding subagent. Complete only the delegated task and return a concise evidence-based result.",
   },
   explore: {
-    capabilityMode: "execute",
-    // Keep execute as the default for command-based inspection. An explicit
-    // read-only request now retains Bash without changing its capability label.
-    capabilityFloor: "execute",
+    capabilityMode: "all",
     systemPrompt: [
       "You are an exploration subagent. Inspect the codebase and report evidence-backed findings; never modify tracked files.",
       "bash is available, and you are expected to use it to gather evidence rather than guessing:",
@@ -40,7 +31,7 @@ export const AGENT_PROFILES: Record<string, {
     ].join(" "),
   },
   plan: {
-    capabilityMode: "execute",
+    capabilityMode: "all",
     systemPrompt: "You are a planning subagent. Inspect the codebase and return an implementation plan with risks and verification steps. Do not edit files.",
   },
 };
@@ -223,16 +214,6 @@ export function cloneDefinition(definition: AgentDefinition): AgentDefinition {
   };
 }
 
-/**
- * Capability modes from narrowest to widest. A profile floor widens requests
- * whose tool set lacks the required Bash tool; read-only now satisfies it.
- */
-const CAPABILITY_ORDER: readonly CapabilityMode[] = ["read-only", "read-write", "execute", "all"];
-
-function widest(left: CapabilityMode, right: CapabilityMode): CapabilityMode {
-  return CAPABILITY_ORDER.indexOf(right) > CAPABILITY_ORDER.indexOf(left) ? right : left;
-}
-
 export function resolveProfile(type: string, capabilityMode: string | undefined): {
   type: string;
   capabilityMode: CapabilityMode;
@@ -240,16 +221,9 @@ export function resolveProfile(type: string, capabilityMode: string | undefined)
 } {
   const normalizedType = (type.trim() || "general-purpose").toLowerCase();
   const profile = AGENT_PROFILES[normalizedType] ?? AGENT_PROFILES["general-purpose"];
-  const requested = requireCapability(capabilityMode ?? profile.capabilityMode);
-  const requestedTools: readonly string[] = CAPABILITY_TOOLS[requested];
-  const resolvedCapability = profile.capabilityFloor && !requestedTools.includes("bash")
-    ? widest(requested, profile.capabilityFloor)
-    : requested;
   return {
     type: normalizedType,
-    // Keep the requested mode when it already supplies Bash. This lets
-    // read-only agents inspect through Bash without being relabelled execute.
-    capabilityMode: resolvedCapability,
+    capabilityMode: requireCapability(capabilityMode ?? profile.capabilityMode),
     systemPrompt: profile.systemPrompt,
   };
 }

@@ -189,6 +189,7 @@ export function persistedRecord(value: unknown): PersistedRecord | undefined {
     typeof candidate.prompt !== "string" ||
     typeof candidate.description !== "string" ||
     typeof candidate.type !== "string" ||
+    // Legacy snapshots still carry execute/read-write; keep them loadable.
     !["read-only", "read-write", "execute", "all"].includes(candidate.capabilityMode ?? "") ||
     typeof candidate.modelId !== "string" ||
     typeof candidate.background !== "boolean" ||

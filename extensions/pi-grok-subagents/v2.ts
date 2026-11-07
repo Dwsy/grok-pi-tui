@@ -556,7 +556,7 @@ export class TeamCoordinator {
         model: Type.Optional(Type.String({ description: "Optional model allowed by the selected external agent definition." })),
         max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Optional soft turn cap; external agent definition takes precedence." })),
         thinking_level: Type.Optional(Type.String({ description: "Optional thinking level: off, minimal, low, medium, high, xhigh, or max. Clamped to what the model supports; omitted inherits Pi settings." })),
-        capability_mode: Type.Optional(Type.String({ description: "Tool access for the child: read-only, read-write, execute, or all. Defaults to the agent definition, then all." })),
+        capability_mode: Type.Optional(Type.String({ description: "Tool access for the child: read-only or all (legacy execute/read-write map to all). Defaults to the agent definition, then all." })),
       }),
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
         await this.flushBufferedMessages();
@@ -790,7 +790,7 @@ export class TeamCoordinator {
         model: Type.Optional(Type.String({ description: "Optional model applied to every selected member, overriding each member's preset model. Must be enabled for the member's agent definition." })),
         thinking_level: Type.Optional(Type.String({ description: "Optional thinking level applied to every selected member, overriding preset thinking levels. Clamped per model." })),
         max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Optional soft turn cap applied to every selected member; 0 means unlimited. Agent definitions still take precedence." })),
-        capability_mode: Type.Optional(Type.String({ description: "Tool access for every selected member: read-only, read-write, execute, or all. Defaults to each agent definition, then all." })),
+        capability_mode: Type.Optional(Type.String({ description: "Tool access for every selected member: read-only or all (legacy execute/read-write map to all). Defaults to each agent definition, then all." })),
         instructions: Type.Optional(Type.String({ description: "Extra team-wide instruction appended to the preset instructions and shared with every member's system prompt." })),
         timeout_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_TEAM_WAIT_MS, description: "Wait this long for members to finish and return their results. 0 or omitted returns immediately and delivers final answers to /root asynchronously." })),
       }),
