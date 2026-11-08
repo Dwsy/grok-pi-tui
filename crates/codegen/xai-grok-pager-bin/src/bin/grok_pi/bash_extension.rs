@@ -82,6 +82,11 @@ pub(super) fn write_bash_extension() -> Result<BashExtension> {
         "tool-bridge.ts",
         include_str!("../../../../../../extensions/pi-grok-bash/tool-bridge.ts"),
     )?;
+    write_source_file(
+        source_dir.path(),
+        "env-tool.ts",
+        include_str!("../../../../../../extensions/pi-grok-bash/env-tool.ts"),
+    )?;
 
     write_source_file(
         source_dir.path(),
@@ -163,6 +168,8 @@ mod tests {
             std::fs::read_to_string(source_dir.join("shared.ts")).expect("read shared module");
         let tool_bridge_source = std::fs::read_to_string(source_dir.join("tool-bridge.ts"))
             .expect("read tool bridge module");
+        let env_module_source = std::fs::read_to_string(source_dir.join("env-tool.ts"))
+            .expect("read env tool module");
         let eval_mcp_source = std::fs::read_to_string(source_dir.join("eval-pi-mcp.ts"))
             .expect("read Eval MCP module");
         let token_count_source = std::fs::read_to_string(source_dir.join("eval-token-count.ts"))
@@ -191,6 +198,10 @@ mod tests {
         assert!(source.contains("from \"./eval-tasks.ts\""));
         assert!(source.contains("from \"./prompts.ts\""));
         assert!(source.contains("from \"./tool-bridge.ts\""));
+        assert!(source.contains("from \"./env-tool.ts\""));
+        assert!(env_module_source.contains("createEnvTool"));
+        assert!(env_module_source.contains("SESSION_ENV_ENTRY_TYPE"));
+        assert!(env_module_source.contains("parseEnvFile"));
         assert!(source.contains("from \"./eval-pi-mcp.ts\""));
         assert!(eval_mcp_source.contains("startEvalPiMcp"));
         assert!(eval_mcp_source.contains("from \"./eval-token-count.ts\""));

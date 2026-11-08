@@ -101,6 +101,9 @@ const BASH_TASK_NAME_DESCRIPTION =
 const BASH_BACKGROUND_WAIT_GUIDELINE =
 	"A long-running foreground Bash call may be automatically backgrounded and return a task_id. When wait_tasks/get_task_output returns a running task at the configured max-wait cap, continue the agent loop and call it again if the result is still needed.";
 
+const BASH_ENV_GUIDELINE =
+	"Project .env values appear as $ENV_<KEY>; use bash_env_tool to set or delete variables that must persist across Bash calls.";
+
 export function buildBashPrompts(
 	evalVersion: EvalVersion,
 	nativeDescription: string,
@@ -127,6 +130,6 @@ export function buildBashPrompts(
 	return {
 		description: `${nativeDescription} ${evalPreference}${BASH_TASK_NAME_DESCRIPTION}`,
 		promptSnippet,
-		promptGuidelines: [...nativeGuidelines, evalGuideline, BASH_BACKGROUND_WAIT_GUIDELINE],
+		promptGuidelines: [...nativeGuidelines, evalGuideline, BASH_BACKGROUND_WAIT_GUIDELINE, BASH_ENV_GUIDELINE],
 	};
 }

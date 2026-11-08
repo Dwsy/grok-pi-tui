@@ -52,6 +52,7 @@ import {
 	startEvalBackgroundTask,
 	waitForEvalTask,
 } from "./eval-tasks.ts";
+import { createEnvTool } from "./env-tool.ts";
 import { buildBashPrompts, buildEvalPrompts } from "./prompts.ts";
 import { MAX_TIMEOUT_SECONDS, resolveMaxWaitMs } from "./shared.ts";
 import { EvalSessionToolBridge } from "./tool-bridge.ts";
@@ -104,6 +105,8 @@ async function loadEvalV2ToolsOverride(): Promise<string[] | undefined> {
 export default async function (pi: ExtensionAPI) {
 	const bashEnabled = envFlagDefaultOn("PI_GROK_BASH") && hostToolNameEnabled("bash");
 	const maxWaitMs = resolveMaxWaitMs();
+	const envTool = bashEnabled ? createEnvTool(pi) : undefined;
+	if (envTool) pi.registerTool(envTool.definition);
 	const tasks = new Map<string, BackgroundTask>();
 	const evalTasks = new Map<string, EvalBackgroundTask>();
 	// Busy completions are appended to Pi's canonical model context at the next
@@ -160,7 +163,10 @@ export default async function (pi: ExtensionAPI) {
 		control.sync();
 		publishTodoBacking();
 	};
-	if (bashEnabled) pi.on("session_start", publishTodoBacking);
+	if (bashEnabled) {
+		pi.on("session_start", publishTodoBacking);
+		if (envTool) pi.on("session_start", (_event, ctx) => envTool.manager.sync(ctx));
+	}
 	const nativeBash = createBashToolDefinition(process.cwd());
 	const evalVersion = resolveEvalVersion();
 	const evalV2Language = evalVersion === "v2" ? resolveEvalV2LanguageSelection() : "all";
@@ -544,6 +550,7 @@ export default async function (pi: ExtensionAPI) {
 		promptSnippet: bashPrompts.promptSnippet,
 		promptGuidelines: bashPrompts.promptGuidelines,
 		async execute(toolCallId, params: BashParams, signal, onUpdate, ctx: ExtensionContext) {
+			envTool?.manager.sync(ctx);
 			if (signal?.aborted) throw new Error("aborted");
 			const taskName = params.task_name?.trim() || undefined;
 			if (params.is_background) {
@@ -554,7 +561,7 @@ export default async function (pi: ExtensionAPI) {
 					cwd: ctx.cwd,
 					timeout: params.timeout,
 					backgrounded: true,
-					env: process.env,
+					env: envTool ? envTool.manager.merge(process.env, ctx.cwd) : process.env,
 					stateChanged: syncTaskState,
 					onCompleted: notifyBashCompletion,
 					ui: ctx.ui,
@@ -586,7 +593,7 @@ export default async function (pi: ExtensionAPI) {
 							autoBackgroundMs: maxWaitMs,
 							backgrounded: false,
 							description: taskName,
-							env: options.env ?? process.env,
+							env: envTool ? envTool.manager.merge(options.env ?? process.env, cwd) : (options.env ?? process.env),
 							onData: options.onData,
 							stateChanged: syncTaskState,
 							onCompleted: notifyBashCompletion,

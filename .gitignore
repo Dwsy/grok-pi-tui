@@ -18,6 +18,8 @@ compaction-results/
 .env
 .env.*
 !.env.example
+# Agent-managed project env (local-only; may contain secrets)
+.pi/env.json
 .pi_config/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
