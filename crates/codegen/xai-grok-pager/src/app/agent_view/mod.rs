@@ -1471,6 +1471,8 @@ pub struct AgentView {
     /// Entry ID of the "Loading session ..." placeholder block pushed by `dispatch_load_session_inner`. Cleared by the `SessionLoaded`
     /// handler so the placeholder doesn't linger on screen when the loaded session has no replay content.
     pub(crate) loading_placeholder_id: Option<EntryId>,
+    pub(crate) tree_projection: Option<crate::app::tree_projection::TextProjectionCache>,
+    pub(crate) tree_navigation_pending: bool,
     /// Entry ID of the in-flight manual `/recap` loading block (rendered with the animated "running" sidebar). Set when `/recap` is dispatched and taken by the `SessionRecap` handler, which fills the block with the summary and stops the animation. `None` when no manual recap is pending (auto recaps never show a loading block).
     pub(crate) pending_recap_entry: Option<EntryId>,
     /// The manually-chosen session title (`/rename` or the dashboard rename flow), as distinct from the auto-generated

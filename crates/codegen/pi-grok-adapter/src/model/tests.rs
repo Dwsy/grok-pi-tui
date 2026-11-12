@@ -1,6 +1,15 @@
 use super::*;
 use serde_json::json;
 
+/// Parse Pi's persisted active branch rather than only the compacted runtime
+/// context. The RPC payload is an append log plus `leafId`; sibling branches are
+/// excluded while messages before compaction and visible summaries are kept.
+fn parse_entries(value: &Value) -> Vec<PiReplayEntry> {
+    let mut cache = PiEntryReplayCache::default();
+    cache.reset("", value);
+    cache.replay_entries()
+}
+
 #[test]
 fn build_session_tree_flattens_depth_and_marks_current_leaf() {
     let tree = build_session_tree(

@@ -2830,6 +2830,7 @@ pub enum TaskResult {
         session_id: String,
         leaf_id: Option<String>,
         editor_text: Option<String>,
+        text_projection: Option<serde_json::Value>,
     },
     /// Pi tree navigation failed; keep current view.
     SessionTreeNavigateFailed {

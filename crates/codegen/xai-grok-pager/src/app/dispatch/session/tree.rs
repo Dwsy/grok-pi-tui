@@ -58,12 +58,17 @@ pub(in crate::app::dispatch) fn dispatch_navigate_session_tree(
         app.show_toast("No active session");
         return vec![];
     };
+    if agent.tree_navigation_pending {
+        app.show_toast("Tree navigation is already in progress");
+        return vec![];
+    }
     let agent_id = agent.session.id;
     if entry_id.trim().is_empty() {
         app.show_toast("Tree entry id is empty");
         return vec![];
     }
     with_active_agent(app, |agent| {
+        agent.tree_navigation_pending = true;
         agent.active_modal = None;
     });
     // Status feedback while the navigate_tree ACP call (which performs the
@@ -244,15 +249,47 @@ pub(in crate::app::dispatch) fn handle_session_tree_navigated(
     session_id: String,
     leaf_id: Option<String>,
     editor_text: Option<String>,
+    text_projection: Option<serde_json::Value>,
 ) -> Vec<Effect> {
+    let minimal = app.screen_mode.is_minimal();
     let Some(agent) = app.agents.get_mut(&agent_id) else {
         return vec![];
     };
+    agent.tree_navigation_pending = false;
+    if agent.session.session_id.as_ref().map(|s| s.0.as_ref()) != Some(session_id.as_str()) {
+        return vec![];
+    }
     if let Some(editor_text) = editor_text.filter(|text| !text.is_empty())
         && agent.prompt.text().trim().is_empty()
     {
         agent.prompt.set_text(&editor_text);
     }
+    if !minimal
+        && agent.session.state.is_idle()
+        && !agent.session.loading_replay
+        && !agent.scrollback.in_batch()
+        && agent.loading_placeholder_id.is_none()
+        && agent.subagent_views.is_empty()
+        && agent.workflow_runs.is_empty()
+        && agent.workflow_blocks.is_empty()
+        && let Some(projection) = text_projection
+        && let Some(cache) = crate::app::tree_projection::apply(
+            &mut agent.scrollback,
+            agent.tree_projection.take(),
+            &session_id,
+            projection,
+        )
+    {
+        agent.begin_replay_window();
+        agent.session.loading_replay = false;
+        agent.tree_projection = Some(cache);
+        agent.session.tracker = AcpUpdateTracker::new();
+        agent.todo = crate::views::todo_pane::TodoPane::new();
+        agent.active_modal = None;
+        app.show_toast("Navigated to selected point");
+        return vec![];
+    }
+    agent.tree_projection = None;
     while agent.scrollback.in_batch() {
         agent.scrollback.end_batch();
     }
@@ -294,6 +331,7 @@ pub(in crate::app::dispatch) fn handle_session_tree_navigate_failed(
 ) -> Vec<Effect> {
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         // Keep tree open if present; only clear on hard failure path callers.
+        agent.tree_navigation_pending = false;
         agent.abort_session_reload();
     }
     app.show_toast(&format!("Tree navigation failed: {error}"));

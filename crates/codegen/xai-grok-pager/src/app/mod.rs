@@ -72,6 +72,7 @@ pub(crate) mod workspace_sync;
 #[cfg(test)]
 pub(crate) mod workspace_test_fixtures;
 mod xt_filter;
+pub(crate) mod tree_projection;
 pub(crate) use crate::terminal::{kitty_flags_pushed, kitty_releases_reported};
 use anyhow::Context as _;
 pub use cli::{

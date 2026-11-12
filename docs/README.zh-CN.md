@@ -4,6 +4,8 @@
 
 [下载最新版本](https://github.com/Dwsy/grok-pi/releases/latest) · [English](../README.md) · [功能矩阵](FEATURE_MATRIX.md) · [架构说明](NATIVE_GROK_TUI_ALIGNMENT.md) · [验证记录](VERIFICATION.md) · [更新日志](CHANGELOG.zh-CN.md) · [Changelog (EN)](../CHANGELOG.MD)
 
+非 minimal 模式下，普通文本 Pi 会话树跳转会复用未变化的对话前缀；包含工具等复杂状态的历史保留完整回放。
+
 ## 安装
 
 ### macOS / Linux

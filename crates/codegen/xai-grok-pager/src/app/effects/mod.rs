@@ -820,6 +820,10 @@ pub(crate) fn execute(
                             session_id,
                             leaf_id,
                             editor_text,
+                            text_projection: payload
+                                .get("textProjection")
+                                .filter(|v| !v.is_null())
+                                .cloned(),
                         }
                     }
                     Err(error) => {

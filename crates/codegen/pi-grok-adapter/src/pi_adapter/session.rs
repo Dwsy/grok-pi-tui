@@ -727,7 +727,18 @@ impl PiAgent {
             let editor_text = state.entry_replay_cache.editor_text(entry_id);
             (session_id, leaf_id, editor_text)
         };
+        let projection = if summarize {
+            None
+        } else {
+            self.state.borrow().entry_replay_cache.text_tree_projection()
+        };
+        if projection.is_some() {
+            let bootstrap = self.state.borrow().bootstrap.clone();
+            self.publish_bootstrap(&bootstrap).await;
+            self.refresh_context_usage().await;
+        }
         Ok(json!({
+            "textProjection": projection,
             "sessionId": session_id,
             "leafId": leaf_id,
             "editorText": editor_text,

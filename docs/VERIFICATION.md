@@ -532,3 +532,13 @@ Branch: `sync/upstream-98c3b24` (not yet merged back to `main`)
 | Architecture invariants | adapter headless; Pager is the only TUI; Pi is the only core |
 
 Known remaining blockers are the Python tree-sitter dependency, deliberate verifier/mock baseline maintenance, the resolver-dependent Hooks test, and manual real-model runtime acceptance described above.
+
+## 2026-11-09: Pi Tree ordinary-message projection
+
+- Adapter focused tests: 2 passed / 0 failed.
+- Pager `--lib tree_projection`: 6 passed / 0 failed; the manual benchmark is ignored by default and passed separately.
+- `./scripts/cargo-shared.sh check -p xai-grok-pager-bin --bin grok-pi`: passed (existing warnings only).
+- New module rustfmt check and whitespace diff check: passed.
+- Debug benchmark after compilation completed: 200 shared turns, about 1 MB Markdown, five samples; full projection median 1712.7 ms, incremental 21.1 ms. Includes snapshot clone/decode; excludes Pi RPC, layout and terminal output. This is a local projection benchmark, not end-to-end navigation or a memory measurement.
+- The native architecture verifier still fails its existing source-identity baselines and older protocol-string checks. Adapter headless/native-entry and explicit-seam checks pass; only the added `app/tree_projection.rs` is newly declared.
+- Scope and rollback: [local PR record](pr/pager/20261109-Pi%20Tree%20普通消息增量投影.md). Stateful/tool histories retain full replay; first navigation or live content changes establish a new text projection. Real-terminal acceptance remains pending.

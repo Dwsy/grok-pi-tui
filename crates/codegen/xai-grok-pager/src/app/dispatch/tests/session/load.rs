@@ -3518,3 +3518,40 @@ fn plain_picker_fetch_carries_no_query_and_bumps_seq() {
         "picker fetch must be unfiltered and supersede the search, got {effects:?}"
     );
 }
+
+#[test]
+fn text_tree_projection_uses_native_blocks_and_unsupported_payload_reloads() {
+    let mut app = test_app_with_agent();
+    let id = get_active_agent(&app).unwrap().session.id;
+    app.agents.get_mut(&id).unwrap().session.session_id = Some(acp::SessionId::new("tree-text"));
+    let projection = serde_json::json!({"version":1,"messages":[
+        {"id":"u","role":"user","parts":[{"kind":"user","text":"hello"}]},
+        {"id":"a","role":"assistant","parts":[{"kind":"assistant","text":"world"}]}
+    ]});
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionTreeNavigated {
+            agent_id: id,
+            session_id: "tree-text".into(),
+            leaf_id: Some("a".into()),
+            editor_text: None,
+            text_projection: Some(projection),
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    assert_eq!(app.agents[&id].scrollback.len(), 2);
+    assert!(app.agents[&id].tree_projection.is_some());
+    assert!(!app.agents[&id].session.loading_replay);
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionTreeNavigated {
+            agent_id: id,
+            session_id: "tree-text".into(),
+            leaf_id: Some("a".into()),
+            editor_text: None,
+            text_projection: Some(serde_json::json!({"version":99,"messages":[]})),
+        }),
+        &mut app,
+    );
+    assert!(matches!(effects.as_slice(), [Effect::LoadSession { .. }]));
+    assert!(app.agents[&id].tree_projection.is_none());
+}

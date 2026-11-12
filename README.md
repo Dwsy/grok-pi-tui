@@ -7,6 +7,8 @@
 
 [Download latest release](https://github.com/Dwsy/grok-pi/releases/latest) · [ZH](docs/README.zh-CN.md) · [Feature matrix](docs/FEATURE_MATRIX.md) · [Architecture](docs/NATIVE_GROK_TUI_ALIGNMENT.md) · [Verification](docs/VERIFICATION.md) · [Changelog](CHANGELOG.MD) · [更新日志](docs/CHANGELOG.zh-CN.md)
 
+Ordinary text-only Pi tree navigation reuses unchanged conversation prefixes outside minimal mode; stateful histories retain full replay.
+
 ## Install
 
 ### macOS / Linux

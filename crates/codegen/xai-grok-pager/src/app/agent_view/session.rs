@@ -399,6 +399,8 @@ impl AgentView {
             pending_first_prompt: None,
             pending_fork_banner: None,
             loading_placeholder_id: None,
+            tree_projection: None,
+            tree_navigation_pending: false,
             pending_recap_entry: None,
             display_name: None,
             generated_session_title: None,
@@ -679,6 +681,7 @@ impl AgentView {
     }
     /// Enter a `session/load` replay window: the fields coupled to that transition (including `cancel_latency`) reset together in one place.
     pub(crate) fn begin_replay_window(&mut self) {
+        self.tree_projection = None;
         self.clear_minimal_btw_lifecycle();
         self.session.loading_replay = true;
         self.replayed_terminal_prompts.clear();

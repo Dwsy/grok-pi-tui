@@ -980,6 +980,74 @@ impl PiEntryReplayCache {
         self.apply_payload(value, true);
     }
 
+    /// Conservative, self-contained projection for ordinary text conversations.
+    /// Any stateful/custom/tool entry requires the existing full replay.
+    pub fn text_tree_projection(&self) -> Option<Value> {
+        let branch = self.active_branch_entries();
+        if !self.leaf_known || (self.leaf_id.is_some() && branch.is_empty()) {
+            return None;
+        }
+        // Reject stateful histories before cloning/parsing any long text prefix.
+        for entry in &branch {
+            match string(entry, &["type"])? {
+                "model_change" | "thinking_level_change" => continue,
+                "message" => {}
+                _ => return None,
+            }
+            let message = entry.get("message")?;
+            if !matches!(string(message, &["role"])?, "user" | "assistant") {
+                return None;
+            }
+            match message.get("content")? {
+                Value::String(_) => {}
+                Value::Array(parts)
+                    if parts.iter().all(|part| {
+                        matches!(
+                            content_kind(part).as_str(),
+                            "text" | "thinking" | "reasoning"
+                        )
+                    }) => {}
+                _ => return None,
+            }
+        }
+        let mut messages = Vec::new();
+        for entry in branch {
+            match string(entry, &["type"])? {
+                "model_change" | "thinking_level_change" => continue,
+                "message" => {}
+                _ => return None,
+            }
+            let id = string(entry, &["id"])?;
+            let message = entry.get("message")?;
+            let role = string(message, &["role"])?;
+            if !matches!(role, "user" | "assistant") {
+                return None;
+            }
+            let mut parts = Vec::new();
+            for replay in parse_replay_values([entry]) {
+                let (kind, text) = match replay.item {
+                    PiHistoryItem::UserText(text) => ("user", text),
+                    PiHistoryItem::AgentText(text) => ("assistant", text),
+                    PiHistoryItem::AgentThought(text) => ("thinking", text),
+                    _ => return None,
+                };
+                // Skill-body suppression is stateful across messages.
+                if text.contains("<command-name>") || text.contains("<skill") {
+                    return None;
+                }
+                parts.push(serde_json::json!({"kind": kind, "text": text}));
+            }
+            if parts.is_empty() {
+                return None;
+            }
+            messages.push(serde_json::json!({
+                "id": id, "role": role,
+                "timestampMs": extract_message_timestamp(entry), "parts": parts
+            }));
+        }
+        Some(serde_json::json!({"version": 1, "messages": messages}))
+    }
+
     pub fn replay_entries(&self) -> Vec<PiReplayEntry> {
         let selected = self.active_branch_entries();
         parse_replay_values(selected.into_iter().filter(|entry| replayable_entry(entry)))
@@ -1370,15 +1438,6 @@ pub fn parse_messages(value: &Value) -> Vec<PiReplayEntry> {
         .or_else(|| value.get("history"))
         .unwrap_or(value);
     parse_replay_values(source.as_array().into_iter().flatten())
-}
-
-/// Parse Pi's persisted active branch rather than only the compacted runtime
-/// context. The RPC payload is an append log plus `leafId`; sibling branches are
-/// excluded while messages before compaction and visible summaries are kept.
-pub fn parse_entries(value: &Value) -> Vec<PiReplayEntry> {
-    let mut cache = PiEntryReplayCache::default();
-    cache.reset("", value);
-    cache.replay_entries()
 }
 
 /// Eval-v2-only nested host tool calls never enter Pi's model transcript; the
@@ -1941,3 +2000,37 @@ pub fn json_text(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod text_tree_projection_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn stable_entry_identity_and_complex_history_fallback() {
+        let mut cache = PiEntryReplayCache::default();
+        cache.reset("s", &json!({"leafId":"a","entries":[
+            {"id":"u","parentId":null,"type":"message","message":{"role":"user","content":"hi"}},
+            {"id":"a","parentId":"u","type":"message","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
+        ]}));
+        let projection = cache.text_tree_projection().unwrap();
+        assert_eq!(projection["messages"][0]["id"], "u");
+        assert_eq!(projection["messages"][1]["parts"][0]["text"], "hello");
+        cache.append(&json!({"leafId":"t","entries":[
+            {"id":"t","parentId":"a","type":"message","message":{"role":"toolResult","content":"result"}}
+        ]}));
+        assert!(cache.text_tree_projection().is_none());
+        cache.append(&json!({"leafId":"missing","entries":[]}));
+        assert!(cache.text_tree_projection().is_none());
+    }
+    #[test]
+    fn custom_entries_and_images_do_not_silently_disappear() {
+        for entry in [
+            json!({"id":"c","type":"custom","customType":"workflow","data":{}}),
+            json!({"id":"c","type":"message","message":{"role":"user","content":[{"type":"image","data":"AA==","mimeType":"image/png"}]}}),
+        ] {
+            let mut cache = PiEntryReplayCache::default();
+            cache.reset("s", &json!({"leafId":"c","entries":[entry]}));
+            assert!(cache.text_tree_projection().is_none());
+        }
+    }
+}

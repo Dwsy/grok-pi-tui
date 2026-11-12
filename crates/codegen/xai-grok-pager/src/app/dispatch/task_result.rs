@@ -724,12 +724,14 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             session_id,
             leaf_id,
             editor_text,
+            text_projection,
         } => super::session::tree::handle_session_tree_navigated(
             app,
             agent_id,
             session_id,
             leaf_id,
             editor_text,
+            text_projection,
         ),
         TaskResult::SessionTreeNavigateFailed { agent_id, error } => {
             super::session::tree::handle_session_tree_navigate_failed(app, agent_id, error)
