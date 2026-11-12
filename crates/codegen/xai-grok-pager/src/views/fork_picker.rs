@@ -163,6 +163,7 @@ mod tests {
                 })
                 .collect(),
             selected: n.saturating_sub(1),
+            to_dashboard: false,
         }
     }
 
