@@ -119,10 +119,27 @@ jobs:
         with:
           ref: ${{ env.GROK_PI_RELEASE_TAG }}
 
-      - name: Install Rust 1.94.0
-        uses: dtolnay/rust-toolchain@1.94.0
+      - name: Read repository Rust version
+        id: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel=$(sed -n 's/^channel = "\([^"]*\)".*/\1/p' rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install repository Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust.outputs.channel }}
           targets: ${{ matrix.target }}
+
+      - name: Verify active Rust target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          rustup target list --installed | grep -Fx -- '${{ matrix.target }}'
 
       # Releases run on distinct v* tag refs. Actions target caches written by
       # one tag are not readable by the next tag, yet macOS/Windows previously
