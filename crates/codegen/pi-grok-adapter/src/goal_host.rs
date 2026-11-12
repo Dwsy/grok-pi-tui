@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 const CONTINUATION_LOOP_WINDOW: Duration = Duration::from_secs(30);
@@ -18,6 +18,9 @@ const CONTINUATION_LOOP_GUARD_MESSAGE: &str =
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalControl {
+    /// Pi session identity. Empty legacy controls are never replayed across sessions.
+    #[serde(default)]
+    pub session_id: String,
     pub goal_id: String,
     pub objective: String,
     /// `active` | `user_paused` | `blocked` | `complete` | `cleared`
@@ -46,6 +49,27 @@ fn default_phase() -> String {
 }
 
 impl GoalControl {
+    pub fn cleared(session_id: String) -> Self {
+        Self {
+            session_id,
+            goal_id: String::new(),
+            objective: String::new(),
+            status: "cleared".into(),
+            phase: "idle".into(),
+            token_budget: None,
+            token_baseline: 0,
+            tokens_used: 0,
+            created_at: String::new(),
+            pause_message: None,
+            last_event: Some("goal_cleared".into()),
+            last_event_detail: None,
+        }
+    }
+
+    pub fn matches_session(&self, session_id: &str) -> bool {
+        !session_id.is_empty() && self.session_id == session_id
+    }
+
     pub fn is_active(&self) -> bool {
         self.status == "active"
     }
@@ -59,8 +83,8 @@ impl GoalControl {
 pub struct GoalHost {
     control_path: PathBuf,
     started: Option<Instant>,
-    last_snapshot: Option<GoalControl>,
-    continuation_goal_id: Option<String>,
+    tracked_goal: Option<(String, String)>,
+    continuation_goal_id: Option<(String, String)>,
     continuation_sends: VecDeque<Instant>,
     continuation_guard_armed: bool,
 }
@@ -70,15 +94,11 @@ impl GoalHost {
         Self {
             control_path,
             started: None,
-            last_snapshot: None,
+            tracked_goal: None,
             continuation_goal_id: None,
             continuation_sends: VecDeque::new(),
             continuation_guard_armed: false,
         }
-    }
-
-    pub fn control_path(&self) -> &Path {
-        &self.control_path
     }
 
     pub fn load(&mut self) -> Option<GoalControl> {
@@ -88,26 +108,52 @@ impl GoalHost {
         Some(control)
     }
 
-    pub fn apply_control(&mut self, control: GoalControl) {
-        if control.is_present() && self.started.is_none() {
-            self.started = Some(Instant::now());
+    /// Reject stale per-process IPC projections before they mutate the host
+    /// timer or continuation guard, even when another session just switched.
+    pub fn load_for_session(&mut self, session_id: &str) -> Option<GoalControl> {
+        let raw = std::fs::read_to_string(&self.control_path).ok()?;
+        let control: GoalControl = serde_json::from_str(&raw).ok()?;
+        if !control.matches_session(session_id) {
+            return None;
         }
-        if !control.is_present() {
-            self.started = None;
+        self.apply_control(control.clone());
+        Some(control)
+    }
+
+    pub fn apply_control(&mut self, control: GoalControl) {
+        let identity = control
+            .is_present()
+            .then(|| (control.session_id.clone(), control.goal_id.clone()));
+        // A new goal (or switched Pi session) must never inherit the old
+        // goal's elapsed clock or continuation-loop guard.
+        if self.tracked_goal != identity {
+            self.started = identity.as_ref().map(|_| Instant::now());
+            self.tracked_goal = identity;
         }
         let same_active_goal = control.is_active()
-            && self.continuation_goal_id.as_deref() == Some(control.goal_id.as_str());
+            && self.continuation_goal_id.as_ref()
+                == Some(&(control.session_id.clone(), control.goal_id.clone()));
         if !same_active_goal {
             self.continuation_sends.clear();
             self.continuation_guard_armed = false;
-            self.continuation_goal_id = control.is_active().then(|| control.goal_id.clone());
+            self.continuation_goal_id = control
+                .is_active()
+                .then(|| (control.session_id.clone(), control.goal_id.clone()));
         }
-        self.last_snapshot = Some(control);
+    }
+
+    pub fn reset_session(&mut self) {
+        self.started = None;
+        self.tracked_goal = None;
+        self.continuation_goal_id = None;
+        self.continuation_sends.clear();
+        self.continuation_guard_armed = false;
     }
 
     pub fn continuation_guard_armed(&self, control: &GoalControl) -> bool {
         control.is_active()
-            && self.continuation_goal_id.as_deref() == Some(control.goal_id.as_str())
+            && self.continuation_goal_id.as_ref()
+                == Some(&(control.session_id.clone(), control.goal_id.clone()))
             && self.continuation_guard_armed
     }
 
@@ -119,8 +165,10 @@ impl GoalHost {
         if !control.is_active() {
             return false;
         }
-        if self.continuation_goal_id.as_deref() != Some(control.goal_id.as_str()) {
-            self.continuation_goal_id = Some(control.goal_id.clone());
+        if self.continuation_goal_id.as_ref()
+            != Some(&(control.session_id.clone(), control.goal_id.clone()))
+        {
+            self.continuation_goal_id = Some((control.session_id.clone(), control.goal_id.clone()));
             self.continuation_sends.clear();
             self.continuation_guard_armed = false;
         }
@@ -138,6 +186,23 @@ impl GoalHost {
         self.continuation_guard_armed
     }
 
+    /// Prevent ACP cancel from being followed by an idle Goal auto-continuation.
+    /// The Pi agent_settled(aborted) hook records the same pause in the durable
+    /// session JSONL, not in a separate database.
+    pub fn pause_for_cancel(&mut self, control: &GoalControl) -> std::io::Result<GoalControl> {
+        let mut paused = control.clone();
+        paused.status = "user_paused".into();
+        paused.phase = "idle".into();
+        paused.pause_message = Some("Execution cancelled. Use /goal resume to continue.".into());
+        paused.last_event = Some("goal_paused".into());
+        paused.last_event_detail = Some("cancelled".into());
+        let raw = serde_json::to_string_pretty(&paused)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        std::fs::write(&self.control_path, raw)?;
+        self.apply_control(paused.clone());
+        Ok(paused)
+    }
+
     pub fn block_continuation_loop(
         &mut self,
         control: &GoalControl,
@@ -153,10 +218,6 @@ impl GoalHost {
         std::fs::write(&self.control_path, raw)?;
         self.apply_control(blocked.clone());
         Ok(blocked)
-    }
-
-    pub fn snapshot(&self) -> Option<&GoalControl> {
-        self.last_snapshot.as_ref()
     }
 
     pub fn elapsed_ms(&self) -> u64 {
@@ -211,26 +272,6 @@ impl GoalHost {
     }
 }
 
-/// Parse `--budget N` and objective from `/goal` args.
-pub fn parse_goal_set_args(args: &str) -> (String, Option<i64>) {
-    let mut budget = None;
-    let mut parts = Vec::new();
-    let tokens: Vec<&str> = args.split_whitespace().collect();
-    let mut i = 0;
-    while i < tokens.len() {
-        if tokens[i] == "--budget" {
-            if let Some(n) = tokens.get(i + 1).and_then(|s| s.parse::<i64>().ok()) {
-                budget = Some(n.max(0));
-                i += 2;
-                continue;
-            }
-        }
-        parts.push(tokens[i]);
-        i += 1;
-    }
-    (parts.join(" "), budget)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +280,7 @@ mod tests {
 
     fn active_control() -> GoalControl {
         GoalControl {
+            session_id: "sess".into(),
             goal_id: "g".into(),
             objective: "x".into(),
             status: "active".into(),
@@ -254,18 +296,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_goal_set_args_budget() {
-        let (obj, budget) = parse_goal_set_args("ship auth --budget 50000");
-        assert_eq!(obj, "ship auth");
-        assert_eq!(budget, Some(50000));
-    }
-
-    #[test]
     fn load_and_notify() {
         let mut f = NamedTempFile::new().unwrap();
         write!(
             f,
-            r#"{{"goalId":"g1","objective":"done","status":"active","phase":"executing","tokenBaseline":0,"tokensUsed":10,"createdAt":"t"}}"#
+            r#"{{"sessionId":"sess","goalId":"g1","objective":"done","status":"active","phase":"executing","tokenBaseline":0,"tokensUsed":10,"createdAt":"t"}}"#
         )
         .unwrap();
         let mut host = GoalHost::new(f.path().to_path_buf());
@@ -311,8 +346,56 @@ mod tests {
     }
 
     #[test]
+    fn stale_control_does_not_mutate_host_session_guard() {
+        let mut f = NamedTempFile::new().unwrap();
+        let mut control = active_control();
+        control.goal_id = "first".into();
+        serde_json::to_writer(&mut f, &control).unwrap();
+        let mut host = GoalHost::new(f.path().to_path_buf());
+        assert!(host.load_for_session("sess").is_some());
+        let tick = Instant::now();
+        host.record_continuation_at(&control, tick);
+        host.record_continuation_at(&control, tick + Duration::from_secs(1));
+        // A stale IPC projection for B must not reset A's continuation guard.
+        control.session_id = "other".into();
+        std::fs::write(f.path(), serde_json::to_vec(&control).unwrap()).unwrap();
+        assert!(host.load_for_session("sess").is_none());
+        let mut same_a = control.clone();
+        same_a.session_id = "sess".into();
+        assert!(host.record_continuation_at(&same_a, tick + Duration::from_secs(2)));
+        assert!(host.continuation_guard_armed(&same_a));
+    }
+
+    #[test]
+    fn goal_identity_and_cancel_are_scoped_to_session() {
+        let f = NamedTempFile::new().unwrap();
+        let mut host = GoalHost::new(f.path().to_path_buf());
+        let a = active_control();
+        assert!(a.matches_session("sess"));
+        assert!(!a.matches_session("other"));
+        host.apply_control(a.clone());
+        let tick = Instant::now();
+        host.record_continuation_at(&a, tick);
+        host.record_continuation_at(&a, tick + Duration::from_secs(1));
+        let mut b = a.clone();
+        b.session_id = "other".into();
+        host.apply_control(b.clone());
+        assert!(!host.continuation_guard_armed(&b));
+        host.record_continuation_at(&b, tick + Duration::from_secs(2));
+        assert!(!host.continuation_guard_armed(&b));
+        let paused = host.pause_for_cancel(&b).unwrap();
+        assert_eq!(paused.status, "user_paused");
+        assert_eq!(paused.last_event_detail.as_deref(), Some("cancelled"));
+        let restored: GoalControl =
+            serde_json::from_str(&std::fs::read_to_string(f.path()).unwrap()).unwrap();
+        assert!(restored.matches_session("other"));
+        assert_eq!(restored.status, "user_paused");
+    }
+
+    #[test]
     fn cleared_not_present() {
         let c = GoalControl {
+            session_id: "sess".into(),
             goal_id: "g".into(),
             objective: "x".into(),
             status: "cleared".into(),

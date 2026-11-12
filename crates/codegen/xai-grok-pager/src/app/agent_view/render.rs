@@ -5133,19 +5133,38 @@ impl AgentView {
             && let Some(ref goal) = self.goal_state
         {
             let todos = self.todo.todos();
-            let overlay_rect = crate::views::goal_detail::goal_detail_area(area, goal, todos);
-            let tick = self.tasks.tick_count() as usize;
+            let expanded = crate::views::goal_workspace::goal_workspace_area(area);
+            // Keep the original compact native overlay for very small terminals.
+            let use_workspace = expanded.width >= 44 && expanded.height >= 16;
+            let overlay_rect = if use_workspace {
+                expanded
+            } else {
+                crate::views::goal_detail::goal_detail_area(area, goal, todos)
+            };
             let active_subagent_tokens = self.live_standalone_subagent_tokens();
-            let close_rect = crate::views::goal_detail::render_goal_detail(
-                buf,
-                overlay_rect,
-                goal,
-                todos,
-                tick,
-                self.context_state.as_ref().map(|c| c.used),
-                active_subagent_tokens,
-                self.hit_goal_close.hovered,
-            );
+            let close_rect = if use_workspace {
+                crate::views::goal_workspace::render_goal_workspace(
+                    buf,
+                    overlay_rect,
+                    goal,
+                    todos,
+                    &mut self.goal_workspace,
+                    self.context_state.as_ref().map(|c| c.used),
+                    active_subagent_tokens,
+                    self.hit_goal_close.hovered,
+                )
+            } else {
+                crate::views::goal_detail::render_goal_detail(
+                    buf,
+                    overlay_rect,
+                    goal,
+                    todos,
+                    self.tasks.tick_count() as usize,
+                    self.context_state.as_ref().map(|c| c.used),
+                    active_subagent_tokens,
+                    self.hit_goal_close.hovered,
+                )
+            };
             self.hit_goal_close.rect = close_rect;
             self.frame_occluder_rects.push(overlay_rect);
         }

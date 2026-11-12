@@ -1784,6 +1784,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             with_active_agent(app, |agent| {
                 if agent.goal_state.is_some() {
                     agent.show_goal_detail = !agent.show_goal_detail;
+                    if agent.show_goal_detail {
+                        agent.goal_workspace.scroll = 0;
+                    }
                 }
             });
             vec![]

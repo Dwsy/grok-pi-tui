@@ -583,14 +583,54 @@ impl AgentView {
             if let Event::Key(key) = ev
                 && key.kind != KeyEventKind::Release
             {
+                use crate::views::goal_workspace::GoalWorkspaceTab;
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('g') | KeyCode::Char('q') => {
                         self.show_goal_detail = false;
+                    }
+                    KeyCode::Char('1') => self.goal_workspace.select(GoalWorkspaceTab::Overview),
+                    KeyCode::Char('2') => self.goal_workspace.select(GoalWorkspaceTab::Timeline),
+                    KeyCode::Char('3') => self.goal_workspace.select(GoalWorkspaceTab::Diagnostics),
+                    KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
+                        self.goal_workspace.select(self.goal_workspace.tab.next());
+                    }
+                    KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                        self.goal_workspace.select(self.goal_workspace.tab.previous());
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => self.goal_workspace.scroll_down(1),
+                    KeyCode::Up | KeyCode::Char('k') => self.goal_workspace.scroll_up(1),
+                    KeyCode::PageDown => self.goal_workspace.scroll_down(10),
+                    KeyCode::PageUp => self.goal_workspace.scroll_up(10),
+                    KeyCode::Home => self.goal_workspace.scroll = 0,
+                    KeyCode::End => self.goal_workspace.scroll = self.goal_workspace.max_scroll,
+                    _ => {}
+                }
+                return InputOutcome::Changed;
+            }
+            if let Event::Mouse(mouse) = ev {
+                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                    use crate::views::goal_workspace::GoalWorkspaceTab;
+                    if let Some(index) = self.goal_workspace.tab_hits.iter()
+                        .position(|rect| rect.contains((mouse.column, mouse.row).into()))
+                    {
+                        self.goal_workspace.select(match index {
+                            0 => GoalWorkspaceTab::Overview,
+                            1 => GoalWorkspaceTab::Timeline,
+                            _ => GoalWorkspaceTab::Diagnostics,
+                        });
                         return InputOutcome::Changed;
                     }
-                    _ => {
+                }
+                match mouse.kind {
+                    MouseEventKind::ScrollDown => {
+                        self.goal_workspace.scroll_down(3);
                         return InputOutcome::Changed;
                     }
+                    MouseEventKind::ScrollUp => {
+                        self.goal_workspace.scroll_up(3);
+                        return InputOutcome::Changed;
+                    }
+                    _ => {}
                 }
             }
             if let Event::Mouse(mouse) = ev

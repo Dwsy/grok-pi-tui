@@ -430,6 +430,11 @@ impl PiAgent {
 
     pub(super) async fn emit_goal_updated_from_control(&self, control: &GoalControl) {
         let session_id = self.session_id().0.to_string();
+        // A late old-session bridge notification must not enter the new
+        // session's Pager state, including a late goal_cleared tombstone.
+        if !control.matches_session(&session_id) {
+            return;
+        }
         let payload = {
             let host = self.goal_host.borrow();
             let Some(host) = host.as_ref() else {
@@ -442,9 +447,24 @@ impl PiAgent {
     }
 
     pub(super) async fn refresh_goal_from_disk(&self) -> Option<GoalControl> {
+        let session_id = self.session_id().0.to_string();
         let mut host = self.goal_host.borrow_mut();
         let host = host.as_mut()?;
-        host.load()
+        host.load_for_session(&session_id)
+    }
+
+    /// Called after bootstrap switches and on initial attach. A missing
+    /// current-session goal clears the Pager instead of preserving a prior
+    /// session's stale status chip.
+    pub async fn sync_goal_for_current_session(&self) {
+        if self.goal_host.borrow().is_none() {
+            return;
+        }
+        let control = match self.refresh_goal_from_disk().await {
+            Some(control) => control,
+            None => GoalControl::cleared(self.session_id().0.to_string()),
+        };
+        self.emit_goal_updated_from_control(&control).await;
     }
 
     /// Extension bridge: control file already written; reload + GoalUpdated.
@@ -463,14 +483,22 @@ impl PiAgent {
         if custom_type != Some("pi-grok-goal/v1") {
             return Ok(false);
         }
-        if let Some(control) = self.refresh_goal_from_disk().await {
-            self.emit_goal_updated_from_control(&control).await;
-        } else if let Some(control) = message
+        // Validate the event's original session even when the process control
+        // file has already been overwritten by a newer session switch.
+        let event_control = message
             .get("details")
             .or_else(|| message.get("data"))
             .and_then(|d| d.get("control"))
-            .and_then(|c| serde_json::from_value::<GoalControl>(c.clone()).ok())
+            .and_then(|c| serde_json::from_value::<GoalControl>(c.clone()).ok());
+        let session_id = self.session_id().0.to_string();
+        if let Some(ref control) = event_control
+            && !control.matches_session(&session_id)
         {
+            return Ok(true);
+        }
+        if let Some(control) = self.refresh_goal_from_disk().await {
+            self.emit_goal_updated_from_control(&control).await;
+        } else if let Some(control) = event_control {
             if let Some(host) = self.goal_host.borrow_mut().as_mut() {
                 host.apply_control(control.clone());
             }
@@ -882,6 +910,11 @@ impl PiAgent {
         let mut state = self.state.borrow_mut();
         let session_changed = state.acp_session_id != bootstrap.state.session_id;
         state.acp_session_id = bootstrap.state.session_id.clone();
+        if session_changed {
+            if let Some(host) = self.goal_host.borrow_mut().as_mut() {
+                host.reset_session();
+            }
+        }
         state.model_map = bootstrap
             .models
             .iter()

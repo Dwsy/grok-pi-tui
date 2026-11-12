@@ -1260,10 +1260,18 @@ pub(super) fn handle_session_notification_with_origin(
                     .as_ref()
                     .is_none_or(|g| g.status != GoalDisplayStatus::Complete);
             if status == "cleared" {
+                // An in-flight clear from an older execution generation must
+                // not remove a newer goal created/restored with a different ID.
+                if !goal_id.is_empty()
+                    && agent.goal_state.as_ref().is_some_and(|g| g.goal_id != goal_id)
+                {
+                    return false;
+                }
                 if let Some(g) = agent.goal_state.take() {
                     agent.last_cleared_goal_id = Some(g.goal_id);
                 }
                 agent.show_goal_detail = false;
+                agent.goal_workspace.clear();
                 true
             } else if agent.last_cleared_goal_id.as_deref() == Some(goal_id.as_str()) {
                 false
@@ -1322,6 +1330,9 @@ pub(super) fn handle_session_notification_with_origin(
                     received_at: std::time::Instant::now(),
                     elapsed_floor_ms,
                 });
+                if let Some(ref current) = agent.goal_state {
+                    agent.goal_workspace.record_update(current);
+                }
                 true
             }
         }

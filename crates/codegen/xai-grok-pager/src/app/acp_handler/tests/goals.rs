@@ -247,6 +247,20 @@
     }
 
     #[test]
+    fn late_clear_from_old_goal_does_not_remove_restored_generation() {
+        let mut app = make_app_with_agent("sess-A");
+        send_goal_update(&mut app, "old", "active", 1_000);
+        send_goal_update(&mut app, "old", "cleared", 0);
+        assert!(send_goal_update(&mut app, "restored", "active", 0));
+        let changed = send_goal_update(&mut app, "old", "cleared", 0);
+        assert!(!changed, "old clear event must be ignored");
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        assert_eq!(agent.goal_state.as_ref().unwrap().goal_id, "restored");
+        assert!(send_goal_update(&mut app, "restored", "cleared", 0));
+        assert!(app.agents.get(&AgentId(0)).unwrap().goal_state.is_none());
+    }
+
+    #[test]
     fn goal_switch_resets_elapsed_floor() {
         // A NEW goal (different id) must start its own clock and NOT inherit the prior goal's carried elapsed floor
         let mut app = make_app_with_agent("sess-A");

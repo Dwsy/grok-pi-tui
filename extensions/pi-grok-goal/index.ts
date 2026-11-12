@@ -4,15 +4,15 @@
  * Adapter (GoalHost) is SSOT for Pager GoalUpdated; this extension:
  *  - registers `/goal` slash
  *  - registers `update_goal` tool
- *  - writes process-private control file (PI_GROK_GOAL_CONTROL)
- *  - appends bridge entries so adapter can emit GoalUpdated + continuation
+ *  - projects session-bound state into PI_GROK_GOAL_CONTROL for the adapter
+ *  - persists snapshots as Pi SessionManager custom entries (durable SSOT)
  *
  * Full Grok multi-agent classifier is residual — see docs/issues/adapter/20260722-grok-pi-goal.md
  */
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { Type } from "@sinclair/typebox";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const BRIDGE_TYPE = "pi-grok-goal/v1";
 const GOAL_MESSAGE_TYPE = "pi-grok-goal/message/v1";
@@ -34,6 +34,7 @@ type GoalMessageOptions = {
 };
 
 type GoalControl = {
+  sessionId: string;
   goalId: string;
   objective: string;
   status: "active" | "user_paused" | "blocked" | "complete" | "cleared";
@@ -52,12 +53,13 @@ function controlPath(): string | undefined {
   return v || undefined;
 }
 
-function readControl(): GoalControl | undefined {
+function readControl(sessionId: string): GoalControl | undefined {
   const path = controlPath();
   if (!path || !existsSync(path)) return undefined;
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as GoalControl;
-    if (!raw?.goalId || !raw.objective || !raw.status) return undefined;
+    if (!raw || raw.sessionId !== sessionId || !raw.status) return undefined;
+    if (raw.status !== "cleared" && (!raw.goalId || !raw.objective)) return undefined;
     return raw;
   } catch {
     return undefined;
@@ -68,6 +70,44 @@ function writeControl(control: GoalControl): void {
   const path = controlPath();
   if (!path) return;
   writeFileSync(path, JSON.stringify(control, null, 2), "utf8");
+}
+
+/** Session-scoped tombstone: clears the Pager without erasing the Pi journal. */
+function noGoal(sessionId: string): GoalControl {
+  return { sessionId, goalId: "", objective: "", status: "cleared", phase: "idle",
+    tokenBaseline: 0, tokensUsed: 0, createdAt: "" };
+}
+
+function isUnfinished(goal: GoalControl | undefined): goal is GoalControl {
+  return !!goal && (
+    goal.status === "active" || goal.status === "user_paused" || goal.status === "blocked"
+  );
+}
+
+/** Rebuild state from Pi's append-only session entries, not the temporary control file.
+ * Unscoped legacy entries can be migrated from the current session only. A fork must
+ * never adopt a parent's unscoped legacy Goal.
+ */
+export function latestGoalFromEntries(
+  entries: Iterable<unknown>, sessionId: string, allowLegacy = true,
+): GoalControl | undefined {
+  let latest: GoalControl | undefined;
+  for (const raw of entries) {
+    if (!raw || typeof raw !== "object") continue;
+    const entry = raw as { type?: unknown; customType?: unknown; data?: unknown };
+    if (entry.type !== "custom" || entry.customType !== BRIDGE_TYPE) continue;
+    if (!entry.data || typeof entry.data !== "object") continue;
+    const data = entry.data as { type?: unknown; control?: unknown };
+    if (data.type !== "goal_state" || !data.control || typeof data.control !== "object") continue;
+    const control = data.control as Partial<GoalControl>;
+    if (control.sessionId !== sessionId && !(allowLegacy && !control.sessionId)) continue;
+    if (!["active", "user_paused", "blocked", "complete", "cleared"].includes(String(control.status))) continue;
+    if (control.status !== "cleared" &&
+      (typeof control.goalId !== "string" || !control.goalId ||
+       typeof control.objective !== "string" || !control.objective)) continue;
+    latest = { ...noGoal(sessionId), ...control, sessionId } as GoalControl;
+  }
+  return latest;
 }
 
 /** Codex rejects non-positive budgets; keep one rule for `/goal` and `create_goal`. */
@@ -92,13 +132,14 @@ function validateObjective(value: string): string | undefined {
  */
 function activateGoal(
   pi: ExtensionAPI,
+  sessionId: string,
   objective: string,
   budget?: number,
 ): { control: GoalControl; replacing: boolean } {
-  // Upstream create_goal replaces any existing orchestration; re-set is set, not error.
-  const prev = readControl();
+  const prev = readControl(sessionId);
   const replacing = !!(prev && prev.status !== "cleared");
   const control: GoalControl = {
+    sessionId,
     goalId: randomUUID(),
     objective,
     status: "active",
@@ -213,22 +254,62 @@ export default function piGrokGoal(pi: ExtensionAPI) {
   if (process.env.PI_GROK !== "1") return;
   if (!controlPath()) return;
 
+  pi.on("session_start", (event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    const restored = latestGoalFromEntries(
+      ctx.sessionManager.getEntries(), sessionId, event.reason !== "fork",
+    );
+    const control = restored ?? noGoal(sessionId);
+    if (control.status === "active") {
+      // Resuming a session is not permission to restart background execution.
+      control.status = "user_paused";
+      control.phase = "idle";
+      control.pauseMessage = "Recovered from session. Use /goal resume to continue.";
+      control.lastEvent = "goal_paused";
+      control.lastEventDetail = "recovered";
+    }
+    writeControl(control);
+    // A brand-new session with no Goal remains empty. A fork is different:
+    // write a scoped cleared tombstone to override any copied legacy parent
+    // Goal records on a later restart of the forked child.
+    if (restored || event.reason === "fork") {
+      emitBridge(pi, control, control.lastEvent ?? "goal_restored");
+    }
+  });
+
+  pi.on("agent_settled", (event, ctx) => {
+    if (!event.aborted) return;
+    const c = readControl(ctx.sessionManager.getSessionId());
+    // The adapter can already have set a provisional cancelled pause before
+    // Pi finishes aborting. Still append it into Pi's durable JSONL once.
+    if (!c || (c.status !== "active" &&
+        !(c.status === "user_paused" && c.lastEventDetail === "cancelled"))) return;
+    c.status = "user_paused";
+    c.phase = "idle";
+    c.pauseMessage = "Execution cancelled. Use /goal resume to continue.";
+    c.lastEvent = "goal_paused";
+    c.lastEventDetail = "cancelled";
+    writeControl(c);
+    emitBridge(pi, c, "goal_paused", "cancelled");
+  });
+
   pi.registerCommand("goal", {
-    description: "Set or manage an autonomous goal (status|pause|resume|clear)",
+    description: "Manage a session-scoped autonomous goal (status|pause|cancel|resume|clear)",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const sessionId = ctx.sessionManager.getSessionId();
       const trimmed = args.trim();
       const sub = trimmed.split(/\s+/)[0]?.toLowerCase() ?? "";
 
       if (!trimmed || sub === "help") {
         ctx.ui.notify(
-          "Usage: /goal <objective> [--budget N] | status | pause | resume | clear",
+          "Usage: /goal <objective> [--budget N] | status | pause | cancel | resume | clear",
           "info",
         );
         return;
       }
 
       if (sub === "status") {
-        const c = readControl();
+        const c = readControl(sessionId);
         if (!c || c.status === "cleared") {
           ctx.ui.notify("No goal is currently set.", "info");
           return;
@@ -240,8 +321,8 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         return;
       }
 
-      if (sub === "pause") {
-        const c = readControl();
+      if (sub === "pause" || sub === "cancel") {
+        const c = readControl(sessionId);
         if (!c || c.status !== "active") {
           ctx.ui.notify("No active goal to pause.", "warning");
           return;
@@ -249,32 +330,34 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         c.status = "user_paused";
         c.phase = "idle";
         c.lastEvent = "goal_paused";
-        c.lastEventDetail = "user";
+        c.lastEventDetail = sub === "cancel" ? "cancelled" : "user";
         writeControl(c);
-        emitBridge(pi, c, "goal_paused", "user");
-        sendGoalMessage(pi, c, "goal_paused", "user", { triggerTurn: false });
-        ctx.ui.notify("Goal paused. Use /goal resume to continue.", "info");
+        emitBridge(pi, c, "goal_paused", c.lastEventDetail);
+        sendGoalMessage(pi, c, "goal_paused", c.lastEventDetail, { triggerTurn: false });
+        ctx.ui.notify("Goal paused (recoverable). Use /goal resume to continue.", "info");
         return;
       }
 
       if (sub === "resume") {
-        const c = readControl();
-        if (!c || (c.status !== "user_paused" && c.status !== "blocked")) {
-          if (c?.status === "active") {
-            // Mid-turn resume: queue, don't crash on active stream (upstream GoalSet replaces).
-            sendGoalMessage(pi, c, "goal_resumed", "already active", {
-              triggerTurn: true,
-              deliverAs: "followUp",
-            });
-            return;
-          }
-          ctx.ui.notify("No paused goal to resume.", "warning");
+        const c = readControl(sessionId);
+        if (!c || !c.goalId || !c.objective ||
+            !["user_paused", "blocked", "cleared"].includes(c.status)) {
+          ctx.ui.notify(
+            c?.status === "active" ? "Goal is already active." : "No recoverable goal to resume.",
+            c?.status === "active" ? "info" : "warning",
+          );
           return;
         }
+        // A cleared goal was hidden by the Pager's stale-update tombstone.
+        // Restore its objective as a new execution generation so old in-flight
+        // updates for its previous goal ID cannot resurrect or clear it.
+        const fromCleared = c.status === "cleared";
+        if (fromCleared) c.goalId = randomUUID();
         c.status = "active";
         c.phase = "executing";
         c.pauseMessage = undefined;
         c.lastEvent = "goal_resumed";
+        c.lastEventDetail = fromCleared ? "restored cleared goal" : undefined;
         writeControl(c);
         emitBridge(pi, c, "goal_resumed");
         sendGoalMessage(pi, c, "goal_resumed", undefined, {
@@ -285,7 +368,7 @@ export default function piGrokGoal(pi: ExtensionAPI) {
       }
 
       if (sub === "clear") {
-        const c = readControl();
+        const c = readControl(sessionId);
         if (!c || c.status === "cleared") {
           ctx.ui.notify("No goal to clear.", "info");
           return;
@@ -296,7 +379,7 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         writeControl(c);
         emitBridge(pi, c, "goal_cleared");
         sendGoalMessage(pi, c, "goal_cleared", undefined, { triggerTurn: false });
-        ctx.ui.notify("Goal cleared.", "info");
+        ctx.ui.notify("Goal cleared. /goal resume restores it until another goal replaces it.", "info");
         return;
       }
 
@@ -312,7 +395,12 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         return;
       }
 
-      const { control, replacing } = activateGoal(pi, objective, budget);
+      const existing = readControl(sessionId);
+      if (isUnfinished(existing)) {
+        ctx.ui.notify("Unfinished goal exists. Use /goal resume or /goal clear before setting a new goal.", "warning");
+        return;
+      }
+      const { control, replacing } = activateGoal(pi, sessionId, objective, budget);
       ctx.ui.notify(
         replacing ? `Goal updated: ${objective}` : `Goal set: ${objective}`,
         "info",
@@ -333,7 +421,7 @@ export default function piGrokGoal(pi: ExtensionAPI) {
     parameters: Type.Object({
       objective: Type.String({
         description:
-          "Required. The concrete objective to pursue. This starts a new active goal, or replaces the current goal.",
+          "Required. Creates an active goal only when no unfinished goal exists.",
       }),
       token_budget: Type.Optional(
         Type.Integer({
@@ -345,7 +433,11 @@ export default function piGrokGoal(pi: ExtensionAPI) {
     async execute(
       _toolCallId: string,
       params: { objective?: string; token_budget?: number },
+      _signal: AbortSignal | undefined,
+      _onUpdate: unknown,
+      ctx: ExtensionContext,
     ) {
+      const sessionId = ctx.sessionManager.getSessionId();
       const objective = params.objective?.trim() ?? "";
       const invalid = validateObjective(objective);
       if (invalid) {
@@ -355,14 +447,14 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         };
       }
 
-      const prev = readControl();
-      if (prev?.status === "active") {
-        // Codex refuses to shadow an unfinished goal; /goal remains the replace path.
+      const prev = readControl(sessionId);
+      if (isUnfinished(prev)) {
         return {
           content: [
             {
               type: "text",
-              text: `Cannot create a new goal while the current goal is still active: ${prev.objective}\nFinish it with update_goal, or ask the user to replace it with /goal.`,
+              text: `Cannot replace unfinished (${prev.status}) goal: ${prev.objective}
+Use /goal resume or /goal clear first.`,
             },
           ],
           details: { ok: false, reason: "goal_in_progress" },
@@ -379,7 +471,7 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         };
       }
 
-      const { control, replacing } = activateGoal(pi, objective, budget);
+      const { control, replacing } = activateGoal(pi, sessionId, objective, budget);
       // Inside a running turn: defer the reminder to turn end instead of starting
       // an extra turn; the adapter's settle-time continuation drives goal work.
       sendGoalMessage(pi, control, replacing ? "goal_replaced" : "goal_created", undefined, {
@@ -437,8 +529,11 @@ export default function piGrokGoal(pi: ExtensionAPI) {
         message?: string;
         blocked_reason?: string;
       },
+      _signal: AbortSignal | undefined,
+      _onUpdate: unknown,
+      ctx: ExtensionContext,
     ) {
-      const c = readControl();
+      const c = readControl(ctx.sessionManager.getSessionId());
       if (!c || c.status === "cleared" || c.status === "complete") {
         return {
           content: [

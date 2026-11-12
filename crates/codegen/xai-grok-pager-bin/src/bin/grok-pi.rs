@@ -1531,6 +1531,10 @@ async fn attach_pi_backend(
     // them. The blocking attach runs before that loop exists (its connection
     // already carries the model/command seed), so only the deferred attach publishes.
     if behind_live_tui {
+        // Pi's session_start hook can restore a goal before the RPC event
+        // adapter subscribes. Publish its session-scoped projection only when
+        // the live Pager is ready to consume notifications.
+        adapter.sync_goal_for_current_session().await;
         // Surface a self-heal drop: the bisection report goes to a stderr that
         // is redirected while the Pager owns the terminal, so without this
         // notice the user never learns an extension was disabled.

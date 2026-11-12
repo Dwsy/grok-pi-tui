@@ -64,6 +64,7 @@ impl acp::Agent for PiAgent {
         // context bar does not keep the previous session's numerator.
         if !cancelled {
             self.refresh_context_usage().await;
+            self.sync_goal_for_current_session().await;
         }
         let mut response = acp::NewSessionResponse::new(bootstrap.state.session_id.clone());
         if let Some(models) = bootstrap.acp_models() {
@@ -121,6 +122,7 @@ impl acp::Agent for PiAgent {
         }
         self.publish_bootstrap(&bootstrap).await;
         self.refresh_context_usage().await;
+        self.sync_goal_for_current_session().await;
         let mut response = acp::LoadSessionResponse::new();
         if let Some(models) = bootstrap.acp_models() {
             response = response.models(Some(models));
@@ -363,6 +365,25 @@ impl acp::Agent for PiAgent {
             return Ok(());
         }
 
+        // Freeze the goal synchronously, but do not await Pager notifications
+        // ahead of Pi's abort signal: cancellation must never be held up by UI.
+        // Pi's agent_settled(aborted) persists this pause into the session JSONL.
+        let paused_goal = if let Some(control) =
+            self.refresh_goal_from_disk().await.filter(GoalControl::is_active)
+        {
+            self.goal_host.borrow_mut().as_mut().and_then(|host| {
+                match host.pause_for_cancel(&control) {
+                    Ok(value) => Some(value),
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to pause goal during ACP cancellation");
+                        None
+                    }
+                }
+            })
+        } else {
+            None
+        };
+
         let (command, queued, running) = {
             let mut state = self.state.borrow_mut();
             for active in &mut state.active_prompts {
@@ -394,6 +415,9 @@ impl acp::Agent for PiAgent {
         // extension continuations can otherwise keep ACP cancel blocked forever.
         if let Err(error) = self.rpc.notify(json!({ "type": command })) {
             tracing::warn!(%error, "failed to notify Pi abort");
+        }
+        if let Some(paused) = paused_goal {
+            self.emit_goal_updated_from_control(&paused).await;
         }
         let probe = self.clone();
         tokio::task::spawn_local(async move {

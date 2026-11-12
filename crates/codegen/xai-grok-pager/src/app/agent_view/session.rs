@@ -177,6 +177,7 @@ impl AgentView {
             credit_balance: None,
             auto_topup: None,
             goal_state: None,
+            goal_workspace: Default::default(),
             workflow_blocks: std::collections::HashMap::new(),
             workflow_runs: Vec::new(),
             workflow_run_revisions: std::collections::HashMap::new(),

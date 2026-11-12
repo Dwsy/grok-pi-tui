@@ -917,6 +917,8 @@ pub struct AgentView {
     /// Current goal orchestration state. Set by `GoalUpdated` session
     /// notifications, cleared when a new session starts.
     pub goal_state: Option<super::agent::GoalDisplayState>,
+    /// Native Goal workspace: bounded live timeline, active tab and scroll offset.
+    pub goal_workspace: crate::views::goal_workspace::GoalWorkspaceState,
     pub workflow_blocks: std::collections::HashMap<String, crate::scrollback::entry::EntryId>,
     pub workflow_runs: Vec<crate::views::workflows::WorkflowRunSnapshot>,
     pub workflow_run_revisions: std::collections::HashMap<String, u64>,

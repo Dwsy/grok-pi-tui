@@ -305,6 +305,9 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/app/actions.rs",
         "crates/codegen/xai-grok-pager/src/app/acp_handler/interactions.rs",
         "crates/codegen/xai-grok-pager/src/app/acp_handler/mod.rs",
+        # Goal lifecycle: session-tagged clear/resume and regression tests.
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/session_notification.rs",
+        "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/goals.rs",
         # Pi's deferred-start command seed and its Welcome timing regressions.
         "crates/codegen/xai-grok-pager/src/app/acp_handler/settings.rs",
         "crates/codegen/xai-grok-pager/src/app/acp_handler/tests/settings.rs",

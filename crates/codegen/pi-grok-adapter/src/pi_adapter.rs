@@ -374,6 +374,9 @@ impl PiAgent {
     }
 
     pub async fn run_events(self: Rc<Self>, mut events: mpsc::UnboundedReceiver<Value>) {
+        // Do not send GoalUpdated during pre-TUI attach: the client receiver
+        // may not exist yet. new_session/load_session reconcile the projection
+        // after the Pager event loop is ready.
         self.clone().spawn_rpc_watchdog();
         if let Some(mut bridge_rx) = self.workflow_bridge_rx.borrow_mut().take() {
             let agent = self.clone();
