@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.2] - 2026-11-12
+
+### Added
+
+- **Status tool call visibility** — F2 → Appearance → Tool output → Show status tool calls now defaults on for calls also represented by task, todo, goal, scheduler, or workflow status. Turn it off to restore compact suppression for subsequent calls and history replay; task status and waits remain active. A call's visibility stays fixed while it is running.
+- **Timeline tick haptics on macOS** — moving the pointer across timeline ticks requests native alignment feedback, throttled to at most one pulse per 50 ms. Other platforms perform no haptic action.
+
+### Changed
+
+- **Release build toolchain** — release CI reads the Rust channel from `rust-toolchain.toml` and verifies that the matrix target is installed, instead of using a separately pinned toolchain.
+
+### 中文发布说明
+
+- **状态工具调用显示** — F2 → Appearance → Tool output → Show status tool calls 默认开启，显示同时由 task、todo、goal、scheduler 或 workflow 状态界面表示的工具调用。关闭后，后续调用和历史回放恢复精简隐藏；任务状态和等待机制仍然有效。运行中的调用保持开始时的显示状态。
+- **macOS 时间线刻度触觉反馈** — 指针经过时间线刻度时请求系统对齐触觉反馈，最多每 50 毫秒触发一次；其他平台不执行触觉操作。
+- **发布构建工具链** — 发布 CI 从 `rust-toolchain.toml` 读取 Rust 版本，并检查矩阵目标是否已安装，不再单独固定工具链版本。
+
 ## [0.1.14-beta.1] - 2026-11-12
 
 ### Added
