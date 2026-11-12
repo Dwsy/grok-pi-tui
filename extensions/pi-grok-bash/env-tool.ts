@@ -211,11 +211,12 @@ export function createEnvTool(pi: ExtensionAPI) {
 			"Manage environment variables for grok-pi Bash. `set`/`delete`/`list` with `scope=project` " +
 			"(persists to .pi/env.json, gitignored) or `scope=session` (default; current Pi session, restored by /resume). " +
 			"Each Bash spawn merges Pi base env < .env (`k=v` keys exposed as `ENV_<KEY>`) < project < session. " +
+			"Only the .env layer is prefixed: keys set with this tool are injected verbatim (set FOO -> $FOO). " +
 			"Only enhanced Bash sees these values; values are stored in plain text and never echoed in tool results.",
 		promptSnippet:
 			"Use before Bash when a variable must survive across calls, or to list the variables available to Bash.",
 		promptGuidelines: [
-			".env entries are read-only: read FOO=bar as $ENV_FOO in Bash. To change a value, use bash_env_tool with action=set and scope=project or session.",
+			".env entries are read-only and their keys appear as $ENV_FOO in Bash; bash_env_tool cannot change them. It writes the project/session layers instead, whose keys are injected verbatim ($FOO, no prefix).",
 			"scope=session is the default and is replayed on /resume; scope=project writes .pi/env.json for the local project. Session overrides project, which overrides .env. Already-running Bash tasks keep the env snapshot they started with.",
 			"Reserved keys (PI_*/GROK_* prefixes and PATH/HOME/SHELL/PWD/TMPDIR/USER/LOGNAME/SystemRoot/COMSPEC/PATHEXT/WINDIR) are rejected. Values are plain text in the project file and session JSONL: do not store long-lived credentials.",
 		],

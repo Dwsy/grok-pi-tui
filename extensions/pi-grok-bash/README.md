@@ -420,7 +420,7 @@ When enhanced Bash is enabled, `bash_env_tool` lets the agent add, delete, and l
 | `project` | `<cwd>/.pi/env.json` (gitignored) | Local project; agent-managed |
 | `session` (default) | `pi.appendEntry("pi-grok-session-env/v1", ...)` | Current Pi session; replayed from the active branch on `/resume` and session-tree navigation |
 
-Sources merge into every Bash child in this order: Pi's base env < `<cwd>/.env` < project < session. `.env` is read-only and parsed with Node's built-in `util.parseEnv` (no third-party dependency); its `k=v` keys are exposed as `ENV_<KEY>` (a key already starting with `ENV_` is kept). `bash_env_tool` writes only the project and session layers.
+Sources merge into every Bash child in this order: Pi's base env < `<cwd>/.env` < project < session. `.env` is read-only and parsed with Node's built-in `util.parseEnv` (no third-party dependency); its `k=v` keys are exposed as `ENV_<KEY>` (a key already starting with `ENV_` is kept). `bash_env_tool` writes only the project and session layers, and those keys are injected verbatim (`set FOO` → `$FOO`, no prefix); it cannot change `.env` entries.
 
 Each Bash spawn takes a snapshot, so later changes do not affect already-running tasks, and the command text is never rewritten. Keys with `PI_`/`GROK_` prefixes and `PATH`, `HOME`, `SHELL`, `PWD`, `TMPDIR`, `USER`, `LOGNAME`, `SystemRoot`, `COMSPEC`, `PATHEXT`, `WINDIR` are rejected. `list` and `set` results never echo values.
 
