@@ -2780,6 +2780,20 @@ mod fork_picker_key_tests {
     }
 
     #[test]
+    fn dashboard_fork_picker_routes_selected_message_to_new_command() {
+        let mut agent = make_agent();
+        open_fork(&mut agent);
+        agent.fork_state.as_mut().unwrap().to_dashboard = true;
+        let outcome = agent.handle_input(&key(KeyCode::Enter), &ActionRegistry::defaults());
+        match outcome {
+            InputOutcome::Action(Action::ForkToDashboard(args)) => {
+                assert_eq!(args.directive.as_deref(), Some("entry-2"));
+            }
+            other => panic!("Enter must fork the selected message into dashboard, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn esc_dismisses_the_picker() {
         let mut agent = make_agent();
         open_fork(&mut agent);

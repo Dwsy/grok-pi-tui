@@ -164,6 +164,7 @@ const PI_GROK_NATIVE_COMMANDS: &[&str] = &[
     "tree-map",
     // Pi message-level session fork (RPC get_fork_messages + fork).
     "fork",
+    "fork-to-dashboard",
     // Pi session clone at current leaf (RPC clone).
     "clone",
     // Pi resource reload (settings/extensions/skills/prompts/themes/context).
@@ -1763,6 +1764,7 @@ mod env_flag_tests {
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"session-info"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"tree"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"fork"));
+        assert!(PI_GROK_NATIVE_COMMANDS.contains(&"fork-to-dashboard"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"clone"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"reload"));
         assert!(PI_GROK_NATIVE_COMMANDS.contains(&"plan"));

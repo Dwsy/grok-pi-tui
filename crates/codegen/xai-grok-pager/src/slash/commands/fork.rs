@@ -7,6 +7,7 @@
 
 use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::{ModeSupport, Remedy};
 
 /// [`parse_fork_args`] returns this, and [`Action::Fork`](crate::app::actions::Action::Fork) carries it to the dispatcher.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -66,6 +67,53 @@ pub fn parse_fork_args(args: &str) -> Result<ForkArgs, String> {
         worktree_override,
         directive,
     })
+}
+
+/// Pi-only: fork a selected user-message entry, then show the new session in Dashboard.
+/// The parent session stays on disk; Pi's single RPC host switches to the fork.
+pub struct ForkToDashboardCommand;
+
+impl SlashCommand for ForkToDashboardCommand {
+    fn name(&self) -> &str {
+        "fork-to-dashboard"
+    }
+
+    fn aliases(&self) -> &[&str] {
+        &["frok-to-dashbord"]
+    }
+
+    fn description(&self) -> &str {
+        "Fork a Pi message into the Agent Dashboard"
+    }
+
+    fn session_scoped(&self) -> bool {
+        true
+    }
+
+    fn mode_support(&self) -> ModeSupport {
+        ModeSupport::FullscreenOnly(Remedy::SwitchMode {
+            why: "the dashboard is fullscreen-only",
+        })
+    }
+
+    fn usage(&self) -> &str {
+        "/fork-to-dashboard [entry-id]"
+    }
+
+    fn takes_args(&self) -> bool {
+        true
+    }
+
+    fn arg_placeholder(&self) -> Option<&str> {
+        Some("[entry-id]")
+    }
+
+    fn run(&self, _ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
+        match parse_fork_args(args) {
+            Ok(parsed) => CommandResult::Action(Action::ForkToDashboard(parsed)),
+            Err(message) => CommandResult::Error(message),
+        }
+    }
 }
 
 pub struct ForkCommand;
@@ -307,5 +355,25 @@ mod tests {
         assert!(cmd.takes_args(), "/fork accepts args");
         assert!(!cmd.args_required(), "/fork allows no args");
         assert_eq!(cmd.arg_placeholder(), Some("[directive]"));
+    }
+
+    #[test]
+    fn fork_to_dashboard_command_selects_distinct_action() {
+        let models = ModelState::default();
+        let mut ctx = make_ctx(&models);
+        let cmd = ForkToDashboardCommand;
+        assert_eq!(cmd.name(), "fork-to-dashboard");
+        assert_eq!(cmd.aliases(), &["frok-to-dashbord"]);
+        assert!(cmd.session_scoped());
+        match cmd.run(&mut ctx, "entry-42") {
+            CommandResult::Action(Action::ForkToDashboard(args)) => {
+                assert_eq!(args.directive.as_deref(), Some("entry-42"));
+            }
+            other => panic!("expected ForkToDashboard action, got {other:?}"),
+        }
+        assert!(matches!(
+            cmd.run(&mut ctx, ""),
+            CommandResult::Action(Action::ForkToDashboard(args)) if args.directive.is_none()
+        ));
     }
 }

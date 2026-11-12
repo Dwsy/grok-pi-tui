@@ -18,9 +18,14 @@ use agent_client_protocol as acp;
 pub(in crate::app::dispatch) fn dispatch_pi_message_fork(
     app: &mut AppView,
     args: ForkArgs,
+    to_dashboard: bool,
 ) -> Vec<Effect> {
     if !app.external_agent {
         app.show_toast("Pi message fork is only available for Pi sessions");
+        return vec![];
+    }
+    if to_dashboard && !crate::views::dashboard::dashboard_enabled() {
+        app.show_toast("Enable the Agent Dashboard before forking to it");
         return vec![];
     }
     if args.worktree_override.is_some() {
@@ -32,8 +37,8 @@ pub(in crate::app::dispatch) fn dispatch_pi_message_fork(
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
     {
-        Some(entry_id) => dispatch_execute_pi_fork(app, entry_id),
-        None => dispatch_show_pi_fork_picker(app),
+        Some(entry_id) => dispatch_execute_pi_fork(app, entry_id, to_dashboard),
+        None => dispatch_show_pi_fork_picker(app, to_dashboard),
     }
 }
 
@@ -44,7 +49,7 @@ pub(in crate::app::dispatch) fn dispatch_pi_fork_dismiss(app: &mut AppView) -> V
     vec![]
 }
 
-fn dispatch_show_pi_fork_picker(app: &mut AppView) -> Vec<Effect> {
+fn dispatch_show_pi_fork_picker(app: &mut AppView, to_dashboard: bool) -> Vec<Effect> {
     let Some(agent) = get_active_agent(app) else {
         app.show_toast("No active session");
         return vec![];
@@ -68,10 +73,15 @@ fn dispatch_show_pi_fork_picker(app: &mut AppView) -> Vec<Effect> {
     vec![Effect::FetchPiForkMessages {
         agent_id,
         session_id,
+        to_dashboard,
     }]
 }
 
-fn dispatch_execute_pi_fork(app: &mut AppView, entry_id: String) -> Vec<Effect> {
+fn dispatch_execute_pi_fork(
+    app: &mut AppView,
+    entry_id: String,
+    to_dashboard: bool,
+) -> Vec<Effect> {
     let Some(agent) = get_active_agent(app) else {
         app.show_toast("No active session");
         return vec![];
@@ -94,6 +104,7 @@ fn dispatch_execute_pi_fork(app: &mut AppView, entry_id: String) -> Vec<Effect> 
         agent_id,
         session_id,
         entry_id,
+        to_dashboard,
     }]
 }
 
@@ -102,6 +113,7 @@ pub(in crate::app::dispatch) fn handle_pi_fork_messages_loaded(
     agent_id: AgentId,
     _session_id: String,
     messages: Vec<PiForkMessage>,
+    to_dashboard: bool,
 ) -> Vec<Effect> {
     let Some(agent) = app.agents.get_mut(&agent_id) else {
         return vec![];
@@ -116,7 +128,10 @@ pub(in crate::app::dispatch) fn handle_pi_fork_messages_loaded(
         return vec![];
     }
     agent.dismiss_jump_picker();
-    agent.fork_state = Some(ForkPickerState::new(messages));
+    agent.fork_state = Some(ForkPickerState::with_dashboard_target(
+        messages,
+        to_dashboard,
+    ));
     vec![]
 }
 
@@ -138,8 +153,9 @@ pub(in crate::app::dispatch) fn handle_pi_session_forked(
     previous_session_id: String,
     session_id: String,
     editor_text: Option<String>,
+    to_dashboard: bool,
 ) -> Vec<Effect> {
-    handle_pi_session_replaced(
+    let mut effects = handle_pi_session_replaced(
         app,
         agent_id,
         previous_session_id,
@@ -147,7 +163,25 @@ pub(in crate::app::dispatch) fn handle_pi_session_forked(
         editor_text,
         "Reloading forked session",
         "Forked to new session",
-    )
+    );
+    if to_dashboard
+        && effects.iter().any(
+            |effect| matches!(effect, Effect::LoadSession { agent_id: id, .. } if *id == agent_id),
+        )
+    {
+        // One Pi RPC host can run only one live session. The old session
+        // remains persisted and appears as a dormant dashboard roster row.
+        effects.extend(super::super::dashboard::dispatch_open_dashboard(app));
+        if matches!(
+            app.active_view,
+            crate::app::app_view::ActiveView::AgentDashboard
+        ) {
+            if let Some(dashboard) = app.dashboard.as_mut() {
+                dashboard.focus_row(crate::views::dashboard::DashboardRowId::TopLevel(agent_id));
+            }
+        }
+    }
+    effects
 }
 
 pub(in crate::app::dispatch) fn handle_pi_session_fork_failed(

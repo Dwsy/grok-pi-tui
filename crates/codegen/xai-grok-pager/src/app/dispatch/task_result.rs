@@ -751,8 +751,9 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             agent_id,
             session_id,
             messages,
+            to_dashboard,
         } => super::session::pi_fork::handle_pi_fork_messages_loaded(
-            app, agent_id, session_id, messages,
+            app, agent_id, session_id, messages, to_dashboard,
         ),
         TaskResult::PiForkMessagesFailed { agent_id, error } => {
             super::session::pi_fork::handle_pi_fork_messages_failed(app, agent_id, error)
@@ -762,12 +763,14 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             previous_session_id,
             session_id,
             editor_text,
+            to_dashboard,
         } => super::session::pi_fork::handle_pi_session_forked(
             app,
             agent_id,
             previous_session_id,
             session_id,
             editor_text,
+            to_dashboard,
         ),
         TaskResult::PiSessionForkFailed { agent_id, error } => {
             super::session::pi_fork::handle_pi_session_fork_failed(app, agent_id, error)

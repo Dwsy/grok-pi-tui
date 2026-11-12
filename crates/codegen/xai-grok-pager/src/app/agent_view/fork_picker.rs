@@ -48,16 +48,23 @@ impl AgentView {
                 }
                 InputOutcome::Changed
             }
-            input => Self::fork_picker_input_to_outcome(input),
+            input => Self::fork_picker_input_to_outcome(input, state.to_dashboard),
         }
     }
 
-    fn fork_picker_input_to_outcome(input: ForkPickerInput) -> InputOutcome {
+    fn fork_picker_input_to_outcome(input: ForkPickerInput, to_dashboard: bool) -> InputOutcome {
         match input {
-            ForkPickerInput::Select(entry_id) => InputOutcome::Action(Action::Fork(ForkArgs {
-                worktree_override: None,
-                directive: Some(entry_id),
-            })),
+            ForkPickerInput::Select(entry_id) => {
+                let args = ForkArgs {
+                    worktree_override: None,
+                    directive: Some(entry_id),
+                };
+                InputOutcome::Action(if to_dashboard {
+                    Action::ForkToDashboard(args)
+                } else {
+                    Action::Fork(args)
+                })
+            }
             ForkPickerInput::Dismissed => InputOutcome::Action(Action::PiForkDismiss),
             ForkPickerInput::MoveUp | ForkPickerInput::MoveDown | ForkPickerInput::Consumed => {
                 InputOutcome::Changed
@@ -84,7 +91,7 @@ impl AgentView {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 set_fork_picker_cursor(state, index);
-                Self::fork_picker_input_to_outcome(fork_picker_activate(state))
+                Self::fork_picker_input_to_outcome(fork_picker_activate(state), state.to_dashboard)
             }
             _ => InputOutcome::Unchanged,
         }

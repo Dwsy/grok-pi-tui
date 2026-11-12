@@ -1549,6 +1549,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             }]
         }
         Action::Fork(args) => dispatch_fork(app, args),
+        Action::ForkToDashboard(args) => {
+            super::session::pi_fork::dispatch_pi_message_fork(app, args, true)
+        }
         Action::PiForkDismiss => super::session::pi_fork::dispatch_pi_fork_dismiss(app),
         Action::PiClone => super::session::pi_fork::dispatch_pi_clone(app),
         Action::PiReload => super::session::pi_fork::dispatch_pi_reload(app),

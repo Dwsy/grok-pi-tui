@@ -975,6 +975,7 @@ pub(crate) fn execute(
         Effect::FetchPiForkMessages {
             agent_id,
             session_id,
+            to_dashboard,
         } => {
             let tx = acp_tx.clone();
             tasks.spawn(async move {
@@ -994,6 +995,7 @@ pub(crate) fn execute(
                             agent_id,
                             session_id,
                             messages,
+                            to_dashboard,
                         }
                     }
                     Err(error) => {
@@ -1010,6 +1012,7 @@ pub(crate) fn execute(
             agent_id,
             session_id,
             entry_id,
+            to_dashboard,
         } => {
             let tx = acp_tx.clone();
             tasks.spawn(async move {
@@ -1056,6 +1059,7 @@ pub(crate) fn execute(
                             previous_session_id: session_id,
                             session_id: new_session_id,
                             editor_text,
+                            to_dashboard,
                         }
                     }
                     Err(error) => {

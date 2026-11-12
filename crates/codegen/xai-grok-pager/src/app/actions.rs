@@ -987,6 +987,8 @@ pub enum Action {
     /// `/fork` slash command: parsed args produced by [`crate::slash::commands::fork::parse_fork_args`].
     /// The dispatcher resolves the worktree question (via flag or the local QuestionView modal) before constructing the placeholder.
     Fork(crate::slash::commands::fork::ForkArgs),
+    /// Pi message fork followed by a switch to the Agent Dashboard.
+    ForkToDashboard(crate::slash::commands::fork::ForkArgs),
     /// Submit-path action emitted by the local fork worktree question modal.
     /// Routes directly to `dispatch_fork_resolved`.
     ForkAnswered {
@@ -1768,12 +1770,14 @@ pub enum Effect {
     FetchPiForkMessages {
         agent_id: crate::app::agent::AgentId,
         session_id: String,
+        to_dashboard: bool,
     },
     /// Execute Pi RPC `fork` from a user-message entry id.
     ForkPiSession {
         agent_id: crate::app::agent::AgentId,
         session_id: String,
         entry_id: String,
+        to_dashboard: bool,
     },
     /// Execute Pi RPC `clone` (duplicate current leaf into a new session file).
     ClonePiSession {
@@ -2850,6 +2854,7 @@ pub enum TaskResult {
         agent_id: crate::app::agent::AgentId,
         session_id: String,
         messages: Vec<PiForkMessage>,
+        to_dashboard: bool,
     },
     PiForkMessagesFailed {
         agent_id: crate::app::agent::AgentId,
@@ -2862,6 +2867,7 @@ pub enum TaskResult {
         previous_session_id: String,
         session_id: String,
         editor_text: Option<String>,
+        to_dashboard: bool,
     },
     PiSessionForkFailed {
         agent_id: crate::app::agent::AgentId,

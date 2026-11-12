@@ -1,5 +1,139 @@
 use super::*;
 
+#[test]
+fn pi_fork_to_dashboard_picker_preserves_target_across_async_message_load() {
+    use crate::slash::commands::fork::ForkArgs;
+
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    let agent_id = AgentId(0);
+    let effects = dispatch(Action::ForkToDashboard(ForkArgs::default()), &mut app);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::FetchPiForkMessages { agent_id: id, to_dashboard: true, .. }]
+            if *id == agent_id
+    ));
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::PiForkMessagesLoaded {
+            agent_id,
+            session_id: "test-session".into(),
+            messages: vec![crate::app::actions::PiForkMessage {
+                entry_id: "message-3".into(),
+                text: "message body".into(),
+            }],
+            to_dashboard: true,
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    assert!(
+        app.agents[&agent_id]
+            .fork_state
+            .as_ref()
+            .unwrap()
+            .to_dashboard
+    );
+}
+
+#[test]
+fn pi_fork_to_dashboard_failure_does_not_change_active_view() {
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::PiSessionForkFailed {
+            agent_id: AgentId(0),
+            error: "invalid entry".into(),
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    assert!(matches!(
+        app.active_view,
+        crate::app::app_view::ActiveView::Agent(AgentId(0))
+    ));
+}
+
+#[test]
+fn pi_fork_to_dashboard_reuses_fork_rpc_and_focuses_new_session_on_success() {
+    use crate::slash::commands::fork::ForkArgs;
+
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    let agent_id = AgentId(0);
+    let effects = dispatch(
+        Action::ForkToDashboard(ForkArgs {
+            worktree_override: None,
+            directive: Some("message-node-7".into()),
+        }),
+        &mut app,
+    );
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::ForkPiSession { agent_id: id, entry_id, to_dashboard: true, .. }]
+            if *id == agent_id && entry_id == "message-node-7"
+    ));
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::PiSessionForked {
+            agent_id,
+            previous_session_id: "test-session".into(),
+            session_id: "forked-session".into(),
+            editor_text: Some("original message".into()),
+            to_dashboard: true,
+        }),
+        &mut app,
+    );
+    assert!(matches!(
+        app.active_view,
+        crate::app::app_view::ActiveView::AgentDashboard
+    ));
+    assert_eq!(
+        app.dashboard
+            .as_ref()
+            .and_then(|dashboard| dashboard.selected.as_ref()),
+        Some(&crate::views::dashboard::DashboardRowId::TopLevel(agent_id))
+    );
+    assert_eq!(
+        app.agents[&agent_id]
+            .session
+            .session_id
+            .as_ref()
+            .map(|s| s.0.as_ref()),
+        Some("forked-session")
+    );
+    assert!(effects.iter().any(|e| matches!(
+        e, Effect::LoadSession { agent_id: id, session_id, .. }
+            if *id == agent_id && session_id == "forked-session"
+    )));
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::FetchExternalSessionCatalog { .. }))
+    );
+}
+
+#[test]
+fn pi_regular_fork_preserves_the_existing_agent_view() {
+    let mut app = test_app_with_agent();
+    app.external_agent = true;
+    let agent_id = AgentId(0);
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::PiSessionForked {
+            agent_id,
+            previous_session_id: "test-session".into(),
+            session_id: "forked-session".into(),
+            editor_text: None,
+            to_dashboard: false,
+        }),
+        &mut app,
+    );
+    assert!(matches!(
+        app.active_view,
+        crate::app::app_view::ActiveView::Agent(id) if id == agent_id
+    ));
+    assert!(matches!(effects.as_slice(), [Effect::LoadSession { .. }]));
+}
+
 // ── Worktree session tests ───────────────────────────────────────
 
 #[test]

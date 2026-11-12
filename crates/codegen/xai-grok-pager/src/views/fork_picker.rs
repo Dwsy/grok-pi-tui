@@ -15,12 +15,21 @@ use crate::views::overlay_list::ListOverlay;
 pub struct ForkPickerState {
     pub messages: Vec<PiForkMessage>,
     pub selected: usize,
+    pub to_dashboard: bool,
 }
 
 impl ForkPickerState {
     pub fn new(messages: Vec<PiForkMessage>) -> Self {
+        Self::with_dashboard_target(messages, false)
+    }
+
+    pub fn with_dashboard_target(messages: Vec<PiForkMessage>, to_dashboard: bool) -> Self {
         let selected = messages.len().saturating_sub(1);
-        Self { messages, selected }
+        Self {
+            messages,
+            selected,
+            to_dashboard,
+        }
     }
 
     fn list(&self) -> ListOverlay {
