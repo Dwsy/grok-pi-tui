@@ -56,6 +56,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "remote_tui_footer"
         | "display_refresh_auto_cadence"
         | "render_mermaid" => "Display",
+        "show_status_tool_calls" => "Tool output",
         "show_thinking_blocks" | "thinking_border_colors" | "max_thoughts_width" => "Thinking",
         "group_tool_verbs"
         | "collapsed_edit_blocks"

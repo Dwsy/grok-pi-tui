@@ -97,6 +97,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "toolset.ask_user_question.timeout_enabled" => {
             Action::SetAskUserQuestionTimeoutEnabled(new)
         }
+        "show_status_tool_calls" => Action::SetShowStatusToolCalls(new),
         "show_thinking_blocks" => Action::SetShowThinkingBlocks(new),
         "thinking_border_colors" => Action::SetThinkingBorderColors(new),
         "group_tool_verbs" => Action::SetGroupToolVerbs(new),

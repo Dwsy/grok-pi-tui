@@ -1274,6 +1274,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetScrollMode(v) => set_scroll_mode(app, v),
         Action::SetInvertScroll(v) => set_invert_scroll(app, v),
         Action::SetScrollLines(v) => set_scroll_lines(app, v),
+        Action::SetShowStatusToolCalls(v) => {
+            super::settings::setters::set_show_status_tool_calls(app, v)
+        }
         Action::SetShowThinkingBlocks(v) => set_show_thinking_blocks(app, v),
         Action::SetThinkingBorderColors(v) => set_thinking_border_colors(app, v),
         Action::SetGroupToolVerbs(v) => set_group_tool_verbs(app, v),

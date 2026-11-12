@@ -1220,6 +1220,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "toolset.ask_user_question.timeout_enabled" => {
             Some(Action::SetAskUserQuestionTimeoutEnabled(new))
         }
+        "show_status_tool_calls" => Some(Action::SetShowStatusToolCalls(new)),
         "show_thinking_blocks" => Some(Action::SetShowThinkingBlocks(new)),
         "thinking_border_colors" => Some(Action::SetThinkingBorderColors(new)),
         "group_tool_verbs" => Some(Action::SetGroupToolVerbs(new)),

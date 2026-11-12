@@ -381,6 +381,24 @@ pub(in crate::app::dispatch) fn set_ask_user_question_timeout_enabled(
     }]
 }
 
+pub(in crate::app::dispatch) fn set_show_status_tool_calls(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    let prev = crate::appearance::cache::load_show_status_tool_calls();
+    if prev == new {
+        return vec![];
+    }
+    crate::appearance::cache::set_show_status_tool_calls(new);
+    refresh_open_settings_modals(app);
+    app.show_toast(&save_success_toast("Status tool calls", new));
+    vec![Effect::PersistSetting {
+        key: "show_status_tool_calls",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev),
+    }]
+}
+
 pub(super) fn set_show_thinking_blocks_inner(app: &mut AppView, new: bool) {
     crate::appearance::cache::set_show_thinking_blocks(new);
     // Thinking visibility reshapes verb-group runs (shown thoughts claim into folds) AND dense N-more runs (hidden thoughts stop counting toward truncation)

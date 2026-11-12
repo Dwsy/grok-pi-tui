@@ -351,6 +351,33 @@ pub fn set_psm_resume_index(enabled: bool) {
     PSM_RESUME_INDEX_LOADED.with(|l| l.set(true));
 }
 
+thread_local! {
+    static SHOW_STATUS_TOOLS: Cell<bool> = const { Cell::new(true) };
+    static SHOW_STATUS_TOOLS_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read the visibility policy for tools with dedicated status surfaces.
+pub fn load_show_status_tool_calls() -> bool {
+    SHOW_STATUS_TOOLS_LOADED.with(|loaded| {
+        if !loaded.get() {
+            SHOW_STATUS_TOOLS.with(|value| {
+                value.set(load_bool_from_effective_config(
+                    "show_status_tool_calls",
+                    true,
+                ))
+            });
+            loaded.set(true);
+        }
+    });
+    SHOW_STATUS_TOOLS.with(|value| value.get())
+}
+
+/// Apply the policy for subsequently received calls and history replay.
+pub fn set_show_status_tool_calls(enabled: bool) {
+    SHOW_STATUS_TOOLS.with(|value| value.set(enabled));
+    SHOW_STATUS_TOOLS_LOADED.with(|loaded| loaded.set(true));
+}
+
 // -- Show thinking blocks ----------------------------------------------------
 
 thread_local! {

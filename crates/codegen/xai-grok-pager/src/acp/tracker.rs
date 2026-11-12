@@ -598,7 +598,9 @@ impl AcpUpdateTracker {
         if self.current_thinking.is_some() {
             return Some(TurnActivity::Thinking);
         }
-        if let Some(tool) = self.pending_tools.values().next() {
+        if let Some(tool) = self.pending_tools.iter().find_map(|(id, tool)| {
+            (!self.suppressed_tools.contains_key(id)).then_some(tool)
+        }) {
             let description = tool
                 .base
                 .raw_input
@@ -1311,7 +1313,10 @@ impl AcpUpdateTracker {
                 tc.status,
                 acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed
             ) {
-                if matches!(tc.status, acp::ToolCallStatus::Completed) || is_bg_plumbing_tool(&tc) {
+                if !crate::appearance::cache::load_show_status_tool_calls()
+                    && (matches!(tc.status, acp::ToolCallStatus::Completed)
+                        || is_bg_plumbing_tool(&tc))
+                {
                     return false;
                 }
             } else {
@@ -1339,9 +1344,16 @@ impl AcpUpdateTracker {
                         },
                     );
                 }
-                self.suppressed_tools
-                    .insert(tc.tool_call_id.0.to_string(), tc);
-                return false;
+                let id = tc.tool_call_id.0.to_string();
+                let visible = if self.suppressed_tools.contains_key(&id) {
+                    self.pending_tools.contains_key(&id)
+                } else {
+                    crate::appearance::cache::load_show_status_tool_calls()
+                };
+                self.suppressed_tools.insert(id, tc.clone());
+                if !visible {
+                    return false;
+                }
             }
         }
         let tc_id = tc.tool_call_id.0.to_string();
@@ -1417,6 +1429,9 @@ impl AcpUpdateTracker {
             return false;
         }
         if self.suppressed_tools.contains_key(&tc_id_str) {
+            // Visibility is fixed at start, so toggling F2 mid-call cannot
+            // orphan an update or produce a second card on completion.
+            let visible = self.pending_tools.contains_key(&tc_id_str);
             if let Some(ref raw_input) = tcu.fields.raw_input {
                 let variant = raw_input.get("variant").and_then(|v| v.as_str());
                 if is_task_variant(variant) {
@@ -1456,6 +1471,7 @@ impl AcpUpdateTracker {
                 acp::ToolCallStatus::Failed => {
                     self.blocking_waits.remove(&tc_id_str);
                     if let Some(mut base) = self.suppressed_tools.remove(&tc_id_str)
+                        && !visible
                         && !is_bg_plumbing_tool(&base)
                     {
                         base.update(tcu.fields);
@@ -1471,11 +1487,13 @@ impl AcpUpdateTracker {
                 }
                 _ => {
                     if let Some(base) = self.suppressed_tools.get_mut(&tc_id_str) {
-                        base.update(tcu.fields);
+                        base.update(tcu.fields.clone());
                     }
                 }
             }
-            return false;
+            if !visible {
+                return false;
+            }
         }
         let status = tcu.fields.status.unwrap_or_default();
         let is_completed = matches!(

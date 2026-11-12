@@ -349,6 +349,9 @@ pub struct UiConfig {
     /// `None` means on (client default). Written by the pager's settings modal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_thinking_blocks: Option<bool>,
+    /// Show tool calls normally hidden by dedicated task and status surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_status_tool_calls: Option<bool>,
     /// Color the normal prompt border according to the selected thinking/
     /// reasoning effort. `None` = on (client default). Written by the pager's
     /// F2 settings modal and applied live.
@@ -617,6 +620,7 @@ impl Default for UiConfig {
             keep_text_selection: None,
             selection_highlight_duration_ms: None,
             show_thinking_blocks: None,
+            show_status_tool_calls: None,
             thinking_border_colors: None,
             group_tool_verbs: None,
             collapsed_edit_blocks: None,

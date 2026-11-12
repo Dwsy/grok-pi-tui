@@ -1,6 +1,20 @@
 use super::*;
 use crate::scrollback::blocks::tool::VerbGroupKind;
 use std::sync::Arc;
+struct HiddenStatusTools(bool);
+impl HiddenStatusTools {
+    fn new() -> Self {
+        let old = crate::appearance::cache::load_show_status_tool_calls();
+        crate::appearance::cache::set_show_status_tool_calls(false);
+        Self(old)
+    }
+}
+impl Drop for HiddenStatusTools {
+    fn drop(&mut self) {
+        crate::appearance::cache::set_show_status_tool_calls(self.0);
+    }
+}
+
 /// Default meta with no timestamps (simulates old grok-shell or tests that don't care about timing).
 fn meta() -> NotificationMeta {
     NotificationMeta::default()
@@ -303,6 +317,7 @@ fn streaming_agent_message() {
 }
 #[test]
 fn agent_output_epoch_tracks_visible_live_output() {
+    let _hidden = HiddenStatusTools::new();
     crate::appearance::cache::set_show_thinking_blocks(true);
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
@@ -4056,6 +4071,7 @@ fn is_bg_plumbing_tool_recognizes_all_name_generations() {
 }
 #[test]
 fn pascal_case_task_tool_call_is_suppressed_from_scrollback() {
+    let _hidden = HiddenStatusTools::new();
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
     tracker.handle_update(
@@ -4074,6 +4090,7 @@ fn pascal_case_task_tool_call_is_suppressed_from_scrollback() {
 }
 #[test]
 fn failed_task_tool_renders_despite_suppression() {
+    let _hidden = HiddenStatusTools::new();
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
     tracker.handle_update(
@@ -4112,6 +4129,7 @@ fn failed_task_tool_renders_despite_suppression() {
 }
 #[test]
 fn failed_bg_plumbing_tool_stays_hidden() {
+    let _hidden = HiddenStatusTools::new();
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
     tracker.handle_update(
@@ -4146,6 +4164,7 @@ fn failed_bg_plumbing_tool_stays_hidden() {
 }
 #[test]
 fn pre_failed_task_tool_renders_despite_suppression() {
+    let _hidden = HiddenStatusTools::new();
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
     let failed_call = acp::SessionUpdate::ToolCall(
@@ -4169,6 +4188,7 @@ fn pre_failed_task_tool_renders_despite_suppression() {
 }
 #[test]
 fn failed_update_racing_ahead_of_suppressed_call_renders() {
+    let _hidden = HiddenStatusTools::new();
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
     let failed = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
@@ -4204,6 +4224,7 @@ fn failed_update_racing_ahead_of_suppressed_call_renders() {
 }
 #[test]
 fn completed_update_racing_ahead_of_suppressed_call_stays_hidden() {
+    let _hidden = HiddenStatusTools::new();
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
     tracker.handle_update(tool_update_completed("tc1"), &meta(), &mut sb);
@@ -4228,6 +4249,7 @@ fn completed_update_racing_ahead_of_suppressed_call_stays_hidden() {
 }
 #[test]
 fn failed_task_tool_render_carries_stashed_title_and_final_error() {
+    let _hidden = HiddenStatusTools::new();
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
     tracker.handle_update(
@@ -5164,6 +5186,7 @@ fn todo_write_suppressed_by_variant() {
 }
 #[test]
 fn pascal_case_todo_write_suppressed_from_scrollback() {
+    let _hidden = HiddenStatusTools::new();
     let mut sb = ScrollbackState::new();
     let mut tracker = AcpUpdateTracker::new();
     for (i, title) in ["TodoWrite", "Updating plan"].iter().enumerate() {
@@ -5649,4 +5672,33 @@ fn title_fallback_preview_with_diffs_still_expands() {
     };
     assert!(edit.summary_untrusted);
     assert_eq!(entry.display_mode, DisplayMode::Expanded);
+}
+
+#[test]
+fn status_tool_visibility_preserves_waits_and_replay() {
+    for replay in [false, true] {
+        for visible in [false, true] {
+            crate::appearance::cache::set_show_status_tool_calls(visible);
+            let mut sb = ScrollbackState::new();
+            let mut tracker = AcpUpdateTracker::new();
+            let meta = NotificationMeta {
+                is_replay: replay,
+                ..Default::default()
+            };
+            tracker.handle_update(
+                tool_call("tc", acp::ToolKind::Other, "Task"),
+                &meta,
+                &mut sb,
+            );
+            assert_eq!(sb.len(), usize::from(visible));
+            assert!(tracker.blocking_waits.contains_key("tc"));
+            // Changing the preference during a call affects subsequent calls only.
+            crate::appearance::cache::set_show_status_tool_calls(!visible);
+            tracker.handle_update(tool_update_completed("tc"), &meta, &mut sb);
+            assert_eq!(sb.len(), usize::from(visible));
+            assert!(!tracker.blocking_waits.contains_key("tc"));
+            assert!(!tracker.suppressed_tools.contains_key("tc"));
+        }
+    }
+    crate::appearance::cache::set_show_status_tool_calls(true);
 }

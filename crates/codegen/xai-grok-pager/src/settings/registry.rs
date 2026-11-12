@@ -666,6 +666,9 @@ pub fn current_value_for(
                 .unwrap_or(3),
         )),
         // Live cache (like `render_mermaid`).
+        "show_status_tool_calls" => Some(SettingValue::Bool(
+            crate::appearance::cache::load_show_status_tool_calls(),
+        )),
         "show_thinking_blocks" => Some(SettingValue::Bool(
             crate::appearance::cache::load_show_thinking_blocks(),
         )),

@@ -1082,6 +1082,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         }
         ("invert_scroll", SettingValue::Bool(b)) => Some(Action::SetInvertScroll(*b)),
         ("scroll_lines", SettingValue::Int(v)) => Some(Action::SetScrollLines(*v)),
+        ("show_status_tool_calls", SettingValue::Bool(b)) => {
+            Some(Action::SetShowStatusToolCalls(*b))
+        }
         ("show_thinking_blocks", SettingValue::Bool(b)) => Some(Action::SetShowThinkingBlocks(*b)),
         ("thinking_border_colors", SettingValue::Bool(b)) => {
             Some(Action::SetThinkingBorderColors(*b))
@@ -1495,6 +1498,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
                 set_ask_user_question_timeout_enabled_inner(app, *b);
             }
         }
+        ("show_status_tool_calls", SettingValue::Bool(b)) => {
+            crate::appearance::cache::set_show_status_tool_calls(*b)
+        }
         ("show_thinking_blocks", SettingValue::Bool(b)) => set_show_thinking_blocks_inner(app, *b),
         ("thinking_border_colors", SettingValue::Bool(b)) => set_thinking_border_colors_inner(*b),
         ("group_tool_verbs", SettingValue::Bool(b)) => set_group_tool_verbs_inner(app, *b),
@@ -1509,8 +1515,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             set_side_by_side_word_highlight_inner(*b)
         }
         ("tool_card_click_action", SettingValue::Enum(s)) => {
-            if let Some(value) = crate::appearance::cache::ToolCardClickAction::from_canonical(s)
-            {
+            if let Some(value) = crate::appearance::cache::ToolCardClickAction::from_canonical(s) {
                 set_tool_card_click_action_inner(app, value);
             }
         }
