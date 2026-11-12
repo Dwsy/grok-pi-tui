@@ -96,11 +96,12 @@ grok-pi update --channel stable  # 切回 stable；默认即 stable
 | 模型管理 | `/pi-models` 提供原生 Provider → Model → Details 编辑器，含安全 `models.json` 事务、备份/恢复、Pi 热重载和 typed 激活；`/model` 保留为快速切换器 |
 | 浏览器配置工作台 | `/pi-config web` / `/pi-models web`：完整中英界面、全局搜索、模型/服务商复制、设置草稿与冲突提示、深浅主题和手机布局，由 Pi 扩展提供带 token 的本地回环服务 |
 | 终端 UI | Grok Pager 输入、斜杠补全、Markdown、工具卡片、文件流式 diff（可展开/回车查看、运行中 +/- 行数）、卡片单击折叠、对话框和 scrollback；Bash 入参在执行开始时一次显示 |
+| Mermaid 图片 | Open Image 使用 Ondine 生成 PNG；Open SVG 打开矢量图。终端中的 ASCII 图保持独立。 |
 | 文件与 skill 预览 | 单击已接受的 `@文件` 芯片或 `/` 下拉中的 skill 行可打开原生预览窗；选中文件时可按 `:` / Ctrl-L，选中 skill 时可按 Ctrl-L。底部显示当前可用操作；其他上下文中 Ctrl-L 仍打开模型选择器。重新编译后需重启已有进程。 |
 | 产品教程 | `/tutorial`（别名 `/tour`、`/onboarding`）展示 18 个 grok-pi 能力域：Pager 原生工作流、Pi Provider/模型/工具/会话、扩展/Skill/Package 生态、产品桥接、可选自动化与明确边界 |
 | **Remote TUI 桥接** | Pi `ctx.ui.custom` 组件通过 Grok Build 原生 Pager 渲染，不创建第二套 TUI |
 | Shell 执行 | Bash 集成、后台任务、输出限制、超时和进程树清理 |
-| 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图；`/subagents` 暴露内置与隔离定义。可选 [Team V2](usage/subagents-v2.zh-CN.md)（F2 开关或 `PI_GROK_SUBAGENTS_V2=1`）提供稳定 agent path、消息、嵌套 spawn 与 JSON preset |
+| 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图；`/subagents` 暴露内置与隔离定义。可选 [Team V2](usage/subagents-v2.zh-CN.md)（F2 开关或 `PI_GROK_SUBAGENTS_V2=1`）提供稳定 agent path、自动 flush 的消息、活跃 parent 结果 steering、嵌套 spawn 与 JSON preset |
 | Rhai Workflow | 上游 `xai-workflow` 宿主（F2 **Pi workflows**）；`/workflow`、`/workflows`、`/create-workflow`；脚本目录 `~/.grok-pi/workflows` 与 `<repo>/.grok-pi/workflows` |
 | 会话流程 | Resume、树导航、标签、回顾、上下文查看和会话选择器 |
 | 资源管理 | Pi 扩展、skills、prompt 和主题的原生管理器 |

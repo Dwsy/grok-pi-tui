@@ -10,6 +10,7 @@ Status definitions: **Native** = implemented by a Grok Pager component; **Adapte
 | Feature | Status | Implementation |
 |---|---|---|
 | Terminal init/restore | Native | Grok `init_terminal` / `restore_terminal` |
+| Mermaid images | Native | Open Image and Copy Image Path render Ondine SVG to PNG; Open SVG opens the standalone themed SVG. Both formats use lazy isolated rendering and separate session cache entries. Inline ASCII rendering is independent. |
 | Fullscreen / alternate screen | Native | Grok screen mode; selected at startup |
 | Minimal / scrollback-native | Native | `xai-grok-pager-minimal`; selected at startup |
 | Welcome / minimal logo | Native+Adapted | Defaults to Welcome (consistent with stock `grok`); `ExternalUiProfile.logo` injects π block art (line-width pad prevents centering drift); only `grok-pi -c/--continue` skips Welcome and goes straight to Resume |

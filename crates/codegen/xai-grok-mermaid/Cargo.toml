@@ -21,8 +21,10 @@ xai-tty-utils = { workspace = true }
 wait-timeout = { workspace = true }
 tempfile = { workspace = true }
 # Vendored dagre-based Mermaid -> SVG engine (third_party/mermaid-to-svg, MIT).
-# Always compiled — the default engine, no feature gate.
+# Retained for the explicitly selected legacy engine.
 mermaid-to-svg = { workspace = true }
+# Ondine is not published as a Rust crate; pin the upstream compiler revision.
+ondine-compiler = { package = "compiler", git = "https://github.com/wevm/ondine", rev = "e8705d0511521107bf7d5bc73882ff501afc620e" }
 
 # Subprocess process-group reaping (killpg) for the sync subprocess path, since
 # xai-tty-utils' ProcessGroup only wraps tokio children.

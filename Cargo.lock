@@ -1975,6 +1975,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "compiler"
+version = "0.0.0"
+source = "git+https://github.com/wevm/ondine?rev=e8705d0511521107bf7d5bc73882ff501afc620e#e8705d0511521107bf7d5bc73882ff501afc620e"
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14089,6 +14094,7 @@ dependencies = [
 name = "xai-grok-mermaid"
 version = "0.1.0"
 dependencies = [
+ "compiler",
  "fontdb",
  "image",
  "libc",

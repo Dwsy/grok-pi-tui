@@ -242,7 +242,7 @@ impl AgentView {
         Some(format!("{transmit_esc}{place_esc}"))
     }
 
-    /// Paint each visible Mermaid affordance row (`◇ mermaid [Open Image] [Copy Image Path] [Copy Source]`) and register its click hit-rects.
+    /// Paint each visible Mermaid action row and register its click hit-rects.
     /// Every button is always clickable (`[Open]`/`[Copy path]` render lazily on click).
     /// The painted labels and the hit-rects therefore can't drift.
     pub(super) fn paint_diagram_affordances(
@@ -587,11 +587,16 @@ impl AgentView {
                     );
                 }
             }
-            AffordanceKind::Open | AffordanceKind::CopyPath => {
-                let action = if matches!(kind, AffordanceKind::Open) {
-                    crate::app::mermaid_worker::MermaidClickAction::Open
-                } else {
-                    crate::app::mermaid_worker::MermaidClickAction::CopyPath
+            AffordanceKind::Open | AffordanceKind::OpenSvg | AffordanceKind::CopyPath => {
+                let action = match kind {
+                    AffordanceKind::Open => crate::app::mermaid_worker::MermaidClickAction::Open,
+                    AffordanceKind::OpenSvg => {
+                        crate::app::mermaid_worker::MermaidClickAction::OpenSvg
+                    }
+                    AffordanceKind::CopyPath => {
+                        crate::app::mermaid_worker::MermaidClickAction::CopyPath
+                    }
+                    AffordanceKind::CopySource => unreachable!(),
                 };
                 self.request_mermaid_render(source, action);
             }

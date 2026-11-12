@@ -229,6 +229,10 @@ def main() -> int:
     # TUI, input, slash, scrollback, minimal and Markdown files.
     renderer_manifest = json.loads(read(docs / "native_renderer_sha256.json"))
     renderer_declared_modified = {
+        # Mermaid image actions: add SVG next to PNG using the native affordance.
+        "crates/codegen/xai-grok-pager/src/app/agent_view/media.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/mermaid_content.rs",
         # Tool-card click policy: reuse native selection/folding and Enter viewer;
         # no new renderer or input loop.
         "crates/codegen/xai-grok-pager/src/app/agent_view/selection.rs",
@@ -289,6 +293,17 @@ def main() -> int:
     # Verify the files allowed to differ really are a narrow integration seam,
     # not a hidden second UI package.
     expected_modified = {
+        # Ondine image compilation and the native Mermaid image/SVG actions.
+        "rust-toolchain.toml",
+        "THIRD-PARTY-NOTICES",
+        "crates/codegen/xai-grok-mermaid/Cargo.toml",
+        "crates/codegen/xai-grok-mermaid/src/lib.rs",
+        "crates/codegen/xai-grok-mermaid/src/raster.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/media.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs",
+        "crates/codegen/xai-grok-pager/src/app/mermaid_worker.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/mermaid_content.rs",
+        "crates/codegen/xai-grok-pager/tests/mermaid_render_subprocess.rs",
         # F2 tool-card click policy: native selection/folding/viewer plus settings persistence.
         "crates/codegen/xai-grok-shared/src/ui_config.rs",
         "crates/codegen/xai-grok-shell/src/util/config/settings_writes.rs",

@@ -74,6 +74,29 @@ fn child_renders_login_flow_to_png() {
 
 #[test]
 #[ignore = "spawns the built pager binary; run with cargo test -- --ignored"]
+fn child_renders_login_flow_to_svg() {
+    let bin = pager_binary().expect("resolve pager binary");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("login.svg");
+    render_via_subprocess(
+        &bin,
+        LOGIN_FLOW,
+        true,
+        1024,
+        MermaidRenderQuality::Svg,
+        &out,
+        Duration::from_secs(30),
+    )
+    .expect("the isolated child should render SVG");
+    let svg = std::fs::read_to_string(out).expect("read SVG");
+    assert!(svg.starts_with("<svg ") && svg.ends_with("</svg>"));
+    assert!(svg.contains("ondine-flowchart"));
+    assert!(svg.contains("User visits login page"));
+    assert!(!svg.contains("var(--_"));
+}
+
+#[test]
+#[ignore = "spawns the built pager binary; run with cargo test -- --ignored"]
 fn oversized_source_is_contained() {
     // Source over the 64 KiB cap: the child rejects it and exits non-zero
     // The parent then returns Err and no PNG is produced (the render degrades to the fallback)

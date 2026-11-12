@@ -4,7 +4,7 @@
 //! This module detects those blocks in an agent message via the generic [`CodeBlockSpan`](xai_grok_markdown::CodeBlockSpan) API.
 //! It exposes each diagram's clean source so a full-fidelity PNG can be rendered on demand.
 //! It never renders and tracks no per-diagram render state (rendering is lazy, driven by the affordance row on click).
-//! For `auto`/`on` a clickable affordance row (`◇ mermaid [Open Image] [Copy Image Path] [Copy Source]`) is placed beneath the inline art.
+//! For `auto`/`on`, a row offers Open Image, Open SVG, Copy Image Path and Copy Source beneath the inline art.
 //! For `off` only the inline art is shown.
 //! The rendered PNG is never drawn inline; it is reached only through the affordance row's actions.
 
@@ -29,6 +29,7 @@ const MERMAID_RENDERING: &str = "rendering diagram\u{2026}";
 
 /// Affordance-row button label: open the rendered PNG in the OS default app.
 const AFFORDANCE_OPEN: &str = "[Open Image]";
+const AFFORDANCE_OPEN_SVG: &str = "[Open SVG]";
 /// Affordance-row button label: copy the rendered PNG's filesystem path.
 const AFFORDANCE_COPY_PATH: &str = "[Copy Image Path]";
 /// Affordance-row button label: copy the diagram's Mermaid source.
@@ -51,7 +52,7 @@ fn width_bucket(target_width_cols: u16) -> u16 {
     target_width_cols / MERMAID_WIDTH_BUCKET
 }
 
-/// Output quality tier for a rendered Mermaid PNG.
+/// Output format and quality tier for a rendered Mermaid diagram.
 /// `[Open Image]` / `[Copy Image Path]` use [`Open`] so the PNG is sharp in an OS image viewer.
 /// A future terminal-budget path can use [`Terminal`] without sharing cache files with the open tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -61,6 +62,8 @@ pub enum MermaidRenderQuality {
     Terminal,
     /// Auto-scaled for OS viewers: prefer at least 2x the intrinsic SVG size and a minimum pixel width, with higher height/area headroom.
     Open,
+    /// Standalone vector output for the OS viewer.
+    Svg,
 }
 
 /// Content hash of a diagram source: the theme/width-independent component of a [`MermaidCacheKey`].
@@ -154,7 +157,7 @@ impl MermaidCacheKey {
     ) -> Self {
         let width_bucket = match quality {
             MermaidRenderQuality::Terminal => width_bucket(target_width_cols),
-            MermaidRenderQuality::Open => OPEN_QUALITY_WIDTH_BUCKET,
+            MermaidRenderQuality::Open | MermaidRenderQuality::Svg => OPEN_QUALITY_WIDTH_BUCKET,
         };
         Self {
             source_hash: hash_source(source),
@@ -173,13 +176,14 @@ impl MermaidCacheKey {
         for byte in self.source_hash {
             let _ = write!(name, "{byte:02x}");
         }
-        let quality_tag = match self.quality {
-            MermaidRenderQuality::Terminal => "t",
-            MermaidRenderQuality::Open => "o",
+        let (quality_tag, extension) = match self.quality {
+            MermaidRenderQuality::Terminal => ("t", "png"),
+            MermaidRenderQuality::Open => ("o", "png"),
+            MermaidRenderQuality::Svg => ("s", "svg"),
         };
         let _ = write!(
             name,
-            "-{}-{}-{}-r{RENDER_REVISION}.png",
+            "-{}-{}-{}-r{RENDER_REVISION}.{extension}",
             self.theme as u8, self.width_bucket, quality_tag
         );
         name
@@ -188,7 +192,7 @@ impl MermaidCacheKey {
 
 /// Render-pipeline revision baked into [`MermaidCacheKey::cache_filename`].
 /// Bump whenever the renderer's output changes for the same source/theme/width/tier.
-const RENDER_REVISION: u8 = 3;
+const RENDER_REVISION: u8 = 4;
 
 /// Detected Mermaid diagrams for one agent message. A detection skeleton: it records detection results and exposes
 /// each diagram's source, but never renders and tracks no per-diagram render state. Constructed once at message
@@ -229,7 +233,7 @@ impl MermaidContent {
 pub enum MermaidDisplay {
     /// The inline diagram art alone, with no affordance row (`render_mermaid = off`).
     SourceOnly,
-    /// The inline diagram art plus the clickable affordance row (`◇ mermaid [Open Image] [Copy Image Path] [Copy Source]`): `auto`/`on`.
+    /// The inline diagram art plus its clickable image, SVG and copy actions: `auto`/`on`.
     Affordances,
 }
 
@@ -259,6 +263,8 @@ pub fn mermaid_display_static(setting: RenderMermaid, static_commit: bool) -> Me
 pub(crate) enum AffordanceKind {
     /// Render the diagram (if not already cached) at the live theme/width, then open the resulting PNG in the OS default app.
     Open,
+    /// Render and open the diagram as an SVG.
+    OpenSvg,
     /// Render the diagram (if not already cached), then copy the PNG's path.
     CopyPath,
     /// Copy the diagram's Mermaid source (no render needed).
@@ -277,22 +283,23 @@ pub(crate) struct AffordanceButton {
     pub col: u16,
 }
 
-/// The full affordance-row layout: the leading `◇ mermaid` label, the three buttons (with columns), and the trailing status hint (with column).
+/// The full affordance-row layout: label, four buttons and trailing status hint.
 /// The painter and the click hit-rects draw from one source of truth and can't drift.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AffordanceRow {
     /// `(start_col, text)` of the leading dim, non-clickable `◇ mermaid` label.
     pub label: (u16, &'static str),
-    /// `[Open Image] [Copy Image Path] [Copy Source]`, left-to-right with their columns (shifted right past the leading label).
-    pub buttons: [AffordanceButton; 3],
+    /// Image, SVG, image path and source buttons, left-to-right.
+    pub buttons: [AffordanceButton; 4],
     /// `(start_col, text)` of the trailing `rendering…` hint, present only while an on-click render for this diagram is in flight.
     pub status: Option<(u16, &'static str)>,
 }
 
-/// The affordance row's three buttons laid out left-to-right starting at `start_col` (which leaves room for the leading `◇ mermaid` label).
-fn affordance_buttons(start_col: u16) -> [AffordanceButton; 3] {
+/// The four buttons laid out left-to-right after the leading label.
+fn affordance_buttons(start_col: u16) -> [AffordanceButton; 4] {
     let specs = [
         (AFFORDANCE_OPEN, AffordanceKind::Open),
+        (AFFORDANCE_OPEN_SVG, AffordanceKind::OpenSvg),
         (AFFORDANCE_COPY_PATH, AffordanceKind::CopyPath),
         (AFFORDANCE_COPY_SOURCE, AffordanceKind::CopySource),
     ];
@@ -305,7 +312,7 @@ fn affordance_buttons(start_col: u16) -> [AffordanceButton; 3] {
 }
 
 /// The whole affordance-row layout for a diagram.
-/// The leading `◇ mermaid` label, the three (always-clickable) buttons shifted past it, and the trailing `rendering…` hint when `rendering` is true.
+/// The leading label, four buttons and the optional `rendering…` hint.
 /// One source of truth shared by the painter and hit-testing, so the painted columns and click hit-rects align.
 pub(crate) fn affordance_row(rendering: bool) -> AffordanceRow {
     let buttons_start = UnicodeWidthStr::width(MERMAID_LABEL) as u16 + AFFORDANCE_GAP;
@@ -670,6 +677,7 @@ mod tests {
             buttons.map(|b| (b.label, b.kind)),
             [
                 ("[Open Image]", AffordanceKind::Open),
+                ("[Open SVG]", AffordanceKind::OpenSvg),
                 ("[Copy Image Path]", AffordanceKind::CopyPath),
                 ("[Copy Source]", AffordanceKind::CopySource),
             ],
@@ -684,20 +692,28 @@ mod tests {
     #[test]
     fn affordance_row_has_label_and_shows_status_only_while_rendering() {
         // Display widths: `◇ mermaid` (9) + gap (3), so buttons start at col 12
-        // [Open Image] (12), [Copy Image Path] (17), [Copy Source] (13) with a 3-col gap between
+        // Buttons have a 3-column gap between them.
         let start = UnicodeWidthStr::width(MERMAID_LABEL) as u16 + AFFORDANCE_GAP;
         let idle = affordance_row(false);
         assert_eq!(idle.label, (0, MERMAID_LABEL));
-        assert_eq!(idle.buttons.map(|b| b.col), [start, start + 15, start + 35]);
+        assert_eq!(
+            idle.buttons.map(|b| b.col),
+            [start, start + 15, start + 28, start + 48]
+        );
         assert_eq!(
             idle.buttons.map(|b| b.label),
-            ["[Open Image]", "[Copy Image Path]", "[Copy Source]"],
+            [
+                "[Open Image]",
+                "[Open SVG]",
+                "[Copy Image Path]",
+                "[Copy Source]"
+            ],
         );
         assert_eq!(idle.status, None, "no status unless a render is in flight");
 
         // While rendering, the `rendering…` hint sits after the last button plus a gap; the label and button columns are unchanged
         let busy = affordance_row(true);
-        let last = busy.buttons[2];
+        let last = busy.buttons[3];
         let after = last.col + UnicodeWidthStr::width(last.label) as u16 + AFFORDANCE_GAP;
         assert_eq!(busy.status, Some((after, MERMAID_RENDERING)));
         assert_eq!(busy.label, idle.label);
@@ -794,6 +810,14 @@ mod tests {
             MermaidRenderQuality::Open,
         );
         assert_ne!(a.cache_filename(), open.cache_filename());
+        let svg = MermaidCacheKey::derive(
+            "flowchart TD\nA-->B",
+            ThemeKind::GrokNight,
+            240,
+            MermaidRenderQuality::Svg,
+        );
+        assert_ne!(open.cache_filename(), svg.cache_filename());
+        assert!(svg.cache_filename().ends_with(".svg"));
         // No raw source in the name (only the hash).
         assert!(!a.cache_filename().contains("flowchart"));
     }

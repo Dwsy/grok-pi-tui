@@ -102,11 +102,12 @@ Update channels are product-local and persisted in `~/.grok-pi/config.toml` unde
 | Model management | `/pi-models` provides a native Provider → Model → Details editor with safe `models.json` transactions, backup/restore, live Pi reload, and typed activation; `/model` remains the fast switcher |
 | Web config workbench | `/pi-config web` / `/pi-models web`: bilingual workbench with global search, model/provider duplication, staged settings, conflict feedback, and light/dark themes, served on a token-gated loopback port |
 | Terminal UI | Grok Pager input, slash completion, Markdown, tool cards, live file diffs (expand/Enter, running +/- counts), single-click card folding, dialogs, and scrollback; Bash arguments appear at execution start |
+| Mermaid images | Open Image renders a PNG with Ondine; Open SVG opens the vector version. Terminal ASCII diagrams remain independent. |
 | File and skill preview | Click an accepted `@file` chip or a slash skill row to open the native preview. `:` / Ctrl-L previews the selected file; Ctrl-L previews a selected skill. The footer shows the available gestures; outside these contexts Ctrl-L opens model selection. Restart an existing process after rebuilding. |
 | Product tutorial | `/tutorial` (aliases `/tour`, `/onboarding`) opens 18 grok-pi capability areas: native Pager workflows, Pi providers/models/tools/sessions, the extension/Skill/Package ecosystem, product bridges, optional automation and explicit boundaries |
 | **Remote TUI bridge** | Pi `ctx.ui.custom` components rendered through Grok Build's native Pager, without a second TUI |
 | Shell execution | Bash integration, background tasks, output limits, timeouts, and process-tree cleanup |
-| Parallel work | Pi subagents with foreground/background execution and native task views; `/subagents` exposes built-ins plus isolated overrides. Opt-in [Team V2](docs/usage/subagents-v2.md) (F2 toggle or `PI_GROK_SUBAGENTS_V2=1`) adds stable agent paths, messaging, nested spawn, and JSON presets |
+| Parallel work | Pi subagents with foreground/background execution and native task views; `/subagents` exposes built-ins plus isolated overrides. Opt-in [Team V2](docs/usage/subagents-v2.md) (F2 toggle or `PI_GROK_SUBAGENTS_V2=1`) adds stable agent paths, automatically flushed messages, active-parent result steering, nested spawn, and JSON presets |
 | Rhai workflows | Upstream `xai-workflow` host (F2 **Pi workflows**); `/workflow`, `/workflows`, `/create-workflow`; scripts under `~/.grok-pi/workflows` and `<repo>/.grok-pi/workflows` |
 | Session workflow | Resume, tree navigation, labels, recap, context inspection, and session picker |
 | Resource management | Native manager for Pi extensions, skills, prompts, and themes |

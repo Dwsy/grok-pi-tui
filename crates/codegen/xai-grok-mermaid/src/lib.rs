@@ -6,7 +6,7 @@
 //! # Pipeline
 //!
 //! 1. A [`MermaidEngine`] turns Mermaid source into an SVG and rasterizes it.
-//!    The default engine ([`PureRustEngine`]) uses the vendored, dagre-based `mermaid-to-svg` for layout, then [`rasterize`].
+//!    The default engine ([`OndineEngine`]) compiles with Ondine, then rasterizes the SVG.
 //! 2. [`rasterize`] converts SVG to PNG with `resvg`/`usvg`/`tiny-skia`.
 //!    It resolves no remote or file references and bundles its font, so it is safe over untrusted input and deterministic across machines.
 //!
@@ -36,12 +36,14 @@
 
 mod engine;
 mod mmdc;
+mod ondine;
 mod pure;
 mod raster;
 mod subprocess;
 
 pub use engine::{MermaidEngine, MermaidError, RenderLimits, render_checked};
 pub use mmdc::{MmdcEngine, detect_mmdc};
+pub use ondine::{OndineEngine, render_svg_checked};
 pub use pure::PureRustEngine;
 pub use raster::{MAX_OUTPUT_MEGAPIXELS, rasterize};
 pub use subprocess::{SubprocessError, run_with_timeout};
@@ -170,11 +172,11 @@ pub struct RenderedDiagram {
     pub height_px: u32,
 }
 
-/// Construct the default engine: the offline, pure-Rust [`PureRustEngine`].
+/// Construct the default offline Ondine engine.
 ///
 /// `mmdc` is never selected automatically; construct [`MmdcEngine`] explicitly to opt in.
 pub fn default_engine() -> Arc<dyn MermaidEngine> {
-    Arc::new(PureRustEngine::new())
+    Arc::new(OndineEngine)
 }
 
 #[cfg(test)]

@@ -18,6 +18,8 @@ use crate::{MermaidError, RenderParams, RenderedDiagram, Rgba};
 /// The vendored layout engine measures text with fixed char-width metrics (no font file), so there is no layout/raster font to keep in sync.
 /// This face is used purely to rasterize glyphs.
 pub(crate) const BUNDLED_FONT: &[u8] = include_bytes!("../assets/Roboto-Regular.ttf");
+/// Ondine measures each glyph at a monospace advance; use a matching bundled face.
+const ONDINE_FONT: &[u8] = include_bytes!("../assets/RobotoMono.ttf");
 
 /// Hard ceiling on output area, applied regardless of requested size, to bound memory over huge untrusted diagrams (32 MP is about 5657x5657).
 pub const MAX_OUTPUT_MEGAPIXELS: f32 = 32.0;
@@ -31,9 +33,9 @@ struct FontSet {
     bundled_id: fontdb::ID,
 }
 
-fn build_font_set(with_system_fonts: bool) -> FontSet {
+fn build_font_set(with_system_fonts: bool, bundled: &[u8]) -> FontSet {
     let mut db = fontdb::Database::new();
-    db.load_font_data(BUNDLED_FONT.to_vec());
+    db.load_font_data(bundled.to_vec());
     let (bundled_id, family) = db
         .faces()
         .next()
@@ -67,12 +69,12 @@ fn build_font_set(with_system_fonts: bool) -> FontSet {
 /// Parse and index the bundled font once; the `Arc` is shared into every `Options` per render with an O(1) refcount bump (no per-render clone).
 fn bundled_font() -> &'static FontSet {
     static FONT: OnceLock<FontSet> = OnceLock::new();
-    FONT.get_or_init(|| build_font_set(false))
+    FONT.get_or_init(|| build_font_set(false, BUNDLED_FONT))
 }
 
 fn font_with_system_fallback() -> &'static FontSet {
     static FONT: OnceLock<FontSet> = OnceLock::new();
-    FONT.get_or_init(|| build_font_set(true))
+    FONT.get_or_init(|| build_font_set(true, BUNDLED_FONT))
 }
 
 fn font_set_for(svg: &str) -> &'static FontSet {
@@ -99,6 +101,21 @@ fn rgba_to_color(c: Rgba) -> tiny_skia::Color {
 /// Returns [`MermaidError::Rasterize`] if the SVG cannot be parsed, has zero size, or cannot be encoded to PNG.
 pub fn rasterize(svg: &str, params: &RenderParams) -> Result<RenderedDiagram, MermaidError> {
     rasterize_with_font(svg, params, font_set_for(svg))
+}
+
+/// Rasterize an Ondine SVG with a fixed-width bundled primary font.
+pub(crate) fn rasterize_ondine(
+    svg: &str,
+    params: &RenderParams,
+) -> Result<RenderedDiagram, MermaidError> {
+    static MONO: OnceLock<FontSet> = OnceLock::new();
+    static MONO_WITH_FALLBACK: OnceLock<FontSet> = OnceLock::new();
+    let font = if svg.is_ascii() {
+        MONO.get_or_init(|| build_font_set(false, ONDINE_FONT))
+    } else {
+        MONO_WITH_FALLBACK.get_or_init(|| build_font_set(true, ONDINE_FONT))
+    };
+    rasterize_with_font(svg, params, font)
 }
 
 fn rasterize_with_font(

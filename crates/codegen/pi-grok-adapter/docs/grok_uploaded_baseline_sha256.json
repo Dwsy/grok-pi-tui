@@ -2840,6 +2840,11 @@
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/codemode.rs",
     "crates/codegen/xai-grok-pager/src/views/settings_modal/state.rs",
     "crates/codegen/xai-grok-pager/src/views/block_viewer/mod.rs",
-    "crates/codegen/xai-grok-pager/src/views/block_viewer/block_viewer_tests.rs"
+    "crates/codegen/xai-grok-pager/src/views/block_viewer/block_viewer_tests.rs",
+    "crates/codegen/xai-grok-pager/src/app/tree_projection.rs",
+    "crates/codegen/xai-grok-mermaid/src/ondine.rs",
+    "crates/codegen/xai-grok-mermaid/assets/RobotoMono.ttf",
+    "crates/codegen/xai-grok-mermaid/assets/RobotoMono-OFL.txt",
+    "docs/issues/pager/20261109-Ondine Mermaid 图片与 SVG.md"
   ]
 }

@@ -2000,7 +2000,11 @@ pub(super) mod paste_key_tests {
     fn mermaid_open_click_routes_to_lazy_render() {
         use crate::scrollback::blocks::mermaid_content::AffordanceKind;
         use ratatui::layout::Rect;
-        for kind in [AffordanceKind::Open, AffordanceKind::CopyPath] {
+        for kind in [
+            AffordanceKind::Open,
+            AffordanceKind::OpenSvg,
+            AffordanceKind::CopyPath,
+        ] {
             let mut agent = make_agent();
             agent.inline_media_hits.mermaid_sources = vec!["flowchart TD\nA-->B\n".to_string()];
             agent.inline_media_hits.mermaid_buttons = vec![(Rect::new(12, 0, 6, 1), kind, 0)];
@@ -2018,7 +2022,7 @@ pub(super) mod paste_key_tests {
         }
     }
     /// The real painter (`paint_diagram_affordances`) lays the row from the single layout source of truth.
-    /// A leading dim `◇ mermaid` label comes first, then the three always-clickable buttons shifted right past the label.
+    /// A leading dim `◇ mermaid` label comes first, then the four buttons.
     /// Each button registers a hit-rect carrying the source.
     #[test]
     fn paints_affordance_row_with_label_and_registers_all_buttons() {
@@ -2053,14 +2057,16 @@ pub(super) mod paste_key_tests {
             "the ◇ mermaid label is dim",
         );
         assert_eq!(span(cols[0], 12), "[Open Image]");
-        assert_eq!(span(cols[1], 17), "[Copy Image Path]");
-        assert_eq!(span(cols[2], 13), "[Copy Source]");
+        assert_eq!(span(cols[1], 10), "[Open SVG]");
+        assert_eq!(span(cols[2], 17), "[Copy Image Path]");
+        assert_eq!(span(cols[3], 13), "[Copy Source]");
         let buttons = &agent.inline_media_hits.mermaid_buttons;
-        assert_eq!(buttons.len(), 3);
+        assert_eq!(buttons.len(), 4);
         assert_eq!(
             buttons.iter().map(|&(_, k, _)| k).collect::<Vec<_>>(),
             vec![
                 AffordanceKind::Open,
+                AffordanceKind::OpenSvg,
                 AffordanceKind::CopyPath,
                 AffordanceKind::CopySource
             ],
@@ -2098,11 +2104,11 @@ pub(super) mod paste_key_tests {
                 && buf.cell((x, 0)).unwrap().fg == theme.gray
         };
         let mut agent = make_agent();
-        agent.last_mouse_pos = (cols[1] + 1, 0);
+        agent.last_mouse_pos = (cols[2] + 1, 0);
         let mut buf = Buffer::empty(rect);
         agent.paint_diagram_affordances(&mut buf, vec![placement(rect)], &theme);
         assert!(
-            highlighted(&buf, cols[1]),
+            highlighted(&buf, cols[2]),
             "hovered [Copy Image Path] is BOLD|UNDERLINED + text_primary",
         );
         assert!(
@@ -2110,7 +2116,7 @@ pub(super) mod paste_key_tests {
             "non-hovered [Open Image] stays idle gray"
         );
         assert!(
-            idle(&buf, cols[2]),
+            idle(&buf, cols[3]),
             "non-hovered [Copy Source] stays idle gray",
         );
         assert_eq!(buf.cell((0, 0)).unwrap().fg, theme.gray_dim);

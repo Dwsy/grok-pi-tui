@@ -21,7 +21,7 @@
 //! 1. The pager re-execs itself as `xai-grok-pager __mermaid-render` (see [`maybe_run_render_subprocess`]).
 //!    The subcommand is intercepted at the very top of `main`, before any TUI/agent/runtime init.
 //!    The child reads the source from stdin and the theme/width/height from argv.
-//!    It renders the source to SVG then PNG, writes the PNG atomically to the out-path, and exits 0; any error exits non-zero.
+//!    It renders to SVG or PNG, writes the requested file atomically, and exits 0; any error exits non-zero.
 //! 2. The worker spawns that child with a wall-clock budget ([`RENDER_TIMEOUT`]) via [`xai_grok_mermaid::run_with_timeout`].
 //!    On timeout it **kills and reaps** the child (a real process kill, not a soft signal).
 //!    A child panic (abort), non-zero exit, or timeout is contained to the child and becomes `Failed`, the existing code-block fallback.
@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use indexmap::IndexMap;
 use xai_grok_mermaid::{
     MermaidTheme, RenderLimits, RenderParams, RenderedDiagram, SubprocessError, default_engine,
-    render_checked, run_with_timeout,
+    render_checked, render_svg_checked, run_with_timeout,
 };
 
 use crate::app::agent_view::AgentView;
@@ -89,12 +89,14 @@ const RENDER_TIMEOUT: Duration = Duration::from_millis(3000);
 /// Runs on the worker thread, off the draw path.
 const SWEEP_EVERY_N_WRITES: u32 = 8;
 
-/// What a finished on-click render should do with the rendered PNG.
+/// What a finished on-click render should do with the output file.
 /// `[Copy source]` needs no render, so it is not represented here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MermaidClickAction {
     /// Open the rendered PNG in the OS default app.
     Open,
+    /// Open the rendered SVG in the OS default app.
+    OpenSvg,
     /// Copy the rendered PNG's filesystem path to the clipboard.
     CopyPath,
 }
@@ -103,6 +105,7 @@ impl MermaidClickAction {
     fn log_label(self) -> &'static str {
         match self {
             Self::Open => "open_image",
+            Self::OpenSvg => "open_svg",
             Self::CopyPath => "copy_image_path",
         }
     }
@@ -264,6 +267,28 @@ fn read_cached_png(path: &Path) -> bool {
     crate::prompt_images::decode_image_dimensions(&bytes).is_some()
 }
 
+/// A cached SVG must be a bounded, complete UTF-8 document, not a symlink.
+fn read_cached_svg(path: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() > 16 * 1024 * 1024 {
+        return false;
+    }
+    let Ok(svg) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    svg.starts_with("<svg ") && svg.ends_with("</svg>")
+}
+
+fn read_cached_output(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("png") => read_cached_png(path),
+        Some("svg") => read_cached_svg(path),
+        _ => false,
+    }
+}
+
 /// Render one job's source to its `out_path` PNG in a short-lived child process.
 /// On timeout the child (and its group) is killed and reaped, a real process kill, so a panic (abort) or runaway render is contained.
 /// Returns `Ok(())` only when the child exits 0 and a decodable PNG is present; otherwise a source-free failure category.
@@ -286,6 +311,7 @@ pub fn render_via_subprocess(
         .arg(match quality {
             MermaidRenderQuality::Terminal => "terminal",
             MermaidRenderQuality::Open => "open",
+            MermaidRenderQuality::Svg => "svg",
         })
         .arg("--width")
         .arg(target_width_px.to_string())
@@ -331,7 +357,7 @@ fn map_run_result(
     out_path: &Path,
 ) -> Result<(), &'static str> {
     match result {
-        Ok(()) if read_cached_png(out_path) => Ok(()),
+        Ok(()) if read_cached_output(out_path) => Ok(()),
         Ok(()) => Err("no_output"),
         Err(SubprocessError::Timeout) => Err("timeout"),
         // Split the non-zero exit so a containment event is observable in telemetry rather than masquerading as an ordinary render failure
@@ -498,6 +524,7 @@ fn parse_render_args(
                 quality = match value()?.to_str() {
                     Some("terminal") | Some("t") => MermaidRenderQuality::Terminal,
                     Some("open") | Some("o") => MermaidRenderQuality::Open,
+                    Some("svg") | Some("s") => MermaidRenderQuality::Svg,
                     other => return Err(format!("invalid --quality {other:?}")),
                 }
             }
@@ -518,6 +545,16 @@ fn parse_render_args(
 /// Split from stdin reading so the render-and-write path is unit-testable with an in-memory source.
 /// The end-to-end stdin path is covered by the subprocess integration test.
 fn render_and_write(args: &RenderArgs, source: &str) -> Result<(), String> {
+    if args.quality == MermaidRenderQuality::Svg {
+        let theme = if args.theme_dark {
+            MermaidTheme::Dark
+        } else {
+            MermaidTheme::Light
+        };
+        let svg = render_svg_checked(source, theme, &RenderLimits::default())
+            .map_err(|e| e.to_string())?;
+        return write_svg_atomic(&args.out, svg.as_bytes()).map_err(|e| e.to_string());
+    }
     let diagram = render_source_to_png(source, args.theme_dark, args.width, args.quality)
         .map_err(|e| e.to_string())?;
     write_png_atomic(&args.out, &diagram.png).map_err(|e| e.to_string())
@@ -575,7 +612,7 @@ fn render_params_for(
         MermaidTheme::Light
     };
     match quality {
-        MermaidRenderQuality::Open => {
+        MermaidRenderQuality::Open | MermaidRenderQuality::Svg => {
             RenderParams::for_os_viewer(theme, OPEN_MIN_WIDTH_PX, OPEN_MAX_HEIGHT_PX)
         }
         MermaidRenderQuality::Terminal => RenderParams {
@@ -612,17 +649,14 @@ fn render_source_to_png(
 /// The real out-of-process path is covered by the integration test against the built pager binary.
 #[cfg(test)]
 fn render_in_process_for_tests(job: &MermaidJob, _timeout: Duration) -> Result<(), &'static str> {
-    match render_source_to_png(
-        &job.source,
-        job.theme_dark,
-        job.target_width_px,
-        job.quality,
-    ) {
-        Ok(diagram) => write_png_atomic(&job.out_path, &diagram.png)
-            .map(|_| ())
-            .map_err(|_| "write"),
-        Err(_) => Err("render"),
-    }
+    let args = RenderArgs {
+        out: job.out_path.clone(),
+        theme_dark: job.theme_dark,
+        width: job.target_width_px,
+        quality: job.quality,
+        deadline: RENDER_TIMEOUT,
+    };
+    render_and_write(&args, &job.source).map_err(|_| "render")
 }
 
 /// Render (or load from disk) one job. Runs only on the worker thread.
@@ -631,7 +665,7 @@ fn render_job(render: &RenderFn, job: &MermaidJob, timeout: Duration) -> (Mermai
     let started = Instant::now();
 
     // Disk hit: the diagram PNG is already on disk and decodes.
-    if read_cached_png(&job.out_path) {
+    if read_cached_output(&job.out_path) {
         tracing::debug!(
             target: MERMAID_TRACING_TARGET,
             theme_kind = ?job.key.theme,
@@ -670,7 +704,7 @@ fn render_job(render: &RenderFn, job: &MermaidJob, timeout: Duration) -> (Mermai
                 target_px = job.target_width_px,
                 duration_ms = started.elapsed().as_millis() as u64,
                 cache_hit = false,
-                engine = "mermaid-to-svg",
+                engine = "ondine",
                 "mermaid render completed",
             );
             (
@@ -707,7 +741,16 @@ fn write_png_atomic(path: &Path, png: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Sweep a session's `mermaid/` dir down to `max_bytes`, dropping the oldest PNGs (and any decode-corrupt ones) first.
+fn write_svg_atomic(path: &Path, svg: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("svg.tmp");
+    std::fs::write(&tmp, svg)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Sweep a session's `mermaid/` dir down to `max_bytes`, dropping the oldest cached images first.
 /// A pure cache, so deletion is safe; repopulated on demand.
 /// Intended to run off the render path (e.g. via `spawn_blocking` at session load), never per render.
 pub fn sweep_session_cache(dir: &Path, max_bytes: u64) {
@@ -725,12 +768,15 @@ pub fn sweep_session_cache(dir: &Path, max_bytes: u64) {
         if path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.ends_with(".png.tmp"))
+            .is_some_and(|n| n.ends_with(".png.tmp") || n.ends_with(".svg.tmp"))
         {
             let _ = std::fs::remove_file(&path);
             continue;
         }
-        if path.extension().and_then(|e| e.to_str()) != Some("png") {
+        if !matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("png" | "svg")
+        ) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -915,7 +961,9 @@ impl AgentView {
     /// Shared by the disk-hit fast path and the worker-result completion path.
     fn complete_mermaid_action(&mut self, action: MermaidClickAction, path: &Path) {
         let ok = match action {
-            MermaidClickAction::Open => self.open_media_natively(path),
+            MermaidClickAction::Open | MermaidClickAction::OpenSvg => {
+                self.open_media_natively(path)
+            }
             MermaidClickAction::CopyPath => self
                 .copy_to_clipboard(&path.display().to_string())
                 .success(),
@@ -940,7 +988,10 @@ impl AgentView {
         let cols = self.mermaid_content_cols();
         // Open Image / Copy Image Path always use the open tier so Preview etc. get a high-res PNG.
         // The cache key is tier-separated from any terminal budget
-        let quality = MermaidRenderQuality::Open;
+        let quality = match action {
+            MermaidClickAction::OpenSvg => MermaidRenderQuality::Svg,
+            MermaidClickAction::Open | MermaidClickAction::CopyPath => MermaidRenderQuality::Open,
+        };
         let Some((key, out_path)) = self.mermaid_render_target(&source, theme, cols, quality)
         else {
             // No session dir yet, so nowhere to cache the PNG
@@ -966,7 +1017,7 @@ impl AgentView {
         }
 
         // Disk hit at the current theme/quality: run the action now, no render
-        if read_cached_png(&out_path) {
+        if read_cached_output(&out_path) {
             self.complete_mermaid_action(action, &out_path);
             return;
         }
@@ -1400,6 +1451,27 @@ mod tests {
         assert!(matches!(outcome, MermaidOutcome::Failed));
         assert!(!wrote);
         assert!(!out.exists(), "no PNG written for oversized source");
+    }
+
+    #[test]
+    fn svg_render_writes_standalone_document_and_hits_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("diagram.svg");
+        let args = RenderArgs {
+            out: path.clone(),
+            theme_dark: true,
+            width: 0,
+            quality: MermaidRenderQuality::Svg,
+            deadline: RENDER_TIMEOUT,
+        };
+        render_and_write(&args, "flowchart LR\nA[Start]-->B[Finish]").unwrap();
+        assert!(read_cached_output(&path));
+        let svg = std::fs::read_to_string(&path).unwrap();
+        assert!(svg.contains("ondine-flowchart"));
+        assert!(svg.contains("Start") && svg.contains("Finish"));
+        assert!(!svg.contains("var(--_"));
+        std::fs::write(&path, "<svg ").unwrap();
+        assert!(!read_cached_output(&path));
     }
 
     /// The disk-cache hit predicate: a real PNG is a hit; a missing, corrupt, or symlinked entry is a miss.
