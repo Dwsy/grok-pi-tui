@@ -173,7 +173,7 @@ grok-pi -- --model openai/gpt-4o
 
 ## 从源码构建
 
-环境要求：Rust **1.92.0**、Node.js **22.19.0 或更高版本**、npm，以及系统 Pi 安装。
+环境要求：Rust **1.97.0**、Node.js **22.19.0 或更高版本**、npm，以及系统 Pi 安装。首次源码构建需要获取固定版本的 Ondine Git 依赖。
 
 ```bash
 ./build.sh

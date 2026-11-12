@@ -179,7 +179,7 @@ grok-pi -- --model openai/gpt-4o
 
 ## Build from source
 
-Requirements: Rust **1.92.0**, Node.js **22.19.0 or newer**, npm, and a system Pi installation.
+Requirements: Rust **1.97.0**, Node.js **22.19.0 or newer**, npm, and a system Pi installation. The first source build fetches the pinned Ondine Git dependency.
 
 ```bash
 ./build.sh

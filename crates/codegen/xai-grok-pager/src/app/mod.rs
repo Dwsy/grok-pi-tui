@@ -741,7 +741,7 @@ pub async fn run_external_deferred(
             .context("failed to spawn the term-writer thread")?;
     let cursor_blink = event_loop::load_initial_ui_config().cursor_blink;
     let TerminalInit {
-        terminal: mut terminal,
+        mut terminal,
         screen_mode,
         startup_typeahead,
     } = init_terminal(
