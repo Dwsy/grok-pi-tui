@@ -151,7 +151,7 @@ fn paint_pixels_iterm2_emits_osc1337_and_restores_cursor() {
     );
     assert!(esc.contains("\x1b]1337;File="));
     assert!(esc.contains(&format!(
-        "width={}cells;height={}cells",
+        "width={};height={}",
         placement.cols, placement.rows
     )));
 }

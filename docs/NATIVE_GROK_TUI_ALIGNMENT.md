@@ -18,6 +18,7 @@ The current entry point is not a self-drawn Ratatui shell. `grok-pi` lives insid
 | Status and notifications | native toast / sticky surface | `notify`/`setStatus`/`setWidget` converted to narrow ACP notifications |
 | Voice dictation | native Pager Voice pipeline | opt-in external profile captures speech through xAI STT and inserts text into PromptWidget; Pi receives only the user-submitted prompt |
 | Scroll and transcript | native scrollback / transcript | both historical and live events are ACP `SessionUpdate` |
+| Read image viewer | native block viewer and terminal overlay | Kitty placement is unchanged; iTerm2 uses OSC 1337 with a full repaint after a committed image to clear grid pixels on the next frame |
 | Model selection | native model selector | Pi models / thinking levels converted to `SessionModelState` |
 
 ## Evidence of What Is Unchanged

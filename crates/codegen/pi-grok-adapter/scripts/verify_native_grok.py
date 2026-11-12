@@ -385,6 +385,11 @@ def main() -> int:
         "crates/codegen/xai-grok-pager-render/src/appearance/cache.rs",
         # Preserve original image paths in ACP metadata without changing native rendering.
         "crates/codegen/xai-grok-pager-render/src/prompt_images.rs",
+        # iTerm2 OSC 1337 uses bare cell counts for image dimensions.
+        "crates/codegen/xai-grok-pager-render/src/render/image_overlay/tests.rs",
+        "crates/codegen/xai-grok-pager-render/src/terminal/image.rs",
+        "crates/codegen/xai-grok-pager-render/src/terminal/image/tests.rs",
+        "crates/codegen/xai-grok-pager-render/src/terminal/overlay.rs",
         # Narrow branding seam: process-wide logo override for external hosts
         # (e.g. grok-pi π art). Layout/shimmer still use the native renderer.
         "crates/codegen/xai-grok-pager/src/scrollback/blocks/context_info.rs",

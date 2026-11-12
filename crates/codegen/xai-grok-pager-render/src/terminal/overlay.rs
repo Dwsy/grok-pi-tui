@@ -14,6 +14,8 @@ static NEXT_OWNER_ID: AtomicU64 = AtomicU64::new(1);
 thread_local! {
     static OWNER: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
     static PLACEMENT: std::cell::Cell<Option<LastPlacement>> = const { std::cell::Cell::new(None) };
+    // iTerm pixels are cells, not Kitty placements; repaint even if the viewer closed.
+    static ITERM_READ_VIEWER_NEEDS_REPAINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +38,7 @@ pub struct Escapes {
     bytes: String,
     ownership: Ownership,
     placement: Option<LastPlacement>,
+    iterm_read_viewer: bool,
 }
 
 impl Escapes {
@@ -44,6 +47,7 @@ impl Escapes {
             bytes,
             ownership: Ownership::Static(owner_id),
             placement: Some(placement),
+            iterm_read_viewer: false,
         }
     }
 
@@ -52,6 +56,7 @@ impl Escapes {
             bytes: String::new(),
             ownership: Ownership::Static(owner_id),
             placement: Some(placement),
+            iterm_read_viewer: false,
         }
     }
 
@@ -65,6 +70,9 @@ impl Escapes {
 
     pub fn commit(self) -> String {
         commit(self.ownership, self.placement);
+        if self.iterm_read_viewer {
+            arm_iterm_read_viewer_repaint();
+        }
         self.bytes
     }
 }
@@ -74,6 +82,7 @@ pub struct PostFlush {
     bytes: String,
     ownership: Option<Ownership>,
     placement: Option<LastPlacement>,
+    iterm_read_viewer: bool,
 }
 
 impl PostFlush {
@@ -82,11 +91,13 @@ impl PostFlush {
             bytes,
             ownership: None,
             placement: None,
+            iterm_read_viewer: false,
         }
     }
 
     pub fn append(&mut self, other: Self) {
         self.bytes.push_str(&other.bytes);
+        self.iterm_read_viewer |= other.iterm_read_viewer;
         if let Some(ownership) = other.ownership {
             self.ownership = Some(ownership);
             self.placement = other.placement;
@@ -103,6 +114,9 @@ impl PostFlush {
 
     pub fn write_to(self, writer: &mut impl Write) -> io::Result<()> {
         writer.write_all(self.bytes.as_bytes())?;
+        if self.iterm_read_viewer {
+            arm_iterm_read_viewer_repaint();
+        }
         if let Some(ownership) = self.ownership {
             commit(ownership, self.placement);
         }
@@ -116,8 +130,19 @@ impl From<Escapes> for PostFlush {
             bytes: escapes.bytes,
             ownership: Some(escapes.ownership),
             placement: escapes.placement,
+            iterm_read_viewer: escapes.iterm_read_viewer,
         }
     }
+}
+
+fn arm_iterm_read_viewer_repaint() {
+    ITERM_READ_VIEWER_NEEDS_REPAINT.with(|flag| flag.set(true));
+}
+
+/// Consume only once the presenter can draw. This survives owner clearing so
+/// closing or replacing the viewer still erases the committed pixels.
+pub fn take_iterm_read_viewer_repaint() -> bool {
+    ITERM_READ_VIEWER_NEEDS_REPAINT.with(|flag| flag.replace(false))
 }
 
 pub fn next_owner_id() -> u64 {
@@ -222,6 +247,7 @@ pub fn volatile_image(
         bytes,
         ownership: Ownership::Clear,
         placement: None,
+        iterm_read_viewer: false,
     })
 }
 
@@ -234,6 +260,22 @@ pub fn static_centered(
 ) -> Option<Escapes> {
     let (cols, rows, x, y) = centered_placement(img_w, img_h, overlay_rect)?;
     static_image(image_data, cols, rows, x, y, owner_id)
+}
+
+/// Read viewer uses the separately gated iTerm protocol. Each committed iTerm
+/// image requests a full repaint before the next frame so the old grid is erased.
+pub fn static_centered_read_viewer(
+    image_data: &[u8],
+    img_w: u32,
+    img_h: u32,
+    overlay_rect: Rect,
+    owner_id: u64,
+) -> Option<Escapes> {
+    let protocol = prompt_preview_graphics_protocol();
+    let (cols, rows, x, y) = centered_placement(img_w, img_h, overlay_rect)?;
+    let mut escapes = static_image_for_protocol(protocol, image_data, cols, rows, x, y, owner_id)?;
+    escapes.iterm_read_viewer = protocol == GraphicsProtocol::ITerm2;
+    Some(escapes)
 }
 
 pub fn volatile_centered(
@@ -255,6 +297,7 @@ pub fn clear() -> Option<Escapes> {
             bytes: String::new(),
             ownership: Ownership::Clear,
             placement: None,
+            iterm_read_viewer: false,
         }),
         GraphicsProtocol::None => None,
     }
@@ -265,6 +308,7 @@ pub fn clear_kitty() -> Escapes {
         bytes: clear_kitty_image(KITTY_PLACEMENT_ID),
         ownership: Ownership::Clear,
         placement: None,
+        iterm_read_viewer: false,
     }
 }
 
@@ -296,6 +340,50 @@ mod tests {
     fn is_delete_then_transmit(esc: &Escapes) -> bool {
         let s = esc.as_str();
         s.contains("a=d,d=i") && s.contains("a=T") && !s.contains("a=p")
+    }
+
+    #[test]
+    fn iterm_read_viewer_requests_repaint_only_after_successful_write() {
+        let _guard = set_protocol_for_test(GraphicsProtocol::ITerm2);
+        reset_owner();
+        let _ = take_iterm_read_viewer_repaint();
+        let rect = Rect::new(0, 0, 40, 20);
+        let discarded = static_centered_read_viewer(&png(), 10, 10, rect, 50).unwrap();
+        assert!(discarded.as_str().contains("1337"));
+        drop(discarded);
+        assert!(!take_iterm_read_viewer_repaint());
+
+        let painted = static_centered_read_viewer(&png(), 10, 10, rect, 50).unwrap();
+        PostFlush::from(painted).write_to(&mut Vec::new()).unwrap();
+        // A close can clear owner before the next frame; the repaint survives.
+        let _ = clear_kitty().commit();
+        assert!(take_iterm_read_viewer_repaint());
+        assert!(!take_iterm_read_viewer_repaint());
+        reset_owner();
+        assert!(
+            static_centered_read_viewer(&png(), 10, 10, rect, 50)
+                .unwrap()
+                .as_str()
+                .contains("1337")
+        );
+    }
+
+    #[test]
+    fn kitty_read_viewer_keeps_existing_placement_without_repaint() {
+        let _guard = set_protocol_for_test(GraphicsProtocol::Kitty);
+        reset_owner();
+        let _ = take_iterm_read_viewer_repaint();
+        let rect = Rect::new(0, 0, 40, 20);
+        let _ = static_centered_read_viewer(&png(), 10, 10, rect, 51)
+            .unwrap()
+            .commit();
+        assert!(!take_iterm_read_viewer_repaint());
+        assert!(
+            static_centered_read_viewer(&png(), 10, 10, rect, 51)
+                .unwrap()
+                .as_str()
+                .is_empty()
+        );
     }
 
     #[test]

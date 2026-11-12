@@ -149,8 +149,7 @@ fn kitty_format_and_conversion_produce_png() {
 fn iterm_escape_fills_requested_geometry_exactly() {
     let escape = render_iterm2_image(&[0u8; 10], 30, 15);
     assert!(escape.starts_with("\x1b]1337;File="));
-    assert!(escape.contains("width=30cells"));
-    assert!(escape.contains("height=15cells"));
+    assert!(escape.contains("width=30;height=15;"));
     assert!(escape.contains("preserveAspectRatio=0"));
 }
 

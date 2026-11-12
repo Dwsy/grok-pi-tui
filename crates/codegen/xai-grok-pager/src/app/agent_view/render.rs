@@ -4546,6 +4546,9 @@ impl AgentView {
             return (None, prompt_post_flush);
         }
         let block_viewer_toast = self.active_toast_message().map(|s| s.to_string());
+        let hide_read_image_for_resize = self.resize_hides_prompt_preview();
+        let is_iterm = crate::terminal::image::prompt_preview_graphics_protocol()
+            == crate::terminal::image::GraphicsProtocol::ITerm2;
         if let Some(ref mut viewer) = self.block_viewer {
             use ratatui::style::Modifier;
             use ratatui::widgets::{Block as RBlock, BorderType, Borders, Clear, Widget};
@@ -4688,8 +4691,14 @@ impl AgentView {
             viewer.render_content(content_area, buf, &entry, true, &prepend_lines);
             viewer.render_text_drag_overlay(buf);
             let mut image_escape_emitted = false;
-            if let Some(img) = &viewer.image {
-                if let Some(esc) = crate::terminal::overlay::static_centered(
+            if !hide_read_image_for_resize
+                && (!is_iterm
+                    || (viewer.list_state.input_mode().is_none()
+                        && viewer.list_state.matcher().is_none()
+                        && !viewer.list_state.visual_mode))
+                && let Some(img) = &viewer.image
+            {
+                if let Some(esc) = crate::terminal::overlay::static_centered_read_viewer(
                     &img.bytes,
                     img.width,
                     img.height,

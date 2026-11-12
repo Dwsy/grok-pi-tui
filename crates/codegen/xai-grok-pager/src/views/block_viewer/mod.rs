@@ -566,11 +566,19 @@ impl BlockViewerPane {
     /// Returns `None` — leaving the text lines as the content — when the
     /// terminal has no graphics protocol or the file can't be read/decoded.
     fn load_read_image(path: &std::path::Path) -> Option<BlockViewerImage> {
-        if !crate::terminal::image::detect_graphics_protocol().supports_images() {
+        use crate::terminal::image::{GraphicsProtocol, prompt_preview_graphics_protocol};
+        let protocol = prompt_preview_graphics_protocol();
+        if !protocol.supports_images() {
             return None;
         }
         let raw = std::fs::read(path).ok()?;
-        let bytes = crate::terminal::image::prepare_overlay_image_bytes(&raw)?;
+        let bytes = match protocol {
+            GraphicsProtocol::Kitty => {
+                crate::terminal::image::prepare_kitty_overlay_image_bytes(&raw)?
+            }
+            GraphicsProtocol::ITerm2 => raw,
+            GraphicsProtocol::None => return None,
+        };
         let (width, height) = crate::prompt_images::decode_image_dimensions(&bytes)?;
         Some(BlockViewerImage {
             bytes,

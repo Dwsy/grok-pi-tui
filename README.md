@@ -117,6 +117,8 @@ For field-level behavior and intentional omissions, see the [feature matrix](doc
 
 Pasted image files keep their original paths in the user prompt's image metadata, so Pi receives both the image content and a path its tools can use.
 
+The Read tool's image viewer supports Kitty-compatible terminals and iTerm2 when inline image display is available. iTerm2 redraws the viewer on updates; inline scrollback images remain unavailable there.
+
 ## Architecture
 
 ```mermaid

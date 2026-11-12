@@ -424,13 +424,12 @@ pub fn clear_kitty_image(image_id: u32) -> String {
 // iTerm2 inline images protocol
 // -------------------------------------------------------------------------
 
+/// Bare width/height numbers are cell counts in the iTerm2 protocol.
 /// `preserveAspectRatio=0`: callers already sized the rect. Re-preserving against real cell geometry letterboxes blank bands.
 pub fn render_iterm2_image(image_data: &[u8], cols: u16, rows: u16) -> String {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD.encode(image_data);
-    format!(
-        "\x1b]1337;File=inline=1;width={cols}cells;height={rows}cells;preserveAspectRatio=0:{b64}\x07",
-    )
+    format!("\x1b]1337;File=inline=1;width={cols};height={rows};preserveAspectRatio=0:{b64}\x07",)
 }
 
 // -------------------------------------------------------------------------

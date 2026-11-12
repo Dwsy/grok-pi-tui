@@ -111,6 +111,8 @@ grok-pi update --channel stable  # 切回 stable；默认即 stable
 
 粘贴图片文件路径时，用户提示词的图片元信息会保留原始路径，Pi 同时收到图片内容和可供工具使用的文件路径。
 
+Read 工具的图片查看器支持 Kitty 兼容终端，以及允许内联图片显示的 iTerm2。iTerm2 更新查看器时会重绘屏幕；会话滚动区内联图片暂不支持 iTerm2。
+
 ## 架构
 
 ```mermaid

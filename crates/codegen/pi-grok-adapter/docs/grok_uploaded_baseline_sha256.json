@@ -2786,13 +2786,27 @@
     "crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs",
     "crates/codegen/xai-grok-pager-render/src/appearance/cache.rs",
     "crates/codegen/xai-grok-pager-render/src/prompt_images.rs",
+    "crates/codegen/xai-grok-pager-render/src/render/image_overlay/tests.rs",
+    "crates/codegen/xai-grok-pager-render/src/terminal/image.rs",
+    "crates/codegen/xai-grok-pager-render/src/terminal/image/tests.rs",
+    "crates/codegen/xai-grok-pager-render/src/terminal/overlay.rs",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/mod.rs",
     "crates/codegen/xai-grok-pager/src/settings/registry.rs",
     "crates/codegen/xai-grok-shared/src/ui_config.rs",
     "crates/codegen/xai-grok-shell/src/util/config/settings_writes.rs",
     "crates/codegen/xai-grok-pager/src/app/mouse.rs",
     "crates/codegen/xai-grok-pager/src/app/agent_view/selection.rs",
-    "crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs"
+    "crates/codegen/xai-grok-pager/src/app/dispatch/tests/settings.rs",
+    "rust-toolchain.toml",
+    "THIRD-PARTY-NOTICES",
+    "crates/codegen/xai-grok-mermaid/Cargo.toml",
+    "crates/codegen/xai-grok-mermaid/src/lib.rs",
+    "crates/codegen/xai-grok-mermaid/src/raster.rs",
+    "crates/codegen/xai-grok-pager/src/app/agent_view/media.rs",
+    "crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs",
+    "crates/codegen/xai-grok-pager/src/app/mermaid_worker.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/blocks/mermaid_content.rs",
+    "crates/codegen/xai-grok-pager/tests/mermaid_render_subprocess.rs"
   ],
   "allowedAddedPrefixes": [
     "crates/codegen/pi-grok-adapter/"

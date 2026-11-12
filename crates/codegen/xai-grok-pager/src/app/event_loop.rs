@@ -696,6 +696,11 @@ impl Presenter {
             sync.written(),
             queued_before,
             |force| {
+                // OSC 1337 images live in the grid. Repaint the old cells even
+                // when the Read viewer was closed and its owner already cleared.
+                let read_viewer_repaint =
+                    crate::terminal::overlay::take_iterm_read_viewer_repaint();
+                let force = force || read_viewer_repaint;
                 if force {
                     let _ = terminal.clear();
                     // terminal.clear() rewrote every cell, erasing iTerm2

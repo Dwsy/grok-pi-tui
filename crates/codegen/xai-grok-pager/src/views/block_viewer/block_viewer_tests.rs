@@ -23,6 +23,35 @@ fn running_markdown_pane(text: &str) -> BlockViewerPane {
 }
 
 #[test]
+fn read_image_file_loads_for_iterm_and_falls_back_without_graphics() {
+    use crate::terminal::image::{GraphicsProtocol, set_protocol_for_test};
+    use std::io::Cursor;
+
+    let dir = tempfile::tempdir().expect("temporary image directory");
+    let path = dir.path().join("sample.png");
+    let mut png = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(7, 5)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .expect("encode PNG");
+    let bytes = png.into_inner();
+    std::fs::write(&path, &bytes).expect("write image");
+
+    {
+        let _guard = set_protocol_for_test(GraphicsProtocol::ITerm2);
+        let image = BlockViewerPane::load_read_image(&path).expect("iTerm Read image");
+        assert_eq!((image.width, image.height), (7, 5));
+        assert_eq!(
+            image.bytes, bytes,
+            "iTerm must receive the original encoded image"
+        );
+    }
+    {
+        let _guard = set_protocol_for_test(GraphicsProtocol::None);
+        assert!(BlockViewerPane::load_read_image(&path).is_none());
+    }
+}
+
+#[test]
 fn codemode_viewer_shows_full_script_calls_and_output() {
     let block = crate::scrollback::blocks::tool::CodemodeToolCallBlock::new("const a = 1;")
         .with_raw_output(Some(&serde_json::json!({
