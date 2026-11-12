@@ -13,6 +13,10 @@ use crate::views::btw_overlay::BTW_OVERLAY_ENTRY_IDX;
 use crate::views::prompt_widget::PromptEvent;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use std::time::Instant;
+
+#[path = "timeline_haptics.rs"]
+mod timeline_haptics;
+
 impl AgentView {
     /// Multi-click check for the prompt textarea, paired by time only (no coordinates); a mispaired action is one undo step.
     /// Records the click for the next pairing.
@@ -1064,6 +1068,12 @@ impl AgentView {
                 self.hovered_entry = new_hover;
                 self.hovered_prompt = new_prompt_hover;
                 if new_timeline_hover != self.timeline_hover {
+                    if matches!(
+                        new_timeline_hover,
+                        Some(crate::views::timeline::TimelineHit::Tick(_))
+                    ) {
+                        timeline_haptics::tick();
+                    }
                     self.timeline_hover = new_timeline_hover;
                     self.sync_timeline_hover_preview();
                     changed = true;
