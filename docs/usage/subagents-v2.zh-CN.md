@@ -16,7 +16,7 @@ V2 **默认关闭**。如果只需要 `spawn_subagent`、`/subagents`、wait/can
 
 report 本身不释放槽，必须结束 turn；不要用 `team_wait` 占槽等排队后代，也不要给 `spawn_team.timeout_ms` 传正值。waiting 要求自己的下级仍待完成；需父级决定时使用 blocked + question。child 的 dropped 会恢复已经 waiting 的 parent；waiting/dropped 不会掩盖运行失败或取消。
 
-V1 不暴露该技能。root 读技能不等于 child 已加载，派发时须明确复制精简契约。默认两层 child、全树最多新建八个 identity 是模型软约定；runtime 仍硬限全树四个并发后台 run。所有 Agent 共用 cwd，每个文件应指定唯一 writer。
+V1 不暴露该技能。root 读技能不等于 child 已加载，派发时须明确复制精简契约。默认两层 child、全树最多新建八个 identity 是模型软约定；runtime 仍硬限全树 25 个并发后台 run。所有 Agent 共用 cwd，每个文件应指定唯一 writer。
 
 源码构建修改内置技能后需重新构建 grok-pi。当前能力不包含 session-wide 开关、忙碌输入队列转并行、硬树预算、worktree 隔离、取消级联或跨进程恢复。参见 [设计调研记录](../issues/adapter/20261102-subagents-v2-multitask.md) 中的现有实现与后续硬化方案。
 
@@ -94,8 +94,8 @@ Root 显示为 `ROOT`。
 |---|---|
 | `spawn_team_agent` | 异步创建一个稳定 `/root/...` path 的直接 child。child 同样获得 V2 control-plane tools，因此可以 nested spawn。支持 `agent_type`、`description`、`model`、`max_turns`、`thinking_level`、`capability_mode`。 |
 | `spawn_team` | 从外置 preset 启动选定成员。完整 roster 注册成功后才统一开跑；后续 member 创建失败，或启动前收到取消，都会回滚已创建成员，避免半个 team 残留。除 `team`、`task` 外还支持 `members`、`model`、`thinking_level`、`max_turns`、`capability_mode`、`instructions`、`timeout_ms`。 |
-| `team_send_message` | 缓冲 `MESSAGE`，不启动 idle recipient 的 turn。同一 sender 到同一 target 的连续消息合并成一条 steer（编号列出，重复文本去重），在 sender 下一次 team 动作前或 turn 结束时发出。 |
-| `team_followup_task` | 发送 `NEW_TASK`。running recipient 排入 follow-up；还在 concurrency queue 的 recipient 会被提到共享队列最前再执行它的待跑任务，父级明确要求的工作不必排在无关 launch 后面；`IDLE` 与 `WAITING_DECISION` recipient 在同一个 child session 上重新激活，使用新的 V1 run ID。 |
+| `team_send_message` | 缓冲 `MESSAGE`，不启动 idle recipient 的 turn。同一 sender 到同一 target 的消息在 25 ms 合并窗口内编号、去重，之后自动 flush；team 动作与 root turn 结束可提前 flush。运行中的接收者在下一个安全循环边界处理真正的 steer。当前工作需要的事实、纠偏和收尾指令使用此工具。 |
+| `team_followup_task` | 发送当前工作结束后的 `NEW_TASK`，不是紧急纠偏通道。还在 concurrency queue 的 recipient 会被提到共享队列最前再执行它的待跑任务，父级明确要求的工作不必排在无关 launch 后面；`IDLE` 与 `WAITING_DECISION` recipient 在同一个 child session 上重新激活，使用新的 V1 run ID。 |
 | `team_wait` | 等待 coordinator activity，不 busy-poll。默认 120 秒，可用范围 1–600 秒；spawn/message/completion/interrupt 都可提前唤醒。 |
 | `team_list` | 列出稳定 path、role、当前状态、最近的 report 或待决问题，以及静默时长。会先 flush 缓冲消息，使显示与已发送内容一致。 |
 | `team_interrupt` | 中断 queued 或 running 工作。queued work 会在真正执行前从队列移除；已终止 agent 返回稳定终态。 |
@@ -149,16 +149,18 @@ report 会替换 child 的最终文本：投递内容变成 `Report: <state>`、
 
 Child run 结束后，结果会作为 `FINAL_ANSWER` 自动交给 parent。
 
-- parent 正在运行：结果进入 follow-up 上下文。
+- parent 正在运行（包括 root）：结果进入 steering 队列，在下一个安全循环边界处理，不等整段工具循环结束。
 - parent 已 `IDLE`：V2 会在同一个 parent child session 上重新激活，避免 nested child 结果丢失。
 - parent 是 root：通过 root extension message channel 投递。
 - parent 已 `FAILED`/`CANCELLED`：不会静默复活；delivery failure 会记录在 child run 上。
 
 因此 nested delegation 不需要 parent 轮询 JSONL 才能拿到结果。
 
+25 ms 是合并窗口，不是端到端延迟保证：steer 与最终回执都不会取消正在执行的模型请求或工具。普通消息省略 `triggerTurn`，使 Pi 在活跃时 steer、空闲时只追加；显式传 `false` 会绕过活跃接收者的 steering 队列。模型/流响应以 `error` 或 `aborted` 结束时，即使 Pi 的 prompt Promise 正常 resolve，也分别记录为 `FAILED` 或 `CANCELLED`。重试恢复后以成功响应结束的运行仍记录 completed。
+
 ## 并发与队列
 
-V1/V2 共用 subagent runtime 的后台并发上限：**每个 root 进程最多 4 个 active background run**。额外工作进入队列。
+V1/V2 共用 subagent runtime 的后台并发上限：**每个 root 进程最多 25 个 active background run**（可在 `/subagents` 的「Background concurrency」中配置，范围 1–256，对新 spawn 生效）。额外工作进入队列。
 
 队列支持安全取消：queued run 被 cancel 后会在执行前移除。对一个仍在 concurrency queue 中的 agent 发送 `team_followup_task` 时，新任务不会绕过并发上限抢跑，而是作为 pending team work 等当前已排队 run 完成后再执行。
 
@@ -262,7 +264,7 @@ Review architecture and correctness. Do not edit files. Return evidence with fil
 
 Markdown definition 控制 system prompt、业务 tools、最多 3 个 models、extensions、skills、max turns、默认 `thinking_level` 与继承开关。V2 control-plane tools 独立注入，所以 read-only reviewer 仍能参与 team 通信。**只保留两种 capability**：`read-only`（精简工具集 + 注入 `READ_ONLY_CONTRACT`）与 `all`（全量内置工具）。两者都包含 Bash，definition 显式配置 `tools:` 时也会补入。旧的 `execute` / `read-write` 值静默映射为 `all`，既有 preset 与定义照常可用。自定义工具列表若同时不含 `edit` 和 `write`，按只读工具集处理。agent 的限制来自注入的 system prompt（只读契约与各 profile 自身指令），而不是隐藏 Bash；这是提示词级约束，不是 OS 级强制。
 
-使用 `/subagents` 管理原生 agent definition，`/subagent-control` 打开统一 TUI 控制中心（状态/定义/preset/注入预览）。
+使用 `/subagents` 管理原生 agent definition 与后台并行度，`/subagent-control` 打开统一 TUI 控制中心（状态/定义/preset/注入预览）。配置界面全部是 pi-tui 全屏组件（走 Remote TUI 投影进 Pager），列表点选、多选勾选、按钮确认、输入框与滚轮均支持鼠标与键盘双操作。
 
 ### 内置 profile 的工具权限
 
@@ -376,7 +378,7 @@ Pi child-session JSONL 仍是持久化对话/history 存储，但**不是**实�
 
 ### 一直显示 QUEUED
 
-共享后台并发上限是 4。用 `team_wait` 等待 activity，或 `team_interrupt` 停掉不再需要的工作。
+共享后台并发上限是 25。用 `team_wait` 等待 activity，或 `team_interrupt` 停掉不再需要的工作。
 
 
 ## 可复现的本地检查

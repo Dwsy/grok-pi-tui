@@ -16,7 +16,7 @@ The bundled skill selects a strategy for this task tree. Each explicitly authori
 
 Reporting alone does not release a slot. Do not park a coordinator on `team_wait` for queued descendants or set a positive `spawn_team.timeout_ms` in this mode. `waiting` requires a pending child of the reporter; a parent decision uses `blocked` with a question. A dropped child still wakes a parent already waiting for its result, and quiet reports never hide runtime failure/cancellation.
 
-V1 does not advertise this skill. Loading it at root does not preload child resources: copy its compact contract into every handoff. Default skill guidance caps depth at two child layers and allocates eight new identities across the whole task; these are model instructions. The existing runtime enforces four concurrent background runs across the tree. Agents share the same cwd, so allocate one writer per file.
+V1 does not advertise this skill. Loading it at root does not preload child resources: copy its compact contract into every handoff. Default skill guidance caps depth at two child layers and allocates eight new identities across the whole task; these are model instructions. The existing runtime enforces 25 concurrent background runs across the tree. Agents share the same cwd, so allocate one writer per file.
 
 For a source build, rebuild grok-pi after changing bundled skills. The skill does not install a session-wide switch, convert the busy input queue, enforce hard tree budgets, isolate worktrees, cascade cancellation, or restore a live team across process restarts. The [design/research record](../issues/adapter/20261102-subagents-v2-multitask.md) separates this implementation from the proposed runtime hardening.
 
@@ -94,8 +94,8 @@ The root is shown as `ROOT`.
 |---|---|
 | `spawn_team_agent` | Creates an asynchronous direct child with a stable `/root/...` path. Children receive the same V2 control-plane tools and may spawn nested children. Accepts `agent_type`, `description`, `model`, `max_turns`, `thinking_level`, and `capability_mode`. |
 | `spawn_team` | Loads one external team preset and creates the selected roster before any member starts. A failed member or a cancel that arrives before start rolls back every member already created. Accepts `members`, `model`, `thinking_level`, `max_turns`, `capability_mode`, `instructions`, and `timeout_ms` on top of `team` and `task`. |
-| `team_send_message` | Buffers a `MESSAGE` without starting an idle recipient turn. Consecutive messages from one sender to one target merge into a single steer (numbered, repeated text dropped) and leave before the sender's next team action or when its turn ends. |
-| `team_followup_task` | Sends a `NEW_TASK`. Running recipients queue it as follow-up work. Concurrency-queued recipients are promoted to the front of the shared queue before their pending run executes, so an explicit parent request does not wait behind unrelated launches. `IDLE` and `WAITING_DECISION` recipients are reactivated in the same child session with a fresh V1 run ID. |
+| `team_send_message` | Buffers a `MESSAGE` without starting an idle recipient turn. A 25 ms merge window batches messages from one sender to one target (numbered, repeated text dropped), then flushes automatically; team actions and root turn end may flush earlier. Running recipients receive an actual steer at their next safe loop boundary. Use it for facts, corrections, or wrap-up instructions needed during current work. |
+| `team_followup_task` | Sends a `NEW_TASK` after the recipient's current work; it is not an urgent correction channel. Concurrency-queued recipients are promoted to the front of the shared queue before their pending run executes, so an explicit parent request does not wait behind unrelated launches. `IDLE` and `WAITING_DECISION` recipients are reactivated in the same child session with a fresh V1 run ID. |
 | `team_wait` | Waits for coordinator activity without busy polling. Default 120 s; accepted range 1 s–600 s. Spawn, message, completion and interruption can wake the wait early. |
 | `team_list` | Lists stable paths, roles, current statuses, the last report or decision question, and the quiet gap. Flushes buffered messages first so the tree it shows matches what was already sent. |
 | `team_interrupt` | Cancels queued or running work. Queued work is removed before execution; already-terminal work returns its stable terminal status. |
@@ -145,16 +145,18 @@ Reactivating an agent clears its previous report. A new run never replays the ol
 
 When a child run ends, its result is sent to its parent as `FINAL_ANSWER`.
 
-- If the parent is running, the result is queued as follow-up context.
+- If the parent is running (including root), the result enters its steering queue and is processed at the next safe loop boundary, without waiting for the entire tool loop to finish.
 - If the parent is `IDLE`, V2 reactivates the same parent child session so the result is not dropped.
 - If the parent is the root session, the result is delivered through the root extension message channel.
 - A failed/cancelled parent is not silently revived; delivery failure is recorded on the child run.
 
 This makes nested delegation usable without parent-side JSONL polling.
 
+The merge window bounds batching, not end-to-end latency: neither steer nor a final answer aborts an already-running model request or tool. Ordinary messages omit `triggerTurn` so Pi steers active sessions but only appends to idle ones; explicitly passing `false` would bypass the active steering queue. Child provider/stream responses ending in `error` or `aborted` are recorded as `FAILED` or `CANCELLED`, even when Pi's prompt Promise resolves normally. A recovered error followed by a successful response remains completed.
+
 ## Concurrency and queueing
 
-V1 and V2 share the subagent runtime's background concurrency limit: **4 active background runs** per root process. Additional work is queued.
+V1 and V2 share the subagent runtime's background concurrency limit: **25 active background runs** per root process (configurable as "Background concurrency" in `/subagents`, range 1–256, applies to new spawns). Additional work is queued.
 
 The queue is cancellation-safe: cancelling a queued run removes it before it can start. A `team_followup_task` sent to an agent that is itself still waiting in the concurrency queue is stored as pending team work and starts only after the already-queued run completes.
 
@@ -258,7 +260,7 @@ Review architecture and correctness. Do not edit files. Return evidence with fil
 
 The Markdown definition controls the system prompt, business tools, up to three models, extensions, skills, max turns, the default `thinking_level`, and inheritance flags. V2 control-plane tools are injected separately so a read-only reviewer can still communicate with the team. **There are only two capability modes**: `read-only` (reduced loadout + `READ_ONLY_CONTRACT`) and `all` (every built-in tool). Both include Bash, including definition-supplied `tools:` lists. Legacy `execute` / `read-write` values are silently mapped to `all` so existing presets keep working. Custom tool lists that omit both `edit` and `write` are treated as read-only. Agents are constrained by the injected system prompt (the read-only contract, or each profile's own instructions), not by hiding Bash. This is a prompt-level rule, not an OS-level boundary.
 
-Use `/subagents` for the native agent-definition management surface, `/subagent-control` for the unified TUI control center (status/definitions/presets/injection preview).
+Use `/subagents` for the native agent-definition management surface (including the background-concurrency setting) and `/subagent-control` for the unified TUI control center (status/definitions/presets/injection preview). All configuration screens are full-screen pi-tui components (projected into Pager by the Remote TUI bridge): list selection, checkbox toggles, button confirmation, text input, and scrolling work with both mouse and keyboard.
 
 ### Built-in profile tool access
 
@@ -374,7 +376,7 @@ That is expected for `team_send_message` to an `IDLE` agent. Use `team_followup_
 
 ### Work appears queued
 
-The shared background concurrency limit is four. `team_list` will show `QUEUED`; wait for activity or interrupt work you no longer need.
+The shared background concurrency limit is 25 by default (configurable via `/subagents`). `team_list` will show `QUEUED`; wait for activity or interrupt work you no longer need.
 
 
 ## Reproducible local checks

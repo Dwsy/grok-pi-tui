@@ -22,6 +22,7 @@ const ROOT_PATH = "/root";
 const TEAM_MESSAGE_TYPE = "pi-grok-team-message/v2";
 const MAX_TEAM_WAIT_MS = 600_000;
 const DEFAULT_TEAM_WAIT_MS = 120_000;
+const MESSAGE_MERGE_MS = 25;
 
 const CONTROL_TOOL_NAMES = [
   "spawn_team_agent",
@@ -139,6 +140,8 @@ export class TeamCoordinator {
   private readonly reservedPaths = new Set<string>();
   private readonly waiters = new Set<(version: number) => void>();
   private readonly messageBuffers = new Map<string, MessageBuffer>();
+  private messageFlushTimer?: ReturnType<typeof setTimeout>;
+  private disposed = false;
   private readonly pi: ExtensionAPI;
   private readonly runtime: SubagentRuntime;
   private activityVersion = 0;
@@ -175,6 +178,7 @@ export class TeamCoordinator {
   }
 
   private bufferMessage(senderPath: string, targetPath: string, message: string): number {
+    if (this.disposed) throw new Error("team coordinator has shut down");
     const key = `${senderPath}\u0000${targetPath}`;
     const existing = this.messageBuffers.get(key);
     if (existing) {
@@ -183,19 +187,46 @@ export class TeamCoordinator {
       return existing.parts.length;
     }
     this.messageBuffers.set(key, { senderPath, targetPath, parts: [message] });
+    if (!this.messageFlushTimer) {
+      this.messageFlushTimer = setTimeout(() => {
+        // flush records each failed delivery before rejecting; do not leave an
+        // unhandled rejection or require another team action to send the batch.
+        void this.flushBufferedMessages().catch(() => undefined);
+      }, MESSAGE_MERGE_MS);
+      this.messageFlushTimer.unref();
+    }
     return 1;
   }
 
   /** Delivers every buffered sender/target pair as one merged steer. */
   async flushBufferedMessages(): Promise<void> {
+    clearTimeout(this.messageFlushTimer);
+    this.messageFlushTimer = undefined;
     const buffers = [...this.messageBuffers.values()];
     this.messageBuffers.clear();
+    const errors: string[] = [];
     for (const buffer of buffers) {
       const payload = buffer.parts.length === 1
         ? buffer.parts[0]
         : buffer.parts.map((part, index) => `${index + 1}. ${part}`).join("\n");
-      await this.deliver(buffer.senderPath, buffer.targetPath, "MESSAGE", payload, false);
+      try {
+        await this.deliver(buffer.senderPath, buffer.targetPath, "MESSAGE", payload, false);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const message = `Message delivery from ${buffer.senderPath} to ${buffer.targetPath} failed: ${detail}`;
+        const record = (this.agents.get(buffer.senderPath) ?? this.agents.get(buffer.targetPath))?.record;
+        if (record) this.runtime.recordPostFinishError(record, message);
+        errors.push(message);
+      }
     }
+    if (errors.length > 0) throw new Error(errors.join("\n"));
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    clearTimeout(this.messageFlushTimer);
+    this.messageFlushTimer = undefined;
+    this.messageBuffers.clear();
   }
 
   private resolveTarget(senderPath: string, target: string): string {
@@ -230,7 +261,7 @@ export class TeamCoordinator {
       `You are ${path}, an agent in a grok-pi Subagents V2 team. Your parent is ${parentPath}.`,
       "All team agents share the same working directory and can see each other's filesystem changes. Keep writes inside the boundary your task names.",
       "Create a nested child with spawn_team_agent only when your own task explicitly requires further decomposition. Having the tool is not permission to fan out; your parent remains the orchestrator.",
-      "Use team_send_message for facts a running peer needs now, team_followup_task to give an agent new work, team_wait only while another agent is genuinely active, team_list to inspect the tree, and team_interrupt to stop an agent.",
+      "Use team_send_message for facts, corrections, or wrap-up instructions a running peer needs now. team_followup_task assigns the NEXT task after its current work; it does not interrupt that work. Use team_wait only while another agent is genuinely active, team_list to inspect the tree, and team_interrupt to stop an agent.",
       "A message is worth sending only when the recipient cannot get the fact themselves or must act on it. Do not forward progress. Consecutive team_send_message calls to one agent merge into a single steer, so batch facts in one turn.",
       "Before you end a turn, call team_report: ready (the requested result is deliverable), waiting (your own children are pending and no local work remains), blocked (you need one decision; question is mandatory), failed (the work cannot be completed), dropped (there is genuinely nothing for the parent to act on: already fixed, superseded, or out of scope). Your summary replaces your final text in what the parent receives. Never report ready to hide unfinished work.",
       "When your own child results are still pending and no independent work remains, report waiting and END THIS TURN to release the shared execution slot. Reporting alone does not release it. A nested FINAL_ANSWER resumes this same child session; do not park on team_wait for your queued descendants.",
@@ -248,12 +279,18 @@ export class TeamCoordinator {
     payload: string,
     triggerTurn: boolean,
   ): Promise<void> {
+    if (this.disposed) return;
     const content = renderMessage(kind, targetPath, senderPath, payload);
     const details = { version: 2, kind, sender: senderPath, target: targetPath };
+    // Pi treats explicit triggerTurn:false as context-only even while running.
+    // Omit it for MESSAGE: active sessions steer, idle sessions only append.
+    // Results steer too; only a genuinely new task waits in the follow-up queue.
+    const deliverAs = kind === "NEW_TASK" ? "followUp" as const : "steer" as const;
+    const options = { ...(triggerTurn ? { triggerTurn: true } : {}), deliverAs };
     if (targetPath === ROOT_PATH) {
       this.pi.sendMessage(
         { customType: TEAM_MESSAGE_TYPE, content, display: true, details },
-        { triggerTurn, deliverAs: triggerTurn ? "followUp" : "steer" },
+        options,
       );
     } else {
       const target = this.agentForPath(targetPath);
@@ -266,7 +303,7 @@ export class TeamCoordinator {
       }
       await target.record.session.sendCustomMessage(
         { customType: TEAM_MESSAGE_TYPE, content, display: true, details },
-        { triggerTurn, deliverAs: triggerTurn ? "followUp" : "steer" },
+        options,
       );
       this.touch(target);
     }
@@ -574,8 +611,9 @@ export class TeamCoordinator {
       label: "Send Team Message",
       description:
         "Send a semantic message to a V2 agent without starting an idle recipient turn. " +
-        "Consecutive messages from one sender to one target merge into a single steer and are delivered before your next team action or when your turn ends.",
-      promptSnippet: "Send a queue-only message to /root or another V2 agent.",
+        "Running recipients process it at the next safe loop boundary; it does not abort a model request or running tool. " +
+        `Messages merge for up to ${MESSAGE_MERGE_MS}ms, then flush automatically (or earlier on your next team action/turn end). Use this for corrections or wrap-up instructions needed during current work.`,
+      promptSnippet: "Send facts or current-work corrections to /root or another V2 agent; idle recipients are not woken.",
       parameters: Type.Object({
         target: Type.String({ description: "Absolute /root/... path. A relative name addresses your own child." }),
         message: Type.String({ description: "Message payload." }),
@@ -584,11 +622,10 @@ export class TeamCoordinator {
         const target = this.resolveTarget(senderPath, params.target);
         const message = requireText(params.message, "message");
         const buffered = this.bufferMessage(senderPath, target, message);
-        // Buffering is still team activity: a waiting peer must wake even though
-        // the payload leaves on the next flush.
-        this.notifyActivity();
+        // Notify waiters from deliver(), after the payload has actually been
+        // queued; waking here would let a peer continue before it has the fact.
         return toolText(
-          `Buffered MESSAGE for ${target} (${buffered} pending from ${senderPath}). It merges with your other messages to that agent and is delivered before your next team action or when this turn ends.`,
+          `Buffered MESSAGE for ${target} (${buffered} pending from ${senderPath}). It merges for up to ${MESSAGE_MERGE_MS}ms, then flushes automatically; the recipient processes it at its next safe loop boundary. An idle recipient is not woken.`,
           { sender: senderPath, target, buffered },
         );
       },
@@ -597,7 +634,7 @@ export class TeamCoordinator {
     const followupTool = defineTool({
       name: "team_followup_task",
       label: "Follow Up Team Task",
-      description: "Send a NEW_TASK to a V2 agent. It triggers an idle recipient turn or queues after a running recipient's current work.",
+      description: "Send a NEW_TASK to a V2 agent. It triggers an idle recipient turn or queues after a running recipient's current work. For corrections or wrap-up instructions needed during current work, use team_send_message instead.",
       promptSnippet: "Assign a follow-up task that triggers the recipient agent.",
       parameters: Type.Object({
         target: Type.String({ description: "Absolute /root/... path. A relative name addresses your own child." }),
@@ -884,8 +921,9 @@ export class TeamCoordinator {
 export function registerV2Tools(pi: ExtensionAPI, runtime: SubagentRuntime): void {
   const coordinator = new TeamCoordinator(pi, runtime);
   coordinator.register();
-  // A root turn has no `handleFinished`; its end is the only reliable flush point
-  // for messages buffered by the last team action of the turn.
+  pi.on("session_shutdown", () => coordinator.dispose());
+  // Flush the root's last batch before turn_end returns. The timer also covers
+  // children and ongoing work that does not make another team call.
   pi.on("turn_end", async () => {
     try {
       await coordinator.flushBufferedMessages();

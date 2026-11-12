@@ -187,7 +187,7 @@ spawn_team(team="research", task="...")
 
 ### Message vs Follow-up
 
-- `team_send_message`：给**正在运行**的 agent 补事实，不主动制造一个新的 idle turn。
+- `team_send_message`：给**正在运行**的 agent 补事实、纠偏或要求当前工作收尾；在下一个安全循环边界处理，不主动制造新的 idle turn，也不取消正在执行的请求/工具。
 - `team_followup_task`：已有 agent 完成一轮后，需要利用它已有上下文继续做新的相关任务。
 - `team_wait`：只给 child 做 mailbox 同步屏障；root 启动后台 V2 agent 后不要用它停车，直接结束当前 turn，等待 `FINAL_ANSWER` 自动唤醒。
 - `team_list`：需要确认路径、状态或责任归属时再看，不拿它做高频轮询。
@@ -195,7 +195,8 @@ spawn_team(team="research", task="...")
 ### 消息要合并，不要刷屏
 
 - 同一 sender 到同一 target 的连续 `team_send_message` 会合并成一条 steer，重复文本被丢弃。一个 turn 内要说的事一次说完，不要拆成多条。
-- 合并后的消息在下一个 team 动作前或 turn 结束时发出；`team_list` 会先 flush。
+- 消息使用 25 ms 合并窗口并自动 flush；下一个 team 动作与 root turn 结束可提前 flush。不要靠反复 `team_list` 或 `sleep` 推动投递。
+- `FINAL_ANSWER` 对活跃 parent 使用 steer，不等待整段工具循环结束；空闲 parent 仍会自动恢复。root 没有本地工作时结束本轮，不用 `sleep + wait_tasks` 等结果。
 - `team_followup_task` 发给排队中的 agent 时，会把它的待跑任务提到并发队列最前——父级明确要的工作不该排在无关 launch 后面。
 - `team_list` 每行带 `quiet 42s`。`RUNNING` agent 静默过久是“该去看”而不是“继续等”的信号。
 

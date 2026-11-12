@@ -16,7 +16,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   CAPABILITY_TOOLS,
-  MAX_BACKGROUND_CONCURRENCY,
   MAX_WAIT_MS,
   SHORT_SUBAGENT_ID_LENGTH,
   composeSubagentSystemPrompt,
@@ -26,6 +25,7 @@ import {
   resolveSubagentBusinessTools,
   textFromContent,
 } from "./shared.ts";
+import { backgroundConcurrency } from "./runtime-settings.ts";
 import { profileFor, selectedDefinition } from "./definitions.ts";
 import { clampThinkingLevel, isThinkingLevel, type ThinkingLevel } from "./thinking.ts";
 import {
@@ -112,17 +112,20 @@ export type RecordCreateOptions = {
   };
 };
 
-function lastAssistantText(session: SubagentRecord["session"]): string {
+function lastAssistantMessage(session: SubagentRecord["session"]) {
   for (let index = session.messages.length - 1; index >= 0; index -= 1) {
     const message = session.messages[index];
-    if (message.role !== "assistant") continue;
-    return message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("")
-      .trim();
+    if (message.role === "assistant") return message;
   }
-  return "";
+  return undefined;
+}
+
+function lastAssistantText(session: SubagentRecord["session"]): string {
+  return lastAssistantMessage(session)?.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("")
+    .trim() ?? "";
 }
 
 function childUpdate(
@@ -648,13 +651,7 @@ export class SubagentRuntime {
   async run(record: SubagentRecord, prompt: string): Promise<string> {
     try {
       await record.session.prompt(prompt);
-      if (record.cancelRequested) {
-        this.finish(record, "cancelled", "Subagent was cancelled.");
-        throw new Error("Subagent was cancelled.");
-      }
-      const output = lastAssistantText(record.session);
-      this.finish(record, "completed");
-      return output;
+      return this.completeRun(record);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.finish(record, record.cancelRequested ? "cancelled" : "failed", message);
@@ -669,18 +666,29 @@ export class SubagentRuntime {
   ): Promise<string> {
     try {
       await record.session.sendCustomMessage(message, options);
-      if (record.cancelRequested) {
-        this.finish(record, "cancelled", "Subagent was cancelled.");
-        throw new Error("Subagent was cancelled.");
-      }
-      const output = lastAssistantText(record.session);
-      this.finish(record, "completed");
-      return output;
+      return this.completeRun(record);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       this.finish(record, record.cancelRequested ? "cancelled" : "failed", detail);
       throw error;
     }
+  }
+
+  private completeRun(record: SubagentRecord): string {
+    if (record.cancelRequested) throw new Error("Subagent was cancelled.");
+    // Pi encodes provider/stream failures in the assistant message; its prompt
+    // Promise may still resolve normally after retries are exhausted.
+    const response = lastAssistantMessage(record.session);
+    if (response?.stopReason === "aborted") {
+      record.cancelRequested = true;
+      throw new Error(response.errorMessage || "Subagent was aborted.");
+    }
+    if (response?.stopReason === "error") {
+      throw new Error(response.errorMessage || "Subagent model response failed.");
+    }
+    const output = lastAssistantText(record.session);
+    this.finish(record, "completed");
+    return output;
   }
 
   scheduleBackgroundTask(record: SubagentRecord, run: () => Promise<void>): "running" | "queued" | "skipped" {
@@ -689,7 +697,7 @@ export class SubagentRuntime {
       this.finish(record, "cancelled", "Cancelled before background execution started.");
       return "skipped";
     }
-    if (this.runningBackground >= MAX_BACKGROUND_CONCURRENCY) {
+    if (this.runningBackground >= backgroundConcurrency()) {
       this.queuedBackground.push({ record, run });
       return "queued";
     }

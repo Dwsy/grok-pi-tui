@@ -1,16 +1,18 @@
-/** Native Pager configuration UI for subagent Markdown definitions. */
+/**
+ * Subagent definition configuration — one full-screen Pi TUI form.
+ *
+ * The definition list, the definition editor, and every field editor run as
+ * `ctx.ui.custom` pi-tui components (projected into Grok Pager by the Remote
+ * TUI bridge) with full mouse and keyboard support. Field editors are
+ * `SettingsList` submenus built from the shared `ui-primitives` panels.
+ * Persistence stays in `definitions.ts`; this module only collects input.
+ */
 
-import { basename } from "node:path";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import {
-  BUILTIN_TOOL_SET,
-  MAX_AGENT_MODELS,
-  MULTI_SELECT_TITLE_PREFIX,
-  RESOURCE_PICKER_TITLE_PREFIX,
-  type CatalogEntry,
-  type InjectedExtensionCatalogEntry,
-  type ResourcePickerExtra,
-} from "./shared.ts";
+import { loadSkills } from "@earendil-works/pi-coding-agent";
+import type { Component, SettingItem, TUI } from "@earendil-works/pi-tui";
 import {
   cloneDefinition,
   definitionName,
@@ -18,51 +20,24 @@ import {
   loadAgentDefinitions,
   profileFor,
   saveDefinition,
-  selectedDefinition,
   type AgentDefinition,
   type AgentDefinitionScope,
 } from "./definitions.ts";
-
-function catalogLabel(entry: CatalogEntry, selected: Set<string>): string {
-  return `${selected.has(entry.id) ? "☑" : "☐"} ${entry.label}`;
-}
-
-async function selectToggles(
-  ctx: ExtensionCommandContext,
-  title: string,
-  entries: CatalogEntry[],
-  selected: Set<string>,
-  maxSelections?: number,
-): Promise<Set<string> | undefined> {
-  if (entries.length === 0) {
-    ctx.ui.notify(`No ${title.toLowerCase()} are currently available.`, "warning");
-    return selected;
-  }
-  const labels = new Map<string, string>();
-  for (const entry of entries) labels.set(catalogLabel(entry, selected), entry.id);
-  const metadata = JSON.stringify({ title: `${title}: choose items to toggle (☑ selected)`, maxSelections });
-  const raw = await ctx.ui.select(`${MULTI_SELECT_TITLE_PREFIX}${metadata}`, [...labels.keys()]);
-  if (raw === undefined) return undefined;
-  let toggledLabels: unknown;
-  try {
-    toggledLabels = JSON.parse(raw);
-  } catch {
-    return selected;
-  }
-  if (!Array.isArray(toggledLabels) || !toggledLabels.every((label) => typeof label === "string")) return selected;
-  const next = new Set(selected);
-  for (const label of toggledLabels) {
-    const id = labels.get(label);
-    if (!id) continue;
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-  }
-  if (maxSelections !== undefined && next.size > maxSelections) {
-    ctx.ui.notify(`Select at most ${maxSelections} models.`, "warning");
-    return selected;
-  }
-  return next;
-}
+import { backgroundConcurrency, editBackgroundConcurrency } from "./runtime-settings.ts";
+import { BUILTIN_TOOL_SET, MAX_AGENT_MODELS, type CatalogEntry, type InjectedExtensionCatalogEntry } from "./shared.ts";
+import {
+  makeConfirmPanel,
+  makeEditorPanel,
+  makeInputPanel,
+  makeMultiSelectPanel,
+  openCustomPanel,
+  Panel,
+  piInput,
+  piSelect,
+  settingsListTheme,
+  uiStyles,
+} from "./ui-primitives.ts";
+import { SettingsList, Text } from "@earendil-works/pi-tui";
 
 export function toolCatalog(pi: ExtensionAPI): { builtin: CatalogEntry[]; plugin: CatalogEntry[] } {
   const builtin: CatalogEntry[] = [];
@@ -116,38 +91,19 @@ export function extensionCatalog(pi: ExtensionAPI): CatalogEntry[] {
   return [...byPath.values()].sort((left, right) => left.label.localeCompare(right.label));
 }
 
-async function selectResources(
-  ctx: ExtensionCommandContext,
-  title: string,
-  resourceType: "extensions" | "skills",
-  current: Set<string>,
-  extraResources: ResourcePickerExtra[] = [],
-): Promise<Set<string> | undefined> {
-  const extras = new Map<string, ResourcePickerExtra>();
-  for (const resource of extraResources) extras.set(resource.path, resource);
-  for (const path of current) {
-    if (!extras.has(path)) {
-      extras.set(path, { path, label: basename(path), type: resourceType });
-    }
-  }
-  const payload = JSON.stringify({
-    title: `${title} for this subagent`,
-    resourceTypes: [resourceType],
-    initialPaths: [...current],
-    extraResources: [...extras.values()],
+export function skillCatalog(cwd: string): CatalogEntry[] {
+  const { skills } = loadSkills({
+    cwd,
+    agentDir: join(homedir(), ".pi", "agent"),
+    skillPaths: [],
+    includeDefaults: true,
   });
-  const raw = await ctx.ui.select(`${RESOURCE_PICKER_TITLE_PREFIX}${payload}`, [
-    "Open Pi resource manager",
-    "Cancel",
-  ]);
-  if (raw === undefined) return undefined;
-  try {
-    const paths: unknown = JSON.parse(raw);
-    if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string")) return current;
-    return new Set(paths.map((path) => path.trim()).filter(Boolean));
-  } catch {
-    return current;
+  const byPath = new Map<string, CatalogEntry>();
+  for (const skill of skills) {
+    if (byPath.has(skill.filePath)) continue;
+    byPath.set(skill.filePath, { id: skill.filePath, label: skill.name, description: skill.description });
   }
+  return [...byPath.values()].sort((left, right) => left.label.localeCompare(right.label));
 }
 
 function modelCatalog(ctx: ExtensionCommandContext): CatalogEntry[] {
@@ -176,136 +132,285 @@ function updateSelection(
   }
 }
 
-async function editDefinition(pi: ExtensionAPI, ctx: ExtensionCommandContext, definition: AgentDefinition): Promise<void> {
+type FormDone = (result: "saved" | "deleted" | undefined) => void;
+
+/**
+ * One definition editor form: every row opens a pi-tui submenu panel and writes
+ * the draft in place; only the explicit Save row persists to disk. Escape
+ * discards (nothing was written before Save).
+ */
+function buildDefinitionForm(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  tui: TUI,
+  theme: { fg: (color: string, text: string) => string; bold?: (text: string) => string },
+  definition: AgentDefinition,
+  done: FormDone,
+): Component {
+  const styles = uiStyles(theme);
   const isBuiltinOverride = definition.builtin === true && definition.scope !== "builtin";
-  const restoreChoice = definition.scope === "global" ? "Restore built-in defaults" : "Remove project override";
-  while (true) {
-    const choice = await ctx.ui.select(`Subagent ${definition.name} (${definition.scope})`, [
-      definition.enabled ? "Disable" : "Enable",
-      "Description",
-      "Instructions",
-      "Built-in tools",
-      "Plugin tools",
-      `Models (max ${MAX_AGENT_MODELS})`,
-      "Extensions",
-      "Skills",
-      "Max turns",
-      ...(isBuiltinOverride ? [restoreChoice] : ["Delete definition"]),
-      "Save and close",
-    ]);
-    if (!choice) return;
-    if (choice === "Save and close") {
-      saveDefinition(ctx.cwd, definition);
-      ctx.ui.notify(`Saved ${definition.scope} subagent ${definition.name}.`, "info");
-      return;
-    }
-    if (choice === "Enable" || choice === "Disable") {
-      definition.enabled = choice === "Enable";
-      continue;
-    }
-    if (choice === restoreChoice || choice === "Delete definition") {
-      const confirmed = await ctx.ui.confirm(
-        choice === restoreChoice ? restoreChoice : "Delete subagent definition",
-        choice === "Restore built-in defaults"
-          ? `Remove the global override for ${definition.name} and restore the built-in profile?`
-          : choice === "Remove project override"
-            ? `Remove the project override for ${definition.name} and restore its inherited definition?`
-          : `Delete the ${definition.scope} subagent definition ${definition.name}?`,
-      );
-      if (confirmed) {
+  const restoreLabel = definition.scope === "global" ? "Restore built-in defaults" : "Remove project override";
+
+  const catalog = toolCatalog(pi);
+  const models = modelCatalog(ctx);
+
+  const toolCount = (entries: CatalogEntry[]): string =>
+    `${(definition.tools ?? []).filter((tool) => entries.some((entry) => entry.id === tool)).length} enabled`;
+
+  const toolRow = (label: string, entries: CatalogEntry[]): SettingItem => ({
+    id: `__tools:${label}`,
+    label,
+    currentValue: toolCount(entries),
+    submenu: (_current, close) =>
+      makeMultiSelectPanel(
+        theme,
+        label,
+        [
+          {
+            label,
+            items: entries.map((entry) => ({
+              value: entry.id,
+              label: entry.label,
+              description: entry.description,
+              selected: (definition.tools ?? []).includes(entry.id),
+            })),
+          },
+        ],
+        (values) => {
+          if (values) {
+            // Explicitly listed tools outside the current catalog stay listed.
+            const allowed = new Set(entries.map((entry) => entry.id));
+            const preserved = (definition.tools ?? []).filter((tool) => !allowed.has(tool));
+            updateSelection(definition, "tools", new Set([...preserved, ...values]));
+          }
+          close(toolCount(entries));
+        },
+      ),
+  });
+
+  const catalogRow = (
+    id: string,
+    label: string,
+    entries: CatalogEntry[],
+    field: "models" | "extensions" | "skills",
+    options: { maxSelections?: number } = {},
+  ): SettingItem => ({
+    id,
+    label,
+    currentValue: `${(definition[field] ?? []).length} selected`,
+    submenu: (_current, close) =>
+      makeMultiSelectPanel(
+        theme,
+        label,
+        [
+          {
+            label,
+            items: entries.map((entry) => ({
+              value: entry.id,
+              label: entry.label,
+              description: entry.description,
+              selected: (definition[field] ?? []).includes(entry.id),
+            })),
+          },
+        ],
+        (values) => {
+          if (values) {
+            // Models must come from the live catalog; resource paths may point
+            // at entries the picker could not rediscover and are preserved.
+            const keepUnknown =
+              field === "models" ? [] : (definition[field] ?? []).filter((value) => !entries.some((entry) => entry.id === value));
+            updateSelection(definition, field, new Set([...keepUnknown, ...values]));
+          }
+          close(`${(definition[field] ?? []).length} selected`);
+        },
+        options,
+      ),
+  });
+
+  const items: SettingItem[] = [
+    {
+      id: "__enabled",
+      label: "Enabled",
+      currentValue: definition.enabled ? "on" : "off",
+      values: ["on", "off"],
+    },
+    {
+      id: "__description",
+      label: "Description",
+      currentValue: definition.description,
+      submenu: (_current, close) =>
+        makeInputPanel(
+          theme,
+          "Subagent description",
+          (value) => {
+            if (value !== undefined && value.trim()) definition.description = value.trim();
+            close(definition.description);
+          },
+          { initial: definition.description },
+        ),
+    },
+    {
+      id: "__instructions",
+      label: "Instructions",
+      currentValue: `${definition.systemPrompt.split("\n").length} lines`,
+      submenu: (_current, close) =>
+        makeEditorPanel(tui, theme, "Subagent instructions", definition.systemPrompt, (value) => {
+          if (value !== undefined) definition.systemPrompt = value.trim();
+          close(`${definition.systemPrompt.split("\n").length} lines`);
+        }),
+    },
+    toolRow("Built-in tools", catalog.builtin),
+    toolRow("Plugin tools", catalog.plugin),
+    catalogRow("__models", `Models (max ${MAX_AGENT_MODELS})`, models, "models", { maxSelections: MAX_AGENT_MODELS }),
+    catalogRow("__extensions", "Extensions", extensionCatalog(pi), "extensions"),
+    catalogRow("__skills", "Skills", skillCatalog(ctx.cwd), "skills"),
+    {
+      id: "__max_turns",
+      label: "Max turns",
+      currentValue: String(definition.maxTurns ?? 0),
+      submenu: (_current, close) =>
+        makeInputPanel(
+          theme,
+          "Max turns (0 = unlimited)",
+          (value) => {
+            const parsed = Number((value ?? "").trim());
+            if (value !== undefined && Number.isInteger(parsed) && parsed >= 0) definition.maxTurns = parsed;
+            close(String(definition.maxTurns ?? 0));
+          },
+          {
+            initial: String(definition.maxTurns ?? 0),
+            validate: (value) => {
+              const parsed = Number(value.trim());
+              return Number.isInteger(parsed) && parsed >= 0 ? undefined : "Max turns must be a non-negative integer.";
+            },
+          },
+        ),
+    },
+    {
+      id: "__restore",
+      label: isBuiltinOverride ? restoreLabel : "Delete definition",
+      currentValue: "",
+      submenu: (_current, close) =>
+        makeConfirmPanel(
+          theme,
+          isBuiltinOverride ? restoreLabel : "Delete subagent definition",
+          isBuiltinOverride
+            ? restoreLabel === "Restore built-in defaults"
+              ? `Remove the global override for ${definition.name} and restore the built-in profile?`
+              : `Remove the project override for ${definition.name} and restore its inherited definition?`
+            : `Delete the ${definition.scope} subagent definition ${definition.name}?`,
+          (confirmed) => close(confirmed ? "confirmed" : undefined),
+        ),
+    },
+    { id: "__save", label: "✓ Save and close", currentValue: "", values: [""] },
+    { id: "__discard", label: "✕ Discard changes", currentValue: "", values: [""] },
+  ];
+
+  const list = new SettingsList(
+    items,
+    Math.max(8, (tui.terminal?.rows ?? 24) - 6),
+    settingsListTheme(theme),
+    (id, value) => {
+      if (id === "__enabled") {
+        definition.enabled = value === "on";
+        return;
+      }
+      if (id === "__save") {
+        saveDefinition(ctx.cwd, definition);
+        ctx.ui.notify(`Saved ${definition.scope} subagent ${definition.name}.`, "info");
+        done("saved");
+        return;
+      }
+      if (id === "__discard") {
+        done(undefined);
+        return;
+      }
+      if (id === "__restore" && value === "confirmed") {
         deleteDefinition(ctx.cwd, definition);
         ctx.ui.notify(
-          choice === "Restore built-in defaults"
-            ? `Restored built-in subagent ${definition.name}.`
-            : choice === "Remove project override"
-              ? `Removed project override for ${definition.name}.`
+          isBuiltinOverride
+            ? restoreLabel === "Restore built-in defaults"
+              ? `Restored built-in subagent ${definition.name}.`
+              : `Removed project override for ${definition.name}.`
             : `Deleted ${definition.scope} subagent ${definition.name}.`,
           "info",
         );
-        return;
+        done("deleted");
       }
-      continue;
-    }
-    if (choice === "Description") {
-      const value = await ctx.ui.input("Subagent description", definition.description);
-      if (value?.trim()) definition.description = value.trim();
-      continue;
-    }
-    if (choice === "Instructions") {
-      const value = await ctx.ui.editor("Subagent instructions", definition.systemPrompt);
-      if (value !== undefined) definition.systemPrompt = value.trim();
-      continue;
-    }
-    if (choice === "Built-in tools" || choice === "Plugin tools") {
-      const catalog = toolCatalog(pi);
-      const entries = choice === "Built-in tools" ? catalog.builtin : catalog.plugin;
-      const allowed = new Set(entries.map((entry) => entry.id));
-      const current = new Set((definition.tools ?? []).filter((tool) => allowed.has(tool)));
-      const next = await selectToggles(ctx, choice, entries, current);
-      if (next) {
-        const preserved = (definition.tools ?? []).filter((tool) => !allowed.has(tool));
-        updateSelection(definition, "tools", new Set([...preserved, ...next]));
-      }
-      continue;
-    }
-    if (choice.startsWith("Models")) {
-      const entries = modelCatalog(ctx);
-      const current = new Set((definition.models ?? []).filter((model) => entries.some((entry) => entry.id === model)));
-      const next = await selectToggles(ctx, "Models", entries, current, MAX_AGENT_MODELS);
-      if (next) updateSelection(definition, "models", next);
-      continue;
-    }
-    if (choice === "Extensions") {
-      const entries = extensionCatalog(pi);
-      const current = new Set(definition.extensions ?? []);
-      const next = await selectResources(
-        ctx,
-        "Extensions",
-        "extensions",
-        current,
-        entries.map((entry) => ({ path: entry.id, label: entry.label, type: "extensions" })),
-      );
-      if (next) updateSelection(definition, "extensions", next);
-      continue;
-    }
-    if (choice === "Skills") {
-      const current = new Set(definition.skills ?? []);
-      const next = await selectResources(ctx, "Skills", "skills", current);
-      if (next) updateSelection(definition, "skills", next);
-      continue;
-    }
-    const raw = await ctx.ui.input("Maximum turns (0 = unlimited)", String(definition.maxTurns ?? 0));
-    if (raw === undefined) continue;
-    const value = Number(raw.trim());
-    if (!Number.isInteger(value) || value < 0) {
-      ctx.ui.notify("Maximum turns must be a non-negative integer.", "warning");
-    } else {
-      definition.maxTurns = value;
-    }
-  }
+    },
+    () => done(undefined),
+  );
+
+  return new Panel(
+    [
+      new Text(styles.title(`Subagent ${definition.name} (${definition.scope})`)),
+      new Text(styles.hint("Enter/click opens a field · Esc discards · Save persists")),
+      list,
+    ],
+    list,
+  );
 }
 
+async function editDefinition(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  definition: AgentDefinition,
+): Promise<void> {
+  await openCustomPanel(ctx, (tui, theme, _keyboard, done) =>
+    buildDefinitionForm(pi, ctx, tui as unknown as TUI, theme, definition, done),
+  );
+}
+
+/**
+ * `/subagents` entry point: pick a definition (or create one), then edit it in
+ * the full-screen form. Built-in profiles require an explicit project/global
+ * override so the shipped bundle stays read-only.
+ */
 export async function configureSubagents(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
-  const definitions = [...loadAgentDefinitions(ctx.cwd).values()].sort((left, right) => left.name.localeCompare(right.name));
+  const definitions = [...loadAgentDefinitions(ctx.cwd).values()].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
   const choices = [
-    "New project subagent",
-    "New global subagent",
-    ...definitions.map((definition) => {
+    { value: "__new_project", label: "New project subagent" },
+    { value: "__new_global", label: "New global subagent" },
+    {
+      value: "__concurrency",
+      label: `Background concurrency (${backgroundConcurrency()})…`,
+      description: "Max simultaneous background subagent runs across the agent tree",
+    },
+    ...definitions.map((definition, index) => {
       const source = definition.scope === "builtin" ? "built-in" : definition.scope;
-      const suffix = definition.scope === "builtin" ? " (default)" : definition.builtin ? " (built-in override)" : "";
-      return `${source}: ${definition.name}${definition.enabled ? suffix : " (disabled)"}`;
+      const suffix =
+        definition.scope === "builtin"
+          ? " (default)"
+          : definition.builtin
+            ? " (built-in override)"
+            : definition.enabled
+              ? ""
+              : " (disabled)";
+      return {
+        value: `def:${index}`,
+        label: `${source}: ${definition.name}${suffix}`,
+        description: definition.description,
+      };
     }),
   ];
-  const choice = await ctx.ui.select("Subagent configuration", choices);
-  if (!choice) return;
-  if (choice.startsWith("New ")) {
-    const scope: AgentDefinitionScope = choice.includes("project") ? "project" : "global";
-    const rawName = await ctx.ui.input("Subagent name (letters, numbers, _ or -)");
+
+  const choice = await piSelect(ctx, "Subagent configuration", choices);
+  if (choice === undefined) return;
+
+  if (choice === "__concurrency") {
+    await editBackgroundConcurrency(ctx);
+    return;
+  }
+
+  if (choice === "__new_project" || choice === "__new_global") {
+    const scope: AgentDefinitionScope = choice === "__new_project" ? "project" : "global";
+    const rawName = await piInput(ctx, "Subagent name (letters, numbers, _ or -)", {
+      validate: (value) => (definitionName(value) ? undefined : "Subagent name is invalid."),
+    });
     const name = rawName && definitionName(rawName);
-    if (!name) {
-      ctx.ui.notify("Subagent name is invalid or cancelled.", "warning");
-      return;
-    }
+    if (!name) return;
     await editDefinition(pi, ctx, {
       name,
       scope,
@@ -315,32 +420,31 @@ export async function configureSubagents(pi: ExtensionAPI, ctx: ExtensionCommand
     });
     return;
   }
-  const target = definitions.find((definition) => {
-    const source = definition.scope === "builtin" ? "built-in" : definition.scope;
-    const suffix = definition.scope === "builtin" ? " (default)" : definition.builtin ? " (built-in override)" : "";
-    const label = `${source}: ${definition.name}${definition.enabled ? suffix : " (disabled)"}`;
-    return choice === label;
-  });
+
+  const target = definitions[Number(choice.slice("def:".length))];
   if (!target) return;
+
   if (target.scope === "builtin") {
-    const scopeChoice = await ctx.ui.select(`Create override for built-in ${target.name}`, [
-      "Project override",
-      "Global override",
+    const scopeChoice = await piSelect(ctx, `Create override for built-in ${target.name}`, [
+      { value: "project", label: "Project override" },
+      { value: "global", label: "Global override" },
     ]);
     if (!scopeChoice) return;
     await editDefinition(pi, ctx, {
       ...cloneDefinition(target),
-      scope: scopeChoice === "Project override" ? "project" : "global",
+      scope: scopeChoice === "project" ? "project" : "global",
       builtin: true,
     });
     return;
   }
+
   if (target.scope === "global") {
-    const action = await ctx.ui.select(`Global subagent ${target.name}`, [
-      "Edit global definition",
-      "Disable in this project",
+    const action = await piSelect(ctx, `Global subagent ${target.name}`, [
+      { value: "edit", label: "Edit global definition" },
+      { value: "disable", label: "Disable in this project" },
     ]);
-    if (action === "Disable in this project") {
+    if (!action) return;
+    if (action === "disable") {
       saveDefinition(ctx.cwd, {
         ...cloneDefinition(target),
         scope: "project",
@@ -349,7 +453,7 @@ export async function configureSubagents(pi: ExtensionAPI, ctx: ExtensionCommand
       ctx.ui.notify(`Disabled global subagent ${target.name} in this project.`, "info");
       return;
     }
-    if (action !== "Edit global definition") return;
   }
+
   await editDefinition(pi, ctx, cloneDefinition(target));
 }

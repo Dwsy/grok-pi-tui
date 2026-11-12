@@ -23,7 +23,7 @@ description: 在 grok-pi Subagents V2 中按任务树启用 Multitask 异步多�
 - 消费者的依赖尚未就绪就先不创建它，不启动一个只会等待的 synthesizer。
 - root 为本次任务树最多分配 8 个新 agent identity；按分支分配互不重叠的剩余额度，不把全局额度重复发给每个 child。
 - 默认 root 深度 0，最多两层 child；每个 coordinator 通常最多 2 个直系 child。
-- 预算或深度不足时本地执行。深度和额度是本技能的软约定，runtime 目前只硬限全树 4 个后台执行槽。
+- 预算或深度不足时本地执行。深度和额度是本技能的软约定，runtime 目前只硬限全树 25 个后台执行槽。
 - 同一目标已有路径时复用 `team_followup_task`，不重复 spawn。跟踪必需任务是否交付，不能把 idle 等同于完成目标。
 - 使用定义/用户允许的模型和能力；不擅自降低模型或提高权限。
 
@@ -73,9 +73,11 @@ root 的第一个 child 默认 depth_left=1；其下一级 depth_left=0。派发
 | 需要父级做决定 | `blocked`，question 写清一个具体决定；parent 用 follow-up 回答 |
 | 执行失败 | `failed`；parent 判断修任务书、接手或有界重试 |
 | 已被满足/接管，确实没有待办 | `dropped`；不要用它表示“仍在等结果” |
-| 对方正在运行，需要新事实 | 合并成一条 `team_send_message` |
+| 对方正在运行，需要新事实、纠偏或当前工作收尾 | 合并成一条 `team_send_message`；25 ms 窗口自动发送，在安全循环边界处理 |
 | 对方 idle/WAITING_RESULT，需要执行新工作 | `team_followup_task`，保留原会话身份 |
 | 需要检查责任/异常状态 | 适时 `team_list`，不用作轮询 |
+
+`team_followup_task` 等当前工作结束后再处理，不能用于紧急收尾。`FINAL_ANSWER` 会 steer 活跃 parent；没有本地工作时结束本轮，不用 `sleep + wait_tasks` 等结果。Steer 不取消正在执行的模型请求或工具。
 
 waiting 仅适用于自己的 active child。依赖已完成就处理已有结果；依赖失败/取消就处置失败；等待别人做决定用 blocked。不要靠创建空 child 通过 waiting 校验。
 

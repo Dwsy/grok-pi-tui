@@ -1,5 +1,39 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-11-11 Team message delivery and model-error terminal status
+
+- PASS: all subagent extension suites against installed Pi 1.5.0, **98/98** tests. The seven new real-SDK offline scenarios cover root→child, child→root, peers, active/idle final-answer delivery, deferred `NEW_TASK`, and resolved provider error/abort handling. Their in-process provider scripts replace model calls, and each scenario rejects network access.
+- PASS: strict/noEmit production-extension TypeScript check against installed Pi declarations; the same check including the new `delivery.test.ts` also passes. Existing test fixtures outside this scoped check were not retyped.
+- PASS: bounded merge/automatic flush, duplicate coalescing, one-target failure isolation, shutdown cleanup, queue/wait ordering, nested parent resumption, and existing concurrency/UI regressions. `git diff --check` passed.
+- NOT RUN: Cargo/build or native TUI/real-provider E2E. This is an extension-only change; the installed binary and active sessions were not rebuilt or hot-reloaded. A steer still waits for an already-running request/tool to reach a safe boundary.
+
+Design, scope and local change record: [issue](issues/subagents/20261111-Team%20消息及时投递与错误终态.md), [PR record](pr/subagents/20261111-Team%20消息及时投递与错误终态.md).
+
+Reproduce from `extensions/pi-grok-subagents`:
+
+```bash
+env PI_TEST_NODE_MODULES=/absolute/pi-1.5.0-release/node_modules \
+  node --import ./test-installed-pi.mjs --test --test-reporter=spec *.test.ts
+```
+
+## 2026-11-10 iTerm2 Read image viewer
+
+Scoped Rust formatting and `git diff --check` passed. The focused renderer test command remained in dependency compilation for over 20 minutes and did not reach tests; a stop was requested. The new image-loading and overlay lifecycle tests, composition build/check, and real iTerm2 visual acceptance are not yet verified. See [issue](issues/pager/20261110-iterm2-image-compatibility.md).
+
+## 2026-11-09 Ondine Mermaid images and SVG
+
+Open Image and Copy Image Path compile with pinned Ondine and produce PNG; Open SVG
+produces a separately cached standalone themed SVG through the same isolated
+render worker. The terminal ASCII renderer is independent. The workspace Rust
+toolchain is now 1.97.0 as required by the upstream compiler.
+
+- PASS: Rustfmt parsing/format checks, TOML/JSON parsing, exact source-identity
+  seam set and pinned lockfile structure, and `git diff --check`.
+- INCOMPLETE: the full static architecture verifier did not finish within its
+  55-second limit. No full-verifier result is claimed.
+- NOT RUN: Cargo, compilation, tests, real viewer opening, and visual acceptance,
+  as requested. Focused SVG/cache and subprocess tests were added for later use.
+
 ## 2026-11-05 Pasted image original paths (issue #12)
 
 The native image builder carries the user-visible source path in ACP image metadata (`xai.dev/imageSourcePath`), independently of the durable attachment URI. The headless adapter appends numbered, JSON-quoted paths to the Pi user prompt in `<image_metadata>`, preferring the original path and falling back to an existing local `file://` URI. Image bytes, MIME types, display numbers, chips and previews retain their existing behavior.

@@ -68,6 +68,16 @@ pub(super) fn write_subagent_extension() -> Result<SubagentExtension> {
     )?;
     write_source_file(
         source_dir.path(),
+        "ui-primitives.ts",
+        include_str!("../../../../../../extensions/pi-grok-subagents/ui-primitives.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "runtime-settings.ts",
+        include_str!("../../../../../../extensions/pi-grok-subagents/runtime-settings.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
         "control-center.ts",
         include_str!("../../../../../../extensions/pi-grok-subagents/control-center.ts"),
     )?;

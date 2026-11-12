@@ -7,6 +7,7 @@ import { loadAgentDefinitions } from "./definitions.ts";
 import type { SubagentRuntime } from "./runtime.ts";
 import { configureTeamPresets } from "./team-ui.ts";
 import { loadTeamDefinitions } from "./teams.ts";
+import { piSelect } from "./ui-primitives.ts";
 
 type ControlAction =
   | "status"
@@ -36,7 +37,8 @@ export async function openSubagentControlCenter(
   ctx: ExtensionCommandContext,
 ): Promise<void> {
   for (;;) {
-    const choice = await ctx.ui.select(
+    const choice = await piSelect(
+      ctx,
       "子代理控制中心",
       ACTIONS.map((action) => `${action.label} — ${action.description}`),
     );
@@ -77,7 +79,8 @@ export async function openSubagentControlCenter(
     }
     if (action === "injection") {
       const definitions = [...loadAgentDefinitions(ctx.cwd).values()].sort((a, b) => a.name.localeCompare(b.name));
-      const picked = await ctx.ui.select(
+      const picked = await piSelect(
+        ctx,
         "预览哪个定义的实际注入",
         definitions.map((d) => `${d.scope}: ${d.name}`),
       );

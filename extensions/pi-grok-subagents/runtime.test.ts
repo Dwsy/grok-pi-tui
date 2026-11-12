@@ -21,6 +21,10 @@ import { registerV1AgentTools, registerV1Commands } from "./tools-v1.ts";
 const noopBridge: BridgeEmitter = Object.assign(() => undefined, { ready: Promise.resolve() });
 const noopPersist = () => undefined;
 
+// Isolate product-global state (background-concurrency settings, global
+// definitions) from the developer home so tests always see the defaults.
+process.env.GROK_HOME ??= mkdtempSync(join(tmpdir(), "pi-grok-subagents-home-"));
+
 function captureBridge(events: Array<{ kind: string; payload: Record<string, unknown>; replay: boolean }>): BridgeEmitter {
   return Object.assign(
     (_record: unknown, kind: string, payload: Record<string, unknown>, replay = false) => {
@@ -249,6 +253,54 @@ test("a running cancel remains cancelled when prompt resolves normally", async (
   assert.equal(events.find((event) => event.kind === "finished")?.payload.status, "cancelled");
 });
 
+test("resolved Pi runs still fail or cancel on an error/aborted assistant response", async () => {
+  for (const mode of ["prompt", "custom"] as const) {
+    for (const stopReason of ["error", "aborted"] as const) {
+      const events: Array<{ kind: string; payload: Record<string, unknown>; replay: boolean }> = [];
+      const persisted: string[] = [];
+      const runtime = new SubagentRuntime(fakePi(), captureBridge(events), (_record, status) => { persisted.push(status); });
+      const record = {
+        id: `${mode}-${stopReason}`, background: true, startedAt: Date.now(), finished: false,
+        cancelRequested: false, terminalStatus: null,
+        removeAbortListener: () => undefined, unsubscribe: () => undefined, doneResolve: () => undefined,
+        session: {
+          prompt: async () => undefined,
+          sendCustomMessage: async () => undefined,
+          sessionManager: { getLeafId: () => "error-leaf" },
+          messages: [{ role: "assistant", stopReason, errorMessage: "malformed server-sent event JSON", content: [{ type: "text", text: "partial output" }] }],
+        },
+      } as unknown as SubagentRecord;
+      const run = mode === "prompt"
+        ? runtime.run(record, "task")
+        : runtime.runCustomMessage(record, { customType: "test", content: "task", display: false }, { triggerTurn: true });
+      await assert.rejects(run, /malformed server-sent event JSON/);
+      const expected = stopReason === "error" ? "failed" : "cancelled";
+      assert.equal(record.terminalStatus, expected);
+      assert.equal(record.lastError, "malformed server-sent event JSON");
+      assert.deepEqual(persisted, [expected]);
+      assert.equal(events.filter((event) => event.kind === "finished").length, 1);
+      assert.equal(events.find((event) => event.kind === "finished")?.payload.status, expected);
+    }
+  }
+});
+
+test("an earlier recovered error does not override the last successful assistant response", async () => {
+  const runtime = new SubagentRuntime(fakePi(), noopBridge, noopPersist);
+  const record = {
+    id: "recovered", background: true, finished: false, cancelRequested: false,
+    removeAbortListener: () => undefined, unsubscribe: () => undefined, doneResolve: () => undefined,
+    session: {
+      prompt: async () => undefined, sessionManager: { getLeafId: () => "success-leaf" },
+      messages: [
+        { role: "assistant", stopReason: "error", errorMessage: "temporary", content: [] },
+        { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "verified result" }] },
+      ],
+    },
+  } as unknown as SubagentRecord;
+  assert.equal(await runtime.run(record, "task"), "verified result");
+  assert.equal(record.terminalStatus, "completed");
+});
+
 test("missing replay transcript emits exactly one failed terminal", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-grok-replay-missing-"));
   try {
@@ -396,7 +448,7 @@ test("queued cancellation removes work before it can start", async () => {
   const runtime = new SubagentRuntime(fakePi(), noopBridge, noopPersist);
   const blockers: Array<() => void> = [];
   const started: string[] = [];
-  const records = Array.from({ length: 5 }, (_, index) => ({
+  const records = Array.from({ length: MAX_BACKGROUND_CONCURRENCY + 1 }, (_, index) => ({
     id: `queued-${index}`,
     background: true,
     finished: false,
@@ -412,24 +464,25 @@ test("queued cancellation removes work before it can start", async () => {
     },
   } as unknown as SubagentRecord));
 
-  for (let index = 0; index < 4; index += 1) {
+  for (let index = 0; index < MAX_BACKGROUND_CONCURRENCY; index += 1) {
     runtime.scheduleBackgroundTask(records[index], async () => {
       started.push(records[index].id);
       await new Promise<void>((resolve) => blockers.push(resolve));
     });
   }
-  const queuedState = runtime.scheduleBackgroundTask(records[4], async () => {
-    started.push(records[4].id);
+  const queuedRecord = records[MAX_BACKGROUND_CONCURRENCY];
+  const queuedState = runtime.scheduleBackgroundTask(queuedRecord, async () => {
+    started.push(queuedRecord.id);
   });
   assert.equal(queuedState, "queued");
-  assert.equal(runtime.backgroundState(records[4]), "queued");
+  assert.equal(runtime.backgroundState(queuedRecord), "queued");
 
-  runtime.cancel(records[4]);
-  assert.equal(records[4].finished, true);
-  assert.equal(records[4].terminalStatus, "cancelled");
+  runtime.cancel(queuedRecord);
+  assert.equal(queuedRecord.finished, true);
+  assert.equal(queuedRecord.terminalStatus, "cancelled");
   for (const resolve of blockers) resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(started.includes(records[4].id), false);
+  assert.equal(started.includes(queuedRecord.id), false);
 });
 
 

@@ -11,8 +11,13 @@ import type {
 import type { SubagentRecord } from "./bridge.ts";
 import type { RecordCreateOptions, SpawnParams } from "./runtime.ts";
 import { configureSubagents } from "./config-ui.ts";
+import { fakeCommandContext, fakeCustomUi, settle } from "./test-support.ts";
 import { loadTeamDefinitions } from "./teams.ts";
 import { TeamCoordinator, TEAM_MESSAGE_TYPE } from "./v2.ts";
+
+// Isolate product-global state (background-concurrency settings, global
+// definitions) from the developer home so tests always see the defaults.
+process.env.GROK_HOME ??= mkdtempSync(join(tmpdir(), "pi-grok-subagents-home-"));
 
 class FakePi {
   readonly tools = new Map<string, ToolDefinition>();
@@ -42,6 +47,7 @@ class FakeRuntime {
   readonly finishHandlers = new Map<string, NonNullable<RecordCreateOptions["onFinished"]>>();
   readonly resumed: Array<{ previousId: string; nextId: string }> = [];
   readonly discarded: string[] = [];
+  readonly deliveryErrors: string[] = [];
   readonly backgroundStates = new Map<string, "running" | "queued" | "idle">();
   readonly promoted: string[] = [];
   cancelled: string[] = [];
@@ -136,6 +142,10 @@ class FakeRuntime {
     return `final:${record.description}`;
   }
 
+  recordPostFinishError(_record: SubagentRecord, message: string): void {
+    this.deliveryErrors.push(message);
+  }
+
   async waitForRecords(): Promise<void> {}
 
   formatDuration(ms: number): string {
@@ -174,7 +184,7 @@ function setup() {
   const runtime = new FakeRuntime();
   const coordinator = new TeamCoordinator(fakePi as unknown as ExtensionAPI, runtime as any);
   coordinator.register();
-  return { fakePi, runtime };
+  return { fakePi, runtime, coordinator };
 }
 
 async function execute(
@@ -242,7 +252,7 @@ test("bundled review preset triggers processing of late explorer evidence", () =
   assert.doesNotMatch(explorer.task, /team_send_message/);
 });
 
-test("V2 routes queue-only and triggering messages across root and child sessions", async () => {
+test("V2 routes non-waking steer and triggering follow-up messages across sessions", async () => {
   const { fakePi, runtime } = setup();
   const spawn = fakePi.tools.get("spawn_team_agent");
   const spawned = await execute(spawn, "spawn", {
@@ -262,7 +272,7 @@ test("V2 routes queue-only and triggering messages across root and child session
   await execute(followup, "followup", { target: "/root/worker", message: "do another pass" });
   const childDelivery = (runtime.childMessages.get("fake-1") ?? [])
     .find((entry) => entry.message.details.kind === "MESSAGE");
-  assert.equal(childDelivery?.options.triggerTurn, false);
+  assert.equal(childDelivery?.options.triggerTurn, undefined, "false would bypass Pi's active steering queue");
   assert.equal(childDelivery?.options.deliverAs, "steer");
   assert.equal(childDelivery?.message.customType, TEAM_MESSAGE_TYPE);
   const followupDelivery = runtime.childMessages.get("fake-1")?.at(-1);
@@ -275,7 +285,7 @@ test("V2 routes queue-only and triggering messages across root and child session
   const childList = childTools.find((tool) => tool.name === "team_list");
   await execute(childList, "child-list", {});
   const rootDelivery = fakePi.messages.at(-1);
-  assert.equal(rootDelivery?.options.triggerTurn, false);
+  assert.equal(rootDelivery?.options.triggerTurn, undefined);
   assert.equal(rootDelivery?.message.details.sender, "/root/worker");
   assert.equal(rootDelivery?.message.details.target, "/root");
 
@@ -366,6 +376,60 @@ test("consecutive team_send_message calls merge into one steer", async () => {
   assert.match(content, /1\. found the parser/);
   assert.match(content, /2\. tests fail on empty input/);
   assert.equal((content.match(/found the parser/g) ?? []).length, 1, "repeated text is not duplicated");
+});
+
+test("child messages flush automatically without another team action or finishing the run", async () => {
+  const { fakePi, runtime, coordinator } = setup();
+  try {
+    await execute(fakePi.tools.get("spawn_team_agent"), "sender", { task_name: "sender", message: "work" });
+    await execute(fakePi.tools.get("spawn_team_agent"), "peer", { task_name: "peer", message: "work" });
+    const send = runtime.created[0].options.customTools?.find((tool) => tool.name === "team_send_message");
+    await execute(send, "fact-1", { target: "/root/peer", message: "parser changed" });
+    await execute(send, "fact-2", { target: "/root/peer", message: "use the new signature" });
+    await execute(send, "duplicate", { target: "/root/peer", message: "parser changed" });
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    const messages = runtime.childMessages.get(runtime.created[1].record.id) ?? [];
+    assert.equal(messages.length, 1);
+    assert.match(messages[0].message.content, /1\. parser changed\n2\. use the new signature/);
+    assert.equal(messages[0].options.triggerTurn, undefined);
+    assert.equal(runtime.created[0].record.finished, false, "the sender is still working");
+  } finally {
+    coordinator.dispose();
+  }
+});
+
+test("one unavailable target does not drop messages for the rest of the flush", async () => {
+  const { fakePi, runtime, coordinator } = setup();
+  await execute(fakePi.tools.get("spawn_team_agent"), "bad", { task_name: "bad", message: "work" });
+  await execute(fakePi.tools.get("spawn_team_agent"), "good", { task_name: "good", message: "work" });
+  await execute(fakePi.tools.get("team_send_message"), "bad-message", { target: "/root/bad", message: "too late" });
+  await execute(fakePi.tools.get("team_send_message"), "good-message", { target: "/root/good", message: "still needed" });
+  runtime.created[0].record.finished = true;
+  runtime.created[0].record.terminalStatus = "cancelled";
+  await assert.rejects(coordinator.flushBufferedMessages(), /cannot receive messages after cancelled/);
+  assert.equal(runtime.childMessages.get(runtime.created[1].record.id)?.length, 1);
+  assert.match(runtime.deliveryErrors[0], /to \/root\/bad failed/);
+});
+
+test("shutdown discards pending buffered messages", async () => {
+  const { fakePi, runtime, coordinator } = setup();
+  await execute(fakePi.tools.get("spawn_team_agent"), "worker", { task_name: "worker", message: "work" });
+  await execute(fakePi.tools.get("team_send_message"), "send", { target: "/root/worker", message: "pending" });
+  coordinator.dispose();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(runtime.childMessages.get(runtime.created[0].record.id)?.length, 0);
+});
+
+test("final answers steer a busy root instead of waiting for its entire tool loop", async () => {
+  const { fakePi, runtime } = setup();
+  await execute(fakePi.tools.get("spawn_team_agent"), "worker", { task_name: "worker", message: "work" });
+  const record = runtime.created[0].record;
+  record.finished = true;
+  record.terminalStatus = "completed";
+  await runtime.finishHandlers.get(record.id)!(record, "completed");
+  assert.equal(fakePi.messages.length, 1);
+  assert.equal(fakePi.messages[0].options.triggerTurn, true);
+  assert.equal(fakePi.messages[0].options.deliverAs, "steer");
 });
 
 test("team_list reports the quiet gap for each agent", async () => {
@@ -566,6 +630,7 @@ test("a dropped result arriving before the coordinator ends its turn is delivere
   const delivery = runtime.childMessages.get(parent.record.id)?.find((entry) => entry.message.details.kind === "FINAL_ANSWER");
   assert.match(delivery?.message.content ?? "", /Report: dropped/);
   assert.equal(delivery?.options.triggerTurn, true);
+  assert.equal(delivery?.options.deliverAs, "steer");
   assert.equal(fakePi.messages.length, 0, "the intermediate result stays at the coordinator");
 });
 
@@ -907,7 +972,10 @@ test("child team_wait wakes on activity and team_interrupt delegates cancellatio
   await execute(fakePi.tools.get("spawn_team_agent"), "spawn-peer", { task_name: "peer", message: "peer work" });
   const childWait = (runtime.created[0].options.customTools ?? []).find((tool) => tool.name === "team_wait");
   const waitPromise = execute(childWait, "child-wait", { timeout_ms: 5_000 });
+  let woke = false;
+  void waitPromise.then(() => { woke = true; });
   await execute(fakePi.tools.get("team_send_message"), "send", { target: "/root/worker", message: "wake" });
+  assert.equal(woke, false, "buffer acceptance must not wake a peer before delivery");
   const waited = await waitPromise;
   assert.equal((waited.details as any).activity, true);
 
@@ -925,21 +993,18 @@ test("subagent config selection matches exact labels instead of name prefixes", 
     const body = (name: string) => `---\ndescription: ${JSON.stringify(name)}\nenabled: true\n---\n\n${name}\n`;
     writeFileSync(join(root, "agents", "foo.md"), body("foo"));
     writeFileSync(join(root, "agents", "foo-bar.md"), body("foo-bar"));
-    const titles: string[] = [];
-    let selectCount = 0;
-    const configCtx = {
-      cwd: process.cwd(),
-      ui: {
-        select: async (title: string) => {
-          titles.push(title);
-          selectCount += 1;
-          return selectCount === 1 ? "project: foo-bar" : undefined;
-        },
-        notify: () => undefined,
-      },
-    } as any;
-    await configureSubagents({} as ExtensionAPI, configCtx);
-    assert.equal(titles[1], "Subagent foo-bar (project)");
+    const fake = fakeCustomUi();
+    const pending = configureSubagents({ getAllTools: () => [] } as unknown as ExtensionAPI, fakeCommandContext(fake) as any);
+    await settle();
+    // Click the foo-bar row (not foo, whose label is a prefix of foo-bar).
+    const row = fake.opened[0].renderText().split("\n").findIndex((line) => line.includes("foo-bar"));
+    assert.notEqual(row, -1);
+    fake.opened[0].click(3, row);
+    await settle();
+    assert.equal(fake.opened.length, 2);
+    assert.match(fake.opened[1].renderText(), /Subagent foo-bar \(project\)/);
+    fake.opened[1].keys("\x1b");
+    await pending;
   } finally {
     if (previousProject === undefined) delete process.env.GROK_PROJECT_DIR;
     else process.env.GROK_PROJECT_DIR = previousProject;
@@ -952,19 +1017,17 @@ test("cancelling a new subagent edit does not create a definition file", async (
   const previousProject = process.env.GROK_PROJECT_DIR;
   try {
     process.env.GROK_PROJECT_DIR = root;
-    let selectCount = 0;
-    const configCtx = {
-      cwd: process.cwd(),
-      ui: {
-        select: async () => {
-          selectCount += 1;
-          return selectCount === 1 ? "New project subagent" : undefined;
-        },
-        input: async () => "cancel_me",
-        notify: () => undefined,
-      },
-    } as any;
-    await configureSubagents({} as ExtensionAPI, configCtx);
+    const fake = fakeCustomUi();
+    const pending = configureSubagents({ getAllTools: () => [] } as unknown as ExtensionAPI, fakeCommandContext(fake) as any);
+    await settle();
+    fake.opened[0].keys("\r"); // "New project subagent"
+    await settle();
+    fake.opened[1].keys("cancel_me");
+    fake.opened[1].keys("\r");
+    await settle();
+    assert.match(fake.opened[2].renderText(), /Subagent cancel_me \(project\)/);
+    fake.opened[2].keys("\x1b"); // discard the form
+    await pending;
     assert.equal(existsSync(join(root, "agents", "cancel_me.md")), false);
   } finally {
     if (previousProject === undefined) delete process.env.GROK_PROJECT_DIR;

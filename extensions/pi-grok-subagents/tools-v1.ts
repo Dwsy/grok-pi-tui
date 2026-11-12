@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { configureSubagents } from "./config-ui.ts";
 import { openSubagentControlCenter } from "./control-center.ts";
 import { showSubagentHistory, type SubagentRecord } from "./bridge.ts";
-import { MAX_WAIT_MS, SUBAGENT_REPLAY_COMMAND, requireText } from "./shared.ts";
+import { MAX_BACKGROUND_CONCURRENCY, MAX_WAIT_MS, SUBAGENT_REPLAY_COMMAND, requireText } from "./shared.ts";
 import { SubagentRuntime, type MessageDelivery } from "./runtime.ts";
 
 async function sendMessageFromCommand(
@@ -130,7 +130,7 @@ export function registerV1AgentTools(pi: ExtensionAPI, runtime: SubagentRuntime)
       "- For background subagents, use get_command_or_subagent_output with task_ids and timeout_ms to wait for results\n" +
       "- Without background (default), blocks until the subagent finishes and returns its final output directly\n" +
       "- Do NOT use wait_tasks for subagent IDs — use get_command_or_subagent_output instead\n" +
-      "- You can spawn multiple background subagents in parallel (up to 4 concurrent)",
+      `- You can spawn multiple background subagents in parallel (up to the configured background concurrency, default ${MAX_BACKGROUND_CONCURRENCY})`,
     executionMode: "parallel",
     parameters: Type.Object({
       prompt: Type.String({ description: "Self-contained task for the child agent. Include all context needed — the child cannot see your conversation." }),

@@ -8,6 +8,7 @@
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { definitionName } from "./definitions.ts";
+import { piConfirm, piEditor, piInput, piSelect } from "./ui-primitives.ts";
 import {
   cloneTeamDefinition,
   deleteTeamDefinition,
@@ -112,7 +113,7 @@ async function pickModel(
     return undefined;
   }
   const options = [ALL_MODELS_LABEL, ...entries.map((entry) => entry.label)];
-  const choice = await ctx.ui.select("Member model", options);
+  const choice = await piSelect(ctx, "Member model", options);
   if (choice === undefined) return undefined;
   if (choice === ALL_MODELS_LABEL) return "";
   const entry = entries.find((candidate) => choice === candidate.label);
@@ -138,7 +139,7 @@ async function pickThinkingLevel(
   current: ThinkingLevel | undefined,
 ): Promise<ThinkingLevel | undefined | null> {
   const options = thinkingOptions(entries, modelKey, current);
-  const choice = await ctx.ui.select("Member thinking level", options.map((option) => option.label));
+  const choice = await piSelect(ctx, "Member thinking level", options.map((option) => option.label));
   if (choice === undefined) return undefined;
   const match =
     options.find((option) => choice === option.label) ??
@@ -152,7 +153,7 @@ async function editMember(
   member: TeamMemberDefinition,
 ): Promise<void> {
   while (true) {
-    const choice = await ctx.ui.select(`Team member ${member.name}`, [
+    const choice = await piSelect(ctx, `Team member ${member.name}`, [
       `Agent (${member.agent})`,
       `Model (${member.model ?? "default"})`,
       `Thinking level (${member.thinkingLevel ?? "inherit"})`,
@@ -164,7 +165,7 @@ async function editMember(
     if (!choice || choice === "Done") return;
 
     if (choice.startsWith("Agent")) {
-      const raw = await ctx.ui.input("Agent definition name", member.agent);
+      const raw = await piInput(ctx, "Agent definition name", { initial: member.agent });
       if (raw === undefined) continue;
       const name = definitionName(raw);
       if (!name) {
@@ -189,9 +190,10 @@ async function editMember(
       continue;
     }
     if (choice.startsWith("Max turns")) {
-      const raw = await ctx.ui.input(
+      const raw = await piInput(
+        ctx,
         "Max turns for this member (empty = agent definition, 0 = unlimited)",
-        member.maxTurns === undefined ? "" : String(member.maxTurns),
+        { initial: member.maxTurns === undefined ? "" : String(member.maxTurns) },
       );
       if (raw === undefined) continue;
       if (!raw.trim()) {
@@ -207,13 +209,13 @@ async function editMember(
       continue;
     }
     if (choice.startsWith("Description")) {
-      const raw = await ctx.ui.input("Member description (optional)", member.description ?? "");
+      const raw = await piInput(ctx, "Member description (optional)", { initial: member.description ?? "" });
       if (raw === undefined) continue;
       if (raw.trim()) member.description = raw.trim();
       else delete member.description;
       continue;
     }
-    const raw = await ctx.ui.editor("Task template", member.task ?? "Work on the team objective: {{task}}");
+    const raw = await piEditor(ctx, "Task template", member.task ?? "Work on the team objective: {{task}}");
     if (raw === undefined) continue;
     if (raw.trim()) member.task = raw.trim();
     else delete member.task;
@@ -231,11 +233,11 @@ async function editMembers(
       ...team.members.map((member) => memberSummary(member)),
       "Back",
     ];
-    const choice = await ctx.ui.select(`Members of ${team.name} (${team.members.length}/${MAX_TEAM_MEMBERS})`, choices);
+    const choice = await piSelect(ctx, `Members of ${team.name} (${team.members.length}/${MAX_TEAM_MEMBERS})`, choices);
     if (!choice || choice === "Back") return;
 
     if (choice === "Add member") {
-      const raw = await ctx.ui.input("Member name (lowercase letters, digits, underscores)");
+      const raw = await piInput(ctx, "Member name (lowercase letters, digits, underscores)", {});
       if (raw === undefined) continue;
       const name = raw.trim();
       if (!name || name === "root" || !/^[a-z0-9][a-z0-9_]{0,63}$/.test(name)) {
@@ -254,9 +256,9 @@ async function editMembers(
     const index = team.members.findIndex((member) => memberSummary(member) === choice);
     if (index < 0) continue;
     const member = team.members[index];
-    const action = await ctx.ui.select(`Member ${member.name}`, ["Edit settings", "Remove member"]);
+    const action = await piSelect(ctx, `Member ${member.name}`, ["Edit settings", "Remove member"]);
     if (action === "Remove member") {
-      const confirmed = await ctx.ui.confirm("Remove team member", `Remove ${member.name} from ${team.name}?`);
+      const confirmed = await piConfirm(ctx, "Remove team member", `Remove ${member.name} from ${team.name}?`);
       if (confirmed) team.members.splice(index, 1);
       continue;
     }
@@ -270,13 +272,13 @@ async function chooseScope(
   allowProject: boolean,
 ): Promise<ExternalScope | undefined> {
   const options = allowProject ? ["Project override", "Global override"] : ["Global"];
-  const choice = await ctx.ui.select(title, options);
+  const choice = await piSelect(ctx, title, options);
   if (!choice) return undefined;
   return choice.startsWith("Project") ? "project" : "global";
 }
 
 async function createTeam(ctx: ExtensionCommandContext, scope: ExternalScope): Promise<void> {
-  const rawName = await ctx.ui.input("Team name (letters, numbers, _ or -)");
+  const rawName = await piInput(ctx, "Team name (letters, numbers, _ or -)", {});
   if (rawName === undefined) return;
   const name = rawName.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) {
@@ -295,7 +297,7 @@ async function editTeam(ctx: ExtensionCommandContext, team: TeamDefinition): Pro
   const entries = modelEntries(ctx);
   const isOverride = team.scope !== "bundled";
   while (true) {
-    const choice = await ctx.ui.select(`Team ${team.name} (${scopeLabel(team.scope)})`, [
+    const choice = await piSelect(ctx, `Team ${team.name} (${scopeLabel(team.scope)})`, [
       team.enabled ? "Disable" : "Enable",
       `Description (${team.description})`,
       "Instructions",
@@ -324,12 +326,12 @@ async function editTeam(ctx: ExtensionCommandContext, team: TeamDefinition): Pro
       continue;
     }
     if (choice.startsWith("Description")) {
-      const raw = await ctx.ui.input("Team description", team.description);
+      const raw = await piInput(ctx, "Team description", { initial: team.description });
       if (raw !== undefined && raw.trim()) team.description = raw.trim();
       continue;
     }
     if (choice === "Instructions") {
-      const raw = await ctx.ui.editor("Team instructions", team.instructions ?? "");
+      const raw = await piEditor(ctx, "Team instructions", team.instructions ?? "");
       if (raw === undefined) continue;
       if (raw.trim()) team.instructions = raw.trim();
       else delete team.instructions;
@@ -340,7 +342,7 @@ async function editTeam(ctx: ExtensionCommandContext, team: TeamDefinition): Pro
       continue;
     }
     if (choice === "Delete preset") {
-      const confirmed = await ctx.ui.confirm("Delete team preset", `Delete ${team.scope} preset ${team.name}?`);
+      const confirmed = await piConfirm(ctx, "Delete team preset", `Delete ${team.scope} preset ${team.name}?`);
       if (!confirmed) continue;
       deleteTeamDefinition(ctx.cwd, team);
       ctx.ui.notify(`Deleted ${team.scope} team preset ${team.name}.`, "info");
@@ -357,7 +359,7 @@ async function editTeam(ctx: ExtensionCommandContext, team: TeamDefinition): Pro
 export async function configureTeamPresets(ctx: ExtensionCommandContext): Promise<void> {
   const teams = [...loadTeamDefinitions(ctx.cwd).values()].sort((left, right) => left.name.localeCompare(right.name));
   const choices = ["New project team", "New global team", ...teams.map(teamChoiceLabel)];
-  const choice = await ctx.ui.select("Subagents V2 team presets", choices);
+  const choice = await piSelect(ctx, "Subagents V2 team presets", choices);
   if (!choice) return;
 
   if (choice === "New project team" || choice === "New global team") {
@@ -375,7 +377,7 @@ export async function configureTeamPresets(ctx: ExtensionCommandContext): Promis
     return;
   }
   if (target.scope === "global") {
-    const action = await ctx.ui.select(`Global team preset ${target.name}`, [
+    const action = await piSelect(ctx, `Global team preset ${target.name}`, [
       "Edit global preset",
       "Override in this project",
     ]);
