@@ -9,6 +9,33 @@
 
 ## [Unreleased]
 
+## [0.1.14-beta.1] - 2026-11-12
+
+### 新增
+
+- **普通文本会话树跳转增量投影** — 非 minimal 模式下，纯文本 Pi 会话树跳转通过 `text_tree_projection` 复用未变化的对话前缀；含状态、custom 或工具条目的历史仍保留完整回放。树跳转增加进行中保护，投影回退路径有 dispatch 测试覆盖。
+- **`/fork-to-dashboard` 消息级 fork 命令** — 从选定消息 fork 并直达 Agent Dashboard。fork picker 携带 dashboard 目标，经新增的 `Action::ForkToDashboard` 路由；命令与 `/fork` 并列注册。
+- **原生 Goal 工作区** — Goal 详情升级为全屏工作区 overlay，含 概览/时间线/诊断 三个标签页（键盘 `1`/`2`/`3`、Tab/hjkl 导航与鼠标点击标签）。Goal 状态按会话打标：迟到的 clear 不会清掉更新的 goal，attach 前不发送 GoalUpdated，bootstrap 会话切换会重置过期的 host 状态。
+- **Ondine Mermaid 渲染与 Open SVG 动作** — 固定版本的 Ondine 配合内置 RobotoMono 将 Mermaid 编译为 PNG；Open Image 生成 PNG，Open SVG 通过同一隔离渲染 worker 打开单独缓存的矢量图。终端 ASCII 图保持独立。
+- **`bash_env_tool` 环境变量工具** — 以 set/delete/list 管理 project 与 session 两层环境变量；.env 条目保持只读（`$ENV_FOO`），工具设置的键按原样注入（`$FOO`）。
+- **扩展 dev 目录加载** — 内置 Pi 扩展可从 dev 目录加载，仅替换来源位置，不改变启用集合。
+
+### 变更
+
+- **Team V2 消息及时投递与模型错误终态** — team 消息按 25 ms 窗口合并、自动 flush 并去重；FINAL_ANSWER 对活跃 parent 进行 steer，不再等待其工具循环结束；单目标投递失败被隔离。能力模式收敛为 read-only 与 all 两档。对已安装 Pi 1.5.0 的 98/98 扩展测试全部通过。
+- **子代理配置 UI 重写为 pi-tui 全屏组件** — runtime 设置与 UI 原语拆分为独立模块，支持键盘与鼠标交互；内嵌的子代理扩展一并打包新文件。
+- **Rust 工具链升级到 1.97.0** — 为满足固定版本 Ondine 编译器的要求。
+
+### 修复
+
+- **iTerm2 Read 图片查看器** — OSC 1337 图片尺寸改用纯 cell 计数；Read 查看器在 resize 期间隐藏，overlay 所属 cell 在更新时重绘，block viewer 为 iTerm2 加载 Read 图片并在无图形协议时回退为文本。
+- **Goal 生命周期竞态** — 迟到的旧会话 bridge 通知不会进入新会话的 Pager 状态（含过期的 `goal_cleared` 墓碑）；旧执行代的 in-flight clear 不会删除以不同 ID 创建或恢复的更新 goal。
+
+### 依赖
+
+- **pi-main 子模块** 推进到上游 v1.5.2+100（`a40abecaa`），跨 v1.4.0-v1.5.2 共 834 个上游提交。
+
+
 ## [0.1.13] - 2026-11-06
 
 ### 新增
