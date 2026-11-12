@@ -84,18 +84,6 @@ impl WorkflowHost {
             .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
 
-    pub async fn launch_inline(
-        &self,
-        script: String,
-        objective: String,
-        args: Value,
-    ) -> Result<(String, tokio::sync::oneshot::Receiver<WorkflowOutcome>)> {
-        self.runtime
-            .launch_inline(script, objective, args, None)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))
-    }
-
     pub async fn pause(&self, run_id: &str) -> bool {
         self.runtime.pause(run_id).await
     }

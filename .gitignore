@@ -42,3 +42,4 @@ compaction-results/
 
 # Local Pi session HTML exports
 /pi-session-*.html
+.alma-snapshots

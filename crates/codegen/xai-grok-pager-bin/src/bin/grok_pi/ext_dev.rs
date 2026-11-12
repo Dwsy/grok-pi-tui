@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Feature gating is unchanged: only extensions the host would inject anyway are
 /// resolved here, so dev mode swaps the source origin, not the enabled set.
+#[derive(Debug)]
 pub(super) struct ExtensionDev {
     root: PathBuf,
 }
