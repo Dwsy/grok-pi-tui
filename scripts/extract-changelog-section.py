@@ -26,6 +26,18 @@ SECTION_RE = re.compile(
     r"(?ms)^(## \[([^\]]+)\][^\n]*\n.*?)(?=^## \[|\Z)"
 )
 
+# The full-platform archive set (filenames as published, matching the `asset`
+# field of scripts/release-targets.json). Used when the caller does not pass
+# --asset, i.e. a tag push that builds every target.
+DEFAULT_ASSETS = [
+    "grok-pi-macos-aarch64.tar.gz",
+    "grok-pi-macos-x86_64.tar.gz",
+    "grok-pi-linux-x86_64.tar.gz",
+    "grok-pi-linux-aarch64.tar.gz",
+    "grok-pi-windows-x86_64.zip",
+    "grok-pi-windows-aarch64.zip",
+]
+
 
 def normalize_version(raw: str) -> str:
     v = raw.strip()
@@ -90,8 +102,14 @@ def fallback_notes(version: str, repo: str) -> str:
     )
 
 
-def install_footer(repo: str, tag: str) -> str:
-    return (
+def install_footer(repo: str, tag: str, assets: list[str] | None = None) -> str:
+    """Install snippet, plus the assets actually built for THIS release.
+
+    The asset line must reflect the real matrix: a single-platform beta run
+    publishes one archive, so appending the old hardcoded six-platform list
+    would advertise downloads that 404.
+    """
+    footer = (
         "\n### Install\n\n"
         f"```bash\n"
         f"# macOS / Linux\n"
@@ -103,8 +121,10 @@ def install_footer(repo: str, tag: str) -> str:
         f"$env:GROK_PI_VERSION='{tag}'; "
         f"irm https://github.com/{repo}/releases/download/{tag}/install.ps1 | iex\n"
         f"```\n\n"
-        "Release assets: macOS aarch64/x86_64, Linux x86_64/aarch64, Windows x86_64/aarch64.\n"
     )
+    if assets:
+        footer += "Release assets: " + ", ".join(assets) + ".\n"
+    return footer
 
 
 def self_test(changelog: Path) -> int:
@@ -138,6 +158,12 @@ def self_test(changelog: Path) -> int:
         assert ranged is not None and f"## [{ver0}]" in ranged
     miss = extract_section(text, "9.9.9.9")
     assert miss is None
+    # Install footer must follow the actual asset list: a single-platform run
+    # passes one --asset and must not advertise the other five archives.
+    single = install_footer("owner/repo", "v9.9.9", ["grok-pi-macos-aarch64.tar.gz"])
+    assert "grok-pi-macos-aarch64.tar.gz" in single
+    assert "grok-pi-windows-x86_64.zip" not in single
+    assert "Release assets: " in single
     print(f"self-test ok: {len(sections)} sections, head={ver0}", file=sys.stderr)
     return 0
 
@@ -176,6 +202,15 @@ def main() -> int:
         "--with-install",
         action="store_true",
         help="Append one-line install snippet for the tag",
+    )
+    p.add_argument(
+        "--asset",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="Release asset actually built for this run (repeatable). "
+        "When given, the install footer lists exactly these instead of a "
+        "hardcoded all-platform list; omit for a full six-platform release.",
     )
     p.add_argument(
         "--self-test",
@@ -218,7 +253,11 @@ def main() -> int:
 
     if args.with_install:
         tag = f"v{version}"
-        body = body.rstrip() + "\n" + install_footer(args.repo, tag)
+        body = (
+            body.rstrip()
+            + "\n"
+            + install_footer(args.repo, tag, args.asset or DEFAULT_ASSETS)
+        )
 
     if args.output == "-":
         sys.stdout.write(body if body.endswith("\n") else body + "\n")

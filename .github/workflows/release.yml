@@ -30,12 +30,13 @@ jobs:
   # all six assets. The single source of truth is scripts/release-targets.json.
   prepare-matrix:
     name: Resolve build matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
+      assets: ${{ steps.resolve.outputs.assets }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.GROK_PI_RELEASE_TAG }}
 
@@ -70,16 +71,19 @@ jobs:
               selected = [by_key[k] for k in wanted]
 
           print("matrix=" + json.dumps({"include": selected}, separators=(",", ":")))
+          # The release notes must advertise exactly what this run publishes:
+          # a single-platform beta ships one archive, not six.
+          print("assets=" + ",".join(t["asset"] for t in selected))
           print("Selected " + str(len(selected)) + " target(s): " +
                 ", ".join(t["key"] for t in selected), file=sys.stderr)
           PY
 
   validate-changelog:
     name: Validate changelog
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Manual dispatch must inspect the existing release tag, not main.
           ref: ${{ env.GROK_PI_RELEASE_TAG }}
@@ -117,7 +121,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.GROK_PI_RELEASE_TAG }}
 
@@ -245,7 +249,7 @@ jobs:
 
       - name: Upload compiler timing report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-timings-${{ matrix.target }}
           path: target/cargo-timings/*.html
@@ -284,7 +288,7 @@ jobs:
           Get-Item "dist/${{ matrix.asset }}" | Format-List Name, Length
 
       - name: Upload release asset
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
@@ -292,18 +296,18 @@ jobs:
 
   release:
     name: Publish GitHub release
-    needs: build
+    needs: [build, prepare-matrix]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out release scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.GROK_PI_RELEASE_TAG }}
 
       - name: Download release binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
           # Keep build-timings-* diagnostics out of the user-facing release.
@@ -320,6 +324,11 @@ jobs:
       - name: Extract CHANGELOG for this tag
         id: notes
         shell: bash
+        env:
+          # Comma-separated asset filenames resolved by `prepare-matrix`, i.e.
+          # exactly the archives this run builds. Empty on legacy reruns that
+          # only pass a tag, in which case the extractor keeps its full list.
+          RELEASE_ASSETS: ${{ needs.prepare-matrix.outputs.assets }}
         run: |
           set -euo pipefail
           ref="${GROK_PI_RELEASE_TAG}"
@@ -347,6 +356,15 @@ jobs:
             extract_args+=(--since "${RELEASE_NOTES_SINCE}")
           fi
 
+          # Advertise only the assets this run actually publishes; a
+          # single-platform beta must not list five archives it never built.
+          if [[ -n "${RELEASE_ASSETS:-}" ]]; then
+            IFS=',' read -ra assets <<< "${RELEASE_ASSETS}"
+            for asset in "${assets[@]}"; do
+              [[ -n "$asset" ]] && extract_args+=(--asset "$asset")
+            done
+          fi
+
           python3 scripts/extract-changelog-section.py "${extract_args[@]}"
 
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
@@ -356,14 +374,14 @@ jobs:
           head -n 60 dist/release-notes.md
 
       - name: Upload release notes artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: dist/release-notes.md
           if-no-files-found: error
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # CHANGELOG.MD tag section only; do not append GitHub's full commit
           # history to every release body.

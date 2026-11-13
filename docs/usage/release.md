@@ -75,7 +75,7 @@ gh workflow run release.yml \
 |---|---|---|
 | `macos-arm64` | macOS ARM64（`aarch64-apple-darwin`） | `macos-15` |
 | `macos-x86_64` | macOS Intel（交叉编译） | `macos-15` |
-| `linux-x86_64` | Linux x64 | `ubuntu-latest` |
+| `linux-x86_64` | Linux x64 | `ubuntu-24.04` |
 | `linux-aarch64` | Linux ARM64（原生 arm runner） | `ubuntu-24.04-arm` |
 | `windows-x86_64` | Windows x64 | `windows-latest` |
 | `windows-aarch64` | Windows ARM64（原生 arm runner） | `windows-11-vs2026-arm` |

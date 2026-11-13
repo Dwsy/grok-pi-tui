@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release notes listed archives the run never built** — the install footer now enumerates the assets resolved by `prepare-matrix` (passed to `extract-changelog-section.py` as repeated `--asset`), so a single-platform beta advertises only the one archive it publishes instead of the full six-platform list.
+- **Release CI pinned to `ubuntu-24.04`** — the `ubuntu-latest` label migrates to Ubuntu 26 (announced deadline 2026-10-19), so the three Ubuntu jobs and the `linux-x86_64` matrix runner are pinned to an explicit image.
+- **Actions runtime deprecations** — `checkout@v4` → `v7`, `upload-artifact@v4` → `v7`, `download-artifact@v4` → `v8`, `action-gh-release@v2` → `v3`; all four now run on Node 24 instead of the deprecated Node 20.
+
+### 中文发布说明
+
+- **发布说明会列出本次并未构建的包** — 安装页脚改为按 `prepare-matrix` 解析出的实际 asset 列表生成（以重复的 `--asset` 传给 `extract-changelog-section.py`），单平台 beta 只会列出真正发布的那一个包，不再虚假宣传六个平台。
+- **发布 CI 固定到 `ubuntu-24.04`** — `ubuntu-latest` 标签将迁移到 Ubuntu 26（公告期限 2026-10-19），因此三个 Ubuntu job 与 `linux-x86_64` 矩阵 runner 改为显式镜像。
+- **Actions 运行时弃用** — `checkout@v4` → `v7`、`upload-artifact@v4` → `v7`、`download-artifact@v4` → `v8`、`action-gh-release@v2` → `v3`，均改用 Node 24。
+
 ## [0.1.14-beta.3] - 2026-11-13
 
 ### Added
