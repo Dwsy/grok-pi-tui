@@ -108,6 +108,13 @@ pub struct UiConfig {
     /// Default off; takes effect for new sessions only.
     #[serde(default)]
     pub pi_herdr: bool,
+    /// Render the text Pi extensions set via `ctx.ui.setWorkingMessage()` in the
+    /// turn status row, replacing `Thinking` / `ToolRunning` / `WritingToolCall`
+    /// / `Waiting` labels. Permission prompts, plan approval, cancellation, and
+    /// `Responding` always keep their native labels.
+    /// Display-only and live-applied; default off preserves native activity.
+    #[serde(default)]
+    pub pi_working_message: bool,
     /// Enable the built-in Pi child-session subagent bridge.
     /// Default on; takes effect for new grok-pi sessions only.
     #[serde(default = "default_true")]
@@ -560,6 +567,7 @@ impl Default for UiConfig {
             pi_tree_file_rollback: false,
             pi_tree_skip_summary_prompt: false,
             pi_herdr: false,
+            pi_working_message: false,
             pi_subagents: true,
             pi_subagents_v2: true,
             pi_workflows: false,

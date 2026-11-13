@@ -777,6 +777,15 @@ impl PiAgent {
                             self.handle_background_bash_status(&payload).await;
                         }
                     }
+                    EXTENSION_WORKING_MESSAGE_STATUS_KEY => {
+                        // Pi's RPC mode cannot carry `setWorkingMessage`; the
+                        // injected mirror extension republishes it here so the
+                        // Pager can substitute it for selected activity labels.
+                        // `null`/blank clears the slot; the Pager also filters
+                        // blanks so a stale value cannot linger after a clear.
+                        self.send_ext_notification("pi/ui/working_message", json!({ "text": text }))
+                            .await;
+                    }
                     _ => {
                         self.send_status(key, text.filter(|text| !text.is_empty()))
                             .await;

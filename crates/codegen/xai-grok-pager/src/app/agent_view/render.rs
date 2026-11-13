@@ -1056,6 +1056,28 @@ impl AgentView {
         } else {
             None
         };
+        // Context usage for the fullscreen title bar: `8.5K / 1.0M`, or `ctx 42.0%` when only the
+        // percentage survived. Colored by usage like the status-bar context bar. Nothing to show
+        // (no progress yet) leaves no blank slot.
+        let ctx_total = info
+            .and_then(|s| s.attempt.context_window_tokens)
+            .filter(|t| *t > 0)
+            .or_else(|| {
+                self.subagent_views
+                    .get(child_sid)
+                    .and_then(|cv| cv.session.models.get_context_window())
+                    .filter(|t| *t > 0)
+            });
+        let context_label = subagent_context_spans(
+            info.and_then(|s| s.attempt.tokens_used),
+            ctx_total,
+            info.and_then(|s| s.attempt.context_usage_pct),
+            theme,
+        );
+        let context_width: u16 = context_label
+            .as_ref()
+            .map(|spans| spans.iter().map(|s| s.width() as u16).sum())
+            .unwrap_or(0);
         let title_x = padded.x + 1;
         buf.set_span_safe(
             title_x,
@@ -1076,7 +1098,13 @@ impl AgentView {
             .as_deref()
             .map(|s| s.width() as u16 + 3)
             .unwrap_or(0);
+        let context_seg_width = if context_label.is_some() {
+            context_width + 1
+        } else {
+            0
+        };
         let right_width = activity_width
+            + context_seg_width
             + elapsed_text.width() as u16
             + 1
             + close_width
@@ -1160,6 +1188,11 @@ impl AgentView {
                 &Span::styled(segment, Style::default().fg(theme.gray)),
                 w,
             );
+        }
+        if let Some(spans) = context_label.as_ref() {
+            // Left of the activity label; `right_width` already counted `context_width + 1`.
+            rx = rx.saturating_sub(context_width + 1);
+            buf.set_line_safe(rx, title_y, &Line::from(spans.clone()), context_width);
         }
         if !badge.is_empty() {
             rx = rx.saturating_sub(badge.width() as u16 + 1);
@@ -2869,6 +2902,14 @@ impl AgentView {
                         is_bash_turn: self.bash_turn,
                         is_pending_user_input,
                         goal_verifying,
+                        // F2 `pi_working_message` (default off) gates the Pi
+                        // text at the last possible point. compute_activity
+                        // still refuses to override user-actionable states.
+                        pi_working_message: if crate::appearance::cache::load_pi_working_message() {
+                            self.external_working_message.as_deref()
+                        } else {
+                            None
+                        },
                         watchers: turn_status_watchers,
                         parked: turn_status_parked,
                         flat_background: false,
@@ -5332,6 +5373,31 @@ fn fit_toast_text(msg: &str, avail_width: u16) -> Option<String> {
     let truncated: String = msg.chars().take(max_msg_chars.saturating_sub(1)).collect();
     Some(format!(" {}… ", truncated.trim_end()))
 }
+/// Context usage segments for the subagent fullscreen title bar: `8.5K / 1.0M` at usage-colored
+/// urgency, matching the status-bar context bar. When only `context_usage_pct` survived, a `ctx
+/// 42.0%` fallback. Returns `None` when there is nothing to show, so callers leave no blank slot.
+fn subagent_context_spans(
+    used_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    usage_pct: Option<u8>,
+    theme: &Theme,
+) -> Option<Vec<Span<'static>>> {
+    use crate::views::context_bar::{blend_color, default_breakpoints, fmt_pct5, fmt_tokens};
+    if let (Some(used), Some(total)) = (used_tokens, total_tokens.filter(|t| *t > 0)) {
+        let pct = xai_token_estimation::usage_percentage(used, total);
+        let color = crate::theme::quantize(blend_color(pct, &default_breakpoints(theme)));
+        let text = format!("{} / {}", fmt_tokens(used), fmt_tokens(total));
+        return Some(vec![Span::styled(
+            text,
+            Style::default().fg(color).bg(theme.bg_base),
+        )]);
+    }
+    let pct = usage_pct?;
+    Some(vec![Span::styled(
+        format!("ctx {}", fmt_pct5(f64::from(pct))),
+        Style::default().fg(theme.gray).bg(theme.bg_base),
+    )])
+}
 #[cfg(test)]
 mod toast_fit_tests {
     use super::fit_toast_text;
@@ -5351,6 +5417,56 @@ mod toast_fit_tests {
     fn zero_width_slot_yields_none() {
         assert_eq!(fit_toast_text("Copied!", 4), None);
         assert_eq!(fit_toast_text("Copied!", 0), None);
+    }
+}
+#[cfg(test)]
+mod subagent_context_span_tests {
+    use super::subagent_context_spans;
+    use crate::theme::Theme;
+
+    fn spans_text(spans: &[ratatui::text::Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn token_form_matches_context_bar_formatting() {
+        let theme = Theme::default();
+        let spans = subagent_context_spans(Some(8_500), Some(1_000_000), None, &theme)
+            .expect("token data provided");
+        assert_eq!(spans_text(&spans), "8.5K / 1.0M");
+    }
+
+    #[test]
+    fn pct_fallback_used_when_tokens_missing() {
+        let theme = Theme::default();
+        let spans = subagent_context_spans(None, Some(1_000_000), Some(42), &theme)
+            .expect("pct fallback");
+        assert_eq!(spans_text(&spans), "ctx 42.0%");
+    }
+
+    #[test]
+    fn nothing_to_show_yields_none() {
+        let theme = Theme::default();
+        assert!(subagent_context_spans(None, Some(1_000_000), None, &theme).is_none());
+        assert!(subagent_context_spans(Some(1_000), None, None, &theme).is_none());
+        // Zero total is treated as missing.
+        assert!(subagent_context_spans(Some(1_000), Some(0), None, &theme).is_none());
+        assert!(subagent_context_spans(None, None, None, &theme).is_none());
+    }
+
+    #[test]
+    fn high_usage_switches_off_the_default_text_color() {
+        let theme = Theme::default();
+        let low = subagent_context_spans(Some(0), Some(1_000_000), None, &theme).unwrap();
+        let high = subagent_context_spans(Some(960_000), Some(1_000_000), None, &theme).unwrap();
+        assert_eq!(
+            low[0].style.fg,
+            Some(crate::theme::quantize(theme.text_primary))
+        );
+        assert_eq!(
+            high[0].style.fg,
+            Some(crate::theme::quantize(theme.accent_error))
+        );
     }
 }
 #[cfg(test)]

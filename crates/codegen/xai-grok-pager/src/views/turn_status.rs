@@ -217,6 +217,13 @@ pub struct TurnStatusArgs<'a> {
     pub is_bash_turn: bool,
     pub is_pending_user_input: bool,
     pub goal_verifying: bool,
+    /// Text Pi published via `ctx.ui.setWorkingMessage()`, eligible to replace
+    /// selected activity labels. `None` keeps every label native.
+    ///
+    /// The caller resolves the F2 `pi_working_message` toggle before passing it;
+    /// [`compute_activity`] still refuses to override waits on the user,
+    /// cancellation, and true progress phases.
+    pub pi_working_message: Option<&'a str>,
     pub watchers: Watchers,
     /// Parked on a sendable wait (`AgentView::renders_parked`).
     pub parked: bool,
@@ -251,6 +258,7 @@ pub fn render_turn_status(
         is_bash_turn,
         is_pending_user_input,
         goal_verifying,
+        pi_working_message,
         watchers,
         parked,
         flat_background,
@@ -365,8 +373,15 @@ pub fn render_turn_status(
         );
 
     // ── Compute activity style and label ──
-    let (activity_style, label, is_tool) =
-        compute_activity(&theme, state, activity, is_bash_turn, goal_verifying);
+    let (activity_style, label, is_tool) = compute_activity_with_working_message(
+        &theme,
+        state,
+        activity,
+        is_bash_turn,
+        goal_verifying,
+        is_pending_user_input,
+        pi_working_message,
+    );
 
     // Early return for idle (shouldn't happen if should_show is respected, but be safe).
     if matches!(state, AgentState::Idle) {
@@ -673,7 +688,8 @@ pub fn render_turn_status(
     }
 }
 
-/// Compute activity style, label, and whether it's a tool.
+/// Convenience wrapper for tests that assert native labels (no Pi override).
+#[cfg(test)]
 fn compute_activity(
     theme: &Theme,
     state: &AgentState,
@@ -681,6 +697,71 @@ fn compute_activity(
     is_bash_turn: bool,
     goal_verifying: bool,
 ) -> (Style, String, bool) {
+    compute_activity_with_working_message(
+        theme,
+        state,
+        activity,
+        is_bash_turn,
+        goal_verifying,
+        false,
+        None,
+    )
+}
+
+/// Which activities a Pi working message may replace.
+///
+/// These are the "nothing user-actionable is happening" phases: the agent is
+/// waiting on the model, streaming a tool call's arguments, executing a tool,
+/// or parked in a passive wait. Everything that asks the user for something
+/// (`Responding` output, permission prompts, plan approval, cancellation) stays
+/// native so a quote can never hide an action the user must take.
+fn working_message_replaces(activity: &Option<TurnActivity>) -> bool {
+    matches!(
+        activity,
+        Some(
+            TurnActivity::Thinking
+                | TurnActivity::ToolRunning { .. }
+                | TurnActivity::WritingToolCall(_)
+                | TurnActivity::Waiting(_)
+        )
+    )
+}
+
+/// [`compute_activity`] with an optional Pi working-message override.
+///
+/// `pi_working_message` is already gated by the caller on the F2
+/// `pi_working_message` toggle; this function enforces the remaining safety
+/// rules so no caller can bypass them by passing text unconditionally.
+fn compute_activity_with_working_message(
+    theme: &Theme,
+    state: &AgentState,
+    activity: &Option<TurnActivity>,
+    is_bash_turn: bool,
+    goal_verifying: bool,
+    is_pending_user_input: bool,
+    pi_working_message: Option<&str>,
+) -> (Style, String, bool) {
+    // Guard before the match so the override can never shadow the arms below.
+    // Cancellation, plan approval, pending user input, and `Responding` /
+    // `AutoCompacting` / `Retrying` all read as real progress or a required
+    // user action, and a quote there would be actively misleading.
+    //
+    // `is_pending_user_input` must be checked explicitly: a parked Ask /
+    // permission tool can still report `ToolRunning` or `Waiting` as its
+    // activity, so the variant filter alone would let a quote hide a prompt.
+    if let Some(text) = pi_working_message
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        && state.is_turn_running()
+        && !goal_verifying
+        && !is_pending_user_input
+        && working_message_replaces(activity)
+    {
+        // Muted like `Thinking`/`Waiting`: the text is a wait subject, not a
+        // green `Run <command>` invocation, so it must not borrow the tool hue.
+        return (Style::default().fg(theme.text_secondary), text.to_string(), false);
+    }
+
     match (state, activity) {
         (AgentState::TurnCancelling | AgentState::CommandCancelling { .. }, _) => (
             Style::default().fg(theme.accent_error),
@@ -1095,6 +1176,7 @@ mod tests {
                 is_bash_turn: false,
                 is_pending_user_input: false,
                 goal_verifying: false,
+                pi_working_message: None,
                 watchers: Watchers::default(),
                 parked: false,
                 flat_background: false,
@@ -1255,6 +1337,7 @@ mod tests {
             is_bash_turn: false,
             is_pending_user_input: false,
             goal_verifying: false,
+            pi_working_message: None,
             watchers,
             parked: false,
             flat_background: false,
@@ -1785,5 +1868,180 @@ mod tests {
         // so this assertion guards against an accidental tweak that
         // would silently change the cadence of every "your turn" cue.
         assert_eq!(USER_WAITING_PULSE_SPEED, 0.08);
+    }
+
+    // ── Pi working-message override ───────────────────────────────────
+
+    const WM: &str = "编译中... (累计 3m 12s + 本轮 8s)";
+
+    fn wm_label(
+        state: &AgentState,
+        activity: &Option<TurnActivity>,
+        goal_verifying: bool,
+        is_pending_user_input: bool,
+        text: Option<&str>,
+    ) -> String {
+        let theme = Theme::current();
+        compute_activity_with_working_message(
+            &theme,
+            state,
+            activity,
+            false,
+            goal_verifying,
+            is_pending_user_input,
+            text,
+        )
+        .1
+    }
+
+    #[test]
+    fn working_message_replaces_only_the_four_wait_phases() {
+        // The four phases the F2 toggle is allowed to substitute.
+        let replaceable = [
+            TurnActivity::Thinking,
+            TurnActivity::ToolRunning {
+                title: "cargo build".into(),
+                description: None,
+            },
+            TurnActivity::WritingToolCall(crate::acp::tracker::WritingToolCall {
+                tool_name: Some("write".into()),
+                ordinal: std::num::NonZeroU32::new(1).unwrap(),
+            }),
+            TurnActivity::Waiting(WaitingReason::Model),
+        ];
+        for activity in replaceable {
+            let label = wm_label(
+                &AgentState::TurnRunning,
+                &Some(activity.clone()),
+                false,
+                false,
+                Some(WM),
+            );
+            assert_eq!(label, WM, "expected override for {activity:?}");
+        }
+
+        // Real progress stays native: a quote must never hide output or a
+        // compaction / retry, which the user needs to see.
+        let native = [
+            TurnActivity::Responding,
+            TurnActivity::AutoCompacting,
+            TurnActivity::Retrying {
+                attempt: 2,
+                max_retries: 3,
+                reason: "timeout".into(),
+                error_type: None,
+            },
+        ];
+        for activity in native {
+            let with = wm_label(
+                &AgentState::TurnRunning,
+                &Some(activity.clone()),
+                false,
+                false,
+                Some(WM),
+            );
+            let without = wm_label(
+                &AgentState::TurnRunning,
+                &Some(activity.clone()),
+                false,
+                false,
+                None,
+            );
+            assert_eq!(with, without, "must stay native for {activity:?}");
+            assert_ne!(with, WM);
+        }
+    }
+
+    #[test]
+    fn working_message_never_overrides_user_actionable_states() {
+        let thinking = Some(TurnActivity::Thinking);
+        // Pending user input: a parked Ask/permission tool can still report
+        // `ToolRunning`/`Waiting`, so this is checked independently of variant.
+        assert_eq!(
+            wm_label(
+                &AgentState::TurnRunning,
+                &thinking,
+                false,
+                true,
+                Some(WM)
+            ),
+            "Thinking…"
+        );
+        // Plan approval (`Verifying…`) wins over the stale activity.
+        assert_eq!(
+            wm_label(
+                &AgentState::TurnRunning,
+                &thinking,
+                true,
+                false,
+                Some(WM)
+            ),
+            "Verifying…"
+        );
+        // Cancellation is its own AgentState arm.
+        assert_eq!(
+            wm_label(
+                &AgentState::TurnCancelling,
+                &thinking,
+                false,
+                false,
+                Some(WM)
+            ),
+            "Cancelling…"
+        );
+        // Slash commands are not inference turns.
+        assert_eq!(
+            wm_label(
+                &AgentState::CommandRunning {
+                    command: AgentCommand::Compact,
+                    started_at: std::time::Instant::now(),
+                },
+                &thinking,
+                false,
+                false,
+                Some(WM)
+            ),
+            "Compacting…"
+        );
+    }
+
+    #[test]
+    fn working_message_off_or_empty_falls_back_to_native() {
+        let thinking = Some(TurnActivity::Thinking);
+        assert_eq!(
+            wm_label(
+                &AgentState::TurnRunning,
+                &thinking,
+                false,
+                false,
+                None
+            ),
+            "Thinking…"
+        );
+        for blank in ["", "   ", "\n\t"] {
+            assert_eq!(
+                wm_label(
+                    &AgentState::TurnRunning,
+                    &thinking,
+                    false,
+                    false,
+                    Some(blank)
+                ),
+                "Thinking…",
+                "blank text {blank:?} must not produce an empty status row"
+            );
+        }
+        // Text is trimmed so trailing whitespace from an extension cannot
+        // shift the spinner layout.
+        assert_eq!(
+            wm_label(
+                &AgentState::TurnRunning,
+                &thinking,
+                false,
+                false,
+                Some("  quoted  ")
+            ),
+            "quoted"
+        );
     }
 }

@@ -144,6 +144,11 @@ const EXTENSION_QUEUE_STATUS_KEY: &str = "__pi_grok_queue_enqueue__";
 /// Bash extension publishes here because `setStatus` is fire-and-forget in Pi's
 /// RPC mode, while its bridge message shares the agent's queue lifetime.
 const EXTENSION_BASH_TASK_STATUS_KEY: &str = "__pi_grok_bash_task__";
+/// Working-message mirror. Pi's RPC mode implements `ctx.ui.setWorkingMessage()`
+/// as a no-op, so the adapter injects a small extension that mirrors the text
+/// onto `setStatus` under this key. Translated to `pi/ui/working_message`, which
+/// the Pager may render in place of selected `TurnActivity` labels.
+const EXTENSION_WORKING_MESSAGE_STATUS_KEY: &str = "__pi_grok_working_message__";
 const SUBAGENT_REPLAY_COMMAND: &str = "__pi_grok_subagent_replay";
 const SUBAGENT_REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -169,6 +174,27 @@ fn subagent_cancel_target(
     child_session_id: &str,
 ) -> Option<String> {
     routes.get(child_session_id).cloned()
+}
+
+/// Delete a Pi session JSONL file, mirroring Pi's own interactive
+/// session-selector behavior: try trash-cli first, then fall back to unlink.
+/// Returns the deletion method used ("trash" or "unlink").
+fn delete_pi_session_file(path: &std::path::Path) -> Result<&'static str> {
+    // trash-cli first (matches Pi's deleteSessionFile)
+    let status = std::process::Command::new("trash")
+        .arg(path)
+        .status();
+    if let Ok(exit) = status
+        && exit.success()
+    {
+        return Ok("trash");
+    }
+    // File may already be gone
+    if !path.exists() {
+        return Ok("trash");
+    }
+    std::fs::remove_file(path)?;
+    Ok("unlink")
 }
 
 fn stop_reason_wire(reason: &acp::StopReason) -> &'static str {
@@ -643,22 +669,27 @@ const NAVIGATE_TREE_COMMAND: &str = "__pi_navigate_tree";
 const LABEL_TREE_COMMAND: &str = "__pi_tree_label";
 const RELOAD_COMMAND: &str = "__pi_reload";
 const SUBAGENT_CANCEL_COMMAND: &str = "__pi_grok_subagent_cancel";
+const SUBAGENT_SEND_COMMAND: &str = "__pi_grok_subagent_send";
 const LOOP_DELETE_COMMAND: &str = "__pi_grok_loop_delete";
 const RECAP_COMMAND: &str = "__pi_grok_recap";
 const BTW_COMMAND: &str = "__pi_grok_btw";
 const CONTEXT_BREAKDOWN_COMMAND: &str = "__pi_context_breakdown";
 const SHORTCUT_DISPATCH_COMMAND: &str = "__pi_shortcut_dispatch";
+/// Goal extension hook that appends adapter-written control state to Pi's log.
+const GOAL_PERSIST_COMMAND: &str = "__pi_grok_goal_persist";
 
 fn is_bridge_command(name: &str) -> bool {
     name.eq_ignore_ascii_case(NAVIGATE_TREE_COMMAND)
         || name.eq_ignore_ascii_case(LABEL_TREE_COMMAND)
         || name.eq_ignore_ascii_case(RELOAD_COMMAND)
         || name.eq_ignore_ascii_case(SUBAGENT_CANCEL_COMMAND)
+        || name.eq_ignore_ascii_case(SUBAGENT_SEND_COMMAND)
         || name.eq_ignore_ascii_case(LOOP_DELETE_COMMAND)
         || name.eq_ignore_ascii_case(RECAP_COMMAND)
         || name.eq_ignore_ascii_case(BTW_COMMAND)
         || name.eq_ignore_ascii_case(CONTEXT_BREAKDOWN_COMMAND)
         || name.eq_ignore_ascii_case(SHORTCUT_DISPATCH_COMMAND)
+        || name.eq_ignore_ascii_case(GOAL_PERSIST_COMMAND)
         || name.eq_ignore_ascii_case(WORKFLOW_SPAWN_COMMAND)
         || name.eq_ignore_ascii_case(WORKFLOW_CANCEL_COMMAND)
 }

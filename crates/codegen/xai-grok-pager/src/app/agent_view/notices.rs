@@ -229,15 +229,19 @@ impl AgentView {
         widgets_below_editor: &[String],
         statuses: &[String],
         remote_tui_inline_offset: Option<usize>,
+        working_message: Option<&str>,
     ) -> bool {
         let geometry_changed = self.external_widgets_above_editor != widgets_above_editor
             || self.remote_tui_inline_offset != remote_tui_inline_offset;
+        let next_working_message = working_message.map(str::to_owned);
         let changed = geometry_changed
             || self.external_widgets_below_editor != widgets_below_editor
-            || self.external_statuses != statuses;
+            || self.external_statuses != statuses
+            || self.external_working_message != next_working_message;
         self.external_widgets_above_editor = widgets_above_editor.to_vec();
         self.external_widgets_below_editor = widgets_below_editor.to_vec();
         self.external_statuses = statuses.to_vec();
+        self.external_working_message = next_working_message;
         self.remote_tui_inline_offset = remote_tui_inline_offset;
         if geometry_changed {
             self.remote_tui_rect = None;
@@ -250,6 +254,7 @@ impl AgentView {
                     widgets_below_editor,
                     statuses,
                     remote_tui_inline_offset,
+                    working_message,
                 ) || changed
             })
     }

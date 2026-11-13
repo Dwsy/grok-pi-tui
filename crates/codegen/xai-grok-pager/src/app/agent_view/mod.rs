@@ -1257,6 +1257,10 @@ pub struct AgentView {
     pub(crate) external_widgets_below_editor: Vec<String>,
     /// Pi RPC keyed statuses, rendered by the native status bar.
     pub(crate) external_statuses: Vec<String>,
+    /// Mirrored `ctx.ui.setWorkingMessage()` text. The turn status row may
+    /// render it instead of selected `TurnActivity` labels when the F2
+    /// `pi_working_message` toggle is on. `None` keeps every label native.
+    pub(crate) external_working_message: Option<String>,
     /// Transient "Switched to mode: X" banner shown above the prompt after Shift+Tab. (message, remaining_ticks). Full brightness for 2 s, then fades out over the final 0.3 s.
     pub(crate) mode_switch_banner: Option<(String, u8)>,
     /// Session announcement banner (critical or promo) is showing (set at start of `draw`). Ephemeral-tip occluder: unlike short-lived mode-switch, an announcement can last the session, so tips must not burn TTL/seen counts while hidden.

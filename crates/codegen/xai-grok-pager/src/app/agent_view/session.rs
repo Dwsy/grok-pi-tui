@@ -321,6 +321,7 @@ impl AgentView {
             remote_tui_last_rect: None,
             external_widgets_below_editor: Vec::new(),
             external_statuses: Vec::new(),
+            external_working_message: None,
             mode_switch_banner: None,
             session_banner_active: false,
             pinned_upgrade_cta_live: false,

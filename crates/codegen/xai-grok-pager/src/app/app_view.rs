@@ -116,6 +116,15 @@ pub struct ExternalUiState {
     /// temporary extension UI and deliberately does not overwrite this value:
     /// Pi restores the session title during `resetExtensionUI()` on reload.
     pub session_title: Option<String>,
+    /// Latest text Pi published through `ctx.ui.setWorkingMessage()`.
+    ///
+    /// Pi's RPC mode implements that call as a no-op, so the injected
+    /// `pi-grok-working-message` extension mirrors it onto a private `setStatus`
+    /// key that the adapter forwards here. The turn status row may render this
+    /// instead of selected [`crate::acp::tracker::TurnActivity`] labels when the
+    /// F2 `pi_working_message` toggle is on. `None` means Pi is not publishing
+    /// one, and every activity label stays native.
+    pub working_message: Option<String>,
     /// Pi extension notifications retained by active session for `/notify`.
     /// This is process-local UI state and deliberately not persisted to Pi.
     pub notifications: std::collections::HashMap<String, Vec<ExternalNotification>>,
@@ -2535,6 +2544,20 @@ impl AppView {
         self.refresh_external_ui_surface()
     }
 
+    /// Store Pi's latest `ctx.ui.setWorkingMessage()` text.
+    ///
+    /// The turn status row reads this through the same projection as statuses
+    /// and widgets, so a change must refresh the external surface. Empty text
+    /// clears the slot, matching `setWorkingMessage()` restoring the default.
+    pub fn set_external_working_message(&mut self, text: Option<String>) -> bool {
+        let next = text.filter(|value| !value.trim().is_empty());
+        if self.external_ui.working_message == next {
+            return false;
+        }
+        self.external_ui.working_message = next;
+        self.refresh_external_ui_surface()
+    }
+
     /// Project Pi's session name onto the native prompt-border inline title.
     ///
     /// Pi owns the session and its name (auto-generated or via rename), so the
@@ -2572,6 +2595,9 @@ impl AppView {
 
         self.external_ui.statuses.clear();
         self.external_ui.widgets.clear();
+        // The mirror extension is unloaded with the runner; its text belongs to
+        // the outgoing session and must not survive into the next one.
+        self.external_ui.working_message = None;
         self.external_ui.remote_tui_layout = None;
         self.external_ui.remote_tui_id = None;
         self.external_ui.remote_tui_mouse_gesture = None;
@@ -3183,6 +3209,9 @@ impl AppView {
             remote_tui_overlay,
         );
         let global_shortcuts_enabled = self.external_ui.extension_shortcuts.is_global_enabled();
+        // Clone before borrowing `self.agents` mutably in the projection loop:
+        // reading `self.external_ui` inside that closure is a borrow conflict.
+        let working_message = self.external_ui.working_message.clone();
         let mut extension_shortcuts = self
             .external_ui
             .extension_shortcuts
@@ -3211,6 +3240,7 @@ impl AppView {
                 &widgets_below_editor,
                 &statuses,
                 remote_tui_inline_offset,
+                working_message.as_deref(),
             ) || changed;
             agent.set_remote_tui_surface(remote_tui_lines, remote_tui_layout.clone()) || changed
         })

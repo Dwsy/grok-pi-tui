@@ -638,6 +638,8 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         "pi/ui/compaction_summary" => handle_pi_ui_compaction_summary(notif, app),
         "pi/ui/btw_history" => handle_pi_ui_btw_history(notif, app),
         "pi/ui/status" => handle_pi_ui_status(notif, app),
+        // Mirrored `ctx.ui.setWorkingMessage()` text (RPC mode drops the call).
+        "pi/ui/working_message" => handle_pi_ui_working_message(notif, app),
         "pi/ui/widget" => handle_pi_ui_widget(notif, app),
         "pi/ui/title" => handle_pi_ui_title(notif, app),
         "pi/ui/reset_extension_ui" => handle_pi_ui_reset_extension_ui(app),
@@ -884,6 +886,22 @@ fn handle_pi_ui_status(notif: &acp::ExtNotification, app: &mut AppView) -> bool 
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
     app.set_external_status(key, text)
+}
+
+/// Store Pi's mirrored working-message text.
+///
+/// Payload is `{ "text": string | null }`; `null` or an empty/blank string
+/// clears the slot so the turn status row falls back to native activity labels.
+fn handle_pi_ui_working_message(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let text = params
+        .get("text")
+        .or_else(|| params.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    app.set_external_working_message(text)
 }
 
 fn handle_pi_ui_widget(notif: &acp::ExtNotification, app: &mut AppView) -> bool {

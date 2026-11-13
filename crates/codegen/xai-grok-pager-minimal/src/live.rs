@@ -583,6 +583,10 @@ fn render_minimal_status(
             is_bash_turn: agent.bash_turn,
             is_pending_user_input,
             goal_verifying,
+            // Minimal mode has no external_ui projection; keep every native
+            // activity label so the F2 toggle cannot create a hidden dependency
+            // on the full Pager state.
+            pi_working_message: None,
             watchers,
             parked,
             flat_background: true,

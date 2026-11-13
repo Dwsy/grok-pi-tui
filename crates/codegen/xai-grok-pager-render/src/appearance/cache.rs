@@ -860,6 +860,35 @@ pub fn set_pi_bash_command_format(value: bool) {
     PI_BASH_COMMAND_FORMAT_LOADED.with(|l| l.set(true));
 }
 
+// -- Pi working message -----------------------------------------------------
+
+thread_local! {
+    static PI_WORKING_MESSAGE_CURRENT: Cell<bool> = const { Cell::new(false) };
+    static PI_WORKING_MESSAGE_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read the F2 `pi_working_message` toggle (default off).
+///
+/// When on, Pi's `ctx.ui.setWorkingMessage()` text may replace selected turn
+/// status activity labels. The Pager reads this every frame so an F2 change is
+/// live without restarting the session.
+pub fn load_pi_working_message() -> bool {
+    PI_WORKING_MESSAGE_LOADED.with(|loaded| {
+        if !loaded.get() {
+            let value = load_bool_from_effective_config("pi_working_message", false);
+            PI_WORKING_MESSAGE_CURRENT.with(|c| c.set(value));
+            loaded.set(true);
+        }
+    });
+    PI_WORKING_MESSAGE_CURRENT.with(|c| c.get())
+}
+
+/// Replace the cached working-message toggle (optimistic modal update or rollback).
+pub fn set_pi_working_message(value: bool) {
+    PI_WORKING_MESSAGE_CURRENT.with(|c| c.set(value));
+    PI_WORKING_MESSAGE_LOADED.with(|l| l.set(true));
+}
+
 // -- Tool-card click action -------------------------------------------------
 
 thread_local! {
@@ -985,6 +1014,7 @@ pub fn prime(ui: &UiConfig) {
             .unwrap_or_default(),
     );
     set_pi_bash_command_format(ui.pi_bash_command_format);
+    set_pi_working_message(ui.pi_working_message);
     set_write_edit_hover_popups(ui.write_edit_hover_popups);
     set_tool_card_click_action(
         ui.tool_card_click_action

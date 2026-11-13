@@ -2636,6 +2636,11 @@ pub(in crate::app::dispatch) fn set_host_feature_bool(
         return vec![];
     }
     spec.set_bool(&mut app.current_ui, enabled);
+    // The turn status row reads this preference from the render-thread cache
+    // every frame. Keep it live so an F2 toggle applies without a restart.
+    if spec.key.as_str() == "pi_working_message" {
+        crate::appearance::cache::set_pi_working_message(enabled);
+    }
     refresh_open_settings_modals(app);
     let value = if enabled { "on" } else { "off" };
     if spec.restart_required {
