@@ -291,6 +291,144 @@ export default async function (pi: ExtensionAPI) {
 			: {}),
 	});
 
+	async function runEvalForeground(
+		toolCallId: string,
+		params: EvalParams,
+		signal: AbortSignal | undefined,
+		ctx: ExtensionContext,
+	) {
+		const startedAt = Date.now();
+		const kernel = evalKernels[params.language];
+		if (!kernel) {
+			throw new Error(`Eval ${evalVersion} does not support language ${JSON.stringify(params.language)}`);
+		}
+		let result;
+		if (evalVersion === "v2") {
+			if (params.reset) kernel.close();
+			const task = await startEvalBackgroundTask({
+				toolCallId,
+				code: params.code,
+				description: params.title,
+				cwd: ctx.cwd,
+				timeout: params.timeout ?? 300,
+				ui: ctx.ui,
+				kernel,
+				tools: evalToolBridge?.catalog() ?? [],
+				skills: evalSkills,
+				backgrounded: false,
+				ownsKernel: false,
+			});
+			const promoted = () => {
+				if (task.completed || task.backgrounded) return;
+				evalKernels = {
+					...evalKernels,
+					[params.language]: new PersistentEvalKernel(params.language, "v2", invokeEvalHostCall),
+				};
+				if (promoteEvalTask(task)) evalTasks.set(task.taskId, task);
+			};
+			task.promote = promoted;
+			armEvalAutoBackground(task, maxWaitMs);
+			const aborted = () => {
+				if (!task.backgrounded && !task.completed) task.controller.abort(new Error("aborted"));
+			};
+			if (signal?.aborted) aborted();
+			else signal?.addEventListener("abort", aborted, { once: true });
+			await new Promise<void>((resolve) => {
+				task.foregroundSettler = () => resolve();
+				if (task.completed || task.backgrounded) resolve();
+			});
+			signal?.removeEventListener("abort", aborted);
+			if (task.backgrounded) {
+				return {
+					content: jsonContent({ task_id: task.taskId, status: "running", output_file: task.outputFile }),
+					details: {
+						taskId: task.taskId,
+						background: true,
+						command: task.code,
+						cwd: task.cwd,
+						outputFile: task.outputFile,
+						description: task.description,
+						kind: "eval",
+					},
+				};
+			}
+			if (task.error) throw new Error(task.error);
+			if (!task.result) throw new Error("Eval v2 foreground task settled without a result");
+			result = task.result;
+		} else {
+			result = await kernel.execute(
+				params.code,
+				ctx.cwd,
+				params.timeout ?? 300,
+				signal,
+				params.reset ?? false,
+				evalToolBridge?.catalog() ?? [],
+				evalSkills,
+			);
+		}
+		const language = params.language === "py" ? "python" : "js";
+		// Mirror the native read tool: displayed images ride along as ImageContent
+		// blocks (vision); the text output only carries short "[display image]" notes.
+		const images = (result.images ?? []).map((image) => ({
+			type: "image" as const,
+			data: image.data,
+			mimeType: image.mimeType,
+		}));
+		return {
+			content: [
+				{ type: "text" as const, text: result.output || "(no output)" },
+				...images,
+			],
+			details: {
+				language,
+				languages: [language],
+				cells: [
+					{
+						index: 0,
+						title: params.title?.trim() || undefined,
+						code: params.code,
+						language,
+						output: result.output,
+						status: "complete",
+						durationMs: Date.now() - startedAt,
+					},
+				],
+				truncated: result.truncated,
+				// Lets the renderer tell "cell made no host tool calls" apart from
+				// unknown: such cells always render as a normal Eval card,
+				// regardless of the effects-first setting or v2-only hiding.
+				toolCalls: result.toolCalls ?? 0,
+				bridgeVersion: evalVersion,
+			},
+		};
+	}
+
+	// Foreground cells read `evalKernels` only after acquiring this per-language
+	// turn. An auto-background promotion swaps in a fresh kernel and hands the
+	// old one to the promoted task, so a queued cell must not capture the old one.
+	// Background cells keep their isolated kernels and bypass the queue entirely.
+	const tails: Partial<Record<EvalLanguage, Promise<unknown>>> = {};
+	const evalForegroundShutdown = new AbortController();
+	function withEvalForegroundTurn<T>(
+		language: EvalLanguage,
+		signal: AbortSignal | undefined,
+		run: () => Promise<T>,
+	): Promise<T> {
+		const tail = tails[language] ?? Promise.resolve();
+		const work = async () => {
+			if (signal?.aborted) {
+				throw signal.reason instanceof Error ? signal.reason : new Error("aborted");
+			}
+			if (evalForegroundShutdown.signal.aborted) {
+				throw evalForegroundShutdown.signal.reason;
+			}
+			return run();
+		};
+		const result = tail.then(work, work);
+		tails[language] = result.catch(() => undefined);
+		return result;
+	}
+
 	const evalToolDefinition = {
 		name: "eval",
 		label: "Eval",
@@ -336,110 +474,9 @@ export default async function (pi: ExtensionAPI) {
 					},
 				};
 			}
-			const startedAt = Date.now();
-			const kernel = evalKernels[params.language];
-			if (!kernel) {
-				throw new Error(`Eval ${evalVersion} does not support language ${JSON.stringify(params.language)}`);
-			}
-			let result;
-			if (evalVersion === "v2") {
-				if (params.reset) kernel.close();
-				const task = await startEvalBackgroundTask({
-					toolCallId,
-					code: params.code,
-					description: params.title,
-					cwd: ctx.cwd,
-					timeout: params.timeout ?? 300,
-					ui: ctx.ui,
-					kernel,
-					tools: evalToolBridge?.catalog() ?? [],
-					skills: evalSkills,
-					backgrounded: false,
-					ownsKernel: false,
-				});
-				const promoted = () => {
-					if (task.completed || task.backgrounded) return;
-					evalKernels = {
-						...evalKernels,
-						[params.language]: new PersistentEvalKernel(params.language, "v2", invokeEvalHostCall),
-					};
-					if (promoteEvalTask(task)) evalTasks.set(task.taskId, task);
-				};
-				task.promote = promoted;
-				armEvalAutoBackground(task, maxWaitMs);
-				const aborted = () => {
-					if (!task.backgrounded && !task.completed) task.controller.abort(new Error("aborted"));
-				};
-				if (signal?.aborted) aborted();
-				else signal?.addEventListener("abort", aborted, { once: true });
-				await new Promise<void>((resolve) => {
-					task.foregroundSettler = () => resolve();
-					if (task.completed || task.backgrounded) resolve();
-				});
-				signal?.removeEventListener("abort", aborted);
-				if (task.backgrounded) {
-					return {
-						content: jsonContent({ task_id: task.taskId, status: "running", output_file: task.outputFile }),
-						details: {
-							taskId: task.taskId,
-							background: true,
-							command: task.code,
-							cwd: task.cwd,
-							outputFile: task.outputFile,
-							description: task.description,
-							kind: "eval",
-						},
-					};
-				}
-				if (task.error) throw new Error(task.error);
-				if (!task.result) throw new Error("Eval v2 foreground task settled without a result");
-				result = task.result;
-			} else {
-				result = await kernel.execute(
-					params.code,
-					ctx.cwd,
-					params.timeout ?? 300,
-					signal,
-					params.reset ?? false,
-					evalToolBridge?.catalog() ?? [],
-					evalSkills,
-				);
-			}
-			const language = params.language === "py" ? "python" : "js";
-			// Mirror the native read tool: displayed images ride along as ImageContent
-			// blocks (vision); the text output only carries short "[display image]" notes.
-			const images = (result.images ?? []).map((image) => ({
-				type: "image" as const,
-				data: image.data,
-				mimeType: image.mimeType,
-			}));
-			return {
-				content: [
-					{ type: "text" as const, text: result.output || "(no output)" },
-					...images,
-				],
-				details: {
-					language,
-					languages: [language],
-					cells: [
-						{
-							index: 0,
-							title: params.title?.trim() || undefined,
-							code: params.code,
-							language,
-							output: result.output,
-							status: "complete",
-							durationMs: Date.now() - startedAt,
-						},
-					],
-					truncated: result.truncated,
-					// Lets the renderer tell "cell made no host tool calls" apart from
-					// unknown: such cells always render as a normal Eval card,
-					// regardless of the effects-first setting or v2-only hiding.
-					toolCalls: result.toolCalls ?? 0,
-					bridgeVersion: evalVersion,
-				},
-			};
+			return withEvalForegroundTurn(params.language, signal, () =>
+				runEvalForeground(toolCallId, params, signal, ctx),
+			);
 		},
 	};
 	pi.registerTool(evalToolDefinition);
@@ -768,6 +805,7 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => {
+		evalForegroundShutdown.abort(new Error("session_shutdown"));
 		evalMcp?.publish({ nativeType: "runtime.changed", native: { phase: "session_shutdown" } });
 		evalMcpGeneration++;
 		void evalMcp?.close();

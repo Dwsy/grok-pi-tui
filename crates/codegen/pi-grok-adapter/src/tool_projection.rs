@@ -360,10 +360,10 @@ fn is_ls_tool(name: &str) -> bool {
     name == "ls" || name == "list_dir" || name == "listdir" || name == "list_directory"
 }
 
-/// Goal lifecycle tools owned by the injected goal extension. Their control
-/// file is the SSOT, so a tool end must refresh the pager goal surface.
+/// Goal lifecycle tool owned by the injected goal extension. Its control file
+/// is the SSOT, so a tool end must refresh the pager goal surface.
 pub(crate) fn is_goal_tool_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("create_goal") || name.eq_ignore_ascii_case("update_goal")
+    name.eq_ignore_ascii_case("goal")
 }
 
 /// Rewrite Pi tool args into shapes the native Grok cards already understand.

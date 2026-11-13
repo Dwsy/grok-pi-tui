@@ -85,7 +85,7 @@ pi.complete(prompt, options?, signal?)
 
 ## Eval v2 wire protocol
 
-Transport 继续使用 child process pipe，不新增 socket：host→worker 走 stdin JSONL；worker→host 走 fd3 JSONL；stdout/stderr 仍是 cell output。同语言同一时刻只允许一个 active cell，但该 cell 内可以有多个并发 host calls。
+Transport 继续使用 child process pipe，不新增 socket：host→worker 走 stdin JSONL；worker→host 走 fd3 JSONL；stdout/stderr 仍是 cell output。同语言同一时刻只允许一个 active cell，但该 cell 内可以有多个并发 host calls。同语言并发提交的 foreground cell 在宿主层按到达顺序 FIFO 排队串行执行，而不是失败。
 
 执行 cell：
 

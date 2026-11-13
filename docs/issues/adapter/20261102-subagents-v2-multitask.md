@@ -59,7 +59,7 @@ tags: ["workhub", "subagents-v2", "multitask", "skills"]
 | `extensions/pi-grok-subagents/index.ts` | `resources_discover.skillPaths` 暴露 proactive skill；V1/V2 互斥注册 | 增加 V2 专用 multitask skill；发现不自动激活 |
 | `v2.ts: spawnAgent / spawnTeamTool` | child `background: true`；单 child 异步；preset 默认 timeout=0，但显式正 timeout 可等待 | 复用，技能禁止传正 timeout |
 | `v2.ts: deliverFinalAnswer / reactivateAgent` | idle parent 复用 child session 新建 run record；queued parent 缓存消息；running parent 接收 followUp | 已具备逐层结果唤醒，不需要新 agent loop |
-| `v2.ts: team_wait` | root 立即返回；child 有 active peer 时可长等 | child 长等仍在 `session.prompt()` 内，占共享执行槽 |
+| `v2.ts: team_wait` | root 可按 `timeout_ms` 等待选定的 team；child 无匹配 active peer 时立即返回 | child 长等仍在 `session.prompt()` 内，占共享执行槽 |
 | `runtime.ts: scheduleBackgroundTask`、`shared.ts` | 整棵树共用 4 个后台执行槽，run 的 Promise 结束才释放 | 4 个 coordinator 同时等 queued child 会饥饿至 timeout；不是无限死锁，但会显著停顿 |
 | `runtime.ts: createRecord` | child `noExtensions/noSkills/noContextFiles`，仅 agent definition 显式资源；systemPromptOverride | root 读技能不等于 child 读技能；不能关闭资源隔离来传播模式 |
 | `skills/multi-agent-proactive/SKILL.md` | Proactive/Ultra 仅 parent 主动；child 进一步拆分需明确任务授权 | 独立新技能，任务书明确授权；不重写默认继承规则 |

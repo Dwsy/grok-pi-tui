@@ -138,7 +138,8 @@ function toolText(text: string, details?: Record<string, unknown>) {
 export class TeamCoordinator {
   private readonly agents = new Map<string, TeamAgent>();
   private readonly reservedPaths = new Set<string>();
-  private readonly waiters = new Set<(version: number) => void>();
+  private readonly waiters = new Set<(teams: Set<string>) => void>();
+  private readonly teamVersions = new Map<string, number>();
   private readonly messageBuffers = new Map<string, MessageBuffer>();
   private messageFlushTimer?: ReturnType<typeof setTimeout>;
   private disposed = false;
@@ -162,10 +163,51 @@ export class TeamCoordinator {
     });
   }
 
-  private notifyActivity(): void {
+  private notifyActivity(...paths: string[]): void {
     this.activityVersion += 1;
-    for (const resolve of this.waiters) resolve(this.activityVersion);
-    this.waiters.clear();
+    const teams = new Set(paths.map((path) => this.teamOf(path)).filter((team): team is string => !!team));
+    for (const team of teams) this.teamVersions.set(team, this.activityVersion);
+    for (const resolve of this.waiters) resolve(teams);
+  }
+
+  /**
+   * Nested children spawned by a team member keep no preset label of their own,
+   * but their activity still belongs to the enclosing team. Walking ancestors
+   * makes `team_wait({teams})` observe descendant messages instead of only the
+   * member that spawned them.
+   */
+  private teamOf(path: string): string | undefined {
+    let current = path;
+    while (current !== ROOT_PATH) {
+      const agent = this.agents.get(current);
+      if (agent?.team) return agent.team.trim().toLowerCase();
+      const slash = current.lastIndexOf("/");
+      if (slash <= 0) return undefined;
+      current = current.slice(0, slash);
+    }
+    return undefined;
+  }
+
+  /** Rejects unknown preset names up front; a typo must not degrade into a silent timeout. */
+  private resolveWaitTeams(requested: string[] | undefined): string[] | undefined {
+    if (!requested) return undefined;
+    if (requested.length === 0) {
+      throw new Error("teams must name at least one active team preset; omit it to watch every agent");
+    }
+    const active = new Set<string>();
+    for (const agent of this.agents.values()) {
+      const team = this.teamOf(agent.path);
+      if (team) active.add(team);
+    }
+    const resolved = new Set<string>();
+    for (const raw of requested) {
+      const name = requireText(raw, "teams[]").toLowerCase();
+      if (!active.has(name)) {
+        throw new Error(`unknown team "${raw}"; active teams: ${[...active].sort().join(", ") || "none"}`);
+      }
+      resolved.add(name);
+    }
+    return [...resolved];
   }
 
   private touch(agent: TeamAgent): void {
@@ -261,7 +303,7 @@ export class TeamCoordinator {
       `You are ${path}, an agent in a grok-pi Subagents V2 team. Your parent is ${parentPath}.`,
       "All team agents share the same working directory and can see each other's filesystem changes. Keep writes inside the boundary your task names.",
       "Create a nested child with spawn_team_agent only when your own task explicitly requires further decomposition. Having the tool is not permission to fan out; your parent remains the orchestrator.",
-      "Use team_send_message for facts, corrections, or wrap-up instructions a running peer needs now. team_followup_task assigns the NEXT task after its current work; it does not interrupt that work. Use team_wait only while another agent is genuinely active, team_list to inspect the tree, and team_interrupt to stop an agent.",
+      "Use team_send_message for facts, corrections, or wrap-up instructions a running peer needs now. team_followup_task assigns the NEXT task after its current work; it does not interrupt that work. Use team_wait({teams}) only while a watched agent is genuinely active; it returns on the first matching message/event. Use team_list to inspect the tree, and team_interrupt to stop an agent.",
       "A message is worth sending only when the recipient cannot get the fact themselves or must act on it. Do not forward progress. Consecutive team_send_message calls to one agent merge into a single steer, so batch facts in one turn.",
       "Before you end a turn, call team_report: ready (the requested result is deliverable), waiting (your own children are pending and no local work remains), blocked (you need one decision; question is mandatory), failed (the work cannot be completed), dropped (there is genuinely nothing for the parent to act on: already fixed, superseded, or out of scope). Your summary replaces your final text in what the parent receives. Never report ready to hide unfinished work.",
       "When your own child results are still pending and no independent work remains, report waiting and END THIS TURN to release the shared execution slot. Reporting alone does not release it. A nested FINAL_ANSWER resumes this same child session; do not park on team_wait for your queued descendants.",
@@ -307,7 +349,7 @@ export class TeamCoordinator {
       );
       this.touch(target);
     }
-    this.notifyActivity();
+    this.notifyActivity(senderPath, targetPath);
   }
 
   private async reactivateAgent(
@@ -344,7 +386,7 @@ export class TeamCoordinator {
     });
     target.status = scheduled === "queued" ? "queued" : "running";
     this.touch(target);
-    this.notifyActivity();
+    this.notifyActivity(target.path);
     return scheduled;
   }
 
@@ -358,7 +400,7 @@ export class TeamCoordinator {
     if (!agent) return;
     agent.status = status === "completed" ? "idle" : status;
     this.touch(agent);
-    this.notifyActivity();
+    this.notifyActivity(path);
     // A turn that ends must not leave buffered messages behind: flush them before
     // the parent is told the result, so ordering matches what the child said.
     try {
@@ -428,7 +470,7 @@ export class TeamCoordinator {
           toolCallId: `team-final:${record.id}`,
           kind: "FINAL_ANSWER",
         });
-        this.notifyActivity();
+        this.notifyActivity(path, parent.path);
       } else {
         await this.deliver(path, agent.parentPath, "FINAL_ANSWER", payload, true);
       }
@@ -497,7 +539,7 @@ export class TeamCoordinator {
       };
       this.agents.set(path, agent);
       if (!options.deferStart) this.runtime.scheduleBackground(record, message);
-      this.notifyActivity();
+      this.notifyActivity(path);
       return agent;
     } finally {
       this.reservedPaths.delete(path);
@@ -505,11 +547,11 @@ export class TeamCoordinator {
   }
 
   private rollbackTeam(spawned: TeamAgent[], reason: string): void {
+    this.notifyActivity(...spawned.map((agent) => agent.path));
     for (const agent of spawned) {
       this.agents.delete(agent.path);
       this.runtime.discard(agent.record, reason);
     }
-    this.notifyActivity();
   }
 
   private hasPendingChild(senderPath: string): boolean {
@@ -520,9 +562,13 @@ export class TeamCoordinator {
     });
   }
 
-  private hasActivePeer(senderPath: string): boolean {
+  private hasActivePeer(senderPath: string, teams?: string[]): boolean {
     return [...this.agents.values()].some((agent) => {
       if (agent.path === senderPath) return false;
+      if (teams) {
+        const team = this.teamOf(agent.path);
+        if (!team || !teams.includes(team)) return false;
+      }
       const status = this.status(agent);
       return status === "running" || status === "queued";
     });
@@ -532,11 +578,13 @@ export class TeamCoordinator {
     timeoutMs: number,
     signal?: AbortSignal,
     sinceVersion = this.activityVersion,
+    teams?: string[],
   ): Promise<boolean> {
     const timeout = Math.min(Math.max(timeoutMs, 1_000), MAX_TEAM_WAIT_MS);
     // Activity that landed between the caller deciding to wait and this
     // registration must not be lost, or the wait blocks for its full timeout.
-    if (this.activityVersion !== sinceVersion) return true;
+    if (signal?.aborted) return false;
+    if (teams ? teams.some((team) => (this.teamVersions.get(team) ?? 0) > sinceVersion) : this.activityVersion !== sinceVersion) return true;
     return await new Promise<boolean>((resolve) => {
       let settled = false;
       const finish = (activity: boolean) => {
@@ -547,7 +595,9 @@ export class TeamCoordinator {
         signal?.removeEventListener("abort", onAbort);
         resolve(activity);
       };
-      const onActivity = () => finish(true);
+      const onActivity = (changedTeams: Set<string>) => {
+        if (!teams || teams.some((team) => changedTeams.has(team))) finish(true);
+      };
       const onAbort = () => finish(false);
       const timer = setTimeout(() => finish(false), timeout);
       this.waiters.add(onActivity);
@@ -655,7 +705,7 @@ export class TeamCoordinator {
             // pending run moves ahead of unrelated launches instead of waiting.
             const promoted = this.runtime.prioritizeBackground(target.record);
             target.pendingTasks.push({ senderPath, message, toolCallId, kind: "NEW_TASK" });
-            this.notifyActivity();
+            this.notifyActivity(target.path);
             return toolText(
               promoted
                 ? `Queued NEW_TASK for ${targetPath} and promoted its pending run to the front of the concurrency queue.`
@@ -684,41 +734,52 @@ export class TeamCoordinator {
     const waitTool = defineTool({
       name: "team_wait",
       label: "Wait for Team Activity",
-      description: "Wait for V2 team activity while another child agent is active. Root never blocks here: it returns immediately so background agents can continue and FINAL_ANSWER can reactivate the root turn.",
-      promptSnippet: "Root must not park on team_wait; children wait only while another V2 agent is active, otherwise finish the turn and become IDLE.",
+      description:
+        "Wait up to timeout_ms for the first message or event from any watched V2 team. " +
+        "`teams` watches several preset names in parallel and returns as soon as one of them produces activity; omit it to watch every agent. " +
+        "Root may block here; a child returns immediately when no watched agent is active so it does not hold an execution slot.",
+      promptSnippet: "Await the first message/event from one or more team presets instead of polling team_list. Root may park; children end their turn on idle.",
       parameters: Type.Object({
         timeout_ms: Type.Optional(Type.Integer({ minimum: 1_000, maximum: MAX_TEAM_WAIT_MS, description: "Wait timeout in milliseconds. Defaults to 120000." })),
+        teams: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "Team preset names to watch in parallel. Omit to watch all agents." })),
       }),
       execute: async (_toolCallId, params, signal) => {
         // Recorded before the flush so activity that lands during the flush is
         // still observed by the wait below.
         const enteredAt = this.activityVersion;
         await this.flushBufferedMessages();
-        if (senderPath === ROOT_PATH) {
-          return toolText(`Root does not block on team_wait. Finish this turn while background agents continue; FINAL_ANSWER will reactivate /root when results arrive.\n\n${this.listText()}`, {
-            activity: false,
-            idle: true,
-            root: true,
+        const teams = this.resolveWaitTeams(params.teams);
+        const detail = teams ? { teams } : {};
+        const activityDuringFlush = teams
+          ? teams.some((team) => (this.teamVersions.get(team) ?? 0) > enteredAt)
+          : this.activityVersion !== enteredAt;
+        if (activityDuringFlush) {
+          return toolText(`Team activity observed.\n\n${this.listText()}`, {
+            activity: true,
+            idle: !this.hasActivePeer(senderPath, teams),
+            ...detail,
             version: this.activityVersion,
           });
         }
-        if (!this.hasActivePeer(senderPath)) {
-          return toolText(`No other V2 agent is active. Finish this turn to become IDLE; a future team_followup_task can reactivate this child session.\n\n${this.listText()}`, {
-            activity: false,
-            idle: true,
-            version: this.activityVersion,
-          });
+        // A child must not occupy a shared execution slot waiting on idle peers.
+        // Root has no slot to release, so it keeps waiting by time: a watched
+        // team can become active again through team_followup_task.
+        if (!this.hasActivePeer(senderPath, teams) && (senderPath !== ROOT_PATH || this.agents.size === 0)) {
+          const scope = teams ? `watched team (${teams.join(", ")})` : "V2 agent";
+          return toolText(
+            `No ${scope} is active. ${senderPath === ROOT_PATH ? "Spawn a team before waiting." : "Finish this turn to become IDLE; a future team_followup_task can reactivate this child session."}\n\n${this.listText()}`,
+            { activity: false, idle: true, ...detail, version: this.activityVersion },
+          );
         }
-        const activity = await this.waitForActivity(params.timeout_ms ?? DEFAULT_TEAM_WAIT_MS, signal, enteredAt);
-        const idle = !this.hasActivePeer(senderPath);
-        const status = idle
-          ? "No other V2 agent is active now. Finish this turn to become IDLE; a future team_followup_task can reactivate this child session."
-          : activity
-            ? "Team activity observed."
-            : "Team wait timed out or was interrupted.";
+        const activity = await this.waitForActivity(params.timeout_ms ?? DEFAULT_TEAM_WAIT_MS, signal, enteredAt, teams);
+        const idle = !this.hasActivePeer(senderPath, teams);
+        const status = activity
+          ? `Team activity observed.${idle ? " No watched V2 agent is active now." : ""}`
+          : `Team wait timed out or was interrupted.${idle ? " No watched V2 agent is active now." : ""}`;
         return toolText(`${status}\n\n${this.listText()}`, {
           activity,
           idle,
+          ...detail,
           version: this.activityVersion,
         });
       },
@@ -759,7 +820,7 @@ export class TeamCoordinator {
         if (target.record.finished) return toolText(`${targetPath} already finished (${this.status(target)}).`, { target: targetPath, finished: true });
         this.runtime.cancel(target.record);
         this.touch(target);
-        this.notifyActivity();
+        this.notifyActivity(targetPath);
         return toolText(`Interrupt requested for ${targetPath}.`, { target: targetPath, finished: false });
       },
     });

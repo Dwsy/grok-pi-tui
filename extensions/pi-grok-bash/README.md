@@ -337,7 +337,7 @@ Each foreground cell owns a run-scoped `AbortController`. When a cell settles, i
 
 Timeout or outer abort is stronger: `PersistentEvalKernel` destroys the worker process and rejects the active cell. The next call starts a clean worker.
 
-Only one cell may execute in a given foreground kernel at a time.
+Only one cell may execute in a given foreground kernel at a time. Concurrent foreground cells of the same language queue FIFO by arrival order in the host layer rather than failing.
 
 ## `agent()` and `completion()`
 

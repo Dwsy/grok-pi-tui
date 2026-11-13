@@ -27,7 +27,7 @@ tags: ["workhub", "multi-agent-proactive-grok-v1-v2"]
 - [ ] A5 Rust grok-pi extension injector SHALL 把内置 skill 一起 materialize，确保发布后的临时扩展路径可用。
 - [ ] A6 本地源 skill 与扩展内置副本 SHALL 保持一致；相关 TS/Rust 窄测和 `git diff --check` 通过。
 - [x] A7 V2 `team_wait` 在调用者之外没有 running/queued agent 时 SHALL 立即返回 idle 提示，让 child 结束当前 turn 进入 IDLE，而不是占住后台 turn 等到 timeout。
-- [x] A8 V2 root 的 `team_wait` SHALL 始终立即返回；root 启动后台 agent 后通过结束当前 turn 挂起，后续由 `FINAL_ANSWER` 自动触发新 turn，而不是主动阻塞等待。
+- [x] A8（2026-11-13 修订）V2 root 的 `team_wait` SHALL 可阻塞等待选定 team，直到匹配活动或 timeout；原「root 永不阻塞」规则由多 team 并行等待需求取代。child 在没有匹配的活跃 agent 时仍立即返回 IDLE。
 
 ## 实施阶段
 
@@ -66,3 +66,4 @@ tags: ["workhub", "multi-agent-proactive-grok-v1-v2"]
 
 - **2026-08-30**: 状态变更 → in-progress，完成真实 V1/V2 入口、child resource loader 和 skill 现状盘点。
 - **2026-08-30**: V2 `team_wait` 挂起语义收口：root 永不阻塞；child 无 active peer 立即进入 IDLE。V2 窄测 14/14、Rust bundle 窄测 3/3、`git diff --check` 通过。
+- **2026-11-13**: `team_wait` 增加多 team 并行等待（`teams` preset 过滤）、按 `timeout_ms` 时间等待、任一匹配 team 首个消息/事件唤醒一次；root 可阻塞等待，child 保持无匹配活跃 agent 时立即返回。A8 相应修订。验证：Subagents 80 项中 79 通过，唯一失败为既有的配置面板鼠标 fixture 缺陷；扩展 `tsgo` 仅剩 3 条既有错误。

@@ -96,7 +96,7 @@ Root 显示为 `ROOT`。
 | `spawn_team` | 从外置 preset 启动选定成员。完整 roster 注册成功后才统一开跑；后续 member 创建失败，或启动前收到取消，都会回滚已创建成员，避免半个 team 残留。除 `team`、`task` 外还支持 `members`、`model`、`thinking_level`、`max_turns`、`capability_mode`、`instructions`、`timeout_ms`。 |
 | `team_send_message` | 缓冲 `MESSAGE`，不启动 idle recipient 的 turn。同一 sender 到同一 target 的消息在 25 ms 合并窗口内编号、去重，之后自动 flush；team 动作与 root turn 结束可提前 flush。运行中的接收者在下一个安全循环边界处理真正的 steer。当前工作需要的事实、纠偏和收尾指令使用此工具。 |
 | `team_followup_task` | 发送当前工作结束后的 `NEW_TASK`，不是紧急纠偏通道。还在 concurrency queue 的 recipient 会被提到共享队列最前再执行它的待跑任务，父级明确要求的工作不必排在无关 launch 后面；`IDLE` 与 `WAITING_DECISION` recipient 在同一个 child session 上重新激活，使用新的 V1 run ID。 |
-| `team_wait` | 等待 coordinator activity，不 busy-poll。默认 120 秒，可用范围 1–600 秒；spawn/message/completion/interrupt 都可提前唤醒。 |
+| `team_wait` | root 和 child 可无轮询地等待首次团队活动。可用 `teams` 指定一个或多个 preset 名称并行等待，省略则监听所有 agent；preset 成员的嵌套 child 也计入该 preset。默认超时 120 秒，范围 1–600 秒；匹配的 message、spawn、completion 或 interrupt 只唤醒一次，未知 preset 名直接报错。child 在没有匹配的活跃 agent 时立即返回以释放执行槽；root 会按时等待，因为 `team_followup_task` 可以重新激活被等待的 team。每次调用返回当前团队树。 |
 | `team_list` | 列出稳定 path、role、当前状态、最近的 report 或待决问题，以及静默时长。会先 flush 缓冲消息，使显示与已发送内容一致。 |
 | `team_interrupt` | 中断 queued 或 running 工作。queued work 会在真正执行前从队列移除；已终止 agent 返回稳定终态。 |
 | `team_report` | 声明本轮结束方式，让 parent 只在必须行动时被唤醒。仅 child 拥有；root 没有 parent。 |

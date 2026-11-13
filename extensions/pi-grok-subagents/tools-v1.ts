@@ -116,6 +116,28 @@ export function registerV1Commands(pi: ExtensionAPI, runtime: SubagentRuntime): 
       runtime.cancel(runtime.resolveSubagent(id));
     },
   });
+
+  pi.registerCommand("__pi_grok_subagent_send", {
+    description: "Internal Pi-Grok bridge command: send a message to a subagent",
+    handler: async (args) => {
+      const request = JSON.parse(args || "{}") as {
+        subagentId?: unknown;
+        message?: unknown;
+        delivery?: unknown;
+      };
+      const id = requireText(request.subagentId, "subagentId");
+      const message = requireText(request.message, "message");
+      const delivery: MessageDelivery =
+        request.delivery === "steer" ? "steer" : "follow_up";
+      const record = runtime.resolveSubagent(id);
+      if (record.finished) {
+        throw new Error(
+          `subagent ${runtime.shortSubagentId(record.id)} has already finished`,
+        );
+      }
+      runtime.sendMessage(record, message, delivery);
+    },
+  });
 }
 
 /** V1 single-agent tools. V2 team mode skips these so only the team surface is model-visible. */

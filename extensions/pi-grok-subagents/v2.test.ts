@@ -952,18 +952,97 @@ test("team_wait returns immediately when a child has no active peers", async () 
   assert.ok(elapsedMs < 250, `idle team_wait blocked for ${elapsedMs}ms`);
 });
 
-test("root team_wait returns immediately while background agents run", async () => {
+test("root waits for matching activity from any selected team, one event at a time", async () => {
+  const { fakePi, runtime } = setup();
+  for (const [team, member] of [["research", "critic"], ["review", "reviewer"], ["implementation", "implementer"]]) {
+    await execute(fakePi.tools.get("spawn_team"), `spawn-${team}`, { team, task: "work", members: [member] });
+  }
+  const wait = () => execute(fakePi.tools.get("team_wait"), "root-wait", { teams: ["research", "review"], timeout_ms: 5_000 });
+  const first = wait();
+  const parallel = wait();
+  let woke = false;
+  void first.then(() => { woke = true; });
+  await settle();
+  const unrelated = runtime.created[2].record;
+  unrelated.finished = true;
+  await runtime.finishHandlers.get(unrelated.id)!(unrelated, "completed");
+  await settle();
+  assert.equal(woke, false);
+  const review = runtime.created[1].record;
+  review.finished = true;
+  await runtime.finishHandlers.get(review.id)!(review, "completed");
+  assert.equal(((await first).details as any).activity, true);
+  assert.equal(((await parallel).details as any).activity, true);
+  const second = wait();
+  await settle();
+  const research = runtime.created[0].record;
+  research.finished = true;
+  await runtime.finishHandlers.get(research.id)!(research, "completed");
+  assert.equal(((await second).details as any).activity, true);
+});
+
+test("root team_wait times out and supports cancellation", async () => {
   const { fakePi } = setup();
   await execute(fakePi.tools.get("spawn_team_agent"), "spawn", { task_name: "worker", message: "work" });
+  const start = Date.now();
+  const timed = await execute(fakePi.tools.get("team_wait"), "timeout", { timeout_ms: 1_000 });
+  assert.equal((timed.details as any).activity, false);
+  assert.equal((timed.details as any).idle, false);
+  assert.ok(Date.now() - start >= 900);
+  const controller = new AbortController();
+  const waiting = execute(fakePi.tools.get("team_wait"), "abort", { timeout_ms: 5_000 }, controller.signal);
+  await settle();
+  controller.abort();
+  assert.equal(((await waiting).details as any).activity, false);
+});
 
-  const startedAt = Date.now();
-  const waited = await execute(fakePi.tools.get("team_wait"), "root-wait", { timeout_ms: 5_000 });
-  const elapsedMs = Date.now() - startedAt;
+test("team_wait rejects unknown team presets instead of silently timing out", async () => {
+  const { fakePi } = setup();
+  await execute(fakePi.tools.get("spawn_team"), "team", { team: "research", task: "work", members: ["critic"] });
+  await assert.rejects(
+    execute(fakePi.tools.get("team_wait"), "wait", { teams: ["ghost"], timeout_ms: 1_000 }),
+    /unknown team "ghost"; active teams: research/,
+  );
+});
 
-  assert.equal((waited.details as any).activity, false);
-  assert.equal((waited.details as any).idle, true);
-  assert.equal((waited.details as any).root, true);
-  assert.ok(elapsedMs < 250, `root team_wait blocked for ${elapsedMs}ms`);
+test("team_wait observes a message from a watched team member's nested child", async () => {
+  const { fakePi, runtime } = setup();
+  await execute(fakePi.tools.get("spawn_team"), "team", { team: "research", task: "work", members: ["critic"] });
+  const criticTools = runtime.created[0].options.customTools ?? [];
+  const nestedSpawn = criticTools.find((tool) => tool.name === "spawn_team_agent");
+  assert.ok(nestedSpawn);
+  await execute(nestedSpawn, "nested", { task_name: "helper", message: "assist" });
+  const helperTools = runtime.created[1].options.customTools ?? [];
+  const helperSend = helperTools.find((tool) => tool.name === "team_send_message");
+  assert.ok(helperSend);
+
+  const wait = execute(fakePi.tools.get("team_wait"), "root-wait", { teams: ["research"], timeout_ms: 5_000 });
+  await settle();
+  await execute(helperSend, "helper-send", { target: "/root", message: "nested evidence" });
+  await execute(fakePi.tools.get("team_list"), "flush", {});
+
+  const waited = await wait;
+  assert.equal((waited.details as any).activity, true);
+  assert.deepEqual((waited.details as any).teams, ["research"]);
+});
+
+test("root team_wait waits by time for an idle watched team and wakes on reactivation", async () => {
+  const { fakePi, runtime } = setup();
+  await execute(fakePi.tools.get("spawn_team"), "team", { team: "research", task: "work", members: ["critic"] });
+  const critic = runtime.created[0].record;
+  critic.finished = true;
+  critic.terminalStatus = "completed";
+  await runtime.finishHandlers.get(critic.id)!(critic, "completed");
+  await settle();
+
+  const wait = execute(fakePi.tools.get("team_wait"), "root-wait", { teams: ["research"], timeout_ms: 2_000 });
+  let woke = false;
+  void wait.then(() => { woke = true; });
+  await settle();
+  assert.equal(woke, false, "an idle watched team must not short-circuit a root wait");
+
+  await execute(fakePi.tools.get("team_followup_task"), "reactivate", { target: "/root/critic", message: "next pass" });
+  assert.equal(((await wait).details as any).activity, true);
 });
 
 test("child team_wait wakes on activity and team_interrupt delegates cancellation", async () => {

@@ -1168,6 +1168,46 @@ console.log(JSON.stringify({
     await imageHarness.close();
   }
   console.log("PASS 18 display(image) forwards vision content like the native read tool without base64 text");
+
+  const fifoTrace = [];
+  const fifoHarness = await createHarness(register, "v2", {
+    evalV2Language: "all",
+    bashEnabled: false,
+    toolInfo: [{ name: "fifo_probe", executionMode: "parallel" }],
+    async invokeTool(toolName, args) {
+      assert.equal(toolName, "fifo_probe");
+      fifoTrace.push(`${args.name}:start`);
+      await sleep(Number(args.ms ?? 40));
+      fifoTrace.push(`${args.name}:end`);
+      return success(String(args.name));
+    },
+  });
+  try {
+    for (const language of ["py", "js"]) {
+      const probe = (name, ms) =>
+        language === "py"
+          ? `r = await tool.fifo_probe({"name":"${name}","ms":${ms}})\nprint(r["text"] + "${name}-output")`
+          : `const r = await tool.fifo_probe({name:"${name}",ms:${ms}}); r.text + "${name}-output"`;
+      fifoTrace.length = 0;
+      const [first, second] = await Promise.all([
+        fifoHarness.run({ language, code: probe("fifo-first", 80), timeout: 5 }),
+        fifoHarness.run({ language, code: probe("fifo-second", 10), timeout: 5 }),
+      ]);
+      assert.match(first.content[0].text, /fifo-first-output/);
+      assert.doesNotMatch(first.content[0].text, /fifo-second|already executing/i);
+      assert.match(second.content[0].text, /fifo-second-output/);
+      assert.doesNotMatch(second.content[0].text, /fifo-first|already executing/i);
+      assert.deepEqual(fifoTrace, [
+        "fifo-first:start",
+        "fifo-first:end",
+        "fifo-second:start",
+        "fifo-second:end",
+      ], `${language} foreground cells must execute strictly FIFO`);
+    }
+    console.log("PASS 19 concurrent same-language foreground cells queue FIFO instead of failing with already executing");
+  } finally {
+    await fifoHarness.close();
+  }
 } finally {
   await rm(tempDir, { recursive: true, force: true });
   if (previousPackageDir === undefined) delete process.env.PI_PACKAGE_DIR;
