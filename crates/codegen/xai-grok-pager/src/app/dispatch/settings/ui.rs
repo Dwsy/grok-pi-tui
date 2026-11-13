@@ -336,6 +336,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
                     existing,
                     crate::app::dispatch::ctx::SwitchCause::Picker,
                 );
+                effects.extend(crate::app::dispatch::ctx::rebind_pi_session_for(app, existing));
                 existing
             } else {
                 let (new_id, create_effects) =
@@ -446,6 +447,7 @@ pub(in crate::app::dispatch) fn dispatch_open_pi_settings(
                     existing,
                     crate::app::dispatch::ctx::SwitchCause::Picker,
                 );
+                effects.extend(crate::app::dispatch::ctx::rebind_pi_session_for(app, existing));
                 existing
             } else {
                 let (new_id, create_effects) =

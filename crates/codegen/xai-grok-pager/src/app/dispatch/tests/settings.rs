@@ -1556,6 +1556,10 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "show_timestamps" => {
             let _ = dispatch(Action::SetTimestamps(false), app);
         }
+        "show_status_tool_calls" => {
+            let away = !app.current_ui.show_status_tool_calls.unwrap_or(true);
+            let _ = dispatch(Action::SetShowStatusToolCalls(away), app);
+        }
         "show_timeline" => {
             let away = !app.current_ui.show_timeline_enabled();
             let _ = dispatch(Action::SetTimeline(away), app);

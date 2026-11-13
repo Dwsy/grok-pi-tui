@@ -80,6 +80,8 @@ pub fn section_for(key: SettingKey) -> &'static str {
         // -- Editor ----------------------------------------------------------
         "combine_queued_prompts"
         | "cancel_turn_key"
+        | "confirm_before_rewind"
+        | "follow_up_behavior"
         | "multiline_mode"
         | "prompt_suggestions"
         | "pi_at_search_hidden" => "Input",
@@ -138,6 +140,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "contextual_hints.send_now"
         | "contextual_hints.small_screen"
         | "contextual_hints.word_select"
+        | "contextual_hints.export_copy"
         | "contextual_hints.ssh_wrap" => "Contextual hints",
         "hunk_tracker_mode" => "Diffs",
 

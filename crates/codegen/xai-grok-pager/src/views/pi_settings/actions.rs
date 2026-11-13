@@ -85,6 +85,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "contextual_hints.send_now" => Action::SetContextualHintSendNow(new),
         "contextual_hints.small_screen" => Action::SetContextualHintSmallScreen(new),
         "contextual_hints.word_select" => Action::SetContextualHintWordSelect(new),
+        "contextual_hints.export_copy" => Action::SetContextualHintExportCopy(new),
         "contextual_hints.ssh_wrap" => Action::SetContextualHintSshWrap(new),
         "multiline_mode" => Action::SetMultilineMode(new),
         "vim_mode" => Action::SetVimMode(new),
@@ -98,6 +99,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
             Action::SetAskUserQuestionTimeoutEnabled(new)
         }
         "show_status_tool_calls" => Action::SetShowStatusToolCalls(new),
+        "codemode_expanded_by_default" => Action::SetCodemodeExpandedByDefault(new),
         "show_thinking_blocks" => Action::SetShowThinkingBlocks(new),
         "thinking_border_colors" => Action::SetThinkingBorderColors(new),
         "group_tool_verbs" => Action::SetGroupToolVerbs(new),
@@ -156,6 +158,15 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &str) -> Option<Ac
         "plan_mode" => match choice {
             "on" => Some(Action::SetPlanMode(PlanModeKind::On)),
             "off" => Some(Action::SetPlanMode(PlanModeKind::Off)),
+            _ => None,
+        },
+        "follow_up_behavior" => match choice {
+            "queue" => Some(Action::SetFollowUpBehavior(
+                crate::appearance::FollowUpBehavior::Queue,
+            )),
+            "steer" => Some(Action::SetFollowUpBehavior(
+                crate::appearance::FollowUpBehavior::Steer,
+            )),
             _ => None,
         },
         "tool_card_click_action" => Some(Action::SetToolCardClickAction(choice.to_string())),

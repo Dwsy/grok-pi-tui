@@ -972,6 +972,13 @@ mod tests {
                         "show_timestamps default drifts from UiConfig::default()"
                     );
                 }
+                ("show_status_tool_calls", SettingKind::Bool { default }) => {
+                    assert_eq!(
+                        *default,
+                        ui.show_status_tool_calls.unwrap_or(true),
+                        "show_status_tool_calls default drifts from UiConfig::default()"
+                    );
+                }
                 ("show_timeline", SettingKind::Bool { default }) => {
                     // Single-sourced via UiConfig::show_timeline_enabled(); this guards that defs.rs wired the resolver, not a stray literal
                     assert_eq!(
