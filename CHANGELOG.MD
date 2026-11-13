@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.3] - 2026-11-13
+
+### Added
+
+- **Pi working-message projection (F2, default off)** — Extensions that call `ctx.ui.setWorkingMessage()` now reach grok-pi's turn status row. Pi's RPC mode implements that call as a no-op, so a new always-on `pi-grok-working-message` extension mirrors it through `setStatus`; the adapter forwards it as `pi/ui/working_message` and the Pager may substitute it for `Thinking`, `ToolRunning`, `WritingToolCall`, and `Waiting` labels. Enable via F2 → Agent → Pi features → **Pi working message**. Permission prompts, plan approval, cancellation, `Responding`, `Compacting`, and retries always keep their native labels. Spinner cadence, phase timer, `[stop]`, turn timer, and token count are unchanged.
+- **Single-platform beta releases** — `workflow_dispatch` on the release workflow accepts a `targets` input (comma-separated keys). Pass `macos-arm64` to build only the macOS ARM64 asset for a local beta; leaving it empty builds all six as before. Tag pushes are unaffected. The platform catalog now lives in `scripts/release-targets.json`.
+
+### Changed
+
+- **Release matrix is resolved dynamically** — a `prepare-matrix` job reads `scripts/release-targets.json` and emits the build matrix, with validation of requested keys. The six platform definitions moved out of `release.yml` into that single source of truth.
+
+### Fixed
+
+- **`/whimsical` disappearing under grok-pi** — the extension no longer returns early in RPC mode, so its command registers while only the component panel stays TUI-only. Its quote/timer loop also stays active so the new working-message mirror can forward it to the Pager.
+
+### 中文发布说明
+
+- **Pi working message 投影（F2 开关，默认关闭）** — 扩展调用 `ctx.ui.setWorkingMessage()` 设置的文本现在能显示在 grok-pi 的 turn status 行。Pi 在 RPC 模式下把该调用实现为空操作，因此新增常驻扩展 `pi-grok-working-message` 把文本镜像到 `setStatus`，adapter 转发为 `pi/ui/working_message`，Pager 用它替换 `Thinking`、`ToolRunning`、`WritingToolCall`、`Waiting` 四种标签。开关位于 F2 → Agent → Pi features → **Pi working message**。权限提示、计划审批、取消、`Responding`、`Compacting`、重试始终保持原生标签；spinner、相位计时、`[stop]`、轮次计时和 token 计数不变。
+- **Beta 版可只构建单平台** — 发布工作流的 `workflow_dispatch` 新增 `targets` 输入（逗号分隔的 key）。填 `macos-arm64` 即只构建 macOS ARM64 一个包，适合本地单人测试；留空仍构建全部六个平台，tag push 行为不变。平台清单统一放在 `scripts/release-targets.json`。
+- **发布矩阵改为动态生成** — 新增 `prepare-matrix` job 读取平台清单并输出 matrix，同时校验输入的 key；六个平台定义从 `release.yml` 移到该单一数据源。
+- **修复 grok-pi 下 `/whimsical` 命令消失** — 扩展不再在 RPC 模式下整体提前返回，命令照常注册，仅组件面板限 TUI；语录与计时循环保持运行，以便新镜像扩展把文本转发给 Pager。
+
 ## [0.1.14-beta.2] - 2026-11-12
 
 ### Added
