@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "key": "pi_working_message",
+      "label": "Pi working message",
+      "description": "Show the text Pi extensions set via ctx.ui.setWorkingMessage() in the turn status line, replacing Thinking, tool, writing, and waiting labels. Permission prompts, plan approval, cancellation, and responding stay native. Default off.",
+      "keywords": ["pi", "working", "message", "spinner", "status", "activity", "whimsical"],
+      "f2": { "category": "agent", "section": "Pi features", "order": 55 },
+      "kind": "bool",
+      "default": false,
+      "restartRequired": false,
+      "configPath": ["ui", "pi_working_message"]
+    }
+  ]
+}
