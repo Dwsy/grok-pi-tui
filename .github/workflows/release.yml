@@ -10,6 +10,11 @@ on:
         description: "Existing release tag (vX.Y.Z or vX.Y.Z-beta.N)"
         required: true
         type: string
+      targets:
+        description: "Platforms to build (comma-separated keys; empty = all six). Keys: macos-arm64, macos-x86_64, linux-x86_64, linux-aarch64, windows-x86_64, windows-aarch64. Example for a local macOS ARM64 beta: macos-arm64"
+        required: false
+        default: ""
+        type: string
 
 env:
   # One canonical tag drives version stamping, changelog extraction and publishing.
@@ -20,6 +25,55 @@ permissions:
   contents: write
 
 jobs:
+  # `workflow_dispatch` may restrict the matrix to a single platform (e.g. a
+  # local macOS ARM64 beta). Tag pushes never set `targets`, so they still ship
+  # all six assets. The single source of truth is scripts/release-targets.json.
+  prepare-matrix:
+    name: Resolve build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.GROK_PI_RELEASE_TAG }}
+
+      - name: Resolve requested targets
+        id: resolve
+        shell: bash
+        env:
+          REQUESTED: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, sys
+
+          with open("scripts/release-targets.json", encoding="utf-8") as fh:
+              all_targets = json.load(fh)
+
+          requested_raw = os.environ.get("REQUESTED", "").strip()
+          if not requested_raw:
+              selected = all_targets
+          else:
+              wanted = [k.strip() for k in requested_raw.split(",") if k.strip()]
+              known = {t["key"] for t in all_targets}
+              unknown = [k for k in wanted if k not in known]
+              if unknown:
+                  print(
+                      "Unknown target key(s): " + ", ".join(unknown) +
+                      ". Known: " + ", ".join(sorted(known)),
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+              by_key = {t["key"]: t for t in all_targets}
+              selected = [by_key[k] for k in wanted]
+
+          print("matrix=" + json.dumps({"include": selected}, separators=(",", ":")))
+          print("Selected " + str(len(selected)) + " target(s): " +
+                ", ".join(t["key"] for t in selected), file=sys.stderr)
+          PY
+
   validate-changelog:
     name: Validate changelog
     runs-on: ubuntu-latest
@@ -51,67 +105,15 @@ jobs:
 
   build:
     name: ${{ matrix.name }}
-    needs: validate-changelog
+    needs: [validate-changelog, prepare-matrix]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # ── macOS ────────────────────────────────────────────────────────
-          - name: macOS ARM64
-            runner: macos-15
-            timeout: 150
-            target: aarch64-apple-darwin
-            asset: grok-pi-macos-aarch64.tar.gz
-            bin: grok-pi
-            cross: false
-          - name: macOS Intel
-            runner: macos-15
-            timeout: 150
-            target: x86_64-apple-darwin
-            asset: grok-pi-macos-x86_64.tar.gz
-            bin: grok-pi
-            # Apple Silicon runners can cross-compile Intel with the right target.
-            cross: true
-
-          # ── Linux ────────────────────────────────────────────────────────
-          - name: Linux x64
-            runner: ubuntu-latest
-            timeout: 90
-            target: x86_64-unknown-linux-gnu
-            asset: grok-pi-linux-x86_64.tar.gz
-            bin: grok-pi
-            cross: false
-          - name: Linux ARM64
-            # Build natively on an arm64-hosted runner. Cross-compiling the
-            # large release-dist profile (codegen-units=1 + thin LTO) from a
-            # shared 16 GB x64 runner OOM-kills the job (exit 143).
-            runner: ubuntu-24.04-arm
-            timeout: 90
-            target: aarch64-unknown-linux-gnu
-            asset: grok-pi-linux-aarch64.tar.gz
-            bin: grok-pi
-            cross: false
-
-          # ── Windows ──────────────────────────────────────────────────────
-          - name: Windows x64
-            runner: windows-latest
-            timeout: 90
-            target: x86_64-pc-windows-msvc
-            asset: grok-pi-windows-x86_64.zip
-            bin: grok-pi.exe
-            cross: false
-          - name: Windows ARM64
-            # Build natively on GitHub's Windows ARM64 image instead of spending
-            # an hour cross-compiling ARM64 on an x64 runner. Pin VS2026 while
-            # the windows-11-arm label is migrating to that image.
-            runner: windows-11-vs2026-arm
-            timeout: 90
-            target: aarch64-pc-windows-msvc
-            asset: grok-pi-windows-aarch64.zip
-            bin: grok-pi.exe
-            cross: false
+      # Resolved from scripts/release-targets.json by `prepare-matrix`. Tag
+      # pushes get all six; a manual beta run can pass `targets: macos-arm64`
+      # to build only the one platform being tested locally.
+      matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
       - name: Check out source

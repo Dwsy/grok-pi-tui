@@ -43,3 +43,9 @@ compaction-results/
 # Local Pi session HTML exports
 /pi-session-*.html
 .alma-snapshots
+
+# Alma workspace state (local-only)
+.alma/
+
+# Haptic probe: keep the Swift source, drop the compiled Mach-O binary
+haptic-test/HapticTest
