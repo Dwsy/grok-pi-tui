@@ -25,6 +25,11 @@
    tag push 会**自动构建全部六个平台**并发布 prerelease。
    `-beta.N` 后缀会被 GitHub 标记为 prerelease，不会移动 `releases/latest`。
 
+> ⚠️ 若这一版只想构建单平台，**不要在推 tag 前指望 dispatch**：
+> `workflow_dispatch` 的 `tag` 输入要求 tag 已经存在，所以顺序必然是
+> 「先推 tag（自动触发全平台）→ 取消那次 run → 手动 dispatch 单平台」。
+> 见下一节。
+
 ## 只构建 macOS ARM64（本地单人 beta）
 
 适合「就我一个人在测试」的迭代，省掉另外五个 runner 的时间和额度。
@@ -43,8 +48,20 @@ gh workflow run release.yml \
 | `targets` | `macos-arm64` |
 
 > `tag` 必须已经存在并推到远端 —— 工作流会 `checkout` 该 tag，
-> 所以**先推 tag，再 dispatch**。tag push 本身会触发一次全平台构建，
-> 若只想跑单平台，可以在推 tag 后立刻取消那次自动运行，再手动 dispatch。
+> 所以**先推 tag，再 dispatch**。
+>
+> 完整顺序（否则 tag push 那次全平台 run 会白跑）：
+>
+> ```bash
+> git push origin main
+> git push origin v0.1.14-beta.3          # 自动触发全平台 run
+> gh run list --repo Dwsy/grok-pi-tui --workflow=release.yml --limit 1  # 拿 run id
+> gh run cancel <run-id> --repo Dwsy/grok-pi-tui
+> gh workflow run release.yml --repo Dwsy/grok-pi-tui \
+>   -f tag=v0.1.14-beta.3 -f targets=macos-arm64
+> ```
+>
+> 取消的 run 不会执行 `release` job，因此不会留下半成品 release。
 
 `targets` 留空 = 全部六个平台（与 tag push 行为一致）。多个用逗号分隔：
 
