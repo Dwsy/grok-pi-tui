@@ -73,6 +73,8 @@ mod tree_bridge;
 mod tutorial_profile;
 #[path = "grok_pi/web_config_extension.rs"]
 mod web_config_extension;
+#[path = "grok_pi/working_message_extension.rs"]
+mod working_message_extension;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -135,6 +137,7 @@ use tools_extension::{
 };
 use tree_bridge::write_navigate_tree_extension;
 use web_config_extension::write_web_config_extension;
+use working_message_extension::write_working_message_extension;
 
 /// Grok pager commands that are meaningful when Pi is the ACP backend.
 ///
@@ -494,6 +497,13 @@ async fn run(mut args: Args) -> Result<()> {
     } else {
         None
     };
+    // Always-on RPC shim: `setWorkingMessage` is a no-op in Pi's RPC mode, so
+    // the mirror republishes it for the Pager. Rendering stays gated by the F2
+    // `pi_working_message` toggle (default off).
+    let working_message_extension = bridge_extensions_enabled
+        .then(|| write_working_message_extension())
+        .transpose()
+        .context("failed to create Pi working-message extension")?;
     // RPC-compat is always injected with bridge extensions: argument-completion
     // enrichment for get_commands does not depend on Remote TUI. TUI mode rewrite
     // remains gated by PI_GROK_EXTENSION_TUI_COMPAT (set only when remote-tui on).
@@ -619,6 +629,12 @@ async fn run(mut args: Args) -> Result<()> {
         (
             "pi-grok-rpc-compat",
             rpc_compat_extension
+                .as_ref()
+                .map(|extension| extension.path()),
+        ),
+        (
+            "pi-grok-working-message",
+            working_message_extension
                 .as_ref()
                 .map(|extension| extension.path()),
         ),
@@ -1248,6 +1264,7 @@ async fn run(mut args: Args) -> Result<()> {
     let _native_commands_extension = native_commands_extension;
     let _remote_tui_extension = remote_tui_extension;
     let _rpc_compat_extension = rpc_compat_extension;
+    let _working_message_extension = working_message_extension;
     let _shortcut_manager_extension = shortcut_manager_extension;
     let _rust_tui_bridge_extension = rust_tui_bridge_extension;
     let _plan_mode_extension = plan_mode_extension;
