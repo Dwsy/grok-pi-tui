@@ -233,6 +233,29 @@
     }
 
     #[test]
+    fn tree_snapshot_overrides_previous_branch_and_clear_tombstone() {
+        let mut app = make_app_with_agent("sess-A");
+        send_goal_update(&mut app, "current", "active", 0);
+        let mut cleared = goal_update_value("historical", "cleared", 0);
+        cleared["last_event"] = serde_json::json!("goal_tree_restored");
+        assert!(dispatch_goal_update(&mut app, cleared));
+        assert!(app.agents.get(&AgentId(0)).unwrap().goal_state.is_none());
+
+        for status in ["user_paused", "complete", "blocked"] {
+            let mut restored = goal_update_value("current", status, 0);
+            restored["last_event"] = serde_json::json!("goal_tree_restored");
+            assert!(dispatch_goal_update(&mut app, restored));
+            let agent = app.agents.get(&AgentId(0)).unwrap();
+            assert_eq!(agent.goal_state.as_ref().unwrap().status, GoalDisplayStatus::parse(status));
+        }
+        let mut empty = goal_update_value("", "cleared", 0);
+        empty["last_event"] = serde_json::json!("goal_tree_restored");
+        assert!(dispatch_goal_update(&mut app, empty));
+        assert!(app.agents.get(&AgentId(0)).unwrap().goal_state.is_none());
+        assert!(!send_goal_update(&mut app, "current", "active", 0));
+    }
+
+    #[test]
     fn new_goal_after_clear_is_not_suppressed() {
         // A genuinely new goal (different id) after a clear must start normally; the cleared-id guard only drops the SAME id
         let mut app = make_app_with_agent("sess-A");

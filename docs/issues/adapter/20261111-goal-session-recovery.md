@@ -1,11 +1,22 @@
 # Goal Session Ownership and Resume (2026-11-11)
 
+## Model-initiated resume
+
+
+The model can call `goal({ action: "resume" })` when the user explicitly asks to resume the current session's goal. It shares the `/goal resume` transition and journal, including a new execution ID for a cleared goal. Restart, interruption, and ordinary messages do not authorize automatic resumption. Completed goals cannot be resumed. The tool runs inside the current turn and does not start a second turn.
+
 Status: implemented, TypeScript regression tests passing; Rust build/tests not executed by user request.
+
+## Budget and authorization follow-up
+
+This Pi goal path does not reliably count and enforce token usage. `/goal ... --budget` (including `--budget=...`) and `goal({ action: "create", token_budget })` are rejected instead of accepting an unenforced limit. A recovered legacy goal with a budget cannot be resumed; clear it and create a new unbudgeted goal if desired. No hard budget is promised.
+
+The natural-language instructions on the `goal` tool's create and resume actions are model guidance, not a programmatic authorization check. The tool remains callable by the model; session recovery itself pauses active goals and does not start a turn.
 
 ## Bugs
 - Process-temp PI_GROK_GOAL_CONTROL survives session switches inside one Pi process and incorrectly influences new/resumed sessions.
 - No startup rehydration despite Pi already persisting pi-grok-goal/v1 custom entries in the session JSONL.
-- /goal replaces active/paused/blocked, while create_goal blocks only active.
+- /goal replaces active/paused/blocked, while the goal create action blocks only active.
 - Cancellation (Escape/ACP abort) can leave active continuation or a cleared state that /goal resume refuses.
 
 ## Invariants
@@ -33,4 +44,27 @@ Status: implemented, TypeScript regression tests passing; Rust build/tests not e
 - A cleared Goal restored via /goal resume receives a new execution ID to bypass the Pager stale-update tombstone; delayed clears from older IDs are discarded.
 
 - GoalHost now checks sessionId before applying IPC snapshots to its in-memory continuation guard/timer, preventing a stale B control file from mutating A's host state. Added a static Rust regression test for this path (not executed).
+
 - The verifier manifest and expected_modified set now explicitly allowlist only the two Goal ACP notification/test seams; verified set equality without weakening the verifier.
+
+## Tree navigation synchronization
+
+Pi's `appendEntry` emits `entry_appended` through RPC. Every `session_tree` transition now writes the selected branch control first and appends a `goal_tree_restored` snapshot, including a cleared snapshot when the branch has no goal. The adapter forwards that event's own session-scoped snapshot; Pager treats it as authoritative across branch changes while retaining ordinary late-clear and late-update guards. Restored active goals remain paused.
+
+Validation: the goal extension and Rust TUI bridge Bun tests pass. Pager regression coverage was added for historical cleared goals and restoration past a clear tombstone. Rust files were parsed with rustfmt; Rust compilation and tests were not run as requested.
+
+## Current-branch restore, model tools, and loop-guard journaling (2026-11-13)
+
+`session_start` restores from `sessionManager.getBranch()` instead of the whole session tree, so restarting on a selected branch cannot adopt a goal from another branch. `session_tree` writes the newly selected branch control and appends a `goal_tree_restored` snapshot, and neither path adopts an unscoped legacy entry.
+
+`goal({ action: "get" })` reports the current control state without side effects. `goal({ action: "update" })` no longer queues `nextTurn` reminders; the `context` hook strips goal reminders from the outgoing request and appends the current control state, so pause, clear, resume, and cancellation cannot leave an older "active" instruction in queued model context.
+
+The adapter's continuation loop guard still writes the IPC control file, and now also invokes the hidden `/__pi_grok_goal_persist <goalId>` command so the block is appended to Pi's session log. The extension journals only when the branch's durable state for the same goal is `active`, which makes duplicate invocations idempotent; a mismatched goal ID is ignored. Lifecycle hooks (`session_start`, `session_tree`, `session_before_tree`, `session_before_switch`, `agent_settled`, `context`, `session_shutdown`) reconcile a missed command.
+
+Validation: 19 Bun tests / 150 assertions pass. Rust sources were updated but not compiled or tested; Cargo was not run as instructed.
+
+## Unified goal tool (2026-11-13)
+
+The four model tools `create_goal`, `get_goal`, `update_goal`, and `resume_goal` are merged into one `goal` tool. `action` selects `create`, `get`, `update`, or `resume`; only that action's parameters are used, and unknown actions fail closed with `invalid_action`. The description, `promptSnippet`, `promptGuidelines`, and per-parameter descriptions disclose actions progressively, matching the existing `todo` tool convention. State transitions, budget rejection, unfinished-goal guards, pause/clear/resume semantics, and journaling are unchanged.
+
+Model-facing reminders and continuation directives now reference `goal({ action: ... })`. The adapter recognizes the `goal` tool for its tool-end refresh, and Pager hides `goal` tool calls from scrollback while retaining the legacy titles used by stock Grok and historical transcripts. Validation: the goal extension tests pass; Rust files were not compiled or tested.

@@ -12,7 +12,7 @@ tags: ["goal", "pi-grok", "f2", "extension"]
 
 ## Goal
 
-在 **grok-pi（External ACP + Pi Core）** 上提供与 Grok 原生 `/goal` 对齐的**可用** goal loop：Pager 原生 `GoalUpdated` UI + `/goal` slash + `update_goal` 工具；**F2 开关默认关闭**。
+在 **grok-pi（External ACP + Pi Core）** 上提供与 Grok 原生 `/goal` 对齐的**可用** goal loop：Pager 原生 `GoalUpdated` UI + `/goal` slash + 单个 `goal` 工具（`create`/`get`/`update`/`resume` action）；**F2 开关默认关闭**。
 
 ## 边界（不可违反）
 
@@ -21,7 +21,7 @@ tags: ["goal", "pi-grok", "f2", "extension"]
 | Grok Pager | 唯一 TUI；`GoalDisplayState` / `goal_detail` / status 条零仿造 |
 | Pi Core | Agent loop、会话、工具执行 |
 | `pi-grok-adapter` | headless GoalHost：状态机 + `x.ai/session_notification` GoalUpdated + turn-end continuation |
-| Injected extension | `/goal` slash + `update_goal` tool；写 control 文件；不渲染 UI |
+| Injected extension | `/goal` slash + `goal` tool（create/get/update/resume）；写 control 文件；不渲染 UI |
 
 **禁止：** 在 adapter 画 UI；改 Pi 源码扩 RPC；把 shell `SessionActor` 当 grok-pi agent 跑完整 multi-agent classifier stack。
 
@@ -63,6 +63,10 @@ tags: ["goal", "pi-grok", "f2", "extension"]
 - [ ] A7 adapter headless；无 Pi 源码改动
 - [x] A8 cancel idle probe 不得清除刚启动的 Goal successor turn
 - [x] A9 Goal 自动续作期间 Pager 保持 Working/Waiting；用户消息进入 follow-up，不触发 `already processing`
+
+## 当前状态补充
+
+下文 S7 和验证记录保留当时的历史行为。当前 Pi goal 扩展拒绝任何 token budget，因为此路径没有可靠的预算强制执行；历史带预算目标也不能恢复。模型工具的显式用户请求要求只是提示词约束，并非可强制验证的授权。模型工具已合并为单个 `goal` 工具（`create`/`get`/`update`/`resume` action）。会话恢复和 `goal({ action: "resume" })` 的当前行为见 [Goal Session Ownership and Resume](20261111-goal-session-recovery.md)。
 
 ## S7（2026-10-29）：模型自设目标 `create_goal`
 

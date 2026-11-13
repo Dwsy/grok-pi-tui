@@ -1,4 +1,4 @@
-//! Minimal GoalHost for grok-pi External ACP (legacy update_goal path).
+//! Minimal GoalHost for grok-pi External ACP (legacy goal tool path).
 //!
 //! Owns goal state and builds pager-facing `GoalUpdated` session notifications.
 //! Full multi-agent classifier/planner/strategist is residual (see issue).
@@ -263,9 +263,11 @@ impl GoalHost {
             "<system-reminder>\n\
              Goal still ACTIVE. Objective: {obj}\n\
              Continue working. Do not stop until the objective is fully achieved\n\
-             with verifiable evidence. When done, call update_goal with completed=true\n\
-             and a short summary. If blocked after repeated failures, call update_goal\n\
-             with blocked_reason. Do not claim completion without running checks.\n\
+             with verifiable evidence. When done, call\n\
+             goal({{ action: \"update\", completed: true, message: \"...\" }}).\n\
+             If blocked after repeated failures, call\n\
+             goal({{ action: \"update\", blocked_reason: \"...\" }}). Do not claim\n\
+             completion without running checks.\n\
              </system-reminder>",
             obj = control.objective
         )

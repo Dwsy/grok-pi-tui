@@ -59,9 +59,18 @@ mod tests {
     fn goal_extension_source_loads() {
         let ext = write_goal_extension().expect("write");
         let source = std::fs::read_to_string(ext.source_path()).expect("read");
-        assert!(source.contains("update_goal"));
-        assert!(source.contains("create_goal"));
+        assert!(source.contains("name: \"goal\""));
+        assert!(source.contains("Type.Literal(\"create\")"));
+        assert!(source.contains("Type.Literal(\"get\")"));
+        assert!(source.contains("Type.Literal(\"update\")"));
+        assert!(source.contains("Type.Literal(\"resume\")"));
+        assert!(!source.contains("name: \"create_goal\""));
+        assert!(!source.contains("name: \"update_goal\""));
         assert!(source.contains("registerCommand(\"goal\""));
+        assert!(source.contains("registerCommand(PERSIST_COMMAND)"));
+        assert!(source.contains("__pi_grok_goal_persist"));
+        assert!(source.contains("session_tree"));
+        assert!(source.contains("getBranch"));
         assert!(source.contains("PI_GROK_GOAL_CONTROL"));
         assert!(source.contains("pi-grok-goal/v1"));
         // Mid-turn /goal must queue; bare sendUserMessage throws "already processing".
