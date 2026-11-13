@@ -1130,6 +1130,26 @@ pub(crate) fn execute(
                 }
             });
         }
+        Effect::RebindPiSession { session_id } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let request = acp::ExtRequest::new(
+                    "x.ai/session/rebind",
+                    serde_json::value::to_raw_value(&serde_json::json!({
+                        "sessionId": session_id,
+                    }))
+                    .expect("serialize Pi session rebind request")
+                    .into(),
+                );
+                match acp_send(request, &tx).await {
+                    Ok(_) => TaskResult::PiSessionRebound { session_id },
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to rebind Pi session");
+                        TaskResult::PiSessionRebindFailed { session_id }
+                    }
+                }
+            });
+        }
         Effect::ReloadPiSession {
             agent_id,
             session_id,

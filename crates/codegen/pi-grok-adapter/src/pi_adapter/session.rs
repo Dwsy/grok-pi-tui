@@ -496,7 +496,22 @@ impl PiAgent {
         {
             return Ok(true);
         }
-        if let Some(control) = self.refresh_goal_from_disk().await {
+        // Tree navigation carries an authoritative branch snapshot. Use its
+        // event payload rather than a file that a later navigation may replace.
+        let tree_restored = message
+            .get("data")
+            .and_then(|data| data.get("event"))
+            .and_then(Value::as_str)
+            == Some("goal_tree_restored");
+        if tree_restored {
+            if let Some(mut control) = event_control {
+                if let Some(host) = self.goal_host.borrow_mut().as_mut() {
+                    host.apply_control(control.clone());
+                }
+                control.last_event = Some("goal_tree_restored".into());
+                self.emit_goal_updated_from_control(&control).await;
+            }
+        } else if let Some(control) = self.refresh_goal_from_disk().await {
             self.emit_goal_updated_from_control(&control).await;
         } else if let Some(control) = event_control {
             if let Some(host) = self.goal_host.borrow_mut().as_mut() {
@@ -580,6 +595,7 @@ impl PiAgent {
             });
             if let Some(blocked) = blocked {
                 self.emit_goal_updated_from_control(&blocked).await;
+                self.journal_goal_control(blocked.goal_id.clone());
             }
             return;
         }
@@ -590,6 +606,29 @@ impl PiAgent {
         if let Some(host) = self.goal_host.borrow_mut().as_mut() {
             host.record_continuation(&control);
         }
+    }
+
+    /// Adapter-owned transitions exist only in the IPC control file: Pi owns
+    /// the session log. Ask the goal extension (hidden command) to append the
+    /// same state as a bridge entry, without starting an agent turn. The
+    /// extension also reconciles at lifecycle boundaries if this is missed.
+    fn journal_goal_control(&self, goal_id: String) {
+        let agent = self.clone();
+        tokio::task::spawn_local(async move {
+            let message = bridge_command_message(GOAL_PERSIST_COMMAND, &goal_id);
+            match agent
+                .rpc
+                .request(json!({ "type": "prompt", "message": message }))
+                .await
+            {
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    %error,
+                    %goal_id,
+                    "failed to journal goal control into the Pi session log"
+                ),
+            }
+        });
     }
 
     pub(super) async fn handle_workflow_bridge_message(&self, event: &Value) -> Result<bool> {
@@ -921,6 +960,20 @@ impl PiAgent {
         let mut state = self.state.borrow_mut();
         let session_changed = state.acp_session_id != bootstrap.state.session_id;
         state.acp_session_id = bootstrap.state.session_id.clone();
+        // Register the session path so the multi-agent switcher can rebind to
+        // this session later (load_session and x.ai/session/rebind look up
+        // session_paths). Without this, switching back to a newly-created
+        // session fails with "not in the local catalog".
+        if let Some(path) = bootstrap
+            .state
+            .session_file
+            .as_deref()
+            .filter(|p| !p.is_empty())
+        {
+            state
+                .session_paths
+                .insert(bootstrap.state.session_id.clone(), PathBuf::from(path));
+        }
         if session_changed {
             if let Some(host) = self.goal_host.borrow_mut().as_mut() {
                 host.reset_session();

@@ -2772,8 +2772,12 @@ fn is_task_tool(tc: &acp::ToolCall) -> bool {
     xai_grok_tools::is_task_tool_id(&tc.title) || is_task_variant(extract_variant(tc))
 }
 fn is_goal_tool(tc: &acp::ToolCall) -> bool {
-    tc.title == "update_goal"
+    // "goal" is the merged Pi tool; the four legacy titles remain for stock
+    // Grok and historical Pi transcripts.
+    tc.title == "goal"
+        || tc.title == "update_goal"
         || tc.title == "create_goal"
+        || tc.title == "resume_goal"
         || tc.title.starts_with("Goal:")
         || matches!(extract_variant(tc), Some("UpdateGoal" | "WorkflowSignal"))
 }

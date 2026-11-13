@@ -790,6 +790,15 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::PiSessionCloneFailed { agent_id, error } => {
             super::session::pi_fork::handle_pi_session_clone_failed(app, agent_id, error)
         }
+        TaskResult::PiSessionRebound { session_id } => {
+            tracing::debug!(%session_id, "Pi session rebound for multi-agent switch");
+            vec![]
+        }
+        TaskResult::PiSessionRebindFailed { session_id } => {
+            tracing::warn!(%session_id, "Pi session rebind failed");
+            app.show_toast("Pi could not switch to the selected session");
+            vec![]
+        }
         TaskResult::PiSessionReloaded {
             agent_id,
             session_id,

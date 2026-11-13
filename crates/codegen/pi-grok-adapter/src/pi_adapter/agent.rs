@@ -174,6 +174,79 @@ impl acp::Agent for PiAgent {
         &self,
         arguments: acp::PromptRequest,
     ) -> Result<acp::PromptResponse, acp::Error> {
+        // Multi-agent switcher: rebind the single Pi RPC host on-the-fly when a
+        // prompt targets a session that is not the currently bound one. This
+        // keeps typing fast even when the async rebind effect has not landed yet.
+        // Subagent sessions take the bridge route and skip the rebind.
+        let requested_session = arguments.session_id.0.to_string();
+        let active_session = self.state.borrow().acp_session_id.clone();
+        let is_subagent = self
+            .state
+            .borrow()
+            .subagent_session_to_id
+            .contains_key(&requested_session);
+        if requested_session != active_session && !is_subagent {
+            let session_path = self
+                .state
+                .borrow()
+                .session_paths
+                .get(&requested_session)
+                .cloned();
+            match session_path {
+                Some(path) => {
+                    let result = self
+                        .switch_session(&path, &requested_session)
+                        .await
+                        .map_err(acp_internal)?;
+                    if result.cancelled {
+                        return Err(acp::Error::invalid_params()
+                            .data("Pi session switch cancelled"));
+                    }
+                }
+                None => {
+                    return Err(acp::Error::invalid_params().data(format!(
+                        "Pi session {requested_session} is not in the local catalog"
+                    )));
+                }
+            }
+        }
+
+        // Subagent prompts route through the hidden bridge command so the
+        // extension delivers them to the correct child session. The child's
+        // updates stream back via the subagent bridge notifications.
+        if is_subagent {
+            let subagent_id = self
+                .state
+                .borrow()
+                .subagent_session_to_id
+                .get(&requested_session)
+                .cloned()
+                .expect("checked is_subagent above");
+            let (message, images) = prompt_to_pi(&arguments.prompt);
+            let delivery = if arguments
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("sendNow"))
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                "steer"
+            } else {
+                "follow_up"
+            };
+            if message.trim().is_empty() && images.is_empty() {
+                return Err(acp::Error::invalid_params().data("Pi prompt is empty"));
+            }
+            let args = json!({
+                "subagentId": subagent_id,
+                "message": message,
+                "delivery": delivery,
+            })
+            .to_string();
+            self.run_bridge_command(SUBAGENT_SEND_COMMAND, &args).await?;
+            return Ok(prompt_response(acp::StopReason::EndTurn, None));
+        }
+
         if let Some(command) = direct_bash_command(&arguments.prompt) {
             return self.execute_bash(command, arguments.meta.as_ref()).await;
         }
@@ -362,6 +435,12 @@ impl acp::Agent for PiAgent {
         if let Some(subagent_id) = subagent_id {
             self.run_bridge_command(SUBAGENT_CANCEL_COMMAND, &subagent_id)
                 .await?;
+            return Ok(());
+        }
+        // Multi-agent switcher cross-talk guard: a cancel from a stale AgentView
+        // must never abort the currently bound Pi session's turn.
+        let active_session = self.state.borrow().acp_session_id.clone();
+        if child_session_id != active_session {
             return Ok(());
         }
 
@@ -764,6 +843,85 @@ impl acp::Agent for PiAgent {
                 self.run_bridge_command("__pi_rollback_execute", entry_id)
                     .await?;
                 ext_response(json!({ "entryId": entry_id, "executed": true })).map_err(acp_internal)
+            }
+            // Multi-agent switcher: rebind the single Pi RPC host to another
+            // session WITHOUT a full history replay. The pager keeps every
+            // loaded AgentView's scrollback locally; switching between two
+            // already-loaded rows only needs Pi to point at the right JSONL so
+            // later prompts land in the right session. Idempotent.
+            "x.ai/session/rebind" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let requested = string(&params, &["sessionId", "session_id"])
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| acp::Error::invalid_params().data("sessionId is required"))?;
+                let active = self.state.borrow().acp_session_id.clone();
+                if requested == active {
+                    return ext_response(json!({ "sessionId": requested, "rebound": false }))
+                        .map_err(acp_internal);
+                }
+                let session_path = self
+                    .state
+                    .borrow()
+                    .session_paths
+                    .get(requested)
+                    .cloned()
+                    .ok_or_else(|| {
+                        acp::Error::invalid_params().data(format!(
+                            "Pi session {requested} is not in the local catalog"
+                        ))
+                    })?;
+                let result = self
+                    .switch_session(&session_path, requested)
+                    .await
+                    .map_err(acp_internal)?;
+                if result.cancelled {
+                    return Err(acp::Error::invalid_params().data("Pi session switch cancelled"));
+                }
+                ext_response(json!({ "sessionId": requested, "rebound": true }))
+                    .map_err(acp_internal)
+            }
+            // Dashboard row delete for Pi-hosted sessions. Mirrors Pi's own
+            // interactive session-selector: trash-cli first, unlink fallback.
+            // Deliberately refuses to delete the currently bound session.
+            "x.ai/session/delete" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let requested = string(&params, &["sessionId", "session_id"])
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| {
+                        acp::Error::invalid_params().data("sessionId is required")
+                    })?;
+                let active = self.state.borrow().acp_session_id.clone();
+                if requested == active {
+                    return Err(acp::Error::invalid_params()
+                        .data("Cannot delete the currently active session"));
+                }
+                let session_path = self
+                    .state
+                    .borrow()
+                    .session_paths
+                    .get(requested)
+                    .cloned()
+                    .ok_or_else(|| {
+                        acp::Error::invalid_params().data(format!(
+                            "Pi session {requested} is not in the local catalog"
+                        ))
+                    })?;
+                let method = tokio::task::spawn_blocking(move || {
+                    delete_pi_session_file(&session_path)
+                })
+                .await
+                .map_err(acp_internal)?
+                .map_err(acp_internal)?;
+                self.state
+                    .borrow_mut()
+                    .session_paths
+                    .remove(requested);
+                ext_response(json!({ "sessionId": requested, "method": method }))
+                    .map_err(acp_internal)
             }
             "x.ai/session/rename" => {
                 let params: Value =

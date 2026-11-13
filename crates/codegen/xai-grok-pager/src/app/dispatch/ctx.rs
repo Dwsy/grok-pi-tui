@@ -1,6 +1,7 @@
 //! Active-agent lookup and view-context helpers shared across dispatch modules.
 
 use super::dashboard_telemetry::log_dashboard_opened;
+use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView, WelcomeAnnouncementState};
@@ -282,6 +283,15 @@ pub(crate) fn switch_to_agent(app: &mut AppView, target: AgentId, cause: SwitchC
     if matches!(app.active_view, ActiveView::Agent(current) if current == target) {
         return;
     }
+    // Promote an unused home husk on first attach: the moment the user
+    // navigates into it the husk becomes a real conversation, so the
+    // unused-home pointer must clear or a later NewSession would delete it.
+    if app.home_session_agent == Some(target) {
+        app.home_session_agent = None;
+    }
+    if app.optimistic_home_husk == Some(target) {
+        app.optimistic_home_husk = None;
+    }
     // Capture before mutating active_view (subagent views are not top-level ids).
     let previous_top_level = match app.active_view {
         ActiveView::Agent(id) => Some(id),
@@ -337,4 +347,24 @@ pub(super) fn find_agent_by_session_id<'a>(
         }
     }
     None
+}
+
+/// Emit [`Effect::RebindPiSession`] when the pager hosts an external (Pi) agent
+/// and the given agent carries a real session id. The rebind is what keeps the
+/// single Pi RPC host pointed at the session the user just switched to, so a
+/// prompt typed after the switch lands in the right Pi session instead of
+/// whatever session was bound before. Returns the effect list (possibly empty)
+/// so every switch path can `extend`/`return` it uniformly.
+pub(crate) fn rebind_pi_session_for(app: &AppView, target: AgentId) -> Vec<Effect> {
+    if !app.external_agent {
+        return Vec::new();
+    }
+    let Some(sid) = app
+        .agents
+        .get(&target)
+        .and_then(|a| a.session.session_id.as_ref().map(|s| s.0.to_string()))
+    else {
+        return Vec::new();
+    };
+    vec![Effect::RebindPiSession { session_id: sid }]
 }

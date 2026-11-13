@@ -825,15 +825,17 @@ impl AgentView {
         {
             return Some(InputOutcome::Changed);
         }
+        // While a cancel is already in flight, swallow Esc silently: it must
+        // neither re-send the cancel nor hint at Ctrl+C (which escalates toward
+        // quit in this state).
+        if self.any_cancel_pending() {
+            self.suppress_rewind_arm(std::time::Instant::now());
+            return Some(InputOutcome::Changed);
+        }
         // Mid-turn with Esc cancellation enabled: cancel immediately from prompt or
-        // scrollback, even with a draft. Also — in every mode — while already
-        // cancelling, so a lost cancel notification is re-sent (Ctrl+C
-        // escalates to Quit instead). Push the grace deadline out so an Esc
+        // scrollback, even with a draft. Push the grace deadline out so an Esc
         // mash past the cancel cannot silently arm the rewind picker below.
-        if self.session.state.is_turn_running()
-            || self.wake_turn_active()
-            || self.any_cancel_pending()
-        {
+        if self.session.state.is_turn_running() || self.wake_turn_active() {
             self.cancel_trigger_hint = Some(crate::app::actions::CancelTrigger::Esc);
             self.suppress_rewind_arm(std::time::Instant::now());
             return Some(InputOutcome::Action(Action::CancelTurn));

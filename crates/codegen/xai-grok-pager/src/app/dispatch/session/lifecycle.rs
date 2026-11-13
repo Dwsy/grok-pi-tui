@@ -382,6 +382,9 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
         None => (None, app.cwd.clone(), false),
     };
     let mut effects = unregister_session_effect(previous_session_id);
+    // Drop the unused home husk before creating the real agent: a husk the
+    // user never typed into must not survive a New Agent from the dashboard.
+    effects.extend(abandon_unused_home_session(app));
     reseed_tip_for_new_session(app);
     let agent_id = AgentId(app.next_agent_id);
     app.next_agent_id += 1;

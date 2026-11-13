@@ -1792,6 +1792,11 @@ pub enum Effect {
         session_id: String,
     },
     /// Fetch session list for the welcome screen session picker.
+    /// Rebind the single Pi RPC host to another session without replaying history.
+    /// Emitted on multi-agent switch so the next prompt lands in the right Pi session.
+    RebindPiSession {
+        session_id: String,
+    },
     FetchSessionList {
         /// The picker this fetch was issued for; the result routes back to this host's storage only.
         host: crate::views::session_picker_surface::SessionPickerHost,
@@ -2887,6 +2892,14 @@ pub enum TaskResult {
         error: String,
     },
     /// Pi `/reload` completed (resources refreshed; session file unchanged).
+    /// Pi session rebind completed; the RPC host now targets the given session.
+    PiSessionRebound {
+        session_id: String,
+    },
+    /// Pi session rebind failed (stale catalog entry, network, etc.).
+    PiSessionRebindFailed {
+        session_id: String,
+    },
     PiSessionReloaded {
         agent_id: crate::app::agent::AgentId,
         session_id: String,

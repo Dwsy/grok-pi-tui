@@ -42,6 +42,7 @@ pub(in crate::app::dispatch) fn dispatch_sessions_confirm_close(
         app.show_toast("Cannot close the only session -- use /home to exit");
         return vec![];
     }
+    let mut effects = Vec::new();
     if matches!(app.active_view, ActiveView::Agent(id) if id == closed_id) {
         let parent = app
             .agents
@@ -51,15 +52,17 @@ pub(in crate::app::dispatch) fn dispatch_sessions_confirm_close(
         let fallback = parent.or_else(|| app.agents.keys().copied().find(|id| *id != closed_id));
         if let Some(target) = fallback {
             switch_to_agent(app, target, SwitchCause::Picker);
+            // Rebind the Pi host to the fallback session so prompts land correctly.
+            effects.extend(super::super::ctx::rebind_pi_session_for(app, target));
         } else {
             show_welcome(app);
         }
     }
-    let effects = unregister_session_effect(
+    effects.extend(unregister_session_effect(
         app.agents
             .get(&closed_id)
             .and_then(|a| a.session.session_id.clone()),
-    );
+    ));
     remove_agent_and_cleanup(app, closed_id);
     effects
 }

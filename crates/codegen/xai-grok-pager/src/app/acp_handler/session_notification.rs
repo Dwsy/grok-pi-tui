@@ -1253,6 +1253,11 @@ pub(super) fn handle_session_notification_with_origin(
             planning,
             ..
         } => {
+            let tree_restored = last_event.as_deref() == Some("goal_tree_restored");
+            if tree_restored {
+                // The selected branch supersedes the previous branch's tombstone.
+                agent.last_cleared_goal_id = None;
+            }
             let new_status = GoalDisplayStatus::parse(&status);
             let just_completed = new_status == GoalDisplayStatus::Complete
                 && agent
@@ -1262,8 +1267,12 @@ pub(super) fn handle_session_notification_with_origin(
             if status == "cleared" {
                 // An in-flight clear from an older execution generation must
                 // not remove a newer goal created/restored with a different ID.
-                if !goal_id.is_empty()
-                    && agent.goal_state.as_ref().is_some_and(|g| g.goal_id != goal_id)
+                if !tree_restored
+                    && !goal_id.is_empty()
+                    && agent
+                        .goal_state
+                        .as_ref()
+                        .is_some_and(|g| g.goal_id != goal_id)
                 {
                     return false;
                 }

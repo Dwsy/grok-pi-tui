@@ -254,17 +254,19 @@ pub(super) fn dispatch_open_dashboard(app: &mut AppView) -> Vec<Effect> {
         return crate::app::workspace_sync::drain(app);
     }
     app.dashboard_sessions_loading = true;
-    if app.leader_mode {
-        return vec![Effect::FetchRoster];
-    }
     // External hosts own their session store. Pi projects its catalog through
     // the existing ACP extension seam rather than using Grok's local scanner.
+    // This check MUST precede the leader gate: a grok-pi launch can carry both
+    // flags, and Pi's catalog is the only truthful source for dormant rows.
     if app.external_agent {
         return vec![Effect::FetchExternalSessionCatalog {
             cwd: app.cwd.clone(),
             all: false,
             use_psm_index: app.current_ui.psm_resume_index,
         }];
+    }
+    if app.leader_mode {
+        return vec![Effect::FetchRoster];
     }
     vec![Effect::FetchDashboardSessions]
 }
@@ -436,14 +438,14 @@ fn dispatch_dashboard_load_local_build(
     {
         app.welcome_history_load_as_build = true;
     }
-    if let Some(existing_id) = focus_if_session_already_open(app, resolved_id.as_str(), false) {
+    if let Some((existing_id, rebind)) = focus_if_session_already_open(app, resolved_id.as_str(), false) {
         #[cfg(feature = "local-workspace")]
         {
             app.welcome_history_load_as_build = false;
         }
         crate::app::workspace_sync::allow_loaded_session(app, &resolved_id);
         log_dashboard_attached(&DashboardRowId::TopLevel(existing_id));
-        return vec![];
+        return rebind;
     }
 
     let effects = dispatch_load_session(app, resolved_id, Some(resolved_cwd), false);
@@ -510,6 +512,9 @@ pub(super) fn dispatch_dashboard_attach(
             switch_to_agent(app, agent_id, SwitchCause::Picker);
             log_dashboard_attached(&DashboardRowId::TopLevel(agent_id));
             surface_yolo_launch_block_notice(app, agent_id);
+            // Rebind the single Pi RPC host to this session (idempotent)
+            // so prompts typed after the switch land in the right Pi session.
+            return super::ctx::rebind_pi_session_for(app, agent_id);
         }
         DashboardRowId::Subagent {
             parent,
@@ -563,11 +568,11 @@ pub(super) fn dispatch_dashboard_attach(
                 .unwrap_or((None, false));
 
             // Already local (e.g. double-click after the row converted): focus only.
-            if let Some(existing_id) =
+            if let Some((existing_id, rebind)) =
                 focus_if_session_already_open(app, session_id.as_str(), conversation_entry)
             {
                 log_dashboard_attached(&DashboardRowId::TopLevel(existing_id));
-                return vec![];
+                return rebind;
             }
 
             // Mirror the picker resume path: allocate a new local agent and emit `Effect::LoadSession` (strict load)
@@ -1247,7 +1252,9 @@ pub(super) fn dispatch_dashboard_overlay_cycle(app: &mut AppView, delta: i32) ->
     }
     app.active_view = ActiveView::Agent(next_id);
     surface_yolo_launch_block_notice(app, next_id);
-    vec![]
+    // Rebind the single Pi RPC host to the newly active session so the
+    // next prompt lands in the right Pi session (idempotent on the adapter side).
+    super::ctx::rebind_pi_session_for(app, next_id)
 }
 
 pub(super) fn dispatch_dashboard_dispatch(

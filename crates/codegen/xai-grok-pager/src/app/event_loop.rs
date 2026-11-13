@@ -3128,17 +3128,18 @@ pub(crate) async fn run(
                 dashboard_poll_at = None;
                 let dashboard_open = matches!(app.active_view, ActiveView::AgentDashboard);
                 if dashboard_open {
+                    // External Pi must win over the leader gate: when both are
+                    // set, only Pi's catalog reflects the real session store.
                     let effects = if app.workspace_dashboard_enabled {
                         super::workspace_sync::refresh(&mut app)
-                    } else if leader_status_rx.is_some() {
-                        vec![Effect::FetchRoster]
                     } else if app.external_agent {
                         vec![Effect::FetchExternalSessionCatalog {
                             cwd: app.cwd.clone(),
                             all: false,
                             use_psm_index: app.current_ui.psm_resume_index,
                         }]
-
+                    } else if leader_status_rx.is_some() {
+                        vec![Effect::FetchRoster]
                     } else {
                         vec![Effect::FetchDashboardSessions]
                     };

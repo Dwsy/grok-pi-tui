@@ -83,7 +83,7 @@ pub(in crate::app::dispatch) fn focus_if_session_already_open(
     app: &mut AppView,
     session_id: &str,
     chat_kind: bool,
-) -> Option<AgentId> {
+) -> Option<(AgentId, Vec<Effect>)> {
     use crate::app::app_view::ActiveView;
     use crate::views::dashboard::DashboardRowId;
     let expected_conversation_entry = session_opens_as_chat(app, chat_kind);
@@ -116,7 +116,8 @@ pub(in crate::app::dispatch) fn focus_if_session_already_open(
         d.attached_agent = Some(existing_id);
     }
     switch_to_agent(app, existing_id, SwitchCause::Load);
-    Some(existing_id)
+    let rebind_effects = super::super::ctx::rebind_pi_session_for(app, existing_id);
+    Some((existing_id, rebind_effects))
 }
 /// Matches the effects layer's `is_chat_path` after history-bypass clearing of `SessionFlags.chat_mode`.
 /// True for a conversation-entry row, or under sticky `--chat` without the local-disk history bypass.
@@ -157,12 +158,12 @@ fn dispatch_load_session_ungated(
         return vec![];
     }
     invalidate_picker_fetch_on_dismiss(app);
-    if focus_if_session_already_open(app, &session_id, chat_kind).is_some() {
+    if let Some((_existing_id, rebind)) = focus_if_session_already_open(app, &session_id, chat_kind) {
         #[cfg(feature = "local-workspace")]
         {
             app.welcome_history_load_as_build = false;
         }
-        return vec![];
+        return rebind;
     }
     let mut effects = abandon_unused_empty_for_load(app, &session_id);
     let identity_rebind = super::super::dashboard::WorkspaceIdentityRebind::capture(app);
@@ -432,12 +433,12 @@ pub(in crate::app::dispatch) fn dispatch_pick_session(
         );
     }
     if source == "remote" || source == "both" {
-        if focus_if_session_already_open(app, &session_id, false).is_some() {
+        if let Some((_existing_id, rebind)) = focus_if_session_already_open(app, &session_id, false) {
             #[cfg(feature = "local-workspace")]
             {
                 app.welcome_history_load_as_build = false;
             }
-            return vec![];
+            return rebind;
         }
         app.show_toast("Restoring session from remote...");
         dispatch_load_session_with_restore(app, session_id, cwd)
@@ -1117,8 +1118,8 @@ pub(in crate::app::dispatch) fn dispatch_pick_content_session(
             false,
         );
     }
-    if focus_if_session_already_open(app, &session_id, false).is_some() {
-        return vec![];
+    if let Some((_existing_id, rebind)) = focus_if_session_already_open(app, &session_id, false) {
+        return rebind;
     }
     app.show_toast("Restoring session from remote...");
     dispatch_load_session_with_restore(app, session_id, cwd)
@@ -1149,12 +1150,12 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
         app.show_toast(crate::app::session_startup::CHAT_MODE_LOCAL_BUILD_REFUSAL);
         return vec![];
     }
-    if focus_if_session_already_open(app, &session_id, false).is_some() {
+    if let Some((_existing_id, rebind)) = focus_if_session_already_open(app, &session_id, false) {
         #[cfg(feature = "local-workspace")]
         {
             app.welcome_history_load_as_build = false;
         }
-        return vec![];
+        return rebind;
     }
     let agent_id = AgentId(app.next_agent_id);
     app.next_agent_id += 1;
@@ -1736,7 +1737,11 @@ pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) 
         } = &mut modal
         {
             *state = crate::views::picker::PickerState::input_active();
-            *loading = external_agent;
+            // The modal always awaits its own fetch (Pi catalog for external,
+            // the native list otherwise), so loading starts true for BOTH.
+            // Clearing it for native broke "the replacement modal keeps waiting
+            // for its own fetch" after a close/reopen.
+            *loading = true;
             *source_filter = if external_agent {
                 crate::views::session_picker::SourceFilter::External
             } else {
