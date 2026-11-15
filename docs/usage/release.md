@@ -12,31 +12,30 @@
 
    ```bash
    python3 scripts/extract-changelog-section.py --self-test
-   python3 scripts/extract-changelog-section.py 0.1.14-beta.3 CHANGELOG.MD --strict -o /tmp/notes.md
+   python3 scripts/extract-changelog-section.py 0.1.14-beta.4 CHANGELOG.MD --strict -o /tmp/notes.md
    ```
 
 2. 提交并推送代码，然后打 tag：
 
    ```bash
-   git tag v0.1.14-beta.3
-   git push origin v0.1.14-beta.3
+   git tag v0.1.14-beta.4
+   git push origin v0.1.14-beta.4
    ```
 
-   tag push 会**自动构建全部六个平台**并发布 prerelease。
+   **beta tag push 自动只构建 macOS ARM64 与 Intel** 并发布 prerelease；
+   正式版 tag push 仍构建全部六个平台。
    `-beta.N` 后缀会被 GitHub 标记为 prerelease，不会移动 `releases/latest`。
 
-> ⚠️ 若这一版只想构建单平台，**不要在推 tag 前指望 dispatch**：
-> `workflow_dispatch` 的 `tag` 输入要求 tag 已经存在，所以顺序必然是
-> 「先推 tag（自动触发全平台）→ 取消那次 run → 手动 dispatch 单平台」。
-> 见下一节。
+> `workflow_dispatch` 仍可通过 `targets` 自定义平台。发布全新 beta 最简单的方式
+> 是直接推 tag，不再需要取消自动触发的六平台构建。
 
-## 只构建 macOS ARM64（本地单人 beta）
+## 手动指定 macOS ARM64（本地单人 beta）
 
-适合「就我一个人在测试」的迭代，省掉另外五个 runner 的时间和额度。
+默认 beta 自动构建两个 macOS 架构；若只需一台 Apple Silicon Mac 测试，可手动指定单一目标。
 
 ```bash
 gh workflow run release.yml \
-  -f tag=v0.1.14-beta.3 \
+  -f tag=v0.1.14-beta.4 \
   -f targets=macos-arm64
 ```
 
@@ -44,26 +43,16 @@ gh workflow run release.yml \
 
 | 输入 | 值 |
 |---|---|
-| `tag` | 已存在的 tag，如 `v0.1.14-beta.3` |
+| `tag` | 已存在的 tag，如 `v0.1.14-beta.4` |
 | `targets` | `macos-arm64` |
 
 > `tag` 必须已经存在并推到远端 —— 工作流会 `checkout` 该 tag，
 > 所以**先推 tag，再 dispatch**。
 >
-> 完整顺序（否则 tag push 那次全平台 run 会白跑）：
->
-> ```bash
-> git push origin main
-> git push origin v0.1.14-beta.3          # 自动触发全平台 run
-> gh run list --repo Dwsy/grok-pi-tui --workflow=release.yml --limit 1  # 拿 run id
-> gh run cancel <run-id> --repo Dwsy/grok-pi-tui
-> gh workflow run release.yml --repo Dwsy/grok-pi-tui \
->   -f tag=v0.1.14-beta.3 -f targets=macos-arm64
-> ```
->
-> 取消的 run 不会执行 `release` job，因此不会留下半成品 release。
+> 手动重跑某个已存在的 beta tag 时，可用 `targets` 明确覆盖默认矩阵；
+> 避免在自动 tag 构建仍运行时重复触发同一版本的发布。
 
-`targets` 留空 = 全部六个平台（与 tag push 行为一致）。多个用逗号分隔：
+`targets` 留空 = beta 为 macOS 两个平台，stable 为全部六个平台。多个用逗号分隔：
 
 ```bash
 -f targets=macos-arm64,macos-x86_64
@@ -84,11 +73,12 @@ gh workflow run release.yml \
 
 ## 工作原理
 
-- `prepare-matrix` job 读取 `scripts/release-targets.json`，按 `targets` 输入
-  过滤，输出 `matrix=<json>` 到 `$GITHUB_OUTPUT`。
+- `prepare-matrix` job 读取 `scripts/release-targets.json`，beta 默认只保留两个
+  macOS target，stable 保留全部六个平台；显式 `targets` 输入覆盖默认，输出
+  `matrix=<json>` 到 `$GITHUB_OUTPUT`。
 - `build` job 用 `matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}`
   拿到动态矩阵；平台定义不再硬编码在 workflow 里。
 - `validate-changelog` 校验版本段落，`release` job 把 `grok-pi-*` 产物连同
   `install.sh` / `install.ps1` 一起发布。
-- 只构建一个平台时，release 里也就只有那一个 asset + 安装脚本。
-  这是**有意为之**：beta 通道仅供本地测试，正式版请走 tag push 全平台。
+- release 里只包含实际构建出的 asset 与安装脚本，不宣称未构建的平台。
+  beta 默认为两份 macOS archive；正式版走 tag push 全平台。

@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       targets:
-        description: "Platforms to build (comma-separated keys; empty = all six). Keys: macos-arm64, macos-x86_64, linux-x86_64, linux-aarch64, windows-x86_64, windows-aarch64. Example for a local macOS ARM64 beta: macos-arm64"
+        description: "Platforms to build (comma-separated keys; empty = both macOS targets for beta, all six for stable). Keys: macos-arm64, macos-x86_64, linux-x86_64, linux-aarch64, windows-x86_64, windows-aarch64."
         required: false
         default: ""
         type: string
@@ -25,9 +25,9 @@ permissions:
   contents: write
 
 jobs:
-  # `workflow_dispatch` may restrict the matrix to a single platform (e.g. a
-  # local macOS ARM64 beta). Tag pushes never set `targets`, so they still ship
-  # all six assets. The single source of truth is scripts/release-targets.json.
+  # Beta tags default to two macOS builds, including on tag pushes; stable
+  # tags default to all six. Explicit dispatch targets override either default.
+  # The single source of truth is scripts/release-targets.json.
   prepare-matrix:
     name: Resolve build matrix
     runs-on: ubuntu-24.04
@@ -45,6 +45,7 @@ jobs:
         shell: bash
         env:
           REQUESTED: ${{ inputs.targets }}
+          RELEASE_TAG: ${{ env.GROK_PI_RELEASE_TAG }}
         run: |
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
@@ -54,6 +55,8 @@ jobs:
               all_targets = json.load(fh)
 
           requested_raw = os.environ.get("REQUESTED", "").strip()
+          if not requested_raw and "-beta." in os.environ["RELEASE_TAG"]:
+              requested_raw = "macos-arm64,macos-x86_64"
           if not requested_raw:
               selected = all_targets
           else:
@@ -114,9 +117,8 @@ jobs:
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
-      # Resolved from scripts/release-targets.json by `prepare-matrix`. Tag
-      # pushes get all six; a manual beta run can pass `targets: macos-arm64`
-      # to build only the one platform being tested locally.
+      # Resolved from scripts/release-targets.json by `prepare-matrix`.
+      # Beta tag pushes build both macOS targets, never Linux or Windows.
       matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
@@ -393,8 +395,7 @@ jobs:
           # Do not pass target_commitish: GitHub requires workflow-write permission
           # when that older commit differs from the default branch workflow files,
           # and Actions' GITHUB_TOKEN cannot be granted that permission.
-          # A beta tag ships the same six platform assets, but is not promoted
-          # by GitHub's stable `releases/latest` pointer. Unsupported prerelease
-          # suffixes are rejected before the build starts.
+          # Beta tags publish only the selected macOS assets by default and
+          # do not replace the stable `releases/latest` pointer.
           prerelease: ${{ contains(env.GROK_PI_RELEASE_TAG, '-beta.') }}
           files: release-assets/*

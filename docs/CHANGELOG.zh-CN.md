@@ -9,6 +9,21 @@
 
 ## [Unreleased]
 
+## [0.1.14-beta.4] - 2026-11-15
+
+### 新增
+
+- 时间线触感强度支持 off / light / medium / strong 四档，仅 macOS 生效。
+
+### 变更
+
+- Herdr 生命周期桥接默认启用；只有在 Herdr 内才会发送状态，可在 F2 关闭。
+- beta tag 的 GitHub Actions 构建默认仅包含 macOS ARM64 和 Intel，正式版仍覆盖全部平台。
+
+### 修复
+
+- Herdr Session 与 State 报告改为有序发送，校验 Socket API 的 JSON 回复并记录错误；真实 Header 接管仍待新进程验收。
+
 ## [0.1.14-beta.1] - 2026-11-12
 
 ### 新增

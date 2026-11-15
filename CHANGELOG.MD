@@ -6,14 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.4] - 2026-11-15
+
+### Added
+
+- **Timeline hover haptics strength setting** — F2 → Mouse → Scrolling → **Timeline hover haptics** (`[ui].timeline_haptics`) offers `off`, `light`, `medium` (default), and `strong`. macOS only. `Light` keeps AppKit's soft guide-snap pulse; `medium` and `strong` use `NSHapticFeedbackPatternLevelChange`, the only simulated detent the system provides, with `strong` repeating it.
+
+### Changed
+
+- **Herdr integration enabled by default** — the built-in Pi lifecycle bridge now starts automatically in Herdr (and is inert outside it), with an explicit `[ui].pi_herdr = false` opt-out in F2.
+- **macOS-only beta releases** — pushing a `-beta.N` tag now builds only macOS ARM64 and Intel archives by default. Stable tags still build all six platforms; manual dispatch can override the matrix explicitly.
+- **Timeline tick haptics are materially stronger** — the rate cap drops from 50 ms to 30 ms so a normal flick is not collapsed into a single pulse, and one pointer event that skips several ticks now pulses once per crossed tick (capped at four) instead of firing once. Default strength also moves from `alignment` to `levelChange`.
+
 ### Fixed
 
+- **Herdr Header lifecycle delivery** — serializes session identity and state events, parses socket API replies and retries bounded failures with stderr diagnostics. Adds regression coverage for delayed replies, session replacement and errors; real Header authority still requires fresh-pane validation.
 - **Release notes listed archives the run never built** — the install footer now enumerates the assets resolved by `prepare-matrix` (passed to `extract-changelog-section.py` as repeated `--asset`), so a single-platform beta advertises only the one archive it publishes instead of the full six-platform list.
 - **Release CI pinned to `ubuntu-24.04`** — the `ubuntu-latest` label migrates to Ubuntu 26 (announced deadline 2026-10-19), so the three Ubuntu jobs and the `linux-x86_64` matrix runner are pinned to an explicit image.
 - **Actions runtime deprecations** — `checkout@v4` → `v7`, `upload-artifact@v4` → `v7`, `download-artifact@v4` → `v8`, `action-gh-release@v2` → `v3`; all four now run on Node 24 instead of the deprecated Node 20.
 
 ### 中文发布说明
 
+- **Herdr 默认开启** — 内置 Pi 生命周期桥接在 Herdr 内自动工作，环境外静默不运行；仍可通过 F2 或 `[ui].pi_herdr = false` 显式关闭。
+- **beta 仅构建 macOS** — 推送 `-beta.N` tag 默认只构建 Apple Silicon 和 Intel 两个 macOS 归档，正式版仍构建六个平台；手动 Dispatch 可覆盖目标。
+- **Herdr Header 状态上报修复** — Session 和 State 使用同一有序队列，解析 Socket API 成功与错误响应，失败有有限重试与日志；实际 Header authority 尚待发行版独立验收。
+- **时间线 hover 触感强度可调** — F2 → Mouse → Scrolling → **Timeline hover haptics**（`[ui].timeline_haptics`）可选 `off`、`light`、`medium`（默认）、`strong`，仅 macOS 生效。`light` 保留 AppKit 的柔性对齐脉冲；`medium` 与 `strong` 使用 `NSHapticFeedbackPatternLevelChange`（系统唯一提供的模拟段落感），`strong` 会重复两次。
+- **时间线 tick 触感明显增强** — 节流上限从 50ms 降到 30ms，正常划动不再被压成单次脉冲；一次指针事件跨过多格时按跨过的格数各触发一次（上限四格）。默认强度也从 `alignment` 改为 `levelChange`。
 - **发布说明会列出本次并未构建的包** — 安装页脚改为按 `prepare-matrix` 解析出的实际 asset 列表生成（以重复的 `--asset` 传给 `extract-changelog-section.py`），单平台 beta 只会列出真正发布的那一个包，不再虚假宣传六个平台。
 - **发布 CI 固定到 `ubuntu-24.04`** — `ubuntu-latest` 标签将迁移到 Ubuntu 26（公告期限 2026-10-19），因此三个 Ubuntu job 与 `linux-x86_64` 矩阵 runner 改为显式镜像。
 - **Actions 运行时弃用** — `checkout@v4` → `v7`、`upload-artifact@v4` → `v7`、`download-artifact@v4` → `v8`、`action-gh-release@v2` → `v3`，均改用 Node 24。
