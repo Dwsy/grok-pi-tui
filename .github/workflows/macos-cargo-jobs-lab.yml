@@ -16,7 +16,7 @@ permissions:
 jobs:
   compare:
     name: macOS ARM64 target / jobs-${{ matrix.cargo_jobs }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -41,14 +41,24 @@ jobs:
           }
 
       - name: Check out benchmark source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_tag }}
           persist-credentials: false
 
+      - name: Read benchmark source Rust version
+        id: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel=$(sed -n 's/^channel = "\([^"]*\)".*/\1/p' rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
       - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@1.94.0
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust.outputs.channel }}
           targets: aarch64-apple-darwin
 
       - name: Install protoc

@@ -114,6 +114,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: [validate-changelog, prepare-matrix]
     runs-on: ${{ matrix.runner }}
+    cache-mode: read
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -149,11 +150,24 @@ jobs:
           rustc --version
           rustup target list --installed | grep -Fx -- '${{ matrix.target }}'
 
-      # Releases run on distinct v* tag refs. Actions target caches written by
-      # one tag are not readable by the next tag, yet macOS/Windows previously
-      # uploaded ~1.4-2.1 GB per matrix job. Avoid paying to upload caches
-      # that the next beta/stable tag cannot reuse. Revisit using a shared
-      # default-branch build context or an external sccache backend.
+      # Tag caches are isolated from other tags. Restore only from the trusted
+      # main-branch cache created by macos-release-cache-warm.yml. Do not save
+      # caches from release tags (previously 1.4–2.1 GB per target per tag).
+      - name: Restore macOS release dependencies
+        if: runner.os == 'macOS'
+        uses: Swatinem/rust-cache@v2
+        env:
+          # Exactly the same release flags are used by the main-branch warmer.
+          CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+          CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
+          CARGO_PROFILE_RELEASE_DIST_STRIP: "none"
+          CARGO_INCREMENTAL: "0"
+        with:
+          shared-key: grok-pi-release-dist-${{ matrix.target }}
+          cache-workspace-crates: "true"
+          cache-bin: "false"
+          save-if: "false"
 
       - name: Install protoc on Linux
         if: runner.os == 'Linux'

@@ -1,0 +1,84 @@
+name: Warm macOS release cache (non-release)
+
+# Run on main before cutting a beta tag. Keeping this explicit avoids a second
+# expensive build on every push, and puts cache entries in the default-branch
+# scope so all future beta tags can restore them.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release-cache-warm
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    if: github.ref == 'refs/heads/main'
+    name: Cache ${{ matrix.name }}
+    runs-on: macos-15
+    timeout-minutes: 150
+    cache-mode: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ARM64
+            target: aarch64-apple-darwin
+          - name: Intel
+            target: x86_64-apple-darwin
+
+    # Match the release build flags. cache keys incorporate Cargo env vars.
+    env:
+      CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+      CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_DIST_STRIP: "none"
+      CARGO_INCREMENTAL: "0"
+      GROK_PI_VERSION: "0.0.0"
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+
+      - name: Read repository Rust version
+        id: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel=$(sed -n 's/^channel = "\([^"]*\)".*/\1/p' rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install release Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          targets: ${{ matrix.target }}
+
+      - name: Install protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install protobuf
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      - name: Restore and save main-branch Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: grok-pi-release-dist-${{ matrix.target }}
+          cache-workspace-crates: "true"
+          cache-bin: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Compile release dependencies (no publishing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Warming main-branch dependencies for ${{ matrix.target }}"
+          cargo build --locked --timings --profile release-dist \
+            -p xai-grok-pager-bin --bin grok-pi --features release-dist \
+            --target "${{ matrix.target }}"
+          echo "### Cache ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+          du -sh target || true

@@ -1,5 +1,10 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-11-15 macOS release cache (local static verification)
+
+- Implementation: main-only manually dispatched `macos-release-cache-warm.yml` with two macOS targets and `Swatinem/rust-cache`; release builds restore only, using target-specific cache keys and matching release flags. `macos-cargo-jobs-lab.yml` runner/toolchain were refreshed.
+- Pending: first `main` cache warm, actual tag release restore hit rate and runtime delta, matched 3-vs-8 jobs experiment. No local Cargo was run. See [issue](issues/架构/20261115-macos-beta-cross-tag-cache-optimization.md).
+
 ## 2026-11-11 Team message delivery and model-error terminal status
 
 - PASS: all subagent extension suites against installed Pi 1.5.0, **98/98** tests. The seven new real-SDK offline scenarios cover root→child, child→root, peers, active/idle final-answer delivery, deferred `NEW_TASK`, and resolved provider error/abort handling. Their in-process provider scripts replace model calls, and each scenario rejects network access.

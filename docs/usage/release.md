@@ -71,6 +71,24 @@ gh workflow run release.yml \
 
 未知 key 会被 `prepare-matrix` 拒绝并列出所有合法值，不会静默跳过。
 
+## macOS 构建缓存（跨 beta tag 复用）
+
+GitHub Actions 的 tag cache 不能跨版本复用；Release 现在只**读取**缓存、不在 tag
+上保存。需要时先在 `main` 运行一次独立预热，它会为 ARM64 和 Intel 两个目标
+分别编译并保存缓存，后续 beta tag 可读取 `main` 的缓存：
+
+```bash
+gh workflow run macos-release-cache-warm.yml --repo Dwsy/grok-pi-tui --ref main
+gh run list --repo Dwsy/grok-pi-tui --workflow macos-release-cache-warm.yml --limit 3
+gh cache list --repo Dwsy/grok-pi-tui
+```
+
+- **预热必须先完成，再推新 tag**。首次预热仍是冷构建；缓存 miss 时发布会自动冷构建，不影响正确性。预热不会自动在每次 `main` push 运行，防止双倍 CI 消耗。
+- 两个目标的 cache key 按 target、Rust toolchain、Cargo manifest/lockfile 和 release profile 区分。会缓存依赖及可复用的 workspace crates，但不缓存最终用户安装包。
+- 缓存存在大小和淘汰限制。若缓存体积、下载/上传耗时反而高于节省的编译时间，停止预热或关闭缓存即可；不能以 `gh cache list` 有记录就推断命中。
+- macOS release 目前仍使用 `jobs=8`（Runner 只有 3 CPU）；专用 `macos-cargo-jobs-lab.yml` 可同源比较 3/8 jobs。**在实测前不调整正式发布的并发数。**
+- 改动只对新 tag 生效；已经启动的 beta.4 不受影响。
+
 ## 工作原理
 
 - `prepare-matrix` job 读取 `scripts/release-targets.json`，beta 默认只保留两个
