@@ -109,7 +109,9 @@ Examples under a git repo:
 
 ## Build and verification
 
-Run from the project root:
+**Do not run Cargo unless the user explicitly requests it.** This rule takes precedence over all build and verification instructions below. Do not run any `cargo` command (including `check`, `test`, `build`, `clippy`, `fmt`, or `clean`), or invoke it indirectly through wrappers, scripts, hooks, or agents, unless the user explicitly requests that operation. Code changes alone do not authorize Cargo. Use static review and non-Rust checks by default, and state which checks were not run. Clean Rust build caches directly through filesystem operations without invoking Cargo.
+
+The commands below are reference instructions for user-requested builds and verification only. Run from the project root:
 
 ```bash
 ./build.sh
@@ -124,11 +126,11 @@ All linked worktrees share one Cargo output tree at `<git-common-dir>/pi-grok-ca
 
 `./verify.sh` additionally runs architecture, mock, syntax, and Pager checks. Current known blockers are documented in [`VERIFICATION.md`](docs/VERIFICATION.md): Python tree-sitter dependencies are not provisioned, and several source-identity/mock expectations require deliberate baseline maintenance. Focused Pager lib tests compile and pass after the `47348d1` integration. Do not claim full verification is green unless the remaining blockers are resolved.
 
-For a standalone change under `extensions/`, validate the extension source and diff only; do **not** run Cargo unless Rust code, the embedded-extension loader, or its Rust contract changed, or the user asks.
+For a standalone change under `extensions/`, validate the extension source and diff only. Changes to Rust code, the embedded-extension loader, or its Rust contract do not override the explicit-user-request requirement for Cargo.
 
 Before reporting completion:
 
-1. Run the narrowest relevant tests and build/check.
+1. Run the narrowest relevant non-Rust checks. Run Cargo-based tests or build/check only when explicitly requested by the user.
 2. Read the exit status and complete output.
 3. Review the diff for scope and whitespace errors.
 4. State known blockers separately from passing checks.
