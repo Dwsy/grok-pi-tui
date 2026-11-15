@@ -1,8 +1,8 @@
 name: Warm macOS release cache (non-release)
 
 # Run on main before cutting a beta tag. Keeping this explicit avoids a second
-# expensive build on every push, and puts cache entries in the default-branch
-# scope so all future beta tags can restore them.
+# expensive build on every push, and puts the ARM64 cache in the default-branch
+# scope so all future beta tags can restore it.
 on:
   workflow_dispatch:
 
@@ -16,18 +16,9 @@ concurrency:
 jobs:
   warm:
     if: github.ref == 'refs/heads/main'
-    name: Cache ${{ matrix.name }}
+    name: Cache ARM64
     runs-on: macos-15
     timeout-minutes: 150
-    cache-mode: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: ARM64
-            target: aarch64-apple-darwin
-          - name: Intel
-            target: x86_64-apple-darwin
 
     # Match the release build flags. cache keys incorporate Cargo env vars.
     env:
@@ -55,7 +46,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.rust.outputs.channel }}
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
 
       - name: Install protoc
         shell: bash
@@ -67,7 +58,7 @@ jobs:
       - name: Restore and save main-branch Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: grok-pi-release-dist-${{ matrix.target }}
+          shared-key: grok-pi-release-dist-aarch64-apple-darwin
           cache-workspace-crates: "true"
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -76,9 +67,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Warming main-branch dependencies for ${{ matrix.target }}"
+          echo "Warming main-branch dependencies for aarch64-apple-darwin"
           cargo build --locked --timings --profile release-dist \
             -p xai-grok-pager-bin --bin grok-pi --features release-dist \
-            --target "${{ matrix.target }}"
-          echo "### Cache ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+            --target aarch64-apple-darwin
+          echo "### Cache ARM64" >> "$GITHUB_STEP_SUMMARY"
           du -sh target || true

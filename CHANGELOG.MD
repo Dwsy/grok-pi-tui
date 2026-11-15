@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Apple Silicon-only standalone macOS builds** — new beta tags, the macOS release-cache warmer, and the independent macOS compile lab default to ARM64 only. Stable releases retain all six platform targets; explicitly requested manual release targets remain supported.
+
 ## [0.1.14-beta.4] - 2026-11-15
 
 ### Added

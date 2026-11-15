@@ -16,7 +16,7 @@ permissions:
 jobs:
   profile-pager:
     name: Pager frontend self-profile (macOS ARM64 target)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - name: Validate source tag

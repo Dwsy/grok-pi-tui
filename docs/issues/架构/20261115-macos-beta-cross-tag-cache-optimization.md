@@ -12,9 +12,9 @@
 
 ## 最小改动方案
 
-1. 单独的 `main` 预热工作流使用 GitHub-hosted macOS runner，编译两个目标并写入 main 范围的 Rust dependency cache。
+1. 单独的 `main` 预热工作流使用 GitHub-hosted macOS runner，仅编译 ARM64 并写入 main 范围的 Rust dependency cache。
 2. release 在对应目标上仅**读取** main 缓存，绝不在 tag 中写 cache。缓存 miss 不影响发布。
-3. 预热与 release 使用相同 Rust toolchain、target、profile、Cargo flags，缓存按 target 隔离；不使用第三方持久化服务，不 cache 最终发布二进制。
+3. 预热与 ARM64 release 使用相同 Rust toolchain、target、profile、Cargo flags；不使用第三方持久化服务，不 cache 最终发布二进制。
 4. 同步修复现存的 `macos-cargo-jobs-lab.yml` 旧 runner/toolchain，使其能做公平的 3 vs 8 并发实验；生产 jobs 暂不改，等数据。
 5. 只允许 `workflow_dispatch` 在 main 上预热，不自动在每次 push 编译两轮；先通过缓存大小和实测编译耗时证明收益，再决定是否自动预热。
 
@@ -25,6 +25,13 @@
 - [x] 核验 YAML 和静态断言，不在本地运行 Cargo
 - [ ] 新的 main 预热 run 成功保存 cache，并核验 tag release 命中、总耗时和 cache 大小
 - [ ] 3 jobs 与 8 jobs 的同源实验后再决定生产默认并发
+
+## 后续裁决：独立 macOS 构建只保留 ARM64
+
+2026-11-15：后续 beta tag 默认矩阵改为唯一 `macos-arm64`，缓存预热取消 Intel
+矩阵，macOS compile lab 仅保留 ARM64 变体。稳定版的六平台发布清单不变，
+手动 `targets` 仍可覆盖默认。原有运行中的 beta.4 和预热 run 使用其各自
+已固定的 workflow，不随本次修改变化。
 
 ## 风险
 

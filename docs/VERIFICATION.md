@@ -1,8 +1,12 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-11-15 standalone macOS ARM64-only builds
+
+- Standalone beta default matrix, release-cache warm and independent compile lab now target ARM64 only. Full stable matrix remains unchanged. YAML, matrix resolution and diff checks are required before delivery; no local Cargo is run.
+
 ## 2026-11-15 macOS release cache (local static verification)
 
-- Implementation: main-only manually dispatched `macos-release-cache-warm.yml` with two macOS targets and `Swatinem/rust-cache`; release builds restore only, using target-specific cache keys and matching release flags. `macos-cargo-jobs-lab.yml` runner/toolchain were refreshed.
+- Implementation: main-only manually dispatched `macos-release-cache-warm.yml` with ARM64 only and `Swatinem/rust-cache`; release builds restore only, using matching target keys and release flags. `macos-cargo-jobs-lab.yml` runner/toolchain were refreshed.
 - Pending: first `main` cache warm, actual tag release restore hit rate and runtime delta, matched 3-vs-8 jobs experiment. No local Cargo was run. See [issue](issues/架构/20261115-macos-beta-cross-tag-cache-optimization.md).
 
 ## 2026-11-11 Team message delivery and model-error terminal status

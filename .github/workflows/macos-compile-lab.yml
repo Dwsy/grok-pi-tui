@@ -16,7 +16,7 @@ permissions:
 jobs:
   compare:
     name: ${{ matrix.platform }} / ${{ matrix.variant }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -33,18 +33,6 @@ jobs:
             codegen_units: 32
           - platform: macOS ARM64
             target: aarch64-apple-darwin
-            variant: shell-o2
-            codegen_units: 16
-          - platform: macOS Intel
-            target: x86_64-apple-darwin
-            variant: cgu16-baseline
-            codegen_units: 16
-          - platform: macOS Intel
-            target: x86_64-apple-darwin
-            variant: cgu32
-            codegen_units: 32
-          - platform: macOS Intel
-            target: x86_64-apple-darwin
             variant: shell-o2
             codegen_units: 16
 

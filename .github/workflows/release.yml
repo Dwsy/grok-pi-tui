@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       targets:
-        description: "Platforms to build (comma-separated keys; empty = both macOS targets for beta, all six for stable). Keys: macos-arm64, macos-x86_64, linux-x86_64, linux-aarch64, windows-x86_64, windows-aarch64."
+        description: "Platforms to build (comma-separated keys; empty = macos-arm64 for beta, all six for stable). Keys: macos-arm64, macos-x86_64, linux-x86_64, linux-aarch64, windows-x86_64, windows-aarch64."
         required: false
         default: ""
         type: string
@@ -25,7 +25,7 @@ permissions:
   contents: write
 
 jobs:
-  # Beta tags default to two macOS builds, including on tag pushes; stable
+  # Beta tags default to macOS ARM64 only, including on tag pushes; stable
   # tags default to all six. Explicit dispatch targets override either default.
   # The single source of truth is scripts/release-targets.json.
   prepare-matrix:
@@ -56,7 +56,7 @@ jobs:
 
           requested_raw = os.environ.get("REQUESTED", "").strip()
           if not requested_raw and "-beta." in os.environ["RELEASE_TAG"]:
-              requested_raw = "macos-arm64,macos-x86_64"
+              requested_raw = "macos-arm64"
           if not requested_raw:
               selected = all_targets
           else:
@@ -114,12 +114,11 @@ jobs:
     name: ${{ matrix.name }}
     needs: [validate-changelog, prepare-matrix]
     runs-on: ${{ matrix.runner }}
-    cache-mode: read
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       # Resolved from scripts/release-targets.json by `prepare-matrix`.
-      # Beta tag pushes build both macOS targets, never Linux or Windows.
+      # Beta tag pushes build macOS ARM64 only, never Intel, Linux or Windows.
       matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
