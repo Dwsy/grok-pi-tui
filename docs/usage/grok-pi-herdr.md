@@ -1,6 +1,6 @@
 # Herdr integration for grok-pi
 
-`grok-pi` includes an opt-in, headless Herdr lifecycle bridge. It needs no separate Pi integration install and is a silent no-op when the process is not running inside Herdr.
+`grok-pi` includes a default-on, headless Herdr lifecycle bridge. It needs no separate Pi integration install and is a silent no-op when the process is not running inside Herdr.
 
 The bridge reports the native Pi session identity plus authoritative `working`, `blocked`, and `idle` lifecycle state through Herdr's local socket. It does not add another terminal UI and does not modify Pi or Herdr files in your home directory.
 
@@ -41,8 +41,8 @@ The bridge reports the native Pi session identity plus authoritative `working`, 
 
 Open **F2 → Agent → Pi Herdr integration**.
 
-- `off` is the default.
-- Set it to `on` to enable the built-in bridge when running inside Herdr.
+- `on` is the default; it reports only inside Herdr.
+- Set it to `off` to disable the built-in bridge.
 - Restart the whole `grok-pi` process after changing it.
 
 The equivalent config is:
@@ -52,7 +52,7 @@ The equivalent config is:
 pi_herdr = true
 ```
 
-Set it to `false`, or remove the key, to disable it. `grok-pi --no-extensions` also skips this and every other bundled bridge extension for that process.
+Set it to `false` to disable it; removing the key restores the default `true`. `grok-pi --no-extensions` also skips this and every other bundled bridge extension for that process.
 
 ## Interaction with Herdr's stock Pi integration
 
@@ -73,3 +73,5 @@ No global integration is removed or rewritten, so stock `pi` can continue using 
 - Restart `grok-pi` after changing the F2 setting.
 - If all bundled extensions were disabled with `--no-extensions`, start without that flag.
 - The bridge fails closed: if the local socket is missing or unavailable, `grok-pi` continues normally without lifecycle reporting.
+- Check `~/.grok-pi/logs/pi-rpc-stderr.log` for `[pi-grok-herdr]` socket/API failures. The bridge validates JSON responses and retries a bounded number of times.
+- Run `herdr pane process-info --pane <PANE_ID>` and `herdr agent explain <PANE_ID> --json`. Full Header ownership requires `screen_detection_skipped=true` with `full_lifecycle_hook_authority`; a successful socket response alone does not prove Herdr accepted the lifecycle state.

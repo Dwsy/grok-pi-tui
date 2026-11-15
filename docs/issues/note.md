@@ -5,7 +5,7 @@
 - [x] `/resume` 的会话预览中，Esc 返回会话列表而非关闭弹窗。
 - [x] `/model` 选择项显示“模型名称 + 提供商”。
 - [x] 成功切换模型后，用新模型的上下文窗口更新上下文最大值，保留已用 token 数。
-- [x] Herdr 桥接插件默认关闭，可通过 F2 `[ui].pi_herdr` 启用（重启生效）。
+- [x] Herdr 桥接插件默认开启（仅在 Herdr 内生效），可通过 F2 `[ui].pi_herdr` 关闭（重启生效）。
 - [x] Pi 模式仅暴露 Normal/Plan；`/plan-mode` 与 Ctrl+Shift+T 切换（`/plan` 仅进入），Shift+Tab 正确显示并执行 thinking level 切换。
 - [x] Dashboard 对 Pi 单 session RPC host 做串行隔离：运行中阻止二次 dispatch，新 session 创建前移除旧 live AgentView，避免用户提示词/上下文串线。
 - [x] `/resume` 改用 `get_entries` 回放 active branch，渲染压缩前消息及可见 summary/custom entry；旧 host 回退 `get_messages`。
@@ -20,7 +20,7 @@
 - 预览模式按 Esc 后仍停留在 `/resume` 会话选择器。
 - 同名模型可通过显示的提供商区分。
 - 已显示上下文使用量时，切换到不同窗口大小的模型会立刻更新最大值。
-- 缺少 `ui.pi_herdr` 配置时不注入 Herdr 扩展。
+- 缺少 `ui.pi_herdr` 配置时按默认值注入 Herdr 扩展；`false` 才明确关闭。
 - Pi 模式切换只在 Normal/Plan 间往返；Shift+Tab 提示为 thinking，Dashboard 模式提示为 Ctrl+Shift+T。
 - Dashboard 不会在一个 Pi RPC host 上保留多个可写 live AgentView，运行中的 turn 也不会被新 dispatch 重定向。
 - Resume 可看到最近一次压缩之前的历史；`/pi-share` gist 文件名为 `session.html`。

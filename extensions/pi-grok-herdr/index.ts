@@ -20,33 +20,58 @@ function requestId(kind) {
 }
 
 function deliverOnce(request, timeoutMs) {
-  if (!isEnabled()) return Promise.resolve(true);
-
   return new Promise((resolve) => {
     const socket = net.createConnection(SOCKET_ENDPOINT);
     let settled = false;
     let timer;
+    let buffer = "";
 
-    const finish = (delivered) => {
+    const finish = (result) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       socket.destroy();
-      resolve(delivered);
+      resolve(result);
     };
 
-    socket.on("error", () => finish(false));
+    socket.on("error", () => finish({ ok: false, reason: "socket error" }));
     socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
-    socket.on("data", () => finish(true));
-    socket.on("end", () => finish(false));
-    timer = setTimeout(() => finish(false), timeoutMs);
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString();
+      if (buffer.length > 65536) {
+        finish({ ok: false, reason: "response too large" });
+        return;
+      }
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      try {
+        const response = JSON.parse(buffer.slice(0, newline));
+        if (response?.id === request.id && response.result && !response.error) {
+          finish({ ok: true });
+        } else {
+          finish({ ok: false, reason: response?.error?.code ?? "invalid response" });
+        }
+      } catch {
+        finish({ ok: false, reason: "invalid JSON" });
+      }
+    });
+    socket.on("end", () => finish({ ok: false, reason: "connection closed" }));
+    timer = setTimeout(() => finish({ ok: false, reason: "timeout" }), timeoutMs);
     timer.unref?.();
   });
 }
 
+let deliveryFailed = false;
 async function deliver(request) {
-  if (await deliverOnce(request, 500)) return;
-  await deliverOnce(request, 1500);
+  let result = await deliverOnce(request, 500);
+  if (!result.ok) result = await deliverOnce(request, 1500);
+  if (result.ok) {
+    deliveryFailed = false;
+  } else if (!deliveryFailed) {
+    // The Pi RPC stderr reader captures this without corrupting JSONL stdout.
+    console.error(`[pi-grok-herdr] ${request.method} failed: ${result.reason}`);
+    deliveryFailed = true;
+  }
 }
 
 let sequence = Date.now() * 1000;
@@ -84,11 +109,11 @@ function sessionFields() {
   return {};
 }
 
-async function reportSession(reason) {
+function reportSession(reason) {
   const fields = sessionFields();
   if (Object.keys(fields).length === 0) return;
 
-  await deliver({
+  enqueue({
     id: requestId("session"),
     method: "pane.report_agent_session",
     params: {
@@ -102,8 +127,8 @@ async function reportSession(reason) {
   });
 }
 
-async function reportState(state, message, seq) {
-  await deliver({
+function reportState(state, message) {
+  enqueue({
     id: requestId("state"),
     method: "pane.report_agent",
     params: {
@@ -112,32 +137,37 @@ async function reportState(state, message, seq) {
       agent: AGENT,
       state,
       message,
-      seq,
+      seq: nextSequence(),
       ...sessionFields(),
     },
   });
 }
 
+const pendingReports = [];
 let sending = false;
-let pendingState;
 
-function enqueueState(state, message) {
-  pendingState = { state, message, seq: nextSequence() };
-  if (!sending) void flushStates();
+function enqueue(request) {
+  // Preserve session-before-state ordering across all lifecycle callbacks.
+  // Only unsent consecutive states may be collapsed; never cross a session report.
+  const last = pendingReports.at(-1);
+  if (last?.method === "pane.report_agent" && request.method === "pane.report_agent") {
+    pendingReports[pendingReports.length - 1] = request;
+  } else {
+    pendingReports.push(request);
+  }
+  if (!sending) void flushReports();
 }
 
-async function flushStates() {
+async function flushReports() {
   if (sending) return;
   sending = true;
   try {
-    while (pendingState) {
-      const report = pendingState;
-      pendingState = undefined;
-      await reportState(report.state, report.message, report.seq);
+    while (pendingReports.length > 0) {
+      await deliver(pendingReports.shift());
     }
   } finally {
     sending = false;
-    if (pendingState) void flushStates();
+    if (pendingReports.length > 0) void flushReports();
   }
 }
 
@@ -161,7 +191,7 @@ export default function installHerdrLifecycle(pi) {
     if (!force && next.state === lastState && next.message === lastMessage) return;
     lastState = next.state;
     lastMessage = next.message;
-    enqueueState(next.state, next.message);
+    reportState(next.state, next.message);
   }
 
   pi.events.on("herdr:blocked", (event) => {
@@ -177,13 +207,14 @@ export default function installHerdrLifecycle(pi) {
     publish();
   });
 
-  pi.on("session_start", async (event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
     if (ctx?.hasUI !== true) return;
 
     rootInteractiveSession = true;
     refreshSession(ctx);
-    // Session identity must reach Herdr before state for /new, /resume, /fork, and /reload.
-    await reportSession(event?.reason);
+    reportSession(event?.reason);
+    blockerDepth = 0;
+    blockerLabel = undefined;
     agentWorking = ctx?.isIdle?.() === false;
     publish(true);
   });
@@ -192,7 +223,7 @@ export default function installHerdrLifecycle(pi) {
     if (!rootInteractiveSession) return;
 
     refreshSession(ctx);
-    void reportSession();
+    reportSession();
     agentWorking = true;
     publish();
   });

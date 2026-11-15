@@ -392,7 +392,7 @@ async fn run(mut args: Args) -> Result<()> {
         .collect::<Vec<_>>();
     let host_feature_enabled =
         |key: HostFeatureKey| enabled_host_features.iter().any(|spec| spec.key == key);
-    // F2 `[ui].pi_herdr` (default off). Outside Herdr the extension is a silent no-op.
+    // F2 `[ui].pi_herdr` (default on). Outside Herdr the extension is a silent no-op.
     let herdr_extension = if host_feature_enabled(PI_HERDR) {
         Some(write_herdr_extension().context("failed to create Pi Herdr extension")?)
     } else {

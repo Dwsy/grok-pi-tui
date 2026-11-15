@@ -20,6 +20,7 @@
 | Agent Dashboard | 原生+适配 | 原生 `/dashboard` · Ctrl+\\ · 列表/peek/dispatch；Pi 的单 session RPC host 同时仅保留一个 live AgentView，turn 忙时阻止二次 dispatch，已完成 session 经 `pi/session/list` → `pi/ui/session_catalog` 回到 dormant roster；不接 Grok leader FleetView |
 | Prompt editing | 原生 | PromptWidget |
 | 设置面板（F2） | 原生（grok-pi 自有surface） | grok-pi 自带分页设置面板（`views/pi_settings`），入口为 **F2**、`/settings` 与命令面板：每个设置分类一个原生 `ModalWindow` Tab，Tab 内左侧 section 侧边栏（非活动 section 整行变暗），焦点行说明固定在底部 3 行区块，`/` 跨 Tab 搜索。键位：`↑/↓/j/k` 移动行、`←/→/h/l` 切 Tab、`Tab` 进入 section 焦点、`Space`/`Enter` 修改、`g/G` 首尾、`d` 重置为默认（y/n 确认）。与上游共用 `crate::settings` 注册表，设置项、默认值与 `Action::Set*` 完全一致。上游 `views/settings_modal` 一行未改，仍可通过 `Action::OpenSettings` 打开。 |
+| Herdr Header 生命周期 | 适配 | F2 `[ui].pi_herdr` **默认开启**（重启生效）。Pi RPC 扩展向 Herdr 按顺序上报 session 与 `working`/`blocked`/`idle`；在 Herdr 外无动作，设置为 `false` 可关闭。Header 最终接管仍受 Herdr 的进程和会话安全检查限制。 |
 | Multiline / Vim mode | 原生 | Grok slash/settings |
 | Theme / timestamps / mouse | 原生+适配 | Grok appearance/input；Pi 主题 JSON 经 `theme::pi` 映射为 Grok `Theme`，`/theme` 可选 `pi:<name>`；内置实验性 `pi:transparent`（暗色）与 `pi:transparent-light`（浅色）将主画布交给终端默认背景（用于终端透明度/毛玻璃），同时保留选中态、代码、diff 与工具表面的实色；F2 可控制 OSC 9;4 terminal-tab progress，默认关闭 |
 | Markdown / code blocks | 原生+适配 | Pi text/reasoning → ACP chunks → `xai-grok-markdown` |

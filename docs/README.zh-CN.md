@@ -166,7 +166,7 @@ Subagents V2 的 team preset 使用 JSON，放在 `<repo>/.grok-pi/teams` 或 `~
 
 Rhai Workflow **默认关闭**（F2 → Agent → **Pi workflows**，改完后需**整进程重启**）。细节见 [功能矩阵](FEATURE_MATRIX.zh-CN.md)、[AGENTS.md 产品态隔离](../AGENTS.md#product-state-isolation)。
 
-Herdr 生命周期上报**默认关闭**。可在 F2 → Agent → **Pi Herdr integration** 中开启，然后重启。详见 [Herdr 设置指南](usage/grok-pi-herdr.zh-CN.md)。
+Herdr 生命周期上报**默认开启**，在 Herdr 外自动不生效。如需关闭，可在 F2 → Agent → **Pi Herdr integration** 中禁用并重启。详见 [Herdr 设置指南](usage/grok-pi-herdr.zh-CN.md)。
 
 使用 `--no-extensions`（`-ne`）可关闭 Pi 扩展自动发现；显式 `-e` 路径与 grok-pi 宿主桥接仍会加载。使用 `--no-bridge-extensions` 可关闭内置宿主桥接；组合两个开关可实现完全无扩展启动。Pi 启动参数可放在 `--` 之后直接传递：
 
@@ -177,6 +177,8 @@ grok-pi -- --model openai/gpt-4o
 插件开发时用 `--extensions-dev <DIR>`（或环境变量 `PI_GROK_EXTENSIONS_DEV`）可让 grok-pi 从 `<DIR>/<name>/index.ts` 加载内置 Pi 扩展，而不是二进制里 `include_str!` 编译进去的临时副本。功能开关不变，因此改完插件只需重启、无需重新编译；`<DIR>` 缺失或缺少某个已启用扩展的 `index.ts` 会直接启动失败。
 
 ## 从源码构建
+
+**代理执行规则：禁止运行 Cargo，除非用户明确要求。** 这包括所有 Cargo 子命令，以及通过构建或验证脚本、包装器、钩子和委派代理间接调用 Cargo。默认只做静态审查和非 Rust 检查；清理构建缓存直接操作文件系统，不调用 Cargo。详见 [AGENTS.md](../AGENTS.md#build-and-verification)。以下命令仅供用户明确要求构建或验证时使用。
 
 环境要求：Rust **1.97.0**、Node.js **22.19.0 或更高版本**、npm，以及系统 Pi 安装。首次源码构建需要获取固定版本的 Ondine Git 依赖。
 

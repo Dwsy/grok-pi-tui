@@ -1,6 +1,6 @@
 # grok-pi 的 Herdr 集成
 
-`grok-pi` 现在内置一个可选的无界面 Herdr 生命周期桥接。不需要单独安装 Pi 集成；当进程不在 Herdr 中运行时，它会静默不做任何事。
+`grok-pi` 现在内置一个默认开启的无界面 Herdr 生命周期桥接。不需要单独安装 Pi 集成；当进程不在 Herdr 中运行时，它会静默不做任何事。
 
 桥接通过 Herdr 本地 socket 上报原生 Pi 会话标识，以及权威的 `working`、`blocked`、`idle` 状态。它不会创建第二套终端 UI，也不会修改用户目录中的 Pi 或 Herdr 文件。
 
@@ -41,8 +41,8 @@
 
 打开 **F2 → Agent → Pi Herdr integration**。
 
-- 默认值是 `off`。
-- 在 Herdr 中运行时改为 `on` 会开启内置桥接。
+- 默认值是 `on`，但仅在 Herdr 环境中实际发送报告。
+- 如需关闭内置桥接，可改为 `off`。
 - 修改后需要完整重启 `grok-pi` 进程。
 
 等价配置为：
@@ -52,7 +52,7 @@
 pi_herdr = true
 ```
 
-改为 `false` 或删除该键即可关闭。`grok-pi --no-extensions` 也会在当前进程中跳过它以及所有其他内置桥接扩展。
+改为 `false` 可以关闭；删除该键会恢复默认开启。`grok-pi --no-extensions` 也会在当前进程中跳过它以及所有其他内置桥接扩展。
 
 ## 与 Herdr 官方 Pi 集成的关系
 
@@ -73,3 +73,5 @@ Herdr 可通过 `herdr integration install pi` 安装面向 stock Pi 的托管�
 - 修改 F2 设置后重启 `grok-pi`。
 - 如果使用了 `--no-extensions`，去掉该参数后重试。
 - 桥接采用失败关闭策略：本地 socket 不存在或不可用时，`grok-pi` 会继续正常运行，只是不再上报生命周期。
+- 查看 `~/.grok-pi/logs/pi-rpc-stderr.log` 中的 `[pi-grok-herdr]` 错误；Bridge 会校验 Herdr Socket API 的 JSON 应答，错误会有限重试。
+- 使用 `herdr pane process-info --pane <PANE_ID>` 检查前台进程，并运行 `herdr agent explain <PANE_ID> --json`。只有 `screen_detection_skipped=true` 且原因为 `full_lifecycle_hook_authority`，才代表 Header 已由生命周期接管。Socket 成功回复不保证 Herdr 内部已接纳该状态。

@@ -43,7 +43,9 @@ async function waitFor(predicate, message) {
   assert.fail(message);
 }
 
-async function recordingServer(socketPath) {
+async function recordingServer(socketPath, respond = (request, socket) => {
+  socket.end(JSON.stringify({ id: request.id, result: { type: "ok" } }) + "\n");
+}) {
   const requests = [];
   const server = net.createServer((socket) => {
     let buffer = "";
@@ -52,8 +54,9 @@ async function recordingServer(socketPath) {
       buffer += chunk;
       const newline = buffer.indexOf("\n");
       if (newline < 0) return;
-      requests.push(JSON.parse(buffer.slice(0, newline)));
-      socket.end("{}\n");
+      const request = JSON.parse(buffer.slice(0, newline));
+      requests.push(request);
+      respond(request, socket, requests);
     });
   });
   await new Promise((resolve, reject) => {
@@ -135,6 +138,7 @@ test("reports ordered session, working, blocked, and settled states", { concurre
     assert.equal(requests[0].params.session_start_source, "startup");
     assert.equal(requests[0].params.source, "herdr:pi");
     assert.equal(requests[1].params.state, "idle");
+    assert.ok(requests[0].params.seq < requests[1].params.seq);
 
     idle = false;
     h.lifecycle.get("agent_start")({}, ctx);
@@ -166,7 +170,142 @@ test("reports ordered session, working, blocked, and settled states", { concurre
       .filter((r) => r.method === "pane.report_agent")
       .map((r) => r.params.state);
     assert.deepEqual(states, ["idle", "working", "blocked", "idle"]);
+    assert.ok(requests.every((r, i) => i === 0 || r.params.seq > requests[i - 1].params.seq));
   } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (saved.env === undefined) delete process.env.HERDR_ENV;
+    else process.env.HERDR_ENV = saved.env;
+    if (saved.socket === undefined) delete process.env.HERDR_SOCKET_PATH;
+    else process.env.HERDR_SOCKET_PATH = saved.socket;
+    if (saved.pane === undefined) delete process.env.HERDR_PANE_ID;
+    else process.env.HERDR_PANE_ID = saved.pane;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("serializes agent_start session and state, including session replacement", { concurrency: false }, async (t) => {
+  if (process.platform === "win32") t.skip("Unix socket smoke test");
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "pi-grok-herdr-order-"));
+  const socketPath = path.join(tempDir, "herdr.sock");
+  const { requests, server } = await recordingServer(socketPath, (request, socket, all) => {
+    const respond = () => socket.end(JSON.stringify({
+      id: request.id, result: { type: "ok" },
+    }) + "\n");
+    if (all.length === 1) setTimeout(respond, 80);
+    else respond();
+  });
+  const saved = {
+    env: process.env.HERDR_ENV,
+    socket: process.env.HERDR_SOCKET_PATH,
+    pane: process.env.HERDR_PANE_ID,
+  };
+  process.env.HERDR_ENV = "1";
+  process.env.HERDR_SOCKET_PATH = socketPath;
+  process.env.HERDR_PANE_ID = "w-test:p2";
+
+  try {
+    const { default: install } = await importFresh(tempDir, "order");
+    const h = harness();
+    install(h.pi);
+    let id = "session-a";
+    let idle = true;
+    const ctx = {
+      hasUI: true,
+      isIdle: () => idle,
+      sessionManager: {
+        getSessionFile: () => undefined,
+        getSessionId: () => id,
+      },
+    };
+
+    // Fire callbacks synchronously to expose any session/state send race.
+    h.lifecycle.get("session_start")({ reason: "startup" }, ctx);
+    idle = false;
+    h.lifecycle.get("agent_start")({}, ctx);
+    await waitFor(() => requests.length === 1, "first session report dispatched");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(requests.length, 1, "state must wait for session acknowledgment");
+    await waitFor(() => requests.length >= 4, "initial state and agent_start reports");
+    assert.deepEqual(requests.slice(0, 4).map((r) => r.method), [
+      "pane.report_agent_session", "pane.report_agent",
+      "pane.report_agent_session", "pane.report_agent",
+    ]);
+    assert.deepEqual(requests.slice(0, 4).map((r) => r.params.agent_session_id), [
+      "session-a", "session-a", "session-a", "session-a",
+    ]);
+
+    id = "session-b";
+    idle = true;
+    h.lifecycle.get("session_start")({ reason: "resume" }, ctx);
+    await waitFor(() => requests.length >= 6, "replacement session and idle reports");
+    assert.deepEqual(requests.slice(4, 6).map((r) => r.method), [
+      "pane.report_agent_session", "pane.report_agent",
+    ]);
+    assert.equal(requests[4].params.session_start_source, "resume");
+    assert.deepEqual(requests.slice(4, 6).map((r) => r.params.agent_session_id), [
+      "session-b", "session-b",
+    ]);
+    assert.ok(requests.every((r, i) => i === 0 || r.params.seq > requests[i - 1].params.seq));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (saved.env === undefined) delete process.env.HERDR_ENV;
+    else process.env.HERDR_ENV = saved.env;
+    if (saved.socket === undefined) delete process.env.HERDR_SOCKET_PATH;
+    else process.env.HERDR_SOCKET_PATH = saved.socket;
+    if (saved.pane === undefined) delete process.env.HERDR_PANE_ID;
+    else process.env.HERDR_PANE_ID = saved.pane;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("rejects API errors instead of treating socket data as an acknowledgment", { concurrency: false }, async (t) => {
+  if (process.platform === "win32") t.skip("Unix socket smoke test");
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "pi-grok-herdr-error-"));
+  const socketPath = path.join(tempDir, "herdr.sock");
+  const { requests, server } = await recordingServer(socketPath, (request, socket) => {
+    const response = {
+      id: request.id,
+      error: { code: "pane_not_found", message: "pane not found" },
+    };
+    const json = JSON.stringify(response) + "\n";
+    // A response can arrive in multiple chunks.
+    socket.write(json.slice(0, 9));
+    socket.end(json.slice(9));
+  });
+  const saved = {
+    env: process.env.HERDR_ENV,
+    socket: process.env.HERDR_SOCKET_PATH,
+    pane: process.env.HERDR_PANE_ID,
+  };
+  const logged = [];
+  const originalError = console.error;
+  console.error = (...args) => logged.push(args.join(" "));
+  process.env.HERDR_ENV = "1";
+  process.env.HERDR_SOCKET_PATH = socketPath;
+  process.env.HERDR_PANE_ID = "w-test:p3";
+
+  try {
+    const { default: install } = await importFresh(tempDir, "error");
+    const h = harness();
+    install(h.pi);
+    h.lifecycle.get("session_start")({ reason: "startup" }, {
+      hasUI: true,
+      isIdle: () => true,
+      sessionManager: {
+        getSessionFile: () => undefined,
+        getSessionId: () => "session-error",
+      },
+    });
+
+    await waitFor(() => logged.length > 0, "failed API response diagnostic");
+    assert.match(logged[0], /pane.report_agent_session failed: pane_not_found/);
+    assert.equal(requests[0].id, requests[1].id, "retry preserves request identity");
+    assert.equal(requests[0].params.seq, requests[1].params.seq);
+    await waitFor(() => requests.some((r) => r.method === "pane.report_agent"), "state after session failure");
+  } finally {
+    console.error = originalError;
     await new Promise((resolve) => server.close(resolve));
     if (saved.env === undefined) delete process.env.HERDR_ENV;
     else process.env.HERDR_ENV = saved.env;

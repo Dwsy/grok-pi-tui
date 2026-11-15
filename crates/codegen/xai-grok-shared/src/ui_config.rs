@@ -140,8 +140,8 @@ pub struct UiConfig {
     #[serde(default)]
     pub pi_tree_skip_summary_prompt: bool,
     /// Report authoritative Pi lifecycle and session state to Herdr.
-    /// Default off; takes effect for new sessions only.
-    #[serde(default)]
+    /// Default on; the bridge is inert outside Herdr. Takes effect for new sessions.
+    #[serde(default = "default_true")]
     pub pi_herdr: bool,
     /// Render the text Pi extensions set via `ctx.ui.setWorkingMessage()` in the
     /// turn status row, replacing `Thinking` / `ToolRunning` / `WritingToolCall`
@@ -607,7 +607,7 @@ impl Default for UiConfig {
             psm_resume_index: false,
             pi_tree_file_rollback: false,
             pi_tree_skip_summary_prompt: false,
-            pi_herdr: false,
+            pi_herdr: true,
             pi_working_message: false,
             pi_subagents: true,
             pi_subagents_v2: true,
@@ -806,6 +806,16 @@ mod tests {
             let saved = serde_json::to_value(&ui).expect("[ui] serializes");
             assert!(saved.get("status_line").is_some(), "{json}");
         }
+    }
+
+    #[test]
+    fn herdr_integration_defaults_on_but_accepts_explicit_off() {
+        assert!(UiConfig::default().pi_herdr);
+        let missing: UiConfig = serde_json::from_str("{}").expect("missing setting");
+        assert!(missing.pi_herdr);
+        let disabled: UiConfig =
+            serde_json::from_str(r#"{"pi_herdr":false}"#).expect("explicit opt-out");
+        assert!(!disabled.pi_herdr);
     }
 
     #[test]

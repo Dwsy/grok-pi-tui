@@ -357,7 +357,7 @@ Reproducible commands for the V2-specific checks are also documented in `docs/us
 |---|---:|---|
 | Main history | PASS | ff-only from `906470c` to `1a52f81`; no rebase, squash, force update, or remote push |
 | Restored WIP | PASS | 64 paths (33 modified, 31 added), zero SHA-256 or mode mismatches against safety tip `3d4278d` |
-| Herdr extension | PASS | Node socket tests 2/2; Rust `grok-pi herdr` tests 3/3 |
+| Herdr extension | PARTIAL | Node socket tests 4/4 (2026-11-15); historical Rust `grok-pi herdr` tests 3/3, not rerun; rebuilt binary and live Header authority pending |
 | Model management | PASS | focused Pager model tests 12/12 |
 | Product compile | PASS | `cargo check -p xai-grok-pager-bin --bin grok-pi` |
 | CLI smoke | PASS | `target/debug/grok-pi --help` |

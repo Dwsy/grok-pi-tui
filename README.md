@@ -172,7 +172,7 @@ Enable V2 before startup (F2 toggle or `PI_GROK_SUBAGENTS_V2=1`); `/subagent-tea
 
 Rhai workflows are **off by default** (F2 → Agent → **Pi workflows**, then full restart). Details: [FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md), [AGENTS.md](AGENTS.md#product-state-isolation).
 
-Herdr lifecycle reporting is **off by default**. Enable it with F2 → Agent → **Pi Herdr integration**, then restart. See the [Herdr setup guide](docs/usage/grok-pi-herdr.md).
+Herdr lifecycle reporting is **on by default**, and inert outside Herdr. Disable it with F2 → Agent → **Pi Herdr integration** if needed, then restart. See the [Herdr setup guide](docs/usage/grok-pi-herdr.md).
 
 Use `--no-extensions` (`-ne`) to disable Pi extension auto-discovery; explicit `-e` paths and grok-pi host bridges still load. Use `--no-bridge-extensions` to disable the bundled host bridges, or combine both flags for a fully extension-free launch. Pi startup options can be passed directly after `--`.
 
@@ -183,6 +183,8 @@ grok-pi -- --model openai/gpt-4o
 ```
 
 ## Build from source
+
+**Agent rule: do not run Cargo unless the user explicitly requests it.** This includes all Cargo subcommands and indirect invocations through build/verification scripts, wrappers, hooks, or delegated agents. Use static review and non-Rust checks by default; clean build caches through filesystem operations without Cargo. See [AGENTS.md](AGENTS.md#build-and-verification). The commands below are for explicitly requested builds and verification.
 
 Requirements: Rust **1.97.0**, Node.js **22.19.0 or newer**, npm, and a system Pi installation. The first source build fetches the pinned Ondine Git dependency.
 
