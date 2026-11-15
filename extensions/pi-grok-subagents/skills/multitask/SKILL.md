@@ -23,7 +23,7 @@ description: 在 grok-pi Subagents V2 中按任务树启用 Multitask 异步多�
 - 消费者的依赖尚未就绪就先不创建它，不启动一个只会等待的 synthesizer。
 - root 为本次任务树最多分配 8 个新 agent identity；按分支分配互不重叠的剩余额度，不把全局额度重复发给每个 child。
 - 默认 root 深度 0，最多两层 child；每个 coordinator 通常最多 2 个直系 child。
-- 预算或深度不足时本地执行。深度和额度是本技能的软约定，runtime 目前只硬限全树 25 个后台执行槽。
+- 预算或深度不足时本地执行。深度和 identity 额度是本技能的软约定，runtime 不校验；唯一的硬限制是全树同时运行的后台执行数，默认 25，可在设置中配置为 1–256，只对新的 spawn 生效。
 - 同一目标已有路径时复用 `team_followup_task`，不重复 spawn。跟踪必需任务是否交付，不能把 idle 等同于完成目标。
 - 使用定义/用户允许的模型和能力；不擅自降低模型或提高权限。
 
@@ -31,10 +31,10 @@ description: 在 grok-pi Subagents V2 中按任务树启用 Multitask 异步多�
 
 1. 用 `spawn_team_agent` 启动就绪任务。它已是异步工具，无须虚构 `background` 参数。
 2. 默认用单个 `spawn_team_agent` 派发独立任务。只有核对过确实存在且成员任务/写域适合本次工作的 preset，才用 root 专有的 `spawn_team`，传真实 team 名称，省略 `timeout_ms` 或设 0，并通过 instructions 传契约。不要为了一个普通任务虚构 preset。
-3. 派发后立刻做自己可推进的工作，不读取结果做忙轮询，不调用 `team_wait` 占槽等依赖。
+3. 派发后立刻做自己可推进的工作，不读取结果做忙轮询，不用 `team_wait` 代替本地工作。
 4. 到真正依赖点且无本地工作时结束当前 turn：
-   - root：简短说明仍有哪项后台任务，结束本轮。等待 FINAL_ANSWER 自动触发后续 turn，不宣称整个任务已完成。
-   - child：有自己的 running/queued/WAITING_RESULT child 时，先 `team_report(state="waiting", summary="等待哪些下级及交付")`，然后结束本轮。runtime 释放本轮槽，结果会恢复同一个 child session。
+   - root：简短说明仍有哪项后台任务，结束本轮。等待 FINAL_ANSWER 自动触发后续 turn，不宣称整个任务已完成。root 可以用 `team_wait` 阻塞到匹配活动出现、超时（默认 120 s，上限 600 s）或被取消；但它不是默认的 multitask 等待方式，无本地工作时结束本轮更优。
+   - child：有自己的 running/queued/WAITING_RESULT child 时，先 `team_report(state="waiting", summary="等待哪些下级及交付")`，然后结束本轮。runtime 释放本轮槽，结果会恢复同一个 child session。child 调用 `team_wait` 时，若没有被观察的活跃 peer，会立刻返回（`idle=true`），以便它结束本轮而不继续占槽。
 5. 收到结果后核对 sender、任务、写域和证据，更新依赖，再做本地工作或派发下一项。
 6. 必需依赖全部验收后才报告交付；root 最终综合，不把 child 的一句话直接当作用户结论。
 
@@ -53,7 +53,7 @@ Multitask 契约（本任务显式授权）：
 - depth_left=[剩余可创建层数]；spawn_budget=[本分支可再创建的 agent identity 总数]。
 - 仅在有独立闭环、有并行收益且额度足够时创建自己的 child；不得扩展任务范围。
 - 复制本契约给下级，depth_left 减 1，分配不重复的剩余 spawn_budget。
-- spawn_team_agent 已异步；派发后继续本地工作。不要 team_wait、轮询或 shell sleep 等下级。
+- spawn_team_agent 已异步；派发后继续本地工作。不要轮询或 shell sleep 等下级；child 不要用 team_wait 占槽。
 - 自己的下级仍 running/queued 且没有本地工作时，team_report waiting 后结束 turn；结果会恢复本会话。waiting 不代表完成。
 - 完成并验收所有必需交付后 team_report ready；需父级决定时 blocked + question；失败时 failed；确实无需父级行动才 dropped。
 - report summary 必须带结论和可核查证据路径/关键验证结果；它会替换父级收到的最终文本。
@@ -89,7 +89,7 @@ waiting 仅适用于自己的 active child。依赖已完成就处理已有结�
 
 所有 V2 agent 共享 cwd。按文件或模块指定唯一 writer；两个任务都要改热点文件时串行执行，让另一个只读审查。当前 spawn 不支持 workdir，不虚构 worktree 隔离。
 
-取消时查看任务树，逐个处理本任务的 running/queued 后代；现有 team_interrupt 不会级联。不要把长期静默自动判成卡死：quiet 只是 team 通信间隔。遇到 parent 失败或不可达，保留证据并向仍可联系的上级说明，不无限重派。
+取消时查看任务树，逐个处理本任务的 running/queued 后代；现有 team_interrupt 不会级联。对 queued agent，interrupt 把它移出并发队列并直接标记 cancelled（尚未开始执行）；对 running agent，interrupt 中止其会话。不要把长期静默自动判成卡死：quiet 只是 team 通信间隔。遇到 parent 失败或不可达，保留证据并向仍可联系的上级说明，不无限重派。
 
 ## 结束前核对
 
@@ -97,4 +97,4 @@ waiting 仅适用于自己的 active child。依赖已完成就处理已有结�
 - 没有 Agent 占执行槽等自己的排队后代；waiting report 后已经结束 turn。
 - 没有把 waiting/idle 当成目标完成，没有悬空 blocked。
 - 根任务所有必需交付已验收，关键验证有真实输出。
-- 未实现的硬预算、DAG/写锁、取消级联、跨进程恢复或忙碌输入队列转换没有被宣称为已支持。
+- 未实现的 identity/深度硬预算、DAG/写锁、取消级联、跨进程恢复或忙碌输入队列转换没有被宣称为已支持。
