@@ -1497,6 +1497,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "timeline_haptics" => {
+            let SettingValue::Enum(value) = value else {
+                return Err(kind_mismatch("timeline_haptics", "Enum", &value));
+            };
+            xai_grok_shell::util::config::set_timeline_haptics(value.to_string())
+                .await
+                .map_err(|e| e.to_string())
+        }
         "ctrl_o_tool_expansion" => {
             let SettingValue::Enum(value) = value else {
                 return Err(kind_mismatch("ctrl_o_tool_expansion", "Enum", &value));

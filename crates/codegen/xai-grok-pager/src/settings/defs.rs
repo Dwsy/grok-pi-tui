@@ -41,6 +41,29 @@ const TOOL_CARD_CLICK_ACTION_CHOICES: &[EnumChoice] = &[
     },
 ];
 
+const TIMELINE_HAPTICS_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "off",
+        display: "Off",
+        description: "No trackpad feedback at all.",
+    },
+    EnumChoice {
+        canonical: "light",
+        display: "Light",
+        description: "Soft guide-snap pulse. Easiest to miss on a light trackpad setting.",
+    },
+    EnumChoice {
+        canonical: "medium",
+        display: "Medium",
+        description: "One simulated detent per crossed tick. Default.",
+    },
+    EnumChoice {
+        canonical: "strong",
+        display: "Strong",
+        description: "Harder detent, doubled. Use when Medium is still too faint.",
+    },
+];
+
 const PI_EVAL_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "v1",
@@ -1311,6 +1334,35 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
             external_only: true,
+        },
+        // SHELL-owned: `[ui].timeline_haptics`. macOS only; the strength maps
+        // onto an AppKit feedback pattern and a pulse count.
+        SettingMeta {
+            key: "timeline_haptics",
+            category: SettingCategory::Mouse,
+            owner: SettingOwner::Shell,
+            label: "Timeline hover haptics",
+            description: "Trackpad feedback when the pointer crosses a timeline tick (macOS only). Stronger levels use a harder detent and pulse once per crossed tick.",
+            keywords: &[
+                "haptic",
+                "haptics",
+                "trackpad",
+                "feedback",
+                "vibration",
+                "timeline",
+                "rail",
+                "tick",
+                "hover",
+                "buzz",
+            ],
+            kind: SettingKind::Enum {
+                default: "medium",
+                choices: TIMELINE_HAPTICS_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: true,
+            external_only: false,
         },
         SettingMeta {
             key: "tool_card_click_action",

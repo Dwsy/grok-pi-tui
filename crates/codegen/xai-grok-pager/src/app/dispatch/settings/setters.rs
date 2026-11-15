@@ -715,6 +715,35 @@ pub(in crate::app::dispatch) fn set_tool_card_click_action(
     }]
 }
 
+pub(super) fn set_timeline_haptics_inner(
+    app: &mut AppView,
+    new: crate::appearance::cache::TimelineHapticStrength,
+) {
+    crate::appearance::cache::set_timeline_haptics(new);
+    app.current_ui.timeline_haptics = Some(new.as_canonical().to_string());
+}
+
+pub(in crate::app::dispatch) fn set_timeline_haptics(
+    app: &mut AppView,
+    new: String,
+) -> Vec<Effect> {
+    let Some(new) = crate::appearance::cache::TimelineHapticStrength::from_canonical(&new) else {
+        return vec![];
+    };
+    let prev = crate::appearance::cache::load_timeline_haptics();
+    if prev == new {
+        return vec![];
+    }
+    set_timeline_haptics_inner(app, new);
+    refresh_open_settings_modals(app);
+    app.show_toast(&format!("Timeline haptics: {}", new.as_canonical()));
+    vec![Effect::PersistSetting {
+        key: "timeline_haptics",
+        value: crate::settings::SettingValue::Enum(new.as_canonical()),
+        rollback_value: crate::settings::SettingValue::Enum(prev.as_canonical()),
+    }]
+}
+
 pub(super) fn set_pi_bash_run_display_inner(
     app: &mut AppView,
     new: crate::appearance::ExecuteHeaderContent,

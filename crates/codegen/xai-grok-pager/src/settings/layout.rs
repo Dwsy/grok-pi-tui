@@ -76,6 +76,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         // -- Mouse -----------------------------------------------------------
         "scroll_speed" | "scroll_mode" | "scroll_lines" | "invert_scroll" => "Scrolling",
         "keep_text_selection" | "tool_card_click_action" => "Selection",
+        "timeline_haptics" => "Scrolling",
 
         // -- Editor ----------------------------------------------------------
         "combine_queued_prompts"

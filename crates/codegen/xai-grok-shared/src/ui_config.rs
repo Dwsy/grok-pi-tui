@@ -46,6 +46,41 @@ impl ToolCardClickAction {
     }
 }
 
+/// Trackpad feedback strength for pointer crossings on the timeline rail.
+///
+/// Ordered weakest to strongest: the settings modal presents them as a
+/// progression, and the haptic layer maps each level onto an AppKit pattern.
+/// macOS only — other platforms never pulse.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TimelineHapticStrength {
+    Off,
+    Light,
+    #[default]
+    Medium,
+    Strong,
+}
+
+impl TimelineHapticStrength {
+    pub fn from_canonical(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "light" => Some(Self::Light),
+            "medium" => Some(Self::Medium),
+            "strong" => Some(Self::Strong),
+            _ => None,
+        }
+    }
+
+    pub fn as_canonical(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Light => "light",
+            Self::Medium => "medium",
+            Self::Strong => "strong",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -383,6 +418,12 @@ pub struct UiConfig {
     /// Tool-card click action: select (default), toggle, or open_viewer (same as Enter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_card_click_action: Option<String>,
+    /// Trackpad feedback strength when the pointer crosses a timeline tick:
+    /// `off` | `light` | `medium` (default) | `strong`.
+    /// macOS only; other platforms never pulse. Written by the pager's settings
+    /// modal and applied live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_haptics: Option<String>,
     /// Header content for grok-pi Bash/run tool cards:
     /// `command_only` | `task_name` (default) | `task_name_and_command`.
     /// Written by the pager's F2 settings modal and applied live.
@@ -635,6 +676,7 @@ impl Default for UiConfig {
             codemode_expanded_by_default: None,
             ctrl_o_tool_expansion: None,
             tool_card_click_action: None,
+            timeline_haptics: None,
             pi_bash_run_display: None,
             prompt_suggestions: None,
             cursor_blink: None,

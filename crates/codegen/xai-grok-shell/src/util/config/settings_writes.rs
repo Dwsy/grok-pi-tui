@@ -526,6 +526,15 @@ pub async fn set_tool_card_click_action(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.tool_card_click_action = Some(value)).await
 }
 
+/// Persist `[ui].timeline_haptics` (`off` | `light` | `medium` | `strong`).
+pub async fn set_timeline_haptics(value: String) -> Result<()> {
+    anyhow::ensure!(
+        xai_grok_shared::ui_config::TimelineHapticStrength::from_canonical(&value).is_some(),
+        "invalid timeline haptic strength"
+    );
+    update_config(|cfg| cfg.ui.timeline_haptics = Some(value)).await
+}
+
 /// Persist `[ui].pi_bash_run_display`.
 pub async fn set_pi_bash_run_display(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_bash_run_display = Some(value)).await

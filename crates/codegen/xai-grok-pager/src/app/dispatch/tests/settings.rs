@@ -48,6 +48,43 @@ fn tool_card_click_action_persists_and_rolls_back_live() {
     });
 }
 
+#[test]
+fn timeline_haptics_persists_and_rolls_back_live() {
+    use crate::appearance::cache::TimelineHapticStrength;
+    use crate::settings::SettingValue;
+    with_theme_test_env(|| {
+        let previous = crate::appearance::cache::load_timeline_haptics();
+        let mut app = test_app_with_agent();
+        crate::appearance::cache::set_timeline_haptics(TimelineHapticStrength::Medium);
+        app.current_ui.timeline_haptics = None;
+        assert!(dispatch(Action::SetTimelineHaptics("invalid".into()), &mut app).is_empty());
+        assert_eq!(app.current_ui.timeline_haptics, None);
+        for canonical in ["light", "strong", "off"] {
+            let effects = dispatch(Action::SetTimelineHaptics(canonical.into()), &mut app);
+            assert_eq!(app.current_ui.timeline_haptics.as_deref(), Some(canonical));
+            assert_eq!(
+                crate::appearance::cache::load_timeline_haptics().as_canonical(),
+                canonical
+            );
+            assert!(matches!(effects.as_slice(), [Effect::PersistSetting {
+                key: "timeline_haptics",
+                value: SettingValue::Enum(value),
+                rollback_value: SettingValue::Enum("medium"),
+            }] if *value == canonical));
+            // Re-applying the same strength must not re-persist.
+            assert!(dispatch(Action::SetTimelineHaptics(canonical.into()), &mut app).is_empty());
+            let _ =
+                apply_setting_rollback(&mut app, "timeline_haptics", &SettingValue::Enum("medium"));
+            assert_eq!(app.current_ui.timeline_haptics.as_deref(), Some("medium"));
+            assert_eq!(
+                crate::appearance::cache::load_timeline_haptics(),
+                TimelineHapticStrength::Medium
+            );
+        }
+        crate::appearance::cache::set_timeline_haptics(previous);
+    });
+}
+
 /// `Action::ToggleVimMode` flips the active agent's `vim_mode` field and the in-process pager cache (`load_vim_mode`) that seeds future agents.
 /// It emits `Effect::PersistSetting` so the new value lands in `[ui].vim_mode` in config.toml, and a second toggle restores the original.
 #[test]
@@ -1550,6 +1587,24 @@ fn pr13_set_show_tips_toast_includes_restart_marker() {
 /// Dispatches theme-mutating actions for the theme keys; callers must hold the theme test lock (wrap the test in [`with_theme_test_env`]).
 fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::SettingKey) {
     match key {
+        "timeline_haptics" => {
+            let default = crate::appearance::cache::TimelineHapticStrength::default();
+            let away = if crate::appearance::cache::load_timeline_haptics() == default {
+                "strong"
+            } else {
+                default.as_canonical()
+            };
+            let _ = dispatch(Action::SetTimelineHaptics(away.to_string()), app);
+        }
+        "tool_card_click_action" => {
+            let default = crate::appearance::cache::ToolCardClickAction::default();
+            let away = if crate::appearance::cache::load_tool_card_click_action() == default {
+                "toggle"
+            } else {
+                default.as_canonical()
+            };
+            let _ = dispatch(Action::SetToolCardClickAction(away.to_string()), app);
+        }
         "compact_mode" => {
             let _ = dispatch(Action::SetCompactMode(true), app);
         }

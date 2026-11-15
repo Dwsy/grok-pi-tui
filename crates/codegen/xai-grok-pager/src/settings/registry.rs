@@ -696,6 +696,9 @@ pub fn current_value_for(
         "tool_card_click_action" => Some(SettingValue::Enum(
             crate::appearance::cache::load_tool_card_click_action().as_canonical(),
         )),
+        "timeline_haptics" => Some(SettingValue::Enum(
+            crate::appearance::cache::load_timeline_haptics().as_canonical(),
+        )),
         "ctrl_o_tool_expansion" => Some(SettingValue::Enum(
             match ui.ctrl_o_tool_expansion.as_deref() {
                 Some("all_tools") => "all_tools",
@@ -1150,6 +1153,13 @@ mod tests {
                         *default,
                         ui.ctrl_o_tool_expansion.as_deref().unwrap_or("write_edit"),
                         "ctrl_o_tool_expansion default drifts from UiConfig::default()",
+                    );
+                }
+                ("timeline_haptics", SettingKind::Enum { default, .. }) => {
+                    assert_eq!(
+                        *default,
+                        crate::appearance::cache::TimelineHapticStrength::default().as_canonical(),
+                        "timeline_haptics default drifts from TimelineHapticStrength",
                     );
                 }
                 // permission_mode: None on disk falls back to "ask"

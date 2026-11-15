@@ -12,6 +12,7 @@
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub use xai_grok_shared::ui_config::TimelineHapticStrength;
 pub use xai_grok_shared::ui_config::ToolCardClickAction;
 use xai_grok_shared::ui_config::UiConfig;
 
@@ -915,6 +916,34 @@ pub fn set_tool_card_click_action(value: ToolCardClickAction) {
     TOOL_CARD_CLICK_ACTION_LOADED.with(|l| l.set(true));
 }
 
+// -- Timeline tick haptics ---------------------------------------------------
+
+thread_local! {
+    static TIMELINE_HAPTICS_CURRENT: Cell<TimelineHapticStrength> =
+        const { Cell::new(TimelineHapticStrength::Medium) };
+    static TIMELINE_HAPTICS_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read the cached timeline-haptic strength.
+pub fn load_timeline_haptics() -> TimelineHapticStrength {
+    TIMELINE_HAPTICS_LOADED.with(|loaded| {
+        if !loaded.get() {
+            let value = load_str_from_effective_config("timeline_haptics")
+                .as_deref()
+                .and_then(TimelineHapticStrength::from_canonical)
+                .unwrap_or_default();
+            TIMELINE_HAPTICS_CURRENT.with(|c| c.set(value));
+            loaded.set(true);
+        }
+    });
+    TIMELINE_HAPTICS_CURRENT.with(|c| c.get())
+}
+
+pub fn set_timeline_haptics(value: TimelineHapticStrength) {
+    TIMELINE_HAPTICS_CURRENT.with(|c| c.set(value));
+    TIMELINE_HAPTICS_LOADED.with(|l| l.set(true));
+}
+
 // -- Write/Edit hover popups ------------------------------------------------
 
 thread_local! {
@@ -1020,6 +1049,12 @@ pub fn prime(ui: &UiConfig) {
         ui.tool_card_click_action
             .as_deref()
             .and_then(ToolCardClickAction::from_canonical)
+            .unwrap_or_default(),
+    );
+    set_timeline_haptics(
+        ui.timeline_haptics
+            .as_deref()
+            .and_then(TimelineHapticStrength::from_canonical)
             .unwrap_or_default(),
     );
     let _ = load_render_mermaid();

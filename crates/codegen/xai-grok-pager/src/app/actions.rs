@@ -610,6 +610,8 @@ pub enum Action {
     SetCtrlOToolExpansion(String),
     /// Set tool-card mouse behavior (select, toggle, or open_viewer).
     SetToolCardClickAction(String),
+    /// Set timeline tick haptic strength (off, light, medium, or strong).
+    SetTimelineHaptics(String),
     /// Set which fields grok-pi Bash/run headers render.
     SetPiBashRunDisplay(crate::appearance::ExecuteHeaderContent),
     /// Set whether Bash commands are formatted for display only.
