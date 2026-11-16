@@ -147,14 +147,11 @@ const pendingReports = [];
 let sending = false;
 
 function enqueue(request) {
-  // Preserve session-before-state ordering across all lifecycle callbacks.
-  // Only unsent consecutive states may be collapsed; never cross a session report.
-  const last = pendingReports.at(-1);
-  if (last?.method === "pane.report_agent" && request.method === "pane.report_agent") {
-    pendingReports[pendingReports.length - 1] = request;
-  } else {
-    pendingReports.push(request);
-  }
+  // These are transitions, not snapshots: coalescing queued states can erase
+  // working/blocked when a fast Pi turn completes before the socket responds.
+  // publish() already suppresses unchanged states. Preserve FIFO and session
+  // identity before all subsequent lifecycle events.
+  pendingReports.push(request);
   if (!sending) void flushReports();
 }
 

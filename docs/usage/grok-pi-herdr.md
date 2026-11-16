@@ -99,3 +99,6 @@ No global integration is removed or rewritten, so stock `pi` can continue using 
   `idle → working → blocked → working → idle` sequence, ownership and
   monotonic event sequence. It is also part of the
   Pi-only CI.
+- The lifecycle events must not be coalesced into a final `idle` during
+  fast turns: the test also emits `working → blocked → working → idle`
+  without awaiting socket replies and verifies every state was reported.

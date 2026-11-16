@@ -96,6 +96,19 @@ test("Herdr reports authoritative session, idle, working and blocked states", as
     assert.ok(blocked.params.seq < resumed.params.seq);
     assert.ok(resumed.params.seq < settled.params.seq);
 
+    // A fast turn can finish before socket responses return. Queueing must
+    // preserve transitions (not coalesce away blocked/working/idle).
+    lifecycle.get("agent_start")({}, ctx);
+    events.get("herdr:blocked")({ active: true, label: "rapid approval" });
+    events.get("herdr:blocked")({ active: false });
+    lifecycle.get("agent_settled")({}, ctx);
+    const rapidWorking = await stateReport("working", settled.params.seq);
+    const rapidBlocked = await stateReport("blocked", rapidWorking.params.seq);
+    const rapidResumed = await stateReport("working", rapidBlocked.params.seq);
+    const rapidIdle = await stateReport("idle", rapidResumed.params.seq);
+    assert.equal(rapidBlocked.params.message, "rapid approval");
+    assert.ok(rapidIdle.params.seq > rapidResumed.params.seq);
+
     for (const report of reports) {
       assert.equal(report.params.pane_id, "isolated-herdr-pane");
       assert.equal(report.params.source, "herdr:pi");
