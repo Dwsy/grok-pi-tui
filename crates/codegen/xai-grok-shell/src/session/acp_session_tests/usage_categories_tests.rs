@@ -3,6 +3,7 @@
 use super::support::*;
 use super::*;
 use crate::session::tool_index::{ServerMetadata, ToolMetadata};
+#[cfg(feature = "stock-mcp")]
 fn mcp_tool(server: &str, tool: &str) -> ToolMetadata {
     ToolMetadata {
         qualified_name: format!("{server}__{tool}"),
@@ -13,6 +14,7 @@ fn mcp_tool(server: &str, tool: &str) -> ToolMetadata {
         input_schema: serde_json::json!({"type": "object"}),
     }
 }
+#[cfg(feature = "stock-mcp")]
 fn install_mcp_servers(actor: &SessionActor) {
     let mut snapshot = actor.tool_metadata_snapshot.lock().unwrap();
     snapshot.tools = vec![mcp_tool("demo", "echo"), mcp_tool("demo", "add")];
@@ -39,6 +41,7 @@ async fn seed_skills(actor: &SessionActor, names: &[&str]) {
         .seed_skill_discovery(None, None, skills, None, None, None, Default::default())
         .await;
 }
+#[cfg(feature = "stock-mcp")]
 #[tokio::test(flavor = "current_thread")]
 async fn usage_categories_include_skills_and_mcp_with_counts() {
     let local = tokio::task::LocalSet::new();
@@ -249,6 +252,7 @@ async fn subagent_session_does_not_list_workflows() {
 /// This test pins the MCP row against drift.
 /// The estimated snapshot must equal the body `maybe_inject_mcp_reminder` injects in `Full` mode, minus the `<system-reminder>` wrapper.
 /// Composing the two texts differently (for example, dropping the tool usage hint from one side) fails this test.
+#[cfg(feature = "stock-mcp")]
 #[tokio::test(flavor = "current_thread")]
 async fn mcp_snapshot_matches_full_mode_injected_reminder() {
     let local = tokio::task::LocalSet::new();

@@ -100,6 +100,7 @@ async fn create_test_actor(
         permissions: PermissionHandle::allow_all(),
         tool_context,
         deny_read_globs: Vec::new(),
+        #[cfg(feature = "stock-mcp")]
         mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
         mcp_strategy: std::cell::Cell::new(McpInitStrategy::Blocking),
         delivery_tools: std::cell::RefCell::new(Vec::new()),
@@ -232,16 +233,23 @@ async fn create_test_actor(
         managed_mcp_handle: Default::default(),
         initial_client_mcp_servers: vec![],
         tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
+        #[cfg(feature = "stock-mcp")]
         mcp_announcements: Default::default(),
+        #[cfg(feature = "stock-mcp")]
         mcp_reminder_mode: McpReminderMode::Delta,
+        #[cfg(feature = "stock-mcp")]
         mcp_reminder_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        #[cfg(feature = "stock-mcp")]
         mcp_connecting_reminder_injected: std::cell::Cell::new(false),
+        #[cfg(feature = "stock-mcp")]
         mcp_refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: None,
         last_live_orphan_reconcile: std::cell::Cell::new(None),
         deferred_prefix: DeferredPrefix::new(),
+        #[cfg(feature = "stock-mcp")]
         mcp_startup_waits: Default::default(),
+        #[cfg(feature = "stock-mcp")]
         mcp_init_tasks: Default::default(),
         weak_self: std::sync::Weak::new(),
         startup_tasks: Default::default(),
@@ -530,6 +538,7 @@ async fn create_test_actor_with_memory(
         permissions: PermissionHandle::allow_all(),
         tool_context,
         deny_read_globs: Vec::new(),
+        #[cfg(feature = "stock-mcp")]
         mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
         mcp_strategy: std::cell::Cell::new(McpInitStrategy::Blocking),
         delivery_tools: std::cell::RefCell::new(Vec::new()),
@@ -672,16 +681,23 @@ async fn create_test_actor_with_memory(
         managed_mcp_handle: Default::default(),
         initial_client_mcp_servers: vec![],
         tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
+        #[cfg(feature = "stock-mcp")]
         mcp_announcements: Default::default(),
+        #[cfg(feature = "stock-mcp")]
         mcp_reminder_mode: McpReminderMode::Delta,
+        #[cfg(feature = "stock-mcp")]
         mcp_reminder_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        #[cfg(feature = "stock-mcp")]
         mcp_connecting_reminder_injected: std::cell::Cell::new(false),
+        #[cfg(feature = "stock-mcp")]
         mcp_refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: None,
         last_live_orphan_reconcile: std::cell::Cell::new(None),
         deferred_prefix: DeferredPrefix::new(),
+        #[cfg(feature = "stock-mcp")]
         mcp_startup_waits: Default::default(),
+        #[cfg(feature = "stock-mcp")]
         mcp_init_tasks: Default::default(),
         weak_self: std::sync::Weak::new(),
         startup_tasks: Default::default(),

@@ -3024,6 +3024,7 @@ mod cancellation_error_message_tests {
         assert!(msg.contains("user rejected a permission prompt"));
     }
 }
+#[cfg(feature = "stock-mcp")]
 fn make_pool(names: &[&str]) -> crate::session::mcp_servers::SharedMcpPool {
     use crate::session::mcp_servers::{McpClient, McpState, SharedMcpPool};
     let mut state = McpState::new(vec![]);
@@ -3032,11 +3033,13 @@ fn make_pool(names: &[&str]) -> crate::session::mcp_servers::SharedMcpPool {
     }
     SharedMcpPool::from_state(&state)
 }
+#[cfg(feature = "stock-mcp")]
 fn pool_names(pool: &crate::session::mcp_servers::SharedMcpPool) -> Vec<String> {
     let mut names: Vec<String> = pool.server_names().map(str::to_string).collect();
     names.sort();
     names
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn filter_inheritance_all_passes_everything_through() {
     let pool = make_pool(&["github", "linear", "slack"]);
@@ -3047,6 +3050,7 @@ fn filter_inheritance_all_passes_everything_through() {
     let result = result.expect("All should return Some");
     assert_eq!(pool_names(&result), vec!["github", "linear", "slack"]);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn filter_inheritance_none_returns_none() {
     let pool = make_pool(&["github", "linear"]);
@@ -3056,6 +3060,7 @@ fn filter_inheritance_none_returns_none() {
     );
     assert!(result.is_none());
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn filter_inheritance_named_selects_specific_servers() {
     let pool = make_pool(&["github", "linear", "slack", "jira"]);
@@ -3068,6 +3073,7 @@ fn filter_inheritance_named_selects_specific_servers() {
     let result = result.expect("Named should return Some");
     assert_eq!(pool_names(&result), vec!["github", "slack"]);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn filter_inheritance_except_excludes_specific_servers() {
     let pool = make_pool(&["github", "linear", "slack", "jira"]);
@@ -3080,6 +3086,7 @@ fn filter_inheritance_except_excludes_specific_servers() {
     let result = result.expect("Except should return Some");
     assert_eq!(pool_names(&result), vec!["github", "slack"]);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn filter_inheritance_named_empty_list_gives_empty_pool() {
     let pool = make_pool(&["github", "linear"]);
@@ -3090,6 +3097,7 @@ fn filter_inheritance_named_empty_list_gives_empty_pool() {
     let result = result.expect("Named([]) should return Some (empty pool)");
     assert_eq!(result.server_names().count(), 0);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn filter_inheritance_except_empty_list_keeps_all() {
     let pool = make_pool(&["github", "linear"]);
@@ -3100,6 +3108,7 @@ fn filter_inheritance_except_empty_list_keeps_all() {
     let result = result.expect("Except([]) should return Some");
     assert_eq!(pool_names(&result), vec!["github", "linear"]);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn filter_inheritance_named_nonexistent_servers_ignored() {
     let pool = make_pool(&["github", "linear"]);
@@ -3115,6 +3124,7 @@ fn filter_inheritance_named_nonexistent_servers_ignored() {
     let result = result.expect("Named should return Some");
     assert_eq!(pool_names(&result), vec!["github"]);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn filter_inheritance_except_nonexistent_servers_ignored() {
     let pool = make_pool(&["github", "linear"]);
@@ -3125,6 +3135,7 @@ fn filter_inheritance_except_nonexistent_servers_ignored() {
     let result = result.expect("Except should return Some");
     assert_eq!(pool_names(&result), vec!["github", "linear"]);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn filter_inheritance_named_all_nonexistent_gives_empty() {
     let pool = make_pool(&["github", "linear"]);
@@ -3135,6 +3146,7 @@ fn filter_inheritance_named_all_nonexistent_gives_empty() {
     let result = result.expect("Named should return Some");
     assert_eq!(result.server_names().count(), 0);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn filter_inheritance_except_all_servers_gives_empty() {
     let pool = make_pool(&["github", "linear"]);
@@ -3147,6 +3159,7 @@ fn filter_inheritance_except_all_servers_gives_empty() {
     let result = result.expect("Except should return Some");
     assert_eq!(result.server_names().count(), 0);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn resolve_inherited_pool_all_passes_parent_pool() {
     let pool = make_pool(&["github", "atlassian"]);
@@ -3157,6 +3170,7 @@ fn resolve_inherited_pool_all_passes_parent_pool() {
         .expect("All should return Some");
     assert_eq!(pool_names(&result), vec!["atlassian", "github"]);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn resolve_inherited_pool_none_returns_none() {
     let pool = make_pool(&["github", "atlassian"]);
@@ -3166,6 +3180,7 @@ fn resolve_inherited_pool_none_returns_none() {
     );
     assert!(result.is_none());
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn resolve_inherited_pool_named_filters() {
     let pool = make_pool(&["github", "atlassian", "slack"]);
@@ -3176,6 +3191,7 @@ fn resolve_inherited_pool_named_filters() {
         .expect("Named should return Some");
     assert_eq!(pool_names(&result), vec!["atlassian"]);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn resolve_inherited_pool_missing_parent_returns_none() {
     let result = super::resolve_inherited_mcp_pool(
@@ -3186,6 +3202,7 @@ fn resolve_inherited_pool_missing_parent_returns_none() {
 }
 /// Plugin agents must still inherit the parent pool under default `mcpInheritance: all`.
 /// The product rule: plugins cannot *declare* mcpServers, but they do inherit already-connected parent servers.
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn plugin_agents_inherit_parent_mcp_pool_by_default() {
     let pool = make_pool(&["atlassian", "github"]);
@@ -3196,6 +3213,7 @@ fn plugin_agents_inherit_parent_mcp_pool_by_default() {
         .expect("plugin children inherit parent pool with mcpInheritance=all");
     assert_eq!(pool_names(&inherited), vec!["atlassian", "github"]);
 }
+#[cfg(feature = "stock-mcp")]
 #[test]
 fn plugin_agents_can_opt_out_via_mcp_inheritance_none() {
     let pool = make_pool(&["atlassian"]);

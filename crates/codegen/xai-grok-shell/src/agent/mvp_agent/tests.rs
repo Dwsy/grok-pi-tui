@@ -1933,6 +1933,7 @@ async fn test_per_session_code_nav_isolation() {
     );
 }
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "stock-mcp")]
 async fn ext_method_routes_auth_cleared_and_refreshes_resident_sessions() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1972,6 +1973,7 @@ fn empty_gateway_catalog() -> crate::session::managed_mcp::GatewayToolCatalog {
         reauth_connectors: vec![],
     }
 }
+#[cfg(feature = "stock-mcp")]
 fn assert_no_update_mcp_servers(cmds: &[SessionCommand]) {
     assert!(
         !cmds
@@ -1983,6 +1985,7 @@ fn assert_no_update_mcp_servers(cmds: &[SessionCommand]) {
 /// `mcp/list` refresh with two resident sessions: cache=false with a committed catalog fans `RefreshMcpSearchIndex`.
 /// A failed catalog and cache=true do not.
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "stock-mcp")]
 async fn mcp_list_gateway_refresh_fans_only_on_committed_uncached_catalog() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2101,6 +2104,7 @@ async fn mcp_list_gateway_refresh_fans_only_on_committed_uncached_catalog() {
 }
 /// mcp/list with gateway off must disable the cache, same as initialize.
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "stock-mcp")]
 async fn mcp_list_gateway_off_disables_cached_catalog() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2182,6 +2186,7 @@ async fn skills_list_refreshes_session_skill_baseline() {
 }
 /// Gateway tools live on the agent catalog, so sessions only rebuild `search_tool`.
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "stock-mcp")]
 async fn refresh_mcp_search_index_broadcasts_to_sessions() {
     let agent = build_minimal_agent_for_tests();
     let sid = acp::SessionId::new("sess-search-index");
@@ -6542,6 +6547,7 @@ async fn answer_folder_trust_request(
 }
 #[test]
 #[serial_test::serial]
+#[cfg(feature = "stock-mcp")]
 fn interactive_trust_prompt_grant_reloads_project_mcp() {
     use xai_grok_test_support::EnvGuard;
     use xai_grok_workspace::trust::{TrustStore, workspace_key};
@@ -6791,6 +6797,7 @@ fn interactive_trust_prompt_dedups_same_workspace() {
     });
 }
 /// Which reload commands a session received after a grant.
+#[cfg(feature = "stock-mcp")]
 struct ReloadCmds {
     update_mcp: bool,
     reload_plugins: bool,
@@ -6799,6 +6806,7 @@ struct ReloadCmds {
 }
 /// Drain a session's command channel for the post-grant reload trio (`UpdateMcpServers`, `ReloadPlugins`, `ReloadHooks`).
 /// Captures the merged MCP server names so a test can assert per-cwd reload.
+#[cfg(feature = "stock-mcp")]
 async fn drain_reload_commands(
     cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TestSessionCommand>,
 ) -> ReloadCmds {
@@ -6832,6 +6840,7 @@ async fn drain_reload_commands(
 }
 #[test]
 #[serial_test::serial]
+#[cfg(feature = "stock-mcp")]
 fn interactive_trust_prompt_reloads_all_same_workspace_sessions() {
     use xai_grok_test_support::EnvGuard;
     let home = tempfile::tempdir().unwrap();
