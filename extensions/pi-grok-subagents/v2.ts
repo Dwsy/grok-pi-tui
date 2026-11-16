@@ -632,15 +632,29 @@ export class TeamCoordinator {
     const spawnTool = defineTool({
       name: "spawn_team_agent",
       label: "Spawn Team Agent",
-      description: "Spawn a Subagents V2 child agent under your current /root/... path. The child starts asynchronously and can communicate with the team.",
-      promptSnippet: "Spawn a named V2 child agent with a stable /root/... path.",
+      description:
+        "Spawn one Subagents V2 child agent under your current /root/... path for a clearly bounded task. " +
+        "The child starts asynchronously and its final output is delivered back to you automatically.\n\n" +
+        "Default: do the work yourself. Broad scope, many steps, an uncertain answer, or work that could theoretically run in parallel is NOT on its own a reason to spawn. " +
+        "Spawn only when the user asks for an agent or parallel delegation, when a substantial workflow can be completed independently and delegating it materially shortens the critical path, " +
+        "or when the task needs capabilities only a specialized agent_type provides. If one or a few direct tool calls finish the job, make them.\n\n" +
+        "Never hand the whole user request to a child and relay its answer: you remain responsible for the intent, the integration, and the final response. " +
+        "A child's output is working material, so verify it at the risk level of the task rather than accepting it unconditionally.\n\n" +
+        "Concurrency: start 1-3 children by default, matching the number of genuinely independent workflows. " +
+        "Do not split one investigation or one execution chain to manufacture parallelism. " +
+        "Reuse an existing agent with team_followup_task instead of spawning a near-duplicate.",
+      promptSnippet: "Spawn a V2 child for one clearly bounded, independent task; the child sees none of this conversation.",
       executionMode: "parallel",
       parameters: Type.Object({
-        task_name: Type.String({ description: "Lowercase path segment for the child, e.g. researcher or verifier_2." }),
-        message: Type.String({ description: "Self-contained initial task for the child." }),
-        agent_type: Type.Optional(Type.String({ description: "External agent definition/profile name. Defaults to general-purpose." })),
+        task_name: Type.String({ description: "Lowercase path segment for the child, unique among your existing children, e.g. researcher or verifier_2." }),
+        message: Type.String({
+          description:
+            "Self-contained task: the child cannot see the user's request, this conversation, or your earlier steps. " +
+            "State the goal, the files or write boundary it may touch, the acceptance evidence, and exactly what it should return.",
+        }),
+        agent_type: Type.Optional(Type.String({ description: "Agent definition name; /subagents lists the configured ones. Defaults to general-purpose. An unknown or disabled name fails the spawn instead of falling back." })),
         description: Type.Optional(Type.String({ description: "Short 3-5 word label shown in the team tree and subagent UI. Defaults to task_name." })),
-        model: Type.Optional(Type.String({ description: "Optional model allowed by the selected external agent definition." })),
+        model: Type.Optional(Type.String({ description: "Optional model the selected definition allows. Omit to inherit Pi settings; never guess a model name." })),
         max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Optional soft turn cap; external agent definition takes precedence." })),
         thinking_level: Type.Optional(Type.String({ description: "Optional thinking level: off, minimal, low, medium, high, xhigh, or max. Clamped to what the model supports; omitted inherits Pi settings." })),
         capability_mode: Type.Optional(Type.String({ description: "Tool access for the child: read-only or all (legacy execute/read-write map to all). Defaults to the agent definition, then all." })),
@@ -878,8 +892,10 @@ export class TeamCoordinator {
     return defineTool({
       name: "spawn_team",
       label: "Spawn Team Preset",
-      description: "Launch an external Subagents V2 team preset from project/global/bundled configuration. Members start asynchronously and can communicate by stable agent paths.",
-      promptSnippet: "Launch a configured V2 team preset for collaborative work.",
+      description:
+        "Launch an external Subagents V2 team preset from project/global/bundled configuration for collaborative work. Members start asynchronously and can communicate by stable agent paths. " +
+        "Use spawn_team_agent for a single delegated task; start a preset only when its roster already matches the work.",
+      promptSnippet: "Launch a configured V2 team preset when its roster matches the work; single tasks use spawn_team_agent.",
       executionMode: "parallel",
       parameters: Type.Object({
         team: Type.String({ description: "Team preset name as listed by /subagent-teams, e.g. research, implementation, or review." }),

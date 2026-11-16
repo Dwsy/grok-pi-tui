@@ -23,6 +23,10 @@ pub(crate) const MAX_THOUGHTS_WIDTH_MAX: i64 = 500;
 /// Registry key for `max_thoughts_width`; it is shared between the registry definition and the live-wrap-preview gate in the int stepper.
 pub(crate) const MAX_THOUGHTS_WIDTH_KEY: &str = "max_thoughts_width";
 
+/// Registered upper bound for `toolset.ask_user_question.timeout_secs` (24h).
+/// `pub(crate)` so the dispatcher's clamp and the shell helper's defensive clamp share these bounds.
+pub(crate) const MAX_ASK_USER_QUESTION_TIMEOUT_SECS_MAX: i64 = 24 * 60 * 60;
+
 const TOOL_CARD_CLICK_ACTION_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "select",
@@ -1697,6 +1701,37 @@ pub fn default_settings() -> Vec<SettingMeta> {
             ],
             kind: SettingKind::Bool {
                 default: ask_user_question::DEFAULT_ASK_USER_QUESTION_TIMEOUT_ENABLED,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
+        // SHELL-owned `[toolset.ask_user_question].timeout_secs`. `restart_required` because the value is resolved when
+        // an agent is built, like `timeout_enabled`; `0` and non-positive layers fall back to the shared default in the resolver.
+        SettingMeta {
+            key: "toolset.ask_user_question.timeout_secs",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Ask-Question timeout secs",
+            description: "Seconds to wait for the ask_user_question tool before timing out \\
+                          instead of infinitely blocking. Default 1800 (30 minutes); \\
+                          restart required.",
+            keywords: &[
+                "ask",
+                "question",
+                "questionnaire",
+                "timeout",
+                "secs",
+                "seconds",
+                "ask_user_question",
+                "block",
+                "wait",
+                "tool",
+            ],
+            kind: SettingKind::Int {
+                default: ask_user_question::RESPONSE_TIMEOUT.as_secs() as i64,
+                min: 1,
+                max: MAX_ASK_USER_QUESTION_TIMEOUT_SECS_MAX,
             },
             restart_required: true,
             hidden_in_minimal: false,

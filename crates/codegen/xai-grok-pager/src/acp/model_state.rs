@@ -253,13 +253,18 @@ impl ModelState {
     }
 
     /// Cycle through the current model's advertised thinking levels.
+    ///
+    /// Walks weakest → strongest (none → … → xhigh) so Shift+Tab steps reasoning
+    /// intensity upward, regardless of the menu's strongest-first display order.
+    /// With no current effort the cycle starts at the weakest level.
     pub fn next_reasoning_effort(&self) -> Option<ReasoningEffort> {
-        let options = self.reasoning_effort_options();
+        let mut cycle = self.reasoning_effort_options();
+        cycle.sort_by(|a, b| a.value.cmp(&b.value));
         let next_index = self
             .reasoning_effort
-            .and_then(|current| options.iter().position(|option| option.value == current))
-            .map_or(0, |index| (index + 1) % options.len());
-        options.get(next_index).map(|option| option.value)
+            .and_then(|current| cycle.iter().position(|option| option.value == current))
+            .map_or(0, |index| (index + 1) % cycle.len());
+        cycle.get(next_index).map(|option| option.value)
     }
 
     /// Menu for a specific catalog model id (used by `/model`'s effort phase).
@@ -268,8 +273,9 @@ impl ModelState {
     /// exactly as the shell's session picker does.
     ///
     /// The menu is ordered strongest-first (highest effort at the top) regardless
-    /// of wire order, so the picker, [`Self::next_reasoning_effort`]'s cycle, and
-    /// error listings all read highest → lowest.
+    /// of wire order, so the picker and error listings read highest → lowest.
+    /// ([`Self::next_reasoning_effort`]'s Shift+Tab cycle re-sorts to walk weakest
+    /// → strongest.)
     pub(crate) fn reasoning_effort_options_for(
         &self,
         id: &acp::ModelId,
@@ -669,12 +675,15 @@ mod tests {
             ],
         })));
 
-        // The menu is strongest-first, so cycling walks it downwards.
-        assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::High));
-        state.reasoning_effort = Some(ReasoningEffort::Low);
+        // Cycling walks weakest → strongest regardless of the menu's
+        // strongest-first display order.
         assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::None));
-        state.reasoning_effort = Some(ReasoningEffort::High);
+        state.reasoning_effort = Some(ReasoningEffort::None);
         assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::Low));
+        state.reasoning_effort = Some(ReasoningEffort::Low);
+        assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::High));
+        state.reasoning_effort = Some(ReasoningEffort::High);
+        assert_eq!(state.next_reasoning_effort(), Some(ReasoningEffort::None));
     }
 
     #[test]

@@ -293,6 +293,9 @@ pub struct PagerLocalSnapshot {
     /// `[toolset.ask_user_question].timeout_enabled` mirror (effective TOML merge, like `show_tips`).
     /// `None` means unset in TOML, so the default `true` applies.
     pub ask_user_question_timeout_enabled: Option<bool>,
+    /// `[toolset.ask_user_question].timeout_secs` mirror (effective TOML merge, like `ask_user_question_timeout_enabled`).
+    /// `None` means unset in TOML, so the default `RESPONSE_TIMEOUT` applies.
+    pub ask_user_question_timeout_secs: Option<u64>,
     /// Live `voice_config.language` at snapshot time.
     /// Lets the modal show the language actually in effect when `[ui].voice_stt_language` is unset but an explicit `[voice].language` applies.
     pub voice_stt_language: String,
@@ -319,6 +322,7 @@ impl Default for PagerLocalSnapshot {
             prompt_cursor: crate::appearance::PromptCursor::default().to_config_value(),
             auto_mode_gate: false,
             ask_user_question_timeout_enabled: None,
+            ask_user_question_timeout_secs: None,
             voice_stt_language: xai_grok_voice::STT_LANGUAGE_DEFAULT.to_string(),
         }
     }
@@ -796,6 +800,14 @@ pub fn current_value_for(
                 .ask_user_question_timeout_enabled
                 .unwrap_or(ask_user_question::DEFAULT_ASK_USER_QUESTION_TIMEOUT_ENABLED),
         )),
+        // ask_user_question timeout in seconds: reflects the effective TOML merge
+        // The toggle writes the user layer, and the env and remote settings tiers feed the final gate at agent build
+        // None falls back to the resolver-shared default (1800)
+        "toolset.ask_user_question.timeout_secs" => Some(SettingValue::Int(
+            pager
+                .ask_user_question_timeout_secs
+                .unwrap_or(ask_user_question::RESPONSE_TIMEOUT.as_secs()) as i64,
+        )),
         // default_selected_permission: maps `[ui].default_selected_permission` onto one of the four registry canonicals
         // `None` or an unrecognised value on disk falls back to `always_allow_all_sessions`, the effective default
         // The cursor lands on the "Always allow on all sessions" row, picked explicitly in `enqueue_permission`
@@ -1239,6 +1251,15 @@ mod tests {
                         ask_user_question::DEFAULT_ASK_USER_QUESTION_TIMEOUT_ENABLED,
                         "toolset.ask_user_question.timeout_enabled default drifts from the \
                          shared resolver const in xai-grok-tools"
+                    );
+                }
+                // ask_user_question timeout in seconds: anchored on the tool's `RESPONSE_TIMEOUT` const
+                ("toolset.ask_user_question.timeout_secs", SettingKind::Int { default, .. }) => {
+                    assert_eq!(
+                        *default,
+                        ask_user_question::RESPONSE_TIMEOUT.as_secs() as i64,
+                        "toolset.ask_user_question.timeout_secs default drifts from the \
+                         tool's RESPONSE_TIMEOUT const"
                     );
                 }
                 // show_thinking_blocks: Option<bool>; None reads as true (client default)
