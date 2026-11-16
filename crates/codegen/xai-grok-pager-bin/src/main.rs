@@ -2513,12 +2513,18 @@ async fn finish_update_on_exit(
 fn build_update_config() -> UpdateConfig {
     let environment = xai_grok_shell::env::GrokBuildEnvironment::from_flags(false, false);
     let mut config = UpdateConfig::from_environment(&environment);
+    #[cfg(feature = "stock-obfuscation")]
     cryptify::flow_stmt!({
         {
             config.deployment_key =
                 xai_grok_shell::agent::config::EndpointsConfig::default().deployment_key;
         }
     });
+    #[cfg(not(feature = "stock-obfuscation"))]
+    {
+        config.deployment_key =
+            xai_grok_shell::agent::config::EndpointsConfig::default().deployment_key;
+    }
     config.npm_registry = std::env::var(obfstr::obfstr!("GROK_NPM_REGISTRY"))
         .ok()
         .or_else(xai_grok_shell::util::config::load_npm_registry_sync);

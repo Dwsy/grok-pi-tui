@@ -60,11 +60,11 @@ jobs:
             --no-default-features --features release-dist,sandbox-enforce \
             --target aarch64-apple-darwin -e normal,build \
             > "$RUNNER_TEMP/pi-dependencies.txt"
-          if grep -E 'tikv-jemalloc-(sys|ctl)|tikv-jemallocator' "$RUNNER_TEMP/pi-dependencies.txt"; then
-            echo "Unexpected jemalloc dependency in grok-pi" >&2
+          if grep -E 'tikv-jemalloc-(sys|ctl)|tikv-jemallocator|cryptify v[0-9]' "$RUNNER_TEMP/pi-dependencies.txt"; then
+            echo "Unexpected Grok-only allocator or obfuscation dependency in grok-pi" >&2
             exit 1
           fi
-          echo "Verified: no jemalloc compile dependencies in grok-pi"
+          echo "Verified: no jemalloc or cryptify compile dependencies in grok-pi"
 
       - name: Build ARM64 grok-pi (release-dist)
         shell: bash

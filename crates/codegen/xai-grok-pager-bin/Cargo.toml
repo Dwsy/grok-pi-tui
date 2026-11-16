@@ -74,7 +74,7 @@ xai-grok-extra-ca = { workspace = true }
 
 # Binary hardening: compile-time string + control-flow obfuscation.
 obfstr = { workspace = true }
-cryptify = { workspace = true }
+cryptify = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 
@@ -105,12 +105,15 @@ clap = { workspace = true, features = ["derive"] }
 default = [
     "jemalloc",
     "sandbox-enforce",
+    "stock-obfuscation",
     ]
 default-bazel = [
     "jemalloc",
     "sandbox-enforce",
     "local-workspace",
+    "stock-obfuscation",
     ]
+stock-obfuscation = ["dep:cryptify"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
 # xai-grok-workspace no longer enables sandbox-enforce by default, so enable it here.
 sandbox-enforce = ["xai-grok-pager/sandbox-enforce", "xai-grok-workspace/sandbox-enforce"]
