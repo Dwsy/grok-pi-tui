@@ -163,3 +163,11 @@ Shell 的关键耦合包括：
 **本批静态核对**：Rustfmt、diff check；依赖与 stock/no-stock 条件审查。**本批没有运行 Cargo、没有触发任何 CI、没有新二进制，更没有可宣称的 ARM64 通过。**
 
 **尚需继续清除的阻塞**：Shell 其他配置、Agent/Session 调用对 stock-only API 的无条件引用、测试配置下仅存 stock 字段的 fixtures，以及最终两端 feature-unification 的真实 Cargo 解析；应在一次集中验证时运行 Pi 无 MCP 与 stock 含 MCP 的实际 Cargo tree + check/test + ARM64 smoke。不要为了通过编译恢复假的 MCP 服务，也不要拆 Workflow。
+
+## 10. 增量进度：S08a-14（2026-11-16，待编译）
+
+- **测试夹具与真实测试保留**：给 7 个普通 SessionActor fixture 文件共 88 处原版 MCP 专属字段初始化补 `#[cfg(feature = "stock-mcp")]`，取消任务、空闲恢复、压缩、内存与回放测试模块没有整块禁用。16 个 MCP 客户端连接池继承 Subagent 测试和 `actor_with_mcp` / `register_stub`、MCP reminder、gateway catalog 测试隔离成 stock-only；普通技能/Workflow/Hook 测试仍在两种特性下可编译的范围。
+- **生产代码漏网命令**：`extensions/session_admin.rs` 的 MCP Server 更新、全局与项目重载函数及请求分发只在 stock 入口存在，无 stock 的内部 MCP 方法显式返回 `method_not_found`；`agent/app.rs` 的文件 watcher 在非 stock 构建不再发送 Grok MCP reload；`session_setup.rs` 保留附加策略更新，但不再发送 MCP Server 重连命令；`agent_ops.rs` 的 Gateway MCP catalog、RefreshMcpSearchIndex 以及在 ACP 初始化/会话插入时的启动任务统一按 stock feature 切分。
+- **手动验收补强（未执行）**：`.github/workflows/pi-slim-ci.yml` 新增 `xai-grok-shell --no-default-features` 的 `cargo tree` 负向检查、ARM64 `cargo check --lib` 和 `cargo test --lib`。保持 `workflow_dispatch`，不触发逐提交 CI。
+
+**当前判断不变**：源码静态检查不等于 Rust type check；`grok-pi` 的 MCP 编译闭包必须等到目标 ARM64 `cargo tree` 与完整构建、stock 正向回归通过之后才能标为完成。仍不拆 Workflow、不改 Pi Eval MCP、不触发 CI 或发布。

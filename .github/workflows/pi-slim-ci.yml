@@ -91,6 +91,23 @@ jobs:
             --no-default-features --features sandbox-enforce \
             --target aarch64-apple-darwin
 
+      - name: Check stock-MCP-free Shell and test fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo tree --locked -p xai-grok-shell \
+            --no-default-features \
+            --target aarch64-apple-darwin -e normal,build \
+            > "$RUNNER_TEMP/shell-no-stock-mcp.txt"
+          if grep -E 'xai-grok-mcp v[0-9]|rmcp v[0-9]|xai-computer-hub-mcp-adapter v[0-9]' "$RUNNER_TEMP/shell-no-stock-mcp.txt"; then
+            echo "Shell still links stock Grok MCP with stock-mcp disabled" >&2
+            exit 1
+          fi
+          cargo check --locked --lib -p xai-grok-shell \
+            --no-default-features --target aarch64-apple-darwin
+          cargo test --locked --lib -p xai-grok-shell \
+            --no-default-features --target aarch64-apple-darwin
+
       - name: Build ARM64 grok-pi (release-dist)
         shell: bash
         run: |
