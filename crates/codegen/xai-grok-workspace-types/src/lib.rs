@@ -55,6 +55,7 @@ pub mod client_type;
 pub mod error;
 pub mod events;
 pub mod identity;
+pub mod mcp_names;
 pub mod metadata;
 pub mod request;
 pub mod requests;

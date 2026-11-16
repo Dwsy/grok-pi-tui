@@ -7,6 +7,38 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Keep the last MCP server definition for each name, retaining list order.
+/// Configuration parsing must not import the stock MCP transport runtime.
+pub fn dedupe_mcp_servers_last_wins(servers: &mut Vec<acp::McpServer>) {
+    let mut seen = std::collections::HashSet::new();
+    let mut dropped = 0usize;
+    for index in (0..servers.len()).rev() {
+        let name = mcp_server_name(&servers[index]).to_owned();
+        if !seen.insert(name) {
+            servers.remove(index);
+            dropped += 1;
+        }
+    }
+    if dropped > 0 {
+        tracing::warn!(
+            dropped,
+            "MCP config has duplicate server names; keeping the last definition of each"
+        );
+    }
+}
+
+/// Bound configured MCP servers before any resource-heavy client discovery.
+pub fn cap_mcp_servers(servers: &mut Vec<acp::McpServer>, limit: usize) {
+    if servers.len() > limit {
+        tracing::warn!(
+            configured = servers.len(),
+            cap = limit,
+            "MCP config exceeds the server cap; keeping the first entries in config order"
+        );
+        servers.truncate(limit);
+    }
+}
+
 /// serde default helper.
 fn default_true() -> bool {
     true
@@ -803,5 +835,56 @@ mod tests {
             McpSetupResolution::Invalid(_)
         ));
         assert!(config.to_acp_mcp_server("x").is_none());
+    }
+}
+
+/// Extract the name from an MCP server enum variant.
+pub fn mcp_server_name(server: &acp::McpServer) -> &str {
+    match server {
+        acp::McpServer::Stdio(stdio) => &stdio.name,
+        acp::McpServer::Http(http) => &http.name,
+        acp::McpServer::Sse(sse) => &sse.name,
+        // TODO(acp-0.10): `McpServer` is #[non_exhaustive].
+        _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod mcp_list_policy_tests {
+    use super::*;
+
+    #[test]
+    fn shared_dedupe_keeps_last_definition_in_its_original_position() {
+        let server = |name: &str, url: &str| {
+            acp::McpServer::Http(acp::McpServerHttp::new(name, url).headers(vec![]))
+        };
+        let mut configs = vec![
+            server("dup", "http://old.invalid/mcp"),
+            server("other", "http://other.invalid/mcp"),
+            server("dup", "http://new.invalid/mcp"),
+        ];
+        dedupe_mcp_servers_last_wins(&mut configs);
+        assert_eq!(configs.len(), 2);
+        assert_eq!(mcp_server_name(&configs[0]), "other");
+        assert_eq!(mcp_server_name(&configs[1]), "dup");
+        assert_eq!(
+            serde_json::to_value(&configs[1]).unwrap(),
+            serde_json::to_value(server("dup", "http://new.invalid/mcp")).unwrap(),
+        );
+    }
+
+    #[test]
+    fn shared_cap_keeps_first_entries() {
+        let server = |name: &str| {
+            acp::McpServer::Http(
+                acp::McpServerHttp::new(name, "http://server.invalid/mcp").headers(vec![]),
+            )
+        };
+        let mut configs = vec![server("first"), server("second"), server("third")];
+        cap_mcp_servers(&mut configs, 2);
+        assert_eq!(
+            configs.iter().map(mcp_server_name).collect::<Vec<_>>(),
+            ["first", "second"],
+        );
     }
 }

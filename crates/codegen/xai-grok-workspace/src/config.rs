@@ -704,8 +704,8 @@ impl BindMcpConfig {
     pub const MAX_SERVERS: usize = 64;
     pub fn new(servers: impl IntoIterator<Item = agent_client_protocol::McpServer>) -> Self {
         let mut servers: Vec<_> = servers.into_iter().collect();
-        crate::mcp::dedupe_servers_last_wins(&mut servers);
-        crate::mcp::cap_servers(&mut servers);
+        xai_grok_config_types::dedupe_mcp_servers_last_wins(&mut servers);
+        xai_grok_config_types::cap_mcp_servers(&mut servers, Self::MAX_SERVERS);
         Self {
             servers: servers.into(),
             discovery_timeout: Self::DEFAULT_DISCOVERY_TIMEOUT,
@@ -970,7 +970,7 @@ mod bind_mcp_config_tests {
         let names: Vec<&str> = config
             .servers()
             .iter()
-            .map(xai_grok_mcp::servers::mcp_server_name)
+            .map(xai_grok_config_types::mcp_server_name)
             .collect();
         assert_eq!(
             names,
@@ -998,8 +998,8 @@ mod bind_mcp_config_tests {
             ))
         }));
         assert_eq!(config.servers().len(), BindMcpConfig::MAX_SERVERS);
-        let first = xai_grok_mcp::servers::mcp_server_name(&config.servers()[0]);
-        let last = xai_grok_mcp::servers::mcp_server_name(
+        let first = xai_grok_config_types::mcp_server_name(&config.servers()[0]);
+        let last = xai_grok_config_types::mcp_server_name(
             &config.servers()[BindMcpConfig::MAX_SERVERS - 1],
         );
         assert_eq!(first, "server-000");

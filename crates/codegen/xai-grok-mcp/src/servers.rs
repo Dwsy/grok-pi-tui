@@ -1197,31 +1197,8 @@ pub fn parse_mcp_meta_config(
 /// MCP initialization strategy. Defined in `xai-grok-telemetry`; re-exported here so existing call sites continue to work.
 pub use xai_grok_telemetry::enums::McpInitStrategy;
 
-/// Parse a non-empty `server__tool` ID with one overlap-aware delimiter and valid [`xai_tool_protocol::ToolId`] syntax.
-pub fn parse_mcp_qualified_name(name: &str) -> Option<(xai_tool_protocol::ToolId, &str, &str)> {
-    let delimiter = MCP_TOOL_NAME_DELIMITER.as_bytes();
-    // Byte windows preserve both overlapping `__` boundaries in `___`.
-    let mut boundaries = name
-        .as_bytes()
-        .windows(delimiter.len())
-        .enumerate()
-        .filter_map(|(index, window)| (window == delimiter).then_some(index));
-    let boundary = boundaries.next()?;
-    if boundaries.next().is_some() {
-        return None;
-    }
-    let (server, tool_with_delimiter) = name.split_at(boundary);
-    let tool = &tool_with_delimiter[MCP_TOOL_NAME_DELIMITER.len()..];
-    if server.is_empty() || tool.is_empty() {
-        return None;
-    }
-    Some((xai_tool_protocol::ToolId::new(name).ok()?, server, tool))
-}
-
-/// Parse an MCP tool name in `server__tool` format into owned segments.
-pub fn parse_mcp_tool_name(name: &str) -> Option<(String, String)> {
-    parse_mcp_qualified_name(name).map(|(_, server, tool)| (server.to_owned(), tool.to_owned()))
-}
+/// Compatibility re-export; the canonical parser lives with workspace wire types.
+pub use xai_grok_workspace_types::mcp_names::{parse_mcp_qualified_name, parse_mcp_tool_name};
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
@@ -4910,16 +4887,8 @@ pub async fn start_mcp_servers(
     .await
 }
 
-/// Extract the name from an MCP server enum variant.
-pub fn mcp_server_name(server: &acp::McpServer) -> &str {
-    match server {
-        acp::McpServer::Stdio(stdio) => &stdio.name,
-        acp::McpServer::Http(http) => &http.name,
-        acp::McpServer::Sse(sse) => &sse.name,
-        // TODO(acp-0.10): `McpServer` is #[non_exhaustive].
-        _ => "unknown",
-    }
-}
+/// Historical transport API for the canonical config-only server name.
+pub use xai_grok_config_types::mcp_server_name;
 
 pub fn mcp_transport_str(server: &acp::McpServer) -> &'static str {
     match server {

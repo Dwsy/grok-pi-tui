@@ -635,39 +635,14 @@ async fn finish_init_if_life(session: &WorkspaceSession, life: u64, claim: Optio
     }
 }
 
-/// Dedupe MCP server configs by name, LAST definition wins (JSON-object semantics — name-keyed sources can only produce duplicates through list-shaped construction).
-/// One helper for BOTH config chokepoints — `BindMcpConfig::new` (machine-owned) and `start_session_mcp_servers` (client-driven `workspace.configure_mcp`) — so the two paths cannot drift.
+/// One canonical configuration policy in xai-grok-config-types.
 pub(crate) fn dedupe_servers_last_wins(servers: &mut Vec<agent_client_protocol::McpServer>) {
-    let mut seen = std::collections::HashSet::new();
-    let mut dropped = 0usize;
-    // Iterate from the back so the LAST occurrence of each name is the one
-    // kept, preserving its position.
-    for index in (0..servers.len()).rev() {
-        let name = xai_grok_mcp::servers::mcp_server_name(&servers[index]).to_owned();
-        if !seen.insert(name) {
-            servers.remove(index);
-            dropped += 1;
-        }
-    }
-    if dropped > 0 {
-        tracing::warn!(
-            dropped,
-            "MCP config has duplicate server names; keeping the last definition of each"
-        );
-    }
+    xai_grok_config_types::dedupe_mcp_servers_last_wins(servers);
 }
 
-/// Cap a server-config list at [`crate::config::BindMcpConfig::MAX_SERVERS`], keeping the first entries in config order.
-/// Shared by BOTH config chokepoints — `BindMcpConfig::new` (machine-owned) and `start_session_mcp_servers` (client-driven `workspace.configure_mcp`) — so every entry ends up costing bounded resources (process, connection, discovery work) no matter which path configured it.
+/// Match the same bound on both machine-owned and client-driven MCP paths.
 pub(crate) fn cap_servers(servers: &mut Vec<agent_client_protocol::McpServer>) {
-    if servers.len() > crate::config::BindMcpConfig::MAX_SERVERS {
-        tracing::warn!(
-            configured = servers.len(),
-            cap = crate::config::BindMcpConfig::MAX_SERVERS,
-            "MCP config exceeds the server cap; keeping the first entries in config order"
-        );
-        servers.truncate(crate::config::BindMcpConfig::MAX_SERVERS);
-    }
+    xai_grok_config_types::cap_mcp_servers(servers, crate::config::BindMcpConfig::MAX_SERVERS);
 }
 
 /// [`drive_server_starts`], collected into one batch result: the

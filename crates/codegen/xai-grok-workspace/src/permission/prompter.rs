@@ -9,9 +9,9 @@ use crate::permission::{
 };
 use agent_client_protocol::{self as acp, Client as _};
 use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use xai_grok_mcp::servers::parse_mcp_qualified_name;
 use xai_grok_session_events::{Event, EventWriter, PermissionDecision};
 use xai_grok_tools::implementations::grok_build::web_fetch::domain_from_url;
+use xai_grok_workspace_types::mcp_names::parse_mcp_qualified_name;
 
 const REJECT_ONCE_LABEL: &str = "No, and tell Grok what to do differently";
 

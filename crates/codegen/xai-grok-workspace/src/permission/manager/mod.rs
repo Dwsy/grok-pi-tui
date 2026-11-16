@@ -33,12 +33,12 @@ use crate::permission::types::{
     AccessKind, ClientType, Decision, EditPolicy, PermissionCommand, PermissionEvent,
     PermissionRequest, PermissionResolution, PromptPolicy,
 };
-use xai_grok_mcp::servers::parse_mcp_qualified_name;
 use xai_grok_paths::AbsPathBuf;
 use xai_grok_tools::implementations::grok_build::web_fetch::{
     DomainMatcher, config::DEFAULT_ALLOWED_DOMAINS, domain::normalize_domain,
 };
 use xai_grok_tools::types::resources::resolve_model_path;
+use xai_grok_workspace_types::mcp_names::parse_mcp_qualified_name;
 
 mod bash_grants;
 pub mod reasons;
