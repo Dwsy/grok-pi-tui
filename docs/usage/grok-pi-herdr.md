@@ -80,6 +80,11 @@ No global integration is removed or rewritten, so stock `pi` can continue using 
 - The bridge fails closed: if the local socket is missing or unavailable, `grok-pi` continues normally without lifecycle reporting.
 - Check `~/.grok-pi/logs/pi-rpc-stderr.log` for `[pi-grok-herdr]` socket/API failures. The bridge validates JSON responses and retries a bounded number of times.
 - Run `herdr pane process-info --pane <PANE_ID>` and `herdr agent explain <PANE_ID> --json`. Full Header ownership requires `screen_detection_skipped=true` with `full_lifecycle_hook_authority`; a successful socket response alone does not prove Herdr accepted the lifecycle state.
+- `herdr agent list` can identify Pi and display `idle` even when the
+  detailed explanation still reports `default_known_agent_idle_fallback`.
+  That means Herdr's screen-detection fallback is active, **not** that the
+  built-in bridge has full lifecycle authority. Compare the same pane's
+  `herdr agent explain <PANE_ID> --json` after an actual root Pi turn.
 - For an offline local transport check on an ARM64 Mac with Pi installed, run
   `python3 scripts/pi-herdr-pty-smoke.py` from a repository build tree after
   producing `target/aarch64-apple-darwin/release-dist/grok-pi`. This launches
