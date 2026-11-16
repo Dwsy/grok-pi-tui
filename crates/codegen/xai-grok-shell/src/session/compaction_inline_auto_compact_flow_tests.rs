@@ -1,6 +1,7 @@
 use super::super::support::*;
 use super::super::*;
 use super::{AutoCompactTriggerInfo, SuppressReason};
+#[cfg(feature = "stock-mcp")]
 use crate::session::acp_session::McpReminderMode;
 use crate::terminal::AsyncTerminalRunner;
 use crate::terminal::runner::{TerminalError, TerminalRunRequest, TerminalRunResult};

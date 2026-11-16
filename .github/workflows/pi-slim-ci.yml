@@ -120,10 +120,12 @@ jobs:
             --no-default-features --target aarch64-apple-darwin
           if [[ "$(uname -m)" == "arm64" ]]; then
             cargo test --locked --lib -p xai-grok-shell \
-              --no-default-features --target aarch64-apple-darwin
+              --no-default-features --features test-support \
+              --target aarch64-apple-darwin
           else
             cargo check --locked --tests -p xai-grok-shell \
-              --no-default-features --target aarch64-apple-darwin
+              --no-default-features --features test-support \
+              --target aarch64-apple-darwin
           fi
 
       - name: Build ARM64 grok-pi (release-dist)
@@ -153,6 +155,11 @@ jobs:
           else
             echo "Cross-compiled ARM64 Mach-O verified; execution smoke requires an ARM64 host"
           fi
+
+      - name: Smoke-test native Pager with mocked Pi JSONL RPC
+        if: runner.arch == 'ARM64'
+        shell: bash
+        run: python3 scripts/pi-native-pty-smoke.py target/aarch64-apple-darwin/release-dist/grok-pi
 
       - name: Check renderer no longer imports stock tools
         shell: bash
