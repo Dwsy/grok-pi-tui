@@ -1273,6 +1273,9 @@ pub struct AppView {
     /// Persisted `[toolset.ask_user_question].timeout_enabled` mirror, seeded from the effective TOML merge like `show_tips`.
     /// `None` means unset in TOML (default `true`); toggles write the user layer.
     pub ask_user_question_timeout_enabled: Option<bool>,
+    /// Effective timeout in seconds, seeded from the merged TOML at startup.
+    /// `None` means the shell's default timeout applies.
+    pub ask_user_question_timeout_secs: Option<u64>,
     /// Whether ZDR users are allowed to use the product.
     /// Server-controlled via RemoteSettings (remote settings). Default `false` (blocked) during beta.
     pub zdr_access_enabled: bool,
@@ -1878,6 +1881,7 @@ impl AppView {
             show_tips: None,
             auto_update: None,
             ask_user_question_timeout_enabled: None,
+            ask_user_question_timeout_secs: None,
             zdr_access_enabled: false,
             usage_billing_redirect_url: None,
             access_gate_shown_logged: false,

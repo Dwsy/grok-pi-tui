@@ -1949,6 +1949,7 @@ pub(crate) async fn run(
         config_session_bools.auto_update
     };
     app.ask_user_question_timeout_enabled = config_session_bools.ask_user_question_timeout_enabled;
+    app.ask_user_question_timeout_secs = config_session_bools.ask_user_question_timeout_secs;
     // Prime thread-local caches so first render doesn't hit disk.
     crate::appearance::cache::prime(&app.current_ui);
     // Apply the remote soft default for text selection (flash | hold | word_select) when the user has set none locally
@@ -3622,6 +3623,7 @@ struct InitialConfigSessionBools {
     show_tips: Option<bool>,
     auto_update: Option<bool>,
     ask_user_question_timeout_enabled: Option<bool>,
+    ask_user_question_timeout_secs: Option<u64>,
 }
 
 fn load_initial_config_session_bools() -> InitialConfigSessionBools {
@@ -3637,6 +3639,13 @@ fn load_initial_config_session_bools() -> InitialConfigSessionBools {
             .and_then(|t| t.get("ask_user_question"))
             .and_then(|a| a.get("timeout_enabled"))
             .and_then(|v| v.as_bool()),
+        ask_user_question_timeout_secs: root
+            .get("toolset")
+            .and_then(|t| t.get("ask_user_question"))
+            .and_then(|a| a.get("timeout_secs"))
+            .and_then(|v| v.as_integer())
+            .and_then(|v| u64::try_from(v).ok())
+            .filter(|&secs| secs > 0),
     }
 }
 

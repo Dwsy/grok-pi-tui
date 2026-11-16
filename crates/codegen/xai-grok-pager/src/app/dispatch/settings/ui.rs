@@ -63,6 +63,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
     let prompt_cursor_from_app = app.appearance.prompt.cursor.to_config_value();
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
+    let ask_user_question_timeout_secs_from_app = app.ask_user_question_timeout_secs;
     let voice_stt_language_from_app = app.voice_config.language.clone();
     for agent in app.agents.values_mut() {
         // Walk both `Settings` and `ResetSettingsConfirm`
@@ -101,6 +102,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
                 prompt_cursor: prompt_cursor_from_app.clone(),
                 auto_mode_gate: auto_mode_gate_from_app,
                 ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
+                ask_user_question_timeout_secs: ask_user_question_timeout_secs_from_app,
                 voice_stt_language: voice_stt_language_from_app.clone(),
             };
         }
@@ -360,6 +362,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
     let prompt_cursor_from_app = app.appearance.prompt.cursor.to_config_value();
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
+    let ask_user_question_timeout_secs_from_app = app.ask_user_question_timeout_secs;
     let voice_stt_language_from_app = app.voice_config.language.clone();
 
     let Some(agent) = app.agents.get_mut(&id) else {
@@ -406,6 +409,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
         prompt_cursor: prompt_cursor_from_app.clone(),
         auto_mode_gate: auto_mode_gate_from_app,
         ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
+        ask_user_question_timeout_secs: ask_user_question_timeout_secs_from_app,
         voice_stt_language: voice_stt_language_from_app,
     };
     let mut state = Box::new(SettingsModalState::new(
@@ -933,6 +937,7 @@ pub(crate) fn build_pager_snapshot(app: &AppView) -> crate::settings::PagerLocal
         prompt_cursor: app.appearance.prompt.cursor.to_config_value(),
         auto_mode_gate: app.auto_mode_gate,
         ask_user_question_timeout_enabled: app.ask_user_question_timeout_enabled,
+        ask_user_question_timeout_secs: app.ask_user_question_timeout_secs,
         voice_stt_language: app.voice_config.language.clone(),
     }
 }
