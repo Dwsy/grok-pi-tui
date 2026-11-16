@@ -80,9 +80,10 @@ stock-grok (separate build feature, unchanged behavior)
 | **S08a-6 本批已改待编译** | `MemoryBackend`、`MemoryV2Access`／`MemoryV2Write` 和 UTF-8 截断契约移入 `xai-tool-types`；Memory 改为只依赖纯类型；资源容器接线留在 stock Tools | Memory 的生产 manifest 不再直接依赖 Tools；工具资源容器集成测试仍有显式 **dev-dependency** | 中 |
 | **S08a-7 本批已改待编译** | `ClientType` 从 Workspace Permission 移入 `xai-grok-workspace-types`，HTTP 直接依赖轻量 wire 类型，旧 Workspace API re-export | `xai-grok-http` 移除完整 Workspace 的生产依赖；原客户端标识、serde 别名、User-Agent 标签不变 | 低～中 |
 | **S08a-8 本批已改待编译** | `McpOAuthConfig` 从 MCP 运行时移到 `xai-grok-config-types`；MCP SDK 保留旧路径 re-export；依赖边变为 MCP → Config Types | Config Types 不再为单个 OAuth 值类型引入完整 MCP/工具链；消除逆依赖方向 | 中 |
+| **S08a-9 已改待编译** | **原版 Grok MCP 纯协议归位**：`parse_mcp_qualified_name`、`parse_mcp_tool_name` 移到 `xai-grok-workspace-types`；`mcp_server_name`、服务器配置去重/截断移到 `xai-grok-config-types`，原 Grok MCP re-export | Workspace 的 Config + Permission 不再引用 `xai-grok-mcp`；独立协议边界无 `rmcp` | 中 |
 | S08b | Pager 的 `external-backend` 与 `stock-agent` **编译期**隔离；从 `lib.rs`、App reducer、Slash、Settings、session/view 逐块分层 | Pi 下 `xai-grok-pager` 编译入口不依赖 Shell 的 Agent 运行时 | 高 |
-| S08c | `pi-grok-adapter` 的 Shell config / workflow host / session 枚举等从具体 Shell 实现改为精简 host 接口；必须保持 Pi 主导执行 | Adapter 不再直接链接 `xai-grok-shell`；API / workflow 行为不回归 | 高 |
-| S08d | 完全去除 Pi 对 stock Tools、Shell agent loop 的编译依赖：继续裁 Grok Auth、采样器、MCP、Workflow 的真实可达路径 | `cargo tree` 证实剩余 stock Agent 后端不再可达；需要按边界小批量推进 | 高 |
+| **S08c 暂缓** | Workflow Host 从 Shell 的解耦（用户明确要求本轮不拆 Workflow） | 保持 `pi-grok-adapter` 的 Workflow Host、业务行为和状态机不变，不把 MCP 去依赖与 Workflow 重构混为一项任务 | 暂停 |
+| **S08d 仅 MCP 优先** | 在不拆 Workflow 前提下，切断 Pi 对 Grok 原版 `xai-grok-mcp`、`rmcp`、`reqwest 0.13` 的编译路径；其它 Shell/Tools 瘦身延后 | 完成后才可通过真实 `cargo tree` 断言 `xai-grok-mcp` 不可达 | 高 |
 | S09 | 验证与收敛：修复外部模式自测、删除无用门控/抽象、文档收敛 | 完整 Pi RPC/TUI/Herdr/Remote TUI 回归，冷/热 CI 性能可复现 | 中 |
 
 如果某刀需要把模块一次性重写成多个新 crate，应先验证为什么不能只做一个可选依赖和一个现有类型层；**首先砍依赖边，其次才重排目录**。Stock 功能默认路径不应被无意改动。
@@ -99,6 +100,8 @@ stock-grok (separate build feature, unchanged behavior)
 - 本轮静态 Cargo manifest 排查后仍直接依赖 Tools 的 8 个 crate 为：`xai-grok-agent`、`xai-grok-mcp`、`xai-grok-memory`、`xai-grok-pager`、`xai-grok-shell-terminal`、`xai-grok-shell`、`xai-grok-subagent-resolution`、`xai-grok-workspace`。其中 Memory 的 `MemoryBackend`/`MemoryV2Access` 是 Login → Tools 的剩余间接路径；Terminal 还需要 `TerminalBackend`、`ToolNotificationHandle`、`BashOutput` 等接口。不要声称 Login 或 Hooks 的直接去依赖已经让整个 Pi 构建闭包不含 Tools。
 - **S08a-6–8 之后的增量证据**：静态正常/构建依赖 BFS（排除 `dev-dependencies`，仍包含目标相关性未知的 manifest 边）已验证 `xai-grok-memory`、`xai-grok-login`、`xai-grok-http`、`xai-grok-config-types`、`xai-grok-hooks` **均无 Grok Tools 可达路径**。这是静态 manifest 图，不是 target-specific Cargo tree；先前“8 个直接依赖”状态已过时，Memory 现在仅在一个旧资源容器集成测试中保留 Tools dev dependency。
 - **MCP 尚不能直接断开 Tools**：其 `McpErasedTool` 实现 stock `ToolMetadata`，返回 `ToolOutput::MCP` 等实际运行时类型，并不只是 `McpElicit` wire 数据；不能为了 Graph 好看而复制假的 ToolMetadata。**Pager 仍直接引用 Tools 和 Shell，Pi Adapter 仍经 Workflow 引入 Shell。**
+- **2026-11-16 用户明确纠偏：要拆的是原版 Grok 的 Rust MCP 编译闭包，不是 grok-pi 私有的 Eval MCP daemon。** 此前误删 Pi MCP 的 `7210bc13` 已通过追加恢复提交 `f59deb0f` 完整恢复，保留历史以便审计。**Workflow 暂不拆。**
+- **S08a-9 后的源码实况**：`xai-grok-workspace/src/config.rs` 与 `permission/{manager,prompter}` 已无 `xai_grok_mcp::` 或 `crate::mcp::` 依赖。真正阻塞编译的是 `session/mod.rs` 的 `McpState` 和绑定生命周期、`handle.rs` 的注册/重连/卸载逻辑，以及 Shell `session/*` 的 ACP MCP 实现。**当前 Cargo manifest 中 Shell 和 Workspace 仍直接依赖 `xai-grok-mcp`，不能宣告 Grok MCP 已移除。**
 - `pdf_oxide` 只在 `xai-grok-tools` 的 stock PDF 路径使用；`aws-sdk-s3` / `aws-config` / `aws-smithy-http-client` 只在 `xai-file-utils/s3.rs` 使用；`gcloud-storage` 只用于直接 GCS 客户端及 Shell 的一个未使用 manifest 声明（已移除）。
 - stock Grok 组合根 `xai-grok-pager-bin` 的 `default` 与 `default-bazel` 显式启用 `stock-pdf`、`stock-s3`、`stock-gcs`；Pi 的 `--no-default-features --features release-dist,sandbox-enforce` 不启用这些功能。Pi 误调用原版文件上传分支将返回清晰错误，Pi agent 的工具由其独立进程执行。
 
