@@ -19,6 +19,7 @@ pub mod hunk_tracker;
 pub mod interject;
 pub mod jj;
 pub mod marketplace;
+#[cfg(feature = "stock-mcp")]
 pub mod mcp;
 pub mod memory;
 pub mod notification;

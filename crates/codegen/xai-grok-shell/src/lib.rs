@@ -39,6 +39,7 @@ pub mod inspect;
 pub mod instrumentation;
 pub mod leader;
 pub mod managed_config;
+#[cfg(feature = "stock-mcp")]
 pub mod mcp_doctor;
 pub use xai_grok_models as models;
 pub mod plugin;

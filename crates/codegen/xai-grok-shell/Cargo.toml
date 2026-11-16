@@ -5,10 +5,11 @@ version = "1.0.24"
 edition.workspace = true
 
 [features]
+stock-mcp = ["dep:xai-grok-mcp", "xai-grok-workspace/stock-mcp"]
 stock-pdf = ["xai-grok-tools/stock-pdf"]
 stock-s3 = ["xai-file-utils/stock-s3"]
 stock-gcs = ["xai-file-utils/stock-gcs"]
-default = []
+default = ["stock-mcp"]
 dhat-heap = ["dep:dhat"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
@@ -22,6 +23,7 @@ local-workspace = []
 # parse the committed config-reference page.
 config-docs = []
 default-bazel = [
+    "stock-mcp",
     "local-workspace",
     "test-support",
     "config-docs",
@@ -49,12 +51,12 @@ glob = { workspace = true }
 globset = { workspace = true }
 kanal = "0.1"
 regex = { workspace = true }
-# rmcp 2.1 + reqwest 0.13 are quarantined inside `xai-grok-mcp`. The remaining
+# rmcp 3.2 + reqwest 0.13 are quarantined inside `xai-grok-mcp`. The remaining
 # MCP code in this crate (extensions/mcp.rs, mcp_doctor.rs) reaches rmcp model
 # types via `xai_grok_mcp::rmcp::model::*`. reqwest 0.13 is a private impl
 # detail of xai-grok-mcp::servers; shell never sees it. Every HTTP call site
 # in this crate uses workspace reqwest 0.12.
-xai-grok-mcp = { workspace = true }
+xai-grok-mcp = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["stream", "blocking"] }
 reqwest-middleware = { workspace = true }
 serde = { workspace = true }

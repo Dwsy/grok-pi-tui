@@ -92,7 +92,7 @@ xai-ratatui-textarea = { workspace = true }
 xai-ratatui-inline = { workspace = true }
 
 # Update
-xai-grok-update = { path = "../xai-grok-update" }
+xai-grok-update = { path = "../xai-grok-update", default-features = false }
 
 # ACP
 agent-client-protocol = { workspace = true }
@@ -235,13 +235,19 @@ path = "tests/settings_e2e.rs"
 workspace = true
 
 [features]
-default = ["jemalloc", "sandbox-enforce"]
+default = ["jemalloc", "sandbox-enforce", "stock-mcp"]
 default-bazel = [
+    "stock-mcp",
     "jemalloc",
     "sandbox-enforce",
     "test-support",
     "local-workspace",
     ]
+stock-mcp = [
+    "xai-grok-shell/stock-mcp",
+    "xai-grok-workspace/stock-mcp",
+    "xai-grok-update/stock-mcp",
+]
 local-workspace = ["xai-grok-shell/local-workspace"]
 # No-op on this crate: the actual `#[global_allocator]` (and the
 # `tikv-jemallocator` dep) live on the composition-root binary

@@ -514,6 +514,7 @@ pub(crate) struct RegistryConfig {
     pub alpha_test_key: Option<String>,
 }
 pub mod acp_conversion;
+#[cfg(feature = "stock-mcp")]
 pub(crate) mod acp_mcp;
 pub(crate) mod acp_session;
 pub(crate) mod agent_rebuild;
@@ -540,13 +541,19 @@ pub(crate) mod image_describe;
 pub(crate) mod image_normalize;
 pub(crate) mod inference_metrics;
 pub use xai_grok_shared::session::info;
+#[cfg(feature = "stock-mcp")]
 pub mod managed_mcp;
+#[cfg(feature = "stock-mcp")]
 pub(crate) mod mcp_descriptors;
+#[cfg(feature = "stock-mcp")]
 pub(crate) mod mcp_dispatcher;
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-mcp"))]
 mod mcp_dispatcher_e2e_tests;
+#[cfg(feature = "stock-mcp")]
 pub(crate) mod mcp_elicitation;
+#[cfg(feature = "stock-mcp")]
 pub(crate) mod mcp_restart;
+#[cfg(feature = "stock-mcp")]
 pub mod mcp_servers;
 pub mod memory;
 pub(crate) mod memory_observation;

@@ -4,6 +4,10 @@ name = "xai-grok-update"
 version = "0.1.220-alpha.4"
 edition.workspace = true
 
+[features]
+default = ["stock-mcp"]
+stock-mcp = ["xai-grok-shell/stock-mcp"]
+
 [dependencies]
 dunce = { workspace = true }
 anyhow = { workspace = true }

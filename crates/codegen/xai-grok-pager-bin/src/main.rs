@@ -54,12 +54,13 @@ fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<P
         Some(Command::Agent(_)) => return None,
         Some(Command::Dashboard) => return None,
         Some(Command::Login { .. }) => (Entrypoint::Cli, Interactivity::Interactive),
+        #[cfg(feature = "stock-mcp")]
+        Some(Command::Mcp(_)) => (Entrypoint::Cli, Interactivity::Unattended),
         Some(
             Command::Inspect { .. }
             | Command::Doctor(_)
             | Command::Leader(_)
             | Command::Logout
-            | Command::Mcp(_)
             | Command::Plugin(_)
             | Command::Memory(_)
             | Command::Models
@@ -94,13 +95,14 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
         | Some(Command::Dashboard)
         | Some(Command::Models)
         | Some(Command::Worktree(_)) => true,
+        #[cfg(feature = "stock-mcp")]
+        Some(Command::Mcp(_)) => false,
         Some(
             Command::Inspect { .. }
             | Command::Doctor(_)
             | Command::Leader(_)
             | Command::Logout
             | Command::Login { .. }
-            | Command::Mcp(_)
             | Command::Plugin(_)
             | Command::Memory(_)
             | Command::Sessions(_)
@@ -2202,6 +2204,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 run_setup_command(json).await;
                 return Ok(());
             }
+            #[cfg(feature = "stock-mcp")]
             Command::Mcp(mcp_args) => {
                 init_tracing_simple("cli");
                 return xai_grok_pager::mcp_cmd::run(mcp_args).await;

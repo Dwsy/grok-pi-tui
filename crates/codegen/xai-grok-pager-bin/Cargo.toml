@@ -23,15 +23,15 @@ path = "src/bin/grok-pi.rs"
 
 [dependencies]
 # The pager library (all application logic + the public API main.rs drives).
-xai-grok-pager = { path = "../xai-grok-pager" }
+xai-grok-pager = { path = "../xai-grok-pager", default-features = false }
 # Optional scrollback-native render mode, wired in via the fn-pointer seam.
-xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal" }
+xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal", default-features = false }
 pi-grok-adapter = { path = "../pi-grok-adapter" }
 
 # Agent runtime + leader/stdio/headless entry points.
 xai-grok-login = { workspace = true }
 xai-grok-shell = { workspace = true }
-xai-grok-update = { path = "../xai-grok-update" }
+xai-grok-update = { path = "../xai-grok-update", default-features = false }
 xai-grok-version = { workspace = true }
 xai-grok-telemetry = { workspace = true }
 xai-grok-workspace = { workspace = true }
@@ -103,6 +103,7 @@ clap = { workspace = true, features = ["derive"] }
 
 [features]
 default = [
+    "stock-mcp",
     "jemalloc",
     "sandbox-enforce",
     "stock-obfuscation",
@@ -111,6 +112,7 @@ default = [
     "stock-gcs",
     ]
 default-bazel = [
+    "stock-mcp",
     "jemalloc",
     "sandbox-enforce",
     "local-workspace",
@@ -119,6 +121,13 @@ default-bazel = [
     "stock-s3",
     "stock-gcs",
     ]
+stock-mcp = [
+    "xai-grok-shell/stock-mcp",
+    "xai-grok-workspace/stock-mcp",
+    "xai-grok-pager/stock-mcp",
+    "xai-grok-pager-minimal/stock-mcp",
+    "xai-grok-update/stock-mcp",
+]
 stock-obfuscation = ["dep:cryptify"]
 stock-pdf = ["xai-grok-shell/stock-pdf"]
 stock-s3 = ["xai-grok-shell/stock-s3"]

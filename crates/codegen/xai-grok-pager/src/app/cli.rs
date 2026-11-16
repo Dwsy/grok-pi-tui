@@ -41,6 +41,7 @@ pub enum Command {
         devbox: bool,
     },
     /// Manage MCP server configurations
+    #[cfg(feature = "stock-mcp")]
     Mcp(crate::mcp_cmd::McpArgs),
     /// Manage plugins and marketplace sources
     Plugin(crate::plugin_cmd::PluginArgs),

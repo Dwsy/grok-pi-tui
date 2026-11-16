@@ -542,7 +542,9 @@ impl acp::Agent for MvpAgent {
                             acp::PromptCapabilities::new().embedded_context(true),
                         )
                         .mcp_capabilities(
-                            acp::McpCapabilities::new().http(true).sse(true),
+                            acp::McpCapabilities::new()
+                                .http(cfg!(feature = "stock-mcp"))
+                                .sse(cfg!(feature = "stock-mcp")),
                         )
                         .session_capabilities(session_capabilities),
                 )
@@ -551,13 +553,10 @@ impl acp::Agent for MvpAgent {
                     let metadata = crate::util::parse_json_object_env(
                         "GROK_AGENT_METADATA",
                     );
-                    serde_json::json!({
+                    let mut capabilities = serde_json::json!({
                     "grokShell": true,
                     // Re-deriving this precedence client-side has regressed OIDC refresh, so clients consume the agent's choice from here
                     "defaultAuthMethodId": default_auth_method_id_wire,
-                    // The agent can drive in-process SDK MCP servers over the ACP reverse channel (`x.ai/mcp/sdk_call`)
-                    // The SDK reads this to enable transport="acp"
-                    (xai_grok_mcp::wire::MCP_SDK): true,
                     // `session/new` / `session/load` accept per-session plugin roots in `_meta.pluginDirs`
                     // The SDKs gate `GrokOptions.plugins` on this
                     (SESSION_PLUGIN_DIRS_CAPABILITY_KEY): true,
@@ -581,9 +580,12 @@ impl acp::Agent for MvpAgent {
                     "sessionRecap": self.cfg.borrow().is_session_recap_enabled(),
                     "feedbackTraceOffer": self.feedback_trace_offer(),
                     "voiceMode": self.cfg.borrow().is_voice_mode_enabled(),
-                })
-                        .as_object()
-                        .cloned()
+                });
+                    // Only the stock agent advertises the original Grok MCP
+                    // reverse-channel capability. Pi's own Eval MCP is separate.
+                    #[cfg(feature = "stock-mcp")]
+                    capabilities[xai_grok_mcp::wire::MCP_SDK] = serde_json::Value::Bool(true);
+                    capabilities.as_object().cloned()
                 }),
         )
     }

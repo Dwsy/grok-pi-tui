@@ -996,7 +996,8 @@ pub async fn delete_mcp_server_config_at(
     tokio::fs::write(&tmp, &toml_str).await?;
     tokio::fs::rename(&tmp, &path).await?;
 
-    // Clean up OAuth credentials for the deleted server.
+    // Stock Grok OAuth credentials belong to stock MCP, not Pi's disk config.
+    #[cfg(feature = "stock-mcp")]
     if let Ok(mut cred_store) = xai_grok_mcp::credentials::McpCredentialStore::load_default() {
         let removed = cred_store.remove_by_server_name(server_name);
         if removed > 0 {
