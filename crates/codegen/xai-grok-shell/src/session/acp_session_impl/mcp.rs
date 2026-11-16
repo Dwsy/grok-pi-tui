@@ -1039,32 +1039,6 @@ impl SessionActor {
             "Injected MCP connecting system-reminder"
         );
     }
-    /// `deliveryTools` sessions emit user-visible output only through MCP tools, so both gates hold full waits for them, under either strategy.
-    pub(super) fn requires_full_mcp_wait(&self) -> bool {
-        !self.delivery_tools.borrow().is_empty()
-    }
-    /// Re-apply the attaching client's per-attachment policy.
-    /// The resident `session/load` rail sends this when the request carries explicit `startupHints`.
-    /// Only policy fields are touched; structural spawn-time hints (subagent identity, inherited prefix, preserved system head) stay frozen.
-    pub(super) fn apply_attach_policy(&self, hints: &crate::session::StartupHints) {
-        let strategy = hints.resolve_mcp_strategy();
-        let changed = self.mcp_strategy.get() != strategy
-            || self.attach_non_interactive.get() != hints.non_interactive
-            || *self.delivery_tools.borrow() != hints.delivery_tools;
-        self.mcp_strategy.set(strategy);
-        self.attach_non_interactive.set(hints.non_interactive);
-        *self.delivery_tools.borrow_mut() = hints.delivery_tools.clone();
-        if changed {
-            self.mcp_connecting_reminder_injected.set(false);
-        }
-        tracing::info!(
-            ?strategy,
-            non_interactive = hints.non_interactive,
-            delivery_tools = ?hints.delivery_tools,
-            changed,
-            "apply_attach_policy: updated per-attachment policy from session request startupHints"
-        );
-    }
     fn cancel_superseded_init(
         &self,
         generation: &crate::session::mcp_servers::Generation,
@@ -1449,15 +1423,6 @@ impl SessionActor {
                 pass.run(refresher)
             ),
         );
-    }
-    /// Summaries of the currently connected MCP servers, from the live tool-metadata snapshot.
-    /// The single source for every consumer of the server list.
-    pub(crate) fn connected_server_summaries(
-        &self,
-    ) -> Vec<xai_grok_tools::types::tool_index::ServerSummary> {
-        use xai_grok_tools::types::tool_index::ToolSearchIndex;
-        crate::session::tool_index::Bm25ToolSearchIndex::new(self.tool_metadata_snapshot.clone())
-            .list_server_summaries()
     }
     /// Render the tool usage hint appended to every injected MCP reminder body, with the session's tool names substituted.
     /// Shared by the injector and the `/context` estimate.

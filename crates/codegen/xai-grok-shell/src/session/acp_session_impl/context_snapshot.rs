@@ -83,6 +83,7 @@ impl SessionActor {
         let tool_definitions_count = tool_defs.len() as u64;
         let tools = tool_definitions_text(&tool_defs);
         let skills = self.tool_bridge_handle().skill_listing_snapshot().await;
+        #[cfg(feature = "stock-mcp")]
         let mcp = self.mcp_announcement_snapshot().await;
         let workflows = self.workflow_listing_snapshot();
         let agents = self.agents_md_category_text();
@@ -92,8 +93,14 @@ impl SessionActor {
             tool_definitions_count,
             skills_text: skills.as_ref().map(|s| s.text.clone()).unwrap_or_default(),
             skills_count: skills.map(|s| s.skill_count as u64).unwrap_or(0),
+            #[cfg(feature = "stock-mcp")]
             mcp_text: mcp.as_ref().map(|s| s.text.clone()).unwrap_or_default(),
+            #[cfg(not(feature = "stock-mcp"))]
+            mcp_text: String::new(),
+            #[cfg(feature = "stock-mcp")]
             mcp_server_count: mcp.map(|s| s.server_count as u64).unwrap_or(0),
+            #[cfg(not(feature = "stock-mcp"))]
+            mcp_server_count: 0,
             agents_md_text: agents
                 .as_ref()
                 .map(|(text, _)| text.clone())

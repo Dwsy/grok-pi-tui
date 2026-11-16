@@ -3,6 +3,44 @@
 use super::*;
 use xai_grok_tools::types::skill_discovery_tracker::SkillUpdateKind;
 impl SessionActor {
+    /// Summaries of the currently connected MCP servers, from the live tool-metadata snapshot.
+    /// The single source for every consumer of the server list.
+    pub(crate) fn connected_server_summaries(
+        &self,
+    ) -> Vec<xai_grok_tools::types::tool_index::ServerSummary> {
+        use xai_grok_tools::types::tool_index::ToolSearchIndex;
+        crate::session::tool_index::Bm25ToolSearchIndex::new(self.tool_metadata_snapshot.clone())
+            .list_server_summaries()
+    }
+
+    /// `deliveryTools` sessions emit user-visible output only through MCP tools, so both gates hold full waits for them, under either strategy.
+    pub(super) fn requires_full_mcp_wait(&self) -> bool {
+        cfg!(feature = "stock-mcp") && !self.delivery_tools.borrow().is_empty()
+    }
+    /// Re-apply the attaching client's per-attachment policy.
+    /// The resident `session/load` rail sends this when the request carries explicit `startupHints`.
+    /// Only policy fields are touched; structural spawn-time hints (subagent identity, inherited prefix, preserved system head) stay frozen.
+    pub(super) fn apply_attach_policy(&self, hints: &crate::session::StartupHints) {
+        let strategy = hints.resolve_mcp_strategy();
+        let changed = self.mcp_strategy.get() != strategy
+            || self.attach_non_interactive.get() != hints.non_interactive
+            || *self.delivery_tools.borrow() != hints.delivery_tools;
+        self.mcp_strategy.set(strategy);
+        self.attach_non_interactive.set(hints.non_interactive);
+        *self.delivery_tools.borrow_mut() = hints.delivery_tools.clone();
+        #[cfg(feature = "stock-mcp")]
+        if changed {
+            self.mcp_connecting_reminder_injected.set(false);
+        }
+        tracing::info!(
+            ?strategy,
+            non_interactive = hints.non_interactive,
+            delivery_tools = ?hints.delivery_tools,
+            changed,
+            "apply_attach_policy: updated per-attachment policy from session request startupHints"
+        );
+    }
+
     /// `true` for session-based ACP auth methods.
     fn is_session_based_auth(&self) -> bool {
         self.auth_method_id
@@ -95,6 +133,7 @@ impl SessionActor {
     #[tracing::instrument(skip_all)]
     pub(super) async fn build_prefix_after_mcp_wait(&self, full_wait: bool) -> String {
         let start = std::time::Instant::now();
+        #[cfg(feature = "stock-mcp")]
         if full_wait {
             let deadline = tokio::time::Instant::now() + self.delivery_prefix_wait();
             self.wait_for_mcp_handshakes(|_| deadline).await;
@@ -672,6 +711,7 @@ impl SessionActor {
         if let Some((listing, count)) = self.workflow_listing_snapshot() {
             rows.push(TokenUsageCategory::workflows_listing(&listing, count));
         }
+        #[cfg(feature = "stock-mcp")]
         if let Some(announcement) = self.mcp_announcement_snapshot().await {
             rows.push(TokenUsageCategory::mcp_servers(
                 &announcement.text,
