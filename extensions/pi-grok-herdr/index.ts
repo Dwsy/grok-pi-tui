@@ -144,14 +144,30 @@ function reportState(state, message) {
 }
 
 const pendingReports = [];
+const MAX_PENDING_REPORTS = 128;
 let sending = false;
 
 function enqueue(request) {
   // These are transitions, not snapshots: coalescing queued states can erase
   // working/blocked when a fast Pi turn completes before the socket responds.
-  // publish() already suppresses unchanged states. Preserve FIFO and session
-  // identity before all subsequent lifecycle events.
+  // publish() already suppresses unchanged states. Preserve FIFO normally.
   pendingReports.push(request);
+  if (pendingReports.length > MAX_PENDING_REPORTS) {
+    // A disconnected Herdr must not consume unbounded memory. Only under
+    // exceptional backpressure retain the newest session identity and the
+    // latest state *after* that session, so a recovered socket converges.
+    const session = pendingReports.findLast(
+      (item) => item.method === "pane.report_agent_session",
+    );
+    const state = pendingReports.findLast(
+      (item) => item.method === "pane.report_agent",
+    );
+    pendingReports.length = 0;
+    if (session) pendingReports.push(session);
+    if (state && (!session || state.params.seq > session.params.seq)) {
+      pendingReports.push(state);
+    }
+  }
   if (!sending) void flushReports();
 }
 

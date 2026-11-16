@@ -248,6 +248,41 @@ jobs:
               -p xai-grok-pager-render --target aarch64-apple-darwin
           fi
 
+      # Keep this candidate separate from the tag-driven multi-platform release.
+      # Only a native ARM64 runner can ship an artifact it has executed.
+      - name: Package smoke-tested ARM64 Pi candidate
+        if: runner.arch == 'ARM64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=target/aarch64-apple-darwin/release-dist/grok-pi
+          test -s "$src"
+          file "$src" | grep -q 'Mach-O 64-bit executable arm64'
+          mkdir -p dist "$RUNNER_TEMP/pi-slim-stage"
+          cp "$src" "$RUNNER_TEMP/pi-slim-stage/grok-pi"
+          chmod 755 "$RUNNER_TEMP/pi-slim-stage/grok-pi"
+          asset="grok-pi-macos-arm64-pi-slim-${GITHUB_SHA:0:12}.tar.gz"
+          tar -C "$RUNNER_TEMP/pi-slim-stage" -czf "dist/$asset" grok-pi
+          tar -tzf "dist/$asset" | grep -qx grok-pi
+          (cd dist && shasum -a 256 "$asset" > "$asset.sha256")
+          (cd dist && shasum -a 256 -c "$asset.sha256")
+          {
+            echo "git_sha=$GITHUB_SHA"
+            echo "target=aarch64-apple-darwin"
+            echo "profile=release-dist"
+            echo "runner=${{ inputs.runner }}"
+            "$src" --version
+          } > dist/build-info.txt
+
+      - name: Upload ARM64 Pi candidate (not a GitHub release)
+        if: runner.arch == 'ARM64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-slim-macos-arm64-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload Cargo timings
         if: always()
         uses: actions/upload-artifact@v4

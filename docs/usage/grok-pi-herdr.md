@@ -102,3 +102,8 @@ No global integration is removed or rewritten, so stock `pi` can continue using 
 - The lifecycle events must not be coalesced into a final `idle` during
   fast turns: the test also emits `working → blocked → working → idle`
   without awaiting socket replies and verifies every state was reported.
+- On a stalled Herdr Socket, the extension limits the pending-report queue to
+  128 entries. Only when this bound is exceeded does it retain the newest
+  session report and the latest subsequent state. Normal event delivery keeps
+  its full FIFO transition history; this fallback prevents memory growth while
+  the socket is disconnected.

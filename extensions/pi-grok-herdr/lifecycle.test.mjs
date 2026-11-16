@@ -12,6 +12,8 @@ test("Herdr reports authoritative session, idle, working and blocked states", as
   const dir = await mkdtemp(join(tmpdir(), "pi-herdr-state-"));
   const socketPath = join(dir, "socket");
   const reports = [];
+  let holdResponses = false;
+  const heldReplies = [];
   const server = createServer((socket) => {
     let buffer = "";
     socket.on("data", (bytes) => {
@@ -20,7 +22,10 @@ test("Herdr reports authoritative session, idle, working and blocked states", as
       if (newline < 0) return;
       const request = JSON.parse(buffer.slice(0, newline));
       reports.push(request);
-      socket.end(JSON.stringify({ id: request.id, result: { ok: true } }) + "\n");
+      const reply = () =>
+        socket.end(JSON.stringify({ id: request.id, result: { ok: true } }) + "\n");
+      if (holdResponses) heldReplies.push(reply);
+      else reply();
     });
   });
 
@@ -109,6 +114,30 @@ test("Herdr reports authoritative session, idle, working and blocked states", as
     assert.equal(rapidBlocked.params.message, "rapid approval");
     assert.ok(rapidIdle.params.seq > rapidResumed.params.seq);
 
+    // A dead Herdr socket cannot allow an unbounded queue to retain the
+    // entire turn history. Once it recovers, the latest session and state
+    // must still reach Herdr even if intermediate transitions were collapsed.
+    const reportsBeforeBackpressure = reports.length;
+    const cycles = 200;
+    holdResponses = true;
+    for (let i = 0; i < cycles; i++) {
+      lifecycle.get("agent_start")({}, ctx);
+      lifecycle.get("agent_settled")({}, ctx);
+    }
+    await sleep(30);
+    holdResponses = false;
+    for (const reply of heldReplies.splice(0)) reply();
+    const finalSeq = rapidIdle.params.seq + cycles * 3;
+    await waitFor(
+      (r) => r.method === "pane.report_agent" &&
+        r.params.seq === finalSeq && r.params.state === "idle",
+      "latest idle after socket stall",
+    );
+    assert.ok(
+      reports.length - reportsBeforeBackpressure <= 140,
+      "Socket stall must not retain an unlimited number of queued reports",
+    );
+
     for (const report of reports) {
       assert.equal(report.params.pane_id, "isolated-herdr-pane");
       assert.equal(report.params.source, "herdr:pi");
@@ -117,6 +146,8 @@ test("Herdr reports authoritative session, idle, working and blocked states", as
     }
     console.log("PASS Herdr authoritative lifecycle: idle → working → blocked → working → idle");
   } finally {
+    holdResponses = false;
+    for (const reply of heldReplies.splice(0)) reply();
     delete process.env.HERDR_ENV;
     delete process.env.HERDR_SOCKET_PATH;
     delete process.env.HERDR_PANE_ID;
