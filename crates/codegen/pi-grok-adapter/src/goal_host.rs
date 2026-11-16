@@ -101,13 +101,6 @@ impl GoalHost {
         }
     }
 
-    pub fn load(&mut self) -> Option<GoalControl> {
-        let raw = std::fs::read_to_string(&self.control_path).ok()?;
-        let control: GoalControl = serde_json::from_str(&raw).ok()?;
-        self.apply_control(control.clone());
-        Some(control)
-    }
-
     /// Reject stale per-process IPC projections before they mutate the host
     /// timer or continuation guard, even when another session just switched.
     pub fn load_for_session(&mut self, session_id: &str) -> Option<GoalControl> {
@@ -306,7 +299,7 @@ mod tests {
         )
         .unwrap();
         let mut host = GoalHost::new(f.path().to_path_buf());
-        let c = host.load().expect("load");
+        let c = host.load_for_session("sess").expect("load");
         assert!(c.is_active());
         let payload = host.notification_payload("sess", &c);
         assert_eq!(payload["update"]["sessionUpdate"], "goal_updated");
