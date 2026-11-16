@@ -45,8 +45,10 @@
 use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
+use xai_grok_auth::tool_attribution::{
+    Auth401AttributionCallback as ToolAuth401AttributionCallback, ToolConsumer,
+};
 use xai_grok_sampler::{Auth401AttributionCallback, SamplingConsumer};
-use xai_grok_tools::{Auth401AttributionCallback as ToolAuth401AttributionCallback, ToolConsumer};
 
 use crate::{AuthManager, TOKEN_TTL};
 use xai_grok_auth::bearer_suffix;

@@ -7898,6 +7898,7 @@ dependencies = [
  "tracing",
  "uuid",
  "xai-acp-lib",
+ "xai-grok-config",
  "xai-grok-shell",
  "xai-workflow",
 ]
@@ -13684,7 +13685,7 @@ dependencies = [
  "tokio",
  "tracing",
  "ts-rs",
- "xai-grok-tools",
+ "xai-dirs",
 ]
 
 [[package]]
@@ -13696,6 +13697,7 @@ dependencies = [
  "mockito",
  "reqwest 0.12.24",
  "reqwest-middleware 0.4.2",
+ "strum 0.27.2",
  "tokio",
  "tracing",
 ]
@@ -13889,7 +13891,8 @@ dependencies = [
  "xai-grok-config",
  "xai-grok-extra-ca",
  "xai-grok-sandbox",
- "xai-grok-tools",
+ "xai-tool-types",
+ "xai-tty-utils",
 ]
 
 [[package]]
@@ -13974,9 +13977,10 @@ dependencies = [
  "xai-grok-shell-base",
  "xai-grok-telemetry",
  "xai-grok-test-support",
- "xai-grok-tools",
  "xai-grok-version",
  "xai-system-power",
+ "xai-tool-types",
+ "xai-tty-utils",
 ]
 
 [[package]]
@@ -14797,6 +14801,7 @@ dependencies = [
  "xai-grok-sandbox",
  "xai-grok-tools",
  "xai-grok-workspace",
+ "xai-tool-types",
  "xai-tty-utils",
 ]
 
@@ -15045,8 +15050,8 @@ dependencies = [
  "xai-grok-login",
  "xai-grok-shell",
  "xai-grok-telemetry",
- "xai-grok-tools",
  "xai-grok-version",
+ "xai-tty-utils",
  "zstd",
 ]
 
@@ -15403,6 +15408,7 @@ dependencies = [
  "schemars 1.0.4",
  "serde",
  "serde_json",
+ "strum 0.27.2",
 ]
 
 [[package]]

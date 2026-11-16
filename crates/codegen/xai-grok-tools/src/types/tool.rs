@@ -40,75 +40,9 @@ pub enum ToolNamespace {
     #[serde(rename = "mcp", alias = "MCP")]
     MCP,
 }
-/// Categorizes what a tool does at a high level. Serializes as snake_case strings (e.g. `"read"`, `"list_dir"`,
-/// `"web_search"`). `Other` is the default for tools that don't fit neatly elsewhere, and the `#[serde(other)]` sink so
-/// a consumer pinned to an older schema deserializes a newer `kind` to `Other` instead of erroring.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    strum::EnumCount,
-    strum::EnumIter,
-    strum::AsRefStr,
-    strum::IntoStaticStr,
-)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum ToolKind {
-    Read,
-    Edit,
-    Delete,
-    ListDir,
-    Write,
-    Move,
-    Search,
-    Lsp,
-    Execute,
-    Plan,
-    WebSearch,
-    WebFetch,
-    BackgroundTaskAction,
-    WaitTasksAction,
-    KillTaskAction,
-    List,
-    Skill,
-    MemorySearch,
-    MemoryGet,
-    Task,
-    ActiveAgentMessage,
-    EnterPlan,
-    ExitPlan,
-    AskUser,
-    ImageGen,
-    VideoGen,
-    ImageToVideo,
-    ReferenceToVideo,
-    DeployApp,
-    InitOrUpdateApp,
-    SearchTool,
-    UseTool,
-    Monitor,
-    GoalUpdate,
-    Workflow,
-    Feedback,
-    #[serde(other)]
-    Other,
-}
-impl ToolKind {
-    /// Total number of `ToolKind` variants (powered by `strum::EnumCount`). Used by downstream
-    /// compile-time assertions (e.g. `ALL_TOOL_KINDS` in `capability.rs`) to catch missing variants
-    /// when the enum grows.
-    pub const VARIANT_COUNT: usize = <Self as strum::EnumCount>::COUNT;
-    /// Stable snake_case key for this kind (the `tools.by_kind.<key>` template key).
-    pub fn as_key(self) -> &'static str {
-        self.into()
-    }
-}
+// Canonical classification is shared with hooks; preserve stock path identity.
+pub use xai_tool_types::ToolKind;
+
 /// System reminders that fire after a tool call completes. **Per-tool reminders** on tool structs
 /// (e.g., `ReadFileTool`: empty file, offset past end). **Cross-cutting reminders** on standalone
 /// structs (e.g., `SkillDiscoveryReminder`) that react to any tool call.

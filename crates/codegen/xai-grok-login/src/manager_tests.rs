@@ -3042,7 +3042,7 @@ fn apply_user_info_enrichment_preserves_token_fields() {
 #[serial_test::serial]
 async fn current_api_key_async_drives_refresh_chain() {
     use xai_grok_test_support::EnvGuard;
-    use xai_grok_tools::types::ApiKeyProvider;
+    use xai_tool_types::ApiKeyProvider;
     let _xai = EnvGuard::unset("XAI_API_KEY");
     let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
     let _auth_path = EnvGuard::unset("GROK_AUTH_PATH");
@@ -3907,7 +3907,7 @@ async fn shared_api_key_provider_sync_falls_through_when_session_expired() {
 #[serial_test::serial]
 async fn shared_api_key_provider_sync_buffered_session_beats_static() {
     use xai_grok_test_support::EnvGuard;
-    use xai_grok_tools::types::ApiKeyProvider;
+    use xai_tool_types::ApiKeyProvider;
     let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
     let _key = EnvGuard::set("XAI_API_KEY", "leftover-static");
     let dir = tempfile::tempdir().unwrap();

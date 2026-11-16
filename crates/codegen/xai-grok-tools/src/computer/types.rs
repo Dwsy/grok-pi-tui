@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::notification::types::ToolNotificationHandle;
+pub use xai_tool_types::TaskKind;
 
 // ============================================================================
 // Error types
@@ -115,27 +116,6 @@ pub struct TerminalRunRequest {
     pub owner_session_id: Option<String>,
     /// Model-supplied label for task UI / snapshots.
     pub description: Option<String>,
-}
-
-/// Distinguishes different types of background tasks.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskKind {
-    /// Regular bash command.
-    #[default]
-    Bash,
-    /// Monitor tool — streams stdout events with rate limiting.
-    Monitor,
 }
 
 #[derive(Clone)]

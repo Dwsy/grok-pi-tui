@@ -240,7 +240,7 @@ async fn run_capped(
         .map_err(|e| anyhow::anyhow!("command failed to start: {e}"))?;
     // Enroll the child's process group so the timeout path can tear down the whole tree
     // Best-effort: if enrollment fails, `kill_on_drop` still reaps the direct child
-    let mut group = xai_grok_tools::util::ProcessGroup::new()
+    let mut group = xai_tty_utils::ProcessGroup::new()
         .map_err(|e| anyhow::anyhow!("process group setup failed: {e}"))?;
     if let Err(e) = group.attach(&child) {
         tracing::debug!(error = %e, "auth provider: could not enroll helper process group");
@@ -358,8 +358,8 @@ async fn mint_provider_token(
             cmd.env("GROK_AUTH_PROVIDER_EXPIRES_AT", expires_at.to_rfc3339());
         }
     }
-    xai_grok_tools::util::detach_command(&mut cmd);
-    cmd.envs(xai_grok_tools::util::pager_env());
+    xai_tty_utils::detach_command(&mut cmd);
+    cmd.envs(xai_tty_utils::pager_env());
     // Scrub last so nothing above can reintroduce a first-party credential.
     scrub_first_party_credentials(&mut cmd);
 

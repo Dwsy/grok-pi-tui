@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::io::AsyncWriteExt;
-use xai_grok_tools::util::ProcessGroup;
+use xai_tty_utils::ProcessGroup;
 
 use crate::config::{HookSpec, RUNNER_ALWAYS_SET_ENV};
 use crate::event::{
@@ -195,7 +195,7 @@ pub async fn run_command_hook(
         tokio::process::Command::new(command_path)
     };
 
-    xai_grok_tools::util::detach_command(&mut cmd);
+    xai_tty_utils::detach_command(&mut cmd);
     xai_grok_sandbox::child_net::restrict_child_network(&mut cmd);
 
     #[cfg(not(unix))]
@@ -1986,7 +1986,7 @@ mod tests {
         }
     }
 
-    fn make_scoped_ctx(scope: xai_grok_tools::util::ProcessScope) -> RunContext<'static> {
+    fn make_scoped_ctx(scope: xai_tty_utils::ProcessScope) -> RunContext<'static> {
         RunContext {
             process_scope: Some(scope),
             ..make_ctx()
@@ -2361,7 +2361,7 @@ mod tests {
         ));
         spec.timeout_ms = 60_000;
         let envelope = make_envelope();
-        let scope = xai_grok_tools::util::ProcessScope::new();
+        let scope = xai_tty_utils::ProcessScope::new();
         let hook_scope = scope.clone();
         let hook = tokio::spawn(async move {
             run_command_hook(
@@ -2433,7 +2433,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn command_hook_fails_fast_when_scope_already_closed() {
-        let scope = xai_grok_tools::util::ProcessScope::new();
+        let scope = xai_tty_utils::ProcessScope::new();
         scope.kill_all();
         let mut spec = make_shell_spec("sleep 600");
         spec.timeout_ms = 60_000;

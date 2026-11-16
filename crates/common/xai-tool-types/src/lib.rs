@@ -1,12 +1,17 @@
 //! Canonical, extensible tool types.
+pub mod api_key;
+pub mod claude_alias;
 pub mod definition;
 pub mod edit;
 mod ext;
 mod schema_utils;
 pub mod serde_lenient;
 mod task;
+pub mod terminal;
+pub mod tool_kind;
 mod types;
 
+pub use api_key::{ApiKeyProvider, SharedApiKeyProvider};
 pub use edit::{SearchReplaceEditContextInformation, SearchReplaceEditDetail};
 pub use ext::Extensions;
 pub use schema_utils::parse_arguments_from_schema_lossy;
@@ -31,6 +36,8 @@ pub use task::{
     resolve_task_ids, sanitize_optional_arg, should_continue_parent_work, task_output_waits,
     task_output_waits_from_json,
 };
+pub use terminal::TaskKind;
+pub use tool_kind::ToolKind;
 pub use types::{
     ArgumentType, SchemaType, ToolArgument, ToolDescription, ValidationError, ValidationErrors,
 };

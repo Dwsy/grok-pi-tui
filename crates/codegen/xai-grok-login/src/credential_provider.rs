@@ -210,7 +210,7 @@ impl AuthCredentialProvider for ShellAuthCredentialProvider {
 pub fn embedding_session_credentials(
     embed_base_url: &str,
     auth_manager: Option<&Arc<AuthManager>>,
-    api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider>,
+    api_key_provider: Option<xai_tool_types::SharedApiKeyProvider>,
 ) -> xai_grok_memory::EndpointScopedCredentials {
     let auth_credentials = auth_manager.map(|am| {
         Arc::new(ShellAuthCredentialProvider::new(am.clone(), None, None))
@@ -883,7 +883,7 @@ mod tests {
             &dir,
             Some(make_auth("xai-session-token", ChronoDuration::hours(1))),
         );
-        let api_key_provider: xai_grok_tools::types::SharedApiKeyProvider =
+        let api_key_provider: xai_tool_types::SharedApiKeyProvider =
             Arc::new(crate::manager::SharedAuthKeyProvider(mgr.clone()));
 
         for denied in [

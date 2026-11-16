@@ -173,8 +173,8 @@ async fn fetch_npm_tag(tag: &str, npm_registry: Option<&str>) -> Result<String> 
     }
     let mut cmd = Command::new("npm");
     cmd.args(&args).stdin(std::process::Stdio::null());
-    xai_grok_tools::util::detach_command(&mut cmd);
-    cmd.envs(xai_grok_tools::util::pager_env());
+    xai_tty_utils::detach_command(&mut cmd);
+    cmd.envs(xai_tty_utils::pager_env());
     let output = cmd.output().await?;
 
     if !output.status.success() {
@@ -229,8 +229,8 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
     }
     let mut cmd = Command::new("gh");
     cmd.args(&args).stdin(std::process::Stdio::null());
-    xai_grok_tools::util::detach_command(&mut cmd);
-    cmd.envs(xai_grok_tools::util::pager_env());
+    xai_tty_utils::detach_command(&mut cmd);
+    cmd.envs(xai_tty_utils::pager_env());
     let output = cmd.output().await?;
 
     if !output.status.success() {

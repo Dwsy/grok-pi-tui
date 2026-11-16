@@ -61,7 +61,8 @@ xai-grok-memory = { workspace = true }
 xai-grok-sampler = { workspace = true }
 xai-grok-shell-base = { workspace = true }
 xai-grok-telemetry = { workspace = true }
-xai-grok-tools = { workspace = true }
+xai-tool-types = { workspace = true }
+xai-tty-utils = { workspace = true }
 xai-grok-version = { workspace = true }
 xai-system-power = { workspace = true }
 

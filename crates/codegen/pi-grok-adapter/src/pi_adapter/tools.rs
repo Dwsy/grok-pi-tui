@@ -50,7 +50,7 @@ fn eval_legacy_display_selected() -> bool {
     // persisted F2 / `/eval-display` write lands on disk either way.
     // ponytail: ~1 small config read per Eval tool_start/update/end; cache and
     // push over its own ACP notification if that ever shows up in profiles.
-    xai_grok_shell::config::load_effective_config_disk_only()
+    xai_grok_config::load_effective_config_disk_only()
         .ok()
         .and_then(|config| {
             config
@@ -783,8 +783,11 @@ impl PiAgent {
                         // Pager can substitute it for selected activity labels.
                         // `null`/blank clears the slot; the Pager also filters
                         // blanks so a stale value cannot linger after a clear.
-                        self.send_ext_notification("pi/ui/working_message", json!({ "text": text }))
-                            .await;
+                        self.send_ext_notification(
+                            "pi/ui/working_message",
+                            json!({ "text": text }),
+                        )
+                        .await;
                     }
                     _ => {
                         self.send_status(key, text.filter(|text| !text.is_empty()))

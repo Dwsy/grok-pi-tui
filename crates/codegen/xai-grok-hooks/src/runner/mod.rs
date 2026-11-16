@@ -16,7 +16,7 @@ pub use crate::event::GateKind;
 pub struct RunContext<'a> {
     pub session_id: &'a str,
     pub workspace_root: &'a str,
-    pub process_scope: Option<xai_grok_tools::util::ProcessScope>,
+    pub process_scope: Option<xai_tty_utils::ProcessScope>,
     /// Loaded by the caller off the dispatch path, so the announced count and the run loop agree and no dispatch reads the file.
     pub disabled: std::sync::Arc<crate::trust::DisabledHooks>,
 }

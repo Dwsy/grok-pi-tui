@@ -189,8 +189,8 @@ pub async fn run_external_auth_provider(
     } else {
         cmd.stderr(std::process::Stdio::piped());
     }
-    xai_grok_tools::util::detach_command(&mut cmd);
-    cmd.envs(xai_grok_tools::util::pager_env());
+    xai_tty_utils::detach_command(&mut cmd);
+    cmd.envs(xai_tty_utils::pager_env());
     #[allow(clippy::disallowed_methods)]
     let mut child = cmd
         .spawn()

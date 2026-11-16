@@ -5,6 +5,7 @@ pub mod auth_provider;
 pub mod bearer_fragment;
 #[cfg(feature = "middleware")]
 pub mod retry_middleware;
+pub mod tool_attribution;
 pub mod visibility;
 
 pub use auth_provider::{AuthCredentialProvider, CredentialSnapshot, StaticAuthCredentialProvider};

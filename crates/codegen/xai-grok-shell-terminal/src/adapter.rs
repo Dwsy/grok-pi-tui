@@ -10,9 +10,10 @@ use super::output_recorder::{OutputRecorder, read_log_tail};
 use agent_client_protocol as acp;
 use xai_acp_lib::{AcpAgentGatewaySender as GatewaySender, acp_channel_failure};
 use xai_grok_tools::computer::types::{
-    BackgroundHandle, ComputerError, KillOutcome, KillSource, TaskKind, TaskSnapshot,
-    TerminalBackend, TerminalRunRequest, TerminalRunResult,
+    BackgroundHandle, ComputerError, KillOutcome, KillSource, TaskSnapshot, TerminalBackend,
+    TerminalRunRequest, TerminalRunResult,
 };
+use xai_tool_types::TaskKind;
 
 /// A snapshot's per-completion fields, grouped to avoid transposed positional args.
 #[derive(Clone)]

@@ -1861,7 +1861,7 @@ pub fn compute_proactive_sleep(this: &AuthManager) -> StdDuration {
 /// Bearer for tools and pager voice. Static precedence: env, then process model key, then disk.
 /// Kill-switch / `preferred_method = oidc` block static keys.
 pub struct SharedAuthKeyProvider(pub Arc<AuthManager>);
-impl xai_grok_tools::types::ApiKeyProvider for SharedAuthKeyProvider {
+impl xai_tool_types::ApiKeyProvider for SharedAuthKeyProvider {
     fn current_api_key(&self) -> Option<String> {
         if prefers_static_api_key(&self.0) {
             return resolve_static_api_key(&self.0);
@@ -1967,7 +1967,7 @@ fn non_empty_key(key: Option<String>) -> Option<String> {
 /// Per-request bearer for out-of-crate consumers (e.g. pager voice).
 pub fn shared_api_key_provider(
     auth_manager: Arc<AuthManager>,
-) -> xai_grok_tools::types::SharedApiKeyProvider {
+) -> xai_tool_types::SharedApiKeyProvider {
     Arc::new(SharedAuthKeyProvider(auth_manager))
 }
 /// Compile-time check that `AuthManager` is `Send + Sync`. The proactive refresh task and arbitrary `Arc<AuthManager>` consumers can then safely cross a multi-threaded executor / thread boundary.

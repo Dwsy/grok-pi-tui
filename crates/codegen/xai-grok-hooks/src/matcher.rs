@@ -1,5 +1,5 @@
 use regex::Regex;
-use xai_grok_tools::types::{claude_names_for, grok_names_for};
+use xai_tool_types::claude_alias::{claude_names_for, grok_names_for};
 
 /// A compiled hook matcher for tool names.
 /// The pattern semantics are chosen so that `matcher` entries in hooks migrated from other agent CLIs keep firing unchanged:
@@ -71,7 +71,7 @@ fn is_simple_form(pattern: &str) -> bool {
 }
 
 /// Expand a simple-form pattern into the exact set of names it matches: each `|`-term plus any Grok tool names that term aliases.
-/// The alias mapping comes from the shared external-name registry in `xai-grok-tools`, so `"Bash"` also matches `run_terminal_command`.
+/// The alias mapping comes from the canonical `xai-tool-types` registry, so `"Bash"` also matches `run_terminal_command`.
 /// Empty terms and duplicates are dropped.
 fn exact_names(pattern: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();

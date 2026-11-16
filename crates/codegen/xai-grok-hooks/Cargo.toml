@@ -23,7 +23,8 @@ xai-grok-config = { workspace = true }
 # Child-network restriction on hook command spawns; enforce is feature-unified
 # from the binary crate, matching the other consumers.
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
-xai-grok-tools = { workspace = true }
+xai-tool-types = { workspace = true }
+xai-tty-utils = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

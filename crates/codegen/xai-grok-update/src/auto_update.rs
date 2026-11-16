@@ -813,7 +813,7 @@ async fn run_update_subcommand(
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
             // Detach means a new session (Ctrl+C isolation), not handle abandonment: the child is still ours to wait() on
-            xai_grok_tools::util::detach_command(&mut cmd);
+            xai_tty_utils::detach_command(&mut cmd);
             #[allow(clippy::disallowed_methods)] // the caller owns the returned handle
             let child = cmd.spawn()?;
             Ok(Some(child))
@@ -1468,7 +1468,7 @@ async fn smoke_test_binary(binary_path: &std::path::Path) -> Result<(), SmokeTes
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        xai_grok_tools::util::detach_command(&mut cmd);
+        xai_tty_utils::detach_command(&mut cmd);
         match tokio::time::timeout(SMOKE_TEST_TIMEOUT, cmd.output()).await {
             Err(_) => return Err(SmokeTestFailure::Timeout),
             Ok(Ok(output)) if output.status.success() => return Ok(()),
@@ -1637,7 +1637,7 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
-        xai_grok_tools::util::detach_command(&mut cmd);
+        xai_tty_utils::detach_command(&mut cmd);
         let Ok(output) = cmd.output().await else {
             continue;
         };
@@ -2256,8 +2256,8 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::piped());
-    xai_grok_tools::util::detach_command(&mut cmd);
-    cmd.envs(xai_grok_tools::util::pager_env());
+    xai_tty_utils::detach_command(&mut cmd);
+    cmd.envs(xai_tty_utils::pager_env());
     let output = cmd.output().await?;
 
     pb.finish_and_clear();
@@ -2397,7 +2397,7 @@ fn warn_if_other_grok_processes_running() {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    xai_grok_tools::util::detach_std_command(&mut cmd);
+    xai_tty_utils::detach_std_command(&mut cmd);
     if let Ok(output) = cmd.output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let other_pids: Vec<&str> = stdout
@@ -2476,7 +2476,7 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
         .stdout(Stdio::null())
         // inherit, not piped; same rationale as run_update_subcommand
         .stderr(Stdio::inherit());
-    xai_grok_tools::util::detach_std_command(&mut cmd);
+    xai_tty_utils::detach_std_command(&mut cmd);
     let status = cmd.status()?;
 
     if let Some(path) = temp_npmrc

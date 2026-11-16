@@ -117,7 +117,7 @@ pub async fn list_terminals() -> Vec<TerminalInfo> {
 }
 
 /// Returns environment variables that prevent CLI tools from launching any blocking/waiting programs.
-pub use xai_grok_tools::util::pager_env;
+pub use xai_tty_utils::pager_env;
 
 /// Returns environment variables that encourage CLI tools to emit color and progress bars/spinners even when running through pipes (non-TTY).
 pub fn color_env() -> std::collections::HashMap<String, String> {

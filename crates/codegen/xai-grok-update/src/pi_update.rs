@@ -606,7 +606,7 @@ async fn install_pi_unix_sh(tag: &str) -> Result<()> {
     ));
     cmd.env("GROK_PI_VERSION", tag);
     cmd.stdin(std::process::Stdio::null());
-    xai_grok_tools::util::detach_command(&mut cmd);
+    xai_tty_utils::detach_command(&mut cmd);
     let status = cmd.status().await.context("spawn install.sh via curl|sh")?;
     if !status.success() {
         anyhow::bail!("install.sh exited with {status}");
@@ -628,7 +628,7 @@ async fn install_pi_windows_ps1(tag: &str) -> Result<()> {
         &script,
     ]);
     cmd.stdin(std::process::Stdio::null());
-    xai_grok_tools::util::detach_command(&mut cmd);
+    xai_tty_utils::detach_command(&mut cmd);
     let status = cmd.status().await.context("spawn install.ps1")?;
     if !status.success() {
         anyhow::bail!("install.ps1 exited with {status}");

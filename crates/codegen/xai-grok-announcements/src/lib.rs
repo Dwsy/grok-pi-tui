@@ -139,7 +139,7 @@ pub async fn write_hidden_announcement_ids(ids: &BTreeSet<String>) {
 }
 
 fn announcements_state_path() -> PathBuf {
-    xai_grok_tools::util::grok_home::grok_home().join("announcements.json")
+    xai_dirs::grok_home().join("announcements.json")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

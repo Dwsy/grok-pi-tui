@@ -25,7 +25,7 @@ xai-dirs = { workspace = true }
 xai-grok-login = { workspace = true }
 xai-grok-shell = { workspace = true }
 xai-grok-telemetry = { workspace = true }
-xai-grok-tools = { workspace = true }
+xai-tty-utils = { workspace = true }
 xai-grok-version = { workspace = true }
 flate2 = { workspace = true }
 zstd = { workspace = true }
