@@ -144,11 +144,18 @@ impl coordinator::ChildRunner for ShellChildRunner {
                     "subagent.parent_snapshot",
                     parent_session_id = %parent_sid,
                 ));
+                #[cfg(feature = "stock-mcp")]
                 let (pool, hooks, mut definitions) = tokio::join!(
                     handle.snapshot_mcp_pool(),
                     handle.snapshot_client_hooks(),
                     handle.snapshot_tool_definitions()
                 );
+                #[cfg(not(feature = "stock-mcp"))]
+                let (hooks, mut definitions) = tokio::join!(
+                    handle.snapshot_client_hooks(),
+                    handle.snapshot_tool_definitions()
+                );
+                #[cfg(feature = "stock-mcp")]
                 ctx.parent_mcp_pool = pool;
                 ctx.client_hooks = hooks;
                 super::strip_ask_user_question_tool(&mut definitions);

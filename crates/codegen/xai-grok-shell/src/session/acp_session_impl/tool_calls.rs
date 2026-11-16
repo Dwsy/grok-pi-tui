@@ -29,7 +29,7 @@ struct ValidatedRewrite {
 }
 /// Whether a tool name is an MCP `create_pull_request` (qualified `server__create_pull_request` or bare).
 fn is_mcp_create_pull_request(tool_name: &str) -> bool {
-    match crate::session::mcp_servers::parse_mcp_tool_name(tool_name) {
+    match xai_grok_workspace_types::mcp_names::parse_mcp_tool_name(tool_name) {
         Some((_, tool)) => tool == "create_pull_request",
         None => tool_name == "create_pull_request",
     }
@@ -50,8 +50,9 @@ fn tool_execution_span(
     tool_call_id: &str,
     retry: bool,
 ) -> tracing::Span {
-    let mcp_server = crate::session::mcp_servers::parse_mcp_tool_name(prepared.hook_tool_name())
-        .map(|(server, _)| server);
+    let mcp_server =
+        xai_grok_workspace_types::mcp_names::parse_mcp_tool_name(prepared.hook_tool_name())
+            .map(|(server, _)| server);
     let span = tracing::info_span!(
         parent: parent,
         "tool.execution",
@@ -544,7 +545,7 @@ impl SessionActor {
                 || c.function.name == "use_tool"
                 || c.function
                     .name
-                    .contains(crate::session::mcp_servers::MCP_TOOL_NAME_DELIMITER)
+                    .contains(xai_grok_workspace_types::MCP_TOOL_NAME_DELIMITER)
         });
         let mut approved: Vec<PreparedToolCall> = Vec::new();
         for call in tool_calls.into_iter() {
@@ -594,7 +595,7 @@ impl SessionActor {
                 Err(tool_loop) => {
                     self.events.tool_finished();
                     if let Some((server, tool)) =
-                        crate::session::mcp_servers::parse_mcp_tool_name(&call_name)
+                        xai_grok_workspace_types::mcp_names::parse_mcp_tool_name(&call_name)
                     {
                         let error_reason = match &tool_loop {
                             ToolLoop::PermissionReject { reason, .. } => reason.clone(),
@@ -611,7 +612,7 @@ impl SessionActor {
                             call_id: format!(
                                 "{}{}{}",
                                 server,
-                                crate::session::mcp_servers::MCP_TOOL_NAME_DELIMITER,
+                                xai_grok_workspace_types::MCP_TOOL_NAME_DELIMITER,
                                 tool
                             ),
                             duration_ms: 0,
@@ -1419,6 +1420,7 @@ impl SessionActor {
             )
             .await;
         }
+        #[cfg(feature = "stock-mcp")]
         if let Some((mcp_server, _)) = parse_mcp_tool_name(&call.function.name)
             && !mcp_server_dispatchable(&self.mcp_state, &mcp_server).await
         {
@@ -2807,10 +2809,13 @@ impl SessionActor {
         }
         self.record_git_pr_signals(effective_tool_name, &result);
         let path_rewriter = self.path_rewriter();
+        #[cfg(feature = "stock-mcp")]
         let tool_meta = {
             let state = self.mcp_state.lock().await;
             state.mcp_tool_meta.get(effective_tool_name).cloned()
         };
+        #[cfg(not(feature = "stock-mcp"))]
+        let tool_meta = None;
         tool_layer_images.extend(drain_tool_layer_extracted_images(&mut result.output));
         if let Some(mut tool_update) =
             acp_tool_update(&result.output, call_id, path_rewriter.as_ref(), tool_meta)

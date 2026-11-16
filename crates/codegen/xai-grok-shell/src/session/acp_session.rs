@@ -31,8 +31,8 @@ use crate::session::fs_watch::{self, git_head_dedup_key};
 use crate::session::info::Info as SessionInfo;
 #[cfg(feature = "stock-mcp")]
 use crate::session::mcp_servers::{
-    McpInitStrategy, McpMetaConfigMap, McpState, OauthInteractivity, build_pending_clients,
-    mcp_server_name, mcp_target_str, mcp_transport_str, parse_mcp_tool_name,
+    McpState, OauthInteractivity, build_pending_clients, mcp_server_name, mcp_target_str,
+    mcp_transport_str, parse_mcp_tool_name,
 };
 use crate::session::persistence::{
     PersistenceContentChunk, PersistenceHandle, PersistenceMsg, get_prompt_file_path,
@@ -63,8 +63,10 @@ use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use xai_grok_agent::AgentDefinition;
 use xai_grok_agent::prompt::agents_md::LEGACY_AGENTS_MD_REMINDER_PREFIX;
 use xai_grok_agent::prompt::skills::SkillsConfig;
+use xai_grok_config_types::McpMetaConfigMap;
 use xai_grok_sampler::SamplerConfig as SamplingConfig;
 use xai_grok_sampling_types::truncate_bytes;
+use xai_grok_telemetry::enums::McpInitStrategy;
 use xai_grok_tools::computer::local::LocalTerminalBackend;
 use xai_grok_tools::implementations::BashToolInput;
 use xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig;
@@ -744,6 +746,7 @@ pub(crate) struct SessionActor {
     pub(crate) deny_read_globs: Vec<String>,
     /// Consolidated MCP state (configs, clients, init status) protected by a single lock.
     /// The single lock keeps config updates and init-status checks atomic.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_state: Arc<TokioMutex<McpState>>,
     /// MCP initialization strategy. `Cell`: per-attachment policy.
     /// A resident `session/load` carrying explicit `startupHints` re-applies the attaching client's strategy (`UpdateAttachPolicy`).
@@ -977,21 +980,28 @@ pub(crate) struct SessionActor {
         Arc<std::sync::Mutex<crate::session::tool_index::ToolMetadataSnapshot>>,
     /// MCP servers (connected and failed) already announced via system-reminder.
     /// See [`crate::session::announcement_state::McpAnnounced`] for how repeats are deduped.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_announcements: Mutex<crate::session::announcement_state::McpAnnounced>,
     /// Controls whether MCP server reminders inject only changes (Delta) or the full server list (Full).
     /// Read from `MCP_REMINDER_MODE` env var.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_reminder_mode: McpReminderMode,
     /// Set when the MCP server set changes and a reminder needs injection.
     /// Cleared by `maybe_inject_mcp_reminder` after injecting.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_reminder_dirty: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_connecting_reminder_injected: std::cell::Cell<bool>,
     /// Serializes snapshot refreshes end-to-end so the last write is the latest read, without holding `mcp_state` across refresh awaits.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_refresh_gate: Arc<tokio::sync::Mutex<()>>,
     /// Background-computed user-message prefix, injected before the first prompt.
     pub(crate) deferred_prefix: DeferredPrefix,
     /// The prompt gates' per-generation startup grace and full-wait timeout.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_startup_waits: McpStartupWaits,
     /// Background MCP init passes (handshakes and tool registration), aborted with the actor.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_init_tasks: std::cell::RefCell<tokio::task::JoinSet<()>>,
     pub(crate) weak_self: std::sync::Weak<SessionActor>,
     /// Where `&self` methods hand startup work so it outlives the caller's future but not the session.

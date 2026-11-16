@@ -1098,7 +1098,9 @@ impl SessionActor {
                 };
                 xai_grok_telemetry::session_ctx::log_event_dual(self.telemetry_enabled, ev);
             }
+            #[cfg(feature = "stock-mcp")]
             self.maybe_inject_mcp_reminder().await;
+            #[cfg(feature = "stock-mcp")]
             self.maybe_inject_mcp_connecting_reminder().await;
             self.maybe_inject_date_rollover_reminder().await;
             self.inject_plan_mode_reminders().await;
@@ -2709,6 +2711,7 @@ impl SessionActor {
                 );
             }
             if !salvage.awaiting_continuation() {
+                #[cfg(feature = "stock-mcp")]
                 self.maybe_inject_mcp_reminder().await;
             }
             let turn_parked = if self.uncharged_401_park_enabled && auth_retry_schedule.is_parked()
@@ -3221,7 +3224,11 @@ impl SessionActor {
                     latency.attempts,
                     response.usage.as_ref().map(|u| u.completion_tokens),
                 );
+                #[cfg(feature = "stock-mcp")]
                 let mcp_count = self.mcp_state.lock().await.configs.len() as u32;
+                #[cfg(not(feature = "stock-mcp"))]
+                let mcp_count = 0u32;
+                #[cfg(feature = "stock-mcp")]
                 let mcp_tools = self
                     .agent
                     .borrow()
@@ -3231,6 +3238,8 @@ impl SessionActor {
                     .iter()
                     .filter(|t| t.function.name.contains("__"))
                     .count() as u32;
+                #[cfg(not(feature = "stock-mcp"))]
+                let mcp_tools = 0u32;
                 let turn_index = self
                     .chat_state_handle
                     .get_prompt_index()
@@ -3586,7 +3595,7 @@ impl SessionActor {
             }
             for tc in &tool_calls {
                 if let Some((server, tool)) =
-                    crate::session::mcp_servers::parse_mcp_tool_name(&tc.name)
+                    xai_grok_workspace_types::mcp_names::parse_mcp_tool_name(&tc.name)
                 {
                     let span = tracing::Span::current();
                     span.record("mcp_server.name", server.as_str());

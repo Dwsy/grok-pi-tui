@@ -486,7 +486,11 @@ impl acp::Agent for MvpAgent {
         self.sync_process_static_api_key(None);
         let current_working_directory = self.launch_cwd.clone();
         let hostname = gethostname::gethostname();
+        #[cfg(feature = "stock-mcp")]
         let mcp_servers: Vec<crate::extensions::mcp::McpServerEntry> = Vec::new();
+        #[cfg(not(feature = "stock-mcp"))]
+        let mcp_servers: Vec<serde_json::Value> = Vec::new();
+        #[cfg(feature = "stock-mcp")]
         self.spawn_initialize_launch_mcp_setup();
         self.spawn_managed_gateway_tool_catalog_fetch();
         {
@@ -567,7 +571,7 @@ impl acp::Agent for MvpAgent {
                     "hostname": hostname.to_string_lossy().to_string(),
                     "modelState": init_model_state,
                     "mcpServers": mcp_servers,
-                    "mcpApps": client_supports_mcp_apps,
+                    "mcpApps": cfg!(feature = "stock-mcp") && client_supports_mcp_apps,
                     "metadata": metadata,
                     "availableCommands": crate::session::slash_commands::builtin_commands(self.command_availability()),
                     "cancelRewind": self
@@ -2268,6 +2272,7 @@ impl acp::Agent for MvpAgent {
             s if s.starts_with("x.ai/pr/") => {
                 crate::extensions::pr::handle(self, &args).await
             }
+            #[cfg(feature = "stock-mcp")]
             s if s.starts_with(crate::extensions::mcp::mcp_methods::PREFIX) => {
                 crate::extensions::mcp::handle(self, &args).await
             }

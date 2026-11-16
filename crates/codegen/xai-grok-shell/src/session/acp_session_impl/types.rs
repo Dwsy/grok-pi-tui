@@ -3,6 +3,7 @@
 use super::*;
 
 /// Controls how MCP server system-reminders are injected.
+#[cfg(feature = "stock-mcp")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum McpReminderMode {
     /// Only inject what changed (added/removed/updated servers).

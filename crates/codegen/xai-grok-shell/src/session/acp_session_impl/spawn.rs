@@ -189,8 +189,10 @@ pub(crate) async fn spawn_session_actor(
     mcp_servers: Vec<acp::McpServer>,
     initial_client_mcp_servers: Vec<acp::McpServer>,
     mcp_meta_config_map: McpMetaConfigMap,
-    parent_mcp_pool: Option<crate::session::mcp_servers::SharedMcpPool>,
-    acp_mcp_servers: Vec<crate::session::mcp_servers::AcpServerEntry>,
+    #[cfg(feature = "stock-mcp")] parent_mcp_pool: Option<
+        crate::session::mcp_servers::SharedMcpPool,
+    >,
+    acp_mcp_servers: Vec<xai_grok_config_types::AcpServerEntry>,
     support_permission: bool,
     telemetry_enabled: bool,
     auto_update: Option<bool>,
@@ -1040,6 +1042,7 @@ pub(crate) async fn spawn_session_actor(
             },
         ))
     });
+    #[cfg(feature = "stock-mcp")]
     let mcp_state = {
         let mut state = McpState::new_with_meta(mcp_servers.clone(), mcp_meta_config_map);
         if let Some(ref pool) = parent_mcp_pool {
@@ -1137,6 +1140,7 @@ pub(crate) async fn spawn_session_actor(
         blocking_wait_depth: tool_context.blocking_wait_depth.clone(),
         respect_gitignore,
         path_not_found_hints,
+        #[cfg(feature = "stock-mcp")]
         mcp_state: mcp_state.clone(),
         managed_gateway_tool_client: managed_gateway_tool_client.clone(),
         is_non_interactive: startup_hints.non_interactive,
@@ -1729,6 +1733,7 @@ pub(crate) async fn spawn_session_actor(
         permissions,
         tool_context,
         deny_read_globs,
+        #[cfg(feature = "stock-mcp")]
         mcp_state: mcp_state.clone(),
         mcp_strategy: std::cell::Cell::new(mcp_strategy),
         initial_client_mcp_servers: initial_client_mcp_servers.clone(),
@@ -1914,20 +1919,27 @@ pub(crate) async fn spawn_session_actor(
         goal_classifier_in_flight: std::sync::atomic::AtomicBool::new(false),
         managed_mcp_handle,
         tool_metadata_snapshot: Arc::new(std::sync::Mutex::new(Default::default())),
+        #[cfg(feature = "stock-mcp")]
         mcp_announcements: Mutex::new(
             persisted_announcement_state
                 .map(crate::session::announcement_state::McpAnnounced::from_persisted)
                 .unwrap_or_default(),
         ),
+        #[cfg(feature = "stock-mcp")]
         mcp_reminder_mode: McpReminderMode::from_env(),
+        #[cfg(feature = "stock-mcp")]
         mcp_reminder_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        #[cfg(feature = "stock-mcp")]
         mcp_connecting_reminder_injected: std::cell::Cell::new(false),
+        #[cfg(feature = "stock-mcp")]
         mcp_refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: laziness_debug_log.map(|p| std::sync::Arc::from(p.as_path())),
         last_live_orphan_reconcile: std::cell::Cell::new(None),
         deferred_prefix: DeferredPrefix::new(),
+        #[cfg(feature = "stock-mcp")]
         mcp_startup_waits: Default::default(),
+        #[cfg(feature = "stock-mcp")]
         mcp_init_tasks: Default::default(),
         repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::new(
             repo_status_plan,
@@ -2405,8 +2417,10 @@ pub(crate) async fn spawn_session_on_thread(
     mcp_servers: Vec<acp::McpServer>,
     initial_client_mcp_servers: Vec<acp::McpServer>,
     mcp_meta_config_map: McpMetaConfigMap,
-    parent_mcp_pool: Option<crate::session::mcp_servers::SharedMcpPool>,
-    acp_mcp_servers: Vec<crate::session::mcp_servers::AcpServerEntry>,
+    #[cfg(feature = "stock-mcp")] parent_mcp_pool: Option<
+        crate::session::mcp_servers::SharedMcpPool,
+    >,
+    acp_mcp_servers: Vec<xai_grok_config_types::AcpServerEntry>,
     support_permission: bool,
     telemetry_enabled: bool,
     auto_update: Option<bool>,
@@ -2612,6 +2626,7 @@ pub(crate) async fn spawn_session_on_thread(
                     mcp_servers,
                     initial_client_mcp_servers,
                     mcp_meta_config_map,
+                    #[cfg(feature = "stock-mcp")]
                     parent_mcp_pool,
                     acp_mcp_servers,
                     support_permission,
@@ -2764,10 +2779,12 @@ pub(crate) async fn spawn_session_on_thread(
     ))
 }
 /// Production [`crate::session::mcp_restart::RestartActions`] impl, captured by the dispatcher task when `mcp.auto_restart=true`.
+#[cfg(feature = "stock-mcp")]
 pub(crate) struct SessionRestartActions {
     session: Arc<SessionActor>,
     shutdown: crate::session::mcp_dispatcher::SharedShutdownState,
 }
+#[cfg(feature = "stock-mcp")]
 impl SessionRestartActions {
     pub(crate) fn new(
         session: Arc<SessionActor>,
@@ -2776,6 +2793,7 @@ impl SessionRestartActions {
         Self { session, shutdown }
     }
 }
+#[cfg(feature = "stock-mcp")]
 #[async_trait::async_trait(?Send)]
 impl crate::session::mcp_restart::RestartActions for SessionRestartActions {
     #[tracing::instrument(level = "debug", skip_all)]

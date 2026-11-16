@@ -352,6 +352,7 @@ pub(crate) struct SubagentSpawnContext {
     /// Parent's managed MCP state handle (Arc-shared, no re-fetch).
     pub managed_mcp_state: crate::session::managed_mcp::ManagedMcpStateHandle,
     /// Snapshot of the parent session's MCP client pool at spawn time.
+    #[cfg(feature = "stock-mcp")]
     pub parent_mcp_pool: Option<crate::session::mcp_servers::SharedMcpPool>,
     /// Exact parent tool schema for verbatim non-workflow forks.
     pub parent_tool_definitions: Option<Vec<xai_grok_sampling_types::ToolSpec>>,
@@ -1455,6 +1456,7 @@ fn durable_resume_source_from_meta(
 }
 /// Resolve the MCP pool a child subagent should import from its parent. Inheritance applies to **every** agent source (built-in, user, project, and plugin).
 /// Plugin agents are not excluded: the parent already connected these servers for the session. Agent-owned `mcpServers` (spawned by the child itself) are handled separately and remain blocked for plugins.
+#[cfg(feature = "stock-mcp")]
 fn resolve_inherited_mcp_pool(
     parent_pool: Option<crate::session::mcp_servers::SharedMcpPool>,
     inheritance: &xai_grok_agent::config::McpInheritance,
@@ -1464,6 +1466,7 @@ fn resolve_inherited_mcp_pool(
 /// Apply `McpInheritance` filtering to a parent MCP pool snapshot.
 /// Returns `None` for `McpInheritance::None` (no pool at all, which avoids an empty import call downstream).
 /// For `Named`/`Except`, retains or removes the matching server names in-place.
+#[cfg(feature = "stock-mcp")]
 fn filter_pool_by_inheritance(
     mut pool: crate::session::mcp_servers::SharedMcpPool,
     inheritance: &xai_grok_agent::config::McpInheritance,

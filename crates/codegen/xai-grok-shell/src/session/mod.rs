@@ -541,7 +541,6 @@ pub(crate) mod image_describe;
 pub(crate) mod image_normalize;
 pub(crate) mod inference_metrics;
 pub use xai_grok_shared::session::info;
-#[cfg(feature = "stock-mcp")]
 pub mod managed_mcp;
 #[cfg(feature = "stock-mcp")]
 pub(crate) mod mcp_descriptors;

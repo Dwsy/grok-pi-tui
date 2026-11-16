@@ -335,6 +335,7 @@ impl MvpAgent {
     /// Resolve folder trust and load launch-dir MCP configs after `initialize` returns.
     /// The walks are synchronous and expensive in large monorepos.
     /// They must not block the ACP response (grok-desktop sends `initialize` immediately).
+    #[cfg(feature = "stock-mcp")]
     pub(super) fn spawn_initialize_launch_mcp_setup(&self) {
         let cwd = self.launch_cwd.clone();
         let compat = self.cfg.borrow().compat_resolved;
@@ -370,6 +371,7 @@ impl MvpAgent {
                 .await;
         });
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) fn agent_mcp_state(
         &self,
     ) -> std::sync::Arc<tokio::sync::Mutex<crate::session::mcp_servers::McpState>> {
@@ -2352,6 +2354,7 @@ impl MvpAgent {
             restore_code,
             session_registry_local,
             managed_mcp_cache: Default::default(),
+            #[cfg(feature = "stock-mcp")]
             agent_mcp_state: std::sync::Arc::new(
                 tokio::sync::Mutex::new(
                     crate::session::mcp_servers::McpState::new(vec![]),
@@ -4711,6 +4714,7 @@ impl MvpAgent {
                     mcp_servers,
                     initial_client_mcp_servers,
                     mcp_meta_config_map,
+                    #[cfg(feature = "stock-mcp")]
                     None,
                     acp_mcp_servers,
                     support_permission,

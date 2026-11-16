@@ -1326,7 +1326,7 @@ pub(crate) async fn run_shell_child(
                         ctx.parent_mcp_configs
                             .iter()
                             .find(|s| {
-                                crate::session::mcp_servers::mcp_server_name(s) == name
+                                xai_grok_config_types::mcp_server_name(s) == name
                             })
                             .cloned()
                             .or_else(|| {
@@ -1372,12 +1372,15 @@ pub(crate) async fn run_shell_child(
         agent_mcp_servers,
         &ctx.parent_cwd,
     );
+    #[cfg(feature = "stock-mcp")]
     let parent_mcp_pool =
         resolve_inherited_mcp_pool(ctx.parent_mcp_pool.take(), &definition.mcp_inheritance);
+    #[cfg(feature = "stock-mcp")]
     let mcp_inherited_count = parent_mcp_pool
         .as_ref()
         .map(|p| p.len() as u32)
         .unwrap_or(0);
+    #[cfg(feature = "stock-mcp")]
     if mcp_inherited_count > 0 {
         tracing::info!(
             subagent_id = %request.id,
@@ -1470,6 +1473,7 @@ pub(crate) async fn run_shell_child(
         agent_mcp_servers,
         vec![],
         Default::default(),
+        #[cfg(feature = "stock-mcp")]
         parent_mcp_pool,
         Vec::new(),
         true,

@@ -748,6 +748,7 @@ pub struct MvpAgent {
     /// Managed MCP configs and gateway tool catalog; lazily fetched.
     managed_mcp_cache: crate::session::managed_mcp::ManagedMcpStateHandle,
     /// Agent-level MCP server state. LEADER-SAFE(shared): MCP servers are agent-scoped, not per-client.
+    #[cfg(feature = "stock-mcp")]
     agent_mcp_state: std::sync::Arc<
         tokio::sync::Mutex<crate::session::mcp_servers::McpState>,
     >,

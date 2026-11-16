@@ -957,19 +957,23 @@ impl SessionActor {
         // Always re-merge plugin-contributed MCP servers and apply them via an order-insensitive diff.
         // Unchanged servers stay connected; only added, changed, or removed ones are re-initialized.
         // The order-sensitive `update_configs` would tear everything down instead, because merge order is non-deterministic.
+        #[cfg(feature = "stock-mcp")]
         let t_mcp = std::time::Instant::now();
+        #[cfg(feature = "stock-mcp")]
         let new_mcp_servers = crate::session::managed_mcp::merge_managed_mcp_servers(
             self.initial_client_mcp_servers.clone(),
             session_cwd,
             new_registry_snapshot.as_deref(),
             &self.rebuild_spec.compat,
         );
+        #[cfg(feature = "stock-mcp")]
         let (mcp_change, dispatch_event_tx) = {
             let mut mcp_state = self.mcp_state.lock().await;
             let change = self.update_mcp_configs(&mut mcp_state, new_mcp_servers);
             let tx = mcp_state.client_event_tx();
             (change, tx)
         };
+        #[cfg(feature = "stock-mcp")]
         let mcp_changed = if let Some(change) = mcp_change {
             self.apply_mcp_config_diff(&change.diff, dispatch_event_tx);
             self.start_mcp_servers_after_config_change(change).await;
@@ -978,6 +982,7 @@ impl SessionActor {
             false
         };
 
+        #[cfg(feature = "stock-mcp")]
         xai_grok_telemetry::unified_log::info(
             "reload_plugins_impl: MCP done",
             Some(sid),

@@ -314,11 +314,14 @@ async fn reload_project_servers_after_grant(ctx: ReloadAfterGrant<'_>) {
 
     // Push the refreshed MCP catalog so the client UI reflects the now-trusted repo-local servers;
     // policy-blocked servers stay out, same as the pool seeding.
+    #[cfg(feature = "stock-mcp")]
     let local = folder_trust::filter_untrusted_project_mcp(
         ctx.prompt_cwd,
         crate::util::config::load_mcp_servers(ctx.prompt_cwd, ctx.compat),
     );
+    #[cfg(feature = "stock-mcp")]
     let local = crate::session::managed_mcp::filter_policy_blocked_agent_mcp(local, ctx.prompt_cwd);
+    #[cfg(feature = "stock-mcp")]
     crate::extensions::mcp::notify_servers_updated(ctx.gateway, &local).await;
 }
 

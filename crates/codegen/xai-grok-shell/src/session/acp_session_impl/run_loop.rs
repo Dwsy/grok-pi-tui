@@ -336,6 +336,7 @@ impl StartupTasks {
         let session_for_mcp = session.clone();
         let mcp_init_prompt_promote =
             crate::util::AbortOnDrop(tokio::task::spawn_local(async move {
+                #[cfg(feature = "stock-mcp")]
                 session_for_mcp.ensure_mcp_tools_initialized().await;
                 SessionActor::maybe_start_running_task(session_for_mcp.clone(), completion_tx)
                     .await;
@@ -347,6 +348,7 @@ impl StartupTasks {
             let s = session.clone();
             Some(crate::util::AbortOnDrop(tokio::task::spawn_local(
                 instrument_task!("session.context_snapshot", Parent::Inherit, async move {
+                    #[cfg(feature = "stock-mcp")]
                     s.wait_for_mcp_initialized().await;
                     s.emit_session_context_snapshot().await;
                 }),
@@ -434,6 +436,7 @@ pub(super) async fn run_session(
     tokio::task::spawn_local(super::status_line::run_status_emitter(Arc::downgrade(
         &session,
     )));
+    #[cfg(feature = "stock-mcp")]
     let liveness_watchers_enabled = {
         let user_cfg = crate::config::load_effective_config().ok();
         let requirements = crate::agent::config::read_requirements_toml();
@@ -443,6 +446,7 @@ pub(super) async fn run_session(
             None,
         )
     };
+    #[cfg(feature = "stock-mcp")]
     let _elicitation_coordinator = if !session.startup_hints.is_subagent {
         let elicit_inbox = xai_grok_mcp::elicitation::ElicitationInbox::new();
         {
@@ -461,6 +465,7 @@ pub(super) async fn run_session(
     } else {
         None
     };
+    #[cfg(feature = "stock-mcp")]
     if !session.startup_hints.is_subagent {
         let (event_tx, event_rx) =
             tokio::sync::mpsc::unbounded_channel::<xai_grok_mcp::servers::McpClientEvent>();

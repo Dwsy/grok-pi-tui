@@ -623,6 +623,7 @@ impl SessionActor {
         repo_status: Option<&RepoStatusSnapshot>,
     ) -> Option<String> {
         use xai_grok_agent::prompt::user_message::UserMessageContext;
+        #[cfg(feature = "stock-mcp")]
         self.wait_for_mcp_startup_grace().await;
         let bridge = self.agent.borrow().tool_bridge().clone();
         let (vcs_root, vcs_status) = match repo_status {
@@ -632,7 +633,10 @@ impl SessionActor {
         let (workspace_rules, user_rules) = self.gather_partitioned_rules();
         let mut user_rules = user_rules;
         let skills = self.slash_skills_for_resolve().await;
+        #[cfg(feature = "stock-mcp")]
         let mcp_servers = self.gather_mcp_servers(cwd).await;
+        #[cfg(not(feature = "stock-mcp"))]
+        let mcp_servers = Vec::new();
         if self
             .agent
             .borrow()
@@ -733,6 +737,7 @@ impl SessionActor {
     /// Only servers that expose tools or resources get files; models read these before issuing `CallMcpTool` or `FetchMcpResource` calls.
     /// The model then sees an empty descriptor directory rather than a missing one.
     /// No-op when the descriptor root is unavailable (`workspace_mcps_root` is `None`).
+    #[cfg(feature = "stock-mcp")]
     async fn gather_mcp_servers(
         &self,
         workspace: &std::path::Path,
@@ -782,6 +787,7 @@ impl SessionActor {
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         entries
     }
+    #[cfg(feature = "stock-mcp")]
     async fn gather_gateway_mcp_servers(
         &self,
         mcps_root: Option<&std::path::Path>,

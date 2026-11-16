@@ -122,6 +122,7 @@ pub(crate) struct AgentRebuildSpec {
     pub path_not_found_hints: bool,
     /// Fire side of the scheduler mode.
     /// Keep the two on one resolve.
+    #[cfg(feature = "stock-mcp")]
     pub mcp_state: Arc<tokio::sync::Mutex<crate::session::mcp_servers::McpState>>,
     pub managed_gateway_tool_client:
         Option<xai_grok_tools::types::resources::ManagedGatewayToolClient>,
@@ -213,6 +214,7 @@ impl AgentRebuildSpec {
             blocking_wait_depth,
             respect_gitignore,
             path_not_found_hints,
+            #[cfg(feature = "stock-mcp")]
             mcp_state,
             managed_gateway_tool_client,
             is_non_interactive,
@@ -220,6 +222,7 @@ impl AgentRebuildSpec {
             owner_session_id,
             parent_scheduler_handle,
         } = self.as_ref();
+        #[cfg(feature = "stock-mcp")]
         let _ = mcp_state;
         #[allow(unused_variables)]
         let is_cursor_template =
@@ -458,6 +461,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         blocking_wait_depth: Arc::new(crate::tools::tool_context::BlockingWaitState::new()),
         respect_gitignore: false,
         path_not_found_hints: false,
+        #[cfg(feature = "stock-mcp")]
         mcp_state: Arc::new(tokio::sync::Mutex::new(
             crate::session::mcp_servers::McpState::new(vec![]),
         )),

@@ -309,7 +309,9 @@ impl SessionActor {
             tool_count = tracing::field::Empty,
         ));
         let mcp_wait_start = tokio::time::Instant::now();
+        #[cfg(feature = "stock-mcp")]
         let full_wait = self.requires_full_mcp_wait();
+        #[cfg(feature = "stock-mcp")]
         if (full_wait || matches!(self.mcp_strategy.get(), McpInitStrategy::Blocking))
             && !self.mcp_state.lock().await.is_initialized()
         {

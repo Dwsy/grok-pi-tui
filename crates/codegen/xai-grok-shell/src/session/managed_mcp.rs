@@ -91,6 +91,7 @@ pub(crate) fn merge_managed_mcp_servers(
 /// Merge local/plugin/client MCP sources into ONE live session and push the result via [`crate::session::SessionCommand::UpdateMcpServers`].
 /// Returns `true` if the command was enqueued (session still alive).
 /// Shared core for every "re-merge MCP sources into a live session" path (config hot-reload, post-grant reload, plugin reload).
+#[cfg(feature = "stock-mcp")]
 pub(crate) fn merge_and_send_managed_mcp_update(
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<crate::session::SessionCommand>,
     cwd: &std::path::Path,

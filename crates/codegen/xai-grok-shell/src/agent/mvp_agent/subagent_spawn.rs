@@ -380,6 +380,7 @@ impl MvpAgent {
                 .map(|h| h.mcp_servers.clone())
                 .unwrap_or_default(),
             managed_mcp_state: self.managed_mcp_cache.clone(),
+            #[cfg(feature = "stock-mcp")]
             parent_mcp_pool: None,
             parent_tool_definitions: None,
             parent_skills: None,

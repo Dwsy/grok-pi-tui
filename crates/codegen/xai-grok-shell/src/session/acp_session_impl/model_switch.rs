@@ -293,8 +293,11 @@ impl SessionActor {
             }
             self.inject_deny_read_globs().await;
         }
+        #[cfg(feature = "stock-mcp")]
         let claim = self.restart_mcp_init(&mut *self.mcp_state.lock().await);
+        #[cfg(feature = "stock-mcp")]
         self.re_register_mcp_tools_on_rebuilt_bridge().await;
+        #[cfg(feature = "stock-mcp")]
         self.run_mcp_init_with_claim(claim).await;
         self.deferred_prefix.cancel();
         let new_user_prefix = self
@@ -325,6 +328,7 @@ impl SessionActor {
         save_system_prompt(&self.session_info, &new_system_prompt);
         let snapshot = self.chat_state_handle.get_conversation().await;
         persist_chat_history_jsonl_sync(&self.session_info, &snapshot);
+        #[cfg(feature = "stock-mcp")]
         self.mcp_reminder_dirty
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.send_available_commands_update(AdvertiseTrigger::HarnessRebuild)
