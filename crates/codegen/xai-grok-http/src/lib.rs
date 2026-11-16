@@ -7,7 +7,7 @@
 
 use std::sync::OnceLock;
 
-use xai_grok_workspace::permission::ClientType;
+use xai_grok_workspace_types::ClientType;
 
 /// Per-attempt ceiling for a startup `/settings` or `/v1/models` fetch.
 pub const STARTUP_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

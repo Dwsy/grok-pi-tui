@@ -11,6 +11,7 @@ description = "Canonical tool-description types for the xAI platform"
 prompt-render = ["dep:minijinja"]
 
 [dependencies]
+async-trait = { workspace = true }
 minijinja = { workspace = true, features = ["custom_syntax"], optional = true }
 schemars = { workspace = true }
 serde = { workspace = true }

@@ -13,6 +13,8 @@ mod memory;
 pub use memory::*;
 mod mcp;
 pub use mcp::*;
+pub mod mcp_oauth;
+pub use mcp_oauth::{McpOAuthConfig, McpOAuthConfigMap};
 mod permission;
 pub use permission::*;
 mod auth_provider;

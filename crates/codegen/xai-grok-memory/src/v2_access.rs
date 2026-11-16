@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
 use std::path::{Component, Path, PathBuf};
 
-use xai_grok_tools::types::memory_v2::{MemoryV2Access, MemoryV2Write};
+use xai_tool_types::memory_v2::{MemoryV2Access, MemoryV2Write};
 
 use crate::v2::{V2ManifestBudget, V2MemoryScope, V2StorageError, regenerate_scope_manifest};
 

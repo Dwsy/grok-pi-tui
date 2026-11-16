@@ -4,10 +4,13 @@ pub mod claude_alias;
 pub mod definition;
 pub mod edit;
 mod ext;
+pub mod memory_backend;
+pub mod memory_v2;
 mod schema_utils;
 pub mod serde_lenient;
 mod task;
 pub mod terminal;
+pub mod text;
 pub mod tool_kind;
 mod types;
 

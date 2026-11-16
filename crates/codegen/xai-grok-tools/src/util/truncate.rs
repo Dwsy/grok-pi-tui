@@ -61,19 +61,8 @@ pub fn soft_wrap_line(line: &str, wrap_width: usize) -> Cow<'_, str> {
     Cow::Owned(result)
 }
 
-/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8 boundary. Returns the original
-/// string if it fits. No truncation marker is added. Walks back from `max_bytes` until a char
-/// boundary is found. At most 3 steps back since UTF-8 multibyte sequences are at most 4 bytes.
-pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
+/// Shared UTF-8-safe truncation contract; preserve the historical Tools path.
+pub use xai_tool_types::text::truncate_str;
 
 /// Text on hand, and the size of the output it came from. The two differ when
 /// the caller holds only part of a larger output and the reader still needs

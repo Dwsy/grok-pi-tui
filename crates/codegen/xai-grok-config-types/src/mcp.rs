@@ -1,11 +1,11 @@
 //! MCP server configuration value types, extracted from xai-grok-shell so crates the shell depends on can use them.
 
+use crate::mcp_oauth::McpOAuthConfig;
 use agent_client_protocol as acp;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use xai_grok_mcp::oauth_config::McpOAuthConfig;
 
 /// serde default helper.
 fn default_true() -> bool {

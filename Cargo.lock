@@ -13770,7 +13770,6 @@ dependencies = [
  "tracing",
  "xai-grok-announcements",
  "xai-grok-config",
- "xai-grok-mcp",
 ]
 
 [[package]]
@@ -13911,7 +13910,7 @@ dependencies = [
  "xai-grok-sampler",
  "xai-grok-telemetry",
  "xai-grok-version",
- "xai-grok-workspace",
+ "xai-grok-workspace-types",
 ]
 
 [[package]]
@@ -14045,6 +14044,7 @@ dependencies = [
  "which",
  "xai-computer-hub-sdk",
  "xai-grok-config",
+ "xai-grok-config-types",
  "xai-grok-extra-ca",
  "xai-grok-sandbox",
  "xai-grok-session-events",
@@ -14085,12 +14085,14 @@ dependencies = [
  "tokio",
  "tracing",
  "windows 0.61.3",
+ "xai-dirs",
  "xai-grok-auth",
  "xai-grok-config-types",
  "xai-grok-http",
  "xai-grok-tools",
  "xai-grok-version",
  "xai-sqlite-journal",
+ "xai-tool-types",
  "xai-token-estimation",
 ]
 
@@ -15404,6 +15406,7 @@ dependencies = [
 name = "xai-tool-types"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "minijinja",
  "schemars 1.0.4",
  "serde",

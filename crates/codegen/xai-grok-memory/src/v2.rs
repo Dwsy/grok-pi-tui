@@ -8,8 +8,8 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use rusqlite::params;
-use xai_grok_tools::util::truncate_str;
 use xai_sqlite_journal::JournalMode;
+use xai_tool_types::text::truncate_str;
 
 const STATE_SCHEMA_VERSION: &str = "1";
 const MAX_DISCOVERED_FILES: usize = 10_000;

@@ -17,7 +17,7 @@ xai-grok-extra-ca = { workspace = true }
 xai-grok-sampler = { path = "../xai-grok-sampler" }
 xai-grok-telemetry = { workspace = true }
 xai-grok-version = { workspace = true }
-xai-grok-workspace = { workspace = true }
+xai-grok-workspace-types = { workspace = true }
 
 [dev-dependencies]
 rcgen = { workspace = true }

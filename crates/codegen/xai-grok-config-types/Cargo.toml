@@ -15,7 +15,6 @@ toml = { workspace = true }
 tracing = { workspace = true }
 xai-grok-announcements = { workspace = true }
 xai-grok-config = { workspace = true }
-xai-grok-mcp = { workspace = true }
 
 [features]
 default-bazel = []

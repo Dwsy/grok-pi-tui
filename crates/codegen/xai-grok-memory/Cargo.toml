@@ -38,7 +38,8 @@ tracing = { workspace = true }
 xai-grok-auth = { workspace = true }
 xai-grok-config-types = { workspace = true }
 xai-grok-http = { workspace = true }
-xai-grok-tools = { workspace = true }
+xai-dirs = { workspace = true }
+xai-tool-types = { workspace = true }
 xai-grok-version = { workspace = true }
 xai-sqlite-journal = { workspace = true }
 xai-token-estimation = { workspace = true }
@@ -51,6 +52,9 @@ windows = { workspace = true }
 
 [dev-dependencies]
 filetime = { workspace = true }
+# One adapter integration test exercises stock Tools' typed Resource container.
+# Production memory code and its binary dependency closure do not use Tools.
+xai-grok-tools = { workspace = true }
 
 [lints]
 workspace = true

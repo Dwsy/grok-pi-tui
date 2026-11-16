@@ -5,8 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+use xai_dirs::grok_home;
 use xai_grok_config_types::MemoryMode;
-use xai_grok_tools::util::grok_home::grok_home;
 
 /// Write-operation scope. Distinct from `xai_grok_agent::config::MemoryScope` (agent memory dir).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
