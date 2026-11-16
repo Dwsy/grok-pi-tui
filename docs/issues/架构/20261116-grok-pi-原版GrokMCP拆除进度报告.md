@@ -148,3 +148,18 @@ Shell 的关键耦合包括：
 **S08a-12 仍未完成的实质阻塞**：`xai-grok-shell::session::acp_session` 仍有直接的 `McpState`、`McpInitStrategy` 和 managed MCP 字段/初始化；`acp_session_impl/run_loop.rs` 仍有 MCP startup/dispatcher 任务；部分 Agent/Session 模块仍非条件引用 MCP API。因此**无 MCP 的 Shell 源码尚未被证明能通过 Rust 编译**。不要用上面的 manifest 结果宣告产品完工，也不要为了掩盖类型问题而增加假的 MCP stub。
 
 **约束不变**：不修改 Workflow 实现；不删除 Pi Eval MCP；不改 Pi 源码；不运行逐提交 Cargo/CI、不自动发布。
+
+## 9. 增量进度：S08a-13（2026-11-16，待编译）
+
+**本批切到了真正的原版 Grok MCP 执行层，而不再仅是 manifest 或协议辅助函数。**
+
+- **Actor 状态与生命周期**：`SessionActor` 中 MCP client-state、已宣告服务器、reminder/refresh、初始化任务字段和构造器加 `stock-mcp` 条件；`AgentRebuildSpec` 不再强制持有 MCP 客户端状态。会话普通状态、Goal 和 Workflow 字段不动。
+- **运行循环**：原版 elicitation coordinator、MCP 连接事件 dispatcher、SessionRestartActions 与 MCP 初始化握手/等待仅 stock 编译；通用任务推进、上下文快照、Workflow watcher 及 Hooks 保留。
+- **工具与提示词**：在非 stock 构建中不启动 MCP handshake，不收集 MCP server descriptor，不重连 MCP、不处理 MCP-only tool metadata；正常工具调用传入 `None` 元信息，原版 MCP 计数为 0；普通技能、规则和 Prompt 渲染继续执行。
+- **Subagent 连接池**：`SharedMcpPool` 持有真实 MCP Client，不能降级为假 DTO；从 `SubagentSpawnContext`、继承算法、`spawn_session_{actor,on_thread}` 参数及所有当前调用点按 stock 特性隔离。无 stock 时依旧并发取得父会话 Hooks 和 ToolDefinitions。
+- **Agent 初始化**：原版启动时的 MCP 目录扫描、ACP MCP 扩展路由及 agent-scoped McpState 按 stock 特性隔离，非 stock 不宣告 `mcpApps`；目录信任、插件发现和普通初始化仍保留。
+- **下沉唯一的 wire DTO**：原版 `AcpServerEntry {name, serverId}` 移至 `xai-grok-config-types`，`xai-grok-mcp::servers` re-export；补 `serverId` 大小写反序列化测试（源码已编写，尚未执行）。解析 MCP 工具名时改用已有 Workspace Types 的单一文法实现；Shell manifest/lock 增加轻量依赖。
+
+**本批静态核对**：Rustfmt、diff check；依赖与 stock/no-stock 条件审查。**本批没有运行 Cargo、没有触发任何 CI、没有新二进制，更没有可宣称的 ARM64 通过。**
+
+**尚需继续清除的阻塞**：Shell 其他配置、Agent/Session 调用对 stock-only API 的无条件引用、测试配置下仅存 stock 字段的 fixtures，以及最终两端 feature-unification 的真实 Cargo 解析；应在一次集中验证时运行 Pi 无 MCP 与 stock 含 MCP 的实际 Cargo tree + check/test + ARM64 smoke。不要为了通过编译恢复假的 MCP 服务，也不要拆 Workflow。
