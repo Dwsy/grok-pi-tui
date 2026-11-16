@@ -184,12 +184,14 @@ use crate::config::{
     AgentSessionConfig, DEFAULT_EVENT_BUFFER_CAPACITY, HookSourceConfig, WorkspaceConfig,
 };
 use crate::error::{WorkspaceError, WorkspaceResult};
+#[cfg(feature = "stock-mcp")]
+use crate::session::WorkspaceMcpBinding;
 use crate::session::swap_policy::{
     DeferReason, SessionSnapshot, SwapAction, SwapDecision, SwapPolicy, SwapTrigger,
     record_swap_decision, record_toolset_swap,
 };
 use crate::session::tool_config::resolve_session_toolset;
-use crate::session::{WorkspaceMcpBinding, WorkspaceSession, WorkspaceShared};
+use crate::session::{WorkspaceSession, WorkspaceShared};
 use crate::telemetry::dc_log;
 use crate::workspace_ops::{
     GetFileEntry, GetFileResult, GetFilesRes, PutFileEntry, PutFileResult, PutFilesRes,
@@ -2529,6 +2531,7 @@ impl WorkspaceHandle {
         Some(outcome)
     }
     /// Replace a session's MCP servers with `configs` (`workspace.configure_mcp`). Client-driven, so it is refused on a workspace whose MCP servers come from local configuration — there, the machine owns the set and [`Self::reload_bind_mcp`] is how it changes.
+    #[cfg(feature = "stock-mcp")]
     pub async fn start_session_mcp_servers(
         &self,
         session_id: &str,
@@ -2602,6 +2605,7 @@ impl WorkspaceHandle {
     /// Publish a new locally-configured MCP set and converge every live session onto it, without restarting the process.
     /// Only added, removed, and redefined servers are touched; the rest keep their client, process, and in-flight calls.
     /// Sessions converge concurrently, each serialized only by its own `update_lock`, and every convergence reads the *published* config at execution time — so overlapping reloads need no global ordering: the last publish wins.
+    #[cfg(feature = "stock-mcp")]
     pub async fn reload_bind_mcp(
         &self,
         config: crate::config::BindMcpConfig,
@@ -2642,6 +2646,7 @@ impl WorkspaceHandle {
     /// Converge one session's MCP servers onto the *currently published* configuration, under that session's `update_lock`.
     /// The single entry point for every convergence — bind-spawned, reload-driven — so tool publication has exactly one channel (dynamic registration) and one serialization point per session.
     /// Reads the config after taking the lock, so a convergence queued behind another always applies the latest publish.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn converge_session_mcp(
         &self,
         session_id: &str,
@@ -2697,12 +2702,14 @@ impl WorkspaceHandle {
         session_id: &str,
     ) -> WorkspaceResult<()> {
         let session = self.unmap_session(caller_session_id, session_id)?;
+        #[cfg(feature = "stock-mcp")]
         self.teardown_session_mcp_arc(&session, None).await;
         self.finalize_dropped_session(&session, session_id);
         Ok(())
     }
     /// Unregister all MCP tools for a session from the server. Deliberately takes no `update_lock`: session-end, evict, and `drop_session` await this from hub hooks, and a bind or reload mid-MCP-start holds that lock for up to the discovery window — a hook must not queue behind it.
     /// Flipping the binding to `Closed` first is what makes the lock unnecessary: every in-flight MCP step fails closed against it (`install_servers` refuses the session and `claim_tools` yields nothing), and cancelling `mcp_cancel` drops any starts still connecting.
+    #[cfg(feature = "stock-mcp")]
     pub async fn teardown_session_mcp(&self, session_id: &str) {
         if let Some(session) = self.session(session_id) {
             let _ = self.teardown_session_mcp_arc(&session, None).await;
@@ -2710,6 +2717,7 @@ impl WorkspaceHandle {
     }
     /// The hub-EVENT teardown entry (`session.unbind`'s deferred task, the `SessionEnded` hook) for a session that stays mapped: the caller anchors the bind generation with ONE atomic load when the event arrives, and this re-snapshots the (epoch, generation) pair atomically under `mcp_binding` — two separate loads can tear, and a soft rebind between them pairs the old epoch with the post-bind generation, which would slip past the fence and close MCP under the accepted bind.
     /// (The unmapped-session paths — evict, drop — stay unfenced by design: the unmap precedes the teardown, so no bind can reach the session through the map, and the teardown must always run or the MCP children leak.)
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn teardown_session_mcp_for_event(
         &self,
         session_id: &str,
@@ -2735,6 +2743,7 @@ impl WorkspaceHandle {
     }
     /// Arc-based teardown, so a caller that already unmapped the session
     /// (the drop and evict paths) can still tear its MCP down.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn teardown_session_mcp_arc(
         &self,
         session: &Arc<WorkspaceSession>,
@@ -3282,6 +3291,7 @@ impl WorkspaceHandle {
                             );
                         }
                     };
+                    #[cfg(feature = "stock-mcp")]
                     let mcp_bind_epoch = session
                         .mcp_epoch
                         .load(std::sync::atomic::Ordering::SeqCst);
@@ -3324,6 +3334,7 @@ impl WorkspaceHandle {
                             .with_property(|| ("session_id", sid_str.clone()));
                         build_session_routed_handlers(&session.toolset(), &ws)
                     };
+                    #[cfg(feature = "stock-mcp")]
                     let () = async {
                         if ws.shared.bind_mcp.is_some() && !bind_config.rpc_only
                             && resolve_error.is_none()
@@ -3592,9 +3603,11 @@ impl WorkspaceHandle {
         let catalog: Arc<Vec<Arc<dyn xai_computer_hub_sdk::ToolServerHandler>>> =
             Arc::new(template_handlers.clone());
         let resolver = self.session_bind_resolver(catalog, rpc_tool_id);
+        #[cfg(feature = "stock-mcp")]
         let unbind_workspace = self.clone();
-        let on_session_unbound: Arc<xai_computer_hub_sdk::SessionUnboundCallback> =
-            Arc::new(move |sid: &xai_tool_protocol::SessionId| {
+        #[cfg(feature = "stock-mcp")]
+        let on_session_unbound: Option<Arc<xai_computer_hub_sdk::SessionUnboundCallback>> =
+            Some(Arc::new(move |sid: &xai_tool_protocol::SessionId| {
                 let workspace = unbind_workspace.clone();
                 let session_id = sid.as_str().to_owned();
                 let Some(session) = workspace.session(&session_id) else {
@@ -3614,7 +3627,9 @@ impl WorkspaceHandle {
                         );
                     }
                 });
-            });
+            }));
+        #[cfg(not(feature = "stock-mcp"))]
+        let on_session_unbound: Option<Arc<xai_computer_hub_sdk::SessionUnboundCallback>> = None;
         let hub_ws_started = std::time::Instant::now();
         let connect_result = HubHandle::connect(
             &hub_config,
@@ -3622,7 +3637,7 @@ impl WorkspaceHandle {
             template_handlers,
             self.shared.server_metadata.clone(),
             Some(resolver),
-            Some(on_session_unbound),
+            on_session_unbound,
         )
         .await;
         let hub_ws_connect_secs = hub_ws_started.elapsed().as_secs_f64();

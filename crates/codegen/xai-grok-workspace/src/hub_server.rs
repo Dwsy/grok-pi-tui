@@ -736,6 +736,7 @@ impl WorkspaceRpcHandler {
                 );
                 Ok(Value::Array(plugins))
             }
+            #[cfg(feature = "stock-mcp")]
             <ConfigureMcpReq as WorkspaceRpc>::METHOD => {
                 note_mutation::<ConfigureMcpReq>(&self.workspace);
                 let session_id = bound_session.ok_or_else(|| {
@@ -1144,6 +1145,7 @@ impl ToolServerHandler for WorkspaceRpcHandler {
             }
             HookEvent::SessionEnded => {
                 tracing::info!(%session_id, "session_ended hook received");
+                #[cfg(feature = "stock-mcp")]
                 if let Some(session) = self.workspace.session(session_id.as_str()) {
                     let arrival_generation = session
                         .mcp_bind_generation
@@ -1259,6 +1261,7 @@ impl ToolServerHandler for WorkspaceRpcHandler {
             }
             (empty, start, removed)
         };
+        #[cfg(feature = "stock-mcp")]
         if let Some(session) = &removed {
             self.workspace.teardown_session_mcp_arc(session, None).await;
         }

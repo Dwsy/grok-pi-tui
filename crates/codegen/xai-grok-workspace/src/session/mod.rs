@@ -15,7 +15,9 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+#[cfg(feature = "stock-mcp")]
 use xai_computer_hub_mcp_adapter::McpBridgeHandle;
+#[cfg(feature = "stock-mcp")]
 use xai_grok_mcp::servers::McpState;
 use xai_grok_tools::notification::AcknowledgedToolNotification;
 use xai_grok_tools::notification::types::ToolNotificationHandle;
@@ -48,6 +50,7 @@ pub mod result {
     }
 }
 /// One MCP server running for a session.
+#[cfg(feature = "stock-mcp")]
 pub(crate) struct SessionMcpServer {
     pub(crate) bridge: McpBridgeHandle,
     /// The ids this server contributed to the session's advertised tool set, i.e. Dropping the server unregisters exactly these, so a native tool that shadowed a same-named MCP tool is never torn down along with it.
@@ -57,6 +60,7 @@ pub(crate) struct SessionMcpServer {
     pub(crate) tier: crate::mcp_claim::McpServerTier,
 }
 /// The MCP servers a session is running.
+#[cfg(feature = "stock-mcp")]
 pub(crate) struct ActiveMcp {
     /// Config server name → live server. Empty is meaningful: it marks a
     /// session that is in the configured set but currently runs nothing, so
@@ -64,11 +68,13 @@ pub(crate) struct ActiveMcp {
     pub(crate) servers: HashMap<String, SessionMcpServer>,
 }
 /// Whether a session takes part in the workspace's configured MCP set. `Uninitialized` is a session that never joined: unbound, an `rpc_only` bind, or a bind whose toolset failed to resolve.
+#[cfg(feature = "stock-mcp")]
 pub(crate) enum WorkspaceMcpBinding {
     Uninitialized,
     Active(ActiveMcp),
     Closed,
 }
+#[cfg(feature = "stock-mcp")]
 impl WorkspaceMcpBinding {
     /// The session's servers, or `None` if it has not joined the set.
     pub(crate) fn active(&self) -> Option<&ActiveMcp> {
@@ -126,21 +132,27 @@ pub struct WorkspaceSession {
     /// Per-session lock that serialises `update_tool_config` calls.
     pub(crate) update_lock: tokio::sync::Mutex<()>,
     /// Canonical MCP client/configuration runtime state.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_state: Arc<tokio::sync::Mutex<McpState>>,
     /// Workspace hub publication state for MCP bridges and registered aliases.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_binding: tokio::sync::Mutex<WorkspaceMcpBinding>,
     /// Cancels the session's in-flight MCP server starts. Teardown flips the binding to `Closed` for everything that COMPLETES afterwards, but a start still connecting holds its child process inside a pending future — cancelling drops those futures, killing the children now instead of at the discovery deadline.
     /// A revive bind (re-opening a `Closed` binding) swaps in a fresh token.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_cancel: parking_lot::Mutex<tokio_util::sync::CancellationToken>,
     /// MCP life counter, only ever bumped under `mcp_binding`: an enrolment that TRANSITIONS the binding to Active starts a life, teardown ends one.
     /// A soft rebind of an already-Active binding continues the life — its cancel token and its hub registrations' life tags are the life's, and must stay coherent with this counter.
     /// Two fences read it: - A bind snapshots it when its resolution starts, and enrolment refuses a stale snapshot — so a stale soft rebind landing just after a genuine session-end teardown cannot re-open the binding and start servers nothing will ever tear down.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_epoch: std::sync::atomic::AtomicU64,
     /// Accepted-bind counter, bumped under `mcp_binding` by every bind the resolver accepts (enrolments, soft rebinds, re-opens — anything that returns bind success).
     /// A hub unbind's DEFERRED teardown snapshots it beside the epoch and re-checks both: a soft rebind continues the life (same epoch — wave 13), so the epoch alone cannot distinguish "before the unbind" from "after the reconnect bind"; a bind accepted after the unbind arrived must invalidate the pending teardown, or it would close MCP under the accepted bind with nothing to re-open it.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_bind_generation: std::sync::atomic::AtomicU64,
     /// The native tool ids the session's last bind advertised (including the RPC handler), recorded by the bind resolver.
     /// `claim_tools` refuses an MCP tool whose id collides with one of these, and only the bind knows them — the hub snapshot also holds already-advertised MCP tools.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) mcp_native_tool_ids: parking_lot::Mutex<std::collections::HashSet<ToolId>>,
     /// Per-user feature-flag bag resolved at session-bind time, frozen for
     /// the session lifetime. `None` → tools use their safe defaults.
@@ -292,11 +304,17 @@ impl WorkspaceSession {
             update_lock: tokio::sync::Mutex::new(()),
             bind_tool_config_fingerprint: std::sync::Mutex::new(None),
             stale_resolve: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "stock-mcp")]
             mcp_state: Arc::new(tokio::sync::Mutex::new(McpState::new(vec![]))),
+            #[cfg(feature = "stock-mcp")]
             mcp_binding: tokio::sync::Mutex::new(WorkspaceMcpBinding::Uninitialized),
+            #[cfg(feature = "stock-mcp")]
             mcp_cancel: parking_lot::Mutex::new(tokio_util::sync::CancellationToken::new()),
+            #[cfg(feature = "stock-mcp")]
             mcp_epoch: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "stock-mcp")]
             mcp_bind_generation: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "stock-mcp")]
             mcp_native_tool_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
             viewer_ctx,
             yolo_mode: std::sync::atomic::AtomicBool::new(false),
