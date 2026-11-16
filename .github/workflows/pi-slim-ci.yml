@@ -1,0 +1,99 @@
+name: Pi slim ARM64 CI (non-release)
+
+# Each slimming commit is verified independently; this never publishes releases.
+on:
+  push:
+    branches:
+      - "refactor/pi-slim-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi-slim-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  arm64:
+    name: ARM64 dependency and release-build validation
+    runs-on: macos-15
+    timeout-minutes: 150
+    env:
+      GROK_PI_VERSION: "0.0.0-slim-ci"
+      CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+      CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_DIST_STRIP: "none"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Check out exact commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.0"
+          targets: aarch64-apple-darwin
+
+      - name: Install protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install protobuf
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      - name: Restore and save slimming-branch cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pi-slim-aarch64-apple-darwin
+          cache-workspace-crates: "true"
+          cache-bin: "false"
+
+      - name: Assert Grok-only allocator is absent from Pi dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo tree --locked -p xai-grok-pager-bin \
+            --no-default-features --features release-dist,sandbox-enforce \
+            --target aarch64-apple-darwin -e normal,build \
+            > "$RUNNER_TEMP/pi-dependencies.txt"
+          if grep -E 'tikv-jemalloc-(sys|ctl)|tikv-jemallocator' "$RUNNER_TEMP/pi-dependencies.txt"; then
+            echo "Unexpected jemalloc dependency in grok-pi" >&2
+            exit 1
+          fi
+          echo "Verified: no jemalloc compile dependencies in grok-pi"
+
+      - name: Build ARM64 grok-pi (release-dist)
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          cargo build --locked --timings --profile release-dist \
+            -p xai-grok-pager-bin --bin grok-pi \
+            --no-default-features --features release-dist,sandbox-enforce \
+            --target aarch64-apple-darwin
+          echo "Build elapsed: $((SECONDS - started)) seconds"
+          du -sh target/aarch64-apple-darwin/release-dist || true
+
+      - name: Smoke-test ARM64 binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/aarch64-apple-darwin/release-dist/grok-pi"
+          test -x "$bin"
+          file "$bin"
+          "$bin" --version
+          "$bin" --help > /dev/null
+          "$bin" --print-capabilities > /dev/null
+
+      - name: Upload Cargo timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-slim-arm64-cargo-timings
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7

@@ -242,7 +242,8 @@ jobs:
             --profile release-dist \
             -p xai-grok-pager-bin \
             --bin grok-pi \
-            --features release-dist \
+            --no-default-features \
+            --features release-dist,sandbox-enforce \
             --target "${{ matrix.target }}"
           build_status=$?
           duration=$((SECONDS - started))

@@ -25,7 +25,9 @@ if [[ -f "$PI_MAIN_ROOT/packages/coding-agent/package.json" ]]; then
   fi
 fi
 
-(cd "$GROK_ROOT" && "$ROOT/scripts/cargo-shared.sh" build -p xai-grok-pager-bin --bin grok-pi)
+# Only stock Grok main.rs installs jemalloc; Pi has no global allocator hook.
+# Drop Pi's unused allocator compilation while retaining sandbox enforcement.
+(cd "$GROK_ROOT" && "$ROOT/scripts/cargo-shared.sh" build -p xai-grok-pager-bin --bin grok-pi --no-default-features --features sandbox-enforce)
 
 echo "Built: $GROK_ROOT/target/debug/grok-pi"
 echo "Pi:    $PI_BIN (min compatible 0.99.0)"

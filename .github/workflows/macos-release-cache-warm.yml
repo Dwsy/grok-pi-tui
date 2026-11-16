@@ -69,7 +69,8 @@ jobs:
           set -euo pipefail
           echo "Warming main-branch dependencies for aarch64-apple-darwin"
           cargo build --locked --timings --profile release-dist \
-            -p xai-grok-pager-bin --bin grok-pi --features release-dist \
+            -p xai-grok-pager-bin --bin grok-pi \
+            --no-default-features --features release-dist,sandbox-enforce \
             --target aarch64-apple-darwin
           echo "### Cache ARM64" >> "$GITHUB_STEP_SUMMARY"
           du -sh target || true
