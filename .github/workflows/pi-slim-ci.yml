@@ -76,6 +76,29 @@ jobs:
           echo "Build elapsed: $((SECONDS - started)) seconds"
           du -sh target/aarch64-apple-darwin/release-dist || true
 
+      - name: Assert Pi Eval MCP is absent from host and embedded resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          host = Path("crates/codegen/xai-grok-pager-bin/src/bin/grok-pi.rs").read_text()
+          sources = Path("crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/bash_extension.rs").read_text()
+          extension = Path("extensions/pi-grok-bash/index.ts").read_text()
+          settings = Path("crates/codegen/xai-grok-pager/src/settings/defs.rs").read_text()
+          assert "PI_GROK_EVAL_MCP" not in host
+          assert "pi_eval_mcp" not in settings
+          assert "registerEvalPi" not in extension
+          assert "./eval-pi-mcp.ts" not in extension
+          assert "mcpeval-" not in extension
+          assert 'include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-' not in sources
+          assert 'include_str!("../../../../../../extensions/pi-grok-bash/eval-pi-mcp.ts")' not in sources
+          assert not list(Path("extensions/pi-grok-bash").glob("mcpeval-*.ts"))
+          assert not Path("extensions/pi-grok-bash/eval-pi-mcp.ts").exists()
+          print("Pi MCP facade, daemon, and embedded server resources are absent")
+          PY
+
       - name: Smoke-test ARM64 binary
         shell: bash
         run: |

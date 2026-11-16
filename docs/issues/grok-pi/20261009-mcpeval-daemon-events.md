@@ -1,5 +1,7 @@
 # mcpeval resident daemon + event mode
 
+> **已废弃（2026-11-16）**：产品不再使用 MCP。本文为历史实现记录，不代表当前 grok-pi 会运行或打包 daemon；不再执行本页测试/验收步骤。
+
 - Date: 2026-10-09
 - Branch: main
 - Scope: `extensions/pi-grok-bash/eval-pi-mcp.ts`, `extensions/pi-grok-bash/mcpeval-*.ts`, `extensions/pi-grok-bash/index.ts`

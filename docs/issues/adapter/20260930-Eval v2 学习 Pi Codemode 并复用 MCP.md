@@ -1,7 +1,7 @@
 ---
 id: "2026-09-30-eval-v2-pi-codemode-mcp"
 title: "Eval v2 学习 Pi Codemode 并复用 MCP"
-status: "in-progress"
+status: "superseded"
 created: "2026-09-30"
 updated: "2026-09-30"
 category: "adapter"
@@ -9,6 +9,8 @@ tags: ["workhub", "grok-pi", "eval-v2", "codemode", "mcp", "tool-bridge"]
 ---
 
 # Issue: Eval v2 学习 Pi Codemode 并复用 MCP
+
+> **2026-11-16 决策：停止 MCP 方向。** Eval v2 的 Pi tools、Codemode 与工作流以原生能力继续维护；不再引入或桥接 MCP 运行时。本页仅作为历史参考。
 
 ## Goal
 
