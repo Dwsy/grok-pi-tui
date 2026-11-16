@@ -1380,6 +1380,8 @@ pub(crate) async fn run_shell_child(
         .as_ref()
         .map(|p| p.len() as u32)
         .unwrap_or(0);
+    #[cfg(not(feature = "stock-mcp"))]
+    let mcp_inherited_count = 0;
     #[cfg(feature = "stock-mcp")]
     if mcp_inherited_count > 0 {
         tracing::info!(

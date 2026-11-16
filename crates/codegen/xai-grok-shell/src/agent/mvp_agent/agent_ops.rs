@@ -4688,9 +4688,10 @@ impl MvpAgent {
                     agent_name: Some(agent_definition.name.clone()),
                     reasoning_effort: reasoning_effort_to_persist,
                 });
-            let acp_mcp_servers = crate::session::acp_mcp::parse_acp_mcp_servers(
-                session_meta,
-            );
+            #[cfg(feature = "stock-mcp")]
+            let acp_mcp_servers = crate::session::acp_mcp::parse_acp_mcp_servers(session_meta);
+            #[cfg(not(feature = "stock-mcp"))]
+            let acp_mcp_servers = Vec::new();
             let git_head_changed = init
                 .client_capabilities
                 .meta

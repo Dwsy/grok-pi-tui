@@ -285,13 +285,16 @@ async fn reload_project_servers_after_grant(ctx: ReloadAfterGrant<'_>) {
         let session_cwd = target.cwd.as_path();
         // MCP: `merge_managed_mcp_servers` re-reads disk and runs `filter_untrusted_project_mcp`
         // The filter now keeps project servers because the cached verdict was flipped to trusted (same workspace key)
-        let _ = crate::session::managed_mcp::merge_and_send_managed_mcp_update(
-            &target.cmd_tx,
-            session_cwd,
-            target.initial_client_mcp_servers,
-            plugin_snapshot.as_deref(),
-            ctx.compat,
-        );
+        #[cfg(feature = "stock-mcp")]
+        {
+            let _ = crate::session::managed_mcp::merge_and_send_managed_mcp_update(
+                &target.cmd_tx,
+                session_cwd,
+                target.initial_client_mcp_servers,
+                plugin_snapshot.as_deref(),
+                ctx.compat,
+            );
+        }
         // Plugins (and plugin-contributed hooks) are built for this session's own cwd on the folder-trust verdict
         // This mirrors `broadcast_plugin_registry_to_sessions`
         // The grant and `resolve_and_record` above flipped the cached verdict to trusted

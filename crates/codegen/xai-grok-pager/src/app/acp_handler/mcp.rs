@@ -3,6 +3,7 @@ use super::*;
 /// Cached `mcp.push_server_status` flag resolution.
 /// Resolution mirrors the `mcp.liveness_watchers` flag pattern but only stacks the env and default layers.
 /// The pager process does not load `config.toml` / `requirements.toml`.
+#[cfg(feature = "stock-mcp")]
 pub(super) fn push_server_status_enabled() -> bool {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -128,6 +129,7 @@ pub(super) fn agent_has_pending_mcps_fetch(app: &AppView, agent_id: AgentId) -> 
 /// Re-uses the shell's canonical wire types instead of re-declaring a parallel pager enum.
 /// Later variants (e.g. `RestartSucceeded` / `RestartFailed`) ride through automatically without a pager code change.
 /// Returns `true` (request redraw) only when the row mutation happened AND the matched agent is the currently active view.
+#[cfg(feature = "stock-mcp")]
 pub(super) fn handle_mcp_server_status(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
     use crate::views::extensions_modal::TabDataState;
     use crate::views::mcps_modal::{McpServerDisplayStatus, McpToolDetail, patch_server_row};

@@ -27,6 +27,7 @@
         );
     }
 
+    #[cfg(feature = "stock-mcp")]
     #[test]
     fn server_status_routes_to_owning_agent() {
         use crate::views::extensions_modal::TabDataState;
@@ -322,6 +323,7 @@
         );
     }
 
+    #[cfg(feature = "stock-mcp")]
     #[test]
     fn server_status_handler_noop_when_modal_closed_background() {
         use xai_grok_shell::extensions::mcp::McpServerStatus;
@@ -347,6 +349,7 @@
 
     /// Pin the cheap-path behavior for the FOREGROUND case too.
     /// Without this test, the background case passes trivially regardless of how the cheap path is gated on `is_active`.
+    #[cfg(feature = "stock-mcp")]
     #[test]
     fn server_status_handler_noop_when_modal_closed_foreground() {
         use xai_grok_shell::extensions::mcp::McpServerStatus;
@@ -367,6 +370,7 @@
 
     /// Pin the cheap-path behavior when the modal is open but the data is still loading.
     /// The `TabDataState::Loaded` gate must return early without panicking.
+    #[cfg(feature = "stock-mcp")]
     #[test]
     fn server_status_handler_noop_when_modal_data_still_loading() {
         use crate::views::extensions_modal::{ExtensionsModalState, ExtensionsTab, TabDataState};
@@ -386,6 +390,7 @@
 
     /// A malformed `status` field must NOT silently coerce to `Unavailable`.
     /// The whole payload must fail to parse and log a warning instead.
+    #[cfg(feature = "stock-mcp")]
     #[test]
     fn server_status_malformed_status_does_not_silently_repaint() {
         use crate::views::extensions_modal::TabDataState;
@@ -424,6 +429,7 @@
 
     /// A `tools` field that is present but not an array must drop ONLY the tools update.
     /// The `status` field still applies; we do not drop the whole push.
+    #[cfg(feature = "stock-mcp")]
     #[test]
     fn server_status_lenient_tools_decoding_still_applies_status() {
         use crate::views::extensions_modal::TabDataState;
@@ -461,6 +467,7 @@
 
     /// Pin that the pager deserializes against the *shell's* `McpServerStatus` enum, so a new variant needs no pager change to be recognized.
     /// Round-trip through `serde_json::to_string` of the shell type itself.
+    #[cfg(feature = "stock-mcp")]
     #[test]
     fn server_status_round_trips_shell_canonical_type() {
         use xai_grok_shell::extensions::mcp::{
@@ -650,6 +657,7 @@
         );
     }
 
+    #[cfg(feature = "stock-mcp")]
     #[test]
     fn tools_changed_post_h2_routes_to_owning_agent_not_active_view() {
         let mut app = make_app_two_agents();

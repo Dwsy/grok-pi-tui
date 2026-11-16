@@ -646,30 +646,6 @@ impl SessionActor {
     fn cursor_mcps_root(&self) -> Option<std::path::PathBuf> {
         None
     }
-    /// Snapshot both MCP and skill announcement tracking state and send it to the persistence channel for atomic write to `announcement_state.json`.
-    ///
-    /// Called after MCP fingerprint changes, skill update effects, and compaction so that resumed sessions start with accurate tracking state.
-    pub(super) async fn persist_announcement_state(&self) {
-        let skill_names = self.tool_bridge_handle().get_announced_skill_names().await;
-        let (mcp_server_fingerprints, announced_failed) = {
-            let announced = self.mcp_announcements.lock();
-            (
-                crate::session::announcement_state::to_persisted_fingerprints(
-                    &announced.fingerprints,
-                ),
-                announced.persisted_failed(),
-            )
-        };
-        let state = crate::session::announcement_state::AnnouncementState {
-            mcp_server_fingerprints,
-            announced_skill_names: skill_names,
-            announced_failed_servers: announced_failed,
-        };
-        let _ = self
-            .notifications
-            .persistence_tx
-            .send(PersistenceMsg::AnnouncementState(state));
-    }
     /// Inject an MCP server system-reminder if the set changed since the last announcement.
     /// Skips if not dirty.
     /// The dirty flag is cleared up front so a cancelled run degrades to a missed (re-triggerable) injection, never an in-session duplicate.

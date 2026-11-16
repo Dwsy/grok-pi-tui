@@ -156,7 +156,9 @@ impl coordinator::ChildRunner for ShellChildRunner {
                     handle.snapshot_tool_definitions()
                 );
                 #[cfg(feature = "stock-mcp")]
-                ctx.parent_mcp_pool = pool;
+                {
+                    ctx.parent_mcp_pool = pool;
+                }
                 ctx.client_hooks = hooks;
                 super::strip_ask_user_question_tool(&mut definitions);
                 super::strip_workflow_tool(&mut definitions);

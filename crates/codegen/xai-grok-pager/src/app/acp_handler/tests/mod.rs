@@ -2287,6 +2287,7 @@ pub(super) fn seed_owner_agent_with_open_modal(app: &mut AppView) {
 }
 /// Build a `server_status` notification using the SHELL's canonical `McpServerStatusPayload`.
 /// The test then exercises the actual wire type, not a synthesized json object that could drift from the shell.
+#[cfg(feature = "stock-mcp")]
 pub(super) fn make_server_status_notif(
     session_id: &str,
     name: &str,
@@ -2316,6 +2317,7 @@ pub(super) fn make_servers_updated_notif() -> acp::ExtNotification {
     acp::ExtNotification::new("x.ai/mcp/servers_updated", std::sync::Arc::from(raw))
 }
 /// Real post-handshake / auth-recovery wire shape: `McpToolsChanged { sessionId, serverName, tools }`.
+#[cfg(feature = "stock-mcp")]
 pub(super) fn make_tools_changed_notif_post_h2(
     session_id: &str,
 ) -> acp::ExtNotification {

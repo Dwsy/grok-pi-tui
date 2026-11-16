@@ -182,6 +182,11 @@ use sampler_turn::*;
 #[path = "acp_session_impl/tool_dispatch.rs"]
 mod tool_dispatch;
 use tool_dispatch::*;
+// Shared session policy: skill reminders still persist when the stock MCP
+// transport is absent. Keep the delivery policy constants outside MCP runtime.
+const DELIVERY_TOOLS_DEFAULT_PREFIX_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+const DELIVERY_TOOLS_TEMPLATED_PREFIX_WAIT: std::time::Duration =
+    std::time::Duration::from_secs(60);
 #[cfg(feature = "stock-mcp")]
 #[path = "acp_session_impl/mcp_snapshot.rs"]
 mod mcp_snapshot;

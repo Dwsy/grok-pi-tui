@@ -1,11 +1,9 @@
 //! Tool taxonomy — the harness-independent vocabulary, identity, and canonical
 //! `_meta` envelope.
 //!
-//! Depends only on `ToolKind`/`ToolNamespace` + `serde`/`serde_json` (no
-//! `ToolInput`, proto, or runtime). A future `xai-tool-taxonomy` leaf crate
-//! would need those two (dependency-free) enums moved here too — coherence ties
-//! the inherent impls to the enum definitions. The `ToolInput`-coupled
-//! projection lives in [`crate::normalization`].
+//! Uses canonical `ToolKind` and `ToolNamespace` from the lightweight types crate.
+//! Kind-level display/read-only behavior and schema live with their owning type
+//! in `xai-tool-types`; `ToolInput` projection stays in [`crate::normalization`].
 use crate::types::tool::{ToolKind, ToolNamespace};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -28,96 +26,6 @@ pub const TOOL_META_KEY: &str = "x.ai/tool";
 /// Version of the canonical tool `_meta` contract. Bump on any breaking change
 /// to keys or value shapes so consumers can adapt.
 pub const TOOL_META_VERSION: u32 = 1;
-impl ToolKind {
-    /// Unified, harness-independent display label for this semantic kind. A pure function of the kind, so equivalent tools
-    /// across toolsets share it (`read_file` and `Read` → `Read`; `run_terminal_cmd` and `Shell` → `Run Command`). Display
-    /// only; the model's tool name is `name` in `x.ai/tool`. Exhaustive, so a new `ToolKind` must add a label to compile.
-    pub fn presentation_name(self) -> &'static str {
-        match self {
-            ToolKind::Read => "Read",
-            ToolKind::Edit => "Edit",
-            ToolKind::Delete => "Delete",
-            ToolKind::Write => "Write",
-            ToolKind::Move => "Move",
-            ToolKind::ListDir => "List Files",
-            ToolKind::List => "List Files",
-            ToolKind::Search => "Search",
-            ToolKind::Lsp => "Code Intelligence",
-            ToolKind::Execute => "Run Command",
-            ToolKind::Plan => "Plan",
-            ToolKind::WebSearch => "Web Search",
-            ToolKind::WebFetch => "Web Fetch",
-            ToolKind::BackgroundTaskAction => "Background Task",
-            ToolKind::WaitTasksAction => "Wait for Tasks",
-            ToolKind::KillTaskAction => "Kill Task",
-            ToolKind::Skill => "Skill",
-            ToolKind::MemorySearch => "Memory Search",
-            ToolKind::MemoryGet => "Memory Read",
-            ToolKind::Task => "Subagent",
-            ToolKind::ActiveAgentMessage => "Send Subagent Message",
-            ToolKind::EnterPlan => "Enter Plan Mode",
-            ToolKind::ExitPlan => "Exit Plan Mode",
-            ToolKind::AskUser => "Ask User",
-            ToolKind::ImageGen => "Generate Image",
-            ToolKind::VideoGen => "Generate Video",
-            ToolKind::ImageToVideo => "Generate Video",
-            ToolKind::ReferenceToVideo => "Generate Video",
-            ToolKind::DeployApp => "Deploy App",
-            ToolKind::InitOrUpdateApp => "Init or Update App",
-            ToolKind::SearchTool => "Search Tools",
-            ToolKind::UseTool => "Use Tool",
-            ToolKind::Monitor => "Monitor",
-            ToolKind::GoalUpdate => "Update Goal",
-            ToolKind::Workflow => "Workflow",
-            ToolKind::Feedback => "Feedback",
-            ToolKind::Other => "Tool",
-        }
-    }
-    /// Whether this kind only reads (no workspace or external mutation) by default. The kind-level
-    /// default for `ToolMetadata::is_read_only`, which individual tools may override. Exhaustive
-    /// (no `_`) so a new kind must classify itself rather than silently defaulting to "mutating".
-    pub fn is_read_only(self) -> bool {
-        match self {
-            ToolKind::Read
-            | ToolKind::Search
-            | ToolKind::Lsp
-            | ToolKind::ListDir
-            | ToolKind::List
-            | ToolKind::MemorySearch
-            | ToolKind::MemoryGet
-            | ToolKind::WebSearch
-            | ToolKind::WebFetch
-            | ToolKind::EnterPlan
-            | ToolKind::ExitPlan
-            | ToolKind::AskUser => true,
-            ToolKind::Edit
-            | ToolKind::Delete
-            | ToolKind::Write
-            | ToolKind::Move
-            | ToolKind::Execute
-            | ToolKind::Plan
-            | ToolKind::BackgroundTaskAction
-            | ToolKind::WaitTasksAction
-            | ToolKind::KillTaskAction
-            | ToolKind::Skill
-            | ToolKind::Task
-            | ToolKind::ActiveAgentMessage
-            | ToolKind::ImageGen
-            | ToolKind::VideoGen
-            | ToolKind::ImageToVideo
-            | ToolKind::ReferenceToVideo
-            | ToolKind::DeployApp
-            | ToolKind::InitOrUpdateApp
-            | ToolKind::SearchTool
-            | ToolKind::UseTool
-            | ToolKind::Monitor
-            | ToolKind::GoalUpdate
-            | ToolKind::Workflow
-            | ToolKind::Feedback
-            | ToolKind::Other => false,
-        }
-    }
-}
 /// First-party tool wire names whose argument streams are long enough for a writing-phase spinner label to be visible (file bodies, edit
 /// strings, shell scripts, prompts), paired with their [`ToolKind`]. Public so clients can pin that every entry gets non-fallback display copy
 /// — a spelling added here without client copy would otherwise silently keep the raw-name fallback.
@@ -148,27 +56,6 @@ pub fn writing_tool_kind(wire_name: &str) -> Option<ToolKind> {
         .iter()
         .find(|(name, _)| *name == wire_name)
         .map(|&(_, kind)| kind)
-}
-impl schemars::JsonSchema for ToolKind {
-    fn schema_name() -> Cow<'static, str> {
-        "ToolKind".into()
-    }
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        use strum::IntoEnumIterator;
-        let known = Self::iter()
-            .filter_map(|k| serde_json::to_value(k).ok())
-            .filter_map(|v| v.as_str().map(|s| format!("`{s}`")))
-            .collect::<Vec<_>>()
-            .join(", ");
-        schemars::json_schema!({
-            "type": "string",
-            "description": format!(
-                "Categorizes what a tool does at a high level. Open set — consumers must \
-                 tolerate unknown values (Rust deserializes them to `other` via \
-                 `#[serde(other)]`). Known values: {known}."
-            ),
-        })
-    }
 }
 /// Canonical identity for a tool call, resolved from a tool's registered metadata by its
 /// client-facing wire name. Harness-independent. `tool_kind` is the authoritative

@@ -1220,7 +1220,7 @@ pub(crate) async fn spawn_session_actor(
                 },
                 mcp_server_names: mcp_servers
                     .iter()
-                    .map(|s| mcp_server_name(s).to_owned())
+                    .map(|s| crate::session::managed_mcp::mcp_server_name(s).to_owned())
                     .collect(),
                 lsp_server_names: tool_context.lsp_server_names.clone(),
                 memory_enabled: memory_config.as_ref().is_some_and(|config| config.enabled),

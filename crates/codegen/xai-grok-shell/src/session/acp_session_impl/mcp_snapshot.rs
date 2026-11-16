@@ -13,10 +13,6 @@ pub(super) fn init_cancelled_reason(
     }
 }
 pub(super) const MCP_STARTUP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
-pub(super) const DELIVERY_TOOLS_DEFAULT_PREFIX_WAIT: std::time::Duration =
-    std::time::Duration::from_secs(15);
-pub(super) const DELIVERY_TOOLS_TEMPLATED_PREFIX_WAIT: std::time::Duration =
-    std::time::Duration::from_secs(60);
 pub(super) const MCP_INIT_WAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Outcome of [`SessionActor::wait_for_mcp_handshakes_until`]; `GenerationChanged` tells the caller to restart against the current generation's deadline.

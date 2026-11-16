@@ -589,7 +589,9 @@ impl acp::Agent for MvpAgent {
                     // Only the stock agent advertises the original Grok MCP
                     // reverse-channel capability. Pi's own Eval MCP is separate.
                     #[cfg(feature = "stock-mcp")]
-                    capabilities[xai_grok_mcp::wire::MCP_SDK] = serde_json::Value::Bool(true);
+                    {
+                        capabilities[xai_grok_mcp::wire::MCP_SDK] = serde_json::Value::Bool(true);
+                    }
                     capabilities.as_object().cloned()
                 }),
         )

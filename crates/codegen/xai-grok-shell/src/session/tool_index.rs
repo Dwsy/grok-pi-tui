@@ -10,7 +10,7 @@ use xai_grok_tools::types::tool_index::{
     SearchSnapshot, ServerSummary, ToolSearchIndex, ToolSearchResult,
 };
 
-use super::mcp_servers::MCP_TOOL_NAME_DELIMITER;
+use xai_grok_workspace_types::MCP_TOOL_NAME_DELIMITER;
 
 /// Handles `__` (qualified-name delimiter), `_` (snake_case), `-` (kebab-case), and camelCase / PascalCase boundaries.
 fn split_identifier(s: &str) -> Vec<&str> {

@@ -3,6 +3,33 @@
 use super::*;
 use xai_grok_tools::types::skill_discovery_tracker::SkillUpdateKind;
 impl SessionActor {
+    /// Persist skill announcement state even in Pi-only builds without stock
+    /// MCP. The stock build additionally persists MCP server fingerprints.
+    pub(super) async fn persist_announcement_state(&self) {
+        let skill_names = self.tool_bridge_handle().get_announced_skill_names().await;
+        #[cfg(feature = "stock-mcp")]
+        let (mcp_server_fingerprints, announced_failed) = {
+            let announced = self.mcp_announcements.lock();
+            (
+                crate::session::announcement_state::to_persisted_fingerprints(
+                    &announced.fingerprints,
+                ),
+                announced.persisted_failed(),
+            )
+        };
+        #[cfg(not(feature = "stock-mcp"))]
+        let (mcp_server_fingerprints, announced_failed) = (Default::default(), Default::default());
+        let state = crate::session::announcement_state::AnnouncementState {
+            mcp_server_fingerprints,
+            announced_skill_names: skill_names,
+            announced_failed_servers: announced_failed,
+        };
+        let _ = self
+            .notifications
+            .persistence_tx
+            .send(PersistenceMsg::AnnouncementState(state));
+    }
+
     /// Summaries of the currently connected MCP servers, from the live tool-metadata snapshot.
     /// The single source for every consumer of the server list.
     pub(crate) fn connected_server_summaries(

@@ -981,6 +981,8 @@ impl SessionActor {
         } else {
             false
         };
+        #[cfg(not(feature = "stock-mcp"))]
+        let mcp_changed = false;
 
         #[cfg(feature = "stock-mcp")]
         xai_grok_telemetry::unified_log::info(
