@@ -42,7 +42,7 @@ pub struct ImageViewerState {
 
 pub fn decode_image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     // Unrestricted: accepts any format `image` recognises so paste previews don't fail for non-allow-listed types
-    xai_grok_tools::util::image_validate::validate_image_bytes_unrestricted(bytes, false)
+    xai_grok_image::validate_image_bytes_unrestricted(bytes, false)
         .ok()
         .map(|(w, h, _)| (w, h))
 }

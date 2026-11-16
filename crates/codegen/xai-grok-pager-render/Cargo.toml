@@ -70,7 +70,7 @@ xai-grok-config = { workspace = true }
 xai-grok-shared = { workspace = true }
 xai-grok-workspace = { workspace = true }
 xai-grok-telemetry = { workspace = true }
-xai-grok-tools = { workspace = true }
+xai-grok-image = { workspace = true }
 xai-grok-paths = { path = "../xai-grok-paths" }
 xai-grok-gboom = { path = "../xai-grok-gboom" }
 

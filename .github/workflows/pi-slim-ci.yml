@@ -89,6 +89,33 @@ jobs:
           "$bin" --help > /dev/null
           "$bin" --print-capabilities > /dev/null
 
+      - name: Check renderer no longer imports stock tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import tomllib
+
+          crate = pathlib.Path("crates/codegen/xai-grok-pager-render")
+          manifest = tomllib.loads((crate / "Cargo.toml").read_text())
+          assert "xai-grok-tools" not in manifest["dependencies"]
+          assert "xai-grok-image" in manifest["dependencies"]
+          for path in (crate / "src").rglob("*.rs"):
+              assert "xai_grok_tools::" not in path.read_text(), path
+          print("Renderer no longer directly imports stock Grok Tools")
+          PY
+
+      - name: Test renderer image-size presentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --profile release-dist \
+            -p xai-grok-pager-render --lib \
+            --target aarch64-apple-darwin \
+            util::tests::format_bytes_matches_stock_grok_binary_units \
+            -- --exact
+
       - name: Upload Cargo timings
         if: always()
         uses: actions/upload-artifact@v4

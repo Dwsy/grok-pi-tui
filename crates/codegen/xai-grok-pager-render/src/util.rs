@@ -5,7 +5,25 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub use xai_grok_config::grok_home;
-pub use xai_grok_tools::util::format_bytes;
+
+/// Human-readable binary-size formatter used by image overlays.
+///
+/// Keep the exact stock Grok presentation without pulling its entire tools
+/// runtime (PDF, cloud storage, and original agent tooling) into this renderer.
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    const UNITS: &[&str] = &["KB", "MB", "GB", "TB", "PB"];
+    let mut val = bytes as f64 / 1024.0;
+    for unit in UNITS {
+        if val < 1023.95 {
+            return format!("{val:.1} {unit}");
+        }
+        val /= 1024.0;
+    }
+    format!("{val:.1} EB")
+}
 
 /// A closed stdout (`grok du | head`) is a clean stop, not a failure.
 pub fn ignore_broken_pipe(result: std::io::Result<()>) -> std::io::Result<()> {
@@ -244,6 +262,25 @@ pub fn group_thousands(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_bytes_matches_stock_grok_binary_units() {
+        let cases = [
+            (0, "0 B"),
+            (1, "1 B"),
+            (1023, "1023 B"),
+            (1024, "1.0 KB"),
+            (1536, "1.5 KB"),
+            (1024 * 1024, "1.0 MB"),
+            (1024 * 1024 * 1024, "1.0 GB"),
+            (1024_u64.pow(4), "1.0 TB"),
+            (1024_u64.pow(5), "1.0 PB"),
+            (1024_u64.pow(6), "1.0 EB"),
+        ];
+        for (bytes, expected) in cases {
+            assert_eq!(format_bytes(bytes), expected, "bytes={bytes}");
+        }
+    }
 
     #[test]
     fn format_age_buckets_relative_to_now() {

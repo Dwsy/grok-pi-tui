@@ -253,7 +253,7 @@ fn open_writer(path: &Path) -> std::io::Result<BufWriter<File>> {
 /// It is also the target of the `/debug log` runtime toggle ([`super::mouse::MouseScrollState`]).
 pub(crate) fn default_log_path() -> PathBuf {
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    xai_grok_tools::util::grok_home::grok_home()
+    crate::util::grok_home()
         .join("logs")
         .join(format!("scroll-log-{ts}.jsonl"))
 }
