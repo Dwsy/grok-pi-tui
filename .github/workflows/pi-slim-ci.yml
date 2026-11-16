@@ -58,11 +58,22 @@ jobs:
             --no-default-features --features release-dist,sandbox-enforce \
             --target aarch64-apple-darwin -e normal,build \
             > "$RUNNER_TEMP/pi-dependencies.txt"
-          if grep -E 'tikv-jemalloc-(sys|ctl)|tikv-jemallocator|cryptify v[0-9]|pdf_oxide|aws-sdk-s3|aws-config|aws-smithy-http-client|gcloud-storage' "$RUNNER_TEMP/pi-dependencies.txt"; then
-            echo "Unexpected stock-only allocator, PDF, or cloud storage dependency in grok-pi" >&2
+          if grep -E 'tikv-jemalloc-(sys|ctl)|tikv-jemallocator|cryptify v[0-9]|pdf_oxide|aws-sdk-s3|aws-config|aws-smithy-http-client|gcloud-storage|xai-grok-mcp v[0-9]|rmcp v[0-9]|xai-computer-hub-mcp-adapter v[0-9]' "$RUNNER_TEMP/pi-dependencies.txt"; then
+            echo "Unexpected stock-only allocator, PDF, cloud storage, or Grok MCP runtime in grok-pi" >&2
             exit 1
           fi
-          echo "Verified: no stock jemalloc, cryptify, pdf_oxide, AWS SDK, or gcloud-storage compile dependencies"
+          echo "Verified: no stock jemalloc, cryptify, PDF, cloud SDK, or Grok MCP compile dependencies"
+
+      - name: Assert stock Grok still selects native MCP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo tree --locked -p xai-grok-pager-bin \
+            --features stock-mcp \
+            --target aarch64-apple-darwin -e normal,build \
+            > "$RUNNER_TEMP/stock-grok-dependencies.txt"
+          grep -E 'xai-grok-mcp v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
+          grep -E 'rmcp v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
 
       - name: Check Workspace builds without stock MCP
         shell: bash

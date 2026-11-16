@@ -135,3 +135,16 @@ Shell 的关键耦合包括：
 更完整的历史瘦身清单、基线时间与每项实现坐标，见同目录 `20261116-grok-pi-Pi-only编译闭包拆除路线图.md`。
 
 **交接结论**：现在应推进 **Shell 的真实编译边界**，而不是继续拆无状态 helper；只有 Pi target-specific Cargo tree 明确不含 `xai-grok-mcp` / `rmcp`，才可以把 Grok MCP 项目标记为“拆除完成”。
+
+## 8. 增量进度：S08a-12（2026-11-16，待编译）
+
+**此节记录原快照 `4d4ee673` 之后新增的拆分，不改变上面的历史证据。**
+
+1. **Cargo 编译特性**：Shell 的 `xai-grok-mcp` 改为 `optional`，由 `stock-mcp` 启用，并转发给 Workspace。Cargo 根 workspace 引用 Shell 时关闭其默认依赖特性；Bin、Pager、Minimal Renderer、Update 分别设置显式的 stock 转发链，原版 Grok 默认依旧启用 `stock-mcp`，Pi 的 `--no-default-features --features release-dist,sandbox-enforce` 不开启。
+2. **静态 Cargo manifest 图**：模拟常规/build 依赖及默认特性传播时，Pi 配置可达 **90 个本地 crate**、不包含 `xai-grok-mcp`；stock 默认配置可达 **92 个本地 crate**，仍包含 `xai-grok-mcp`。**这是非 Cargo 的静态求解，不是实际 target-specific `cargo tree`，不能作为“构建已成功”证据**。
+3. **源码编译门控**：Shell `mcp_doctor`、`extensions::mcp`、`session::mcp_*`、managed MCP 及相关 ACP 子模块改成 stock-only；`SessionCommand` 的 12 类 MCP 专属变体、事件循环处理、`SessionHandle` 对应接口增加统一特性门控。Pager 的原版 `mcp` CLI 命令只保留在 stock 构建。原版 ACP 初始化的 MCP 能力仅在 stock 开启。
+4. **集中 CI 验收断言**：手动 ARM64 流程已同时要求 Pi 缺席 `xai-grok-mcp`/`rmcp`/MCP Bridge，原版 Grok 包含 `xai-grok-mcp` 与 `rmcp`；**尚未触发**。
+
+**S08a-12 仍未完成的实质阻塞**：`xai-grok-shell::session::acp_session` 仍有直接的 `McpState`、`McpInitStrategy` 和 managed MCP 字段/初始化；`acp_session_impl/run_loop.rs` 仍有 MCP startup/dispatcher 任务；部分 Agent/Session 模块仍非条件引用 MCP API。因此**无 MCP 的 Shell 源码尚未被证明能通过 Rust 编译**。不要用上面的 manifest 结果宣告产品完工，也不要为了掩盖类型问题而增加假的 MCP stub。
+
+**约束不变**：不修改 Workflow 实现；不删除 Pi Eval MCP；不改 Pi 源码；不运行逐提交 Cargo/CI、不自动发布。
