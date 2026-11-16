@@ -2,16 +2,23 @@
 
 use std::fmt::Write as _;
 
+#[cfg(feature = "stock-pdf")]
 use base64::Engine as _;
+#[cfg(feature = "stock-pdf")]
 use base64::engine::general_purpose;
 
-use crate::types::output::{FileContent, PdfPageImage, PdfPageImages, ReadFileOutput};
+use crate::types::output::{FileContent, ReadFileOutput};
+#[cfg(feature = "stock-pdf")]
+use crate::types::output::{PdfPageImage, PdfPageImages};
 
 use super::metadata::{bytes_to_metadata, is_pdf_magic};
 
 pub const MAX_PDF_BYTES: usize = 50 * 1024 * 1024;
+#[cfg(feature = "stock-pdf")]
 const PDF_AUTO_READ_THRESHOLD: usize = 10;
+#[cfg(feature = "stock-pdf")]
 const PDF_RENDER_DPI: u32 = 150;
+#[cfg(feature = "stock-pdf")]
 const PDF_RENDER_JPEG_QUALITY: u8 = 85;
 pub const PDF_PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -76,6 +83,7 @@ where
     }
 }
 
+#[cfg(feature = "stock-pdf")]
 pub(crate) async fn handle_pdf(
     file_bytes: Vec<u8>,
     path: &std::path::Path,
@@ -109,6 +117,21 @@ pub(crate) async fn handle_pdf(
         },
     )
     .await
+}
+
+/// Pi-only builds do not instantiate the stock PDF renderer. Pi's read tool
+/// executes in the separate Pi process; retain an explicit diagnostic for any
+/// accidental stock read-file invocation instead of silently ignoring it.
+#[cfg(not(feature = "stock-pdf"))]
+pub(crate) async fn handle_pdf(
+    _file_bytes: Vec<u8>,
+    _path: &std::path::Path,
+    _pages: Option<String>,
+    _format: Option<&str>,
+) -> Result<ReadFileOutput, xai_tool_runtime::ToolError> {
+    Ok(ReadFileOutput::FileReadError(
+        "Stock PDF rendering is not included in the Pi-only build".to_string(),
+    ))
 }
 
 /// Parse a page range specification into sorted, deduplicated 0-based page indices.
@@ -175,6 +198,7 @@ pub fn parse_page_range(spec: &str, page_count: usize) -> Result<Vec<usize>, Str
     Ok(pages)
 }
 
+#[cfg(feature = "stock-pdf")]
 fn open_pdf_document(bytes: Vec<u8>) -> Result<(pdf_oxide::PdfDocument, usize), String> {
     let doc = pdf_oxide::PdfDocument::from_bytes(bytes)
         .map_err(|e| format!("Failed to open PDF: {e}"))?;
@@ -190,6 +214,7 @@ fn open_pdf_document(bytes: Vec<u8>) -> Result<(pdf_oxide::PdfDocument, usize), 
     Ok((doc, page_count))
 }
 
+#[cfg(feature = "stock-pdf")]
 fn open_pdf_and_resolve_pages(
     bytes: Vec<u8>,
     pages_spec: Option<&str>,
@@ -214,6 +239,7 @@ fn open_pdf_and_resolve_pages(
     Ok((doc, page_count, page_indices))
 }
 
+#[cfg(feature = "stock-pdf")]
 pub(crate) fn render_pdf_pages(
     bytes: Vec<u8>,
     pages_spec: Option<&str>,
@@ -266,11 +292,13 @@ pub fn raw_text_to_file_content(text: String) -> ReadFileOutput {
     })
 }
 
+#[cfg(feature = "stock-pdf")]
 enum PageTextStyle {
     GrokBuild,
     Cursor { total_pages: usize },
 }
 
+#[cfg(feature = "stock-pdf")]
 fn append_page_body(text: &mut String, doc: &pdf_oxide::PdfDocument, page_idx: usize) {
     match doc.extract_text(page_idx) {
         Ok(page_text) => text.push_str(&page_text),
@@ -285,6 +313,7 @@ fn append_page_body(text: &mut String, doc: &pdf_oxide::PdfDocument, page_idx: u
     }
 }
 
+#[cfg(feature = "stock-pdf")]
 fn extract_page_texts(
     doc: &pdf_oxide::PdfDocument,
     page_indices: &[usize],
@@ -313,6 +342,7 @@ fn extract_page_texts(
     Ok(text)
 }
 
+#[cfg(feature = "stock-pdf")]
 fn extract_pdf_plain_text(bytes: Vec<u8>, style: PageTextStyle) -> Result<String, String> {
     let (doc, page_count) = open_pdf_document(bytes)?;
     let page_indices: Vec<usize> = (0..page_count).collect();
@@ -326,16 +356,23 @@ fn extract_pdf_plain_text(bytes: Vec<u8>, style: PageTextStyle) -> Result<String
 }
 
 /// Extract plain text from all PDF pages (no auto-read page limit).
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-pdf"))]
 pub(crate) fn extract_pdf_plain_text_all(bytes: Vec<u8>) -> Result<String, String> {
     extract_pdf_plain_text(bytes, PageTextStyle::GrokBuild)
 }
 
 /// Plain text from all PDF pages in the `Read` format.
+#[cfg(feature = "stock-pdf")]
 pub fn extract_pdf_plain_text_cursor(bytes: Vec<u8>) -> Result<String, String> {
     extract_pdf_plain_text(bytes, PageTextStyle::Cursor { total_pages: 0 })
 }
 
+#[cfg(not(feature = "stock-pdf"))]
+pub fn extract_pdf_plain_text_cursor(_bytes: Vec<u8>) -> Result<String, String> {
+    Err("Stock PDF text extraction is not included in the Pi-only build".to_string())
+}
+
+#[cfg(feature = "stock-pdf")]
 pub(crate) fn extract_pdf_text(
     bytes: Vec<u8>,
     pages_spec: Option<&str>,
@@ -427,7 +464,7 @@ pub fn make_test_pdf(page_texts: &[&str]) -> Vec<u8> {
     pdf
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-pdf"))]
 mod tests {
     use super::*;
 

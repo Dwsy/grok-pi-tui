@@ -14,13 +14,13 @@ xai-circuit-breaker = { workspace = true }
 xai-grok-version = { workspace = true }
 aws-sdk-s3 = { version = "1", default-features = false, features = [
     "rt-tokio",
-] }
+], optional = true }
 aws-config = { version = "1", default-features = false, features = [
     "rt-tokio",
     "sso",
     "credentials-process",
-] }
-aws-smithy-http-client = { version = "1", features = ["rustls-ring"] }
+], optional = true }
+aws-smithy-http-client = { version = "1", features = ["rustls-ring"], optional = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -37,7 +37,7 @@ sha2 = { workspace = true, features = ["force-soft"] }
 xai-grok-auth = { path = "../xai-grok-auth", features = ["middleware"] }
 prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" }
 async-compression = { workspace = true, features = ["tokio"] }
-gcloud-storage = { workspace = true }
+gcloud-storage = { workspace = true, optional = true }
 reflink-copy = { workspace = true }
 xai-grok-otel = { workspace = true }
 url = { workspace = true }
@@ -48,6 +48,11 @@ zstd.workspace = true
 
 [features]
 default-bazel = []
+# Only the stock Grok S3 backend needs the large AWS SDK dependency tree.
+stock-s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:aws-smithy-http-client"]
+# The native GCS service-account upload path is stock-only; the lightweight
+# proxy storage client remains available in both builds.
+stock-gcs = ["dep:gcloud-storage"]
 
 
 [dev-dependencies]

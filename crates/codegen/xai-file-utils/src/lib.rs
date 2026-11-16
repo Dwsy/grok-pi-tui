@@ -18,6 +18,10 @@ pub fn with_auth_retry(
 }
 pub mod gcs;
 pub mod queue;
+#[cfg(feature = "stock-s3")]
+pub mod s3;
+#[cfg(not(feature = "stock-s3"))]
+#[path = "s3_disabled.rs"]
 pub mod s3;
 pub mod storage_client;
 pub mod upload_config;

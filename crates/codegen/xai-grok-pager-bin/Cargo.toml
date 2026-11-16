@@ -106,14 +106,23 @@ default = [
     "jemalloc",
     "sandbox-enforce",
     "stock-obfuscation",
+    "stock-pdf",
+    "stock-s3",
+    "stock-gcs",
     ]
 default-bazel = [
     "jemalloc",
     "sandbox-enforce",
     "local-workspace",
     "stock-obfuscation",
+    "stock-pdf",
+    "stock-s3",
+    "stock-gcs",
     ]
 stock-obfuscation = ["dep:cryptify"]
+stock-pdf = ["xai-grok-shell/stock-pdf"]
+stock-s3 = ["xai-grok-shell/stock-s3"]
+stock-gcs = ["xai-grok-shell/stock-gcs"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
 # xai-grok-workspace no longer enables sandbox-enforce by default, so enable it here.
 sandbox-enforce = ["xai-grok-pager/sandbox-enforce", "xai-grok-workspace/sandbox-enforce"]

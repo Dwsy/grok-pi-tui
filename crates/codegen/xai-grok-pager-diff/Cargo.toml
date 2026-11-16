@@ -9,9 +9,8 @@ description = "Diff hunk construction for the Grok Build TUI"
 [dependencies]
 # Line-level diffing (`TextDiff`) and the `ChangeTag` carried by every hunk line.
 similar = { workspace = true }
-# `SearchReplaceEditDetail` / `SearchReplaceOutput`: the edit-tool output shapes
-# the hunk builder reads.
-xai-grok-tools = { workspace = true }
+# Wire-safe edit detail data only; no stock Grok tool implementation closure.
+xai-tool-types = { workspace = true }
 # ACP `ToolCall` inspection for `extract_edit_hunks`.
 agent-client-protocol = { workspace = true }
 # Parsing `raw_output` / `Diff.meta` JSON payloads on ACP tool calls.

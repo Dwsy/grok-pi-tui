@@ -36,7 +36,7 @@ infer = { workspace = true }
 globset = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
 kamadak-exif = { workspace = true, optional = true }
-pdf_oxide = { workspace = true }
+pdf_oxide = { workspace = true, optional = true }
 # PPTX text extraction (implementations/read_file/pptx.rs). Deliberately NOT
 # `workspace = true`: the workspace `zip` pin has default features on, which
 # drag aes/bzip2/lzma/zstd into the shipped pager binary. PPTX entries are
@@ -131,4 +131,6 @@ workspace = true
 default-bazel = ["serde"]
 default = ["serde"]
 serde = []
+# Stock Grok's read_file PDF renderer; the Pi agent owns its own read tool.
+stock-pdf = ["dep:pdf_oxide"]
 dhat-heap = ["dep:dhat"]

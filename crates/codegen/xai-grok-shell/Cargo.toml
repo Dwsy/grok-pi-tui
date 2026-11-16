@@ -5,6 +5,9 @@ version = "1.0.24"
 edition.workspace = true
 
 [features]
+stock-pdf = ["xai-grok-tools/stock-pdf"]
+stock-s3 = ["xai-file-utils/stock-s3"]
+stock-gcs = ["xai-file-utils/stock-gcs"]
 default = []
 dhat-heap = ["dep:dhat"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
@@ -100,7 +103,6 @@ rustls = { version = "0.23", default-features = false, features = [
 futures-util = { workspace = true }
 urlencoding = { workspace = true }
 gethostname = { workspace = true }
-gcloud-storage = { workspace = true }
 git2 = { version = "0.20", default-features = false, features = [
     "vendored-libgit2",
 ] }

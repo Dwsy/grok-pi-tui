@@ -14299,7 +14299,7 @@ dependencies = [
  "serde_json",
  "similar",
  "tracing",
- "xai-grok-tools",
+ "xai-tool-types",
 ]
 
 [[package]]
@@ -14396,11 +14396,11 @@ dependencies = [
  "xai-dirs",
  "xai-grok-config",
  "xai-grok-gboom",
+ "xai-grok-image",
  "xai-grok-markdown",
  "xai-grok-paths",
  "xai-grok-shared",
  "xai-grok-telemetry",
- "xai-grok-tools",
  "xai-grok-workspace",
  "xai-ratatui-inline",
  "xai-ratatui-textarea",
@@ -14612,7 +14612,6 @@ dependencies = [
  "fs2",
  "futures",
  "futures-util",
- "gcloud-storage",
  "gethostname",
  "git2",
  "glob",

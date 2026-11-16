@@ -2336,6 +2336,7 @@ pub fn verify(req: &HttpRequest) -> Result<Claims, Error> {
     }
     /// PDF `format="text"` returns `FileContent` yet must NOT stream (returns
     /// before the text path; PPTX shares the same early-return shape).
+    #[cfg(feature = "stock-pdf")]
     #[tokio::test]
     async fn read_file_pdf_text_path_is_terminal_only() {
         let tmp = TempDir::new().unwrap();
@@ -2362,6 +2363,7 @@ pub fn verify(req: &HttpRequest) -> Result<Claims, Error> {
     }
     /// PDF read with the default (image) format renders to `PdfPageImages` — a
     /// single non-incremental result, so it must not stream.
+    #[cfg(feature = "stock-pdf")]
     #[tokio::test]
     async fn read_file_pdf_image_path_is_terminal_only() {
         let tmp = TempDir::new().unwrap();
@@ -2388,6 +2390,7 @@ pub fn verify(req: &HttpRequest) -> Result<Claims, Error> {
     }
     /// Regression: a concurrent text read must not make a PDF-text read on
     /// the same `Resources` stream (streamability is call-local).
+    #[cfg(feature = "stock-pdf")]
     #[tokio::test]
     async fn read_file_concurrent_text_and_pdf_text_do_not_cross_talk() {
         let tmp = TempDir::new().unwrap();

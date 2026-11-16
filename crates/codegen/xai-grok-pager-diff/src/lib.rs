@@ -5,7 +5,7 @@
 //! [`DiffHunk`]s that the pager renders, and back into unified-diff text.
 
 use similar::{ChangeTag, TextDiff};
-use xai_grok_tools::types::output::SearchReplaceEditDetail;
+use xai_tool_types::{SearchReplaceEditContextInformation, SearchReplaceEditDetail};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffLine {
@@ -315,29 +315,34 @@ fn stitch_hunk_pair(a: &DiffHunk, b: &DiffHunk) -> Option<DiffHunk> {
 ///
 /// Returns `(hunks, edit_count)`.
 pub fn extract_edit_hunks(tc: &agent_client_protocol::ToolCall) -> (Vec<DiffHunk>, usize) {
-    use xai_grok_tools::types::output::{
-        SearchReplaceEditContextInformation, SearchReplaceOutput, ToolOutput,
-    };
-
-    // Strategy 1: structured edit details from raw_output (via ToolOutput wrapper)
-    if let Some(raw) = &tc.raw_output {
-        match serde_json::from_value::<ToolOutput>(raw.clone()) {
-            Ok(ToolOutput::SearchReplace(SearchReplaceOutput::EditsApplied(edits))) => {
-                let hunks = build_diff_hunks(&edits.edits.details);
+    // Strategy 1: use only the SearchReplace JSON contract, not the entire
+    // stock ToolOutput enum (which pulls PDF/cloud/agent tool implementations
+    // into the native UI's dependency graph).
+    //
+    // Stock wire shape: {"type":"SearchReplace",
+    //                    "EditsApplied":{"edits":{"details":[...]}}}
+    if let Some(raw) = &tc.raw_output
+        && raw.get("type").and_then(serde_json::Value::as_str) == Some("SearchReplace")
+        && let Some(applied) = raw.get("EditsApplied")
+    {
+        match applied
+            .get("edits")
+            .cloned()
+            .map(serde_json::from_value::<SearchReplaceEditContextInformation>)
+        {
+            Some(Ok(edits)) => {
+                let hunks = build_diff_hunks(&edits.details);
                 let count = hunks.len().max(1);
                 return (hunks, count);
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 tracing::warn!(
                     tool_call_id = %tc.tool_call_id.0,
                     error_kind = ?e.classify(),
-                    "extract_edit_hunks: raw_output failed to deserialize as ToolOutput, \
-                     falling back to Diff.meta"
+                    "extract_edit_hunks: malformed SearchReplace edit details; falling back to Diff.meta"
                 );
             }
-            _ => {
-                // raw_output is a different ToolOutput variant (not SearchReplace::EditsApplied)
-            }
+            None => {}
         }
     }
 
@@ -1040,37 +1045,22 @@ mod tests {
     fn extract_edit_hunks_from_raw_output() {
         use agent_client_protocol as acp;
         use std::sync::Arc;
-        use xai_grok_tools::types::output::{
-            SearchReplaceEditContextInformation, SearchReplaceEditsApplied, SearchReplaceOutput,
-            ToolOutput,
-        };
-
-        let edits_applied = SearchReplaceEditsApplied {
-            old_string: "let x = 1;".to_string(),
-            new_string: "let x = 2;".to_string(),
-            tool_output_for_prompt: String::new(),
-            tool_output_for_prompt_concise: None,
-            absolute_path: "/tmp/test.rs".into(),
-            edits: SearchReplaceEditContextInformation {
-                details: vec![SearchReplaceEditDetail {
-                    old_string: "let x = 1;".to_string(),
-                    new_string: "let x = 2;".to_string(),
-                    old_line: 5,
-                    new_line: 5,
-                    context_before: "fn main() {".to_string(),
-                    context_after: "}".to_string(),
-                    line_prefix: String::new(),
-                }],
-            },
-            patch: None,
-            unicode_normalized: false,
-        };
-
-        // Wrap in ToolOutput::SearchReplace — matches production rawOutput format
-        let raw_output = serde_json::to_value(ToolOutput::SearchReplace(
-            SearchReplaceOutput::EditsApplied(edits_applied),
-        ))
-        .unwrap();
+        // Match the exact stock wire shape, without linking stock ToolOutput
+        // just for a native UI unit test.
+        let raw_output = serde_json::json!({
+            "type": "SearchReplace",
+            "EditsApplied": {
+                "edits": {"details": [{
+                    "old_string": "let x = 1;",
+                    "new_string": "let x = 2;",
+                    "old_line": 5,
+                    "new_line": 5,
+                    "context_before": "fn main() {",
+                    "context_after": "}",
+                    "line_prefix": ""
+                }]}
+            }
+        });
 
         let tc = acp::ToolCall::new(
             acp::ToolCallId::new(Arc::from("tc1")),
@@ -1142,7 +1132,6 @@ mod tests {
         // (acp_conversion embeds SearchReplaceEditContextInformation).
         use agent_client_protocol as acp;
         use std::sync::Arc;
-        use xai_grok_tools::types::output::SearchReplaceEditContextInformation;
 
         let edits = SearchReplaceEditContextInformation {
             details: vec![SearchReplaceEditDetail {

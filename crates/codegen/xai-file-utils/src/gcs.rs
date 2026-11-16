@@ -366,6 +366,7 @@ where
 }
 
 /// Stream an async reader directly to GCS via the gcloud-storage client.
+#[cfg(feature = "stock-gcs")]
 async fn upload_stream_direct<R: tokio::io::AsyncRead + Send + Sync + 'static>(
     bucket: &str,
     object_path: &str,
@@ -392,6 +393,17 @@ async fn upload_stream_direct<R: tokio::io::AsyncRead + Send + Sync + 'static>(
         .with_context(|| format!("Failed to upload to gs://{}/{}", bucket, object_path))?;
 
     Ok(format!("gs://{}/{}", bucket, object_path))
+}
+
+#[cfg(not(feature = "stock-gcs"))]
+async fn upload_stream_direct<R: tokio::io::AsyncRead + Send + Sync + 'static>(
+    _bucket: &str,
+    _object_path: &str,
+    _reader: R,
+    _content_type: &str,
+    _service_account_key: Option<&str>,
+) -> anyhow::Result<String> {
+    anyhow::bail!("Stock direct GCS upload is not included in the Pi-only build")
 }
 
 /// Upload a file through the cli-chat-proxy, choosing multipart vs streaming based on size.
@@ -457,6 +469,7 @@ async fn upload_file_via_proxy(
 }
 
 /// Build a GCS client with optional service account key, or default ADC.
+#[cfg(feature = "stock-gcs")]
 async fn build_gcs_client(
     service_account_key: Option<&str>,
 ) -> anyhow::Result<gcloud_storage::client::Client> {
@@ -482,6 +495,7 @@ async fn build_gcs_client(
 }
 
 /// Upload a file directly to GCS by streaming from disk.
+#[cfg(feature = "stock-gcs")]
 async fn upload_file_direct(
     bucket: &str,
     object_path: &str,
@@ -517,7 +531,19 @@ async fn upload_file_direct(
     Ok(format!("gs://{}/{}", bucket, object_path))
 }
 
+#[cfg(not(feature = "stock-gcs"))]
+async fn upload_file_direct(
+    _bucket: &str,
+    _object_path: &str,
+    _file_path: &Path,
+    _content_type: &str,
+    _service_account_key: Option<&str>,
+) -> anyhow::Result<String> {
+    anyhow::bail!("Stock direct GCS upload is not included in the Pi-only build")
+}
+
 /// Uploads bytes directly to GCS using the gcloud-storage client.
+#[cfg(feature = "stock-gcs")]
 async fn upload_bytes_direct(
     bucket: &str,
     object_path: &str,
@@ -544,6 +570,17 @@ async fn upload_bytes_direct(
 
     // Return the full GCS URL
     Ok(format!("gs://{}/{}", bucket, object_path))
+}
+
+#[cfg(not(feature = "stock-gcs"))]
+async fn upload_bytes_direct(
+    _bucket: &str,
+    _object_path: &str,
+    _content: &[u8],
+    _content_type: &str,
+    _service_account_key: Option<&str>,
+) -> anyhow::Result<String> {
+    anyhow::bail!("Stock direct GCS upload is not included in the Pi-only build")
 }
 
 /// Uploads bytes via the cli-chat-proxy storage proxy API.
