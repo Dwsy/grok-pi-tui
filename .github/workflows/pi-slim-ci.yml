@@ -13,12 +13,14 @@ on:
         options:
           - macos-15-intel
           - macos-15
+          - macos-26
 
 permissions:
   contents: read
 
 concurrency:
-  group: pi-slim-${{ github.ref }}
+  # Intel cross-checks must not prevent a native ARM64 candidate from starting.
+  group: pi-slim-${{ github.ref }}-${{ inputs.runner }}
   cancel-in-progress: false
 
 jobs:

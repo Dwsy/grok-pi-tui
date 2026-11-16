@@ -6,7 +6,8 @@ Pi-only 瘦身分支 `refactor/pi-slim-20261116` 的测试产物只通过显式�
 
 ## 生产候选包闸门
 
-选择 `runner=macos-15`（原生 Apple Silicon），流水线会运行：
+选择 `runner=macos-15` 或 `runner=macos-26`（均为原生 Apple Silicon），
+流水线会运行：
 
 1. Pi-only / stock Grok 的依赖闭包断言；Workspace、Shell / 测试模块的编译检查。
 2. ARM64 `release-dist` 二进制构建、`--version`、`--help`、能力清单的真实执行。
@@ -34,7 +35,7 @@ GitHub 标准 `macos-15` ARM64 M1 runner 的资源较紧张。流水线将
 gh workflow run pi-slim-ci.yml \
   --repo Dwsy/grok-pi-tui \
   --ref refactor/pi-slim-20261116 \
-  -f runner=macos-15
+  -f runner=macos-26
 
 gh run list --repo Dwsy/grok-pi-tui \
   --workflow pi-slim-ci.yml --limit 3
