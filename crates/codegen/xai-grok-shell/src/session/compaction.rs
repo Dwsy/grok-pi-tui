@@ -1845,6 +1845,7 @@ impl SessionActor {
             .tool_bridge()
             .on_skill_discovery_compaction()
             .await;
+        #[cfg(feature = "stock-mcp")]
         self.rearm_failed_server_announcements().await;
         self.plan_mode.lock().reset_after_compaction();
         self.persist_plan_mode_state();

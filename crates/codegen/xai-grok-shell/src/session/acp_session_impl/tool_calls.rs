@@ -540,6 +540,7 @@ impl SessionActor {
             let conversation = self.chat_state_handle.get_conversation().await;
             super::refresh_classifier_transcript(&self.permissions, &conversation);
         }
+        #[cfg(feature = "stock-mcp")]
         let mcp_surface_requested = tool_calls.iter().any(|c| {
             c.function.name == "search_tool"
                 || c.function.name == "use_tool"
@@ -635,9 +636,11 @@ impl SessionActor {
                 }
             }
         }
+        #[cfg(feature = "stock-mcp")]
         if approved.iter().any(|p| p.tool_name == "search_tool") {
             self.retry_auth_required_servers().await;
         }
+        #[cfg(feature = "stock-mcp")]
         if mcp_surface_requested {
             self.retry_unreachable_servers().await;
         }

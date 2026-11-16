@@ -416,6 +416,7 @@ impl SessionActor {
 
             // The rewind may have dropped failed-server reminders with the truncated turns, so still-down servers must re-announce
             // See rearm_failed_server_announcements for why connected fingerprints stay latched
+            #[cfg(feature = "stock-mcp")]
             self.rearm_failed_server_announcements().await;
 
             // Append a RewindMarker to updates.jsonl so replay can handle a branched timeline (updates.jsonl is append-only)
