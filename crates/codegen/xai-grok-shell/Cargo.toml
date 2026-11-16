@@ -259,6 +259,10 @@ harness = false
 # is the package wildcard). Process-isolated suites stay as implicit
 # `tests/*.rs` binaries.
 [[test]]
+name = "test_mcp_doctor_isolation"
+required-features = ["stock-mcp"]
+
+[[test]]
 name = "test_startup_prefetch_fallback"
 required-features = ["test-support"]
 
