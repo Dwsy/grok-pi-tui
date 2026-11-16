@@ -128,6 +128,17 @@ jobs:
           cargo test --locked -p xai-grok-pager-diff --lib \
             --target aarch64-apple-darwin
 
+      - name: Test shared contracts after dependency inversion
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Includes migrated MemoryBackend staleness tests, TaskKind, ToolKind,
+          # Claude tool alias registry, ClientType wire values and config types.
+          cargo test --locked --lib \
+            -p xai-tool-types -p xai-grok-workspace-types \
+            -p xai-grok-config-types \
+            --target aarch64-apple-darwin
+
       - name: Test renderer image-size presentation
         shell: bash
         run: |

@@ -77,6 +77,9 @@ stock-grok (separate build feature, unchanged behavior)
 | **S08a-3 本批已改待编译** | `xai-grok-login` 的 API key provider 上移 `xai-tool-types`，工具 401 归因契约上移 `xai-grok-auth`，进程分离直连 `xai-tty-utils` | Login 的源码和 manifest 不再直接依赖完整 Tools，原 Tools API 通过 re-export 保持可用 | 中 |
 | **S08a-4 本批已改待编译** | Pi Adapter 的 Eval 配置只读直接使用 `xai-grok-config` | 去掉一处对 Shell 的磁盘配置 re-export 使用，保留远端 campaign-aware 的其它 Shell 配置调用 | 低 |
 | **S08a-5 本批已改待编译** | 将 `ToolKind` 和唯一的 Claude↔Grok 别名注册表迁入 `xai-tool-types`；`xai-grok-hooks` 改为直接使用它及 `xai-tty-utils` | Hooks manifest 不再直接依赖 Tools，工具分类、匹配别名和 stock 原公共路径都保留 | 中 |
+| **S08a-6 本批已改待编译** | `MemoryBackend`、`MemoryV2Access`／`MemoryV2Write` 和 UTF-8 截断契约移入 `xai-tool-types`；Memory 改为只依赖纯类型；资源容器接线留在 stock Tools | Memory 的生产 manifest 不再直接依赖 Tools；工具资源容器集成测试仍有显式 **dev-dependency** | 中 |
+| **S08a-7 本批已改待编译** | `ClientType` 从 Workspace Permission 移入 `xai-grok-workspace-types`，HTTP 直接依赖轻量 wire 类型，旧 Workspace API re-export | `xai-grok-http` 移除完整 Workspace 的生产依赖；原客户端标识、serde 别名、User-Agent 标签不变 | 低～中 |
+| **S08a-8 本批已改待编译** | `McpOAuthConfig` 从 MCP 运行时移到 `xai-grok-config-types`；MCP SDK 保留旧路径 re-export；依赖边变为 MCP → Config Types | Config Types 不再为单个 OAuth 值类型引入完整 MCP/工具链；消除逆依赖方向 | 中 |
 | S08b | Pager 的 `external-backend` 与 `stock-agent` **编译期**隔离；从 `lib.rs`、App reducer、Slash、Settings、session/view 逐块分层 | Pi 下 `xai-grok-pager` 编译入口不依赖 Shell 的 Agent 运行时 | 高 |
 | S08c | `pi-grok-adapter` 的 Shell config / workflow host / session 枚举等从具体 Shell 实现改为精简 host 接口；必须保持 Pi 主导执行 | Adapter 不再直接链接 `xai-grok-shell`；API / workflow 行为不回归 | 高 |
 | S08d | 完全去除 Pi 对 stock Tools、Shell agent loop 的编译依赖：继续裁 Grok Auth、采样器、MCP、Workflow 的真实可达路径 | `cargo tree` 证实剩余 stock Agent 后端不再可达；需要按边界小批量推进 | 高 |
@@ -94,6 +97,8 @@ stock-grok (separate build feature, unchanged behavior)
 - 本批新增的认证边界拆除使 `xai-grok-login` 不再直接依赖 Tools；类型身份通过 `xai-grok-tools::{types,attribution}` 对同一个公共类型 re-export 保持一致。Login 的其它依赖可能通过间接路径继续引用 Tools，需最终用 Cargo tree 证明闭包变化。
 - `ToolKind` 的完整枚举与现有单一 Claude↔Grok 别名表共同迁移到 `xai-tool-types`，避免 Hooks 和 Agent Builder 持有两份可能漂移的工具映射；`xai-grok-tools::types::tool::ToolKind` 与 `types::claude_alias` 保留 re-export。ToolKind 的 serde、strum 以及别名表内原有测试需要批量验收。
 - 本轮静态 Cargo manifest 排查后仍直接依赖 Tools 的 8 个 crate 为：`xai-grok-agent`、`xai-grok-mcp`、`xai-grok-memory`、`xai-grok-pager`、`xai-grok-shell-terminal`、`xai-grok-shell`、`xai-grok-subagent-resolution`、`xai-grok-workspace`。其中 Memory 的 `MemoryBackend`/`MemoryV2Access` 是 Login → Tools 的剩余间接路径；Terminal 还需要 `TerminalBackend`、`ToolNotificationHandle`、`BashOutput` 等接口。不要声称 Login 或 Hooks 的直接去依赖已经让整个 Pi 构建闭包不含 Tools。
+- **S08a-6–8 之后的增量证据**：静态正常/构建依赖 BFS（排除 `dev-dependencies`，仍包含目标相关性未知的 manifest 边）已验证 `xai-grok-memory`、`xai-grok-login`、`xai-grok-http`、`xai-grok-config-types`、`xai-grok-hooks` **均无 Grok Tools 可达路径**。这是静态 manifest 图，不是 target-specific Cargo tree；先前“8 个直接依赖”状态已过时，Memory 现在仅在一个旧资源容器集成测试中保留 Tools dev dependency。
+- **MCP 尚不能直接断开 Tools**：其 `McpErasedTool` 实现 stock `ToolMetadata`，返回 `ToolOutput::MCP` 等实际运行时类型，并不只是 `McpElicit` wire 数据；不能为了 Graph 好看而复制假的 ToolMetadata。**Pager 仍直接引用 Tools 和 Shell，Pi Adapter 仍经 Workflow 引入 Shell。**
 - `pdf_oxide` 只在 `xai-grok-tools` 的 stock PDF 路径使用；`aws-sdk-s3` / `aws-config` / `aws-smithy-http-client` 只在 `xai-file-utils/s3.rs` 使用；`gcloud-storage` 只用于直接 GCS 客户端及 Shell 的一个未使用 manifest 声明（已移除）。
 - stock Grok 组合根 `xai-grok-pager-bin` 的 `default` 与 `default-bazel` 显式启用 `stock-pdf`、`stock-s3`、`stock-gcs`；Pi 的 `--no-default-features --features release-dist,sandbox-enforce` 不启用这些功能。Pi 误调用原版文件上传分支将返回清晰错误，Pi agent 的工具由其独立进程执行。
 
@@ -125,6 +130,7 @@ stock-grok (separate build feature, unchanged behavior)
 - S02：`ed616ce9` — [CI 成功 #43798146593](https://github.com/Dwsy/grok-pi-tui/actions/runs/43798146593)。
 - S03：提交 `d3428440`，Render 脱钩和十组字节格式测试，**尚未经新的编译验证**。
 - S04–S07：跨工具类型、PDF、S3、GCS 的批量变更，Rustfmt、manifest、Cargo.lock 和负向源码引用的静态审查已通过，**未运行 Cargo 或新 CI，不能声称构建成功**。
-- S08a-1–5：针对 Terminal、Announcements、Update、Login、Hooks、Adapter 的本轮共享契约拆分，**仅静态审查，不执行 Cargo 或 GitHub Actions**。
+- S08a-1–5：针对 Terminal、Announcements、Update、Login、Hooks、Adapter 的共享契约拆分，**仅静态审查，不执行 Cargo 或 GitHub Actions**。
+- S08a-6–8：Memory、HTTP、Workspace、MCP OAuth 的类型所有权与逆依赖修正；已通过 Rustfmt、Cargo.lock/TOML、定义迁移逐字比对和静态依赖图无环检查；**未执行 Cargo、CI 或端到端验收**。
 
 后续按批次更新提交、最终验证 Run、实际闭包变化和未消除的风险。**以可验证的证据替代 CI 次数。**
