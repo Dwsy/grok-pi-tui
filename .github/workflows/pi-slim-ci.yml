@@ -118,8 +118,13 @@ jobs:
           fi
           cargo check --locked --lib -p xai-grok-shell \
             --no-default-features --target aarch64-apple-darwin
-          cargo test --locked --lib -p xai-grok-shell \
-            --no-default-features --target aarch64-apple-darwin
+          if [[ "$(uname -m)" == "arm64" ]]; then
+            cargo test --locked --lib -p xai-grok-shell \
+              --no-default-features --target aarch64-apple-darwin
+          else
+            cargo check --locked --tests -p xai-grok-shell \
+              --no-default-features --target aarch64-apple-darwin
+          fi
 
       - name: Build ARM64 grok-pi (release-dist)
         shell: bash
@@ -140,9 +145,14 @@ jobs:
           bin="target/aarch64-apple-darwin/release-dist/grok-pi"
           test -x "$bin"
           file "$bin"
-          "$bin" --version
-          "$bin" --help > /dev/null
-          "$bin" --print-capabilities > /dev/null
+          lipo -archs "$bin" | grep -qw arm64
+          if [[ "$(uname -m)" == "arm64" ]]; then
+            "$bin" --version
+            "$bin" --help > /dev/null
+            "$bin" --print-capabilities > /dev/null
+          else
+            echo "Cross-compiled ARM64 Mach-O verified; execution smoke requires an ARM64 host"
+          fi
 
       - name: Check renderer no longer imports stock tools
         shell: bash
@@ -182,8 +192,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p xai-grok-pager-diff --lib \
-            --target aarch64-apple-darwin
+          if [[ "$(uname -m)" == "arm64" ]]; then
+            cargo test --locked -p xai-grok-pager-diff --lib \
+              --target aarch64-apple-darwin
+          else
+            cargo check --locked -p xai-grok-pager-diff --tests \
+              --target aarch64-apple-darwin
+          fi
 
       - name: Test shared contracts after dependency inversion
         shell: bash
@@ -191,20 +206,32 @@ jobs:
           set -euo pipefail
           # Includes migrated MemoryBackend staleness tests, TaskKind, ToolKind,
           # Claude tool alias registry, ClientType wire values and config types.
-          cargo test --locked --lib \
-            -p xai-tool-types -p xai-grok-workspace-types \
-            -p xai-grok-config-types \
-            --target aarch64-apple-darwin
+          if [[ "$(uname -m)" == "arm64" ]]; then
+            cargo test --locked --lib \
+              -p xai-tool-types -p xai-grok-workspace-types \
+              -p xai-grok-config-types \
+              --target aarch64-apple-darwin
+          else
+            cargo check --locked --tests \
+              -p xai-tool-types -p xai-grok-workspace-types \
+              -p xai-grok-config-types \
+              --target aarch64-apple-darwin
+          fi
 
       - name: Test renderer image-size presentation
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked --profile release-dist \
-            -p xai-grok-pager-render --lib \
-            --target aarch64-apple-darwin \
-            util::tests::format_bytes_matches_stock_grok_binary_units \
-            -- --exact
+          if [[ "$(uname -m)" == "arm64" ]]; then
+            cargo test --locked --profile release-dist \
+              -p xai-grok-pager-render --lib \
+              --target aarch64-apple-darwin \
+              util::tests::format_bytes_matches_stock_grok_binary_units \
+              -- --exact
+          else
+            cargo check --locked --tests \
+              -p xai-grok-pager-render --target aarch64-apple-darwin
+          fi
 
       - name: Upload Cargo timings
         if: always()
