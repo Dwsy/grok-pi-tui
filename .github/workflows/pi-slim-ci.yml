@@ -43,6 +43,14 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Node for Herdr lifecycle contract
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Test Herdr working and blocked lifecycle over local socket
+        run: node --test extensions/pi-grok-herdr/lifecycle.test.mjs
+
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:

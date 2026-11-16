@@ -87,3 +87,10 @@ No global integration is removed or rewritten, so stock `pi` can continue using 
   bridge's session + idle messages against a **fake local Herdr Socket**. It
   neither changes Herdr nor contacts a model provider. It does **not** prove
   that real Herdr accepted working/blocked/idle states in an actual pane.
+- To test the extension's state transitions without starting Pi or a model,
+  run `node --test extensions/pi-grok-herdr/lifecycle.test.mjs` with Node 24.
+  This executes the real extension against simulated lifecycle callbacks and
+  a local Unix Socket, checking the full
+  `idle → working → blocked → working → idle` sequence, ownership and
+  monotonic event sequence. It is also part of the
+  Pi-only CI.
