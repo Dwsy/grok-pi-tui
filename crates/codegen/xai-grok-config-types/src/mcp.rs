@@ -39,6 +39,39 @@ pub fn cap_mcp_servers(servers: &mut Vec<acp::McpServer>, limit: usize) {
     }
 }
 
+/// Per-MCP-server config overrides from `_meta.mcpConfig` in session/new or session/load.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerMetaConfig {
+    /// Init handshake timeout in ms. Overrides config.toml `startup_timeout_sec`.
+    #[serde(default)]
+    pub startup_timeout_ms: Option<u64>,
+    /// Per-tool-call timeout in ms. Overrides config.toml `tool_timeout_sec`.
+    #[serde(default)]
+    pub tool_timeout_ms: Option<u64>,
+    /// Per-tool timeout overrides in ms: `{ "create_issue": 120000, "search": 30000 }`.
+    /// Overrides config.toml `tool_timeouts` (and `tool_timeout_sec`) for matching tools.
+    #[serde(default)]
+    pub tool_timeouts_ms: Option<HashMap<String, u64>>,
+    /// Also keep the raw base64 in tool-result text, in addition to the vision-token rendering.
+    /// The agent can then decode and forward it via path-based tools like `send_file`.
+    /// Costs ~2× tokens per image. Default `false`. See `format_mcp_image`.
+    #[serde(default)]
+    pub expose_image_base64: Option<bool>,
+}
+
+/// Maps MCP server name to its per-server config overrides from `_meta.mcpConfig`.
+pub type McpMetaConfigMap = HashMap<String, McpServerMetaConfig>;
+
+/// Parse `mcpConfig` from a session request's `_meta`. Empty map if absent/invalid.
+pub fn parse_mcp_meta_config(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> McpMetaConfigMap {
+    meta.and_then(|m| m.get("mcpConfig"))
+        .and_then(|v| serde_json::from_value::<McpMetaConfigMap>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
 /// serde default helper.
 fn default_true() -> bool {
     true

@@ -8,7 +8,7 @@ use toml::map::Map as TomlMap;
 use xai_grok_agent::prompt::skills::SkillsConfig;
 use xai_grok_tools::types::compat::{CompatConfig, CompatConfigToml};
 
-pub use xai_grok_mcp::oauth_config::{McpOAuthConfig, McpOAuthConfigMap};
+pub use xai_grok_config_types::{McpOAuthConfig, McpOAuthConfigMap};
 // MCP server config value types moved to `xai-grok-config-types`; the re-export keeps `crate::util::config::*` paths working
 pub use xai_grok_config_types::{
     KNOWN_MCP_SERVER_FIELDS, McpJsonOAuthBlock, McpPreferenceSource, McpPreferencesFile,
