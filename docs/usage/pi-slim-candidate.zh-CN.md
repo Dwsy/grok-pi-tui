@@ -21,6 +21,11 @@ Pi-only 瘦身分支 `refactor/pi-slim-20261116` 的测试产物只通过显式�
 `.tar.gz.sha256`、`build-info.txt`。
 跨架构 Intel runner 只编译、不能执行 ARM64，所以**不产出候选包**。
 
+GitHub 标准 `macos-15` ARM64 M1 runner 的资源较紧张。流水线将
+`CARGO_PROFILE_TEST_DEBUG=0` 且仅对原生 runner 设置
+`CARGO_BUILD_JOBS=2`：保留全部测试执行，避免 Debug DWARF 产物
+挤满磁盘或并行 rustc 争抢内存；正式 `release-dist` 编译设置不变。
+
 ## 构建并获取候选包
 
 在仓库维护者终端执行：

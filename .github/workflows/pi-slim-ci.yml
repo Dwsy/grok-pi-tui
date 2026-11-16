@@ -33,11 +33,18 @@ jobs:
       CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
       CARGO_PROFILE_RELEASE_DIST_STRIP: "none"
       CARGO_INCREMENTAL: "0"
+      # Native macos-15 M1 runners have 7 GiB RAM / 14 GiB SSD. Keep the
+      # full Rust test suite, but avoid enormous DWARF debug/test artifacts.
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - name: Record build host architecture
         run: |
           uname -m
           echo "Rust target: aarch64-apple-darwin"
+
+      - name: Bound native ARM64 compilation memory
+        if: runner.arch == 'ARM64'
+        run: echo "CARGO_BUILD_JOBS=2" >> "$GITHUB_ENV"
       - name: Check out exact commit
         uses: actions/checkout@v4
         with:
@@ -175,7 +182,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --lib -p pi-grok-adapter \
-            --no-default-features --target aarch64-apple-darwin -j 6
+            --no-default-features --target aarch64-apple-darwin
 
       - name: Check renderer no longer imports stock tools
         shell: bash
