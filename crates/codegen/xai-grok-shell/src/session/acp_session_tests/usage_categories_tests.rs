@@ -68,6 +68,26 @@ async fn usage_categories_include_skills_and_mcp_with_counts() {
         })
         .await;
 }
+#[cfg(not(feature = "stock-mcp"))]
+#[tokio::test(flavor = "current_thread")]
+async fn no_stock_mcp_keeps_skill_usage_without_mcp_servers() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            seed_skills(&actor, &["alpha", "beta"]).await;
+            let rows = actor.usage_categories().await;
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(rows[0].label, "Skills");
+            assert_eq!(rows[0].detail.as_deref(), Some("2 skills"));
+            assert!(!actor.requires_full_mcp_wait());
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn usage_categories_include_agents_md_with_count() {
     let local = tokio::task::LocalSet::new();

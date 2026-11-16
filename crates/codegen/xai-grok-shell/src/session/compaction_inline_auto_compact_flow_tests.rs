@@ -1354,6 +1354,7 @@ async fn transient_auto_compact_failure_notifies_with_real_error() {
 /// The failure reminder was dropped with the compacted context (unlike connected servers, which the compaction context carries).
 /// So the announced episodes clear and the MCP reminder goes dirty for a re-announcement at the next injection.
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "stock-mcp")]
 async fn compaction_rearms_failed_server_announcements() {
     use xai_grok_test_support::MockInferenceServer;
     let local = tokio::task::LocalSet::new();
