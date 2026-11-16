@@ -568,6 +568,7 @@ pub enum SessionCommand {
     /// Update MCP servers for an existing session (used during reconnect or mid-session via the `x.ai/session/update_mcp_servers` extension method).
     /// This replaces the current MCP server configuration and triggers re-initialization.
     /// The caller is notified via `respond_to` once MCP re-initialization completes (or immediately if configs are unchanged).
+    #[cfg(feature = "stock-mcp")]
     UpdateMcpServers {
         mcp_servers: Vec<acp::McpServer>,
         respond_to: oneshot::Sender<Result<(), acp::Error>>,
@@ -581,6 +582,7 @@ pub enum SessionCommand {
     /// Toggle an MCP server on/off within the session actor's event loop.
     /// Atomic read-modify-write avoids TOCTOU races with background config refreshes.
     /// Those refreshes can change `mcp_state.configs` between a snapshot read and an `UpdateMcpServers` command.
+    #[cfg(feature = "stock-mcp")]
     ToggleMcpServer {
         server_name: String,
         enabled: bool,
@@ -592,6 +594,7 @@ pub enum SessionCommand {
     },
     /// Toggle a single MCP tool on/off within a server.
     /// The server stays connected; only the tool's registration in ToolBridge is affected.
+    #[cfg(feature = "stock-mcp")]
     ToggleMcpTool {
         server_name: String,
         tool_name: String,
@@ -600,14 +603,17 @@ pub enum SessionCommand {
         respond_to: oneshot::Sender<Result<(), acp::Error>>,
     },
     /// Read MCP status: which servers are configured, which clients are healthy, what tools.
+    #[cfg(feature = "stock-mcp")]
     GetMcpStatus {
         respond_to: oneshot::Sender<crate::extensions::mcp::McpStatusSnapshot>,
     },
+    #[cfg(feature = "stock-mcp")]
     GetManagedGatewayDisabledTools {
         respond_to:
             oneshot::Sender<std::collections::HashMap<String, std::collections::HashSet<String>>>,
     },
     /// Snapshot the session's live MCP client pool for subagent inheritance.
+    #[cfg(feature = "stock-mcp")]
     SnapshotMcpPool {
         respond_to: oneshot::Sender<Option<crate::session::mcp_servers::SharedMcpPool>>,
     },
@@ -626,6 +632,7 @@ pub enum SessionCommand {
         hooks: crate::extensions::hooks::ClientHooks,
     },
     /// Client-driven MCP tool call outside the LLM loop.
+    #[cfg(feature = "stock-mcp")]
     CallMcpTool {
         server_name: String,
         server_url: Option<String>,
@@ -633,22 +640,27 @@ pub enum SessionCommand {
         arguments: serde_json::Value,
         respond_to: oneshot::Sender<Result<crate::extensions::mcp::McpCallResponse, String>>,
     },
+    #[cfg(feature = "stock-mcp")]
     ReadMcpResource {
         server_name: String,
         uri: String,
         respond_to:
             oneshot::Sender<Result<crate::extensions::mcp::McpReadResourceResponse, String>>,
     },
+    #[cfg(feature = "stock-mcp")]
     McpAuthStatus {
         respond_to: oneshot::Sender<Vec<crate::extensions::mcp::McpAuthStatusEntry>>,
     },
+    #[cfg(feature = "stock-mcp")]
     McpAuthTrigger {
         server_name: String,
         respond_to: oneshot::Sender<Result<(), String>>,
     },
+    #[cfg(feature = "stock-mcp")]
     RetryAuthRequiredServers {
         respond_to: oneshot::Sender<()>,
     },
+    #[cfg(feature = "stock-mcp")]
     RefreshMcpSearchIndex,
     /// Move a foreground bash command to background by tool_call_id.
     /// Unblocks the agent loop so it can continue with the next action.

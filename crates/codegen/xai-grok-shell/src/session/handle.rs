@@ -419,6 +419,7 @@ impl SessionHandle {
         rx.await.ok().flatten()
     }
     /// Snapshot the session's live MCP client pool for subagent inheritance.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn snapshot_mcp_pool(
         &self,
     ) -> Option<crate::session::mcp_servers::SharedMcpPool> {
@@ -519,6 +520,7 @@ impl SessionHandle {
     pub(crate) fn set_client_hooks(&self, hooks: crate::extensions::hooks::ClientHooks) {
         let _ = self.cmd_tx.send(SessionCommand::SetClientHooks { hooks });
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn get_mcp_status(&self) -> crate::extensions::mcp::McpStatusSnapshot {
         let (tx, rx) = oneshot::channel();
         if self
@@ -530,6 +532,7 @@ impl SessionHandle {
         }
         rx.await.unwrap_or_default()
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn toggle_mcp_server(
         &self,
         server_name: String,
@@ -552,6 +555,7 @@ impl SessionHandle {
         rx.await
             .map_err(|_| agent_client_protocol::Error::internal_error().data("session closed"))?
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn toggle_mcp_tool(
         &self,
         server_name: String,
@@ -561,6 +565,7 @@ impl SessionHandle {
         self.toggle_mcp_tool_with_source(server_name, tool_name, enabled, false)
             .await
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn toggle_managed_gateway_tool(
         &self,
         server_name: String,
@@ -570,6 +575,7 @@ impl SessionHandle {
         self.toggle_mcp_tool_with_source(server_name, tool_name, enabled, true)
             .await
     }
+    #[cfg(feature = "stock-mcp")]
     async fn toggle_mcp_tool_with_source(
         &self,
         server_name: String,
@@ -594,6 +600,7 @@ impl SessionHandle {
         rx.await
             .map_err(|_| agent_client_protocol::Error::internal_error().data("session closed"))?
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn managed_gateway_disabled_tool_names(
         &self,
     ) -> HashMap<String, HashSet<String>> {
@@ -607,6 +614,7 @@ impl SessionHandle {
         }
         rx.await.unwrap_or_default()
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn retry_auth_required_servers(&self) {
         let (tx, rx) = oneshot::channel();
         if self
@@ -618,6 +626,7 @@ impl SessionHandle {
         }
         let _ = rx.await;
     }
+    #[cfg(feature = "stock-mcp")]
     pub async fn call_mcp_tool(
         &self,
         server_name: String,
@@ -642,6 +651,7 @@ impl SessionHandle {
         rx.await
             .unwrap_or_else(|_| Err("session closed".to_string()))
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn read_mcp_resource(
         &self,
         server_name: String,
@@ -662,6 +672,7 @@ impl SessionHandle {
         rx.await
             .unwrap_or_else(|_| Err("session closed".to_string()))
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn mcp_auth_status(&self) -> Vec<crate::extensions::mcp::McpAuthStatusEntry> {
         let (tx, rx) = oneshot::channel();
         if self
@@ -673,6 +684,7 @@ impl SessionHandle {
         }
         rx.await.unwrap_or_default()
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn mcp_auth_trigger(&self, server_name: String) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         if self

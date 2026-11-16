@@ -1434,6 +1434,7 @@ pub(super) async fn run_session(
                         SessionCommand::UpdateAttachPolicy { startup_hints } => {
                             session.apply_attach_policy(&startup_hints);
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::UpdateMcpServers { mcp_servers, respond_to } => {
                             if session.startup_hints.is_subagent {
                                 tracing::debug!(
@@ -1480,6 +1481,7 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(Ok(()));
                             });
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::ToggleMcpServer { server_name, enabled, server_config, respond_to } => {
                             session.events.emit(xai_grok_session_events::Event::McpServerToggled {
                                 server_name: server_name.clone(),
@@ -1552,6 +1554,7 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(Ok(()));
                             });
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::ToggleMcpTool { server_name, tool_name, enabled, is_managed_gateway, respond_to } => {
                             if is_managed_gateway {
                                 let mut disabled_tools = crate::util::config::get_all_mcp_disabled_tools(std::path::Path::new(&session.session_info.cwd));
@@ -1735,6 +1738,7 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(Ok(()));
                             });
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::SnapshotMcpPool { respond_to } => {
                             let mcp_state = session.mcp_state.lock().await;
                             let pool = if mcp_state.owned_clients.is_empty() && mcp_state.shared_clients.is_empty() {
@@ -1763,6 +1767,7 @@ pub(super) async fn run_session(
                         SessionCommand::SetClientHooks { hooks } => {
                             *session.client_hooks.borrow_mut() = hooks;
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::GetMcpStatus { respond_to } => {
                             let mcp_state = session.mcp_state.clone();
                             let tool_bridge = session.agent.borrow().tool_bridge().clone();
@@ -1776,6 +1781,7 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(snapshot);
                             });
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::CallMcpTool { server_name, server_url, tool_name, arguments, respond_to } => {
                             let mcp_state = session.mcp_state.clone();
                             tokio::task::spawn_local(async move {
@@ -1789,6 +1795,7 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(result);
                             });
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::ReadMcpResource { server_name, uri, respond_to } => {
                             let mcp_state = session.mcp_state.clone();
                             tokio::task::spawn_local(async move {
@@ -1800,6 +1807,7 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(result);
                             });
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::McpAuthStatus { respond_to } => {
                             let mcp_state = session.mcp_state.clone();
                             tokio::task::spawn_local(async move {
@@ -1813,6 +1821,7 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(entries);
                             });
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::McpAuthTrigger { server_name, respond_to } => {
                             let s = session.clone();
                             tokio::task::spawn_local(async move {
@@ -1820,12 +1829,14 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(result);
                             });
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::GetManagedGatewayDisabledTools { respond_to } => {
                             let disabled_tools = crate::util::config::get_all_mcp_disabled_tools(
                                 std::path::Path::new(&session.session_info.cwd),
                             );
                             let _ = respond_to.send(disabled_tools);
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::RetryAuthRequiredServers { respond_to } => {
                             let s = session.clone();
                             tokio::task::spawn_local(async move {
@@ -1834,6 +1845,7 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(());
                             });
                         }
+                        #[cfg(feature = "stock-mcp")]
                         SessionCommand::RefreshMcpSearchIndex => {
                             session.refresh_mcp_snapshot_and_schedule_reminder().await;
                         }

@@ -29,15 +29,11 @@ use crate::session::ClientFsConfig;
 use crate::session::feedback_manager::{FeedbackManager, FeedbackManagerConfig};
 use crate::session::fs_watch::{self, git_head_dedup_key};
 use crate::session::info::Info as SessionInfo;
-use crate::session::mcp_servers::McpInitStrategy;
-use crate::session::mcp_servers::McpMetaConfigMap;
-use crate::session::mcp_servers::McpState;
-use crate::session::mcp_servers::OauthInteractivity;
-use crate::session::mcp_servers::build_pending_clients;
-use crate::session::mcp_servers::mcp_server_name;
-use crate::session::mcp_servers::mcp_target_str;
-use crate::session::mcp_servers::mcp_transport_str;
-use crate::session::mcp_servers::parse_mcp_tool_name;
+#[cfg(feature = "stock-mcp")]
+use crate::session::mcp_servers::{
+    McpInitStrategy, McpMetaConfigMap, McpState, OauthInteractivity, build_pending_clients,
+    mcp_server_name, mcp_target_str, mcp_transport_str, parse_mcp_tool_name,
+};
 use crate::session::persistence::{
     PersistenceContentChunk, PersistenceHandle, PersistenceMsg, get_prompt_file_path,
 };
@@ -142,15 +138,19 @@ mod prompt_queue;
 pub(super) use prompt_queue::QueueInputRequest;
 #[cfg(test)]
 use tool_calls::BridgeToolSuccess;
+#[cfg(feature = "stock-mcp")]
 #[path = "acp_session_impl/mcp.rs"]
 mod mcp;
+#[cfg(feature = "stock-mcp")]
 #[path = "acp_session_impl/mcp_init.rs"]
 mod mcp_init;
 #[path = "acp_session_impl/parent_message.rs"]
 mod parent_message;
+#[cfg(feature = "stock-mcp")]
 use mcp_init::*;
 #[path = "acp_session_impl/hooks_plugins.rs"]
 mod hooks_plugins;
+#[cfg(feature = "stock-mcp")]
 #[path = "acp_session_impl/mcp_failed_reminder.rs"]
 mod mcp_failed_reminder;
 #[path = "acp_session_impl/model_switch.rs"]
@@ -180,8 +180,10 @@ use sampler_turn::*;
 #[path = "acp_session_impl/tool_dispatch.rs"]
 mod tool_dispatch;
 use tool_dispatch::*;
+#[cfg(feature = "stock-mcp")]
 #[path = "acp_session_impl/mcp_snapshot.rs"]
 mod mcp_snapshot;
+#[cfg(feature = "stock-mcp")]
 use mcp_snapshot::*;
 #[path = "acp_session_impl/turn_task.rs"]
 mod turn_task;
@@ -1938,10 +1940,10 @@ mod length_salvage_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/load_user_prompts_tests.rs"]
 mod load_user_prompts_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-mcp"))]
 #[path = "acp_session_tests/mcp_connecting_reminder_tests.rs"]
 mod mcp_connecting_reminder_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-mcp"))]
 #[path = "acp_session_tests/mcp_failed_reminder_tests.rs"]
 mod mcp_failed_reminder_tests;
 #[cfg(test)]
@@ -1984,7 +1986,7 @@ mod turn_end_guard_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/turn_end_reporting_tests.rs"]
 mod turn_end_reporting_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-mcp"))]
 #[path = "acp_session_tests/wait_for_mcp_prefix_tests.rs"]
 mod wait_for_mcp_prefix_tests;
 #[cfg(test)]
