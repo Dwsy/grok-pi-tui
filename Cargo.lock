@@ -14717,6 +14717,7 @@ dependencies = [
  "xai-grok-tools",
  "xai-grok-version",
  "xai-grok-workspace",
+ "xai-grok-workspace-types",
  "xai-hooks-plugins-types",
  "xai-hunk-tracker",
  "xai-interjection-core",

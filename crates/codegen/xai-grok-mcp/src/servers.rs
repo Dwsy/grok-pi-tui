@@ -358,15 +358,8 @@ impl InitProgress {
     }
 }
 
-/// One in-process SDK MCP server registration: its tool-namespace name and the SDK-side id echoed back in `x.ai/mcp/sdk_call`.
-/// A named struct (rather than a `(String, String)` tuple) so callers can't transpose the two strings.
-/// `Deserialize`d from a `_meta["x.ai/mcp/servers"]` entry, so the `serverId` wire field name is declared (and serde-checked) exactly once here.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct AcpServerEntry {
-    pub name: McpServerName,
-    #[serde(rename = "serverId")]
-    pub server_id: String,
-}
+/// Canonical ACP SDK registration wire type, shared below the stock transport.
+pub use xai_grok_config_types::AcpServerEntry;
 
 /// The session's in-process SDK MCP servers (declared via `_meta["x.ai/mcp/servers"]`), bundled with the shared reverse-RPC invoker.
 /// The registry survives `update_configs` clears; config reloads only touch `configs`/`owned_clients`.

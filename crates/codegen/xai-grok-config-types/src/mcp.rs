@@ -1,5 +1,33 @@
 //! MCP server configuration value types, extracted from xai-grok-shell so crates the shell depends on can use them.
 
+/// ACP SDK server registration is a wire DTO, not an MCP transport client.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct AcpServerEntry {
+    pub name: String,
+    #[serde(rename = "serverId")]
+    pub server_id: String,
+}
+
+#[cfg(test)]
+mod acp_sdk_registration_tests {
+    use super::AcpServerEntry;
+
+    #[test]
+    fn server_id_uses_the_original_acp_wire_name() {
+        let decoded: AcpServerEntry =
+            serde_json::from_value(serde_json::json!({"name": "local", "serverId": "sdk-1"}))
+                .unwrap();
+        assert_eq!(decoded.name, "local");
+        assert_eq!(decoded.server_id, "sdk-1");
+        assert!(
+            serde_json::from_value::<AcpServerEntry>(
+                serde_json::json!({"name": "local", "server_id": "sdk-1"})
+            )
+            .is_err()
+        );
+    }
+}
+
 use crate::mcp_oauth::McpOAuthConfig;
 use agent_client_protocol as acp;
 use indexmap::IndexMap;

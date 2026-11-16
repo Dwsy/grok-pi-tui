@@ -150,6 +150,7 @@ xai-grok-tools = { path = "../xai-grok-tools" }
 xai-tty-utils = { workspace = true }
 xai-workflow = { path = "../xai-workflow" }
 xai-grok-workspace = { workspace = true }
+xai-grok-workspace-types = { workspace = true }
 # Backs the compatibility-only `xai_grok_shell::foreign_sessions` re-export.
 xai-grok-foreign-sessions = { workspace = true }
 xai-grok-subagent-resolution = { path = "../xai-grok-subagent-resolution" }
