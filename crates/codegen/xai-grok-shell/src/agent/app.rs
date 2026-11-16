@@ -1133,6 +1133,8 @@ pub async fn run_leader(
                                     .arm_if_eligible(&session, &auth_manager_for_config);
                             }
                             models_manager_for_config.on_auth_changed().await;
+                            #[cfg(feature = "stock-mcp")]
+                            {
                             let line = internal_reload_request_line(
                                 "config-auth-reloaded",
                                 InternalMethod::ReloadAllMcpServers,
@@ -1141,6 +1143,7 @@ pub async fn run_leader(
                             let mut tx = acp_tx_for_config.lock().await;
                             if let Err(e) = tx.write_all(line.as_bytes()).await {
                                 warn!(error = %e, "failed to inject MCP reload after auth hot-swap");
+                            }
                             }
                         }
                         ConfigUpdate::AuthCleared => {
@@ -1162,6 +1165,7 @@ pub async fn run_leader(
                             );
                             info!("Auth cleared by config watcher");
                         }
+                        #[cfg(feature = "stock-mcp")]
                         ConfigUpdate::McpServersChanged => {
                             info!("MCP server config change detected — reloading active sessions");
                             let line = internal_reload_request_line(
@@ -1174,6 +1178,7 @@ pub async fn run_leader(
                                 warn!(error = %e, "failed to inject MCP reload into ACP stream");
                             }
                         }
+                        #[cfg(feature = "stock-mcp")]
                         ConfigUpdate::ProjectMcpServersChanged { cwd } => {
                             info!(
                                 cwd = %cwd.display(),
@@ -1191,6 +1196,11 @@ pub async fn run_leader(
                                     "failed to inject project MCP reload into ACP stream"
                                 );
                             }
+                        }
+                        #[cfg(not(feature = "stock-mcp"))]
+                        ConfigUpdate::McpServersChanged
+                        | ConfigUpdate::ProjectMcpServersChanged { .. } => {
+                            // No stock MCP transport is linked. Never request a reload.
                         }
                         ConfigUpdate::ModelsChanged => {
                             info!("Model config change detected — reloading agent model list");

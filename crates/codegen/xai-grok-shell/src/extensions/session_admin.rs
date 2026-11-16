@@ -45,6 +45,7 @@ pub(crate) async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResul
     match args.method.as_ref() {
         "x.ai/session/rename" => handle_session_rename(agent, args).await,
         "x.ai/session/delete" => handle_session_delete(agent, args).await,
+        #[cfg(feature = "stock-mcp")]
         "x.ai/session/update_mcp_servers" => handle_update_mcp_servers(agent, args).await,
         #[cfg(feature = "local-workspace")]
         "x.ai/session/add_local_workspace" => handle_add_local_workspace(agent, args).await,
@@ -62,9 +63,15 @@ async fn handle_internal(
     method: InternalMethod,
 ) -> ExtResult {
     match method {
+        #[cfg(feature = "stock-mcp")]
         InternalMethod::ReloadAllMcpServers => handle_reload_all_mcp_servers(agent).await,
+        #[cfg(feature = "stock-mcp")]
         InternalMethod::ReloadProjectMcpServers => {
             handle_reload_project_mcp_servers(agent, args).await
+        }
+        #[cfg(not(feature = "stock-mcp"))]
+        InternalMethod::ReloadAllMcpServers | InternalMethod::ReloadProjectMcpServers => {
+            Err(acp::Error::method_not_found())
         }
         InternalMethod::ReloadSkills => handle_reload_skills(agent),
         InternalMethod::ReloadWorkflows => handle_reload_workflows(agent),
@@ -517,6 +524,7 @@ async fn soft_delete_chat_conversation(agent: &MvpAgent, conversation_id: &str) 
 
 // session/update_mcp_servers
 
+#[cfg(feature = "stock-mcp")]
 async fn handle_update_mcp_servers(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -626,6 +634,7 @@ fn handle_reload_workflows(agent: &MvpAgent) -> ExtResult {
 
 /// Reload MCP servers for ALL active sessions.
 /// Called by the config hot-reload watcher when `[mcp_servers]` changes in config.toml.
+#[cfg(feature = "stock-mcp")]
 async fn handle_reload_all_mcp_servers(agent: &MvpAgent) -> ExtResult {
     let session_ids = agent.resident_ids();
 
@@ -671,6 +680,7 @@ async fn handle_reload_all_mcp_servers(agent: &MvpAgent) -> ExtResult {
 /// Reload MCP servers for sessions whose `cwd` matches (or sits beneath) the project root passed in `params.cwd`.
 /// Called by the config hot-reload watcher when `<cwd>/.grok/config.toml`, `<cwd>/.mcp.json`, or `<cwd>/.claude.json` changes. Sessions in unrelated cwds are intentionally NOT touched.
 /// That is the whole point of [`crate::config::reloader::ConfigUpdate::ProjectMcpServersChanged`] being a per-cwd variant. The legacy [`handle_reload_all_mcp_servers`] is still the fan-out for global `~/.grok/config.toml` edits.
+#[cfg(feature = "stock-mcp")]
 async fn handle_reload_project_mcp_servers(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     #[derive(Deserialize)]
     struct Params {
@@ -801,6 +811,7 @@ fn handle_reload_models_cache(agent: &MvpAgent) -> ExtResult {
 }
 
 fn handle_auth_cleared(agent: &MvpAgent) -> ExtResult {
+    #[cfg(feature = "stock-mcp")]
     agent.disable_managed_gateway_tools_and_refresh_sessions();
     ExtMethodResult::success(serde_json::json!({ "ok": true }))
         .to_ext_response()

@@ -1134,7 +1134,9 @@ impl MvpAgent {
                                 startup_hints: Box::new(hints),
                             });
                 }
+                #[cfg(feature = "stock-mcp")]
                 let (tx, _rx) = tokio::sync::oneshot::channel();
+                #[cfg(feature = "stock-mcp")]
                 let _ = handle
                     .cmd_tx
                     .send(crate::session::SessionCommand::UpdateMcpServers {

@@ -492,6 +492,7 @@ impl acp::Agent for MvpAgent {
         let mcp_servers: Vec<serde_json::Value> = Vec::new();
         #[cfg(feature = "stock-mcp")]
         self.spawn_initialize_launch_mcp_setup();
+        #[cfg(feature = "stock-mcp")]
         self.spawn_managed_gateway_tool_catalog_fetch();
         {
             let agent_ref = LocalRef::new(self);

@@ -192,15 +192,18 @@ impl MvpAgent {
                 }
             })
     }
+    #[cfg(feature = "stock-mcp")]
     fn has_managed_mcp_auth(&self) -> bool {
         self.auth_manager
             .current_or_expired()
             .is_some_and(|a| a.is_managed_mcp_eligible())
     }
+    #[cfg(feature = "stock-mcp")]
     fn can_fetch_managed_mcp_gateway_tools(&self) -> bool {
         self.cfg.borrow().managed_mcp_gateway_tools_enabled
             && self.has_managed_mcp_auth()
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn get_managed_mcp_gateway_tool_catalog(
         &self,
     ) -> Option<crate::session::managed_mcp::GatewayToolCatalog> {
@@ -223,11 +226,13 @@ impl MvpAgent {
             )
             .await
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) fn managed_mcp_cache(
         &self,
     ) -> &crate::session::managed_mcp::ManagedMcpStateHandle {
         &self.managed_mcp_cache
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) fn disable_managed_gateway_tools_and_refresh_sessions(&self) {
         self.disable_managed_gateway_tools_and_refresh_sessions_with_txs({
             let mut txs = Vec::new();
@@ -238,6 +243,7 @@ impl MvpAgent {
             txs
         });
     }
+    #[cfg(feature = "stock-mcp")]
     fn disable_managed_gateway_tools_and_refresh_sessions_with_txs(
         &self,
         session_txs: Vec<tokio::sync::mpsc::UnboundedSender<SessionCommand>>,
@@ -250,6 +256,7 @@ impl MvpAgent {
             }
         });
     }
+    #[cfg(feature = "stock-mcp")]
     pub(crate) fn spawn_managed_gateway_tool_catalog_fetch(&self) {
         let session_txs = self.resident_cmd_txs();
         if !self.can_fetch_managed_mcp_gateway_tools() {
@@ -292,6 +299,7 @@ impl MvpAgent {
     /// Rebuild `search_tool` in every live session after a fresh gateway tool catalog committed.
     /// Gateway tools live in the agent-level catalog, not per-session `McpServers`.
     /// Callers skip on a failed refetch so the last-good index stays.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) fn refresh_mcp_search_index_in_sessions(&self) {
         let session_txs = self.resident_cmd_txs();
         for tx in session_txs {
@@ -301,6 +309,7 @@ impl MvpAgent {
     /// `mcp/list` catalog fetch: optional cache bust, then gateway list, then fan `RefreshMcpSearchIndex` only when a fresh catalog commits.
     /// Gateway off (or no eligible auth) goes through [`Self::get_managed_mcp_gateway_tool_catalog`].
     /// That path disables the cache the same way initialize does.
+    #[cfg(feature = "stock-mcp")]
     pub(crate) async fn fetch_gateway_catalog_for_mcp_list(
         &self,
         cache: bool,
@@ -4918,6 +4927,7 @@ impl MvpAgent {
         if is_headless {
             self.session_registry.mark_headless(&session_info.id);
         }
+        #[cfg(feature = "stock-mcp")]
         self.spawn_managed_gateway_tool_catalog_fetch();
         let cwd_for_maintenance = session_info.cwd.clone();
         tokio::spawn(async move {
