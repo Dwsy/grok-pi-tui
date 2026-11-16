@@ -1,10 +1,8 @@
 name: Pi slim ARM64 CI (non-release)
 
-# Each slimming commit is verified independently; this never publishes releases.
+# Batch slimming: build only on explicit dispatch, not on every intermediate commit.
+# This job never publishes releases.
 on:
-  push:
-    branches:
-      - "refactor/pi-slim-*"
   workflow_dispatch:
 
 permissions:
@@ -52,7 +50,7 @@ jobs:
           cache-workspace-crates: "true"
           cache-bin: "false"
 
-      - name: Assert Grok-only allocator is absent from Pi dependencies
+      - name: Assert stock-only dependency closure is absent from Pi
         shell: bash
         run: |
           set -euo pipefail
@@ -60,11 +58,11 @@ jobs:
             --no-default-features --features release-dist,sandbox-enforce \
             --target aarch64-apple-darwin -e normal,build \
             > "$RUNNER_TEMP/pi-dependencies.txt"
-          if grep -E 'tikv-jemalloc-(sys|ctl)|tikv-jemallocator|cryptify v[0-9]' "$RUNNER_TEMP/pi-dependencies.txt"; then
-            echo "Unexpected Grok-only allocator or obfuscation dependency in grok-pi" >&2
+          if grep -E 'tikv-jemalloc-(sys|ctl)|tikv-jemallocator|cryptify v[0-9]|pdf_oxide|aws-sdk-s3|aws-config|aws-smithy-http-client|gcloud-storage' "$RUNNER_TEMP/pi-dependencies.txt"; then
+            echo "Unexpected stock-only allocator, PDF, or cloud storage dependency in grok-pi" >&2
             exit 1
           fi
-          echo "Verified: no jemalloc or cryptify compile dependencies in grok-pi"
+          echo "Verified: no stock jemalloc, cryptify, pdf_oxide, AWS SDK, or gcloud-storage compile dependencies"
 
       - name: Build ARM64 grok-pi (release-dist)
         shell: bash
@@ -105,6 +103,30 @@ jobs:
               assert "xai_grok_tools::" not in path.read_text(), path
           print("Renderer no longer directly imports stock Grok Tools")
           PY
+
+      - name: Check native diff no longer imports stock tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import tomllib
+
+          crate = pathlib.Path("crates/codegen/xai-grok-pager-diff")
+          manifest = tomllib.loads((crate / "Cargo.toml").read_text())
+          assert "xai-grok-tools" not in manifest["dependencies"]
+          assert "xai-tool-types" in manifest["dependencies"]
+          for path in (crate / "src").rglob("*.rs"):
+              assert "xai_grok_tools::" not in path.read_text(), path
+          print("Native diff uses canonical xai-tool-types without stock Grok Tools")
+          PY
+
+      - name: Test native diff wire shapes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p xai-grok-pager-diff --lib \
+            --target aarch64-apple-darwin
 
       - name: Test renderer image-size presentation
         shell: bash
