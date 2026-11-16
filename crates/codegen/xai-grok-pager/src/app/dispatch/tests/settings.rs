@@ -3,8 +3,8 @@ use super::*;
 
 #[test]
 fn tool_card_click_action_persists_and_rolls_back_live() {
-    use crate::appearance::cache::ToolCardClickAction;
     use crate::settings::SettingValue;
+    use crate::appearance::cache::ToolCardClickAction;
     with_theme_test_env(|| {
         let previous = crate::appearance::cache::load_tool_card_click_action();
         let mut app = test_app_with_agent();
@@ -1834,6 +1834,9 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         }
         "pi_eval_v2_only" => {
             let _ = dispatch(Action::SetPiEvalV2Only(true), app);
+        }
+        "pi_eval_mcp" => {
+            let _ = dispatch(Action::SetPiEvalMcp(true), app);
         }
         "pi_herdr" => {
             let _ = dispatch(

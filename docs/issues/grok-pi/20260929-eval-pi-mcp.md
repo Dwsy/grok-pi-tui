@@ -1,7 +1,5 @@
 # eval-pi-mcp: binding-scoped Eval v2 MCP access
 
-> **已废弃（2026-11-16）**：grok-pi 不再提供 MCP 服务端。该文档仅保留历史设计；`pi_eval_mcp` 配置、Eval MCP daemon、SDK/Token 依赖及相关实现已删除。当前能力以 `docs/FEATURE_MATRIX.md` 为准。
-
 ## Contract
 
 `[ui].pi_eval_mcp` (default false, restart required) takes effect **only** when

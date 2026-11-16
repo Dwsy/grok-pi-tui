@@ -296,6 +296,14 @@
         "source": "native"
       },
       {
+        "key": "pi_eval_mcp",
+        "default": false,
+        "restartRequired": true,
+        "section": "runtime",
+        "kind": "bool",
+        "source": "native"
+      },
+      {
         "key": "psm_resume_index",
         "default": false,
         "restartRequired": false,

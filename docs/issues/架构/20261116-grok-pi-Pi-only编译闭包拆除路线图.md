@@ -80,10 +80,8 @@ stock-grok (separate build feature, unchanged behavior)
 | **S08a-6 本批已改待编译** | `MemoryBackend`、`MemoryV2Access`／`MemoryV2Write` 和 UTF-8 截断契约移入 `xai-tool-types`；Memory 改为只依赖纯类型；资源容器接线留在 stock Tools | Memory 的生产 manifest 不再直接依赖 Tools；工具资源容器集成测试仍有显式 **dev-dependency** | 中 |
 | **S08a-7 本批已改待编译** | `ClientType` 从 Workspace Permission 移入 `xai-grok-workspace-types`，HTTP 直接依赖轻量 wire 类型，旧 Workspace API re-export | `xai-grok-http` 移除完整 Workspace 的生产依赖；原客户端标识、serde 别名、User-Agent 标签不变 | 低～中 |
 | **S08a-8 本批已改待编译** | `McpOAuthConfig` 从 MCP 运行时移到 `xai-grok-config-types`；MCP SDK 保留旧路径 re-export；依赖边变为 MCP → Config Types | Config Types 不再为单个 OAuth 值类型引入完整 MCP/工具链；消除逆依赖方向 | 中 |
-| **S08-MCP-A 已实现待编译** | grok-pi 移除 Eval MCP daemon、OAuth、配置/环境开关、内嵌文件和 13 个 TypeScript 模块/测试 | Pi 私有扩展不再启动或打包 MCP；保留 Eval v2 和 Bash | 中 |
-| **S08-MCP-B 优先待做** | 隔离 stock Shell/Workspace MCP 代码，让 Pi 编译闭包真正不含 `xai-grok-mcp`、`rmcp` | Pi target-specific Cargo tree 的负向断言和 stock Grok 正向回归 | 高 |
 | S08b | Pager 的 `external-backend` 与 `stock-agent` **编译期**隔离；从 `lib.rs`、App reducer、Slash、Settings、session/view 逐块分层 | Pi 下 `xai-grok-pager` 编译入口不依赖 Shell 的 Agent 运行时 | 高 |
-| S08c 暂停 | Workflow Host 从 Shell 解耦；用户明确要求本轮先不拆 Workflow | 保持 Workflow 实现及行为不变，后续单独裁决 | 暂停 |
+| S08c | `pi-grok-adapter` 的 Shell config / workflow host / session 枚举等从具体 Shell 实现改为精简 host 接口；必须保持 Pi 主导执行 | Adapter 不再直接链接 `xai-grok-shell`；API / workflow 行为不回归 | 高 |
 | S08d | 完全去除 Pi 对 stock Tools、Shell agent loop 的编译依赖：继续裁 Grok Auth、采样器、MCP、Workflow 的真实可达路径 | `cargo tree` 证实剩余 stock Agent 后端不再可达；需要按边界小批量推进 | 高 |
 | S09 | 验证与收敛：修复外部模式自测、删除无用门控/抽象、文档收敛 | 完整 Pi RPC/TUI/Herdr/Remote TUI 回归，冷/热 CI 性能可复现 | 中 |
 
@@ -101,26 +99,10 @@ stock-grok (separate build feature, unchanged behavior)
 - 本轮静态 Cargo manifest 排查后仍直接依赖 Tools 的 8 个 crate 为：`xai-grok-agent`、`xai-grok-mcp`、`xai-grok-memory`、`xai-grok-pager`、`xai-grok-shell-terminal`、`xai-grok-shell`、`xai-grok-subagent-resolution`、`xai-grok-workspace`。其中 Memory 的 `MemoryBackend`/`MemoryV2Access` 是 Login → Tools 的剩余间接路径；Terminal 还需要 `TerminalBackend`、`ToolNotificationHandle`、`BashOutput` 等接口。不要声称 Login 或 Hooks 的直接去依赖已经让整个 Pi 构建闭包不含 Tools。
 - **S08a-6–8 之后的增量证据**：静态正常/构建依赖 BFS（排除 `dev-dependencies`，仍包含目标相关性未知的 manifest 边）已验证 `xai-grok-memory`、`xai-grok-login`、`xai-grok-http`、`xai-grok-config-types`、`xai-grok-hooks` **均无 Grok Tools 可达路径**。这是静态 manifest 图，不是 target-specific Cargo tree；先前“8 个直接依赖”状态已过时，Memory 现在仅在一个旧资源容器集成测试中保留 Tools dev dependency。
 - **MCP 尚不能直接断开 Tools**：其 `McpErasedTool` 实现 stock `ToolMetadata`，返回 `ToolOutput::MCP` 等实际运行时类型，并不只是 `McpElicit` wire 数据；不能为了 Graph 好看而复制假的 ToolMetadata。**Pager 仍直接引用 Tools 和 Shell，Pi Adapter 仍经 Workflow 引入 Shell。**
-- **新裁决（2026-11-16）**：grok-pi 完全不需要 MCP；Workflow 先不拆。Pi 私有 Eval MCP facade、daemon/OAuth/Token 以及所有设置入口已经从代码删除（13 个文件、2416 行），无需恢复；但 **原版 Rust MCP SDK 仍在编译闭包**，不能宣告全部清除。
 - `pdf_oxide` 只在 `xai-grok-tools` 的 stock PDF 路径使用；`aws-sdk-s3` / `aws-config` / `aws-smithy-http-client` 只在 `xai-file-utils/s3.rs` 使用；`gcloud-storage` 只用于直接 GCS 客户端及 Shell 的一个未使用 manifest 声明（已移除）。
 - stock Grok 组合根 `xai-grok-pager-bin` 的 `default` 与 `default-bazel` 显式启用 `stock-pdf`、`stock-s3`、`stock-gcs`；Pi 的 `--no-default-features --features release-dist,sandbox-enforce` 不启用这些功能。Pi 误调用原版文件上传分支将返回清晰错误，Pi agent 的工具由其独立进程执行。
 
 ## 5. 批量验证策略（用户决定：不要每拆一项就跑 CI）
-
-### MCP 精修任务：下一批只砍 stock MCP 编译边，不拆 Workflow
-
-**真实闭包来源：** `grok-pi` 的组合根引用 `xai-grok-pager` 和 `xai-grok-shell`；Pager/Adapter/Workspace 的正常依赖继续拉入 `xai-grok-shell`、`xai-grok-workspace`。后两者直接依赖 `xai-grok-mcp`，再引入 `rmcp` 与 `reqwest 0.13`。因此从 Pi 移除 Eval MCP daemon 后，Rust 编译负担仍未消除。
-
-本任务的**闭包验收条件**：Pi 的 target-specific `cargo tree -e normal,build` 不含 `xai-grok-mcp`、`rmcp`、其独占 MCP HTTP SDK 依赖；同时 stock Grok 默认构建的 MCP 正向功能保持原样。不得在同一个 crate 中仅通过运行时 `if` 禁用，也不得新增一份维护成本高的空 MCP 服务伪实现。
-
-**按边界实施（Workflow 保持原样）：**
-
-1. Workspace 先分离 stock-only 的 `mcp.rs`、`mcp_claim.rs`、Session 中 MCP state/binding、Hub MCP 注册/销毁、权限名称处理等引用；仅把跨路径确实需要的轻量 wire 类型留在已有基础包。
-2. Shell 再分离 stock-only 的 `session/mcp_*`、`extensions/mcp`、`mcp_doctor`、ACP MCP 初始化/重连/派发；不要移动 `session/workflow`，不要改 Workflow Host 的注册、历史和状态机。
-3. 将 `xai-grok-mcp` 变成具体 stock 运行时的可选依赖，由 stock binary 显式开启、Pi 的 `release-dist,sandbox-enforce` 不开启；检查 Cargo feature-unification，不允许其它普通依赖重新开启它。
-4. 最终一次集中 ARM64 构建：对 MCP SDK 负向断言；校验 Eval v2、Bash/后台任务、原生 Pager、ACP、Herdr、Dashboard、Remote TUI，另以 stock 构建和 MCP 测试验证原版未退化。
-
-**本批已完成的产品层清理**仅证明 grok-pi 不再启动/打包私有 TS MCP；Rust MCP 依赖和真实编译耗时仍待处理。本阶段不运行逐刀 CI、Cargo 或发布版本。
 
 1. **取消按提交自动 CI**：`.github/workflows/pi-slim-ci.yml` 只允许 `workflow_dispatch`，原先每小时自动续跑任务已暂停。中间改动仅静态审查、整理 Cargo.lock 和本地分组提交，先不中断开发。
 2. 待一批依赖闭包拆完，再 **手动触发一次** ARM64 CI。使用 `cargo tree --locked -p xai-grok-pager-bin --no-default-features --features release-dist,sandbox-enforce --target aarch64-apple-darwin -e normal,build`，断言 jemalloc、cryptify、`pdf_oxide`、AWS SDK、`gcloud-storage` 缺席。
