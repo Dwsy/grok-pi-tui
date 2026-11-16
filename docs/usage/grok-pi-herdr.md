@@ -29,6 +29,11 @@ The bridge reports the native Pi session identity plus authoritative `working`, 
 
    When `HERDR_ENV=1` is already present, you are inside Herdr. Do not start a nested Herdr session.
 
+   If grok-pi opens its Welcome screen, **enter or create a Pi session first**.
+   The Herdr bridge reports the root interactive session's lifecycle; a
+   prewarmed Pi process behind Welcome is not an active interactive session,
+   so Welcome alone does not emit a session/idle report.
+
 5. Verify the active pane from another shell or Herdr command pane:
 
    ```bash
@@ -75,3 +80,10 @@ No global integration is removed or rewritten, so stock `pi` can continue using 
 - The bridge fails closed: if the local socket is missing or unavailable, `grok-pi` continues normally without lifecycle reporting.
 - Check `~/.grok-pi/logs/pi-rpc-stderr.log` for `[pi-grok-herdr]` socket/API failures. The bridge validates JSON responses and retries a bounded number of times.
 - Run `herdr pane process-info --pane <PANE_ID>` and `herdr agent explain <PANE_ID> --json`. Full Header ownership requires `screen_detection_skipped=true` with `full_lifecycle_hook_authority`; a successful socket response alone does not prove Herdr accepted the lifecycle state.
+- For an offline local transport check on an ARM64 Mac with Pi installed, run
+  `python3 scripts/pi-herdr-pty-smoke.py` from a repository build tree after
+  producing `target/aarch64-apple-darwin/release-dist/grok-pi`. This launches
+  real Pi JSONL RPC in an isolated temporary session and verifies the built-in
+  bridge's session + idle messages against a **fake local Herdr Socket**. It
+  neither changes Herdr nor contacts a model provider. It does **not** prove
+  that real Herdr accepted working/blocked/idle states in an actual pane.
