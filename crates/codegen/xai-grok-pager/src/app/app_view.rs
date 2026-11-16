@@ -135,7 +135,7 @@ pub struct ExternalUiState {
     /// Info notifications that arrived before any agent view existed (Pi
     /// extension `session_start` fires while the host is still bootstrapping).
     /// `tick()` flushes them into the first active agent's scrollback so
-    /// content-bearing messages like the eval-pi-mcp URL are never dropped.
+    /// content-bearing notifications like connection details are never dropped.
     pub pending_system_messages: std::collections::VecDeque<String>,
     /// Session metadata from the external agent, rendered by the existing
     /// native SessionPicker rather than by an adapter-owned selector.

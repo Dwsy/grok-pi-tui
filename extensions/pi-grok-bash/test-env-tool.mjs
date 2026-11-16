@@ -18,7 +18,6 @@ const savedEnv = {
 	PI_GROK_EXCLUDE_TOOLS: process.env.PI_GROK_EXCLUDE_TOOLS,
 	PI_GROK_BASH_CONTROL_META: process.env.PI_GROK_BASH_CONTROL_META,
 	PI_GROK_EVAL_V2_ONLY: process.env.PI_GROK_EVAL_V2_ONLY,
-	PI_GROK_EVAL_MCP: process.env.PI_GROK_EVAL_MCP,
 	PI_PACKAGE_DIR: process.env.PI_PACKAGE_DIR,
 };
 
@@ -54,7 +53,6 @@ function createHarness(register, cwd, options = {}) {
 	delete process.env.PI_GROK_EXCLUDE_TOOLS;
 	delete process.env.PI_GROK_BASH_CONTROL_META;
 	delete process.env.PI_GROK_EVAL_V2_ONLY;
-	delete process.env.PI_GROK_EVAL_MCP;
 
 	const registeredTools = new Map();
 	const handlers = new Map();

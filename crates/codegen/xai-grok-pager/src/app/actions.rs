@@ -752,8 +752,6 @@ pub enum Action {
     SetPiEvalV2DisplayMode(String),
     /// Force Eval v2 and hide every other Pi tool (restart required).
     SetPiEvalV2Only(bool),
-    /// Authenticated loopback MCP facade over live Eval v2-only (restart).
-    SetPiEvalMcp(bool),
     /// Enable PSM's optional SQLite catalog source for Pi `/resume`.
     SetPsmResumeIndex(bool),
     /// Enable Pi tree file rollback checkpoint tracking.
@@ -1796,9 +1794,7 @@ pub enum Effect {
     /// Fetch session list for the welcome screen session picker.
     /// Rebind the single Pi RPC host to another session without replaying history.
     /// Emitted on multi-agent switch so the next prompt lands in the right Pi session.
-    RebindPiSession {
-        session_id: String,
-    },
+    RebindPiSession { session_id: String },
     FetchSessionList {
         /// The picker this fetch was issued for; the result routes back to this host's storage only.
         host: crate::views::session_picker_surface::SessionPickerHost,

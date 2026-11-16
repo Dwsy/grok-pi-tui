@@ -440,7 +440,7 @@ fn info_notification_before_first_agent_is_queued_then_flushed() {
     // bootstrapping, so the info notification arrives with no agent view.
     let mut app = test_app();
     app.show_external_notification(
-        "eval-pi-mcp binding ID: x\nMCP URL (secret): http://127.0.0.1:1/mcp?key=y",
+        "Private connection binding: x\nSecret URL: http://127.0.0.1:1/?key=y",
         Some("info"),
     );
     assert_eq!(app.external_ui.pending_system_messages.len(), 1);

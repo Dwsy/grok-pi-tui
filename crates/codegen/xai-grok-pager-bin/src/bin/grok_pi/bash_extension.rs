@@ -88,53 +88,6 @@ pub(super) fn write_bash_extension() -> Result<BashExtension> {
         include_str!("../../../../../../extensions/pi-grok-bash/env-tool.ts"),
     )?;
 
-    write_source_file(
-        source_dir.path(),
-        "eval-pi-mcp.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/eval-pi-mcp.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "eval-token-count.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/eval-token-count.ts"),
-    )?;
-    for (name, source) in [
-        (
-            "mcpeval-daemon.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-daemon.ts"),
-        ),
-        (
-            "mcpeval-client.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-client.ts"),
-        ),
-        (
-            "mcpeval-protocol.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-protocol.ts"),
-        ),
-        (
-            "mcpeval-events.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-events.ts"),
-        ),
-        (
-            "mcpeval-registry.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-registry.ts"),
-        ),
-        (
-            "mcpeval-mcp-facade.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-mcp-facade.ts"),
-        ),
-        (
-            "mcpeval-web.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-web.ts"),
-        ),
-        (
-            "mcpeval-oauth.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-oauth.ts"),
-        ),
-    ] {
-        write_source_file(source_dir.path(), name, source)?;
-    }
-
     let control_meta = tempfile::Builder::new()
         .prefix("pi-grok-bash-control-")
         .suffix(".json")
@@ -168,13 +121,15 @@ mod tests {
             std::fs::read_to_string(source_dir.join("shared.ts")).expect("read shared module");
         let tool_bridge_source = std::fs::read_to_string(source_dir.join("tool-bridge.ts"))
             .expect("read tool bridge module");
-        let env_module_source = std::fs::read_to_string(source_dir.join("env-tool.ts"))
-            .expect("read env tool module");
-        let eval_mcp_source = std::fs::read_to_string(source_dir.join("eval-pi-mcp.ts"))
-            .expect("read Eval MCP module");
-        let token_count_source = std::fs::read_to_string(source_dir.join("eval-token-count.ts"))
-            .expect("read token counter module");
-        for module in [
+        let env_module_source =
+            std::fs::read_to_string(source_dir.join("env-tool.ts")).expect("read env tool module");
+        // Pi no longer exposes Eval over MCP. The extension must not embed a
+        // daemon, OAuth layer, or a second MCP SDK / HTTP server.
+        assert!(!source.contains("eval-pi-mcp"));
+        assert!(!source.contains("registerEvalPi"));
+        for removed in [
+            "eval-pi-mcp.ts",
+            "eval-token-count.ts",
             "mcpeval-daemon.ts",
             "mcpeval-client.ts",
             "mcpeval-protocol.ts",
@@ -185,11 +140,10 @@ mod tests {
             "mcpeval-oauth.ts",
         ] {
             assert!(
-                source_dir.join(module).is_file(),
-                "missing embedded {module}"
+                !source_dir.join(removed).exists(),
+                "unexpected MCP module embedded in Pi: {removed}"
             );
         }
-
         assert!(source.contains("const nativeBash = createBashToolDefinition"));
         assert!(source.contains("pi.registerTool({"));
         assert!(source.contains("name: \"eval\""));
@@ -202,10 +156,6 @@ mod tests {
         assert!(env_module_source.contains("createEnvTool"));
         assert!(env_module_source.contains("SESSION_ENV_ENTRY_TYPE"));
         assert!(env_module_source.contains("parseEnvFile"));
-        assert!(source.contains("from \"./eval-pi-mcp.ts\""));
-        assert!(eval_mcp_source.contains("startEvalPiMcp"));
-        assert!(eval_mcp_source.contains("from \"./eval-token-count.ts\""));
-        assert!(token_count_source.contains("class EvalTokenCounter"));
         assert!(source.contains("invokeEvalHostCall"));
         assert!(source.contains("is_background"));
         assert!(source.contains("name: \"get_task_output\""));
