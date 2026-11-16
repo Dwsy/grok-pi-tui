@@ -64,6 +64,22 @@ jobs:
           fi
           echo "Verified: no stock jemalloc, cryptify, pdf_oxide, AWS SDK, or gcloud-storage compile dependencies"
 
+      - name: Check Workspace builds without stock MCP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo tree --locked -p xai-grok-workspace \
+            --no-default-features --features sandbox-enforce \
+            --target aarch64-apple-darwin -e normal,build \
+            > "$RUNNER_TEMP/workspace-no-stock-mcp.txt"
+          if grep -E 'xai-grok-mcp v[0-9]|rmcp v[0-9]|xai-computer-hub-mcp-adapter v[0-9]' "$RUNNER_TEMP/workspace-no-stock-mcp.txt"; then
+            echo "Workspace still pulls the Grok MCP runtime when stock-mcp is off" >&2
+            exit 1
+          fi
+          cargo check --locked -p xai-grok-workspace --lib \
+            --no-default-features --features sandbox-enforce \
+            --target aarch64-apple-darwin
+
       - name: Build ARM64 grok-pi (release-dist)
         shell: bash
         run: |
