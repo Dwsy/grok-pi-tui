@@ -171,3 +171,14 @@ Shell 的关键耦合包括：
 - **手动验收补强（未执行）**：`.github/workflows/pi-slim-ci.yml` 新增 `xai-grok-shell --no-default-features` 的 `cargo tree` 负向检查、ARM64 `cargo check --lib` 和 `cargo test --lib`。保持 `workflow_dispatch`，不触发逐提交 CI。
 
 **当前判断不变**：源码静态检查不等于 Rust type check；`grok-pi` 的 MCP 编译闭包必须等到目标 ARM64 `cargo tree` 与完整构建、stock 正向回归通过之后才能标为完成。仍不拆 Workflow、不改 Pi Eval MCP、不触发 CI 或发布。
+
+## 11. 增量进度：S08a-15（2026-11-16，待编译）
+
+在保持历史快照不变的基础上，本批针对 Shell 的普通 Session 路径找到了尚未隔离的 stock-only MCP 方法调用：
+
+- **ACP Session 共享方法归位**：`requires_full_mcp_wait`、`apply_attach_policy` 和只读取工具元数据的 `connected_server_summaries` 不属于原版 MCP transport，已从 `acp_session_impl/mcp.rs` 移至常规 `session_setup.rs`。对通用 Session Attach 保留原来的提示和策略字段；仅在 stock 下重置 MCP connecting reminder。
+- **Prompt / Context**：无 stock 模式下不请求 MCP 握手，不调用 MCP 公告；`/context` 不出现 MCP 分类，session-start 统计仍保留完整技能/AGENTS.md/Workflow 信息，但 MCP 文本为空、服务器数为 0。
+- **压缩、回退和工具执行**：仅在 stock 模式下重置失败 MCP 公告或重试 MCP 客户端；通用 compaction / rewind / 普通工具执行继续保留。
+- **测试**：原版失败服务器公告重置测试限定 stock；新增无 stock MCP 的 `usage_categories` 测试，检查技能行仍可生成而 MCP 行缺席。**测试代码已写入，但按用户约束尚未运行**。
+
+**风险和验收**：本批只完成格式、差异、feature 门控的静态检查。完整 `xai-grok-shell --no-default-features`、`grok-pi` ARM64 和 stock Grok 正向 Cargo tree/check/test、Pi RPC/Herdr/Eval MCP/Workflow 的二进制回归仍必须集中执行；本批不得宣称已经通过。
