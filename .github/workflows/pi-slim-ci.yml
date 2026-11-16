@@ -169,6 +169,14 @@ jobs:
         shell: bash
         run: python3 scripts/pi-native-pty-smoke.py target/aarch64-apple-darwin/release-dist/grok-pi
 
+      - name: Test Pi Adapter RPC Goal and Remote TUI contract
+        if: runner.arch == 'ARM64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib -p pi-grok-adapter \
+            --no-default-features --target aarch64-apple-darwin -j 6
+
       - name: Check renderer no longer imports stock tools
         shell: bash
         run: |

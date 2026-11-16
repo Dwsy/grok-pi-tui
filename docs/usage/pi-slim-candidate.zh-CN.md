@@ -11,8 +11,10 @@ Pi-only 瘦身分支 `refactor/pi-slim-20261116` 的测试产物只通过显式�
 1. Pi-only / stock Grok 的依赖闭包断言；Workspace、Shell / 测试模块的编译检查。
 2. ARM64 `release-dist` 二进制构建、`--version`、`--help`、能力清单的真实执行。
 3. 原生 Pager + 模拟 Pi JSONL RPC 的 PTY 冒烟测试。
-4. Herdr 内置扩展真实 Unix Socket 的生命周期测试（`idle/working/blocked`）。
-5. 工具共享契约、原生 diff、renderer 测试。
+4. Pi Adapter 原生 Rust `--lib` 全套单测（当前基线 212 项，含
+   RPC、Goal、Remote TUI 及跨会话隔离）。
+5. Herdr 内置扩展真实 Unix Socket 的生命周期测试（`idle/working/blocked`）。
+6. 工具共享契约、原生 diff、renderer 测试。
 
 **仅上述全部通过时**，上传 `pi-slim-macos-arm64-<full Git SHA>` Actions artifact，
 其中有 `grok-pi-macos-arm64-pi-slim-<short SHA>.tar.gz`、
