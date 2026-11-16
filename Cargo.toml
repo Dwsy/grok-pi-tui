@@ -408,6 +408,20 @@ strip = false
 debug = 1
 split-debuginfo = "off"
 
+# Experimental, opt-in Pi-only distribution build. Keep stock release-dist
+# unchanged. In the Pi RPC host, Grok's tool implementations are not the
+# execution path, yet their monolithic crate dominates release codegen.
+# Measure compilation and native behavior before choosing this for CI.
+[profile.pi-slim]
+inherits = "release-dist"
+lto = false
+codegen-units = 16
+debug = 0
+strip = false
+
+[profile.pi-slim.package.xai-grok-tools]
+opt-level = 1
+
 # Production profile for latency-sensitive x-product services (VF, home-mixer).
 # Thin LTO gives ~90% of full LTO benefit at significantly faster link time.
 # Keeps symbols + line tables for prod debuggability (perf, flamegraph, stack traces).
