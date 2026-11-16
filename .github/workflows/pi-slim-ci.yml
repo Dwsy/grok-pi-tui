@@ -4,6 +4,15 @@ name: Pi slim ARM64 CI (non-release)
 # This job never publishes releases.
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS host; the output target remains aarch64-apple-darwin
+        required: true
+        default: macos-15-intel
+        type: choice
+        options:
+          - macos-15-intel
+          - macos-15
 
 permissions:
   contents: read
@@ -15,7 +24,7 @@ concurrency:
 jobs:
   arm64:
     name: ARM64 dependency and release-build validation
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 150
     env:
       GROK_PI_VERSION: "0.0.0-slim-ci"
@@ -25,6 +34,10 @@ jobs:
       CARGO_PROFILE_RELEASE_DIST_STRIP: "none"
       CARGO_INCREMENTAL: "0"
     steps:
+      - name: Record build host architecture
+        run: |
+          uname -m
+          echo "Rust target: aarch64-apple-darwin"
       - name: Check out exact commit
         uses: actions/checkout@v4
         with:
@@ -46,7 +59,7 @@ jobs:
       - name: Restore and save slimming-branch cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: pi-slim-aarch64-apple-darwin
+          shared-key: pi-slim-aarch64-apple-darwin-${{ inputs.runner }}
           cache-workspace-crates: "true"
           cache-bin: "false"
 
