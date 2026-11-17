@@ -14,18 +14,28 @@ on:
           - macos-15-intel
           - macos-15
           - macos-26
+      scope:
+        description: Run the candidate build, the full Shell tests, or both
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - shell-only
+          - candidate-only
 
 permissions:
   contents: read
 
 concurrency:
   # Intel cross-checks must not prevent a native ARM64 candidate from starting.
-  group: pi-slim-${{ github.ref }}-${{ inputs.runner }}
+  group: pi-slim-${{ github.ref }}-${{ inputs.runner }}-${{ inputs.scope }}
   cancel-in-progress: false
 
 jobs:
   arm64:
     name: ARM64 dependency and release-build validation
+    if: inputs.scope != 'shell-only'
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 150
     env:
@@ -300,13 +310,17 @@ jobs:
 
   shell_tests:
     name: Native Shell full regression (independent of candidate)
-    if: inputs.runner != 'macos-15-intel'
+    if: inputs.runner != 'macos-15-intel' && inputs.scope != 'candidate-only'
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 80
     env:
       CARGO_BUILD_JOBS: '2'
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
+      # libtest threads default to ~2 MiB but production SessionActor threads
+      # use 8 MiB (acp_session_impl/spawn.rs). An actual turn future needs the
+      # production-sized stack; this does not skip or loosen any assertions.
+      RUST_MIN_STACK: '8388608'
     steps:
       - name: Check out exact commit
         uses: actions/checkout@v5
@@ -340,6 +354,16 @@ jobs:
           cargo test --locked --lib -p xai-grok-shell \
             --no-default-features --features test-support \
             --target aarch64-apple-darwin -j 2 --no-run
+
+      - name: Verify slash-authority turn regression on production-sized stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib -p xai-grok-shell \
+            --no-default-features --features test-support \
+            --target aarch64-apple-darwin -j 2 \
+            session::acp_session::slash_authority_turn_tests \
+            -- --test-threads=1
 
       - name: Run full Shell suite with a 30-minute watchdog
         shell: bash

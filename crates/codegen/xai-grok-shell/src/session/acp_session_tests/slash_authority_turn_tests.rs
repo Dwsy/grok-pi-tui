@@ -206,7 +206,11 @@ async fn actor_with_sampler(
 }
 
 async fn run_parent_turn(actor: &Arc<SessionActor>, request: TurnInputRequest) -> PromptTurnResult {
-    tokio::time::timeout(Duration::from_secs(30), actor.handle_turn_input(request))
+    // Avoid embedding the large turn-state future in the timeout's stack frame.
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        Box::pin(actor.handle_turn_input(request)),
+    )
         .await
         .expect("parent turn timed out")
 }
