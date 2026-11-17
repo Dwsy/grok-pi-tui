@@ -629,6 +629,7 @@ pub(super) fn dispatch_send_prompt_submission(
                     prompt_cursor: prompt_cursor_from_app.clone(),
                     auto_mode_gate: auto_mode_gate_from_app,
                     ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
+                    ask_user_question_timeout_secs: None,
                     voice_stt_language: voice_stt_language_from_app,
                 },
             };
