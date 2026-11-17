@@ -32,6 +32,7 @@ pub struct WorkflowAgentSpawnRequest {
     pub parent_session_id: String,
     pub resume_from: Option<String>,
     pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub capability_mode: Option<SubagentCapabilityMode>,
     pub isolation: Option<SubagentIsolationMode>,
     pub fork_context: bool,
@@ -107,6 +108,7 @@ impl WorkflowAgentBackend for GrokSubagentBackend {
             cwd: None,
             runtime_overrides: SubagentRuntimeOverrides {
                 model: request.model,
+                reasoning_effort: request.reasoning_effort,
                 output_token_budget: None,
                 model_override_provenance: ModelOverrideProvenance::Tool,
                 capability_mode: request.capability_mode,

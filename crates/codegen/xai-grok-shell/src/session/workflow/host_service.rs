@@ -7,8 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use xai_grok_tools::implementations::grok_build::task::backend::{ChannelBackend, SubagentBackend};
 use xai_grok_tools::implementations::grok_build::task::types::{
-    ModelOverrideProvenance, SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
-    SubagentOwner, SubagentRequest, SubagentRuntimeOverrides,
+    SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
 };
 use xai_workflow::{AgentOpts, AgentResult, BudgetState, HostError, WorkflowHostRequest};
 
@@ -530,37 +529,6 @@ impl HostService {
         };
         let cancel_token = CancellationToken::new();
 
-        let spawn_once =
-            |child_id: String, prompt: String, resume_from: Option<String>, fork_context: bool| {
-                SubagentRequest {
-                    id: child_id,
-                    prompt,
-                    description: description.clone(),
-                    subagent_type: subagent_type.clone(),
-                    parent_session_id: self.params.parent_session_id.clone(),
-                    parent_prompt_id: None,
-                    resume_from,
-                    cwd: None,
-                    runtime_overrides: SubagentRuntimeOverrides {
-                        model: opts.model.clone(),
-                        reasoning_effort: reasoning_effort.map(|effort| effort.to_string()),
-                        output_token_budget: None,
-                        model_override_provenance: ModelOverrideProvenance::Tool,
-                        capability_mode,
-                        isolation,
-                        output_schema: None,
-                        ..Default::default()
-                    },
-                    run_in_background: false,
-                    surface_completion: false,
-                    await_to_completion: true,
-                    fork_context,
-                    owner: SubagentOwner::workflow(&self.params.run_id),
-                    cancel_token: cancel_token.clone(),
-                    spawn_root: Default::default(),
-                }
-            };
-
         let mut attempts: u32 = 0;
         let mut total_tokens: u64 = 0;
         let mut total_duration: u64 = 0;
@@ -593,6 +561,7 @@ impl HostService {
                 parent_session_id: self.params.parent_session_id.clone(),
                 resume_from: resume_child,
                 model: opts.model.clone(),
+                reasoning_effort: reasoning_effort.as_ref().map(ToString::to_string),
                 capability_mode,
                 isolation,
                 fork_context,

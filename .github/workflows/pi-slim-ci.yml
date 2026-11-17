@@ -365,6 +365,22 @@ jobs:
             session::acp_session::slash_authority_turn_tests \
             -- --test-threads=1
 
+      - name: Verify unified-list and workflow regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for filter in \
+            session::unified_list::tests::parse_list_req_preserves_kind_when_process_chat_mode_is_disabled \
+            session::workflow::manager::tests::launch_effort_applies_to_children_and_child_override_wins \
+            session::workflow::manager::tests::resume_reuses_immutable_launch_effort \
+            session::workflow::registry::tests::save_through_symlinked_session_root_stays_in_canonical_project
+          do
+            cargo test --locked --lib -p xai-grok-shell \
+              --no-default-features --features test-support \
+              --target aarch64-apple-darwin -j 2 "$filter" \
+              -- --exact --test-threads=1
+          done
+
       - name: Run full Shell suite with a 30-minute watchdog
         shell: bash
         run: |

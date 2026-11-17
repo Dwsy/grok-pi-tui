@@ -971,63 +971,33 @@ mod tests {
             );
         }
     }
-    /// `parse_list_req` forces the conversations-only `kind` exactly when process chat mode is on; otherwise the client request is untouched.
+    /// Pi slim disables the process-wide Chat-mode lane, even if the legacy
+    /// environment variable is set. Parsing must preserve client filters.
     #[test]
     #[serial_test::serial]
-    fn parse_list_req_forces_kind_under_process_chat_mode_only() {
+    fn parse_list_req_preserves_kind_when_process_chat_mode_is_disabled() {
         use crate::agent::chat_modes::GROK_CHAT_MODE_ENV;
-        let raw = serde_json::json!({
-            "_meta": { "x.ai/facetFilters": { "kind": ["build"], "starred": [true] } },
-        })
-        .to_string();
-        {
-            let _off = xai_grok_test_support::EnvGuard::unset(GROK_CHAT_MODE_ENV);
-            let req = parse_list_req(&raw).expect("parse");
-            let parsed = ParsedMeta::parse(req.meta.as_ref());
-            assert_eq!(
-                parsed.facet_filters.get(KIND_FACET_KEY),
-                Some(&vec![serde_json::json!("build")]),
-                "non-chat: client kind filter untouched"
-            );
-        }
-        {
-            let _on = xai_grok_test_support::EnvGuard::set(GROK_CHAT_MODE_ENV, "1");
-            let req = parse_list_req(&raw).expect("parse");
-            let parsed = ParsedMeta::parse(req.meta.as_ref());
-            let expected_build = if cfg!(feature = "local-workspace") {
-                Some(&vec![serde_json::json!("build")])
+        for enabled in [false, true] {
+            let _mode = if enabled {
+                xai_grok_test_support::EnvGuard::set(GROK_CHAT_MODE_ENV, "1")
             } else {
-                Some(&vec![serde_json::json!("build")])
+                xai_grok_test_support::EnvGuard::unset(GROK_CHAT_MODE_ENV)
             };
-            assert_eq!(
-                parsed.facet_filters.get(KIND_FACET_KEY),
-                expected_build,
-                "client kind=build under process chat mode"
-            );
-            assert_eq!(
-                parsed.facet_filters.get("starred"),
-                Some(&vec![serde_json::json!(true)]),
-                "other facets pass through"
-            );
-            let req = parse_list_req("{}").expect("parse");
-            let parsed = ParsedMeta::parse(req.meta.as_ref());
-            let expected = None;
-            assert_eq!(
-                parsed.facet_filters.get(KIND_FACET_KEY),
-                expected,
-                "absent client kind still forces chat under process chat mode"
-            );
-            for bad in [
+            assert!(!crate::agent::chat_modes::process_chat_mode_enabled());
+            for wire in [
+                serde_json::json!({}),
+                serde_json::json!({
+                    "_meta": { "x.ai/facetFilters": { "kind": ["build"], "starred": [true] } },
+                }),
                 serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": [] } } }),
                 serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": null } } }),
                 serde_json::json!({ "_meta": { "x.ai/facetFilters": { "kind": ["other"] } } }),
             ] {
-                let req = parse_list_req(&bad.to_string()).expect("parse");
-                let parsed = ParsedMeta::parse(req.meta.as_ref());
+                let req = parse_list_req(&wire.to_string()).expect("parse");
                 assert_eq!(
-                    parsed.facet_filters.get(KIND_FACET_KEY),
-                    expected,
-                    "empty/null/unknown kind must still force chat: {bad}"
+                    req.meta,
+                    wire.get("_meta").cloned(),
+                    "slim Shell must preserve client metadata even if {GROK_CHAT_MODE_ENV} is set: {wire}"
                 );
             }
         }
