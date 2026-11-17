@@ -68,11 +68,17 @@ fn tool_results_by_call_id(conv: &[ConversationItem]) -> HashMap<String, Vec<Str
 /// A mid-turn system reminder must not fabricate a cancel `tool_result` that duplicates a live tool's result.
 /// Here the reminder is the stationarity nudge after 8 identical tool calls.
 /// The regression: the nudge was pushed after the assistant `tool_use` was committed and before `execute_tool_calls`.
-#[tokio::test(flavor = "current_thread")]
-async fn mid_turn_user_injection_must_not_duplicate_tool_results_for_one_tool_use_id() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn mid_turn_user_injection_must_not_duplicate_tool_results_for_one_tool_use_id() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            let local = tokio::task::LocalSet::new();
+            rt.block_on(local.run_until(async {
             let server = MockInferenceServer::start().await.expect("mock inference server");
             for i in 1..=SCRIPTED_IDENTICAL_CALLS {
                 server.enqueue_response(
@@ -158,7 +164,7 @@ async fn mid_turn_user_injection_must_not_duplicate_tool_results_for_one_tool_us
             ))];
             let outcome = tokio::time::timeout(
                 Duration::from_secs(60),
-                actor.handle_prompt(
+                Box::pin(actor.handle_prompt(
                     "chat-history-integrity",
                     prompt_blocks,
                     PromptMode::Agent,
@@ -171,7 +177,7 @@ async fn mid_turn_user_injection_must_not_duplicate_tool_results_for_one_tool_us
                     None,
                     None,
                     None,
-                ),
+                )),
             )
             .await
             .expect("turn must finish within timeout");
@@ -233,6 +239,9 @@ async fn mid_turn_user_injection_must_not_duplicate_tool_results_for_one_tool_us
                  run; deleting the nudge is not a valid fix for chat-history corruption. \
                  conversation={conv:#?}"
             );
+            }));
         })
-        .await;
+        .expect("spawn test thread")
+        .join()
+        .expect("test thread panicked");
 }

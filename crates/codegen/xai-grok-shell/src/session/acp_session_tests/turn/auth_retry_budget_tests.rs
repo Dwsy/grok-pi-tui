@@ -404,11 +404,10 @@ fn fail_closed_401_is_uncharged_and_turn_survives() {
 
 /// Rule: kill switch off, a recovered fail-closed 401 resubmits un-parked (no
 /// prepare/preflight skips) — full pre-park behavior on rollback.
-#[tokio::test(flavor = "current_thread")]
-async fn park_disabled_recovered_401_still_resubmits() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn park_disabled_recovered_401_still_resubmits() {
+    on_session_stack(|| {
+        run_current_thread(false, || async {
             let server = MockInferenceServer::start_with_required_auth(
                 vec![MockModelEntry::new("test")],
                 FRESH_TOKEN,
@@ -464,8 +463,8 @@ async fn park_disabled_recovered_401_still_resubmits() {
                 10,
                 "flag off must restore every pre-park refresh attempt"
             );
-        })
-        .await;
+        });
+    });
 }
 
 /// Real credential rejections must still terminate: the escalating budget exhausts after `MAX_RETRIES` when every request carries a rejected bearer.
@@ -566,11 +565,10 @@ impl xai_grok_login::refresh::TokenRefresher for DeferredRefreshNeverLands {
 /// Rule, end to end: a credential-less 401 with transiently-failing recovery parks and the
 /// turn completes once a refresh lands. Deliberate exclusions (budgeted children,
 /// compact-path 401s) stay terminal.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn deferred_recovery_credential_less_401_parks_and_survives() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn deferred_recovery_credential_less_401_parks_and_survives() {
+    on_session_stack(|| {
+        run_current_thread(true, || async {
             let server = MockInferenceServer::start_with_required_auth(
                 vec![MockModelEntry::new("test")],
                 FRESH_TOKEN,
@@ -654,17 +652,16 @@ async fn deferred_recovery_credential_less_401_parks_and_survives() {
                 AuthRetrySchedule::MAX_UNCHARGED_RESUBMITS,
                 &["Re-authenticating after 401", "carried no credential"],
             );
-        })
-        .await;
+        });
+    });
 }
 
 /// Rule: budgeted workflow children are excluded from the park — the output-budget gate
 /// fails the turn closed before the auth arms run.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn budgeted_workflow_child_credential_less_401_stays_terminal() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn budgeted_workflow_child_credential_less_401_stays_terminal() {
+    on_session_stack(|| {
+        run_current_thread(true, || async {
             let server = MockInferenceServer::start_with_required_auth(
                 vec![MockModelEntry::new("test")],
                 "never-issued-token",
@@ -708,17 +705,16 @@ async fn budgeted_workflow_child_credential_less_401_stays_terminal() {
                 0,
                 "the output-budget gate runs before any recovery dispatch"
             );
-        })
-        .await;
+        });
+    });
 }
 
 /// Rule: a transient Api 5xx mid-park proves nothing about the credential — the next
 /// credential-less 401 re-parks without a fresh recovery dispatch.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn api_5xx_during_park_does_not_unpark_or_redispatch() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn api_5xx_during_park_does_not_unpark_or_redispatch() {
+    on_session_stack(|| {
+        run_current_thread(true, || async {
             let server = MockInferenceServer::start_with_required_auth(
                 vec![MockModelEntry::new("test")],
                 FRESH_TOKEN,
@@ -771,18 +767,17 @@ async fn api_5xx_during_park_does_not_unpark_or_redispatch() {
                 terminal_failure(&updates).is_none(),
                 "a surviving turn must not report a terminal retryState"
             );
-        })
-        .await;
+        });
+    });
 }
 
 /// Rule: a parked resubmit's 429 waits never re-prepare — the mid-wait
 /// re-prepare is park-gated, else each wait drives one refresh through the
 /// shared budget. Subagent-shaped: only subagent turns get a wait budget.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn parked_429_wait_does_not_drive_refreshes() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn parked_429_wait_does_not_drive_refreshes() {
+    on_session_stack(|| {
+        run_current_thread(true, || async {
             let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
                 .await
                 .expect("mock inference server");
@@ -837,17 +832,16 @@ async fn parked_429_wait_does_not_drive_refreshes() {
                 0,
                 "no recovery dispatch may run inside the rate-limit wait loop"
             );
-        })
-        .await;
+        });
+    });
 }
 
 /// Rule: two-pass prefire must not re-arm while parked — pass-1 drives auth, and each
 /// spawn costs an extra credential-less send the runaway guard never counts.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn parked_turn_does_not_respawn_two_pass_prefire() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn parked_turn_does_not_respawn_two_pass_prefire() {
+    on_session_stack(|| {
+        run_current_thread(true, || async {
             let server = MockInferenceServer::start_with_required_auth(
                 vec![MockModelEntry::new("test")],
                 FRESH_TOKEN,
@@ -922,18 +916,17 @@ async fn parked_turn_does_not_respawn_two_pass_prefire() {
                 pass1_sends, 1,
                 "parked cycles must not re-spawn prefire pass-1"
             );
-        })
-        .await;
+        });
+    });
 }
 
 /// Rule: parked turns must not fire the pre-sampling auto-compact — the
 /// credential-less compact 401s into `surface_compact_auth_failure` and aborts
 /// the very turn the park is keeping alive.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn parked_turn_past_compact_threshold_does_not_auto_compact() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn parked_turn_past_compact_threshold_does_not_auto_compact() {
+    on_session_stack(|| {
+        run_current_thread(true, || async {
             let server = MockInferenceServer::start_with_required_auth(
                 vec![MockModelEntry::new("test")],
                 FRESH_TOKEN,
@@ -1008,8 +1001,8 @@ async fn parked_turn_past_compact_threshold_does_not_auto_compact() {
                 compact_sends, 0,
                 "parked iterations must not send a credential-less compact"
             );
-        })
-        .await;
+        });
+    });
 }
 
 /// Fails transiently until `recovers` flips, then mints [`FRESH_TOKEN`]; counts
@@ -1046,11 +1039,10 @@ impl xai_grok_login::refresh::TokenRefresher for DeferredThenRecovers {
 
 /// Rule: a `Sent` rejection leaves the park path onto the charged budget (terminating
 /// after `MAX_RETRIES`) — pins the `is_missing()` conjunct of the re-park arm.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn parked_turn_authenticated_rejection_dispatches_and_exhausts_charged() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn parked_turn_authenticated_rejection_dispatches_and_exhausts_charged() {
+    on_session_stack(|| {
+        run_current_thread(true, || async {
             // The server accepts a token nobody mints: 401s before and after the landing.
             let server = MockInferenceServer::start_with_required_auth(
                 vec![MockModelEntry::new("test")],
@@ -1131,17 +1123,16 @@ async fn parked_turn_authenticated_rejection_dispatches_and_exhausts_charged() {
             let (error_type, message) = terminal_failure(&updates)
                 .expect("an exhausted turn must report a terminal retryState");
             assert_eq!(error_type, "auth", "{message}");
-        })
-        .await;
+        });
+    });
 }
 
 /// Rule: with a refresh that never lands, the runaway guard fails the turn with a
 /// client-visible terminal retryState — not an infinite loop.
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn never_recovering_credential_less_401_hits_runaway_guard() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
+#[test]
+fn never_recovering_credential_less_401_hits_runaway_guard() {
+    on_session_stack(|| {
+        run_current_thread(true, || async {
             let server = MockInferenceServer::start_with_required_auth(
                 vec![MockModelEntry::new("test")],
                 "never-issued-token",
@@ -1191,6 +1182,6 @@ async fn never_recovering_credential_less_401_hits_runaway_guard() {
                 AuthRetrySchedule::MAX_UNCHARGED_RESUBMITS,
                 &["Re-authenticating after 401", "carried no credential"],
             );
-        })
-        .await;
+        });
+    });
 }
