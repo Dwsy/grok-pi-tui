@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Tool call density** — F2 → Appearance → Tool calls → **Tool call density** (`[ui].tool_call_density`) and `/density` mirror the native Grok tool-call density: five levels (Detailed, Diff focus, Balanced, Grouped, Compact) decide whether edits render a diff or a one-line `+N/-M` row, whether shell commands keep their output preview, and which tool runs fold into a single summary row. Switching a level re-materializes the current transcript. The retired `collapsed_edit_blocks` and `group_tool_verbs` settings migrate to the closest level on first read.
+
 ### Changed
 
 - **Apple Silicon-only standalone macOS builds** — new beta tags, the macOS release-cache warmer, and the independent macOS compile lab default to ARM64 only. Stable releases retain all six platform targets; explicitly requested manual release targets remain supported.

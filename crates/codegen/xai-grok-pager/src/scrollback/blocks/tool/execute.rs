@@ -722,6 +722,10 @@ impl BlockContent for ExecuteToolCallBlock {
     /// Minimum fold mode used by collapse and the running expand chevron. Agent tools default to Collapsed (title
     /// only), no auto-expand. When finished, Collapsed is always the true minimum (user can fold to title-only).
     fn collapse_mode(&self, is_running: bool) -> DisplayMode {
+        // Every density below Detailed folds shells to their one-line row, custom `!` bash included.
+        if crate::appearance::cache::load_tool_call_density().shells_collapsed() {
+            return DisplayMode::Collapsed;
+        }
         if self.bash_mode && is_running {
             DisplayMode::Truncated
         } else {
@@ -729,26 +733,27 @@ impl BlockContent for ExecuteToolCallBlock {
         }
     }
 
-    /// Agent tools start Collapsed (no auto-expand of stdout). User `!` bash defaults to Truncated so a kind-upgrade or
-    /// first materialize lands Truncated. `finish_running` then expands because the mode is not Collapsed. Same-kind
-    /// completion preserves Truncated rather than resetting.
+    /// At Detailed ("shells with output") every command starts on the output preview.
+    /// Compact densities start folded to the one-line row and stay there.
     fn default_display_mode(&self) -> DisplayMode {
-        if self.bash_mode {
-            DisplayMode::Truncated
-        } else {
+        if crate::appearance::cache::load_tool_call_density().shells_collapsed() {
             DisplayMode::Collapsed
+        } else {
+            DisplayMode::Truncated
         }
     }
 
     fn finished_display_mode(&self) -> Option<DisplayMode> {
+        if crate::appearance::cache::load_tool_call_density().shells_collapsed() {
+            // Compact densities never snap open: a folded row stays folded.
+            return None;
+        }
         if self.bash_mode {
             // Interactive bash: full output on finish, like a terminal; the streaming preview would silently drop the middle lines
             Some(DisplayMode::Expanded)
         } else {
-            // Agent tools: do **not** force a mode on finish.
-            // - Never auto-expanded at start (default Collapsed).
-            // - If the user manually expanded while running, keep that mode (no snap-shut). If they left it collapsed, it stays collapsed.
-            None
+            // Agent tools keep the preview row; the user can still expand for the full output.
+            Some(DisplayMode::Truncated)
         }
     }
 
@@ -1063,15 +1068,18 @@ mod tests {
         assert!(!no_desc.is_foldable());
     }
 
+    /// Density owns the shell default mode: Detailed shows the output preview,
+    /// every compact level stores a one-line row and never auto-opens on finish.
     #[test]
-    fn agent_execute_does_not_auto_expand_and_preserves_fold_on_finish() {
+    fn execute_display_modes_follow_tool_call_density() {
+        use crate::appearance::cache::{ToolCallDensity, set_tool_call_density};
+
+        set_tool_call_density(ToolCallDensity::Detailed);
         let agent = ExecuteToolCallBlock::new("echo hi").with_description("say hi");
-        // No auto-expand: start collapsed (title only).
-        assert_eq!(agent.default_display_mode(), DisplayMode::Collapsed);
+        assert_eq!(agent.default_display_mode(), DisplayMode::Truncated);
         assert_eq!(agent.collapse_mode(true), DisplayMode::Collapsed);
         assert_eq!(agent.collapse_mode(false), DisplayMode::Collapsed);
-        // Finish does not force open or shut; preserve user choice (None)
-        assert_eq!(agent.finished_display_mode(), None);
+        assert_eq!(agent.finished_display_mode(), Some(DisplayMode::Truncated));
 
         let mut bash = ExecuteToolCallBlock::new("ls");
         bash.bash_mode = true;
@@ -1081,18 +1089,26 @@ mod tests {
         assert_eq!(bash.collapse_mode(true), DisplayMode::Truncated);
         assert_eq!(bash.collapse_mode(false), DisplayMode::Collapsed);
 
-        let failed = ExecuteToolCallBlock::new("false").with_error("exit 1");
-        assert_eq!(failed.default_display_mode(), DisplayMode::Collapsed);
-        assert_eq!(failed.finished_display_mode(), None);
+        set_tool_call_density(ToolCallDensity::CompactShells);
+        let agent = ExecuteToolCallBlock::new("echo hi").with_description("say hi");
+        assert_eq!(agent.default_display_mode(), DisplayMode::Collapsed);
+        assert_eq!(agent.collapse_mode(true), DisplayMode::Collapsed);
+        assert_eq!(agent.finished_display_mode(), None);
+        let mut bash = ExecuteToolCallBlock::new("ls");
+        bash.bash_mode = true;
+        assert_eq!(bash.default_display_mode(), DisplayMode::Collapsed);
+        assert_eq!(bash.finished_display_mode(), None);
+        assert_eq!(bash.collapse_mode(true), DisplayMode::Collapsed);
 
-        // Failed user bash keeps the Truncated default: a Collapsed default would defeat the finish expand (see default_display_mode)
-        let mut failed_bash = ExecuteToolCallBlock::new("pytest").with_error("exit 2");
-        failed_bash.bash_mode = true;
-        assert_eq!(failed_bash.default_display_mode(), DisplayMode::Truncated);
-        assert_eq!(
-            failed_bash.finished_display_mode(),
-            Some(DisplayMode::Expanded)
-        );
+        let failed_bash = {
+            let mut b = ExecuteToolCallBlock::new("pytest").with_error("exit 2");
+            b.bash_mode = true;
+            b
+        };
+        assert_eq!(failed_bash.default_display_mode(), DisplayMode::Collapsed);
+        assert_eq!(failed_bash.finished_display_mode(), None);
+
+        set_tool_call_density(ToolCallDensity::CompactAllGrouped);
     }
 
     #[test]

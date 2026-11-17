@@ -435,7 +435,9 @@ fn windowed_paint_renders_full_verb_group_label_for_offscreen_members() {
     use crate::scrollback::ScrollbackState;
     use crate::scrollback::blocks::tool::{ReadToolCallBlock, ToolCallBlock};
 
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     for i in 0..20 {
@@ -489,7 +491,7 @@ fn windowed_paint_renders_full_verb_group_label_for_offscreen_members() {
 
     let header_row = buffer_row_text(&buf, viewport.height - 1);
     assert!(
-        header_row.contains("Read 50 files · 2 failed"),
+        header_row.contains("Explored 50 files · 2 failed"),
         "header label must aggregate the full off-screen run: {header_row:?}"
     );
 }
@@ -501,7 +503,9 @@ fn windowed_paint_renders_full_verb_group_label_for_offscreen_members() {
 fn windowed_paint_labels_truncation_header_on_last_viewport_row() {
     use crate::scrollback::ScrollbackState;
 
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     let mut appearance = AppearanceConfig::default();
@@ -567,7 +571,9 @@ fn windowed_paint_labels_truncation_header_on_last_viewport_row() {
 fn rendered_verb_group_label_spans_hidden_thinking_inside_folded_run() {
     use crate::scrollback::ScrollbackState;
 
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     state.push_block(RenderBlock::read("a.rs", None));
@@ -606,7 +612,7 @@ fn rendered_verb_group_label_spans_hidden_thinking_inside_folded_run() {
 
     let header_row = buffer_row_text(&buf, 0);
     assert!(
-        header_row.contains("Read 2 files"),
+        header_row.contains("Explored 2 files"),
         "label must count members on both sides of hidden thinking: {header_row:?}"
     );
 }
@@ -617,7 +623,9 @@ fn rendered_verb_group_label_spans_hidden_thinking_inside_folded_run() {
 fn rendered_verb_group_label_stays_tools_only_across_folded_thought() {
     use crate::scrollback::ScrollbackState;
 
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
     crate::appearance::cache::set_show_thinking_blocks(true);
     let mut state = ScrollbackState::new();
     state.push_block(RenderBlock::read("a.rs", None));
@@ -658,7 +666,7 @@ fn rendered_verb_group_label_stays_tools_only_across_folded_thought() {
 
     let header_row = buffer_row_text(&buf, 0);
     assert!(
-        header_row.contains("Read 2 files"),
+        header_row.contains("Explored 2 files"),
         "label must stay tools-only: {header_row:?}"
     );
     for y in 0..viewport.height {
@@ -676,7 +684,9 @@ fn rendered_verb_group_label_stays_tools_only_across_folded_thought() {
 fn rendered_verb_group_singleton_stays_unfolded() {
     use crate::scrollback::ScrollbackState;
 
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
     crate::appearance::cache::set_show_thinking_blocks(true);
     let mut state = ScrollbackState::new();
     state.push_block(RenderBlock::list_dir("src"));
@@ -745,7 +755,9 @@ fn rendered_verb_group_folds_subagent_row_and_expansion_keeps_activity() {
     use crate::scrollback::ScrollbackState;
     use crate::scrollback::blocks::SubagentBlock;
 
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     state.push_block(RenderBlock::read("a.rs", None));
@@ -784,7 +796,7 @@ fn rendered_verb_group_folds_subagent_row_and_expansion_keeps_activity() {
     );
     let header_row = buffer_row_text(&buf, 0);
     assert!(
-        header_row.contains("Read 1 file, Ran 1 subagent"),
+        header_row.contains("Explored 1 file, ran 1 subagent"),
         "header must aggregate tool and subagent members: {header_row:?}"
     );
 
@@ -874,7 +886,9 @@ fn truncation_header_row(
 fn truncation_header_renders_bucket_label_with_spans_and_plain_count_without() {
     use crate::scrollback::ScrollbackState;
 
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     let mut appearance = AppearanceConfig::default();
@@ -903,13 +917,15 @@ fn truncation_header_renders_bucket_label_with_spans_and_plain_count_without() {
     );
 }
 
-/// The aggregated vocabulary is owned by the "Group tool calls" setting: toggled off, a span-fed truncation header keeps the plain "N more" count.
-/// With the toggle off, previously verb-groupable tools feed truncation runs; they must not come back verb-labeled anyway.
+/// The aggregated vocabulary is unconditional: even at the least-grouping density a
+/// span-fed truncation header labels the commands it hides.
 #[test]
-fn truncation_header_keeps_plain_count_when_group_tool_verbs_off() {
+fn truncation_header_labels_commands_at_least_grouping_density() {
     use crate::scrollback::ScrollbackState;
 
-    crate::appearance::cache::set_group_tool_verbs(false);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     let mut appearance = AppearanceConfig::default();
@@ -926,8 +942,8 @@ fn truncation_header_keeps_plain_count_when_group_tool_verbs_off() {
 
     let row = truncation_header_row(&state, viewport, true);
     assert!(
-        row.contains("2 more") && !row.contains("Ran"),
-        "toggle off keeps the legacy count even with spans: {row:?}"
+        row.contains("Ran 3 commands"),
+        "span-fed truncation labels its hidden prefix: {row:?}"
     );
 }
 
@@ -937,7 +953,9 @@ fn truncation_header_keeps_plain_count_when_group_tool_verbs_off() {
 fn expanded_truncation_collapse_header_renders_whole_run_label() {
     use crate::scrollback::ScrollbackState;
 
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     let mut appearance = AppearanceConfig::default();
@@ -997,7 +1015,9 @@ fn labeled_truncation_header_synthetic_line_copies_label_text() {
     use crate::scrollback::ScrollbackState;
     use crate::scrollback::text_selection::reconstruct_selection_text;
 
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     let mut appearance = AppearanceConfig::default();
@@ -1052,13 +1072,15 @@ fn labeled_truncation_header_synthetic_line_copies_label_text() {
     assert_eq!(copy, "Ran 6 commands");
 }
 
-/// With the vocabulary gate off, a span-fed truncation header keeps the plain count AND stays non-copyable.
-/// No synthetic selectable line may land on the header row (the span-less path is pinned by `group_header_entry_contributes_no_selectable_lines`).
+/// A span-fed truncation header is copyable through the same synthetic label row.
+/// (The span-less path is pinned by `group_header_entry_contributes_no_selectable_lines`.)
 #[test]
-fn plain_count_truncation_header_contributes_no_selectable_line() {
+fn truncation_header_contributes_selectable_label_line() {
     use crate::scrollback::ScrollbackState;
 
-    crate::appearance::cache::set_group_tool_verbs(false);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     let mut appearance = AppearanceConfig::default();
@@ -1072,27 +1094,14 @@ fn plain_count_truncation_header_contributes_no_selectable_line() {
 
     let (buf, result) = render_state(&state, viewport, true);
     assert!(
-        buffer_row_text(&buf, 0).contains("2 more"),
-        "gate off keeps the plain count"
+        buffer_row_text(&buf, 0).contains("Ran 3 commands"),
+        "the header names the hidden commands"
     );
-    assert!(
-        result
-            .selection_model
-            .range(0, GROUP_HEADER_RANGE_ID)
-            .is_none(),
-        "plain-count header must not gain the synthetic label range"
-    );
-    let rows: Vec<u16> = result
+    let header = result
         .selection_model
-        .ranges
-        .iter()
-        .flat_map(|r| r.lines.iter())
-        .map(|l| l.screen_y)
-        .collect();
-    assert!(
-        rows.iter().all(|row| *row != 0),
-        "no selectable line may land on the plain '◈ N more' header row, got: {rows:?}"
-    );
+        .range(0, GROUP_HEADER_RANGE_ID)
+        .expect("labeled header exposes its synthetic row");
+    assert_eq!(header.lines[0].text, "Ran 3 commands");
 }
 
 /// Both fold families feed the single label channel in one frame.
@@ -1101,7 +1110,9 @@ fn plain_count_truncation_header_contributes_no_selectable_line() {
 fn verb_and_truncation_headers_share_one_label_channel() {
     use crate::scrollback::ScrollbackState;
 
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     let mut appearance = AppearanceConfig::default();
@@ -1127,7 +1138,7 @@ fn verb_and_truncation_headers_share_one_label_channel() {
         .map(|y| buffer_row_text(&buf, y))
         .collect();
     assert!(
-        rows.iter().any(|r| r.contains("Read 2 files")),
+        rows.iter().any(|r| r.contains("Explored 2 files")),
         "verb header must render its label: {rows:?}"
     );
     assert!(
@@ -1139,7 +1150,7 @@ fn verb_and_truncation_headers_share_one_label_channel() {
     let verb = model
         .range(0, GROUP_HEADER_RANGE_ID)
         .expect("verb header range");
-    assert_eq!(verb.lines[0].text, "Read 2 files");
+    assert_eq!(verb.lines[0].text, "Explored 2 files");
     let trunc = model
         .range(2, GROUP_HEADER_RANGE_ID)
         .expect("truncation header range");
@@ -2138,9 +2149,9 @@ fn verb_group_header_selection_geometry_tracks_chrome() {
     };
 
     let collapsed = header_line(false);
-    assert_eq!(collapsed.text, "Read 2 files");
+    assert_eq!(collapsed.text, "Explored 2 files");
     let expanded = header_line(true);
-    assert_eq!(expanded.text, "Read 2 files");
+    assert_eq!(expanded.text, "Explored 2 files");
     assert_eq!(
         collapsed.selectable_cols, expanded.selectable_cols,
         "hitbox always spans exactly the label glyphs"
@@ -2308,7 +2319,7 @@ fn verb_group_expanded_slot_header_and_member_select_independently() {
     // The two rows resolve to two distinct ranges, one line each on their own screen rows
     let header = model.range(0, GROUP_HEADER_RANGE_ID).expect("header range");
     assert_eq!(header.lines.len(), 1);
-    assert_eq!(header.lines[0].text, "Read 2 files");
+    assert_eq!(header.lines[0].text, "Explored 2 files");
     assert_eq!(header.lines[0].screen_y, 0);
     let member = model
         .range(0, crate::scrollback::blocks::tool::TOOL_HEADER_RANGE)
@@ -2320,11 +2331,11 @@ fn verb_group_expanded_slot_header_and_member_select_independently() {
     // A same-row drag over each row reconstructs that row's text only.
     let header_copy =
         reconstruct_selection_text(model, &full_row_drag(&header.lines[0])).expect("header copy");
-    assert_eq!(header_copy, "Read 2 files");
+    assert_eq!(header_copy, "Explored 2 files");
     let member_copy =
         reconstruct_selection_text(model, &full_row_drag(&member.lines[0])).expect("member copy");
     assert!(
-        member_copy.contains("b1.rs") && !member_copy.contains("Read 2 files"),
+        member_copy.contains("b1.rs") && !member_copy.contains("Explored 2 files"),
         "member drag must not drag the header along: {member_copy:?}"
     );
 }

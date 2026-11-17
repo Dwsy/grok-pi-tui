@@ -497,14 +497,9 @@ pub async fn set_ask_user_question_timeout_enabled(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ask_user_question.timeout_enabled = Some(value)).await
 }
 
-/// Persist `[ui].group_tool_verbs` via `update_config`.
-pub async fn set_group_tool_verbs(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.group_tool_verbs = Some(value)).await
-}
-
-/// Persist `[ui].collapsed_edit_blocks` via `update_config`.
-pub async fn set_collapsed_edit_blocks(value: bool) -> Result<()> {
-    update_config(|cfg| cfg.ui.collapsed_edit_blocks = Some(value)).await
+/// Persist `[ui].tool_call_density` via `update_config`.
+pub async fn set_tool_call_density(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.tool_call_density = Some(value)).await
 }
 
 /// Persist `[ui].codemode_expanded_by_default` via `update_config`.

@@ -1655,23 +1655,12 @@ pub(crate) async fn run(
         )
         .value,
     );
-    crate::appearance::cache::set_group_tool_verbs(
-        xai_grok_shell::util::config::resolve_group_tool_verbs(
+    crate::appearance::cache::set_tool_call_density(
+        xai_grok_shell::util::config::resolve_tool_call_density(
             requirements.as_ref(),
             user_config.as_ref(),
             managed_config.as_ref(),
-            remote_settings.as_ref(),
-        )
-        .value,
-    );
-    crate::appearance::cache::set_collapsed_edit_blocks(
-        xai_grok_shell::util::config::resolve_collapsed_edit_blocks(
-            requirements.as_ref(),
-            user_config.as_ref(),
-            managed_config.as_ref(),
-            remote_settings.as_ref(),
-        )
-        .value,
+        ),
     );
 
     app.usage_billing_redirect_url = remote_settings

@@ -1223,8 +1223,6 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "show_status_tool_calls" => Some(Action::SetShowStatusToolCalls(new)),
         "show_thinking_blocks" => Some(Action::SetShowThinkingBlocks(new)),
         "thinking_border_colors" => Some(Action::SetThinkingBorderColors(new)),
-        "group_tool_verbs" => Some(Action::SetGroupToolVerbs(new)),
-        "collapsed_edit_blocks" => Some(Action::SetCollapsedEditBlocks(new)),
         "codemode_expanded_by_default" => Some(Action::SetCodemodeExpandedByDefault(new)),
         "side_by_side_edit" => Some(Action::SetSideBySideEdit(new)),
         "side_by_side_word_highlight" => Some(Action::SetSideBySideWordHighlight(new)),
@@ -1314,6 +1312,8 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> O
             .map(Action::SetPiBashRunDisplay),
         "hunk_tracker_mode" => Some(Action::SetHunkTrackerMode(choice.to_string())),
         "screen_mode" => Some(Action::SetScreenMode(choice.to_string())),
+        "tool_call_density" => crate::appearance::cache::ToolCallDensity::parse(choice)
+            .map(|level| Action::SetToolCallDensity(level.as_canonical().to_string())),
         "voice_capture_mode" => Some(Action::SetVoiceCaptureMode(choice.to_string())),
         "voice_stt_language" => Some(Action::SetVoiceSttLanguage(choice.to_string())),
         "render_mermaid" => {

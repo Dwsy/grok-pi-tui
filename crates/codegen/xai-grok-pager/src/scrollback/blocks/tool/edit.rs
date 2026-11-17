@@ -933,7 +933,7 @@ impl EditToolCallBlock {
     }
 
     /// Get pre-computed insertion/deletion counts.
-    fn count_changes(&self) -> (usize, usize) {
+    pub(crate) fn count_changes(&self) -> (usize, usize) {
         self.change_counts
     }
 
@@ -1251,8 +1251,9 @@ impl EditToolCallBlock {
         let dim_details = tool_cfg.dim_details;
         // Live progress always shows counts; completed cards follow the configured summary policy.
         let show_summary = ctx.is_running
-            || edit_cfg
-                .effective_line_summary(crate::appearance::cache::load_collapsed_edit_blocks());
+            || edit_cfg.effective_line_summary(
+                crate::appearance::cache::load_tool_call_density().edits_collapsed(),
+            );
 
         let cwd = ctx.cwd.as_deref();
         let link_target = self.path_link_target(cwd);
@@ -1498,7 +1499,9 @@ impl BlockContent for EditToolCallBlock {
             .scrollback
             .blocks
             .edit
-            .effective_line_summary(crate::appearance::cache::load_collapsed_edit_blocks());
+            .effective_line_summary(
+                crate::appearance::cache::load_tool_call_density().edits_collapsed(),
+            );
         Some(Text::from(self.header_line(
             &theme,
             false,

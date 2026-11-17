@@ -13,6 +13,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use xai_grok_shared::ui_config::TimelineHapticStrength;
+pub use xai_grok_shared::ui_config::ToolCallDensity;
 pub use xai_grok_shared::ui_config::ToolCardClickAction;
 use xai_grok_shared::ui_config::UiConfig;
 
@@ -500,6 +501,63 @@ pub fn load_collapsed_edit_blocks() -> bool {
 pub fn set_collapsed_edit_blocks(enabled: bool) {
     COLLAPSED_EDIT_BLOCKS_CURRENT.with(|c| c.set(enabled));
     COLLAPSED_EDIT_BLOCKS_LOADED.with(|l| l.set(true));
+}
+
+// -- Tool call density --------------------------------------------------------
+
+thread_local! {
+    static TOOL_CALL_DENSITY_CURRENT: Cell<ToolCallDensity> =
+        const { Cell::new(ToolCallDensity::CompactAllGrouped) };
+    static TOOL_CALL_DENSITY_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read the cached tool-call density, seeding from `[ui] tool_call_density` on first call.
+///
+/// A config written before this setting existed maps to the closest level through
+/// [`ToolCallDensity::from_legacy`]; `GROK_COLLAPSED_EDIT_BLOCKS` and
+/// `GROK_GROUP_TOOL_VERBS` map the same way and win over the file, mirroring the
+/// other `GROK_*` UI overrides.
+pub fn load_tool_call_density() -> ToolCallDensity {
+    TOOL_CALL_DENSITY_LOADED.with(|loaded| {
+        if !loaded.get() {
+            TOOL_CALL_DENSITY_CURRENT.with(|c| c.set(seed_tool_call_density()));
+            loaded.set(true);
+        }
+    });
+    TOOL_CALL_DENSITY_CURRENT.with(|c| c.get())
+}
+
+/// Replace cached `tool_call_density`.
+pub fn set_tool_call_density(level: ToolCallDensity) {
+    TOOL_CALL_DENSITY_CURRENT.with(|c| c.set(level));
+    TOOL_CALL_DENSITY_LOADED.with(|l| l.set(true));
+}
+
+fn seed_tool_call_density() -> ToolCallDensity {
+    let root = xai_grok_config::load_effective_config_disk_only().ok();
+    let ui = root.as_ref().and_then(|root| root.get("ui"));
+    let configured = ui
+        .and_then(|ui| ui.get("tool_call_density"))
+        .and_then(|v| v.as_str())
+        .and_then(ToolCallDensity::parse);
+    if let Some(level) = configured {
+        return level;
+    }
+    let legacy_bool = |env: &str, key: &str| {
+        env_flag(env).or_else(|| ui.and_then(|ui| ui.get(key)).and_then(|v| v.as_bool()))
+    };
+    ToolCallDensity::from_legacy(
+        legacy_bool("GROK_COLLAPSED_EDIT_BLOCKS", "collapsed_edit_blocks"),
+        legacy_bool("GROK_GROUP_TOOL_VERBS", "group_tool_verbs"),
+    )
+}
+
+fn env_flag(name: &str) -> Option<bool> {
+    std::env::var(name).ok().and_then(|v| match v.trim() {
+        "1" | "true" => Some(true),
+        "0" | "false" => Some(false),
+        _ => None,
+    })
 }
 
 // -- Code Mode card expansion -------------------------------------------------

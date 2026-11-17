@@ -69,6 +69,42 @@ pub fn resolve_group_tool_verbs(
     )
 }
 
+/// Resolve `[ui] tool_call_density` through the requirements / user / managed
+/// layers, in that order. An unparseable or missing value falls through to the
+/// next layer; when no layer sets one, the legacy knobs map to the closest level
+/// so a pre-density config keeps its shape.
+pub fn resolve_tool_call_density(
+    requirements: Option<&TomlValue>,
+    user: Option<&TomlValue>,
+    managed: Option<&TomlValue>,
+) -> xai_grok_shared::ui_config::ToolCallDensity {
+    use xai_grok_shared::ui_config::ToolCallDensity;
+
+    let level_in = |layer: Option<&TomlValue>| {
+        layer?
+            .get("ui")?
+            .get("tool_call_density")?
+            .as_str()
+            .and_then(ToolCallDensity::parse)
+    };
+    if let Some(level) = level_in(requirements)
+        .or_else(|| level_in(user))
+        .or_else(|| level_in(managed))
+    {
+        return level;
+    }
+    let legacy_in = |key: &str| {
+        let from = |layer: Option<&TomlValue>| layer?.get("ui")?.get(key)?.as_bool();
+        from(requirements)
+            .or_else(|| from(user))
+            .or_else(|| from(managed))
+    };
+    ToolCallDensity::from_legacy(
+        legacy_in("collapsed_edit_blocks"),
+        legacy_in("group_tool_verbs"),
+    )
+}
+
 pub const ENV_COLLAPSED_EDIT_BLOCKS: &str = "GROK_COLLAPSED_EDIT_BLOCKS";
 
 #[cfg(test)]

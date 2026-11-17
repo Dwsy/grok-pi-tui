@@ -369,6 +369,15 @@ pub fn canonical_screen_mode(value: Option<&str>) -> &'static str {
     }
 }
 
+/// Canonical `[ui] tool_call_density`. Labels and legacy aliases (`verbose`,
+/// `minimal`) are accepted; anything unparseable falls back to the default.
+pub fn canonical_tool_call_density(value: Option<&str>) -> &'static str {
+    value
+        .and_then(crate::appearance::cache::ToolCallDensity::parse)
+        .unwrap_or_default()
+        .as_canonical()
+}
+
 impl PagerLocalSnapshot {
     /// Iterate over just the display names, for validator paths that don't need the ids.
     pub fn available_model_names(&self) -> impl Iterator<Item = &str> {
@@ -680,13 +689,9 @@ pub fn current_value_for(
         "thinking_border_colors" => Some(SettingValue::Bool(
             crate::appearance::cache::load_thinking_border_colors(),
         )),
-        // Live cache (like `show_thinking_blocks`).
-        "group_tool_verbs" => Some(SettingValue::Bool(
-            crate::appearance::cache::load_group_tool_verbs(),
-        )),
-        // Live cache (like `group_tool_verbs`).
-        "collapsed_edit_blocks" => Some(SettingValue::Bool(
-            crate::appearance::cache::load_collapsed_edit_blocks(),
+        // Live cache: a `/density` change must show in an already-open modal.
+        "tool_call_density" => Some(SettingValue::Enum(
+            crate::appearance::cache::load_tool_call_density().as_canonical(),
         )),
         "codemode_expanded_by_default" => Some(SettingValue::Bool(
             crate::appearance::cache::load_codemode_expanded_by_default(),
@@ -1669,6 +1674,20 @@ mod tests {
                     );
                     assert!(!*default, "review_file_tree must default OFF");
                 }
+                ("tool_call_density", SettingKind::Enum { default, .. }) => {
+                    assert_eq!(
+                        ui.tool_call_density, None,
+                        "test assumes UiConfig::default().tool_call_density is None"
+                    );
+                    assert_eq!(
+                        *default,
+                        crate::settings::canonical_tool_call_density(
+                            ui.tool_call_density.as_deref()
+                        ),
+                        "tool_call_density default drifts from UiConfig::default()"
+                    );
+                    assert_eq!(*default, "compact-all-grouped");
+                }
                 ("review_include_reads", SettingKind::Bool { default }) => {
                     assert_eq!(
                         *default, ui.review_include_reads,
@@ -2177,8 +2196,14 @@ mod tests {
     fn search_multi_word_and() {
         let reg = SettingsRegistry::defaults();
         let hits = reg.search("compact density");
-        assert_eq!(hits.len(), 1, "expected 1 match for 'compact density'");
-        assert_eq!(hits[0].key, "compact_mode");
+        assert_eq!(
+            hits.len(),
+            2,
+            "compact_mode and tool_call_density both carry these keywords"
+        );
+        let keys: Vec<&str> = hits.iter().map(|h| h.key).collect();
+        assert!(keys.contains(&"compact_mode"));
+        assert!(keys.contains(&"tool_call_density"));
 
         let empty = reg.search("xyzzy-no-match");
         assert!(empty.is_empty(), "expected no match for 'xyzzy-no-match'");

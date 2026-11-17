@@ -18,6 +18,7 @@ pub mod create_workflow;
 pub mod dashboard;
 pub mod debug;
 pub mod delete;
+pub mod density;
 pub mod docs;
 pub mod doctor;
 pub mod edit_prompt;
@@ -146,6 +147,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(vim_mode::VimModeCommand),
         Arc::new(multiline::MultilineCommand),
         Arc::new(compact_mode::CompactModeCommand),
+        Arc::new(density::DensityCommand),
         Arc::new(timestamps::TimestampsCommand),
         Arc::new(toggle_mouse_reporting::ToggleMouseReportingCommand),
         // Screen-mode switchers: visible only in the opposite mode.

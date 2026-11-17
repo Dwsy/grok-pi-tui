@@ -134,7 +134,7 @@ impl VerbGroupKind {
         let (one, many) = match self {
             VerbGroupKind::File | VerbGroupKind::EditFile => ("file", "files"),
             VerbGroupKind::Skill => ("skill", "skills"),
-            VerbGroupKind::Search => ("pattern", "patterns"),
+            VerbGroupKind::Search => ("search", "searches"),
             VerbGroupKind::Dir => ("dir", "dirs"),
             VerbGroupKind::WebFetch | VerbGroupKind::WebSearch => ("website", "websites"),
             VerbGroupKind::MemorySearch => ("memory", "memories"),
@@ -731,7 +731,8 @@ mod tests {
         assert_eq!(VerbGroupKind::File.noun(1), "file");
         assert_eq!(VerbGroupKind::File.noun(2), "files");
         assert_eq!(VerbGroupKind::Skill.noun(2), "skills");
-        assert_eq!(VerbGroupKind::Search.noun(1), "pattern");
+        assert_eq!(VerbGroupKind::Search.noun(1), "search");
+        assert_eq!(VerbGroupKind::Search.noun(2), "searches");
         assert_eq!(VerbGroupKind::Dir.noun(2), "dirs");
         assert_eq!(VerbGroupKind::WebFetch.noun(1), "website");
         assert_eq!(VerbGroupKind::WebSearch.noun(2), "websites");

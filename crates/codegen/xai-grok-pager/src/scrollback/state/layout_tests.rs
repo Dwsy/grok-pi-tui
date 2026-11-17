@@ -132,6 +132,9 @@ fn collapsed_turn_marker_keeps_gap_from_collapsed_neighbors() {
             .collect()
     };
 
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     let mut state = ScrollbackState::new();
     state.push_block(tool_block("wait one"));
     state.push_block(tool_block("wait two"));
@@ -2271,7 +2274,9 @@ fn compute_paint_window_truncation_header_extends_through_run_end() {
 #[test]
 fn paint_window_extends_through_offscreen_verb_group_members() {
     let _theme = pin_theme();
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     for i in 0..20 {

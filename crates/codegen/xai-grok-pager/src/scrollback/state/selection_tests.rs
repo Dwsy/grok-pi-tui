@@ -338,6 +338,9 @@ fn collapsed_turn_marker_breaks_dense_run_walks() {
     use crate::scrollback::blocks::SessionEvent;
     use std::time::Duration;
 
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     let mut appearance = AppearanceConfig::default();
@@ -877,7 +880,11 @@ fn navigation_skips_hidden_entries() {
 // ── Verb-group fold tests ──
 
 fn verb_state() -> ScrollbackState {
-    crate::appearance::cache::set_group_tool_verbs(true);
+    // Verb-run mechanics are density-independent; the least-grouping level keeps
+    // edits/commands standalone so a run shape only reflects the reads.
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     ScrollbackState::new()
 }
@@ -1250,7 +1257,9 @@ fn verb_group_boundary_gap_follows_pairwise_rule() {
 
     // Controls with folding off: the pairwise rule's verdict at the boundary between the run and its neighbor, for both neighbor kinds
     crate::appearance::cache::set_show_thinking_blocks(false);
-    crate::appearance::cache::set_group_tool_verbs(false);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     let mut control_text = ScrollbackState::new();
     push_reads(&mut control_text, 3);
     control_text.push_block(RenderBlock::agent_message("after"));
@@ -1592,28 +1601,31 @@ fn verb_group_claimed_entries_skip_n_more_truncation() {
 }
 
 #[test]
-fn verb_group_flag_off_matches_todays_layout() {
-    crate::appearance::cache::set_group_tool_verbs(false);
+fn verb_group_folds_reads_at_every_density() {
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactShells,
+    );
     crate::appearance::cache::set_show_thinking_blocks(false);
     let mut state = ScrollbackState::new();
     let mut appearance = AppearanceConfig::default();
     appearance.scrollback.display.group_max_visible = 3;
     state.set_appearance(appearance);
 
-    // Short read run: fully visible, no verb header.
     push_reads(&mut state, 3);
     state.push_block(RenderBlock::agent_message("break"));
-    // Long read run: plain N-more truncation applies as today.
     push_reads(&mut state, 5);
     state.prepare_layout(80, 40);
 
-    for i in 0..3 {
-        assert!(!verb_header_at(&state, i));
-        assert!(cached_height_at(&state, i) > 0);
-    }
-    assert_eq!(header_count_at(&mut state, 4), 1, "N-more still applies");
+    // Grouping cannot be turned off: both read runs fold into a verb header.
+    assert!(verb_header_at(&state, 0));
+    assert_eq!(header_count_at(&mut state, 0), 3);
+    assert_eq!(cached_height_at(&state, 1), 0);
+    assert!(verb_header_at(&state, 4));
+    assert_eq!(header_count_at(&mut state, 4), 5);
     assert_eq!(cached_height_at(&state, 5), 0);
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
 }
 
 #[test]

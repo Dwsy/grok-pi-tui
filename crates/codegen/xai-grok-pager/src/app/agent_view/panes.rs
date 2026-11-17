@@ -1509,6 +1509,9 @@ mod scroll_granularity_tests {
 
         /// Fresh scrollback with one collapsed Edit entry at index 0.
         fn agent_with_collapsed_edit() -> AgentView {
+            crate::appearance::cache::set_tool_call_density(
+                crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+            );
             let mut agent = make_agent();
             agent
                 .scrollback

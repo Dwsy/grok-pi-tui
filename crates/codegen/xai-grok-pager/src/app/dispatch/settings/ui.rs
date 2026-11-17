@@ -3,24 +3,25 @@
 use super::setters::{
     pr13_effective_default, set_ask_user_question_timeout_enabled_inner, set_auto_dark_theme_inner,
     set_auto_light_theme_inner, set_auto_update_inner, set_cancel_turn_key_inner,
-    set_codemode_expanded_by_default_inner, set_collapsed_edit_blocks_inner,
-    set_combine_queued_prompts_inner, set_compact_mode, set_compact_mode_inner,
-    set_confirm_before_rewind_inner, set_contextual_hint_inner, set_default_model_inner,
-    set_default_selected_permission_inner, set_display_refresh_auto_cadence_inner,
-    set_follow_up_behavior_inner, set_fork_secondary_model_inner, set_group_tool_verbs_inner,
-    set_hunk_tracker_mode_inner, set_invert_scroll_inner, set_keep_text_selection_inner,
-    set_max_thoughts_width_inner, set_multiline_mode, set_page_flip_on_send_inner,
-    set_pi_at_search_hidden_inner, set_pi_bash_command_format_inner, set_pi_bash_run_display_inner,
-    set_pi_eval_v2_display_mode_inner, set_progress_bar_inner, set_prompt_cursor_inner,
-    set_prompt_suggestions_inner, set_recap_mermaid_inner, set_recap_model_inner,
-    set_remember_tool_approvals_inner, set_render_mermaid_inner, set_respect_manual_folds_inner,
-    set_screen_mode_inner, set_scroll_lines_inner, set_scroll_mode_inner, set_scroll_speed_inner,
-    set_session_recap_inner, set_show_thinking_blocks_inner, set_show_tips_inner,
-    set_side_by_side_edit_inner, set_side_by_side_word_highlight_inner, set_simple_mode_inner,
-    set_theme_inner, set_thinking_border_colors_inner, set_timeline_haptics_inner,
-    set_timeline_inner, set_timestamps, set_timestamps_inner, set_tool_card_click_action_inner,
-    set_vim_mode_inner, set_voice_capture_mode_inner, set_voice_keybind_enabled_inner,
-    set_voice_stt_language_inner, set_write_edit_hover_popups_inner,
+    set_codemode_expanded_by_default_inner, set_combine_queued_prompts_inner, set_compact_mode,
+    set_compact_mode_inner, set_confirm_before_rewind_inner, set_contextual_hint_inner,
+    set_default_model_inner, set_default_selected_permission_inner,
+    set_display_refresh_auto_cadence_inner, set_follow_up_behavior_inner,
+    set_fork_secondary_model_inner, set_hunk_tracker_mode_inner, set_invert_scroll_inner,
+    set_keep_text_selection_inner, set_max_thoughts_width_inner, set_multiline_mode,
+    set_page_flip_on_send_inner, set_pi_at_search_hidden_inner, set_pi_bash_command_format_inner,
+    set_pi_bash_run_display_inner, set_pi_eval_v2_display_mode_inner, set_progress_bar_inner,
+    set_prompt_cursor_inner, set_prompt_suggestions_inner, set_recap_mermaid_inner,
+    set_recap_model_inner, set_remember_tool_approvals_inner, set_render_mermaid_inner,
+    set_respect_manual_folds_inner, set_screen_mode_inner, set_scroll_lines_inner,
+    set_scroll_mode_inner, set_scroll_speed_inner, set_session_recap_inner,
+    set_show_thinking_blocks_inner, set_show_tips_inner, set_side_by_side_edit_inner,
+    set_side_by_side_word_highlight_inner, set_simple_mode_inner, set_theme_inner,
+    set_thinking_border_colors_inner, set_timeline_haptics_inner, set_timeline_inner,
+    set_timestamps, set_timestamps_inner, set_tool_call_density_inner,
+    set_tool_card_click_action_inner, set_vim_mode_inner, set_voice_capture_mode_inner,
+    set_voice_keybind_enabled_inner, set_voice_stt_language_inner,
+    set_write_edit_hover_popups_inner,
 };
 use crate::app::actions::{Action, Effect};
 use crate::app::app_view::{ActiveView, AppView};
@@ -337,7 +338,9 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(
                     existing,
                     crate::app::dispatch::ctx::SwitchCause::Picker,
                 );
-                effects.extend(crate::app::dispatch::ctx::rebind_pi_session_for(app, existing));
+                effects.extend(crate::app::dispatch::ctx::rebind_pi_session_for(
+                    app, existing,
+                ));
                 existing
             } else {
                 let (new_id, create_effects) =
@@ -449,7 +452,9 @@ pub(in crate::app::dispatch) fn dispatch_open_pi_settings(
                     existing,
                     crate::app::dispatch::ctx::SwitchCause::Picker,
                 );
-                effects.extend(crate::app::dispatch::ctx::rebind_pi_session_for(app, existing));
+                effects.extend(crate::app::dispatch::ctx::rebind_pi_session_for(
+                    app, existing,
+                ));
                 existing
             } else {
                 let (new_id, create_effects) =
@@ -1094,9 +1099,8 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("thinking_border_colors", SettingValue::Bool(b)) => {
             Some(Action::SetThinkingBorderColors(*b))
         }
-        ("group_tool_verbs", SettingValue::Bool(b)) => Some(Action::SetGroupToolVerbs(*b)),
-        ("collapsed_edit_blocks", SettingValue::Bool(b)) => {
-            Some(Action::SetCollapsedEditBlocks(*b))
+        ("tool_call_density", SettingValue::Enum(s)) => {
+            Some(Action::SetToolCallDensity((*s).to_string()))
         }
         ("codemode_expanded_by_default", SettingValue::Bool(b)) => {
             Some(Action::SetCodemodeExpandedByDefault(*b))
@@ -1511,9 +1515,11 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         }
         ("show_thinking_blocks", SettingValue::Bool(b)) => set_show_thinking_blocks_inner(app, *b),
         ("thinking_border_colors", SettingValue::Bool(b)) => set_thinking_border_colors_inner(*b),
-        ("group_tool_verbs", SettingValue::Bool(b)) => set_group_tool_verbs_inner(app, *b),
-        ("collapsed_edit_blocks", SettingValue::Bool(b)) => {
-            set_collapsed_edit_blocks_inner(app, *b)
+        ("tool_call_density", SettingValue::Enum(s)) => {
+            let prev = crate::appearance::cache::load_tool_call_density();
+            if let Some(level) = crate::appearance::cache::ToolCallDensity::parse(s) {
+                set_tool_call_density_inner(app, prev, level);
+            }
         }
         ("codemode_expanded_by_default", SettingValue::Bool(b)) => {
             set_codemode_expanded_by_default_inner(app, *b)
