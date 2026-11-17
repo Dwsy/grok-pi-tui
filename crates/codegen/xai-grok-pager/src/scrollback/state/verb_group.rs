@@ -19,6 +19,63 @@ use crate::scrollback::entry::ScrollbackEntry;
 use crate::scrollback::types::DisplayMode;
 use crate::theme::Theme;
 
+/// Which runs a tool-call density folds.
+///
+/// `VerbOnly` is the pre-density shape: read/search/list/web/subagent runs fold and
+/// nothing else does. `ByFamily` additionally folds runs of edits, runs of commands,
+/// and runs of other tools, each family separately. `AllRuns` folds every run of
+/// consecutive tool calls into one row, whichever families it mixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupingMode {
+    VerbOnly,
+    ByFamily,
+    AllRuns,
+}
+
+impl GroupingMode {
+    /// The mode selected by the live `[ui] tool_call_density` cache.
+    pub(crate) fn current() -> Self {
+        let density = crate::appearance::cache::load_tool_call_density();
+        if density.groups_all_tool_runs() {
+            Self::AllRuns
+        } else if density.groups_action_runs() {
+            Self::ByFamily
+        } else {
+            Self::VerbOnly
+        }
+    }
+
+    /// Whether this mode is at least as permissive as `other`.
+    pub(crate) fn folds_actions(self) -> bool {
+        !matches!(self, Self::VerbOnly)
+    }
+
+    /// The fold family of a member kind. Members only join a run of their own family;
+    /// `AllRuns` puts every tool call in one family so mixed runs fold together.
+    pub(crate) fn family(self, kind: VerbGroupKind) -> u8 {
+        if matches!(self, Self::AllRuns) {
+            return 0;
+        }
+        match kind {
+            // Explore/tool-verb family: reads, searches, listings, web, subagents.
+            VerbGroupKind::File
+            | VerbGroupKind::Skill
+            | VerbGroupKind::Search
+            | VerbGroupKind::Dir
+            | VerbGroupKind::WebFetch
+            | VerbGroupKind::WebSearch
+            | VerbGroupKind::MemorySearch
+            | VerbGroupKind::IntegrationSearch
+            | VerbGroupKind::Subagent => 0,
+            VerbGroupKind::EditFile => 1,
+            VerbGroupKind::Command => 2,
+            VerbGroupKind::OtherTool => 3,
+            VerbGroupKind::McpCall => 4,
+            VerbGroupKind::Message => 5,
+        }
+    }
+}
+
 /// One step of a verb-group run walk.
 pub(crate) enum RunStep {
     /// A collapsed verb-groupable tool or subagent entry: joins the run and counts toward the fold threshold ([`RunScan::folds`]).
@@ -37,20 +94,43 @@ pub(crate) enum RunStep {
 /// never breaks a run: a finished collapsed thought without prompt chrome folds in as
 /// [`RunStep::ThoughtMember`].
 pub(crate) fn run_step(entry: &ScrollbackEntry, show_thinking: bool) -> RunStep {
+    run_step_with(entry, show_thinking, GroupingMode::current())
+}
+
+/// [`run_step`] under an explicit grouping mode, so tests never depend on the live cache.
+pub(crate) fn run_step_with(
+    entry: &ScrollbackEntry,
+    show_thinking: bool,
+    mode: GroupingMode,
+) -> RunStep {
     let is_claimable_thinking =
         entry.display_mode == DisplayMode::Collapsed && !entry.is_pending_user_input;
     if let RenderBlock::ToolCall(block) = &entry.block
-        && let Some(kind) = block.verb_group_kind()
         && !entry.is_pending_user_input
     {
-        if entry.display_mode == DisplayMode::Collapsed {
-            RunStep::Member(kind)
-        } else {
-            // A manually-opened member keeps its own rows without splitting the run, the same treatment as opened thinking
-            // Toggling a member of an expanded group therefore never dissolves the group
-            RunStep::Transparent
+        if let Some(kind) = block.verb_group_kind() {
+            return if entry.display_mode == DisplayMode::Collapsed {
+                RunStep::Member(kind)
+            } else {
+                // A manually-opened member keeps its own rows without splitting the run, the same treatment as opened thinking
+                // Toggling a member of an expanded group therefore never dissolves the group
+                RunStep::Transparent
+            };
         }
-    } else if matches!(entry.block, RenderBlock::Subagent(_)) {
+        // Action tools (edits, commands, MCP calls, …) join a run only at densities
+        // that fold them; a manually-opened row stays transparent, like an opened verb member.
+        if mode.folds_actions()
+            && let Some(kind) = block.label_kind()
+        {
+            return if entry.display_mode == DisplayMode::Collapsed {
+                RunStep::Member(kind)
+            } else {
+                RunStep::Transparent
+            };
+        }
+        return RunStep::Break;
+    }
+    if matches!(entry.block, RenderBlock::Subagent(_)) {
         if entry.display_mode == DisplayMode::Collapsed && !entry.is_pending_user_input {
             RunStep::Member(VerbGroupKind::Subagent)
         } else {
@@ -107,17 +187,39 @@ pub(crate) fn scan_run_forward<'e>(
     start: usize,
     show_thinking: bool,
 ) -> Option<RunScan> {
-    // Members and finished thoughts anchor runs; transparent thinking may sit inside one but cannot start one
-    match run_step(entry_at(start)?, show_thinking) {
-        RunStep::Member(_) | RunStep::ThoughtMember => {}
+    scan_run_forward_with(entry_at, start, show_thinking, GroupingMode::current())
+}
+
+/// [`scan_run_forward`] under an explicit grouping mode.
+///
+/// The run keeps one family: at `ByFamily`, a command after two reads ends the
+/// read run, and the command's own run starts there. `AllRuns` treats every
+/// tool call as one family, so mixed runs fold together.
+pub(crate) fn scan_run_forward_with<'e>(
+    entry_at: impl Fn(usize) -> Option<&'e ScrollbackEntry>,
+    start: usize,
+    show_thinking: bool,
+    mode: GroupingMode,
+) -> Option<RunScan> {
+    // Members and finished thoughts anchor runs; transparent thinking may sit inside one but cannot start one.
+    // A leading thought decides no family: the first member it precedes picks one.
+    let mut family: Option<u8> = match run_step_with(entry_at(start)?, show_thinking, mode) {
+        RunStep::Member(kind) => Some(mode.family(kind)),
+        RunStep::ThoughtMember => None,
         RunStep::Transparent | RunStep::Break => return None,
-    }
+    };
     let mut members = 0usize;
     let mut end = start;
     let mut i = start;
     while let Some(entry) = entry_at(i) {
-        match run_step(entry, show_thinking) {
-            RunStep::Member(_) => {
+        match run_step_with(entry, show_thinking, mode) {
+            RunStep::Member(kind) => {
+                let kind_family = mode.family(kind);
+                match family {
+                    Some(current) if current != kind_family => break,
+                    Some(_) => {}
+                    None => family = Some(kind_family),
+                }
                 members += 1;
                 end = i + 1;
             }
@@ -185,11 +287,30 @@ pub fn verb_group_header_label<'e>(
     show_thinking: bool,
     theme: &Theme,
 ) -> VerbGroupHeaderLabel {
+    verb_group_header_label_with(
+        entries,
+        header_idx,
+        end,
+        show_thinking,
+        GroupingMode::current(),
+        theme,
+    )
+}
+
+/// [`verb_group_header_label`] under an explicit grouping mode.
+pub(crate) fn verb_group_header_label_with<'e>(
+    entries: &[&'e ScrollbackEntry],
+    header_idx: usize,
+    end: usize,
+    show_thinking: bool,
+    mode: GroupingMode,
+    theme: &Theme,
+) -> VerbGroupHeaderLabel {
     let mut acc = BucketAccumulator::default();
 
     let end = end.min(entries.len());
     for &entry in &entries[header_idx.min(end)..end] {
-        let kind = match run_step(entry, show_thinking) {
+        let kind = match run_step_with(entry, show_thinking, mode) {
             RunStep::Member(kind) => kind,
             RunStep::Break => break,
             RunStep::ThoughtMember | RunStep::Transparent => continue,
@@ -248,6 +369,69 @@ struct BucketAccumulator<'e> {
     buckets: Vec<Bucket<'e>>,
     running: bool,
     failed_count: usize,
+    /// Total `+N/-M` across folded edits, rendered once at the end of the label.
+    insertions: usize,
+    deletions: usize,
+}
+
+/// Summary families shared by the folded-run header. Kinds in one family share a
+/// verb and list one item per kind ("Explored 2 files, 1 search").
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SummaryFamily {
+    Explore,
+    Fetch,
+    Search,
+    Edit,
+    Run,
+    Mcp,
+    Message,
+}
+
+fn summary_family(kind: VerbGroupKind) -> SummaryFamily {
+    match kind {
+        VerbGroupKind::File | VerbGroupKind::Skill | VerbGroupKind::Dir | VerbGroupKind::Search => {
+            SummaryFamily::Explore
+        }
+        VerbGroupKind::WebFetch => SummaryFamily::Fetch,
+        VerbGroupKind::WebSearch
+        | VerbGroupKind::MemorySearch
+        | VerbGroupKind::IntegrationSearch => SummaryFamily::Search,
+        VerbGroupKind::EditFile => SummaryFamily::Edit,
+        VerbGroupKind::Command | VerbGroupKind::OtherTool | VerbGroupKind::Subagent => {
+            SummaryFamily::Run
+        }
+        VerbGroupKind::McpCall => SummaryFamily::Mcp,
+        VerbGroupKind::Message => SummaryFamily::Message,
+    }
+}
+
+fn summary_verb(family: SummaryFamily, running: bool) -> &'static str {
+    match (family, running) {
+        (SummaryFamily::Explore, false) => "Explored",
+        (SummaryFamily::Explore, true) => "Exploring",
+        (SummaryFamily::Fetch, false) => "Fetched",
+        (SummaryFamily::Fetch, true) => "Fetching",
+        (SummaryFamily::Search, false) => "Searched",
+        (SummaryFamily::Search, true) => "Searching",
+        (SummaryFamily::Edit, false) => "Edited",
+        (SummaryFamily::Edit, true) => "Editing",
+        (SummaryFamily::Run, false) => "Ran",
+        (SummaryFamily::Run, true) => "Running",
+        (SummaryFamily::Mcp, false) => "Called",
+        (SummaryFamily::Mcp, true) => "Calling",
+        (SummaryFamily::Message, false) => "Sent",
+        (SummaryFamily::Message, true) => "Sending",
+    }
+}
+
+/// Lowercase a verb's first character so later families read as a sentence
+/// ("Edited 2 files, ran 1 command").
+fn lowercase_first(verb: &'static str) -> String {
+    let mut chars = verb.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 impl<'e> BucketAccumulator<'e> {
@@ -283,6 +467,11 @@ impl<'e> BucketAccumulator<'e> {
                 if block_failed(block) {
                     self.failed_count += 1;
                 }
+                if let ToolCallBlock::Edit(edit) = block {
+                    let (insertions, deletions) = edit.count_changes();
+                    self.insertions += insertions;
+                    self.deletions += deletions;
+                }
             }
             RenderBlock::Subagent(sb) => {
                 bucket.sources.insert(sb.child_session_id.as_str());
@@ -304,21 +493,45 @@ impl<'e> BucketAccumulator<'e> {
         let text_style = theme.fg(theme.gray_bright).add_modifier(Modifier::BOLD);
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut text = String::new();
-        for (i, bucket) in self.buckets.iter().enumerate() {
+
+        // Group buckets by summary family in first-appearance order, so kinds that
+        // share a verb read as one clause ("Explored 2 files, 1 search").
+        let mut groups: Vec<(SummaryFamily, Vec<String>)> = Vec::new();
+        for bucket in &self.buckets {
             let count = if bucket.sources.is_empty() {
                 bucket.calls
             } else {
                 bucket.sources.len()
             };
-            let segment = format!(
-                "{}{} {} {}",
-                if i == 0 { "" } else { ", " },
-                bucket.kind.verb(self.running),
-                count,
-                bucket.kind.noun(count)
-            );
+            let item = format!("{} {}", count, bucket.kind.noun(count));
+            let family = summary_family(bucket.kind);
+            match groups.iter_mut().find(|(known, _)| *known == family) {
+                Some((_, items)) => items.push(item),
+                None => groups.push((family, vec![item])),
+            }
+        }
+
+        for (i, (family, items)) in groups.iter().enumerate() {
+            let segment = if i == 0 {
+                format!(
+                    "{} {}",
+                    summary_verb(*family, self.running),
+                    items.join(", ")
+                )
+            } else {
+                format!(
+                    ", {} {}",
+                    lowercase_first(summary_verb(*family, self.running)),
+                    items.join(", ")
+                )
+            };
             text.push_str(&segment);
             spans.push(Span::styled(segment, text_style));
+        }
+        if self.insertions > 0 || self.deletions > 0 {
+            let suffix = format!(" +{} -{}", self.insertions, self.deletions);
+            text.push_str(&suffix);
+            spans.push(Span::styled(suffix, text_style));
         }
         if self.failed_count > 0 {
             let suffix = format!(" · {} failed", self.failed_count);
@@ -411,7 +624,7 @@ mod tests {
             entry(ToolCallBlock::ListDir(ListDirToolCallBlock::new("src"))),
         ];
         let l = label(&entries);
-        assert_eq!(l.text, "Read 2 files, Searched 1 pattern, Listed 1 dir");
+        assert_eq!(l.text, "Explored 2 files, 1 search, 1 dir");
         assert!(!l.running);
         assert!(!l.failed);
     }
@@ -424,7 +637,7 @@ mod tests {
             read("b.rs"),
         ];
         let l = label(&entries);
-        assert_eq!(l.text, "Read 2 files, Read 1 skill");
+        assert_eq!(l.text, "Explored 2 files, 1 skill");
     }
 
     #[test]
@@ -439,7 +652,7 @@ mod tests {
             )),
         ];
         let l = label(&entries);
-        assert_eq!(l.text, "Read 3 files · 2 failed");
+        assert_eq!(l.text, "Explored 3 files · 2 failed");
         assert!(l.failed);
     }
 
@@ -451,12 +664,12 @@ mod tests {
         ];
         entries[1].is_running = true;
         let l = label(&entries);
-        assert_eq!(l.text, "Reading 1 file, Searching 1 pattern");
+        assert_eq!(l.text, "Exploring 1 file, 1 search");
         assert!(l.running);
 
         entries[1].is_running = false;
         let l = label(&entries);
-        assert_eq!(l.text, "Read 1 file, Searched 1 pattern");
+        assert_eq!(l.text, "Explored 1 file, 1 search");
         assert!(!l.running);
     }
 
@@ -502,7 +715,7 @@ mod tests {
             /*show_thinking=*/ false,
             &Theme::current(),
         );
-        assert_eq!(l.text, "Read 2 files");
+        assert_eq!(l.text, "Explored 2 files");
     }
 
     #[test]
@@ -534,7 +747,7 @@ mod tests {
             /*show_thinking=*/ true,
             &Theme::current(),
         );
-        assert_eq!(l.text, "Read 4 files");
+        assert_eq!(l.text, "Explored 4 files");
     }
 
     fn execute() -> ScrollbackEntry {
@@ -585,7 +798,7 @@ mod tests {
             execute(),
         ];
         let l = trunc_label(&entries, None).expect("buckets");
-        assert_eq!(l.text, "Ran 2 commands, Read 1 file, Edited 1 file");
+        assert_eq!(l.text, "Ran 2 commands, explored 1 file, edited 1 file");
     }
 
     #[test]
@@ -651,7 +864,7 @@ mod tests {
             sub_completed("child-A"),
         ];
         let l = label(&entries);
-        assert_eq!(l.text, "Read 2 files, Ran 1 subagent");
+        assert_eq!(l.text, "Explored 2 files, ran 1 subagent");
         assert!(!l.failed);
     }
 
@@ -687,7 +900,7 @@ mod tests {
         let mut entries = vec![read("a.rs"), sub_started("child-A")];
         entries[1].is_running = true;
         let l = label(&entries);
-        assert_eq!(l.text, "Reading 1 file, Running 1 subagent");
+        assert_eq!(l.text, "Exploring 1 file, running 1 subagent");
         assert!(l.running);
     }
 }

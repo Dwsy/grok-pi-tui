@@ -16,7 +16,7 @@ use std::ops::Range;
 use indexmap::IndexMap;
 
 use super::types::EntryLayoutInfo;
-use super::verb_group::{RunStep, run_step, scan_run_forward};
+use super::verb_group::{GroupingMode, RunStep, run_step_with, scan_run_forward_with};
 use crate::scrollback::block::BlockContent;
 use crate::scrollback::entry::{EntryId, ScrollbackEntry};
 use crate::scrollback::types::DisplayMode;
@@ -69,16 +69,10 @@ pub(super) fn apply(
         info.group_collapse_header = false;
         info.verb_group_header = false;
     }
-    let group_tool_verbs = crate::appearance::cache::load_group_tool_verbs();
+    let mode = GroupingMode::current();
     let show_thinking = crate::appearance::cache::load_show_thinking_blocks();
-    let spans = scan(
-        entries,
-        max_visible,
-        expanded_groups,
-        group_tool_verbs,
-        show_thinking,
-    );
-    project_to_layout(&spans, entries, layout_cache, show_thinking);
+    let spans = scan(entries, max_visible, expanded_groups, mode, show_thinking);
+    project_to_layout(&spans, entries, layout_cache, mode, show_thinking);
     spans
 }
 
@@ -89,11 +83,10 @@ pub(super) fn scan(
     entries: &IndexMap<EntryId, ScrollbackEntry>,
     max_visible: usize,
     expanded_groups: &HashSet<EntryId>,
-    group_tool_verbs: bool,
+    mode: GroupingMode,
     show_thinking: bool,
 ) -> Vec<GroupSpan> {
-    let (mut spans, claimed) =
-        scan_verb_runs(entries, expanded_groups, group_tool_verbs, show_thinking);
+    let (mut spans, claimed) = scan_verb_runs(entries, expanded_groups, mode, show_thinking);
     spans.extend(scan_truncations(
         entries,
         max_visible,
@@ -112,13 +105,13 @@ pub(super) fn scan(
 fn scan_verb_runs(
     entries: &IndexMap<EntryId, ScrollbackEntry>,
     expanded_groups: &HashSet<EntryId>,
-    group_tool_verbs: bool,
+    mode: GroupingMode,
     show_thinking: bool,
 ) -> (Vec<GroupSpan>, Vec<bool>) {
     let n = entries.len();
     let mut spans = Vec::new();
     let mut claimed = vec![false; n];
-    if n == 0 || !group_tool_verbs {
+    if n == 0 {
         return (spans, claimed);
     }
 
@@ -126,7 +119,7 @@ fn scan_verb_runs(
     let mut i = 0;
     while i < n {
         // Trailing transparent thinking stays outside the run (`scan.end`).
-        let Some(scan) = scan_run_forward(entry_at, i, show_thinking) else {
+        let Some(scan) = scan_run_forward_with(entry_at, i, show_thinking, mode) else {
             i += 1;
             continue;
         };
@@ -139,9 +132,10 @@ fn scan_verb_runs(
         // Transparent entries stay unclaimed inside the span and keep rendering their own rows
         for (offset, slot) in claimed[i..scan.end].iter_mut().enumerate() {
             if matches!(
-                run_step(
+                run_step_with(
                     entry_at(i + offset).expect("index within entries"),
-                    show_thinking
+                    show_thinking,
+                    mode
                 ),
                 RunStep::Member(_) | RunStep::ThoughtMember
             ) {
@@ -243,12 +237,13 @@ pub(super) fn project_to_layout(
     spans: &[GroupSpan],
     entries: &IndexMap<EntryId, ScrollbackEntry>,
     layout_cache: &mut [EntryLayoutInfo],
+    mode: GroupingMode,
     show_thinking: bool,
 ) {
     for span in spans {
         match span.kind {
             GroupKind::VerbRun { members } => {
-                project_verb_run(span, members, entries, layout_cache, show_thinking);
+                project_verb_run(span, members, entries, layout_cache, mode, show_thinking);
             }
             GroupKind::Truncation {
                 participants,
@@ -274,13 +269,14 @@ fn project_verb_run(
     members: usize,
     entries: &IndexMap<EntryId, ScrollbackEntry>,
     layout_cache: &mut [EntryLayoutInfo],
+    mode: GroupingMode,
     show_thinking: bool,
 ) {
     let last_claimed = span.range.end - 1;
     for idx in span.range.clone() {
         let (_, e) = entries.get_index(idx).unwrap();
         let cached = &mut layout_cache[idx];
-        match run_step(e, show_thinking) {
+        match run_step_with(e, show_thinking, mode) {
             RunStep::Member(_) | RunStep::ThoughtMember => {}
             RunStep::Transparent => {
                 if !span.expanded {
@@ -399,9 +395,33 @@ mod tests {
         max_visible: usize,
         expanded: &HashSet<EntryId>,
     ) -> Vec<GroupSpan> {
-        let spans = scan(entries, max_visible, expanded, true, true);
-        project_to_layout(&spans, entries, layout, true);
+        scan_and_project_with(
+            entries,
+            layout,
+            max_visible,
+            expanded,
+            GroupingMode::VerbOnly,
+        )
+    }
+
+    fn scan_and_project_with(
+        entries: &IndexMap<EntryId, ScrollbackEntry>,
+        layout: &mut [EntryLayoutInfo],
+        max_visible: usize,
+        expanded: &HashSet<EntryId>,
+        mode: GroupingMode,
+    ) -> Vec<GroupSpan> {
+        let spans = scan(entries, max_visible, expanded, mode, true);
+        project_to_layout(&spans, entries, layout, mode, true);
         spans
+    }
+
+    fn edit() -> ScrollbackEntry {
+        use crate::scrollback::blocks::tool::{EditToolCallBlock, ToolCallBlock};
+        ScrollbackEntry::new(RenderBlock::ToolCall(ToolCallBlock::Edit(
+            EditToolCallBlock::new("f.rs", Vec::new()),
+        )))
+        .with_display_mode(DisplayMode::Collapsed)
     }
 
     /// The "Read 2 skills / 8 more" transcript shape: a verb run followed by a 19-row dense run of commands and thoughts with the default budget.
@@ -462,23 +482,98 @@ mod tests {
         assert!(layout.iter().all(|i| i.height == 5));
     }
 
+    /// Grouped density folds action runs by family: two reads form one run and
+    /// the following commands form their own, so nothing falls through to the
+    /// truncation family.
     #[test]
-    fn verb_toggle_off_feeds_members_to_truncation() {
+    fn by_family_folds_command_runs_separately_from_verb_runs() {
         let mut list = vec![skill_read(), skill_read()];
         list.extend((0..12).map(|_| execute()));
         let entries = map(list);
-        let spans = scan(&entries, 10, &HashSet::new(), false, true);
+        let mut layout = seeded_layout(entries.len());
+        let spans = scan_and_project_with(
+            &entries,
+            &mut layout,
+            10,
+            &HashSet::new(),
+            GroupingMode::ByFamily,
+        );
+        assert_eq!(
+            spans,
+            vec![
+                GroupSpan {
+                    range: 0..2,
+                    kind: GroupKind::VerbRun { members: 2 },
+                    expanded: false,
+                },
+                GroupSpan {
+                    range: 2..14,
+                    kind: GroupKind::VerbRun { members: 12 },
+                    expanded: false,
+                },
+            ]
+        );
+        assert!(layout[2].verb_group_header, "command run owns its header");
+        assert_eq!(layout[3].height, 0, "commands fold behind it");
+    }
+
+    /// Compact density mixes families: a read, an edit, and a command fold into
+    /// one row.
+    #[test]
+    fn all_runs_folds_mixed_tool_calls_into_one_row() {
+        let entries = map(vec![skill_read(), edit(), execute()]);
+        let mut layout = seeded_layout(entries.len());
+        let spans = scan_and_project_with(
+            &entries,
+            &mut layout,
+            10,
+            &HashSet::new(),
+            GroupingMode::AllRuns,
+        );
         assert_eq!(
             spans,
             vec![GroupSpan {
-                range: 0..14,
-                kind: GroupKind::Truncation {
-                    participants: 14,
-                    hidden: 4,
-                },
+                range: 0..3,
+                kind: GroupKind::VerbRun { members: 3 },
                 expanded: false,
             }]
         );
+        assert_eq!(layout[0].height, 1);
+        assert_eq!(layout[1].height, 0);
+        assert_eq!(layout[2].height, 0);
+    }
+
+    /// A lone action keeps its own row at every density: one row of header would
+    /// hide more than it saves.
+    #[test]
+    fn lone_action_never_folds() {
+        let entries = map(vec![edit()]);
+        let mut layout = seeded_layout(entries.len());
+        let spans = scan_and_project_with(
+            &entries,
+            &mut layout,
+            10,
+            &HashSet::new(),
+            GroupingMode::AllRuns,
+        );
+        assert!(spans.is_empty());
+        assert!(layout.iter().all(|i| i.height == 5));
+    }
+
+    /// Diff focus is verb-only: edits keep their own rows and never fold.
+    #[test]
+    fn verb_only_never_folds_action_runs() {
+        let entries = map(vec![edit(), edit(), execute(), execute()]);
+        let mut layout = seeded_layout(entries.len());
+        let spans = scan_and_project_with(
+            &entries,
+            &mut layout,
+            10,
+            &HashSet::new(),
+            GroupingMode::VerbOnly,
+        );
+        assert!(spans.is_empty());
+        assert!(layout.iter().all(|i| i.height == 5));
     }
 
     #[test]
@@ -528,10 +623,10 @@ mod tests {
             &entries,
             10,
             &HashSet::new(),
-            true,
+            GroupingMode::VerbOnly,
             /*show_thinking=*/ false,
         );
-        project_to_layout(&spans, &entries, &mut layout, false);
+        project_to_layout(&spans, &entries, &mut layout, GroupingMode::VerbOnly, false);
         assert_eq!(
             spans[0].kind,
             GroupKind::Truncation {
@@ -571,7 +666,7 @@ mod tests {
         list.push(skill_read());
         list.push(skill_read());
         let entries = map(list);
-        let spans = scan(&entries, 10, &HashSet::new(), true, true);
+        let spans = scan(&entries, 10, &HashSet::new(), GroupingMode::VerbOnly, true);
         assert!(spans.len() >= 2);
         for pair in spans.windows(2) {
             assert!(pair[0].range.end <= pair[1].range.start);

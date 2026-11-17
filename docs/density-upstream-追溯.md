@@ -93,13 +93,14 @@
 2. 上游源码快照（2026-09-29）与发布二进制（1.0.84, 2026-11-13）差距持续扩大；若未来 xAI 重新发布源码，应以新快照为准重新评估，而不是基于本手写版本。
 3. 本机 1.0.84 的内嵌文档可作为行为规范来源；但这只是二进制字符串，不构成源码授权或 API 契约。
 
-## 六、实现记录（进行中，2026-11-13）
+## 六、实现记录（2026-11-13 开发，2026-11-17 合入 main）
 
-状态：**未完成，未提交。** 主工作区（`main`）的 18 个未提交改动原样保留；实现在
-worktree `/Users/dengwenyu/Dev/AI/pi-grok-density`，分支 `feat/tool-call-density`
-（从 `e3ec2279` 新建）。
+状态：**已合入 `main`。** 开发期实现在 worktree `/Users/dengwenyu/Dev/AI/pi-grok-density`，
+分支 `feat/tool-call-density`（从 `e3ec2279` 新建）；2026-11-17 移植到当时的 `main`
+（`5b679311`）并合入，变更记录见
+`docs/pr/pager/20261117-工具调用密度五档折叠.md`。
 
-### 已完成（库代码可编译：`cargo check` 通过）
+### 已完成
 
 - `xai-grok-shared/src/ui_config.rs`：`ToolCallDensity` 枚举（五档、label、
   description、`parse` 支持 label/canonical/`verbose`/`minimal`、行为谓词、
@@ -121,16 +122,13 @@ worktree `/Users/dengwenyu/Dev/AI/pi-grok-density`，分支 `feat/tool-call-dens
   - 折叠摘要改为句首大写、后续小写、同类合并的格式
     （`Explored 2 files, 1 search`、`Edited 2 files, ran 1 command +12 -4`）；
   - 切换档位时对现有 transcript 重新 materialize（`apply_tool_call_density_flip`）。
-
-### 未完成
-
-1. `--all-targets` 仍不通过：大量单元/e2e 测试引用已删除的
-   `Action::SetGroupToolVerbs` / `SetCollapsedEditBlocks`、旧 cache 断言与旧标签文案，
-   需要逐项改写为 density 断言（`app/dispatch/tests/settings.rs`、`tests/settings_e2e.rs`、
-   `app/acp_handler/tests/settings.rs`、`scrollback/render_tests.rs`、`state/groups.rs` 等）。
-2. 新增测试尚未补：枚举解析/迁移、`/density` 参数、五档折叠分组单测与快照。
-3. `cargo fmt --all --check`、`clippy --all-targets -D warnings`、全量 pager 测试未跑。
-4. 未提交、未 push、未开 PR。
+- 合入时的收尾（2026-11-17）：
+  - 补齐 `move_setting_away_from_default` 的 density 分支、
+    `defaults_round_trip_through_registry` 的默认值断言、
+    `enum_settings_membership` 的枚举清单与 settings_modal 的 Appearance 行清单；
+  - 修正 4 个因新增行/新 section 而过时的断言：Appearance 首行改为
+    `tool_call_density`、`"compact density"` 过滤多命中 `tool_call_density`、
+    多词过滤可见行由 2 变 3、Space 在 Enum 行是 no-op（用 Enter 开选择器）。
 
 ### 已知与截图的偏差（待确认）
 
@@ -139,3 +137,10 @@ worktree `/Users/dengwenyu/Dev/AI/pi-grok-density`，分支 `feat/tool-call-dens
 - “Ran 4 unit tests” 这类基于命令描述的摘要未实现，命令 run 统一用计数
   （`ran 2 commands`）。
 - 折叠摘要的动词统一为 Explore/Edit/Run 家族；`Read 1 skill` 等个别措辞与上游可能不同。
+
+### 遗留（与本功能无关的既有红灯）
+
+`main` 在合入前就有大量失败测试（见 `docs/VERIFICATION.md` 的既有记录），
+合入前后对比：本功能引入 0 个新失败，并顺带修好 10 个
+（`scrollback::state::groups::tests::expanded_verb_run_stacks_header_and_keeps_member_rows`
+与 settings_modal 的 9 个 breadcrumb/picker 用例）。

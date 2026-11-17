@@ -675,6 +675,9 @@ fn rows_contain_categories_and_settings_through_pr_14() {
     assert_eq!(
         settings,
         vec![
+            // SHELL-owned tool call density (Appearance; first row, upstream
+            // "Tool calls" section).
+            "tool_call_density",
             // Booleans.
             "compact_mode",
             "screen_mode",
@@ -697,10 +700,6 @@ fn rows_contain_categories_and_settings_through_pr_14() {
             "show_thinking_blocks",
             // PAGER-owned respect_manual_folds (Appearance, persisted to pager.toml)
             "respect_manual_folds",
-            // SHELL-owned group_tool_verbs (Appearance; live cache).
-            "group_tool_verbs",
-            // SHELL-owned collapsed_edit_blocks (Appearance; live cache, default OFF rollout flag)
-            "collapsed_edit_blocks",
             // SHELL-owned Code Mode default expansion (Appearance; live cache, default OFF).
             "codemode_expanded_by_default",
             // Pi-Grok tool rendering controls retained across upstream syncs.

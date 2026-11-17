@@ -598,9 +598,11 @@ impl AcpUpdateTracker {
         if self.current_thinking.is_some() {
             return Some(TurnActivity::Thinking);
         }
-        if let Some(tool) = self.pending_tools.iter().find_map(|(id, tool)| {
-            (!self.suppressed_tools.contains_key(id)).then_some(tool)
-        }) {
+        if let Some(tool) = self
+            .pending_tools
+            .iter()
+            .find_map(|(id, tool)| (!self.suppressed_tools.contains_key(id)).then_some(tool))
+        {
             let description = tool
                 .base
                 .raw_input
@@ -966,7 +968,7 @@ impl AcpUpdateTracker {
         scrollback: &mut ScrollbackState,
         is_replay: bool,
     ) {
-        if !crate::appearance::cache::load_collapsed_edit_blocks() {
+        if !crate::appearance::cache::load_tool_call_density().edits_collapsed() {
             return;
         }
         if scrollback

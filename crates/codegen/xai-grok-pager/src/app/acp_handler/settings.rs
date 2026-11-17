@@ -291,62 +291,23 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
     );
 
     // Runs on None too: the shell always publishes this field from its live remote tier
-    // So None means remote settings cleared it, or an older shell cannot deliver the remote tier at all
-    // Either way resolving without a remote value is correct
-    let remote = xai_grok_shell::util::config::RemoteSettings {
-        group_tool_verbs: update.group_tool_verbs,
-        ..Default::default()
-    };
-    let resolved = xai_grok_shell::util::config::resolve_group_tool_verbs(
-        requirements.as_ref(),
-        user_config.as_ref(),
-        managed_config.as_ref(),
-        Some(&remote),
-    )
-    .value;
-    // On a real flip, re-fold every live transcript (mirrors dispatch's set_group_tool_verbs_inner); unchanged values keep `/new` cheap
-    // Stale expansion ids describe the old grouping shape
-    // Drop them so the re-fold can't reopen a verb slot expanded or mark a coincident dense group expanded (see `clear_group_expansion`)
-    if resolved != crate::appearance::cache::load_group_tool_verbs() {
-        crate::appearance::cache::set_group_tool_verbs(resolved);
-        for agent in app.agents.values_mut() {
-            agent.scrollback.clear_group_expansion();
-            agent.scrollback.invalidate_heights();
-            for child in agent.subagent_views.values_mut() {
-                child.scrollback.clear_group_expansion();
-                child.scrollback.invalidate_heights();
-            }
-        }
-    }
-
-    // Same rule as group_tool_verbs above: None also reverts
-    // Re-resolve the full local chain with the pushed remote tier so a cleared remote field falls back to local/default instead of staying latched
-    let remote = xai_grok_shell::util::config::RemoteSettings {
-        collapsed_edit_blocks: update.collapsed_edit_blocks,
-        ..Default::default()
-    };
-    let resolved = xai_grok_shell::util::config::resolve_collapsed_edit_blocks(
-        requirements.as_ref(),
-        user_config.as_ref(),
-        managed_config.as_ref(),
-        Some(&remote),
-    )
-    .value;
-    // On a real flip, rebuild on-default Edit rows and repaint suffixes in every live transcript (mirrors dispatch's set_collapsed_edit_blocks_inner)
-    // Unchanged values keep `/new` cheap
-    let prev = crate::appearance::cache::load_collapsed_edit_blocks();
-    if resolved != prev {
-        crate::appearance::cache::set_collapsed_edit_blocks(resolved);
-        for agent in app.agents.values_mut() {
-            agent
-                .scrollback
-                .apply_collapsed_edit_blocks_flip(prev, resolved);
-            for child in agent.subagent_views.values_mut() {
-                child
-                    .scrollback
-                    .apply_collapsed_edit_blocks_flip(prev, resolved);
-            }
-        }
+    // So None means remote settings cleared it (or an older shell cannot deliver the
+    // remote tier at all); re-resolve the local chain rather than staying latched.
+    // A real flip re-materializes every live transcript through the setter's path.
+    let level = update
+        .tool_call_density
+        .as_deref()
+        .and_then(crate::appearance::cache::ToolCallDensity::parse)
+        .unwrap_or_else(|| {
+            xai_grok_shell::util::config::resolve_tool_call_density(
+                requirements.as_ref(),
+                user_config.as_ref(),
+                managed_config.as_ref(),
+            )
+        });
+    let prev = crate::appearance::cache::load_tool_call_density();
+    if prev != level {
+        crate::app::dispatch::settings::setters::set_tool_call_density_inner(app, prev, level);
     }
 
     // A live session's scheduled fires keep the mode the shell pinned when the session's actor spawned
@@ -592,10 +553,13 @@ pub(super) struct PagerSettingsUpdate {
     /// That version skew is why this is tri-state instead of a plain `Option`.
     #[serde(default, deserialize_with = "deserialize_presence_aware_string")]
     permission_mode: Option<Option<String>>,
+    /// Legacy pre-density knobs; accepted on the wire and ignored (density supersedes them).
     #[serde(default)]
     group_tool_verbs: Option<bool>,
     #[serde(default)]
     collapsed_edit_blocks: Option<bool>,
+    #[serde(default)]
+    tool_call_density: Option<String>,
     #[serde(default)]
     subscription_watch_interval_secs: Option<u64>,
     /// Tolerant for the same reason as the settings response it mirrors.

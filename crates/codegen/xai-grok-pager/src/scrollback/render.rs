@@ -349,9 +349,7 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
                 show_thinking,
                 theme,
             )))
-        } else if entry_layout_info.is_group_header()
-            && crate::appearance::cache::load_group_tool_verbs()
-        {
+        } else if entry_layout_info.is_group_header() {
             // Truncation headers get the aggregated vocabulary over the rows they hide (prefix only while collapsed; the whole
             // run when expanded). The walk declines on pure thoughts or on hidden rows it cannot name.
             let show_thinking = crate::appearance::cache::load_show_thinking_blocks();

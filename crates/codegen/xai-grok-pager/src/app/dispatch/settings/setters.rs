@@ -472,84 +472,56 @@ pub(in crate::app::dispatch) fn set_thinking_border_colors(
     }]
 }
 
-pub(super) fn set_group_tool_verbs_inner(app: &mut AppView, new: bool) {
-    crate::appearance::cache::set_group_tool_verbs(new);
-    // Expansion ids describe the OLD grouping shape
-    // Drop them so stale ids can't reopen a verb slot expanded or mark a coincident dense group expanded after the re-fold (see `clear_group_expansion`)
-    for agent in app.agents.values_mut() {
-        agent.scrollback.clear_group_expansion();
-        agent.scrollback.invalidate_heights();
-        for child in agent.subagent_views.values_mut() {
-            child.scrollback.clear_group_expansion();
-            child.scrollback.invalidate_heights();
-        }
-    }
-}
-
-/// Set whether runs of consecutive non-destructive tool calls and subagent rows are grouped into one transcript row.
+/// Apply a density level to the live UI: cache, snapshot, and every agent's transcript.
 ///
-/// SHELL-OWNED: cache mirror and `[ui].group_tool_verbs` via `Effect::PersistSetting`.
-pub(in crate::app::dispatch) fn set_group_tool_verbs(app: &mut AppView, new: bool) -> Vec<Effect> {
-    let prev = crate::appearance::cache::load_group_tool_verbs();
-    if prev == new {
-        return vec![];
-    }
-    set_group_tool_verbs_inner(app, new);
-    refresh_open_settings_modals(app);
-    tracing::info!(
-        target: "settings",
-        key = "group_tool_verbs",
-        value = new,
-        "setting changed",
-    );
-    app.show_toast(&save_success_toast("Group tool calls", new));
-    vec![Effect::PersistSetting {
-        key: "group_tool_verbs",
-        value: crate::settings::SettingValue::Bool(new),
-        rollback_value: crate::settings::SettingValue::Bool(prev),
-    }]
-}
-
-pub(super) fn set_collapsed_edit_blocks_inner(app: &mut AppView, new: bool) {
-    // Read prev from the cache so a rollback restore walks the same flip.
-    let prev = crate::appearance::cache::load_collapsed_edit_blocks();
-    crate::appearance::cache::set_collapsed_edit_blocks(new);
-    if prev == new {
-        return;
-    }
-    // Re-materialize on-default Edit rows and repaint the live +N/-M suffix (the flip policy lives on ScrollbackState)
+/// Expansion ids describe the OLD grouping shape, so they are dropped before the
+/// re-fold; stale ids would otherwise reopen a run that no longer exists.
+pub(in crate::app) fn set_tool_call_density_inner(
+    app: &mut AppView,
+    prev: crate::appearance::cache::ToolCallDensity,
+    level: crate::appearance::cache::ToolCallDensity,
+) {
+    crate::appearance::cache::set_tool_call_density(level);
+    app.current_ui.tool_call_density = Some(level.as_canonical().to_string());
     for agent in app.agents.values_mut() {
-        agent.scrollback.apply_collapsed_edit_blocks_flip(prev, new);
+        agent.scrollback.apply_tool_call_density_flip(prev, level);
         for child in agent.subagent_views.values_mut() {
-            child.scrollback.apply_collapsed_edit_blocks_flip(prev, new);
+            child.scrollback.apply_tool_call_density_flip(prev, level);
         }
     }
 }
 
-/// Set whether Edit blocks default to the collapsed one-line `+N/-M` diffstat summary (expand for the diff).
-/// SHELL-OWNED: cache mirror and `[ui].collapsed_edit_blocks` via `Effect::PersistSetting`.
-/// Explicit pager.toml `[scrollback.blocks.edit]` shape keys override the flag.
-pub(in crate::app::dispatch) fn set_collapsed_edit_blocks(
+/// Set the tool-call density level from a label, canonical value, or legacy alias.
+///
+/// SHELL-OWNED: cache mirror, live transcript re-materialize, and
+/// `[ui] tool_call_density` via `Effect::PersistSetting`.
+pub(in crate::app::dispatch) fn set_tool_call_density(
     app: &mut AppView,
-    new: bool,
+    value: String,
 ) -> Vec<Effect> {
-    let prev = crate::appearance::cache::load_collapsed_edit_blocks();
-    if prev == new {
+    let Some(level) = crate::appearance::cache::ToolCallDensity::parse(&value) else {
+        app.show_toast(&format!(
+            "Unknown density '{value}'. Use detailed, compact-shells, compact-ungrouped, compact-grouped, or compact-all-grouped."
+        ));
+        return vec![];
+    };
+    let prev = crate::appearance::cache::load_tool_call_density();
+    if prev == level {
         return vec![];
     }
-    set_collapsed_edit_blocks_inner(app, new);
+    set_tool_call_density_inner(app, prev, level);
     refresh_open_settings_modals(app);
     tracing::info!(
         target: "settings",
-        key = "collapsed_edit_blocks",
-        value = new,
+        key = "tool_call_density",
+        value = level.as_canonical(),
         "setting changed",
     );
-    app.show_toast(&save_success_toast("Collapsed edit blocks", new));
+    app.show_toast(&format!("\u{2713} Tool call density: {}", level.label()));
     vec![Effect::PersistSetting {
-        key: "collapsed_edit_blocks",
-        value: crate::settings::SettingValue::Bool(new),
-        rollback_value: crate::settings::SettingValue::Bool(prev),
+        key: "tool_call_density",
+        value: crate::settings::SettingValue::Enum(level.as_canonical()),
+        rollback_value: crate::settings::SettingValue::Enum(prev.as_canonical()),
     }]
 }
 

@@ -1,5 +1,30 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-11-17 Tool call density (five fold levels)
+
+- PASS: `cargo check -p xai-grok-pager --all-targets` on the merged tree.
+- PASS: baseline comparison. The density merge was measured against a `main`
+  baseline worktree (`main` + the two breakage fixes below) with the same
+  command and the same toolchain: **0 new failures**, **10 pre-existing
+  failures fixed** (`scrollback::state::groups::tests::expanded_verb_run_stacks_header_and_keeps_member_rows`
+  plus nine `views::settings_modal::tests::*` breadcrumb/picker cases). The
+  remaining 144 failures are the same set the baseline already had and are
+  unrelated to this change.
+- PASS: rustfmt (edition 2024, repo `rustfmt.toml`) on every file this change
+  touches; `cargo fmt --all --check` still reports the repository's
+  pre-existing drift in files this change does not touch.
+- PASS: clippy (`-p xai-grok-pager --all-targets`) reports no new lint on the
+  changed hunks; the warnings inside the touched files are pre-existing lines
+  outside this change's hunks.
+- NOT RUN: real terminal acceptance of the five levels, and no installed
+  binary was rebuilt. The upstream behavior was reconstructed from the
+  published binary's embedded strings, not from source.
+- Pre-existing breakage found on `main` and fixed in separate commits:
+  `PagerLocalSnapshot.ask_user_question_timeout_secs` was added without
+  updating the five snapshot initializers (the pager library did not compile),
+  and the upstream `registered_features_are_documented` test referenced
+  operator tables this fork does not ship.
+
 ## 2026-11-15 standalone macOS ARM64-only builds
 
 - Standalone beta default matrix, release-cache warm and independent compile lab now target ARM64 only. Full stable matrix remains unchanged. YAML, matrix resolution and diff checks are required before delivery; no local Cargo is run.

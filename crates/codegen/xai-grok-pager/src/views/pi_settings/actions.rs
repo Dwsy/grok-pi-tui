@@ -102,8 +102,6 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "codemode_expanded_by_default" => Action::SetCodemodeExpandedByDefault(new),
         "show_thinking_blocks" => Action::SetShowThinkingBlocks(new),
         "thinking_border_colors" => Action::SetThinkingBorderColors(new),
-        "group_tool_verbs" => Action::SetGroupToolVerbs(new),
-        "collapsed_edit_blocks" => Action::SetCollapsedEditBlocks(new),
         "side_by_side_edit" => Action::SetSideBySideEdit(new),
         "side_by_side_word_highlight" => Action::SetSideBySideWordHighlight(new),
         "prompt_suggestions" => Action::SetPromptSuggestions(new),
@@ -138,6 +136,8 @@ pub(super) fn action_for_enum_preview(key: SettingKey, choice: &str) -> Option<A
 pub(super) fn action_for_enum_commit(key: SettingKey, choice: &str) -> Option<Action> {
     use crate::app::actions::{PermissionModeKind, PlanModeKind};
     match key {
+        "tool_call_density" => crate::appearance::cache::ToolCallDensity::parse(choice)
+            .map(|level| Action::SetToolCallDensity(level.as_canonical().to_string())),
         "theme" => Some(Action::SetTheme(choice.to_string())),
         "auto_dark_theme" => Some(Action::SetAutoDarkTheme(choice.to_string())),
         "auto_light_theme" => Some(Action::SetAutoLightTheme(choice.to_string())),

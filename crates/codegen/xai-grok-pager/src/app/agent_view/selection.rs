@@ -2244,7 +2244,9 @@ mod tests {
         use crate::scrollback::blocks::tool::{ReadToolCallBlock, ToolCallBlock};
         use crate::scrollback::types::DisplayMode;
 
-        crate::appearance::cache::set_group_tool_verbs(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+        );
         crate::appearance::cache::set_show_thinking_blocks(false);
         let mut agent = make_agent();
         for i in 0..3 {

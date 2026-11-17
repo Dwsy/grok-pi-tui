@@ -3,8 +3,8 @@ use super::*;
 
 #[test]
 fn tool_card_click_action_persists_and_rolls_back_live() {
-    use crate::settings::SettingValue;
     use crate::appearance::cache::ToolCardClickAction;
+    use crate::settings::SettingValue;
     with_theme_test_env(|| {
         let previous = crate::appearance::cache::load_tool_card_click_action();
         let mut app = test_app_with_agent();
@@ -1765,11 +1765,8 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "show_thinking_blocks" => {
             let _ = dispatch(Action::SetShowThinkingBlocks(true), app);
         }
-        "group_tool_verbs" => {
-            let _ = dispatch(Action::SetGroupToolVerbs(false), app);
-        }
-        "collapsed_edit_blocks" => {
-            let _ = dispatch(Action::SetCollapsedEditBlocks(true), app);
+        "tool_call_density" => {
+            let _ = dispatch(Action::SetToolCallDensity("detailed".into()), app);
         }
         "codemode_expanded_by_default" => {
             let _ = dispatch(Action::SetCodemodeExpandedByDefault(true), app);
@@ -2422,72 +2419,91 @@ fn set_show_thinking_blocks_applies_persists_and_rolls_back() {
     );
 }
 #[test]
-fn set_group_tool_verbs_applies_persists_and_rolls_back() {
-    crate::appearance::cache::set_group_tool_verbs(true);
+fn set_tool_call_density_applies_persists_and_rolls_back() {
+    use crate::appearance::cache::{
+        ToolCallDensity, load_tool_call_density, set_tool_call_density,
+    };
+    set_tool_call_density(ToolCallDensity::CompactAllGrouped);
     let mut app = test_app_with_agent();
-    let effects = dispatch(Action::SetGroupToolVerbs(false), &mut app);
+    let effects = dispatch(Action::SetToolCallDensity("detailed".into()), &mut app);
     assert!(
         matches!(
             effects.as_slice(),
             [Effect::PersistSetting {
-                key: "group_tool_verbs",
-                value: crate::settings::SettingValue::Bool(false),
-                rollback_value: crate::settings::SettingValue::Bool(true),
+                key: "tool_call_density",
+                value: crate::settings::SettingValue::Enum("detailed"),
+                rollback_value: crate::settings::SettingValue::Enum("compact-all-grouped"),
             }]
         ),
         "expected exactly one PersistSetting effect, got {effects:?}",
     );
-    assert!(!crate::appearance::cache::load_group_tool_verbs());
-    let effects = dispatch(Action::SetGroupToolVerbs(false), &mut app);
+    assert_eq!(load_tool_call_density(), ToolCallDensity::Detailed);
+    let effects = dispatch(Action::SetToolCallDensity("detailed".into()), &mut app);
     assert!(effects.is_empty(), "redundant set must be a no-op");
     let _ = apply_setting_rollback(
         &mut app,
-        "group_tool_verbs",
-        &crate::settings::SettingValue::Bool(true),
+        "tool_call_density",
+        &crate::settings::SettingValue::Enum("compact-all-grouped"),
     );
-    assert!(
-        crate::appearance::cache::load_group_tool_verbs(),
+    assert_eq!(
+        load_tool_call_density(),
+        ToolCallDensity::CompactAllGrouped,
         "rollback must restore cache",
     );
 }
-/// Toggling the setting re-folds the existing transcript in place (no restart, no unrelated structural event needed).
+
 #[test]
-fn set_group_tool_verbs_refolds_live_transcript() {
+fn set_tool_call_density_rejects_unknown_level() {
+    use crate::appearance::cache::{
+        ToolCallDensity, load_tool_call_density, set_tool_call_density,
+    };
+    set_tool_call_density(ToolCallDensity::CompactAllGrouped);
+    let mut app = test_app_with_agent();
+    let effects = dispatch(Action::SetToolCallDensity("bogus".into()), &mut app);
+    assert!(effects.is_empty(), "unknown level must not persist");
+    assert_eq!(load_tool_call_density(), ToolCallDensity::CompactAllGrouped);
+}
+
+/// Raising the density folds action runs in place: two shell rows that each keep
+/// their own line at Diff focus fold behind one summary row at Compact.
+#[test]
+fn set_tool_call_density_refolds_action_runs_live() {
+    use crate::appearance::cache::{ToolCallDensity, set_tool_call_density};
     use crate::scrollback::block::RenderBlock;
-    crate::appearance::cache::set_group_tool_verbs(true);
+    set_tool_call_density(ToolCallDensity::CompactShells);
     let mut app = test_app_with_agent();
     {
         let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
-        sb.push_block(RenderBlock::read("a.rs", None));
-        sb.push_block(RenderBlock::read("b.rs", None));
+        sb.push_block(RenderBlock::execute("cargo test"));
+        sb.push_block(RenderBlock::execute("cargo fmt"));
+        sb.prepare_layout(80, 40);
+        assert!(
+            sb.get_cached_entry_height(1).unwrap_or(0) > 0,
+            "commands do not fold at Diff focus"
+        );
+    }
+    let _ = dispatch(
+        Action::SetToolCallDensity("compact-all-grouped".into()),
+        &mut app,
+    );
+    {
+        let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
         sb.prepare_layout(80, 40);
         assert_eq!(
             sb.get_cached_entry_height(1),
             Some(0),
-            "run folds while the setting is on"
+            "both commands fold behind the group header at Compact"
         );
     }
-    let _ = dispatch(Action::SetGroupToolVerbs(false), &mut app);
-    let sb = &app.agents[&AgentId(0)].scrollback;
-    assert!(
-        sb.get_cached_entry_height(1).unwrap_or(0) > 0,
-        "toggle off must unfold the transcript immediately"
-    );
-    let _ = dispatch(Action::SetGroupToolVerbs(true), &mut app);
-    let sb = &app.agents[&AgentId(0)].scrollback;
-    assert_eq!(
-        sb.get_cached_entry_height(1),
-        Some(0),
-        "toggle on must re-fold the transcript immediately"
-    );
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(ToolCallDensity::CompactAllGrouped);
 }
-/// Flipping the setting drops manual group expansions: the id set is shared with N-more dense groups.
-/// A stale verb-slot id must neither mark the coincident dense run expanded after OFF nor reopen the verb slot expanded after ON.
+
+/// A density flip drops manual group expansions: the ids describe the old fold shape.
 #[test]
-fn set_group_tool_verbs_flip_resets_stale_group_expansion() {
+fn set_tool_call_density_flip_resets_stale_group_expansion() {
+    use crate::appearance::cache::{ToolCallDensity, set_tool_call_density};
     use crate::scrollback::block::RenderBlock;
-    crate::appearance::cache::set_group_tool_verbs(true);
+    set_tool_call_density(ToolCallDensity::CompactShells);
     let mut app = test_app_with_agent();
     {
         let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
@@ -2504,71 +2520,31 @@ fn set_group_tool_verbs_flip_resets_stale_group_expansion() {
         let info = sb.get_cached_entry_layouts().unwrap()[0];
         assert!(info.group_collapse_header, "expanded verb slot armed");
     }
-    let _ = dispatch(Action::SetGroupToolVerbs(false), &mut app);
-    {
-        let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
-        sb.prepare_layout(80, 40);
-        let info = sb.get_cached_entry_layouts().unwrap()[0];
-        assert!(
-            !info.group_collapse_header,
-            "stale expansion must not mark the dense run expanded after OFF"
-        );
-    }
-    let _ = dispatch(Action::SetGroupToolVerbs(true), &mut app);
-    {
-        let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
-        sb.prepare_layout(80, 40);
-        let info = sb.get_cached_entry_layouts().unwrap()[0];
-        assert!(info.verb_group_header, "run refolds as a verb group");
-        assert!(
-            !info.group_collapse_header,
-            "refold must be collapsed, not a reopened expanded slot"
-        );
-        assert_eq!(
-            sb.get_cached_entry_height(1),
-            Some(0),
-            "members fold behind the collapsed header"
-        );
-    }
-    crate::appearance::cache::set_group_tool_verbs(true);
-}
-#[test]
-fn set_collapsed_edit_blocks_applies_persists_and_rolls_back() {
-    crate::appearance::cache::set_collapsed_edit_blocks(false);
-    let mut app = test_app_with_agent();
-    let effects = dispatch(Action::SetCollapsedEditBlocks(true), &mut app);
-    assert!(
-        matches!(
-            effects.as_slice(),
-            [Effect::PersistSetting {
-                key: "collapsed_edit_blocks",
-                value: crate::settings::SettingValue::Bool(true),
-                rollback_value: crate::settings::SettingValue::Bool(false),
-            }]
-        ),
-        "expected exactly one PersistSetting effect, got {effects:?}",
-    );
-    assert!(crate::appearance::cache::load_collapsed_edit_blocks());
-    let effects = dispatch(Action::SetCollapsedEditBlocks(true), &mut app);
-    assert!(effects.is_empty(), "redundant set must be a no-op");
-    let _ = apply_setting_rollback(
+    let _ = dispatch(
+        Action::SetToolCallDensity("compact-all-grouped".into()),
         &mut app,
-        "collapsed_edit_blocks",
-        &crate::settings::SettingValue::Bool(false),
     );
-    assert!(
-        !crate::appearance::cache::load_collapsed_edit_blocks(),
-        "rollback must restore cache",
-    );
+    {
+        let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
+        sb.prepare_layout(80, 40);
+        let info = sb.get_cached_entry_layouts().unwrap()[0];
+        assert!(info.verb_group_header, "run refolds as a group");
+        assert!(
+            !info.group_collapse_header,
+            "stale expansion id must not reopen the new fold"
+        );
+    }
+    crate::appearance::cache::set_tool_call_density(ToolCallDensity::CompactAllGrouped);
 }
-/// Toggling the flag re-materializes on-default Edit rows in the live transcript (no restart).
-/// This is the dispatch-level pin of `apply_collapsed_edit_blocks_flip`'s agent walk.
+
+/// Switching between Detailed and Balanced re-materializes on-default Edit rows.
 #[test]
-fn set_collapsed_edit_blocks_refolds_live_edit_rows() {
+fn set_tool_call_density_refolds_live_edit_rows() {
+    use crate::appearance::cache::{ToolCallDensity, set_tool_call_density};
     use crate::scrollback::block::RenderBlock;
     use crate::scrollback::blocks::tool::{EditToolCallBlock, ToolCallBlock};
     use crate::scrollback::types::DisplayMode;
-    crate::appearance::cache::set_collapsed_edit_blocks(false);
+    set_tool_call_density(ToolCallDensity::Detailed);
     let mut app = test_app_with_agent();
     let id = {
         let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
@@ -2583,9 +2559,12 @@ fn set_collapsed_edit_blocks_refolds_live_edit_rows() {
             .unwrap()
             .display_mode,
         DisplayMode::Expanded,
-        "flag off materializes expanded"
+        "Detailed materializes the diff"
     );
-    let _ = dispatch(Action::SetCollapsedEditBlocks(true), &mut app);
+    let _ = dispatch(
+        Action::SetToolCallDensity("compact-ungrouped".into()),
+        &mut app,
+    );
     assert_eq!(
         app.agents[&AgentId(0)]
             .scrollback
@@ -2593,9 +2572,9 @@ fn set_collapsed_edit_blocks_refolds_live_edit_rows() {
             .unwrap()
             .display_mode,
         DisplayMode::Collapsed,
-        "toggle on must collapse the on-default Edit row immediately"
+        "Balanced collapses the on-default Edit row immediately"
     );
-    let _ = dispatch(Action::SetCollapsedEditBlocks(false), &mut app);
+    let _ = dispatch(Action::SetToolCallDensity("detailed".into()), &mut app);
     assert_eq!(
         app.agents[&AgentId(0)]
             .scrollback
@@ -2603,10 +2582,11 @@ fn set_collapsed_edit_blocks_refolds_live_edit_rows() {
             .unwrap()
             .display_mode,
         DisplayMode::Expanded,
-        "toggle off must restore the expanded default"
+        "back to Detailed restores the diff"
     );
-    crate::appearance::cache::set_collapsed_edit_blocks(false);
+    crate::appearance::cache::set_tool_call_density(ToolCallDensity::CompactAllGrouped);
 }
+
 #[test]
 fn set_codemode_expanded_by_default_applies_persists_and_rolls_back() {
     crate::appearance::cache::set_codemode_expanded_by_default(false);
@@ -2851,7 +2831,9 @@ fn set_show_thinking_blocks_off_truncates_across_interspersed_thinking() {
 fn set_show_thinking_blocks_flip_reshapes_verb_runs_and_resets_expansion() {
     use crate::scrollback::block::RenderBlock;
     use crate::scrollback::types::DisplayMode;
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
     crate::appearance::cache::set_show_thinking_blocks(true);
     let mut app = test_app_with_agent();
     {
@@ -2894,7 +2876,9 @@ fn set_show_thinking_blocks_flip_reshapes_verb_runs_and_resets_expansion() {
         );
         assert_eq!(layouts[1].height, 0);
     }
-    crate::appearance::cache::set_group_tool_verbs(true);
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
     crate::appearance::cache::set_show_thinking_blocks(true);
 }
 /// `Action::SetRespectManualFolds` applies to `app.appearance` AND every agent's scrollback.

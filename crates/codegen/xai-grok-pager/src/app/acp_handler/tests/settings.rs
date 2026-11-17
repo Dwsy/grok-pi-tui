@@ -248,116 +248,58 @@
     }
 
     #[test]
-    fn settings_update_clearing_group_tool_verbs_reverts_to_default() {
-        // Expected values come from the same chain the handler resolves, so the test holds regardless of host config/env
-        // A local `[ui]` or env override legitimately beats the remote tier on both legs
+    fn settings_update_clearing_tool_call_density_reverts_to_default() {
+        use crate::appearance::cache::{
+            ToolCallDensity, load_tool_call_density, set_tool_call_density,
+        };
+        // Expected value comes from the same chain the handler resolves, so the
+        // test holds regardless of the host config.
         let requirements = xai_grok_shell::config::load_merged_requirements();
         let user_config = xai_grok_shell::config::load_from_disk().ok();
         let managed_config = xai_grok_shell::config::load_managed_config().ok();
-        let resolve = |remote_val: Option<bool>| {
-            let remote = xai_grok_shell::util::config::RemoteSettings {
-                group_tool_verbs: remote_val,
-                ..Default::default()
-            };
-            xai_grok_shell::util::config::resolve_group_tool_verbs(
-                requirements.as_ref(),
-                user_config.as_ref(),
-                managed_config.as_ref(),
-                Some(&remote),
-            )
-            .value
-        };
-        let expect_on = resolve(Some(true));
-        let expect_cleared = resolve(None);
+        let local = xai_grok_shell::util::config::resolve_tool_call_density(
+            requirements.as_ref(),
+            user_config.as_ref(),
+            managed_config.as_ref(),
+        );
         let mut app = make_app_with_agent("sess-1");
 
-        // Remote enable arrives (redundant with the on-default, still latched).
         assert!(handle_ext_notification(
-            &group_tool_verbs_settings_update(Some(true)),
+            &tool_call_density_settings_update(Some("detailed")),
             &mut app
         ));
         assert_eq!(
-            crate::appearance::cache::load_group_tool_verbs(),
-            expect_on,
-            "remote Some(true) must re-resolve into the cache"
+            load_tool_call_density(),
+            ToolCallDensity::Detailed,
+            "a pushed canonical value wins"
         );
 
-        // Seed the cache opposite to the expected outcome (the latched remote enable) so only a real re-resolve can pass
-        // The update must revert it to the local/default resolution instead of skipping the field
-        // An old payload without the field takes this same path
-        crate::appearance::cache::set_group_tool_verbs(!expect_cleared);
-        assert!(handle_ext_notification(
-            &group_tool_verbs_settings_update(None),
-            &mut app
-        ));
-        assert_eq!(
-            crate::appearance::cache::load_group_tool_verbs(),
-            expect_cleared,
-            "cleared remote tier must re-resolve the full chain, not stay latched"
-        );
-        // Restore default (on) for other tests that share the process cache.
-        crate::appearance::cache::set_group_tool_verbs(true);
-    }
-
-    #[test]
-    fn settings_update_clearing_collapsed_edit_blocks_reverts_to_default() {
-        // Expected values come from the same chain the handler resolves, so the test holds regardless of host config/env
-        // A local `[ui]` or env override legitimately beats the remote tier on both legs
-        let requirements = xai_grok_shell::config::load_merged_requirements();
-        let user_config = xai_grok_shell::config::load_from_disk().ok();
-        let managed_config = xai_grok_shell::config::load_managed_config().ok();
-        let resolve = |remote_val: Option<bool>| {
-            let remote = xai_grok_shell::util::config::RemoteSettings {
-                collapsed_edit_blocks: remote_val,
-                ..Default::default()
-            };
-            xai_grok_shell::util::config::resolve_collapsed_edit_blocks(
-                requirements.as_ref(),
-                user_config.as_ref(),
-                managed_config.as_ref(),
-                Some(&remote),
-            )
-            .value
+        // Latch the cache away from the local resolution so only a real re-resolve passes.
+        let latching = if local == ToolCallDensity::CompactAllGrouped {
+            ToolCallDensity::Detailed
+        } else {
+            ToolCallDensity::CompactAllGrouped
         };
-        let expect_on = resolve(Some(true));
-        let expect_cleared = resolve(None);
-        let mut app = make_app_with_agent("sess-1");
-
-        // remote settings enable arrives (the team rollout path).
+        set_tool_call_density(latching);
         assert!(handle_ext_notification(
-            &collapsed_edit_blocks_settings_update(Some(true)),
+            &tool_call_density_settings_update(None),
             &mut app
         ));
         assert_eq!(
-            crate::appearance::cache::load_collapsed_edit_blocks(),
-            expect_on,
-            "remote Some(true) must re-resolve into the cache"
+            load_tool_call_density(),
+            local,
+            "a cleared remote tier must re-resolve the local chain, not stay latched"
         );
-
-        // Seed the cache opposite to the expected outcome (the latched remote enable) so only a real re-resolve can pass
-        // The update must revert it to the local/default resolution instead of skipping the field
-        // An old payload without the field takes this same path
-        crate::appearance::cache::set_collapsed_edit_blocks(!expect_cleared);
-        assert!(handle_ext_notification(
-            &collapsed_edit_blocks_settings_update(None),
-            &mut app
-        ));
-        assert_eq!(
-            crate::appearance::cache::load_collapsed_edit_blocks(),
-            expect_cleared,
-            "cleared remote tier must re-resolve the full chain, not stay latched"
-        );
-        // Restore default (off) for other tests that share the process cache.
-        crate::appearance::cache::set_collapsed_edit_blocks(false);
+        set_tool_call_density(ToolCallDensity::CompactAllGrouped);
     }
 
-    /// A remote collapsed_edit_blocks flip re-folds Edit rows still on their default display mode in the live transcript.
-    /// The settings toggle applies the same policy via `apply_collapsed_edit_blocks_flip`.
+    /// A pushed density flip re-materializes Edit rows still on their default mode.
     #[test]
-    fn settings_update_collapsed_edit_blocks_flip_refolds_live_edits() {
+    fn settings_update_tool_call_density_refolds_live_edits() {
+        use crate::appearance::cache::{ToolCallDensity, set_tool_call_density};
         use crate::scrollback::types::DisplayMode;
 
-        crate::appearance::cache::set_collapsed_edit_blocks(false);
+        set_tool_call_density(ToolCallDensity::Detailed);
         let mut app = make_app_with_agent("sess-1");
         let id = {
             let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
@@ -368,34 +310,36 @@
             ))
         };
         assert_eq!(
-            app.agents[&AgentId(0)].scrollback.get_by_id(id).unwrap().display_mode,
+            app.agents[&AgentId(0)]
+                .scrollback
+                .get_by_id(id)
+                .unwrap()
+                .display_mode,
             DisplayMode::Expanded,
-            "flag off materializes expanded"
+            "Detailed materializes expanded"
         );
 
         assert!(handle_ext_notification(
-            &collapsed_edit_blocks_settings_update(Some(true)),
+            &tool_call_density_settings_update(Some("compact-ungrouped")),
             &mut app
         ));
-        if !crate::appearance::cache::load_collapsed_edit_blocks() {
-            // A host-level env/config override outranked the remote value, so no real flip occurred and the re-fold didn't run
-            // Nothing to assert on this machine (CI runs with clean layers)
-            return;
-        }
         assert_eq!(
-            app.agents[&AgentId(0)].scrollback.get_by_id(id).unwrap().display_mode,
+            app.agents[&AgentId(0)]
+                .scrollback
+                .get_by_id(id)
+                .unwrap()
+                .display_mode,
             DisplayMode::Collapsed,
-            "remote enable must collapse the on-default Edit row"
+            "a pushed compact level must collapse the on-default Edit row"
         );
-        // Restore default (off) for other tests that share the process cache.
-        crate::appearance::cache::set_collapsed_edit_blocks(false);
+        set_tool_call_density(ToolCallDensity::CompactAllGrouped);
     }
 
-    /// The live-refresh flip mirrors `set_group_tool_verbs_inner`'s cleanup of stale group expansions.
-    /// A previously expanded verb slot must not survive a remote flip as an expanded header.
+    /// A density flip drops manual group expansions: their ids describe the old fold shape.
     #[test]
     fn settings_update_flip_resets_stale_group_expansion() {
-        crate::appearance::cache::set_group_tool_verbs(true);
+        use crate::appearance::cache::{ToolCallDensity, set_tool_call_density};
+        set_tool_call_density(ToolCallDensity::CompactAllGrouped);
         let mut app = make_app_with_agent("sess-1");
         {
             let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
@@ -410,18 +354,13 @@
             assert!(sb.toggle_group_expansion());
             sb.prepare_layout(80, 40);
             let info = sb.get_cached_entry_layouts().unwrap()[0];
-            assert!(info.group_collapse_header, "expanded verb slot armed");
+            assert!(info.group_collapse_header, "expanded group armed");
         }
 
         assert!(handle_ext_notification(
-            &group_tool_verbs_settings_update(Some(false)),
+            &tool_call_density_settings_update(Some("compact-shells")),
             &mut app
         ));
-        if crate::appearance::cache::load_group_tool_verbs() {
-            // A host-level env/config override outranked the remote value, so no real flip occurred and the cleanup path didn't run
-            // Nothing to assert on this machine (CI runs with clean layers)
-            return;
-        }
         let sb = &mut app.agents.get_mut(&AgentId(0)).unwrap().scrollback;
         sb.prepare_layout(80, 40);
         let info = sb.get_cached_entry_layouts().unwrap()[0];
@@ -429,10 +368,12 @@
             !info.group_collapse_header,
             "remote flip must drop the stale expansion"
         );
-        assert!(
-            sb.get_cached_entry_height(1).unwrap_or(0) > 0,
-            "rows render individually after the flip"
+        assert_eq!(
+            sb.get_cached_entry_height(1),
+            Some(0),
+            "the run refolds collapsed"
         );
+        set_tool_call_density(ToolCallDensity::CompactAllGrouped);
     }
 
     #[test]

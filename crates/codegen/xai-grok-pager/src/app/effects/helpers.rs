@@ -1350,19 +1350,11 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
-        "group_tool_verbs" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("group_tool_verbs", "Bool", &value));
+        "tool_call_density" => {
+            let SettingValue::Enum(s) = value else {
+                return Err(kind_mismatch("tool_call_density", "Enum", &value));
             };
-            xai_grok_shell::util::config::set_group_tool_verbs(b)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        "collapsed_edit_blocks" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("collapsed_edit_blocks", "Bool", &value));
-            };
-            xai_grok_shell::util::config::set_collapsed_edit_blocks(b)
+            xai_grok_shell::util::config::set_tool_call_density(s.to_string())
                 .await
                 .map_err(|e| e.to_string())
         }

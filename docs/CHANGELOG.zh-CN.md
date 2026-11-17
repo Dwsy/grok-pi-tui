@@ -9,6 +9,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **工具调用密度** — F2 → Appearance → Tool calls →「Tool call density」（`[ui].tool_call_density`）与 `/density` 对齐原生 Grok 的工具调用密度：五档（Detailed / Diff focus / Balanced / Grouped / Compact）决定编辑渲染 diff 还是一行 `+N/-M`、shell 命令是否保留输出预览、哪些工具调用连续行折叠成一行摘要。切换档位会重新 materialize 当前会话记录。已下线的 `collapsed_edit_blocks` / `group_tool_verbs` 在首次读取时迁移到最接近的档位。
+
 ### 变更
 
 - 后续 beta 默认只发布 macOS ARM64（Apple Silicon）；独立缓存预热与编译实验也只保留 ARM64。正式版六平台发布与手动指定目标能力不变。

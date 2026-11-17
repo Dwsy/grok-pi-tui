@@ -62,8 +62,7 @@ const ALL_SETTINGS_EXERCISED: &[&str] = &[
     "fork_secondary_model",
     "show_thinking_blocks",
     "prompt_suggestions",
-    "group_tool_verbs",
-    "collapsed_edit_blocks",
+    "tool_call_density",
     "respect_manual_folds",
     "hunk_tracker_mode",
     "voice_keybind_enabled",
@@ -301,15 +300,6 @@ fn assert_set_bool_action(outcome: SettingsKeyOutcome, key: &str, expected: bool
             assert_eq!(
                 b, expected,
                 "SetPromptSuggestions value differs from expected"
-            )
-        }
-        ("group_tool_verbs", Action::SetGroupToolVerbs(b)) => {
-            assert_eq!(b, expected, "SetGroupToolVerbs value differs from expected")
-        }
-        ("collapsed_edit_blocks", Action::SetCollapsedEditBlocks(b)) => {
-            assert_eq!(
-                b, expected,
-                "SetCollapsedEditBlocks value differs from expected"
             )
         }
         ("invert_scroll", Action::SetInvertScroll(b)) => {
@@ -975,8 +965,10 @@ fn slash_enters_filter_mode_and_chars_go_to_query_no_action_leak() {
 
     let reg = SettingsRegistry::defaults();
     let hits = reg.search(s.query());
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].key, "compact_mode");
+    // `tool_call_density` carries the `compact` keyword too, so both rows match.
+    let mut keys: Vec<&str> = hits.iter().map(|hit| hit.key).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["compact_mode", "tool_call_density"]);
 }
 
 /// `Ctrl+,` closes the modal from FilterFocused mode.
@@ -1932,8 +1924,6 @@ fn registry_kind_membership_through_pr_14() {
         bool_keys,
         vec![
             "compact_mode",
-            "group_tool_verbs",
-            "collapsed_edit_blocks",
             "invert_scroll",
             "display_refresh_auto_cadence",
             "multiline_mode",
@@ -1986,6 +1976,7 @@ fn registry_kind_membership_through_pr_14() {
             "screen_mode",
             "scroll_mode",
             "theme",
+            "tool_call_density",
             "voice_capture_mode",
             "voice_stt_language",
         ],
@@ -2083,7 +2074,9 @@ fn defaults_round_trip_through_registry() {
     );
     xai_grok_pager::appearance::cache::set_show_thinking_blocks(true);
     xai_grok_pager::appearance::cache::set_prompt_suggestions(true);
-    xai_grok_pager::appearance::cache::set_group_tool_verbs(true);
+    xai_grok_pager::appearance::cache::set_tool_call_density(
+        xai_grok_pager::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
     xai_grok_pager::appearance::cache::set_page_flip_on_send(true);
     xai_grok_pager::appearance::cache::set_combine_queued_prompts(false);
     xai_grok_pager::appearance::cache::set_follow_up_behavior(
@@ -2137,8 +2130,7 @@ fn defaults_round_trip_through_registry() {
             "fork_secondary_model" => SettingValue::String(String::new()),
             "show_thinking_blocks" => SettingValue::Bool(true),
             "prompt_suggestions" => SettingValue::Bool(true),
-            "group_tool_verbs" => SettingValue::Bool(true),
-            "collapsed_edit_blocks" => SettingValue::Bool(false),
+            "tool_call_density" => SettingValue::Enum("compact-all-grouped"),
             "respect_manual_folds" => SettingValue::Bool(false),
             // Per-tip contextual-hint children default ON (inherit → true).
             "contextual_hints.undo" => SettingValue::Bool(true),
@@ -2179,9 +2171,10 @@ fn defaults_round_trip_through_registry() {
 #[test]
 fn initial_state_selects_first_setting_row() {
     let s = make_state();
-    // The first visible setting in the Appearance tab is `theme`.
+    // The first visible setting in the Appearance tab is `tool_call_density`
+    // (Appearance leads with the upstream "Tool calls" section).
     match &s.rows[s.selected] {
-        RowEntry::Setting { key, .. } => assert_eq!(*key, "theme"),
+        RowEntry::Setting { key, .. } => assert_eq!(*key, "tool_call_density"),
         _ => panic!("initial selection must land on a setting row, not a header"),
     }
 }
@@ -2219,8 +2212,6 @@ fn settings_value_payload_matches_kind() {
             | SettingsKeyOutcome::Action(Action::SetRespectManualFolds(_))
             | SettingsKeyOutcome::Action(Action::SetShowThinkingBlocks(_))
             | SettingsKeyOutcome::Action(Action::SetPromptSuggestions(_))
-            | SettingsKeyOutcome::Action(Action::SetGroupToolVerbs(_))
-            | SettingsKeyOutcome::Action(Action::SetCollapsedEditBlocks(_))
             | SettingsKeyOutcome::Action(Action::SetInvertScroll(_))
             | SettingsKeyOutcome::Action(Action::SetDisplayRefreshAutoCadence(_))
             | SettingsKeyOutcome::Action(Action::SetVoiceKeybindEnabled(_)) => {}
@@ -2462,20 +2453,26 @@ fn pr2_filter_matches_multi_word_and() {
     let filtered = s.filtered_indices();
     assert_eq!(
         filtered.len(),
-        2,
-        "expected exactly 2 visible rows (Appearance header + compact_mode), \
-         got {filtered:?}"
+        3,
+        "expected 3 visible rows (Appearance header + tool_call_density + \
+         compact_mode), got {filtered:?}"
     );
     // First entry: Appearance section header.
     match &s.rows[filtered[0]] {
         RowEntry::Header { category } => assert_eq!(*category, SettingCategory::Appearance),
         other => panic!("expected Header at filtered[0], got {other:?}"),
     }
-    // Second entry: compact_mode setting.
-    match &s.rows[filtered[1]] {
-        RowEntry::Setting { key, .. } => assert_eq!(*key, "compact_mode"),
-        other => panic!("expected Setting at filtered[1], got {other:?}"),
-    }
+    // The matching settings: `tool_call_density` carries the `compact` keyword,
+    // so it matches the same query as `compact_mode`.
+    let mut keys: Vec<&str> = filtered[1..]
+        .iter()
+        .map(|idx| match &s.rows[*idx] {
+            RowEntry::Setting { key, .. } => *key,
+            other => panic!("expected a Setting row, got {other:?}"),
+        })
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["compact_mode", "tool_call_density"]);
 }
 
 /// Enum chooser sub-mode: Esc inside `PickingEnum` reverts
@@ -7692,210 +7689,119 @@ fn respect_manual_folds_renders_under_appearance_category_pager_owned() {
 }
 
 // ---------------------------------------------------------------------------
-// group_tool_verbs — SHELL-owned Bool (Appearance, default true)
+// tool_call_density — SHELL-owned Enum (Appearance, first row, default compact)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn group_tool_verbs_space_dispatches_typed_setter() {
-    // Default is true; space toggles to false.
-    xai_grok_pager::appearance::cache::set_group_tool_verbs(true);
-    let mut s = make_state();
-    navigate_to(&mut s, "group_tool_verbs");
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
-    assert_set_bool_action(outcome, "group_tool_verbs", false);
-}
-
-#[test]
-fn group_tool_verbs_enter_dispatches_typed_setter() {
-    xai_grok_pager::appearance::cache::set_group_tool_verbs(true);
-    let mut s = make_state();
-    navigate_to(&mut s, "group_tool_verbs");
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
-    assert_set_bool_action(outcome, "group_tool_verbs", false);
-}
-
-#[test]
-fn group_tool_verbs_mouse_click_two_stage_toggles() {
-    xai_grok_pager::appearance::cache::set_group_tool_verbs(true);
-    let mut s = make_state();
-    synth_rects(&mut s);
-    let row_y = row_idx_for(&s, "group_tool_verbs") as u16;
-
-    let outcome = handle_settings_mouse(
-        &mut s,
-        MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        10,
-        row_y,
-    );
-    assert!(
-        matches!(outcome, SettingsKeyOutcome::Changed),
-        "first click on a different row body should only select, got: {outcome:?}"
-    );
-    assert_eq!(s.selected, row_y as usize);
-
-    let outcome = handle_settings_mouse(
-        &mut s,
-        MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        10,
-        row_y,
-    );
-    // Default is true → toggle dispatches false.
-    assert_set_bool_action(outcome, "group_tool_verbs", false);
-}
-
-#[test]
-fn group_tool_verbs_cache_off_dispatches_on() {
-    // When the live cache is off, toggle should turn it on.
-    xai_grok_pager::appearance::cache::set_group_tool_verbs(false);
-    let mut s = SettingsModalState::new(
-        Arc::new(SettingsRegistry::defaults()),
-        UiConfig::default(),
-        PagerLocalSnapshot::default(),
-    );
-    navigate_to(&mut s, "group_tool_verbs");
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
-    assert_set_bool_action(outcome, "group_tool_verbs", true);
-    // Restore default (on) for other tests that share the process cache.
-    xai_grok_pager::appearance::cache::set_group_tool_verbs(true);
-}
-
-#[test]
-fn group_tool_verbs_renders_under_appearance_category_shell_owned() {
+fn tool_call_density_registers_first_under_appearance() {
     let reg = SettingsRegistry::defaults();
     let meta = reg
-        .find("group_tool_verbs")
-        .expect("group_tool_verbs must be registered");
+        .find("tool_call_density")
+        .expect("tool_call_density must be registered");
     assert_eq!(meta.category, SettingCategory::Appearance);
     assert_eq!(meta.owner, SettingOwner::Shell);
-    match &meta.kind {
-        SettingKind::Bool { default } => assert!(*default, "default must be true"),
-        other => panic!("expected Bool kind for group_tool_verbs, got {other:?}"),
+    assert_eq!(meta.label, "Tool call density");
+    assert_eq!(
+        meta.description,
+        "How much detail tool calls show: edit diffs and shell output, or \
+         one-line rows folded into summary groups. Also /density."
+    );
+    // Searchable by both words of the feature name.
+    for query in ["density", "tool call", "tool call density"] {
+        assert!(
+            reg.search(query)
+                .iter()
+                .any(|hit| hit.key == "tool_call_density"),
+            "search {query:?} must hit tool_call_density"
+        );
     }
-    // Must sit immediately below respect_manual_folds in the registry order.
     let keys: Vec<&str> = reg
         .all()
         .iter()
         .filter(|m| m.category == SettingCategory::Appearance)
         .map(|m| m.key)
         .collect();
-    let respect_idx = keys
-        .iter()
-        .position(|k| *k == "respect_manual_folds")
-        .expect("respect_manual_folds in Appearance");
-    let group_idx = keys
-        .iter()
-        .position(|k| *k == "group_tool_verbs")
-        .expect("group_tool_verbs in Appearance");
     assert_eq!(
-        respect_idx + 1,
-        group_idx,
-        "group_tool_verbs must be immediately below respect_manual_folds; \
-         Appearance order: {keys:?}"
+        keys.first().copied(),
+        Some("tool_call_density"),
+        "Tool call density must be the first Appearance row; got {keys:?}"
+    );
+    assert_eq!(
+        xai_grok_pager::settings::layout::section_for("tool_call_density"),
+        "Tool calls"
     );
 }
 
-// ---------------------------------------------------------------------------
-// collapsed_edit_blocks — SHELL-owned Bool (Appearance, default false)
-// ---------------------------------------------------------------------------
-
 #[test]
-fn collapsed_edit_blocks_space_dispatches_typed_setter() {
-    // Seed the live cache to the shipped default (bypasses the disk seed so a
-    // host [ui] override can't flip the expected toggle direction).
-    xai_grok_pager::appearance::cache::set_collapsed_edit_blocks(false);
-    let mut s = make_state();
-    navigate_to(&mut s, "collapsed_edit_blocks");
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
-    assert_set_bool_action(outcome, "collapsed_edit_blocks", true);
-}
-
-#[test]
-fn collapsed_edit_blocks_enter_dispatches_typed_setter() {
-    xai_grok_pager::appearance::cache::set_collapsed_edit_blocks(false);
-    let mut s = make_state();
-    navigate_to(&mut s, "collapsed_edit_blocks");
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
-    assert_set_bool_action(outcome, "collapsed_edit_blocks", true);
-}
-
-#[test]
-fn collapsed_edit_blocks_mouse_click_two_stage_toggles() {
-    xai_grok_pager::appearance::cache::set_collapsed_edit_blocks(false);
-    let mut s = make_state();
-    synth_rects(&mut s);
-    let row_y = row_idx_for(&s, "collapsed_edit_blocks") as u16;
-
-    let outcome = handle_settings_mouse(
-        &mut s,
-        MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        10,
-        row_y,
-    );
-    assert!(
-        matches!(outcome, SettingsKeyOutcome::Changed),
-        "first click on a different row body should only select, got: {outcome:?}"
-    );
-    assert_eq!(s.selected, row_y as usize);
-
-    let outcome = handle_settings_mouse(
-        &mut s,
-        MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        10,
-        row_y,
-    );
-    // Default is false → toggle dispatches true.
-    assert_set_bool_action(outcome, "collapsed_edit_blocks", true);
-}
-
-#[test]
-fn collapsed_edit_blocks_cache_on_dispatches_off() {
-    // When the live cache is on (remote settings/team enable), toggle turns it off.
-    xai_grok_pager::appearance::cache::set_collapsed_edit_blocks(true);
-    let mut s = SettingsModalState::new(
-        Arc::new(SettingsRegistry::defaults()),
-        UiConfig::default(),
-        PagerLocalSnapshot::default(),
-    );
-    navigate_to(&mut s, "collapsed_edit_blocks");
-    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
-    assert_set_bool_action(outcome, "collapsed_edit_blocks", false);
-    // Restore default (off) for other tests that share the process cache.
-    xai_grok_pager::appearance::cache::set_collapsed_edit_blocks(false);
-}
-
-#[test]
-fn collapsed_edit_blocks_renders_under_appearance_category_shell_owned() {
+fn tool_call_density_choices_use_canonical_strings() {
     let reg = SettingsRegistry::defaults();
-    let meta = reg
-        .find("collapsed_edit_blocks")
-        .expect("collapsed_edit_blocks must be registered");
-    assert_eq!(meta.category, SettingCategory::Appearance);
-    assert_eq!(meta.owner, SettingOwner::Shell);
-    match &meta.kind {
-        SettingKind::Bool { default } => {
-            assert!(!*default, "default must be false (rollout flag ships OFF)")
+    let meta = reg.find("tool_call_density").unwrap();
+    let SettingKind::Enum {
+        default,
+        choices,
+        supports_preview,
+    } = &meta.kind
+    else {
+        panic!("tool_call_density must be Enum");
+    };
+    assert_eq!(*default, "compact-all-grouped");
+    assert!(!*supports_preview, "no live preview pane");
+    assert!(!meta.restart_required, "density applies live");
+    let canonicals: Vec<(&str, &str)> = choices.iter().map(|c| (c.canonical, c.display)).collect();
+    assert_eq!(
+        canonicals,
+        vec![
+            ("detailed", "Detailed"),
+            ("compact-shells", "Diff focus"),
+            ("compact-ungrouped", "Balanced"),
+            ("compact-grouped", "Grouped"),
+            ("compact-all-grouped", "Compact"),
+        ]
+    );
+}
+
+#[test]
+fn tool_call_density_picker_commits_canonical_level() {
+    xai_grok_pager::appearance::cache::set_tool_call_density(
+        xai_grok_pager::appearance::cache::ToolCallDensity::Detailed,
+    );
+    let mut s = make_state();
+    navigate_to(&mut s, "tool_call_density");
+    let _ = handle_settings_key(&mut s, &press(KeyCode::Enter));
+    assert!(matches!(s.mode(), SettingsModalMode::PickingEnum { .. }));
+    // Detailed is index 0; one Down lands on Diff focus.
+    let _ = handle_settings_key(&mut s, &press(KeyCode::Down));
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
+    match outcome {
+        SettingsKeyOutcome::Action(Action::SetToolCallDensity(level)) => {
+            assert_eq!(level, "compact-shells");
         }
-        other => panic!("expected Bool kind for collapsed_edit_blocks, got {other:?}"),
+        other => panic!("expected Action::SetToolCallDensity commit, got {other:?}"),
     }
-    // Must sit immediately below group_tool_verbs in the registry order.
-    let keys: Vec<&str> = reg
-        .all()
-        .iter()
-        .filter(|m| m.category == SettingCategory::Appearance)
-        .map(|m| m.key)
-        .collect();
-    let group_idx = keys
-        .iter()
-        .position(|k| *k == "group_tool_verbs")
-        .expect("group_tool_verbs in Appearance");
-    let collapsed_idx = keys
-        .iter()
-        .position(|k| *k == "collapsed_edit_blocks")
-        .expect("collapsed_edit_blocks in Appearance");
-    assert_eq!(
-        group_idx + 1,
-        collapsed_idx,
-        "collapsed_edit_blocks must be immediately below group_tool_verbs; \
-         Appearance order: {keys:?}"
+    assert!(matches!(s.mode(), SettingsModalMode::Browse));
+    xai_grok_pager::appearance::cache::set_tool_call_density(
+        xai_grok_pager::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
+}
+
+#[test]
+fn tool_call_density_space_is_a_noop_and_enter_opens_the_picker() {
+    xai_grok_pager::appearance::cache::set_tool_call_density(
+        xai_grok_pager::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
+    let mut s = make_state();
+    navigate_to(&mut s, "tool_call_density");
+    // Space only toggles Bool rows, so it is a no-op on the Enum density row.
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
+    assert!(
+        matches!(outcome, SettingsKeyOutcome::Unchanged),
+        "space on an Enum row must not change anything, got {outcome:?}"
+    );
+    assert!(matches!(s.mode(), SettingsModalMode::Browse));
+    // Enter opens the chooser for an Enum row.
+    let _ = handle_settings_key(&mut s, &press(KeyCode::Enter));
+    assert!(
+        matches!(s.mode(), SettingsModalMode::PickingEnum { .. }),
+        "enter on the density row opens the picker"
     );
 }

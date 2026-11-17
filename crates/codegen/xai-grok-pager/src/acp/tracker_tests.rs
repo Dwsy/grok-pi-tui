@@ -1688,6 +1688,9 @@ fn edit_manual_expand_survives_completion() {
 #[test]
 fn execute_manual_expand_survives_progress_and_completion() {
     use crate::scrollback::types::DisplayMode;
+    crate::appearance::cache::set_tool_call_density(
+        crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+    );
     let mut tracker = AcpUpdateTracker::new();
     let mut sb = ScrollbackState::new();
     let tc_id = "toolu_exec_gesture";
@@ -1907,7 +1910,9 @@ fn hunk_lines(edit: &EditToolCallBlock) -> Vec<usize> {
 #[test]
 fn adjacent_same_file_edits_coalesce() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         run_edit(&mut tracker, &mut sb, "e1", "foo.rs", 5);
@@ -1931,7 +1936,9 @@ fn adjacent_same_file_edits_coalesce() {
 #[test]
 fn overlapping_adjacent_edits_stitch_into_single_hunk() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         for (i, line) in (5..=9).enumerate() {
@@ -1962,7 +1969,9 @@ fn overlapping_adjacent_edits_stitch_into_single_hunk() {
 #[test]
 fn coalesce_disabled_when_collapsed_edit_blocks_off() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(false);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::Detailed,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         run_edit(&mut tracker, &mut sb, "e1", "foo.rs", 5);
@@ -1981,7 +1990,9 @@ fn coalesce_disabled_when_collapsed_edit_blocks_off() {
 #[test]
 fn three_sequential_edits_chain_into_one() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         run_edit(&mut tracker, &mut sb, "e1", "foo.rs", 5);
@@ -1998,7 +2009,9 @@ fn three_sequential_edits_chain_into_one() {
 #[test]
 fn different_files_do_not_coalesce() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         run_edit(&mut tracker, &mut sb, "e1", "foo.rs", 5);
@@ -2011,7 +2024,9 @@ fn different_files_do_not_coalesce() {
 #[test]
 fn intervening_entry_breaks_coalesce_run() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         run_edit(&mut tracker, &mut sb, "e1", "foo.rs", 5);
@@ -2031,7 +2046,9 @@ fn intervening_entry_breaks_coalesce_run() {
 #[test]
 fn parallel_out_of_order_completion_coalesces() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         tracker.handle_update(edit_tool_start("e1"), &meta(), &mut sb);
@@ -2053,7 +2070,9 @@ fn parallel_out_of_order_completion_coalesces() {
 #[test]
 fn errored_edit_does_not_coalesce() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         run_edit(&mut tracker, &mut sb, "e1", "foo.rs", 5);
@@ -2078,7 +2097,9 @@ fn errored_edit_does_not_coalesce() {
 #[test]
 fn committed_edit_does_not_coalesce() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         run_edit(&mut tracker, &mut sb, "e1", "foo.rs", 5);
@@ -2094,7 +2115,9 @@ fn committed_edit_does_not_coalesce() {
 #[test]
 fn untrusted_summary_edit_does_not_coalesce() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         run_edit(&mut tracker, &mut sb, "e1", "foo.rs", 5);
@@ -2118,7 +2141,9 @@ fn untrusted_summary_edit_does_not_coalesce() {
 #[test]
 fn replay_precompleted_edits_coalesce_without_hl_queue() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         let replay = NotificationMeta {
@@ -2140,7 +2165,9 @@ fn replay_precompleted_edits_coalesce_without_hl_queue() {
 #[test]
 fn coalesce_repoints_pending_edit_hl_to_survivor() {
     std::thread::spawn(|| {
-        crate::appearance::cache::set_collapsed_edit_blocks(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+        );
         let mut sb = ScrollbackState::new();
         let mut tracker = AcpUpdateTracker::new();
         run_edit(&mut tracker, &mut sb, "e1", "foo.rs", 5);

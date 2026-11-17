@@ -31,7 +31,7 @@ mod review;
 mod rewind;
 mod router;
 mod session;
-mod settings;
+pub(crate) mod settings;
 mod status;
 mod task_result;
 mod transcript;
