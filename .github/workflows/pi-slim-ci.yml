@@ -35,9 +35,6 @@ jobs:
       CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
       CARGO_PROFILE_RELEASE_DIST_STRIP: "none"
       CARGO_INCREMENTAL: "0"
-      # Native macos-15 M1 runners have 7 GiB RAM / 14 GiB SSD. Keep the
-      # full Rust test suite, but avoid enormous DWARF debug/test artifacts.
-      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - name: Record build host architecture
         run: |
@@ -48,14 +45,15 @@ jobs:
         if: runner.arch == 'ARM64'
         run: echo "CARGO_BUILD_JOBS=2" >> "$GITHUB_ENV"
       - name: Check out exact commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           persist-credentials: false
 
       - name: Install Node for Herdr lifecycle contract
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "24"
+          package-manager-cache: false
 
       - name: Test Herdr working and blocked lifecycle over local socket
         run: node --test extensions/pi-grok-herdr/lifecycle.test.mjs
@@ -121,7 +119,7 @@ jobs:
             --no-default-features --features sandbox-enforce \
             --target aarch64-apple-darwin
 
-      - name: Check stock-MCP-free Shell and test fixtures
+      - name: Check stock-MCP-free Shell
         shell: bash
         run: |
           set -euo pipefail
@@ -135,15 +133,6 @@ jobs:
           fi
           cargo check --locked --lib -p xai-grok-shell \
             --no-default-features --target aarch64-apple-darwin
-          if [[ "$(uname -m)" == "arm64" ]]; then
-            cargo test --locked --lib -p xai-grok-shell \
-              --no-default-features --features test-support \
-              --target aarch64-apple-darwin
-          else
-            cargo check --locked --tests -p xai-grok-shell \
-              --no-default-features --features test-support \
-              --target aarch64-apple-darwin
-          fi
 
       - name: Build ARM64 grok-pi (release-dist)
         shell: bash
@@ -293,7 +282,7 @@ jobs:
 
       - name: Upload ARM64 Pi candidate (not a GitHub release)
         if: runner.arch == 'ARM64'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pi-slim-macos-arm64-${{ github.sha }}
           path: dist/
@@ -302,9 +291,79 @@ jobs:
 
       - name: Upload Cargo timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: pi-slim-arm64-cargo-timings
           path: target/cargo-timings/*.html
           if-no-files-found: ignore
           retention-days: 7
+
+  shell_tests:
+    name: Native Shell full regression (independent of candidate)
+    if: inputs.runner != 'macos-15-intel'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 80
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Check out exact commit
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.97.0'
+          targets: aarch64-apple-darwin
+
+      - name: Install protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install protobuf
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      - name: Restore Shell test cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pi-slim-shell-aarch64-apple-darwin-${{ inputs.runner }}
+          cache-workspace-crates: 'true'
+          cache-bin: 'false'
+
+      - name: Compile Shell test fixture (no local builds)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib -p xai-grok-shell \
+            --no-default-features --features test-support \
+            --target aarch64-apple-darwin -j 2 --no-run
+
+      - name: Run full Shell suite with a 30-minute watchdog
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import signal
+          import subprocess
+          import sys
+
+          command = [
+              'cargo', 'test', '--locked', '--lib', '-p', 'xai-grok-shell',
+              '--no-default-features', '--features', 'test-support',
+              '--target', 'aarch64-apple-darwin', '-j', '2',
+              '--', '--test-threads=1',
+          ]
+          process = subprocess.Popen(command, start_new_session=True)
+          try:
+              code = process.wait(timeout=1800)
+          except subprocess.TimeoutExpired:
+              os.killpg(process.pid, signal.SIGKILL)
+              process.wait()
+              print('Shell suite exceeded 30 minutes; inspect running tests for deadlocks', file=sys.stderr)
+              sys.exit(124)
+          sys.exit(code)
+          PY

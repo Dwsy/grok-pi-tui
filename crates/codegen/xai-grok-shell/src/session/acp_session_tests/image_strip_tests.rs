@@ -112,6 +112,27 @@ fn completed_event(request_id: &RequestId) -> SamplingEvent {
     }
 }
 
+// Completed awaits the durable image-strip write. When a test deliberately
+// holds the rewrite barrier, dispatch the event on the LocalSet and join it
+// only after releasing the barrier; an inline await deadlocks the test.
+fn dispatch_completed(
+    actor: &Arc<SessionActor>,
+    request_id: &RequestId,
+) -> tokio::task::JoinHandle<()> {
+    let actor = Arc::clone(actor);
+    let event = completed_event(request_id);
+    tokio::task::spawn_local(async move {
+        actor.handle_sampling_event(event).await;
+    })
+}
+
+async fn await_completed(task: tokio::task::JoinHandle<()>) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("terminal event must complete after releasing the rewrite barrier")
+        .expect("terminal event task panicked");
+}
+
 fn failed_info() -> xai_grok_sampler::SamplingErrorInfo {
     xai_grok_sampler::SamplingErrorInfo {
         kind: xai_grok_sampler::SamplingErrorKind::Api,
@@ -375,9 +396,6 @@ async fn rewind_cancels_detached_image_strip_before_it_runs() {
             let _ = actor.chat_state_handle.get_conversation().await;
 
             let strip_blocker = actor.image_strip_rewrite_barrier.lock_strip().await;
-            actor
-                .handle_sampling_event(completed_event(&timed_out))
-                .await;
             assert!(
                 actor
                     .pending_image_strip
@@ -398,6 +416,10 @@ async fn rewind_cancels_detached_image_strip_before_it_runs() {
                     .await
             });
             tokio::task::yield_now().await;
+            // Queue the rewind's exclusive gate before the terminal event's
+            // strip write: the successful rewind must invalidate queued work.
+            let completed = dispatch_completed(&actor, &timed_out);
+            tokio::task::yield_now().await;
             assert!(
                 actor
                     .pending_image_strip
@@ -408,10 +430,12 @@ async fn rewind_cancels_detached_image_strip_before_it_runs() {
             );
             drop(strip_blocker);
 
-            let rewind = rewind
+            let rewind = tokio::time::timeout(std::time::Duration::from_secs(10), rewind)
                 .await
+                .expect("rewind must finish after the rewrite barrier is released")
                 .expect("rewind task completes")
                 .expect("rewind succeeds");
+            await_completed(completed).await;
             assert!(rewind.success, "rewind should commit: {rewind:?}");
             settle().await;
 
@@ -464,9 +488,8 @@ async fn rejected_rewind_preserves_queued_image_strip() {
             });
             tokio::task::yield_now().await;
 
-            actor
-                .handle_sampling_event(completed_event(&request_id))
-                .await;
+            let completed = dispatch_completed(&actor, &request_id);
+            tokio::task::yield_now().await;
             assert!(
                 actor
                     .pending_image_strip
@@ -477,10 +500,12 @@ async fn rejected_rewind_preserves_queued_image_strip() {
             );
             drop(strip_blocker);
 
-            let rewind = rewind
+            let rewind = tokio::time::timeout(std::time::Duration::from_secs(10), rewind)
                 .await
+                .expect("rewind must finish after the rewrite barrier is released")
                 .expect("rewind task completes")
                 .expect("rewind returns a response");
+            await_completed(completed).await;
             assert!(
                 !rewind.success,
                 "invalid rewind must be rejected: {rewind:?}"
@@ -566,9 +591,8 @@ async fn failed_compaction_replay_preserves_queued_image_strip() {
                 .await;
 
             let strip_blocker = actor.image_strip_rewrite_barrier.lock_strip().await;
-            actor
-                .handle_sampling_event(completed_event(&request_id))
-                .await;
+            let completed = dispatch_completed(&actor, &request_id);
+            tokio::task::yield_now().await;
             let rewind_actor = Arc::clone(&actor);
             let rewind = tokio::task::spawn_local(async move {
                 rewind_actor
@@ -590,10 +614,12 @@ async fn failed_compaction_replay_preserves_queued_image_strip() {
             );
             drop(strip_blocker);
 
-            let rewind = rewind
+            let rewind = tokio::time::timeout(std::time::Duration::from_secs(10), rewind)
                 .await
+                .expect("rewind must finish after the rewrite barrier is released")
                 .expect("rewind task completes")
                 .expect("rewind returns a response");
+            await_completed(completed).await;
             assert!(!rewind.success, "missing checkpoint must reject rewind");
 
             let conv = wait_for_conversation(&actor, |conv| {
@@ -633,9 +659,8 @@ async fn pending_strip_bound_preserves_detached_and_new_url_entries() {
                 .await;
 
             let strip_blocker = actor.image_strip_rewrite_barrier.lock_strip().await;
-            actor
-                .handle_sampling_event(completed_event(&applying_id))
-                .await;
+            let completed = dispatch_completed(&actor, &applying_id);
+            tokio::task::yield_now().await;
             {
                 let mut pending = actor.pending_image_strip.lock();
                 for index in 0..16 {
@@ -675,6 +700,7 @@ async fn pending_strip_bound_preserves_detached_and_new_url_entries() {
                 assert_eq!(16, pending.len());
             }
             drop(strip_blocker);
+            await_completed(completed).await;
 
             let conv = wait_for_conversation(&actor, |conv| {
                 !conversation_has_image(conv, PERSIST_GATE_IMAGE_URI)
