@@ -1,6 +1,7 @@
 pub mod config;
 pub mod focus;
 pub mod hooks;
+pub mod program_status;
 pub mod progress;
 pub mod protocol;
 pub mod sleep;
@@ -34,6 +35,7 @@ pub struct NotificationService {
     pub focus_tracker: focus::FocusTracker,
     pub sleep_inhibitor: sleep::SleepInhibitor,
     title_manager: title::TitleManager,
+    program_status: program_status::ProgramStatusReporter,
     protocol: protocol::NotificationProtocol,
     terminal_ctx: &'static crate::terminal::TerminalContext,
     /// Whether the OSC 9;4 progress indicator is currently active.
@@ -62,6 +64,7 @@ impl NotificationService {
             focus_tracker,
             sleep_inhibitor,
             title_manager,
+            program_status: program_status::ProgramStatusReporter::new(),
             protocol,
             terminal_ctx,
             progress_active: false,
@@ -94,6 +97,11 @@ impl NotificationService {
 
     pub fn protocol(&self) -> protocol::NotificationProtocol {
         self.protocol
+    }
+
+    /// Record a failed turn so the settled program status reports `error` instead of `done`.
+    pub fn record_agent_error(&mut self, message: &str) {
+        self.program_status.record_error(message);
     }
 
     fn is_event_enabled(&self, kind: &NotificationEventKind) -> bool {
@@ -133,7 +141,7 @@ impl NotificationService {
         }
     }
 
-    /// Build escape sequences to set the title and progress bar to idle without writing to stderr.
+    /// Build escape sequences to set the title, program status, and progress bar to idle without writing to stderr.
     /// The caller can route these through the frame pipeline (`pending_notification_escapes`) so they go through the writer thread.
     /// They are then ordered correctly relative to previous frames that may still carry the busy title.
     pub fn build_idle_escapes(&mut self, state: &title::TitleState<'_>) -> Option<String> {
@@ -145,6 +153,12 @@ impl NotificationService {
             buf.push_str(&esc);
         }
 
+        if self.config.program_status
+            && let Some(status_esc) = self.program_status.update(state)
+        {
+            buf.push_str(&status_esc);
+        }
+
         if !state.is_busy {
             self.clear_progress_into(&mut buf);
         }
@@ -152,7 +166,7 @@ impl NotificationService {
         if buf.is_empty() { None } else { Some(buf) }
     }
 
-    /// Advance the tab title and progress bar state.
+    /// Advance the tab title, program status, and progress bar state.
     /// Returns escape sequences to emit (title and progress) as a single `String`, or `None` if nothing changed.
     /// The caller should route these bytes through the frame pipeline's `post_flush_escapes`.
     pub fn on_tick(&mut self, state: &title::TitleState<'_>) -> Option<String> {
@@ -188,6 +202,12 @@ impl NotificationService {
             }
         }
 
+        if self.config.program_status
+            && let Some(status_esc) = self.program_status.update(state)
+        {
+            buf.push_str(&status_esc);
+        }
+
         if buf.is_empty() { None } else { Some(buf) }
     }
 
@@ -196,6 +216,9 @@ impl NotificationService {
     /// after any still-queued busy-title escape.
     pub fn shutdown(&mut self) {
         let mut buf = self.title_manager.reset();
+        if let Some(clear) = self.program_status.clear() {
+            buf.push_str(clear);
+        }
         self.clear_progress_into(&mut buf);
         self.escape_writer.emit(buf);
     }
@@ -250,6 +273,7 @@ impl NotificationService {
             focus_tracker,
             sleep_inhibitor,
             title_manager,
+            program_status: program_status::ProgramStatusReporter::new(),
             protocol: protocol::NotificationProtocol::None,
             terminal_ctx,
             progress_active: false,

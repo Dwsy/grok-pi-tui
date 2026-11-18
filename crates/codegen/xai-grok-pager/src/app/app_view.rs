@@ -7021,6 +7021,11 @@ impl AppView {
         if let Some((_, remaining)) = self.deferred_notification.as_mut() {
             if *remaining == 0 {
                 if let Some((event, _)) = self.deferred_notification.take() {
+                    // A failed turn must settle the program status as `error` instead of `done`
+                    // (OSC 7501); the notification body carries the same failure text.
+                    if event.kind == crate::notifications::NotificationEventKind::AgentError {
+                        self.notification_service.record_agent_error(&event.body);
+                    }
                     self.notification_service.notify(event);
                 }
             } else {

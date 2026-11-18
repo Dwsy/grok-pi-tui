@@ -9,6 +9,9 @@ pub struct NotificationConfig {
     pub events: Vec<NotificationEventKind>,
     pub sleep_prevention: bool,
     pub progress_bar: bool,
+    /// Report idle/working/blocked/done/error to the terminal through the Program Status Protocol (OSC 7501).
+    /// Terminals without support ignore the sequence.
+    pub program_status: bool,
     /// Show an automatic "where was I" session recap when you return to the
     /// terminal after being away. Only applies when the shell has rolled out
     /// session recap (`sessionRecap` on ACP initialize / remote settings). Manual
@@ -34,6 +37,7 @@ impl Default for NotificationConfig {
             ],
             sleep_prevention: true,
             progress_bar: false,
+            program_status: true,
             session_recap: true,
             session_recap_threshold_secs: 0,
             title: TitleConfig::default(),
@@ -175,6 +179,9 @@ events = [\"turn_complete\", \"approval_required\"]
 sleep_prevention = true
 # Show a progress indicator in the terminal tab (OSC 9;4).
 progress_bar = false
+# Report idle/working/blocked/done/error to the terminal (OSC 7501).
+# Terminals without support ignore the sequence.
+program_status = true
 # Show an automatic \"where was I\" session recap when you return after being away.
 # Shell session_recap is on by default; disable via [features] session_recap or
 # GROK_SESSION_RECAP=0. Manual /recap uses only the shell flag.
@@ -217,6 +224,7 @@ mod tests {
             ],
             sleep_prevention: false,
             progress_bar: false,
+            program_status: false,
             session_recap: false,
             session_recap_threshold_secs: 90,
             title: TitleConfig {

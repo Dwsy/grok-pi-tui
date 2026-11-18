@@ -449,6 +449,7 @@ idle_threshold_secs = 3   # seconds unfocused before a notification fires
 events = ["turn_complete", "approval_required"]
 sleep_prevention = true   # prevent display sleep during agent turns
 progress_bar = true       # show tab progress bar (OSC 9;4)
+program_status = true     # report idle/working/blocked/done/error to the terminal (OSC 7501)
 
 [ui.notifications.title]
 enabled = true

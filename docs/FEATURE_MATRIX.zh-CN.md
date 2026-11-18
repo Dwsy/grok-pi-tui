@@ -23,6 +23,7 @@
 | Herdr Header 生命周期 | 适配 | F2 `[ui].pi_herdr` **默认开启**（重启生效）。Pi RPC 扩展向 Herdr 按顺序上报 session 与 `working`/`blocked`/`idle`；在 Herdr 外无动作，设置为 `false` 可关闭。Header 最终接管仍受 Herdr 的进程和会话安全检查限制。 |
 | Multiline / Vim mode | 原生 | Grok slash/settings |
 | Theme / timestamps / mouse | 原生+适配 | Grok appearance/input；Pi 主题 JSON 经 `theme::pi` 映射为 Grok `Theme`，`/theme` 可选 `pi:<name>`；内置实验性 `pi:transparent`（暗色）与 `pi:transparent-light`（浅色）将主画布交给终端默认背景（用于终端透明度/毛玻璃），同时保留选中态、代码、diff 与工具表面的实色；F2 可控制 OSC 9;4 terminal-tab progress，默认关闭 |
+| 程序状态（OSC 7501） | Native+Pager | Pager 用与标签标题同源的 `TitleState` 推导 `idle/working/blocked/done/error`，经 `[ui.notifications].program_status`（默认开）上报。Pi 的 RPC 模式从不调用 `setProgramStatus`，因此由 Pager 合成而非转发 |
 | Markdown / code blocks | 原生+适配 | Pi text/reasoning → ACP chunks → `xai-grok-markdown` |
 | Tool cards | 原生+适配 | Pi tool events → ACP ToolCall；`read`/`bash`/`edit`/`write`/`grep`/`find`/`ls` 投影到原生卡 |
 | 工具调用密度 | 原生+适配 | F2 → Appearance → Tool calls → Tool call density，另有 `/density`：五档（Detailed / Diff focus / Balanced / Grouped / Compact）决定编辑是展开 diff 还是一行 `+N/-M`、shell 是否保留输出预览、哪些工具调用连续行折叠成一行。即时生效并持久化为 `[ui].tool_call_density`；已下线的 `collapsed_edit_blocks` / `group_tool_verbs` 键在首次读取时迁移。 |
