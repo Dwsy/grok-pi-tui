@@ -15,9 +15,12 @@
 //! The user always submits with Enter; nothing is auto-sent.
 //! Submit promotes any remaining interim text into the bound prompt, then resets capture completely.
 
+#[cfg(feature = "stock-agent")]
 mod auth;
 mod handle;
 
+// Voice STT/TTS billing rides the grok.com bearer; Pi closures have no voice auth.
+#[cfg(feature = "stock-agent")]
 pub use auth::build_voice_auth;
 pub use handle::handle_voice_event;
 pub(crate) use handle::{

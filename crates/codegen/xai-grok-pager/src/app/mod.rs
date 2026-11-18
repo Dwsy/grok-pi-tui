@@ -1046,6 +1046,9 @@ async fn bounded_connect(
 /// Main entry point: connect to agent, init terminal, run event loop, restore.
 /// If a session ID is provided via `--resume` / `--load` / `--continue`, the pager skips the welcome screen and immediately loads that session.
 /// The load replays the session's history; sessions not found locally are restored from remote storage.
+/// Stock-only: the full-screen TUI boots the in-process agent and runs the
+/// pre-TUI grok.com login; grok-pi enters through `run_external_deferred` instead.
+#[cfg(feature = "stock-agent")]
 pub async fn run(
     mut args: PagerArgs,
     bg_update_rx: Option<

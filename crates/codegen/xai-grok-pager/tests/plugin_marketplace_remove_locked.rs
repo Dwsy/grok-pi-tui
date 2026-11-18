@@ -1,3 +1,7 @@
+#![cfg(feature = "stock-agent")]
+
+// The plugin marketplace CLI (plugin_cmd) is a stock-only surface.
+
 //! Regression: `grok plugin marketplace remove` must fail closed when the config-init flock
 //! cannot be acquired — proceeding unlocked is the race the flock exists to prevent.
 

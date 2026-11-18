@@ -1566,6 +1566,17 @@ pub(crate) fn execute(
                     }
                 });
         }
+        // Remote restore authenticates against grok.com; Pi closures carry no bearer.
+        #[cfg(not(feature = "stock-agent"))]
+        Effect::RestoreAndLoadSession { agent_id, .. } => {
+            tasks.spawn(async move {
+                TaskResult::SessionRestoreFailed {
+                    agent_id,
+                    error: "Session restore requires the stock agent build.".into(),
+                }
+            });
+        }
+        #[cfg(feature = "stock-agent")]
         Effect::RestoreAndLoadSession { agent_id, session_id, session_cwd: _ } => {
             use xai_grok_shell::agent::session_registry_client::SessionRegistryClient;
             use xai_grok_shell::session::restore::restore_session_with_storage;
@@ -5805,6 +5816,16 @@ pub(crate) fn execute(
                     }
                 });
         }
+        // Remote settings refresh reads the grok.com bearer from auth.json.
+        #[cfg(not(feature = "stock-agent"))]
+        Effect::RefreshGate => {
+            tasks.spawn(async move {
+                TaskResult::GateRefreshed {
+                    settings: None,
+                }
+            });
+        }
+        #[cfg(feature = "stock-agent")]
         Effect::RefreshGate => {
             tasks
                 .spawn(async move {

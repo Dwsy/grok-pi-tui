@@ -654,6 +654,8 @@ async fn upload_with_retries(
 // Upload method resolution
 // ---------------------------------------------------------------------------
 
+/// Resolve the trace-upload method from the signed-in grok.com bearer.
+#[cfg(feature = "stock-agent")]
 pub async fn resolve_upload_method(agent_config: &AgentConfig) -> Option<UploadMethod> {
     // On login failure, fall back to ambient creds rather than erroring.
     let auth_token = xai_grok_login::ensure_authenticated_or_noninteractive(
@@ -676,4 +678,11 @@ pub async fn resolve_upload_method(agent_config: &AgentConfig) -> Option<UploadM
         tracing::warn!("trace_cmd: no upload method available");
     }
     method
+}
+
+/// Pi closures carry no grok.com bearer; ambient credential paths still work.
+#[cfg(not(feature = "stock-agent"))]
+pub async fn resolve_upload_method(_agent_config: &AgentConfig) -> Option<UploadMethod> {
+    tracing::warn!("trace_cmd: upload auth requires the stock agent build");
+    None
 }

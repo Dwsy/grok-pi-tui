@@ -2091,6 +2091,7 @@ pub(crate) async fn run(
     // That avoids background work for users who never enable voice mode
     // `AUDIO_SUPPORTED` reflects whether mic capture is compiled in It is true for production CLI builds on macOS/Windows (cpal) and Linux (subprocess recorder)
     let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
+    #[cfg(feature = "stock-agent")]
     let voice_auth_factory = connection.auth_manager.clone();
 
     // Animation tick: only scheduled when there are running entries.
@@ -2504,31 +2505,42 @@ pub(crate) async fn run(
         // Consume the queued cold-start, carrying its hold-ownership and bound target forward into the live recording it spawns
         if let VoiceState::ColdStart { hold, target } = app.voice_state {
             if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
-                let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
-                let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
-                let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
-                let voice_config = app.voice_config.clone();
-                tokio::spawn(xai_grok_voice::run_voice_pipeline(
-                    voice_config,
-                    voice_auth.clone(),
-                    cmd_rx,
-                    event_tx,
-                ));
-                app.voice_auth = Some(voice_auth);
-                app.voice_cmd_tx = Some(cmd_tx);
-                voice_rx = Some(event_rx);
-                tracing::info!("voice pipeline started (/voice or Ctrl+Space)");
-                // But only if the user is still somewhere that can receive dictation (an agent prompt or the dashboard dispatch input)
-                // This runs at loop-top before any new input, so that normally can't have changed since the keypress
-                // The else-arm is defensive cleanup so voice mode can't stay on without capture ever starting
-                if matches!(
-                    app.active_view,
-                    ActiveView::Agent(_) | ActiveView::AgentDashboard
-                ) {
-                    app.voice_begin_recording(target, hold);
-                } else {
+                // Pi closures have no grok.com bearer: voice STT/TTS cannot start.
+                #[cfg(feature = "stock-agent")]
+                {
+                    let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
+                    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
+                    let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
+                    let voice_config = app.voice_config.clone();
+                    tokio::spawn(xai_grok_voice::run_voice_pipeline(
+                        voice_config,
+                        voice_auth.clone(),
+                        cmd_rx,
+                        event_tx,
+                    ));
+                    app.voice_auth = Some(voice_auth);
+                    app.voice_cmd_tx = Some(cmd_tx);
+                    voice_rx = Some(event_rx);
+                    tracing::info!("voice pipeline started (/voice or Ctrl+Space)");
+                    // But only if the user is still somewhere that can receive dictation (an agent prompt or the dashboard dispatch input)
+                    // This runs at loop-top before any new input, so that normally can't have changed since the keypress
+                    // The else-arm is defensive cleanup so voice mode can't stay on without capture ever starting
+                    if matches!(
+                        app.active_view,
+                        ActiveView::Agent(_) | ActiveView::AgentDashboard
+                    ) {
+                        app.voice_begin_recording(target, hold);
+                    } else {
+                        app.voice_state = VoiceState::Idle;
+                        app.voice_ui_active = false;
+                    }
+                }
+                #[cfg(not(feature = "stock-agent"))]
+                {
+                    let _ = (hold, target);
                     app.voice_state = VoiceState::Idle;
                     app.voice_ui_active = false;
+                    app.show_toast("Voice requires the stock agent build.");
                 }
             } else if app.voice_cmd_tx.is_none() {
                 app.voice_state = VoiceState::Idle;

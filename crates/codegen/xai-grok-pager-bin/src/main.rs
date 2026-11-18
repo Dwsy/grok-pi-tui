@@ -31,9 +31,11 @@ use std::num::NonZeroUsize;
 use tokio_util::sync::CancellationToken;
 use xai_grok_pager::app::{
     AgentCmd, Command, EARLY_PREFETCH_WAIT, HeadlessArgs, LeaderMgmtArgs, LeaderMgmtCommand,
-    LeaderMode, LeaderTargetArgs, PagerArgs, resolve_leader_mode, resolve_use_leader,
-    warn_leader_disabled_by_sandbox,
+    LeaderMode, LeaderTargetArgs, PagerArgs, resolve_leader_mode, warn_leader_disabled_by_sandbox,
 };
+// Workspace exposure rides the stock leader topology (stock-agent).
+#[cfg(feature = "stock-agent")]
+use xai_grok_pager::app::resolve_use_leader;
 use xai_grok_pager::app::{WorkspaceMgmtArgs, WorkspaceMgmtCommand, WorkspaceStartArgs};
 use xai_grok_pager::client_identity::PAGER_CLIENT_VERSION;
 use xai_grok_shell::agent::app::{run_headless, run_leader, run_stdio_agent};
@@ -53,6 +55,7 @@ fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<P
     let (entrypoint, interactivity) = match command {
         Some(Command::Agent(_)) => return None,
         Some(Command::Dashboard) => return None,
+        #[cfg(feature = "stock-agent")]
         Some(Command::Login { .. }) => (Entrypoint::Cli, Interactivity::Interactive),
         #[cfg(feature = "stock-mcp")]
         Some(Command::Mcp(_)) => (Entrypoint::Cli, Interactivity::Unattended),
@@ -61,10 +64,7 @@ fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<P
             | Command::Doctor(_)
             | Command::Leader(_)
             | Command::Logout
-            | Command::Plugin(_)
             | Command::Memory(_)
-            | Command::Models
-            | Command::Sessions(_)
             | Command::Usage(_)
             | Command::Setup { .. }
             | Command::Share(_)
@@ -74,8 +74,14 @@ fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<P
             | Command::Update { .. }
             | Command::Version { .. }
             | Command::Completions { .. }
+            | Command::DiskUsage(_),
+        ) => (Entrypoint::Cli, Interactivity::Unattended),
+        #[cfg(feature = "stock-agent")]
+        Some(
+            Command::Plugin(_)
+            | Command::Models
+            | Command::Sessions(_)
             | Command::Worktree(_)
-            | Command::DiskUsage(_)
             | Command::Workspace(_),
         ) => (Entrypoint::Cli, Interactivity::Unattended),
         None if is_interactive => return None,
@@ -92,8 +98,9 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
     match command {
         None
         | Some(Command::Agent(_))
-        | Some(Command::Dashboard)
-        | Some(Command::Models)
+        | Some(Command::Dashboard) => true,
+        #[cfg(feature = "stock-agent")]
+        Some(Command::Models)
         | Some(Command::Worktree(_)) => true,
         #[cfg(feature = "stock-mcp")]
         Some(Command::Mcp(_)) => false,
@@ -102,10 +109,7 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
             | Command::Doctor(_)
             | Command::Leader(_)
             | Command::Logout
-            | Command::Login { .. }
-            | Command::Plugin(_)
             | Command::Memory(_)
-            | Command::Sessions(_)
             | Command::Usage(_)
             | Command::Setup { .. }
             | Command::Share(_)
@@ -115,7 +119,13 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
             | Command::Update { .. }
             | Command::Version { .. }
             | Command::Completions { .. }
-            | Command::DiskUsage(_)
+            | Command::DiskUsage(_),
+        ) => false,
+        #[cfg(feature = "stock-agent")]
+        Some(
+            Command::Login { .. }
+            | Command::Plugin(_)
+            | Command::Sessions(_)
             | Command::Workspace(_),
         ) => false,
     }
@@ -522,6 +532,7 @@ async fn fetch_remote_settings(
     .await;
     xai_grok_shell::agent::remote_config::settings_get::consume_wait(wait, None, grok_com_config)
 }
+#[cfg(feature = "stock-agent")]
 #[tracing::instrument(level = "debug", skip_all)]
 async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
     if matches!(
@@ -590,6 +601,7 @@ async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
         }
     }
 }
+#[cfg(feature = "stock-agent")]
 fn ensure_workspace_caps(reg: &LeaderRegistration) -> Result<()> {
     let caps = ensure_control_caps(reg)?;
     if !caps.workspace_exposure {
@@ -600,6 +612,7 @@ fn ensure_workspace_caps(reg: &LeaderRegistration) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(feature = "stock-agent")]
 #[tracing::instrument(level = "debug", skip_all)]
 async fn connect_workspace_control(
     agent_config: &AgentConfig,
@@ -625,6 +638,7 @@ async fn connect_workspace_control(
         )
     })
 }
+#[cfg(feature = "stock-agent")]
 #[tracing::instrument(level = "debug", skip_all)]
 async fn workspace_control(
     target: &LeaderTargetArgs,
@@ -640,6 +654,7 @@ async fn workspace_control(
     client.cancel();
     Ok(())
 }
+#[cfg(feature = "stock-agent")]
 #[tracing::instrument(level = "debug", skip_all)]
 async fn workspace_start(
     args: WorkspaceStartArgs,
@@ -710,6 +725,7 @@ async fn workspace_start(
     client.cancel();
     Ok(())
 }
+#[cfg(feature = "stock-agent")]
 fn render_workspace_payload(payload: &ControlPayload, json: bool) {
     let ControlPayload::WorkspaceStatus {
         state,
@@ -2120,6 +2136,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
     }
     if command_needs_pre_sandbox_policy_heal(args.command.as_ref()) {
         match xai_grok_shell::config::load_agent_config_disk_only() {
+            #[cfg(feature = "stock-agent")]
             Ok(agent_cfg) => {
                 let auth_manager =
                     std::sync::Arc::new(xai_grok_login::AuthManager::new_with_proxy_base_url(
@@ -2133,6 +2150,9 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 );
                 xai_grok_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
             }
+            // Pi closures carry no grok.com bearer, so there is nothing to heal.
+            #[cfg(not(feature = "stock-agent"))]
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -2209,11 +2229,13 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 init_tracing_simple("cli");
                 return xai_grok_pager::mcp_cmd::run(mcp_args).await;
             }
+            #[cfg(feature = "stock-agent")]
             Command::Plugin(plugin_args) => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 return xai_grok_pager::plugin_cmd::run(plugin_args).await;
             }
+            #[cfg(feature = "stock-agent")]
             Command::Models => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
@@ -2226,6 +2248,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 return run_leader_mgmt(leader_args).await;
             }
+            #[cfg(feature = "stock-agent")]
             Command::Worktree(worktree_args) => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
@@ -2243,6 +2266,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 return run_workspace_mgmt(workspace_args).await;
             }
+            #[cfg(feature = "stock-agent")]
             Command::Sessions(sessions_args) => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
@@ -2302,6 +2326,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 )
                 .await;
             }
+            #[cfg(feature = "stock-agent")]
             Command::Login {
                 legacy: _,
                 oauth,
@@ -2353,6 +2378,12 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
         args.prompt_json.as_deref(),
         args.prompt_file.as_deref(),
     )?;
+    // -p/--print spawns the in-process stock agent; the Pi-only build has none.
+    #[cfg(not(feature = "stock-agent"))]
+    if headless_prompt.is_some() || args.memory_flush {
+        anyhow::bail!("headless mode (-p/--print, --memory-flush) requires the stock agent build");
+    }
+    #[cfg(feature = "stock-agent")]
     if headless_prompt.is_some() || args.memory_flush {
         if args.memory_flush
             && headless_prompt.is_none()
@@ -2428,11 +2459,16 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
     }
     enforce_version_policy_or_exit();
     let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-    type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
-    let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
-        std::sync::Arc::new(tokio::sync::Mutex::new(None));
-    let bg_update_rx: Option<tokio::sync::oneshot::Receiver<Option<auto_update::UpdateAvailable>>> =
-        if should_check_for_updates(args.no_auto_update) {
+    // The full-screen TUI boots the in-process stock agent (connect/connect_via_leader
+    // plus the pre-TUI grok.com login); grok-pi ships its own binary entry instead.
+    #[cfg(feature = "stock-agent")]
+    {
+        type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
+        let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let bg_update_rx: Option<
+            tokio::sync::oneshot::Receiver<Option<auto_update::UpdateAvailable>>,
+        > = if should_check_for_updates(args.no_auto_update) {
             let update_config = update_config.clone();
             let wait_slot = bg_update_wait.clone();
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -2447,20 +2483,27 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
         } else {
             None
         };
-    let result = xai_grok_pager::app::run(args, bg_update_rx).await;
-    xai_grok_sandbox::flush();
-    match result {
-        Ok(true) => {
-            let adopted = bg_update_wait.lock().await.take();
-            if finish_update_on_exit(adopted, &update_config).await {
-                eprintln!("Update installed. Run `grok` to start.");
-            } else {
-                eprintln!("Update did not complete. Run `grok update` to retry.");
+        let result = xai_grok_pager::app::run(args, bg_update_rx).await;
+        xai_grok_sandbox::flush();
+        return match result {
+            Ok(true) => {
+                let adopted = bg_update_wait.lock().await.take();
+                if finish_update_on_exit(adopted, &update_config).await {
+                    eprintln!("Update installed. Run `grok` to start.");
+                } else {
+                    eprintln!("Update did not complete. Run `grok update` to retry.");
+                }
+                Ok(())
             }
-            Ok(())
-        }
-        Ok(false) => Ok(()),
-        Err(e) => Err(e),
+            Ok(false) => Ok(()),
+            Err(e) => Err(e),
+        };
+    }
+    #[cfg(not(feature = "stock-agent"))]
+    {
+        anyhow::bail!(
+            "The full-screen TUI requires the stock agent build; use the grok-pi binary instead"
+        )
     }
 }
 /// Returns `true` when an update path completed without a reported failure. It falls back to a fresh blocking `grok
@@ -2635,9 +2678,12 @@ async fn run_update_command(
             v
         );
     }
+    // Pi closures carry no grok.com bearer; update telemetry stays uninitialized.
+    #[cfg(feature = "stock-agent")]
     let telemetry_cfg = xai_grok_shell::config::load_agent_config_disk_only()
         .map_err(|e| tracing::warn!("grok update: telemetry init skipped (agent config: {e})"))
         .ok();
+    #[cfg(feature = "stock-agent")]
     if let Some(agent_cfg) = telemetry_cfg {
         let auth_manager =
             std::sync::Arc::new(xai_grok_login::AuthManager::new_with_proxy_base_url(

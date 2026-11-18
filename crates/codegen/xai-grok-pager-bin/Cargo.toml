@@ -29,7 +29,9 @@ xai-grok-pager-minimal = { path = "../xai-grok-pager-minimal", default-features 
 pi-grok-adapter = { path = "../pi-grok-adapter" }
 
 # Agent runtime + leader/stdio/headless entry points.
-xai-grok-login = { workspace = true }
+# Login is stock-only: the grok binary enables it via the `stock-agent`
+# feature below; grok-pi (release-dist, no default features) never does.
+xai-grok-login = { workspace = true, optional = true }
 xai-grok-shell = { workspace = true }
 xai-grok-update = { path = "../xai-grok-update", default-features = false }
 xai-grok-version = { workspace = true }
@@ -116,6 +118,7 @@ default = [
     "stock-s3",
     "stock-gcs",
     "stock-tool-dialects",
+    "stock-agent",
     ]
 default-bazel = [
     "stock-mcp",
@@ -132,6 +135,7 @@ default-bazel = [
     "stock-s3",
     "stock-gcs",
     "stock-tool-dialects",
+    "stock-agent",
     ]
 stock-mcp = [
     "xai-grok-shell/stock-mcp",
@@ -148,6 +152,7 @@ stock-pptx = ["xai-grok-shell/stock-pptx"]
 stock-diag = ["xai-grok-shell/stock-diag"]
 stock-codebase-graph = ["xai-grok-shell/stock-codebase-graph"]
 stock-tool-dialects = ["xai-grok-shell/stock-tool-dialects"]
+stock-agent = ["xai-grok-pager/stock-agent", "xai-grok-login"]
 stock-s3 = ["xai-grok-shell/stock-s3"]
 stock-gcs = ["xai-grok-shell/stock-gcs"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]

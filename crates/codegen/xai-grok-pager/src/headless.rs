@@ -3,54 +3,81 @@
 //! Runs the agent in-process via `spawn_grok_shell` and drives the ACP lifecycle (init, auth, session, prompt).
 //! Streams to stdout and exits via `CancellationToken`.
 
+#[cfg(feature = "stock-agent")]
 use crate::app::subagent::{
     SubagentLifecycleEffect, SubagentLifecycleReduction, SubagentLifecycleState,
     SubagentLifecycleTransition,
 };
+#[cfg(feature = "stock-agent")]
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "stock-agent")]
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "stock-agent")]
 use anyhow::Result;
+#[cfg(feature = "stock-agent")]
 use tokio_util::sync::CancellationToken;
 
+#[cfg(feature = "stock-agent")]
 use agent_client_protocol as acp;
+#[cfg(feature = "stock-agent")]
 use xai_acp_lib::{AcpAgentTx, AcpClientMessageBox, AcpClientRx, acp_send};
+#[cfg(feature = "stock-agent")]
 use xai_grok_shell::agent::auth_method::AuthMethodKind;
+#[cfg(feature = "stock-agent")]
 use xai_grok_shell::agent::config::Config as AgentConfig;
+#[cfg(feature = "stock-agent")]
 use xai_grok_shell::extensions::task::{CancelSubagentRequest, KillTaskRequest};
+#[cfg(feature = "stock-agent")]
 use xai_grok_shell::sampling::error::{
     RATE_LIMITED_ERROR_CODE, error_detail_from_data, format_rate_limited_user_message,
 };
+#[cfg(feature = "stock-agent")]
 use xai_grok_shell::sampling::types::{
     REASONING_EFFORT_META_KEY, parse_canonical_effort_token, reasoning_effort_meta_value,
 };
+#[cfg(feature = "stock-agent")]
 use xai_grok_shell::util::config as cli_config;
+#[cfg(feature = "stock-agent")]
 use xai_grok_telemetry::startup::PendingStartup;
 
+#[cfg(feature = "stock-agent")]
 use crate::acp::model_state::{EffortTokenError, ModelState};
+#[cfg(feature = "stock-agent")]
 use crate::acp::spawn::{AgentShutdownGuard, spawn_grok_shell};
+#[cfg(feature = "stock-agent")]
 use crate::app::prompt_ack::{PromptAckDeadlines, PromptAckWatch};
+#[cfg(feature = "stock-agent")]
 use crate::app::worktree_session::{
     WorktreeSpec, create_worktree, new_worktree_id, note_orphaned_worktree,
     resume_session_into_worktree,
 };
+#[cfg(feature = "stock-agent")]
 use crate::best_effort_stderr::eprint_line;
+#[cfg(feature = "stock-agent")]
 use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_VERSION};
+#[cfg(feature = "stock-agent")]
 use crate::headless::reducer::{
     Lifecycle, McpServer, Reducer, SessionContext, StreamEvent, TurnEnd, map_session_update,
     reducer_for,
 };
 
+#[cfg(feature = "stock-agent")]
 mod ext_protocol;
+#[cfg(feature = "stock-agent")]
 mod prompt_ack;
+#[cfg(feature = "stock-agent")]
 mod reducer;
+#[cfg(feature = "stock-agent")]
 use ext_protocol::{ExtEvent, handle_ext_notification, reply_headless_ext_method};
+#[cfg(feature = "stock-agent")]
 use prompt_ack::{abort_unacknowledged_prompt, headless_ack_signal};
 
 mod cli;
 pub use cli::{HeadlessPrompt, OutputFormat, parse_json_schema, parse_permission_rules_lenient};
 pub(crate) use cli::{ResolvedAgent, resolve_agent_arg};
+#[cfg(feature = "stock-agent")]
 use cli::{apply_agent_flag, parse_cli_agents, parse_comma_list, parse_permission_rules_strict};
 
 #[derive(Debug, Clone)]
@@ -400,6 +427,7 @@ pub(crate) fn attach_result_usage(result: &mut serde_json::Value, usage: &serde_
 }
 
 /// Snake_case wire token for an ACP stop reason.
+#[cfg(feature = "stock-agent")]
 fn stop_reason_wire(reason: acp::StopReason) -> String {
     match reason {
         acp::StopReason::EndTurn => "end_turn",
@@ -420,6 +448,7 @@ fn stop_reason_wire(reason: acp::StopReason) -> String {
 }
 
 /// Configured MCP servers for the `init` line; all report `"connected"` (status is not resolved here).
+#[cfg(feature = "stock-agent")]
 fn mcp_server_names(cwd: &Path) -> Vec<McpServer> {
     let servers =
         cli_config::load_mcp_servers(cwd, &xai_grok_tools::types::compat::CompatConfig::default());
@@ -440,6 +469,7 @@ fn mcp_server_names(cwd: &Path) -> Vec<McpServer> {
         .collect()
 }
 
+#[cfg(feature = "stock-agent")]
 fn auto_respond_to_permissions(
     args: &acp::RequestPermissionRequest,
     option_kinds: &[acp::PermissionOptionKind],
@@ -459,6 +489,7 @@ fn auto_respond_to_permissions(
 }
 
 /// "Not signed in" error message, tailored to the session type.
+#[cfg(feature = "stock-agent")]
 fn auth_required_message(interactive: bool) -> String {
     if interactive {
         "Not signed in. Run `grok login` to authenticate \
@@ -475,6 +506,7 @@ fn auth_required_message(interactive: bool) -> String {
 
 /// Authenticate via the agent's `defaultAuthMethodId`, failing closed when none is available.
 /// Returns whether the selected method is API-key auth.
+#[cfg(feature = "stock-agent")]
 async fn authenticate(
     acp_tx: &AcpAgentTx,
     auths: &[acp::AuthMethod],
@@ -505,6 +537,7 @@ async fn authenticate(
     Ok(is_api_key_auth)
 }
 
+#[cfg(feature = "stock-agent")]
 fn build_headless_init_request(
     rules: Option<&str>,
     system_prompt_override: Option<&str>,
@@ -542,6 +575,7 @@ struct OpenedSession {
     cwd: PathBuf,
 }
 
+#[cfg(feature = "stock-agent")]
 async fn open_session(
     acp_tx: &AcpAgentTx,
     cwd: &Path,
@@ -596,6 +630,7 @@ async fn open_session(
     })
 }
 
+#[cfg(feature = "stock-agent")]
 async fn open_session_with_id(
     acp_tx: &AcpAgentTx,
     cwd: &Path,
@@ -623,6 +658,7 @@ async fn open_session_with_id(
     })
 }
 
+#[cfg(feature = "stock-agent")]
 async fn fork_then_open(
     acp_tx: &AcpAgentTx,
     launch_cwd: &Path,
@@ -667,6 +703,7 @@ async fn fork_then_open(
 /// Mirrors `Effect::CreateWorktreeSession`. A `-s` UUID also names the worktree, and
 /// `open_session_with_id` checks its availability under the worktree cwd, which is why
 /// `materialize_startup_for_cwd` skipped that check when `has_worktree` is set.
+#[cfg(feature = "stock-agent")]
 async fn open_session_in_new_worktree(
     acp_tx: &AcpAgentTx,
     cwd: &Path,
@@ -696,6 +733,7 @@ async fn open_session_in_new_worktree(
 
 /// Mirrors the `load_session_id` branch of `Effect::CreateWorktreeSession`: the agent creates the
 /// worktree and restores into it, then the session is loaded at the cwd it reports.
+#[cfg(feature = "stock-agent")]
 async fn resume_session_in_new_worktree(
     acp_tx: &AcpAgentTx,
     cwd: &Path,
@@ -739,7 +777,8 @@ async fn resume_session_in_new_worktree(
 
 /// Apply `-m` / effort after session open.
 /// Effort is soft-ignored on a non-supporting model (still applying `-m`) but hard-fails on a genuinely unknown token.
-async fn apply_headless_model_and_effort(
+async #[cfg(feature = "stock-agent")]
+fn apply_headless_model_and_effort(
     acp_tx: &AcpAgentTx,
     session_id: &acp::SessionId,
     models: &ModelState,
@@ -824,6 +863,7 @@ async fn apply_headless_model_and_effort(
 }
 
 /// Startup-materialization context for headless (`-p`) runs; never chat mode.
+#[cfg(feature = "stock-agent")]
 fn headless_materialize_ctx(
     resume_title_pinned: bool,
     restore_code: bool,
@@ -846,6 +886,7 @@ fn headless_materialize_ctx(
 }
 
 /// Run a headless single-turn prompt: spawn the agent, drive the ACP lifecycle, stream to stdout.
+#[cfg(feature = "stock-agent")]
 pub async fn run_single_turn(
     prompt: Option<HeadlessPrompt>,
     verbatim: bool,
@@ -1545,6 +1586,7 @@ pub async fn run_single_turn(
 }
 
 /// Invoke `x.ai/memory/flush` and wait for the flush LLM to finish.
+#[cfg(feature = "stock-agent")]
 async fn run_headless_memory_flush(
     acp_tx: &AcpAgentTx,
     acp_rx: &mut AcpClientRx,
@@ -1615,6 +1657,7 @@ struct BackgroundLifecycleState {
 }
 
 /// Ext request that kills one unit of background work (subagent cancel or task kill).
+#[cfg(feature = "stock-agent")]
 fn reap_request_for_work(
     work: &BackgroundWork,
     session_id: &acp::SessionId,
@@ -1639,6 +1682,7 @@ fn reap_request_for_work(
 }
 
 /// Best-effort kill of background work still pending at exit so it never outlives the process.
+#[cfg(feature = "stock-agent")]
 async fn reap_pending_background_tasks(
     pending_bg: &HashSet<BackgroundWork>,
     session_id: &acp::SessionId,
@@ -1667,6 +1711,7 @@ async fn reap_pending_background_tasks(
     }
 }
 
+#[cfg(feature = "stock-agent")]
 fn track_background_lifecycle(
     event: ExtEvent,
     pending_bg: &mut HashSet<BackgroundWork>,
@@ -1754,6 +1799,7 @@ fn track_background_lifecycle(
 /// Non-blocking drain-to-empty of `acp_rx`.
 /// Background work buffered around prompt completion is recorded in `pending_bg` before the empty-check decides whether to exit.
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "stock-agent")]
 fn drain_pending_acp_messages(
     acp_rx: &mut AcpClientRx,
     emitter: &mut HeadlessEmitter,
@@ -1777,6 +1823,7 @@ fn drain_pending_acp_messages(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "stock-agent")]
 async fn drain_acp_with_grace(
     acp_rx: &mut AcpClientRx,
     grace: Duration,
@@ -1827,6 +1874,7 @@ async fn drain_acp_with_grace(
 
 /// Process one inbound ACP client message; shared by `recv()` and `try_recv()`.
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "stock-agent")]
 fn handle_headless_acp_message(
     msg: AcpClientMessageBox,
     emitter: &mut HeadlessEmitter,
@@ -1921,10 +1969,10 @@ fn handle_headless_acp_message(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 #[path = "headless/background_lifecycle_tests.rs"]
 mod background_lifecycle_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 #[path = "headless_tests.rs"]
 mod tests;

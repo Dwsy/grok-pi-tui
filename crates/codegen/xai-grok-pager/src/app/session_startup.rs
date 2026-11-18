@@ -796,6 +796,8 @@ async fn most_recent_session_id(
 /// `AuthManager` for direct grok.com calls made outside the agent (pre-ACP `--continue` conversation listing, the GCS restore effect).
 /// Wires the auth-provider refresher before the first `auth()`.
 /// Without it, environments that mint credentials via `auth_provider_command` report `NoOauth`.
+/// Stock-only: Pi closures never talk to grok.com directly.
+#[cfg(feature = "stock-agent")]
 pub(crate) fn pre_acp_auth_manager(
     agent_config: &xai_grok_shell::agent::config::Config,
 ) -> std::sync::Arc<xai_grok_login::AuthManager> {
@@ -1052,17 +1054,26 @@ async fn resolve_existing_session(
             anyhow::bail!("Session does not exist")
         }
         RemoteMissPlan::RestoreConversation => {
-            let restored =
-                restore_session_from_remote(session_id, cwd, ctx.restore_progress_on_stdout).await;
-            if arg_is_uuid {
-                return restored;
+            // Remote restore authenticates against grok.com; Pi closures bail.
+            #[cfg(feature = "stock-agent")]
+            {
+                let restored =
+                    restore_session_from_remote(session_id, cwd, ctx.restore_progress_on_stdout).await;
+                if arg_is_uuid {
+                    return restored;
+                }
+                restored.map_err(|e| {
+                    anyhow::anyhow!(
+                        "{e:#}; {}",
+                        super::session_title_resolve::title_miss_hint(session_id)
+                    )
+                })
             }
-            restored.map_err(|e| {
-                anyhow::anyhow!(
-                    "{e:#}; {}",
-                    super::session_title_resolve::title_miss_hint(session_id)
-                )
-            })
+            #[cfg(not(feature = "stock-agent"))]
+            {
+                let _ = (session_id, cwd);
+                anyhow::bail!("Session restore from remote requires the stock agent build")
+            }
         }
     }
 }
@@ -1116,6 +1127,7 @@ pub(crate) fn plan_remote_miss(ctx: MaterializeCtx, arg_is_uuid: bool) -> Remote
 /// Remote-restore tail of [`resolve_existing_session`], split out so non-id targets can wrap every failure with the title-miss hint.
 /// Always restores session state and memory only.
 /// Codebase checkout is refused in-place ([`RemoteMissPlan::RejectInPlaceCodeRestore`]) or deferred to the worktree handler.
+#[cfg(feature = "stock-agent")]
 async fn restore_session_from_remote(
     session_id: &str,
     cwd: &str,

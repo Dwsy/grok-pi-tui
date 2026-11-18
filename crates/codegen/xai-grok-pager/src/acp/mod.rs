@@ -4,6 +4,7 @@
 pub mod leader_bridge;
 pub mod meta;
 pub mod model_state;
+#[cfg(feature = "stock-agent")]
 pub mod spawn;
 mod subagent_message;
 pub mod tracker;
@@ -153,6 +154,7 @@ pub(in crate::acp) enum AgentLocation {
     /// In the leader process. The receiver reports socket reconnects to the event loop.
     Leader(tokio::sync::watch::Receiver<leader_bridge::ConnectionStatus>),
 }
+#[cfg(feature = "stock-agent")]
 impl From<spawn::SpawnedAgent> for AgentEndpoint {
     fn from(spawned: spawn::SpawnedAgent) -> Self {
         AgentEndpoint {
@@ -207,6 +209,8 @@ pub struct AcpConnection {
     /// `AuthManager` for pager-side authenticated channels (voice STT and TTS).
     /// In-process mode shares the agent's instance (single token cache); leader mode builds a dedicated one off the same local `auth.json`.
     /// Either way it resolves a fresh bearer per request via the refresh chain.
+    /// Stock-only: Pi closures (stock-agent off) have no grok.com bearer at all.
+    #[cfg(feature = "stock-agent")]
     pub auth_manager: std::sync::Arc<xai_grok_login::AuthManager>,
 }
 
@@ -223,6 +227,8 @@ impl AcpConnection {
         cancel: CancellationToken,
         profile: ExternalUiProfile,
     ) -> Self {
+        // Pi closures run without any grok.com login: no manager to build.
+        #[cfg(feature = "stock-agent")]
         let auth_manager = std::sync::Arc::new(
             xai_grok_login::AuthManager::new_without_startup_diagnostics(
                 &xai_grok_shell::util::grok_home::grok_home(),
@@ -250,6 +256,7 @@ impl AcpConnection {
             cancel_rewind_enabled: false,
             session_recap_available: false,
             feedback_trace_offer: false,
+            #[cfg(feature = "stock-agent")]
             auth_manager,
         }
     }
@@ -303,6 +310,8 @@ pub struct ConnectFlags {
     pub default_auto_mode: bool,
 }
 /// Connect to an agent: spawn, initialize, authenticate.
+/// Stock-only: spawns the in-process `MvpAgent` via `acp::spawn`.
+#[cfg(feature = "stock-agent")]
 pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<AcpConnection> {
     startup::enter(StartupPhase::ConfigLoad);
     let raw_config = {
@@ -354,6 +363,7 @@ pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<
 }
 /// Finishes connecting to an agent. Sends it `initialize`, works out whether the user must log in first, and returns the `AcpConnection`.
 /// The embedded agent, the leader agent, and the agent-host worker are all connected through this function, so these steps are written once.
+#[cfg(feature = "stock-agent")]
 pub(in crate::acp) async fn initialize_connection(
     endpoint: AgentEndpoint,
     flags: &ConnectFlags,
@@ -410,6 +420,8 @@ pub(in crate::acp) async fn initialize_connection(
 /// Connect to a leader process and return an `AcpConnection`. The leader provides the ACP transport via IPC (raw
 /// JSON strings over a Unix socket). This function bridges that transport into the same typed `(AcpAgentTx,
 /// AcpClientRx)` pair that `connect()` produces. It then runs the standard initialize and authenticate sequence.
+/// Stock-only: leader mode is a grok-native process topology.
+#[cfg(feature = "stock-agent")]
 pub async fn connect_via_leader(
     cancel: &CancellationToken,
     flags: ConnectFlags,

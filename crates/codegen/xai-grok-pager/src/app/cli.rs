@@ -21,6 +21,9 @@ pub enum Command {
     /// Sign out and clear cached credentials
     Logout,
     /// Sign in to Grok
+    /// Stock-only: the login flow needs the grok.com OAuth runtime; grok-pi
+    /// sessions authenticate through the Pi adapter instead.
+    #[cfg(feature = "stock-agent")]
     Login {
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
@@ -44,12 +47,15 @@ pub enum Command {
     #[cfg(feature = "stock-mcp")]
     Mcp(crate::mcp_cmd::McpArgs),
     /// Manage plugins and marketplace sources
+    #[cfg(feature = "stock-agent")]
     Plugin(crate::plugin_cmd::PluginArgs),
     /// Manage cross-session memory
     Memory(crate::memory_cmd::MemoryArgs),
     /// List available models and exit
+    #[cfg(feature = "stock-agent")]
     Models,
     /// List, search, or restore sessions
+    #[cfg(feature = "stock-agent")]
     Sessions(crate::sessions_cmd::SessionsArgs),
     /// Print persisted token and cost usage for a session
     Usage(crate::usage_cmd::UsageArgs),
@@ -130,6 +136,7 @@ See ~/.grok/README.md for more information.
         shell: Shell,
     },
     /// Manage git worktrees
+    #[cfg(feature = "stock-agent")]
     Worktree(crate::worktree_cmd::WorktreeArgs),
     /// Show what the grok home (~/.grok) uses on disk
     #[command(name = "du", visible_alias = "disk-usage")]
@@ -137,6 +144,8 @@ See ~/.grok/README.md for more information.
     /// Expose this workspace to the Computer Hub (via the leader).
     ///
     /// Disabled by default and enabled server-side per account; set `GROK_WORKSPACE_COMMAND=1` to enable it locally for testing.
+    /// Stock-only: Computer Hub exposure rides the leader topology.
+    #[cfg(feature = "stock-agent")]
     #[command(hide = true)]
     Workspace(WorkspaceMgmtArgs),
     /// Open the Agent Dashboard view at startup.

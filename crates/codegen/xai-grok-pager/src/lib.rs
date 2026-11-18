@@ -35,6 +35,7 @@ pub mod memory_trace;
 pub mod minimal_api;
 #[path = "minimal/hook.rs"]
 pub mod minimal_hook;
+#[cfg(feature = "stock-agent")]
 pub mod models;
 pub mod native_feature_conflicts;
 pub mod notifications;
@@ -43,10 +44,12 @@ pub mod obf;
 pub mod pi_model_config;
 pub mod pi_resource_config;
 pub mod pi_resource_policy;
+#[cfg(feature = "stock-agent")]
 pub mod plugin_cmd;
 pub mod pty_wrap;
 pub mod recent_dirs;
 pub mod scrollback;
+#[cfg(feature = "stock-agent")]
 pub mod sessions_cmd;
 pub mod settings;
 pub mod share_cmd;
@@ -73,4 +76,5 @@ pub mod tracing;
 pub mod unified_log;
 pub mod views;
 pub mod voice;
+#[cfg(feature = "stock-agent")]
 pub mod worktree_cmd;

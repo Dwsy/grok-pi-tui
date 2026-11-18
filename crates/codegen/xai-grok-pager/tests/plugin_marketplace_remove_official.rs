@@ -1,3 +1,7 @@
+#![cfg(feature = "stock-agent")]
+
+// The plugin marketplace CLI (plugin_cmd) is a stock-only surface.
+
 //! Regression: CLI `marketplace remove` of the official source must set
 //! `official_marketplace_auto_installed` even for a JSON-store-only source with the flag unset.
 
