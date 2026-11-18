@@ -32,3 +32,14 @@
 1. CI `Assert stock-only dependency closure is absent from Pi` 断言 `async-lsp`、`lsp-types`、`scraper`、`htmd` 不在 `grok-pi` 的 `cargo tree -e normal,build` 闭包内。
 2. 原版默认 feature（`xai-grok-pager-bin` default）仍包含 `async-lsp`、`scraper`、`htmd`，且 `xai-grok-tools` 在开启 `stock-lsp,stock-web-fetch,stock-pdf` 时编译检查通过。
 3. Pi-only `xai-grok-workspace`、`xai-grok-shell`、`release-dist` 二进制构建、PTY/RPC smoke、Adapter 单测与候选包上传全部在 GitHub ARM64 CI 通过。
+
+## 4. 实测验证结果（Run `#44226229567`，commit `b20a746c`，2026-11-18）
+
+`b20a746c`（S10 + S11-A 合并提交）在 GitHub Actions `macos-15` 全绿通过（`scope=all`）：
+
+- **Wall-clock**：`1818.0s`（基线 `#44198844083`，`45386652`）→ `1153.1s`，缩减 `664.9s`（**`-36.6%`**）；
+- **Units**：`1288` → `1211`，移除 `77` 个编译单元（**`-6.0%`**）；
+- 依赖闭包断言（Step 10/11 双向实证）：`grok-pi` `--locked` 闭环不再包含 `async-lsp`、`lsp-types`、`scraper`、`htmd`、`zip`、`xai-grok-diag-server`、`xai-grok-workspace-daemon`、`xai-codebase-graph`、`tree-sitter-{rust,typescript,python,go,javascript}`、`mimalloc`、`libmimalloc-sys`；原版 `default` 仍完整拉入上述依赖；
+- Shell 全量回归（slash-authority / unified-list / workflow / 30 分钟 watchdog）与 ARM64 `release-dist` 候选包打包全部通过。
+
+> 数据来源：Run `#44226229567` 的 `pi-slim-arm64-cargo-timings` artifact（`cargo-timing.html` 的 `Total time` 与 `Total units` 字段）。
