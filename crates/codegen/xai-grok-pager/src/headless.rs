@@ -11,8 +11,9 @@ use crate::app::subagent::{
 #[cfg(feature = "stock-agent")]
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 #[cfg(feature = "stock-agent")]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(feature = "stock-agent")]
 use anyhow::Result;
@@ -125,6 +126,7 @@ pub struct HeadlessOptions {
     pub memory_enabled_override: Option<bool>,
 }
 
+#[cfg(feature = "stock-agent")]
 struct HeadlessEmitter {
     format: OutputFormat,
     parse_structured_output: bool,
@@ -144,6 +146,7 @@ struct HeadlessEmitter {
     write_error: Option<std::io::Error>,
 }
 
+#[cfg(feature = "stock-agent")]
 impl HeadlessEmitter {
     fn new(format: OutputFormat, parse_structured_output: bool) -> Self {
         Self {
@@ -422,6 +425,7 @@ impl HeadlessEmitter {
     }
 }
 
+#[cfg(feature = "stock-agent")]
 pub(crate) fn attach_result_usage(result: &mut serde_json::Value, usage: &serde_json::Value) {
     xai_grok_shell::extensions::notification::attach_result_usage_fail_closed(result, usage);
 }
@@ -568,6 +572,7 @@ fn build_headless_init_request(
 }
 
 #[derive(Debug)]
+#[cfg(feature = "stock-agent")]
 struct OpenedSession {
     session_id: acp::SessionId,
     models: ModelState,
@@ -1644,12 +1649,14 @@ async fn run_headless_memory_flush(
 }
 
 /// Background work tracked for exit: bash/monitor tasks and background subagents, keyed by id.
+#[cfg(feature = "stock-agent")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum BackgroundWork {
     Task(String),
     Subagent(String),
 }
 
+#[cfg(feature = "stock-agent")]
 #[derive(Default)]
 struct BackgroundLifecycleState {
     completed_tasks: HashSet<String>,
