@@ -1289,7 +1289,7 @@ pub struct AppView {
     pub announcement_cta_impressions_logged:
         std::collections::BTreeSet<(String, xai_grok_telemetry::events::AnnouncementCtaSurface)>,
     /// Access gate from `grok_build_access_gate`. `Some` means blocked.
-    pub gate: Option<xai_grok_login::GateInfo>,
+    pub gate: Option<xai_grok_shared::auth_types::GateInfo>,
     /// User-friendly subscription tier name (e.g. "SuperGrok", "Free").
     pub subscription_tier: Option<String>,
     /// When the pager started auto-checking subscriptions (for 10-min timeout).
@@ -1299,7 +1299,7 @@ pub struct AppView {
     /// Server override (seconds) for the subscription-watch cadence.
     pub subscription_watch_interval_secs: Option<u64>,
     /// A stale-source gate held out of `gate` while a live check verifies it (see [`super::subscription`]).
-    pub pending_gate_verification: Option<xai_grok_login::GateInfo>,
+    pub pending_gate_verification: Option<xai_grok_shared::auth_types::GateInfo>,
     /// Generation stamp of the current gate verification.
     pub gate_verify_gen: u64,
     /// Whether a leader reconnect is in progress (blocks prompt submission).
@@ -1598,19 +1598,19 @@ impl AppView {
     /// Extract `GateInfo` from `RemoteSettings`.
     pub fn gate_from_settings(
         rs: &xai_grok_shell::util::config::RemoteSettings,
-    ) -> Option<xai_grok_login::GateInfo> {
+    ) -> Option<xai_grok_shared::auth_types::GateInfo> {
         let msg = rs.gate_message.as_ref()?;
         if msg.is_empty() {
             return None;
         }
-        Some(xai_grok_login::GateInfo {
+        Some(xai_grok_shared::auth_types::GateInfo {
             message: msg.clone(),
             url: rs.gate_url.clone(),
             label: rs.gate_label.clone(),
         })
     }
     /// Apply typed auth metadata from the shell.
-    pub fn apply_auth_meta(&mut self, meta: &xai_grok_login::AuthMeta) {
+    pub fn apply_auth_meta(&mut self, meta: &xai_grok_shared::auth_types::AuthMeta) {
         self.pending_gate_verification = None;
         let was_gated = self.gate.is_some();
         self.account_email = meta.email.clone();

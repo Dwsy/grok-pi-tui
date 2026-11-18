@@ -380,7 +380,7 @@ pub(super) fn handle_check_subscription_complete(
     let was_blocked = !app.has_access();
     let applied = match meta {
         Some(meta_val) => {
-            match serde_json::from_value::<xai_grok_login::AuthMeta>(meta_val) {
+            match serde_json::from_value::<xai_grok_shared::auth_types::AuthMeta>(meta_val) {
                 Ok(auth_meta) => {
                     app.apply_auth_meta(&auth_meta);
                     true
@@ -445,7 +445,7 @@ pub(super) fn handle_credit_limit_recheck_complete(
 ) -> Vec<Effect> {
     let old_tier = app.subscription_tier.clone();
     if let Some(meta_val) = meta
-        && let Ok(auth_meta) = serde_json::from_value::<xai_grok_login::AuthMeta>(meta_val)
+        && let Ok(auth_meta) = serde_json::from_value::<xai_grok_shared::auth_types::AuthMeta>(meta_val)
     {
         app.apply_auth_meta(&auth_meta);
     }

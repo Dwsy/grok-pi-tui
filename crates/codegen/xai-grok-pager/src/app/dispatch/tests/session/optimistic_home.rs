@@ -98,7 +98,7 @@ fn maybe_create_home_session_skips_when_startup_will_leave_home() {
 #[test]
 fn maybe_create_home_session_skips_when_access_blocked() {
     let mut app = test_app();
-    app.gate = Some(xai_grok_login::GateInfo {
+    app.gate = Some(xai_grok_shared::auth_types::GateInfo {
         message: "paywall".into(),
         url: None,
         label: None,

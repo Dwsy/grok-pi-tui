@@ -3152,7 +3152,7 @@ fn dashboard_does_not_advertise_or_dispatch_doctor() {
 fn dashboard_slash_usage_hidden_for_external_auth() {
     let mut app = three_agent_app();
     app.has_external_auth_provider = true;
-    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta::default());
     open_dashboard(&mut app);
     let before = app.agents.len();
     let effects = dispatch_dashboard_dispatch_slash(&mut app, "/usage".into());

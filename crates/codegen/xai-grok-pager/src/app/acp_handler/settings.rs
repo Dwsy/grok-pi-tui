@@ -273,7 +273,7 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         && !msg.is_empty()
     {
         // (An empty gate_message would only clear the gate message text, NOT access, so it does not touch the gate here.)
-        let effs = app.impose_gate(xai_grok_login::GateInfo {
+        let effs = app.impose_gate(xai_grok_shared::auth_types::GateInfo {
             message: msg.clone(),
             url: update.gate_url.clone(),
             label: update.gate_label.clone(),

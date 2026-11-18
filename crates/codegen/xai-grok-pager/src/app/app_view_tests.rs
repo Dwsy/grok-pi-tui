@@ -2351,7 +2351,7 @@ fn external_auth_provider_keeps_billing_off_after_auth_meta() {
     let mut app = test_app();
     app.has_external_auth_provider = true;
     app.usage_visible = false;
-    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta::default());
     assert!(!app.usage_visible);
     assert!(app.tier_restricted_commands.is_empty());
     assert!(
@@ -2366,7 +2366,7 @@ fn external_auth_provider_keeps_billing_off_after_auth_meta() {
 fn apply_auth_meta_disables_billing_surface_for_team_users() {
     let mut app = test_app();
     assert!(app.usage_visible);
-    let meta = xai_grok_login::AuthMeta {
+    let meta = xai_grok_shared::auth_types::AuthMeta {
         team_id: Some("team-uuid".into()),
         team_name: Some("Acme Corp".into()),
         ..Default::default()
@@ -2384,7 +2384,7 @@ fn apply_auth_meta_disables_billing_surface_for_team_users() {
 fn apply_auth_meta_enables_billing_surface_for_personal_users() {
     let mut app = test_app();
     app.usage_visible = false;
-    let meta = xai_grok_login::AuthMeta::default();
+    let meta = xai_grok_shared::auth_types::AuthMeta::default();
     app.apply_auth_meta(&meta);
     assert!(app.usage_visible);
 }
@@ -2393,7 +2393,7 @@ fn apply_auth_meta_clears_api_key_flag_and_restores_billing_on_personal_login() 
     let mut app = test_app();
     app.is_api_key_auth = true;
     app.usage_visible = false;
-    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta::default());
     assert!(!app.is_api_key_auth);
     assert!(app.usage_visible);
 }
@@ -2402,7 +2402,7 @@ fn apply_auth_meta_api_key_enables_voice_and_skips_tier_gate() {
     let mut app = test_app();
     advertise_media_tools(&mut app);
     assert!(!app.voice_mode_enabled);
-    app.apply_auth_meta(&xai_grok_login::AuthMeta {
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta {
         auth_mode: Some("ApiKey".into()),
         subscription_tier: Some("API Key".into()),
         ..Default::default()
@@ -2414,14 +2414,14 @@ fn apply_auth_meta_api_key_enables_voice_and_skips_tier_gate() {
     assert!(!app.is_voice_tier_restricted());
     assert!(app.voice_mode_enabled);
     let mut app = test_app();
-    app.apply_auth_meta(&xai_grok_login::AuthMeta {
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta {
         subscription_tier: Some("api_key".into()),
         ..Default::default()
     });
     assert!(app.is_api_key_auth);
     assert!(app.voice_mode_enabled);
     assert!(app.tier_restricted_commands.is_empty());
-    app.apply_auth_meta(&xai_grok_login::AuthMeta {
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta {
         auth_mode: Some("Oidc".into()),
         subscription_tier: Some("Free".into()),
         ..Default::default()
@@ -2475,7 +2475,7 @@ fn assert_tier_restricted_commands_present(app: &AppView) {
 fn apply_auth_meta_restricts_usage_for_free_tier() {
     let mut app = test_app();
     advertise_media_tools(&mut app);
-    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta::default());
     assert_eq!(
         app.tier_restricted_commands,
         expected_tier_restricted_commands()
@@ -2487,7 +2487,7 @@ fn apply_auth_meta_restricts_usage_for_free_tier() {
 fn apply_auth_meta_restricts_usage_for_x_basic_tier() {
     let mut app = test_app();
     advertise_media_tools(&mut app);
-    let meta = xai_grok_login::AuthMeta {
+    let meta = xai_grok_shared::auth_types::AuthMeta {
         subscription_tier: Some("X Basic".into()),
         ..Default::default()
     };
@@ -2502,7 +2502,7 @@ fn apply_auth_meta_restricts_usage_for_x_basic_tier() {
 fn apply_auth_meta_lifts_restrictions_for_paid_tiers_and_teams() {
     let mut app = test_app();
     advertise_media_tools(&mut app);
-    let meta = xai_grok_login::AuthMeta {
+    let meta = xai_grok_shared::auth_types::AuthMeta {
         subscription_tier: Some("SuperGrok".into()),
         ..Default::default()
     };
@@ -2511,14 +2511,14 @@ fn apply_auth_meta_lifts_restrictions_for_paid_tiers_and_teams() {
     assert_tier_restricted_commands_present(&app);
     let mut app = test_app();
     advertise_media_tools(&mut app);
-    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta::default());
     assert!(!app.tier_restricted_commands.is_empty());
     app.subscription_tier = Some("SuperGrok".into());
     app.apply_tier_restrictions();
     assert!(app.tier_restricted_commands.is_empty());
     assert_tier_restricted_commands_present(&app);
     let mut app = test_app();
-    let meta = xai_grok_login::AuthMeta {
+    let meta = xai_grok_shared::auth_types::AuthMeta {
         team_id: Some("team-uuid".into()),
         team_name: Some("Acme Corp".into()),
         ..Default::default()
@@ -2546,10 +2546,10 @@ fn voice_included_in_tier_restricted_commands() {
 #[test]
 fn is_voice_tier_restricted_tracks_tier() {
     let mut app = test_app();
-    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta::default());
     assert!(app.is_voice_tier_restricted());
     let mut app = test_app();
-    let meta = xai_grok_login::AuthMeta {
+    let meta = xai_grok_shared::auth_types::AuthMeta {
         subscription_tier: Some("SuperGrok".into()),
         ..Default::default()
     };
@@ -2559,13 +2559,13 @@ fn is_voice_tier_restricted_tracks_tier() {
 #[test]
 fn apply_auth_meta_clears_gate_on_subscription() {
     let mut app = test_app();
-    app.gate = Some(xai_grok_login::GateInfo {
+    app.gate = Some(xai_grok_shared::auth_types::GateInfo {
         message: "Subscribe to use Grok Build".into(),
         url: Some("https://grok.com/supergrok?referrer=grok-build".into()),
         label: None,
     });
     assert!(app.is_access_blocked());
-    let meta = xai_grok_login::AuthMeta::default();
+    let meta = xai_grok_shared::auth_types::AuthMeta::default();
     app.apply_auth_meta(&meta);
     assert!(app.gate.is_none());
     assert!(app.has_access());
@@ -2573,13 +2573,13 @@ fn apply_auth_meta_clears_gate_on_subscription() {
 #[test]
 fn apply_auth_meta_gate_unchanged_when_still_gated() {
     let mut app = test_app();
-    let gate = xai_grok_login::GateInfo {
+    let gate = xai_grok_shared::auth_types::GateInfo {
         message: "Subscribe".into(),
         url: None,
         label: None,
     };
     app.gate = Some(gate.clone());
-    let meta = xai_grok_login::AuthMeta {
+    let meta = xai_grok_shared::auth_types::AuthMeta {
         gate: Some(gate),
         ..Default::default()
     };

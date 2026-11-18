@@ -2486,7 +2486,7 @@ fn reset_session_title_complete_pushes_system_block() {
 fn gate_refreshed_emits_check_subscription_on_gate_lift() {
     let mut app = test_app();
     // User starts gated (no subscription).
-    app.gate = Some(xai_grok_login::GateInfo {
+    app.gate = Some(xai_grok_shared::auth_types::GateInfo {
         message: "SuperGrok subscription required".into(),
         url: Some("https://grok.com/supergrok".into()),
         label: Some("Subscribe".into()),
@@ -2518,7 +2518,7 @@ fn gate_refreshed_emits_check_subscription_on_gate_lift() {
 #[test]
 fn gate_refreshed_no_effect_when_still_gated() {
     let mut app = test_app();
-    app.gate = Some(xai_grok_login::GateInfo {
+    app.gate = Some(xai_grok_shared::auth_types::GateInfo {
         message: "Subscribe".into(),
         url: None,
         label: None,
@@ -2595,8 +2595,8 @@ fn gate_refreshed_newly_blocked_defers_gate_for_verification() {
 
 // ── Stale-gate verification resolution ──────────────────────────
 
-fn test_gate() -> xai_grok_login::GateInfo {
-    xai_grok_login::GateInfo {
+fn test_gate() -> xai_grok_shared::auth_types::GateInfo {
+    xai_grok_shared::auth_types::GateInfo {
         message: "Subscribe".into(),
         url: None,
         label: None,
@@ -2610,7 +2610,7 @@ fn verify_check_with_meta_resolves_pending_gate() {
     let _effs = app.impose_gate(test_gate());
     assert!(app.has_access());
 
-    let meta = serde_json::to_value(xai_grok_login::AuthMeta::default()).unwrap();
+    let meta = serde_json::to_value(xai_grok_shared::auth_types::AuthMeta::default()).unwrap();
     dispatch_task_result(
         TaskResult::CheckSubscriptionComplete {
             verify: Some(app.gate_verify_gen),
@@ -2629,7 +2629,7 @@ fn verify_check_with_gated_meta_shows_gate() {
     let mut app = test_app();
     let _effs = app.impose_gate(test_gate());
 
-    let meta = serde_json::to_value(xai_grok_login::AuthMeta {
+    let meta = serde_json::to_value(xai_grok_shared::auth_types::AuthMeta {
         gate: Some(test_gate()),
         ..Default::default()
     })
@@ -2772,7 +2772,7 @@ fn gate_verify_timeout_noop_when_already_resolved() {
     let _effs = app.impose_gate(test_gate());
     let generation = app.gate_verify_gen;
     // Live check resolved first (access confirmed).
-    let meta = serde_json::to_value(xai_grok_login::AuthMeta::default()).unwrap();
+    let meta = serde_json::to_value(xai_grok_shared::auth_types::AuthMeta::default()).unwrap();
     dispatch_task_result(
         TaskResult::CheckSubscriptionComplete {
             verify: None,
@@ -2795,7 +2795,7 @@ fn gate_verify_timeout_stale_generation_is_ignored() {
     // First deferral resolves (access confirmed)
     let _effs = app.impose_gate(test_gate());
     let stale_gen = app.gate_verify_gen;
-    let meta = serde_json::to_value(xai_grok_login::AuthMeta::default()).unwrap();
+    let meta = serde_json::to_value(xai_grok_shared::auth_types::AuthMeta::default()).unwrap();
     dispatch_task_result(
         TaskResult::CheckSubscriptionComplete {
             verify: None,
@@ -2833,7 +2833,7 @@ fn verified_gate_via_check_complete_starts_paywall_chain() {
     let mut app = test_app();
     let _effs = app.impose_gate(test_gate());
 
-    let meta = serde_json::to_value(xai_grok_login::AuthMeta {
+    let meta = serde_json::to_value(xai_grok_shared::auth_types::AuthMeta {
         gate: Some(test_gate()),
         ..Default::default()
     })
@@ -2859,7 +2859,7 @@ fn verified_gate_via_check_complete_starts_paywall_chain() {
     );
 
     // Steady-state paywall-poller responses (already gated) must NOT fan out extra timers
-    let meta = serde_json::to_value(xai_grok_login::AuthMeta {
+    let meta = serde_json::to_value(xai_grok_shared::auth_types::AuthMeta {
         gate: Some(test_gate()),
         ..Default::default()
     })

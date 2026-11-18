@@ -125,7 +125,7 @@ impl AppView {
     /// An already-gated view just updates the copy.
     /// A consumer session with access defers for live verification (the gate source may be stale).
     #[must_use]
-    pub fn impose_gate(&mut self, gate: xai_grok_login::GateInfo) -> Vec<Effect> {
+    pub fn impose_gate(&mut self, gate: xai_grok_shared::auth_types::GateInfo) -> Vec<Effect> {
         if self.gate.is_some() {
             self.gate = Some(gate);
             return vec![];
@@ -173,7 +173,7 @@ impl AppView {
     /// Resolution: authoritative meta via `apply_auth_meta` drops the deferral.
     /// A same-generation check failure or timeout promotes it via [`Self::promote_deferred_gate`].
     #[must_use]
-    fn defer_gate_for_verification(&mut self, gate: xai_grok_login::GateInfo) -> Vec<Effect> {
+    fn defer_gate_for_verification(&mut self, gate: xai_grok_shared::auth_types::GateInfo) -> Vec<Effect> {
         self.pending_gate_verification = Some(gate);
         self.gate_verify_gen = self.gate_verify_gen.wrapping_add(1);
         self.note_subscription_check();
@@ -223,8 +223,8 @@ mod tests {
     use super::*;
     use crate::app::app_view::tests::test_app;
 
-    fn watch_gate() -> xai_grok_login::GateInfo {
-        xai_grok_login::GateInfo {
+    fn watch_gate() -> xai_grok_shared::auth_types::GateInfo {
+        xai_grok_shared::auth_types::GateInfo {
             message: "Subscribe".into(),
             url: None,
             label: None,
@@ -388,7 +388,7 @@ mod tests {
         // Already gated: update the copy only.
         let mut gated = test_app();
         gated.gate = Some(watch_gate());
-        let new_copy = xai_grok_login::GateInfo {
+        let new_copy = xai_grok_shared::auth_types::GateInfo {
             message: "New copy".into(),
             url: None,
             label: None,
@@ -466,7 +466,7 @@ mod tests {
         let mut app = test_app();
         let _effs = app.impose_gate(watch_gate());
 
-        app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+        app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta::default());
 
         assert!(app.pending_gate_verification.is_none());
         assert!(app.has_access());

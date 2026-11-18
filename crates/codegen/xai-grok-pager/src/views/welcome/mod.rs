@@ -724,7 +724,7 @@ pub struct WelcomeRenderParams<'a> {
     /// The query the picker entries were server-fetched with (see [`crate::views::session_picker::effective_filter_query`]).
     pub session_picker_entries_query: Option<&'a str>,
     pub welcome_tick: u64,
-    pub gate: Option<&'a xai_grok_login::GateInfo>,
+    pub gate: Option<&'a xai_grok_shared::auth_types::GateInfo>,
     pub subscription_tier: Option<&'a str>,
     pub session_picker_grouped: bool,
     /// Source filter for the session picker.

@@ -607,7 +607,7 @@ fn auth_meta_refreshes_feedback_trace_offer() {
     let mut app = test_app_with_agent();
     app.shell_feedback_trace_offer = false; // initialize ran logged-out
 
-    let meta = xai_grok_login::AuthMeta {
+    let meta = xai_grok_shared::auth_types::AuthMeta {
         feedback_trace_offer: true,
         coding_data_retention_opt_out: false,
         ..Default::default()

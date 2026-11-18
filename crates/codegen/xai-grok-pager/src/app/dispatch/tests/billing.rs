@@ -774,7 +774,7 @@ fn team_auth_disables_agent_billing_surface() {
         .get_mut(&AgentId(0))
         .unwrap()
         .billing_surface_visible = true;
-    app.apply_auth_meta(&xai_grok_login::AuthMeta {
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta {
         team_id: Some("team-uuid".into()),
         team_name: Some("Acme Corp".into()),
         ..Default::default()

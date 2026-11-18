@@ -374,7 +374,7 @@ fn voice_keybinding_on_restricted_tier_opens_upsell() {
     let mut app = test_app_with_agent();
     app.voice_mode_enabled = true;
     // A personal login without a subscription tier is free tier, so voice is restricted
-    app.apply_auth_meta(&xai_grok_login::AuthMeta::default());
+    app.apply_auth_meta(&xai_grok_shared::auth_types::AuthMeta::default());
     assert!(app.is_voice_tier_restricted());
 
     dispatch(Action::EnableVoiceMode, &mut app);
@@ -397,7 +397,7 @@ fn voice_keybinding_on_paid_tier_not_gated() {
     }
     let mut app = test_app_with_agent();
     app.voice_mode_enabled = true;
-    let meta = xai_grok_login::AuthMeta {
+    let meta = xai_grok_shared::auth_types::AuthMeta {
         subscription_tier: Some("SuperGrok".into()),
         ..Default::default()
     };

@@ -785,7 +785,7 @@ fn auth_complete_preserves_show_resolved_model_when_absent() {
     dispatch(
         Action::TaskComplete(TaskResult::AuthComplete {
             request_seq: 1,
-            meta: Some(serde_json::to_value(xai_grok_login::AuthMeta::default()).unwrap()),
+            meta: Some(serde_json::to_value(xai_grok_shared::auth_types::AuthMeta::default()).unwrap()),
         }),
         &mut app,
     );

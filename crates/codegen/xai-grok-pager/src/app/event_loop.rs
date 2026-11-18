@@ -1531,7 +1531,7 @@ pub(crate) async fn run(
         crate::slash::commands::usage::detect_external_auth_provider(&app.auth_methods);
 
     if let Some(meta) = connection.auth_meta.as_ref() {
-        match serde_json::from_value::<xai_grok_login::AuthMeta>(meta.clone()) {
+        match serde_json::from_value::<xai_grok_shared::auth_types::AuthMeta>(meta.clone()) {
             Ok(auth_meta) => app.apply_auth_meta(&auth_meta),
             Err(e) => tracing::warn!("failed to deserialize auth_meta: {e}"),
         }
