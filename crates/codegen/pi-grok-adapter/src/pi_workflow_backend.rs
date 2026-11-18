@@ -226,6 +226,7 @@ mod tests {
                 parent_session_id: "p".into(),
                 resume_from: None,
                 model: None,
+                reasoning_effort: None,
                 capability_mode: None,
                 isolation: None,
                 fork_context: false,
