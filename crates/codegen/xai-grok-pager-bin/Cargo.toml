@@ -152,7 +152,11 @@ stock-pptx = ["xai-grok-shell/stock-pptx"]
 stock-diag = ["xai-grok-shell/stock-diag"]
 stock-codebase-graph = ["xai-grok-shell/stock-codebase-graph"]
 stock-tool-dialects = ["xai-grok-shell/stock-tool-dialects"]
-stock-agent = ["xai-grok-pager/stock-agent", "xai-grok-login"]
+stock-agent = [
+    "xai-grok-pager/stock-agent",
+    "xai-grok-shell/stock-agent",
+    "xai-grok-login",
+]
 stock-s3 = ["xai-grok-shell/stock-s3"]
 stock-gcs = ["xai-grok-shell/stock-gcs"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]

@@ -5,6 +5,10 @@ version = "1.0.24"
 edition.workspace = true
 
 [features]
+# Stock Grok's in-process agent/CLI surfaces; Pi never needs the inspect CLI
+# entry point. Gate one independently owned module at a time before making
+# the heavyweight agent dependency optional (S12-b).
+stock-agent = []
 stock-mcp = ["dep:xai-grok-mcp", "xai-grok-workspace/stock-mcp"]
 stock-pdf = ["xai-grok-tools/stock-pdf"]
 stock-lsp = ["xai-grok-tools/stock-lsp", "xai-grok-workspace/stock-lsp"]
@@ -16,6 +20,7 @@ stock-diag = ["xai-grok-workspace/stock-diag"]
 stock-codebase-graph = ["dep:xai-codebase-graph", "xai-grok-workspace/stock-codebase-graph"]
 stock-tool-dialects = ["xai-grok-tools/stock-tool-dialects", "xai-grok-agent/stock-tool-dialects"]
 default = [
+    "stock-agent",
     "stock-mcp",
     "stock-lsp",
     "stock-web-fetch",
@@ -37,6 +42,7 @@ local-workspace = []
 # parse the committed config-reference page.
 config-docs = []
 default-bazel = [
+    "stock-agent",
     "stock-mcp",
     "stock-lsp",
     "stock-web-fetch",

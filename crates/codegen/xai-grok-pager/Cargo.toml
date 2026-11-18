@@ -259,7 +259,7 @@ local-workspace = ["xai-grok-shell/local-workspace"]
 # subcommands that talk to a live agent, the agents modal, and the voice
 # bearer bridge all compile out when this is off. Pi-only closures (grok-pi)
 # enable neither this feature nor the `xai-grok-login`/`xai-grok-agent` deps.
-stock-agent = ["xai-grok-login", "dep:xai-grok-agent"]
+stock-agent = ["xai-grok-login", "dep:xai-grok-agent", "xai-grok-shell/stock-agent"]
 # No-op on this crate: the actual `#[global_allocator]` (and the
 # `tikv-jemallocator` dep) live on the composition-root binary
 # `xai-grok-pager-bin`, which owns `main.rs`. Kept as an empty feature so the

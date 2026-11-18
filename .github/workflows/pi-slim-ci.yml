@@ -192,6 +192,17 @@ jobs:
           cargo check --locked --lib -p xai-grok-shell \
             --target aarch64-apple-darwin
 
+      - name: Verify stock CLI inspection compiles behind Shell stock-agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This bin alone invokes xai_grok_shell::inspect. Keep the Stock
+          # CLI surface compiled while the Pi-only Shell no-default profile
+          # excludes its 3k+ lines of inspection implementation.
+          cargo check --locked -p xai-grok-pager-bin --bin xai-grok-pager \
+            --no-default-features --features stock-agent \
+            --target aarch64-apple-darwin
+
       - name: Check stock LSP, web_fetch, and PPTX tools path still compiles
         shell: bash
         run: |

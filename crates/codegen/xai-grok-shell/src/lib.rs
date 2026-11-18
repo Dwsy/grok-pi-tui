@@ -35,6 +35,7 @@ pub use xai_grok_foreign_sessions as foreign_sessions;
 pub mod heap_profile;
 pub mod host_features;
 pub use xai_grok_http as http;
+#[cfg(feature = "stock-agent")]
 pub mod inspect;
 pub mod instrumentation;
 pub mod leader;
