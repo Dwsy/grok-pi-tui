@@ -1094,7 +1094,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shell,
             label: "Show status tool calls",
-            description: "Show tool calls also represented by task, todo, goal, scheduler, or workflow status. Applies to new calls and replay.",
+            description: "Show tool calls also represented by task, todo, goal, or workflow status. Applies to new calls and replay.",
             keywords: &["tool", "task", "todo", "goal", "workflow", "show", "hide"],
             kind: SettingKind::Bool {
                 default: ui_default.show_status_tool_calls.unwrap_or(true),

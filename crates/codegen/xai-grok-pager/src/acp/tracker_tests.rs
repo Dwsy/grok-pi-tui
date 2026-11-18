@@ -5176,7 +5176,9 @@ fn cursor_todo_write_suppressed_by_title() {
     assert!(is_todo_tool(&initial_tool_call("tc1", "TodoWrite")));
     assert!(is_todo_tool(&initial_tool_call("tc2", "Updating plan")));
     assert!(is_todo_tool(&initial_tool_call("tc3", "todo_write")));
-    assert!(is_todo_tool(&initial_tool_call("tc4", "todo")));
+    // Pi's merged `todo` tool echoes its own card even when status cards are
+    // hidden; only stock todo shapes stay suppressed.
+    assert!(!is_todo_tool(&initial_tool_call("tc4", "todo")));
 }
 #[test]
 fn todo_write_suppressed_by_variant() {
@@ -5201,6 +5203,32 @@ fn pascal_case_todo_write_suppressed_from_scrollback() {
             0,
             "todo tool with title={title:?} must be suppressed"
         );
+    }
+}
+/// Pi session-management tools (`goal`, `todo`, `scheduler_create`) must echo
+/// a scrollback card even when `show_status_tool_calls` is disabled: their
+/// dedicated panes are opt-in surfaces, so suppression left successful calls
+/// with no visible trace (TUI echo bug).
+#[test]
+fn pi_session_tools_render_despite_hidden_status_cards() {
+    let _hidden = HiddenStatusTools::new();
+    for (i, title) in ["goal", "todo", "scheduler_create"].iter().enumerate() {
+        let id = format!("tc-pi-{i}");
+        let mut sb = ScrollbackState::new();
+        let mut tracker = AcpUpdateTracker::new();
+        tracker.handle_update(
+            tool_call(&id, acp::ToolKind::Other, title),
+            &meta(),
+            &mut sb,
+        );
+        assert_eq!(sb.len(), 1, "Pi tool with title={title:?} must echo a card");
+        tracker.handle_update(tool_update_completed(&id), &meta(), &mut sb);
+        assert_eq!(
+            sb.len(),
+            1,
+            "completion must reconcile the existing card, not duplicate it"
+        );
+        assert!(!tracker.suppressed_tools.contains_key(&id));
     }
 }
 /// Every video ToolInput variant must route through `media_gen_block` so `[Open Video]` uses the typed `MediaGenOutput.path`.

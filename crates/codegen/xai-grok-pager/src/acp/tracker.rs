@@ -2757,12 +2757,16 @@ fn is_todo_variant(variant: Option<&str>) -> bool {
 ///
 /// Suppressed from scrollback because the dedicated todo pane provides
 /// better visibility. Covers the `todo_write` / `TodoWrite` ids, the
-/// `Updating plan` title, TodoWrite-family variant tags, and Pi
-/// `@juicesharp/rpiv-todo`'s tool name `todo` (projected via ACP Plan).
+/// `Updating plan` title, and TodoWrite-family variant tags. Pi
+/// `@juicesharp/rpiv-todo`'s `todo` calls stay visible (they still project
+/// their ACP Plan snapshot into the todo pane).
 fn is_todo_tool(tc: &acp::ToolCall) -> bool {
+    // Stock Grok todo shapes only. Pi's merged `todo` tool renders its own card:
+    // its Plan snapshot still refreshes the TodoPane, but suppressing the card
+    // left successful calls with no scrollback echo at all.
     matches!(
         tc.title.as_str(),
-        "todo_write" | "TodoWrite" | "Updating plan" | "todo"
+        "todo_write" | "TodoWrite" | "Updating plan"
     ) || is_todo_variant(extract_variant(tc))
 }
 /// Check if a tool call is a task tool (subagent spawn).
@@ -2772,10 +2776,10 @@ fn is_task_tool(tc: &acp::ToolCall) -> bool {
     xai_grok_tools::is_task_tool_id(&tc.title) || is_task_variant(extract_variant(tc))
 }
 fn is_goal_tool(tc: &acp::ToolCall) -> bool {
-    // "goal" is the merged Pi tool; the four legacy titles remain for stock
-    // Grok and historical Pi transcripts.
-    tc.title == "goal"
-        || tc.title == "update_goal"
+    // Stock Grok goal titles only. Pi's merged `goal` tool renders its own card
+    // (the goal pane mirrors state separately); suppressing it hid successful
+    // goal calls from the scrollback entirely.
+    tc.title == "update_goal"
         || tc.title == "create_goal"
         || tc.title == "resume_goal"
         || tc.title.starts_with("Goal:")
@@ -2797,10 +2801,10 @@ fn is_workflow_tool(tc: &acp::ToolCall) -> bool {
 }
 /// Check if a tool call is a scheduler tool (scheduler_create/delete/list).
 /// Suppressed from scrollback because the tasks pane provides visibility.
-/// Uses convention-based prefixes rather than exhaustive names.
+/// Stock Grok scheduler tools serialize a `Scheduler*` variant; Pi's
+/// `scheduler_*` extension tools carry no variant and render their own card.
 fn is_scheduler_tool(tc: &acp::ToolCall) -> bool {
-    tc.title.starts_with("scheduler_")
-        || extract_variant(tc).is_some_and(|v| v.starts_with("Scheduler"))
+    extract_variant(tc).is_some_and(|v| v.starts_with("Scheduler"))
 }
 fn extract_eval_bridge_version(tc: &acp::ToolCall) -> Option<String> {
     let from_input =
