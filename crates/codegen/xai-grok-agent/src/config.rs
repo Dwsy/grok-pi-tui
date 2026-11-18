@@ -147,6 +147,7 @@ fn kill_task_tool_config() -> ToolConfig {
 /// In proxy mode the workspace server executes all tools; the shell has zero local dispatch.
 pub fn workspace_grok_build_toolset() -> ToolServerConfig {
     let mut tools = default_grok_build_toolset().tools;
+#[cfg(feature = "stock-tool-dialects")]
     tools.push((&opencode::OpenCodeWriteTool).into());
     tools.push((&grok_build::EnterPlanModeTool).into());
     tools.push((&grok_build::ExitPlanModeTool).into());
@@ -171,7 +172,6 @@ fn grok_computer_toolset() -> ToolServerConfig {
         bash_tool_config(),
         (&grok_build::ReadFileTool).into(),
         (&grok_build::SearchReplaceTool).into(),
-        (&opencode::OpenCodeWriteTool).into(),
         (&grok_build::ListDirTool).into(),
         (&grok_build::GrepTool).into(),
         (&grok_build::KillTerminalCommandTool).into(),
@@ -180,6 +180,8 @@ fn grok_computer_toolset() -> ToolServerConfig {
         (&grok_build::SchedulerDeleteTool).into(),
         (&grok_build::SchedulerListTool).into(),
     ];
+    #[cfg(feature = "stock-tool-dialects")]
+    tools.push((&opencode::OpenCodeWriteTool).into());
     ToolServerConfig {
         tools,
         behavior_preset: None,
@@ -1798,6 +1800,7 @@ mod tests {
     /// The grok-computer preset must ship a full-file write tool (legacy `write_file` parity), the same OpenCode `write` tool grok-build uses.
     /// Guards against `search_replace` being the only file-mutation path.
     /// With the empty-old_string overwrite guard enabled, that path has no single-tool full rewrite.
+    #[cfg(all(test, feature = "stock-tool-dialects"))]
     #[test]
     fn grok_computer_preset_includes_write_tool() {
         let gc = toolset_for_preset("grok-computer").unwrap();
