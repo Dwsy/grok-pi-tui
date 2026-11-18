@@ -1,8 +1,8 @@
 # Subagents V2 Team 协作
 
-Subagents V2 是 grok-pi 内置 Pi 子代理上的**可选团队协作层**。它增加稳定 agent path、peer messaging、nested spawn、可复用 child-session 上下文和外置 team preset。V2 会**替换** V1 的单代理工具面，而不是在其之上叠加；V1 runtime 与命令仍然保留。
+Subagents V2 是 grok-pi 内置 Pi 子代理上的**团队协作层**。它增加稳定 agent path、peer messaging、nested spawn、可复用 child-session 上下文和外置 team preset。V2 会**替换** V1 的单代理工具面，而不是在其之上叠加；V1 runtime 与命令仍然保留。
 
-V2 **默认关闭**。如果只需要 `spawn_subagent`、`/subagents`、wait/cancel/history 或主→子消息，保持 V2 关闭即可；开启后 `spawn_subagent` 等 5 个 V1 工具不再注册（见下文「V2 模式下不注册 V1 工具」）。
+在 `grok-pi` 中，**F2 → Agent → Pi subagents V2（`[ui].pi_subagents_v2`）默认开启**（为 Pi 注入 `PI_GROK_SUBAGENTS_V2=1`；若独立加载扩展仍需 `PI_GROK_SUBAGENTS_V2=1`）。如果只需要 `spawn_subagent`、`/subagents`、wait/cancel/history 或主→子消息，可在 F2 关闭该开关并重启即可（立即可回滚到 V1）。
 
 ## Plan Mode ↔ Team V2 闭环
 
@@ -89,6 +89,7 @@ Agent path segment 只允许小写字母、数字和下划线，`root` 保留：
 - `QUEUED`：等待共享后台并发额度。
 - `RUNNING`：child turn 正在运行。
 - `IDLE`：上一轮成功完成，可用 `team_followup_task` 重新激活。
+- `WAITING_RESULT`：上一轮以 `waiting` report 结束并等待自身直系下级完成；下级 `FINAL_ANSWER` 到达后自动恢复该会话。
 - `WAITING_DECISION`：上一轮以 `blocked` report 结束。问题保留在 `team_list` 里，消息仍能送达，`team_followup_task` 可像 `IDLE` 一样重新激活它。
 - `FAILED`：上一轮失败，不会被静默自动复活。
 - `CANCELLED`：上一轮被中断，不会被静默自动复活。

@@ -43,7 +43,7 @@ V1 适合彼此独立的研究、实现、验证、审查。默认 child 是叶�
 | 等待 team activity | `team_wait` |
 | 查看 team tree | `team_list`（含静默时长与待决问题） |
 | 中断运行中 agent | `team_interrupt` |
-| 声明本轮结果 | `team_report`（`ready`/`blocked`/`failed`/`dropped`；只有 `dropped` 不唤醒 parent） |
+| 声明本轮结果 | `team_report`（`ready`/`waiting`/`blocked`/`failed`/`dropped`；`waiting` 与 `dropped` 均不唤醒正常 parent） |
 | 启动预设团队（root 可见时） | `spawn_team`（可加 `members` 子集、`model`/`thinking_level`/`max_turns`/`capability_mode` 统一覆盖、`instructions`、`timeout_ms`） |
 
 V2 适合 agent 之间需要消息、follow-up、稳定 `/root/...` 身份或预设团队的场景。V1 与 V2 工具面互斥：V2 开启时不注册 V1 单代理工具，因此不要在本会话里寻找 `spawn_subagent`。若 V2 工具未出现，就使用 V1；不要为了“更高级”而绕过实际工具目录。
@@ -183,7 +183,7 @@ spawn_team(team="research", task="...", members=["researcher","synthesizer"])
 
 ### 并行推进
 
-V2 下 root 的正确做法是**派完就结束 turn**，而不是停下来等：
+V2 下 root 的默认最佳实践是**派完就推进本地工作或直接结束 turn**，等待 `FINAL_ANSWER` 自动唤醒，而不是挂在工具等待里：
 
 ```text
 spawn_team(team="research", task="...")
@@ -192,13 +192,13 @@ spawn_team(team="research", task="...")
 → child 的 FINAL_ANSWER 重新唤醒 root
 ```
 
-不要在 root 调 `team_wait` 停车——它对 root 直接返回，写了也不等。也不要为同一个目标重复 spawn。
+注意：`team_wait` 对 root **会按 `timeout_ms`（默认 120 s，上限 600 s）阻塞等待团队活动**（即使当前成员暂时 `IDLE`，因为 `team_followup_task` 仍可能重激活它）；除非你明确要在当前 turn 内同步收集阶段结果，否则不要用 `team_wait` 阻塞 root。也不要为同一个目标重复 spawn。
 
 ### Message vs Follow-up
 
 - `team_send_message`：给**正在运行**的 agent 补事实、纠偏或要求当前工作收尾；在下一个安全循环边界处理，不主动制造新的 idle turn，也不取消正在执行的请求/工具。
 - `team_followup_task`：已有 agent 完成一轮后，需要利用它已有上下文继续做新的相关任务。
-- `team_wait`：只给 child 做 mailbox 同步屏障；root 启动后台 V2 agent 后不要用它停车，直接结束当前 turn，等待 `FINAL_ANSWER` 自动唤醒。
+- `team_wait`：支持按 `teams` 过滤与 `timeout_ms` 超时等待首个团队活动；对 child 无活跃被观察 peer 时会立即返回以释放执行槽；对 root 在无本地工作时通常不如直接结束 turn 等 `FINAL_ANSWER` 高效。
 - `team_list`：需要确认路径、状态或责任归属时再看，不拿它做高频轮询。
 
 ### 消息要合并，不要刷屏
@@ -225,9 +225,10 @@ child 在结束 turn 前调用 `team_report`，父级只为需要行动的结果
 | `state` | 何时用 | 父级被唤醒 |
 |---|---|---|
 | `ready` | 要的结果可交付 | 是 |
+| `waiting` | 自身有下级仍在跑且无本地工作，结束本轮释放执行槽 | 否（等待下级结果恢复本会话） |
 | `blocked` | 需要父级做一个决定，`question` 必填 | 是 |
 | `failed` | 做不成 | 是 |
-| `dropped` | 无需改动、请求已被满足、或已被其他 agent 接管 | **否** |
+| `dropped` | 无需改动、请求已被满足、或已被其他 agent 接管 | **否**（除非父级正处于 `waiting`） |
 
 `dropped` 不是“偷懒退出”，而是“父级无事可做”的诚实声明：它保留 summary 供 `team_list` 查看，但不消耗父级的 turn。没有产出就不要编产出。
 
@@ -267,6 +268,7 @@ child 默认行为：
 | `QUEUED` | 在等并发额度 | 需要它先跑 → `team_followup_task` 会插队 |
 | `RUNNING` | turn 正在跑 | 看 quiet；过长则 `team_interrupt` 或再等 |
 | `IDLE` | 上一轮成功结束 | 有新工作 → `team_followup_task` |
+| `WAITING_RESULT` | 上一轮 `waiting`，正等直系下级结果恢复 | 等待其下级回传，勿重复 follow-up |
 | `WAITING_DECISION` | 上一轮 `blocked`，等父级决定 | 读 question → 给决定 |
 | `FAILED` | 上一轮失败 | 不静默复活；重派或自己接手 |
 | `CANCELLED` | 被中断 | 同上 |

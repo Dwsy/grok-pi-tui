@@ -108,7 +108,7 @@ Update channels are product-local and persisted in `~/.grok-pi/config.toml` unde
 | Product tutorial | `/tutorial` (aliases `/tour`, `/onboarding`) opens 18 grok-pi capability areas: native Pager workflows, Pi providers/models/tools/sessions, the extension/Skill/Package ecosystem, product bridges, optional automation and explicit boundaries |
 | **Remote TUI bridge** | Pi `ctx.ui.custom` components rendered through Grok Build's native Pager, without a second TUI |
 | Shell execution | Bash integration, background tasks, output limits, timeouts, and process-tree cleanup |
-| Parallel work | Pi subagents with foreground/background execution and native task views; `/subagents` exposes built-ins plus isolated overrides, and opt-in `fork: true` inherits the initiating parent's (`root` or `child`) live branch, skills, `AGENTS.md`, prompt sections, and plugins in the same shared `.jsonl` tree. Opt-in [Team V2](docs/usage/subagents-v2.md) (F2 toggle or `PI_GROK_SUBAGENTS_V2=1`) adds stable agent paths, automatically flushed messages, active-parent result steering, nested spawn, and JSON presets |
+| Parallel work | Pi subagents with foreground/background execution and native task views; `/subagents` exposes built-ins plus isolated overrides, and opt-in `fork: true` inherits the initiating parent's (`root` or `child`) live branch, skills, `AGENTS.md`, prompt sections, and plugins in the same shared `.jsonl` tree. [Team V2](docs/usage/subagents-v2.md) (default on via F2 `[ui].pi_subagents_v2`, or `PI_GROK_SUBAGENTS_V2=1`) adds stable agent paths, automatically flushed messages, active-parent result steering, nested spawn, JSON presets, and Plan Mode read-only recon gating |
 | Rhai workflows | Upstream `xai-workflow` host (F2 **Pi workflows**); `/workflow`, `/workflows`, `/create-workflow`; scripts under `~/.grok-pi/workflows` and `<repo>/.grok-pi/workflows` |
 | Session workflow | Resume, tree navigation, labels, recap, context inspection, and session picker |
 | Resource management | Native manager for Pi extensions, skills, prompts, and themes |
@@ -151,7 +151,7 @@ Bundled bridge extensions are enabled by default where stable. Experimental nati
 | `PI_GROK_REMOTE_TUI` | `1` | Enable Pi `ctx.ui.custom` components |
 | `PI_GROK_BASH` | `1` | Enable Grok-owned Bash integration |
 | `PI_GROK_NATIVE_COMMANDS` | `0` | Enable experimental `/pi-*` commands |
-| `PI_GROK_SUBAGENTS_V2` | `0` | Enable the V2 team surface (`spawn_team`, stable agent paths, peer messaging, nested spawn). V2 replaces the V1 single-agent tools; V1 commands and history stay available |
+| `PI_GROK_SUBAGENTS_V2` | `1` (F2 default) | Enable the V2 team surface (`spawn_team`, stable agent paths, peer messaging, nested spawn). V2 replaces the V1 single-agent tools; V1 commands and history stay available (disable via F2 or `0`) |
 | `GROK_HOME` | `~/.grok-pi` | User state root (isolated from stock Grok `~/.grok`) |
 | `GROK_PROJECT_DIR` | `.grok-pi` | Project config/workflows/hooks dir name under repo root |
 | `GROK_PI_NO_AUTO_UPDATE` | unset | Disable background update checks |

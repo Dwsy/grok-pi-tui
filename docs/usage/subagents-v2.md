@@ -1,8 +1,8 @@
 # Subagents V2 team collaboration
 
-Subagents V2 is the opt-in team collaboration layer for grok-pi's built-in Pi subagents. It adds stable agent paths, peer messaging, nested spawning, reusable child-session context, and external team presets. V2 **replaces** the V1 single-agent tool surface rather than extending it; the V1 runtime and commands stay available.
+Subagents V2 is the team collaboration layer for grok-pi's built-in Pi subagents. It adds stable agent paths, peer messaging, nested spawning, reusable child-session context, and external team presets. V2 **replaces** the V1 single-agent tool surface rather than extending it; the V1 runtime and commands stay available.
 
-V2 is **off by default**. Keep it off if you only need `spawn_subagent`, `/subagents`, wait/cancel/history, or parent-to-child messaging.
+In `grok-pi`, **F2 → Agent → Pi subagents V2 (`[ui].pi_subagents_v2`) defaults to on** (setting `PI_GROK_SUBAGENTS_V2=1` for Pi). Turn that toggle off (or run with `PI_GROK_SUBAGENTS_V2=0` when launching the extension standalone) if you only need `spawn_subagent`, `/subagents`, wait/cancel/history, or parent-to-child messaging.
 
 ## Plan Mode ↔ Team V2 Closed Loop
 
@@ -89,6 +89,7 @@ Use absolute paths when addressing siblings. A relative target names a direct ch
 - `QUEUED` — waiting for the shared background concurrency budget.
 - `RUNNING` — a child turn is active.
 - `IDLE` — the last run completed successfully; the stable agent can be reactivated with `team_followup_task`.
+- `WAITING_RESULT` — the last run ended with a `waiting` report while its own children remain pending; descendant `FINAL_ANSWER` deliveries resume the same session automatically.
 - `WAITING_DECISION` — the last run completed with a `blocked` report. The question stays in `team_list`, messages still reach it, and `team_followup_task` reactivates it like an `IDLE` agent.
 - `FAILED` — the last run failed. It is not silently reactivated.
 - `CANCELLED` — the last run was interrupted. It is not silently reactivated.
