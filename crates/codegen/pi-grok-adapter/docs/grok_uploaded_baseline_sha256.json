@@ -2806,7 +2806,12 @@
     "crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs",
     "crates/codegen/xai-grok-pager/src/app/mermaid_worker.rs",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/mermaid_content.rs",
-    "crates/codegen/xai-grok-pager/tests/mermaid_render_subprocess.rs"
+    "crates/codegen/xai-grok-pager/tests/mermaid_render_subprocess.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/session/fork.rs",
+    "crates/codegen/xai-grok-pager/src/slash/mru.rs",
+    "crates/codegen/xai-grok-pager/src/slash/commands/model.rs",
+    "crates/codegen/xai-grok-pager/src/views/prompt_widget/mod.rs",
+    "crates/codegen/xai-grok-pager/src/views/prompt_widget/tests.rs"
   ],
   "allowedAddedPrefixes": [
     "crates/codegen/pi-grok-adapter/"
@@ -2864,6 +2869,7 @@
     "extensions/pi-grok-plan-mode/index.test.mjs",
     "docs/issues/subagents/20261118-subagent-fork-context-inheritance.md",
     "extensions/pi-grok-subagents/fork.ts",
-    "extensions/pi-grok-subagents/fork.test.ts"
+    "extensions/pi-grok-subagents/fork.test.ts",
+    "crates/codegen/xai-grok-pager/src/slash/usage.rs"
   ]
 }

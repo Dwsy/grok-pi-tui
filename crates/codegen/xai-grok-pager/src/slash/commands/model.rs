@@ -54,6 +54,18 @@ impl SlashCommand for ModelCommand {
     }
 
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
+        self.suggest_args_with_usage(ctx, args_query, &crate::slash::usage::ProjectUsage::empty())
+    }
+
+    /// Model candidates follow this project's usage counters: the models chosen
+    /// most often in this project come first, and the current model keeps its
+    /// `(current)` marker instead of a pinned first row.
+    fn suggest_args_with_usage(
+        &self,
+        ctx: &AppCtx,
+        args_query: &str,
+        usage: &crate::slash::usage::ProjectUsage,
+    ) -> Option<Vec<ArgItem>> {
         if ctx.models.is_empty() {
             return None;
         }
@@ -62,7 +74,7 @@ impl SlashCommand for ModelCommand {
         if let Some(model_id) = detect_effort_phase(ctx.models, args_query) {
             return Some(build_effort_items(ctx.models, &model_id));
         }
-        Some(build_model_items(ctx.models))
+        Some(build_model_items(ctx.models, usage))
     }
 
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
@@ -165,10 +177,16 @@ fn detect_effort_phase(models: &ModelState, args_query: &str) -> Option<acp::Mod
 ///
 /// Reasoning models still get a trailing space on `insert_text` so the prompt
 /// widget chains into the effort sub-menu (Grok-only extension over Pi).
-fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
+fn build_model_items(
+    models: &ModelState,
+    usage: &crate::slash::usage::ProjectUsage,
+) -> Vec<ArgItem> {
     let current_id = models.current.as_ref();
     let mut items: Vec<ArgItem> = Vec::with_capacity(models.available.len());
-    for (id, info) in &models.available {
+    let mut catalog: Vec<_> = models.available.iter().collect();
+    // Preserve catalog order for equal usage, including never-selected models.
+    catalog.sort_by_cached_key(|(id, _)| std::cmp::Reverse(usage.model_rank(id.0.as_ref())));
+    for (id, info) in catalog {
         let is_current = current_id == Some(id);
         let supports = supports_reasoning_effort(info);
         let (provider, model_id) = split_provider_model_id(id, info);
@@ -207,14 +225,6 @@ fn build_model_items(models: &ModelState) -> Vec<ArgItem> {
             insert_text,
             description,
         });
-    }
-    if let Some(current_id) = current_id {
-        if let Some(current_index) = items
-            .iter()
-            .position(|item| resolve_model_for_arg_item(models, item).as_ref() == Some(current_id))
-        {
-            items.swap(0, current_index);
-        }
     }
     items
 }
@@ -605,6 +615,57 @@ mod tests {
     }
 
     #[test]
+    fn model_usage_beats_current_and_search_quality_beats_usage() {
+        let mut state = ModelState::default();
+        let (popular, popular_info) = plain_model("popular", "Popular");
+        let (current, current_info) = plain_model("current", "Current");
+        let (rare, rare_info) = plain_model("rare", "Rare");
+        state.available.insert(current.clone(), current_info);
+        state.available.insert(popular.clone(), popular_info);
+        state.available.insert(rare.clone(), rare_info);
+        state.current = Some(current);
+        let mut usage = crate::slash::usage::ProjectUsage::load(std::path::Path::new("."), false);
+        usage.record_model(popular.0.as_ref());
+        usage.record_model(popular.0.as_ref());
+        usage.record_model(rare.0.as_ref());
+        let items = build_model_items(&state, &usage);
+        assert_eq!(items[0].insert_text, "test/popular");
+        assert_eq!(items[1].insert_text, "test/rare");
+        assert!(items[2].display.contains("(current)"));
+        let indexes = crate::slash::matcher::FuzzyMatcher::new().rank_pi_model_selector(
+            &items,
+            "rare",
+            |item| item.match_text.as_str(),
+        );
+        assert_eq!(items[indexes[0]].insert_text, "test/rare");
+        usage.record_model(rare.0.as_ref());
+        assert_eq!(
+            build_model_items(&state, &usage)[0].insert_text,
+            "test/rare"
+        );
+    }
+
+    #[test]
+    fn model_search_keeps_usage_order_when_match_quality_ties() {
+        let mut state = ModelState::default();
+        for provider in ["one", "two"] {
+            let id = acp::ModelId::new(Arc::from(format!("{provider}::same")));
+            state
+                .available
+                .insert(id.clone(), acp::ModelInfo::new(id, "Same"));
+        }
+        let mut usage = crate::slash::usage::ProjectUsage::load(std::path::Path::new("."), false);
+        usage.record_model("two::same");
+        let items = build_model_items(&state, &usage);
+        let indexes = crate::slash::matcher::FuzzyMatcher::new().rank_pi_model_selector(
+            &items,
+            "same",
+            |item| item.match_text.as_str(),
+        );
+        assert_eq!(items[indexes[0]].insert_text, "two/same");
+    }
+
+    #[test]
     fn empty_query_returns_one_row_per_logical_model() {
         let mut state = ModelState::default();
         let (rid, rinfo) = model_with_reasoning("reasoning-x", "Reasoning X");
@@ -628,7 +689,8 @@ mod tests {
         };
         let items = cmd.suggest_args(&ctx, "").unwrap();
         assert_eq!(items.len(), 2, "model phase: one row per logical model");
-        assert!(items[0].display.contains("(current)"));
+        assert_eq!(items[0].insert_text, "test/reasoning-x ");
+        assert!(items[1].display.contains("(current)"));
 
         // Pi interactive: insert_text is provider/id; trailing space on reasoning
         // keeps the dropdown open so the effort sub-menu can render.
@@ -646,7 +708,7 @@ mod tests {
             .find(|i| i.insert_text == "test/grok-4.5")
             .unwrap();
         assert_eq!(plain.insert_text, "test/grok-4.5");
-        assert!(plain.display.contains("grok-4.5"));
+        assert!(plain.display.contains("Grok 4.5"));
         assert!(plain.display.contains("(current)"));
         assert_eq!(plain.description, "test");
     }

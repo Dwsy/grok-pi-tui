@@ -2079,6 +2079,8 @@ pub(in crate::app::dispatch) fn set_default_model(
         return vec![];
     }
 
+    // Usage is counted once the switch succeeds (see `handle_switch_model_complete`),
+    // so a rejected or rolled-back switch never counts as a choice.
     // Idempotent: the same model already active is a no-op
     if prev_id.as_ref() == Some(&new_id) {
         return vec![];

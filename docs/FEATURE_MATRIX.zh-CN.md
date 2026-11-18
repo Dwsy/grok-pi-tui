@@ -68,7 +68,8 @@
 
 | 功能 | 状态 | 说明 |
 |---|---|---|
-| Provider/模型目录 | 原生+适配 | Pi 负责多 Provider registry、凭据、`models.json` 本地/自定义 endpoint 与 extension `registerProvider`；`get_available_models` → Grok 原生 model selector，裸 `/model` 打开且当前模型置顶。默认开启的 Pi auth bridge 在 Remote TUI 可用时提供 `/login`/`/logout`。 |
+| Provider/模型目录 | 原生+适配 | Pi 负责多 Provider registry、凭据、`models.json` 本地/自定义 endpoint 与 extension `registerProvider`；`get_available_models` → Grok 原生 model selector。裸 `/model` 与行内补全共用项目内使用频次排序，并保留当前模型标识。默认开启的 Pi auth bridge 在 Remote TUI 可用时提供 `/login`/`/logout`。 |
+| 项目使用频率排序 | 原生 | 命令/技能提交和模型选择分开统计，各项目独立持久化。频次降序、同频按最近使用排序；斜杠菜单保留命令/技能分组与手工标签，搜索相关性和精确命令匹配优先。仅接受补全不增加命令次数，被动刷新模型目录或回放历史不增加模型次数。 |
 | Thinking effort | 适配 | Pi levels → Grok effort selector；xhigh/max 做能力归一化 |
 | New session | 适配 | Grok `/new` → Pi `new_session` |
 | Rename | 适配 | Grok `/rename` → Pi `set_session_name` |

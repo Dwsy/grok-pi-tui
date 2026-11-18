@@ -1424,6 +1424,152 @@ fn set_default_model_resolves_known_name() {
     ));
     assert_eq!(app.agents[&agent_id].session.models.current, Some(id));
 }
+/// A model counts as used only once the switch is confirmed; passive state,
+/// a pending switch and a failed switch must not add usage.
+#[test]
+fn model_usage_counts_only_after_a_confirmed_switch() {
+    let mut app = test_app_with_agent();
+    let agent_id = AgentId(0);
+    let model_id = acp::ModelId::new(Arc::from("test::usage-model"));
+    let other_id = acp::ModelId::new(Arc::from("test::usage-other"));
+    let store = std::rc::Rc::new(std::cell::RefCell::new(
+        crate::slash::mru::SlashMru::new_in_memory(),
+    ));
+    let agent = app.agents.get_mut(&agent_id).unwrap();
+    let cwd = agent.prompt.slash_controller.cwd().to_path_buf();
+    agent.prompt.adopt_slash_mru(store.clone());
+    for (id, name) in [(&model_id, "Usage model"), (&other_id, "Usage other")] {
+        agent.session.models.available.insert(
+            id.clone(),
+            acp::ModelInfo::new(id.clone(), name.to_string()),
+        );
+    }
+    agent.session.models.set_current(model_id.clone(), None);
+    // Passive state updates above do not constitute a user choice.
+    assert_eq!(
+        store
+            .borrow_mut()
+            .project(&cwd)
+            .model_rank(model_id.0.as_ref())
+            .count,
+        0
+    );
+
+    // A pending switch is not a choice yet.
+    dispatch(
+        Action::SwitchModel {
+            model_id: other_id.clone(),
+            effort: None,
+        },
+        &mut app,
+    );
+    assert_eq!(
+        store
+            .borrow_mut()
+            .project(&cwd)
+            .model_rank(other_id.0.as_ref())
+            .count,
+        0
+    );
+
+    // The confirmed switch counts once.
+    dispatch(
+        Action::TaskComplete(TaskResult::SwitchModelComplete {
+            agent_id,
+            model_id: other_id.clone(),
+            effort: None,
+            result: Ok(()),
+            prev_model_id: None,
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        store
+            .borrow_mut()
+            .project(&cwd)
+            .model_rank(other_id.0.as_ref())
+            .count,
+        1
+    );
+
+    // A failed switch never counts.
+    dispatch(
+        Action::TaskComplete(TaskResult::SwitchModelComplete {
+            agent_id,
+            model_id: model_id.clone(),
+            effort: None,
+            result: Err(SwitchModelError::Other("nope".into())),
+            prev_model_id: None,
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        store
+            .borrow_mut()
+            .project(&cwd)
+            .model_rank(model_id.0.as_ref())
+            .count,
+        0
+    );
+
+    // Changing only the reasoning effort keeps the same model: no extra use.
+    dispatch(
+        Action::TaskComplete(TaskResult::SwitchModelComplete {
+            agent_id,
+            model_id: other_id.clone(),
+            effort: Some(xai_grok_shell::sampling::types::ReasoningEffort::High),
+            result: Ok(()),
+            prev_model_id: None,
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        store
+            .borrow_mut()
+            .project(&cwd)
+            .model_rank(other_id.0.as_ref())
+            .count,
+        1
+    );
+
+    // A switch dispatched before the session exists moves the model
+    // optimistically; the confirmation must still count the choice.
+    app.agents.get_mut(&agent_id).unwrap().session.session_id = None;
+    dispatch(
+        Action::SwitchModel {
+            model_id: model_id.clone(),
+            effort: None,
+        },
+        &mut app,
+    );
+    assert_eq!(
+        store
+            .borrow_mut()
+            .project(&cwd)
+            .model_rank(model_id.0.as_ref())
+            .count,
+        0
+    );
+    dispatch(
+        Action::TaskComplete(TaskResult::SwitchModelComplete {
+            agent_id,
+            model_id: model_id.clone(),
+            effort: None,
+            result: Ok(()),
+            prev_model_id: Some(other_id.clone()),
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        store
+            .borrow_mut()
+            .project(&cwd)
+            .model_rank(model_id.0.as_ref())
+            .count,
+        1
+    );
+}
+
 /// Re-dispatching the same model id is idempotent: no PersistSetting, no SwitchModel, no reasoning_effort reset.
 #[test]
 fn set_default_model_idempotent_when_already_current() {

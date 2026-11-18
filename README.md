@@ -100,6 +100,7 @@ Update channels are product-local and persisted in `~/.grok-pi/config.toml` unde
 |---|---|
 | Agent runtime | Pi models, providers, tools, extensions, skills, sessions, retries, and compaction |
 | Model management | `/pi-models` provides a native Provider → Model → Details editor with safe `models.json` transactions, backup/restore, live Pi reload, and typed activation; `/model` remains the fast switcher |
+| Project usage ranking | Slash commands, skills, and model choices remember usage separately for each project. More frequent choices rank first, with recency breaking ties; search relevance remains ahead of usage. |
 | Web config workbench | `/pi-config web` / `/pi-models web`: bilingual workbench with global search, model/provider duplication, staged settings, conflict feedback, and light/dark themes, served on a token-gated loopback port |
 | Terminal UI | Grok Pager input, slash completion, Markdown, tool cards, live file diffs (expand/Enter, running +/- counts), single-click card folding, dialogs, and scrollback; Bash arguments appear at execution start |
 | Mermaid images | Open Image renders a PNG with Ondine; Open SVG opens the vector version. Terminal ASCII diagrams remain independent. |

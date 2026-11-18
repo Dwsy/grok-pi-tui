@@ -1566,6 +1566,24 @@
     // ── Slash completion acceptance tests ──────────────────────────
 
     #[test]
+    fn accepting_completion_does_not_count_a_submission() {
+        let cwd = tempfile::tempdir().unwrap();
+        let mut pw = PromptWidget::new_with_cwd(cwd.path());
+        let store = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::slash::mru::SlashMru::new_in_memory(),
+        ));
+        pw.adopt_slash_mru(store.clone());
+        let models = crate::acp::model_state::ModelState::default();
+        pw.textarea.insert_str("/mod");
+        pw.refresh_slash(&models);
+        assert!(pw.accept_slash_completion(&models));
+        assert_eq!(store.borrow_mut().project(cwd.path()).command_rank("model").count, 0);
+        // The submission boundary canonicalizes aliases and records exactly once.
+        pw.slash_controller.record_command_use("m", "m");
+        assert_eq!(store.borrow_mut().project(cwd.path()).command_rank("model").count, 1);
+    }
+
+    #[test]
     fn accept_completion_inserts_alias_for_alias() {
         let mut pw = PromptWidget::new();
         let models = crate::acp::model_state::ModelState::default();

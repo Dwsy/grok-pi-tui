@@ -276,6 +276,20 @@ pub trait SlashCommand: Send + Sync {
         None
     }
 
+    /// Generate argument suggestions ordered by this project's usage counters.
+    ///
+    /// Only commands whose candidates carry a usage identity (today: `/model`)
+    /// override this; every other command keeps its static order.
+    fn suggest_args_with_usage(
+        &self,
+        ctx: &AppCtx,
+        args_query: &str,
+        usage: &crate::slash::usage::ProjectUsage,
+    ) -> Option<Vec<ArgItem>> {
+        let _ = usage;
+        self.suggest_args(ctx, args_query)
+    }
+
     /// Whether this command is currently visible / executable.
     /// Default is `true` (every command is visible).
     /// Override to gate a command on session state.

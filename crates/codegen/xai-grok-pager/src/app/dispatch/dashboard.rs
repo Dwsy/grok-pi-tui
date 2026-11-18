@@ -145,6 +145,7 @@ fn configure_dashboard_state(app: &mut AppView) {
         d.location_picker = None;
         d.usage_modal = None;
         d.cwd = cwd.clone();
+        d.dispatch.slash_controller.set_cwd(&cwd);
         d.cwd_has_git_ancestor = cwd_has_git_ancestor;
         d.dispatch_worktree = false;
         d.worktree_dialog = None;
@@ -1075,6 +1076,7 @@ pub(super) fn dispatch_dashboard_change_location(app: &mut AppView, input: Strin
         // Keep the dashboard's cwd and git-repo snapshot in sync with the new cwd so the header tracks it immediately
         // The process cwd changes later, via `Effect::SetWorkingDir`
         d.cwd = path.clone();
+        d.dispatch.slash_controller.set_cwd(&path);
         d.cwd_has_git_ancestor = has_git;
         // Carry the picker's worktree toggle onto the dashboard so the next dispatch honors it after the modal closes, but only in a git repo
         // Worktrees require a repo, so navigating to a non-git directory forces the mode off; the dashboard is never in worktree mode outside a repo
@@ -1674,6 +1676,7 @@ fn stage_dashboard_model(
         .map(|info| info.name.clone())
         .unwrap_or_else(|| model_id.0.to_string());
     if let Some(d) = app.dashboard.as_mut() {
+        d.dispatch.slash_controller.record_model_use(&model_id);
         d.dispatch.set_text("");
         d.error_toast = None;
         // Mirror the staged choice into the dashboard catalog snapshot so `/model` marks this model `(current)` and its effort `(active)`

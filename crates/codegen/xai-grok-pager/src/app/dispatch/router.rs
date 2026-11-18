@@ -1045,6 +1045,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             let Some((model_id, effort)) = agent.session.models.next_model_selection() else {
                 return vec![];
             };
+            // Usage is counted once the switch succeeds (see `handle_switch_model_complete`).
             let Some(session_id) = agent.session.session_id.clone() else {
                 agent.session.deferred_model_switch =
                     Some(crate::app::agent::DeferredModelSwitch {
@@ -1111,6 +1112,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             let Some(agent) = app.agents.get_mut(&id) else {
                 return vec![];
             };
+            // Usage is counted once the switch succeeds (see `handle_switch_model_complete`).
             let Some(session_id) = agent.session.session_id.clone() else {
                 let prev_model = agent.session.models.current.clone();
                 let prev_effort = agent.session.models.reasoning_effort;

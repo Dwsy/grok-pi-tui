@@ -76,7 +76,8 @@ In an active session, accepted `@file` chips and slash skill rows open the nativ
 
 | Feature | Status | Notes |
 |---|---|---|
-| Provider/model catalog | Native+Adapted | Pi owns the multi-provider registry, credentials, `models.json` local/custom endpoints and extension `registerProvider`; `get_available_models` → Grok native model selector, bare `/model` opens it with the active model pinned to top. The default-on Pi auth bridge provides `/login`/`/logout` through Remote TUI when enabled. |
+| Provider/model catalog | Native+Adapted | Pi owns the multi-provider registry, credentials, `models.json` local/custom endpoints and extension `registerProvider`; `get_available_models` → Grok native model selector. Bare `/model` and inline completion use the same project usage order while keeping the current-model marker. The default-on Pi auth bridge provides `/login`/`/logout` through Remote TUI when enabled. |
+| Project usage ranking | Native | Command/skill submissions and model choices have separate persisted usage statistics for each project. Frequency descends, with last-use time breaking ties; slash menus retain their command/skill groups and curated tags, and search relevance/exact matches precede usage. Accepting completion alone does not increment command counts; passive catalog/history reloads do not increment model counts. |
 | Thinking effort | Adapted | Pi levels → Grok effort selector; xhigh/max normalized for capability |
 | New session | Adapted | Grok `/new` → Pi `new_session` |
 | Rename | Adapted | Grok `/rename` → Pi `set_session_name` |

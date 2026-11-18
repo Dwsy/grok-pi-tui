@@ -49,6 +49,16 @@ Design, root causes, and RSI log: [issue](issues/adapter/20261118-proactive-plan
   and the upstream `registered_features_are_documented` test referenced
   operator tables this fork does not ship.
 
+## 2026-11-16 Project-scoped usage ranking for slash commands and models
+
+- PASS (static): `rustfmt --edition 2024 --check` parses every changed Rust file without syntax errors; the new file and the changed blocks follow the project style.
+- PASS (static): `verify_native_grok.py` shows no newly failing check compared with the pre-change report (`verification-logs/usage-sort-native-before-mwio9h45xpt0yxdg4jb.json` vs `usage-sort-native-after-mwio9h45xpt0yxdg4jb.json`); the eight remaining failures are identical to the pre-existing baseline. The seam declaration check passes with 93 declared seams after the `session/fork.rs` declaration was mirrored into the verifier.
+- PASS (review): two independent read-only reviews (storage concurrency, borrow and counting boundaries) raised nine issues — including one compile-blocking binding error and one inconsistent model ordering path. All nine are fixed and re-checked. Usage is counted on real command submissions and on confirmed model switches only; accepting a completion, refreshing the catalog, replaying history, an effort-only change, and failed or rolled-back switches do not add usage.
+- NOT RUN: `cargo check`, `cargo test`, `./build.sh` and the native TUI manual acceptance. The repository rules require an explicit user request before any Cargo command, and none was given for this change. The new unit tests (project isolation, frequency-then-recency ordering, concurrent merge, legacy-file compatibility, cross-terminal refresh, completion-versus-submission counting, confirmed-switch counting) are therefore unexecuted and still need a Cargo run.
+- Storage note: counters live in `$GROK_HOME/selector-usage/<project hash>.json`; nothing is written into the user's repository.
+
+Design, scope and local change record: [issue](issues/pager/20261116-按项目统计模型与斜杠命令使用频率并排序.md).
+
 ## 2026-11-15 standalone macOS ARM64-only builds
 
 - Standalone beta default matrix, release-cache warm and independent compile lab now target ARM64 only. Full stable matrix remains unchanged. YAML, matrix resolution and diff checks are required before delivery; no local Cargo is run.

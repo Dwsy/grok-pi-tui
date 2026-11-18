@@ -158,13 +158,24 @@ fn open_command_arg_picker(
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
-    let Some(cmd) = agent.prompt.slash_controller.registry().get(command) else {
+    if agent
+        .prompt
+        .slash_controller
+        .registry()
+        .get(command)
+        .is_none()
+    {
         return vec![];
-    };
-    let ctx = agent.prompt.slash_controller.app_ctx(&agent.session.models);
-    let Some(mut items) = cmd.suggest_args(&ctx, "").filter(|items| !items.is_empty()) else {
+    }
+    // Same usage-aware candidates as the inline completion, so both rank alike.
+    let mut items =
+        agent
+            .prompt
+            .slash_controller
+            .suggest_command_args(command, "", &agent.session.models);
+    if items.is_empty() {
         return vec![];
-    };
+    }
     if matches!(
         selection,
         crate::views::modal::ArgPickerSelection::SetModelSlot(_)
