@@ -6,6 +6,8 @@ use anstyle::Style as AnsiStyle;
 use ratatui::text::{Line, Span};
 use syntect::highlighting::Style as SyntectStyle;
 
+use crate::pill::PillTone;
+
 /// A range of text with optional styling.
 #[derive(Debug, Clone)]
 pub struct Highlight {
@@ -73,6 +75,11 @@ pub struct CellSpan {
     /// Hyperlink (url, id) when this span is inside a `[label](url)` link or autolink inside a table cell.
     /// `None` for plain text.
     pub link: Option<(String, u32)>,
+    /// Tone of a `[[Word]]` status pill, or `None` for ordinary cell text.
+    ///
+    /// A cell is buffered as its own string, so a pill inside one is a span of its own rather than
+    /// a highlight over the source text (which is what the prose path draws).
+    pub pill: Option<PillTone>,
 }
 
 impl CellSpan {
@@ -91,6 +98,7 @@ impl CellSpan {
             code,
             strike,
             link,
+            pill: None,
         }
     }
 }
@@ -162,7 +170,31 @@ impl TableState {
     }
 
     /// Push text with current styling to the cell.
+    /// Append cell text, splitting every `[[Word]]` status pill into its own coloured span.
+    ///
+    /// Prose pills are highlights anchored to source byte offsets, and a buffered cell has none —
+    /// which is why the table path skips `scan_pills` entirely. A cell is its own string, so the
+    /// pill can be drawn here and is free to change length. Code spans keep their brackets,
+    /// matching prose.
     pub fn push_text(&mut self, text: &str) {
+        if self.cell_code || !text.contains("[[") {
+            self.push_plain_span(text);
+            return;
+        }
+        let mut cursor = 0;
+        for span in crate::pill::scan(text, 0..text.len()) {
+            if span.open.start > cursor {
+                self.push_plain_span(&text[cursor..span.open.start]);
+            }
+            self.push_pill_span(&text[span.label.clone()]);
+            cursor = span.close.end;
+        }
+        if cursor < text.len() {
+            self.push_plain_span(&text[cursor..]);
+        }
+    }
+
+    fn push_plain_span(&mut self, text: &str) {
         self.current_cell.spans.push(CellSpan::new(
             text.to_string(),
             self.cell_bold,
@@ -171,6 +203,26 @@ impl TableState {
             self.cell_strike,
             self.cell_link.clone(),
         ));
+    }
+
+    /// A pill's brackets are dropped in favour of its icon and canonical word.
+    ///
+    /// `[[Completed]]` draws as `✓ Done`, and the column width follows the drawn text.
+    fn push_pill_span(&mut self, label: &str) {
+        let read = crate::pill::split_label(label);
+        let text = match read.icon {
+            Some(icon) => format!("{icon} {}", read.word),
+            None => read.word,
+        };
+        self.current_cell.spans.push(CellSpan {
+            text,
+            bold: self.cell_bold,
+            italic: self.cell_italic,
+            code: false,
+            strike: self.cell_strike,
+            link: self.cell_link.clone(),
+            pill: Some(crate::pill::tone_of(label)),
+        });
     }
 }
 

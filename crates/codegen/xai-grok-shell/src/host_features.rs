@@ -255,6 +255,7 @@ pub const PI_GOAL: HostFeatureKey = HostFeatureKey::new("pi_goal");
 pub const PI_LOOP: HostFeatureKey = HostFeatureKey::new("pi_loop");
 pub const PI_ASK_USER_QUESTION: HostFeatureKey = HostFeatureKey::new("pi_ask_user_question");
 pub const PI_BTW: HostFeatureKey = HostFeatureKey::new("pi_btw");
+pub const PI_EMPHASIS: HostFeatureKey = HostFeatureKey::new("pi_emphasis");
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

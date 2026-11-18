@@ -310,6 +310,10 @@ pub struct UiConfig {
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
     pub pi_btw: bool,
+    /// Teach the agent to write `[[Done]]` status pills, which the Pager draws as coloured chips.
+    /// Default on; takes effect for new grok-pi sessions only.
+    #[serde(default = "default_true")]
+    pub pi_emphasis: bool,
     /// Show pi-cache-graph views (1/2/3/s/e) inside the Context modal.
     /// Default on for grok-pi; F2 can disable without restart.
     #[serde(default = "default_true")]
@@ -745,6 +749,7 @@ impl Default for UiConfig {
             pi_ask_user_question: false,
             pi_ask_user_question_notifications: true,
             pi_btw: false,
+            pi_emphasis: true,
             pi_cache_graph: true,
             pi_config_skill: true,
             pi_user_markdown: true,

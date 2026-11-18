@@ -64,6 +64,10 @@ impl StyleInto<ratatui::style::Style> for Style {
         if effects.contains(anstyle::Effects::HIDDEN) {
             modifiers |= Modifier::HIDDEN;
         }
+        // A solid chip is drawn by inverting the terminal's default foreground and background.
+        if effects.contains(anstyle::Effects::INVERT) {
+            modifiers |= Modifier::REVERSED;
+        }
 
         style.add_modifier(modifiers)
     }
@@ -643,6 +647,7 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                     }
                     if self.table_state.is_none() {
                         self.scan_inline_html_entities(&range);
+                        self.scan_pills(&range);
                     }
                 }
             }
@@ -1392,6 +1397,38 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         }
     }
 
+    /// Record `[[Word]]` status pills found in a prose `Event::Text` source range.
+    ///
+    /// The brackets become two spaces and the label is coloured by its word, so the draw is a chip
+    /// with no syntax showing. Both edits keep their byte ranges in place, which is what leaves
+    /// `source_map` and the streaming checkpoint valid — see `crate::pill` for why the brackets are
+    /// blanked instead of removed.
+    ///
+    /// Code spans and fenced blocks never reach here, so a pill inside code stays literal.
+    /// Panic-safety: `crate::pill::scan` returns ranges derived from `self.text`.
+    fn scan_pills(&mut self, range: &Range<usize>) {
+        let spans = crate::pill::scan(self.text, range.clone());
+        for span in spans {
+            let label = &self.text[span.label.clone()];
+            let tone = crate::pill::tone_of(label);
+            let style = self.ms.pill_style(tone);
+            // The brackets are blanked and carry the chip's own style, so they read as the chip's
+            // shoulders rather than as a gap between the word and the text around it.
+            self.buffers
+                .transforms
+                .push(crate::pill::blank_syntax(&span.open));
+            self.push_highlight(Some(style), &span.open);
+            if let Some(canonical) = crate::pill::canonicalize(label, &span.label) {
+                self.buffers.transforms.push(canonical);
+            }
+            self.push_highlight(Some(style), &span.label);
+            self.buffers
+                .transforms
+                .push(crate::pill::blank_syntax(&span.close));
+            self.push_highlight(Some(style), &span.close);
+        }
+    }
+
     /// Scan a prose `Event::Text` source range for HTML character entity references (`&lt;`, `&gt;`, `&amp;`, numeric, …).
     /// Code spans and fenced blocks never reach here, so entities inside code stay literal.
     /// Panic-safety: pulldown-cmark guarantees `range` is a valid sub-slice of `self.text`.
@@ -1963,6 +2000,11 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                             }
                             if cell_span.strike {
                                 style = style.crossed_out();
+                            }
+                            if let Some(tone) = cell_span.pill {
+                                // Patch rather than replace: the tone owns the colour, and the cell
+                                // keeps whatever emphasis it was written with.
+                                style = style.patch(self.ms.pill_style(tone).style_into());
                             }
                             if let Some((url, id)) = &cell_span.link {
                                 // Apply link styling additively (preserves bold/italic if combined)
