@@ -2861,6 +2861,9 @@
     "crates/codegen/xai-grok-mermaid/assets/RobotoMono-OFL.txt",
     "docs/issues/pager/20261109-Ondine Mermaid 图片与 SVG.md",
     "docs/issues/adapter/20261118-proactive-plan-mode-orchestrator.md",
-    "extensions/pi-grok-plan-mode/index.test.mjs"
+    "extensions/pi-grok-plan-mode/index.test.mjs",
+    "docs/issues/subagents/20261118-subagent-fork-context-inheritance.md",
+    "extensions/pi-grok-subagents/fork.ts",
+    "extensions/pi-grok-subagents/fork.test.ts"
   ]
 }

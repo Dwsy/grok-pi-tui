@@ -2,7 +2,8 @@
 
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
-import { SessionManager, type AgentSession, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type AgentSession, type ExtensionCommandContext, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { FORK_BRANCH_ANCHOR_TYPE, type ForkResourceProfile } from "./fork.ts";
 import { BRIDGE_TYPE, SHORT_SUBAGENT_ID_LENGTH, textFromContent, type CapabilityMode } from "./shared.ts";
 
 export const SUBAGENT_STATE_SUFFIX = ".subagents.jsonl";
@@ -51,6 +52,8 @@ export type PersistedRecord = {
   parentAgentPath?: string;
   /** Team preset/name when the V2 agent belongs to one. */
   team?: string;
+  /** True when the child session was forked from its initiating parent context. */
+  forked?: boolean;
   lastError?: string;
 };
 
@@ -87,6 +90,10 @@ export type SubagentRecord = {
   parentAgentPath?: string;
   /** Team preset/name when the V2 agent belongs to one. */
   team?: string;
+  /** True when the child session was forked from its initiating parent context. */
+  forked?: boolean;
+  /** Live captured parent-resource profile used if this child later initiates a nested fork. */
+  forkProfile?: ForkResourceProfile;
   finished: boolean;
   /** Terminal status set by finish(): "completed" | "failed" | "cancelled". */
   terminalStatus: "completed" | "failed" | "cancelled" | null;
@@ -201,6 +208,7 @@ export function persistedRecord(value: unknown): PersistedRecord | undefined {
     (candidate.agentPath !== undefined && typeof candidate.agentPath !== "string") ||
     (candidate.parentAgentPath !== undefined && typeof candidate.parentAgentPath !== "string") ||
     (candidate.team !== undefined && typeof candidate.team !== "string") ||
+    (candidate.forked !== undefined && typeof candidate.forked !== "boolean") ||
     (candidate.thinkingLevel !== undefined && typeof candidate.thinkingLevel !== "string") ||
     (candidate.lastError !== undefined && typeof candidate.lastError !== "string")
   ) {
@@ -259,15 +267,34 @@ export function persistedRunBranch(snapshot: PersistedRecord): readonly unknown[
   if (!existsSync(snapshot.childSessionFile)) {
     throw new Error(`child session file does not exist: ${snapshot.childSessionFile}`);
   }
-  const branch = SessionManager.open(snapshot.childSessionFile).getBranch(snapshot.endLeafId ?? undefined);
-  if (snapshot.startLeafId === null) return branch;
-  const boundary = branch.findIndex((entry) =>
-    typeof entry === "object" && entry !== null && (entry as { id?: unknown }).id === snapshot.startLeafId
-  );
-  if (boundary < 0) {
+  const sm = SessionManager.open(snapshot.childSessionFile);
+  if (snapshot.startLeafId === null) {
+    return sm.getBranch(snapshot.endLeafId ?? undefined);
+  }
+  if (snapshot.endLeafId) {
+    const branch = sm.getBranch(snapshot.endLeafId);
+    const boundary = branch.findIndex((entry) => entry.id === snapshot.startLeafId);
+    if (boundary < 0) {
+      throw new Error(`child transcript start boundary is unavailable: ${snapshot.startLeafId}`);
+    }
+    return branch.slice(boundary + 1);
+  }
+  // When endLeafId is null (live running child or crash before settlement) in a
+  // shared multi-branch JSONL, walk the linear branch descended from startLeafId
+  // while skipping nested FORK_BRANCH_ANCHOR_TYPE subtrees and sibling branches.
+  const entries = sm.getEntries();
+  if (!entries.some((entry) => entry.id === snapshot.startLeafId)) {
     throw new Error(`child transcript start boundary is unavailable: ${snapshot.startLeafId}`);
   }
-  return branch.slice(boundary + 1);
+  const branchEntries: SessionEntry[] = [];
+  let headId: string = snapshot.startLeafId;
+  for (const entry of entries) {
+    if (entry.parentId !== headId) continue;
+    if (entry.type === "custom" && entry.customType === FORK_BRANCH_ANCHOR_TYPE) continue;
+    branchEntries.push(entry);
+    headId = entry.id;
+  }
+  return branchEntries;
 }
 
 /** Shortest unique prefix of `id` among `candidateIds` (at least SHORT_SUBAGENT_ID_LENGTH). */
@@ -301,7 +328,7 @@ function formatPersistedSubagentHistory(
   const shortId = shortSubagentIdFor(snapshot.id, snapshots.map((candidate) => candidate.id));
   const lines = [
     `# Subagent ${shortId}: ${snapshot.description}`,
-    `Status: ${persistedStatusLabel(records, snapshot)} · ${snapshot.type} · ${snapshot.turnCount} turns · ${snapshot.toolCallCount} tools`,
+    `Status: ${persistedStatusLabel(records, snapshot)} · ${snapshot.type}${snapshot.forked ? " · forked" : ""} · ${snapshot.turnCount} turns · ${snapshot.toolCallCount} tools`,
     `UI run: ${snapshot.childSessionId}`,
     `Pi child session: ${snapshot.agentSessionId}`,
     ...(snapshot.lastError ? [`Error: ${snapshot.lastError}`] : []),
@@ -432,6 +459,7 @@ export function persist(record: SubagentRecord, status: PersistedRecord["status"
     agentPath: record.agentPath,
     parentAgentPath: record.parentAgentPath,
     team: record.team,
+    ...(record.forked ? { forked: true } : {}),
     lastError: record.lastError,
   };
   appendPersistedRecord(record.stateFile, snapshot);

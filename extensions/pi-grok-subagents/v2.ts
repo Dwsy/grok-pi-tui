@@ -86,6 +86,7 @@ type SpawnAgentArgs = {
   max_turns?: number;
   thinking_level?: string;
   capability_mode?: string;
+  fork?: boolean;
 };
 
 function pathSegment(value: string): string {
@@ -306,6 +307,7 @@ export class TeamCoordinator {
       "Use team_send_message for facts, corrections, or wrap-up instructions a running peer needs now. team_followup_task assigns the NEXT task after its current work; it does not interrupt that work. Use team_wait({teams}) only while a watched agent is genuinely active; it returns on the first matching message/event. Use team_list to inspect the tree, and team_interrupt to stop an agent.",
       "A message is worth sending only when the recipient cannot get the fact themselves or must act on it. Do not forward progress. Consecutive team_send_message calls to one agent merge into a single steer, so batch facts in one turn.",
       "Before you end a turn, call team_report: ready (the requested result is deliverable), waiting (your own children are pending and no local work remains), blocked (you need one decision; question is mandatory), failed (the work cannot be completed), dropped (there is genuinely nothing for the parent to act on: already fixed, superseded, or out of scope). Your summary replaces your final text in what the parent receives. Never report ready to hide unfinished work.",
+      "If a Re-plan if condition in your task triggers or write boundaries conflict, do not improvise across files; stop and call team_report(state=\"blocked\", question=...) immediately.",
       "When your own child results are still pending and no independent work remains, report waiting and END THIS TURN to release the shared execution slot. Reporting alone does not release it. A nested FINAL_ANSWER resumes this same child session; do not park on team_wait for your queued descendants.",
       "When no other agent is active, finish your turn instead of waiting; you become IDLE and team_followup_task can reactivate this same child session later.",
       "Use absolute /root/... paths when messaging siblings.",
@@ -509,12 +511,14 @@ export class TeamCoordinator {
           max_turns: args.max_turns,
           thinking_level: args.thinking_level,
           capability_mode: args.capability_mode,
+          fork: args.fork,
         },
         signal,
         ctx,
         {
           customTools,
           parentToolCallId: options.parentToolCallId,
+          ...(parentRecord ? { parentRecord } : {}),
           systemPromptSuffix: this.usageHint(path, senderPath, options.systemPromptExtra),
           teamIdentity: {
             agentPath: path,
@@ -643,7 +647,7 @@ export class TeamCoordinator {
         "Concurrency: start 1-3 children by default, matching the number of genuinely independent workflows. " +
         "Do not split one investigation or one execution chain to manufacture parallelism. " +
         "Reuse an existing agent with team_followup_task instead of spawning a near-duplicate.",
-      promptSnippet: "Spawn a V2 child for one clearly bounded, independent task; the child sees none of this conversation.",
+      promptSnippet: "Spawn a V2 child for one clearly bounded, independent task; set fork=true only when it needs your current conversation context.",
       ...(senderPath === ROOT_PATH
         ? {
             promptGuidelines: [
@@ -657,15 +661,16 @@ export class TeamCoordinator {
         task_name: Type.String({ description: "Lowercase path segment for the child, unique among your existing children, e.g. researcher or verifier_2." }),
         message: Type.String({
           description:
-            "Self-contained task: the child cannot see the user's request, this conversation, or your earlier steps. " +
-            "State the goal, the files or write boundary it may touch, the acceptance evidence, Re-plan if triggers for reporting blocked, and exactly what it should return.",
+            "Bounded task for the child. When fork is omitted/false, make it self-contained (the child cannot see your conversation or earlier steps); " +
+            "when fork=true, focus on the delta assignment. Always state the goal, allowed write boundary, acceptance evidence, Re-plan if triggers for reporting blocked, and what to return.",
         }),
         agent_type: Type.Optional(Type.String({ description: "Agent definition name; /subagents lists the configured ones. Defaults to general-purpose. An unknown or disabled name fails the spawn instead of falling back." })),
         description: Type.Optional(Type.String({ description: "Short 3-5 word label shown in the team tree and subagent UI. Defaults to task_name." })),
-        model: Type.Optional(Type.String({ description: "Optional model the selected definition allows. Omit to inherit Pi settings; never guess a model name." })),
+        fork: Type.Optional(Type.Boolean({ description: "When true, fork from your current session context (root or child): inherits your conversation branch, skills, AGENTS.md context, system prompt sections, and active plugins up to this call." })),
+        model: Type.Optional(Type.String({ description: "Optional model the selected definition allows. Omit to inherit Pi settings (or parent model when fork=true); never guess a model name." })),
         max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Optional soft turn cap; external agent definition takes precedence." })),
-        thinking_level: Type.Optional(Type.String({ description: "Optional thinking level: off, minimal, low, medium, high, xhigh, or max. Clamped to what the model supports; omitted inherits Pi settings." })),
-        capability_mode: Type.Optional(Type.String({ description: "Tool access for the child: read-only or all (legacy execute/read-write map to all). Defaults to the agent definition, then all." })),
+        thinking_level: Type.Optional(Type.String({ description: "Optional thinking level: off, minimal, low, medium, high, xhigh, or max. Clamped to what the model supports; omitted inherits Pi settings (or parent thinking level when fork=true)." })),
+        capability_mode: Type.Optional(Type.String({ description: "Tool access for the child: read-only or all (legacy execute/read-write map to all). Defaults to the agent definition (or read-only when forked from a read-only parent), then all." })),
       }),
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
         await this.flushBufferedMessages();
@@ -674,6 +679,7 @@ export class TeamCoordinator {
           agentPath: agent.path,
           parentPath: senderPath,
           subagentId: agent.record.id,
+          forked: params.fork === true,
         });
       },
     });
@@ -912,6 +918,7 @@ export class TeamCoordinator {
         team: Type.String({ description: "Team preset name as listed by /subagent-teams, e.g. research, implementation, or review." }),
         task: Type.String({ description: "Shared team objective substituted into member task templates as {{task}}." }),
         members: Type.Optional(Type.Array(Type.String(), { description: "Optional member subset to start. Omitted starts the full preset roster. Preset order is preserved." })),
+        fork: Type.Optional(Type.Boolean({ description: "When true, fork every selected member from /root's current session context (conversation branch, skills, AGENTS.md context, system prompt sections, and active plugins)." })),
         model: Type.Optional(Type.String({ description: "Optional model applied to every selected member, overriding each member's preset model. Must be enabled for the member's agent definition." })),
         thinking_level: Type.Optional(Type.String({ description: "Optional thinking level applied to every selected member, overriding preset thinking levels. Clamped per model." })),
         max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Optional soft turn cap applied to every selected member; 0 means unlimited. Agent definitions still take precedence." })),
@@ -955,6 +962,7 @@ export class TeamCoordinator {
                 max_turns: params.max_turns ?? member.maxTurns,
                 thinking_level: params.thinking_level ?? member.thinkingLevel,
                 capability_mode: params.capability_mode,
+                fork: params.fork,
               },
               // The real tool-call id is recorded on the child run for history.
               // Parent task metadata is omitted below because one call starts

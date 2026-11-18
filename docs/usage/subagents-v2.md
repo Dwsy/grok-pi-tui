@@ -101,8 +101,8 @@ The root is shown as `ROOT`.
 
 | Tool | Semantics |
 |---|---|
-| `spawn_team_agent` | Creates an asynchronous direct child with a stable `/root/...` path. Children receive the same V2 control-plane tools and may spawn nested children. Accepts `agent_type`, `description`, `model`, `max_turns`, `thinking_level`, and `capability_mode`. |
-| `spawn_team` | Loads one external team preset and creates the selected roster before any member starts. A failed member or a cancel that arrives before start rolls back every member already created. Accepts `members`, `model`, `thinking_level`, `max_turns`, `capability_mode`, `instructions`, and `timeout_ms` on top of `team` and `task`. |
+| `spawn_team_agent` | Creates an asynchronous direct child with a stable `/root/...` path. Children receive the same V2 control-plane tools and may spawn nested children. Accepts `agent_type`, `description`, `fork`, `model`, `max_turns`, `thinking_level`, and `capability_mode`. |
+| `spawn_team` | Loads one external team preset and creates the selected roster before any member starts. A failed member or a cancel that arrives before start rolls back every member already created. Accepts `members`, `fork`, `model`, `thinking_level`, `max_turns`, `capability_mode`, `instructions`, and `timeout_ms` on top of `team` and `task`. |
 | `team_send_message` | Buffers a `MESSAGE` without starting an idle recipient turn. A 25 ms merge window batches messages from one sender to one target (numbered, repeated text dropped), then flushes automatically; team actions and root turn end may flush earlier. Running recipients receive an actual steer at their next safe loop boundary. Use it for facts, corrections, or wrap-up instructions needed during current work. |
 | `team_followup_task` | Sends a `NEW_TASK` after the recipient's current work; it is not an urgent correction channel. Concurrency-queued recipients are promoted to the front of the shared queue before their pending run executes, so an explicit parent request does not wait behind unrelated launches. `IDLE` and `WAITING_DECISION` recipients are reactivated in the same child session with a fresh V1 run ID. |
 | `team_wait` | Root and children can wait for the first coordinator activity without polling. Optional `teams` selects one or more preset names to watch in parallel; omitting it watches all agents, and nested children count toward their enclosing preset. The default timeout is 120 s (1–600 s). A matching message, spawn, completion, or interruption wakes the call once; unknown preset names are rejected. A child returns immediately when no matching agent is active so it releases its execution slot; root keeps waiting by time because `team_followup_task` can reactivate a watched team. Each call returns the current team tree. |
@@ -118,6 +118,7 @@ The root is shown as `ROOT`.
 | `members` | Optional subset of preset member names. Preset order is preserved, so a synthesizer defined last still starts after its producers. An unknown name fails before any child is created. |
 | `model`, `thinking_level`, `max_turns` | Applied to every selected member, overriding that member's preset value. Omitting the parameter keeps the member's own preset value. |
 | `capability_mode` | Tool access for every selected member: `read-only` or `all`. Both include Bash; `read-only` omits built-in `edit`/`write` and injects the read-only contract. Legacy `execute`/`read-write` map to `all`. Defaults to each agent definition, then `all`. |
+| `fork` | When `true`, forks every selected member from `/root`'s current conversation branch, skills, `AGENTS.md` context, system prompt sections (such as `reply_style`), active tools, and non-host-singleton extensions. |
 | `instructions` | Extra team-wide instruction appended to the preset `instructions` and shared through every member's system prompt. |
 | `timeout_ms` | `0` or omitted returns immediately and delivers final answers to `/root` asynchronously. A positive value waits up to 600 s and returns each member's status and output in the tool result. |
 
@@ -320,6 +321,17 @@ A child session runs with `systemPromptOverride`, so Pi renders the **preamble o
 - The default rules ("Be concise", "Show file paths clearly") are absent in a child, which is why `usageHint` states the evidence rule explicitly.
 
 Keep child-facing rules in `usageHint` or a tool `description`. Adding a `promptGuideline` will not change child behaviour.
+
+### Parent-context `fork` mode (`fork: true`, root & child)
+
+Both V1 (`spawn_subagent`) and V2 (`spawn_team_agent`, `spawn_team`) accept `fork?: boolean` (default `false`):
+
+- **Default (`fork: false`)**: clean isolated child session; put all required context in `prompt` / `message`. V1 and V2 children receive their respective control tools so nested spawns/forks work from any depth when explicitly needed.
+- **Forked (`fork: true`)**: creates an isolated child branch directly inside the initiating parent's **same `.jsonl` file and live `SessionManager` tree** (`SharedBranchSessionManager` with an isolated per-branch `cursorLeafId`):
+  - Anchors under the parent's fork-point entry (`pi-grok-fork-branch/v1`), closes any in-flight parallel `toolCall`s with synthetic `toolResult`s before `startLeafId`, uses branch-local `appendContextEdit(..., null)` on nested forks to hide stale ancestor fork envelopes without mutating the parent branch, and labels the child's first user turn (`fork: <description>` / `fork /root/...: <description>`) so native `/tree` (`ctx.navigateTree`) displays all forked child/grandchild branches and lets you jump directly into any of them while UI history/replay (`persistedRunBranch`) still scopes cleanly to that run's own turns.
+  - Preserves identical resolved skills, `AGENTS.md`/`CLAUDE.md` context files, prompt templates, `SystemMessage` sections (e.g., `reply_style`), `promptGuidelines`, active tools, and non-host-singleton extensions/plugins (user, project, CLI, `@ff-labs/pi-fff`, `builtin:codemode`, while filtering internal `pi-grok-*` host bridges).
+  - Delivers the child's role / V2 `usageHint` / read-only contract in a non-displayed `pi-grok-fork-context/v1` message on turn 1 rather than overwriting structured system sections.
+  - Explicit `model`, `thinking_level`, `max_turns`, and `capability_mode: "read-only"` overrides remain authoritative (`read-only` strips `edit`/`write` and still satisfies Plan Mode's `tool_call` gate).
 
 ## Message and persistence boundaries
 
