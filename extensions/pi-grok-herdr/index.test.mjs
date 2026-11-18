@@ -183,7 +183,7 @@ test("reports ordered session, working, blocked, and settled states", { concurre
   }
 });
 
-test("serializes agent_start session and state, including session replacement", { concurrency: false }, async (t) => {
+test("withholds session reference until the session file is materialized, then serializes reports", { concurrency: false }, async (t) => {
   if (process.platform === "win32") t.skip("Unix socket smoke test");
 
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "pi-grok-herdr-order-"));
@@ -208,44 +208,49 @@ test("serializes agent_start session and state, including session replacement", 
     const { default: install } = await importFresh(tempDir, "order");
     const h = harness();
     install(h.pi);
-    let id = "session-a";
+    // session_start fires before the file exists: getSessionFile() undefined,
+    // but getSessionId() returns an ID. The bridge must NOT report that ID.
+    let sessionFile;
     let idle = true;
     const ctx = {
       hasUI: true,
       isIdle: () => idle,
       sessionManager: {
-        getSessionFile: () => undefined,
-        getSessionId: () => id,
+        getSessionFile: () => sessionFile,
+        getSessionId: () => "must-not-be-reported",
       },
     };
 
-    // Fire callbacks synchronously to expose any session/state send race.
     h.lifecycle.get("session_start")({ reason: "startup" }, ctx);
+    await waitFor(() => requests.length >= 1, "initial idle state dispatched");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.deepEqual(requests.map((r) => r.method), ["pane.report_agent"], "no session report before the file exists");
+    assert.equal(requests[0].params.state, "idle");
+    assert.equal(requests[0].params.agent_session_id, undefined, "must not lock Herdr to an ID");
+    assert.equal(requests[0].params.agent_session_path, undefined);
+
+    // File is now materialized. agent_start must report the path, never the ID.
+    sessionFile = "/tmp/session-a.jsonl";
     idle = false;
     h.lifecycle.get("agent_start")({}, ctx);
-    await waitFor(() => requests.length === 1, "first session report dispatched");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(requests.length, 1, "state must wait for session acknowledgment");
-    await waitFor(() => requests.length >= 4, "initial state and agent_start reports");
-    assert.deepEqual(requests.slice(0, 4).map((r) => r.method), [
-      "pane.report_agent_session", "pane.report_agent",
+    await waitFor(() => requests.length >= 3, "path session and working state reports");
+    assert.deepEqual(requests.slice(1, 3).map((r) => r.method), [
       "pane.report_agent_session", "pane.report_agent",
     ]);
-    assert.deepEqual(requests.slice(0, 4).map((r) => r.params.agent_session_id), [
-      "session-a", "session-a", "session-a", "session-a",
-    ]);
+    assert.equal(requests[1].params.agent_session_path, "/tmp/session-a.jsonl");
+    assert.equal(requests[1].params.agent_session_id, undefined, "ID must never be sent");
+    assert.equal(requests[2].params.state, "working");
 
-    id = "session-b";
+    // A resume with a new path replaces the session reference cleanly.
+    sessionFile = "/tmp/session-b.jsonl";
     idle = true;
     h.lifecycle.get("session_start")({ reason: "resume" }, ctx);
-    await waitFor(() => requests.length >= 6, "replacement session and idle reports");
-    assert.deepEqual(requests.slice(4, 6).map((r) => r.method), [
+    await waitFor(() => requests.length >= 5, "replacement path session and idle reports");
+    assert.deepEqual(requests.slice(3, 5).map((r) => r.method), [
       "pane.report_agent_session", "pane.report_agent",
     ]);
-    assert.equal(requests[4].params.session_start_source, "resume");
-    assert.deepEqual(requests.slice(4, 6).map((r) => r.params.agent_session_id), [
-      "session-b", "session-b",
-    ]);
+    assert.equal(requests[3].params.session_start_source, "resume");
+    assert.equal(requests[3].params.agent_session_path, "/tmp/session-b.jsonl");
     assert.ok(requests.every((r, i) => i === 0 || r.params.seq > requests[i - 1].params.seq));
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -294,7 +299,7 @@ test("rejects API errors instead of treating socket data as an acknowledgment", 
       hasUI: true,
       isIdle: () => true,
       sessionManager: {
-        getSessionFile: () => undefined,
+        getSessionFile: () => "/tmp/session-error.jsonl",
         getSessionId: () => "session-error",
       },
     });
