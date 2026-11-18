@@ -110,6 +110,7 @@ xai-grok-dashboard-store = { workspace = true }
 # (cpal is target-gated to non-Linux inside xai-grok-voice).
 xai-grok-voice = { path = "../xai-grok-voice", default-features = false, features = ["audio"] }
 xai-grok-login = { workspace = true }
+xai-grok-shared = { workspace = true }
 xai-grok-shell = { workspace = true }
 # The status-line contract: the config the user writes and the payload the
 # agent sends. A leaf crate rather than the agent's, so the client reads it

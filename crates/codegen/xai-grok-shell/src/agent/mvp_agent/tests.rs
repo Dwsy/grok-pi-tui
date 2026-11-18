@@ -697,6 +697,7 @@ fn resolve_agent_definition_defaults_to_grok_build() {
     }
 }
 /// When model_agent_type = Some("codex"), the codex agent is selected even though the default chain would return grok-build.
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 #[test]
 #[serial_test::serial]
 fn resolve_agent_definition_model_agent_type_overrides_default() {
@@ -1054,6 +1055,7 @@ fn harnesses_are_compatible_for_stock_family_pairs() {
         "grok-build-plan"
     ));
 }
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 #[test]
 fn harnesses_are_compatible_rejects_strict_mismatches() {
     assert!(harnesses_are_compatible("codex", "codex"));
@@ -1098,6 +1100,7 @@ fn agent_name_unchanged_without_harness_rebuild() {
 }
 /// End-to-end test: config through resolve, override, and finalize to tool_definitions.
 /// The hashline tools must appear in the actual tool definitions that would be sent to the model.
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 #[tokio::test]
 async fn file_toolset_override_e2e_to_finalized_toolset() {
     use crate::tools::{FileToolset, ShellToolsetConfig};

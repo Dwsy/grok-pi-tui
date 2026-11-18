@@ -14237,6 +14237,7 @@ dependencies = [
  "xai-grok-pager-render",
  "xai-grok-plugin-marketplace",
  "xai-grok-sandbox",
+ "xai-grok-shared",
  "xai-grok-shell",
  "xai-grok-status-line",
  "xai-grok-telemetry",
