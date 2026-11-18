@@ -87,6 +87,7 @@ pub(crate) fn git_head_dedup_key(
 }
 
 /// Convert to codebase graph `FileEvent` for incremental index updates.
+#[cfg(feature = "stock-codebase-graph")]
 fn fs_event_to_codebase_graph_event(
     paths: &[PathBuf],
     kind: FsEventKind,
@@ -149,8 +150,10 @@ fn fs_event_to_delta(
     }
 }
 
+#[cfg(feature = "stock-codebase-graph")]
 const GIT_DIFF_REBUILD_THRESHOLD: usize = 500;
 
+#[cfg(feature = "stock-codebase-graph")]
 fn parse_diff_name_status_line(
     line: &str,
     repo_root: &Path,
@@ -177,6 +180,7 @@ fn parse_diff_name_status_line(
 
 /// After a HEAD change, diff ORIG_HEAD..HEAD and send targeted events to the codebase graph.
 /// Falls back to a full rebuild when too many files changed.
+#[cfg(feature = "stock-codebase-graph")]
 async fn refresh_codebase_graph_after_head_change(
     idx: &xai_codebase_graph::IndexManagerHandle,
     repo_root: &Path,
@@ -266,9 +270,11 @@ pub(crate) struct FsWatchDeps {
     pub gateway: GatewaySender,
     pub session_id: String,
     pub cwd: PathBuf,
+    #[cfg_attr(not(feature = "stock-codebase-graph"), allow(dead_code))]
     pub index_root: PathBuf,
     pub hunk_tracker: HunkTrackerHandle,
     pub hunk_tracking_enabled: bool,
+    #[cfg_attr(not(feature = "stock-codebase-graph"), allow(dead_code))]
     pub codebase_indexes: Arc<parking_lot::Mutex<CodebaseIndexManager>>,
     pub client_fs_config: Option<ClientFsConfig>,
     pub persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
@@ -461,12 +467,14 @@ impl HunkTracking {
     }
 }
 
+#[cfg(feature = "stock-codebase-graph")]
 #[derive(Clone)]
 struct CodebaseIndex {
     indexes: Arc<parking_lot::Mutex<CodebaseIndexManager>>,
     root: PathBuf,
 }
 
+#[cfg(feature = "stock-codebase-graph")]
 impl CodebaseIndex {
     fn on_change(&self, paths: &[PathBuf], kind: FsEventKind) {
         if let Some(idx) = self.indexes.lock().get(&self.root) {
@@ -547,6 +555,7 @@ impl GitHead {
 pub(crate) struct FsWatchPlan {
     client_notify: Option<ClientNotify>,
     hunk: Option<HunkTracking>,
+    #[cfg(feature = "stock-codebase-graph")]
     index: Option<CodebaseIndex>,
     git_head: Option<GitHead>,
     fs_config: xai_fsnotify::FsConfig,
@@ -577,6 +586,7 @@ impl FsWatchPlan {
         });
 
         // The index handle is looked up per event so a later-created index still receives events
+        #[cfg(feature = "stock-codebase-graph")]
         let index = caps.code_nav.then(|| CodebaseIndex {
             indexes: deps.codebase_indexes,
             root: deps.index_root,
@@ -596,6 +606,7 @@ impl FsWatchPlan {
         Self {
             client_notify,
             hunk,
+            #[cfg(feature = "stock-codebase-graph")]
             index,
             git_head,
             fs_config,
@@ -609,6 +620,7 @@ impl FsWatchPlan {
         if let Some(h) = &self.hunk {
             h.on_change(paths, kind);
         }
+        #[cfg(feature = "stock-codebase-graph")]
         if let Some(i) = &self.index {
             i.on_change(paths, kind);
         }
@@ -618,6 +630,7 @@ impl FsWatchPlan {
     }
 
     async fn on_replayed_change(&self, paths: &[PathBuf], kind: FsEventKind) {
+        #[cfg(feature = "stock-codebase-graph")]
         if let Some(i) = &self.index {
             i.on_change(paths, kind);
         }
@@ -629,15 +642,18 @@ impl FsWatchPlan {
     /// A self-contained refresh (clones the handles it needs) so it runs on its own `spawn_local` without blocking the event loop's `recv`.
     fn refresh_future(
         &self,
+        #[cfg_attr(not(feature = "stock-codebase-graph"), allow(unused_variables))]
         rebuild_index: bool,
     ) -> impl std::future::Future<Output = ()> + 'static {
         let hunk = self.hunk.clone();
+        #[cfg(feature = "stock-codebase-graph")]
         let index = self.index.clone();
         let git_head = self.git_head.clone();
         async move {
             if let Some(h) = &hunk {
                 h.reconcile();
             }
+            #[cfg(feature = "stock-codebase-graph")]
             if rebuild_index && let Some(i) = &index {
                 i.rebuild_after_head_change().await;
             }
@@ -1057,6 +1073,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "stock-codebase-graph")]
     #[test]
     fn parse_diff_name_status() {
         use xai_codebase_graph::FileEventKind;

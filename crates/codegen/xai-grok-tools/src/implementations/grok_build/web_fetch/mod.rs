@@ -6,16 +6,23 @@
 //! Prefers `text/markdown` in the Accept header so doc sites that serve markdown
 //! directly bypass the HTML conversion entirely.
 
+#[cfg(feature = "stock-web-fetch")]
 mod artifact;
+#[cfg(feature = "stock-web-fetch")]
 mod cache;
+#[cfg(feature = "stock-web-fetch")]
 pub mod client;
 pub mod config;
 pub mod domain;
 pub mod error;
+#[cfg(feature = "stock-web-fetch")]
 mod http;
+#[cfg(feature = "stock-web-fetch")]
 pub(crate) mod overflow;
+#[cfg(feature = "stock-web-fetch")]
 mod ssrf;
 
+#[cfg(feature = "stock-web-fetch")]
 pub use client::WebFetchClient;
 pub use config::WebFetchParams;
 pub use domain::{DomainMatcher, domain_from_url};
@@ -47,6 +54,7 @@ impl WebFetchConfig {
 
 use crate::types::output::WebFetchOutput;
 use crate::types::requirements::{Expr, ToolRequirement};
+#[cfg(feature = "stock-web-fetch")]
 use crate::types::resources::SessionFolder;
 use crate::types::tool::{ToolKind, ToolNamespace};
 
@@ -163,32 +171,43 @@ impl xai_tool_runtime::Tool for WebFetchTool {
         ctx: xai_tool_runtime::ToolCallContext,
         input: WebFetchInput,
     ) -> Result<WebFetchOutput, xai_tool_runtime::ToolError> {
-        use crate::types::tool_metadata::shared_resources;
-        let resources = shared_resources(&ctx)?;
+        #[cfg(feature = "stock-web-fetch")]
+        {
+            use crate::types::tool_metadata::shared_resources;
+            let resources = shared_resources(&ctx)?;
 
-        let (client, session_folder, read_tool_name, execute_tool_name) = {
-            let res = resources.lock().await;
-            let client = res.require::<WebFetchClient>()?.clone();
-            let session_folder = res.get::<SessionFolder>().map(|folder| folder.0.clone());
-            let renderer = res.get::<crate::types::template_renderer::TemplateRenderer>();
-            let read_tool_name = renderer
-                .and_then(|renderer| renderer.tool_for_kind(ToolKind::Read))
-                .map(str::to_owned);
-            let execute_tool_name = renderer
-                .and_then(|renderer| renderer.tool_for_kind(ToolKind::Execute))
-                .map(str::to_owned);
-            (client, session_folder, read_tool_name, execute_tool_name)
-        };
+            let (client, session_folder, read_tool_name, execute_tool_name) = {
+                let res = resources.lock().await;
+                let client = res.require::<WebFetchClient>()?.clone();
+                let session_folder = res.get::<SessionFolder>().map(|folder| folder.0.clone());
+                let renderer = res.get::<crate::types::template_renderer::TemplateRenderer>();
+                let read_tool_name = renderer
+                    .and_then(|renderer| renderer.tool_for_kind(ToolKind::Read))
+                    .map(str::to_owned);
+                let execute_tool_name = renderer
+                    .and_then(|renderer| renderer.tool_for_kind(ToolKind::Execute))
+                    .map(str::to_owned);
+                (client, session_folder, read_tool_name, execute_tool_name)
+            };
 
-        let output = client
-            .fetch(
-                &input.url,
-                session_folder.as_deref(),
-                read_tool_name.as_deref(),
-                execute_tool_name.as_deref(),
-            )
-            .await?;
-        Ok(output)
+            let output = client
+                .fetch(
+                    &input.url,
+                    session_folder.as_deref(),
+                    read_tool_name.as_deref(),
+                    execute_tool_name.as_deref(),
+                )
+                .await?;
+            Ok(output)
+        }
+        #[cfg(not(feature = "stock-web-fetch"))]
+        {
+            let _ = (ctx, input);
+            Err(xai_tool_runtime::ToolError::custom(
+                "web_fetch",
+                "web_fetch is disabled in this build (stock-web-fetch feature off)",
+            ))
+        }
     }
 }
 
@@ -207,6 +226,25 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "stock-web-fetch"))]
+    #[tokio::test]
+    async fn errors_when_stock_web_fetch_disabled() {
+        let resources = crate::types::resources::Resources::new();
+        let tool = WebFetchTool;
+        let err = xai_tool_runtime::Tool::run(
+            &tool,
+            test_ctx_with_call_id(resources.into_shared(), "test-call"),
+            WebFetchInput {
+                url: "https://example.com".into(),
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("stock-web-fetch feature off"), "got: {err}");
+    }
+
+    #[cfg(feature = "stock-web-fetch")]
     #[tokio::test]
     async fn errors_when_client_not_in_resources() {
         let resources = crate::types::resources::Resources::new();

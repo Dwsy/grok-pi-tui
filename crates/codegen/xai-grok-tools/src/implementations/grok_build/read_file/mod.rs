@@ -73,8 +73,11 @@ static READ_FILE_CAPABILITIES: LazyLock<xai_tool_protocol::ToolCapabilities> =
         }),
         ..Default::default()
     });
+#[cfg(feature = "stock-pptx")]
 const MAX_PPTX_BYTES: usize = 50 * 1024 * 1024;
+#[cfg(feature = "stock-pptx")]
 const PPTX_PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(feature = "stock-pptx")]
 async fn handle_pptx(
     file_bytes: Vec<u8>,
     path: &std::path::Path,
@@ -89,8 +92,18 @@ async fn handle_pptx(
     )
     .await
 }
+#[cfg(not(feature = "stock-pptx"))]
+async fn handle_pptx(
+    _file_bytes: Vec<u8>,
+    _path: &std::path::Path,
+) -> Result<ReadFileOutput, xai_tool_runtime::ToolError> {
+    Ok(ReadFileOutput::FileReadError(
+        "Stock PPTX text extraction is not included in the Pi-only build".to_string(),
+    ))
+}
 /// Extract text from a PPTX file (zip + DrawingML text runs). Returns line-numbered text via the
 /// shared `raw_text_to_file_content` helper.
+#[cfg(feature = "stock-pptx")]
 fn extract_pptx_text(file_bytes: Vec<u8>) -> Result<ReadFileOutput, String> {
     let text = crate::implementations::read_file::pptx::extract_pptx_text_from_bytes(&file_bytes)
         .map_err(|e| format!("Failed to extract text from PPTX: {e}"))?;

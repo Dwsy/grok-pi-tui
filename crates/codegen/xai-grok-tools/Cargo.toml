@@ -26,7 +26,7 @@ xai-grok-version = { workspace = true }
 xai-interjection-core = { workspace = true }
 xai-message-delivery-core = { workspace = true }
 xai-token-estimation = { workspace = true }
-async-lsp = { workspace = true }
+async-lsp = { workspace = true, optional = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
@@ -41,13 +41,13 @@ pdf_oxide = { workspace = true, optional = true }
 # `workspace = true`: the workspace `zip` pin has default features on, which
 # drag aes/bzip2/lzma/zstd into the shipped pager binary. PPTX entries are
 # only ever stored or deflated.
-zip = { version = "3", default-features = false, features = ["deflate-flate2"] }
-quick-xml = { workspace = true }
+zip = { version = "3", default-features = false, features = ["deflate-flate2"], optional = true }
+quick-xml = { workspace = true, optional = true }
 indexmap = { workspace = true, features = ["serde"] }
 minijinja = { version = "2", features = ["custom_syntax"] }
 parking_lot = { workspace = true }
-htmd = { workspace = true }
-scraper = { workspace = true }
+htmd = { workspace = true, optional = true }
+scraper = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["rustls-tls", "json", "gzip", "brotli", "deflate"] }
 pulldown-cmark = { workspace = true }
 regex = { workspace = true }
@@ -133,4 +133,10 @@ default = ["serde"]
 serde = []
 # Stock Grok's read_file PDF renderer; the Pi agent owns its own read tool.
 stock-pdf = ["dep:pdf_oxide"]
+# Stock Grok's local LSP client; the Pi agent owns its own tools/LSP.
+stock-lsp = ["dep:async-lsp"]
+# Stock Grok's HTML web_fetch scraper/markdown converter; Pi owns web tools.
+stock-web-fetch = ["dep:scraper", "dep:htmd"]
+# Stock Grok's read_file PPTX extractor; the Pi agent owns its own read tool.
+stock-pptx = ["dep:zip", "dep:quick-xml"]
 dhat-heap = ["dep:dhat"]

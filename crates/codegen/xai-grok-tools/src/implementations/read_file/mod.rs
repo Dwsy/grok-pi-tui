@@ -3,6 +3,7 @@
 pub mod image;
 pub mod metadata;
 pub mod pdf;
+#[cfg(feature = "stock-pptx")]
 pub mod pptx;
 
 pub use metadata::{

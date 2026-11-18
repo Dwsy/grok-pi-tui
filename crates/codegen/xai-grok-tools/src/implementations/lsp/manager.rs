@@ -16,11 +16,7 @@ use crate::util::ProcessScope;
 #[cfg(test)]
 use super::format::{format_locations_labeled, format_symbols};
 
-pub struct DiagnosticsSummary {
-    pub text: String,
-    pub file_count: usize,
-    pub diagnostic_count: usize,
-}
+pub use super::types::DiagnosticsSummary;
 
 /// How many diagnostics one file may contribute to a summary. A file with forty errors is usually
 /// one mistake seen forty times, and the fortieth line teaches the reader nothing the first ten did

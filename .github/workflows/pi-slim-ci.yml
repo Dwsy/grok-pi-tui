@@ -96,13 +96,13 @@ jobs:
             --no-default-features --features release-dist,sandbox-enforce \
             --target aarch64-apple-darwin -e normal,build \
             > "$RUNNER_TEMP/pi-dependencies.txt"
-          if grep -E 'tikv-jemalloc-(sys|ctl)|tikv-jemallocator|cryptify v[0-9]|pdf_oxide|aws-sdk-s3|aws-config|aws-smithy-http-client|gcloud-storage|xai-grok-mcp v[0-9]|rmcp v[0-9]|xai-computer-hub-mcp-adapter v[0-9]' "$RUNNER_TEMP/pi-dependencies.txt"; then
-            echo "Unexpected stock-only allocator, PDF, cloud storage, or Grok MCP runtime in grok-pi" >&2
+          if grep -E 'tikv-jemalloc-(sys|ctl)|tikv-jemallocator|cryptify v[0-9]|pdf_oxide|async-lsp v[0-9]|lsp-types v[0-9]|scraper v[0-9]|htmd v[0-9]|[[:space:]]zip v[0-9]|xai-grok-diag-server v[0-9]|xai-grok-workspace-daemon v[0-9]|xai-codebase-graph v[0-9]|tree-sitter-(rust|typescript|python|go|javascript) v[0-9]|mimalloc v[0-9]|libmimalloc-sys v[0-9]|aws-sdk-s3|aws-config|aws-smithy-http-client|gcloud-storage|xai-grok-mcp v[0-9]|rmcp v[0-9]|xai-computer-hub-mcp-adapter v[0-9]' "$RUNNER_TEMP/pi-dependencies.txt"; then
+            echo "Unexpected stock-only allocator, PDF, PPTX zip, LSP, web-fetch scraper, diag/daemon, codebase graph, cloud storage, or Grok MCP runtime in grok-pi" >&2
             exit 1
           fi
-          echo "Verified: no stock jemalloc, cryptify, PDF, cloud SDK, or Grok MCP compile dependencies"
+          echo "Verified: no stock jemalloc, cryptify, PDF, PPTX zip, LSP, web-fetch scraper, diag/daemon, codebase graph, cloud SDK, or Grok MCP compile dependencies"
 
-      - name: Assert stock Grok still selects native MCP
+      - name: Assert stock Grok still selects native MCP, LSP, web_fetch, PPTX, diag, and codebase graph
         shell: bash
         run: |
           set -euo pipefail
@@ -112,8 +112,14 @@ jobs:
             > "$RUNNER_TEMP/stock-grok-dependencies.txt"
           grep -E 'xai-grok-mcp v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
           grep -E 'rmcp v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
+          grep -E 'async-lsp v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
+          grep -E 'scraper v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
+          grep -E 'htmd v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
+          grep -E '[[:space:]]zip v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
+          grep -E 'xai-grok-diag-server v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
+          grep -E 'xai-codebase-graph v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
 
-      - name: Check Workspace builds without stock MCP
+      - name: Check Workspace builds without stock MCP, diag, daemon, or codebase graph (and with stock defaults)
         shell: bash
         run: |
           set -euo pipefail
@@ -121,15 +127,17 @@ jobs:
             --no-default-features --features sandbox-enforce \
             --target aarch64-apple-darwin -e normal,build \
             > "$RUNNER_TEMP/workspace-no-stock-mcp.txt"
-          if grep -E 'xai-grok-mcp v[0-9]|rmcp v[0-9]|xai-computer-hub-mcp-adapter v[0-9]' "$RUNNER_TEMP/workspace-no-stock-mcp.txt"; then
-            echo "Workspace still pulls the Grok MCP runtime when stock-mcp is off" >&2
+          if grep -E 'xai-grok-mcp v[0-9]|rmcp v[0-9]|xai-computer-hub-mcp-adapter v[0-9]|xai-grok-diag-server v[0-9]|xai-grok-workspace-daemon v[0-9]|xai-codebase-graph v[0-9]' "$RUNNER_TEMP/workspace-no-stock-mcp.txt"; then
+            echo "Workspace still pulls stock MCP, diag, daemon, or codebase-graph when disabled" >&2
             exit 1
           fi
           cargo check --locked -p xai-grok-workspace --lib \
             --no-default-features --features sandbox-enforce \
             --target aarch64-apple-darwin
+          cargo check --locked -p xai-grok-workspace --lib --bin xai-workspace-server \
+            --target aarch64-apple-darwin
 
-      - name: Check stock-MCP-free Shell
+      - name: Check stock-free Shell (and stock default Shell)
         shell: bash
         run: |
           set -euo pipefail
@@ -137,12 +145,22 @@ jobs:
             --no-default-features \
             --target aarch64-apple-darwin -e normal,build \
             > "$RUNNER_TEMP/shell-no-stock-mcp.txt"
-          if grep -E 'xai-grok-mcp v[0-9]|rmcp v[0-9]|xai-computer-hub-mcp-adapter v[0-9]' "$RUNNER_TEMP/shell-no-stock-mcp.txt"; then
-            echo "Shell still links stock Grok MCP with stock-mcp disabled" >&2
+          if grep -E 'xai-grok-mcp v[0-9]|rmcp v[0-9]|xai-computer-hub-mcp-adapter v[0-9]|xai-grok-diag-server v[0-9]|xai-grok-workspace-daemon v[0-9]|xai-codebase-graph v[0-9]|[[:space:]]zip v[0-9]' "$RUNNER_TEMP/shell-no-stock-mcp.txt"; then
+            echo "Shell still links stock Grok MCP, diag, daemon, codebase graph, or PPTX zip with stock features disabled" >&2
             exit 1
           fi
           cargo check --locked --lib -p xai-grok-shell \
             --no-default-features --target aarch64-apple-darwin
+          cargo check --locked --lib -p xai-grok-shell \
+            --target aarch64-apple-darwin
+
+      - name: Check stock LSP, web_fetch, and PPTX tools path still compiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --locked --lib -p xai-grok-tools \
+            --no-default-features --features serde,stock-lsp,stock-web-fetch,stock-pptx \
+            --target aarch64-apple-darwin
 
       - name: Build ARM64 grok-pi (release-dist)
         shell: bash

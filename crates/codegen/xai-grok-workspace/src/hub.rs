@@ -28,10 +28,12 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use url::Url;
+#[cfg(feature = "stock-diag")]
+use xai_computer_hub_sdk::CLOSE_CODE_SANDBOX_TERMINATED;
 use xai_computer_hub_sdk::{
-    AuthProvider, CLOSE_CODE_SANDBOX_TERMINATED, ClientError, HubConnectionPool, ToolServer,
-    ToolServerBuilder, ToolServerHandler,
+    AuthProvider, ClientError, HubConnectionPool, ToolServer, ToolServerBuilder, ToolServerHandler,
 };
+#[cfg(feature = "stock-diag")]
 use xai_grok_diag_server::DiagHandle;
 use xai_grok_tools::registry::types::ToolConfig;
 use xai_tool_protocol::ToolId;
@@ -60,6 +62,7 @@ pub struct HubConfig {
     pub allow_insecure_ws: bool,
     /// Diagnostics-server state handle that drives the `/ready` state from connection events.
     /// `None` means no diagnostics server (embedded/local use).
+    #[cfg(feature = "stock-diag")]
     pub diag: Option<DiagHandle>,
 }
 impl std::fmt::Debug for HubConfig {
@@ -95,6 +98,7 @@ pub(crate) struct HubHandle {
     session_bind_task: Option<JoinHandle<()>>,
     /// Background codebase-index event forwarder.
     /// Tracked so shutdown aborts it (it holds the `events` sender and cannot self-terminate).
+    #[cfg_attr(not(feature = "stock-codebase-graph"), allow(dead_code))]
     codebase_index_forwarder_task: Option<JoinHandle<()>>,
     /// Background client ext-notification forwarder.
     client_ext_forwarder_task: Option<JoinHandle<()>>,
@@ -228,6 +232,7 @@ impl HubHandle {
                 }
             });
         }
+        #[cfg(feature = "stock-diag")]
         if let Some(diag) = config.diag.clone() {
             let on_connect = diag.clone();
             let on_disconnect = diag.clone();
@@ -292,6 +297,7 @@ impl HubHandle {
         self.status_publisher_task = Some(task);
     }
     /// Attach the background codebase-index event forwarder task.
+    #[cfg_attr(not(feature = "stock-codebase-graph"), allow(dead_code))]
     pub(crate) fn set_codebase_index_forwarder_task(&mut self, task: JoinHandle<()>) {
         self.codebase_index_forwarder_task = Some(task);
     }

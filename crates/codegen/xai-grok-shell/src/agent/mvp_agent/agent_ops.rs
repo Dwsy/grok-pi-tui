@@ -4474,23 +4474,30 @@ impl MvpAgent {
                     "LSP tools enabled, but no language servers are configured"
                 );
             } else {
-                use xai_grok_tools::implementations::lsp::{
-                    LspBackend, LspBackendAdapter, LspManager,
-                };
-                let mgr = std::sync::Arc::new(
-                    tokio::sync::Mutex::new(
-                        LspManager::new(
-                                servers,
-                                tool_ctx.cwd.as_path().to_path_buf(),
-                                true,
-                                xai_grok_tools::notification::ToolNotificationHandle::noop(),
-                            )
-                            .with_process_scope(tool_ctx.process_scope.clone()),
-                    ),
-                );
-                let adapter = std::sync::Arc::new(LspBackendAdapter::new(mgr));
-                adapter.ensure_started_background();
-                tool_ctx.lsp = Some(adapter as std::sync::Arc<dyn LspBackend>);
+                #[cfg(feature = "stock-lsp")]
+                {
+                    use xai_grok_tools::implementations::lsp::{
+                        LspBackend, LspBackendAdapter, LspManager,
+                    };
+                    let mgr = std::sync::Arc::new(
+                        tokio::sync::Mutex::new(
+                            LspManager::new(
+                                    servers,
+                                    tool_ctx.cwd.as_path().to_path_buf(),
+                                    true,
+                                    xai_grok_tools::notification::ToolNotificationHandle::noop(),
+                                )
+                                .with_process_scope(tool_ctx.process_scope.clone()),
+                        ),
+                    );
+                    let adapter = std::sync::Arc::new(LspBackendAdapter::new(mgr));
+                    adapter.ensure_started_background();
+                    tool_ctx.lsp = Some(adapter as std::sync::Arc<dyn LspBackend>);
+                }
+                #[cfg(not(feature = "stock-lsp"))]
+                {
+                    let _ = servers;
+                }
             }
         }
         let inference_idle_timeout_secs = {

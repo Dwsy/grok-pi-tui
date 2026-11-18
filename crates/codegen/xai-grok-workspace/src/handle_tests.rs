@@ -3486,6 +3486,7 @@ fn workspace_shared_auth_provider_uses_workspace_config() {
         server_id: Some("server-1".to_string()),
         alpha_test_key: None,
         allow_insecure_ws: true,
+        #[cfg(feature = "stock-diag")]
         diag: None,
     };
     let config = WorkspaceConfig::new_for_proxy(
@@ -3522,6 +3523,7 @@ async fn shutdown_hub_noop_when_not_connected() {
     handle.shutdown_hub().await;
     assert!(handle.shared().hub_server().is_none());
 }
+#[cfg(feature = "stock-codebase-graph")]
 #[tokio::test]
 async fn codebase_index_forwarder_abort_releases_shared() {
     let handle = make_handle();

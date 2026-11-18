@@ -44,6 +44,7 @@ pub trait AgentRuntime {
         cwd: &Path,
     ) -> Result<(), CodeNavEligibility>;
 
+    #[cfg(feature = "stock-codebase-graph")]
     fn start_codebase_index_for_code_nav(
         &self,
         session_id: Option<&acp::SessionId>,

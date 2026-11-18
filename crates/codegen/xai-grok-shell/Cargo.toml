@@ -7,9 +7,21 @@ edition.workspace = true
 [features]
 stock-mcp = ["dep:xai-grok-mcp", "xai-grok-workspace/stock-mcp"]
 stock-pdf = ["xai-grok-tools/stock-pdf"]
+stock-lsp = ["xai-grok-tools/stock-lsp", "xai-grok-workspace/stock-lsp"]
+stock-web-fetch = ["xai-grok-tools/stock-web-fetch"]
 stock-s3 = ["xai-file-utils/stock-s3"]
 stock-gcs = ["xai-file-utils/stock-gcs"]
-default = ["stock-mcp"]
+stock-pptx = ["xai-grok-tools/stock-pptx"]
+stock-diag = ["xai-grok-workspace/stock-diag"]
+stock-codebase-graph = ["dep:xai-codebase-graph", "xai-grok-workspace/stock-codebase-graph"]
+default = [
+    "stock-mcp",
+    "stock-lsp",
+    "stock-web-fetch",
+    "stock-pptx",
+    "stock-diag",
+    "stock-codebase-graph",
+]
 dhat-heap = ["dep:dhat"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
@@ -24,6 +36,11 @@ local-workspace = []
 config-docs = []
 default-bazel = [
     "stock-mcp",
+    "stock-lsp",
+    "stock-web-fetch",
+    "stock-pptx",
+    "stock-diag",
+    "stock-codebase-graph",
     "local-workspace",
     "test-support",
     "config-docs",
@@ -130,7 +147,7 @@ xai-grok-shared = { workspace = true }
 xai-grok-status-line = { workspace = true }
 xai-tracing-macros = { path = "../xai-tracing-macros" }
 xai-fsnotify = { path = "../xai-fsnotify" }
-xai-codebase-graph = { path = "../xai-codebase-graph" }
+xai-codebase-graph = { path = "../xai-codebase-graph", optional = true }
 xai-hunk-tracker = { path = "../xai-hunk-tracker" }
 xai-agent-lifecycle = { workspace = true }
 xai-interjection-core = { workspace = true }

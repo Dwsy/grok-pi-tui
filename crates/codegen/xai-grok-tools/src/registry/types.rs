@@ -1011,6 +1011,7 @@ impl ToolRegistryBuilder {
                 }
             }
         }
+        #[cfg(feature = "stock-web-fetch")]
         if let crate::implementations::grok_build::web_fetch::WebFetchConfig::Enabled { params } =
             &ctx.web_fetch_config
         {

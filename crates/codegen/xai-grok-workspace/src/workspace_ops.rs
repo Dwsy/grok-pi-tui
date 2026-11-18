@@ -1089,6 +1089,7 @@ impl WorkspaceOp for ClientFsReadFileReq {
 }
 /// Resolve the index root for a code-nav op: the explicit per-session `root` (the cwd the client sends per window), else the workspace root.
 /// The per-window `root` keeps code nav in a non-primary window on its own repo's index rather than the launch directory's.
+#[cfg_attr(not(feature = "stock-codebase-graph"), allow(dead_code))]
 fn index_root_for(
     ws: &WorkspaceHandle,
     root: Option<&std::path::Path>,
@@ -1099,6 +1100,7 @@ fn index_root_for(
     };
     Ok(crate::session::git::find_git_root_from_path(&cwd).unwrap_or(cwd))
 }
+#[cfg(feature = "stock-codebase-graph")]
 fn resolve_index_for_workspace(
     ws: &WorkspaceHandle,
     root: Option<&std::path::Path>,
@@ -1110,6 +1112,7 @@ fn resolve_index_for_workspace(
     let (handle, _was_new) = ws.get_or_create_codebase_index(index_root.clone());
     Ok((handle, index_root))
 }
+#[cfg(feature = "stock-codebase-graph")]
 fn resolve_index_for_file(
     ws: &WorkspaceHandle,
     root: Option<&std::path::Path>,
@@ -1126,6 +1129,7 @@ fn resolve_index_for_file(
     }
     resolve_index_for_workspace(ws, root)
 }
+#[cfg(feature = "stock-codebase-graph")]
 #[async_trait]
 impl WorkspaceOp for CodeGotoDefinitionReq {
     async fn execute(
@@ -1141,6 +1145,7 @@ impl WorkspaceOp for CodeGotoDefinitionReq {
         Ok(query_result_to_response(result))
     }
 }
+#[cfg(feature = "stock-codebase-graph")]
 #[async_trait]
 impl WorkspaceOp for CodeGotoReferencesReq {
     async fn execute(
@@ -1161,6 +1166,7 @@ impl WorkspaceOp for CodeGotoReferencesReq {
         Ok(query_result_to_response(result))
     }
 }
+#[cfg(feature = "stock-codebase-graph")]
 #[async_trait]
 impl WorkspaceOp for CodeFindDefinitionsReq {
     async fn execute(
@@ -1179,6 +1185,7 @@ impl WorkspaceOp for CodeFindDefinitionsReq {
         Ok(symbol_locations_to_response(result))
     }
 }
+#[cfg(feature = "stock-codebase-graph")]
 #[async_trait]
 impl WorkspaceOp for CodeFindReferencesReq {
     async fn execute(
@@ -1197,6 +1204,7 @@ impl WorkspaceOp for CodeFindReferencesReq {
         Ok(symbol_locations_to_response(result))
     }
 }
+#[cfg(feature = "stock-codebase-graph")]
 #[async_trait]
 impl WorkspaceOp for CodeIndexStatusReq {
     async fn execute(
@@ -1228,6 +1236,7 @@ impl WorkspaceOp for CodeIndexStatusReq {
         }
     }
 }
+#[cfg(feature = "stock-codebase-graph")]
 fn query_result_to_response(
     result: Result<xai_codebase_graph::QueryResult, xai_codebase_graph::QueryError>,
 ) -> CodeNavResponse {
@@ -1246,6 +1255,7 @@ fn query_result_to_response(
         Err(_) => CodeNavResponse { locations: vec![] },
     }
 }
+#[cfg(feature = "stock-codebase-graph")]
 fn symbol_locations_to_response(
     locations: Vec<xai_codebase_graph::SymbolLocation>,
 ) -> CodeNavResponse {

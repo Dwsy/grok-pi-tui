@@ -63,6 +63,7 @@ impl AgentRuntime for MvpAgent {
         self.code_nav_eligibility_for_request(session_id, cwd)
     }
 
+    #[cfg(feature = "stock-codebase-graph")]
     fn start_codebase_index_for_code_nav(
         &self,
         session_id: Option<&acp::SessionId>,

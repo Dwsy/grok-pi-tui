@@ -2181,10 +2181,15 @@ async fn dispatch_knows_every_typed_method() {
         <HunkGetStagedFilesReq as WorkspaceRpc>::METHOD,
         <HunkGetFilteredHunksReq as WorkspaceRpc>::METHOD,
         <HunkGetFileSummariesReq as WorkspaceRpc>::METHOD,
+        #[cfg(feature = "stock-codebase-graph")]
         <CodeGotoDefinitionReq as WorkspaceRpc>::METHOD,
+        #[cfg(feature = "stock-codebase-graph")]
         <CodeGotoReferencesReq as WorkspaceRpc>::METHOD,
+        #[cfg(feature = "stock-codebase-graph")]
         <CodeFindDefinitionsReq as WorkspaceRpc>::METHOD,
+        #[cfg(feature = "stock-codebase-graph")]
         <CodeFindReferencesReq as WorkspaceRpc>::METHOD,
+        #[cfg(feature = "stock-codebase-graph")]
         <CodeIndexStatusReq as WorkspaceRpc>::METHOD,
         <ContentSearchRequest as WorkspaceRpc>::METHOD,
         <FuzzyOpenReq as WorkspaceRpc>::METHOD,

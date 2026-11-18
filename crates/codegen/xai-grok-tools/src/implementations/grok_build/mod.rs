@@ -76,7 +76,9 @@ pub use video_gen::{
     REFERENCE_TO_VIDEO_TOOL_NAME, ReferenceToVideoTool, imagine_video_instruction,
     imagine_video_usage_message,
 };
-pub use web_fetch::{WebFetchClient, WebFetchConfig, WebFetchParams, WebFetchTool};
+#[cfg(feature = "stock-web-fetch")]
+pub use web_fetch::WebFetchClient;
+pub use web_fetch::{WebFetchConfig, WebFetchParams, WebFetchTool};
 pub use web_search::WebSearchTool;
 pub use workflow::{
     WORKFLOW_TOOL_NAME, WorkflowTool, is_workflow_tool, is_workflow_tool_id,

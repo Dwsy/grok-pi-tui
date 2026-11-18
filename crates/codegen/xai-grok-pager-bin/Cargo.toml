@@ -108,6 +108,11 @@ default = [
     "sandbox-enforce",
     "stock-obfuscation",
     "stock-pdf",
+    "stock-lsp",
+    "stock-web-fetch",
+    "stock-pptx",
+    "stock-diag",
+    "stock-codebase-graph",
     "stock-s3",
     "stock-gcs",
     ]
@@ -118,6 +123,11 @@ default-bazel = [
     "local-workspace",
     "stock-obfuscation",
     "stock-pdf",
+    "stock-lsp",
+    "stock-web-fetch",
+    "stock-pptx",
+    "stock-diag",
+    "stock-codebase-graph",
     "stock-s3",
     "stock-gcs",
     ]
@@ -130,6 +140,11 @@ stock-mcp = [
 ]
 stock-obfuscation = ["dep:cryptify"]
 stock-pdf = ["xai-grok-shell/stock-pdf"]
+stock-lsp = ["xai-grok-shell/stock-lsp"]
+stock-web-fetch = ["xai-grok-shell/stock-web-fetch"]
+stock-pptx = ["xai-grok-shell/stock-pptx"]
+stock-diag = ["xai-grok-shell/stock-diag"]
+stock-codebase-graph = ["xai-grok-shell/stock-codebase-graph"]
 stock-s3 = ["xai-grok-shell/stock-s3"]
 stock-gcs = ["xai-grok-shell/stock-gcs"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]

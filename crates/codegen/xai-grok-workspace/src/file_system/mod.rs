@@ -23,8 +23,23 @@ pub use xai_grok_workspace_types::rpc::fs::FsReadEncoding;
 pub mod adapter;
 pub use adapter::AcpFsAdapter;
 
+#[cfg(feature = "stock-codebase-graph")]
 mod codebase_index;
+#[cfg(feature = "stock-codebase-graph")]
 pub use codebase_index::CodebaseIndexManager;
+
+/// Zero-sized stub when `stock-codebase-graph` is disabled so session shared
+/// state and constructors stay structurally uniform without linking tree-sitter.
+#[cfg(not(feature = "stock-codebase-graph"))]
+#[derive(Debug, Default)]
+pub struct CodebaseIndexManager;
+
+#[cfg(not(feature = "stock-codebase-graph"))]
+impl CodebaseIndexManager {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 mod fs;
 pub use fs::{AsyncFileSystem, AsyncFsWrapper, FsError, bytes_to_string};

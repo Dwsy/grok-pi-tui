@@ -12,10 +12,12 @@
 //! | `x.ai/code/find-references` | All references to a symbol by name |
 //! | `x.ai/code/status` | Indexing status |
 
+#[cfg(feature = "stock-codebase-graph")]
 use std::path::{Path, PathBuf};
 
 use crate::extensions::agent_runtime::AgentRuntime;
 use agent_client_protocol as acp;
+#[cfg(feature = "stock-codebase-graph")]
 use serde::{Deserialize, Serialize};
 
 /// Reason why a client is not eligible to use codebase indexing.
@@ -39,6 +41,7 @@ pub enum CodeNavEligibility {
 /// Record a structured telemetry event at the end of a code-nav handler call, once per request.
 /// The fields separate first-use latency (newly spawned, high elapsed_ms) from reuse latency.
 /// They also attribute slowness to index startup vs query processing.
+#[cfg(feature = "stock-codebase-graph")]
 fn log_code_nav_telemetry(
     method: &str,
     session_id: Option<&acp::SessionId>,
@@ -62,6 +65,7 @@ type ExtResult = Result<acp::ExtResponse, acp::Error>;
 
 /// Position-based query request (for goto-definition, goto-references). Position parameters are 1-indexed (matching editor display). **`sessionId` is required** for all code-nav requests.
 /// Per-client capability gating requires a valid session so eligibility is resolved correctly in both simple and leader modes. Requests without `sessionId` receive `reason: sessionRequired` in the error response.
+#[cfg(feature = "stock-codebase-graph")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GotoRequest {
@@ -80,6 +84,7 @@ pub(crate) struct GotoRequest {
 /// Symbol name query request (for find-definitions, find-references).
 ///
 /// **`sessionId` is required**; same contract as [`GotoRequest`].
+#[cfg(feature = "stock-codebase-graph")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FindSymbolRequest {
@@ -96,6 +101,7 @@ pub(crate) struct FindSymbolRequest {
 /// Status request: check indexing status.
 ///
 /// **`sessionId` is required**; same contract as [`GotoRequest`].
+#[cfg(feature = "stock-codebase-graph")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StatusRequest {
@@ -108,6 +114,7 @@ pub(crate) struct StatusRequest {
 // ========== Response Types ==========
 
 /// Response for goto-definition and goto-references queries.
+#[cfg(feature = "stock-codebase-graph")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeNavResponse {
@@ -118,6 +125,7 @@ pub struct CodeNavResponse {
 }
 
 /// A symbol location in a file.
+#[cfg(feature = "stock-codebase-graph")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SymbolLocation {
@@ -139,6 +147,7 @@ pub struct SymbolLocation {
 /// Reason string for the `x.ai/code/status` response.
 ///
 /// Serialised as a camelCase string so clients can pattern-match on it.
+#[cfg(feature = "stock-codebase-graph")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum IndexStatusReason {
@@ -159,6 +168,7 @@ pub(crate) enum IndexStatusReason {
 }
 
 /// Response for status query.
+#[cfg(feature = "stock-codebase-graph")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StatusResponse {
@@ -178,6 +188,7 @@ pub(crate) struct StatusResponse {
 /// Handle code navigation extension methods.
 /// Routes through [`WorkspaceOps`].
 /// Eligibility checks still run in shell since they depend on agent-level config (client type, feature flags).
+#[cfg(feature = "stock-codebase-graph")]
 #[tracing::instrument(name = "ext.code_nav", skip_all, fields(method = %args.method))]
 pub async fn handle(
     agent: &dyn AgentRuntime,
@@ -357,7 +368,24 @@ pub async fn handle(
     }
 }
 
+#[cfg(not(feature = "stock-codebase-graph"))]
+pub async fn handle(
+    _agent: &dyn AgentRuntime,
+    _ops: &xai_grok_workspace::WorkspaceOps,
+    args: &acp::ExtRequest,
+) -> ExtResult {
+    match args.method.as_ref() {
+        "x.ai/code/goto-definition"
+        | "x.ai/code/goto-references"
+        | "x.ai/code/find-definitions"
+        | "x.ai/code/find-references"
+        | "x.ai/code/status" => Err(eligibility_error(CodeNavEligibility::DisabledByConfig)),
+        _ => Err(acp::Error::method_not_found()),
+    }
+}
+
 /// Convert workspace CodeNavResponse to the shell's CodeNavResponse format and wrap in the `ExtMethodResult` envelope that clients expect.
+#[cfg(feature = "stock-codebase-graph")]
 fn to_code_nav_ext_response(resp: xai_grok_workspace::workspace_ops::CodeNavResponse) -> ExtResult {
     let symbol = resp
         .locations
@@ -383,6 +411,7 @@ fn to_code_nav_ext_response(resp: xai_grok_workspace::workspace_ops::CodeNavResp
 }
 
 /// Check eligibility, ensure the codebase index is started, and return whether the index was newly created (for telemetry).
+#[cfg(feature = "stock-codebase-graph")]
 fn ensure_eligible_and_started(
     agent: &dyn AgentRuntime,
     session_id: Option<&acp::SessionId>,
@@ -402,6 +431,7 @@ fn ensure_eligible_and_started(
 // ========== Helper Functions ==========
 
 /// Resolve cwd from session_id or direct cwd parameter.
+#[cfg(feature = "stock-codebase-graph")]
 fn resolve_cwd(
     agent: &dyn AgentRuntime,
     cwd: Option<String>,

@@ -197,6 +197,7 @@ use crate::workspace_ops::{
     GetFileEntry, GetFileResult, GetFilesRes, PutFileEntry, PutFileResult, PutFilesRes,
 };
 use xai_file_utils::queue::EnqueueOutcome;
+#[cfg(feature = "stock-diag")]
 use xai_grok_diag_server::DiagHandle;
 use xai_grok_session_events::types::CancellationCategory;
 use xai_grok_session_events::{Event, SessionRelationship, TurnOutcomeLabel};
@@ -577,18 +578,26 @@ impl WorkspaceHandle {
             if servers.is_empty() {
                 None
             } else {
-                use xai_grok_tools::implementations::lsp::{
-                    LspBackend, LspBackendAdapter, LspManager,
-                };
-                let mgr = Arc::new(tokio::sync::Mutex::new(LspManager::new(
-                    servers,
-                    config.root_cwd.clone(),
-                    true,
-                    xai_grok_tools::notification::ToolNotificationHandle::noop(),
-                )));
-                let adapter = Arc::new(LspBackendAdapter::new(mgr));
-                adapter.ensure_started_background();
-                Some(adapter)
+                #[cfg(feature = "stock-lsp")]
+                {
+                    use xai_grok_tools::implementations::lsp::{
+                        LspBackend, LspBackendAdapter, LspManager,
+                    };
+                    let mgr = Arc::new(tokio::sync::Mutex::new(LspManager::new(
+                        servers,
+                        config.root_cwd.clone(),
+                        true,
+                        xai_grok_tools::notification::ToolNotificationHandle::noop(),
+                    )));
+                    let adapter = Arc::new(LspBackendAdapter::new(mgr));
+                    adapter.ensure_started_background();
+                    Some(adapter as Arc<dyn LspBackend>)
+                }
+                #[cfg(not(feature = "stock-lsp"))]
+                {
+                    let _ = servers;
+                    None
+                }
             }
         };
         let session_event_writers: Arc<
@@ -2296,27 +2305,32 @@ impl WorkspaceHandle {
         .await
         .map_err(|e| WorkspaceError::HubError(e.to_string()))
     }
+    #[cfg(feature = "stock-codebase-graph")]
     pub fn get_or_create_codebase_index(
         &self,
         cwd: std::path::PathBuf,
     ) -> (Arc<xai_codebase_graph::IndexManagerHandle>, bool) {
         self.shared.codebase_indexes.lock().get_or_create(cwd)
     }
+    #[cfg(feature = "stock-codebase-graph")]
     pub fn get_codebase_index(
         &self,
         cwd: &std::path::Path,
     ) -> Option<Arc<xai_codebase_graph::IndexManagerHandle>> {
         self.shared.codebase_indexes.lock().get(cwd)
     }
+    #[cfg(feature = "stock-codebase-graph")]
     pub fn get_covering_codebase_index(
         &self,
         path: &std::path::Path,
     ) -> Option<Arc<xai_codebase_graph::IndexManagerHandle>> {
         self.shared.codebase_indexes.lock().get_covering(path)
     }
+    #[cfg(feature = "stock-codebase-graph")]
     pub fn ensure_codebase_indexes(&self, roots: &[std::path::PathBuf]) {
         self.shared.codebase_indexes.lock().ensure_all(roots);
     }
+    #[cfg(feature = "stock-codebase-graph")]
     fn spawn_codebase_index_event_forwarder(&self) -> tokio::task::JoinHandle<()> {
         let shared = self.shared.clone();
         let root_cwd = self.shared.root_cwd.clone();
@@ -3910,14 +3924,17 @@ impl WorkspaceHandle {
                 let _ = ext_tx.send((method, params));
             }));
         }
-        handle.set_codebase_index_forwarder_task(self.spawn_codebase_index_event_forwarder());
+        #[cfg(feature = "stock-codebase-graph")]
         {
-            let ws = self.clone();
-            tokio::spawn(async move {
-                if let Ok(roots) = crate::workspace_ops::materialized_git_roots(&ws).await {
-                    ws.ensure_codebase_indexes(&roots);
-                }
-            });
+            handle.set_codebase_index_forwarder_task(self.spawn_codebase_index_event_forwarder());
+            {
+                let ws = self.clone();
+                tokio::spawn(async move {
+                    if let Ok(roots) = crate::workspace_ops::materialized_git_roots(&ws).await {
+                        ws.ensure_codebase_indexes(&roots);
+                    }
+                });
+            }
         }
         if let Some(task) = self.spawn_tool_definitions_event_forwarder() {
             handle.set_tool_defs_forwarder_task(task);
@@ -4170,6 +4187,7 @@ pub struct LocalWorkspaceConnectOptions {
     /// Folder-trust verdict for project-scoped LSP servers.
     pub project_lsp_trusted: bool,
     /// Diagnostics server handle, when the embedder runs one.
+    #[cfg(feature = "stock-diag")]
     pub diag: Option<DiagHandle>,
     /// Fail binds without an explicit toolset closed instead of widening to
     /// the default catalog (sandbox-launched standalone servers).
@@ -4197,6 +4215,7 @@ pub async fn connect_local_workspace(
         status_config,
         upload_queue_enabled,
         project_lsp_trusted,
+        #[cfg(feature = "stock-diag")]
         diag,
         require_explicit_toolset,
         confine_fs_to_workspace_root,
@@ -4227,6 +4246,7 @@ pub async fn connect_local_workspace(
         server_id,
         alpha_test_key,
         allow_insecure_ws,
+        #[cfg(feature = "stock-diag")]
         diag,
     };
     let tool_config = xai_grok_agent::workspace_grok_build_toolset();

@@ -918,18 +918,23 @@ impl WorkspaceRpcHandler {
             <HunkGetFileSummariesReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<HunkGetFileSummariesReq>(params, &self.workspace, bound_session).await
             }
+            #[cfg(feature = "stock-codebase-graph")]
             <CodeGotoDefinitionReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<CodeGotoDefinitionReq>(params, &self.workspace, None).await
             }
+            #[cfg(feature = "stock-codebase-graph")]
             <CodeGotoReferencesReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<CodeGotoReferencesReq>(params, &self.workspace, None).await
             }
+            #[cfg(feature = "stock-codebase-graph")]
             <CodeFindDefinitionsReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<CodeFindDefinitionsReq>(params, &self.workspace, None).await
             }
+            #[cfg(feature = "stock-codebase-graph")]
             <CodeFindReferencesReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<CodeFindReferencesReq>(params, &self.workspace, None).await
             }
+            #[cfg(feature = "stock-codebase-graph")]
             <CodeIndexStatusReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<CodeIndexStatusReq>(params, &self.workspace, None).await
             }

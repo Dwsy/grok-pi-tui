@@ -725,6 +725,7 @@ impl SessionRegistry {
         }
         events
     }
+    #[cfg(feature = "stock-codebase-graph")]
     pub(super) fn set_codebase_index(
         &self,
         id: &acp::SessionId,
@@ -776,7 +777,10 @@ impl SessionRegistry {
                     usize::from(retained.permission_event_receiver.is_some());
             }
             if let Some(resident) = resident {
-                counts.session_index_claims += usize::from(resident.codebase_index.is_some());
+                #[cfg(feature = "stock-codebase-graph")]
+                {
+                    counts.session_index_claims += usize::from(resident.codebase_index.is_some());
+                }
                 counts.require_gateway_sessions += usize::from(resident.require_gateway);
             }
         }

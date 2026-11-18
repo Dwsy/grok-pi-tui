@@ -19,6 +19,7 @@ impl MvpAgent {
 
     /// Start (or reuse) the codebase index for an eligible code-nav request. The bool is the authoritative "first spawn vs reuse" signal threaded up from `CodebaseIndexManager`.
     /// This is the narrow `pub(crate)` entry point for lazy index startup from `extensions/code_nav.rs`. Callers must verify eligibility with [`code_nav_eligibility_for_request`] before calling this.
+    #[cfg(feature = "stock-codebase-graph")]
     #[tracing::instrument(name = "code_nav.index_start", skip_all)]
     pub(crate) fn start_codebase_index_for_code_nav(
         &self,
@@ -140,6 +141,7 @@ impl MvpAgent {
     /// Resolve and get-or-create the codebase index for `cwd`, applying config and git-root eligibility checks.
     /// Returns `Some((handle, was_newly_started))` when an index is available, `None` when config or git-root checks rule it out.
     /// The bool is the authoritative "was this a first spawn?" signal from the manager.
+    #[cfg(feature = "stock-codebase-graph")]
     pub(super) fn resolve_codebase_index(
         &self,
         cwd: &std::path::Path,
@@ -195,6 +197,7 @@ impl MvpAgent {
         Some((handle, was_newly_started))
     }
 
+    #[cfg(feature = "stock-codebase-graph")]
     pub(super) fn indexed_roots_for(&self, cwd: &std::path::Path) -> Vec<String> {
         if self.get_codebase_index(cwd).is_some() {
             return vec![cwd.to_string_lossy().into_owned()];
@@ -207,8 +210,14 @@ impl MvpAgent {
         Vec::new()
     }
 
+    #[cfg(not(feature = "stock-codebase-graph"))]
+    pub(super) fn indexed_roots_for(&self, _cwd: &std::path::Path) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Returns `(handle, was_newly_started)`.
     /// The bool is the authoritative "did this call spawn a new actor?" bit from `CodebaseIndexManager::get_or_create`.
+    #[cfg(feature = "stock-codebase-graph")]
     pub(super) fn get_or_create_codebase_index(
         &self,
         cwd: PathBuf,
@@ -218,6 +227,7 @@ impl MvpAgent {
 
     /// Get an existing codebase index for the given cwd.
     /// Returns None if no index exists for this cwd.
+    #[cfg(feature = "stock-codebase-graph")]
     pub(crate) fn get_codebase_index(
         &self,
         cwd: &std::path::Path,

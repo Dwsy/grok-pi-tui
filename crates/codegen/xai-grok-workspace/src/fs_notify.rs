@@ -72,6 +72,7 @@ pub(crate) fn forward_to_hunk_tracker_roots(
 }
 
 /// Convert to codebase graph `FileEvent` for incremental index updates.
+#[cfg(feature = "stock-codebase-graph")]
 pub(crate) fn fs_event_to_codebase_graph_event(
     paths: &[PathBuf],
     kind: FsEventKind,
@@ -104,6 +105,7 @@ pub(crate) fn to_workspace_event_kind(kind: FsEventKind) -> xai_grok_workspace_t
 
 /// Forward `FilesChanged` from an [`FsEvent`] broadcast to the hunk tracker and re-broadcast each path as `FsChanged`.
 /// Exits when the broadcast sender drops or `cancel` is cancelled.
+#[cfg(feature = "stock-codebase-graph")]
 pub(crate) fn spawn_fs_event_forwarder(
     rx: tokio::sync::broadcast::Receiver<FsEvent>,
     hunk_tracker: HunkTrackerHandle,
@@ -122,6 +124,7 @@ pub(crate) fn spawn_fs_event_forwarder(
     );
 }
 
+#[cfg(feature = "stock-codebase-graph")]
 pub(crate) fn spawn_fs_event_forwarder_roots(
     mut rx: tokio::sync::broadcast::Receiver<FsEvent>,
     hunk_tracker: HunkTrackerHandle,
@@ -178,8 +181,10 @@ pub(crate) fn spawn_fs_event_forwarder_roots(
     });
 }
 
+#[cfg(feature = "stock-codebase-graph")]
 const GIT_DIFF_REBUILD_THRESHOLD: usize = 500;
 
+#[cfg(feature = "stock-codebase-graph")]
 fn parse_diff_name_status_line(
     line: &str,
     repo_root: &Path,
@@ -206,6 +211,7 @@ fn parse_diff_name_status_line(
 
 /// After a HEAD change, diff `ORIG_HEAD..HEAD` and send targeted graph events, or rebuild if too many files changed.
 /// Emits `CodebaseIndexUpdated` after the update; skips it if the index actor channel is closed.
+#[cfg(feature = "stock-codebase-graph")]
 pub(crate) async fn refresh_codebase_graph_after_head_change(
     idx: &xai_codebase_graph::IndexManagerHandle,
     repo_root: &Path,
@@ -272,6 +278,7 @@ pub(crate) async fn refresh_codebase_graph_after_head_change(
     }
 }
 
+#[cfg(feature = "stock-codebase-graph")]
 pub(crate) fn ws_event_to_codebase_graph_event(
     path: &std::path::Path,
     kind: xai_grok_workspace_types::FsEventKind,
@@ -357,6 +364,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "stock-codebase-graph")]
     #[test]
     fn codebase_graph_event_mapping() {
         use xai_codebase_graph::FileEventKind;
@@ -375,6 +383,7 @@ mod tests {
         assert_eq!(ev.kind, FileEventKind::Renamed);
     }
 
+    #[cfg(feature = "stock-codebase-graph")]
     #[test]
     fn parse_diff_name_status_all_variants() {
         use std::path::Path;
