@@ -176,9 +176,13 @@ let opencode_bash = Expr::Value(ToolRequirement::Tool {
         if_params: None,
     });
 #[cfg(feature = "stock-tool-dialects")]
-vec![grok_build_bash, grok_build_concise_bash, opencode_bash]
+{
+    vec![grok_build_bash, grok_build_concise_bash, opencode_bash]
+}
 #[cfg(not(feature = "stock-tool-dialects"))]
-vec![grok_build_bash]
+{
+    vec![grok_build_bash]
+}
 }
 
 /// Shared `requires_expr` for both `get_task_output` and `wait_tasks`.
