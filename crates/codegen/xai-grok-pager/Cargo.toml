@@ -130,9 +130,9 @@ chrono = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 xai-grok-tools = { workspace = true }
-// NOTE: still a hard (non-optional) dep until the S12-a step-3 type sink
-// (AgentDefinition/PluginRegistry out of xai-grok-agent); only the login edge
-// is cut in this batch.
+# NOTE: still a hard (non-optional) dep until the S12-a step-3 type sink
+# (AgentDefinition/PluginRegistry out of xai-grok-agent); only the login edge
+# is cut in this batch.
 xai-grok-agent = { workspace = true }
 xai-grok-plugin-marketplace = { path = "../xai-grok-plugin-marketplace" }
 # Blocked-card copy: `hook_display_name` lives next to the hook-name grammar.
