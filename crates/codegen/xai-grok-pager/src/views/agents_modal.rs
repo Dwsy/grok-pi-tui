@@ -16,7 +16,9 @@ use ratatui::style::{Modifier, Style};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use unicode_width::UnicodeWidthStr;
-use xai_grok_agent::config::{AgentDefinition, AgentScope, BuiltinAgentName};
+#[cfg(feature = "stock-agent")]
+use xai_grok_agent::config::{AgentDefinition, BuiltinAgentName};
+use xai_grok_config::agent_scope::AgentScope;
 use xai_grok_shell::agent::config::AgentSelectionConfig;
 use xai_grok_tools::implementations::skills::discovery::extract_first_paragraph;
 use xai_grok_tools::registry::types::ToolServerConfig;
@@ -62,7 +64,37 @@ pub struct AgentListEntry {
     pub enabled: bool,
     pub is_builtin: bool,
     pub expanded: bool,
+    #[cfg(feature = "stock-agent")]
     pub definition: AgentDefinition,
+}
+
+#[cfg(feature = "stock-agent")]
+pub type ModalPluginRegistry = xai_grok_agent::plugins::PluginRegistry;
+#[cfg(not(feature = "stock-agent"))]
+pub type ModalPluginRegistry = ();
+
+fn entry_is_plugin(entry: &AgentListEntry) -> bool {
+    #[cfg(feature = "stock-agent")]
+    {
+        entry.definition.plugin_name.is_some()
+    }
+    #[cfg(not(feature = "stock-agent"))]
+    {
+        let _ = entry;
+        false
+    }
+}
+
+fn entry_has_prompt_body(entry: &AgentListEntry) -> bool {
+    #[cfg(feature = "stock-agent")]
+    {
+        entry.definition.prompt_body.is_some()
+    }
+    #[cfg(not(feature = "stock-agent"))]
+    {
+        let _ = entry;
+        false
+    }
 }
 /// Kind of inline message shown in the agents modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,7 +290,7 @@ pub struct AgentsModalState {
     /// Model `agentType` from the pager's default or current model catalog entry, used when re-resolving after `s` toggles `[agent] name`.
     model_agent_type: Option<String>,
     /// Plugin registry snapshot for listing plugin-provided agents (`None` when no plugins are installed or enabled).
-    plugin_registry: Option<xai_grok_agent::plugins::PluginRegistry>,
+    plugin_registry: Option<ModalPluginRegistry>,
     pub personas: Vec<PersonaDetail>,
     pub persona_selected: usize,
     pub persona_scroll: usize,
@@ -268,6 +300,7 @@ pub struct AgentsModalState {
 /// Built-in agent names that should be shown to the user.
 /// Skips the internal variants:
 /// GrokBuildConcise, GrokBuildPlan, GrokBuildPlanNoSubagents, GrokBuildAskUser, Codex, Opencode, CursorExtended, GrokBuildOrchestrator.
+#[cfg(feature = "stock-agent")]
 fn user_visible_builtins() -> &'static [BuiltinAgentName] {
     &[
         BuiltinAgentName::GrokBuild,
@@ -286,7 +319,7 @@ impl AgentsModalState {
         bundle: &BundleState,
         model_agent_type: Option<&str>,
         active_agent: Option<String>,
-        plugin_registry: Option<xai_grok_agent::plugins::PluginRegistry>,
+        plugin_registry: Option<ModalPluginRegistry>,
     ) -> Self {
         let agents = build_agent_list(cwd, toggle, plugin_registry.as_ref());
         let personas = merge_persona_lists(bundle, cwd);
@@ -377,10 +410,21 @@ impl AgentsModalState {
 }
 /// Build the full agent list: user-visible built-ins first, then file-based agents from discovery (with dedup).
 /// Plugin-provided agents come last under qualified `plugin:agent` names.
+#[cfg(not(feature = "stock-agent"))]
+pub fn build_agent_list(
+    _cwd: &Path,
+    _toggle: &HashMap<String, bool>,
+    _plugins: Option<&ModalPluginRegistry>,
+) -> Vec<AgentListEntry> {
+    // Pi owns its agent definitions; stock discovery must not run in this profile.
+    Vec::new()
+}
+
+#[cfg(feature = "stock-agent")]
 pub fn build_agent_list(
     cwd: &Path,
     toggle: &HashMap<String, bool>,
-    plugins: Option<&xai_grok_agent::plugins::PluginRegistry>,
+    plugins: Option<&ModalPluginRegistry>,
 ) -> Vec<AgentListEntry> {
     let mut entries = Vec::new();
     for &builtin in user_visible_builtins() {
@@ -796,6 +840,12 @@ pub fn toggle_agent(name: &str, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 /// Format detail lines for an expanded agent entry.
+#[cfg(not(feature = "stock-agent"))]
+pub fn format_agent_detail(entry: &AgentListEntry) -> Vec<String> {
+    vec![format!("  Scope: {}", entry.scope.label())]
+}
+
+#[cfg(feature = "stock-agent")]
 pub fn format_agent_detail(entry: &AgentListEntry) -> Vec<String> {
     let def = &entry.definition;
     let mut lines = Vec::new();
@@ -879,6 +929,12 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
 /// Build viewer content for a built-in agent's prompt extension. Shows only the `prompt_body`, the
 /// custom instructions this agent adds on top of the base template. Template variables like `${{
 /// tools.by_kind.read }}` are resolved to actual tool names using the agent's configured toolset.
+#[cfg(not(feature = "stock-agent"))]
+fn synthesize_agent_markdown(entry: &AgentListEntry) -> String {
+    format!("*No stock agent definition for {}.*\n", entry.name)
+}
+
+#[cfg(feature = "stock-agent")]
 fn synthesize_agent_markdown(entry: &AgentListEntry) -> String {
     if let Some(ref body) = entry.definition.prompt_body {
         render_prompt_body(body, &entry.definition.tool_config)
@@ -890,6 +946,7 @@ fn synthesize_agent_markdown(entry: &AgentListEntry) -> String {
     }
 }
 /// Resolve `${{ tools.by_kind.* }}` template variables in a prompt body using the agent's tool config.
+#[cfg(feature = "stock-agent")]
 fn render_prompt_body(body: &str, tool_config: &ToolServerConfig) -> String {
     let mut kind_map: HashMap<ToolKind, String> = HashMap::new();
     for tool in &tool_config.tools {
@@ -1480,7 +1537,7 @@ fn render_agents_tab(
                         x += off_label.len() as u16;
                     }
                 }
-                let (badge_text, mut badge_style) = if entry.definition.plugin_name.is_some() {
+                let (badge_text, mut badge_style) = if entry_is_plugin(entry) {
                     (
                         " plugin ".to_string(),
                         Style::default().fg(theme.text_secondary),
@@ -1969,7 +2026,7 @@ enum AgentGroup {
 }
 impl AgentGroup {
     fn of(entry: &AgentListEntry) -> Self {
-        if entry.definition.plugin_name.is_some() {
+        if entry_is_plugin(entry) {
             Self::Plugin
         } else {
             Self::Scope(entry.scope)
@@ -2179,7 +2236,7 @@ fn handle_agents_tab_key(state: &mut AgentsModalState, key: &KeyEvent) -> Agents
                         content: None,
                     };
                 }
-                if entry.definition.prompt_body.is_some() {
+                if entry_has_prompt_body(entry) {
                     let title = format!("{} \u{00b7} prompt extension", entry.name);
                     return AgentsModalOutcome::ViewAgent {
                         title,
@@ -2199,7 +2256,7 @@ fn handle_agents_tab_key(state: &mut AgentsModalState, key: &KeyEvent) -> Agents
         KeyCode::Char('q') => AgentsModalOutcome::Close,
         KeyCode::Char('s') => {
             if let Some(entry) = state.agents.get(state.selected) {
-                if entry.definition.plugin_name.is_some() {
+                if entry_is_plugin(entry) {
                     state.message = Some(AgentsModalMessage::info(
                         "Plugin agents can't be the session default \u{2014} \
                          they are spawned as subagents via the Task tool.",
@@ -2575,7 +2632,7 @@ pub fn handle_agents_mouse(state: &mut AgentsModalState, mouse: &MouseEvent) -> 
         }
     }
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 mod tests {
     use super::*;
     use xai_grok_shell::agent::config::DEFAULT_AGENT_TYPE;

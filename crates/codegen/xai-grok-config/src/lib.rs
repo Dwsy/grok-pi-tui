@@ -11,6 +11,7 @@
 //! Each layer applies its own [`[[version_overrides]]`](version_overrides) before merge.
 //! Requirements layers (#4 through #6) may opt into fail-closed startup; see [`validate_requirements`].
 
+pub mod agent_scope;
 pub mod campaigns;
 mod config_layers;
 pub mod config_override;

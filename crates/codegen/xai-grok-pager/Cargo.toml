@@ -130,10 +130,8 @@ chrono = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 xai-grok-tools = { workspace = true }
-# NOTE: still a hard (non-optional) dep until the S12-a step-3 type sink
-# (AgentDefinition/PluginRegistry out of xai-grok-agent); only the login edge
-# is cut in this batch.
-xai-grok-agent = { workspace = true }
+# The agents configuration modal belongs to stock Grok, not the Pi runtime.
+xai-grok-agent = { workspace = true, optional = true }
 xai-grok-plugin-marketplace = { path = "../xai-grok-plugin-marketplace" }
 # Blocked-card copy: `hook_display_name` lives next to the hook-name grammar.
 xai-grok-hooks = { path = "../xai-grok-hooks" }
@@ -261,7 +259,7 @@ local-workspace = ["xai-grok-shell/local-workspace"]
 # subcommands that talk to a live agent, the agents modal, and the voice
 # bearer bridge all compile out when this is off. Pi-only closures (grok-pi)
 # enable neither this feature nor the `xai-grok-login`/`xai-grok-agent` deps.
-stock-agent = ["xai-grok-login"]
+stock-agent = ["xai-grok-login", "dep:xai-grok-agent"]
 # No-op on this crate: the actual `#[global_allocator]` (and the
 # `tikv-jemallocator` dep) live on the composition-root binary
 # `xai-grok-pager-bin`, which owns `main.rs`. Kept as an empty feature so the

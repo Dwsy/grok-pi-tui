@@ -119,6 +119,26 @@ jobs:
           grep -E 'xai-grok-diag-server v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
           grep -E 'xai-codebase-graph v[0-9]' "$RUNNER_TEMP/stock-grok-dependencies.txt"
 
+      - name: Assert Pager cuts its direct stock Agent edge in Pi mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo tree --locked -p xai-grok-pager \
+            --no-default-features --target aarch64-apple-darwin \
+            -e normal,build --depth 1 > "$RUNNER_TEMP/pager-no-stock-direct.txt"
+          if grep -E 'xai-grok-agent v[0-9]' "$RUNNER_TEMP/pager-no-stock-direct.txt"; then
+            echo "Pi Pager still directly depends on stock Agent" >&2
+            exit 1
+          fi
+          cargo tree --locked -p xai-grok-pager \
+            --target aarch64-apple-darwin -e normal,build --depth 1 \
+            > "$RUNNER_TEMP/pager-stock-direct.txt"
+          grep -E 'xai-grok-agent v[0-9]' "$RUNNER_TEMP/pager-stock-direct.txt"
+          cargo check --locked --lib -p xai-grok-pager \
+            --no-default-features --target aarch64-apple-darwin
+          cargo check --locked --lib -p xai-grok-pager \
+            --target aarch64-apple-darwin
+
       - name: Check Workspace builds without stock MCP, diag, daemon, or codebase graph (and with stock defaults)
         shell: bash
         run: |

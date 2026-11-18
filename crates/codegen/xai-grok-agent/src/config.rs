@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
+pub use xai_grok_config::agent_scope::AgentScope;
 #[cfg(feature = "stock-tool-dialects")]
 use xai_grok_tools::implementations::codex;
 use xai_grok_tools::implementations::grok_build;
@@ -147,7 +148,7 @@ fn kill_task_tool_config() -> ToolConfig {
 /// In proxy mode the workspace server executes all tools; the shell has zero local dispatch.
 pub fn workspace_grok_build_toolset() -> ToolServerConfig {
     let mut tools = default_grok_build_toolset().tools;
-#[cfg(feature = "stock-tool-dialects")]
+    #[cfg(feature = "stock-tool-dialects")]
     tools.push((&opencode::OpenCodeWriteTool).into());
     tools.push((&grok_build::EnterPlanModeTool).into());
     tools.push((&grok_build::ExitPlanModeTool).into());
@@ -845,34 +846,6 @@ pub enum PromptMode {
 }
 fn default_prompt_mode() -> PromptMode {
     PromptMode::Extend
-}
-/// Where the agent definition was discovered.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum AgentScope {
-    /// .grok/agents/ (project-level, highest priority)
-    Project,
-    /// ~/.grok/agents/ (user-level)
-    User,
-    /// ~/.grok/bundled/agents/ (lowest-priority bundled cache)
-    Bundled,
-    /// Built-in agent (e.g., default_grok_build(), browser_use()).
-    #[default]
-    BuiltIn,
-}
-impl AgentScope {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Project => "project",
-            Self::User => "user",
-            Self::Bundled => "bundled",
-            Self::BuiltIn => "built-in",
-        }
-    }
-}
-impl std::fmt::Display for AgentScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.label())
-    }
 }
 /// Controls which parent MCP servers a subagent inherits.
 /// Custom `Deserialize` because `serde_yaml` 0.9 uses YAML tags for externally-tagged enums.

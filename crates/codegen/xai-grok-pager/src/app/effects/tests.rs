@@ -1890,6 +1890,7 @@ async fn load_card_detail_echoes_identity_and_zeroes_missing_session() {
     }
 }
 /// Verify that every profile name produced by `SessionFlags::agent_profile()` is a valid `BuiltinAgentName` that the shell can resolve.
+#[cfg(feature = "stock-agent")]
 #[test]
 fn agent_profile_names_are_valid_builtins() {
     use std::str::FromStr;
@@ -2438,6 +2439,7 @@ fn to_meta_yolo_suppresses_auto_mode() {
         );
 }
 /// Verify that each resolved profile name produces a valid `AgentDefinition` whose name matches the expected kebab-case string.
+#[cfg(feature = "stock-agent")]
 #[test]
 fn agent_profile_definitions_have_correct_names() {
     use std::str::FromStr;

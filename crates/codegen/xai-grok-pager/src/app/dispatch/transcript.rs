@@ -547,8 +547,12 @@ pub(super) fn dispatch_open_config_agents_modal(
     let session_id = agent.session.session_id.clone();
     let active_agent = agent.session_agent_name.clone();
     // One-shot plugin discovery (same gating as `/mcp doctor` and `inspect`) so plugin-provided agents are listed alongside native ones
+    #[cfg(feature = "stock-agent")]
     let plugin_registry = xai_grok_shell::util::config::load_cli_plugin_registry(&cwd);
+    #[cfg(feature = "stock-agent")]
     let plugin_registry = (!plugin_registry.is_empty()).then_some(plugin_registry);
+    #[cfg(not(feature = "stock-agent"))]
+    let plugin_registry = None;
     let mut modal = AgentsModalState::new(
         &cwd,
         &toggle,
