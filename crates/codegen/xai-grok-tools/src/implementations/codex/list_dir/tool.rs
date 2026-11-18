@@ -5,23 +5,31 @@
 //! absolute paths. See the plan document for the full diff vs the grok-build
 //! `ListDirTool`.
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::collections::VecDeque;
+#[cfg(feature = "stock-tool-dialects")]
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::{ListDirContent, ListDirOutput};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::Expr;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 
 // ─── Constants ──────────────────────────────────────────────────────
 
 /// Maximum length (in bytes) for a single entry name before truncation.
+#[cfg(feature = "stock-tool-dialects")]
 const MAX_ENTRY_LENGTH: usize = 500;
 
 /// Number of spaces per depth level for indentation.
+#[cfg(feature = "stock-tool-dialects")]
 const INDENTATION_SPACES: usize = 2;
 
 // ─── Description ────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str =
     "Lists entries in a local directory with 1-indexed entry numbers and simple type labels.";
 
@@ -61,6 +69,7 @@ pub struct CodexListDirInput {
 // ─── Internal types ─────────────────────────────────────────────────
 
 #[derive(Clone)]
+#[cfg(feature = "stock-tool-dialects")]
 struct DirEntry {
     /// Full relative path from the listing root (used for sorting).
     name: String,
@@ -72,6 +81,7 @@ struct DirEntry {
     kind: DirEntryKind,
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DirEntryKind {
     Directory,
@@ -80,6 +90,7 @@ enum DirEntryKind {
     Other,
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl From<&std::fs::FileType> for DirEntryKind {
     fn from(ft: &std::fs::FileType) -> Self {
         // Check is_symlink() FIRST — on Unix, a symlink to a directory has both is_symlink() and
@@ -100,12 +111,14 @@ impl From<&std::fs::FileType> for DirEntryKind {
 // ─── Tool ───────────────────────────────────────────────────────────
 
 /// Codex-namespace list_dir tool — paginated, depth-limited directory listing.
+#[cfg(feature = "stock-tool-dialects")]
 #[derive(Debug, Default)]
 pub struct CodexListDirTool;
 
 // ─── Core BFS logic ─────────────────────────────────────────────────
 
 /// Orchestrator: collect entries via BFS → sort → paginate → format.
+#[cfg(feature = "stock-tool-dialects")]
 async fn list_dir_slice(
     dir_path: &Path,
     offset: usize,
@@ -152,6 +165,7 @@ async fn list_dir_slice(
 /// BFS walker using `tokio::fs::read_dir`. Collects entries breadth-first up to `max_depth` levels. Directories beyond the depth limit are
 /// listed but not descended into. Uses `PathBuf` for the relative prefix (matching codex's `prefix: &Path` + `prefix.join(&file_name)`). The
 /// raw `PathBuf` is kept for recursion so that subdirectory prefixes are never affected by `format_entry_name` truncation or normalization.
+#[cfg(feature = "stock-tool-dialects")]
 async fn collect_entries(
     dir_path: &Path,
     relative_prefix: &Path,
@@ -217,6 +231,7 @@ async fn collect_entries(
 }
 
 /// Format a single entry line: `"{indent}{display_name}{suffix}"`.
+#[cfg(feature = "stock-tool-dialects")]
 fn format_entry_line(entry: &DirEntry) -> String {
     let indent = " ".repeat(entry.depth * INDENTATION_SPACES);
     let suffix = match entry.kind {
@@ -229,18 +244,21 @@ fn format_entry_line(entry: &DirEntry) -> String {
 }
 
 /// Normalize path separators (backslash → forward slash) and truncate.
+#[cfg(feature = "stock-tool-dialects")]
 fn format_entry_name(path: &str) -> String {
     let normalized = path.replace('\\', "/");
     take_at_char_boundary(&normalized, MAX_ENTRY_LENGTH).to_string()
 }
 
 /// Truncate an `OsStr` file name component at `MAX_ENTRY_LENGTH` bytes.
+#[cfg(feature = "stock-tool-dialects")]
 fn format_entry_component(name: &std::ffi::OsStr) -> String {
     let s = name.to_string_lossy();
     take_at_char_boundary(&s, MAX_ENTRY_LENGTH).to_string()
 }
 
 /// Truncate a string at a char boundary, returning at most `max_bytes` bytes.
+#[cfg(feature = "stock-tool-dialects")]
 fn take_at_char_boundary(s: &str, max_bytes: usize) -> &str {
     let end = crate::util::floor_char_boundary(s, max_bytes);
     &s[..end]
@@ -248,6 +266,7 @@ fn take_at_char_boundary(s: &str, max_bytes: usize) -> &str {
 
 // ─── Tests ──────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for CodexListDirTool {
     fn kind(&self) -> ToolKind {
         ToolKind::ListDir
@@ -348,7 +367,7 @@ impl xai_tool_runtime::Tool for CodexListDirTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use tempfile::TempDir;

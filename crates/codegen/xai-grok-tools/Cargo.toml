@@ -128,6 +128,15 @@ zstd = { workspace = true }
 workspace = true
 
 [features]
+# Stock Grok's non-Pi tool dialects (codex / opencode / grok_build_hashline /
+# grok_build_concise): pure in-crate implementation code, cfg-gated with zero
+# new deps. Pi owns its tools, so grok-pi (no-default-features) skips them.
+# Input/output wire structs stay unconditional (ToolInput/ToolOutput payloads
+# matched by shell/workspace), so this feature gates Tool impls and registration only.
+# NOT in this crate's default: shell->tools dependency edges do not disable
+# default features, so a default here would leak the dialects into the
+# grok-pi closure. The stock binaries enable it via shell's default.
+stock-tool-dialects = []
 default-bazel = ["serde"]
 default = ["serde"]
 serde = []

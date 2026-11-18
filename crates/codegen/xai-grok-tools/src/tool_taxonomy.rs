@@ -156,12 +156,15 @@ mod tests {
         covered(crate::implementations::grok_build::ImageToVideoTool);
         covered(crate::implementations::grok_build::ReferenceToVideoTool);
         covered(crate::implementations::grok_build::AskUserQuestionTool);
-        covered(crate::implementations::opencode::OpenCodeWriteTool);
-        covered(crate::implementations::opencode::OpenCodeEditTool);
-        covered(crate::implementations::opencode::OpenCodeBashTool);
-        covered(crate::implementations::opencode::OpenCodeTodoWriteTool);
-        covered(crate::implementations::codex::ApplyPatchTool);
-        covered(crate::implementations::grok_build_hashline::HashlineEditTool);
+        #[cfg(feature = "stock-tool-dialects")]
+        {
+            covered(crate::implementations::opencode::OpenCodeWriteTool);
+            covered(crate::implementations::opencode::OpenCodeEditTool);
+            covered(crate::implementations::opencode::OpenCodeBashTool);
+            covered(crate::implementations::opencode::OpenCodeTodoWriteTool);
+            covered(crate::implementations::codex::ApplyPatchTool);
+            covered(crate::implementations::grok_build_hashline::HashlineEditTool);
+        }
     }
     /// Spellings with no instantiable definition site in this crate
     /// (client-facing renames) and the deliberate absences.

@@ -13,10 +13,15 @@
 //! - [`indentation`] — indentation-mode reader (exact port of codex `indentation::*`).
 //! - [`tool`] — `CodexReadFileTool` implementation, input types, description.
 
+#[cfg(feature = "stock-tool-dialects")]
 pub mod indentation;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod slice;
+#[cfg(feature = "stock-tool-dialects")]
 pub(crate) mod text_utils;
 pub mod tool;
 
 // Re-exports for convenience.
-pub use tool::{CodexReadFileInput, CodexReadFileTool};
+pub use tool::CodexReadFileInput;
+#[cfg(feature = "stock-tool-dialects")]
+pub use tool::CodexReadFileTool;

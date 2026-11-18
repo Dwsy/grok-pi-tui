@@ -14,6 +14,7 @@ stock-gcs = ["xai-file-utils/stock-gcs"]
 stock-pptx = ["xai-grok-tools/stock-pptx"]
 stock-diag = ["xai-grok-workspace/stock-diag"]
 stock-codebase-graph = ["dep:xai-codebase-graph", "xai-grok-workspace/stock-codebase-graph"]
+stock-tool-dialects = ["xai-grok-tools/stock-tool-dialects", "xai-grok-agent/stock-tool-dialects"]
 default = [
     "stock-mcp",
     "stock-lsp",
@@ -21,6 +22,7 @@ default = [
     "stock-pptx",
     "stock-diag",
     "stock-codebase-graph",
+    "stock-tool-dialects",
 ]
 dhat-heap = ["dep:dhat"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,

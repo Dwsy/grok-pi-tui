@@ -16,26 +16,35 @@
 //! - `NotificationHandle` — emit `FileWritten` notifications (required)
 //! - `ToolCallId` — notification correlation (required)
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::sync::Arc;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::computer::types::AsyncFileSystem;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::implementations::grok_build::search_replace::CONTEXT_LINES;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::implementations::grok_build::search_replace::helpers::{
     build_edit_details, render_snippet, replace_using_positions,
 };
+#[cfg(feature = "stock-tool-dialects")]
 use crate::notification::types::FileWritten;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::{
     SearchReplaceEditContextInformation, SearchReplaceEditDetail, SearchReplaceEditsApplied,
     SearchReplaceOutput,
 };
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::Expr;
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 use crate::types::resources::Resources;
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::{
     Cwd, DisplayCwd, FileSystem, NotificationHandle, SharedResources, resolve_model_path,
 };
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -45,6 +54,7 @@ use crate::types::tool::{ToolKind, ToolNamespace};
 // NOTE: OpenCode's `EditInput` serializes camelCase (`oldString`, `newString`, `replaceAll`), so param refs must use
 // the camelCase schema property names — the snake_case `params.edit.old_string` keys of the grok_build twin resolve to
 // "" here (the kind-params map is keyed by schema property names).
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = r#"Performs exact string replacements in files.
 
 Usage:${%- if tools.by_kind.read %}
@@ -123,8 +133,10 @@ impl From<EditInput> for crate::types::tool_io::ToolInput {
 
 /// OpenCode `edit` tool — performs exact string replacements in files.
 #[derive(Debug, Default)]
+#[cfg(feature = "stock-tool-dialects")]
 pub struct EditTool;
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for EditTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Edit
@@ -147,6 +159,7 @@ impl crate::types::tool_metadata::ToolMetadata for EditTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for EditTool {
     type Args = EditInput;
     type Output = SearchReplaceOutput;
@@ -248,6 +261,7 @@ impl xai_tool_runtime::Tool for EditTool {
 // ───────────────────────────────────────────────────────────────────────────
 
 /// Create parent directories for a file path if they don't exist.
+#[cfg(feature = "stock-tool-dialects")]
 async fn ensure_parent_dirs(path: &std::path::Path) -> Result<(), xai_tool_runtime::ToolError> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -263,6 +277,7 @@ async fn ensure_parent_dirs(path: &std::path::Path) -> Result<(), xai_tool_runti
 }
 
 /// Handle new file creation when `old_string` is empty.
+#[cfg(feature = "stock-tool-dialects")]
 async fn handle_new_file_creation(
     input: &EditInput,
     resources: crate::types::resources::SharedResources,
@@ -356,6 +371,7 @@ async fn handle_new_file_creation(
 }
 
 /// Handle replacement in an existing file.
+#[cfg(feature = "stock-tool-dialects")]
 async fn handle_replacement(
     input: &EditInput,
     resources: SharedResources,
@@ -514,7 +530,7 @@ async fn handle_replacement(
 // Tests
 // ───────────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx;

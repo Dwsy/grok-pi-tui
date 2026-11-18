@@ -3,26 +3,39 @@
 //! Wires the pure-library patch engine (parser + apply) through `AsyncFileSystem`
 //! for all I/O and emits `FileWritten` notifications.
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::fmt::Write as _;
+#[cfg(feature = "stock-tool-dialects")]
 use std::path::PathBuf;
+#[cfg(feature = "stock-tool-dialects")]
 use std::sync::Arc;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::computer::types::AsyncFileSystem;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::notification::types::FileWritten;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::{ApplyPatchFileResult, ApplyPatchOutput};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::Expr;
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::{Cwd, FileSystem, NotificationHandle, SharedResources};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 
+#[cfg(feature = "stock-tool-dialects")]
 use super::errors::ParseError;
+#[cfg(feature = "stock-tool-dialects")]
 use super::parser::{self, Hunk};
+#[cfg(feature = "stock-tool-dialects")]
 use super::{apply, errors::ApplyPatchError};
 
 // ─── Description ─────────────────────────────────────────────────────
 
 /// Tool description derived from the codex `apply_patch_tool_instructions.md`.
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = r#"Use this tool to edit files.
 Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:
 
@@ -106,6 +119,7 @@ pub struct ApplyPatchInput {
 
 // ─── Tool ────────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 /// ApplyPatch tool — applies multi-file patches in the codex patch format.
 #[derive(Debug, Default)]
 pub struct ApplyPatchTool;
@@ -113,6 +127,7 @@ pub struct ApplyPatchTool;
 // ─── Internal types ──────────────────────────────────────────────────
 
 /// A computed file change — all content determined in-memory, ready to write.
+#[cfg(feature = "stock-tool-dialects")]
 enum FileChange {
     Add {
         path: PathBuf,
@@ -138,6 +153,7 @@ enum FileChange {
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 /// Create parent directories for a file path if they don't exist.
+#[cfg(feature = "stock-tool-dialects")]
 async fn ensure_parent_dirs(path: &std::path::Path) -> Result<(), xai_tool_runtime::ToolError> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -154,6 +170,7 @@ async fn ensure_parent_dirs(path: &std::path::Path) -> Result<(), xai_tool_runti
 
 /// Compute all file changes in memory without writing anything.
 /// Returns an error string if any hunk can't be applied.
+#[cfg(feature = "stock-tool-dialects")]
 async fn compute_all_changes(
     cwd: &std::path::Path,
     fs: &Arc<dyn AsyncFileSystem>,
@@ -224,6 +241,7 @@ async fn compute_all_changes(
 /// failures such as protected/nested paths and missing/stale read snapshots.
 /// The policy does not expose removal, so deletes and moves inside memory roots
 /// fail closed (including when classification itself fails).
+#[cfg(feature = "stock-tool-dialects")]
 async fn preflight_memory_v2_changes(
     resources: &SharedResources,
     changes: &[FileChange],
@@ -264,6 +282,7 @@ async fn preflight_memory_v2_changes(
     Ok(())
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 async fn reject_memory_v2_destructive_path(
     resources: &SharedResources,
     path: &std::path::Path,
@@ -281,6 +300,7 @@ async fn reject_memory_v2_destructive_path(
 
 /// Route a create/replace through memory v2. Returns `true` when the policy
 /// already persisted the file (skip the ordinary filesystem write).
+#[cfg(feature = "stock-tool-dialects")]
 async fn write_via_memory_v2(
     resources: &SharedResources,
     path: &std::path::Path,
@@ -293,6 +313,7 @@ async fn write_via_memory_v2(
 }
 
 /// Read a file via AsyncFileSystem and convert to String.
+#[cfg(feature = "stock-tool-dialects")]
 async fn read_file_as_string(
     fs: &Arc<dyn AsyncFileSystem>,
     path: &std::path::Path,
@@ -302,6 +323,7 @@ async fn read_file_as_string(
 }
 
 /// Build the codex-style summary string.
+#[cfg(feature = "stock-tool-dialects")]
 fn build_summary(results: &[ApplyPatchFileResult]) -> String {
     let mut out = String::from("Success. Updated the following files:\n");
     for r in results {
@@ -318,6 +340,7 @@ fn build_summary(results: &[ApplyPatchFileResult]) -> String {
 
 // ─── Tests ───────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for ApplyPatchTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Edit
@@ -340,6 +363,7 @@ impl crate::types::tool_metadata::ToolMetadata for ApplyPatchTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for ApplyPatchTool {
     type Args = ApplyPatchInput;
     type Output = ApplyPatchOutput;
@@ -577,7 +601,7 @@ impl xai_tool_runtime::Tool for ApplyPatchTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::computer::local::LocalFs;

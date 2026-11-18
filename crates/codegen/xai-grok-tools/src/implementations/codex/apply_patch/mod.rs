@@ -12,14 +12,23 @@
 //! - [`parser`] — `parse_patch()`, `Hunk`, `UpdateFileChunk`.
 //! - [`seek_sequence`] — 4-tier fuzzy line matcher.
 
+#[cfg(feature = "stock-tool-dialects")]
 pub mod apply;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod errors;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod parser;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod seek_sequence;
 pub mod tool;
 
 // Re-exports for convenience.
+#[cfg(feature = "stock-tool-dialects")]
 pub use apply::derive_new_contents;
+#[cfg(feature = "stock-tool-dialects")]
 pub use errors::{ApplyPatchError, ParseError};
+#[cfg(feature = "stock-tool-dialects")]
 pub use parser::{Hunk, ParsedPatch, UpdateFileChunk, parse_patch};
-pub use tool::{ApplyPatchInput, ApplyPatchTool};
+pub use tool::ApplyPatchInput;
+#[cfg(feature = "stock-tool-dialects")]
+pub use tool::ApplyPatchTool;

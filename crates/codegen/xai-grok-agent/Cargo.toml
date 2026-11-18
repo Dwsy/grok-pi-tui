@@ -32,6 +32,12 @@ zeroize = "1"
 xai-tool-types.workspace = true
 
 [features]
+# Stock Grok's non-Pi dialect agent presets (codex/opencode/concise/hashline toolsets);
+# forwards to xai-grok-tools so the dialect Tool impls register.
+# NOT in this crate's default: shell->agent dependency edges do not disable
+# default features, so a default here would leak the dialects into the
+# grok-pi closure. The stock binaries enable it via shell's default.
+stock-tool-dialects = ["xai-grok-tools/stock-tool-dialects"]
 default = []
 default-bazel = []
 

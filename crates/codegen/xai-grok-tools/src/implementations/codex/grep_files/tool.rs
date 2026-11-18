@@ -5,28 +5,40 @@
 //! modification time. See the plan document for the full diff vs the
 //! grok-build `GrepTool`.
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "stock-tool-dialects")]
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "stock-tool-dialects")]
 use tokio::process::Command;
+#[cfg(feature = "stock-tool-dialects")]
 use tokio::time::timeout;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::implementations::grok_build::grep::ripgrep::rg_path;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::CodexGrepFilesOutput;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::Expr;
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::Cwd;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 
 // ─── Constants ──────────────────────────────────────────────────────
 
 const DEFAULT_LIMIT: usize = 100;
+#[cfg(feature = "stock-tool-dialects")]
 const MAX_LIMIT: usize = 2000;
+#[cfg(feature = "stock-tool-dialects")]
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ─── Description ────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = "Finds files whose contents match the ${{ params.search.pattern }} and lists them by modification time.";
 
 // ─── Input ──────────────────────────────────────────────────────────
@@ -59,6 +71,7 @@ pub struct CodexGrepFilesInput {
 /// Codex-namespace grep_files tool — file-path-only regex search. Shares `ToolKind::Search` with the grok-build `GrepTool`. These tools are
 /// namespace-exclusive — consumers enable either `GrokBuild` or `Codex` search, never both simultaneously. This follows the same pattern as
 /// `CodexListDirTool`/`ListDirTool` (`ToolKind::ListDir`) and `CodexReadFileTool`/`ReadFileImpl` (`ToolKind::Read`).
+#[cfg(feature = "stock-tool-dialects")]
 #[derive(Debug, Default)]
 pub struct CodexGrepFilesTool;
 
@@ -67,6 +80,7 @@ pub struct CodexGrepFilesTool;
 /// Run `rg --files-with-matches` and return matching file paths.
 ///
 /// Direct port from `codex-rs/core/src/tools/handlers/grep_files.rs`.
+#[cfg(feature = "stock-tool-dialects")]
 async fn run_rg_search(
     pattern: &str,
     include: Option<&str>,
@@ -111,6 +125,7 @@ async fn run_rg_search(
 /// Parse newline-separated file paths from rg stdout.
 ///
 /// Direct port from `codex-rs/core/src/tools/handlers/grep_files.rs`.
+#[cfg(feature = "stock-tool-dialects")]
 fn parse_results(stdout: &[u8], limit: usize) -> Vec<String> {
     let mut results = Vec::new();
     for line in stdout.split(|byte| *byte == b'\n') {
@@ -132,6 +147,7 @@ fn parse_results(stdout: &[u8], limit: usize) -> Vec<String> {
 
 // ─── Tests ──────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for CodexGrepFilesTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Search
@@ -150,6 +166,7 @@ impl crate::types::tool_metadata::ToolMetadata for CodexGrepFilesTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for CodexGrepFilesTool {
     type Args = CodexGrepFilesInput;
     type Output = CodexGrepFilesOutput;
@@ -247,7 +264,7 @@ impl xai_tool_runtime::Tool for CodexGrepFilesTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::types::resources::Resources;

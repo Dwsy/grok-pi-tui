@@ -14,7 +14,9 @@ use crate::implementations::BashTool;
 use crate::implementations::grok_build::task::TaskTool;
 use crate::implementations::grok_build::task::backend::SubagentBackendResource;
 use crate::implementations::grok_build::task::types::{SubagentSnapshot, SubagentSnapshotStatus};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::implementations::grok_build_concise::BashConciseTool;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::implementations::opencode::OpenCodeBashTool;
 use crate::implementations::task_output::tool::snapshot_to_result;
 use crate::types::requirements::{Expr, ToolParamsRequirement, ToolRequirement};
@@ -154,7 +156,8 @@ pub(crate) fn background_bash_requires_exprs() -> Vec<Expr<ToolRequirement>> {
             value: Expr::Value(serde_json::Value::Bool(true)),
         })),
     });
-    let grok_build_concise_bash = Expr::Value(ToolRequirement::Tool {
+    #[cfg(feature = "stock-tool-dialects")]
+let grok_build_concise_bash = Expr::Value(ToolRequirement::Tool {
         namespace: ToolMetadata::tool_namespace(&BashConciseTool).to_string(),
         id: xai_tool_runtime::Tool::id(&BashConciseTool)
             .as_str()
@@ -164,14 +167,18 @@ pub(crate) fn background_bash_requires_exprs() -> Vec<Expr<ToolRequirement>> {
             value: Expr::Value(serde_json::Value::Bool(true)),
         })),
     });
-    let opencode_bash = Expr::Value(ToolRequirement::Tool {
+#[cfg(feature = "stock-tool-dialects")]
+let opencode_bash = Expr::Value(ToolRequirement::Tool {
         namespace: ToolMetadata::tool_namespace(&OpenCodeBashTool).to_string(),
         id: xai_tool_runtime::Tool::id(&OpenCodeBashTool)
             .as_str()
             .to_string(),
         if_params: None,
     });
-    vec![grok_build_bash, grok_build_concise_bash, opencode_bash]
+#[cfg(feature = "stock-tool-dialects")]
+vec![grok_build_bash, grok_build_concise_bash, opencode_bash]
+#[cfg(not(feature = "stock-tool-dialects"))]
+vec![grok_build_bash]
 }
 
 /// Shared `requires_expr` for both `get_task_output` and `wait_tasks`.

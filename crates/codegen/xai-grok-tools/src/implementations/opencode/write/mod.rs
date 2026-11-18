@@ -2,21 +2,27 @@
 //!
 //! Creates parent directories as needed and emits `FileWritten` notifications.
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::notification::types::FileWritten;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::{
     SearchReplaceEditContextInformation, SearchReplaceEditDetail, SearchReplaceEditsApplied,
     SearchReplaceOutput,
 };
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::Expr;
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::{
     Cwd, DisplayCwd, FileSystem, NotificationHandle, SharedResources, resolve_model_path,
 };
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 
 // ─── Description ─────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = r#"Create or overwrite a file.
 
 - Writing to an existing path replaces the file${%- if tools.by_kind.read %} — read it first with the ${{ tools.by_kind.read }} tool${%- endif %}.
@@ -38,10 +44,13 @@ pub struct WriteInput {
 
 /// OpenCode write tool — writes entire file contents to disk.
 #[derive(Debug, Default)]
+#[cfg(feature = "stock-tool-dialects")]
 pub struct WriteTool;
 
+#[cfg(feature = "stock-tool-dialects")]
 type WriteOutput = SearchReplaceOutput;
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for WriteTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Write
@@ -64,6 +73,7 @@ impl crate::types::tool_metadata::ToolMetadata for WriteTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for WriteTool {
     type Args = WriteInput;
     type Output = WriteOutput;
@@ -217,7 +227,7 @@ impl xai_tool_runtime::Tool for WriteTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use crate::types::tool_metadata::test_ctx;
     use std::path::PathBuf;

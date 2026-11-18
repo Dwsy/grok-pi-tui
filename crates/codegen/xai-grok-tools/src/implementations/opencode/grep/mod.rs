@@ -4,30 +4,42 @@
 //! matches by file modification time (most recent first), caps at 100
 //! results, truncates long lines, and formats as grouped output.
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::collections::HashMap;
+#[cfg(feature = "stock-tool-dialects")]
 use std::process::Stdio;
 
+#[cfg(feature = "stock-tool-dialects")]
 use tokio::io::AsyncReadExt;
+#[cfg(feature = "stock-tool-dialects")]
 use tokio::process::Command;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::implementations::grok_build::grep::ripgrep::rg_path;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::{GrepFileMatch, GrepLineMatch, GrepSearchOutput};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::{Expr, ToolRequirement};
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::{Cwd, SharedResources};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 
 // ───────────────────────────────────────────────────────────────────────────
 // Constants
 // ───────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const RESULT_LIMIT: usize = 100;
+#[cfg(feature = "stock-tool-dialects")]
 const MAX_LINE_LENGTH: usize = 2000;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Description
 // ───────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = r#"A powerful search tool built on ripgrep
 
 Usage:
@@ -88,10 +100,12 @@ impl From<GrepInput> for crate::types::tool_io::ToolInput {
 // ───────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
+#[cfg(feature = "stock-tool-dialects")]
 pub struct GrepTool;
 
 // ─── Tests ──────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for GrepTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Search
@@ -110,6 +124,7 @@ impl crate::types::tool_metadata::ToolMetadata for GrepTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for GrepTool {
     type Args = GrepInput;
     type Output = GrepSearchOutput;
@@ -370,7 +385,7 @@ impl xai_tool_runtime::Tool for GrepTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx;

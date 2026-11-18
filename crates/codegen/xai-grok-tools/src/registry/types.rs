@@ -1,9 +1,6 @@
 use crate::{
     computer::types::{AsyncFileSystem, TerminalBackend},
-    implementations::{
-        codex, grok_build, grok_build_concise, grok_build_hashline, opencode,
-        skills::types::SkillInfo,
-    },
+    implementations::{grok_build, skills::types::SkillInfo},
     notification::ToolNotificationHandle,
     persistence::ResourcesPersistence,
     reminders::SkillDiscoveryReminder,
@@ -20,6 +17,8 @@ use crate::{
     },
     util::remap::remap_json_keys,
 };
+#[cfg(feature = "stock-tool-dialects")]
+use crate::implementations::{codex, grok_build_concise, grok_build_hashline, opencode};
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -642,18 +641,21 @@ impl ToolRegistryBuilder {
         b.register::<grok_build::SchedulerCreateTool>();
         b.register::<grok_build::SchedulerDeleteTool>();
         b.register::<grok_build::SchedulerListTool>();
-        b.register::<codex::apply_patch::ApplyPatchTool>();
-        b.register::<codex::list_dir::CodexListDirTool>();
-        b.register::<codex::grep_files::CodexGrepFilesTool>();
-        b.register::<codex::read_file::CodexReadFileTool>();
-        b.register::<opencode::OpenCodeBashTool>();
-        b.register::<opencode::OpenCodeReadTool>();
-        b.register::<opencode::OpenCodeEditTool>();
-        b.register::<opencode::OpenCodeWriteTool>();
-        b.register::<opencode::OpenCodeGrepTool>();
-        b.register::<opencode::OpenCodeGlobTool>();
-        b.register::<opencode::OpenCodeTodoWriteTool>();
-        b.register::<opencode::OpenCodeSkillTool>();
+        #[cfg(feature = "stock-tool-dialects")]
+        {
+            b.register::<codex::apply_patch::ApplyPatchTool>();
+            b.register::<codex::list_dir::CodexListDirTool>();
+            b.register::<codex::grep_files::CodexGrepFilesTool>();
+            b.register::<codex::read_file::CodexReadFileTool>();
+            b.register::<opencode::OpenCodeBashTool>();
+            b.register::<opencode::OpenCodeReadTool>();
+            b.register::<opencode::OpenCodeEditTool>();
+            b.register::<opencode::OpenCodeWriteTool>();
+            b.register::<opencode::OpenCodeGrepTool>();
+            b.register::<opencode::OpenCodeGlobTool>();
+            b.register::<opencode::OpenCodeTodoWriteTool>();
+            b.register::<opencode::OpenCodeSkillTool>();
+        }
         b.register::<crate::implementations::memory::search_tool::MemorySearchImpl>();
         b.register::<crate::implementations::memory::get_tool::MemoryGetImpl>();
         b.register::<crate::implementations::search_tool::SearchTool>();
@@ -661,30 +663,33 @@ impl ToolRegistryBuilder {
                 crate::implementations::use_tool::UseTool,
                 crate::implementations::use_tool::UseToolParams,
             >();
-        b.register_with_params::<
+        #[cfg(feature = "stock-tool-dialects")]
+        {
+            b.register_with_params::<
                 grok_build_concise::ReadFileConciseTool,
                 grok_build::read_file::ReadFileParams,
             >();
-        b.register_with_params::<
+            b.register_with_params::<
                 grok_build_concise::SearchReplaceConciseTool,
                 grok_build::search_replace::SearchReplaceParams,
             >();
-        b.register_with_params::<
+            b.register_with_params::<
                 grok_build_concise::BashConciseTool,
                 grok_build::bash::BashParams,
             >();
-        b.register_with_params::<
+            b.register_with_params::<
                 grok_build_hashline::HashlineReadTool,
                 grok_build_hashline::config::HashlineSchemeParams,
             >();
-        b.register_with_params::<
+            b.register_with_params::<
                 grok_build_hashline::HashlineEditTool,
                 grok_build_hashline::config::HashlineSchemeParams,
             >();
-        b.register_with_params::<
+            b.register_with_params::<
                 grok_build_hashline::HashlineGrepTool,
                 grok_build_hashline::config::HashlineSchemeParams,
             >();
+        }
         b.register_reminder(crate::reminders::LspDiagnosticsReminder);
         b.register_reminder(crate::reminders::TaskCompletionReminder);
         b.register_reminder(SkillDiscoveryReminder);
@@ -2109,6 +2114,7 @@ mod tests {
     /// Regression test: `kind_params` must merge input params from ALL tools that share a `ToolKind`, not just the first one. Before the fix, the
     /// `kind_params` builder used `if map.is_empty()` to seed identity param-name mappings only from the **first** tool of each kind. At runtime,
     /// the template `${{ params.edit.replace_all }}` failed with "undefined value".
+    #[cfg(all(test, feature = "stock-tool-dialects"))]
     #[tokio::test]
     async fn kind_params_merged_across_multiple_tools_of_same_kind() {
         let tmp = TempDir::new().unwrap();
@@ -2726,6 +2732,7 @@ mod tests {
         }
     }
     /// Verify GrokBuildConcise tools can be finalized and produce concise output.
+    #[cfg(all(test, feature = "stock-tool-dialects"))]
     #[tokio::test]
     async fn test_concise_namespace_tools() {
         use crate::types::output::{ReadFileOutput, ToolOutput};
@@ -3355,6 +3362,7 @@ mod tests {
             "error must surface the no-terminal violation, got: {msg}"
         );
     }
+    #[cfg(all(test, feature = "stock-tool-dialects"))]
     #[tokio::test]
     async fn non_pi_finalized_contract_snapshot_is_unchanged() {
         let tmp = TempDir::new().unwrap();
@@ -4440,6 +4448,7 @@ mod tests {
     /// End-to-end: construct a hashline ToolServerConfig with custom
     /// params + shared utilities, finalize, and verify the resulting
     /// toolset contains hashline trio + utilities, not standard file tools.
+    #[cfg(all(test, feature = "stock-tool-dialects"))]
     #[tokio::test]
     async fn hashline_toolset_e2e_with_utilities() {
         let tmp = TempDir::new().unwrap();

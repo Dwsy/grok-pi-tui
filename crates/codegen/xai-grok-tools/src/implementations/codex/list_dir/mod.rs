@@ -4,4 +4,6 @@
 
 pub mod tool;
 
-pub use tool::{CodexListDirInput, CodexListDirTool};
+pub use tool::CodexListDirInput;
+#[cfg(feature = "stock-tool-dialects")]
+pub use tool::CodexListDirTool;

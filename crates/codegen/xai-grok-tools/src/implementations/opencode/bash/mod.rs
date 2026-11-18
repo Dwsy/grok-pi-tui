@@ -17,21 +17,30 @@
 //! - `NotificationHandle` — bash execution notifications (optional, noop fallback)
 //! - `TruncationCfg` — max output bytes override (optional)
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::path::PathBuf;
+#[cfg(feature = "stock-tool-dialects")]
 use std::time::Duration;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::DEFAULT_TOOL_OUTPUT_CHARS;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::computer::types::TerminalRunRequest;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::notification::types::{
     BashExecutionComplete, BashExecutionFailed, BashExecutionTimeout, BashNotificationBase,
 };
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::{BashOutput, BashToolOutput};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::{Expr, ToolRequirement};
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::{
     Cwd, NotificationHandle, SessionEnv, SessionFolder, SharedResources, Terminal, TruncationCfg,
 };
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 use crate::types::tool_io::ToolInput;
 
@@ -39,13 +48,16 @@ use crate::types::tool_io::ToolInput;
 // Constants
 // ───────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const MAX_TIMEOUT_MS: u64 = 600_000; // 10 minutes
+#[cfg(feature = "stock-tool-dialects")]
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ───────────────────────────────────────────────────────────────────────────
 // Description
 // ───────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = r#"Executes a given bash command in a shell session with optional timeout, ensuring proper handling and security measures. Each command runs in a fresh shell: working directory changes and environment variables do not persist between calls.
 IMPORTANT: This tool is for terminal operations like git, npm, docker, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files) - use the specialized tools for this instead.
 
@@ -231,9 +243,11 @@ impl From<BashInput> for ToolInput {
 // ───────────────────────────────────────────────────────────────────────────
 
 /// OpenCode bash tool — executes shell commands via the `Terminal` backend.
+#[cfg(feature = "stock-tool-dialects")]
 #[derive(Debug, Default)]
 pub struct BashTool;
 
+#[cfg(feature = "stock-tool-dialects")]
 impl BashTool {
     /// Compute the effective timeout: clamp user-provided ms, or use default.
     fn effective_timeout(input_timeout_ms: Option<u64>) -> Duration {
@@ -267,6 +281,7 @@ impl BashTool {
 // Into<ToolOutput> for BashToolOutput
 // ───────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 impl From<BashToolOutput> for crate::types::output::ToolOutput {
     fn from(o: BashToolOutput) -> Self {
         match o {
@@ -278,6 +293,7 @@ impl From<BashToolOutput> for crate::types::output::ToolOutput {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for BashTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Execute
@@ -307,6 +323,7 @@ impl crate::types::tool_metadata::ToolMetadata for BashTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for BashTool {
     type Args = BashInput;
     type Output = BashToolOutput;
@@ -459,7 +476,7 @@ impl xai_tool_runtime::Tool for BashTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx;

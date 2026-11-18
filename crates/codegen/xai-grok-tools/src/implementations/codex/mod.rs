@@ -16,7 +16,11 @@ pub mod grep_files;
 pub mod list_dir;
 pub mod read_file;
 
+#[cfg(feature = "stock-tool-dialects")]
 pub use apply_patch::ApplyPatchTool;
+#[cfg(feature = "stock-tool-dialects")]
 pub use grep_files::CodexGrepFilesTool;
+#[cfg(feature = "stock-tool-dialects")]
 pub use list_dir::CodexListDirTool;
+#[cfg(feature = "stock-tool-dialects")]
 pub use read_file::CodexReadFileTool;

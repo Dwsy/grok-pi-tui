@@ -789,6 +789,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(test, feature = "stock-tool-dialects"))]
     fn test_by_name_builtin_codex() {
         let def = by_name("codex");
         assert!(def.is_some());

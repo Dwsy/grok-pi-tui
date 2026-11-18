@@ -3,20 +3,27 @@
 //! Reads files via `AsyncFileSystem` and produces output in the codex
 //! `L{n}: {content}` format. Supports both slice mode and indentation mode.
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::path::PathBuf;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::{FileContent, ReadFileOutput};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::Expr;
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::{FileSystem, SharedResources};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 
+#[cfg(feature = "stock-tool-dialects")]
 use super::{indentation, slice};
 
 // ─── Description ─────────────────────────────────────────────────────
 
 /// Tool description — word-for-word copy from codex `create_read_file_tool()` in
 /// `codex-rs/core/src/tools/spec.rs` (line 1233).
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = "Reads a local file with 1-indexed line numbers, supporting slice and indentation-aware block modes.";
 
 // ─── Input ───────────────────────────────────────────────────────────
@@ -122,11 +129,13 @@ impl Default for IndentationArgs {
 // ─── Tool ────────────────────────────────────────────────────────────
 
 /// Codex read_file tool — reads files in the codex `L{n}: {content}` format.
+#[cfg(feature = "stock-tool-dialects")]
 #[derive(Debug, Default)]
 pub struct CodexReadFileTool;
 
 // ─── Tests ───────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for CodexReadFileTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Read
@@ -145,6 +154,7 @@ impl crate::types::tool_metadata::ToolMetadata for CodexReadFileTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for CodexReadFileTool {
     type Args = CodexReadFileInput;
     type Output = ReadFileOutput;
@@ -268,7 +278,7 @@ impl xai_tool_runtime::Tool for CodexReadFileTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::computer::local::LocalFs;

@@ -5,23 +5,32 @@
 //! to avoid line-shift interference. Returns fresh-anchor snippets on success
 //! and structured error context on validation failures.
 
+#[cfg(feature = "stock-tool-dialects")]
 pub mod apply;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod range_policy;
 pub mod types;
 
 pub use types::{HashlineEditInput, HashlineEditOutput, HashlineOp};
 
+#[cfg(feature = "stock-tool-dialects")]
 use super::config::HashlineSchemeParams;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::{Expr, ToolRequirement};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::resources::{
     Cwd, DisplayCwd, FileSystem, Params, PathNotFoundHints, display_cwd_or_cwd,
 };
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::resources::resolve_model_path;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::util::format_not_found_error;
 
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = r#"Edit a file using anchors${%- if tools.by_kind.read and tools.by_kind.search %} from ${{ tools.by_kind.read }} or ${{ tools.by_kind.search }}${%- elif tools.by_kind.read %} from ${{ tools.by_kind.read }}${%- elif tools.by_kind.search %} from ${{ tools.by_kind.search }}${%- endif %}.
 
 Operations (use the "op" field):
@@ -69,8 +78,10 @@ Follow-up edits:
 
 /// `hashline_edit` tool — edits files using anchor references.
 #[derive(Debug, Default)]
+#[cfg(feature = "stock-tool-dialects")]
 pub struct HashlineEditTool;
 
+#[cfg(feature = "stock-tool-dialects")]
 impl HashlineEditTool {
     /// Build a `FileNotFound` output with enriched path hints (if enabled).
     async fn file_not_found(
@@ -210,6 +221,7 @@ fn to_search_replace(
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for HashlineEditTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Edit
@@ -250,6 +262,7 @@ impl crate::types::tool_metadata::ToolMetadata for HashlineEditTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for HashlineEditTool {
     type Args = HashlineEditInput;
     type Output = crate::types::output::SearchReplaceOutput;
@@ -476,7 +489,7 @@ impl xai_tool_runtime::Tool for HashlineEditTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx;

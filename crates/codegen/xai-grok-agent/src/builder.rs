@@ -666,10 +666,12 @@ impl AgentBuilder {
                     (&xai_grok_tools::implementations::grok_build::ReferenceToVideoTool).into(),
                 );
             }
+            #[cfg(feature = "stock-tool-dialects")]
             let has_write_tool = tool_config
                 .tools
                 .iter()
                 .any(|tc| tc.id.ends_with(":write") || tc.id.ends_with(":Write"));
+            #[cfg(feature = "stock-tool-dialects")]
             if self.write_file_enabled && !has_write_tool {
                 tool_config
                     .tools

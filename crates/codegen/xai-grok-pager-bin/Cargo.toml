@@ -115,6 +115,7 @@ default = [
     "stock-codebase-graph",
     "stock-s3",
     "stock-gcs",
+    "stock-tool-dialects",
     ]
 default-bazel = [
     "stock-mcp",
@@ -130,6 +131,7 @@ default-bazel = [
     "stock-codebase-graph",
     "stock-s3",
     "stock-gcs",
+    "stock-tool-dialects",
     ]
 stock-mcp = [
     "xai-grok-shell/stock-mcp",
@@ -145,6 +147,7 @@ stock-web-fetch = ["xai-grok-shell/stock-web-fetch"]
 stock-pptx = ["xai-grok-shell/stock-pptx"]
 stock-diag = ["xai-grok-shell/stock-diag"]
 stock-codebase-graph = ["xai-grok-shell/stock-codebase-graph"]
+stock-tool-dialects = ["xai-grok-shell/stock-tool-dialects"]
 stock-s3 = ["xai-grok-shell/stock-s3"]
 stock-gcs = ["xai-grok-shell/stock-gcs"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]

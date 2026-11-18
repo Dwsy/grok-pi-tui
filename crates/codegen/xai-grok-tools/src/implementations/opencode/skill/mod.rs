@@ -4,17 +4,24 @@
 //! lists up to 10 bundled files from the skill directory, and returns
 //! the result wrapped in `<skill_content>` XML.
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::path::Path;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::implementations::skills::skill::{SkillOutput, extract_skill_body, format_skill_name};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::implementations::skills::types::SkillInfo;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::{Expr, ToolRequirement};
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::{AvailableSkills, SharedResources};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 
 // ─── Description ─────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = r#"Load a specialized skill that provides domain-specific instructions and workflows.
 
 When you recognize that a task matches one of the available skills listed below, use this tool to load the full skill instructions.
@@ -74,6 +81,7 @@ impl From<SkillInput> for crate::types::tool_io::ToolInput {
 
 /// OpenCode skill tool — loads specialized skill instructions into the conversation.
 #[derive(Debug, Default)]
+#[cfg(feature = "stock-tool-dialects")]
 pub struct SkillTool;
 
 /// Result of looking up a skill by name.
@@ -90,6 +98,7 @@ enum FindSkillResult<'a> {
 /// Find a skill by name from the available skills list. Supports both fully-qualified names (`"local:commit"`) and
 /// short names (`"commit"`). When a short name matches multiple skills across scopes, returns `Ambiguous` with the
 /// qualified names so the caller can ask for disambiguation instead of silently picking first-match.
+#[cfg(feature = "stock-tool-dialects")]
 fn find_skill<'a>(name: &str, skills: &'a [SkillInfo]) -> FindSkillResult<'a> {
     // First try exact match with fully qualified name -- always unambiguous.
     if let Some(skill) = skills
@@ -115,6 +124,7 @@ fn find_skill<'a>(name: &str, skills: &'a [SkillInfo]) -> FindSkillResult<'a> {
 }
 
 /// Load skill content from its SKILL.md file, stripping YAML frontmatter.
+#[cfg(feature = "stock-tool-dialects")]
 async fn load_skill_content(skill: &SkillInfo) -> Result<String, String> {
     let path = Path::new(&skill.path);
     match tokio::fs::read_to_string(path).await {
@@ -124,6 +134,7 @@ async fn load_skill_content(skill: &SkillInfo) -> Result<String, String> {
 }
 
 /// List up to `limit` bundled files in the skill directory, excluding SKILL.md.
+#[cfg(feature = "stock-tool-dialects")]
 async fn list_skill_files(skill: &SkillInfo, limit: usize) -> Vec<String> {
     let skill_path = Path::new(&skill.path);
     let dir = match skill_path.parent() {
@@ -187,6 +198,7 @@ fn format_output(skill: &SkillInfo, content: &str, files: &[String]) -> String {
 
 // ─── Tests ───────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for SkillTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Skill
@@ -205,6 +217,7 @@ impl crate::types::tool_metadata::ToolMetadata for SkillTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for SkillTool {
     type Args = SkillInput;
     type Output = SkillOutput;
@@ -321,7 +334,7 @@ impl xai_tool_runtime::Tool for SkillTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx;

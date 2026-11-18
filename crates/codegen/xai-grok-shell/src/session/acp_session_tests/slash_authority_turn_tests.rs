@@ -628,6 +628,7 @@ async fn parent_compact_and_available_skill_execute_but_other_slashes_stay_inert
         .await;
 }
 
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 #[tokio::test(flavor = "current_thread")]
 async fn parent_skill_lookup_matches_advertised_gated_collision_and_skill_only_loader() {
     let local = tokio::task::LocalSet::new();

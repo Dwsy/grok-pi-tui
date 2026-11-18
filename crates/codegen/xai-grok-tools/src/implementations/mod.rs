@@ -2,6 +2,7 @@ pub mod codex;
 pub mod cursor_rules_on_read;
 pub mod editor_infra;
 pub mod grok_build;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod grok_build_concise;
 pub mod grok_build_hashline;
 pub mod lsp;
@@ -21,6 +22,7 @@ pub use grok_build::{
     WebSearchTool,
 };
 pub use memory::{MemoryGetImpl, MemorySearchImpl};
+#[cfg(feature = "stock-tool-dialects")]
 pub use opencode::{
     OpenCodeBashTool, OpenCodeEditTool, OpenCodeGlobTool, OpenCodeGrepTool, OpenCodeReadTool,
     OpenCodeSkillTool, OpenCodeTodoWriteTool, OpenCodeWriteTool,

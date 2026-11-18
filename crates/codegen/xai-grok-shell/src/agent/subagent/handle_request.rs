@@ -18,7 +18,9 @@ use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
 use xai_grok_telemetry::subagent_spawn::{SubagentSpawnPhase, phase_region};
 use xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageSource;
-use xai_grok_tools::implementations::{grok_build, opencode};
+use xai_grok_tools::implementations::grok_build;
+#[cfg(feature = "stock-tool-dialects")]
+use xai_grok_tools::implementations::opencode;
 static SUBAGENTS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
     xai_grok_telemetry::activity::ActivityGauge::work(
         xai_grok_telemetry::activity::SUBAGENTS_ACTIVE_KEY,
@@ -1216,10 +1218,16 @@ pub(crate) async fn run_shell_child(
         }
     }
     if let Some(scope) = agent_memory_scope {
+        #[cfg(feature = "stock-tool-dialects")]
         let memory_tools: Vec<xai_grok_tools::registry::types::ToolConfig> = vec![
             (&grok_build::ReadFileTool).into(),
             (&grok_build::SearchReplaceTool).into(),
             (&opencode::OpenCodeWriteTool).into(),
+        ];
+        #[cfg(not(feature = "stock-tool-dialects"))]
+        let memory_tools: Vec<xai_grok_tools::registry::types::ToolConfig> = vec![
+            (&grok_build::ReadFileTool).into(),
+            (&grok_build::SearchReplaceTool).into(),
         ];
         for tc in memory_tools {
             if !definition.tool_config.tools.iter().any(|t| t.id == tc.id) {

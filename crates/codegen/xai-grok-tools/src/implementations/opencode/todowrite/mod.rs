@@ -7,17 +7,24 @@
 //! State is stored as `State<TodoState>` in Resources, shared with the
 //! grok_build todo infrastructure.
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::fmt::Write;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::implementations::grok_build::todo::{TodoItem, TodoPriority, TodoState, TodoStatus};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::{TodoWriteOutput, TodoWriteSuccess};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::{Expr, ToolRequirement};
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::{SharedResources, State};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 
 // ─── Description ─────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = r#"Use this tool to create and manage a structured task list for your current coding session. This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
 It also helps the user understand the progress of the task and overall progress of their requests.
 
@@ -240,6 +247,7 @@ impl From<TodoWriteInput> for crate::types::tool_io::ToolInput {
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 /// Parse a status string into `TodoStatus`, defaulting to `Pending`.
+#[cfg(feature = "stock-tool-dialects")]
 fn parse_status(s: &str) -> TodoStatus {
     match s {
         "in_progress" => TodoStatus::InProgress,
@@ -251,6 +259,7 @@ fn parse_status(s: &str) -> TodoStatus {
 }
 
 /// Parse a priority string into `TodoPriority`, defaulting to `Medium`.
+#[cfg(feature = "stock-tool-dialects")]
 fn parse_priority(s: &str) -> TodoPriority {
     match s {
         "high" => TodoPriority::High,
@@ -261,6 +270,7 @@ fn parse_priority(s: &str) -> TodoPriority {
 }
 
 /// Build a human-readable summary of the current todo state.
+#[cfg(feature = "stock-tool-dialects")]
 fn summarize(todos: &[TodoItem]) -> String {
     if todos.is_empty() {
         return "No tasks currently tracked.".into();
@@ -276,10 +286,12 @@ fn summarize(todos: &[TodoItem]) -> String {
 
 /// OpenCode `todowrite` tool.
 #[derive(Debug, Default)]
+#[cfg(feature = "stock-tool-dialects")]
 pub struct TodoWriteTool;
 
 // ─── Tests ───────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for TodoWriteTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Plan
@@ -298,6 +310,7 @@ impl crate::types::tool_metadata::ToolMetadata for TodoWriteTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for TodoWriteTool {
     type Args = TodoWriteInput;
     type Output = TodoWriteOutput;
@@ -377,7 +390,7 @@ impl xai_tool_runtime::Tool for TodoWriteTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx;

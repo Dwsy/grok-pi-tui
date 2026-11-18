@@ -4,30 +4,41 @@
 //! Returns matching file paths sorted by modification time (most recent first),
 //! capped at 100 results.
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::path::PathBuf;
+#[cfg(feature = "stock-tool-dialects")]
 use std::process::Stdio;
 
+#[cfg(feature = "stock-tool-dialects")]
 use tokio::io::AsyncReadExt;
+#[cfg(feature = "stock-tool-dialects")]
 use tokio::process::Command;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::implementations::grok_build::grep::ripgrep::rg_path;
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::ToolOutput;
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::{
     Cwd, DisplayCwd, SharedResources, display_cwd_or_cwd, resolve_model_path,
 };
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::{ToolKind, ToolNamespace};
 use crate::types::tool_io::ToolInput;
 
 // ─── Constants ──────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const RESULT_LIMIT: usize = 100;
 
 /// Hard cap on bytes read from ripgrep's stdout (5 MB).
+#[cfg(feature = "stock-tool-dialects")]
 const MAX_STDOUT_BYTES: usize = 5_000_000;
 
 // ─── Description ────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = r#"Fast file pattern matching tool that works with any codebase size.
 
 - Supports glob patterns like "**/*.js" or "src/**/*.ts" via the required ${{ params.list.pattern }} parameter
@@ -72,6 +83,7 @@ impl From<GlobInput> for ToolInput {
 
 /// Structured output for the `glob` tool.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg(feature = "stock-tool-dialects")]
 pub struct GlobOutput {
     /// Pre-formatted text for the model prompt.
     pub tool_output_for_prompt: String,
@@ -91,8 +103,10 @@ pub struct GlobOutput {
     pub cwd_for_display: String,
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::ToolOutput for GlobOutput {}
 
+#[cfg(feature = "stock-tool-dialects")]
 impl From<GlobOutput> for ToolOutput {
     fn from(output: GlobOutput) -> Self {
         ToolOutput::Text(output.tool_output_for_prompt.into())
@@ -103,8 +117,10 @@ impl From<GlobOutput> for ToolOutput {
 
 /// Glob tool — lists files matching a glob pattern, sorted by mtime.
 #[derive(Debug, Default)]
+#[cfg(feature = "stock-tool-dialects")]
 pub struct GlobTool;
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for GlobTool {
     fn kind(&self) -> ToolKind {
         ToolKind::List
@@ -119,6 +135,7 @@ impl crate::types::tool_metadata::ToolMetadata for GlobTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for GlobTool {
     type Args = GlobInput;
     type Output = GlobOutput;
@@ -322,7 +339,7 @@ impl xai_tool_runtime::Tool for GlobTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx;

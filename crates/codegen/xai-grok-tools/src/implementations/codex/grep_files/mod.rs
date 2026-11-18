@@ -4,4 +4,6 @@
 
 pub mod tool;
 
-pub use tool::{CodexGrepFilesInput, CodexGrepFilesTool};
+pub use tool::CodexGrepFilesInput;
+#[cfg(feature = "stock-tool-dialects")]
+pub use tool::CodexGrepFilesTool;

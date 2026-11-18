@@ -6,17 +6,26 @@
 //! Reuses `ReadFileOutput` from `crate::types::output` as the output type
 //! so the existing `ToolOutput::ReadFile` variant handles prompt rendering.
 
+#[cfg(feature = "stock-tool-dialects")]
 use std::fmt::Write as _;
+#[cfg(feature = "stock-tool-dialects")]
 use std::path::PathBuf;
 
+#[cfg(feature = "stock-tool-dialects")]
 use base64::Engine as _;
+#[cfg(feature = "stock-tool-dialects")]
 use base64::engine::general_purpose;
 
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::output::{FileContent, ImageContent, ReadFileOutput};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::requirements::Expr;
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::resources::{Cwd, DisplayCwd, FileSystem, SharedResources, resolve_model_path};
+#[cfg(feature = "stock-tool-dialects")]
 use crate::types::tool::ToolKind;
+#[cfg(feature = "stock-tool-dialects")]
 #[allow(unused_imports)]
 use crate::types::tool::ToolNamespace;
 use crate::types::tool_io::ToolInput;
@@ -24,16 +33,20 @@ use crate::types::tool_io::ToolInput;
 // ─── Constants ──────────────────────────────────────────────────────
 
 /// Default maximum number of lines returned per read.
+#[cfg(feature = "stock-tool-dialects")]
 const DEFAULT_READ_LIMIT: u32 = 2000;
 
 /// Maximum character length per line before truncation.
+#[cfg(feature = "stock-tool-dialects")]
 const MAX_LINE_LENGTH: usize = 2000;
 
 /// Maximum bytes of text content returned per read (50 KB).
+#[cfg(feature = "stock-tool-dialects")]
 const MAX_BYTES: usize = 50 * 1024;
 
 // ─── Description ────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-tool-dialects")]
 const DESCRIPTION: &str = r#"Reads a file or directory from the local filesystem. You can access any file directly by using this tool.
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
@@ -94,8 +107,10 @@ impl From<ReadInput> for ToolInput {
 
 /// OpenCode `read` tool — reads files, directories, images, and PDFs.
 #[derive(Debug, Default)]
+#[cfg(feature = "stock-tool-dialects")]
 pub struct ReadTool;
 
+#[cfg(feature = "stock-tool-dialects")]
 impl crate::types::tool_metadata::ToolMetadata for ReadTool {
     fn kind(&self) -> ToolKind {
         ToolKind::Read
@@ -114,6 +129,7 @@ impl crate::types::tool_metadata::ToolMetadata for ReadTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for ReadTool {
     type Args = ReadInput;
     type Output = ReadFileOutput;
@@ -504,7 +520,7 @@ async fn not_found_with_suggestions(path: &std::path::Path) -> ReadFileOutput {
 
 // ─── Tests ──────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx;

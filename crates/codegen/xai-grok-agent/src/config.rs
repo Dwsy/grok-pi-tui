@@ -7,10 +7,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
+#[cfg(feature = "stock-tool-dialects")]
 use xai_grok_tools::implementations::codex;
 use xai_grok_tools::implementations::grok_build;
+#[cfg(feature = "stock-tool-dialects")]
 use xai_grok_tools::implementations::grok_build_concise;
 use xai_grok_tools::implementations::memory;
+#[cfg(feature = "stock-tool-dialects")]
 use xai_grok_tools::implementations::opencode;
 use xai_grok_tools::implementations::search_tool;
 use xai_grok_tools::implementations::use_tool;
@@ -186,15 +189,18 @@ fn grok_computer_toolset() -> ToolServerConfig {
 /// Single source of truth: [`toolset_for_preset`] resolves through this table, and coverage tests iterate it.
 /// A new preset is covered the moment it becomes resolvable.
 fn native_toolset_presets() -> Vec<(&'static str, ToolServerConfig)> {
-    vec![
+    let mut presets = vec![
         ("grok-build", workspace_grok_build_toolset()),
-        ("grok-build-concise", grok_build_concise_toolset()),
         ("grok-build-plan", grok_build_plan_toolset()),
-        ("codex", codex_toolset()),
         ("explore", explore_toolset()),
         ("plan", plan_toolset()),
         ("grok-computer", grok_computer_toolset()),
-    ]
+    ];
+    #[cfg(feature = "stock-tool-dialects")]
+    presets.push(("grok-build-concise", grok_build_concise_toolset()));
+    #[cfg(feature = "stock-tool-dialects")]
+    presets.push(("codex", codex_toolset()));
+    presets
 }
 /// Every named **public** toolset preset (native and externally registered public presets), as `(name, config)` pairs.
 /// Harness-internal registered presets are intentionally excluded; resolve them by name via [`toolset_for_preset`].
@@ -276,6 +282,7 @@ fn grok_build_core_toolset_with(
         behavior_preset: None,
     }
 }
+#[cfg(feature = "stock-tool-dialects")]
 fn grok_build_concise_toolset() -> ToolServerConfig {
     ToolServerConfig {
         tools: vec![
@@ -299,6 +306,7 @@ fn grok_build_concise_toolset() -> ToolServerConfig {
 }
 /// Hashline toolset: anchor-based read/edit/search and standard utilities.
 /// `hashline_tools` should be the 3 hashline `ToolConfig` entries; they carry the scheme parameters as tool params.
+#[cfg(feature = "stock-tool-dialects")]
 pub fn grok_build_hashline_toolset(
     hashline_tools: Vec<xai_grok_tools::registry::types::ToolConfig>,
 ) -> ToolServerConfig {
@@ -326,6 +334,7 @@ pub fn grok_build_hashline_toolset(
         behavior_preset: None,
     }
 }
+#[cfg(feature = "stock-tool-dialects")]
 fn codex_toolset() -> ToolServerConfig {
     ToolServerConfig {
         tools: vec![
@@ -508,6 +517,7 @@ fn grok_build_ask_user_toolset() -> ToolServerConfig {
         behavior_preset: None,
     }
 }
+#[cfg(feature = "stock-tool-dialects")]
 fn opencode_toolset() -> ToolServerConfig {
     ToolServerConfig {
         tools: vec![
@@ -660,12 +670,21 @@ impl BuiltinAgentName {
     pub fn definition(self) -> AgentDefinition {
         match self {
             Self::GrokBuild => AgentDefinition::default_grok_build(),
+            #[cfg(feature = "stock-tool-dialects")]
             Self::GrokBuildConcise => AgentDefinition::grok_build_concise(),
+            #[cfg(not(feature = "stock-tool-dialects"))]
+            Self::GrokBuildConcise => AgentDefinition::default_grok_build(),
             Self::GrokBuildPlan => AgentDefinition::grok_build_plan(),
             Self::GrokBuildPlanNoSubagents => AgentDefinition::grok_build_plan_no_subagents(),
             Self::GrokBuildAskUser => AgentDefinition::grok_build_ask_user(),
+            #[cfg(feature = "stock-tool-dialects")]
             Self::Codex => AgentDefinition::codex(),
+            #[cfg(not(feature = "stock-tool-dialects"))]
+            Self::Codex => AgentDefinition::default_grok_build(),
+            #[cfg(feature = "stock-tool-dialects")]
             Self::Opencode => AgentDefinition::opencode(),
+            #[cfg(not(feature = "stock-tool-dialects"))]
+            Self::Opencode => AgentDefinition::default_grok_build(),
             Self::GeneralPurpose => AgentDefinition::general_purpose(),
             Self::Explore => AgentDefinition::explore(),
             Self::Plan => AgentDefinition::plan(),
@@ -1434,6 +1453,7 @@ impl AgentDefinition {
         }
     }
     /// Concise output format for SFT/RL.
+    #[cfg(feature = "stock-tool-dialects")]
     pub fn grok_build_concise() -> Self {
         Self {
             tool_config: grok_build_concise_toolset(),
@@ -1471,6 +1491,7 @@ impl AgentDefinition {
             )
         }
     }
+    #[cfg(feature = "stock-tool-dialects")]
     pub fn codex() -> Self {
         Self {
             tool_config: codex_toolset(),
@@ -1478,6 +1499,7 @@ impl AgentDefinition {
             ..Self::base(BuiltinAgentName::Codex, "Codex toolset and prompt")
         }
     }
+    #[cfg(feature = "stock-tool-dialects")]
     pub fn opencode() -> Self {
         Self {
             tool_config: opencode_toolset(),
@@ -1643,6 +1665,7 @@ mod tests {
         ids
     }
     #[test]
+    #[cfg(all(test, feature = "stock-tool-dialects"))]
     fn send_feedback_exposure_is_grok_build_only() {
         use strum::IntoEnumIterator;
         let presets = all_toolset_presets();

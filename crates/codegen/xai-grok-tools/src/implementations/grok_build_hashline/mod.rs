@@ -9,18 +9,29 @@
 //! `hashline_grep`) build on the reusable core this module provides (also
 //! used by the benchmark harness).
 
+#[cfg(feature = "stock-tool-dialects")]
 pub mod anchor;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod benchmark;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod config;
 pub mod edit;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod grep;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod mutate;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod read_file;
+#[cfg(feature = "stock-tool-dialects")]
 pub mod scheme;
 
+#[cfg(feature = "stock-tool-dialects")]
 pub use config::HashlineSchemeParams;
+#[cfg(feature = "stock-tool-dialects")]
 pub use edit::HashlineEditTool;
+#[cfg(feature = "stock-tool-dialects")]
 pub use grep::HashlineGrepTool;
+#[cfg(feature = "stock-tool-dialects")]
 pub use read_file::HashlineReadTool;
 
 /// In-crate stand-in for the memory crate's v2 access policy.
@@ -30,7 +41,7 @@ pub use read_file::HashlineReadTool;
 /// tools rely on: a single scope root, protected `MEMORY.md`, writable
 /// direct children of `topics/` and `observations/_inbox/`, read-before-edit
 /// snapshots, and a manifest refresh after every persisted write.
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-tool-dialects"))]
 pub(crate) mod memory_v2_test_support {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};

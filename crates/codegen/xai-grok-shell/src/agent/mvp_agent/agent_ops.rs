@@ -3851,6 +3851,7 @@ impl MvpAgent {
         let agent_name = std::env::var("GROK_AGENT").ok();
         let resolved = match agent_name.as_deref() {
             Some("browser-use") | Some("browser_use") => AgentDefinition::browser_use(),
+            #[cfg(feature = "stock-tool-dialects")]
             Some("grok-build-concise") | Some("grok_build_concise") => {
                 AgentDefinition::grok_build_concise()
             }
