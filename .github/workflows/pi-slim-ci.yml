@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   arm64:
-    name: ARM64 dependency and release-build validation
+    name: ARM64 release-dist build and native smoke
     if: inputs.scope != 'shell-only'
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 150
@@ -103,6 +103,127 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: pi-slim-aarch64-apple-darwin-${{ inputs.runner }}
+          cache-workspace-crates: "true"
+          cache-bin: "false"
+
+      - name: Build ARM64 grok-pi (release-dist)
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          cargo build --locked --timings --profile release-dist \
+            -p xai-grok-pager-bin --bin grok-pi \
+            --no-default-features --features release-dist,sandbox-enforce \
+            --target aarch64-apple-darwin
+          echo "Build elapsed: $((SECONDS - started)) seconds"
+          du -sh target/aarch64-apple-darwin/release-dist || true
+
+      - name: Smoke-test ARM64 binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/aarch64-apple-darwin/release-dist/grok-pi"
+          test -x "$bin"
+          file "$bin"
+          lipo -archs "$bin" | grep -qw arm64
+          if [[ "$(uname -m)" == "arm64" ]]; then
+            "$bin" --version
+            "$bin" --help > /dev/null
+            "$bin" --print-capabilities > /dev/null
+          else
+            echo "Cross-compiled ARM64 Mach-O verified; execution smoke requires an ARM64 host"
+          fi
+
+      - name: Smoke-test native Pager with mocked Pi JSONL RPC
+        if: runner.arch == 'ARM64'
+        shell: bash
+        run: python3 scripts/pi-native-pty-smoke.py target/aarch64-apple-darwin/release-dist/grok-pi
+
+      # Keep this candidate separate from the tag-driven multi-platform release.
+      # Only a native ARM64 runner can ship an artifact it has executed.
+      - name: Package smoke-tested ARM64 Pi candidate
+        if: runner.arch == 'ARM64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=target/aarch64-apple-darwin/release-dist/grok-pi
+          test -s "$src"
+          file "$src" | grep -q 'Mach-O 64-bit executable arm64'
+          mkdir -p dist "$RUNNER_TEMP/pi-slim-stage"
+          cp "$src" "$RUNNER_TEMP/pi-slim-stage/grok-pi"
+          chmod 755 "$RUNNER_TEMP/pi-slim-stage/grok-pi"
+          asset="grok-pi-macos-arm64-pi-slim-${GITHUB_SHA:0:12}.tar.gz"
+          tar -C "$RUNNER_TEMP/pi-slim-stage" -czf "dist/$asset" grok-pi
+          tar -tzf "dist/$asset" | grep -qx grok-pi
+          (cd dist && shasum -a 256 "$asset" > "$asset.sha256")
+          (cd dist && shasum -a 256 -c "$asset.sha256")
+          {
+            echo "git_sha=$GITHUB_SHA"
+            echo "target=aarch64-apple-darwin"
+            echo "profile=release-dist"
+            echo "runner=${{ inputs.runner }}"
+            "$src" --version
+          } > dist/build-info.txt
+
+      - name: Upload ARM64 Pi candidate (not a GitHub release)
+        if: runner.arch == 'ARM64'
+        uses: actions/upload-artifact@v6
+        with:
+          name: pi-slim-macos-arm64-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Cargo timings
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pi-slim-arm64-cargo-timings
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7
+
+  feature_checks:
+    name: ARM64 dependency, feature matrix, and contract regression
+    if: inputs.scope != 'shell-only'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 110
+    env:
+      GROK_PI_VERSION: "0.0.0-slim-ci"
+      CARGO_PROFILE_RELEASE_DIST_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_DIST_LTO: "off"
+      CARGO_PROFILE_RELEASE_DIST_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_DIST_STRIP: "none"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Bound native ARM64 compilation memory
+        if: runner.arch == 'ARM64'
+        run: echo "CARGO_BUILD_JOBS=2" >> "$GITHUB_ENV"
+
+      - name: Check out exact commit
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.0"
+          targets: aarch64-apple-darwin
+
+      - name: Install protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install protobuf
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      # Separate check/test outputs from release artifacts: a second runner
+      # can validate all feature modes without serializing the 18m release.
+      - name: Restore and save feature-matrix cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pi-slim-feature-matrix-aarch64-apple-darwin-${{ inputs.runner }}
           cache-workspace-crates: "true"
           cache-bin: "false"
 
@@ -196,9 +317,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # This bin alone invokes xai_grok_shell::inspect. Keep the Stock
-          # CLI surface compiled while the Pi-only Shell no-default profile
-          # excludes its 3k+ lines of inspection implementation.
+          # Stock CLI invokes xai_grok_shell::{inspect,cli_models}; keep both
+          # compiled while the Pi-only Shell profile excludes their modules.
           cargo check --locked -p xai-grok-pager-bin --bin xai-grok-pager \
             --no-default-features --features stock-agent \
             --target aarch64-apple-darwin
@@ -210,39 +330,6 @@ jobs:
           cargo check --locked --lib -p xai-grok-tools \
             --no-default-features --features serde,stock-lsp,stock-web-fetch,stock-pptx \
             --target aarch64-apple-darwin
-
-      - name: Build ARM64 grok-pi (release-dist)
-        shell: bash
-        run: |
-          set -euo pipefail
-          started=$SECONDS
-          cargo build --locked --timings --profile release-dist \
-            -p xai-grok-pager-bin --bin grok-pi \
-            --no-default-features --features release-dist,sandbox-enforce \
-            --target aarch64-apple-darwin
-          echo "Build elapsed: $((SECONDS - started)) seconds"
-          du -sh target/aarch64-apple-darwin/release-dist || true
-
-      - name: Smoke-test ARM64 binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          bin="target/aarch64-apple-darwin/release-dist/grok-pi"
-          test -x "$bin"
-          file "$bin"
-          lipo -archs "$bin" | grep -qw arm64
-          if [[ "$(uname -m)" == "arm64" ]]; then
-            "$bin" --version
-            "$bin" --help > /dev/null
-            "$bin" --print-capabilities > /dev/null
-          else
-            echo "Cross-compiled ARM64 Mach-O verified; execution smoke requires an ARM64 host"
-          fi
-
-      - name: Smoke-test native Pager with mocked Pi JSONL RPC
-        if: runner.arch == 'ARM64'
-        shell: bash
-        run: python3 scripts/pi-native-pty-smoke.py target/aarch64-apple-darwin/release-dist/grok-pi
 
       - name: Test Pi Adapter RPC Goal and Remote TUI contract
         if: runner.arch == 'ARM64'
@@ -334,50 +421,6 @@ jobs:
             cargo check --locked --tests \
               -p xai-grok-pager-render --target aarch64-apple-darwin
           fi
-
-      # Keep this candidate separate from the tag-driven multi-platform release.
-      # Only a native ARM64 runner can ship an artifact it has executed.
-      - name: Package smoke-tested ARM64 Pi candidate
-        if: runner.arch == 'ARM64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          src=target/aarch64-apple-darwin/release-dist/grok-pi
-          test -s "$src"
-          file "$src" | grep -q 'Mach-O 64-bit executable arm64'
-          mkdir -p dist "$RUNNER_TEMP/pi-slim-stage"
-          cp "$src" "$RUNNER_TEMP/pi-slim-stage/grok-pi"
-          chmod 755 "$RUNNER_TEMP/pi-slim-stage/grok-pi"
-          asset="grok-pi-macos-arm64-pi-slim-${GITHUB_SHA:0:12}.tar.gz"
-          tar -C "$RUNNER_TEMP/pi-slim-stage" -czf "dist/$asset" grok-pi
-          tar -tzf "dist/$asset" | grep -qx grok-pi
-          (cd dist && shasum -a 256 "$asset" > "$asset.sha256")
-          (cd dist && shasum -a 256 -c "$asset.sha256")
-          {
-            echo "git_sha=$GITHUB_SHA"
-            echo "target=aarch64-apple-darwin"
-            echo "profile=release-dist"
-            echo "runner=${{ inputs.runner }}"
-            "$src" --version
-          } > dist/build-info.txt
-
-      - name: Upload ARM64 Pi candidate (not a GitHub release)
-        if: runner.arch == 'ARM64'
-        uses: actions/upload-artifact@v6
-        with:
-          name: pi-slim-macos-arm64-${{ github.sha }}
-          path: dist/
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload Cargo timings
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: pi-slim-arm64-cargo-timings
-          path: target/cargo-timings/*.html
-          if-no-files-found: ignore
-          retention-days: 7
 
   shell_tests:
     name: Native Shell full regression (independent of candidate)

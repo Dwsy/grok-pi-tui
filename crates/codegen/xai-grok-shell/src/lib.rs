@@ -23,6 +23,7 @@ pub mod builtin;
 pub use xai_grok_bundle as bundle;
 pub mod claude_import;
 pub mod claude_import_state;
+#[cfg(feature = "stock-agent")]
 pub mod cli_models;
 pub mod config;
 #[cfg(all(test, feature = "config-docs"))]
