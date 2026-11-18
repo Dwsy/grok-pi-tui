@@ -1883,6 +1883,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_uses_run_owned_cancel_event_without_parent_detach() {
+        use tokio::time::{Duration, timeout};
         use xai_grok_tools::implementations::grok_build::task::types::{
             SubagentCancelTarget, SubagentEvent,
         };
@@ -1905,12 +1906,20 @@ mod tests {
                 },
             )
             .unwrap();
-        let SubagentEvent::Spawn(req) = subagent_rx.recv().await.expect("spawn") else {
+        let SubagentEvent::Spawn(req) = timeout(Duration::from_secs(15), subagent_rx.recv())
+            .await
+            .expect("workflow child spawn did not arrive within 15s")
+            .expect("spawn channel closed")
+        else {
             panic!("expected spawn");
         };
         assert!(req.owner.is_workflow());
         assert!(manager.cancel(&run_id));
-        let _ = outcome_rx.await;
+        // The host's bounded child-drain path may take up to 25s; only the
+        // absence of a terminal outcome is a failure here, not its payload.
+        let _ = timeout(Duration::from_secs(35), outcome_rx)
+            .await
+            .expect("cancelled workflow did not finish within 35s");
         assert!(
             req.cancel_token.is_cancelled(),
             "run cancel must cancel the child token, not silently detach the receiver"

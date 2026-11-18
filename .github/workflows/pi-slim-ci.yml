@@ -15,7 +15,7 @@ on:
           - macos-15
           - macos-26
       scope:
-        description: Run the candidate build, the full Shell tests, or both
+        description: Full matrix or one ARM64 lane when hosted runners lack capacity
         required: true
         default: all
         type: choice
@@ -23,6 +23,8 @@ on:
           - all
           - shell-only
           - candidate-only
+          - release-only
+          - checks-only
 
 permissions:
   contents: read
@@ -35,7 +37,7 @@ concurrency:
 jobs:
   arm64:
     name: ARM64 release-dist build and native smoke
-    if: inputs.scope != 'shell-only'
+    if: inputs.scope == 'all' || inputs.scope == 'candidate-only' || inputs.scope == 'release-only'
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 150
     env:
@@ -185,7 +187,7 @@ jobs:
 
   feature_checks:
     name: ARM64 dependency, feature matrix, and contract regression
-    if: inputs.scope != 'shell-only'
+    if: inputs.scope == 'all' || inputs.scope == 'candidate-only' || inputs.scope == 'checks-only'
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 110
     env:
@@ -495,6 +497,34 @@ jobs:
               -- --exact --test-threads=1
           done
 
+      - name: Verify workflow cancellation in isolation (90-second watchdog)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import signal
+          import subprocess
+          import sys
+
+          test = 'session::workflow::manager::tests::cancellation_uses_run_owned_cancel_event_without_parent_detach'
+          command = [
+              'cargo', 'test', '--locked', '--lib', '-p', 'xai-grok-shell',
+              '--no-default-features', '--features', 'test-support',
+              '--target', 'aarch64-apple-darwin', '-j', '2',
+              test, '--', '--exact', '--test-threads=1',
+          ]
+          process = subprocess.Popen(command, start_new_session=True)
+          try:
+              code = process.wait(timeout=90)
+          except subprocess.TimeoutExpired:
+              os.killpg(process.pid, signal.SIGKILL)
+              process.wait()
+              print(f'Workflow cancellation test exceeded 90s: {test}', file=sys.stderr)
+              sys.exit(124)
+          sys.exit(code)
+          PY
+
       - name: Run full Shell suite with a 30-minute watchdog
         shell: bash
         run: |
@@ -509,7 +539,10 @@ jobs:
               'cargo', 'test', '--locked', '--lib', '-p', 'xai-grok-shell',
               '--no-default-features', '--features', 'test-support',
               '--target', 'aarch64-apple-darwin', '-j', '2',
-              '--', '--test-threads=1',
+              # The cancellation regression above executes independently in
+              # an isolated test process with a hard timeout, not suppressed.
+              '--', '--test-threads=1', '--skip',
+              'session::workflow::manager::tests::cancellation_uses_run_owned_cancel_event_without_parent_detach',
           ]
           process = subprocess.Popen(command, start_new_session=True)
           try:
