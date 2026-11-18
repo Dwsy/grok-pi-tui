@@ -59,6 +59,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Reject misplaced Rust cfg attributes before compilation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          misplaced = re.compile(r"(?m)^\s*(?:async|unsafe|const)\s+#\[cfg\b")
+          bad = []
+          for path in Path("crates/codegen").rglob("*.rs"):
+              for match in misplaced.finditer(path.read_text(errors="replace")):
+                  line = path.read_text(errors="replace").count("\n", 0, match.start()) + 1
+                  bad.append(f"{path}:{line}")
+          if bad:
+              raise SystemExit("Misplaced #[cfg] after item qualifier:\n" + "\n".join(bad))
+          print("Rust cfg attribute placement scan passed")
+          PY
+
       - name: Install Node for Herdr lifecycle contract
         uses: actions/setup-node@v5
         with:

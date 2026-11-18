@@ -777,8 +777,8 @@ async fn resume_session_in_new_worktree(
 
 /// Apply `-m` / effort after session open.
 /// Effort is soft-ignored on a non-supporting model (still applying `-m`) but hard-fails on a genuinely unknown token.
-async #[cfg(feature = "stock-agent")]
-fn apply_headless_model_and_effort(
+#[cfg(feature = "stock-agent")]
+async fn apply_headless_model_and_effort(
     acp_tx: &AcpAgentTx,
     session_id: &acp::SessionId,
     models: &ModelState,
