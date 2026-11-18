@@ -98,6 +98,7 @@ impl HashlineEditTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 fn to_search_replace(
     result: HashlineEditOutput,
     file_path: &std::path::Path,

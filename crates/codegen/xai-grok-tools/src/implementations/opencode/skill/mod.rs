@@ -85,6 +85,7 @@ impl From<SkillInput> for crate::types::tool_io::ToolInput {
 pub struct SkillTool;
 
 /// Result of looking up a skill by name.
+#[cfg(feature = "stock-tool-dialects")]
 #[derive(Debug)]
 enum FindSkillResult<'a> {
     /// Exactly one match found.
@@ -166,6 +167,7 @@ async fn list_skill_files(skill: &SkillInfo, limit: usize) -> Vec<String> {
 }
 
 /// Format the `<skill_content>` XML output block.
+#[cfg(feature = "stock-tool-dialects")]
 fn format_output(skill: &SkillInfo, content: &str, files: &[String]) -> String {
     let base_dir = Path::new(&skill.path)
         .parent()

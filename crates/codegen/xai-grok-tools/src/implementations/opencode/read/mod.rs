@@ -394,6 +394,7 @@ impl xai_tool_runtime::Tool for ReadTool {
 // ─── Helpers ────────────────────────────────────────────────────────
 
 /// Read a directory and return a formatted listing wrapped in XML tags.
+#[cfg(feature = "stock-tool-dialects")]
 async fn read_directory(
     path: &std::path::Path,
     offset: Option<u32>,
@@ -481,6 +482,7 @@ async fn read_directory(
 }
 
 /// Generate a file-not-found error, suggesting up to 3 similar files.
+#[cfg(feature = "stock-tool-dialects")]
 async fn not_found_with_suggestions(path: &std::path::Path) -> ReadFileOutput {
     let dir = path.parent().unwrap_or(path);
     let base = path

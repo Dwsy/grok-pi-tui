@@ -285,6 +285,7 @@ impl crate::types::tool_metadata::ToolMetadata for CodexListDirTool {
     }
 }
 
+#[cfg(feature = "stock-tool-dialects")]
 impl xai_tool_runtime::Tool for CodexListDirTool {
     type Args = CodexListDirInput;
     type Output = ListDirOutput;
