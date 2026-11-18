@@ -8,19 +8,19 @@
       "name": "researcher",
       "agent": "explore",
       "description": "Primary researcher",
-      "task": "Investigate the objective deeply: {{task}}. Gather concrete evidence, then send your strongest findings to /root/synthesizer with team_send_message."
+      "task": "Investigate the objective deeply: {{task}}. Gather concrete evidence, send your strongest findings to /root/synthesizer with team_followup_task so late evidence reactivates the synthesizer even if it is already IDLE, and finish with team_report."
     },
     {
       "name": "critic",
       "agent": "plan",
       "description": "Critical reviewer",
-      "task": "Independently challenge assumptions, risks, and missing evidence for: {{task}}. Send the most important corrections to /root/synthesizer with team_send_message."
+      "task": "Independently challenge assumptions, risks, and missing evidence for: {{task}}. Send your most important corrections and gaps to /root/synthesizer with team_followup_task so late critiques reactivate the synthesizer even if it is already IDLE, and finish with team_report."
     },
     {
       "name": "synthesizer",
       "agent": "plan",
       "description": "Research synthesizer",
-      "task": "Coordinate the research team for: {{task}}. Use team_wait only while researcher/critic are still active, integrate their messages, resolve disagreements from available evidence, then finish your turn with a concise final synthesis; do not keep waiting after no active peers remain."
+      "task": "Own the synthesis for: {{task}}. Do NOT occupy an execution slot in a long team_wait; quickly inspect any already-delivered evidence and finish your initial turn cleanly (call team_report with dropped if waiting on initial researcher/critic deliveries) so team_followup_task from /root/researcher and /root/critic reactivates this session with their findings. Once woken with evidence, integrate findings, resolve disagreements from source-grounded evidence, and report the final synthesis to your parent."
     }
   ]
 }

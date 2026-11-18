@@ -2859,6 +2859,8 @@
     "crates/codegen/xai-grok-mermaid/src/ondine.rs",
     "crates/codegen/xai-grok-mermaid/assets/RobotoMono.ttf",
     "crates/codegen/xai-grok-mermaid/assets/RobotoMono-OFL.txt",
-    "docs/issues/pager/20261109-Ondine Mermaid 图片与 SVG.md"
+    "docs/issues/pager/20261109-Ondine Mermaid 图片与 SVG.md",
+    "docs/issues/adapter/20261118-proactive-plan-mode-orchestrator.md",
+    "extensions/pi-grok-plan-mode/index.test.mjs"
   ]
 }

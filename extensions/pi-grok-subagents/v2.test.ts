@@ -252,6 +252,37 @@ test("bundled review preset triggers processing of late explorer evidence", () =
   assert.doesNotMatch(explorer.task, /team_send_message/);
 });
 
+test("bundled research preset triggers processing of late findings and prevents idle synthesizer silent drops", () => {
+  const research = JSON.parse(readFileSync(new URL("./teams/research.json", import.meta.url), "utf8")) as {
+    members?: Array<{ name?: string; task?: string }>;
+  };
+  const researcher = research.members?.find((member) => member.name === "researcher");
+  const critic = research.members?.find((member) => member.name === "critic");
+  const synthesizer = research.members?.find((member) => member.name === "synthesizer");
+  assert.ok(researcher?.task);
+  assert.ok(critic?.task);
+  assert.ok(synthesizer?.task);
+  assert.match(researcher.task, /team_followup_task/);
+  assert.doesNotMatch(researcher.task, /team_send_message/);
+  assert.match(critic.task, /team_followup_task/);
+  assert.doesNotMatch(critic.task, /team_send_message/);
+  assert.match(synthesizer.task, /Do NOT occupy an execution slot in a long team_wait/);
+});
+
+test("root V2 spawn tools carry proactive plan-mode promptGuidelines while child tools stay clean", async () => {
+  const { fakePi, runtime } = setup();
+  const rootSpawn = fakePi.tools.get("spawn_team_agent") as any;
+  const rootTeam = fakePi.tools.get("spawn_team") as any;
+  assert.ok(Array.isArray(rootSpawn?.promptGuidelines));
+  assert.ok(rootSpawn.promptGuidelines.some((g: string) => g.includes("enter_plan_mode") && g.includes("exit_plan_mode")));
+  assert.ok(Array.isArray(rootTeam?.promptGuidelines));
+  assert.ok(rootTeam.promptGuidelines.some((g: string) => g.includes("enter_plan_mode") && g.includes("read-only")));
+
+  await execute(rootSpawn, "spawn-child", { task_name: "worker", message: "do work" });
+  const childSpawn = (runtime.created[0].options.customTools ?? []).find((t) => t.name === "spawn_team_agent") as any;
+  assert.equal(childSpawn?.promptGuidelines, undefined);
+});
+
 test("V2 routes non-waking steer and triggering follow-up messages across sessions", async () => {
   const { fakePi, runtime } = setup();
   const spawn = fakePi.tools.get("spawn_team_agent");

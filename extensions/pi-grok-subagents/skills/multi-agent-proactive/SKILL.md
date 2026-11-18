@@ -48,6 +48,14 @@ V1 适合彼此独立的研究、实现、验证、审查。默认 child 是叶�
 
 V2 适合 agent 之间需要消息、follow-up、稳定 `/root/...` 身份或预设团队的场景。V1 与 V2 工具面互斥：V2 开启时不注册 V1 单代理工具，因此不要在本会话里寻找 `spawn_subagent`。若 V2 工具未出现，就使用 V1；不要为了“更高级”而绕过实际工具目录。
 
+## Orchestrator 闭环：主动 Plan ↔ Team V2 执行
+
+当工作横跨多个文件、架构尚未收敛、或需要多代理分域写入且当前工具面存在 `enter_plan_mode` / `exit_plan_mode` 时，优先走两阶段闭环：
+
+1. **主动进入 Plan Mode**：先调用 `enter_plan_mode` 锁定只读探索边界（Plan Mode 期间只允许带 `capability_mode: "read-only"` 的只读侦察/审查子代理；`bash`、代码写入与写型子代理会被阻止）。
+2. **计划落盘后同轮主动退出**：将目标、顺序步骤、互不重叠的 `write_scope`、验收命令与 `Re-plan if:` 升级条件写入计划文件后，**同轮主动调用 `exit_plan_mode`** 提交审批，不要只把计划贴在正文里结束回合。
+3. **按批准决议执行或收敛**：仅在 `approved` 后启动写型 V2 代理；`abandoned` 时立即停止并等待用户；若执行中命中 `Re-plan if:` 条件或收到 child 的 `blocked` 使原方案失效，先中断/收敛受影响分支，再主动调用 `enter_plan_mode` 重规划，不靠猜硬冲。
+
 ## 第一原则：委派必须有收益
 
 每次新任务或新阶段只快速检查四件事：
@@ -85,6 +93,7 @@ V2 适合 agent 之间需要消息、follow-up、稳定 `/root/...` 身份或预
 - [允许修改的模块/文件；只读任务明确写不要改文件]
 - [禁止事项，例如不要 commit、不要加依赖]
 - [和其他 agent 的责任边界]
+- [升级条件（Re-plan if）：遇到什么边界冲突或假设失效必须停下调用 team_report(state="blocked", question=...)]
 - 不要因为父级处于 Proactive/Ultra 而继续主动创建子代理；只有本任务明确要求进一步协调时才使用 team spawn。
 
 验证:

@@ -4,6 +4,15 @@ Subagents V2 是 grok-pi 内置 Pi 子代理上的**可选团队协作层**。�
 
 V2 **默认关闭**。如果只需要 `spawn_subagent`、`/subagents`、wait/cancel/history 或主→子消息，保持 V2 关闭即可；开启后 `spawn_subagent` 等 5 个 V1 工具不再注册（见下文「V2 模式下不注册 V1 工具」）。
 
+## Plan Mode ↔ Team V2 闭环
+
+当任务横跨多个文件、架构尚未收敛或需要多代理分域写入时：
+
+1. root 先主动调用 `enter_plan_mode`，锁定只读探索边界。
+2. Plan Mode 下，`bash`、计划文件以外的写入与写型子代理会被阻塞；但 root 仍可传 `capability_mode: "read-only"` 调用 `spawn_team_agent` / `spawn_team` 进行并行只读侦察。
+3. 将目标、顺序步骤、互不重叠的 `write_scope`、验收命令与 `Re-plan if:` 升级条件写入 `.plan.md` 后，root **同轮主动调用 `exit_plan_mode`**，同步等待 `approved`、`abandoned` 或 `cancelled` 决议。
+4. 仅在 `approved` 后启动写型成员；若执行中命中 `Re-plan if:` 条件或 `blocked` 报告使原计划失效，root 可再次调用 `enter_plan_mode` 重规划。
+
 ## Multitask 技能模式
 
 开启 Pi subagents 与 V2 后调用：

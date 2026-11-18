@@ -17,8 +17,9 @@ description: 在 grok-pi Subagents V2 中按任务树启用 Multitask 异步多�
 
 ## 先规划可验收闭环
 
-快速列出任务、依赖、owner、写域和验收条件，通常只派 1–3 个有收益的闭环。
+快速列出任务、依赖、owner、写域、验收条件与 `Re-plan if:` 升级条件，通常只派 1–3 个有收益的闭环。
 
+- 若任务需修改多文件或架构/写域尚不明确且工具面提供 `enter_plan_mode` / `exit_plan_mode`：root 先主动调用 `enter_plan_mode`（Plan Mode 下如需并行侦察，只派发带 `capability_mode: "read-only"` 的只读代理），将目标、写域与 `Re-plan if:` 写入计划文件后**同轮主动调用 `exit_plan_mode`**；获批再启动写型代理，执行中命中 `Re-plan if:` 时可主动再调用 `enter_plan_mode` 重规划。
 - 独立调查、不同模块实现、独立审查可以并行。
 - 消费者的依赖尚未就绪就先不创建它，不启动一个只会等待的 synthesizer。
 - root 为本次任务树最多分配 8 个新 agent identity；按分支分配互不重叠的剩余额度，不把全局额度重复发给每个 child。
@@ -50,6 +51,7 @@ Multitask 契约（本任务显式授权）：
 - 已知与输入：[关键事实/路径/依赖结果]。
 - 写域：[允许修改的文件；只读任务明确禁止写入]。
 - 验收：[命令或证据标准]。
+- Re-plan if：[遇到何种边界冲突、缺失契约或架构失效必须立即停止写操作，调用 team_report blocked 并附具体 question]。
 - depth_left=[剩余可创建层数]；spawn_budget=[本分支可再创建的 agent identity 总数]。
 - 仅在有独立闭环、有并行收益且额度足够时创建自己的 child；不得扩展任务范围。
 - 复制本契约给下级，depth_left 减 1，分配不重复的剩余 spawn_budget。

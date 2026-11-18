@@ -644,13 +644,21 @@ export class TeamCoordinator {
         "Do not split one investigation or one execution chain to manufacture parallelism. " +
         "Reuse an existing agent with team_followup_task instead of spawning a near-duplicate.",
       promptSnippet: "Spawn a V2 child for one clearly bounded, independent task; the child sees none of this conversation.",
+      ...(senderPath === ROOT_PATH
+        ? {
+            promptGuidelines: [
+              "Before launching mutating V2 agents on an ambiguous or multi-writer task, call enter_plan_mode first (only spawn capability_mode: \"read-only\" explorers during Plan Mode), define disjoint write scopes and Re-plan if: triggers in the plan, then call exit_plan_mode before spawning writers.",
+              "Include explicit write scope, verification command, and `Re-plan if:` triggers in every child task message so children report `blocked` instead of crossing boundaries; call enter_plan_mode to re-plan if a blocked report invalidates the current plan.",
+            ],
+          }
+        : {}),
       executionMode: "parallel",
       parameters: Type.Object({
         task_name: Type.String({ description: "Lowercase path segment for the child, unique among your existing children, e.g. researcher or verifier_2." }),
         message: Type.String({
           description:
             "Self-contained task: the child cannot see the user's request, this conversation, or your earlier steps. " +
-            "State the goal, the files or write boundary it may touch, the acceptance evidence, and exactly what it should return.",
+            "State the goal, the files or write boundary it may touch, the acceptance evidence, Re-plan if triggers for reporting blocked, and exactly what it should return.",
         }),
         agent_type: Type.Optional(Type.String({ description: "Agent definition name; /subagents lists the configured ones. Defaults to general-purpose. An unknown or disabled name fails the spawn instead of falling back." })),
         description: Type.Optional(Type.String({ description: "Short 3-5 word label shown in the team tree and subagent UI. Defaults to task_name." })),
@@ -896,6 +904,9 @@ export class TeamCoordinator {
         "Launch an external Subagents V2 team preset from project/global/bundled configuration for collaborative work. Members start asynchronously and can communicate by stable agent paths. " +
         "Use spawn_team_agent for a single delegated task; start a preset only when its roster already matches the work.",
       promptSnippet: "Launch a configured V2 team preset when its roster matches the work; single tasks use spawn_team_agent.",
+      promptGuidelines: [
+        "Only start a mutating team preset after architecture and disjoint write scopes are settled (call enter_plan_mode first on complex tasks; pass capability_mode: \"read-only\" if running an exploration preset inside Plan Mode).",
+      ],
       executionMode: "parallel",
       parameters: Type.Object({
         team: Type.String({ description: "Team preset name as listed by /subagent-teams, e.g. research, implementation, or review." }),

@@ -59,6 +59,7 @@ impl acp::Agent for PiAgent {
             let mut state = self.state.borrow_mut();
             let plan_path = plan_file_path(&bootstrap.state, &state.session_dir);
             state.plan_mode = crate::plan_mode::PiPlanTracker::with_plan_file(plan_path);
+            state.active_plan_approval_id = None;
         }
         // Mirror load_session: push Pi's baseline contextUsage so the pager
         // context bar does not keep the previous session's numerator.
@@ -115,6 +116,7 @@ impl acp::Agent for PiAgent {
             state.acp_session_id = requested.clone();
             let plan_path = plan_file_path(&bootstrap.state, &state.session_dir);
             state.plan_mode = load_plan_tracker(&plan_path).map_err(acp_internal)?;
+            state.active_plan_approval_id = None;
         }
         self.replay_history().await.map_err(acp_internal)?;
         if bridge_command_is_registered(&bootstrap.commands, SUBAGENT_REPLAY_COMMAND) {
@@ -149,6 +151,7 @@ impl acp::Agent for PiAgent {
                 let was_plan = state.plan_mode.state() != crate::plan_mode::PiPlanState::Inactive;
                 if was_plan {
                     state.plan_mode.user_exit(turn_in_flight);
+                    state.active_plan_approval_id = None;
                     true
                 } else {
                     false

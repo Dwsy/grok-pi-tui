@@ -295,6 +295,9 @@ struct AdapterState {
     /// It is deliberately not session persistence; the adapter rewrites it
     /// from its authoritative tracker after every transition.
     plan_mode_control: Option<PathBuf>,
+    /// Tool call ID of the currently pending `x.ai/exit_plan_mode` request,
+    /// preventing stale cancellations from clearing a newer approval dialog.
+    active_plan_approval_id: Option<String>,
     /// Storm guard for automatic Pi RPC crash recovery.
     rpc_recovery: recovery::RpcRecoveryTracker,
 }
@@ -394,6 +397,7 @@ impl PiAgent {
                 reload_in_flight: false,
                 plan_mode,
                 plan_mode_control,
+                active_plan_approval_id: None,
                 rpc_recovery: recovery::RpcRecoveryTracker::default(),
             })),
         })
@@ -1095,10 +1099,18 @@ fn yaml_string(value: &str) -> Result<String> {
 /// Normalize the completed plan into a Cursor-style Markdown document with
 /// deterministic YAML front matter. This runs immediately before approval so
 /// a model's whole-file write cannot accidentally discard adapter metadata.
+/// Missing or empty/frontmatter-only files are left untouched so empty-plan
+/// approval preserves `planContent: None`.
 fn normalize_plan_document(path: &Path, state: &PiState) -> Result<()> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|error| anyhow!("read plan file {}: {error}", path.display()))?;
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(anyhow!("read plan file {}: {error}", path.display())),
+    };
     let body = strip_plan_front_matter(&content);
+    if body.trim().is_empty() {
+        return Ok(());
+    }
     let name = plan_name(body, state);
     let overview = plan_overview(body);
     let (created_at, cwd) = plan_session_context(state);
@@ -1154,6 +1166,28 @@ fn ensure_plan_file(path: &Path) -> Result<()> {
     std::fs::File::create(path)
         .map_err(|error| anyhow!("create plan file {}: {error}", path.display()))?;
     Ok(())
+}
+
+/// Read the session plan file for `x.ai/exit_plan_mode`, treating missing,
+/// whitespace-only, or frontmatter-only files as `None`.
+fn plan_content_for_approval(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let body = strip_plan_front_matter(&content);
+    (!body.trim().is_empty()).then_some(content)
+}
+
+/// Convert the opaque Pi tool call id to a bounded, portable filename inside the
+/// private `plan_mode_control` directory (mirrors `ask_user_response_file_name`).
+fn plan_response_file_name(tool_call_id: &str) -> String {
+    let digest = Sha256::digest(tool_call_id.as_bytes());
+    let mut name = String::with_capacity("plan-resp-".len() + digest.len() * 2 + ".json".len());
+    name.push_str("plan-resp-");
+    use std::fmt::Write as _;
+    for byte in digest {
+        write!(name, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    name.push_str(".json");
+    name
 }
 
 fn plan_state_path(plan_file: &Path) -> PathBuf {

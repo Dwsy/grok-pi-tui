@@ -4,6 +4,15 @@ Subagents V2 is the opt-in team collaboration layer for grok-pi's built-in Pi su
 
 V2 is **off by default**. Keep it off if you only need `spawn_subagent`, `/subagents`, wait/cancel/history, or parent-to-child messaging.
 
+## Plan Mode ↔ Team V2 Closed Loop
+
+When a task spans multiple files, has unsettled architecture, or needs parallel writers with disjoint ownership:
+
+1. Root proactively calls `enter_plan_mode` before mutating files or launching write-enabled agents.
+2. Inside Plan Mode, `bash`, edits outside the session `.plan.md`, and mutating subagent spawns are blocked; root may still pass `capability_mode: "read-only"` to `spawn_team_agent` / `spawn_team` for parallel read-only reconnaissance.
+3. Once the plan (Goal, Ordered Steps, Write Scopes, Verification, and `Re-plan if:` triggers) is written to `.plan.md`, root proactively calls `exit_plan_mode` in the same turn and waits synchronously for `approved`, `abandoned`, or `cancelled`.
+4. Only after `approved` does root dispatch write-enabled Team V2 workers; if execution hits a `Re-plan if:` trigger or a `blocked` child report that invalidates the plan, root can re-enter `enter_plan_mode`.
+
 ## Multitask with skills
 
 With Pi subagents and V2 enabled, invoke:

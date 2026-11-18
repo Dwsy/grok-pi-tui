@@ -143,6 +143,11 @@ impl PiPlanTracker {
         self.was_previously_active && self.state == PiPlanState::Pending
     }
 
+    /// Whether plan mode was ever active earlier in this session.
+    pub fn was_previously_active(&self) -> bool {
+        self.was_previously_active
+    }
+
     pub fn is_awaiting_plan_approval(&self) -> bool {
         self.awaiting_plan_approval
     }
@@ -184,6 +189,20 @@ impl PiPlanTracker {
         self.state = PiPlanState::Active;
         self.was_previously_active = true;
         self.reminder_count = 0;
+        true
+    }
+
+    /// Agent called `enter_plan_mode`: enter `Active` immediately (idempotent).
+    /// Returns true if the tracker transitioned into `Active`.
+    pub fn activate_from_tool(&mut self) -> bool {
+        if self.state == PiPlanState::Active {
+            return false;
+        }
+        self.state = PiPlanState::Active;
+        self.was_previously_active = true;
+        self.reminder_count = 0;
+        self.pending_exit_reminder = false;
+        self.awaiting_plan_approval = false;
         true
     }
 
@@ -301,29 +320,29 @@ impl PiPlanTracker {
 // Mirrors Grok's plan_mode.rs templates, adapted for prompt-prefix injection.
 
 fn plan_mode_full_reminder() -> &'static str {
-    "Plan mode is active. Do not make any edits or writes to the system.\n\n\
+    "Plan mode is active. Do not make any edits or writes to the system, and do not run bash or mutating subagents (only capability_mode: \"read-only\" subagents are allowed for parallel exploration).\n\n\
      ## Plan File:\n\
-     Write your plan to {plan_path} using the write or edit tool.\n\
-     This is the only file you are allowed to edit.\n\n\
-     Ask clarifying questions in your response when needed, or call \
-     exit_plan_mode to present your plan to the user."
+     Write a concise, actionable plan to {plan_path} using the write or edit tool.\n\
+     This is the only file you are allowed to edit.\n\
+     Include: Goal, Ordered Steps (with concrete files/symbols), Write Scopes (if delegating to Subagents V2), Verification commands, and a short `Re-plan if:` trigger list.\n\n\
+     Once the plan is written and no blocking requirement questions remain (use ask_user_question only if user input is needed), proactively call exit_plan_mode in this same turn rather than pasting the plan in chat and stopping."
 }
 
 fn plan_mode_sparse_reminder() -> &'static str {
     "Plan mode is still active. Do not make any edits or writes to the system \
-     except for the plan file."
+     except for the plan file (mutating subagents are blocked unless capability_mode is \"read-only\"). \
+     Once the plan is ready and no blocking question remains, call exit_plan_mode in this same turn."
 }
 
 fn plan_mode_reentry_reminder() -> &'static str {
     "## Returning to Plan Mode\n\n\
      You are entering plan mode again after having previously exited it.\n\
      A plan file exists at {plan_path} from your previous planning session.\n\n\
-     Ask clarifying questions in your response when needed, or call \
-     exit_plan_mode to present your plan to the user."
+     Read and update {plan_path} with the revised steps, Write Scopes, and Re-plan if: triggers, then ask clarifying questions only if blocked or proactively call exit_plan_mode in this same turn."
 }
 
 fn plan_mode_exit_reminder() -> &'static str {
-    "You have exited plan mode. You can now make edits, run tools, and take actions."
+    "You have exited plan mode. You can now make edits, run tools, and take actions. Follow the approved plan; if execution hits a Re-plan if condition or architectural blocker, call enter_plan_mode to re-plan before guessing."
 }
 
 /// Rejection message for a write outside the plan file during plan mode.
@@ -541,5 +560,40 @@ mod tests {
         let msg = plan_mode_edit_rejected(Path::new("/home/user/.pi/sessions/abc/plan.md"));
         assert!(msg.contains("Rejected"));
         assert!(msg.contains("plan.md"));
+    }
+
+    #[test]
+    fn agent_initiated_activate_from_tool_transitions_and_is_idempotent() {
+        let mut t = test_tracker();
+        assert!(!t.was_previously_active());
+        assert!(t.activate_from_tool());
+        assert_eq!(t.state(), PiPlanState::Active);
+        assert!(t.was_previously_active());
+        assert!(
+            !t.activate_from_tool(),
+            "re-entering while Active is idempotent"
+        );
+
+        // ExitPending (mid-turn user toggle off) returns cleanly to Active.
+        t.user_exit(true);
+        assert_eq!(t.state(), PiPlanState::ExitPending);
+        assert!(t.activate_from_tool());
+        assert_eq!(t.state(), PiPlanState::Active);
+        assert!(!t.has_pending_exit_reminder());
+
+        // Pending (user toggle before prompt) collapses to Active without double entry.
+        let mut t2 = test_tracker();
+        assert!(t2.enter_pending());
+        assert!(t2.activate_from_tool());
+        assert_eq!(t2.state(), PiPlanState::Active);
+    }
+
+    #[test]
+    fn reminders_encourage_proactive_exit_and_reentry() {
+        assert!(plan_mode_full_reminder().contains("exit_plan_mode"));
+        assert!(plan_mode_full_reminder().contains("Re-plan if:"));
+        assert!(plan_mode_sparse_reminder().contains("exit_plan_mode"));
+        assert!(plan_mode_reentry_reminder().contains("exit_plan_mode"));
+        assert!(plan_mode_exit_reminder().contains("enter_plan_mode"));
     }
 }

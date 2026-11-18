@@ -1,5 +1,17 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-11-18 Proactive Plan Mode (`enter_plan_mode` / `exit_plan_mode`) & Team V2 Closed Loop
+
+- PASS: `node --test extensions/pi-grok-plan-mode/index.test.mjs` — **6/6** passing (tool registration + `promptSnippet`/`promptGuidelines`, `tool_call` gate for `bash`/edits/`spawn_*` with `capability_mode: "read-only"` allowance, synchronous `enter_plan_mode` + SHA-256 response contract + abort cleanup, synchronous `exit_plan_mode` across `approved`/`abandoned`/`cancelled`/`inactive`, standalone fallback, and real Pi 1.5.2 RPC extension boot).
+- PASS: `env PI_TEST_NODE_MODULES=~/.pi/agent/install/releases/1.5.2/node_modules node --import ./test-installed-pi.mjs --test index.test.ts v2.test.ts runtime.test.ts delivery.test.ts` in `extensions/pi-grok-subagents/` — **83/83** passing (including new tests for `teams/research.json` late-evidence wakeup via `team_followup_task` and root-only Plan Mode `promptGuidelines`).
+- PASS: combined real Pi 1.5.2 RPC load (`pi -ne --mode rpc --extension extensions/pi-grok-plan-mode/index.ts --extension extensions/pi-grok-subagents/index.ts` with `PI_GROK_SUBAGENTS=1 PI_GROK_SUBAGENTS_V2=1`): exit 0, empty stderr, `get_commands` and `get_state` succeeded.
+- PASS (static): `rustfmt --edition 2024 --check` parses every modified Rust file cleanly (`plan_mode_extension.rs`, `plan_mode.rs`, `events.rs`, `tests.rs` pass with zero diffs; remaining diffs in `pi_adapter/{session,tools}.rs` and `pi_adapter.rs` are pre-existing lines outside this change's hunks).
+- PASS (static): `verify_native_grok.py` compared before/after reports (`scratch/verify-before.json` vs `scratch/verify-after.json`): **0 new failures** (13/21 pass, identical 8 pre-existing baseline failures, 93 declared seams, both newly added files allowlisted in `grok_uploaded_baseline_sha256.json`).
+- PASS: `git diff --check` reports zero whitespace errors.
+- NOT RUN: `cargo check`, `cargo test`, `./build.sh`, and native TUI/live-model E2E. Per `AGENTS.md`, Cargo commands were not invoked without an explicit user request; the Rust adapter & `plan_mode_extension` unit tests (`plan_mode.rs`, `pi_adapter/tests.rs`, `plan_mode_extension.rs`) still require a user-authorized Cargo run.
+
+Design, root causes, and RSI log: [issue](issues/adapter/20261118-proactive-plan-mode-orchestrator.md).
+
 ## 2026-11-17 Tool call density (five fold levels)
 
 - PASS: `cargo check -p xai-grok-pager --all-targets` on the merged tree.

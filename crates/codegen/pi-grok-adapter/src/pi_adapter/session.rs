@@ -949,7 +949,10 @@ impl PiAgent {
             let mut state = self.state.borrow_mut();
             let plan_path = plan_file_path(&bootstrap.state, &state.session_dir);
             state.plan_mode = load_plan_tracker(&plan_path).map_err(acp_internal)?;
+            state.active_plan_approval_id = None;
         }
+        self.sync_plan_mode_control().map_err(acp_internal)?;
+        self.publish_plan_file_path().await;
         self.publish_bootstrap(&bootstrap).await;
         // Fork/clone rebinds session identity; refresh bar from the new JSONL.
         self.refresh_context_usage().await;
@@ -1056,8 +1059,46 @@ impl PiAgent {
         let body = serde_json::to_vec(&json!({
             "active": active,
             "planFilePath": plan_file_path,
+            "syncResponses": true,
         }))?;
         atomic_write(&control_path, &body)
+    }
+
+    /// Atomically write the synchronous tool response for `enter_plan_mode` /
+    /// `exit_plan_mode` into the private `plan_mode_control` directory.
+    /// Callers must call `sync_plan_mode_control()` strictly before writing
+    /// this response so the `tool_call` gate observes the updated `active`
+    /// flag before Pi continues the turn.
+    pub(super) fn write_plan_mode_response(&self, tool_call_id: &str, payload: Value) -> bool {
+        let Some(control_path) = self.state.borrow().plan_mode_control.clone() else {
+            return false;
+        };
+        let Some(dir) = control_path.parent() else {
+            tracing::warn!(
+                path = %control_path.display(),
+                "plan control path has no parent directory"
+            );
+            return false;
+        };
+        let path = dir.join(plan_response_file_name(tool_call_id));
+        match serde_json::to_vec(&payload) {
+            Ok(bytes) => {
+                if let Err(error) = atomic_write(&path, &bytes) {
+                    tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "failed to write plan mode response"
+                    );
+                    false
+                } else {
+                    true
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, tool_call_id, "failed to serialize plan mode response");
+                false
+            }
+        }
     }
 
     /// Notify the Pager of the session plan file path so `/view-plan` and the
