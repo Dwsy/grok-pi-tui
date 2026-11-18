@@ -36,7 +36,9 @@ pub use git::{
 pub use hunk::{Hunk, HunkAction};
 pub use interaction::{UserAnswer, UserQuestion, UserQuestionOption};
 pub use memory::MemoryChunk;
-pub use permission::{PermissionDecision, PermissionRequest};
+pub use permission::{
+    ENABLE_ALWAYS_APPROVE_OPTION_ID, PermissionDecision, PermissionRequest,
+};
 pub use plan_mode::{PlanModeDecision, PlanModeTransition};
 pub use plugins::{HookInfo, PluginInfo};
 pub use search::{ContentMatch, FuzzyMatch, FuzzySearchArgs, RipgrepArgs, RipgrepStats};

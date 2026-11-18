@@ -215,9 +215,13 @@ jobs:
           manifest = tomllib.loads((crate / "Cargo.toml").read_text())
           assert "xai-grok-tools" not in manifest["dependencies"]
           assert "xai-grok-image" in manifest["dependencies"]
+          assert "xai-grok-workspace" not in manifest["dependencies"]
+          assert "xai-grok-workspace-types" in manifest["dependencies"]
           for path in (crate / "src").rglob("*.rs"):
-              assert "xai_grok_tools::" not in path.read_text(), path
-          print("Renderer no longer directly imports stock Grok Tools")
+              text = path.read_text()
+              assert "xai_grok_tools::" not in text, path
+              assert "xai_grok_workspace::" not in text, path
+          print("Renderer no longer directly imports stock Grok Tools or the workspace runtime")
           PY
 
       - name: Check native diff no longer imports stock tools

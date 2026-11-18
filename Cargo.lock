@@ -14407,7 +14407,7 @@ dependencies = [
  "xai-grok-paths",
  "xai-grok-shared",
  "xai-grok-telemetry",
- "xai-grok-workspace",
+ "xai-grok-workspace-types",
  "xai-ratatui-inline",
  "xai-ratatui-textarea",
  "xai-tty-utils",

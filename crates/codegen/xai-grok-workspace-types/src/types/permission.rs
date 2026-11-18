@@ -8,6 +8,11 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Stable id for the "enable always-approve mode" permission option prepended to TUI / Pager / Desktop prompts.
+/// Canonical home for the wire id: the Pager renderer imports it from here directly
+/// (`xai-grok-workspace::permission` re-exports it for shell-side callers).
+pub const ENABLE_ALWAYS_APPROVE_OPTION_ID: &str = "enable-always-approve";
+
 /// A pending permission request emitted to the sampler via [`ToolChunk::NeedPermission`](crate::chunks::ToolChunk::NeedPermission).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRequest {

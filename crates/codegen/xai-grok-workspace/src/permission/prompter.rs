@@ -22,7 +22,9 @@ pub const ALLOW_EDITS_SESSION_OPTION_ID: &str = "allow-edits-session";
 /// Stable id for the "enable always-approve mode" option prepended for TUI / Pager / Desktop clients.
 /// Shell maps it to [`PromptOutcome::AllowOnce`] and persists nothing; the pager separately fires `set_yolo_mode(true)`.
 /// Keeps the wire plain ACP. An unrecognized client still gets `AllowOnce`; worst case the current call is granted but the toggle does not flip.
-pub const ENABLE_ALWAYS_APPROVE_OPTION_ID: &str = "enable-always-approve";
+/// Canonical definition lives in `xai_grok_workspace_types::types::permission` so the Pager renderer can read the id
+/// without depending on the workspace runtime crate; re-exported here for every shell-side caller.
+pub use xai_grok_workspace_types::types::permission::ENABLE_ALWAYS_APPROVE_OPTION_ID;
 
 /// Defined once so the label is identical across every permission prompt (edit, bash, MCP, web_fetch, fallback).
 const ENABLE_ALWAYS_APPROVE_LABEL: &str =
