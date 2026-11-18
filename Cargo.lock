@@ -13973,6 +13973,7 @@ dependencies = [
  "xai-grok-http",
  "xai-grok-memory",
  "xai-grok-sampler",
+ "xai-grok-shared",
  "xai-grok-shell-base",
  "xai-grok-telemetry",
  "xai-grok-test-support",

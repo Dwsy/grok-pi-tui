@@ -1,6 +1,7 @@
 //! Shared utilities used by both `xai-grok-shell` and its downstream clients (e.g. `xai-grok-pager-render`).
 //! This crate sits upstream of the tools and shell; keep client utilities independent of their runtimes.
 
+pub mod auth_types;
 pub mod clipboard;
 pub mod placeholder_images;
 pub mod session;
