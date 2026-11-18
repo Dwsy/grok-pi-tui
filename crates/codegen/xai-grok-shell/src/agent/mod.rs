@@ -1,4 +1,5 @@
 pub mod activity;
+#[cfg(feature = "stock-agent")]
 pub mod app;
 pub mod auth_method;
 pub mod chat_modes;
@@ -18,6 +19,7 @@ pub mod relay;
 pub mod remote_config;
 pub(crate) mod restore_code;
 pub mod roster;
+#[cfg(feature = "stock-agent")]
 pub mod server;
 pub mod session_config;
 pub(crate) mod session_metrics;
@@ -30,6 +32,7 @@ pub(crate) mod update_chunk_merge;
 
 pub use mvp_agent::MvpAgent;
 pub use relay::{RelayConfig, RelayHandle, spawn_relay_connection};
+#[cfg(feature = "stock-agent")]
 pub use server::{ServerConfig, run_agent_server};
 
 #[cfg(test)]
