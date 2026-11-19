@@ -8,6 +8,7 @@ pub mod contracts;
 pub mod conversation;
 pub mod doom_loop;
 pub mod error;
+pub mod error_kind;
 pub mod messages;
 pub mod metrics;
 pub mod origin;

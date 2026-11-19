@@ -9,8 +9,9 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::contracts::{OriginClientInfo, SharedAttributionCallback, SharedBearerResolver};
+use crate::contracts::{SharedAttributionCallback, SharedBearerResolver};
 use crate::doom_loop::DoomLoopRecoveryPolicy;
+use crate::origin::OriginClientInfo;
 use crate::types::{
     ApiBackend, CompactionAtTokens, CompactionsRemaining, ConversationGroupId, ReasoningEffort,
 };
