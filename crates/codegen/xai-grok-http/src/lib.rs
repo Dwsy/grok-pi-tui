@@ -74,7 +74,7 @@ macro_rules! startup_timer {
 
 static CLIENT_TYPE: OnceLock<ClientType> = OnceLock::new();
 
-pub use xai_grok_sampler::OriginClientInfo;
+pub use xai_grok_sampling_types::OriginClientInfo;
 
 pub fn origin_client_info_from_env() -> Option<OriginClientInfo> {
     std::env::var("GROK_CLIENT_NAME")

@@ -350,6 +350,7 @@ xai-grok-mermaid = { path = "crates/codegen/xai-grok-mermaid" }
 xai-grok-models = { path = "crates/codegen/xai-grok-models" }
 xai-grok-otel = { path = "crates/codegen/xai-grok-otel" }
 xai-grok-sampler = { path = "crates/codegen/xai-grok-sampler" }
+xai-grok-sampling-types = { path = "crates/codegen/xai-grok-sampling-types" }
 xai-grok-secrets = { path = "crates/codegen/xai-grok-secrets" }
 xai-grok-session-events = { path = "crates/codegen/xai-grok-session-events" }
 xai-grok-session-search = { path = "crates/codegen/xai-grok-session-search" }

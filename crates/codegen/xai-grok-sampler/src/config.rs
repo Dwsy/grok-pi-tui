@@ -193,11 +193,10 @@ impl Default for RetryPolicy {
 
 /// Identity of the client that originated the request, used for User-Agent rendering.
 /// The shell layer composes this with platform info into a final UA string.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct OriginClientInfo {
-    pub product: String,
-    pub version: Option<String>,
-}
+///
+/// Moved to `xai_grok_sampling_types` (pure data) so `xai-grok-http` and
+/// `xai-grok-telemetry` can name it without depending on this runtime crate.
+pub use xai_grok_sampling_types::OriginClientInfo;
 
 #[cfg(test)]
 mod tests {
