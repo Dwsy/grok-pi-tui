@@ -39,18 +39,14 @@ jobs:
           targets: aarch64-apple-darwin
 
       - name: Test standalone grok-pi-shell-host
-        run: |
-          cargo test \
-            --manifest-path tools/grok-pi-shell-host/Cargo.toml \
-            --target aarch64-apple-darwin
+        working-directory: tools/grok-pi-shell-host
+        run: cargo +nightly-2026-11-08 test --target aarch64-apple-darwin
 
       - name: Build & verify handshake
+        working-directory: tools/grok-pi-shell-host
         run: |
-          cargo build \
-            --manifest-path tools/grok-pi-shell-host/Cargo.toml \
-            --release \
-            --target aarch64-apple-darwin
-          host_bin="tools/grok-pi-shell-host/target/aarch64-apple-darwin/release/grok-pi-shell-host"
+          cargo +nightly-2026-11-08 build --release --target aarch64-apple-darwin
+          host_bin="target/aarch64-apple-darwin/release/grok-pi-shell-host"
           "$host_bin" --handshake | python3 -c '
           import json, sys
           data = json.load(sys.stdin)

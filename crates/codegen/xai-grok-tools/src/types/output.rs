@@ -487,8 +487,7 @@ impl BashOutput {
     pub fn make_output_for_prompt(raw: &str) -> String {
         let stripped = strip_str(raw);
         soft_wrap_lines(&stripped, DEFAULT_SOFT_WRAP_WIDTH)
-    },
-    shell_trace: None,
+    }
 }
 /// Output when a background task is started (matches the vendor-compat XML format)
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -2639,8 +2638,8 @@ mod tests {
             total_bytes: output.len(),
             output_delta: None,
             was_bare_echo: false,
-        },
-        shell_trace: None,
+            shell_trace: None,
+        }
     }
     fn assert_cer(
         resp: &xai_tool_runtime::ToolChatCompletionResponse,

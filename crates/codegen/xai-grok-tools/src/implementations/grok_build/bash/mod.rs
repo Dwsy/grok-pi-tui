@@ -3210,10 +3210,10 @@ mod tests {
             total_bytes: output.len(),
             output_delta: None,
             was_bare_echo: false,
+            shell_trace: None,
         };
         bash.output_for_prompt = format_default_prompt(&bash);
-        bash,
-        shell_trace: None,
+        bash
     }
 
     #[test]
