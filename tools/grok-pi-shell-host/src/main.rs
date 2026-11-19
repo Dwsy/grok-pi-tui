@@ -43,7 +43,7 @@ async fn main() -> ExitCode {
         return ExitCode::from(1);
     }
 
-    match runner::execute_request(req, cancel_flag, emit_event).await {
+    match runner::execute_request(req, cancel_flag, |ev| emit_event(&ev)).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             emit_event(&HostEvent::Error {

@@ -1278,6 +1278,7 @@ fn production_execute_sequence() {
         total_bytes: 19,
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     });
     let in_progress = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
         acp::ToolCallId::new(Arc::from(tc_id)),
@@ -1315,6 +1316,7 @@ fn production_execute_sequence() {
         total_bytes: 40,
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     });
     let in_progress2 = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
         acp::ToolCallId::new(Arc::from(tc_id)),
@@ -1348,6 +1350,7 @@ fn production_execute_sequence() {
         total_bytes: 46,
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     });
     let completed = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
         acp::ToolCallId::new(Arc::from(tc_id)),

@@ -208,7 +208,7 @@ impl ProgramStatusReporter {
         self.resting
     }
 
-    fn message_for(&self, status: ProgramStatus, state: &TitleState<'_>) -> Option<&str> {
+    fn message_for<'a>(&'a self, status: ProgramStatus, state: &TitleState<'a>) -> Option<&'a str> {
         match status {
             ProgramStatus::Error => self.error_message.as_deref(),
             // Report the compaction cause so a long silent run explains itself in the terminal.

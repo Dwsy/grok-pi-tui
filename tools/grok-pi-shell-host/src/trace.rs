@@ -166,6 +166,9 @@ const fn node_kind_str(kind: NodeKind) -> &'static str {
         NodeKind::Arith => "arith",
         NodeKind::Cond => "cond",
         NodeKind::FuncDef => "func_def",
+        NodeKind::Coproc => "coproc",
+        NodeKind::Assign => "assign",
+        NodeKind::Word => "word",
     }
 }
 
