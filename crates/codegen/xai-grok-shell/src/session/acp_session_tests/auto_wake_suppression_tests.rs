@@ -2040,7 +2040,7 @@ async fn is_busy_reflects_active_work() {
                 !actor.is_busy().await,
                 "a fresh actor (no turn, no queue, no work) must not be busy"
             );
-            let guard = crate::session::handle::WorkGuard::new(actor.active_work.clone());
+            let guard = crate::session::work_guard::WorkGuard::new(actor.active_work.clone());
             assert!(
                 actor.is_busy().await,
                 "a work unit in flight must keep the session busy"
