@@ -19,6 +19,8 @@ chrono = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 xai-grok-extra-ca = { workspace = true }
 serde = { workspace = true }
+obfstr = { workspace = true }
+toml = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }

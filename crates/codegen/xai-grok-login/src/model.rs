@@ -41,7 +41,7 @@ pub enum AuthMode {
 
 /// Wire value of `principal_type` for team OAuth principals (capitalized by the auth service).
 /// Single source for every comparison site.
-pub const TEAM_PRINCIPAL_TYPE: &str = "Team";
+pub use xai_grok_shell_base::auth_config::TEAM_PRINCIPAL_TYPE;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GrokAuth {
