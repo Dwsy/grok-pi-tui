@@ -23,8 +23,8 @@ pub use async_openai::types::responses as rs;
 // Everything a Pi-profile caller needs already lives in `xai-grok-sampling-types` and is re-exported above.
 #[cfg(feature = "stock-agent")]
 pub use xai_grok_sampler::{
-    InferenceLatencyStats, RequestId, SamplerActor, SamplerConfig, SamplerHandle, SamplingChannel,
-    SamplingClient, SamplingErrorInfo, SamplingEvent,
+    InferenceLatencyStats, RequestId, SamplerActor, SamplerHandle, SamplingChannel, SamplingClient,
+    SamplingErrorInfo, SamplingEvent,
 };
 
 const CONVERSATION_GROUP_NAMESPACE: &str = "xai:grok-build:conversation-group:";
