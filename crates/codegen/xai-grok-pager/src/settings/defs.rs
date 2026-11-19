@@ -54,17 +54,17 @@ const TIMELINE_HAPTICS_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "light",
         display: "Light",
-        description: "Soft guide-snap pulse. Easiest to miss on a light trackpad setting.",
+        description: "One soft Alignment pulse per new tick hovered.",
     },
     EnumChoice {
         canonical: "medium",
         display: "Medium",
-        description: "One simulated detent per crossed tick. Default.",
+        description: "One LevelChange detent per new tick hovered. Default.",
     },
     EnumChoice {
         canonical: "strong",
         display: "Strong",
-        description: "Harder detent, doubled. Use when Medium is still too faint.",
+        description: "Legacy setting with the same single detent as Medium.",
     },
 ];
 
@@ -1349,14 +1349,13 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: true,
         },
-        // SHELL-owned: `[ui].timeline_haptics`. macOS only; the strength maps
-        // onto an AppKit feedback pattern and a pulse count.
+        // SHELL-owned: `[ui].timeline_haptics`. AppKit feedback on macOS only.
         SettingMeta {
             key: "timeline_haptics",
             category: SettingCategory::Mouse,
             owner: SettingOwner::Shell,
             label: "Timeline hover haptics",
-            description: "Trackpad feedback when the pointer crosses a timeline tick (macOS only). Stronger levels use a harder detent and pulse once per crossed tick.",
+            description: "Request one trackpad pulse when the pointer moves onto a new timeline tick (macOS only).",
             keywords: &[
                 "haptic",
                 "haptics",

@@ -46,11 +46,8 @@ impl ToolCardClickAction {
     }
 }
 
-/// Trackpad feedback strength for pointer crossings on the timeline rail.
-///
-/// Ordered weakest to strongest: the settings modal presents them as a
-/// progression, and the haptic layer maps each level onto an AppKit pattern.
-/// macOS only — other platforms never pulse.
+/// Trackpad feedback for pointer landings on timeline ticks (macOS only).
+/// `Strong` is a historical setting with the same feedback as `Medium`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TimelineHapticStrength {
     Off,
@@ -548,7 +545,7 @@ pub struct UiConfig {
     /// Tool-card click action: select (default), toggle, or open_viewer (same as Enter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_card_click_action: Option<String>,
-    /// Trackpad feedback strength when the pointer crosses a timeline tick:
+    /// Trackpad feedback when the pointer moves onto a new timeline tick:
     /// `off` | `light` | `medium` (default) | `strong`.
     /// macOS only; other platforms never pulse. Written by the pager's settings
     /// modal and applied live.

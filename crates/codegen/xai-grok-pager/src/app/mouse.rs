@@ -1067,30 +1067,14 @@ impl AgentView {
                 }
                 self.hovered_entry = new_hover;
                 self.hovered_prompt = new_prompt_hover;
+                if timeline_haptics::landed_on_tick(
+                    old_mouse_pos != self.last_mouse_pos,
+                    self.timeline_hover,
+                    new_timeline_hover,
+                ) {
+                    timeline_haptics::tick(crate::appearance::cache::load_timeline_haptics());
+                }
                 if new_timeline_hover != self.timeline_hover {
-                    if let (
-                        Some(crate::views::timeline::TimelineHit::Tick(landed)),
-                        Some(crate::views::timeline::TimelineHit::Tick(left)),
-                    ) = (new_timeline_hover, self.timeline_hover)
-                    {
-                        // One mouse event can cross several ticks. Pulse once
-                        // per crossed tick so a flick reads as the number of
-                        // steps it actually skipped, instead of collapsing to
-                        // a single pulse that feels like nothing happened.
-                        let crossed = landed.abs_diff(left).max(1);
-                        timeline_haptics::tick(
-                            crate::appearance::cache::load_timeline_haptics(),
-                            crossed,
-                        );
-                    } else if matches!(
-                        new_timeline_hover,
-                        Some(crate::views::timeline::TimelineHit::Tick(_))
-                    ) {
-                        timeline_haptics::tick(
-                            crate::appearance::cache::load_timeline_haptics(),
-                            1,
-                        );
-                    }
                     self.timeline_hover = new_timeline_hover;
                     self.sync_timeline_hover_preview();
                     changed = true;

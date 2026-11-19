@@ -615,6 +615,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `ui.scroll_speed` | `integer` | `yes` | `user` | Mouse/trackpad scroll speed multiplier (1–100). Also GROK_SCROLL_SPEED. |
 | `ui.show_thinking_blocks` | `boolean` | `yes` | `user` | Show thinking/reasoning blocks while streaming. Also GROK_SHOW_THINKING_BLOCKS. |
 | `ui.show_timeline` | `boolean` | `yes` | `user` | Per-turn tick rail instead of the scrollbar. |
+| `ui.timeline_haptics` | `off / light / medium / strong` | `yes` | `user` | macOS only. Each new tick hovered requests one AppKit pulse. `medium` (default) uses LevelChange, `light` uses Alignment, `strong` is a legacy alias for `medium`, and `off` disables feedback. |
 | `ui.show_timestamps` | `boolean` | `yes` | `user` | Clock time next to messages. Also `/timestamps`. |
 | `ui.simple_mode` | `boolean` | `yes` | `user` | Readline prompt editing when true; experimental vim prompt keys when false. |
 | `ui.status_line.command` | `string` | `yes` | `user` | Script for a `command` status line. Campaigns strip this path; a requirements layer still merges it. |
