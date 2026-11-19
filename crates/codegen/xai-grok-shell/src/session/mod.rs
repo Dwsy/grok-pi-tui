@@ -538,6 +538,7 @@ pub mod feedback;
 #[cfg(feature = "stock-agent")]
 pub mod feedback_manager;
 pub mod file_system;
+#[cfg(feature = "stock-agent")]
 pub mod fork;
 #[cfg(feature = "stock-agent")]
 pub(crate) mod fs_watch;
@@ -591,6 +592,7 @@ pub mod restore;
 pub mod result;
 pub mod signals;
 pub(crate) mod slash_authority;
+#[cfg(feature = "stock-agent")]
 pub(crate) mod slash_commands;
 pub mod usage_file;
 pub use slash_commands::PAGER_COMMAND_KEYS;
@@ -613,6 +615,7 @@ pub(crate) mod wire_tags;
 pub(crate) mod work_guard;
 /// Workflow engine host (Rhai + journal). Public for grok-pi External runtime seams.
 pub mod workflow;
+#[cfg(feature = "stock-agent")]
 pub mod worktree;
 pub(crate) mod worktree_cleanup;
 pub mod worktree_pool;
