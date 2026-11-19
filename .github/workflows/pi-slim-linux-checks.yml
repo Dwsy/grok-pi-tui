@@ -79,6 +79,21 @@ jobs:
           cargo check --locked -p xai-grok-pager-bin --bin xai-grok-pager \
             --no-default-features --features stock-agent
 
+      - name: Assert the sampler runtime stays outside the Pi compile closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pi ships without the Stock sampling runtime; finding it here is a regression
+          # of the optional `stock-agent` gate, not a harmless extra dependency.
+          if cargo tree --locked -p xai-grok-pager-bin --no-default-features \
+               --features release-dist,sandbox-enforce -e normal -i xai-grok-sampler >/dev/null 2>&1; then
+            echo "::error::xai-grok-sampler is back in the Pi compile closure"
+            exit 1
+          fi
+          # The Stock shell must still carry it, otherwise the gate disabled Stock sampling.
+          cargo tree --locked -p xai-grok-shell --no-default-features --features stock-agent \
+            -e normal -i xai-grok-sampler >/dev/null
+
       - name: Verify Workflow cancellation without a hanging suite
         if: github.event_name == 'push' || inputs.scope == 'all'
         shell: bash
