@@ -1,6 +1,8 @@
 use super::*;
 use crate::btw_bridge::BtwHistoryEntry;
-use crate::pi_adapter::tools::{eval_result_without_tool_calls, eval_top_level_hidden};
+use crate::pi_adapter::tools::{
+    eval_result_without_tool_calls, eval_top_level_hidden, timeline_only_tool_end, timeline_only_tool_start,
+};
 
 impl PiAgent {
     /// Publish Pi-owned session metadata title. This is distinct from an
@@ -173,19 +175,17 @@ impl PiAgent {
                 // Suppress the top-level Eval card exactly like the live
                 // handlers, so resume shows only the replayed nested effects.
                 if eval_top_level_hidden(self.eval_v2_only, &name) {
+                    self.send_replay_update(timeline_only_tool_start(&id, &name), timestamp_ms)
+                        .await;
                     return;
                 }
-                let mut tool_call = acp::ToolCall::new(acp::ToolCallId::new(id), name.clone())
+                let tool_call = acp::ToolCall::new(acp::ToolCallId::new(id), name.clone())
                     .kind(tool_kind(&name))
                     .status(acp::ToolCallStatus::InProgress)
                     .content(edit_diff_content(&name, arguments.as_ref(), None).unwrap_or_default())
                     .locations(Vec::new())
-                    .raw_input(arguments);
-                if let Some(usage) = usage {
-                    let mut meta = acp::Meta::new();
-                    meta.insert("piToolUsage".into(), usage);
-                    tool_call = tool_call.meta(Some(meta));
-                }
+                    .raw_input(arguments)
+                    .meta(pi_tool_metadata(&name, usage));
                 acp::SessionUpdate::ToolCall(tool_call)
             }
             PiHistoryItem::ToolEnd {
@@ -237,20 +237,24 @@ impl PiAgent {
                 if eval_top_level_hidden(self.eval_v2_only, &name) {
                     if !eval_result_without_tool_calls(&raw) {
                         self.state.borrow_mut().tool_args.remove(&id);
+                        self.send_replay_update(
+                            timeline_only_tool_end(&id, &raw, is_error),
+                            timestamp_ms,
+                        )
+                        .await;
                         return;
                     }
                     let args = self.state.borrow_mut().tool_args.remove(&id);
-                    let tool_call = acp::ToolCall::new(acp::ToolCallId::new(id.clone()), name.clone())
-                        .kind(tool_kind(&name))
-                        .status(acp::ToolCallStatus::InProgress)
-                        .content(Vec::new())
-                        .locations(Vec::new())
-                        .raw_input(args);
-                    self.send_replay_update(
-                        acp::SessionUpdate::ToolCall(tool_call),
-                        timestamp_ms,
-                    )
-                    .await;
+                    let tool_call =
+                        acp::ToolCall::new(acp::ToolCallId::new(id.clone()), name.clone())
+                            .kind(tool_kind(&name))
+                            .status(acp::ToolCallStatus::InProgress)
+                            .content(Vec::new())
+                            .locations(Vec::new())
+                            .raw_input(args)
+                            .meta(pi_tool_metadata(&name, None));
+                    self.send_replay_update(acp::SessionUpdate::ToolCall(tool_call), timestamp_ms)
+                        .await;
                 }
                 let args = self.state.borrow_mut().tool_args.remove(&id);
                 let normalized = normalize_tool_raw_output(&name, args.as_ref(), &raw, is_error);
@@ -261,7 +265,7 @@ impl PiAgent {
                     } else {
                         acp::ToolCallStatus::Completed
                     }))
-                    .raw_output(Some(normalized));
+                    .raw_output(Some(timeline_tool_result(normalized, &raw, is_error)));
                 if tool_kind(&name) == acp::ToolKind::Edit {
                     fields = fields.content(edit_diff_content(&name, args.as_ref(), Some(&raw)));
                 } else {

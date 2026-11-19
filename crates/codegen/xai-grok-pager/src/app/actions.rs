@@ -2428,6 +2428,12 @@ pub enum Effect {
     },
     /// Experimental Remote TUI: cancel the active remote component session.
     RemoteTuiCancel { id: String },
+    TimelineMessage(serde_json::Value),
+    SaveTimeline {
+        host: String,
+        id: String,
+        contents: xai_grok_shell::util::config::TimelineContents,
+    },
     /// Extension shortcut matched: dispatch to Pi extension handler via RPC.
     ShortcutDispatch { key: String },
     /// Quit the application.
@@ -2727,6 +2733,11 @@ pub enum WorkspaceWriteCompletion {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum TaskResult {
+    TimelineSaved {
+        host: String,
+        id: String,
+        result: Result<xai_grok_shell::util::config::TimelineContents, String>,
+    },
     /// Session lifecycle result paired with the memory mode pinned by the
     /// actor that produced it. The wrapper lets all lifecycle variants share
     /// one typed metadata path.

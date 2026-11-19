@@ -404,16 +404,23 @@ impl AgentView {
                     self.apply_scrollbar_click(mouse.row);
                     return InputOutcome::Changed;
                 }
-                if let Some(rail) = self.timeline_rail.as_ref()
-                    && rail.rect.contains((mouse.column, mouse.row).into())
+                if let Some(frame) = self.timeline_frame.as_ref()
+                    && frame.rail.rect.contains((mouse.column, mouse.row).into())
                 {
-                    if let Some(marker_idx) = rail
-                        .hit(mouse.column, mouse.row)
-                        .and_then(|hit| crate::views::timeline::chevron_target(rail, hit))
+                    if frame.branch == self.scrollback.timeline_branch()
+                        && let Some(marker) = frame
+                            .rail
+                            .hit(mouse.column, mouse.row)
+                            .and_then(|hit| {
+                                crate::views::timeline::chevron_target(&frame.rail, hit)
+                            })
+                            .and_then(|index| frame.markers.get(index))
                     {
-                        self.set_active_pane(AgentPane::Scrollback, false);
-                        self.scrollback.jump_to_timeline_marker(marker_idx);
-                        return InputOutcome::Changed;
+                        let entry_id = marker.entry_id;
+                        if self.scrollback.jump_to_timeline_marker(entry_id) {
+                            self.set_active_pane(AgentPane::Scrollback, false);
+                            return InputOutcome::Changed;
+                        }
                     }
                     return InputOutcome::Unchanged;
                 }
@@ -1007,9 +1014,10 @@ impl AgentView {
                     || self.deferred_text_press.is_some();
                 let hit = self.pane_areas.hit_test(mouse.column, mouse.row);
                 let new_timeline_hover = self
-                    .timeline_rail
+                    .timeline_frame
                     .as_ref()
-                    .and_then(|rail| rail.hit(mouse.column, mouse.row));
+                    .filter(|frame| frame.branch == self.scrollback.timeline_branch())
+                    .and_then(|frame| frame.rail.hit(mouse.column, mouse.row));
                 let new_hover = if new_timeline_hover.is_none()
                     && !suppress_scrollback_hover
                     && self.write_edit_hover_popup_contains(mouse.column, mouse.row)
@@ -1076,7 +1084,6 @@ impl AgentView {
                 }
                 if new_timeline_hover != self.timeline_hover {
                     self.timeline_hover = new_timeline_hover;
-                    self.sync_timeline_hover_preview();
                     changed = true;
                 }
                 if hit == Some(AgentPane::Dock) {

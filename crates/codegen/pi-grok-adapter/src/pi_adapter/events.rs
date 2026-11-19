@@ -84,7 +84,8 @@ fn project_tool_call_stream(
                     .status(acp::ToolCallStatus::InProgress)
                     .content(content)
                     .locations(Vec::new())
-                    .raw_input(args);
+                    .raw_input(args)
+                    .meta(pi_tool_metadata(name, None));
             streams.insert(
                 content_index,
                 PiToolCallStream::new(id.to_string(), name.to_string()),

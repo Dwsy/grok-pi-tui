@@ -2813,7 +2813,13 @@
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/mermaid_content.rs",
     "crates/codegen/xai-grok-pager/tests/mermaid_render_subprocess.rs",
     "crates/codegen/xai-grok-pager/src/notifications/config.rs",
-    "crates/codegen/xai-grok-pager/src/notifications/mod.rs"
+    "crates/codegen/xai-grok-pager/src/notifications/mod.rs",
+    "crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs",
+    "crates/codegen/xai-grok-pager/src/app/agent_view/session.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/tests/transcript.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/entry.rs",
+    "crates/codegen/xai-grok-shell/src/util/config/persist.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/blocks/markdown_content.rs"
   ],
   "allowedAddedPrefixes": [
     "crates/codegen/pi-grok-adapter/"
@@ -2873,6 +2879,18 @@
     "extensions/pi-grok-plan-mode/index.test.mjs",
     "extensions/pi-grok-subagents/fork.ts",
     "extensions/pi-grok-subagents/fork.test.ts",
-    "crates/codegen/xai-grok-pager/src/notifications/program_status.rs"
+    "crates/codegen/xai-grok-pager/src/notifications/program_status.rs",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/remote_tui_extension.rs",
+    "crates/codegen/xai-grok-pager/src/app/timeline.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/state/timeline.rs",
+    "crates/codegen/xai-grok-pager/src/views/timeline.rs",
+    "docs/issues/pager/20261119-timeline-content-configuration.md",
+    "extensions/pi-grok-remote-tui/index.ts",
+    "extensions/pi-grok-remote-tui/test-fixtures.ts",
+    "extensions/pi-grok-remote-tui/timeline.ts",
+    "extensions/pi-grok-remote-tui/tsconfig.json",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tree_bridge.rs",
+    "extensions/pi-grok-remote-tui/timeline-format.test.ts",
+    "extensions/pi-grok-remote-tui/timeline-format.ts"
   ]
 }

@@ -19,6 +19,7 @@ The current entry point is not a self-drawn Ratatui shell. `grok-pi` lives insid
 | Voice dictation | native Pager Voice pipeline | opt-in external profile captures speech through xAI STT and inserts text into PromptWidget; Pi receives only the user-submitted prompt |
 | Scroll and transcript | native scrollback / transcript | both historical and live events are ACP `SessionUpdate` |
 | Read image viewer | native block viewer and terminal overlay | Kitty placement is unchanged; iTerm2 uses OSC 1337 with a full repaint after a committed image to clear grid pixels on the next frame |
+| Timeline | Native+Adapted | Pager filters the current scrollback, owns frame anchors, and draws native chrome. Pi SettingsList and input components project through Remote TUI. The Pi extension formats bounded SGR for agent interactions, compactions, and prompt hover excerpts. Pager extracts replies and file change totals from the hovered turn in the active branch and provides a native preview. |
 | Model selection | native model selector | Pi models / thinking levels converted to `SessionModelState` |
 
 ## Evidence of What Is Unchanged

@@ -1,4 +1,4 @@
-//! Timeline sidebar: prompt and context-compaction markers replacing the scrollbar gutter.
+//! Timeline sidebar with native marker chrome and optional styled tool content.
 
 use std::ops::Range;
 
@@ -8,6 +8,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Widget};
 
+use crate::scrollback::state::TimelineMarkerKind;
 use crate::theme::Theme;
 
 pub const RAIL_WIDTH: u16 = 2;
@@ -20,16 +21,13 @@ pub const MIN_MARKERS: usize = 2;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelineRail {
     pub rect: Rect,
-    /// Turn indices currently shown as ticks (windowed around the active turn when the conversation has more turns than rows).
+    /// Marker indices currently shown as ticks.
     pub window: Range<usize>,
     pub ticks_y: u16,
     pub active: Option<usize>,
-    /// The ▲ target: the nearest turn strictly above the viewport top
-    /// ([`ScrollbackState::turn_above_viewport_top`]), NOT `active - 1`.
+    /// The nearest marker above the viewport.
     pub up_target: Option<usize>,
-    /// The ▼ target: the nearest turn below the viewport top
-    /// ([`ScrollbackState::turn_below_viewport_top`]). Both go through `jump_to_turn`, which
-    /// over-scrolls trailing turns rather than dimming.
+    /// The nearest marker below the viewport.
     pub down_target: Option<usize>,
     pub up_y: u16,
     pub down_y: u16,
@@ -86,16 +84,14 @@ pub fn compute_rail(
         0..marker_count
     } else {
         let tail_start = marker_count - max_ticks;
+        let pivot = viewport
+            .active
+            .or(viewport.down_target)
+            .unwrap_or(marker_count - 1);
         let start = if viewport.at_bottom {
-            viewport
-                .active
-                .map_or(tail_start, |active| active.min(tail_start))
+            pivot.min(tail_start)
         } else {
-            viewport
-                .active
-                .unwrap_or(marker_count - 1)
-                .saturating_sub(max_ticks / 2)
-                .min(tail_start)
+            pivot.saturating_sub(max_ticks / 2).min(tail_start)
         };
         start..start + max_ticks
     };
@@ -148,46 +144,103 @@ impl TimelineRail {
     }
 }
 
+pub fn preview_columns(scrollback_width: u16) -> u16 {
+    (scrollback_width / 2)
+        .clamp(24, 48)
+        .min(scrollback_width.saturating_sub(5))
+}
+
 pub fn render_tick_hover_popup(
     buf: &mut Buffer,
     rail: &TimelineRail,
     scrollback_area: Rect,
     marker_idx: usize,
     preview: &str,
+    excerpt: Option<&str>,
+    file_rows: &[String],
+    formatted: Option<&[Line<'static>]>,
     timestamp: Option<chrono::DateTime<chrono::Local>>,
     theme: &Theme,
 ) {
     if !rail.window.contains(&marker_idx) {
         return;
     }
-    // Wider card than the original text-only popup: the timestamp line and a
-    // longer preview need more room to stay readable.
-    let max_text = ((scrollback_area.width / 2).clamp(24, 48)) as usize;
-    let mut lines: Vec<(String, bool)> = Vec::new();
-    if let Some(ts) = timestamp {
-        lines.push((ts.format("%Y-%m-%d %H:%M").to_string(), true));
+    let max_text = usize::from(preview_columns(scrollback_area.width));
+    if max_text == 0 {
+        return;
     }
-    let mut rest = preview.trim();
-    while !rest.is_empty() && lines.len() < 4 {
-        if lines.len() == 3 {
-            lines.push((
-                crate::render::line_utils::truncate_str(rest, max_text),
-                false,
+    let mut lines = Vec::new();
+    if let Some(ts) = timestamp {
+        lines.push(Line::styled(
+            ts.format("%Y-%m-%d %H:%M").to_string(),
+            Style::default().fg(theme.gray),
+        ));
+    }
+    let max_rows = usize::from(scrollback_area.height.saturating_sub(2)).min(7);
+    if let Some(formatted) = formatted {
+        lines.extend(
+            formatted
+                .iter()
+                .take(max_rows.saturating_sub(lines.len()))
+                .cloned(),
+        );
+    } else {
+        let mut preview = preview.split_whitespace().collect::<Vec<_>>().join(" ");
+        let extra_rows = file_rows
+            .len()
+            .min(max_rows.saturating_sub(lines.len() + 1));
+        let max_body = (lines.len() + 3).min(max_rows.saturating_sub(extra_rows));
+        if (excerpt.is_some() || extra_rows > 0) && lines.len() < max_body {
+            let title = if preview.is_empty() {
+                "User prompt"
+            } else {
+                &preview
+            };
+            lines.push(Line::styled(
+                crate::render::line_utils::truncate_str(title, max_text),
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
             ));
-            break;
+            preview = excerpt
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
         }
-        let end = crate::render::line_utils::byte_offset_at_width(rest, max_text);
-        lines.push((rest[..end].to_string(), false));
-        rest = rest[end..].trim_start();
+        let mut rest = preview.as_str();
+        while !rest.is_empty() && lines.len() < max_body {
+            let style = Style::default().fg(theme.text_primary);
+            if lines.len() + 1 == max_body {
+                lines.push(Line::styled(
+                    crate::render::line_utils::truncate_str(rest, max_text),
+                    style,
+                ));
+                break;
+            }
+            let end = crate::render::line_utils::byte_offset_at_width(rest, max_text);
+            if end == 0 {
+                break;
+            }
+            lines.push(Line::styled(rest[..end].to_owned(), style));
+            rest = rest[end..].trim_start();
+        }
+        lines.extend(file_rows.iter().take(extra_rows).map(|row| {
+            Line::styled(
+                crate::render::line_utils::truncate_str(row, max_text),
+                Style::default().fg(theme.accent_assistant),
+            )
+        }));
     }
     if lines.is_empty() {
         return;
     }
     let text_width = lines
         .iter()
-        .map(|(text, _)| unicode_width::UnicodeWidthStr::width(text.as_str()))
+        .map(Line::width)
         .max()
-        .unwrap_or_default() as u16;
+        .unwrap_or_default()
+        .min(max_text) as u16;
     let card_height = lines.len() as u16 + 2;
     if card_height > scrollback_area.height {
         return;
@@ -214,23 +267,11 @@ pub fn render_tick_hover_popup(
         .border_style(Style::default().fg(theme.gray).bg(background));
     let inner = block.inner(card_area);
     block.render(card_area, buf);
-    for (index, line) in lines.into_iter().enumerate() {
-        let (text, is_timestamp) = line;
-        buf.set_line(
-            inner.x + 1,
-            inner.y + index as u16,
-            &Line::from(Span::styled(
-                text,
-                Style::default()
-                    .fg(if is_timestamp {
-                        theme.gray
-                    } else {
-                        theme.text_primary
-                    })
-                    .bg(background),
-            )),
-            text_width,
-        );
+    for (index, mut line) in lines.into_iter().enumerate() {
+        for span in &mut line.spans {
+            span.style.bg = Some(background);
+        }
+        buf.set_line(inner.x + 1, inner.y + index as u16, &line, text_width);
     }
 }
 
@@ -242,7 +283,8 @@ pub fn render_rail(
     rail: &TimelineRail,
     hovered: Option<TimelineHit>,
     theme: &Theme,
-    is_compaction_marker: impl Fn(usize) -> bool,
+    marker_kind: impl Fn(usize) -> TimelineMarkerKind,
+    formatted_tick: impl Fn(usize) -> Option<Line<'static>>,
 ) {
     let dim = Style::default().fg(theme.gray_dim);
     let normal = Style::default().fg(theme.gray);
@@ -284,7 +326,29 @@ pub fn render_rail(
         let is_active = rail.active == Some(marker_idx);
         let is_hovered = hovered == Some(TimelineHit::Tick(marker_idx));
 
-        if is_compaction_marker(marker_idx) {
+        let kind = marker_kind(marker_idx);
+        let style = if is_active || is_hovered {
+            bright
+        } else {
+            normal
+        };
+        let custom_tick = formatted_tick(marker_idx)
+            .or_else(|| (kind == TimelineMarkerKind::Tool).then(|| Line::styled("•", style)));
+        if let Some(mut line) = custom_tick {
+            for span in &mut line.spans {
+                span.style.bg = None;
+                if is_active || is_hovered {
+                    span.style.fg = style.fg;
+                    if is_active {
+                        span.style = span.style.add_modifier(ratatui::style::Modifier::BOLD);
+                    }
+                }
+            }
+            let x = rail.rect.right() - (line.width().clamp(1, usize::from(RAIL_WIDTH)) as u16);
+            buf.set_line(x, y, &line, rail.rect.right() - x);
+            continue;
+        }
+        if kind == TimelineMarkerKind::Compaction {
             // Compaction is a context-boundary event rather than a user turn.
             // Use both a different glyph and a semantic accent so the marker
             // stays recognizable even in low-contrast or monochrome themes.
@@ -332,7 +396,20 @@ mod tests {
         let theme = Theme::current();
         let mut buf = Buffer::empty(area);
 
-        render_rail(&mut buf, &rail, None, &theme, |turn_idx| turn_idx == 1);
+        render_rail(
+            &mut buf,
+            &rail,
+            None,
+            &theme,
+            |index| {
+                if index == 1 {
+                    TimelineMarkerKind::Compaction
+                } else {
+                    TimelineMarkerKind::Prompt
+                }
+            },
+            |_| None,
+        );
 
         assert_eq!(
             buf[(1, 1)].symbol(),

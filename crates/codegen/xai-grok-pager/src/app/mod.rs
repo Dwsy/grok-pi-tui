@@ -65,6 +65,7 @@ pub(crate) mod screen_mode_relaunch;
 mod session_load_barrier;
 pub mod signal_handler;
 mod startup_failure;
+mod timeline;
 mod turn_completion;
 pub(crate) mod workspace_layout;
 pub(crate) mod workspace_membership;

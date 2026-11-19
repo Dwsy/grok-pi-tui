@@ -2887,6 +2887,8 @@ fn collapse_on_minimal_tool_trace_opens_split_trace_viewer() {
     entry.display_mode = DisplayMode::Collapsed;
     entry.tool_traces.push(ToolTraceSnapshot {
         tool_call_id: "trace-1".into(),
+        pi_tool_name: None,
+        file_change: None,
         title: "read".into(),
         status: "Completed".into(),
         raw_input: Some(serde_json::json!({ "path": "README.md" })),

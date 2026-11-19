@@ -12,7 +12,8 @@ mod types;
 pub mod verb_group;
 
 pub use layout::compute_paint_window;
-pub use timeline::{TimelineEntry, TimelineMarker, TimelineMarkerKind};
+pub use timeline::{TimelineEntry, TimelineMarker, TimelineMarkerKind, TimelineTool};
+pub(crate) use timeline::TimelineFileSummary;
 pub use types::*;
 
 pub(crate) use layout::ScrollAnchor;
@@ -66,6 +67,10 @@ pub struct ScrollbackState {
 
     /// Next entry ID to assign.
     next_id: u64,
+    timeline_branch: u64,
+    timeline_cache: std::cell::RefCell<Option<timeline::MarkerCache>>,
+    timeline_hidden_tools: IndexMap<String, timeline::HiddenTimelineTool>,
+    timeline_spawn_anchors: std::collections::HashMap<String, EntryId>,
 
     /// Set of currently running entry IDs.
     /// Used for O(running) iteration in tick_running().
@@ -249,6 +254,10 @@ impl ScrollbackState {
         Self {
             entries: IndexMap::new(),
             next_id: 1, // Start at 1 so 0 can be a sentinel
+            timeline_branch: timeline::next_branch_id(),
+            timeline_cache: Default::default(),
+            timeline_hidden_tools: IndexMap::new(),
+            timeline_spawn_anchors: Default::default(),
             running: HashSet::new(),
             flashing: Vec::new(),
             dirty_heights: HashSet::new(),
@@ -377,6 +386,9 @@ impl ScrollbackState {
             tail.next_id >= self.next_id,
             "append_entries_from requires a fresh_continuation sibling (shared id space)"
         );
+        self.mark_timeline_dirty(self.entries.len());
+        self.timeline_hidden_tools.extend(tail.timeline_hidden_tools);
+        self.timeline_spawn_anchors.extend(tail.timeline_spawn_anchors);
         self.entries.extend(tail.entries);
         self.running.extend(tail.running);
         self.dirty_heights.extend(tail.dirty_heights);
@@ -607,6 +619,7 @@ impl ScrollbackState {
             self.running.insert(id);
         }
 
+        self.mark_timeline_dirty(self.entries.len());
         self.entries.insert(id, entry);
         if self.batch_depth == 0 {
             self.rebuild_turns();
@@ -670,6 +683,7 @@ impl ScrollbackState {
         if entry.is_running {
             self.running.insert(id);
         }
+        self.mark_timeline_dirty(index);
         self.entries.shift_insert(index, id, entry);
 
         if let Some(selected) = self.selected.as_mut()
@@ -713,7 +727,11 @@ impl ScrollbackState {
         };
         // Anchor the viewport top before the removal shifts indices, then re-point it at the survivor if this removal deleted its entry
         self.arm_structural_scroll_anchor();
+        self.mark_timeline_dirty(removed_index);
         self.entries.shift_remove(&id);
+        self.timeline_hidden_tools
+            .retain(|_, tool| tool.anchor != id);
+        self.timeline_spawn_anchors.retain(|_, anchor| *anchor != id);
         self.migrate_structural_anchor_past_removal(id, removed_index);
         self.running.remove(&id);
         self.dirty_heights.remove(&id);
@@ -738,6 +756,7 @@ impl ScrollbackState {
     }
 
     pub fn remove_from(&mut self, index: usize) -> Vec<ScrollbackEntry> {
+        self.mark_timeline_dirty(index);
         // Anchor a viewport parked above the cut; pruned below if the anchored entry itself is in the removed tail
         self.arm_structural_scroll_anchor();
         let mut removed = Vec::new();
@@ -761,6 +780,9 @@ impl ScrollbackState {
         // Clamp the minimal-mode commit cursor: `remove_from` (rewind / trailing auth-error strip) pops the tail
         // That could otherwise leave the cursor past the end and silently skip future commits
         self.commit_scan_cursor = self.commit_scan_cursor.min(self.entries.len());
+        self.timeline_hidden_tools
+            .retain(|_, tool| self.entries.contains_key(&tool.anchor));
+        self.timeline_spawn_anchors.retain(|_, anchor| self.entries.contains_key(anchor));
         self.rebuild_turns();
         self.gaps_may_be_dirty = true;
         self.invalidate_layout_cache();
@@ -910,6 +932,10 @@ impl ScrollbackState {
 
     /// Clear all entries.
     pub fn clear(&mut self) {
+        self.invalidate_timeline_branch();
+        *self.timeline_cache.get_mut() = None;
+        self.timeline_hidden_tools.clear();
+        self.timeline_spawn_anchors.clear();
         self.entries.clear();
         self.running.clear();
         self.flashing.clear();
@@ -992,7 +1018,8 @@ impl ScrollbackState {
 
     /// Get entry by index mutably.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut ScrollbackEntry> {
-        self.entries.get_index_mut(index).map(|(_, v)| v)
+        let id = *self.entries.get_index(index)?.0;
+        self.get_by_id_mut(id)
     }
 
     /// Get the last entry.
@@ -1053,7 +1080,13 @@ impl ScrollbackState {
     /// O(1) average via IndexMap.
     /// Returns None if the entry doesn't exist (was removed or ID is invalid).
     pub fn get_by_id_mut(&mut self, id: EntryId) -> Option<&mut ScrollbackEntry> {
-        self.entries.get_mut(&id)
+        let (index, _, entry) = self.entries.get_full(&id)?;
+        if matches!(entry.block, RenderBlock::UserPrompt(_) | RenderBlock::SessionEvent(_) | RenderBlock::ToolCall(_))
+            || !entry.tool_traces.is_empty()
+        {
+            self.mark_timeline_dirty(index);
+        }
+        self.entries.get_index_mut(index).map(|(_, entry)| entry)
     }
 
     /// Attach hook data to a tool-call entry and rebuild structural grouping.
@@ -1366,6 +1399,7 @@ impl ScrollbackState {
 
     /// Mark every running entry finished. `finish_turn` alone would leave them animating forever.
     pub(crate) fn finish_all_running(&mut self) {
+        self.settle_hidden_timeline_tools();
         let ids: Vec<EntryId> = self.running.iter().copied().collect();
         for id in ids {
             self.finish_running(id);
@@ -1889,7 +1923,7 @@ impl ScrollbackState {
 
     /// Get mutable reference to an entry.
     pub fn entry_mut(&mut self, index: usize) -> Option<&mut ScrollbackEntry> {
-        self.entries.get_index_mut(index).map(|(_, v)| v)
+        self.get_mut(index)
     }
 
     /// Whether group truncation replaces or hides this entry's content at the current layout (a "N more" header, or a hidden member at height 0).

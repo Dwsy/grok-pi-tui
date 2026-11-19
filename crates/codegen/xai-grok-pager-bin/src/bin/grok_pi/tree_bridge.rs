@@ -18,21 +18,32 @@ pub(super) fn write_navigate_tree_extension() -> Result<NamedTempFile> {
     handler: async (args, ctx) => {
       const raw = String(args ?? "").trim();
       if (!raw) throw new Error("entry id required");
-      const summarize = /(?:^|\s)--summarize(?:\s|$)/.test(raw);
-      let customInstructions;
-      const instrMatch = raw.match(/(?:^|\s)--instructions\s+([\s\S]+)$/);
-      if (instrMatch) customInstructions = instrMatch[1].trim();
-      const entryId = raw
-        .replace(/(?:^|\s)--summarize(?:\s|$)/g, " ")
-        .replace(/(?:^|\s)--instructions\s+[\s\S]+$/, " ")
-        .trim()
-        .split(/\s+/)[0];
+      const instructions = raw.match(/(?:^|\s)--instructions\s+([\s\S]+)$/);
+      const tokens = (instructions ? raw.slice(0, instructions.index) : raw).trim().split(/\s+/);
+      const entryId = tokens[0];
+      const summarize = tokens.includes("--summarize");
+      const replyFlag = tokens.indexOf("--leaf-reply");
+      const requestId = replyFlag < 0 ? undefined : tokens[replyFlag + 1];
+      const customInstructions = instructions?.[1].trim();
       if (!entryId) throw new Error("entry id required");
+      const entry = requestId ? ctx.sessionManager?.getEntry?.(entryId) : undefined;
+      const content = entry?.type === "custom_message" ? entry.content
+        : entry?.type === "message" && entry.message?.role === "user" ? entry.message.content : undefined;
+      const editorText = typeof content === "string" ? content
+        : Array.isArray(content) ? content.filter((part) => part?.type === "text").map((part) => part.text).join("")
+        : undefined;
       const result = await ctx.navigateTree(entryId, {
         summarize,
         customInstructions: customInstructions || undefined,
       });
       if (result?.cancelled) throw new Error("tree navigation cancelled");
+      if (requestId && typeof ctx.sessionManager?.getLeafId === "function") {
+        ctx.ui.setStatus("__pi_grok_tree_leaf__", JSON.stringify({
+          requestId,
+          leafId: ctx.sessionManager.getLeafId(),
+          editorText: result?.editorText ?? editorText,
+        }));
+      }
     },
   });
 
@@ -82,6 +93,8 @@ mod tests {
         assert!(source.contains("registerCommand(\"__pi_tree_label\""));
         assert!(source.contains("registerCommand(\"__pi_reload\""));
         assert!(source.contains("ctx.navigateTree"));
+        assert!(source.contains("ctx.sessionManager.getLeafId()"));
+        assert!(source.contains("__pi_grok_tree_leaf__"));
         assert!(source.contains("ctx.setLabel"));
         assert!(source.contains("ctx.reload"));
         assert!(file.path().extension().and_then(|e| e.to_str()) == Some("ts"));

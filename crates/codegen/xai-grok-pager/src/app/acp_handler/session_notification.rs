@@ -737,6 +737,12 @@ pub(super) fn handle_session_notification_with_origin(
                     is_background,
                 );
                 let entry_id = agent.scrollback.push_block(RenderBlock::Subagent(block));
+                if let Some(call_id) = session_notif.meta.as_ref()
+                    .and_then(|meta| meta.get("timelineSpawnCallId"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    agent.scrollback.set_timeline_spawn_anchor(call_id, entry_id);
+                }
                 agent.scrollback.set_last_running(true);
                 if let Some(info) = agent.subagent_sessions.get_mut(&child_session_id) {
                     info.attempt.scrollback_entry_id = Some(entry_id);
@@ -1693,6 +1699,12 @@ fn handle_nested_subagent_lifecycle(
                     is_background,
                 );
                 let entry_id = parent.scrollback.push_block(RenderBlock::Subagent(block));
+                if let Some(call_id) = meta
+                    .and_then(|meta| meta.get("timelineSpawnCallId"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    parent.scrollback.set_timeline_spawn_anchor(call_id, entry_id);
+                }
                 parent.scrollback.set_last_running(true);
                 if let Some(info) = parent.subagent_sessions.get_mut(&child_session_id) {
                     info.attempt.scrollback_entry_id = Some(entry_id);

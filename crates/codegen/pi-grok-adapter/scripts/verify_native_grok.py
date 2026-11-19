@@ -299,6 +299,13 @@ def main() -> int:
     # Verify the files allowed to differ really are a narrow integration seam,
     # not a hidden second UI package.
     expected_modified = {
+        # Timeline rules persistence, frame anchors, and Pi call-trace metadata.
+        "crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/session.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/transcript.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/entry.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/markdown_content.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/persist.rs",
         # Ondine image compilation and the native Mermaid image/SVG actions.
         "rust-toolchain.toml",
         "THIRD-PARTY-NOTICES",

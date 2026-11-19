@@ -1,5 +1,14 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-11-19 Timeline Content Configuration
+
+- Passed all 18 Remote TUI Bun tests, including prompt reply and compaction excerpts, both interaction groups, and file summaries with row and column limits. The extension passed a typecheck against the installed Pi 1.5.2 SDK.
+- Passed installed Pi 1.5.2 RPC smoke tests. An isolated extension bundle with simulated Pager replies covered configuration, partial and full group selection, and batch formatting. A separate Pi session fixture verified sibling leaf navigation, user node editor text, and the empty root.
+- Passed changed-file Rust parsing with standalone rustfmt and `git diff --check`. All Timeline source seams are listed explicitly. The full source-identity verifier still reports existing baseline and protocol expectation failures.
+- Pending Cargo compilation, Rust tests, and a mouse-enabled terminal run against a rebuilt Pager. The native scrollback jumps and on-disk config behavior still need this end-to-end pass.
+
+Implementation and acceptance record in the [Timeline issue](issues/pager/20261119-timeline-content-configuration.md).
+
 ## 2026-11-19 Optional OMP Shell Backend (`Issue #20`: `#13`–`#19`)
 
 - PASS: `node --test extensions/pi-grok-bash/test-shell-backend.mjs` — **3/3** passing (`resolveBashBackend` default `system` & opt-in `omp`, `PI_GROK_OMP_SHELL_HOST` validation, and mock JSONL host handshake/streaming/`shell_trace` projection).

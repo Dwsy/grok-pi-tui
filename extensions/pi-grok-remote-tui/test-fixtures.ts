@@ -1,4 +1,8 @@
 // Bun module mocks are process-wide; both projection suites need the same exports.
+import { Input } from "../../pi-main/packages/tui/src/components/input.ts";
+import { SelectList } from "../../pi-main/packages/tui/src/components/select-list.ts";
+import { matchesKey } from "../../pi-main/packages/tui/src/keys.ts";
+import { truncateToWidth, wrapTextWithAnsi } from "../../pi-main/packages/tui/src/utils.ts";
 type SettingItem = {
   id: string;
   label: string;
@@ -65,4 +69,9 @@ export const piTuiMock = {
   TUI_KEYBINDINGS: {},
   setKeybindings: () => {},
   SettingsList: MockSettingsList,
+  Input,
+  SelectList,
+  matchesKey,
+  truncateToWidth,
+  wrapTextWithAnsi,
 };

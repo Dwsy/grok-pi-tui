@@ -35,7 +35,8 @@ use crate::{
     todo_bridge::plan_update_for_tool,
     tool_projection::{
         bash_tool_output, edit_diff_content, history_tool_content, is_goal_tool_name,
-        normalize_tool_raw_input, normalize_tool_raw_output, pi_result_text, tool_content,
+        normalize_tool_raw_input, normalize_tool_raw_output, pi_result_text, pi_tool_metadata,
+        timeline_tool_result, tool_content,
         tool_kind,
     },
     workflow_host::{
@@ -280,6 +281,7 @@ struct AdapterState {
     /// session/load/recovery waits until the ordered socket stream reaches its
     /// replay-complete marker, so replay events cannot escape the load barrier.
     pending_subagent_replays: HashMap<String, oneshot::Sender<()>>,
+    pending_tree_leaves: HashMap<String, oneshot::Sender<Value>>,
     /// In-flight `/btw` side questions keyed by requestId (extension custom message).
     pending_btw: HashMap<String, oneshot::Sender<Result<String, String>>>,
     /// A recap command must finish before another recap can be requested.
@@ -392,6 +394,7 @@ impl PiAgent {
                 subagent_bridge_sequences: HashMap::new(),
                 subagent_session_to_id: HashMap::new(),
                 pending_subagent_replays: HashMap::new(),
+                pending_tree_leaves: HashMap::new(),
                 pending_btw: HashMap::new(),
                 recap_in_flight: false,
                 reload_in_flight: false,

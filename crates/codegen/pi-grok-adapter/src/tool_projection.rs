@@ -3,6 +3,30 @@ use agent_client_protocol as acp;
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 
+pub(crate) fn pi_tool_metadata(name: &str, usage: Option<Value>) -> Option<acp::Meta> {
+    let mut meta = acp::Meta::new();
+    meta.insert("piToolName".into(), json!(name));
+    if let Some(usage) = usage {
+        meta.insert("piToolUsage".into(), usage);
+    }
+    Some(meta)
+}
+
+pub(crate) fn timeline_tool_result(mut normalized: Value, result: &Value, is_error: bool) -> Value {
+    let cancelled = result.get("cancelled").and_then(Value::as_bool) == Some(true)
+        || result
+            .pointer("/details/cancelled")
+            .and_then(Value::as_bool)
+            == Some(true)
+        || (is_error
+            && result.pointer("/content/0/text").and_then(Value::as_str)
+                == Some("Operation aborted"));
+    if cancelled && let Some(object) = normalized.as_object_mut() {
+        object.insert("piToolCancelled".into(), Value::Bool(true));
+    }
+    normalized
+}
+
 pub(crate) fn history_tool_content(content: Vec<PiToolContent>) -> Vec<acp::ToolCallContent> {
     content
         .into_iter()

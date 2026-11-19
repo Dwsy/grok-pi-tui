@@ -1027,6 +1027,10 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             }
             vec![]
         }
+        TaskResult::TimelineSaved { host, id, result } => {
+            crate::app::timeline::finish_save(app, &host, &id, result);
+            vec![]
+        }
         TaskResult::CancelComplete => {
             tracing::trace!("Cancel notification sent successfully");
             vec![]

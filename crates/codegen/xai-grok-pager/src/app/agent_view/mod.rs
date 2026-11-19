@@ -1412,15 +1412,11 @@ pub struct AgentView {
     /// Set only when the rewind flow emits `Effect::RewindExecute` while the inline editor is open (see `stash_inline_resubmit_if_editing`).
     /// inline editor is open (see `stash_inline_resubmit_if_editing`).
     pub(crate) pending_inline_resubmit: Option<String>,
-    /// Timeline sidebar rail geometry for the current frame (`None` means
-    /// hidden). Set by the renderer, consumed by mouse hit-testing.
-    pub(crate) timeline_rail: Option<crate::views::timeline::TimelineRail>,
-    /// Rail part under the mouse; drives hover styling and the tick
-    /// preview popup.
+    /// Geometry and anchors from the last rendered Timeline frame.
+    pub(in crate::app) timeline_frame: Option<crate::app::timeline::TimelineFrame>,
+    pub(in crate::app) timeline_formatting: crate::app::timeline::TimelineFormatting,
+    pub(in crate::app) timeline_request: Option<serde_json::Value>,
     pub(crate) timeline_hover: Option<crate::views::timeline::TimelineHit>,
-    /// Marker index, preview text, and creation time for the timeline hover card.
-    pub(crate) timeline_hover_preview:
-        Option<(usize, String, Option<chrono::DateTime<chrono::Local>>)>,
     /// Running agent definition for this session (`x.ai/session/info` `agentName`).
     pub session_agent_name: Option<String>,
     /// Map of child session IDs to subagent metadata. Populated on `SubagentSpawned` notifications, used for permission routing (which agent owns a session) and provenance display.

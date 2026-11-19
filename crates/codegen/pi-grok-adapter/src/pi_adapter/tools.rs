@@ -1,6 +1,34 @@
 use super::*;
 use crate::model::EVAL_TOOL_UI_BRIDGE_TYPE;
 
+pub(super) fn timeline_only_tool_start(id: &str, name: &str) -> acp::SessionUpdate {
+    let mut meta = acp::Meta::new();
+    meta.insert("piToolName".into(), json!(name));
+    meta.insert("piTimelineOnly".into(), Value::Bool(true));
+    acp::SessionUpdate::ToolCall(
+        acp::ToolCall::new(acp::ToolCallId::new(id), name.to_owned())
+            .status(acp::ToolCallStatus::InProgress)
+            .meta(Some(meta)),
+    )
+}
+
+pub(super) fn timeline_only_tool_end(
+    id: &str,
+    result: &Value,
+    is_error: bool,
+) -> acp::SessionUpdate {
+    acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+        acp::ToolCallId::new(id),
+        acp::ToolCallUpdateFields::new()
+            .status(Some(if is_error {
+                acp::ToolCallStatus::Failed
+            } else {
+                acp::ToolCallStatus::Completed
+            }))
+            .raw_output(Some(timeline_tool_result(json!({}), result, is_error))),
+    ))
+}
+
 /// Whether the top-level `eval` call must stay out of the native tool cards.
 ///
 /// Eval-v2-only normally keeps the call model-visible but unrendered, showing
@@ -233,6 +261,7 @@ impl PiAgent {
                 .insert(id.to_string(), args);
         }
         if eval_top_level_hidden(self.eval_v2_only, name) {
+            self.send_update(timeline_only_tool_start(id, name)).await;
             return;
         }
         let content = edit_diff_content(name, args.as_ref(), None).unwrap_or_default();
@@ -249,18 +278,13 @@ impl PiAgent {
         let open_ask_user = name == "ask_user_question";
         let enter_plan = name == "enter_plan_mode";
         let exit_plan = name == "exit_plan_mode";
-        let mut tool_call =
-            acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
-                .kind(tool_kind(name))
-                .status(acp::ToolCallStatus::InProgress)
-                .content(content)
-                .locations(Vec::new())
-                .raw_input(args);
-        if let Some(usage) = usage {
-            let mut meta = acp::Meta::new();
-            meta.insert("piToolUsage".into(), usage);
-            tool_call = tool_call.meta(Some(meta));
-        }
+        let tool_call = acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
+            .kind(tool_kind(name))
+            .status(acp::ToolCallStatus::InProgress)
+            .content(content)
+            .locations(Vec::new())
+            .raw_input(args)
+            .meta(pi_tool_metadata(name, usage));
         self.send_update(acp::SessionUpdate::ToolCall(tool_call))
             .await;
         if enter_plan {
@@ -910,6 +934,8 @@ impl PiAgent {
         if eval_top_level_hidden(self.eval_v2_only, name) {
             if !eval_result_without_tool_calls(&output) {
                 self.state.borrow_mut().tool_args.remove(id);
+                self.send_update(timeline_only_tool_end(id, &output, is_error))
+                    .await;
                 return;
             }
             // Eval-v2-only withheld the start card, but this cell never called
@@ -923,7 +949,8 @@ impl PiAgent {
                     .status(acp::ToolCallStatus::InProgress)
                     .content(Vec::new())
                     .locations(Vec::new())
-                    .raw_input(args);
+                    .raw_input(args)
+                    .meta(pi_tool_metadata(name, None));
             self.send_update(acp::SessionUpdate::ToolCall(tool_call))
                 .await;
         }
@@ -939,7 +966,7 @@ impl PiAgent {
         let raw_output = normalize_tool_raw_output(name, args.as_ref(), &output, is_error);
         let mut fields = acp::ToolCallUpdateFields::new()
             .status(Some(status))
-            .raw_output(Some(raw_output));
+            .raw_output(Some(timeline_tool_result(raw_output, &output, is_error)));
         if tool_kind(name) == acp::ToolKind::Edit {
             fields = fields.content(edit_diff_content(name, args.as_ref(), Some(&output)));
         } else {
@@ -1128,6 +1155,21 @@ impl PiAgent {
                         // blanks so a stale value cannot linger after a clear.
                         self.send_ext_notification("pi/ui/working_message", json!({ "text": text }))
                             .await;
+                    }
+                    "__pi_grok_tree_leaf__" => {
+                        if let Some(payload) = control_status_payload(text)
+                            && let Some(id) = string(&payload, &["requestId"])
+                            && let Some(sender) = self.state.borrow_mut().pending_tree_leaves.remove(id)
+                        {
+                            let _ = sender.send(payload);
+                        }
+                    }
+                    "__pi_grok_timeline__" => {
+                        if let Some(payload) =
+                            control_status_payload(text.filter(|text| text.len() <= 768 * 1024))
+                        {
+                            self.send_ext_notification("pi/ui/timeline", payload).await;
+                        }
                     }
                     _ => {
                         self.send_status(key, text.filter(|text| !text.is_empty()))

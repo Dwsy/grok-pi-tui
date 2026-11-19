@@ -15,6 +15,7 @@
 
 ## Core Features
 
+- **Timeline** — `/timeline` toggles the fullscreen sidebar. `/timeline-config` selects prompts, compactions, file tools, subagent interactions, and custom tool names. Hovering a prompt shows the opening of its final reply and a bounded summary of enabled file changes. Saved rules apply to the loaded branch and live calls.
 - **Pi Extensions & Remote TUI**: Full `ctx.ui.custom` keyboard/render/paste bridge, `/reload`, extension/skill/prompt/theme manager, native conflict policy overlays, and `pi:transparent` themes.
 - **Native Pager & Viewers**: Streaming Markdown, live side-by-side/word-level diffs, 5-level tool call density, single-click folding, F2 settings, Mermaid PNG/SVG (`Ondine`), Kitty/iTerm2 image viewer, `@file` & skill previews.
 - **Models & Web Workbench**: `/model` fast switcher, `/pi-models` transactional editor, `/pi-config web` local workbench, and per-project usage ranking for slash commands, skills, and models.
