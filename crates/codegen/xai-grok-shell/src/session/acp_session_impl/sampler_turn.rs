@@ -81,7 +81,7 @@ pub(super) fn transient_backoff_delay(attempts_used: u32) -> std::time::Duration
 /// Stream stalls (never retried internally), transport errors, retryable 5xx.
 /// Vetoes mirror `is_retry_vetoed`. Status-less `Api` fails closed; other kinds keep their dedicated recovery or terminal path.
 pub(super) fn transient_retry_eligible(error: &xai_grok_sampler::SamplingErrorInfo) -> bool {
-    use xai_grok_sampler::SamplingErrorKind;
+    use xai_grok_sampling_types::SamplingErrorKind;
     if error.should_retry == Some(false)
         || xai_grok_sampling_types::is_context_length_error(&error.message)
         // Deterministic rejection however the proxy wrapped it (400 or 500); the sampler's own classifier already stripped images and gave up
@@ -285,7 +285,7 @@ fn error_after_stream_drain(
 
 fn revoked_sampling_info() -> xai_grok_sampler::SamplingErrorInfo {
     xai_grok_sampler::SamplingErrorInfo {
-        kind: xai_grok_sampler::SamplingErrorKind::Api,
+        kind: xai_grok_sampling_types::SamplingErrorKind::Api,
         status_code: None,
         message: "sampling result revoked by turn cancellation or rewind".to_string(),
         is_retryable: false,
@@ -618,7 +618,7 @@ impl SessionActor {
         #[allow(clippy::items_after_statements)]
         #[derive(Debug)]
         struct TraceContextInjector;
-        impl xai_grok_sampler::HeaderInjector for TraceContextInjector {
+        impl xai_grok_sampling_types::HeaderInjector for TraceContextInjector {
             fn inject(&self, headers: &mut reqwest::header::HeaderMap) {
                 if let Some(tp) = xai_grok_otel::current_traceparent()
                     && let Ok(v) = reqwest::header::HeaderValue::from_str(&tp)
@@ -924,7 +924,7 @@ impl SessionActor {
     pub(super) async fn resolve_aux_sampler_config(
         &self,
         slug: &str,
-    ) -> Option<xai_grok_sampler::SamplerConfig> {
+    ) -> Option<xai_grok_sampling_types::SamplerConfig> {
         let creds = self.chat_state_handle.get_credentials().await;
         let session_key = self
             .auth_manager
@@ -1039,7 +1039,7 @@ impl SessionActor {
     /// Terminal failure when consecutive Length salvages exceed the cap: executing more calls is not converging, so surface the pre-salvage `MaxTokensTruncation` failure.
     /// The sampler emitted only Completed events for these samples, so the error signal is recorded here.
     pub(crate) async fn fail_turn_length_salvage_exhausted(&self) -> acp::Error {
-        let kind = xai_grok_sampler::SamplingErrorKind::MaxTokensTruncation;
+        let kind = xai_grok_sampling_types::SamplingErrorKind::MaxTokensTruncation;
         let message = xai_grok_sampling_types::SamplingError::MaxTokensTruncation.to_string();
         self.signals_handle().record_error_typed(kind.as_ref());
         self.log_terminal_failure(kind.as_ref(), None, &message);
@@ -1162,7 +1162,7 @@ impl SessionActor {
         mid_salvage_continuation: bool,
         park: TurnParkState,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
-        use xai_grok_sampler::SamplingErrorKind;
+        use xai_grok_sampling_types::SamplingErrorKind;
 
         // On an in-flight salvage continuation, a max-tokens failure or a probable context overflow is not terminal.
         // Return before the budgeted-child rewrites so the marker survives for workflow children.
@@ -2273,7 +2273,7 @@ mod stream_drain_tests {
     #[test]
     fn failed_drain_revocation_supersedes_original_error() {
         let original = xai_grok_sampler::SamplingErrorInfo {
-            kind: xai_grok_sampler::SamplingErrorKind::RateLimited,
+            kind: xai_grok_sampling_types::SamplingErrorKind::RateLimited,
             status_code: Some(429),
             message: "original sampling failure".to_string(),
             is_retryable: true,

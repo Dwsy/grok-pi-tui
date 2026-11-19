@@ -182,10 +182,10 @@ async fn session_token_actor(
     auth_manager: Arc<AuthManager>,
     shape: ActorShape,
 ) -> (Arc<SessionActor>, XaiUpdates) {
-    let sampling_cfg = xai_grok_sampler::SamplerConfig {
+    let sampling_cfg = xai_grok_sampling_types::SamplerConfig {
         base_url: server.url(),
         model: "test".to_string(),
-        api_backend: xai_grok_sampler::ApiBackend::Responses,
+        api_backend: xai_grok_sampling_types::ApiBackend::Responses,
         context_window: 256_000,
         max_retries: Some(0),
         idle_timeout_secs: Some(30),

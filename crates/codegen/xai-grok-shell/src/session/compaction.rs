@@ -741,7 +741,7 @@ impl SessionActor {
         acp::Error::auth_required().data(crate::sampling::error::terminal_error_data(
             message,
             Some(401),
-            xai_grok_sampler::SamplingErrorKind::Auth,
+            xai_grok_sampling_types::SamplingErrorKind::Auth,
         ))
     }
     /// Clear [`SUPPRESS_AUTH`] on login/token refresh (credit suppress waits for a 200).

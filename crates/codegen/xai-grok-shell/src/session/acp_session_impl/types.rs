@@ -53,7 +53,7 @@ pub(crate) enum SamplerFailureRecovery {
     /// Transient failure: back off and resubmit instead of killing the turn.
     /// Retries are bounded.
     RetryTransient {
-        kind: xai_grok_sampler::SamplingErrorKind,
+        kind: xai_grok_sampling_types::SamplingErrorKind,
         status_code: Option<u16>,
     },
 }
@@ -64,7 +64,7 @@ pub(crate) enum SamplerTurnOutcome {
     /// Model responded, with per-call latency stats for `shell.turn.inference_done`.
     Response(
         Box<ConversationResponse>,
-        Box<xai_grok_sampler::InferenceLatencyStats>,
+        Box<xai_grok_sampling_types::InferenceLatencyStats>,
     ),
     CompactAndResubmit,
     /// Retry through the auth-retry schedule. Mirrors
@@ -75,7 +75,7 @@ pub(crate) enum SamplerTurnOutcome {
     },
     /// Mirrors [`SamplerFailureRecovery::RetryTransient`].
     RetryTransient {
-        kind: xai_grok_sampler::SamplingErrorKind,
+        kind: xai_grok_sampling_types::SamplingErrorKind,
         status_code: Option<u16>,
     },
 }

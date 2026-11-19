@@ -492,7 +492,7 @@ async fn aux_model_with_auth_provider_never_reroutes() {
 fn session_resolver_is_not_stamped_onto_third_party_samplers() {
     #[derive(Debug)]
     struct SessionResolver;
-    impl xai_grok_sampler::BearerResolver for SessionResolver {
+    impl xai_grok_sampling_types::BearerResolver for SessionResolver {
         fn current_bearer(&self) -> Option<String> {
             Some("session-jwt".into())
         }
@@ -1583,6 +1583,7 @@ fn try_resolve_model_credentials_swaps_first_party_own_key_under_kill_switch() {
     assert_eq!(byok_creds.auth_type, AuthType::ApiKey);
     assert_eq!(byok_creds.api_key.as_deref(), Some("sk-byok"));
 }
+#[cfg(feature = "stock-agent")]
 #[test]
 fn x_api_key_auth_scheme_flows_from_config_to_sampler() {
     let mut model = test_model_entry(
@@ -1605,6 +1606,7 @@ fn x_api_key_auth_scheme_flows_from_config_to_sampler() {
     let info = client.auth_info();
     assert_eq!(info.auth_type, "x-api-key");
 }
+#[cfg(feature = "stock-agent")]
 #[test]
 fn auth_scheme_defaults_to_bearer_when_not_set_in_config() {
     let model = test_model_entry(

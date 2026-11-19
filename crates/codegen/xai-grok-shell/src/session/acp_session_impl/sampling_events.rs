@@ -413,7 +413,7 @@ impl SessionActor {
                 if !self.turn_stream_drained.lock().contains_key(&request_id) {
                     return;
                 }
-                if kind == xai_grok_sampler::SamplingErrorKind::DoomLoopDetected {
+                if kind == xai_grok_sampling_types::SamplingErrorKind::DoomLoopDetected {
                     let triggers = doom_loop_triggers.unwrap_or_default();
                     let (should_count, should_stamp) = {
                         let mut tally = self.doom_loop_turn_tally.lock();

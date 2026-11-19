@@ -37,42 +37,43 @@ fn persist_ack_waits_for_disk_flush_before_success() {
                 id: acp::SessionId::new("test-persist-ack"),
                 cwd: cwd.as_str().to_string(),
             };
-            let sampling_client = crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
-                api_key: Some("test-key".to_string()),
-                base_url: "http://localhost".to_string(),
-                mtls_cert_dir: None,
-                model: "test".to_string(),
-                max_completion_tokens: None,
-                temperature: None,
-                top_p: None,
-                api_backend: Default::default(),
-                auth_scheme: Default::default(),
-                extra_headers: Default::default(),
-                extra_response_includes: Vec::new(),
-                query_params: Default::default(),
-                env_http_headers: Default::default(),
-                context_window: 100_000,
-                client_version: None,
-                force_http1: false,
-                max_retries: None,
-                rate_limit_retry_threshold: None,
-                stream_tool_calls: false,
-                idle_timeout_secs: None,
-                client_identifier: None,
-                reasoning_effort: None,
-                deployment_id: None,
-                user_id: None,
-                conversation_group_id: None,
-                origin_client: None,
-                attribution_callback: None,
-                bearer_resolver: None,
-                supports_backend_search: false,
-                compactions_remaining: None,
-                compaction_at_tokens: None,
-                doom_loop_recovery: None,
-                header_injector: None,
-            })
-            .expect("sampling client should build for persistence actor");
+            let sampling_client =
+                crate::sampling::Client::new(xai_grok_sampling_types::SamplerConfig {
+                    api_key: Some("test-key".to_string()),
+                    base_url: "http://localhost".to_string(),
+                    mtls_cert_dir: None,
+                    model: "test".to_string(),
+                    max_completion_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    api_backend: Default::default(),
+                    auth_scheme: Default::default(),
+                    extra_headers: Default::default(),
+                    extra_response_includes: Vec::new(),
+                    query_params: Default::default(),
+                    env_http_headers: Default::default(),
+                    context_window: 100_000,
+                    client_version: None,
+                    force_http1: false,
+                    max_retries: None,
+                    rate_limit_retry_threshold: None,
+                    stream_tool_calls: false,
+                    idle_timeout_secs: None,
+                    client_identifier: None,
+                    reasoning_effort: None,
+                    deployment_id: None,
+                    user_id: None,
+                    conversation_group_id: None,
+                    origin_client: None,
+                    attribution_callback: None,
+                    bearer_resolver: None,
+                    supports_backend_search: false,
+                    compactions_remaining: None,
+                    compaction_at_tokens: None,
+                    doom_loop_recovery: None,
+                    header_injector: None,
+                })
+                .expect("sampling client should build for persistence actor");
             let persistence = crate::session::persistence::new_with_explicit_dir(
                 &crate::session::info::Info {
                     id: session_info.id.clone(),
@@ -368,22 +369,20 @@ fn persist_ack_waits_for_disk_flush_before_success() {
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
             let prompt_task = tokio::task::spawn_local(async move {
-                Box::pin(
-                    actor_for_prompt.handle_prompt(
-                        "persist-ack-test",
-                        prompt_blocks,
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        true,
-                        false,
-                        None,
-                        Some(ack_tx),
-                        None,
-                    ),
-                )
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "persist-ack-test",
+                    prompt_blocks,
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                    false,
+                    None,
+                    Some(ack_tx),
+                    None,
+                ))
                 .await
             });
             assert!(ack_rx.await.is_ok(), "persist ack should resolve");
@@ -436,22 +435,20 @@ fn plain_user_prompt_without_persist_ack_still_sends_flush_barrier_behind_its_ec
             );
             let actor_for_prompt = actor.clone();
             let turn = tokio::task::spawn_local(async move {
-                Box::pin(
-                    actor_for_prompt.handle_prompt(
-                        "plain-user-prompt",
-                        vec![acp::ContentBlock::Text(acp::TextContent::new("hello"))],
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        true,
-                        false,
-                        None,
-                        None,
-                        None,
-                    ),
-                )
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "plain-user-prompt",
+                    vec![acp::ContentBlock::Text(acp::TextContent::new("hello"))],
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                    false,
+                    None,
+                    None,
+                    None,
+                ))
                 .await
             });
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -510,7 +507,8 @@ fn first_turn_memory_injection_persists_to_chat_history() {
                 id: acp::SessionId::new("persist-memory"),
                 cwd: session_dir.path().to_string_lossy().to_string(),
             };
-            let sampling_client = crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
+            let sampling_client =
+                crate::sampling::Client::new(xai_grok_sampling_types::SamplerConfig {
                     api_key: Some("test-key".to_string()),
                     base_url: "http://localhost".to_string(),
                     mtls_cert_dir: None,
@@ -547,30 +545,28 @@ fn first_turn_memory_injection_persists_to_chat_history() {
                 })
                 .expect("sampling client should build for persistence actor");
             let persistence = crate::session::persistence::new_with_explicit_dir(
-                    &crate::session::info::Info {
-                        id: session_info.id.clone(),
-                        cwd: session_info.cwd.clone(),
-                    },
-                    session_dir.path().to_path_buf(),
-                    acp::ModelId::new("test-model"),
-                    sampling_client,
-                    crate::test_support::TEST_MODEL.to_owned(),
-                    crate::session::persistence::ExplicitSessionOpen::New {
-                        identity: None,
-                        next_trace_turn: None,
-                    },
-                )
-                .await
-                .expect("persistence actor should start");
-            let (_event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<
-                SessionEvent,
-            >();
+                &crate::session::info::Info {
+                    id: session_info.id.clone(),
+                    cwd: session_info.cwd.clone(),
+                },
+                session_dir.path().to_path_buf(),
+                acp::ModelId::new("test-model"),
+                sampling_client,
+                crate::test_support::TEST_MODEL.to_owned(),
+                crate::session::persistence::ExplicitSessionOpen::New {
+                    identity: None,
+                    next_trace_turn: None,
+                },
+            )
+            .await
+            .expect("persistence actor should start");
+            let (_event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
             let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
             let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
                 vec![
-                        ConversationItem::system("sys"),
-                        ConversationItem::user("<user_info>OS Version: macos</user_info>"),
-                    ],
+                    ConversationItem::system("sys"),
+                    ConversationItem::user("<user_info>OS Version: macos</user_info>"),
+                ],
                 xai_grok_sampling_types::SamplingConfig {
                     base_url: "http://localhost".to_string(),
                     mtls_cert_dir: None,
@@ -611,7 +607,9 @@ fn first_turn_memory_injection_persists_to_chat_history() {
                 )
                 .await
                 .expect("request should build");
-            assert!(matches!(request.items.first(), Some(ConversationItem::System(sys)) if sys.content.contains("Persist this memory reminder.")));
+            assert!(
+                matches!(request.items.first(), Some(ConversationItem::System(sys)) if sys.content.contains("Persist this memory reminder."))
+            );
             let storage = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
                 session_dir.path().to_path_buf(),
             );
@@ -627,7 +625,9 @@ fn first_turn_memory_injection_persists_to_chat_history() {
                 .load_session_without_updates(&session_info)
                 .await
                 .unwrap();
-            assert!(matches!(loaded.chat_history.first(), Some(ConversationItem::System(sys)) if sys.content.contains("Persist this memory reminder.")));
+            assert!(
+                matches!(loaded.chat_history.first(), Some(ConversationItem::System(sys)) if sys.content.contains("Persist this memory reminder."))
+            );
         });
     });
 }
@@ -655,42 +655,43 @@ fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history() {
             );
             let tool_context =
                 ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
-            let sampling_client = crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
-                api_key: Some("test-key".to_string()),
-                base_url: "http://localhost".to_string(),
-                mtls_cert_dir: None,
-                model: "test-model".to_string(),
-                max_completion_tokens: None,
-                extra_headers: Default::default(),
-                extra_response_includes: Vec::new(),
-                query_params: Default::default(),
-                env_http_headers: Default::default(),
-                temperature: None,
-                top_p: None,
-                api_backend: Default::default(),
-                auth_scheme: Default::default(),
-                context_window: 100_000,
-                client_version: None,
-                force_http1: false,
-                max_retries: None,
-                rate_limit_retry_threshold: None,
-                stream_tool_calls: false,
-                idle_timeout_secs: None,
-                client_identifier: None,
-                reasoning_effort: None,
-                deployment_id: None,
-                user_id: None,
-                conversation_group_id: None,
-                origin_client: None,
-                attribution_callback: None,
-                bearer_resolver: None,
-                supports_backend_search: false,
-                compactions_remaining: None,
-                compaction_at_tokens: None,
-                doom_loop_recovery: None,
-                header_injector: None,
-            })
-            .expect("sampling client should build for persistence actor");
+            let sampling_client =
+                crate::sampling::Client::new(xai_grok_sampling_types::SamplerConfig {
+                    api_key: Some("test-key".to_string()),
+                    base_url: "http://localhost".to_string(),
+                    mtls_cert_dir: None,
+                    model: "test-model".to_string(),
+                    max_completion_tokens: None,
+                    extra_headers: Default::default(),
+                    extra_response_includes: Vec::new(),
+                    query_params: Default::default(),
+                    env_http_headers: Default::default(),
+                    temperature: None,
+                    top_p: None,
+                    api_backend: Default::default(),
+                    auth_scheme: Default::default(),
+                    context_window: 100_000,
+                    client_version: None,
+                    force_http1: false,
+                    max_retries: None,
+                    rate_limit_retry_threshold: None,
+                    stream_tool_calls: false,
+                    idle_timeout_secs: None,
+                    client_identifier: None,
+                    reasoning_effort: None,
+                    deployment_id: None,
+                    user_id: None,
+                    conversation_group_id: None,
+                    origin_client: None,
+                    attribution_callback: None,
+                    bearer_resolver: None,
+                    supports_backend_search: false,
+                    compactions_remaining: None,
+                    compaction_at_tokens: None,
+                    doom_loop_recovery: None,
+                    header_injector: None,
+                })
+                .expect("sampling client should build for persistence actor");
             let persistence = crate::session::persistence::new_with_explicit_dir(
                 &crate::session::info::Info {
                     id: session_info.id.clone(),
@@ -1731,22 +1732,20 @@ fn handle_prompt_frames_interrupt_on_user_message() {
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
             let prompt_task = tokio::task::spawn_local(async move {
-                Box::pin(
-                    actor_for_prompt.handle_prompt(
-                        "interrupt-wiring-test",
-                        prompt_blocks,
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        false,
-                        false,
-                        None,
-                        Some(ack_tx),
-                        None,
-                    ),
-                )
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "interrupt-wiring-test",
+                    prompt_blocks,
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    false,
+                    None,
+                    Some(ack_tx),
+                    None,
+                ))
                 .await
             });
             assert!(ack_rx.await.is_ok(), "persist ack should resolve");
@@ -1780,22 +1779,20 @@ fn handle_prompt_verbatim_skips_interrupt_envelope() {
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
             let prompt_task = tokio::task::spawn_local(async move {
-                Box::pin(
-                    actor_for_prompt.handle_prompt(
-                        "interrupt-verbatim-test",
-                        prompt_blocks,
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        true,
-                        false,
-                        None,
-                        Some(ack_tx),
-                        None,
-                    ),
-                )
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "interrupt-verbatim-test",
+                    prompt_blocks,
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                    false,
+                    None,
+                    Some(ack_tx),
+                    None,
+                ))
                 .await
             });
             assert!(ack_rx.await.is_ok(), "persist ack should resolve");
@@ -1828,22 +1825,20 @@ fn handle_prompt_send_now_frames_interjection_envelope() {
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
             let prompt_task = tokio::task::spawn_local(async move {
-                Box::pin(
-                    actor_for_prompt.handle_prompt(
-                        "send-now-envelope-test",
-                        prompt_blocks,
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        false,
-                        true,
-                        None,
-                        Some(ack_tx),
-                        None,
-                    ),
-                )
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "send-now-envelope-test",
+                    prompt_blocks,
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    true,
+                    None,
+                    Some(ack_tx),
+                    None,
+                ))
                 .await
             });
             assert!(ack_rx.await.is_ok(), "persist ack should resolve");
@@ -1882,22 +1877,20 @@ fn handle_prompt_synthetic_origin_preserves_interrupt_reminder() {
             let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
             let actor_for_prompt = actor.clone();
             let prompt_task = tokio::task::spawn_local(async move {
-                Box::pin(
-                    actor_for_prompt.handle_prompt(
-                        "scheduler-fired-test-1",
-                        prompt_blocks,
-                        PromptMode::Agent,
-                        None,
-                        None,
-                        None,
-                        None,
-                        true,
-                        false,
-                        None,
-                        Some(ack_tx),
-                        None,
-                    ),
-                )
+                Box::pin(actor_for_prompt.handle_prompt(
+                    "scheduler-fired-test-1",
+                    prompt_blocks,
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                    false,
+                    None,
+                    Some(ack_tx),
+                    None,
+                ))
                 .await
             });
             assert!(ack_rx.await.is_ok(), "persist ack should resolve");
@@ -2598,7 +2591,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
             let server_task = tokio::spawn(async move {
                 let _ = axum::serve(listener, app).await;
             });
-            let cfg = xai_grok_sampler::SamplerConfig {
+            let cfg = xai_grok_sampling_types::SamplerConfig {
                 api_key: Some("test-key".to_string()),
                 base_url: format!("http://{addr}/v1"),
                 mtls_cert_dir: None,
@@ -2606,7 +2599,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 max_completion_tokens: None,
                 temperature: None,
                 top_p: None,
-                api_backend: xai_grok_sampler::ApiBackend::Responses,
+                api_backend: xai_grok_sampling_types::ApiBackend::Responses,
                 auth_scheme: Default::default(),
                 extra_headers: Default::default(),
                 extra_response_includes: Vec::new(),

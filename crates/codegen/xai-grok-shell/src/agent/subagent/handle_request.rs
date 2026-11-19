@@ -17,8 +17,8 @@ use xai_grok_sampling_types::ReasoningEffort;
 use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
 use xai_grok_telemetry::subagent_spawn::{SubagentSpawnPhase, phase_region};
-use xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageSource;
 use xai_grok_tools::implementations::grok_build;
+use xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageSource;
 #[cfg(feature = "stock-tool-dialects")]
 use xai_grok_tools::implementations::opencode;
 static SUBAGENTS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
@@ -1192,7 +1192,7 @@ pub(crate) async fn run_shell_child(
             "context_window": effective_sampling_config.context_window,
         })),
     );
-    let attribution_callback: Option<xai_grok_sampler::SharedAttributionCallback> =
+    let attribution_callback: Option<xai_grok_sampling_types::SharedAttributionCallback> =
         effective_sampling_config.attribution_callback.clone();
     let agent_memory_scope = agent_memory_scope_for_mode(definition.memory, ctx.memory_mode);
     let agent_name_for_memory = definition.name.clone();

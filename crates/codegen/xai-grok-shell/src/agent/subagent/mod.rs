@@ -189,7 +189,7 @@ pub(crate) struct SubagentSpawnContext {
     /// Parent's client-registered hooks, inherited so the subagent's tool calls hit the same PreToolUse gate. Its events fire the same observe hooks over the parent's connection. Empty when the parent has none.
     /// Filled by the coordinator after the context is built (an async snapshot from the parent session actor).
     pub client_hooks: crate::extensions::hooks::ClientHooks,
-    pub sampling_config: xai_grok_sampler::SamplerConfig,
+    pub sampling_config: xai_grok_sampling_types::SamplerConfig,
     #[cfg(test)]
     pub setup_failure: Option<SubagentSetupFailure>,
     #[cfg(test)]
@@ -247,7 +247,7 @@ pub(crate) struct SubagentSpawnContext {
     pub memory_config: Option<crate::config::MemoryConfig>,
     /// Parent's selected memory implementation, retained even when memory is disabled.
     pub memory_mode: crate::config::MemoryMode,
-    pub web_search_sampling_config: Option<xai_grok_sampler::SamplerConfig>,
+    pub web_search_sampling_config: Option<xai_grok_sampling_types::SamplerConfig>,
     pub web_fetch_config: xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig,
     pub image_gen_config: xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig,
     pub video_gen_config: xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig,
@@ -338,7 +338,7 @@ pub(crate) struct SubagentSpawnContext {
     /// The parent SessionActor's live `Auth401AttributionCallback`, captured at spawn time. Subagents inherit this so the child's `OaiCompatClient` 401 sites emit attribution under the parent's session id.
     /// It is joined with the parent's live `AuthManager`. Reading from `ctx.sampling_config.attribution_callback` would not work.
     /// The baseline `MvpAgent.sampling_config` goes through `agent/config.rs::sampling_config_for_model`, which always sets that field to `None`.
-    pub attribution_callback: Option<xai_grok_sampler::SharedAttributionCallback>,
+    pub attribution_callback: Option<xai_grok_sampling_types::SharedAttributionCallback>,
     /// Parent session's agent name (e.g. "grok-build").
     pub parent_agent_name: Option<String>,
     /// `agent_type` of the parent's current model: the harness-flavor fallback when `parent_agent_name` is not a recognized harness.
@@ -605,7 +605,7 @@ async fn resolve_subagent_sampling_config(
     agent_name: &str,
     agent_model: &xai_grok_agent::config::ModelOverride,
     ctx: &SubagentSpawnContext,
-) -> (xai_grok_sampler::SamplerConfig, acp::ModelId) {
+) -> (xai_grok_sampling_types::SamplerConfig, acp::ModelId) {
     let (parent_config, parent_mid) = read_parent_sampling_config(ctx).await;
     let try_pin = |model_id: &str, source: &'static str, unknown_msg: &'static str| {
         match resolve_model_override_to_config(model_id, ctx) {
@@ -661,7 +661,7 @@ async fn resolve_effective_model_config(
     subagent_type: &str,
     definition_model: &xai_grok_agent::config::ModelOverride,
     ctx: &SubagentSpawnContext,
-) -> (xai_grok_sampler::SamplerConfig, acp::ModelId) {
+) -> (xai_grok_sampling_types::SamplerConfig, acp::ModelId) {
     if let Some(model_id) = runtime_override_model {
         if let Some(resolved) = resolve_model_override_to_config(model_id, ctx) {
             return resolved;
@@ -685,9 +685,9 @@ fn key_prefix(key: &Option<String>) -> String {
 fn log_subagent_model_resolution(
     agent_name: &str,
     priority: &str,
-    resolved: &xai_grok_sampler::SamplerConfig,
+    resolved: &xai_grok_sampling_types::SamplerConfig,
     resolved_id: &acp::ModelId,
-    parent: &xai_grok_sampler::SamplerConfig,
+    parent: &xai_grok_sampling_types::SamplerConfig,
 ) {
     let child_key = key_prefix(&resolved.api_key);
     let parent_key = key_prefix(&parent.api_key);
@@ -715,7 +715,7 @@ fn session_bearer_resolver(
     ctx: &SubagentSpawnContext,
     byok: crate::agent::auth_method::ModelByok,
     base_url: &str,
-) -> Option<xai_grok_sampler::SharedBearerResolver> {
+) -> Option<xai_grok_sampling_types::SharedBearerResolver> {
     use crate::agent::auth_method;
     auth_method::session_token_auth_gate(
         auth_method::is_session_based_method(&ctx.auth_method_id),
@@ -733,7 +733,7 @@ fn inherited_bearer_resolver(
     ctx: &SubagentSpawnContext,
     model: &str,
     base_url: &str,
-) -> Option<xai_grok_sampler::SharedBearerResolver> {
+) -> Option<xai_grok_sampling_types::SharedBearerResolver> {
     let byok = crate::agent::config::resolve_model_auth_facts_and_provider(model)
         .0
         .byok;
@@ -750,7 +750,7 @@ fn parent_catalog_model_id(ctx: &SubagentSpawnContext, routing_model: &str) -> a
 #[tracing::instrument(level = "debug", skip_all)]
 async fn read_parent_sampling_config(
     ctx: &SubagentSpawnContext,
-) -> (xai_grok_sampler::SamplerConfig, acp::ModelId) {
+) -> (xai_grok_sampling_types::SamplerConfig, acp::ModelId) {
     if let Some(ref chat_state) = ctx.parent_chat_state {
         if let Some(cfg) = chat_state.get_sampling_config().await {
             let creds = chat_state.get_credentials().await;
@@ -774,7 +774,7 @@ async fn read_parent_sampling_config(
                 &cfg.api_backend,
                 &cfg.base_url,
             );
-            let inherited = xai_grok_sampler::SamplerConfig {
+            let inherited = xai_grok_sampling_types::SamplerConfig {
                 api_key: creds.api_key,
                 base_url: cfg.base_url,
                 mtls_cert_dir: cfg.mtls_cert_dir,
@@ -890,7 +890,7 @@ fn subagent_auth_type(
 fn resolve_model_override_to_config(
     model_id: &str,
     ctx: &SubagentSpawnContext,
-) -> Option<(xai_grok_sampler::SamplerConfig, acp::ModelId)> {
+) -> Option<(xai_grok_sampling_types::SamplerConfig, acp::ModelId)> {
     let entry = crate::agent::config::find_model_by_id(&ctx.available_models, model_id).cloned()?;
     if !entry.info.user_selectable {
         let user_picker_only = ctx

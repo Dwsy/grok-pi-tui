@@ -936,7 +936,7 @@ async fn test_idle_flush_conversation_len_reset_after_compaction() {
 }
 fn api_error_with_context_window(context_window: u64) -> xai_grok_sampler::SamplingErrorInfo {
     xai_grok_sampler::SamplingErrorInfo {
-        kind: xai_grok_sampler::SamplingErrorKind::Api,
+        kind: xai_grok_sampling_types::SamplingErrorKind::Api,
         status_code: Some(400),
         message: "prompt is too long".into(),
         is_retryable: false,
@@ -993,7 +993,7 @@ async fn test_compact_on_error_noop_without_model_metadata() {
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(500_000, 200_000, 85, gateway_tx, persistence_tx).await;
             let err = xai_grok_sampler::SamplingErrorInfo {
-                kind: xai_grok_sampler::SamplingErrorKind::Api,
+                kind: xai_grok_sampling_types::SamplingErrorKind::Api,
                 status_code: Some(400),
                 message: "prompt is too long".into(),
                 is_retryable: false,

@@ -16,7 +16,7 @@ use xai_grok_compaction::{
     CompactionPrompt, CompactionSampleError, CompactionSampler, FullReplaceAttemptOutcome,
     FullReplaceObserver, LlmCompactionOutput,
 };
-use xai_grok_sampler::SamplerConfig as SamplingConfig;
+use xai_grok_sampling_types::SamplerConfig as SamplingConfig;
 use xai_grok_sampling_types::{ConversationItem, HostedTool, ToolSpec};
 use xai_grok_telemetry::events::{CompactionRetryDegraded, CompactionTrigger};
 

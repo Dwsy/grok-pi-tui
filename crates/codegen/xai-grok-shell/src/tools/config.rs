@@ -1,6 +1,6 @@
 use crate::models;
 use serde::{Deserialize, Serialize};
-use xai_grok_sampler::SamplerConfig;
+use xai_grok_sampling_types::SamplerConfig;
 use xai_grok_tools::implementations::grok_build;
 use xai_grok_tools::registry::types::ToolConfig;
 

@@ -408,7 +408,7 @@ async fn completed_event_releases_stream_drain_barrier_and_timeout_keeps_request
                     request_id: late_req.clone(),
                     attempt: 1,
                     max_retries: 2,
-                    kind: xai_grok_sampler::SamplingErrorKind::DoomLoopDetected,
+                    kind: xai_grok_sampling_types::SamplingErrorKind::DoomLoopDetected,
                     reason: "queued retry after timeout".to_string(),
                     doom_loop_triggers: Some(vec!["tail_repetition:8@thinking".to_string()]),
                     doom_loop_aborted_at_chunk: Some(42),

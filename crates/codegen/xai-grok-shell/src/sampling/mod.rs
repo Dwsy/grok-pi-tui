@@ -7,19 +7,23 @@ pub mod types;
 pub use self::conversation::*;
 pub use self::error::{ResponseModelMetadata, Result, SamplingError};
 pub use self::types::*;
-pub use xai_grok_sampler::ApiBackend;
+// Data types already owned by `xai-grok-sampling-types`: named here so shell callers
+// keep their `crate::sampling::*` paths while the sampler runtime stays optional.
 pub use xai_grok_sampler::SamplingClient as Client;
+pub use xai_grok_sampling_types::{
+    ApiBackend, ConversationGroupId, OriginClientInfo, SamplingErrorKind,
+};
 
 // Re-export async-openai Responses API types under `rs` namespace
 pub use async_openai::types::responses as rs;
 
-// --------------------------------------------------------------------------- xai-grok-sampler re-exports --------------------------------------------------------------------------- The actual streaming / retry / HTTP-client logic lives in the `xai-grok-sampler` crate
-// These re-exports keep `crate::sampling::{SamplerHandle, SamplerConfig, ...}` paths working for callers not yet ported to `xai_grok_sampler::*`
-// There is no shell-side `sampling::client::Config` composite anymore; `MvpAgent` holds session-snapshot state in a `RefCell<SamplerConfig>`
+// --------------------------------------------------------------------------- xai-grok-sampler re-exports --------------------------------------------------------------------------- The actual streaming / retry / HTTP-client logic still lives in `xai-grok-sampler`.
+// These re-exports keep `crate::sampling::{SamplerHandle, SamplerConfig, ...}` paths working.
+// Types that move to `xai-grok-sampling-types` get named above instead, so the Pi profile
+// stops needing the sampler runtime once the last of them (SamplerConfig) sinks too.
 pub use xai_grok_sampler::{
-    ConversationGroupId, InferenceLatencyStats, OriginClientInfo, RequestId, SamplerActor,
-    SamplerConfig, SamplerHandle, SamplingChannel, SamplingClient, SamplingErrorInfo,
-    SamplingErrorKind, SamplingEvent,
+    InferenceLatencyStats, RequestId, SamplerActor, SamplerConfig, SamplerHandle, SamplingChannel,
+    SamplingClient, SamplingErrorInfo, SamplingEvent,
 };
 
 const CONVERSATION_GROUP_NAMESPACE: &str = "xai:grok-build:conversation-group:";

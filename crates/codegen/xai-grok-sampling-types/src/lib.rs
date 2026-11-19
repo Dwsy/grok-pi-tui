@@ -9,8 +9,10 @@ pub mod conversation;
 pub mod doom_loop;
 pub mod error;
 pub mod messages;
+pub mod metrics;
 pub mod origin;
 pub mod provider_error;
+pub mod sampler_config;
 pub mod serde_helpers;
 pub mod tool_overrides;
 pub mod types;
@@ -28,7 +30,10 @@ pub use self::error::{
     is_retryable_api_status, is_size_overflow_error_code, parse_error_code, status_user_message,
     user_facing_api_error_message,
 };
+pub use self::error_kind::*;
+pub use self::metrics::{InferenceLatencyStats, compute_percentiles};
 pub use self::origin::*;
+pub use self::sampler_config::{AuthScheme, HeaderInjector, SamplerConfig, SharedHeaderInjector};
 pub use self::tool_overrides::{
     ClearableField, MAX_WEB_SEARCH_DOMAINS, SearchDateBound, SearchDateBoundError, ToolOverrides,
     ToolOverridesUpdate, WebSearchOptions, WebSearchOptionsError, XSearchOptions,

@@ -95,7 +95,7 @@ async fn salvage_test_actor_on_backend(
     context_window: u64,
     backend: xai_grok_sampling_types::ApiBackend,
 ) -> Arc<SessionActor> {
-    let sampling_cfg = xai_grok_sampler::SamplerConfig {
+    let sampling_cfg = xai_grok_sampling_types::SamplerConfig {
         api_key: Some("test-key".to_string()),
         base_url: server.url(),
         model: "test".to_string(),
@@ -262,7 +262,7 @@ fn default_agent_gate_off_hard_fails_on_length() {
 /// Terminal error whose metadata reports a tiny context window.
 /// The overflow heuristic compares the token estimate to that window, so it fires for any nonempty history.
 fn error_with_tiny_window(
-    kind: xai_grok_sampler::SamplingErrorKind,
+    kind: xai_grok_sampling_types::SamplingErrorKind,
     status_code: u16,
 ) -> xai_grok_sampler::SamplingErrorInfo {
     xai_grok_sampler::SamplingErrorInfo {
@@ -297,8 +297,10 @@ fn rate_limit_mid_continuation_stays_terminal() {
                     "enough history that the token estimate clears the tiny window",
                 ),
             );
-            let error =
-                error_with_tiny_window(xai_grok_sampler::SamplingErrorKind::RateLimited, 429);
+            let error = error_with_tiny_window(
+                xai_grok_sampling_types::SamplingErrorKind::RateLimited,
+                429,
+            );
             let Err(err) = actor
                 .handle_sampling_failure(
                     error,
@@ -336,7 +338,8 @@ fn suppressed_overflow_mid_continuation_still_completes_truncated() {
                 crate::session::compaction_config::SUPPRESS_STICKY,
                 std::sync::atomic::Ordering::Relaxed,
             );
-            let error = error_with_tiny_window(xai_grok_sampler::SamplingErrorKind::Api, 500);
+            let error =
+                error_with_tiny_window(xai_grok_sampling_types::SamplingErrorKind::Api, 500);
             let Err(err) = actor
                 .handle_sampling_failure(
                     error,

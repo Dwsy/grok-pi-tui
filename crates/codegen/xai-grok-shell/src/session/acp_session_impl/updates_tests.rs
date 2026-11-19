@@ -116,7 +116,7 @@ fn persisted_finishes(
 }
 
 fn test_persistence_sampling_client() -> crate::sampling::Client {
-    crate::sampling::Client::new(xai_grok_sampler::SamplerConfig {
+    crate::sampling::Client::new(xai_grok_sampling_types::SamplerConfig {
         api_key: Some("test-key".to_owned()),
         base_url: "http://localhost".to_owned(),
         model: "test-model".to_owned(),

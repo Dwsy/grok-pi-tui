@@ -4516,7 +4516,7 @@ impl MvpAgent {
                 client_version: sampling_config.client_version.clone(),
             };
             let attribution_callback: Option<
-                xai_grok_sampler::SharedAttributionCallback,
+                xai_grok_sampling_types::SharedAttributionCallback,
             > = Some(
                 xai_grok_login::attribution::ShellAttribution::new(
                     self.auth_manager.clone(),

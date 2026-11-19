@@ -117,7 +117,7 @@ pub struct SessionHandle {
     /// The parent SessionActor's live `Auth401AttributionCallback` (if any).
     /// Exposed on the handle so `MvpAgent::build_subagent_spawn_context` can copy it into the spawn context.
     /// Subagents then inherit the parent's callback rather than getting a fresh one, preserving the parent's session_id on the child's emits.
-    pub attribution_callback: Option<xai_grok_sampler::SharedAttributionCallback>,
+    pub attribution_callback: Option<xai_grok_sampling_types::SharedAttributionCallback>,
     /// The agent definition name for this session.
     pub agent_name: String,
     pub managed_mcp_proxy_base_url: String,

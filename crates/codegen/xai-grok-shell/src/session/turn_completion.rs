@@ -5,7 +5,7 @@
 //! Both builders live here and derive their fields from [`crate::sampling::error::prompt_complete_fields`], so the two signals never disagree.
 
 use crate::extensions::notification::SessionUpdate;
-use xai_grok_sampler::SamplingErrorKind;
+use xai_grok_sampling_types::SamplingErrorKind;
 
 /// Build a `TurnCompleted` from a prompt id and the `(stop_reason, agent_result)` JSON pair from [`crate::sampling::error::prompt_complete_fields`].
 /// `stop_reason` is always a JSON string; `agent_result` is a string or null.

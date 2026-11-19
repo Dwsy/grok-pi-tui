@@ -33,7 +33,8 @@ fn test_actor_inner(
 ) -> ActorGuard {
     let (tx, rx) = mpsc::unbounded_channel();
     let (disk_full_tx, disk_full_rx) = tokio::sync::watch::channel(false);
-    let sampling_client = OaiCompatClient::new(xai_grok_sampler::SamplerConfig::default()).unwrap();
+    let sampling_client =
+        OaiCompatClient::new(xai_grok_sampling_types::SamplerConfig::default()).unwrap();
     let mut summary =
         crate::session::summary::SummaryGenerator::new(crate::session::summary::SummaryConfig {
             sampling_client,

@@ -64,7 +64,7 @@ use xai_grok_agent::AgentDefinition;
 use xai_grok_agent::prompt::agents_md::LEGACY_AGENTS_MD_REMINDER_PREFIX;
 use xai_grok_agent::prompt::skills::SkillsConfig;
 use xai_grok_config_types::McpMetaConfigMap;
-use xai_grok_sampler::SamplerConfig as SamplingConfig;
+use xai_grok_sampling_types::SamplerConfig as SamplingConfig;
 use xai_grok_sampling_types::truncate_bytes;
 use xai_grok_telemetry::enums::McpInitStrategy;
 use xai_grok_tools::computer::local::LocalTerminalBackend;
@@ -733,7 +733,7 @@ pub(crate) struct SessionActor {
     /// The event fires at each of the six `OaiCompatClient` 401 arms in `xai-grok-sampler`.
     /// Threaded into every `SamplerConfig` reconstructed by `reconstruct_full_config`.
     /// `None` when the session was spawned without an `AuthManager` (BYOK direct mode, test fixtures).
-    pub(crate) attribution_callback: Option<xai_grok_sampler::SharedAttributionCallback>,
+    pub(crate) attribution_callback: Option<xai_grok_sampling_types::SharedAttributionCallback>,
     /// Owns the token refresher (`configure_refresher()`) and non-sampler 401 attribution. Sampler path uses `attribution_callback`.
     /// Idle-resume refresh calls `record_auth_401` directly with this handle.
     /// `None` for tests / BYOK that don't need refresh or the attribution emit.

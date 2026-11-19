@@ -215,7 +215,7 @@ mod tests {
     fn reset_returns_generator_to_idle() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let sampling_client =
-            OaiCompatClient::new(xai_grok_sampler::SamplerConfig::default()).unwrap();
+            OaiCompatClient::new(xai_grok_sampling_types::SamplerConfig::default()).unwrap();
         let mut generator = SummaryGenerator::new(SummaryConfig {
             sampling_client,
             model: String::new(),

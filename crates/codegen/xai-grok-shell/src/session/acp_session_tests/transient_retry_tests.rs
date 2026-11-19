@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 fn error_of_kind(
-    kind: xai_grok_sampler::SamplingErrorKind,
+    kind: xai_grok_sampling_types::SamplingErrorKind,
     status_code: Option<u16>,
 ) -> xai_grok_sampler::SamplingErrorInfo {
     xai_grok_sampler::SamplingErrorInfo {
@@ -36,7 +36,7 @@ async fn make_actor() -> (Arc<SessionActor>, mpsc::UnboundedReceiver<Persistence
 /// The eligibility classifier is a closed set: transient infrastructure kinds retry, everything with its own recovery or UX stays terminal.
 #[test]
 fn transient_retry_eligibility_truth_table() {
-    use xai_grok_sampler::SamplingErrorKind as K;
+    use xai_grok_sampling_types::SamplingErrorKind as K;
 
     assert!(transient_retry_eligible(&error_of_kind(
         K::IdleTimeout,
@@ -85,7 +85,7 @@ fn transient_retry_eligibility_truth_table() {
 /// Vetoes mirror `is_retry_vetoed`: `x-should-retry: false` and context-window overflow, whatever status wrapped them.
 #[test]
 fn retry_vetoes_mirror_sampler_classifier() {
-    use xai_grok_sampler::SamplingErrorKind as K;
+    use xai_grok_sampling_types::SamplingErrorKind as K;
 
     for kind in [K::IdleTimeout, K::Http] {
         let mut error = error_of_kind(kind, None);
@@ -131,7 +131,10 @@ async fn idle_timeout_first_failure_requests_resubmit() {
             let (actor, _rx) = make_actor().await;
             let result = actor
                 .handle_sampling_failure(
-                    error_of_kind(xai_grok_sampler::SamplingErrorKind::IdleTimeout, None),
+                    error_of_kind(
+                        xai_grok_sampling_types::SamplingErrorKind::IdleTimeout,
+                        None,
+                    ),
                     0,
                     transient_state(0, true),
                     false,
@@ -140,7 +143,10 @@ async fn idle_timeout_first_failure_requests_resubmit() {
                 .await;
             match result {
                 Ok(SamplerFailureRecovery::RetryTransient { kind, .. }) => {
-                    assert_eq!(kind, xai_grok_sampler::SamplingErrorKind::IdleTimeout);
+                    assert_eq!(
+                        kind,
+                        xai_grok_sampling_types::SamplingErrorKind::IdleTimeout
+                    );
                 }
                 Ok(_) => panic!("expected RetryTransient, got another recovery"),
                 Err(e) => panic!("first idle timeout must not be terminal: {e:?}"),
@@ -158,7 +164,7 @@ async fn server_error_first_failure_requests_resubmit() {
             let (actor, _rx) = make_actor().await;
             let result = actor
                 .handle_sampling_failure(
-                    error_of_kind(xai_grok_sampler::SamplingErrorKind::Api, Some(503)),
+                    error_of_kind(xai_grok_sampling_types::SamplingErrorKind::Api, Some(503)),
                     0,
                     transient_state(0, true),
                     false,
@@ -184,7 +190,10 @@ async fn exhausted_budget_falls_through_to_terminal() {
             let (actor, _rx) = make_actor().await;
             let result = actor
                 .handle_sampling_failure(
-                    error_of_kind(xai_grok_sampler::SamplingErrorKind::IdleTimeout, None),
+                    error_of_kind(
+                        xai_grok_sampling_types::SamplingErrorKind::IdleTimeout,
+                        None,
+                    ),
                     0,
                     transient_state(MAX_TRANSIENT_TURN_RETRIES, true),
                     false,
@@ -208,7 +217,10 @@ async fn kill_switch_disables_the_arm() {
             let (actor, _rx) = make_actor().await;
             let result = actor
                 .handle_sampling_failure(
-                    error_of_kind(xai_grok_sampler::SamplingErrorKind::IdleTimeout, None),
+                    error_of_kind(
+                        xai_grok_sampling_types::SamplingErrorKind::IdleTimeout,
+                        None,
+                    ),
                     0,
                     transient_state(0, false),
                     false,
@@ -239,7 +251,7 @@ async fn budgeted_workflow_child_stays_terminal() {
             let actor = Arc::new(actor);
             let result = actor
                 .handle_sampling_failure(
-                    error_of_kind(xai_grok_sampler::SamplingErrorKind::Api, Some(503)),
+                    error_of_kind(xai_grok_sampling_types::SamplingErrorKind::Api, Some(503)),
                     0,
                     transient_state(0, true),
                     false,
@@ -263,7 +275,10 @@ async fn empty_response_stays_terminal_with_full_budget() {
             let (actor, _rx) = make_actor().await;
             let result = actor
                 .handle_sampling_failure(
-                    error_of_kind(xai_grok_sampler::SamplingErrorKind::EmptyResponse, None),
+                    error_of_kind(
+                        xai_grok_sampling_types::SamplingErrorKind::EmptyResponse,
+                        None,
+                    ),
                     0,
                     transient_state(0, true),
                     false,
@@ -291,7 +306,7 @@ async fn prompt_total_cap_vetoes_even_with_fresh_step_budget() {
             };
             let result = actor
                 .handle_sampling_failure(
-                    error_of_kind(xai_grok_sampler::SamplingErrorKind::Api, Some(503)),
+                    error_of_kind(xai_grok_sampling_types::SamplingErrorKind::Api, Some(503)),
                     0,
                     state,
                     false,
@@ -324,7 +339,10 @@ async fn episode_window_vetoes_after_wall_clock_budget() {
             };
             let result = actor
                 .handle_sampling_failure(
-                    error_of_kind(xai_grok_sampler::SamplingErrorKind::IdleTimeout, None),
+                    error_of_kind(
+                        xai_grok_sampling_types::SamplingErrorKind::IdleTimeout,
+                        None,
+                    ),
                     0,
                     state,
                     false,
@@ -346,7 +364,8 @@ async fn invalid_image_code_is_never_transient_retried() {
     local
         .run_until(async {
             let (actor, _rx) = make_actor().await;
-            let mut error = error_of_kind(xai_grok_sampler::SamplingErrorKind::Api, Some(500));
+            let mut error =
+                error_of_kind(xai_grok_sampling_types::SamplingErrorKind::Api, Some(500));
             error.error_code = Some(xai_grok_sampling_types::ApiErrorCode::InvalidImage);
             let result = actor
                 .handle_sampling_failure(

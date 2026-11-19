@@ -145,11 +145,11 @@ async fn actor_with_sampler(
     tokio::sync::mpsc::UnboundedReceiver<()>,
     std::rc::Rc<PolicyRecorder>,
 ) {
-    let sampling_config = xai_grok_sampler::SamplerConfig {
+    let sampling_config = xai_grok_sampling_types::SamplerConfig {
         api_key: Some("test-key".into()),
         base_url: server.url(),
         model: "test".into(),
-        api_backend: xai_grok_sampler::ApiBackend::Responses,
+        api_backend: xai_grok_sampling_types::ApiBackend::Responses,
         context_window: 256_000,
         max_retries: Some(0),
         idle_timeout_secs: Some(30),
@@ -211,8 +211,8 @@ async fn run_parent_turn(actor: &Arc<SessionActor>, request: TurnInputRequest) -
         Duration::from_secs(30),
         Box::pin(actor.handle_turn_input(request)),
     )
-        .await
-        .expect("parent turn timed out")
+    .await
+    .expect("parent turn timed out")
 }
 
 #[tokio::test(flavor = "current_thread")]

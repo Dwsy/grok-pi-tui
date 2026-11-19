@@ -4,7 +4,7 @@ use xai_chat_state::conversation_util::replace_or_insert_system_head;
 impl SessionActor {
     pub(super) async fn handle_set_session_model(
         self: &std::sync::Arc<Self>,
-        sampling_config: xai_grok_sampler::SamplerConfig,
+        sampling_config: xai_grok_sampling_types::SamplerConfig,
         use_concise: bool,
         is_family_switch: bool,
         apply_prompt_override: bool,

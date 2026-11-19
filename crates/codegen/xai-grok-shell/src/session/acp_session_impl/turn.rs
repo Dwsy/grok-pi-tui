@@ -304,10 +304,10 @@ const LAST_SAMPLE_STOP_REASON_ERROR: &str = "error";
 /// A resubmit's next response overwrites these fields.
 pub(super) fn record_failed_sample_on_turn_span(
     span: &tracing::Span,
-    kind: xai_grok_sampler::SamplingErrorKind,
+    kind: xai_grok_sampling_types::SamplingErrorKind,
 ) {
     let stop_reason = match kind {
-        xai_grok_sampler::SamplingErrorKind::MaxTokensTruncation => {
+        xai_grok_sampling_types::SamplingErrorKind::MaxTokensTruncation => {
             xai_grok_sampling_types::StopReason::Length.as_ref()
         }
         _ => LAST_SAMPLE_STOP_REASON_ERROR,
@@ -2951,7 +2951,7 @@ impl SessionActor {
                     return Err(error);
                 }
                 Ok(SamplerTurnOutcome::RetryTransient { kind, status_code }) => {
-                    if matches!(kind, xai_grok_sampler::SamplingErrorKind::Api) {
+                    if matches!(kind, xai_grok_sampling_types::SamplingErrorKind::Api) {
                         auth_retry_schedule.reset_incident_keeping_park();
                     }
                     let delay = xai_grok_sampler::jitter_backoff(transient_backoff_delay(
@@ -2979,8 +2979,10 @@ impl SessionActor {
                         })),
                     );
                     let cause = match kind {
-                        xai_grok_sampler::SamplingErrorKind::IdleTimeout => "Response stalled",
-                        xai_grok_sampler::SamplingErrorKind::Http => "Connection problem",
+                        xai_grok_sampling_types::SamplingErrorKind::IdleTimeout => {
+                            "Response stalled"
+                        }
+                        xai_grok_sampling_types::SamplingErrorKind::Http => "Connection problem",
                         _ => "Server error",
                     };
                     self.send_xai_notification(XaiSessionUpdate::RetryState(
@@ -4263,7 +4265,7 @@ mod last_sample_span_tests {
         totals.record(&span, &sample(Some(StopReason::ToolCalls), true, 40));
         record_failed_sample_on_turn_span(
             &span,
-            xai_grok_sampler::SamplingErrorKind::MaxTokensTruncation,
+            xai_grok_sampling_types::SamplingErrorKind::MaxTokensTruncation,
         );
         let f = fields.lock().unwrap();
         assert_eq!(
@@ -4286,7 +4288,7 @@ mod last_sample_span_tests {
         let span = turn_span();
         let mut totals = TurnSpanTotals::default();
         totals.record(&span, &sample(Some(StopReason::ToolCalls), true, 40));
-        record_failed_sample_on_turn_span(&span, xai_grok_sampler::SamplingErrorKind::Api);
+        record_failed_sample_on_turn_span(&span, xai_grok_sampling_types::SamplingErrorKind::Api);
         assert_eq!(
             fields
                 .lock()

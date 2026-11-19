@@ -6,7 +6,7 @@
 pub use xai_grok_sampling_types::error::*;
 
 // Clients carry this typed kind from parsing the wire error to choosing the user-facing copy; re-exported so the pager shares the exact type
-pub use xai_grok_sampler::SamplingErrorKind;
+pub use xai_grok_sampling_types::SamplingErrorKind;
 
 use agent_client_protocol as acp;
 
@@ -156,7 +156,7 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
             acp::Error::internal_error().data(terminal_error_data(
                 err.to_string(),
                 None,
-                xai_grok_sampler::SamplingErrorKind::MaxTokensTruncation,
+                xai_grok_sampling_types::SamplingErrorKind::MaxTokensTruncation,
             ))
         }
         SamplingError::IdleTimeout { elapsed_secs } => acp::Error::internal_error().data(format!(
@@ -464,7 +464,7 @@ mod tests {
             acp::Error::internal_error().data(terminal_error_data(
                 "truncated".into(),
                 None,
-                xai_grok_sampler::SamplingErrorKind::MaxTokensTruncation,
+                xai_grok_sampling_types::SamplingErrorKind::MaxTokensTruncation,
             )),
             Some(usage.clone()),
         );

@@ -399,7 +399,7 @@ pub enum SessionCommand {
         responds_to: oneshot::Sender<()>,
     },
     SetSessionModel {
-        sampling_config: xai_grok_sampler::SamplerConfig,
+        sampling_config: xai_grok_sampling_types::SamplerConfig,
         use_concise: bool,
         /// The two models declare differing `model_family`s, so a lossy compaction runs at switch end.
         is_family_switch: bool,

@@ -69,7 +69,8 @@ async fn new_with_explicit_dir_overrides_worktree_stamp_so_subagent_stays_hidden
     let cwd = worktree_cwd_under(home.path());
     let target_dir = home.path().join("child-session");
 
-    let sampling_client = OaiCompatClient::new(xai_grok_sampler::SamplerConfig::default()).unwrap();
+    let sampling_client =
+        OaiCompatClient::new(xai_grok_sampling_types::SamplerConfig::default()).unwrap();
     let _persistence = new_with_explicit_dir(
         &Info {
             id: acp::SessionId::new("subagent-in-worktree"),
@@ -111,7 +112,7 @@ async fn new_with_explicit_dir_stores_requested_identity() {
         },
         target_dir.clone(),
         default_model_id(),
-        OaiCompatClient::new(xai_grok_sampler::SamplerConfig::default()).unwrap(),
+        OaiCompatClient::new(xai_grok_sampling_types::SamplerConfig::default()).unwrap(),
         "test-model".to_owned(),
         crate::session::persistence::ExplicitSessionOpen::New {
             identity: Some(ExplicitSessionIdentity {

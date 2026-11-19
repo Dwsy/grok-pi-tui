@@ -750,7 +750,7 @@ async fn delivered_message_is_durable_in_updates_and_chat_history_before_shutdow
     await_with_timeout(local.run_until(async {
         let session_dir = tempfile::tempdir().expect("session dir");
         let sampling_client =
-            crate::sampling::Client::new(xai_grok_sampler::SamplerConfig::default())
+            crate::sampling::Client::new(xai_grok_sampling_types::SamplerConfig::default())
                 .expect("sampling client");
         let info = crate::session::info::Info {
             id: acp::SessionId::new("parent-message-durable"),

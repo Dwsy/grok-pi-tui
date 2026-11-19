@@ -811,8 +811,8 @@ async fn spawn_capturing_status_body_server(
     });
     (format!("http://{addr}"), captured)
 }
-fn switch_target_config(model: &str, base_url: String) -> xai_grok_sampler::SamplerConfig {
-    xai_grok_sampler::SamplerConfig {
+fn switch_target_config(model: &str, base_url: String) -> xai_grok_sampling_types::SamplerConfig {
+    xai_grok_sampling_types::SamplerConfig {
         api_key: Some("test-key".to_string()),
         base_url,
         model: model.to_string(),
@@ -1791,7 +1791,7 @@ mod preserve_prefix {
 }
 fn api_error_with_context_window(context_window: u64) -> xai_grok_sampler::SamplingErrorInfo {
     xai_grok_sampler::SamplingErrorInfo {
-        kind: xai_grok_sampler::SamplingErrorKind::Api,
+        kind: xai_grok_sampling_types::SamplingErrorKind::Api,
         status_code: Some(400),
         message: "prompt is too long".to_string(),
         is_retryable: false,

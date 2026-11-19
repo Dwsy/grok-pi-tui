@@ -1,8 +1,8 @@
 //! Applies a reasoning-effort hint only when the model supports it; shared by session creation, model switch, and the summary client.
 
 use agent_client_protocol as acp;
-use xai_grok_sampler::SamplerConfig;
 use xai_grok_sampling_types::ReasoningEffort;
+use xai_grok_sampling_types::SamplerConfig;
 
 use crate::agent::remote_config::ModelsManager;
 use crate::sampling::EffortTarget;

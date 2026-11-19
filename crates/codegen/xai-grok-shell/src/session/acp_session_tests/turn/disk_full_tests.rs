@@ -85,11 +85,11 @@ pub(super) async fn actor_with_mock_sampler_configured(
     max_turns: Option<usize>,
     configure: impl FnOnce(&mut SessionActor),
 ) -> Arc<SessionActor> {
-    let sampling_cfg = xai_grok_sampler::SamplerConfig {
+    let sampling_cfg = xai_grok_sampling_types::SamplerConfig {
         api_key: Some("test-key".to_string()),
         base_url: server.url(),
         model: "test".to_string(),
-        api_backend: xai_grok_sampler::ApiBackend::Responses,
+        api_backend: xai_grok_sampling_types::ApiBackend::Responses,
         context_window: 256_000,
         max_retries: Some(0),
         idle_timeout_secs: Some(30),

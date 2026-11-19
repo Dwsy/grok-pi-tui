@@ -59,7 +59,7 @@ use xai_grok_workspace::permission::{ClientType, PermissionEvent};
 use crate::sampling::Client as OaiCompatClient;
 use crate::sampling::error::map_sampling_err_to_acp;
 use xai_grok_config_types::{McpMetaConfigMap, parse_mcp_meta_config};
-use xai_grok_sampler::SamplerConfig as SamplingConfig;
+use xai_grok_sampling_types::SamplerConfig as SamplingConfig;
 use crate::session::persistence::PersistenceHandle;
 use crate::session::worktree::BackgroundCopyContext;
 use crate::session::{

@@ -135,7 +135,7 @@ async fn await_completed(task: tokio::task::JoinHandle<()>) {
 
 fn failed_info() -> xai_grok_sampler::SamplingErrorInfo {
     xai_grok_sampler::SamplingErrorInfo {
-        kind: xai_grok_sampler::SamplingErrorKind::Api,
+        kind: xai_grok_sampling_types::SamplingErrorKind::Api,
         message: "400 Bad Request".to_string(),
         status_code: Some(400),
         is_retryable: false,
