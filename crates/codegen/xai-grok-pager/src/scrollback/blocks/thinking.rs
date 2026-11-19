@@ -615,16 +615,28 @@ impl BlockContent for ThinkingBlock {
         }
     }
 
+    /// The tightest fold a running thinking block can take.
+    ///
+    /// Normally a running block collapses to `Truncated` (its tail still streams). With
+    /// the collapse flag on, `Truncated` is exactly what the flag forbids, so the tightest
+    /// fold becomes `Collapsed`.
     fn collapse_mode(&self, is_running: bool) -> DisplayMode {
-        if is_running {
+        if is_running && !crate::appearance::cache::load_collapse_thinking_blocks() {
             DisplayMode::Truncated
         } else {
             DisplayMode::Collapsed
         }
     }
 
+    /// A thinking block starts in `Truncated` so its body streams while the agent works.
+    /// With the collapse flag on it starts folded instead, which keeps the reasoning
+    /// out of the transcript until the user expands it.
     fn default_display_mode(&self) -> DisplayMode {
-        DisplayMode::Truncated
+        if crate::appearance::cache::load_collapse_thinking_blocks() {
+            DisplayMode::Collapsed
+        } else {
+            DisplayMode::Truncated
+        }
     }
 
     fn finished_display_mode(&self) -> Option<DisplayMode> {
@@ -685,6 +697,48 @@ mod tests {
         assert_eq!(out.lines.len(), 1);
         assert!(matches!(out.lines[0].selectable, Selectable::None));
         assert_eq!(out.lines[0].selection_range, None);
+    }
+
+    #[test]
+    fn default_display_mode_streams_the_body_until_the_collapse_flag_is_on() {
+        let block = ThinkingBlock::streaming();
+
+        crate::appearance::cache::set_collapse_thinking_blocks(false);
+        assert_eq!(
+            block.default_display_mode(),
+            DisplayMode::Truncated,
+            "without the flag a thinking block streams its body while the agent works"
+        );
+
+        crate::appearance::cache::set_collapse_thinking_blocks(true);
+        assert_eq!(
+            block.default_display_mode(),
+            DisplayMode::Collapsed,
+            "the collapse flag folds a thinking block so its body never streams"
+        );
+
+        crate::appearance::cache::set_collapse_thinking_blocks(false);
+    }
+
+    #[test]
+    fn collapse_mode_folds_a_running_block_when_the_flag_is_on() {
+        let block = ThinkingBlock::streaming();
+
+        crate::appearance::cache::set_collapse_thinking_blocks(false);
+        assert_eq!(
+            block.collapse_mode(true),
+            DisplayMode::Truncated,
+            "a running block normally folds to a still-streaming tail"
+        );
+
+        crate::appearance::cache::set_collapse_thinking_blocks(true);
+        assert_eq!(
+            block.collapse_mode(true),
+            DisplayMode::Collapsed,
+            "with the flag on, the tightest fold of a running block is fully collapsed"
+        );
+
+        crate::appearance::cache::set_collapse_thinking_blocks(false);
     }
 
     #[test]

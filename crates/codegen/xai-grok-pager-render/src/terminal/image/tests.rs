@@ -15,6 +15,55 @@ fn protocol_matrix_matches_supported_terminals() {
     }
 }
 
+/// Herdr sets TERM_PROGRAM=herdr, so the outer brand is Unknown. Herdr forwards Kitty
+/// sequences to a compatible outer terminal, so images must still be Kitty-capable.
+#[test]
+fn herdr_with_unknown_outer_brand_uses_kitty() {
+    assert_eq!(
+        protocol_for_brand_and_mux(TerminalName::Unknown, MultiplexerKind::Herdr, false),
+        GraphicsProtocol::Kitty,
+    );
+}
+
+/// A known outer brand inside herdr keeps the brand's own protocol.
+#[test]
+fn herdr_with_known_outer_brand_keeps_brand_protocol() {
+    assert_eq!(
+        protocol_for_brand_and_mux(TerminalName::Ghostty, MultiplexerKind::Herdr, false),
+        GraphicsProtocol::Kitty,
+    );
+    assert_eq!(
+        protocol_for_brand_and_mux(TerminalName::Iterm2, MultiplexerKind::Herdr, false),
+        GraphicsProtocol::None,
+    );
+}
+
+/// Only herdr gets the unknown-brand exemption; tmux and friends keep the strict matrix.
+#[test]
+fn unknown_brand_outside_herdr_stays_without_graphics() {
+    for mux in [
+        MultiplexerKind::Undetected,
+        MultiplexerKind::Tmux,
+        MultiplexerKind::Zellij,
+        MultiplexerKind::Screen,
+        MultiplexerKind::Cmux,
+    ] {
+        assert_eq!(
+            protocol_for_brand_and_mux(TerminalName::Unknown, mux, false),
+            GraphicsProtocol::None,
+        );
+    }
+}
+
+/// ConPTY strips the APC escapes, so Windows never gets a protocol.
+#[test]
+fn herdr_on_windows_stays_without_graphics() {
+    assert_eq!(
+        protocol_for_brand_and_mux(TerminalName::Unknown, MultiplexerKind::Herdr, true),
+        GraphicsProtocol::None,
+    );
+}
+
 #[test]
 fn prompt_preview_protocol_gates_iterm2_on_file_capability() {
     for (features, is_ssh, expected) in [

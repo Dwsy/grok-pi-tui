@@ -1911,6 +1911,9 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "show_thinking_blocks" => {
             let _ = dispatch(Action::SetShowThinkingBlocks(true), app);
         }
+        "collapse_thinking_blocks" => {
+            let _ = dispatch(Action::SetCollapseThinkingBlocks(true), app);
+        }
         "tool_call_density" => {
             let _ = dispatch(Action::SetToolCallDensity("detailed".into()), app);
         }
@@ -2561,6 +2564,35 @@ fn set_show_thinking_blocks_applies_persists_and_rolls_back() {
     );
     assert!(
         crate::appearance::cache::load_show_thinking_blocks(),
+        "rollback must restore cache",
+    );
+}
+#[test]
+fn set_collapse_thinking_blocks_applies_persists_and_rolls_back() {
+    crate::appearance::cache::set_collapse_thinking_blocks(false);
+    let mut app = test_app_with_agent();
+    let effects = dispatch(Action::SetCollapseThinkingBlocks(true), &mut app);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::PersistSetting {
+                key: "collapse_thinking_blocks",
+                value: crate::settings::SettingValue::Bool(true),
+                rollback_value: crate::settings::SettingValue::Bool(false),
+            }]
+        ),
+        "expected exactly one PersistSetting effect, got {effects:?}",
+    );
+    assert!(crate::appearance::cache::load_collapse_thinking_blocks());
+    let effects = dispatch(Action::SetCollapseThinkingBlocks(true), &mut app);
+    assert!(effects.is_empty(), "redundant set must be a no-op");
+    let _ = apply_setting_rollback(
+        &mut app,
+        "collapse_thinking_blocks",
+        &crate::settings::SettingValue::Bool(false),
+    );
+    assert!(
+        !crate::appearance::cache::load_collapse_thinking_blocks(),
         "rollback must restore cache",
     );
 }

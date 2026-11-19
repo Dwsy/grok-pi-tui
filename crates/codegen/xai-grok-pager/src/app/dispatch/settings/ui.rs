@@ -3,8 +3,9 @@
 use super::setters::{
     pr13_effective_default, set_ask_user_question_timeout_enabled_inner, set_auto_dark_theme_inner,
     set_auto_light_theme_inner, set_auto_update_inner, set_cancel_turn_key_inner,
-    set_codemode_expanded_by_default_inner, set_combine_queued_prompts_inner, set_compact_mode,
-    set_compact_mode_inner, set_confirm_before_rewind_inner, set_contextual_hint_inner,
+    set_codemode_expanded_by_default_inner, set_collapse_thinking_blocks_inner,
+    set_combine_queued_prompts_inner, set_compact_mode, set_compact_mode_inner,
+    set_confirm_before_rewind_inner, set_contextual_hint_inner,
     set_default_model_inner, set_default_selected_permission_inner,
     set_display_refresh_auto_cadence_inner, set_follow_up_behavior_inner,
     set_fork_secondary_model_inner, set_hunk_tracker_mode_inner, set_invert_scroll_inner,
@@ -1107,6 +1108,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
             Some(Action::SetShowStatusToolCalls(*b))
         }
         ("show_thinking_blocks", SettingValue::Bool(b)) => Some(Action::SetShowThinkingBlocks(*b)),
+        ("collapse_thinking_blocks", SettingValue::Bool(b)) => {
+            Some(Action::SetCollapseThinkingBlocks(*b))
+        }
         ("thinking_border_colors", SettingValue::Bool(b)) => {
             Some(Action::SetThinkingBorderColors(*b))
         }
@@ -1525,6 +1529,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             crate::appearance::cache::set_show_status_tool_calls(*b)
         }
         ("show_thinking_blocks", SettingValue::Bool(b)) => set_show_thinking_blocks_inner(app, *b),
+        ("collapse_thinking_blocks", SettingValue::Bool(b)) => {
+            set_collapse_thinking_blocks_inner(app, *b)
+        }
         ("thinking_border_colors", SettingValue::Bool(b)) => set_thinking_border_colors_inner(*b),
         ("tool_call_density", SettingValue::Enum(s)) => {
             let prev = crate::appearance::cache::load_tool_call_density();

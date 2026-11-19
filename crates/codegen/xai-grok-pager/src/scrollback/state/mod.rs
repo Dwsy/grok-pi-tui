@@ -1265,6 +1265,38 @@ impl ScrollbackState {
         self.invalidate_heights();
     }
 
+    /// Re-materialize running thinking blocks when the collapse flag flips.
+    ///
+    /// A running thinking block's mode comes from its default mode (which the flag decides),
+    /// while a finished one comes from the sticky `thinking_display_mode` (Ctrl+E). Only the
+    /// running blocks are re-materialized here, so flipping the flag never overrides a
+    /// finished block's fold state or a block the user expanded by hand.
+    pub fn apply_collapse_thinking_blocks_flip(&mut self, new_flag: bool) {
+        let new_mode = if new_flag {
+            DisplayMode::Collapsed
+        } else {
+            DisplayMode::Truncated
+        };
+        for entry in self.entries.values_mut() {
+            if !matches!(&entry.block, RenderBlock::Thinking(_)) {
+                continue;
+            }
+            if !entry.is_running {
+                continue;
+            }
+            if entry.display_mode_pinned {
+                continue;
+            }
+            if entry.display_mode == DisplayMode::Expanded {
+                // The user expanded this one by hand; leave it open.
+                continue;
+            }
+            entry.display_mode = new_mode;
+        }
+        self.clear_group_expansion();
+        self.invalidate_heights();
+    }
+
     /// Re-materialize only Code Mode cards still using the previous default mode.
     /// Manual modes are pinned when they would otherwise become indistinguishable from the new default.
     pub fn apply_codemode_expanded_by_default_flip(&mut self, old_flag: bool, new_flag: bool) {

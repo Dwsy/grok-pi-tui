@@ -584,6 +584,9 @@ pub enum Action {
     /// Set whether agent thinking blocks are shown.
     /// SHELL-owned: updates the process-wide cache mirror and persists to `[ui].show_thinking_blocks` via `Effect::PersistSetting`.
     SetShowThinkingBlocks(bool),
+    /// Set whether thinking blocks stay folded while the agent is working.
+    /// SHELL-owned: updates the process-wide cache mirror and persists to `[ui].collapse_thinking_blocks` via `Effect::PersistSetting`.
+    SetCollapseThinkingBlocks(bool),
     /// Show calls otherwise hidden behind task/status surfaces.
     SetShowStatusToolCalls(bool),
     /// Set whether the normal prompt border follows the selected thinking/

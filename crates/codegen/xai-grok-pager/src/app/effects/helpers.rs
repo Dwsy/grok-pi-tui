@@ -1350,6 +1350,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "collapse_thinking_blocks" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("collapse_thinking_blocks", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_collapse_thinking_blocks(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "tool_call_density" => {
             let SettingValue::Enum(s) = value else {
                 return Err(kind_mismatch("tool_call_density", "Enum", &value));

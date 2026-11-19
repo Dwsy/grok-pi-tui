@@ -101,6 +101,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "show_status_tool_calls" => Action::SetShowStatusToolCalls(new),
         "codemode_expanded_by_default" => Action::SetCodemodeExpandedByDefault(new),
         "show_thinking_blocks" => Action::SetShowThinkingBlocks(new),
+        "collapse_thinking_blocks" => Action::SetCollapseThinkingBlocks(new),
         "thinking_border_colors" => Action::SetThinkingBorderColors(new),
         "side_by_side_edit" => Action::SetSideBySideEdit(new),
         "side_by_side_word_highlight" => Action::SetSideBySideWordHighlight(new),

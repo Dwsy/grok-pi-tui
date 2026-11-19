@@ -41,6 +41,8 @@ const PI_EVAL_V2_EFFECTS_FIRST_DEFAULT: bool = true;
 /// PSM resume index + full-text/preview (defaults OFF; opt-in).
 const PSM_RESUME_INDEX_DEFAULT: bool = false;
 const SHOW_THINKING_BLOCKS_DEFAULT: bool = true;
+/// Thinking blocks keep streaming their body until the turn ends (client default).
+const COLLAPSE_THINKING_BLOCKS_DEFAULT: bool = false;
 /// Prompt border follows the selected thinking/reasoning effort by default.
 const THINKING_BORDER_COLORS_DEFAULT: bool = true;
 const GROUP_TOOL_VERBS_DEFAULT: bool = true;
@@ -409,6 +411,37 @@ pub fn load_show_thinking_blocks() -> bool {
 pub fn set_show_thinking_blocks(enabled: bool) {
     SHOW_THINKING_BLOCKS_CURRENT.with(|c| c.set(enabled));
     SHOW_THINKING_BLOCKS_LOADED.with(|l| l.set(true));
+}
+
+// -- Collapse thinking blocks ------------------------------------------------
+
+thread_local! {
+    static COLLAPSE_THINKING_BLOCKS_CURRENT: Cell<bool> =
+        const { Cell::new(COLLAPSE_THINKING_BLOCKS_DEFAULT) };
+    static COLLAPSE_THINKING_BLOCKS_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read cached `collapse_thinking_blocks`, seeding from `[ui]` on first call.
+/// Settings resolution at startup may override the seeded value.
+pub fn load_collapse_thinking_blocks() -> bool {
+    COLLAPSE_THINKING_BLOCKS_LOADED.with(|loaded| {
+        if !loaded.get() {
+            COLLAPSE_THINKING_BLOCKS_CURRENT.with(|c| {
+                c.set(load_bool_from_effective_config(
+                    "collapse_thinking_blocks",
+                    COLLAPSE_THINKING_BLOCKS_DEFAULT,
+                ))
+            });
+            loaded.set(true);
+        }
+    });
+    COLLAPSE_THINKING_BLOCKS_CURRENT.with(|c| c.get())
+}
+
+/// Replace cached `collapse_thinking_blocks`.
+pub fn set_collapse_thinking_blocks(enabled: bool) {
+    COLLAPSE_THINKING_BLOCKS_CURRENT.with(|c| c.set(enabled));
+    COLLAPSE_THINKING_BLOCKS_LOADED.with(|l| l.set(true));
 }
 
 // -- Thinking-level prompt border colors -------------------------------------
@@ -1118,6 +1151,7 @@ pub fn prime(ui: &UiConfig) {
     let _ = load_render_mermaid();
     let _ = load_show_thinking_blocks();
     let _ = load_thinking_border_colors();
+    let _ = load_collapse_thinking_blocks();
     let _ = load_group_tool_verbs();
     let _ = load_collapsed_edit_blocks();
     set_codemode_expanded_by_default(
@@ -1233,6 +1267,11 @@ mod tests {
             SHOW_THINKING_BLOCKS_DEFAULT,
             ui.show_thinking_blocks
                 .unwrap_or(SHOW_THINKING_BLOCKS_DEFAULT)
+        );
+        assert_eq!(
+            COLLAPSE_THINKING_BLOCKS_DEFAULT,
+            ui.collapse_thinking_blocks
+                .unwrap_or(COLLAPSE_THINKING_BLOCKS_DEFAULT)
         );
         assert_eq!(
             THINKING_BORDER_COLORS_DEFAULT,

@@ -444,6 +444,54 @@ pub(super) fn set_thinking_border_colors_inner(new: bool) {
     crate::appearance::cache::set_thinking_border_colors(new);
 }
 
+/// Set whether thinking blocks stay folded while the agent is working.
+/// SHELL-OWNED: cache mirror and `[ui].collapse_thinking_blocks` via `Effect::PersistSetting`.
+pub(super) fn set_collapse_thinking_blocks_inner(app: &mut AppView, new: bool) {
+    let prev = crate::appearance::cache::load_collapse_thinking_blocks();
+    crate::appearance::cache::set_collapse_thinking_blocks(new);
+    if prev == new {
+        return;
+    }
+    // The fold shape of every thinking block changed, so the transcript's heights and
+    // group expansion no longer describe the rendered rows.
+    for agent in app.agents.values_mut() {
+        agent
+            .scrollback
+            .apply_collapse_thinking_blocks_flip(new);
+        for child in agent.subagent_views.values_mut() {
+            child
+                .scrollback
+                .apply_collapse_thinking_blocks_flip(new);
+        }
+    }
+}
+
+/// Set whether thinking blocks stay folded while the agent is working.
+/// SHELL-OWNED: cache mirror and `[ui].collapse_thinking_blocks` via `Effect::PersistSetting`.
+pub(in crate::app::dispatch) fn set_collapse_thinking_blocks(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    let prev = crate::appearance::cache::load_collapse_thinking_blocks();
+    if prev == new {
+        return vec![];
+    }
+    set_collapse_thinking_blocks_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "collapse_thinking_blocks",
+        value = new,
+        "setting changed",
+    );
+    app.show_toast(&save_success_toast("Collapse thinking blocks", new));
+    vec![Effect::PersistSetting {
+        key: "collapse_thinking_blocks",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev),
+    }]
+}
+
 /// Set whether the normal prompt border follows the selected thinking level.
 ///
 /// SHELL-OWNED: cache mirror + `[ui].thinking_border_colors` via

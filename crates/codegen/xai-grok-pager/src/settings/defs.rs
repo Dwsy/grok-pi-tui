@@ -1184,6 +1184,29 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: false,
         },
+        // SHELL-owned: `[ui].collapse_thinking_blocks` + process-wide cache.
+        // Default OFF: thinking streams its body while the agent is still working.
+        SettingMeta {
+            key: "collapse_thinking_blocks",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shell,
+            label: "Collapse thinking blocks",
+            description: "Keep thinking blocks folded while the agent works, instead of streaming the reasoning body line by line.",
+            keywords: &[
+                "thinking",
+                "reasoning",
+                "collapse",
+                "folded",
+                "stream",
+                "thinking blocks",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.collapse_thinking_blocks.unwrap_or(false),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
         // SHELL-owned: `[ui].thinking_border_colors` + process-wide cache.
         // Default ON; applies to the next render frame.
         SettingMeta {

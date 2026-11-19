@@ -65,7 +65,10 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "display_refresh_auto_cadence"
         | "render_mermaid" => "Display",
         "show_status_tool_calls" => "Tool output",
-        "show_thinking_blocks" | "thinking_border_colors" | "max_thoughts_width" => "Thinking",
+        "show_thinking_blocks"
+        | "collapse_thinking_blocks"
+        | "thinking_border_colors"
+        | "max_thoughts_width" => "Thinking",
         "codemode_expanded_by_default"
         | "side_by_side_edit"
         | "side_by_side_word_highlight"

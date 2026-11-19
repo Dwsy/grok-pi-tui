@@ -511,6 +511,12 @@ pub struct UiConfig {
     /// `None` means on (client default). Written by the pager's settings modal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_thinking_blocks: Option<bool>,
+    /// Keep thinking blocks folded instead of streaming their body while the
+    /// agent is still thinking. `None` means off (client default): thinking
+    /// streams its last lines until the turn ends. Written by the pager's F2
+    /// settings modal and applied live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapse_thinking_blocks: Option<bool>,
     /// Show tool calls normally hidden by dedicated task and status surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_status_tool_calls: Option<bool>,
@@ -797,6 +803,7 @@ impl Default for UiConfig {
             keep_text_selection: None,
             selection_highlight_duration_ms: None,
             show_thinking_blocks: None,
+            collapse_thinking_blocks: None,
             show_status_tool_calls: None,
             thinking_border_colors: None,
             tool_call_density: None,

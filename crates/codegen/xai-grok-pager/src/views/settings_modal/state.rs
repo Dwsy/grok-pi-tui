@@ -1222,6 +1222,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         }
         "show_status_tool_calls" => Some(Action::SetShowStatusToolCalls(new)),
         "show_thinking_blocks" => Some(Action::SetShowThinkingBlocks(new)),
+        "collapse_thinking_blocks" => Some(Action::SetCollapseThinkingBlocks(new)),
         "thinking_border_colors" => Some(Action::SetThinkingBorderColors(new)),
         "codemode_expanded_by_default" => Some(Action::SetCodemodeExpandedByDefault(new)),
         "side_by_side_edit" => Some(Action::SetSideBySideEdit(new)),

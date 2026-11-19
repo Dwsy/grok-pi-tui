@@ -84,7 +84,8 @@ use super::settings::setters::{
     clear_default_model, clear_fork_secondary_model, clear_recap_model, preview_auto_dark_theme,
     preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
     set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_cancel_turn_key,
-    set_codemode_expanded_by_default, set_combine_queued_prompts, set_compact_mode,
+    set_codemode_expanded_by_default, set_collapse_thinking_blocks, set_combine_queued_prompts,
+    set_compact_mode,
     set_confirm_before_rewind, set_contextual_hint_export_copy, set_contextual_hint_image_input,
     set_contextual_hint_plan_mode, set_contextual_hint_send_now, set_contextual_hint_small_screen,
     set_contextual_hint_ssh_wrap, set_contextual_hint_undo, set_contextual_hint_word_select,
@@ -1280,6 +1281,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             super::settings::setters::set_show_status_tool_calls(app, v)
         }
         Action::SetShowThinkingBlocks(v) => set_show_thinking_blocks(app, v),
+        Action::SetCollapseThinkingBlocks(v) => set_collapse_thinking_blocks(app, v),
         Action::SetThinkingBorderColors(v) => set_thinking_border_colors(app, v),
         Action::SetToolCallDensity(s) => set_tool_call_density(app, s),
         Action::SetCodemodeExpandedByDefault(v) => set_codemode_expanded_by_default(app, v),

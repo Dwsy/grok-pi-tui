@@ -579,6 +579,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `ui.auto_light_theme` | `string` | `yes` | `user` | Theme when `theme = auto` and the OS is light. |
 | `ui.cancel_subagents_on_turn_cancel` | `ask / always_stop / always_continue` | `yes` | `user` | What to do with running subagents when cancelling a parent turn. |
 | `ui.codemode_expanded_by_default` | `boolean` | `yes` | `user` | F2 → Appearance → Tool output: expand complete Code Mode cards by default (default off); off keeps the truncated preview. |
+| `ui.collapse_thinking_blocks` | `boolean` | `yes` | `user` | F2 → Appearance → Thinking: keep thinking blocks folded while the agent works (default off); off streams the reasoning body line by line. Ctrl+E still expands them. |
 | `ui.combine_queued_prompts` | `boolean` | `yes` | `user` | Merge consecutive plain follow-ups into one turn. |
 | `ui.compact_mode` | `boolean` | `yes` | `user` | Denser message padding. Also `/compact-mode`. |
 | `ui.confirm_before_rewind` | `boolean` | `yes` | `user` | Ask before rewinding conversation history. |

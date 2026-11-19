@@ -481,6 +481,11 @@ pub async fn set_show_thinking_blocks(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.show_thinking_blocks = Some(value)).await
 }
 
+/// Persist `[ui].collapse_thinking_blocks` via `update_config`.
+pub async fn set_collapse_thinking_blocks(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.collapse_thinking_blocks = Some(value)).await
+}
+
 /// Persist `[ui].thinking_border_colors` via `update_config`.
 pub async fn set_thinking_border_colors(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.thinking_border_colors = Some(value)).await

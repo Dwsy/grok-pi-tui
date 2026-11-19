@@ -61,6 +61,7 @@ const ALL_SETTINGS_EXERCISED: &[&str] = &[
     "auto_update",
     "fork_secondary_model",
     "show_thinking_blocks",
+    "collapse_thinking_blocks",
     "prompt_suggestions",
     "tool_call_density",
     "respect_manual_folds",
@@ -7468,6 +7469,90 @@ fn show_thinking_blocks_cache_on_dispatches_off() {
     assert_set_bool_action(outcome, "show_thinking_blocks", false);
     // Restore client default (on) for other tests that share the process cache.
     xai_grok_pager::appearance::cache::set_show_thinking_blocks(true);
+}
+
+#[test]
+fn collapse_thinking_blocks_space_dispatches_typed_setter() {
+    // Pin off so space toggles to true.
+    xai_grok_pager::appearance::cache::set_collapse_thinking_blocks(false);
+    let mut s = make_state();
+    navigate_to(&mut s, "collapse_thinking_blocks");
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
+    assert_set_bool_action(outcome, "collapse_thinking_blocks", true);
+    xai_grok_pager::appearance::cache::set_collapse_thinking_blocks(false);
+}
+
+#[test]
+fn collapse_thinking_blocks_enter_dispatches_typed_setter() {
+    xai_grok_pager::appearance::cache::set_collapse_thinking_blocks(false);
+    let mut s = make_state();
+    navigate_to(&mut s, "collapse_thinking_blocks");
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Enter));
+    assert_set_bool_action(outcome, "collapse_thinking_blocks", true);
+    xai_grok_pager::appearance::cache::set_collapse_thinking_blocks(false);
+}
+
+#[test]
+fn collapse_thinking_blocks_mouse_click_two_stage_toggles() {
+    xai_grok_pager::appearance::cache::set_collapse_thinking_blocks(false);
+    let mut s = make_state();
+    synth_rects(&mut s);
+    let row_y = row_idx_for(&s, "collapse_thinking_blocks") as u16;
+
+    let outcome = handle_settings_mouse(
+        &mut s,
+        MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        10,
+        row_y,
+    );
+    assert!(
+        matches!(outcome, SettingsKeyOutcome::Changed),
+        "first click on a different row body should only select, got: {outcome:?}"
+    );
+    assert_eq!(s.selected, row_y as usize);
+
+    let outcome = handle_settings_mouse(
+        &mut s,
+        MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        10,
+        row_y,
+    );
+    // Cache pinned off above → toggle dispatches true.
+    assert_set_bool_action(outcome, "collapse_thinking_blocks", true);
+    xai_grok_pager::appearance::cache::set_collapse_thinking_blocks(false);
+}
+
+#[test]
+fn collapse_thinking_blocks_cache_on_dispatches_off() {
+    // When the live cache is on, toggle should turn it off.
+    xai_grok_pager::appearance::cache::set_collapse_thinking_blocks(true);
+    let mut s = SettingsModalState::new(
+        Arc::new(SettingsRegistry::defaults()),
+        UiConfig::default(),
+        PagerLocalSnapshot::default(),
+    );
+    navigate_to(&mut s, "collapse_thinking_blocks");
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
+    assert_set_bool_action(outcome, "collapse_thinking_blocks", false);
+    // Restore client default (off) for other tests that share the process cache.
+    xai_grok_pager::appearance::cache::set_collapse_thinking_blocks(false);
+}
+
+#[test]
+fn collapse_thinking_blocks_renders_under_appearance_category_shell_owned() {
+    let reg = SettingsRegistry::defaults();
+    let meta = reg
+        .find("collapse_thinking_blocks")
+        .expect("collapse_thinking_blocks must be registered");
+    assert_eq!(meta.category, SettingCategory::Appearance);
+    assert_eq!(meta.owner, SettingOwner::Shell);
+    match &meta.kind {
+        SettingKind::Bool { default } => assert!(
+            !*default,
+            "default must be false: thinking streams its body until the user opts in"
+        ),
+        other => panic!("expected Bool kind for collapse_thinking_blocks, got {other:?}"),
+    }
 }
 
 #[test]
