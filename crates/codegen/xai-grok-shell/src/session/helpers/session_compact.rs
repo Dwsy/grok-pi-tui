@@ -811,11 +811,11 @@ mod classify_tests;
 #[path = "session_compact_compacted_history_shape_tests.rs"]
 mod compacted_history_shape_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 #[path = "session_compact_large_body_tests.rs"]
 mod large_body_tests;
 
 /// Regression: ChatCompletions compaction must not panic on a standalone `Reasoning` sibling.
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 #[path = "session_compact_reasoning_compaction_regression_tests.rs"]
 mod reasoning_compaction_regression_tests;

@@ -8,7 +8,7 @@ pub use self::types::*;
 // Data types already owned by `xai-grok-sampling-types`: named here so shell callers
 // keep their `crate::sampling::*` paths while the sampler runtime stays optional.
 pub use xai_grok_sampling_types::{
-    ApiBackend, ConversationGroupId, OriginClientInfo, SamplingErrorKind,
+    ApiBackend, AuthScheme, ConversationGroupId, OriginClientInfo, SamplerConfig, SamplingErrorKind,
 };
 // `Client` is the legacy alias for the sampler crate's `SamplingClient`. Only the Stock
 // agent runtime names it: the Pi profile delegates sampling to Pi over JSONL RPC and
