@@ -9,8 +9,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use moka::future::Cache;
 
-use crate::session::image_describe::content_fingerprint_bytes;
 use crate::session::image_normalize::ImageCompressionInfo;
+use crate::session::image_normalize::content_fingerprint_bytes;
 
 const CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60);

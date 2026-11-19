@@ -495,7 +495,7 @@ impl SessionActor {
         request: TurnInputRequest,
     ) -> PromptTurnResult {
         let _active = TURNS_ACTIVE.enter();
-        let _work = crate::session::handle::WorkGuard::new(self.active_work.clone());
+        let _work = crate::session::work_guard::WorkGuard::new(self.active_work.clone());
         let TurnInputRequest {
             prompt_id,
             input_origin,

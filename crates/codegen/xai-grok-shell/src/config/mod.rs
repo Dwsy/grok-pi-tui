@@ -2,6 +2,7 @@ pub mod reloader;
 pub mod watcher;
 use crate::bundle;
 use serde::Deserialize;
+pub(crate) const MAX_SUBAGENT_SAMPLING_LIMIT: usize = 512;
 pub use xai_grok_config_types::{
     DEFAULT_RECENCY_DECAY, MemoryConfig, MemoryDreamConfig, MemoryDreamSettings,
     MemoryEmbeddingConfig, MemoryEmbeddingSettings, MemoryFlushConfig, MemoryFlushSettings,
@@ -277,7 +278,7 @@ impl SubagentsConfig {
             xai_grok_tools::implementations::grok_build::task::admission::DEFAULT_MAX_CONCURRENT,
         )
     }
-    /// Resolve the subagent turn-sampling limit, clamped to [`crate::agent::subagent::MAX_SUBAGENT_SAMPLING_LIMIT`].
+    /// Resolve the subagent turn-sampling limit, clamped to [`MAX_SUBAGENT_SAMPLING_LIMIT`].
     /// `default` is the resolved concurrent-subagent bound (`GROK_MAX_CONCURRENT_SUBAGENTS`).
     /// A lower `GROK_SUBAGENT_SAMPLING_LIMIT`, `[subagents] sampling_limit`, or remote value caps sampling further.
     pub(crate) fn resolve_sampling_limit(
@@ -286,7 +287,7 @@ impl SubagentsConfig {
         remote: Option<u32>,
         default: usize,
     ) -> usize {
-        let max = crate::agent::subagent::MAX_SUBAGENT_SAMPLING_LIMIT;
+        let max = MAX_SUBAGENT_SAMPLING_LIMIT;
         let resolved =
             resolve_positive_count(Self::ENV_SAMPLING_LIMIT, env, config, remote, default);
         if resolved > max {

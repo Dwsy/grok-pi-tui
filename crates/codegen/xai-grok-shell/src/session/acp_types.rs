@@ -8,6 +8,21 @@ use std::path::PathBuf;
 use crate::session::persistence::Summary;
 use crate::util::config::DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT;
 
+pub(crate) fn new_submission(
+    session_id: String,
+    client_type: prod_mc_cli_chat_proxy_types::feedback_types::ClientType,
+    content: prod_mc_cli_chat_proxy_types::feedback_types::FeedbackContent,
+) -> prod_mc_cli_chat_proxy_types::feedback_types::FeedbackSubmission {
+    let mut submission =
+        prod_mc_cli_chat_proxy_types::feedback_types::FeedbackSubmission::with_content(
+            session_id,
+            client_type,
+            content,
+        );
+    submission.shell_version = Some(xai_grok_version::VERSION.to_string());
+    submission
+}
+
 // ── Session list ───────────────────────────────────────────────────────
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -187,11 +202,7 @@ impl ClientFeedbackInput {
             (_, _, text) => FeedbackContent::Text(text.unwrap_or_default()),
         };
 
-        let mut s = crate::session::feedback_manager::new_submission(
-            self.session_id.clone(),
-            self.client_type,
-            content,
-        );
+        let mut s = new_submission(self.session_id.clone(), self.client_type, content);
         s.turn_number = turn_number;
         s.images = std::mem::take(&mut self.images);
         s.feedback_categories = self.feedback_categories.clone();

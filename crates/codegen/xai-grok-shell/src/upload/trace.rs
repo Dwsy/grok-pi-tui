@@ -1162,14 +1162,13 @@ pub(crate) async fn flush_upload_queue(
     remaining
 }
 pub(crate) const BLOCKING_ATTEMPT_FLOOR: std::time::Duration = std::time::Duration::from_secs(10);
-pub(crate) const BLOCKING_ATTEMPT_CAP: std::time::Duration = std::time::Duration::from_secs(30);
 /// Budget for one awaited attempt on the blocking path (a non-durable-accept
 /// direct upload, or the manifest write): whatever remains of the flush
 pub(crate) fn blocking_attempt_budget(deadline: tokio::time::Instant) -> std::time::Duration {
     deadline
         .saturating_duration_since(tokio::time::Instant::now())
         .max(BLOCKING_ATTEMPT_FLOOR)
-        .min(BLOCKING_ATTEMPT_CAP)
+        .min(super::BLOCKING_ATTEMPT_CAP)
 }
 /// Blocking error path: bounded queue flush, then the error manifest under its own budget so the prompt response cannot hang on the final write.
 pub(crate) async fn flush_then_write_error_manifest(

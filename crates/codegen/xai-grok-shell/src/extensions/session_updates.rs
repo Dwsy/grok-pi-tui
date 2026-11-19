@@ -58,6 +58,7 @@ struct Request {
     #[serde(default)]
     turn_index: Option<usize>,
     /// Routing metadata, forwarded to chunk notifications so the gateway can route them to the requesting client.
+    #[cfg(feature = "stock-agent")]
     #[serde(default, rename = "_meta")]
     meta: Option<crate::extensions::routing::RequestMeta>,
 }
@@ -279,6 +280,7 @@ fn extract_last_event_id<T: AsRef<str>>(lines: &[T]) -> Option<String> {
 
 /// Send updates as chunked `_x.ai/session/updates/chunk` notifications.
 /// Injects routing metadata when `target_client_id` is set.
+#[cfg(feature = "stock-agent")]
 fn send_streamed_chunks<T: AsRef<str>>(
     gateway: &xai_acp_lib::AcpAgentGatewaySender,
     session_id: &str,
@@ -317,6 +319,7 @@ fn send_streamed_chunks<T: AsRef<str>>(
 }
 
 /// Inline sync I/O (`spawn_blocking` is slow on a `current_thread` runtime with a `LocalSet`).
+#[cfg(feature = "stock-agent")]
 pub async fn handle(
     args: &acp::ExtRequest,
     gateway: &xai_acp_lib::AcpAgentGatewaySender,
@@ -481,7 +484,7 @@ fn empty_response(total_count: usize) -> ExtResult {
     Ok(acp::ExtResponse::new(std::sync::Arc::from(raw)))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 mod tests {
     use super::*;
 

@@ -34,7 +34,7 @@ pub struct ExternalWorkflowRuntimeConfig {
     pub backend: Arc<dyn WorkflowAgentBackend>,
     pub notify: WorkflowNotifySender,
     pub store: WorkflowRunStore,
-    pub session_cmd_tx: mpsc::UnboundedSender<crate::session::commands::SessionCommand>,
+    pub completion_hook: Option<super::WorkflowCompletionHook>,
     pub templates: HashMap<String, String>,
 }
 
@@ -53,7 +53,7 @@ impl ExternalWorkflowRuntime {
             config.notify,
             config.backend,
             Arc::new(|_, _, _| {}),
-            config.session_cmd_tx,
+            config.completion_hook,
             config.templates,
             super::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
         )));
@@ -180,7 +180,7 @@ pub fn test_runtime(session_dir: Option<PathBuf>) -> ExternalWorkflowRuntime {
         }),
         notify,
         store,
-        session_cmd_tx: mpsc::unbounded_channel().0,
+        completion_hook: None,
         templates: HashMap::new(),
     })
 }

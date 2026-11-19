@@ -315,6 +315,7 @@ impl From<SkillUpdateKind> for AdvertiseTrigger {
         }
     }
 }
+#[cfg(feature = "stock-agent")]
 pub enum SessionCommand {
     Initialize {
         system_prompt: String,

@@ -7,6 +7,7 @@ use xai_grok_tools::implementations::grok_build::task::types::{
     SubagentSnapshotStatus,
 };
 
+#[cfg(feature = "stock-agent")]
 use crate::agent::MvpAgent;
 use crate::session::ExtMethodResult;
 
@@ -359,6 +360,7 @@ fn respond<T: Serialize>(result: Result<T, impl std::fmt::Display>) -> ExtResult
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))
 }
 
+#[cfg(feature = "stock-agent")]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         "x.ai/task/kill" => {
@@ -402,6 +404,7 @@ struct DeleteScheduledTaskResponse {
 }
 
 /// Handle `x.ai/scheduler/*` extension methods.
+#[cfg(feature = "stock-agent")]
 pub(crate) async fn handle_scheduler(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         "x.ai/scheduler/delete" => {
@@ -420,6 +423,7 @@ pub(crate) async fn handle_scheduler(agent: &MvpAgent, args: &acp::ExtRequest) -
 }
 
 /// Handle `x.ai/subagent/*` extension methods.
+#[cfg(feature = "stock-agent")]
 pub(crate) async fn handle_subagent(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         "x.ai/subagent/message" => crate::extensions::subagent_message::handle(agent, args).await,
@@ -480,7 +484,7 @@ pub(crate) async fn handle_subagent(agent: &MvpAgent, args: &acp::ExtRequest) ->
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 mod tests {
     use super::*;
 

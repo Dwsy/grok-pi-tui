@@ -17,7 +17,7 @@ pub struct ConversationRequestTrace {
         dead_code,
         reason = "retained for snapshot compat; wire when sampler path uploads traces"
     )]
-    pub(crate) artifact_tracker: Option<crate::upload::manifest::ArtifactTracker>,
+    pub(crate) artifact_tracker: Option<crate::upload::artifact_tracker::ArtifactTracker>,
 }
 
 /// Filters chat history copied into a fork. Drops synthetic user messages, then truncates at the last complete turn so the child never sees a partial one.

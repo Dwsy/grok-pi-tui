@@ -8,6 +8,7 @@ use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 
 use super::{ExtResult, parse_params, to_raw_response};
+#[cfg(feature = "stock-agent")]
 use crate::agent::MvpAgent;
 use crate::extensions::notification::PromptUsage;
 
@@ -24,6 +25,7 @@ pub struct SessionUsageResponse {
     pub usage: PromptUsage,
 }
 
+#[cfg(feature = "stock-agent")]
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
@@ -32,6 +34,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     }
 }
 
+#[cfg(feature = "stock-agent")]
 async fn handle_session_usage(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let req: SessionUsageRequest = parse_params(args)?;
     let session_id = acp::SessionId::new(req.session_id.as_str());
@@ -56,7 +59,7 @@ async fn handle_session_usage(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 mod tests {
     use super::*;
     use xai_chat_state::UsageLedger;

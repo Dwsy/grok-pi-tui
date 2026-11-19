@@ -228,10 +228,12 @@ pub struct ToolContext {
     pub task_wake_suppressed:
         Option<xai_grok_tools::reminders::task_completion::TaskWakeSuppressed>,
     /// Channel for requesting trace uploads for synthetic auto-wake turns.
+    #[cfg(feature = "stock-agent")]
     pub(crate) synthetic_trace_tx:
         Option<tokio::sync::mpsc::UnboundedSender<crate::upload::turn::SyntheticTurnTraceRequest>>,
     /// Populated by `start_subagent_coordinator` after the notification bridge is spawned.
     /// The notification bridge reads from this slot on each completion event.
+    #[cfg(feature = "stock-agent")]
     pub(crate) synthetic_trace_tx_shared: Option<
         std::sync::Arc<
             std::sync::Mutex<
@@ -343,7 +345,9 @@ impl ToolContext {
             monitor_event_buffer: None,
             task_completion_reservations: None,
             task_wake_suppressed: None,
+            #[cfg(feature = "stock-agent")]
             synthetic_trace_tx: None,
+            #[cfg(feature = "stock-agent")]
             synthetic_trace_tx_shared: None,
             task_output_tool_name:
                 xai_grok_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL.to_string(),
@@ -439,7 +443,9 @@ mod tests {
                 monitor_event_buffer: None,
                 task_completion_reservations: None,
                 task_wake_suppressed: None,
+                #[cfg(feature = "stock-agent")]
                 synthetic_trace_tx: None,
+                #[cfg(feature = "stock-agent")]
                 synthetic_trace_tx_shared: None,
                 task_output_tool_name:
                     xai_grok_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL.to_string(),

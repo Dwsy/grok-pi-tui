@@ -60,7 +60,7 @@ pub async fn drain_pending_uploads_at_exit() {
 /// Floor for the exit drain: the longest a turn-end upload can defer its start
 /// (`PARSED_PROMPT_WAIT`) plus one bounded attempt to reach the bucket.
 fn exit_drain_min() -> std::time::Duration {
-    crate::session::commands::PARSED_PROMPT_WAIT + super::trace::BLOCKING_ATTEMPT_CAP
+    crate::session::commands::PARSED_PROMPT_WAIT + super::BLOCKING_ATTEMPT_CAP
 }
 
 #[cfg(test)]
@@ -79,6 +79,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "stock-agent")]
     #[tokio::test]
     async fn panicking_upload_task_releases_pending_guard() {
         let _lock = DRAIN_TEST_LOCK.lock().await;
@@ -98,6 +99,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "stock-agent")]
     #[tokio::test]
     async fn drain_pending_uploads_is_budget_bounded() {
         let _lock = DRAIN_TEST_LOCK.lock().await;

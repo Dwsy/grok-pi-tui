@@ -726,6 +726,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "stock-agent")]
     #[test]
     fn laziness_abort_reason_consts_are_distinct() {
         // Driven off `LazinessAbortReason::all()`, so this test only sees a new variant once it is added there

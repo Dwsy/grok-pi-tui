@@ -84,7 +84,7 @@ pub(crate) struct WorkflowManager {
     notify: WorkflowNotifySender,
     backend: Arc<dyn WorkflowAgentBackend>,
     telemetry: TelemetryHook,
-    session_cmd_tx: mpsc::UnboundedSender<crate::session::commands::SessionCommand>,
+    completion_hook: Option<super::WorkflowCompletionHook>,
     templates: HashMap<String, String>,
     active: HashMap<String, ActiveRun>,
     retiring: Vec<(String, oneshot::Receiver<()>)>,
@@ -103,7 +103,7 @@ impl WorkflowManager {
         notify: WorkflowNotifySender,
         backend: Arc<dyn WorkflowAgentBackend>,
         telemetry: TelemetryHook,
-        session_cmd_tx: mpsc::UnboundedSender<crate::session::commands::SessionCommand>,
+        completion_hook: Option<super::WorkflowCompletionHook>,
         templates: HashMap<String, String>,
         max_concurrent_agents: usize,
     ) -> Self {
@@ -117,7 +117,7 @@ impl WorkflowManager {
             notify,
             backend,
             telemetry,
-            session_cmd_tx,
+            completion_hook,
             templates,
             active: HashMap::new(),
             retiring: Vec::new(),
@@ -264,7 +264,7 @@ impl WorkflowManager {
             .emit(&state, self.tracker.lock().elapsed_ms(&run_id), 0);
 
         let active = WORKFLOW_RUNS_ACTIVE.enter();
-        let work = crate::session::handle::WorkGuard::new(self.active_work.clone());
+        let work = crate::session::work_guard::WorkGuard::new(self.active_work.clone());
         debug_assert!(
             WORKFLOW_RUNS_ACTIVE.get() >= 1,
             "WorkflowRunStarted must stamp a self-inclusive count"
@@ -339,7 +339,7 @@ impl WorkflowManager {
         let tracker = self.tracker.clone();
         let store = self.store.clone();
         let notify = self.notify.clone();
-        let session_cmd_tx = self.session_cmd_tx.clone();
+        let completion_hook = self.completion_hook.clone();
         let watcher_run_id = run_id.clone();
         let watcher_cancel = cancel.clone();
         let watcher_session_id = self.session_id.clone();
@@ -477,12 +477,9 @@ impl WorkflowManager {
                 }
                 notify.broadcast(&state, elapsed, 0, true);
                 if state.status.is_completion_reportable() {
-                    let _ = session_cmd_tx.send(
-                        crate::session::commands::SessionCommand::WorkflowCompletionTurn {
-                            run_id: watcher_run_id.clone(),
-                            revision: state.revision,
-                        },
-                    );
+                    if let Some(on_completion) = completion_hook.as_ref() {
+                        on_completion(watcher_run_id.clone(), state.revision);
+                    }
                 }
             }
             let _ = done_tx.send(());
@@ -529,7 +526,7 @@ impl WorkflowManager {
                 output: Arc::from("mock"),
             }),
             Arc::new(|_, _, _| {}),
-            mpsc::unbounded_channel().0,
+            None,
             std::collections::HashMap::new(),
             super::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
         )));
@@ -863,7 +860,7 @@ fn run_ended_status(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 mod tests {
     use super::*;
     use crate::session::persistence::PersistenceMsg;
@@ -940,7 +937,7 @@ mod tests {
                 parent_session_id: "test-session".into(),
             }),
             Arc::new(|_, _, _| {}),
-            mpsc::unbounded_channel().0,
+            None,
             HashMap::new(),
             crate::session::workflow::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
         );

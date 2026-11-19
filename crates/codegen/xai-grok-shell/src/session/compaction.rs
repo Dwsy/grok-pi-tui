@@ -2315,6 +2315,6 @@ impl SessionActor {
         );
     }
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 #[path = "compaction_inline_auto_compact_flow_tests.rs"]
 mod inline_auto_compact_flow_tests;

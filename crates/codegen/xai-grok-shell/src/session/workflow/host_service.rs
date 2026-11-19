@@ -1093,6 +1093,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
+    #[cfg(feature = "stock-agent")]
     #[tokio::test]
     async fn a_run_keeps_at_most_max_concurrent_agents_live() {
         let run_id = "wf_agent_slots".to_string();

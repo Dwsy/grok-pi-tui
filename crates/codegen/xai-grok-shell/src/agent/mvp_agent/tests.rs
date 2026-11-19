@@ -5516,7 +5516,7 @@ fn disconnect_keeps_the_workflow_session_and_evicts_the_idle_one() {
         let active_work = wf_handle.active_work.clone();
         agent.insert_resident(&workflow_sid, wf_handle);
         spawn_active_work_actor(wf_rx, active_work.clone());
-        let _workflow = crate::session::handle::WorkGuard::new(active_work.clone());
+        let _workflow = crate::session::work_guard::WorkGuard::new(active_work.clone());
         let idle_sid = acp::SessionId::new("sess-idle");
         let (idle_handle, _idle_tx, idle_rx) = make_live_session_handle(&idle_sid, None);
         let idle_work = idle_handle.active_work.clone();

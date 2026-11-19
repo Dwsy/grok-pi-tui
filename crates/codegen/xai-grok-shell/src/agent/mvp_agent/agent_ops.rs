@@ -3762,9 +3762,9 @@ impl MvpAgent {
             auth_manager: self.auth_manager.clone(),
         })
     }
-    /// Resolve the agent definition for a session. Priority (highest to lowest): Model `agent_type` if it names a strict harness (codex, …). `acp_agent_profile` from ACP `_meta.agentProfile` (remote clients).
-    /// `agent_profile_path` from CLI `--agent-profile`. `agent_config` from config.toml `[agent]`. `GROK_AGENT` env var. Built-in default agent. `GROK_AGENT` and an explicit `[agent] name` bypass step 1.
-    /// Strict-harness classification is structural; see [`xai_grok_agent::config::is_strict_harness_agent_type`]. Harness inheritance for a profile that pins its own model is applied by the caller via [`inherited_harness_template`], not here.
+/// Resolve the agent definition for a session. Priority (highest to lowest): Model `agent_type` if it names a strict harness (codex, …). `acp_agent_profile` from ACP `_meta.agentProfile` (remote clients).
+/// `agent_profile_path` from CLI `--agent-profile`. `agent_config` from config.toml `[agent]`. `GROK_AGENT` env var. Built-in default agent. `GROK_AGENT` and an explicit `[agent] name` bypass step 1.
+/// Strict-harness classification is structural; see [`xai_grok_agent::config::is_strict_harness_agent_type`]. Harness inheritance for a profile that pins its own model is applied by the caller via [`inherited_harness_template`], not here.
     pub fn resolve_agent_definition(
         cwd: &std::path::Path,
         agent_profile_path: Option<&std::path::Path>,
@@ -3772,129 +3772,13 @@ impl MvpAgent {
         acp_agent_profile: Option<xai_grok_agent::AgentDefinition>,
         model_agent_type: Option<&str>,
     ) -> xai_grok_agent::AgentDefinition {
-        use xai_grok_agent::AgentDefinition;
-        let grok_agent_env_set = std::env::var("GROK_AGENT")
-            .ok()
-            .is_some_and(|s| !s.trim().is_empty());
-        let config_agent_explicitly_set = agent_config.name.is_some();
-        let model_requires_strict_harness = model_agent_type
-            .is_some_and(xai_grok_agent::config::is_strict_harness_agent_type);
-        if !grok_agent_env_set && !config_agent_explicitly_set
-            && model_requires_strict_harness && let Some(required) = model_agent_type
-            && let Some(def) = xai_grok_agent::discovery::by_name_in_cwd(required, cwd)
-        {
-            tracing::info!(
-                agent_name = %def.name,
-                "Using agent definition from model agent_type"
-            );
-            return def;
-        }
-        if let Some(def) = acp_agent_profile {
-            tracing::info!(
-                agent_name = %def.name,
-                "Using agent profile from ACP _meta.agentProfile"
-            );
-            return def;
-        }
-        if let Some(path) = agent_profile_path {
-            match AgentDefinition::from_file(path) {
-                Ok(def) => return def,
-                Err(e) => {
-                    tracing::error!(
-                        path = %path.display(),
-                        error = %e,
-                        "Failed to load agent profile from --agent-profile path"
-                    );
-                    eprintln!(
-                        "error: failed to load agent profile '{}': {}",
-                        path.display(),
-                        e
-                    );
-                    crate::instrumentation::finalize_and_exit(1);
-                }
-            }
-        }
-        if let Some(ref path) = agent_config.definition {
-            match AgentDefinition::from_file(path) {
-                Ok(def) => {
-                    tracing::info!(
-                        agent_name = %def.name,
-                        path = %path.display(),
-                        "Using agent definition from config.toml [agent] definition"
-                    );
-                    return def;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "Failed to load agent definition from config.toml [agent] definition, \
-                         falling through to next source"
-                    );
-                }
-            }
-        }
-        if let Some(ref name) = agent_config.name {
-            tracing::info!(
-                agent_name = %name,
-                "Resolving agent definition from config.toml [agent] name"
-            );
-            if let Some(def) = xai_grok_agent::discovery::by_name_in_cwd(name, cwd) {
-                return def;
-            }
-            tracing::warn!(
-                agent_name = %name,
-                "Agent '{}' not found via discovery, falling through to next source",
-                name
-            );
-        }
-        let agent_name = std::env::var("GROK_AGENT").ok();
-        let resolved = match agent_name.as_deref() {
-            Some("browser-use") | Some("browser_use") => AgentDefinition::browser_use(),
-            #[cfg(feature = "stock-tool-dialects")]
-            Some("grok-build-concise") | Some("grok_build_concise") => {
-                AgentDefinition::grok_build_concise()
-            }
-            Some(path) if std::path::Path::new(path).is_absolute() => {
-                match AgentDefinition::from_file(path) {
-                    Ok(def) => def,
-                    Err(e) => {
-                        tracing::warn!(
-                            path = path,
-                            error = %e,
-                            "Failed to load agent definition from file, falling back to default"
-                        );
-                        AgentDefinition::grok_build_plan()
-                    }
-                }
-            }
-            Some(name) => {
-                xai_grok_agent::discovery::by_name_in_cwd(name, cwd)
-                    .unwrap_or_else(AgentDefinition::grok_build_plan)
-            }
-            None => AgentDefinition::grok_build_plan(),
-        };
-        if !grok_agent_env_set && !config_agent_explicitly_set
-            && model_requires_strict_harness && let Some(required) = model_agent_type
-            && resolved.name != required
-        {
-            tracing::info!(
-                resolved_agent = %resolved.name,
-                model_agent_type = %required,
-                "resolve_agent_definition: model requires different agent, re-resolving"
-            );
-            if let Some(def) = xai_grok_agent::discovery::by_name_in_cwd(required, cwd) {
-                return def;
-            }
-            tracing::warn!(
-                model_agent_type = %required,
-                fallback_agent = %resolved.name,
-                "resolve_agent_definition: model agent_type '{}' not found via discovery, \
-                 keeping chain-resolved agent",
-                required,
-            );
-        }
-        resolved
+        crate::agent::config::resolve_agent_definition(
+            cwd,
+            agent_profile_path,
+            agent_config,
+            acp_agent_profile,
+            model_agent_type,
+        )
     }
     /// Whether the requesting client will draw a status row.
     /// Session `_meta` first, for the same reason as [`Self::resolve_client_io_caps`].

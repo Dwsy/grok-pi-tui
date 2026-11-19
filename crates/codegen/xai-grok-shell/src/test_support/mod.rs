@@ -1,3 +1,4 @@
+#[cfg(feature = "stock-agent")]
 pub(crate) mod lsp_runtime;
 
 pub(crate) const TEST_MODEL: &str = "test-model";

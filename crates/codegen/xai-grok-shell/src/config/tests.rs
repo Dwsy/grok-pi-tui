@@ -1145,7 +1145,7 @@ fn subagent_limit_counts_resolve_env_over_toml_over_remote_over_default() {
 }
 #[test]
 fn subagent_sampling_limit_applies_precedence_and_clamps() {
-    use crate::agent::subagent::MAX_SUBAGENT_SAMPLING_LIMIT;
+    use crate::config::MAX_SUBAGENT_SAMPLING_LIMIT;
     use xai_grok_tools::implementations::grok_build::task::admission::DEFAULT_MAX_CONCURRENT;
     let resolve = |env: Option<&str>, config: Option<i64>, remote: Option<u32>| SubagentsConfig::resolve_sampling_limit(
         env,

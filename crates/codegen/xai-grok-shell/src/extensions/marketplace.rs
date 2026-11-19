@@ -7,6 +7,7 @@ use xai_hooks_plugins_types::{
     MarketplaceScanResult,
 };
 
+#[cfg(feature = "stock-agent")]
 use crate::agent::MvpAgent;
 use crate::plugin::add_marketplace_source;
 use crate::util::config::acquire_init_lock;
@@ -17,6 +18,7 @@ fn load_filtered_marketplace_sources() -> Vec<xai_grok_plugin_marketplace::Marke
     crate::plugin::load_filtered_marketplace_sources()
 }
 
+#[cfg(feature = "stock-agent")]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         "x.ai/marketplace/list" => handle_list().await,
@@ -106,6 +108,7 @@ async fn handle_list() -> ExtResult {
     super::to_ext_response(Ok(response))
 }
 
+#[cfg(feature = "stock-agent")]
 async fn handle_action(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let req: MarketplaceActionRequest = super::parse_params(args)?;
     let sid = acp::SessionId::new(req.session_id);
@@ -204,6 +207,7 @@ async fn run_post_install(repo_key: &str) {
     }
 }
 
+#[cfg(feature = "stock-agent")]
 async fn handle_update(
     agent: &MvpAgent,
     sid: &acp::SessionId,
@@ -302,6 +306,7 @@ fn update_error_outcome(
     }
 }
 
+#[cfg(feature = "stock-agent")]
 async fn handle_install(
     agent: &MvpAgent,
     sid: &acp::SessionId,
@@ -409,6 +414,7 @@ fn action_outcome(
     }
 }
 
+#[cfg(feature = "stock-agent")]
 async fn handle_uninstall(
     agent: &MvpAgent,
     sid: &acp::SessionId,
@@ -1197,7 +1203,7 @@ fn ensure_official_marketplace_source_with(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 mod official_source_tests {
     use super::*;
 
@@ -1549,7 +1555,7 @@ mod official_source_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 mod default_skills_purge_tests {
     use super::*;
     use xai_grok_agent::plugins::install_registry::{
@@ -1774,7 +1780,7 @@ mod default_skills_purge_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 mod conversion_tests {
     use super::*;
 

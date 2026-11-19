@@ -15,6 +15,7 @@ use std::io;
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "stock-agent")]
 use crate::agent::MvpAgent;
 use crate::session::storage::search::{SessionSearchRequest, SessionSearchResponse};
 use crate::session::storage::search_fts::SessionSearchRow;
@@ -75,6 +76,7 @@ pub struct SearchSessionHit {
 }
 
 /// Route `x.ai/session/search` extension method calls.
+#[cfg(feature = "stock-agent")]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
         "x.ai/session/search" => {
@@ -235,7 +237,7 @@ where
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 #[path = "session_search_tests.rs"]
 mod tests;
 

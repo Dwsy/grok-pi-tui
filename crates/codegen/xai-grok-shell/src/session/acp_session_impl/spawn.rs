@@ -1589,7 +1589,13 @@ pub(crate) async fn spawn_session_actor(
                     tracing::info!(event = name, %fields, "workflow telemetry");
                 }
             }),
-            cmd_tx.clone(),
+            Some(Arc::new({
+                let cmd_tx = cmd_tx.clone();
+                move |run_id, revision| {
+                    let _ =
+                        cmd_tx.send(SessionCommand::WorkflowCompletionTurn { run_id, revision });
+                }
+            })),
             std::collections::HashMap::new(),
             workflow_max_concurrent_agents,
         ),

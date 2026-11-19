@@ -37,6 +37,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use crate::agent::feedback_client::{
     FeedbackApiError, FeedbackClient, signals_to_update, snapshot_to_turn_delta,
 };
+use crate::session::acp_types::new_submission;
 use crate::session::feedback::{
     FeedbackHeuristics, FeedbackRequest, FeedbackTier, TriggerCondition,
 };
@@ -87,16 +88,6 @@ fn user_feedback_event(
         task_category: taxonomy.task_category.and_then(wire_value),
         failure_mode: taxonomy.failure_mode.and_then(wire_value),
     }
-}
-
-pub(crate) fn new_submission(
-    session_id: String,
-    client_type: ClientType,
-    content: FeedbackContent,
-) -> FeedbackSubmission {
-    let mut s = FeedbackSubmission::with_content(session_id, client_type, content);
-    s.shell_version = Some(xai_grok_version::VERSION.to_string());
-    s
 }
 
 #[derive(Debug)]

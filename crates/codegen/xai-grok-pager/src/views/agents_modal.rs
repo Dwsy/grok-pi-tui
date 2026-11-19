@@ -771,10 +771,10 @@ fn load_config_agent_name() -> Option<String> {
     load_agent_selection_config().name.filter(|s| !s.is_empty())
 }
 /// Resolve the agent name new sessions would start with.
-/// Mirrors `MvpAgent::resolve_agent_definition` in xai-grok-shell.
+/// Uses the shared agent-definition resolver in xai-grok-shell.
 pub fn resolve_default_agent_name(cwd: &Path, model_agent_type: Option<&str>) -> String {
     let agent_config = load_agent_selection_config();
-    xai_grok_shell::agent::mvp_agent::MvpAgent::resolve_agent_definition(
+    xai_grok_shell::agent::config::resolve_agent_definition(
         cwd,
         None,
         &agent_config,

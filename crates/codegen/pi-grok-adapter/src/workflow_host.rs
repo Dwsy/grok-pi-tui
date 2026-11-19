@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
 use xai_grok_shell::session::workflow::{
     ExternalWorkflowRuntime, ExternalWorkflowRuntimeConfig, WorkflowNotifySender, WorkflowRunStore,
     workflow_session_notification_json,
@@ -63,7 +62,7 @@ impl WorkflowHost {
             backend,
             notify,
             store,
-            session_cmd_tx: mpsc::unbounded_channel().0,
+            completion_hook: None,
             templates: HashMap::new(),
         });
         Self {

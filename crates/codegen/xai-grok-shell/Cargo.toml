@@ -9,7 +9,7 @@ edition.workspace = true
 # entry point. Gate one independently owned module at a time before making
 # the heavyweight agent dependency optional (S12-b).
 stock-agent = []
-stock-mcp = ["dep:xai-grok-mcp", "xai-grok-workspace/stock-mcp"]
+stock-mcp = ["stock-agent", "dep:xai-grok-mcp", "xai-grok-workspace/stock-mcp"]
 stock-pdf = ["xai-grok-tools/stock-pdf"]
 stock-lsp = ["xai-grok-tools/stock-lsp", "xai-grok-workspace/stock-lsp"]
 stock-web-fetch = ["xai-grok-tools/stock-web-fetch"]

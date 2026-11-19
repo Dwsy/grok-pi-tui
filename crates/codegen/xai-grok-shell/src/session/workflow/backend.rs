@@ -6,8 +6,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+#[cfg(feature = "stock-agent")]
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+#[cfg(feature = "stock-agent")]
 use xai_grok_tools::implementations::grok_build::task::types::{
     ModelOverrideProvenance, SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
     SubagentOwner, SubagentRequest, SubagentResult, SubagentRuntimeOverrides, SubagentSpawnRequest,
@@ -85,12 +87,14 @@ pub trait WorkflowAgentBackend: Send + Sync {
 }
 
 /// Upstream Grok path: funnel through the existing subagent coordinator channel.
+#[cfg(feature = "stock-agent")]
 pub struct GrokSubagentBackend {
     pub subagent_event_tx: mpsc::UnboundedSender<SubagentEvent>,
     pub parent_session_id: String,
 }
 
 #[async_trait]
+#[cfg(feature = "stock-agent")]
 impl WorkflowAgentBackend for GrokSubagentBackend {
     async fn spawn_and_await(
         &self,

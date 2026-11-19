@@ -9,6 +9,12 @@ use bytes::Bytes;
 use std::borrow::Cow;
 use xai_grok_tools::util::format_bytes;
 use xai_grok_tools::util::image_compress::{FilterType, ReEncodeParams, re_encode_under_limit};
+
+/// Raw blake3 digest for binary cache keys. The always-compiled definition:
+/// [`crate::session::image_describe`] wraps it for log lines and on-disk hex paths.
+pub(crate) fn content_fingerprint_bytes(bytes: &[u8]) -> [u8; 32] {
+    *blake3::hash(bytes).as_bytes()
+}
 /// Kept low so many images fit under the inference proxy's ~50 MB request-body limit before the downstream byte budget starts evicting images.
 /// Base64 inflates raw bytes by ~4/3, so a 1.5 MB image is ~2 MB on the wire and ~25 fit under the limit.
 /// A low per-image cost means a conversation rarely reaches the eviction threshold, so the server-side KV-cache prefix is rarely rewritten.

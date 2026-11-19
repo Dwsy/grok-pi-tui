@@ -3,6 +3,7 @@ use xai_grok_tools::types::TaskSnapshot;
 
 use crate::session::feedback::FeedbackRequest as FeedbackRequestData;
 
+#[cfg(feature = "stock-agent")]
 pub use crate::extensions::background_task::{BackgroundTaskRow, BackgroundTaskStatus};
 pub use crate::session::goal_tracker::GoalClassifierVerdict;
 
@@ -1014,6 +1015,7 @@ pub enum SessionUpdate {
     /// A blocking reverse-request (permission / `ask_user_question` / plan-approval) is now **pending** on the agent, keyed by `tool_call_id`.
     /// Fire-and-forget, **never persisted**: it is a request, not a notification.
     /// Subscribers show ⏳ NeedsInput for this session.
+    #[cfg(feature = "stock-agent")]
     PendingInteraction {
         tool_call_id: String,
         kind: crate::session::pending_interaction::PendingKind,

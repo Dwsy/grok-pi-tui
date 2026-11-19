@@ -1101,6 +1101,7 @@ pub async fn run(
             settings_query.clone(),
         );
     }
+    #[cfg(feature = "stock-agent")]
     xai_grok_shell::agent::mvp_agent::warm_async_http_client();
     tokio::task::spawn_blocking(|| {});
     if let Ok(cwd) = std::env::current_dir() {

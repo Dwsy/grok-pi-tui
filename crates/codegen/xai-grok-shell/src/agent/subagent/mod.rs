@@ -57,16 +57,16 @@ mod handle_request;
 mod prompt_turn_receipt;
 mod prompt_turn_result;
 mod resume_window;
+/// Clamp for a resolved sampling-limit override; `Semaphore::new` panics past `Semaphore::MAX_PERMITS`.
+/// See [`SubagentsConfig::resolve_sampling_limit`].
+/// [`SubagentsConfig::resolve_sampling_limit`]: crate::config::SubagentsConfig::resolve_sampling_limit
+pub(crate) use crate::config::MAX_SUBAGENT_SAMPLING_LIMIT;
 pub(crate) use child_runtime::{
     ShellChildRuntime, UNPROMOTED_SESSION_THREAD_EXIT_TIMEOUT, UnpromotedResourceFate,
     await_session_thread_exit,
 };
 pub(crate) use handle_request::run_shell_child;
 pub(crate) use prompt_turn_receipt::PromptTurnReceipt;
-/// Clamp for a resolved sampling-limit override; `Semaphore::new` panics past `Semaphore::MAX_PERMITS`.
-/// See [`SubagentsConfig::resolve_sampling_limit`].
-/// [`SubagentsConfig::resolve_sampling_limit`]: crate::config::SubagentsConfig::resolve_sampling_limit
-pub(crate) const MAX_SUBAGENT_SAMPLING_LIMIT: usize = 512;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InitialContextSource {
     /// Fresh session: no inherited history.

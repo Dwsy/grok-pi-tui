@@ -3,8 +3,10 @@
 
 pub mod bridge;
 pub mod config;
+#[cfg(feature = "stock-agent")]
 pub mod notification_bridge;
 pub mod retry;
+#[cfg(feature = "stock-agent")]
 pub(crate) mod task_completed_frame;
 pub mod todo;
 pub mod tool_context;

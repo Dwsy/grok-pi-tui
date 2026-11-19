@@ -13,6 +13,7 @@
 //! A user turn that contains image blocks is routed through the vision model before being pushed onto chat state.
 //! If the describe call fails the whole turn fails; we never silently drop the images.
 use crate::sampling::{Client as OaiCompatClient, ConversationRequest};
+use crate::session::image_normalize::content_fingerprint_bytes;
 use agent_client_protocol::ImageContent;
 use base64::Engine as _;
 use parking_lot::Mutex;
@@ -203,10 +204,6 @@ pub(crate) fn describe_prompt_fingerprint(outline: Option<&str>, current_query: 
     hasher.update(b"query:");
     hasher.update(current_query.as_bytes());
     hasher.finalize().to_hex().to_string()
-}
-/// Raw blake3 digest for binary cache keys; use [`content_fingerprint`] for log lines and on-disk paths.
-pub(crate) fn content_fingerprint_bytes(bytes: &[u8]) -> [u8; 32] {
-    *blake3::hash(bytes).as_bytes()
 }
 /// Blake3 hex digest of raw image (or other binary) bytes.
 pub(crate) fn content_fingerprint(bytes: &[u8]) -> String {

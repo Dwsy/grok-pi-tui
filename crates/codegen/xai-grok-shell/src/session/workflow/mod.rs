@@ -10,10 +10,17 @@ pub(crate) mod schema_contract;
 pub(crate) mod store;
 pub(crate) mod tracker;
 
+/// Optional completion callback for hosts that want to turn a finished
+/// workflow into an agent-visible follow-up. The workflow engine itself does
+/// not depend on the Stock SessionCommand channel.
+pub type WorkflowCompletionHook = std::sync::Arc<dyn Fn(String, u64) + Send + Sync + 'static>;
+
 // Narrow External/Pi seam: agent spawn backends + runtime handle.
+#[cfg(feature = "stock-agent")]
+pub use backend::GrokSubagentBackend;
 pub use backend::{
-    GrokSubagentBackend, HostDrainOutcome, MockWorkflowAgentBackend, WorkflowAgentBackend,
-    WorkflowAgentSpawnRequest, WorkflowAgentSpawnResult,
+    HostDrainOutcome, MockWorkflowAgentBackend, WorkflowAgentBackend, WorkflowAgentSpawnRequest,
+    WorkflowAgentSpawnResult,
 };
 pub use external::{ExternalWorkflowRuntime, ExternalWorkflowRuntimeConfig};
 pub use manager::LaunchError;

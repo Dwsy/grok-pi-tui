@@ -7,6 +7,7 @@ use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
 
 use super::{ExtResult, to_raw_response};
+#[cfg(feature = "stock-agent")]
 use crate::agent::MvpAgent;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +130,7 @@ pub struct GetAutoTopupRuleResponse {
     pub rule: Option<AutoTopupRule>,
 }
 
+#[cfg(feature = "stock-agent")]
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     match args.method.as_ref() {
@@ -179,6 +181,7 @@ fn billing_unified_log_ctx(billing: &BillingConfigResponse) -> serde_json::Value
     })
 }
 
+#[cfg(feature = "stock-agent")]
 async fn handle_get_billing(agent: &MvpAgent) -> ExtResult {
     let auth = super::auth_gate::require_xai_auth(
         &agent.auth_manager,
@@ -269,6 +272,7 @@ async fn handle_get_billing(agent: &MvpAgent) -> ExtResult {
     to_raw_response(&billing)
 }
 
+#[cfg(feature = "stock-agent")]
 async fn handle_get_auto_topup_rule(agent: &MvpAgent) -> ExtResult {
     let auth = super::auth_gate::require_xai_auth(
         &agent.auth_manager,
@@ -324,7 +328,7 @@ async fn handle_get_auto_topup_rule(agent: &MvpAgent) -> ExtResult {
     to_raw_response(&value)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 mod tests {
     use super::*;
 
