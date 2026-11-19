@@ -266,8 +266,9 @@ impl PiAgent {
         if enter_plan {
             let agent = self.clone();
             let tool_call_id = id.to_string();
+            let enter_plan_args = plan_args.clone();
             tokio::task::spawn_local(async move {
-                agent.handle_enter_plan_mode(&tool_call_id, plan_args).await;
+                agent.handle_enter_plan_mode(&tool_call_id, enter_plan_args).await;
             });
         }
         if exit_plan {

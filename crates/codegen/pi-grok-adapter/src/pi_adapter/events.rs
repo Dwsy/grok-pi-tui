@@ -228,7 +228,7 @@ impl PiAgent {
             }
             "agent_settled" => {
                 self.refresh_context_usage().await;
-                let (mode_update, running) = {
+                let (mode_update, persist_plan, running) = {
                     let mut state = self.state.borrow_mut();
                     state.agent_running = false;
                     state.cancelling = false;

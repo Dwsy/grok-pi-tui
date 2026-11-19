@@ -952,7 +952,7 @@ pub(crate) fn bash_tool_output(
         .or_else(|| result.pointer("/details/shell_trace"))
         .or_else(|| result.get("shell_trace"))
         .and_then(|value| {
-            serde_json::from_value::<xai_grok_tools::types::output::ShellTraceSummary>(value.clone())
+            serde_json::from_value::<xai_grok_shell::types::output::ShellTraceSummary>(value.clone())
                 .ok()
         });
 
