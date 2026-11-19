@@ -13,7 +13,7 @@ use xai_grok_telemetry::startup;
 use tracing::Instrument;
 use xai_grok_login::{CachedTokenState, SilentRefresh};
 use crate::upload::trace::PromptMetadataParams;
-use crate::leader::protocol::InternalMethod;
+use crate::leader_protocol::InternalMethod;
 /// Which `x_search` sub-tools enforce the date cutoff, sent in `initialize`. `x_user_search` and
 /// `x_thread_fetch` are `false`: they don't honor it yet.
 #[derive(serde::Serialize)]

@@ -39,7 +39,13 @@ pub use xai_grok_http as http;
 #[cfg(feature = "stock-agent")]
 pub mod inspect;
 pub mod instrumentation;
+// The 13k-line stock Leader IPC runtime is unrelated to Pi JSONL RPC.
+#[cfg(feature = "stock-agent")]
 pub mod leader;
+// Small wire contracts remain available to the Pi pager and Stock Leader.
+#[path = "leader/protocol.rs"]
+pub mod leader_protocol;
+pub mod leader_status;
 pub mod managed_config;
 #[cfg(feature = "stock-mcp")]
 pub mod mcp_doctor;

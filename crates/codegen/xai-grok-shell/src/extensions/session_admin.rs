@@ -27,7 +27,7 @@ use serde::Deserialize;
 
 use super::{ExtResult, parse_params, to_raw_response};
 use crate::agent::MvpAgent;
-use crate::leader::protocol::InternalMethod;
+use crate::leader_protocol::InternalMethod;
 use crate::session::persistence::{
     MAX_TITLE_BYTES, MAX_TITLE_SCALARS, PersistenceMsg, list_summaries, sanitize_rename_title,
 };

@@ -1,6 +1,7 @@
 //! ACP (Agent Communication Protocol) connection management.
 //!
 //! This module spawns the agent process, initializes the protocol, authenticates, and provides the channel for communication.
+#[cfg(feature = "stock-agent")]
 pub mod leader_bridge;
 pub mod meta;
 pub mod model_state;
@@ -152,7 +153,7 @@ pub(in crate::acp) enum AgentLocation {
     /// On a thread in this process. Exit joins the thread so the agent can finish flushing.
     Thread(std::thread::JoinHandle<Result<()>>),
     /// In the leader process. The receiver reports socket reconnects to the event loop.
-    Leader(tokio::sync::watch::Receiver<leader_bridge::ConnectionStatus>),
+    Leader(tokio::sync::watch::Receiver<xai_grok_shell::leader_status::ConnectionStatus>),
 }
 #[cfg(feature = "stock-agent")]
 impl From<spawn::SpawnedAgent> for AgentEndpoint {
@@ -198,7 +199,8 @@ pub struct AcpConnection {
     /// Contains `team_name`, etc. `None` when interactive login is required.
     pub auth_meta: Option<serde_json::Value>,
     /// Leader connection status. `Some` only when connected via leader.
-    pub leader_status_rx: Option<tokio::sync::watch::Receiver<leader_bridge::ConnectionStatus>>,
+    pub leader_status_rx:
+        Option<tokio::sync::watch::Receiver<xai_grok_shell::leader_status::ConnectionStatus>>,
     /// Whether cancel-rewind is enabled (resolved by shell from config layers).
     pub cancel_rewind_enabled: bool,
     /// Whether the session-recap feature is rolled out for this connection. The client gates its automatic away-recap

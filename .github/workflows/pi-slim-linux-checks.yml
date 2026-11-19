@@ -80,7 +80,7 @@ jobs:
             --no-default-features --features stock-agent
 
       - name: Verify Workflow cancellation without a hanging suite
-        if: inputs.scope == 'all'
+        if: github.event_name == 'push' || inputs.scope == 'all'
         shell: bash
         run: |
           set -euo pipefail
@@ -107,8 +107,19 @@ jobs:
           sys.exit(code)
           PY
 
+      - name: Test Stock agent boot and leader lifecycle
+        if: github.event_name == 'push' || inputs.scope == 'all'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The ordinary Pi Shell test configuration correctly excludes
+          # Stock's app/server modules. Exercise their tests explicitly.
+          cargo test --locked --lib -p xai-grok-shell \
+            --no-default-features --features stock-agent,test-support \
+            -j 2 agent::app::tests -- --test-threads=1
+
       - name: Test Pi JSONL RPC / Goal / Remote TUI contracts
-        if: inputs.scope == 'all'
+        if: github.event_name == 'push' || inputs.scope == 'all'
         shell: bash
         run: |
           set -euo pipefail

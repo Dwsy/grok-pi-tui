@@ -55,7 +55,7 @@ pub mod extension_shortcuts;
 pub(crate) mod external_editor;
 mod foreign_sessions;
 mod inline_edit;
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, feature = "stock-agent"))]
 mod leader_cluster;
 mod modals;
 pub(crate) mod mode_switch;
@@ -65,6 +65,7 @@ pub(crate) mod screen_mode_relaunch;
 mod session_load_barrier;
 pub mod signal_handler;
 mod startup_failure;
+pub(crate) mod tree_projection;
 mod turn_completion;
 pub(crate) mod workspace_layout;
 pub(crate) mod workspace_membership;
@@ -72,7 +73,6 @@ pub(crate) mod workspace_sync;
 #[cfg(test)]
 pub(crate) mod workspace_test_fixtures;
 mod xt_filter;
-pub(crate) mod tree_projection;
 pub(crate) use crate::terminal::{kitty_flags_pushed, kitty_releases_reported};
 use anyhow::Context as _;
 pub use cli::{
@@ -1175,7 +1175,10 @@ pub async fn run(
         }
     }
     if let Some(reason) = policy_disable_reason {
+        #[cfg(feature = "stock-agent")]
         tokio::spawn(xai_grok_shell::leader::kill_stale_reachable_leaders(reason));
+        #[cfg(not(feature = "stock-agent"))]
+        let _ = reason;
     }
     if let Some(err) =
         session_startup::chat_mode_flag_conflict(args.chat(), args.fork_session, args.restore_code)

@@ -3242,7 +3242,7 @@ pub(crate) async fn run(
                     None => std::future::pending::<Result<(), ()>>().await,
                 }
             } => {
-                use crate::acp::leader_bridge::ConnectionStatus;
+                use xai_grok_shell::leader_status::ConnectionStatus;
 
                 let Some(rx) = leader_status_rx.as_mut() else {
                     // Guard: the async block above pends when None, but defensive code should never .unwrap() in production
