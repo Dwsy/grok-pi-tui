@@ -8,7 +8,7 @@ edition.workspace = true
 # Stock Grok's in-process agent/CLI surfaces; Pi never needs the inspect CLI
 # entry point. Gate one independently owned module at a time before making
 # the heavyweight agent dependency optional (S12-b).
-stock-agent = []
+stock-agent = ["dep:xai-grok-sampler"]
 stock-mcp = ["stock-agent", "dep:xai-grok-mcp", "xai-grok-workspace/stock-mcp"]
 stock-pdf = ["xai-grok-tools/stock-pdf"]
 stock-lsp = ["xai-grok-tools/stock-lsp", "xai-grok-workspace/stock-lsp"]
@@ -166,7 +166,7 @@ xai-chat-state = { path = "../xai-chat-state" }
 xai-compaction-transcript = { workspace = true }
 xai-grok-compaction = { path = "../../common/xai-grok-compaction" }
 xai-grok-extra-ca = { workspace = true }
-xai-grok-sampler = { path = "../xai-grok-sampler" }
+xai-grok-sampler = { path = "../xai-grok-sampler", optional = true }
 # Session FTS search; owns this crate's only rusqlite/bundled-SQLite use.
 xai-grok-session-search = { workspace = true }
 xai-token-estimation = { workspace = true }

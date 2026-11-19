@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use xai_grok_agent::prompt::skills::SkillsConfig;
 use xai_grok_login::{AuthManager, GrokComConfig, OidcAuthConfig};
-use xai_grok_sampler::{AuthScheme, SamplerConfig};
+use xai_grok_sampling_types::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
     CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
     REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption,

@@ -599,6 +599,7 @@ pub(crate) mod repo_status_prefix;
 pub mod storage;
 #[cfg(feature = "stock-agent")]
 pub(crate) mod streaming_capture;
+#[cfg(feature = "stock-agent")]
 pub(crate) mod summary;
 #[cfg(feature = "stock-agent")]
 pub(crate) mod telemetry;

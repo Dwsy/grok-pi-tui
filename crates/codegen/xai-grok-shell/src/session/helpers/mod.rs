@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod compaction_context;
+#[cfg(feature = "stock-agent")]
 pub mod full_replace_compaction;
 pub mod memory_context;
 pub mod memory_flush_window;
@@ -8,6 +9,7 @@ pub mod prompt_suggest;
 pub mod replay;
 pub mod session_compact;
 pub mod session_recap;
+#[cfg(feature = "stock-agent")]
 pub mod session_summary;
 pub mod tool_input_parsing;
 pub mod turn_summary;

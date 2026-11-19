@@ -23,6 +23,7 @@ use crate::config::StorageMode;
 
 use crate::remote::RemoteSync;
 
+#[cfg(feature = "stock-agent")]
 use crate::sampling::Client as OaiCompatClient;
 use crate::sampling::ConversationItem;
 use crate::session::export::ExportedMetadata;
@@ -1460,6 +1461,7 @@ struct SessionPersistence {
     /// This streams updates to the relay backend in addition to local persistence.
     relay_sync: Option<crate::relay::RelaySync>,
     /// Session title generation lifecycle.
+    #[cfg(feature = "stock-agent")]
     summary: crate::session::summary::SummaryGenerator,
     registry_title_sync: Option<RegistryGeneratedTitleSync>,
     /// Client gateway for `SessionSummaryGenerated` notifications.
@@ -2162,6 +2164,8 @@ impl SessionPersistence {
                         .collect::<Vec<_>>()
                         .join("\n");
                     self.summary.update(content_part);
+                    #[cfg(not(feature = "stock-agent"))]
+                    let _ = content_part;
 
                     // Notify session search index so this turn becomes searchable
                     crate::session::storage::search::notify_session_updated(
@@ -2690,9 +2694,20 @@ async fn touch_worktree_for_session(info: &Info) {
 /// Floor between activity-driven worktree touches from the persistence actor.
 const WORKTREE_TOUCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
 
+/// Sampler handed to the persistence actor for session-title generation.
+///
+/// Every `new*` call site of this module lives behind `stock-agent`: the Pi profile
+/// never spawns the persistence actor, so it carries a zero-sized placeholder rather
+/// than pulling the sampler runtime into the Pi closure.
+#[cfg(feature = "stock-agent")]
+pub(crate) type SessionSampler = OaiCompatClient;
+#[cfg(not(feature = "stock-agent"))]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SessionSampler;
+
 /// What the actor is handed once and holds for the life of the session.
 pub(crate) struct SessionDeps {
-    pub(crate) sampling_client: OaiCompatClient,
+    pub(crate) sampling_client: SessionSampler,
     pub(crate) storage_mode: StorageMode,
     pub(crate) auth_manager: Option<Arc<xai_grok_login::AuthManager>>,
     pub(crate) relay_sync: Option<crate::relay::RelaySync>,
@@ -2762,6 +2777,7 @@ pub(crate) async fn new(
             remote_sync: remote_sync.clone(),
             created_fresh: true,
             relay_sync,
+            #[cfg(feature = "stock-agent")]
             summary: crate::session::summary::SummaryGenerator::new(
                 crate::session::summary::SummaryConfig {
                     sampling_client,
@@ -2800,7 +2816,7 @@ pub(crate) async fn new_with_explicit_dir(
     info: &Info,
     target_dir: PathBuf,
     model_id: acp::ModelId,
-    sampling_client: OaiCompatClient,
+    sampling_client: SessionSampler,
     session_summary_model: String,
     open: ExplicitSessionOpen,
 ) -> io::Result<PersistenceHandle> {
@@ -2871,6 +2887,7 @@ pub(crate) async fn new_with_explicit_dir(
             remote_sync: None,
             created_fresh: false,
             relay_sync: None,
+            #[cfg(feature = "stock-agent")]
             summary: crate::session::summary::SummaryGenerator::new(
                 crate::session::summary::SummaryConfig {
                     sampling_client,
@@ -2999,6 +3016,7 @@ pub(crate) async fn load_light(
 
     let has_title = !persisted_info.summary.display_title().is_empty();
     tokio::task::spawn(async move {
+        #[cfg(feature = "stock-agent")]
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
                 sampling_client,
@@ -3006,9 +3024,12 @@ pub(crate) async fn load_light(
                 persistence_tx: summary_tx,
             },
         );
+        #[cfg(feature = "stock-agent")]
         if has_title {
             summary_gen.mark_done();
         }
+        #[cfg(not(feature = "stock-agent"))]
+        let _ = (&sampling_client, &session_summary_model, has_title);
         let persistence = SessionPersistence {
             info: loaded_info,
             storage: storage.clone(),
