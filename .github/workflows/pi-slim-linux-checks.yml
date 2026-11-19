@@ -79,6 +79,16 @@ jobs:
           cargo check --locked -p xai-grok-pager-bin --bin xai-grok-pager \
             --no-default-features --features stock-agent
 
+      - name: TEMP map stock agent and login dependents in the Pi closure
+        shell: bash
+        run: |
+          set -uo pipefail
+          for pkg in xai-grok-agent xai-grok-login; do
+            echo "===== dependents of $pkg ====="
+            cargo tree --locked -p xai-grok-pager-bin --no-default-features \
+              --features release-dist,sandbox-enforce -e normal,build -i "$pkg" 2>&1 | head -40 || true
+          done
+
       - name: Assert the sampler runtime stays outside the Pi compile closure
         shell: bash
         run: |
