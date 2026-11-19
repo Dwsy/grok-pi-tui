@@ -3195,7 +3195,7 @@ mod durable_update_tests;
 #[path = "persistence_delete_session_history_tests.rs"]
 mod delete_session_history_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 #[path = "persistence_worktree_stamp_tests.rs"]
 mod worktree_stamp_tests;
 
