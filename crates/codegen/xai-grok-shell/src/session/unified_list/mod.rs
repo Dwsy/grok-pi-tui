@@ -562,7 +562,6 @@ pub(super) fn to_meta<E: std::fmt::Display>(
         }
     }
 }
-#[cfg(all(test, feature = "stock-agent"))]
 #[cfg(test)]
 mod tests {
     use super::*;

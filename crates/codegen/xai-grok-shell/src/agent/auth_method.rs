@@ -1,7 +1,7 @@
 use agent_client_protocol as acp;
 
 use crate::agent::config::ModelEntry;
-use xai_grok_shell_base::auth_config::PreferredAuthMethod;
+use xai_grok_login::PreferredAuthMethod;
 
 /// Shared, live handle to the agent's current ACP auth method id. `Arc` so a clone can cross the per-session-thread boundary at spawn.
 /// The `ArcSwapOption` interior lets the agent's `authenticate` handler publish a new method without re-spawning sessions. Every running session's per-turn auth gate observes the new method on its next turn.
@@ -18,7 +18,7 @@ pub(crate) fn new_shared_auth_method_id(initial: Option<acp::AuthMethodId>) -> S
 // The first-party env-key primitives live in the low `xai-grok-login` crate
 // (auth needs them without pulling in shell's `ModelEntry`); re-exported here so
 // `crate::agent::auth_method::{XAI_API_KEY_ENV_VAR, ..}` call sites keep resolving.
-pub use xai_grok_shell_base::auth_config::{
+pub use xai_grok_login::auth_method::{
     LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR, has_xai_api_key_env, read_xai_api_key_env,
 };
 
@@ -384,7 +384,6 @@ pub(crate) fn oidc_auth_method(issuer: &str, label: Option<&str>) -> acp::AuthMe
     )
 }
 
-#[cfg(all(test, feature = "stock-agent"))]
 #[cfg(test)]
 mod tests {
     use super::*;
