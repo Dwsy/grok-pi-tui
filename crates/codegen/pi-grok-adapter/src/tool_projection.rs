@@ -951,10 +951,12 @@ pub(crate) fn bash_tool_output(
         .pointer("/details/shellTrace")
         .or_else(|| result.pointer("/details/shell_trace"))
         .or_else(|| result.get("shell_trace"))
-        .and_then(|value| {
-            serde_json::from_value::<xai_grok_shell::types::output::ShellTraceSummary>(value.clone())
-                .ok()
-        });
+        .filter(|value| {
+            value.is_object()
+                && value.get("version").and_then(Value::as_u64).is_some()
+                && value.get("nodes").and_then(Value::as_array).is_some()
+        })
+        .cloned();
 
     let bytes = text.as_bytes().to_vec();
     let total_bytes = bytes.len();

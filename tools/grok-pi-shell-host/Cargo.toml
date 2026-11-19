@@ -21,13 +21,18 @@ path = "src/main.rs"
 anyhow = "1.0"
 bstr = "1.13"
 flume = "0.12"
-jaq-core = "=3.1.1"
-jaq-json = "=2.0.3"
-jaq-std = "=3.0.3"
 omp-shell = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
+
+[patch.crates-io]
+cfg_aliases = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+grep-searcher = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+jaq-core = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+jaq-json = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+jaq-std = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+tree-sitter-go = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
