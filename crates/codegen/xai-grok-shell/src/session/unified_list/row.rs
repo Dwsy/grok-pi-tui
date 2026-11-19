@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use super::envelope::{FacetMap, SessionKind, SessionMetaEnvelope};
 use super::facets::{FacetRegistry, NormalizedItem};
+#[cfg(feature = "stock-agent")]
 use crate::remote::Conversation;
 use crate::session::merge::MergedSession;
 

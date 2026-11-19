@@ -8,6 +8,7 @@
 //!
 //! Reconnection is handled by `run_relay_loop` in the relay module.
 
+#[cfg(feature = "stock-agent")]
 use crate::agent::relay::{RelayConfig, spawn_relay_connection};
 use crate::relay::types::AgentType;
 use crate::tprintln;

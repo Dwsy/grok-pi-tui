@@ -115,6 +115,7 @@ pub struct PersistenceContentChunk {
 }
 
 impl PersistenceContentChunk {
+    #[cfg(feature = "stock-agent")]
     pub(crate) fn new(content_chunks: Vec<acp::ContentBlock>) -> Self {
         Self { content_chunks }
     }
@@ -1179,6 +1180,7 @@ pub fn default_model_id() -> acp::ModelId {
 }
 
 impl Summary {
+    #[cfg(feature = "stock-agent")]
     pub(crate) fn new(info: &Info, model_id: acp::ModelId) -> std::io::Result<Self> {
         let git_metadata =
             xai_grok_workspace::session::git::resolve_persisted_session_git_metadata_sync(
@@ -1233,6 +1235,7 @@ impl Summary {
         Ok(summary)
     }
 
+    #[cfg(feature = "stock-agent")]
     /// Mark this summary as a worktree session: kind, label, and source workspace all come from the path-derived `identity`.
     pub(crate) fn stamp_worktree_identity(
         &mut self,
@@ -1887,6 +1890,7 @@ impl SessionPersistence {
         flushed.and(prior_write).and(synced)
     }
 
+    #[cfg(feature = "stock-agent")]
     /// Announce a newly adopted auto title (first generation or refresh) to the client, remote store, and session registry.
     /// Called only after the title actually landed on disk, so a title rejected for racing a manual `/rename` is never announced.
     fn announce_adopted_title(&self, title: String) {
@@ -2609,6 +2613,7 @@ fn init_remote_sync(
     }
 }
 
+#[cfg(feature = "stock-agent")]
 /// Pull a session from the backend if not found locally.
 /// Returns the pulled session's [`Info`] (cwd may differ from caller's on different machines), or `None` if not found or on error.
 async fn try_pull_from_remote(info: &Info, client: &crate::remote::BackendClient) -> Option<Info> {
@@ -2708,6 +2713,7 @@ fn backfill_updates_to_sync(
     0
 }
 
+#[cfg(feature = "stock-agent")]
 fn spawn_worktree_touch(info: &Info) -> tokio::task::JoinHandle<()> {
     let cwd = info.cwd.clone();
     tokio::task::spawn_blocking(move || {
@@ -2985,6 +2991,7 @@ pub struct PersistedInfo {
     pub workflow_runs: Vec<crate::session::workflow::store::RestoredWorkflowRun>,
 }
 
+#[cfg(feature = "stock-agent")]
 /// On NotFound, try pulling from backend. Returns pulled info or the original error.
 async fn pull_on_miss(
     info: &Info,
@@ -2997,6 +3004,7 @@ async fn pull_on_miss(
     try_pull_from_remote(info, client).await.ok_or(err)
 }
 
+#[cfg(feature = "stock-agent")]
 /// Load a session without reading updates into memory.
 /// Instead, provides the path to the updates file for streaming reads.
 /// `starts_attempt` is false unless the caller already won cold actor creation.
@@ -3108,6 +3116,7 @@ pub(crate) async fn load_light(
     Ok((persisted_info, handle))
 }
 
+#[cfg(feature = "stock-agent")]
 /// List session summaries, optionally filtered by cwd (absolute path string).
 /// Returns summaries sorted by `last_active_at` (else `updated_at`) descending.
 pub async fn list_summaries(cwd: Option<&str>) -> io::Result<Vec<Summary>> {
@@ -3150,6 +3159,7 @@ impl SessionDeletion {
     }
 }
 
+#[cfg(feature = "stock-agent")]
 /// Idempotent: a session that is missing locally still succeeds.
 /// A remote `404` (copy already gone) is treated as success rather than an error.
 /// When `needs_remote` is set the remote delete runs *first* and is authoritative: only on its success (or a `404`) are the local bits removed.
@@ -3221,12 +3231,14 @@ pub async fn delete_session_history(
     })
 }
 
+#[cfg(feature = "stock-agent")]
 /// Classify a remote `delete_session_data` result, reporting whether a remote copy was actually removed.
 /// A `2xx` means a copy was deleted (`Ok(true)`); a `404` means it was already gone so deletion stays idempotent (`Ok(false)`).
 /// Any other backend error aborts the delete (`Err`) so local bits are left untouched and it can be retried.
 fn classify_remote_delete(
     result: Result<(), crate::remote::client::BackendError>,
 ) -> Result<bool, DeleteSessionError> {
+    #[cfg(feature = "stock-agent")]
     use crate::remote::client::BackendError;
     match result {
         Ok(()) => Ok(true),

@@ -2,7 +2,9 @@ mod cursor;
 mod envelope;
 mod facets;
 mod row;
+#[cfg(feature = "stock-agent")]
 use crate::agent::session_registry_client::SessionRegistryClient;
+#[cfg(feature = "stock-agent")]
 use crate::remote::{ConvError, ConvQuery, ConversationsClient};
 pub use crate::session::merge::CwdScope;
 pub use crate::session::visibility::HeadlessPolicy;
@@ -205,6 +207,7 @@ pub(crate) fn force_kind(req: &mut ListReq, kind: SessionKind) {
     );
     req.meta = Some(serde_json::Value::Object(meta));
 }
+#[cfg(feature = "stock-agent")]
 pub async fn build_unified_list(
     registry_client: Option<&SessionRegistryClient>,
     conversations_client: Option<&ConversationsClient>,

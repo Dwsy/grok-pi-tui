@@ -28,6 +28,7 @@ pub mod visibility;
 pub use self::acp_session::*;
 pub use self::acp_types::*;
 pub use self::commands::*;
+#[cfg(feature = "stock-agent")]
 pub use self::fork::{ForkSessionRequest, ForkSessionResponse, fork_session};
 #[cfg(feature = "stock-agent")]
 pub use self::handle::*;
@@ -453,6 +454,7 @@ mod tests {
             assert_eq!(origin.policy().queue, queue, "{origin:?}");
         }
     }
+    #[cfg(feature = "stock-agent")]
     #[test]
     fn hide_user_echo_from_scrollback_by_origin() {
         assert!(!PromptOrigin::User.hide_user_echo_from_scrollback());
@@ -595,6 +597,7 @@ pub(crate) mod slash_authority;
 #[cfg(feature = "stock-agent")]
 pub(crate) mod slash_commands;
 pub mod usage_file;
+#[cfg(feature = "stock-agent")]
 pub use slash_commands::PAGER_COMMAND_KEYS;
 #[cfg(feature = "stock-agent")]
 pub(crate) mod repo_status_prefix;

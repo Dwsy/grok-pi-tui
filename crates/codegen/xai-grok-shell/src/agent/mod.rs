@@ -50,6 +50,7 @@ pub(crate) mod update_chunk_merge;
 
 #[cfg(feature = "stock-agent")]
 pub use mvp_agent::MvpAgent;
+#[cfg(feature = "stock-agent")]
 pub use relay::{RelayConfig, RelayHandle, spawn_relay_connection};
 #[cfg(feature = "stock-agent")]
 pub use server::{ServerConfig, run_agent_server};

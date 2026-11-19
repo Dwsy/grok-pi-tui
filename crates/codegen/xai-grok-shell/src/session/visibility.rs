@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+#[cfg(feature = "stock-agent")]
 use crate::agent::session_registry_client::SessionRecord;
 use crate::session::persistence::Summary;
 
