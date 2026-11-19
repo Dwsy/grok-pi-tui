@@ -8,6 +8,11 @@ use std::path::PathBuf;
 use crate::session::persistence::Summary;
 use crate::util::config::DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT;
 
+/// `_meta` key carrying the persistent-memory implementation pinned at session spawn.
+/// Lives here (wire constant) because the Pager reads it in both profiles;
+/// `session::handle` previously exported it.
+pub const MEMORY_MODE_META_KEY: &str = "x.ai/memoryMode";
+
 pub(crate) fn new_submission(
     session_id: String,
     client_type: prod_mc_cli_chat_proxy_types::feedback_types::ClientType,
