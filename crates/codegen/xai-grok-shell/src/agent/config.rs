@@ -1827,6 +1827,7 @@ impl Config {
         }
         Ok(())
     }
+    #[cfg(feature = "stock-agent")]
     /// Build an `AuthManager` with the configured proxy URL applied.
     pub fn create_auth_manager(&self) -> AuthManager {
         AuthManager::new_with_proxy_base_url(
@@ -4537,6 +4538,7 @@ pub(crate) struct ResolvedCredentials {
 }
 /// First usable BYOK credential: a non-empty (trimmed) api_key, else the first set, non-empty env_key value.
 /// Single source of truth for has_own_credentials, resolve_credentials, and the JWT-reload path.
+#[cfg(feature = "stock-agent")]
 pub(crate) fn first_own_credential(
     api_key: Option<&str>,
     env_key: Option<&EnvKeys>,
@@ -4547,6 +4549,7 @@ pub(crate) fn first_own_credential(
         .or_else(|| env_key.and_then(EnvKeys::resolve_value))
 }
 /// Priority: model api_key/env_key > cached auth-provider token > session token > XAI_API_KEY.
+#[cfg(feature = "stock-agent")]
 pub(crate) fn resolve_credentials(
     model: &ModelEntry,
     session_key: Option<&str>,
@@ -5208,6 +5211,7 @@ fn force_login_team_from_requirements() -> Option<xai_grok_login::ForceLoginTeam
         &crate::config::load_merged_requirements()?,
     )
 }
+#[cfg(all(test, feature = "stock-agent"))]
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;

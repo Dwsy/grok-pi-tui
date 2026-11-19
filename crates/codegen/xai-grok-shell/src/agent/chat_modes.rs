@@ -8,6 +8,7 @@ use agent_client_protocol as acp;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+#[cfg(feature = "stock-agent")]
 use xai_grok_login::AuthManager;
 /// ~54 min, matching grok-web's refetch cadence.
 const CACHE_TTL: Duration = Duration::from_secs(54 * 60);
@@ -22,6 +23,7 @@ pub const GROK_CHAT_MODE_ENV: &str = "GROK_CHAT_MODE";
 pub fn process_chat_mode_enabled() -> bool {
     false
 }
+#[cfg(feature = "stock-agent")]
 #[derive(Clone)]
 struct CachedModes {
     /// Keyed by identity; a mismatch is a miss so one user's modes never leak to another.
@@ -32,15 +34,18 @@ struct CachedModes {
 }
 /// Thread-safe, cheaply-cloneable manager. Cloning bumps the inner `Arc`.
 #[derive(Clone)]
+#[cfg(feature = "stock-agent")]
 pub(crate) struct ChatModesManager {
     inner: Arc<Inner>,
 }
+#[cfg(feature = "stock-agent")]
 struct Inner {
     auth: Arc<AuthManager>,
     cache: RwLock<Option<CachedModes>>,
     /// Single-flight guard so concurrent fetches coalesce.
     fetch_lock: tokio::sync::Mutex<()>,
 }
+#[cfg(feature = "stock-agent")]
 impl ChatModesManager {
     pub(crate) fn new(auth: Arc<AuthManager>) -> Self {
         Self {

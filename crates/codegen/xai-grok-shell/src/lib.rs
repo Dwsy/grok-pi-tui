@@ -12,6 +12,7 @@ static DHAT_ALLOC: dhat::Alloc = dhat::Alloc;
 pub(crate) use xai_grok_telemetry::unified_log;
 pub use xai_tracing_macros::{teprintln, timed, tprintln};
 pub mod agent;
+#[cfg(feature = "stock-agent")]
 pub mod auth {
     pub use crate::agent::init::run_cli_logout;
     pub use crate::credential_factory::{
@@ -28,11 +29,13 @@ pub mod cli_models;
 pub mod config;
 #[cfg(all(test, feature = "config-docs"))]
 pub mod config_docs;
+#[cfg(feature = "stock-agent")]
 pub mod credential_factory;
 pub use xai_grok_shell_base::cpu_profile;
 pub use xai_grok_shell_base::env;
 pub mod extensions;
 pub use xai_grok_foreign_sessions as foreign_sessions;
+#[cfg(feature = "stock-agent")]
 pub mod heap_profile;
 pub mod host_features;
 pub use xai_grok_http as http;
@@ -52,6 +55,7 @@ pub mod mcp_doctor;
 pub use xai_grok_models as models;
 pub mod plugin;
 pub mod relay;
+#[cfg(feature = "stock-agent")]
 pub mod remote;
 pub mod sampling;
 pub mod session;
