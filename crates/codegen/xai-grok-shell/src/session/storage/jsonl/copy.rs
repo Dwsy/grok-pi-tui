@@ -434,6 +434,7 @@ impl JsonlStorageAdapter {
         // Title-refresh watermark: only a managed parent (one with a watermark) passes managed state to the child.
         // So a fork of a pre-feature session stays unmanaged (frozen) rather than being adopted.
         // A full fork inherits the parent's checkpoint (keeping the inherited title frozen).
+        #[cfg(feature = "stock-agent")]
         if let Some(parent_idx) =
             crate::session::helpers::session_summary::load_title_refresh_watermark(
                 &self.session_dir(source_info),

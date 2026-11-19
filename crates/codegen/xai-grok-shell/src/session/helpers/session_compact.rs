@@ -1,8 +1,12 @@
 use crate::sampling::{
-    ApiBackend, ChatCompletionRequest, ChatRequestMessage, Client as OaiCompatClient,
-    ConversationRequest, ConversationToolChoice, HostedTool, SamplingError, ToolChoice,
-    ToolDefinition, ToolSpec, conversation_to_chat_messages,
+    ApiBackend, ChatCompletionRequest, ChatRequestMessage, ConversationRequest,
+    ConversationToolChoice, HostedTool, SamplingError, ToolChoice, ToolDefinition, ToolSpec,
+    conversation_to_chat_messages,
 };
+// The client is only needed by the stock-agent compaction path; the pure prompt builders in
+// this module are also used by ungated code.
+#[cfg(feature = "stock-agent")]
+use crate::sampling::Client as OaiCompatClient;
 use agent_client_protocol as acp;
 use async_openai::types::responses::ResponseStreamEvent;
 use futures_util::StreamExt;
@@ -410,6 +414,7 @@ mod compact_cancel_await_tests;
 /// `chat_history` must already include the summarization prompt as its final user message.
 /// The split lets callers persist the exact request payload before issuing it.
 /// Omitting them would shift the entire prefix and force a full prefill on the summarizer call.
+#[cfg(feature = "stock-agent")]
 pub(crate) async fn generate_session_compact(
     chat_history: impl Into<
         crate::session::helpers::prepared_compaction_history::CompactionHistoryInput,

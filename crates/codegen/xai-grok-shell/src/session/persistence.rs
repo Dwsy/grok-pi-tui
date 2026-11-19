@@ -1880,6 +1880,7 @@ impl SessionPersistence {
     /// Announce a newly adopted auto title (first generation or refresh) to the client, remote store, and session registry.
     /// Called only after the title actually landed on disk, so a title rejected for racing a manual `/rename` is never announced.
     fn announce_adopted_title(&self, title: String) {
+        #[cfg(feature = "stock-agent")]
         crate::session::summary::notify_client(&self.gateway, &self.info, &title);
         if let Some(sync) = &self.remote_sync {
             sync.set_title(title.clone());
@@ -2163,6 +2164,7 @@ impl SessionPersistence {
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
+                    #[cfg(feature = "stock-agent")]
                     self.summary.update(content_part);
                     #[cfg(not(feature = "stock-agent"))]
                     let _ = content_part;
@@ -2221,6 +2223,7 @@ impl SessionPersistence {
                     }
                 }
                 PersistenceMsg::ResetTitleToAuto => {
+                    #[cfg(feature = "stock-agent")]
                     self.summary.reset();
                     if let Some(sync) = &self.remote_sync {
                         sync.clear_title();
@@ -3038,6 +3041,7 @@ pub(crate) async fn load_light(
             remote_sync: remote_sync.clone(),
             created_fresh: false,
             relay_sync,
+            #[cfg(feature = "stock-agent")]
             summary: summary_gen,
             registry_title_sync,
             gateway,

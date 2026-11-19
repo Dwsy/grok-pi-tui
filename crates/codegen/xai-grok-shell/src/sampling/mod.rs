@@ -19,10 +19,9 @@ pub use xai_grok_sampler::SamplingClient as Client;
 // Re-export async-openai Responses API types under `rs` namespace
 pub use async_openai::types::responses as rs;
 
-// --------------------------------------------------------------------------- xai-grok-sampler re-exports --------------------------------------------------------------------------- The actual streaming / retry / HTTP-client logic still lives in `xai-grok-sampler`.
-// These re-exports keep `crate::sampling::{SamplerHandle, SamplerConfig, ...}` paths working.
-// Types that move to `xai-grok-sampling-types` get named above instead, so the Pi profile
-// stops needing the sampler runtime once the last of them (SamplerConfig) sinks too.
+// --------------------------------------------------------------------------- xai-grok-sampler runtime re-exports --------------------------------------------------------------------------- The streaming/retry/HTTP runtime still lives in `xai-grok-sampler`, named only by the Stock agent runtime.
+// Everything a Pi-profile caller needs already lives in `xai-grok-sampling-types` and is re-exported above.
+#[cfg(feature = "stock-agent")]
 pub use xai_grok_sampler::{
     InferenceLatencyStats, RequestId, SamplerActor, SamplerConfig, SamplerHandle, SamplingChannel,
     SamplingClient, SamplingErrorInfo, SamplingEvent,

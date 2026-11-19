@@ -33,17 +33,22 @@ fn test_actor_inner(
 ) -> ActorGuard {
     let (tx, rx) = mpsc::unbounded_channel();
     let (disk_full_tx, disk_full_rx) = tokio::sync::watch::channel(false);
+    #[cfg(feature = "stock-agent")]
     let sampling_client =
         OaiCompatClient::new(xai_grok_sampling_types::SamplerConfig::default()).unwrap();
+    #[cfg(feature = "stock-agent")]
     let mut summary =
         crate::session::summary::SummaryGenerator::new(crate::session::summary::SummaryConfig {
             sampling_client,
             model: String::new(),
             persistence_tx: tx.downgrade(),
         });
+    #[cfg(feature = "stock-agent")]
     if mark_summary_done {
         summary.mark_done();
     }
+    #[cfg(not(feature = "stock-agent"))]
+    let _ = mark_summary_done;
     let task = tokio::spawn(
         SessionPersistence {
             info,
@@ -54,6 +59,7 @@ fn test_actor_inner(
             // These tests run the actor as resumed; the backfill on writeback upgrade only runs for a fresh session
             created_fresh: false,
             relay_sync: None,
+            #[cfg(feature = "stock-agent")]
             summary,
             registry_title_sync: None,
             gateway: None,
@@ -1771,6 +1777,7 @@ async fn manual_title_renamed_is_noop_without_remote_sync() {
 /// A ContentChunk before reset must not spawn.
 /// ResetTitleToAuto must `reset()` and clear the remote pin.
 /// A later ContentChunk must adopt via the fallback (empty model, no live LLM).
+#[cfg(feature = "stock-agent")]
 #[tokio::test]
 async fn reset_title_to_auto_then_generated_title_is_adopted() {
     use std::sync::Arc;
@@ -2065,6 +2072,7 @@ async fn reset_title_to_auto_adopts_in_flight_generation_as_auto() {
 
 /// An unpin while the session is not resident only patches disk.
 /// The next load sees a blank `display_title()` so the generator stays Idle and a ContentChunk adopts.
+#[cfg(feature = "stock-agent")]
 #[tokio::test]
 async fn non_resident_reset_then_load_regenerates() {
     use std::sync::Arc;
