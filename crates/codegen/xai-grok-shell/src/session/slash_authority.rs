@@ -3,7 +3,6 @@
 
 use agent_client_protocol as acp;
 
-#[cfg(feature = "stock-agent")]
 use super::slash_commands::{BuiltinAction, BuiltinCommand, ModelAuthoredEligibility};
 
 /// Model-authored slash parse only. Human catalogs use `resolve_human_intent`;
@@ -18,7 +17,6 @@ pub(super) enum AuthorityResolution<'a> {
     StaticBuiltin(BuiltinAction),
 }
 
-#[cfg(feature = "stock-agent")]
 pub(super) fn resolve<'a>(
     prompt_blocks: &'a [acp::ContentBlock],
     builtins: &[BuiltinCommand],

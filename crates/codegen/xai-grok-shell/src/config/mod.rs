@@ -872,7 +872,6 @@ pub(crate) fn config_origins(
     }
     origins
 }
-#[cfg(feature = "stock-agent")]
 fn walk_toml(
     value: &toml::Value,
     path: &mut Vec<String>,

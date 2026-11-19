@@ -19,7 +19,6 @@ use fs2::FileExt;
 use xai_grok_sampling_types::ReasoningEffort;
 
 use crate::session::persistence::Summary;
-#[cfg(feature = "stock-agent")]
 use crate::session::worktree::WorktreeIdentity;
 
 /// `Increment` is applied to the in-lock fresh read (never precomputed by the caller, which would re-open the race).
@@ -290,7 +289,6 @@ pub(crate) fn repair_worktree_identity(
     result
 }
 
-#[cfg(feature = "stock-agent")]
 /// Read-site repair for a `summary` that is untagged, or kinded but still missing `worktree_label`, when its cwd is inside a grok-managed worktree.
 /// Stamps the missing identity on disk via [`repair_worktree_identity`] and replaces `summary` with the lock-fresh on-disk state.
 /// Memory then mirrors disk whichever way the repair went.

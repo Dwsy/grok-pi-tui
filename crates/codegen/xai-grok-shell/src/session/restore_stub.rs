@@ -3,7 +3,6 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use xai_file_utils::storage_client::StorageClient;
 
-#[cfg(feature = "stock-agent")]
 use crate::agent::session_registry_client::{SessionRecord, SessionRegistryClient};
 
 const UNAVAILABLE: &str = "Remote session restore is not available in this build";

@@ -1,9 +1,7 @@
 use crate::agent::auth_method::ModelByok;
-#[cfg(feature = "stock-agent")]
 use crate::agent::model_providers::{
     ModelProviderConfig, auth_config_issues, model_provider_auth_name, parse_model_providers,
 };
-#[cfg(feature = "stock-agent")]
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use crate::{config::StorageMode, sampling::ApiBackend, tools::config::ShellToolsetConfig};
 use agent_client_protocol as acp;
@@ -14,7 +12,6 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
 use xai_grok_agent::prompt::skills::SkillsConfig;
-#[cfg(feature = "stock-agent")]
 use xai_grok_login::{AuthManager, GrokComConfig, OidcAuthConfig};
 use xai_grok_sampling_types::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
@@ -461,7 +458,6 @@ impl EndpointsConfig {
         }
         None
     }
-    #[cfg(feature = "stock-agent")]
     /// Resolve trace bucket URL: env > config > compiled-in default.
     /// `None` disables direct GCS trace uploads.
     pub fn resolve_trace_bucket_url(&self) -> Option<Resolved<String>> {
@@ -1815,7 +1811,6 @@ fn parse_auth_providers(
     (providers, warnings)
 }
 impl Config {
-    #[cfg(feature = "stock-agent")]
     /// Reject invalid glob patterns in the model-filter lists at config load, so a typo fails loudly instead of silently changing availability.
     pub(crate) fn validate_model_filters(&self) -> Result<(), String> {
         for (field, list) in [
@@ -1873,7 +1868,6 @@ impl Config {
         };
         Ok((config, unrecognized_keys))
     }
-    #[cfg(feature = "stock-agent")]
     pub fn new_from_toml_cfg(raw_config: &toml::Value) -> Result<Self, String> {
         let raw_config = &Self::expand_auth_alias(raw_config);
         let super::config_model_override_parse::ParsedModelOverrides {
@@ -2313,7 +2307,6 @@ impl Config {
         }
         config
     }
-    #[cfg(feature = "stock-agent")]
     fn apply_env_overrides(&mut self) {
         self.telemetry.apply_env_overrides();
         if let Some(mode) = env_telemetry_mode("GROK_TELEMETRY_ENABLED") {
@@ -2371,7 +2364,6 @@ impl Config {
         }
         Resolved::new(TelemetryMode::Disabled, ConfigSource::Default)
     }
-    #[cfg(feature = "stock-agent")]
     pub(crate) fn resolve_trace_upload(&self) -> Resolved<bool> {
         let mode = self.resolve_telemetry_mode();
         let ff = if mode.value.is_disabled() {
@@ -2388,7 +2380,6 @@ impl Config {
             .default(mode.value.is_enabled())
             .resolve()
     }
-    #[cfg(feature = "stock-agent")]
     /// Resolve jemalloc heap-profile config from stored remote settings and the current gates.
     pub fn resolve_jemalloc_heap_profile(
         &self,
@@ -2404,7 +2395,6 @@ impl Config {
             crate::heap_profile::prof_available(),
         )
     }
-    #[cfg(feature = "stock-agent")]
     /// Scoped resolve: fresh jemalloc fields and current gates, with no remote-settings rewrite.
     pub(crate) fn resolve_jemalloc_heap_profile_from_partial(
         &self,
@@ -3293,7 +3283,6 @@ fn managed_settings_env_flag(key: &str) -> Option<bool> {
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
     xai_grok_workspace::permission::resolution::json_env_flag(json.get("env"), key)
 }
-#[cfg(feature = "stock-agent")]
 /// Assemble the final model map. Priority (highest wins):
 /// config.toml `[model.*]` > prefetched (remote) > hardcoded defaults.
 pub(crate) fn resolve_model_list(
@@ -3848,7 +3837,6 @@ pub struct ConfigModelOverride {
     pub stream_tool_calls: Option<bool>,
 }
 impl ConfigModelOverride {
-    #[cfg(feature = "stock-agent")]
     pub(crate) fn apply(
         &self,
         key: &str,
@@ -4177,7 +4165,6 @@ impl ModelInfo {
             self.reasoning_effort = default;
         }
     }
-    #[cfg(feature = "stock-agent")]
     /// Whether this model appears in the picker for the given auth mode.
     /// | `hidden` | `supported_in_api` | OAuth user | API-key user | |----------|--------------------|------------|--------------| | true | _ | hidden | hidden | | false | true | visible | visible | | false | false | visible | **hidden** |
     pub(crate) fn visible_for_auth(&self, is_session_auth: bool) -> bool {
@@ -4218,7 +4205,6 @@ impl ModelEntry {
     pub fn info(&self) -> &ModelInfo {
         &self.info
     }
-    #[cfg(feature = "stock-agent")]
     pub(crate) fn from_config_entry(entry: &ModelEntryConfig) -> Self {
         Self {
             info: ModelInfo::from_config(entry),
@@ -4229,7 +4215,6 @@ impl ModelEntry {
             api_base_url: entry.api_base_url.clone(),
         }
     }
-    #[cfg(feature = "stock-agent")]
     /// Non-empty `api_key`, else first non-empty resolved `env_key`.
     /// `None` falls through to the session / global key.
     /// Static only: never consults auth-provider tokens.
@@ -4654,7 +4639,6 @@ pub(crate) fn enforce_disable_api_key_auth(
         );
     }
 }
-#[cfg(feature = "stock-agent")]
 /// Resolve credentials for an auxiliary sampling path (web search, image description) with the first-party API-key kill switch applied.
 /// These paths then honor `disable_api_key_auth` exactly like the main chat path.
 fn resolve_credentials_enforced(
@@ -4667,7 +4651,6 @@ fn resolve_credentials_enforced(
     credentials
 }
 pub use xai_grok_telemetry::config::deployment_id_from_key;
-#[cfg(feature = "stock-agent")]
 /// Try to resolve credentials for a model by loading the effective config.
 /// Returns `None` (with a warning) if config loading, parsing, or model lookup fails.
 /// `session_key` should only be passed when `auth_type` is `SessionToken`; callers must guard this.
@@ -5211,7 +5194,6 @@ impl ModelSwitchIncompatibleAgentError {
         }
         serde_json::from_value(data.clone()).ok()
     }
-    #[cfg(feature = "stock-agent")]
     /// Render a user-friendly error message for the TUI.
     pub fn user_message(&self) -> String {
         format!(

@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-#[cfg(feature = "stock-agent")]
 use crate::agent::session_registry_client::{SessionRecord, SessionRegistryClient};
 use crate::session::persistence::{Summary, list_summaries};
 use xai_grok_workspace::session::git::normalize_repo_url;
@@ -143,7 +142,6 @@ pub(crate) fn filter_summaries_by_repo(
         .collect()
 }
 
-#[cfg(feature = "stock-agent")]
 /// Fetch the three [`merge`] lanes concurrently for `cwd`.
 pub(crate) async fn fetch_lanes(
     client: Option<&SessionRegistryClient>,
@@ -259,7 +257,6 @@ pub(crate) async fn fetch_lanes(
     }
 }
 
-#[cfg(feature = "stock-agent")]
 /// Local results are optionally filtered by `query` (case-insensitive substring on summary, display title, and session ID).
 /// Remote results are filtered by normalized repo URL when `local_repo_urls` is non-empty.
 /// Results are sorted by [`effective_sort_time`] descending and truncated to `limit`.

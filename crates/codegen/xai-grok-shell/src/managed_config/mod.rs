@@ -12,18 +12,14 @@ pub use policy::ManagedPolicyRefusal;
 pub use response::ManagedConfigError;
 // Test seams: pub only so the integration suites can link them.
 #[doc(hidden)]
-#[cfg(feature = "stock-agent")]
 pub use store::MANAGED_ARTIFACT_FILES;
-#[cfg(feature = "stock-agent")]
 pub use store::{
     classify_auth_mode, clear_orphan, current_serving_identity, has_principal, is_fetch_enabled,
 };
 pub(crate) use store::{resolve_deployment_id, resolve_deployment_key};
 pub(crate) use supervisor::policy_repair_pending;
 #[doc(hidden)]
-#[cfg(feature = "stock-agent")]
 pub use supervisor::{ManagedConfigRefresher, spawn_refresh_supervisor, take_refresh_supervisor};
-#[cfg(feature = "stock-agent")]
 pub use supervisor::{
     ManagedConfigSync, SESSION_START_AUTH_DEADLINE, SESSION_START_SYNC_DEADLINE, SetupOutcome,
     SetupReport, ensure_managed_policy_present, fetch_setup_report, post_login_sync, run_setup,
@@ -80,7 +76,6 @@ pub fn managed_policy_gate() -> Result<(), ManagedPolicyRefusal> {
     managed_policy_gate_with_lock_wait(GATE_LOCK_WAIT)
 }
 
-#[cfg(feature = "stock-agent")]
 /// Test seam injecting the bounded lock wait; production stays on [`GATE_LOCK_WAIT`].
 #[doc(hidden)]
 pub fn managed_policy_gate_with_lock_wait(
@@ -97,7 +92,6 @@ pub fn managed_policy_gate_with_lock_wait(
     policy::managed_policy_gate_decision(snapshot)
 }
 
-#[cfg(feature = "stock-agent")]
 fn locked_gate_snapshot(
     home: &std::path::Path,
     lock_wait: std::time::Duration,

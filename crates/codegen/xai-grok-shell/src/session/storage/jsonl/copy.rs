@@ -532,7 +532,6 @@ struct ForkCounters {
     inherited_prefix_len: Option<usize>,
 }
 
-#[cfg(feature = "stock-agent")]
 /// Build the fork target's summary: counters from this copy, fork identity from `options`.
 /// Every other field is either inherited from the source or reset as for a fresh session.
 fn fork_summary(
