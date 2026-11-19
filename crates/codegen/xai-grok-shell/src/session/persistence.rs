@@ -21,13 +21,7 @@ use std::sync::Arc;
 
 use crate::config::StorageMode;
 
-#[cfg(feature = "stock-agent")]
 use crate::remote::RemoteSync;
-/// Pi profile never runs remote writeback; the placeholder keeps the actor's field layout compiling
-/// without linking `xai-grok-shell`'s Stock remote-sync stack.
-#[cfg(not(feature = "stock-agent"))]
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct RemoteSync;
 
 #[cfg(feature = "stock-agent")]
 use crate::sampling::Client as OaiCompatClient;
@@ -334,9 +328,8 @@ pub enum PersistenceMsg {
     /// Replaces (`Some`) or clears (`None`, on conversation rewind) the previous one in `summary.json`.
     LastTurnSummary(Option<(String, String)>),
     /// Enable remote writeback for a session created `Local` before remote settings resolved (non-blocking startup); backfills its local history.
-    #[cfg(feature = "stock-agent")]
     UpgradeToWriteback {
-        auth_manager: StockAuth,
+        auth_manager: Arc<xai_grok_login::AuthManager>,
     },
     Flush,
     /// Flush all pending writes AND fsync the session files, then signal the caller.
@@ -1707,7 +1700,6 @@ impl SessionPersistence {
     }
 
     fn queue_acp_sync(&self, notification: acp::SessionNotification) {
-        #[cfg(feature = "stock-agent")]
         if let Some(sync) = &self.remote_sync {
             sync.queue(notification.clone());
         }
@@ -1719,8 +1711,7 @@ impl SessionPersistence {
     /// Enable writeback for a session created `Local` before settings resolved.
     /// Build the sync and (for a fresh session) backfill its local-only history.
     /// No-op once syncing, so a repeat upgrade is harmless.
-    #[cfg(feature = "stock-agent")]
-    async fn upgrade_to_writeback(&mut self, auth_manager: StockAuth) {
+    async fn upgrade_to_writeback(&mut self, auth_manager: Arc<xai_grok_login::AuthManager>) {
         if self.remote_sync.is_some() {
             return;
         }
@@ -1867,7 +1858,6 @@ impl SessionPersistence {
         if let Err(error) = &result {
             tracing::warn!(%error, "failed to write pending update");
         }
-        #[cfg(feature = "stock-agent")]
         if let Some(sync) = &self.remote_sync {
             sync.flush();
         }
@@ -1892,7 +1882,6 @@ impl SessionPersistence {
     fn announce_adopted_title(&self, title: String) {
         #[cfg(feature = "stock-agent")]
         crate::session::summary::notify_client(&self.gateway, &self.info, &title);
-        #[cfg(feature = "stock-agent")]
         if let Some(sync) = &self.remote_sync {
             sync.set_title(title.clone());
         }
@@ -1961,7 +1950,6 @@ impl SessionPersistence {
                 spawn_worktree_touch(&self.info);
             }
             match msg {
-                #[cfg(feature = "stock-agent")]
                 PersistenceMsg::UpgradeToWriteback { auth_manager } => {
                     self.upgrade_to_writeback(auth_manager).await;
                 }
@@ -2083,7 +2071,6 @@ impl SessionPersistence {
                     let _ = respond_to.send(result);
                 }
                 PersistenceMsg::SetRemoteAgentId(agent_id) => {
-                    #[cfg(feature = "stock-agent")]
                     if let Some(sync) = &self.remote_sync {
                         sync.set_agent_id(agent_id);
                     }
@@ -2105,7 +2092,6 @@ impl SessionPersistence {
                     {
                         tracing::warn!(?e, "failed to update current model");
                     }
-                    #[cfg(feature = "stock-agent")]
                     if let Some(sync) = &self.remote_sync {
                         sync.set_model_id(model_id.0.to_string());
                     }
@@ -2231,9 +2217,7 @@ impl SessionPersistence {
                         tracing::warn!(?e, "failed to persist session recap");
                     }
                 }
-                PersistenceMsg::ManualTitleRenamed(title) =>
-                {
-                    #[cfg(feature = "stock-agent")]
+                PersistenceMsg::ManualTitleRenamed(title) => {
                     if let Some(sync) = &self.remote_sync {
                         sync.set_manual_title(title);
                     }
@@ -2241,7 +2225,6 @@ impl SessionPersistence {
                 PersistenceMsg::ResetTitleToAuto => {
                     #[cfg(feature = "stock-agent")]
                     self.summary.reset();
-                    #[cfg(feature = "stock-agent")]
                     if let Some(sync) = &self.remote_sync {
                         sync.clear_title();
                     }
@@ -2548,7 +2531,6 @@ fn collect_session_files_recursive_with_artifacts(
     }
 }
 
-#[cfg(feature = "stock-agent")]
 /// Queue a fresh session's local-only ACP history to `remote_sync` (xAI updates are never synced), returning the count.
 /// Resumed sessions are forward-only.
 /// Their prior history may already be on the backend (which appends by content, no per-message id), so re-sending would duplicate.
@@ -2571,11 +2553,10 @@ fn backfill_updates_to_sync(
     backfilled
 }
 
-#[cfg(feature = "stock-agent")]
 fn init_remote_sync(
     summary: &Summary,
     storage_mode: StorageMode,
-    auth_manager: Option<StockAuth>,
+    auth_manager: Option<Arc<xai_grok_login::AuthManager>>,
 ) -> io::Result<Option<RemoteSync>> {
     match storage_mode {
         StorageMode::Local => Ok(None),
@@ -2687,27 +2668,6 @@ mod io_error_to_acp_tests;
 /// Best-effort worktree liveness touch: stamp `last_accessed_at` on the worktree containing this session's cwd.
 /// `grok worktree gc` then expires by last use, not creation time.
 /// Lives here (not in a `StorageAdapter`) so every session create/load path shares it regardless of backend.
-
-/// Pi profile has no remote writeback: keep the caller shape, return nothing to sync.
-#[cfg(not(feature = "stock-agent"))]
-fn init_remote_sync(
-    _summary: &Summary,
-    _storage_mode: StorageMode,
-    _auth_manager: Option<StockAuth>,
-) -> io::Result<Option<RemoteSync>> {
-    Ok(None)
-}
-
-/// Pi profile never backfills remote history.
-#[cfg(not(feature = "stock-agent"))]
-fn backfill_updates_to_sync(
-    _created_fresh: bool,
-    _updates: Vec<SessionUpdate>,
-    _remote_sync: &RemoteSync,
-) -> usize {
-    0
-}
-
 fn spawn_worktree_touch(info: &Info) -> tokio::task::JoinHandle<()> {
     let cwd = info.cwd.clone();
     tokio::task::spawn_blocking(move || {
@@ -2748,19 +2708,11 @@ pub(crate) type SessionSampler = OaiCompatClient;
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SessionSampler;
 
-/// Stock-only auth handle. Pi profile has no login runtime, so the handle degrades to a ZST and
-/// every code path that would mint/refresh credentials is gated with it.
-#[cfg(feature = "stock-agent")]
-pub(crate) type StockAuth = StockAuth;
-#[cfg(not(feature = "stock-agent"))]
-#[derive(Clone, Debug, Default)]
-pub(crate) struct StockAuth;
-
 /// What the actor is handed once and holds for the life of the session.
 pub(crate) struct SessionDeps {
     pub(crate) sampling_client: SessionSampler,
     pub(crate) storage_mode: StorageMode,
-    pub(crate) auth_manager: Option<StockAuth>,
+    pub(crate) auth_manager: Option<Arc<xai_grok_login::AuthManager>>,
     pub(crate) relay_sync: Option<crate::relay::RelaySync>,
     pub(crate) gateway: Option<GatewaySender>,
     pub(crate) session_summary_model: String,
@@ -3157,7 +3109,7 @@ pub async fn delete_session_history(
     session_id: &str,
     cwd: Option<&str>,
     needs_remote: bool,
-    auth_manager: StockAuth,
+    auth_manager: Arc<xai_grok_login::AuthManager>,
     search_index: Option<&xai_grok_session_search::SearchIndexManager>,
 ) -> Result<SessionDeletion, DeleteSessionError> {
     let sid = acp::SessionId::new(Arc::from(session_id));
@@ -3235,7 +3187,7 @@ fn classify_remote_delete(
     }
 }
 
-#[cfg(all(test, feature = "stock-agent"))]
+#[cfg(test)]
 #[path = "persistence_tests.rs"]
 mod durable_update_tests;
 

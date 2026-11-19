@@ -1,4 +1,3 @@
-#[cfg(feature = "stock-agent")]
 pub mod reloader;
 pub mod watcher;
 use crate::bundle;

@@ -8,7 +8,7 @@ edition.workspace = true
 # Stock Grok's in-process agent/CLI surfaces; Pi never needs the inspect CLI
 # entry point. Gate one independently owned module at a time before making
 # the heavyweight agent dependency optional (S12-b).
-stock-agent = ["dep:xai-grok-sampler", "dep:xai-grok-login"]
+stock-agent = ["dep:xai-grok-sampler"]
 stock-mcp = ["stock-agent", "dep:xai-grok-mcp", "xai-grok-workspace/stock-mcp"]
 stock-pdf = ["xai-grok-tools/stock-pdf"]
 stock-lsp = ["xai-grok-tools/stock-lsp", "xai-grok-workspace/stock-lsp"]
@@ -196,7 +196,7 @@ xai-grok-session-events = { workspace = true }
 xai-grok-auth = { workspace = true, features = ["middleware"] }
 xai-grok-telemetry = { workspace = true }
 xai-grok-http = { workspace = true }
-xai-grok-login = { workspace = true, optional = true }
+xai-grok-login = { workspace = true }
 xai-grok-models = { workspace = true }
 prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" }
 flate2 = { workspace = true }
