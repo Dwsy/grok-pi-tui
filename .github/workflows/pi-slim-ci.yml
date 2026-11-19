@@ -426,7 +426,7 @@ jobs:
 
   shell_tests:
     name: Native Shell full regression (independent of candidate)
-    if: inputs.runner != 'macos-15-intel' && inputs.scope != 'candidate-only'
+    if: inputs.runner != 'macos-15-intel' && (inputs.scope == 'all' || inputs.scope == 'shell-only')
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 80
     env:
