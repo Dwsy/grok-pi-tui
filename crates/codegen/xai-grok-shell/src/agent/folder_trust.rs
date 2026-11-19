@@ -36,7 +36,7 @@ use xai_grok_workspace::folder_trust::{
     grant_folder_trust_key, prompt_for_trust,
 };
 
-use crate::session::managed_mcp::mcp_server_name;
+use crate::util::config::mcp_server_name;
 use crate::util::config::{MCP_SCOPE_PROJECT, RemoteSettings};
 
 // NOTE: this folder-trust store (`~/.grok/trusted_folders.toml`) is SEPARATE from the pre-existing per-plugin trust store (`xai_grok_agent::plugins::TrustStore` at `~/.grok/trusted-plugins`, plus the hooks' own project-trust gating)

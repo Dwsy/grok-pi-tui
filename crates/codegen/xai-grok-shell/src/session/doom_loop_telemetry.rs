@@ -6,14 +6,9 @@ const MAX_TRIGGER_LABELS: usize = 64;
 const MAX_TRIGGER_LABEL_BYTES: usize = 256;
 
 /// Fold `new` trigger labels into `current`, keeping the tightest (lowest-threshold) raw label overall.
-pub(crate) fn merge_tightest_trigger(current: Option<String>, new: &[String]) -> Option<String> {
-    xai_grok_sampling_types::doom_loop::DoomLoopSignal::tightest(
-        current
-            .iter()
-            .map(String::as_str)
-            .chain(new.iter().map(String::as_str)),
-    )
-}
+/// Moved to `super::signals` so the always-compiled signals actor does not
+/// depend on this stock-agent-gated module; re-exported for compatibility.
+pub(crate) use super::signals::merge_tightest_trigger;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct DoomLoopDetectionSummary {

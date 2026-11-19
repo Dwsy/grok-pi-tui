@@ -487,6 +487,7 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
     let grok_auth = auth_manager.current().filter(|a| a.is_xai_auth());
     let user_id = grok_auth.as_ref().map(|a| a.user_id.clone());
     let team_id = grok_auth.as_ref().and_then(|a| a.team_id.clone());
+    #[cfg(feature = "stock-agent")]
     let subscription_tier = super::mvp_agent::resolve_subscription_tier_for_telemetry(
         config
             .remote_settings
@@ -494,6 +495,8 @@ pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager)
             .and_then(|rs| rs.subscription_tier_display.clone()),
         auth_manager.current_or_expired().as_ref(),
     );
+    #[cfg(not(feature = "stock-agent"))]
+    let subscription_tier: Option<String> = None;
     xai_grok_telemetry::client::init(
         config.telemetry.clone(),
         config.resolve_telemetry_mode().value,

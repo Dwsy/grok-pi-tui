@@ -6,6 +6,7 @@ mod consent;
 mod hints;
 mod load;
 mod mcp;
+#[cfg(feature = "stock-mcp")]
 mod mcp_reenable;
 mod permissions;
 mod persist;
@@ -24,6 +25,7 @@ pub use consent::*;
 pub use hints::*;
 pub use load::*;
 pub use mcp::*;
+#[cfg(feature = "stock-mcp")]
 pub(crate) use mcp_reenable::{McpDefinitionIndex, needs_definition_scan};
 pub use permissions::*;
 pub use persist::*;

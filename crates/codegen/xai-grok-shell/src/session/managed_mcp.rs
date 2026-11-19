@@ -35,15 +35,10 @@ fn mcp_vendor_block_key(s: &acp::McpServer) -> String {
     }
 }
 
-pub(crate) fn mcp_server_name(s: &acp::McpServer) -> &str {
-    match s {
-        acp::McpServer::Http(acp::McpServerHttp { name, .. })
-        | acp::McpServer::Sse(acp::McpServerSse { name, .. })
-        | acp::McpServer::Stdio(acp::McpServerStdio { name, .. }) => name,
-        // TODO(acp-0.10): `McpServer` is #[non_exhaustive].
-        _ => "",
-    }
-}
+// Moved to `crate::util::config` so ungated consumers (folder trust, CLI name
+// listings) do not depend on the stock MCP runtime; re-exported here to keep
+// `managed_mcp::mcp_server_name` paths working.
+pub(crate) use crate::util::config::mcp_server_name;
 
 /// Merge/discovery map key: server NAME is the sole merge identity (two names sharing one URL are distinct servers).
 /// Every name-keyed map in this module must derive its key through this helper so merge and discovery keying cannot desynchronize.

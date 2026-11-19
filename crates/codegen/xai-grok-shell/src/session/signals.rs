@@ -11,8 +11,19 @@ use serde::{Deserialize, Serialize};
 use tdigests::TDigest;
 use tokio::sync::{mpsc, oneshot};
 
-use super::doom_loop_telemetry::merge_tightest_trigger;
 use super::inference_metrics::{InferenceLatencyStats, compute_percentiles};
+
+/// Fold `new` trigger labels into `current`, keeping the tightest (lowest-threshold) raw label overall.
+/// Moved from `doom_loop_telemetry` so the always-compiled signals actor does
+/// not depend on the stock-agent-gated telemetry module.
+pub(crate) fn merge_tightest_trigger(current: Option<String>, new: &[String]) -> Option<String> {
+    xai_grok_sampling_types::doom_loop::DoomLoopSignal::tightest(
+        current
+            .iter()
+            .map(String::as_str)
+            .chain(new.iter().map(String::as_str)),
+    )
+}
 
 /// Sample the process resident-set high-water mark in bytes.
 /// Uses `getrusage(RUSAGE_SELF)` on Unix; returns 0 if sampling fails or on non-Unix targets.

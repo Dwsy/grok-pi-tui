@@ -10,6 +10,20 @@ use xai_grok_tools::types::compat::{CompatConfig, CompatConfigToml};
 
 pub use xai_grok_config_types::{McpOAuthConfig, McpOAuthConfigMap};
 // MCP server config value types moved to `xai-grok-config-types`; the re-export keeps `crate::util::config::*` paths working
+
+/// Stable display name of an MCP server entry (the identity the merge dedups
+/// and the disabled/allowlist filters use). Lives here so ungated consumers
+/// (folder trust, CLI name listings) do not depend on the stock MCP runtime.
+pub fn mcp_server_name(s: &acp::McpServer) -> &str {
+    match s {
+        acp::McpServer::Http(acp::McpServerHttp { name, .. })
+        | acp::McpServer::Sse(acp::McpServerSse { name, .. })
+        | acp::McpServer::Stdio(acp::McpServerStdio { name, .. }) => name,
+        // TODO(acp-0.10): `McpServer` is #[non_exhaustive].
+        _ => "",
+    }
+}
+// MCP server config value types moved to `xai-grok-config-types`; the re-export keeps `crate::util::config::*` paths working
 pub use xai_grok_config_types::{
     KNOWN_MCP_SERVER_FIELDS, McpJsonOAuthBlock, McpPreferenceSource, McpPreferencesFile,
     McpServerConfig, McpServerConfigProblem, McpServerPreferences, McpServerProblemSeverity,
@@ -1641,6 +1655,7 @@ pub fn disabled_mcp_server_names(cwd: &std::path::Path) -> std::collections::Has
 /// Names `grok mcp enable`/`disable` may target. Covers user/project TOML (including setup-required/invalid entries that session merge drops) and the user `disabled_mcp_servers` list.
 /// Also covers compat JSON (`.mcp.json`, Claude, Cursor) and **plugin** MCP servers (same discovery as doctor/`/mcps`).
 /// Does **not** include gateway connectors (`managed_gateway:…`); those use `disabled_mcp_tools.__managed_gateway_connectors` via the `/mcps` Space. `grok_com_*` is known only when a TOML / disabled / compat / plugin definition exists, not by prefix.
+#[cfg(feature = "stock-mcp")]
 pub fn cli_known_mcp_server_names(cwd: &std::path::Path) -> std::collections::HashSet<String> {
     let mut names = disabled_mcp_server_names(cwd);
     // Full TOML key set (list parity); the merge drops setup-required/invalid entries
@@ -1654,7 +1669,7 @@ pub fn cli_known_mcp_server_names(cwd: &std::path::Path) -> std::collections::Ha
         Some(&registry),
         &compat,
     ) {
-        let name = crate::session::managed_mcp::mcp_server_name(&server);
+        let name = mcp_server_name(&server);
         if !name.is_empty() {
             names.insert(name.to_string());
         }

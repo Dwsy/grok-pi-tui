@@ -807,6 +807,7 @@ pub enum SessionUpdate {
     /// `truncated` means the list was fitted to the 32 KiB session_notification
     /// frame. This is still last-wins, not a page: consumers must not treat a
     /// truncated snapshot as the complete set.
+    #[cfg(feature = "stock-agent")]
     BackgroundTasks {
         tasks: Vec<BackgroundTaskRow>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]

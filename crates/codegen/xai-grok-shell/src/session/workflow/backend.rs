@@ -55,6 +55,7 @@ pub struct WorkflowAgentSpawnResult {
     pub backgrounded: bool,
 }
 
+#[cfg(feature = "stock-agent")]
 impl From<SubagentResult> for WorkflowAgentSpawnResult {
     fn from(result: SubagentResult) -> Self {
         Self {
