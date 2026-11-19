@@ -1,5 +1,6 @@
 pub(crate) mod artifact_tracker;
 pub(crate) mod drain;
+#[cfg(feature = "stock-agent")]
 pub mod gcs;
 #[cfg(feature = "stock-agent")]
 pub(crate) mod manifest;

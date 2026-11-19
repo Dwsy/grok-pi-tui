@@ -3,7 +3,9 @@
 
 mod policy;
 mod response;
+#[cfg(feature = "stock-agent")]
 mod store;
+#[cfg(feature = "stock-agent")]
 mod supervisor;
 
 pub use policy::ManagedPolicyRefusal;

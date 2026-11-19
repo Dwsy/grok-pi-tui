@@ -6,6 +6,7 @@ pub mod auth;
 pub(crate) mod auth_gate;
 #[cfg(feature = "stock-agent")]
 pub(crate) mod background_task;
+#[cfg(feature = "stock-agent")]
 pub mod billing;
 #[cfg(feature = "stock-agent")]
 pub(crate) mod btw;
