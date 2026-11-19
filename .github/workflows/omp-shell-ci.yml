@@ -27,7 +27,7 @@ jobs:
   omp-shell-host:
     name: Standalone OMP Shell Host (macOS ARM64)
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -37,6 +37,12 @@ jobs:
         with:
           toolchain: nightly-2026-11-08
           targets: aarch64-apple-darwin
+
+      - name: Restore host Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/grok-pi-shell-host
+          shared-key: omp-shell-host-macos-arm64
 
       - name: Test standalone grok-pi-shell-host
         working-directory: tools/grok-pi-shell-host
@@ -59,7 +65,7 @@ jobs:
   extension-and-tui:
     name: Extension & TUI Trace Integration (macOS ARM64)
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -82,6 +88,11 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.rust.outputs.channel }}
+
+      - name: Restore workspace Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: omp-shell-ci-workspace-macos-arm64
 
       - name: Install protoc
         run: brew install protobuf
