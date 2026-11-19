@@ -1,271 +1,93 @@
-<img width="1920" height="981" alt="file-79543f229c432ee6b8b1b7c402a9851b" src="https://github.com/user-attachments/assets/27ff0124-c1e1-4948-8c2c-9880e6a38732" />
-<img width="1042" height="888" alt="file-78b1898685afe0e47d0cee01e9efcc62" src="https://github.com/user-attachments/assets/83abc999-08fe-459e-ab06-935eeb0780e6" />
+<p align="center">
+  <img width="48%" alt="grok-pi main TUI" src="https://github.com/user-attachments/assets/27ff0124-c1e1-4948-8c2c-9880e6a38732" />
+  <img width="48%" alt="grok-pi native views" src="https://github.com/user-attachments/assets/83abc999-08fe-459e-ab06-935eeb0780e6" />
+</p>
 
-# grok-pi — Remote TUI bridge for Pi and Grok Build
+# grok-pi
 
-> Pi agent core in Grok Build's native terminal UI. Pi's interactive components render through the native Pager — Pi users get Grok's UI, Grok users get Pi's models, tools, sessions, and extensions.
+**One native terminal UI. One unmodified agent core.**
 
-[Download latest release](https://github.com/Dwsy/grok-pi/releases/latest) · [ZH](docs/README.zh-CN.md) · [Feature matrix](docs/FEATURE_MATRIX.md) · [Architecture](docs/NATIVE_GROK_TUI_ALIGNMENT.md) · [Verification](docs/VERIFICATION.md) · [Changelog](CHANGELOG.MD) · [更新日志](docs/CHANGELOG.zh-CN.md)
+`grok-pi` bridges [Pi](https://pi.dev) into Grok Build's native Rust TUI (`xai-grok-pager`). Pi owns models, tools, extensions, skills, and sessions; Grok Pager owns every pixel and keystroke.
 
-Ordinary text-only Pi tree navigation reuses unchanged conversation prefixes outside minimal mode; stateful histories retain full replay.
+[Releases](https://github.com/Dwsy/grok-pi-tui/releases/latest) · [中文文档](docs/README.zh-CN.md) · [Feature Matrix](docs/FEATURE_MATRIX.md) · [Architecture](docs/NATIVE_GROK_TUI_ALIGNMENT.md) · [Verification](docs/VERIFICATION.md) · [Changelog](CHANGELOG.MD)
 
-## Install
+---
 
-### macOS / Linux
+## Philosophy
 
-```bash
-curl -fsSL https://github.com/Dwsy/grok-pi/releases/latest/download/install.sh | sh
-```
-
-### Windows
-
-```powershell
-irm https://github.com/Dwsy/grok-pi/releases/latest/download/install.ps1 | iex
-```
-
-The installer picks the matching release asset and installs `grok-pi`:
-
-| Platform | Asset |
-|---|---|
-| macOS Apple Silicon | `grok-pi-macos-aarch64.tar.gz` |
-| macOS Intel | `grok-pi-macos-x86_64.tar.gz` |
-| Linux x86_64 | `grok-pi-linux-x86_64.tar.gz` |
-| Linux ARM64 | `grok-pi-linux-aarch64.tar.gz` |
-| Windows x64 | `grok-pi-windows-x86_64.zip` |
-| Windows ARM64 | `grok-pi-windows-aarch64.zip` |
-
-Defaults: Unix → `~/.local/bin`; Windows → `%LOCALAPPDATA%\grok-pi\bin`. Override with `GROK_PI_INSTALL_DIR`. To install a specific stable or beta release, use `GROK_PI_VERSION=vX.Y.Z` or `GROK_PI_VERSION=vX.Y.Z-beta.N` with the installer from that same release tag.
-
-```bash
-# Example: install a specific beta on macOS / Linux
-curl -fsSL https://github.com/Dwsy/grok-pi/releases/download/v1.2.0-beta.1/install.sh | \
-  GROK_PI_VERSION=v1.2.0-beta.1 sh
-```
-
-The installer also creates `pig` and `pi-grok` aliases (Unix symlinks; Windows `pig.exe` / `pi-grok.exe` hardlinks with copy fallback):
-
-```bash
-pig --help       # short alias
-grok-pi --help   # original name
-pi-grok --help   # alias
-```
-
-`grok-pi` requires [Pi](https://pi.dev) **0.99.0 or newer** (system `pi` / pi.dev installer):
-
-```bash
-# recommended
-curl -fsSL https://pi.dev/install.sh | sh
-# Windows:
-# powershell -c "irm https://pi.dev/install.ps1 | iex"
-# or npm:
-npm install --global @earendil-works/pi-coding-agent
-```
-
-On Windows, if an older `grok-pi.exe` cannot find bare `pi`, point it at the shim:
-
-```powershell
-$env:PI_BIN = "$env:LOCALAPPDATA\pi-node\current\pi.cmd"
-grok-pi --pi-bin $env:PI_BIN
-```
-
-## Start
-
-From any project directory:
-
-```bash
-grok-pi
-# or
-pig
-# or
-pi-grok
-```
-
-Defaults: system `pi` on PATH, current working directory as the project. Continue the previous session with `grok-pi --continue`.
-
-Useful commands:
-
-```bash
-grok-pi --help
-grok-pi update --check
-grok-pi update
-grok-pi update --channel beta    # persist beta in ~/.grok-pi/config.toml
-grok-pi update --channel stable  # switch back; stable is the default
-```
-
-Update channels are product-local and persisted in `~/.grok-pi/config.toml` under `[update].channel`. `stable` is the default and never selects prereleases. `beta` follows valid `-beta.N` GitHub prereleases, but will also advance to a newer final release when semver makes it the newer target. `grok-pi --version` shows the active channel, and `grok-pi update --check --json` includes the resolved `channel`.
-
-## What it provides
-
-| Area | Included |
-|---|---|
-| Agent runtime | Pi models, providers, tools, extensions, skills, sessions, retries, and compaction |
-| Model management | `/pi-models` provides a native Provider → Model → Details editor with safe `models.json` transactions, backup/restore, live Pi reload, and typed activation; `/model` remains the fast switcher |
-| Project usage ranking | Slash commands, skills, and model choices remember usage separately for each project. More frequent choices rank first, with recency breaking ties; search relevance remains ahead of usage. |
-| Web config workbench | `/pi-config web` / `/pi-models web`: bilingual workbench with global search, model/provider duplication, staged settings, conflict feedback, and light/dark themes, served on a token-gated loopback port |
-| Terminal UI | Grok Pager input, slash completion, Markdown, tool cards, live file diffs (expand/Enter, running +/- counts), single-click card folding, dialogs, and scrollback; Bash arguments appear at execution start |
-| Mermaid images | Open Image renders a PNG with Ondine; Open SVG opens the vector version. Terminal ASCII diagrams remain independent. |
-| File and skill preview | Click an accepted `@file` chip or a slash skill row to open the native preview. `:` / Ctrl-L previews the selected file; Ctrl-L previews a selected skill. The footer shows the available gestures; outside these contexts Ctrl-L opens model selection. Restart an existing process after rebuilding. |
-| Product tutorial | `/tutorial` (aliases `/tour`, `/onboarding`) opens 18 grok-pi capability areas: native Pager workflows, Pi providers/models/tools/sessions, the extension/Skill/Package ecosystem, product bridges, optional automation and explicit boundaries |
-| **Remote TUI bridge** | Pi `ctx.ui.custom` components rendered through Grok Build's native Pager, without a second TUI |
-| Shell execution | Bash integration, background tasks, output limits, timeouts, and process-tree cleanup |
-| Parallel work | Pi subagents with foreground/background execution and native task views; `/subagents` exposes built-ins plus isolated overrides, and opt-in `fork: true` inherits the initiating parent's (`root` or `child`) live branch, skills, `AGENTS.md`, prompt sections, and plugins in the same shared `.jsonl` tree. [Team V2](docs/usage/subagents-v2.md) (default on via F2 `[ui].pi_subagents_v2`, or `PI_GROK_SUBAGENTS_V2=1`) adds stable agent paths, automatically flushed messages, active-parent result steering, nested spawn, JSON presets, and Plan Mode read-only recon gating |
-| Rhai workflows | Upstream `xai-workflow` host (F2 **Pi workflows**); `/workflow`, `/workflows`, `/create-workflow`; scripts under `~/.grok-pi/workflows` and `<repo>/.grok-pi/workflows` |
-| Session workflow | Resume, tree navigation, labels, recap, context inspection, and session picker |
-| Resource management | Native manager for Pi extensions, skills, prompts, and themes |
-| Updates | Isolated `stable` / `beta` release channels; channel semantics under Start, above |
-
-For field-level behavior and intentional omissions, see the [feature matrix](docs/FEATURE_MATRIX.md).
-
-Pasted image files keep their original paths in the user prompt's image metadata, so Pi receives both the image content and a path its tools can use.
-
-The Read tool's image viewer supports Kitty-compatible terminals and iTerm2 when inline image display is available. iTerm2 redraws the viewer on updates; inline scrollback images remain unavailable there.
-
-## Architecture
+1. **Zero UI Compromise** — All surfaces (scrollback, diffs, tool cards, dialogs, Remote TUI) render natively through `xai-grok-pager`. No second TUI, no ASCII fallback.
+2. **Zero Pi Forking** — Pi runs unmodified (`>= 0.99.0`). Capabilities outside Pi RPC are bridged through Pi's official extension API.
+3. **Headless Translation** — `pi-grok-adapter` only translates JSONL RPC ↔ ACP. It never touches the terminal or owns UI state.
+4. **Product Isolation** — State lives in `~/.grok-pi` and `<repo>/.grok-pi` (`$GROK_HOME` / `$GROK_PROJECT_DIR`), isolated from stock Grok.
 
 ```mermaid
 flowchart LR
-    User[Terminal user] <--> Pager[Grok Pager\nNative TUI]
-    Pager <--> ACP[ACP]
-    ACP <--> Adapter[pi-grok-adapter\nJSONL RPC ↔ ACP]
-    Adapter <--> Pi[Pi\nAgent core]
+    User[Terminal] <--> Pager[Grok Pager · Native Rust TUI]
+    Pager <-->|ACP| Adapter[pi-grok-adapter · Headless Bridge]
+    Adapter <-->|JSONL RPC| Pi[Pi · Unmodified Agent Core]
 ```
 
-The integration has three boundaries:
+---
 
-- **Grok Pager** owns terminal lifecycle, input, rendering, dialogs, and visible UI.
-- **Pi** owns the agent loop, models, providers, tools, extensions, and sessions.
-- **`pi-grok-adapter`** is a headless JSONL RPC ↔ ACP bridge. It does not own a terminal or render a second UI.
+## Install & Start
 
-Pi source is not modified. The Remote TUI bridge connects capabilities unavailable in Pi RPC through the official extension API and projects them onto native Pager surfaces.
+Requires **Pi `>= 0.99.0`** (`curl -fsSL https://pi.dev/install.sh | sh` or `npm i -g @earendil-works/pi-coding-agent`).
 
-An open custom component owns keyboard input until it closes (letters, paste, plain `Esc`); native Pi input/confirmation dialogs briefly take priority, and `Ctrl+Shift+Esc` force-closes a stuck component when the terminal reports that chord. Transport metadata is isolated per process and stale input is discarded. Shift+letter arrives as uppercase text (e.g. `S`); other modifiers are preserved with distinct repeat/release. Plugins should use Pi's key parsers — raw string comparison misses some terminal encodings.
-
-## Configuration
-
-**F2 → Mouse → Selection → Tool card click action** selects one of three live modes: **Select only** (default), **Expand / collapse**, or **Open details (Enter)**. The last mode opens the native details viewer directly on click. Set `[ui].tool_card_click_action` to `select`, `toggle`, or `open_viewer`.
-
-Bundled bridge extensions are enabled by default where stable. Experimental native commands are opt-in.
-
-| Variable | Default | Purpose |
-|---|---:|---|
-| `PI_GROK_REMOTE_TUI` | `1` | Enable Pi `ctx.ui.custom` components |
-| `PI_GROK_BASH` | `1` | Enable Grok-owned Bash integration |
-| `PI_GROK_NATIVE_COMMANDS` | `0` | Enable experimental `/pi-*` commands |
-| `PI_GROK_SUBAGENTS_V2` | `1` (F2 default) | Enable the V2 team surface (`spawn_team`, stable agent paths, peer messaging, nested spawn). V2 replaces the V1 single-agent tools; V1 commands and history stay available (disable via F2 or `0`) |
-| `GROK_HOME` | `~/.grok-pi` | User state root (isolated from stock Grok `~/.grok`) |
-| `GROK_PROJECT_DIR` | `.grok-pi` | Project config/workflows/hooks dir name under repo root |
-| `GROK_PI_NO_AUTO_UPDATE` | unset | Disable background update checks |
-
-Subagents V2 team presets are JSON files under `<repo>/.grok-pi/teams` or `~/.grok-pi/teams` (project overrides global, which overrides bundled presets). Agent profiles remain external Markdown under the matching `agents/` directories. Example:
-
-```json
-{
-  "name": "implementation",
-  "description": "Implementation plus review",
-  "members": [
-    { "name": "implementer", "agent": "general-purpose", "task": "Implement: {{task}}" },
-    { "name": "reviewer", "agent": "explore", "task": "Review: {{task}}" }
-  ]
-}
-```
-
-Enable V2 before startup (F2 toggle or `PI_GROK_SUBAGENTS_V2=1`); `/subagent-teams` inspects presets, `spawn_team` starts one. V2 replaces the V1 single-agent tools (unregistered in team mode); V1 commands, history, and the Rhai Workflow engine keep working. Details: [Subagents V2 guide](docs/usage/subagents-v2.md), [multitask](docs/usage/subagents-v2.md#multitask-with-skills).
-
-Rhai workflows are **off by default** (F2 → Agent → **Pi workflows**, then full restart). Details: [FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md), [AGENTS.md](AGENTS.md#product-state-isolation).
-
-Herdr lifecycle reporting is **on by default**, and inert outside Herdr. Disable it with F2 → Agent → **Pi Herdr integration** if needed, then restart. See the [Herdr setup guide](docs/usage/grok-pi-herdr.md).
-
-Use `--no-extensions` (`-ne`) to disable Pi extension auto-discovery; explicit `-e` paths and grok-pi host bridges still load. Use `--no-bridge-extensions` to disable the bundled host bridges, or combine both flags for a fully extension-free launch. Pi startup options can be passed directly after `--`.
-
-Use `--extensions-dev <DIR>` (or `PI_GROK_EXTENSIONS_DEV`) to load grok-pi's bundled Pi extensions from `<DIR>/<name>/index.ts` instead of the copies compiled into the binary. Feature gates are unchanged, so editing an extension needs a restart but no rebuild.
-
+**macOS / Linux:**
 ```bash
-grok-pi -- --model openai/gpt-4o
+curl -fsSL https://github.com/Dwsy/grok-pi-tui/releases/latest/download/install.sh | sh
 ```
 
-## Build from source
+**Windows (PowerShell):**
+```powershell
+irm https://github.com/Dwsy/grok-pi-tui/releases/latest/download/install.ps1 | iex
+```
 
-**Agent rule: do not run Cargo unless the user explicitly requests it.** This includes all Cargo subcommands and indirect invocations through build/verification scripts, wrappers, hooks, or delegated agents. Use static review and non-Rust checks by default; clean build caches through filesystem operations without Cargo. See [AGENTS.md](AGENTS.md#build-and-verification). The commands below are for explicitly requested builds and verification.
+Run from any project directory (`pig` and `pi-grok` are installed as aliases):
+```bash
+grok-pi                 # start new session (or: pig / pi-grok)
+grok-pi --continue      # resume previous session
+grok-pi update --channel beta   # switch update channel (stable | beta)
+```
 
-Requirements: Rust **1.97.0**, Node.js **22.19.0 or newer**, npm, and a system Pi installation. The first source build fetches the pinned Ondine Git dependency.
+---
+
+## Capabilities
+
+| Area | What you get |
+|---|---|
+| **Native Pager** | Streaming Markdown, live file diffs, single-click card folding, F2 settings, Mermaid PNG/SVG (`Ondine`), Kitty/iTerm2 image viewer, `@file` & skill previews |
+| **Model & Config** | `/model` fast switcher, `/pi-models` transactional editor, `/pi-config web` local workbench, per-project usage ranking |
+| **Subagents & Plan Mode** | Foreground/background subagents, `fork: true` context inheritance, Team V2 (`spawn_team`, peer messaging, nested spawn), `enter_plan_mode` / `exit_plan_mode` |
+| **Shell & Eval** | Managed Bash (`system` default, optional `PI_GROK_BASH_BACKEND=omp` with per-command trace cards), persistent JS/Python `eval`, background tasks & process-tree cleanup |
+| **Workflows & Sessions** | Rhai workflows (`~/.grok-pi/workflows`, `<repo>/.grok-pi/workflows`), native `/resume` tree picker, compaction & recap |
+
+---
+
+## Key Options & Environment
+
+| Flag / Variable | Default | Purpose |
+|---|---|---|
+| `--continue` / `--pi-bin` | — | Resume session / override `pi` binary (`$PI_BIN`) |
+| `--no-extensions` (`-ne`) / `--no-bridge-extensions` | off | Disable Pi auto-discovery / bundled host bridges |
+| `--extensions-dev <DIR>` | — | Load bundled extensions from disk without rebuilding |
+| `PI_GROK_BASH_BACKEND` | `system` | Shell backend: `system` (`/bin/bash`) or `omp` (`grok-pi-shell-host`) |
+| `PI_GROK_SUBAGENTS_V2` | `1` | Enable Team V2 subagent surface |
+| `PI_GROK_REMOTE_TUI` | `1` | Bridge Pi `ctx.ui.custom` components to native Pager |
+| `GROK_HOME` / `GROK_PROJECT_DIR` | `~/.grok-pi` / `.grok-pi` | Isolated user and project state directories |
+
+Pass raw Pi CLI flags after `--` (e.g. `grok-pi -- --model openai/gpt-4o`).
+
+---
+
+## Build from Source
+
+Requires Rust **1.97.0**, Node.js **>= 22.19.0**, `protoc`, and system Pi:
 
 ```bash
 ./build.sh
 ./target/debug/grok-pi
-# or: PI_BIN=pi ./run-local.sh
-```
-
-Project Cargo commands should go through `./scripts/cargo-shared.sh`: incremental
-compilation is enabled by default, the generated target is capped at 128 GiB, and
-Cargo stops before free space falls below 20 GiB. Override the target cap with
-`CARGO_TARGET_MAX_GIB`; periodic maintenance clears incremental caches first and runs
-`cargo clean` if an already-over-cap target remains too large. Override
-`CARGO_MIN_FREE_GIB` only deliberately; set `CARGO_MAINTENANCE=0` to skip one
-pre-command maintenance pass. The running disk guard continuously enforces the
-free-space floor; target-size maintenance runs on its configured cadence.
-
-Run verification with:
-
-```bash
 ./verify.sh
 ```
 
-See [VERIFICATION.md](docs/VERIFICATION.md) for the distinction between static checks and runtime acceptance.
-
-## Documentation
-
-- [Feature matrix](docs/FEATURE_MATRIX.md) — supported behavior and intentional boundaries
-- [Eval v2 / Pi Codemode / MCP plan](docs/issues/adapter/20260930-Eval%20v2%20学习%20Pi%20Codemode%20并复用%20MCP.md) — planned tool-registry reuse and runtime boundaries
-- [Subagents V2 guide](docs/usage/subagents-v2.md) — opt-in team collaboration, stable paths, presets, queue semantics, rollback, and troubleshooting
-- [Architecture alignment](docs/NATIVE_GROK_TUI_ALIGNMENT.md) — component ownership, protocol mapping, and migration guidance
-- [Verification record](docs/VERIFICATION.md) — completed checks and known environment blockers
-- [Changelog](CHANGELOG.MD) / [更新日志](docs/CHANGELOG.zh-CN.md) — release history (EN / ZH)
-- [Contributing](CONTRIBUTING.md) — contribution guidelines
-
-## License
-
-See [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES) for project and upstream notices.
-
-## Native feature switches → blocked Pi extensions
-
-When a native grok-pi capability is **on**, the host resource policy may block known conflicting Pi packages so tool names / roles do not collide. Built-in defaults live in [`crates/codegen/xai-grok-pager/assets/native_feature_conflicts.toml`](crates/codegen/xai-grok-pager/assets/native_feature_conflicts.toml). Runtime overlays (no rebuild): `$GROK_HOME/native-feature-conflicts.toml`, then `$GROK_PROJECT_DIR/native-feature-conflicts.toml` (package **union**; non-empty `reason` overwrites). User resource `allow` still wins.
-
-```mermaid
-flowchart LR
-  A[Built-in defaults] --> M[Merge]
-  B[User overlay] --> M
-  C[Project overlay] --> M
-  M --> T[Conflict table]
-  T --> P[Block when feature on]
-```
-
-| Feature switch | How it turns on | Default | Blocks (npm packages) |
-|---|---|---:|---|
-| **Q&A** (`pi_ask_user_question`) | F2 → Agent → Q&A (restart) | off | `@juicesharp/rpiv-ask-user-question` |
-| **Q&A desktop notifications** (`pi_ask_user_question_notifications`) | F2 → Agent → Q&A desktop notifications | on | — |
-| **Pi goal mode** (`pi_goal`) | F2 → Agent → Pi goal mode (restart) | off | `pi-codex-goal`, `@narumitw/pi-goal`, `@misunders2d/pi-goal`, `pi-goal`, `pi-goal-x` |
-| **Pi workflows** (`pi_workflows`) | F2 → Agent → Pi workflows (restart) | off | `@quintinshaw/pi-dynamic-workflows` |
-| **Pi subagents** (`pi_subagents`) | F2 → Agent → Pi subagents (restart) | on | `pi-subagents`, `@tintinweb/pi-subagents`; the V2 team surface is a separate opt-in (see Configuration) |
-| **`/btw`** (`pi_btw`) | F2 → Agent → Pi /btw (restart); saved answers are viewable with `/btw-history` | off | `pi-btw`, `@narumitw/pi-btw`, `@juicesharp/rpiv-btw` |
-| **Markdown user messages** (`pi_user_markdown`) | F2 → Agent → Markdown user messages | on | — |
-
-Eval bridge generations are mutually exclusive and selected at process start. Eval v1 remains the default. Eval Bridge v2 can expose JavaScript, Python, or both:
-
-```toml
-[ui]
-pi_eval = "v2"
-pi_eval_v2_language = "all"       # "js" (default), "py", or "all"
-pi_eval_v2_display_mode = "effects" # "effects" (default) or "legacy"
-```
-
-Use `pi_eval = "v1"` (or omit the key) for legacy Eval. Eval v1 keeps persistent Python and JavaScript kernels; Eval Bridge v2 uses isolated cells with explicit `store/load` persistence and the selected language set. Because `pi_eval` is a single version selector, v1 and v2 cannot run concurrently. `pi_eval` and `pi_eval_v2_language` are restart-required.
-
-Pi Codemode is now available as an opt-in F2 built-in tool and loads Pi's official `builtin:codemode` extension only when selected. Eval v2's outbound MCP integration is still planned: it will reuse Pi's official MCP extension and tool registry, without adding a second MCP client to the Eval Worker or replacing Eval's Node/Python runtime. Pi MCP remains disabled by default under grok-pi's explicit extension allowlist. See the [implementation plan](docs/issues/adapter/20260930-Eval%20v2%20学习%20Pi%20Codemode%20并复用%20MCP.md).
-
-`pi_eval_v2_display_mode` is presentation-only and applies immediately: `effects` keeps Eval v2 orchestration source out of the normal transcript and presents its effects/results, while `legacy` restores source + result rendering. Change it from **F2 → Agent → Eval v2 display**, edit `[ui].pi_eval_v2_display_mode`, or use `/eval-display [effects|legacy]`; `/eval-display` with no argument toggles the current mode. The selected mode is persisted for future sessions.
-
-Under `pi_eval_v2_only` the choice decides which card the top level gets: `effects` hides the `eval` card and renders only its nested tool effects, while `legacy` renders the source/result card itself (nested effects still project from the bridge entries). The adapter reads the same key so the live path and session replay agree; a restart-required `pi_eval` version change is unaffected.
-
-Turning Pi subagents off omits the bundled bridge, forces `PI_GROK_SUBAGENTS=0`, and admits conflicting third-party packages again for the next process.
-
-F2 descriptions for the opt-in rows append **When on, blocks: …** from the same table.
+See [FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md), [VERIFICATION.md](docs/VERIFICATION.md), [CHANGELOG.MD](CHANGELOG.MD), and [LICENSE](LICENSE).
