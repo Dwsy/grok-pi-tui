@@ -148,20 +148,9 @@ impl Default for SamplerConfig {
 }
 
 /// Cheap sync read of the current bearer for [`SamplerConfig::bearer_resolver`].
-pub trait BearerResolver: Send + Sync + std::fmt::Debug {
-    fn current_bearer(&self) -> Option<String>;
-
-    /// Awaited by the client right before it stamps a request; [`Self::current_bearer`] is read afterwards.
-    /// A resolver that can renew its bearer does so here when the cached one would not survive the send, so the request never leaves with no credential.
-    /// Default: no-op.
-    fn prepare_for_send(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
-        Box::pin(async {})
-    }
-}
-
-pub type SharedBearerResolver = std::sync::Arc<dyn BearerResolver>;
+/// Moved to `xai_grok_sampling_types` (pure contract) so `xai-grok-login`
+/// can implement it without depending on the sampler runtime.
+pub use xai_grok_sampling_types::{BearerResolver, SharedBearerResolver};
 
 /// Per-request header injection (e.g. OTel `traceparent`).
 pub trait HeaderInjector: Send + Sync + std::fmt::Debug {

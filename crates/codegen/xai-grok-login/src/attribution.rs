@@ -36,9 +36,9 @@
 //!
 //! # Cross-crate wiring
 //!
-//! [`xai_grok_sampler`] is intentionally decoupled from this crate.
-//! It invokes the trait [`xai_grok_sampler::Auth401AttributionCallback`] at its six 401 arms.
-//! This module provides [`ShellAttribution`], the concrete impl wired into [`xai_grok_sampler::SamplerConfig::attribution_callback`].
+//! The 401-attribution contract lives in `xai_grok_sampling_types`, intentionally decoupled from this crate.
+//! The sampler invokes `Auth401AttributionCallback` at its six 401 arms.
+//! This module provides [`ShellAttribution`], the concrete impl wired into the sampler config's `attribution_callback`.
 //! The shell does that wiring at every sampler-construction site.
 //! Non-sampler sites (storage / feedback / registry / idle-resume) call [`record_consumer_401`] directly with their `(consumer_kind, op)` pair.
 
@@ -48,7 +48,7 @@ use serde_json::Value as JsonValue;
 use xai_grok_auth::tool_attribution::{
     Auth401AttributionCallback as ToolAuth401AttributionCallback, ToolConsumer,
 };
-use xai_grok_sampler::{Auth401AttributionCallback, SamplingConsumer};
+use xai_grok_sampling_types::{Auth401AttributionCallback, SamplingConsumer};
 
 use crate::{AuthManager, TOKEN_TTL};
 use xai_grok_auth::bearer_suffix;
@@ -94,7 +94,7 @@ impl std::fmt::Debug for ShellAttribution {
 
 impl ShellAttribution {
     /// Construct a shareable attribution callback wired to the given [`AuthManager`].
-    /// Returns `Arc<dyn Trait>` so callers can drop the value directly into [`xai_grok_sampler::SamplerConfig::attribution_callback`].
+    /// Returns `Arc<dyn Trait>` so callers can drop the value directly into the sampler config's `attribution_callback` field.
     /// That field expects exactly `Arc<dyn Trait>`; keeping the boundary in one place avoids `as Arc<dyn _>` coercions at every call site.
     #[allow(clippy::new_ret_no_self)]
     pub fn new(

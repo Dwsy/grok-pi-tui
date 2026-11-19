@@ -13972,7 +13972,7 @@ dependencies = [
  "xai-grok-extra-ca",
  "xai-grok-http",
  "xai-grok-memory",
- "xai-grok-sampler",
+ "xai-grok-sampling-types",
  "xai-grok-shared",
  "xai-grok-shell-base",
  "xai-grok-telemetry",

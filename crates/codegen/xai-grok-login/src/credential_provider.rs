@@ -14,14 +14,14 @@ fn api_key_id_for(auth: Option<&crate::GrokAuth>) -> Option<String> {
         .map(|a| xai_grok_telemetry::config::deployment_id_from_key(&a.key))
 }
 
-/// Sampler [`BearerResolver`](xai_grok_sampler::BearerResolver) over a live [`AuthManager`].
+/// Sampler [`BearerResolver`](xai_grok_sampling_types::BearerResolver) over a live [`AuthManager`].
 /// Wire-valid only: it never stamps a hard-expired access token (the client auth contract).
 /// Shared by the session sampler and subagent configs so the contract can't drift between them.
 pub struct WireValidBearerResolver(pub Arc<AuthManager>);
 
 impl WireValidBearerResolver {
     /// The one constructor both the session sampler and subagent configs use, so the wire-valid contract cannot drift between the call sites.
-    pub fn shared(auth_manager: Arc<AuthManager>) -> xai_grok_sampler::SharedBearerResolver {
+    pub fn shared(auth_manager: Arc<AuthManager>) -> xai_grok_sampling_types::SharedBearerResolver {
         Arc::new(Self(auth_manager))
     }
 }
@@ -46,7 +46,7 @@ fn pre_send_refresh_budget(remaining_wire_life: std::time::Duration) -> std::tim
         .min(PRE_SEND_REFRESH_BUDGET)
 }
 
-impl xai_grok_sampler::BearerResolver for WireValidBearerResolver {
+impl xai_grok_sampling_types::BearerResolver for WireValidBearerResolver {
     fn current_bearer(&self) -> Option<String> {
         // The samplers attach this resolver whenever the endpoint is a first-party xAI URL.
         // A session minted by another authority would send its token there on every chat call.
@@ -575,7 +575,7 @@ mod tests {
     /// It returns the token inside the early-invalidation buffer (still proxy-accepted), and the fresh token after a rotation. The same resolver serves all three states without a client rebuild.
     #[test]
     fn wire_valid_resolver_tracks_manager_across_expiry_and_refresh() {
-        use xai_grok_sampler::BearerResolver;
+        use xai_grok_sampling_types::BearerResolver;
         let _guard = EarlyInvalidationGuard::pin_to_default();
         let dir = tempfile::tempdir().unwrap();
         let mgr = make_manager(
@@ -628,7 +628,7 @@ mod tests {
     /// A bearer with life to spare is left alone: no refresher run per request.
     #[tokio::test]
     async fn prepare_for_send_refreshes_a_bearer_that_would_not_outlive_the_send() {
-        use xai_grok_sampler::BearerResolver;
+        use xai_grok_sampling_types::BearerResolver;
         let _guard = EarlyInvalidationGuard::pin_to_default();
         let dir = tempfile::tempdir().unwrap();
         let mgr = make_manager(
@@ -668,7 +668,7 @@ mod tests {
     /// A refresh per send here would let parked, deliberately credential-less resubmits drive the escalation budget.
     #[tokio::test]
     async fn prepare_for_send_is_a_no_op_without_a_wire_valid_bearer() {
-        use xai_grok_sampler::BearerResolver;
+        use xai_grok_sampling_types::BearerResolver;
         let _guard = EarlyInvalidationGuard::pin_to_default();
         let dir = tempfile::tempdir().unwrap();
         let mgr = make_manager(
@@ -731,7 +731,7 @@ mod tests {
     /// The wait ends while the old bearer is still wire-valid, and the request goes out with it rather than with nothing.
     #[tokio::test(start_paused = true)]
     async fn prepare_for_send_gives_up_before_the_cached_bearer_dies() {
-        use xai_grok_sampler::BearerResolver;
+        use xai_grok_sampling_types::BearerResolver;
         let _guard = EarlyInvalidationGuard::pin_to_default();
         let dir = tempfile::tempdir().unwrap();
         let mgr = make_manager(
