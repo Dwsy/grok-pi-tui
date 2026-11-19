@@ -1,0 +1,97 @@
+name: OMP Shell Backend CI
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "tools/grok-pi-shell-host/**"
+      - "extensions/pi-grok-bash/**"
+      - "crates/codegen/xai-grok-tools/src/types/output.rs"
+      - "crates/codegen/pi-grok-adapter/**"
+      - "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/execute.rs"
+      - "crates/codegen/xai-grok-pager/src/acp/tracker.rs"
+      - "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/bash_extension.rs"
+      - ".github/workflows/omp-shell-ci.yml"
+  pull_request:
+    paths:
+      - "tools/grok-pi-shell-host/**"
+      - "extensions/pi-grok-bash/**"
+      - "crates/codegen/xai-grok-tools/src/types/output.rs"
+      - "crates/codegen/pi-grok-adapter/**"
+      - "crates/codegen/xai-grok-pager/src/scrollback/blocks/tool/execute.rs"
+      - "crates/codegen/xai-grok-pager/src/acp/tracker.rs"
+      - "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/bash_extension.rs"
+      - ".github/workflows/omp-shell-ci.yml"
+
+jobs:
+  omp-shell-host:
+    name: Standalone OMP Shell Host (macOS ARM64)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install host Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-11-08
+          targets: aarch64-apple-darwin
+
+      - name: Test standalone grok-pi-shell-host
+        run: |
+          cargo test \
+            --manifest-path tools/grok-pi-shell-host/Cargo.toml \
+            --target aarch64-apple-darwin
+
+      - name: Build & verify handshake
+        run: |
+          cargo build \
+            --manifest-path tools/grok-pi-shell-host/Cargo.toml \
+            --release \
+            --target aarch64-apple-darwin
+          host_bin="tools/grok-pi-shell-host/target/aarch64-apple-darwin/release/grok-pi-shell-host"
+          "$host_bin" --handshake | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          assert data["protocol_version"] == 1, data
+          assert data["trace_version"] == 1, data
+          assert data["engine"] == "omp-shell", data
+          print("Handshake OK:", data)
+          '
+
+  extension-and-tui:
+    name: Extension & TUI Trace Integration (macOS ARM64)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run pi-grok-bash backend tests
+        run: node --test extensions/pi-grok-bash/test-shell-backend.mjs
+
+      - name: Read repository Rust version
+        id: rust
+        run: |
+          channel=$(sed -n 's/^channel = "\([^"]*\)".*/\1/p' rust-toolchain.toml)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install repository Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+
+      - name: Install protoc
+        run: brew install protobuf
+
+      - name: Test adapter, Pager Execute card, and bash_extension injector
+        run: |
+          cargo test -p pi-grok-adapter --lib tool_projection::tests
+          cargo test -p xai-grok-pager --lib scrollback::blocks::tool::execute::tests
+          cargo test -p xai-grok-pager-bin --bin grok-pi bash_extension::tests

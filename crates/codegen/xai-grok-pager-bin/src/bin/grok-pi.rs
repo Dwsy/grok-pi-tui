@@ -1190,6 +1190,23 @@ async fn run(mut args: Args) -> Result<()> {
             eval_v2_language.to_string(),
         ));
         env.push(("PI_GROK_BASH_MAX_WAIT_MINS".to_string(), bash_max_wait_mins));
+        if std::env::var_os("PI_GROK_OMP_SHELL_HOST").is_none() {
+            let host_name = if cfg!(windows) {
+                "grok-pi-shell-host.exe"
+            } else {
+                "grok-pi-shell-host"
+            };
+            if let Some(sibling_host) = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join(host_name)))
+                .filter(|candidate| candidate.is_file())
+            {
+                env.push((
+                    "PI_GROK_OMP_SHELL_HOST".to_string(),
+                    sibling_host.to_string_lossy().into_owned(),
+                ));
+            }
+        }
         env.push((
             "PI_GROK_BASH_CONTROL_META".to_string(),
             if bash_bridge_runtime_enabled {

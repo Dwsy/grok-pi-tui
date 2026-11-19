@@ -64,6 +64,11 @@ pub(super) fn write_bash_extension() -> Result<BashExtension> {
     )?;
     write_source_file(
         source_dir.path(),
+        "shell-backend.ts",
+        include_str!("../../../../../../extensions/pi-grok-bash/shell-backend.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
         "eval-tasks.ts",
         include_str!("../../../../../../extensions/pi-grok-bash/eval-tasks.ts"),
     )?;
@@ -160,6 +165,8 @@ mod tests {
             std::fs::read_to_string(source_dir.join("eval.ts")).expect("read eval module");
         let bash_source = std::fs::read_to_string(source_dir.join("bash-tasks.ts"))
             .expect("read bash tasks module");
+        let shell_backend_source = std::fs::read_to_string(source_dir.join("shell-backend.ts"))
+            .expect("read shell backend module");
         let eval_tasks_source = std::fs::read_to_string(source_dir.join("eval-tasks.ts"))
             .expect("read eval tasks module");
         let prompts_source =
@@ -225,6 +232,9 @@ mod tests {
         assert!(eval_source.contains("type: \"host_call\""));
 
         assert!(bash_source.contains("runningTaskIds"));
+        assert!(bash_source.contains("launchBackendProcess"));
+        assert!(shell_backend_source.contains("PI_GROK_BASH_BACKEND"));
+        assert!(shell_backend_source.contains("grok-pi-shell-host"));
         assert!(bash_source.contains("op === \"kill\""));
         assert!(bash_source.contains("PI_GROK_BASH_CONTROL_META"));
         assert!(bash_source.contains("pi-grok-background-bash/v1"));

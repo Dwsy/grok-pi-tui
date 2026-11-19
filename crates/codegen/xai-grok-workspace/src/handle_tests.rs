@@ -168,6 +168,7 @@ impl xai_tool_runtime::Tool for BashCcoStub {
                 total_bytes: output.len(),
                 output_delta: None,
                 was_bare_echo: false,
+                shell_trace: None,
             },
         ))
     }

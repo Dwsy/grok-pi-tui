@@ -2013,6 +2013,7 @@ pub(super) fn send_late_bg_detection(app: &mut AppView, tc_id: &str) {
         total_bytes: 11,
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     };
     let update = agent_client_protocol::SessionUpdate::ToolCallUpdate(
         agent_client_protocol::ToolCallUpdate::new(

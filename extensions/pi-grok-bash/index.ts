@@ -680,7 +680,18 @@ export default async function (pi: ExtensionAPI) {
 			});
 			try {
 				const result = await managedBash.execute(toolCallId, params, signal, onUpdate, ctx);
-				if (!task?.backgrounded) return result;
+				if (!task?.backgrounded) {
+					if (task?.shellTrace) {
+						return {
+							...result,
+							details: {
+								...(result.details as Record<string, unknown> | undefined),
+								shellTrace: task.shellTrace,
+							},
+						};
+					}
+					return result;
+				}
 				// Promotion must expose the task envelope in content (model-visible):
 				// details alone never reach the agent over RPC.
 				return {

@@ -1963,6 +1963,7 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                 let mut block = ExecuteToolCallBlock::new(command).with_output(output_str.as_ref());
                 block.bash_mode = is_bash_mode;
                 block.header_display = header_display;
+                block.shell_trace = bash.shell_trace.clone();
                 if let Some(desc) = description {
                     block = block.with_description(desc);
                 }
@@ -2440,6 +2441,7 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                     let mut block =
                         ExecuteToolCallBlock::new(command).with_output(output_str.as_ref());
                     block.header_display = header_display;
+                    block.shell_trace = bash.shell_trace.clone();
                     if let Some(desc) = extract_raw_field(tc, "description") {
                         block = block.with_description(desc);
                     }

@@ -947,6 +947,15 @@ pub(crate) fn bash_tool_output(
                 .map(ToOwned::to_owned)
         });
 
+    let shell_trace = result
+        .pointer("/details/shellTrace")
+        .or_else(|| result.pointer("/details/shell_trace"))
+        .or_else(|| result.get("shell_trace"))
+        .and_then(|value| {
+            serde_json::from_value::<xai_grok_tools::types::output::ShellTraceSummary>(value.clone())
+                .ok()
+        });
+
     let bytes = text.as_bytes().to_vec();
     let total_bytes = bytes.len();
     json!({
@@ -963,6 +972,7 @@ pub(crate) fn bash_tool_output(
         "output_file": output_file,
         "total_bytes": total_bytes,
         "was_bare_echo": false,
+        "shell_trace": shell_trace,
     })
 }
 

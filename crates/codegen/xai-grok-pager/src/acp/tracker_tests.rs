@@ -981,6 +981,7 @@ fn tool_update_in_progress(id: &str, output_bytes: &[u8]) -> acp::SessionUpdate 
         total_bytes: output_bytes.len(),
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     };
     acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
         acp::ToolCallId::new(Arc::from(id)),
@@ -1011,6 +1012,7 @@ fn tool_update_completed_bash(id: &str, output_bytes: &[u8], exit_code: i32) -> 
         total_bytes: output_bytes.len(),
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     };
     acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
         acp::ToolCallId::new(Arc::from(id)),
@@ -1215,6 +1217,7 @@ fn tool_output_bash_serde_roundtrip() {
         total_bytes: 12,
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     };
     let value = serde_json::to_value(ToolOutput::Bash(bash)).unwrap();
     assert_eq!(
@@ -4362,6 +4365,7 @@ fn tool_update_in_progress_bg(id: &str, output_bytes: &[u8]) -> acp::SessionUpda
         total_bytes: output_bytes.len(),
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     };
     acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
         acp::ToolCallId::new(Arc::from(id)),
@@ -4556,6 +4560,7 @@ fn completed_other_function_name_preserves_bash_output() {
         total_bytes: 14,
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     };
     let tc = acp::ToolCall::new(
         acp::ToolCallId::new(Arc::from("tc1")),

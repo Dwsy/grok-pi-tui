@@ -1,5 +1,12 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-11-19 Optional OMP Shell Backend (`Issue #20`: `#13`–`#19`)
+
+- PASS: `node --test extensions/pi-grok-bash/test-shell-backend.mjs` — **3/3** passing (`resolveBashBackend` default `system` & opt-in `omp`, `PI_GROK_OMP_SHELL_HOST` validation, and mock JSONL host handshake/streaming/`shell_trace` projection).
+- PASS (static): `git diff --check` and `rustfmt --edition 2024 --check` on `tools/grok-pi-shell-host/src/*`, `pi-grok-adapter/src/tool_projection.rs`, `xai-grok-pager/src/scrollback/blocks/tool/execute.rs`, and `xai-grok-pager-bin/src/bin/grok_pi/bash_extension.rs`.
+- NOT RUN: `cargo test` / `cargo build` (`tools/grok-pi-shell-host`, `pi-grok-adapter`, `xai-grok-pager`, `xai-grok-pager-bin`). Per `AGENTS.md` and explicit user instruction, Cargo commands were not executed.
+- Design & Gate Records: [Feasibility Spike (#13)](issues/adapter/20261119-omp-shell-feasibility-spike.md), [Compatibility & Security Gate (#18)](issues/adapter/20261119-omp-shell-compatibility-and-security-gate.md).
+
 ## 2026-11-18 Subagent Parent-Context Fork Mode (`fork?: boolean` across V1 & V2, `root` & `child` Initiators)
 
 - PASS: `cd extensions/pi-grok-subagents && env PI_TEST_NODE_MODULES=/Users/dengwenyu/.pi/agent/install/releases/1.5.2/node_modules node --import ./test-installed-pi.mjs --test index.test.ts v2.test.ts runtime.test.ts delivery.test.ts fork.test.ts` — **89/89** passing (0 failed), including **6/6** offline real-SDK suites in `fork.test.ts` covering host-singleton bridge filtering & CLI flag parsing, `SharedBranchSessionManager` single-JSONL multi-leaf concurrent sibling + nested branches with `/tree` labels (plus standalone partial-mock compaction/toolCall closure fallback), V1 `root` → forked child → forked grandchild sharing `root.sessionFile` (plus `root.navigateTree(forkedChild.endLeafId)` live `/tree` branch jump and isolated child → forked grandchild sharing the child's own `.jsonl`), V2 `root`/`child` `spawn_team_agent(fork=true)` sharing `root.sessionFile` + `team_followup_task` reactivation + `spawn_team(fork=true, capability_mode="read-only")`, turn-1 fork with background/model/thinking/read-only overrides, `builtin:codemode` & user extension/`reply_style`/`AGENTS.md`/skill inheritance, and `persistedRunBranch` transcript isolation (both settled `endLeafId` and running `endLeafId: null`).
