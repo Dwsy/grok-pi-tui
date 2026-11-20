@@ -229,7 +229,9 @@ test("withholds session reference until the session file is materialized, then s
     assert.equal(requests[0].params.agent_session_id, undefined, "must not lock Herdr to an ID");
     assert.equal(requests[0].params.agent_session_path, undefined);
 
-    // File is now materialized. agent_start must report the path, never the ID.
+    // File is now materialized. agent_start must report the path with the
+    // deferred session_start_source (never undefined, which Herdr drops when
+    // unanchored or generation-gated), and never the ID.
     sessionFile = "/tmp/session-a.jsonl";
     idle = false;
     h.lifecycle.get("agent_start")({}, ctx);
@@ -238,6 +240,7 @@ test("withholds session reference until the session file is materialized, then s
       "pane.report_agent_session", "pane.report_agent",
     ]);
     assert.equal(requests[1].params.agent_session_path, "/tmp/session-a.jsonl");
+    assert.equal(requests[1].params.session_start_source, "startup");
     assert.equal(requests[1].params.agent_session_id, undefined, "ID must never be sent");
     assert.equal(requests[2].params.state, "working");
 

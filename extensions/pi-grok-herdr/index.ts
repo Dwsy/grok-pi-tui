@@ -76,6 +76,26 @@ async function deliver(request) {
 
 let sequence = Date.now() * 1000;
 let sessionPath;
+let reportedSessionPath;
+let pendingSessionStartSource;
+let lastSessionStartSource;
+
+const RECOGNIZED_START_SOURCES = new Set([
+  "startup",
+  "clear",
+  "resume",
+  "compact",
+  "new",
+  "fork",
+  "select",
+]);
+const REPLACEMENT_START_SOURCES = new Set(["new", "resume", "fork"]);
+
+function normalizeStartSource(reason) {
+  if (typeof reason !== "string") return undefined;
+  const trimmed = reason.trim();
+  return RECOGNIZED_START_SOURCES.has(trimmed) ? trimmed : undefined;
+}
 
 function nextSequence() {
   sequence += 1;
@@ -105,9 +125,39 @@ function sessionFields() {
   return {};
 }
 
+// Herdr drops pane.report_agent_session without a recognized session_start_source
+// whenever the pane is unanchored, generation-gated (after a previous agent
+// exited in the same pane), or awaiting process detection. Replacing an active
+// herdr:pi session requires "new", "resume", or "fork".
+function resolveStartSource(reason) {
+  const explicit = normalizeStartSource(reason);
+  const replacing =
+    Boolean(reportedSessionPath) && reportedSessionPath !== sessionPath;
+  if (replacing) {
+    if (explicit && REPLACEMENT_START_SOURCES.has(explicit)) return explicit;
+    if (
+      pendingSessionStartSource &&
+      REPLACEMENT_START_SOURCES.has(pendingSessionStartSource)
+    ) {
+      return pendingSessionStartSource;
+    }
+    return "new";
+  }
+  return explicit ?? pendingSessionStartSource ?? lastSessionStartSource ?? "startup";
+}
+
 function reportSession(reason) {
   const fields = sessionFields();
-  if (Object.keys(fields).length === 0) return;
+  if (Object.keys(fields).length === 0) {
+    const normalized = normalizeStartSource(reason);
+    if (normalized) pendingSessionStartSource = normalized;
+    return;
+  }
+
+  const startSource = resolveStartSource(reason);
+  pendingSessionStartSource = undefined;
+  reportedSessionPath = sessionPath;
+  lastSessionStartSource = startSource;
 
   enqueue({
     id: requestId("session"),
@@ -117,7 +167,7 @@ function reportSession(reason) {
       source: SOURCE,
       agent: AGENT,
       seq: nextSequence(),
-      session_start_source: reason,
+      session_start_source: startSource,
       ...fields,
     },
   });
