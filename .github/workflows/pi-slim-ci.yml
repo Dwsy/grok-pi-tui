@@ -3,6 +3,14 @@ name: Pi slim ARM64 CI (non-release)
 # Batch slimming: build only on explicit dispatch, not on every intermediate commit.
 # This job never publishes releases.
 on:
+  # Branch-local workflows can disappear from the dispatch registry after
+  # their final historical run is deleted. A workflow-file-only push restores
+  # a native ARM64 candidate without modifying the default branch.
+  push:
+    branches:
+      - refactor/pi-slim-20261116
+    paths:
+      - .github/workflows/pi-slim-ci.yml
   workflow_dispatch:
     inputs:
       runner:
@@ -31,14 +39,14 @@ permissions:
 
 concurrency:
   # Intel cross-checks must not prevent a native ARM64 candidate from starting.
-  group: pi-slim-${{ github.ref }}-${{ inputs.runner }}-${{ inputs.scope }}
+  group: pi-slim-${{ github.ref }}-${{ inputs.runner || 'macos-15' }}-${{ inputs.scope || 'candidate-only' }}
   cancel-in-progress: false
 
 jobs:
   arm64:
     name: ARM64 release-dist build and native smoke
-    if: inputs.scope == 'all' || inputs.scope == 'candidate-only' || inputs.scope == 'release-only'
-    runs-on: ${{ inputs.runner }}
+    if: github.event_name == 'push' || inputs.scope == 'all' || inputs.scope == 'candidate-only' || inputs.scope == 'release-only'
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     timeout-minutes: 150
     env:
       GROK_PI_VERSION: "0.0.0-slim-ci"
@@ -163,7 +171,7 @@ jobs:
             echo "git_sha=$GITHUB_SHA"
             echo "target=aarch64-apple-darwin"
             echo "profile=release-dist"
-            echo "runner=${{ inputs.runner }}"
+            echo "runner=${{ inputs.runner || 'macos-15' }}"
             "$src" --version
           } > dist/build-info.txt
 
