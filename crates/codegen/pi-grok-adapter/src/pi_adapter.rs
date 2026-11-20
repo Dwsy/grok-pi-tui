@@ -35,7 +35,8 @@ use crate::{
     todo_bridge::plan_update_for_tool,
     tool_projection::{
         bash_tool_output, edit_diff_content, history_tool_content, is_goal_tool_name,
-        normalize_tool_raw_input, normalize_tool_raw_output, pi_result_text, tool_content,
+        normalize_tool_raw_input, normalize_tool_raw_output, pi_result_text, pi_tool_metadata,
+        timeline_tool_result, tool_content,
         tool_kind,
     },
     workflow_host::{
@@ -280,6 +281,7 @@ struct AdapterState {
     /// session/load/recovery waits until the ordered socket stream reaches its
     /// replay-complete marker, so replay events cannot escape the load barrier.
     pending_subagent_replays: HashMap<String, oneshot::Sender<()>>,
+    pending_tree_leaves: HashMap<String, oneshot::Sender<Value>>,
     /// In-flight `/btw` side questions keyed by requestId (extension custom message).
     pending_btw: HashMap<String, oneshot::Sender<Result<String, String>>>,
     /// A recap command must finish before another recap can be requested.
@@ -295,6 +297,9 @@ struct AdapterState {
     /// It is deliberately not session persistence; the adapter rewrites it
     /// from its authoritative tracker after every transition.
     plan_mode_control: Option<PathBuf>,
+    /// Tool call ID of the currently pending `x.ai/exit_plan_mode` request,
+    /// preventing stale cancellations from clearing a newer approval dialog.
+    active_plan_approval_id: Option<String>,
     /// Storm guard for automatic Pi RPC crash recovery.
     rpc_recovery: recovery::RpcRecoveryTracker,
 }
@@ -389,11 +394,13 @@ impl PiAgent {
                 subagent_bridge_sequences: HashMap::new(),
                 subagent_session_to_id: HashMap::new(),
                 pending_subagent_replays: HashMap::new(),
+                pending_tree_leaves: HashMap::new(),
                 pending_btw: HashMap::new(),
                 recap_in_flight: false,
                 reload_in_flight: false,
                 plan_mode,
                 plan_mode_control,
+                active_plan_approval_id: None,
                 rpc_recovery: recovery::RpcRecoveryTracker::default(),
             })),
         })
@@ -1095,10 +1102,18 @@ fn yaml_string(value: &str) -> Result<String> {
 /// Normalize the completed plan into a Cursor-style Markdown document with
 /// deterministic YAML front matter. This runs immediately before approval so
 /// a model's whole-file write cannot accidentally discard adapter metadata.
+/// Missing or empty/frontmatter-only files are left untouched so empty-plan
+/// approval preserves `planContent: None`.
 fn normalize_plan_document(path: &Path, state: &PiState) -> Result<()> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|error| anyhow!("read plan file {}: {error}", path.display()))?;
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(anyhow!("read plan file {}: {error}", path.display())),
+    };
     let body = strip_plan_front_matter(&content);
+    if body.trim().is_empty() {
+        return Ok(());
+    }
     let name = plan_name(body, state);
     let overview = plan_overview(body);
     let (created_at, cwd) = plan_session_context(state);
@@ -1154,6 +1169,28 @@ fn ensure_plan_file(path: &Path) -> Result<()> {
     std::fs::File::create(path)
         .map_err(|error| anyhow!("create plan file {}: {error}", path.display()))?;
     Ok(())
+}
+
+/// Read the session plan file for `x.ai/exit_plan_mode`, treating missing,
+/// whitespace-only, or frontmatter-only files as `None`.
+fn plan_content_for_approval(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let body = strip_plan_front_matter(&content);
+    (!body.trim().is_empty()).then_some(content)
+}
+
+/// Convert the opaque Pi tool call id to a bounded, portable filename inside the
+/// private `plan_mode_control` directory (mirrors `ask_user_response_file_name`).
+fn plan_response_file_name(tool_call_id: &str) -> String {
+    let digest = Sha256::digest(tool_call_id.as_bytes());
+    let mut name = String::with_capacity("plan-resp-".len() + digest.len() * 2 + ".json".len());
+    name.push_str("plan-resp-");
+    use std::fmt::Write as _;
+    for byte in digest {
+        write!(name, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    name.push_str(".json");
+    name
 }
 
 fn plan_state_path(plan_file: &Path) -> PathBuf {

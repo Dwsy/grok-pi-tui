@@ -813,6 +813,9 @@ pub struct AppView {
     /// In-memory snapshot of the effective `UiConfig`.
     /// Seeded once at startup; updated synchronously by `set_X_inner` so dispatch stays sans-IO.
     pub current_ui: xai_grok_shell::agent::config::UiConfig,
+    pub(super) timeline_contents: xai_grok_shell::util::config::TimelineContents,
+    pub(super) timeline_host: Option<String>,
+    pub(super) timeline_saving: bool,
     pub cwd: PathBuf,
     /// Whether the cwd is inside a git repository (any ancestor has `.git`).
     /// Pre-computed at startup so dispatch stays free of filesystem I/O.
@@ -1712,6 +1715,9 @@ impl AppView {
             registry: ActionRegistry::defaults(),
             settings_registry: Arc::new(crate::settings::SettingsRegistry::defaults()),
             current_ui: xai_grok_shell::agent::config::UiConfig::default(),
+            timeline_contents: Default::default(),
+            timeline_host: None,
+            timeline_saving: false,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             cwd_has_git_ancestor: std::env::current_dir()
                 .ok()
@@ -6318,6 +6324,10 @@ impl AppView {
                                     status_line: status_line_frame.clone(),
                                     workspace_dashboard_enabled: self.workspace_dashboard_enabled,
                                     esc_owned_before_agent,
+                                    timeline: Some((
+                                        &self.timeline_contents,
+                                        self.timeline_host.as_deref(),
+                                    )),
                                 },
                             );
                             if let Some(modal) = self.import_claude_modal.as_mut() {
@@ -6448,6 +6458,10 @@ impl AppView {
                                                     AppRenderParams {
                                                         workspace_dashboard_enabled: self
                                                             .workspace_dashboard_enabled,
+                                                        timeline: Some((
+                                                            &self.timeline_contents,
+                                                            None,
+                                                        )),
                                                         ..Default::default()
                                                     },
                                                 )
@@ -6499,6 +6513,15 @@ impl AppView {
             }
             (None, Self::merge_escapes(notif_escapes, None))
         });
+        if let ActiveView::Agent(id) = self.active_view
+            && let Some(request) = self
+                .agents
+                .get_mut(&id)
+                .and_then(AgentView::timeline_view_mut)
+                .and_then(|agent| agent.timeline_request.take())
+        {
+            super::effects::send_timeline_message(&self.acp_tx, request);
+        }
         if let Some(started) = fps_frame_started {
             self.fps_hud.record(started.elapsed());
         }
@@ -7025,6 +7048,11 @@ impl AppView {
         if let Some((_, remaining)) = self.deferred_notification.as_mut() {
             if *remaining == 0 {
                 if let Some((event, _)) = self.deferred_notification.take() {
+                    // A failed turn must settle the program status as `error` instead of `done`
+                    // (OSC 7501); the notification body carries the same failure text.
+                    if event.kind == crate::notifications::NotificationEventKind::AgentError {
+                        self.notification_service.record_agent_error(&event.body);
+                    }
                     self.notification_service.notify(event);
                 }
             } else {

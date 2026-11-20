@@ -1,8 +1,17 @@
 # Subagents V2 Team 协作
 
-Subagents V2 是 grok-pi 内置 Pi 子代理上的**可选团队协作层**。它增加稳定 agent path、peer messaging、nested spawn、可复用 child-session 上下文和外置 team preset。V2 会**替换** V1 的单代理工具面，而不是在其之上叠加；V1 runtime 与命令仍然保留。
+Subagents V2 是 grok-pi 内置 Pi 子代理上的**团队协作层**。它增加稳定 agent path、peer messaging、nested spawn、可复用 child-session 上下文和外置 team preset。V2 会**替换** V1 的单代理工具面，而不是在其之上叠加；V1 runtime 与命令仍然保留。
 
-V2 **默认关闭**。如果只需要 `spawn_subagent`、`/subagents`、wait/cancel/history 或主→子消息，保持 V2 关闭即可；开启后 `spawn_subagent` 等 5 个 V1 工具不再注册（见下文「V2 模式下不注册 V1 工具」）。
+在 `grok-pi` 中，**F2 → Agent → Pi subagents V2（`[ui].pi_subagents_v2`）默认开启**（为 Pi 注入 `PI_GROK_SUBAGENTS_V2=1`；若独立加载扩展仍需 `PI_GROK_SUBAGENTS_V2=1`）。如果只需要 `spawn_subagent`、`/subagents`、wait/cancel/history 或主→子消息，可在 F2 关闭该开关并重启即可（立即可回滚到 V1）。
+
+## Plan Mode ↔ Team V2 闭环
+
+当任务横跨多个文件、架构尚未收敛或需要多代理分域写入时：
+
+1. root 先主动调用 `enter_plan_mode`，锁定只读探索边界。
+2. Plan Mode 下，`bash`、计划文件以外的写入与写型子代理会被阻塞；但 root 仍可传 `capability_mode: "read-only"` 调用 `spawn_team_agent` / `spawn_team` 进行并行只读侦察。
+3. 将目标、顺序步骤、互不重叠的 `write_scope`、验收命令与 `Re-plan if:` 升级条件写入 `.plan.md` 后，root **同轮主动调用 `exit_plan_mode`**，同步等待 `approved`、`abandoned` 或 `cancelled` 决议。
+4. 仅在 `approved` 后启动写型成员；若执行中命中 `Re-plan if:` 条件或 `blocked` 报告使原计划失效，root 可再次调用 `enter_plan_mode` 重规划。
 
 ## Multitask 技能模式
 
@@ -80,6 +89,7 @@ Agent path segment 只允许小写字母、数字和下划线，`root` 保留：
 - `QUEUED`：等待共享后台并发额度。
 - `RUNNING`：child turn 正在运行。
 - `IDLE`：上一轮成功完成，可用 `team_followup_task` 重新激活。
+- `WAITING_RESULT`：上一轮以 `waiting` report 结束并等待自身直系下级完成；下级 `FINAL_ANSWER` 到达后自动恢复该会话。
 - `WAITING_DECISION`：上一轮以 `blocked` report 结束。问题保留在 `team_list` 里，消息仍能送达，`team_followup_task` 可像 `IDLE` 一样重新激活它。
 - `FAILED`：上一轮失败，不会被静默自动复活。
 - `CANCELLED`：上一轮被中断，不会被静默自动复活。
@@ -92,8 +102,8 @@ Root 显示为 `ROOT`。
 
 | Tool | 语义 |
 |---|---|
-| `spawn_team_agent` | 异步创建一个稳定 `/root/...` path 的直接 child。child 同样获得 V2 control-plane tools，因此可以 nested spawn。支持 `agent_type`、`description`、`model`、`max_turns`、`thinking_level`、`capability_mode`。 |
-| `spawn_team` | 从外置 preset 启动选定成员。完整 roster 注册成功后才统一开跑；后续 member 创建失败，或启动前收到取消，都会回滚已创建成员，避免半个 team 残留。除 `team`、`task` 外还支持 `members`、`model`、`thinking_level`、`max_turns`、`capability_mode`、`instructions`、`timeout_ms`。 |
+| `spawn_team_agent` | 异步创建一个稳定 `/root/...` path 的直接 child。child 同样获得 V2 control-plane tools，因此可以 nested spawn / fork。支持 `agent_type`、`description`、`fork`、`model`、`max_turns`、`thinking_level`、`capability_mode`。 |
+| `spawn_team` | 从外置 preset 启动选定成员。完整 roster 注册成功后才统一开跑；后续 member 创建失败，或启动前收到取消，都会回滚已创建成员，避免半个 team 残留。除 `team`、`task` 外还支持 `members`、`fork`、`model`、`thinking_level`、`max_turns`、`capability_mode`、`instructions`、`timeout_ms`。 |
 | `team_send_message` | 缓冲 `MESSAGE`，不启动 idle recipient 的 turn。同一 sender 到同一 target 的消息在 25 ms 合并窗口内编号、去重，之后自动 flush；team 动作与 root turn 结束可提前 flush。运行中的接收者在下一个安全循环边界处理真正的 steer。当前工作需要的事实、纠偏和收尾指令使用此工具。 |
 | `team_followup_task` | 发送当前工作结束后的 `NEW_TASK`，不是紧急纠偏通道。还在 concurrency queue 的 recipient 会被提到共享队列最前再执行它的待跑任务，父级明确要求的工作不必排在无关 launch 后面；`IDLE` 与 `WAITING_DECISION` recipient 在同一个 child session 上重新激活，使用新的 V1 run ID。 |
 | `team_wait` | root 和 child 可无轮询地等待首次团队活动。可用 `teams` 指定一个或多个 preset 名称并行等待，省略则监听所有 agent；preset 成员的嵌套 child 也计入该 preset。默认超时 120 秒，范围 1–600 秒；匹配的 message、spawn、completion 或 interrupt 只唤醒一次，未知 preset 名直接报错。child 在没有匹配的活跃 agent 时立即返回以释放执行槽；root 会按时等待，因为 `team_followup_task` 可以重新激活被等待的 team。每次调用返回当前团队树。 |
@@ -109,6 +119,7 @@ Root 显示为 `ROOT`。
 | `members` | 可选的成员子集。保持 preset 声明顺序，因此定义在最后的 synthesizer 仍在其生产者之后启动。出现未知成员名时，在创建任何 child 之前就失败。 |
 | `model`、`thinking_level`、`max_turns` | 覆盖所有选中成员的对应值。不传则保留成员自身的 preset 值。 |
 | `capability_mode` | 所有选中成员的工具权限：`read-only` 或 `all`。两者都含 Bash；`read-only` 省略内置 `edit`/`write` 并注入只读契约。旧的 `execute`/`read-write` 静默映射为 `all`。默认取 agent definition，再回退 `all`。 |
+| `fork` | 设为 `true` 时，从 `/root` 当前对话分支、技能、`AGENTS.md` 上下文、系统提示段（如 `reply_style`）、活跃工具集与非宿主单例扩展插件分叉每个选中成员。 |
 | `instructions` | 追加到 preset `instructions` 的团队级补充指令，写入每个成员的系统提示。 |
 | `timeout_ms` | `0` 或省略时立即返回，最终答案异步回传 `/root`。正数最多等待 600 秒，并在工具结果里返回各成员状态与输出。 |
 
@@ -315,6 +326,17 @@ Child session 走 `systemPromptOverride`，Pi 只渲染 **preamble**：默认的
 - 默认规则（“Be concise”“Show file paths clearly”）在 child 里不存在，所以 `usageHint` 显式写了证据规则。
 
 面向 child 的规则要写进 `usageHint` 或工具的 `description`。加 `promptGuideline` 不会改变 child 行为。
+
+### 父级上下文分叉模式（`fork: true`，支持 root 与 child）
+
+V1（`spawn_subagent`）与 V2（`spawn_team_agent`、`spawn_team`）均支持可选参数 `fork?: boolean`（默认 `false`）：
+
+- **默认隔离（`fork: false`）**：子会话保持干净上下文，需在 `prompt`/`message` 中写明任务上下文；V1 与 V2 child 均保留各自的控制工具以按需发起下一层 spawn/fork。
+- **上下文分叉（`fork: true`）**：通过 `SharedBranchSessionManager` 直接在发起方（`root` 或 `child`）**同一个 `.jsonl` 文件与实时 `SessionManager` 树**上新建隔离分支（独立分支游标 `cursorLeafId`）：
+  - 在父级调用分叉节点下写入 `pi-grok-fork-branch/v1` 分支锚点，并在 `startLeafId` 前自动为在途并行 `toolCall` 补齐合成 `toolResult`；嵌套孙代理通过分支局部 `appendContextEdit(..., null)` 隐藏上层分叉包络（不影响父分支本身），同时为子分支首条 user 消息自动打上 `fork: ...` / `fork /root/...: ...` 标签，使原生 `/tree`（`ctx.navigateTree`）直接展示所有分叉子代理/孙代理分支并支持回车跳转进入继续对话，且 UI 历史/回放（`persistedRunBranch`）仍只截取该次运行自己的回合。
+  - 完整继承发起方的技能、`AGENTS.md`/`CLAUDE.md` 上下文组成、prompt templates、`SystemMessage` 自定义段（如 `reply_style`）、`promptGuidelines`、活跃工具集与非宿主单例扩展插件（用户/项目/CLI/`@ff-labs/pi-fff`/`builtin:codemode`，同时过滤内部 `pi-grok-*` 宿主桥接防止冲突）。
+  - 通过首轮非展示 custom message（`pi-grok-fork-context/v1`）注入子角色 / V2 `usageHint` / 只读契约，保留结构化 system sections。
+  - 调用级 `model`、`thinking_level`、`max_turns` 与 `capability_mode: "read-only"` 覆盖仍生效（`read-only` 会移除 `edit`/`write` 并满足 Plan Mode 门控）。
 
 ## 消息与持久化边界
 

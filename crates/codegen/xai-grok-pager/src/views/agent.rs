@@ -1574,7 +1574,9 @@ mod tests {
     fn hooked_read_state(member_count: usize, viewport: Rect) -> ScrollbackState {
         use crate::scrollback::RenderBlock;
         use crate::scrollback::blocks::tool::{HookPhase, HookRunEntry, HookRunStatus};
-        crate::appearance::cache::set_group_tool_verbs(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+        );
         crate::appearance::cache::set_show_thinking_blocks(false);
         let mut state = ScrollbackState::new();
         let first = state.push_block(RenderBlock::read("first.rs", None));
@@ -1641,7 +1643,9 @@ mod tests {
     }
     #[test]
     fn grouped_tool_hover_popup_shows_expanded_member_details() {
-        crate::appearance::cache::set_group_tool_verbs(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+        );
         crate::appearance::cache::set_show_thinking_blocks(false);
         crate::appearance::cache::set_write_edit_hover_popups(true);
         let viewport = Rect::new(0, 0, 100, 16);

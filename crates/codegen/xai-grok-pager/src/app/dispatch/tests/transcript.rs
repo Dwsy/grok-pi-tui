@@ -100,6 +100,8 @@ fn open_block_viewer_does_not_open_failed_tool_trace() {
     let entry = agent.scrollback.get_by_id_mut(entry_id).unwrap();
     entry.tool_traces.push(ToolTraceSnapshot {
         tool_call_id: "failed-search".into(),
+        pi_tool_name: None,
+        file_change: None,
         title: "search".into(),
         status: "Failed".into(),
         raw_input: Some(serde_json::json!({"query": "needle"})),

@@ -60,6 +60,10 @@ impl StyleInto<ratatui::style::Style> for Style {
         if effects.contains(Effects::HIDDEN) {
             modifiers |= Modifier::HIDDEN;
         }
+        // A solid chip is drawn by inverting the terminal's default foreground and background.
+        if effects.contains(Effects::INVERT) {
+            modifiers |= Modifier::REVERSED;
+        }
 
         style.add_modifier(modifiers)
     }
@@ -510,6 +514,170 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
     /// Render to ratatui Lines.
     /// If `pretty` is true, syntax markers are hidden.
     /// Returns rendered lines, line source map, and optional checkpoint.
+    /// Push one rendered segment as spans split at every highlight boundary inside it.
+    ///
+    /// A segment normally shares one merged style, which is enough for prose. A `[[Word]]` pill is
+    /// the exception: its label carries the tone's style while the text around it does not, so the
+    /// segment is cut where an interior highlight starts or ends and each piece takes its own style.
+    ///
+    /// `segment_source_start` is the segment's byte offset in the source and `segment_source_len`
+    /// its length before transforms. Slicing happens in the source, then each boundary is mapped
+    /// into the drawn text, because a pill's brackets are removed on the way out.
+    fn push_segment_spans(
+        &mut self,
+        drawn: &str,
+        source: &str,
+        segment_source_start: usize,
+        merged: ratatui::style::Style,
+        cur_col_in_line: &mut usize,
+    ) {
+        if drawn == source {
+            // No transform touched this segment, so source and drawn offsets agree.
+            self.push_split_spans(drawn, segment_source_start, drawn.len(), merged, cur_col_in_line);
+            return;
+        }
+        // The segment was rewritten. Cut it at its interior highlight boundaries in source space,
+        // then map each piece into the drawn text.
+        let source_end = segment_source_start + source.len();
+        let mut cuts: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut boundaries: Vec<usize> = vec![segment_source_start, source_end];
+        for hl in self.buffers.highlights.iter() {
+            for boundary in [hl.range.start, hl.range.end] {
+                if boundary > segment_source_start && boundary < source_end {
+                    boundaries.push(boundary);
+                }
+            }
+        }
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        for window in boundaries.windows(2) {
+            cuts.push(window[0]..window[1]);
+        }
+        if cuts.is_empty() {
+            self.buffers
+                .current_spans
+                .push(Span::styled(drawn.to_string(), merged));
+            *cur_col_in_line += unicode_display_width(drawn);
+            return;
+        }
+        let mut pushed = 0usize;
+        for range in cuts {
+            let start = crate::hyperlinks::source_to_chunk_offset(
+                range.start,
+                segment_source_start,
+                &self.buffers.transforms,
+            );
+            let end = crate::hyperlinks::source_to_chunk_offset(
+                range.end,
+                segment_source_start,
+                &self.buffers.transforms,
+            );
+            if end <= start || start >= drawn.len() {
+                continue;
+            }
+            let start = crate::buffers::floor_char_boundary(drawn, start);
+            let end = crate::buffers::ceil_char_boundary(drawn, end.min(drawn.len()).max(start));
+            if end <= start {
+                continue;
+            }
+            let piece = &drawn[start..end];
+            if piece.is_empty() {
+                continue;
+            }
+            pushed += 1;
+            let exact = self.buffers.highlights.iter().find(|hl| {
+                hl.range.start == range.start && hl.range.end == range.end
+            });
+            let style = match exact.and_then(|hl| hl.style) {
+                Some(style) => style.style_into(),
+                None => merged,
+            };
+            self.buffers
+                .current_spans
+                .push(Span::styled(piece.to_string(), style));
+            *cur_col_in_line += unicode_display_width(piece);
+        }
+        if pushed == 0 {
+            self.buffers
+                .current_spans
+                .push(Span::styled(drawn.to_string(), merged));
+            *cur_col_in_line += unicode_display_width(drawn);
+        }
+    }
+
+    /// Split `drawn` at the interior highlight boundaries that fall inside `[start, start+len)`.
+    fn push_split_spans(
+        &mut self,
+        drawn: &str,
+        segment_source_start: usize,
+        len: usize,
+        merged: ratatui::style::Style,
+        cur_col_in_line: &mut usize,
+    ) {
+        let end = segment_source_start + len;
+        let mut cuts: Vec<usize> = Vec::new();
+        for hl in self.buffers.highlights.iter() {
+            for boundary in [hl.range.start, hl.range.end] {
+                if boundary > segment_source_start && boundary < end {
+                    cuts.push(boundary);
+                }
+            }
+        }
+        if cuts.is_empty() {
+            self.buffers
+                .current_spans
+                .push(Span::styled(drawn.to_string(), merged));
+            *cur_col_in_line += unicode_display_width(drawn);
+            return;
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut cursor = segment_source_start;
+        for cut in cuts {
+            self.push_piece(drawn, segment_source_start, cursor..cut, merged, cur_col_in_line);
+            cursor = cut;
+        }
+        self.push_piece(drawn, segment_source_start, cursor..end, merged, cur_col_in_line);
+    }
+
+    /// Push the part of `drawn` covering `source_range`, styled by an exact highlight match.
+    fn push_piece(
+        &mut self,
+        drawn: &str,
+        segment_source_start: usize,
+        source_range: std::ops::Range<usize>,
+        merged: ratatui::style::Style,
+        cur_col_in_line: &mut usize,
+    ) {
+        if source_range.is_empty() {
+            return;
+        }
+        let raw_start = source_range.start.saturating_sub(segment_source_start);
+        let raw_end = (source_range.end - segment_source_start).min(drawn.len());
+        let start = crate::buffers::floor_char_boundary(drawn, raw_start);
+        let end = crate::buffers::ceil_char_boundary(drawn, raw_end.max(start));
+        if end <= start {
+            return;
+        }
+        let piece = &drawn[start..end];
+        if piece.is_empty() {
+            return;
+        }
+        let exact = self
+            .buffers
+            .highlights
+            .iter()
+            .find(|hl| hl.range.start == source_range.start && hl.range.end == source_range.end);
+        let style = match exact.and_then(|hl| hl.style) {
+            Some(style) => style.style_into(),
+            None => merged,
+        };
+        self.buffers
+            .current_spans
+            .push(Span::styled(piece.to_string(), style));
+        *cur_col_in_line += unicode_display_width(piece);
+    }
+
     pub fn render_ratatui(&mut self, pretty: bool) -> (MarkdownRenderOutput, Option<Checkpoint>) {
         let render_events = self.build_render_events();
 
@@ -738,13 +906,27 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                                     );
                                 }
 
+                                // `transformed` and `text` split into the same number of lines in the
+                                // same order, so the segment's source counterpart sits at the same index.
+                                let source_segment = if transformed.len() == text.len() {
+                                    segment
+                                } else {
+                                    text.split('\n').nth(idx).unwrap_or(segment)
+                                };
+
                                 if !segment.is_empty() {
-                                    self.buffers
-                                        .current_spans
-                                        .push(Span::styled(segment.to_string(), ratatui_style));
-                                    cur_col_in_line += unicode_display_width(segment);
+                                    self.push_segment_spans(
+                                        segment,
+                                        source_segment,
+                                        byte_offset,
+                                        ratatui_style,
+                                        &mut cur_col_in_line,
+                                    );
                                 }
-                                byte_offset += segment.len() + 1;
+                                // Source offsets advance by the source length, never the drawn one: a
+                                // transform may shorten the text and the next segment still has to be
+                                // located where it actually is in the source.
+                                byte_offset += source_segment.len() + 1;
                                 seg_x_offset += segment.len() + 1;
                             }
                         }

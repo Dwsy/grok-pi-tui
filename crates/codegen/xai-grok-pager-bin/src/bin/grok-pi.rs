@@ -18,6 +18,8 @@ mod cli;
 mod config_skill;
 #[path = "grok_pi/context_extension.rs"]
 mod context_extension;
+#[path = "grok_pi/emphasis_extension.rs"]
+mod emphasis_extension;
 #[path = "grok_pi/export_extension.rs"]
 mod export_extension;
 #[path = "grok_pi/ext_dev.rs"]
@@ -90,7 +92,8 @@ use xai_grok_pager::{
     pi_resource_policy::ResourcePolicy,
 };
 use xai_grok_shell::host_features::{
-    HostFeatureKey, HostFeatureManifest, PI_ASK_USER_QUESTION, PI_BTW, PI_GOAL, PI_HERDR, PI_LOOP,
+    HostFeatureKey, HostFeatureManifest, PI_ASK_USER_QUESTION, PI_BTW, PI_EMPHASIS, PI_GOAL,
+    PI_HERDR, PI_LOOP,
     PI_SUBAGENTS, PI_TODO, PI_WORKFLOWS,
 };
 
@@ -105,6 +108,7 @@ use btw_extension::write_btw_extension;
 use cli::{Args, Command, normalize_compound_short_flags, pi_args_with_startup_flags};
 use config_skill::{config_skill_enabled, sync_config_skill_cache};
 use context_extension::write_context_extension;
+use emphasis_extension::write_emphasis_extension;
 use export_extension::write_export_extension;
 use ext_dev::ExtensionDev;
 #[cfg(test)]
@@ -511,6 +515,12 @@ async fn run(mut args: Args) -> Result<()> {
         .then(|| write_rpc_compat_extension())
         .transpose()
         .context("failed to create Pi RPC compatibility extension")?;
+    // Reply emphasis: teaches the agent to write `[[Done]]` pills, which the Pager's own markdown
+    // renderer draws. It is a host bridge extension because Pi never leaves `rpc` mode here.
+    let emphasis_extension = (bridge_extensions_enabled && host_feature_enabled(PI_EMPHASIS))
+        .then(|| write_emphasis_extension())
+        .transpose()
+        .context("failed to create Pi emphasis extension")?;
     let shortcut_manager_extension = if remote_tui_enabled {
         Some(
             write_shortcut_manager_extension()
@@ -635,6 +645,12 @@ async fn run(mut args: Args) -> Result<()> {
         (
             "pi-grok-working-message",
             working_message_extension
+                .as_ref()
+                .map(|extension| extension.path()),
+        ),
+        (
+            "pi-grok-emphasis",
+            emphasis_extension
                 .as_ref()
                 .map(|extension| extension.path()),
         ),
@@ -1174,6 +1190,23 @@ async fn run(mut args: Args) -> Result<()> {
             eval_v2_language.to_string(),
         ));
         env.push(("PI_GROK_BASH_MAX_WAIT_MINS".to_string(), bash_max_wait_mins));
+        if std::env::var_os("PI_GROK_OMP_SHELL_HOST").is_none() {
+            let host_name = if cfg!(windows) {
+                "grok-pi-shell-host.exe"
+            } else {
+                "grok-pi-shell-host"
+            };
+            if let Some(sibling_host) = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join(host_name)))
+                .filter(|candidate| candidate.is_file())
+            {
+                env.push((
+                    "PI_GROK_OMP_SHELL_HOST".to_string(),
+                    sibling_host.to_string_lossy().into_owned(),
+                ));
+            }
+        }
         env.push((
             "PI_GROK_BASH_CONTROL_META".to_string(),
             if bash_bridge_runtime_enabled {
@@ -1266,6 +1299,7 @@ async fn run(mut args: Args) -> Result<()> {
     let _rpc_compat_extension = rpc_compat_extension;
     let _working_message_extension = working_message_extension;
     let _shortcut_manager_extension = shortcut_manager_extension;
+    let _emphasis_extension = emphasis_extension;
     let _rust_tui_bridge_extension = rust_tui_bridge_extension;
     let _plan_mode_extension = plan_mode_extension;
     let _goal_extension = goal_extension;
@@ -1617,6 +1651,27 @@ async fn notify_host_message(client_tx: &xai_acp_lib::AcpClientTx, message: &str
     };
     let notification = agent_client_protocol::ExtNotification::new("pi/ui/notify", raw.into());
     let _ = xai_acp_lib::acp_send(notification, client_tx).await;
+}
+
+#[cfg(test)]
+mod bundled_manifest_tests {
+    use super::bundled_host_ui::BUNDLED_HOST_UI_SOURCES;
+    use xai_grok_shell::host_features::{HostFeatureManifest, PI_EMPHASIS};
+
+    /// The bundled F2 manifests must parse, and the emphasis toggle must be among them.
+    ///
+    /// This runs the same parse the binary does at startup, so a malformed `grok-pi.json` or a
+    /// manifest whose `default` drifts from `UiConfig` fails here instead of on a user's launch.
+    #[test]
+    fn every_bundled_manifest_parses_and_emphasis_is_present() {
+        let manifest = HostFeatureManifest::from_json_sources(BUNDLED_HOST_UI_SOURCES)
+            .expect("bundled host UI manifests must parse");
+        let spec = manifest
+            .find(PI_EMPHASIS)
+            .expect("pi_emphasis must be a bundled setting");
+        // The toggle is on by default, matching `UiConfig::default().pi_emphasis`.
+        assert_eq!(spec.key, PI_EMPHASIS);
+    }
 }
 
 #[cfg(test)]

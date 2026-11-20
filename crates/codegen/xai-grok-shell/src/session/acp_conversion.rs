@@ -1149,6 +1149,7 @@ mod tests {
             output_delta: None,
             total_bytes: 0,
             was_bare_echo: false,
+            shell_trace: None,
         });
         let json = raw_output_json(&output, Some(&rw)).unwrap();
         let round_tripped: ToolOutput = serde_json::from_value(json).unwrap();

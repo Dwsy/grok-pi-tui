@@ -652,6 +652,9 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         "pi/ui/plan_file" => handle_pi_ui_plan_file(notif, app),
         // Experimental Remote TUI frame projection (PI_GROK_REMOTE_TUI=1 on Pi).
         "pi/ui/remote_tui" => handle_pi_ui_remote_tui(notif, app),
+        "pi/ui/timeline" => {
+            pi_ui_params(notif).is_some_and(|params| super::timeline::handle_message(app, params))
+        }
         // Extension shortcut registry sync from Pi.
         "pi/ui/shortcuts" => handle_pi_ui_shortcuts(notif, app),
         _ => false,
@@ -1005,6 +1008,7 @@ fn handle_pi_ui_title(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
 /// streaming/compaction gates pass; clear the equivalent Pager projections
 /// and restore the durable Pi session title.
 fn handle_pi_ui_reset_extension_ui(app: &mut AppView) -> bool {
+    app.timeline_host = None;
     let Some(session_title) = app.reset_external_extension_ui() else {
         return false;
     };

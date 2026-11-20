@@ -1,6 +1,34 @@
 use super::*;
 use crate::model::EVAL_TOOL_UI_BRIDGE_TYPE;
 
+pub(super) fn timeline_only_tool_start(id: &str, name: &str) -> acp::SessionUpdate {
+    let mut meta = acp::Meta::new();
+    meta.insert("piToolName".into(), json!(name));
+    meta.insert("piTimelineOnly".into(), Value::Bool(true));
+    acp::SessionUpdate::ToolCall(
+        acp::ToolCall::new(acp::ToolCallId::new(id), name.to_owned())
+            .status(acp::ToolCallStatus::InProgress)
+            .meta(Some(meta)),
+    )
+}
+
+pub(super) fn timeline_only_tool_end(
+    id: &str,
+    result: &Value,
+    is_error: bool,
+) -> acp::SessionUpdate {
+    acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+        acp::ToolCallId::new(id),
+        acp::ToolCallUpdateFields::new()
+            .status(Some(if is_error {
+                acp::ToolCallStatus::Failed
+            } else {
+                acp::ToolCallStatus::Completed
+            }))
+            .raw_output(Some(timeline_tool_result(json!({}), result, is_error))),
+    ))
+}
+
 /// Whether the top-level `eval` call must stay out of the native tool cards.
 ///
 /// Eval-v2-only normally keeps the call model-visible but unrendered, showing
@@ -183,8 +211,8 @@ impl PiAgent {
                 .insert(id.to_string());
         }
         if self.suppressed_codemode_nested_call(event) {
-            // A script may still call interactive tools. The question dialog
-            // runs outside card projection; suppression only removes the
+            // A script may still call interactive tools. The question/plan
+            // dialogs run outside card projection; suppression only removes the
             // nested tool row, so the extension must not be left polling.
             if name == "ask_user_question" {
                 let args = normalize_tool_raw_input(
@@ -195,6 +223,26 @@ impl PiAgent {
                 let tool_call_id = id.to_string();
                 tokio::task::spawn_local(async move {
                     agent.request_ask_user_question(&tool_call_id, args).await;
+                });
+            } else if name == "enter_plan_mode" {
+                let args = normalize_tool_raw_input(
+                    name,
+                    event.get("args").or_else(|| event.get("input")).cloned(),
+                );
+                let agent = self.clone();
+                let tool_call_id = id.to_string();
+                tokio::task::spawn_local(async move {
+                    agent.handle_enter_plan_mode(&tool_call_id, args).await;
+                });
+            } else if name == "exit_plan_mode" {
+                let args = normalize_tool_raw_input(
+                    name,
+                    event.get("args").or_else(|| event.get("input")).cloned(),
+                );
+                let agent = self.clone();
+                let tool_call_id = id.to_string();
+                tokio::task::spawn_local(async move {
+                    agent.request_plan_approval(&tool_call_id, args).await;
                 });
             }
             return;
@@ -213,6 +261,7 @@ impl PiAgent {
                 .insert(id.to_string(), args);
         }
         if eval_top_level_hidden(self.eval_v2_only, name) {
+            self.send_update(timeline_only_tool_start(id, name)).await;
             return;
         }
         let content = edit_diff_content(name, args.as_ref(), None).unwrap_or_default();
@@ -220,25 +269,38 @@ impl PiAgent {
         let ask_user_args = (name == "ask_user_question")
             .then(|| args.clone())
             .flatten();
-        // When the tool is Q&A we still spawn even if args is None so the control
-        // file gets an error payload instead of leaving the extension polling forever.
+        let plan_args = (name == "enter_plan_mode" || name == "exit_plan_mode")
+            .then(|| args.clone())
+            .flatten();
+        // When the tool is Q&A or Plan we still spawn even if args is None so
+        // the control directory gets a response instead of leaving the
+        // extension polling forever.
         let open_ask_user = name == "ask_user_question";
-        let mut tool_call =
-            acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
-                .kind(tool_kind(name))
-                .status(acp::ToolCallStatus::InProgress)
-                .content(content)
-                .locations(Vec::new())
-                .raw_input(args);
-        if let Some(usage) = usage {
-            let mut meta = acp::Meta::new();
-            meta.insert("piToolUsage".into(), usage);
-            tool_call = tool_call.meta(Some(meta));
-        }
+        let enter_plan = name == "enter_plan_mode";
+        let exit_plan = name == "exit_plan_mode";
+        let tool_call = acp::ToolCall::new(acp::ToolCallId::new(id.to_string()), name.to_string())
+            .kind(tool_kind(name))
+            .status(acp::ToolCallStatus::InProgress)
+            .content(content)
+            .locations(Vec::new())
+            .raw_input(args)
+            .meta(pi_tool_metadata(name, usage));
         self.send_update(acp::SessionUpdate::ToolCall(tool_call))
             .await;
-        if name == "exit_plan_mode" {
-            self.request_plan_approval(id).await;
+        if enter_plan {
+            let agent = self.clone();
+            let tool_call_id = id.to_string();
+            let enter_plan_args = plan_args.clone();
+            tokio::task::spawn_local(async move {
+                agent.handle_enter_plan_mode(&tool_call_id, enter_plan_args).await;
+            });
+        }
+        if exit_plan {
+            let agent = self.clone();
+            let tool_call_id = id.to_string();
+            tokio::task::spawn_local(async move {
+                agent.request_plan_approval(&tool_call_id, plan_args).await;
+            });
         }
         if open_ask_user {
             let agent = self.clone();
@@ -332,46 +394,239 @@ impl PiAgent {
         write_ask_user_response(tool_call_id, format_ask_user_tool_result(result));
     }
 
-    /// Bridge Pi's extension-owned `exit_plan_mode` tool to the Pager's
-    /// native PlanApprovalView. The adapter remains the state authority; the
-    /// extension only gives the model a real tool to request this transition.
-    pub(super) async fn request_plan_approval(&self, tool_call_id: &str) {
-        let plan_file_path = {
+    /// Bridge Pi's extension-owned `enter_plan_mode` tool so the agent can
+    /// proactively enter (or re-enter) Plan Mode, seed the session plan file,
+    /// notify the Pager, and publish `active: true` before the tool returns.
+    pub(super) async fn handle_enter_plan_mode(&self, tool_call_id: &str, _args: Option<Value>) {
+        let plan_file_path = self.state.borrow().plan_mode.plan_file_path().to_path_buf();
+        let had_existing_plan = plan_content_for_approval(&plan_file_path).is_some();
+        if let Err(error) = ensure_plan_file(&plan_file_path) {
+            tracing::warn!(
+                %error,
+                path = %plan_file_path.display(),
+                "failed to prepare session plan file on enter_plan_mode"
+            );
+            self.write_plan_mode_response(
+                tool_call_id,
+                json!({
+                    "outcome": "error",
+                    "message": format!(
+                        "Failed to prepare session plan file {}: {error}",
+                        plan_file_path.display()
+                    ),
+                }),
+            );
+            return;
+        }
+        let (prior_snapshot, was_active, was_pending, reentry, changed) = {
             let mut state = self.state.borrow_mut();
-            if !state.plan_mode.is_active() || state.plan_mode.is_awaiting_plan_approval() {
-                return;
+            let prior_snapshot = state.plan_mode.snapshot();
+            let was_active = state.plan_mode.is_active();
+            let was_pending = state.plan_mode.state() == crate::plan_mode::PiPlanState::Pending;
+            let reentry = state.plan_mode.was_previously_active();
+            let changed = state.plan_mode.activate_from_tool();
+            if changed {
+                state.active_plan_approval_id = None;
             }
-            state.plan_mode.set_awaiting_plan_approval(true);
-            state.plan_mode.plan_file_path().to_path_buf()
+            (prior_snapshot, was_active, was_pending, reentry, changed)
         };
         if let Err(error) = self.persist_plan_mode_state() {
+            tracing::warn!(%error, "failed to persist agent-initiated plan mode entry");
+        }
+        if let Err(error) = self.sync_plan_mode_control() {
+            tracing::warn!(%error, "failed to publish plan gate on enter_plan_mode");
+            if changed {
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.plan_mode = crate::plan_mode::PiPlanTracker::from_snapshot_with_plan_file(
+                        plan_file_path.clone(),
+                        prior_snapshot,
+                    );
+                }
+                let _ = self.persist_plan_mode_state();
+            }
+            self.write_plan_mode_response(
+                tool_call_id,
+                json!({
+                    "outcome": "error",
+                    "message": format!("Failed to activate plan mode gate: {error}"),
+                }),
+            );
+            return;
+        }
+        self.publish_plan_file_path().await;
+        if changed && !was_pending {
+            self.send_update(acp::SessionUpdate::CurrentModeUpdate(
+                acp::CurrentModeUpdate::new(acp::SessionModeId::new("plan")),
+            ))
+            .await;
+        }
+        let plan_path_str = plan_file_path.display().to_string();
+        let seed_status = if had_existing_plan {
+            "existing"
+        } else {
+            "empty"
+        };
+        let message = if was_active {
+            format!(
+                "Plan mode is already active. Your session plan file is {plan_path_str}. \
+                 Update it with Goal, Ordered Steps, Write Scopes (if delegating to Subagents V2), Verification, and Re-plan if: triggers, then call exit_plan_mode proactively when ready."
+            )
+        } else if reentry {
+            format!(
+                "Returned to plan mode. Your previous session plan file is at {plan_path_str} ({seed_status}). \
+                 Read and update {plan_path_str} with revised steps, Write Scopes, and Re-plan if: triggers (bash, edits outside the plan file, and non-read-only subagents are blocked), then call exit_plan_mode in this same turn once ready."
+            )
+        } else {
+            format!(
+                "Entered plan mode. Bash, edits/writes outside {plan_path_str}, and mutating subagents are now blocked (pass capability_mode: \"read-only\" for parallel exploration). \
+                 Write your structured plan to {plan_path_str} (Goal, Ordered Steps, Write Scopes if using Subagents V2, Verification, and Re-plan if: triggers), then call exit_plan_mode proactively in this same turn when ready for user approval."
+            )
+        };
+        self.write_plan_mode_response(
+            tool_call_id,
+            json!({
+                "outcome": "entered",
+                "alreadyActive": was_active,
+                "reentry": reentry && !was_active,
+                "seedStatus": seed_status,
+                "planFilePath": plan_path_str,
+                "message": message,
+            }),
+        );
+    }
+
+    /// Bridge Pi's extension-owned `exit_plan_mode` tool to the Pager's
+    /// native PlanApprovalView. The adapter remains the state authority; the
+    /// extension waits for the response file so Plan Mode transitions and
+    /// `control.json` stay strictly ordered within the active turn.
+    pub(super) async fn request_plan_approval(&self, tool_call_id: &str, args: Option<Value>) {
+        enum EntryCheck {
+            Inactive,
+            AlreadyAwaiting,
+            Proceed(PathBuf),
+        }
+        let check = {
+            let mut state = self.state.borrow_mut();
+            if !state.plan_mode.is_active() {
+                EntryCheck::Inactive
+            } else if state.plan_mode.is_awaiting_plan_approval() {
+                EntryCheck::AlreadyAwaiting
+            } else {
+                state.plan_mode.set_awaiting_plan_approval(true);
+                state.active_plan_approval_id = Some(tool_call_id.to_string());
+                EntryCheck::Proceed(state.plan_mode.plan_file_path().to_path_buf())
+            }
+        };
+        let plan_file_path = match check {
+            EntryCheck::Inactive => {
+                self.write_plan_mode_response(
+                    tool_call_id,
+                    json!({
+                        "outcome": "inactive",
+                        "message": "Plan mode is not active. Nothing to submit; continue in the current mode.",
+                    }),
+                );
+                return;
+            }
+            EntryCheck::AlreadyAwaiting => {
+                self.write_plan_mode_response(
+                    tool_call_id,
+                    json!({
+                        "outcome": "cancelled",
+                        "message": "A plan approval dialog is already open. Wait for the user's decision before calling exit_plan_mode again.",
+                    }),
+                );
+                return;
+            }
+            EntryCheck::Proceed(path) => path,
+        };
+
+        let clear_awaiting_if_current = || {
+            let mut state = self.state.borrow_mut();
+            if state.active_plan_approval_id.as_deref() == Some(tool_call_id) {
+                state.plan_mode.set_awaiting_plan_approval(false);
+                state.active_plan_approval_id = None;
+            }
+        };
+
+        if let Err(error) = self.persist_plan_mode_state() {
             tracing::warn!(%error, "failed to persist plan approval state");
-            self.state
-                .borrow_mut()
-                .plan_mode
-                .set_awaiting_plan_approval(false);
+            clear_awaiting_if_current();
+            self.write_plan_mode_response(
+                tool_call_id,
+                json!({
+                    "outcome": "error",
+                    "message": format!("Failed to persist plan approval state: {error}"),
+                }),
+            );
             return;
         }
         if let Err(error) = self.sync_plan_mode_control() {
             tracing::warn!(%error, "failed to publish plan gate before approval");
-            self.state
-                .borrow_mut()
-                .plan_mode
-                .set_awaiting_plan_approval(false);
+            clear_awaiting_if_current();
+            self.write_plan_mode_response(
+                tool_call_id,
+                json!({
+                    "outcome": "error",
+                    "message": format!("Failed to publish plan gate before approval: {error}"),
+                }),
+            );
             return;
+        }
+        if let Some(inline_plan) = args
+            .as_ref()
+            .and_then(|value| value.get("plan"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|plan| !plan.is_empty())
+        {
+            let body = if inline_plan.ends_with('\n') {
+                inline_plan.to_string()
+            } else {
+                format!("{inline_plan}\n")
+            };
+            if let Err(error) = ensure_plan_file(&plan_file_path)
+                .and_then(|()| atomic_write(&plan_file_path, body.as_bytes()))
+            {
+                tracing::warn!(
+                    %error,
+                    path = %plan_file_path.display(),
+                    "failed to write inline plan before approval"
+                );
+                clear_awaiting_if_current();
+                let _ = self.persist_plan_mode_state();
+                self.write_plan_mode_response(
+                    tool_call_id,
+                    json!({
+                        "outcome": "error",
+                        "message": format!(
+                            "Failed to write plan file {}: {error}",
+                            plan_file_path.display()
+                        ),
+                    }),
+                );
+                return;
+            }
         }
         let pi_state = self.state.borrow().bootstrap.state.clone();
         if let Err(error) = normalize_plan_document(&plan_file_path, &pi_state) {
             tracing::warn!(%error, "failed to normalize plan document before approval");
-            self.state
-                .borrow_mut()
-                .plan_mode
-                .set_awaiting_plan_approval(false);
+            clear_awaiting_if_current();
+            let _ = self.persist_plan_mode_state();
+            self.write_plan_mode_response(
+                tool_call_id,
+                json!({
+                    "outcome": "error",
+                    "message": format!(
+                        "Failed to normalize plan file {}: {error}",
+                        plan_file_path.display()
+                    ),
+                }),
+            );
             return;
         }
-        let plan_content = std::fs::read_to_string(&plan_file_path)
-            .ok()
-            .filter(|content| !content.trim().is_empty());
+        let plan_content = plan_content_for_approval(&plan_file_path);
         let params = json!({
             "sessionId": self.session_id().0.to_string(),
             "toolCallId": tool_call_id,
@@ -381,10 +636,15 @@ impl PiAgent {
             Ok(raw) => raw,
             Err(error) => {
                 tracing::warn!(%error, "failed to serialize plan approval request");
-                self.state
-                    .borrow_mut()
-                    .plan_mode
-                    .set_awaiting_plan_approval(false);
+                clear_awaiting_if_current();
+                let _ = self.persist_plan_mode_state();
+                self.write_plan_mode_response(
+                    tool_call_id,
+                    json!({
+                        "outcome": "error",
+                        "message": format!("Failed to serialize plan approval request: {error}"),
+                    }),
+                );
                 return;
             }
         };
@@ -393,10 +653,15 @@ impl PiAgent {
             Ok(response) => response,
             Err(error) => {
                 tracing::warn!(%error, "plan approval request failed");
-                self.state
-                    .borrow_mut()
-                    .plan_mode
-                    .set_awaiting_plan_approval(false);
+                clear_awaiting_if_current();
+                let _ = self.persist_plan_mode_state();
+                self.write_plan_mode_response(
+                    tool_call_id,
+                    json!({
+                        "outcome": "error",
+                        "message": format!("Plan approval request failed: {error}"),
+                    }),
+                );
                 return;
             }
         };
@@ -404,10 +669,15 @@ impl PiAgent {
             Ok(value) => value,
             Err(error) => {
                 tracing::warn!(%error, "invalid plan approval response");
-                self.state
-                    .borrow_mut()
-                    .plan_mode
-                    .set_awaiting_plan_approval(false);
+                clear_awaiting_if_current();
+                let _ = self.persist_plan_mode_state();
+                self.write_plan_mode_response(
+                    tool_call_id,
+                    json!({
+                        "outcome": "error",
+                        "message": format!("Invalid plan approval response: {error}"),
+                    }),
+                );
                 return;
             }
         };
@@ -419,45 +689,142 @@ impl PiAgent {
         let feedback = result
             .get("feedback")
             .and_then(Value::as_str)
-            .filter(|feedback| !feedback.trim().is_empty());
-        let approved = outcome == "approved" || outcome == "abandoned";
-        if approved {
-            let changed = self.state.borrow_mut().plan_mode.deactivate_approved();
-            if let Err(error) = self.persist_plan_mode_state() {
-                tracing::warn!(%error, "failed to persist approved plan-mode exit");
+            .map(str::trim)
+            .filter(|feedback| !feedback.is_empty())
+            .map(str::to_owned);
+        let plan_path_str = plan_file_path.display().to_string();
+        match outcome {
+            "approved" => {
+                let (allow_transition, changed) = {
+                    let mut state = self.state.borrow_mut();
+                    let allow = state.active_plan_approval_id.as_deref() == Some(tool_call_id)
+                        || state.active_plan_approval_id.is_none();
+                    if allow {
+                        state.active_plan_approval_id = None;
+                        (true, state.plan_mode.deactivate_approved())
+                    } else {
+                        (false, false)
+                    }
+                };
+                if allow_transition {
+                    if let Err(error) = self.persist_plan_mode_state() {
+                        tracing::warn!(%error, "failed to persist approved plan-mode exit");
+                    }
+                    if let Err(error) = self.sync_plan_mode_control() {
+                        tracing::warn!(%error, "failed to publish approved plan-mode exit");
+                    }
+                    if changed {
+                        self.send_update(acp::SessionUpdate::CurrentModeUpdate(
+                            acp::CurrentModeUpdate::new(acp::SessionModeId::new("default")),
+                        ))
+                        .await;
+                    }
+                }
+                let message = "The user approved the plan. Plan mode is now OFF: you can make edits, run tools, and launch implementation subagents normally. Begin executing the approved plan now, and do not call exit_plan_mode again. (If execution hits a Re-plan if condition or architectural blocker, call enter_plan_mode before guessing.)";
+                let wrote_sync = self.write_plan_mode_response(
+                    tool_call_id,
+                    json!({
+                        "outcome": "approved",
+                        "planFilePath": plan_path_str,
+                        "message": message,
+                    }),
+                );
+                if !wrote_sync {
+                    let _ = self.rpc.notify(json!({
+                        "type": "follow_up",
+                        "message": "The user approved the plan. Plan mode is now OFF: you can make edits and run tools normally. Do not call exit_plan_mode again.",
+                    }));
+                }
             }
-            if let Err(error) = self.sync_plan_mode_control() {
-                tracing::warn!(%error, "failed to publish approved plan-mode exit");
+            "abandoned" => {
+                let (allow_transition, changed) = {
+                    let mut state = self.state.borrow_mut();
+                    let allow = state.active_plan_approval_id.as_deref() == Some(tool_call_id)
+                        || state.active_plan_approval_id.is_none();
+                    if allow {
+                        state.active_plan_approval_id = None;
+                        (true, state.plan_mode.deactivate_approved())
+                    } else {
+                        (false, false)
+                    }
+                };
+                if allow_transition {
+                    if let Err(error) = self.persist_plan_mode_state() {
+                        tracing::warn!(%error, "failed to persist abandoned plan-mode exit");
+                    }
+                    if let Err(error) = self.sync_plan_mode_control() {
+                        tracing::warn!(%error, "failed to publish abandoned plan-mode exit");
+                    }
+                    if changed {
+                        self.send_update(acp::SessionUpdate::CurrentModeUpdate(
+                            acp::CurrentModeUpdate::new(acp::SessionModeId::new("default")),
+                        ))
+                        .await;
+                    }
+                }
+                let message = "The user chose to abandon the plan entirely (via Abandon in the plan approval dialog). Plan mode is now OFF. Do NOT implement the abandoned plan and do not call exit_plan_mode again unless asked; stop and wait for the user's next instruction.";
+                let wrote_sync = self.write_plan_mode_response(
+                    tool_call_id,
+                    json!({
+                        "outcome": "abandoned",
+                        "planFilePath": plan_path_str,
+                        "message": message,
+                    }),
+                );
+                if !wrote_sync {
+                    let _ = self.rpc.notify(json!({
+                        "type": "follow_up",
+                        "message": message,
+                    }));
+                }
             }
-            if changed {
-                self.send_update(acp::SessionUpdate::CurrentModeUpdate(
-                    acp::CurrentModeUpdate::new(acp::SessionModeId::new("default")),
-                ))
-                .await;
+            _ => {
+                let is_current = {
+                    let mut state = self.state.borrow_mut();
+                    if state.active_plan_approval_id.as_deref() == Some(tool_call_id) {
+                        state.plan_mode.set_awaiting_plan_approval(false);
+                        state.active_plan_approval_id = None;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if is_current {
+                    if let Err(error) = self.persist_plan_mode_state() {
+                        tracing::warn!(%error, "failed to persist rejected plan approval");
+                    }
+                    if let Err(error) = self.sync_plan_mode_control() {
+                        tracing::warn!(%error, "failed to publish rejected plan gate");
+                    }
+                }
+                let message = if let Some(ref feedback) = feedback {
+                    format!(
+                        "The user requested plan changes (plan mode remains active):\n{feedback}\n\nUpdate {plan_path_str} and call exit_plan_mode when ready."
+                    )
+                } else if plan_content.is_none() {
+                    format!(
+                        "The user did not approve exiting plan mode because no plan content was found at {plan_path_str}. Write your plan there first or ask clarifying questions before calling exit_plan_mode again."
+                    )
+                } else {
+                    format!(
+                        "The user wants to revise or pause before approving the plan (plan mode remains active). Ask what changes they would like to make to {plan_path_str} before calling exit_plan_mode again."
+                    )
+                };
+                let wrote_sync = self.write_plan_mode_response(
+                    tool_call_id,
+                    json!({
+                        "outcome": "cancelled",
+                        "planFilePath": plan_path_str,
+                        "message": message,
+                    }),
+                );
+                if !wrote_sync && let Some(feedback) = feedback {
+                    let _ = self.rpc.notify(json!({
+                        "type": "follow_up",
+                        "message": format!("The user requested plan changes:\n{feedback}"),
+                    }));
+                }
             }
-            // The turn that called exit_plan_mode is still in flight, so it
-            // never sees the mode change through build_reminder_for_prompt.
-            // Without this notice the model keeps acting (and may re-call
-            // exit_plan_mode) under the last injected "Plan mode is still
-            // active" reminder.
-            let _ = self.rpc.notify(json!({
-                "type": "follow_up",
-                "message": "The user approved the plan. Plan mode is now OFF: you can make edits and run tools normally. Do not call exit_plan_mode again.",
-            }));
-            return;
-        }
-        self.state
-            .borrow_mut()
-            .plan_mode
-            .set_awaiting_plan_approval(false);
-        if let Err(error) = self.persist_plan_mode_state() {
-            tracing::warn!(%error, "failed to persist rejected plan approval");
-        }
-        if let Some(feedback) = feedback {
-            let _ = self.rpc.notify(json!({
-                "type": "follow_up",
-                "message": format!("The user requested plan changes:\n{feedback}"),
-            }));
         }
     }
 
@@ -567,6 +934,8 @@ impl PiAgent {
         if eval_top_level_hidden(self.eval_v2_only, name) {
             if !eval_result_without_tool_calls(&output) {
                 self.state.borrow_mut().tool_args.remove(id);
+                self.send_update(timeline_only_tool_end(id, &output, is_error))
+                    .await;
                 return;
             }
             // Eval-v2-only withheld the start card, but this cell never called
@@ -580,7 +949,8 @@ impl PiAgent {
                     .status(acp::ToolCallStatus::InProgress)
                     .content(Vec::new())
                     .locations(Vec::new())
-                    .raw_input(args);
+                    .raw_input(args)
+                    .meta(pi_tool_metadata(name, None));
             self.send_update(acp::SessionUpdate::ToolCall(tool_call))
                 .await;
         }
@@ -596,7 +966,7 @@ impl PiAgent {
         let raw_output = normalize_tool_raw_output(name, args.as_ref(), &output, is_error);
         let mut fields = acp::ToolCallUpdateFields::new()
             .status(Some(status))
-            .raw_output(Some(raw_output));
+            .raw_output(Some(timeline_tool_result(raw_output, &output, is_error)));
         if tool_kind(name) == acp::ToolKind::Edit {
             fields = fields.content(edit_diff_content(name, args.as_ref(), Some(&output)));
         } else {
@@ -788,6 +1158,21 @@ impl PiAgent {
                             json!({ "text": text }),
                         )
                         .await;
+                    }
+                    "__pi_grok_tree_leaf__" => {
+                        if let Some(payload) = control_status_payload(text)
+                            && let Some(id) = string(&payload, &["requestId"])
+                            && let Some(sender) = self.state.borrow_mut().pending_tree_leaves.remove(id)
+                        {
+                            let _ = sender.send(payload);
+                        }
+                    }
+                    "__pi_grok_timeline__" => {
+                        if let Some(payload) =
+                            control_status_payload(text.filter(|text| text.len() <= 768 * 1024))
+                        {
+                            self.send_ext_notification("pi/ui/timeline", payload).await;
+                        }
                     }
                     _ => {
                         self.send_status(key, text.filter(|text| !text.is_empty()))

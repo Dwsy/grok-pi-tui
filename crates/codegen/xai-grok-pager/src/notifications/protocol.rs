@@ -22,6 +22,13 @@ pub fn select_protocol(ctx: &TerminalContext) -> NotificationProtocol {
     if ctx.multiplexer == MultiplexerKind::Zellij {
         return NotificationProtocol::Bel;
     }
+    // Herdr overwrites TERM_PROGRAM with "herdr", so the outer brand cannot be detected and
+    // resolves to Unknown, which falls back to BEL. Herdr forwards OSC notification sequences
+    // to the outer terminal (the same way it forwards Kitty graphics), so use Ghostty's OSC 777
+    // for that path instead of reporting a bogus protocol fallback.
+    if ctx.multiplexer == MultiplexerKind::Herdr && ctx.brand == TerminalName::Unknown {
+        return NotificationProtocol::Osc777;
+    }
     match ctx.brand {
         TerminalName::Iterm2 | TerminalName::WezTerm | TerminalName::WarpTerminal => {
             NotificationProtocol::Osc9
@@ -124,6 +131,41 @@ mod tests {
             multiplexer: mux,
             ..Default::default()
         }
+    }
+
+    // --- herdr: Unknown brand resolves to the outer terminal's protocol ---
+
+    #[test]
+    fn herdr_with_unknown_outer_brand_uses_osc777() {
+        assert_eq!(
+            select_protocol(&ctx_with_brand_and_mux(
+                TerminalName::Unknown,
+                MultiplexerKind::Herdr
+            )),
+            NotificationProtocol::Osc777
+        );
+    }
+
+    #[test]
+    fn herdr_with_known_outer_brand_keeps_brand_protocol() {
+        assert_eq!(
+            select_protocol(&ctx_with_brand_and_mux(
+                TerminalName::Iterm2,
+                MultiplexerKind::Herdr
+            )),
+            NotificationProtocol::Osc9
+        );
+    }
+
+    #[test]
+    fn unknown_brand_outside_herdr_stays_bel() {
+        assert_eq!(
+            select_protocol(&ctx_with_brand_and_mux(
+                TerminalName::Unknown,
+                MultiplexerKind::Tmux
+            )),
+            NotificationProtocol::Bel
+        );
     }
 
     // --- tmux does NOT override protocol selection (passthrough is handled at emission time, not selection time) ---

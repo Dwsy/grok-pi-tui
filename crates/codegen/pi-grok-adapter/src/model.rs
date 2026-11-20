@@ -1,9 +1,11 @@
 use serde_json::Value;
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     fs::{self, File},
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 /// Local Pi session metadata derived from the JSONL format owned by Pi.
@@ -103,8 +105,14 @@ struct FlatEntry<'a> {
 /// (monotonic timestamps, so this equals Pi's timestamp sort), orphans and
 /// self-parented entries treated as roots.
 pub fn build_session_tree(entries: &[Value], leaf_id: Option<&str>) -> PiSessionTree {
+    build_session_tree_from(entries.iter(), leaf_id)
+}
+
+fn build_session_tree_from<'a>(
+    entries: impl Iterator<Item = &'a Value>,
+    leaf_id: Option<&str>,
+) -> PiSessionTree {
     let nodes: Vec<FlatEntry<'_>> = entries
-        .iter()
         .filter_map(|entry| {
             Some(FlatEntry {
                 entry,
@@ -932,6 +940,12 @@ pub enum PiToolContent {
     Image { data: String, mime_type: String },
 }
 
+#[derive(Debug, Clone, Default)]
+struct BranchPath {
+    indices: Vec<usize>,
+    position: HashMap<usize, usize>,
+}
+
 /// Incremental cache for Pi's append-only `get_entries` RPC.
 ///
 /// Pi returns all physical session entries plus the active `leafId`. Retaining
@@ -941,7 +955,8 @@ pub enum PiToolContent {
 #[derive(Debug, Clone, Default)]
 pub struct PiEntryReplayCache {
     session_id: String,
-    entries: Vec<Value>,
+    entries: Vec<Arc<Value>>,
+    branch_path: RefCell<BranchPath>,
     by_id: HashMap<String, usize>,
     last_entry_id: Option<String>,
     leaf_id: Option<String>,
@@ -961,6 +976,16 @@ impl PiEntryReplayCache {
         self.leaf_id.as_deref()
     }
 
+    /// Install an authoritative leaf from Pi without fetching an append-log
+    /// delta when the selected node is already present in this session cache.
+    pub fn select_cached_leaf(&mut self, leaf: Option<&str>) -> bool {
+        if !self.leaf_known || leaf.is_some_and(|id| !self.by_id.contains_key(id)) {
+            return false;
+        }
+        self.leaf_id = leaf.map(str::to_owned);
+        true
+    }
+
     pub fn entry_count(&self) -> usize {
         self.entries.len()
     }
@@ -970,6 +995,7 @@ impl PiEntryReplayCache {
         self.session_id.push_str(session_id);
         self.entries.clear();
         self.by_id.clear();
+        *self.branch_path.get_mut() = BranchPath::default();
         self.last_entry_id = None;
         self.leaf_id = None;
         self.leaf_known = false;
@@ -1064,12 +1090,12 @@ impl PiEntryReplayCache {
         self.by_id
             .get(entry_id)
             .and_then(|index| self.entries.get(*index))
-            .and_then(session_entry_editor_text)
+            .and_then(|entry| session_entry_editor_text(entry))
     }
 
     /// Tree projection of the retained append log (see [`build_session_tree`]).
     pub fn session_tree(&self) -> PiSessionTree {
-        build_session_tree(&self.entries, self.leaf_id.as_deref())
+        build_session_tree_from(self.entries.iter().map(Arc::as_ref), self.leaf_id.as_deref())
     }
 
     fn apply_payload(&mut self, value: &Value, incremental: bool) {
@@ -1087,7 +1113,7 @@ impl PiEntryReplayCache {
                 continue;
             }
             let index = self.entries.len();
-            self.entries.push(entry.clone());
+            self.entries.push(Arc::new(entry.clone()));
             if let Some(id) = id {
                 self.last_entry_id = Some(id.clone());
                 self.by_id.insert(id, index);
@@ -1097,30 +1123,44 @@ impl PiEntryReplayCache {
 
     fn active_branch_entries(&self) -> Vec<&Value> {
         if !self.leaf_known {
-            return self.entries.iter().collect();
+            return self.entries.iter().map(Arc::as_ref).collect();
         }
         let Some(leaf_id) = self.leaf_id.as_deref() else {
             return Vec::new();
         };
-        let mut path = Vec::new();
+        let mut path = self.branch_path.borrow_mut();
+        let mut suffix = Vec::new();
         let mut cursor = Some(leaf_id);
         let mut seen = HashSet::new();
+        let mut retained = 0;
+        // Recover only the path from the new leaf to the cached common
+        // ancestor. Known nodes are immutable for this append-log lifetime.
         while let Some(id) = cursor {
-            if !seen.insert(id) {
-                return Vec::new();
-            }
             let Some(index) = self.by_id.get(id).copied() else {
                 return Vec::new();
             };
-            let entry = &self.entries[index];
-            path.push(entry);
-            cursor = entry
+            if let Some(position) = path.position.get(&index) {
+                retained = position + 1;
+                break;
+            }
+            if !seen.insert(index) {
+                return Vec::new();
+            }
+            suffix.push(index);
+            cursor = self.entries[index]
                 .get("parentId")
-                .or_else(|| entry.get("parent_id"))
+                .or_else(|| self.entries[index].get("parent_id"))
                 .and_then(Value::as_str);
         }
-        path.reverse();
-        path
+        let BranchPath { indices, position } = &mut *path;
+        for index in indices.drain(retained..) {
+            position.remove(&index);
+        }
+        for index in suffix.into_iter().rev() {
+            position.insert(index, indices.len());
+            indices.push(index);
+        }
+        indices.iter().map(|&index| self.entries[index].as_ref()).collect()
     }
 }
 
@@ -2005,6 +2045,30 @@ mod tests;
 mod text_tree_projection_tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn known_tree_leaves_reuse_the_parent_path_and_reject_missing_nodes() {
+        let mut cache = PiEntryReplayCache::default();
+        cache.reset("s", &serde_json::json!({
+            "leafId":"left",
+            "entries":[
+                {"id":"root","parentId":null},
+                {"id":"left","parentId":"root"},
+                {"id":"right","parentId":"root"}
+            ]
+        }));
+        let ids = |cache: &PiEntryReplayCache| cache.active_branch_entries()
+            .into_iter().map(|entry| entry["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        assert_eq!(ids(&cache), ["root", "left"]);
+        assert!(cache.select_cached_leaf(Some("right")));
+        assert_eq!(ids(&cache), ["root", "right"]);
+        assert!(!cache.select_cached_leaf(Some("missing")));
+        assert_eq!(ids(&cache), ["root", "right"]);
+        assert!(cache.select_cached_leaf(None));
+        assert!(ids(&cache).is_empty());
+        assert!(cache.select_cached_leaf(Some("root")));
+        assert_eq!(ids(&cache), ["root"]);
+    }
+
     #[test]
     fn stable_entry_identity_and_complex_history_fallback() {
         let mut cache = PiEntryReplayCache::default();

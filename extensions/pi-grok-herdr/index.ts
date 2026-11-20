@@ -76,7 +76,6 @@ async function deliver(request) {
 
 let sequence = Date.now() * 1000;
 let sessionPath;
-let sessionId;
 
 function nextSequence() {
   sequence += 1;
@@ -93,19 +92,16 @@ function refreshSession(ctx) {
   } catch {
     sessionPath = undefined;
   }
-
-  try {
-    const candidate = ctx?.sessionManager?.getSessionId?.();
-    sessionId =
-      typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
-  } catch {
-    sessionId = undefined;
-  }
 }
 
+// Only an absolute session path is authoritative to Herdr. If we report a session
+// ID first, Herdr locks the pane's session reference to that ID and refuses to
+// upgrade it to a path later, leaving the pane permanently on fallback status.
+// The session file does not exist yet at session_start, so send no session
+// reference at all until agent_start, when the file has been materialized and a
+// path is available. Reports before that point carry only pane/agent/state.
 function sessionFields() {
   if (sessionPath) return { agent_session_path: sessionPath };
-  if (sessionId) return { agent_session_id: sessionId };
   return {};
 }
 

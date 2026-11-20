@@ -38,7 +38,6 @@ impl AgentView {
             &mut self.active_modal,
             &self.prompt.slash_controller,
             &self.session.models,
-            &self.session.cwd,
         )
     }
 
@@ -46,7 +45,6 @@ impl AgentView {
         active_modal: &mut Option<ActiveModal>,
         slash_controller: &crate::slash::SlashController,
         models: &crate::acp::model_state::ModelState,
-        cwd: &std::path::Path,
     ) -> bool {
         let Some(ActiveModal::ArgPicker {
             command,
@@ -60,24 +58,9 @@ impl AgentView {
             return false;
         }
         let command = command.clone();
-        let Some(cmd) = slash_controller.registry().get(&command) else {
-            return false;
-        };
-        let ctx = crate::slash::command::AppCtx {
-            models,
-            cwd,
-            has_session_announcements: slash_controller.has_session_announcements(),
-            billing_surface_visible: slash_controller.billing_surface_visible(),
-            usage_command_visible: slash_controller.usage_command_visible(),
-            workflows_available: slash_controller.workflows_available(),
-            saved_workflows: slash_controller.registry().saved_workflows(),
-            workflow_runs: slash_controller.workflow_runs(),
-            screen_mode: slash_controller.screen_mode(),
-            current_title: slash_controller.current_title(),
-        };
-        let Some(model_items) = cmd.suggest_args(&ctx, "") else {
-            return false;
-        };
+        // The same usage-aware candidates as `/model`, so stepping back from the
+        // effort phase keeps the project's order.
+        let model_items = slash_controller.suggest_command_args(&command, "", models);
         if model_items.is_empty() {
             return false;
         }
@@ -987,30 +970,32 @@ impl AgentView {
                     {
                         self.session.models.toggle_scoped_model(model_id);
                     }
-                    if let Some(cmd) = self.prompt.slash_controller.registry().get(&command_clone) {
-                        let ctx = self.prompt.slash_controller.app_ctx(&self.session.models);
-                        if let Some(updated) = cmd.suggest_args(&ctx, "")
-                            && let Some(ActiveModal::ArgPicker {
-                                items,
-                                original_items,
-                                state,
-                                ..
-                            }) = self.active_modal.as_mut()
-                        {
-                            *original_items = updated;
-                            let query = state.query().to_lowercase();
-                            *items = original_items
-                                .iter()
-                                .filter(|candidate| {
-                                    query.is_empty()
-                                        || candidate.match_text.to_lowercase().contains(&query)
-                                        || candidate.display.to_lowercase().contains(&query)
-                                        || candidate.description.to_lowercase().contains(&query)
-                                })
-                                .cloned()
-                                .collect();
-                            state.selected = state.selected.min(items.len().saturating_sub(1));
-                        }
+                    let updated = self.prompt.slash_controller.suggest_command_args(
+                        &command_clone,
+                        "",
+                        &self.session.models,
+                    );
+                    if !updated.is_empty()
+                        && let Some(ActiveModal::ArgPicker {
+                            items,
+                            original_items,
+                            state,
+                            ..
+                        }) = self.active_modal.as_mut()
+                    {
+                        *original_items = updated;
+                        let query = state.query().to_lowercase();
+                        *items = original_items
+                            .iter()
+                            .filter(|candidate| {
+                                query.is_empty()
+                                    || candidate.match_text.to_lowercase().contains(&query)
+                                    || candidate.display.to_lowercase().contains(&query)
+                                    || candidate.description.to_lowercase().contains(&query)
+                            })
+                            .cloned()
+                            .collect();
+                        state.selected = state.selected.min(items.len().saturating_sub(1));
                     }
                     return InputOutcome::Changed;
                 }
@@ -1311,15 +1296,13 @@ impl AgentView {
 
                                 let is_picker =
                                     matches!(trimmed.as_str(), "model" | "m" | "theme" | "t");
-                                if is_picker
-                                    && let Some(command) =
-                                        self.prompt.slash_controller.registry().get(&trimmed)
-                                {
-                                    let ctx =
-                                        self.prompt.slash_controller.app_ctx(&self.session.models);
-                                    if let Some(items) = command.suggest_args(&ctx, "")
-                                        && !items.is_empty()
-                                    {
+                                if is_picker {
+                                    let items = self.prompt.slash_controller.suggest_command_args(
+                                        &trimmed,
+                                        "",
+                                        &self.session.models,
+                                    );
+                                    if !items.is_empty() {
                                         // Save palette state for Esc restore.
                                         let prev = {
                                             let ActiveModal::CommandPalette {

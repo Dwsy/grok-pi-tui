@@ -1613,6 +1613,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         let session_id_clone = session_id.clone();
         agent.bind_session_id(session_id);
         agent.session.cwd = session_cwd.clone();
+        agent.prompt.slash_controller.set_cwd(&session_cwd);
         agent.session.is_worktree = true;
         agent.current_branch = None;
         agent.main_repo = None;
@@ -1914,7 +1915,18 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                     .unwrap_or_else(|| model_id.0.to_string());
                 let prev_model = agent.session.models.current.clone();
                 let prev_effort = agent.session.models.reasoning_effort;
+                // The model that was active before this switch. A switch that
+                // was dispatched without a session already moved `models.current`
+                // optimistically, so the switch's own previous id is the better
+                // signal there.
+                let previous_model = prev_model_id.clone().or_else(|| prev_model.clone());
                 agent.session.models.set_current(model_id.clone(), effort);
+                // A confirmed switch is a real choice: count it for this project.
+                // Changing only the reasoning effort keeps the same model, so it
+                // must not add another model use.
+                if previous_model.as_ref() != Some(&model_id) {
+                    agent.prompt.slash_controller.record_model_use(&model_id);
+                }
                 if let Some(context_window) = agent.session.models.get_context_window() {
                     let used = agent
                         .context_state

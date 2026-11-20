@@ -1,5 +1,80 @@
 # Grok Native TUI × Pi Verification Report
 
+## 2026-11-19 Timeline Content Configuration
+
+- Passed all 18 Remote TUI Bun tests, including prompt reply and compaction excerpts, both interaction groups, and file summaries with row and column limits. The extension passed a typecheck against the installed Pi 1.5.2 SDK.
+- Passed installed Pi 1.5.2 RPC smoke tests. An isolated extension bundle with simulated Pager replies covered configuration, partial and full group selection, and batch formatting. A separate Pi session fixture verified sibling leaf navigation, user node editor text, and the empty root.
+- Passed changed-file Rust parsing with standalone rustfmt and `git diff --check`. All Timeline source seams are listed explicitly. The full source-identity verifier still reports existing baseline and protocol expectation failures.
+- Pending Cargo compilation, Rust tests, and a mouse-enabled terminal run against a rebuilt Pager. The native scrollback jumps and on-disk config behavior still need this end-to-end pass.
+
+Implementation and acceptance record in the [Timeline issue](issues/pager/20261119-timeline-content-configuration.md).
+
+## 2026-11-19 Optional OMP Shell Backend (`Issue #20`: `#13`–`#19`)
+
+- PASS: `node --test extensions/pi-grok-bash/test-shell-backend.mjs` — **3/3** passing (`resolveBashBackend` default `system` & opt-in `omp`, `PI_GROK_OMP_SHELL_HOST` validation, and mock JSONL host handshake/streaming/`shell_trace` projection).
+- PASS (static): `git diff --check` and `rustfmt --edition 2024 --check` on `tools/grok-pi-shell-host/src/*`, `pi-grok-adapter/src/tool_projection.rs`, `xai-grok-pager/src/scrollback/blocks/tool/execute.rs`, and `xai-grok-pager-bin/src/bin/grok_pi/bash_extension.rs`.
+- NOT RUN: `cargo test` / `cargo build` (`tools/grok-pi-shell-host`, `pi-grok-adapter`, `xai-grok-pager`, `xai-grok-pager-bin`). Per `AGENTS.md` and explicit user instruction, Cargo commands were not executed.
+- Design & Gate Records: [Feasibility Spike (#13)](issues/adapter/20261119-omp-shell-feasibility-spike.md), [Compatibility & Security Gate (#18)](issues/adapter/20261119-omp-shell-compatibility-and-security-gate.md).
+
+## 2026-11-18 Subagent Parent-Context Fork Mode (`fork?: boolean` across V1 & V2, `root` & `child` Initiators)
+
+- PASS: `cd extensions/pi-grok-subagents && env PI_TEST_NODE_MODULES=/Users/dengwenyu/.pi/agent/install/releases/1.5.2/node_modules node --import ./test-installed-pi.mjs --test index.test.ts v2.test.ts runtime.test.ts delivery.test.ts fork.test.ts` — **89/89** passing (0 failed), including **6/6** offline real-SDK suites in `fork.test.ts` covering host-singleton bridge filtering & CLI flag parsing, `SharedBranchSessionManager` single-JSONL multi-leaf concurrent sibling + nested branches with `/tree` labels (plus standalone partial-mock compaction/toolCall closure fallback), V1 `root` → forked child → forked grandchild sharing `root.sessionFile` (plus `root.navigateTree(forkedChild.endLeafId)` live `/tree` branch jump and isolated child → forked grandchild sharing the child's own `.jsonl`), V2 `root`/`child` `spawn_team_agent(fork=true)` sharing `root.sessionFile` + `team_followup_task` reactivation + `spawn_team(fork=true, capability_mode="read-only")`, turn-1 fork with background/model/thinking/read-only overrides, `builtin:codemode` & user extension/`reply_style`/`AGENTS.md`/skill inheritance, and `persistedRunBranch` transcript isolation (both settled `endLeafId` and running `endLeafId: null`).
+- PASS: `node --test extensions/pi-grok-plan-mode/index.test.mjs` — **6/6** passing (including Plan Mode `tool_call` gate blocking mutating `fork: true` spawns and allowing `fork: true` with `capability_mode: "read-only"`).
+- PASS: Live Pi `1.5.2` RPC boot verification (`pi -ne --mode rpc --extension extensions/pi-grok-plan-mode/index.ts --extension extensions/pi-grok-subagents/index.ts`) for both V1 (`PI_GROK_SUBAGENTS_V2=0`) and V2 (`PI_GROK_SUBAGENTS_V2=1`): exit `0`, empty stderr, expected `/subagents`, `/subagent-control`, and `/subagent-teams` (V2) registered.
+- PASS (static): Simulated Rust `subagent_extension.rs` raw `./` import scanner across all non-test `.ts` modules in `extensions/pi-grok-subagents/` and `rustfmt --edition 2024 --check crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/subagent_extension.rs`: exit `0`.
+- PASS (static): `verify_native_grok.py` report (`scratch/verify-fork-after.json`) confirms 0 unallowlisted files added (`fork.ts`, `fork.test.ts`, and `20261118-subagent-fork-context-inheritance.md` added to `allowedAddedFiles` in `grok_uploaded_baseline_sha256.json`) and 0 regressions attributable to this change (pre-existing 8 baseline failures plus concurrent user edits in `xai-grok-pager/src/notifications/{config,mod}.rs`).
+- PASS: `git diff --check`: exit `0` (zero whitespace errors).
+- NOT RUN: `cargo check`, `cargo test` (`cargo test -p xai-grok-pager-bin --bin grok-pi`, `cargo test -p pi-grok-adapter`), and `./build.sh`. Per `AGENTS.md`, Cargo commands were not invoked without an explicit user request.
+
+Design and verification record: [issue](issues/subagents/20261118-subagent-fork-context-inheritance.md).
+
+## 2026-11-18 Proactive Plan Mode (`enter_plan_mode` / `exit_plan_mode`) & Team V2 Closed Loop
+
+- PASS: `node --test extensions/pi-grok-plan-mode/index.test.mjs` — **6/6** passing (tool registration + `promptSnippet`/`promptGuidelines`, `tool_call` gate for `bash`/edits/`spawn_*` with `capability_mode: "read-only"` allowance, synchronous `enter_plan_mode` + SHA-256 response contract + abort cleanup, synchronous `exit_plan_mode` across `approved`/`abandoned`/`cancelled`/`inactive`, standalone fallback, and real Pi 1.5.2 RPC extension boot).
+- PASS: `env PI_TEST_NODE_MODULES=~/.pi/agent/install/releases/1.5.2/node_modules node --import ./test-installed-pi.mjs --test index.test.ts v2.test.ts runtime.test.ts delivery.test.ts` in `extensions/pi-grok-subagents/` — **83/83** passing (including new tests for `teams/research.json` late-evidence wakeup via `team_followup_task` and root-only Plan Mode `promptGuidelines`).
+- PASS: combined real Pi 1.5.2 RPC load (`pi -ne --mode rpc --extension extensions/pi-grok-plan-mode/index.ts --extension extensions/pi-grok-subagents/index.ts` with `PI_GROK_SUBAGENTS=1 PI_GROK_SUBAGENTS_V2=1`): exit 0, empty stderr, `get_commands` and `get_state` succeeded.
+- PASS (static): `rustfmt --edition 2024 --check` parses every modified Rust file cleanly (`plan_mode_extension.rs`, `plan_mode.rs`, `events.rs`, `tests.rs` pass with zero diffs; remaining diffs in `pi_adapter/{session,tools}.rs` and `pi_adapter.rs` are pre-existing lines outside this change's hunks).
+- PASS (static): `verify_native_grok.py` compared before/after reports (`scratch/verify-before.json` vs `scratch/verify-after.json`): **0 new failures** (13/21 pass, identical 8 pre-existing baseline failures, 93 declared seams, both newly added files allowlisted in `grok_uploaded_baseline_sha256.json`).
+- PASS: `git diff --check` reports zero whitespace errors.
+- NOT RUN: `cargo check`, `cargo test`, `./build.sh`, and native TUI/live-model E2E. Per `AGENTS.md`, Cargo commands were not invoked without an explicit user request; the Rust adapter & `plan_mode_extension` unit tests (`plan_mode.rs`, `pi_adapter/tests.rs`, `plan_mode_extension.rs`) still require a user-authorized Cargo run.
+
+Design, root causes, and RSI log: [issue](issues/adapter/20261118-proactive-plan-mode-orchestrator.md).
+
+## 2026-11-17 Tool call density (five fold levels)
+
+- PASS: `cargo check -p xai-grok-pager --all-targets` on the merged tree.
+- PASS: baseline comparison. The density merge was measured against a `main`
+  baseline worktree (`main` + the two breakage fixes below) with the same
+  command and the same toolchain: **0 new failures**, **10 pre-existing
+  failures fixed** (`scrollback::state::groups::tests::expanded_verb_run_stacks_header_and_keeps_member_rows`
+  plus nine `views::settings_modal::tests::*` breadcrumb/picker cases). The
+  remaining 144 failures are the same set the baseline already had and are
+  unrelated to this change.
+- PASS: rustfmt (edition 2024, repo `rustfmt.toml`) on every file this change
+  touches; `cargo fmt --all --check` still reports the repository's
+  pre-existing drift in files this change does not touch.
+- PASS: clippy (`-p xai-grok-pager --all-targets`) reports no new lint on the
+  changed hunks; the warnings inside the touched files are pre-existing lines
+  outside this change's hunks.
+- NOT RUN: real terminal acceptance of the five levels, and no installed
+  binary was rebuilt. The upstream behavior was reconstructed from the
+  published binary's embedded strings, not from source.
+- Pre-existing breakage found on `main` and fixed in separate commits:
+  `PagerLocalSnapshot.ask_user_question_timeout_secs` was added without
+  updating the five snapshot initializers (the pager library did not compile),
+  and the upstream `registered_features_are_documented` test referenced
+  operator tables this fork does not ship.
+
+## 2026-11-16 Project-scoped usage ranking for slash commands and models
+
+- PASS (static): `rustfmt --edition 2024 --check` parses every changed Rust file without syntax errors; the new file and the changed blocks follow the project style.
+- PASS (static): `verify_native_grok.py` shows no newly failing check compared with the pre-change report (`verification-logs/usage-sort-native-before-mwio9h45xpt0yxdg4jb.json` vs `usage-sort-native-after-mwio9h45xpt0yxdg4jb.json`); the eight remaining failures are identical to the pre-existing baseline. The seam declaration check passes with 93 declared seams after the `session/fork.rs` declaration was mirrored into the verifier.
+- PASS (review): two independent read-only reviews (storage concurrency, borrow and counting boundaries) raised nine issues — including one compile-blocking binding error and one inconsistent model ordering path. All nine are fixed and re-checked. Usage is counted on real command submissions and on confirmed model switches only; accepting a completion, refreshing the catalog, replaying history, an effort-only change, and failed or rolled-back switches do not add usage.
+- NOT RUN: `cargo check`, `cargo test`, `./build.sh` and the native TUI manual acceptance. The repository rules require an explicit user request before any Cargo command, and none was given for this change. The new unit tests (project isolation, frequency-then-recency ordering, concurrent merge, legacy-file compatibility, cross-terminal refresh, completion-versus-submission counting, confirmed-switch counting) are therefore unexecuted and still need a Cargo run.
+- Storage note: counters live in `$GROK_HOME/selector-usage/<project hash>.json`; nothing is written into the user's repository.
+
+Design, scope and local change record: [issue](issues/pager/20261116-按项目统计模型与斜杠命令使用频率并排序.md).
+
 ## 2026-11-15 standalone macOS ARM64-only builds
 
 - Standalone beta default matrix, release-cache warm and independent compile lab now target ARM64 only. Full stable matrix remains unchanged. YAML, matrix resolution and diff checks are required before delivery; no local Cargo is run.

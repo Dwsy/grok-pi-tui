@@ -324,6 +324,7 @@ impl SessionActor {
                 total_bytes: full_output.len(),
                 output_delta: None,
                 was_bare_echo: false,
+                shell_trace: None,
             };
             self.send_update(
                 acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(

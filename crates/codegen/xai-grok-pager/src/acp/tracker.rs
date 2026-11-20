@@ -16,7 +16,7 @@ use crate::scrollback::blocks::tool::{
     MemorySearchToolCallBlock, OtherToolCallBlock, ReadMediaKind, ReadToolCallBlock, ToolCallBlock,
     UseToolCallBlock, WebFetchToolCallBlock, WebSearchToolCallBlock,
 };
-use crate::scrollback::entry::{EntryId, ScrollbackEntry, ToolTraceSnapshot};
+use crate::scrollback::entry::{EntryId, ScrollbackEntry, ToolFileChange, ToolTraceSnapshot};
 use crate::scrollback::state::ScrollbackState;
 use crate::scrollback::state::verb_group::verb_group_kind_changed;
 use agent_client_protocol as acp;
@@ -47,9 +47,18 @@ fn replay_elapsed_ms(start_ms: Option<i64>, end_ms: Option<i64>) -> Option<i64> 
         _ => None,
     }
 }
-fn tool_trace_from_call(tc: &acp::ToolCall, meta: &NotificationMeta) -> ToolTraceSnapshot {
+fn tool_trace_from_call(
+    tc: &acp::ToolCall,
+    meta: &NotificationMeta,
+    finalized_block: Option<&RenderBlock>,
+) -> ToolTraceSnapshot {
+    let pi_tool_name = tc.meta.as_ref()
+        .and_then(|meta| meta.get("piToolName"))
+        .and_then(serde_json::Value::as_str);
     ToolTraceSnapshot {
         tool_call_id: tc.tool_call_id.0.to_string(),
+        pi_tool_name: pi_tool_name.map(str::to_owned),
+        file_change: finalized_block.and_then(|block| tool_file_change(tc, pi_tool_name?, block)),
         title: tc.title.clone(),
         status: format!("{:?}", tc.status),
         raw_input: tc.raw_input.clone(),
@@ -66,16 +75,49 @@ fn tool_trace_from_call(tc: &acp::ToolCall, meta: &NotificationMeta) -> ToolTrac
     }
 }
 
+fn tool_file_change(
+    tc: &acp::ToolCall,
+    name: &str,
+    block: &RenderBlock,
+) -> Option<ToolFileChange> {
+    if tc.status != acp::ToolCallStatus::Completed
+        || tc.raw_output.as_ref()
+            .and_then(|output| output.get("piToolCancelled"))
+            .and_then(serde_json::Value::as_bool) == Some(true)
+    {
+        return None;
+    }
+    let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = block else {
+        return None;
+    };
+    let (added, deleted, written) = match name {
+        "edit" => {
+            let (added, deleted) = edit.count_changes();
+            (added, deleted, 0)
+        }
+        "write" => {
+            let written = tc.content.iter().find_map(|content| match content {
+                acp::ToolCallContent::Diff(diff) => Some(diff.new_text.lines().count()),
+                _ => None,
+            })?;
+            (0, 0, written)
+        }
+        _ => return None,
+    };
+    Some(ToolFileChange { path: edit.path.clone(), added, deleted, written })
+}
+
 fn refresh_tool_trace(
     scrollback: &mut ScrollbackState,
     entry_id: EntryId,
     tc: &acp::ToolCall,
     meta: &NotificationMeta,
+    finalized_block: Option<&RenderBlock>,
 ) {
     let Some(entry) = scrollback.get_by_id_mut(entry_id) else {
         return;
     };
-    let incoming = tool_trace_from_call(tc, meta);
+    let incoming = tool_trace_from_call(tc, meta, finalized_block);
     if let Some(trace) = entry
         .tool_traces
         .iter_mut()
@@ -83,6 +125,12 @@ fn refresh_tool_trace(
     {
         trace.title = incoming.title;
         trace.status = incoming.status;
+        if finalized_block.is_some() {
+            trace.file_change = incoming.file_change;
+        }
+        if incoming.pi_tool_name.is_some() {
+            trace.pi_tool_name = incoming.pi_tool_name;
+        }
         if incoming.raw_input.is_some() {
             trace.raw_input = incoming.raw_input;
         }
@@ -598,9 +646,11 @@ impl AcpUpdateTracker {
         if self.current_thinking.is_some() {
             return Some(TurnActivity::Thinking);
         }
-        if let Some(tool) = self.pending_tools.iter().find_map(|(id, tool)| {
-            (!self.suppressed_tools.contains_key(id)).then_some(tool)
-        }) {
+        if let Some(tool) = self
+            .pending_tools
+            .iter()
+            .find_map(|(id, tool)| (!self.suppressed_tools.contains_key(id)).then_some(tool))
+        {
             let description = tool
                 .base
                 .raw_input
@@ -966,7 +1016,7 @@ impl AcpUpdateTracker {
         scrollback: &mut ScrollbackState,
         is_replay: bool,
     ) {
-        if !crate::appearance::cache::load_collapsed_edit_blocks() {
+        if !crate::appearance::cache::load_tool_call_density().edits_collapsed() {
             return;
         }
         if scrollback
@@ -1036,6 +1086,7 @@ impl AcpUpdateTracker {
             entry.invalidate_cache();
         }
         scrollback.mark_structurally_dirty(survivor);
+        scrollback.move_hidden_timeline_tools(removed, survivor);
         scrollback.remove_entry(removed);
         self.pending_edit_hl.retain(|id| *id != removed);
         if !is_replay && !self.pending_edit_hl.contains(&survivor) {
@@ -1136,6 +1187,7 @@ impl AcpUpdateTracker {
     pub fn finish_turn(&mut self, scrollback: &mut ScrollbackState) {
         self.epoch_at_last_finish = self.agent_output_epoch;
         self.finish_thinking(scrollback);
+        scrollback.settle_hidden_timeline_tools();
         scrollback.note_pin_reserve_turn_finished();
         if let Some(agent_id) = self.current_agent_msg.take() {
             scrollback.finish_running(agent_id);
@@ -1297,6 +1349,15 @@ impl AcpUpdateTracker {
         meta: &NotificationMeta,
     ) -> bool {
         let is_replay = meta.is_replay;
+        if tc
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("piTimelineOnly"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return scrollback.record_hidden_timeline_tool(&tc, meta.agent_timestamp_ms);
+        }
         self.finish_thinking(scrollback);
         self.current_agent_msg = None;
         if is_todo_tool(&tc)
@@ -1317,7 +1378,7 @@ impl AcpUpdateTracker {
                     && (matches!(tc.status, acp::ToolCallStatus::Completed)
                         || is_bg_plumbing_tool(&tc))
                 {
-                    return false;
+                    return scrollback.record_hidden_timeline_tool(&tc, meta.agent_timestamp_ms);
                 }
             } else {
                 if is_task_tool(&tc) {
@@ -1352,11 +1413,12 @@ impl AcpUpdateTracker {
                 };
                 self.suppressed_tools.insert(id, tc.clone());
                 if !visible {
-                    return false;
+                    return scrollback.record_hidden_timeline_tool(&tc, meta.agent_timestamp_ms);
                 }
             }
         }
         let tc_id = tc.tool_call_id.0.to_string();
+        scrollback.remove_hidden_timeline_tool(&tc_id);
         // Pi-Grok projects toolcall_start before the arguments are complete,
         // then emits the canonical ToolCall when execution begins. Reconcile
         // the same ID in place instead of adding a duplicate scrollback block.
@@ -1376,8 +1438,8 @@ impl AcpUpdateTracker {
             pending.base = canonical;
             if let Some(entry_id) = entry_id {
                 let block = tool_call_to_block(&pending.base, self.session_cwd.as_deref());
+                refresh_tool_trace(scrollback, entry_id, &pending.base, meta, Some(&block));
                 scrollback.replace_tool_block(entry_id, block, started_at);
-                refresh_tool_trace(scrollback, entry_id, &pending.base, meta);
                 return true;
             }
             return false;
@@ -1385,7 +1447,7 @@ impl AcpUpdateTracker {
         if let Some(orphan) = self.orphan_updates.remove(&tc_id) {
             let merged = merge_tool_call_update(tc, orphan);
             let block = tool_call_to_block(&merged, self.session_cwd.as_deref());
-            let trace = tool_trace_from_call(&merged, meta);
+            let trace = tool_trace_from_call(&merged, meta, Some(&block));
             self.finish_completed_tool(block, trace, scrollback, is_replay);
             return true;
         }
@@ -1395,12 +1457,12 @@ impl AcpUpdateTracker {
         );
         if is_completed {
             let block = tool_call_to_block(&tc, self.session_cwd.as_deref());
-            let trace = tool_trace_from_call(&tc, meta);
+            let trace = tool_trace_from_call(&tc, meta, Some(&block));
             self.finish_completed_tool(block, trace, scrollback, is_replay);
         } else {
             let block = tool_call_to_block(&tc, self.session_cwd.as_deref());
             let id = scrollback.push_block(block);
-            refresh_tool_trace(scrollback, id, &tc, meta);
+            refresh_tool_trace(scrollback, id, &tc, meta, None);
             scrollback.set_last_running(true);
             let started_at = Some(std::time::Instant::now());
             self.pending_tools.insert(
@@ -1425,6 +1487,7 @@ impl AcpUpdateTracker {
     ) -> bool {
         let is_replay = meta.is_replay;
         let tc_id_str = tcu.tool_call_id.0.to_string();
+        let hidden_changed = scrollback.update_hidden_timeline_tool(&tcu);
         if self.bg_deferred_tools.contains_key(&tc_id_str) {
             return false;
         }
@@ -1475,8 +1538,9 @@ impl AcpUpdateTracker {
                         && !is_bg_plumbing_tool(&base)
                     {
                         base.update(tcu.fields);
+                        scrollback.remove_hidden_timeline_tool(&tc_id_str);
                         let block = tool_call_to_block(&base, self.session_cwd.as_deref());
-                        let trace = tool_trace_from_call(&base, meta);
+                        let trace = tool_trace_from_call(&base, meta, Some(&block));
                         self.finish_completed_tool(block, trace, scrollback, is_replay);
                         return true;
                     }
@@ -1492,8 +1556,11 @@ impl AcpUpdateTracker {
                 }
             }
             if !visible {
-                return false;
+                return hidden_changed.unwrap_or(false);
             }
+        }
+        if let Some(changed) = hidden_changed {
+            return changed;
         }
         let status = tcu.fields.status.unwrap_or_default();
         let is_completed = matches!(
@@ -1506,7 +1573,7 @@ impl AcpUpdateTracker {
                 let bash_output = extract_bash_output_from_value(&tcu.fields.raw_output);
                 pending.base.update(tcu.fields);
                 if let Some(entry_id) = pending.entry_id {
-                    refresh_tool_trace(scrollback, entry_id, &pending.base, meta);
+                    refresh_tool_trace(scrollback, entry_id, &pending.base, meta, None);
                 }
                 if pending.entry_id.is_none() && is_bg_tool(&pending.base) {
                     let desc = extract_raw_field(&pending.base, "description");
@@ -1557,7 +1624,7 @@ impl AcpUpdateTracker {
                         pending.entry_id = Some(id);
                         id
                     };
-                    refresh_tool_trace(scrollback, entry_id, &pending.base, meta);
+                    refresh_tool_trace(scrollback, entry_id, &pending.base, meta, None);
                     if let Some(bash_output) = bash_output {
                         if let Some(delta) = &bash_output.output_delta {
                             let text = pending.utf8_decoder.decode(delta);
@@ -1600,7 +1667,7 @@ impl AcpUpdateTracker {
                 tc.set_elapsed_ms(elapsed_ms);
             }
             if let Some(entry_id) = pending.entry_id {
-                refresh_tool_trace(scrollback, entry_id, &merged, meta);
+                refresh_tool_trace(scrollback, entry_id, &merged, meta, Some(&block));
                 if scrollback.replace_tool_block(entry_id, block, pending.started_at)
                     && let Some(entry) = scrollback.get_by_id(entry_id)
                 {
@@ -1609,7 +1676,7 @@ impl AcpUpdateTracker {
                 scrollback.finish_running(entry_id);
                 self.try_coalesce_edit(entry_id, scrollback, is_replay);
             } else {
-                let trace = tool_trace_from_call(&merged, meta);
+                let trace = tool_trace_from_call(&merged, meta, Some(&block));
                 self.finish_completed_tool(block, trace, scrollback, is_replay);
             }
             true
@@ -1636,6 +1703,7 @@ impl AcpUpdateTracker {
             return false;
         }
         self.finish_thinking(scrollback);
+        scrollback.settle_hidden_timeline_tools();
         if let Some(agent_id) = self.current_agent_msg.take() {
             scrollback.finish_running(agent_id);
         }
@@ -1961,6 +2029,7 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                 let mut block = ExecuteToolCallBlock::new(command).with_output(output_str.as_ref());
                 block.bash_mode = is_bash_mode;
                 block.header_display = header_display;
+                block.shell_trace = bash.shell_trace.clone();
                 if let Some(desc) = description {
                     block = block.with_description(desc);
                 }
@@ -2438,6 +2507,7 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
                     let mut block =
                         ExecuteToolCallBlock::new(command).with_output(output_str.as_ref());
                     block.header_display = header_display;
+                    block.shell_trace = bash.shell_trace.clone();
                     if let Some(desc) = extract_raw_field(tc, "description") {
                         block = block.with_description(desc);
                     }

@@ -4,6 +4,88 @@ use anyhow::Result;
 use toml::Value as TomlValue;
 use toml::map::Map as TomlMap;
 use xai_grok_agent::prompt::skills::SkillsConfig;
+
+/// User-level rules for the grok-pi Timeline sidebar.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TimelineContents {
+    pub user_prompts: bool,
+    pub compactions: bool,
+    pub tools: Vec<String>,
+}
+
+impl Default for TimelineContents {
+    fn default() -> Self {
+        Self {
+            user_prompts: true,
+            compactions: true,
+            tools: Vec::new(),
+        }
+    }
+}
+
+impl TimelineContents {
+    pub fn normalize(&mut self) -> Result<(), &'static str> {
+        let mut seen = std::collections::HashSet::new();
+        let mut tools = Vec::new();
+        for name in &self.tools {
+            let name = name.trim();
+            if name.is_empty() || name.chars().any(char::is_control) {
+                return Err("Tool names must be non-empty and cannot contain control characters.");
+            }
+            if seen.insert(name) {
+                tools.push(name.to_owned());
+            }
+        }
+        self.tools = tools;
+        Ok(())
+    }
+}
+
+pub fn load_timeline_contents() -> Result<TimelineContents> {
+    let root = parse_existing_config_toml(&read_to_string_or_empty(&user_config_path())?)?;
+    let Some(value) = root.get("ui").and_then(|ui| ui.get("timeline_contents")) else {
+        return Ok(TimelineContents::default());
+    };
+    let mut contents: TimelineContents = value.clone().try_into()?;
+    contents.normalize().map_err(anyhow::Error::msg)?;
+    Ok(contents)
+}
+
+pub async fn save_timeline_contents(contents: &TimelineContents) -> Result<()> {
+    let _guard = lock_config_writes().await?;
+    let path = user_config_path();
+    let original = read_to_string_or_empty(&path)?;
+    let mut doc: toml_edit::DocumentMut = original.parse()?;
+    let ui = doc.as_table_mut().entry("ui").or_insert_with(|| {
+        let mut table = toml_edit::Table::new();
+        table.set_implicit(true);
+        toml_edit::Item::Table(table)
+    });
+    let mut tools = toml_edit::Array::new();
+    for name in &contents.tools {
+        tools.push(name.as_str());
+    }
+    if let Some(table) = ui.as_inline_table_mut() {
+        let mut section = toml_edit::InlineTable::new();
+        section.insert("user_prompts", contents.user_prompts.into());
+        section.insert("compactions", contents.compactions.into());
+        section.insert("tools", tools.into());
+        table.insert("timeline_contents", section.into());
+    } else {
+        let table = ui
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("Expected [ui] to be a TOML table"))?;
+        let mut section = toml_edit::Table::new();
+        section.insert("user_prompts", toml_edit::value(contents.user_prompts));
+        section.insert("compactions", toml_edit::value(contents.compactions));
+        section.insert("tools", toml_edit::value(tools));
+        table.insert("timeline_contents", toml_edit::Item::Table(section));
+    }
+    atomic_write_string(&path, &doc.to_string())?;
+    Ok(())
+}
+
 /// Process-wide write lock for `~/.grok/config.toml`.
 /// Serializes the read-modify-write in `save_config` so two rapid settings toggles can't interleave and clobber each other.
 static SAVE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

@@ -584,20 +584,19 @@ pub enum Action {
     /// Set whether agent thinking blocks are shown.
     /// SHELL-owned: updates the process-wide cache mirror and persists to `[ui].show_thinking_blocks` via `Effect::PersistSetting`.
     SetShowThinkingBlocks(bool),
+    /// Set whether thinking blocks stay folded while the agent is working.
+    /// SHELL-owned: updates the process-wide cache mirror and persists to `[ui].collapse_thinking_blocks` via `Effect::PersistSetting`.
+    SetCollapseThinkingBlocks(bool),
     /// Show calls otherwise hidden behind task/status surfaces.
     SetShowStatusToolCalls(bool),
     /// Set whether the normal prompt border follows the selected thinking/
     /// reasoning effort color. SHELL-owned: cache mirror +
     /// `[ui].thinking_border_colors` via `Effect::PersistSetting`.
     SetThinkingBorderColors(bool),
-    /// Set whether runs of consecutive non-destructive tool calls and
-    /// subagent rows are grouped into one row. SHELL-owned: updates the
-    /// process-wide cache mirror and persists to `[ui].group_tool_verbs`
-    /// via `Effect::PersistSetting`.
-    SetGroupToolVerbs(bool),
-    /// Set whether Edit blocks default to the collapsed one-line diffstat summary.
-    /// SHELL-owned: updates the process-wide cache mirror and persists to `[ui].collapsed_edit_blocks` via `Effect::PersistSetting`.
-    SetCollapsedEditBlocks(bool),
+    /// Set the tool-call detail level (label, canonical value, or legacy alias).
+    /// SHELL-owned: cache mirror, live transcript re-materialize, and
+    /// `[ui] tool_call_density` via `Effect::PersistSetting`.
+    SetToolCallDensity(String),
     /// Set whether Code Mode cards show their complete content by default.
     /// SHELL-owned: cache mirror and `[ui].codemode_expanded_by_default` via `Effect::PersistSetting`.
     SetCodemodeExpandedByDefault(bool),
@@ -1796,9 +1795,7 @@ pub enum Effect {
     /// Fetch session list for the welcome screen session picker.
     /// Rebind the single Pi RPC host to another session without replaying history.
     /// Emitted on multi-agent switch so the next prompt lands in the right Pi session.
-    RebindPiSession {
-        session_id: String,
-    },
+    RebindPiSession { session_id: String },
     FetchSessionList {
         /// The picker this fetch was issued for; the result routes back to this host's storage only.
         host: crate::views::session_picker_surface::SessionPickerHost,
@@ -2431,6 +2428,12 @@ pub enum Effect {
     },
     /// Experimental Remote TUI: cancel the active remote component session.
     RemoteTuiCancel { id: String },
+    TimelineMessage(serde_json::Value),
+    SaveTimeline {
+        host: String,
+        id: String,
+        contents: xai_grok_shell::util::config::TimelineContents,
+    },
     /// Extension shortcut matched: dispatch to Pi extension handler via RPC.
     ShortcutDispatch { key: String },
     /// Quit the application.
@@ -2730,6 +2733,11 @@ pub enum WorkspaceWriteCompletion {
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum TaskResult {
+    TimelineSaved {
+        host: String,
+        id: String,
+        result: Result<xai_grok_shell::util::config::TimelineContents, String>,
+    },
     /// Session lifecycle result paired with the memory mode pinned by the
     /// actor that produced it. The wrapper lets all lifecycle variants share
     /// one typed metadata path.

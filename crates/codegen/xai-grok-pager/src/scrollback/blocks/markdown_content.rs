@@ -182,6 +182,10 @@ impl MarkdownContent {
         self.state.borrow().renderer.source().to_string()
     }
 
+    pub(crate) fn with_source<R>(&self, use_source: impl FnOnce(&str) -> R) -> R {
+        use_source(self.state.borrow().renderer.source())
+    }
+
     /// Whether the source markdown is empty (zero-alloc, unlike `text()`).
     pub fn is_empty(&self) -> bool {
         self.state.borrow().renderer.source().is_empty()

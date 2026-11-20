@@ -1899,6 +1899,7 @@ mod tests {
                     total_bytes: stdout.len(),
                     output_delta: None,
                     was_bare_echo: false,
+                    shell_trace: None,
                 },
             ))
         }

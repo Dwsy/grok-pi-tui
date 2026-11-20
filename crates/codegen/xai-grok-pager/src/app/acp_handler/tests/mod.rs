@@ -322,23 +322,11 @@ pub(super) fn tier_settings_update(tier: &str) -> acp::ExtNotification {
         ),
     )
 }
-pub(super) fn group_tool_verbs_settings_update(
-    value: Option<bool>,
+pub(super) fn tool_call_density_settings_update(
+    value: Option<&str>,
 ) -> acp::ExtNotification {
     let params = match value {
-        Some(v) => serde_json::json!({ "group_tool_verbs": v }),
-        None => serde_json::json!({}),
-    };
-    acp::ExtNotification::new(
-        "x.ai/settings/update",
-        std::sync::Arc::from(serde_json::value::to_raw_value(&params).unwrap()),
-    )
-}
-pub(super) fn collapsed_edit_blocks_settings_update(
-    value: Option<bool>,
-) -> acp::ExtNotification {
-    let params = match value {
-        Some(v) => serde_json::json!({ "collapsed_edit_blocks": v }),
+        Some(v) => serde_json::json!({ "tool_call_density": v }),
         None => serde_json::json!({}),
     };
     acp::ExtNotification::new(
@@ -2025,6 +2013,7 @@ pub(super) fn send_late_bg_detection(app: &mut AppView, tc_id: &str) {
         total_bytes: 11,
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     };
     let update = agent_client_protocol::SessionUpdate::ToolCallUpdate(
         agent_client_protocol::ToolCallUpdate::new(

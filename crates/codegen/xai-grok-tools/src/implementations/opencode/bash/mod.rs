@@ -472,6 +472,7 @@ impl xai_tool_runtime::Tool for BashTool {
             total_bytes: result.total_bytes,
             output_delta: None,
             was_bare_echo: false,
+            shell_trace: None,
         }))
     }
 }
@@ -959,6 +960,7 @@ mod tests {
             total_bytes: 5,
             output_delta: None,
             was_bare_echo: false,
+            shell_trace: None,
         });
         let tool_output: ToolOutput = bash.into();
         assert!(matches!(tool_output, ToolOutput::Bash(_)));

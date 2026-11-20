@@ -26,6 +26,7 @@ import { ensureRemoteTuiHost, installCustomPatch } from "./host.ts";
 import { shouldInstallRemoteHost } from "./env.ts";
 import type { RemoteTuiDemoUi } from "./shared.ts";
 import { applyDemoCapabilities, createDemoSelector } from "./demo.ts";
+import { installTimeline } from "./timeline.ts";
 
 // Re-exported for the bun test suite and external consumers; the split keeps
 // ./index.ts as the single public import surface.
@@ -33,6 +34,7 @@ export { DEMO_ITEMS, applyDemoCapabilities, createDemoSelector } from "./demo.ts
 export type { DemoKey } from "./demo.ts";
 
 export default function (pi: ExtensionAPI) {
+  installTimeline(pi);
   pi.on("session_start", (_event, ctx) => {
     ensureRemoteTuiHost(ctx.ui as Parameters<typeof installCustomPatch>[0]);
   });

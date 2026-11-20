@@ -46,11 +46,8 @@ impl ToolCardClickAction {
     }
 }
 
-/// Trackpad feedback strength for pointer crossings on the timeline rail.
-///
-/// Ordered weakest to strongest: the settings modal presents them as a
-/// progression, and the haptic layer maps each level onto an AppKit pattern.
-/// macOS only — other platforms never pulse.
+/// Trackpad feedback for pointer landings on timeline ticks (macOS only).
+/// `Strong` is a historical setting with the same feedback as `Medium`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TimelineHapticStrength {
     Off,
@@ -78,6 +75,125 @@ impl TimelineHapticStrength {
             Self::Medium => "medium",
             Self::Strong => "strong",
         }
+    }
+}
+
+/// How much detail tool calls show in the scrollback.
+///
+/// One enum drives the three transcript behaviours that used to be separate
+/// knobs (`collapsed_edit_blocks`, `group_tool_verbs`, and the shell output
+/// preview): edit rendering, shell rendering, and which tool runs fold.
+/// Persisted as `[ui] tool_call_density` and switched with `/density`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolCallDensity {
+    /// Edits with diffs and shells with output.
+    Detailed,
+    /// Edits with diffs and compact shells.
+    CompactShells,
+    /// Compact edits and compact shells, not grouped.
+    CompactUngrouped,
+    /// Compact grouped edits and shells.
+    CompactGrouped,
+    /// Compact grouped tool calls (the default).
+    #[default]
+    CompactAllGrouped,
+}
+
+impl ToolCallDensity {
+    /// Every level, most detailed first (the `/settings` and `/density` order).
+    pub const ALL: [Self; 5] = [
+        Self::Detailed,
+        Self::CompactShells,
+        Self::CompactUngrouped,
+        Self::CompactGrouped,
+        Self::CompactAllGrouped,
+    ];
+
+    /// Canonical persisted value (`[ui] tool_call_density`).
+    pub fn as_canonical(self) -> &'static str {
+        match self {
+            Self::Detailed => "detailed",
+            Self::CompactShells => "compact-shells",
+            Self::CompactUngrouped => "compact-ungrouped",
+            Self::CompactGrouped => "compact-grouped",
+            Self::CompactAllGrouped => "compact-all-grouped",
+        }
+    }
+
+    /// Picker label shown in `/settings` and `/density`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Detailed => "Detailed",
+            Self::CompactShells => "Diff focus",
+            Self::CompactUngrouped => "Balanced",
+            Self::CompactGrouped => "Grouped",
+            Self::CompactAllGrouped => "Compact",
+        }
+    }
+
+    /// One-line description shown beside the label.
+    pub fn choice_description(self) -> &'static str {
+        match self {
+            Self::Detailed => "Edits with diffs and shells with output",
+            Self::CompactShells => "Edits with diffs and compact shells",
+            Self::CompactUngrouped => "Compact edits and compact shells, not grouped",
+            Self::CompactGrouped => "Compact grouped edits and shells",
+            Self::CompactAllGrouped => "Compact grouped tool calls",
+        }
+    }
+
+    /// Parse a label, canonical value, or legacy alias (`verbose`, `minimal`).
+    /// Accepts any case, surrounding whitespace, and `_`/space separators.
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase().replace(['_', ' '], "-");
+        match normalized.as_str() {
+            "detailed" | "verbose" => Some(Self::Detailed),
+            "compact-shells" | "diff-focus" => Some(Self::CompactShells),
+            "compact-ungrouped" | "balanced" => Some(Self::CompactUngrouped),
+            "compact-grouped" | "grouped" => Some(Self::CompactGrouped),
+            "compact-all-grouped" | "compact" | "minimal" => Some(Self::CompactAllGrouped),
+            _ => None,
+        }
+    }
+
+    /// Edits render as a collapsed one-line `+N/-M` row (expand for the diff).
+    pub fn edits_collapsed(self) -> bool {
+        !matches!(self, Self::Detailed | Self::CompactShells)
+    }
+
+    /// Shell commands render as one-line rows without their output preview.
+    pub fn shells_collapsed(self) -> bool {
+        !matches!(self, Self::Detailed)
+    }
+
+    /// Edits and shell commands fold into their own runs (each family separately).
+    pub fn groups_action_runs(self) -> bool {
+        matches!(self, Self::CompactGrouped | Self::CompactAllGrouped)
+    }
+
+    /// Every run of tool calls folds into one row, regardless of family.
+    pub fn groups_all_tool_runs(self) -> bool {
+        matches!(self, Self::CompactAllGrouped)
+    }
+
+    /// Migrate a pre-density config to the closest level.
+    ///
+    /// Mirrors the upstream rule: a collapsed-edit config lands on Balanced;
+    /// any other legacy value (`collapsed_edit_blocks = false`,
+    /// `group_tool_verbs = false`) lands on Diff focus, which groups least.
+    /// `None` everywhere means there was no legacy config at all, so the new
+    /// default applies.
+    pub fn from_legacy(
+        collapsed_edit_blocks: Option<bool>,
+        group_tool_verbs: Option<bool>,
+    ) -> Self {
+        if collapsed_edit_blocks == Some(true) {
+            return Self::CompactUngrouped;
+        }
+        if collapsed_edit_blocks.is_some() || group_tool_verbs.is_some() {
+            return Self::CompactShells;
+        }
+        Self::default()
     }
 }
 
@@ -191,6 +307,10 @@ pub struct UiConfig {
     /// Default off; takes effect for new grok-pi sessions only.
     #[serde(default)]
     pub pi_btw: bool,
+    /// Teach the agent to write `[[Done]]` status pills, which the Pager draws as coloured chips.
+    /// Default on; takes effect for new grok-pi sessions only.
+    #[serde(default = "default_true")]
+    pub pi_emphasis: bool,
     /// Show pi-cache-graph views (1/2/3/s/e) inside the Context modal.
     /// Default on for grok-pi; F2 can disable without restart.
     #[serde(default = "default_true")]
@@ -391,6 +511,12 @@ pub struct UiConfig {
     /// `None` means on (client default). Written by the pager's settings modal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_thinking_blocks: Option<bool>,
+    /// Keep thinking blocks folded instead of streaming their body while the
+    /// agent is still thinking. `None` means off (client default): thinking
+    /// streams its last lines until the turn ends. Written by the pager's F2
+    /// settings modal and applied live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapse_thinking_blocks: Option<bool>,
     /// Show tool calls normally hidden by dedicated task and status surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_status_tool_calls: Option<bool>,
@@ -399,12 +525,19 @@ pub struct UiConfig {
     /// F2 settings modal and applied live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_border_colors: Option<bool>,
-    /// Fold runs of consecutive non-destructive tool calls (reads, searches, lists) into one transcript row.
-    /// `None` means on (client default). Written by the pager's settings modal.
+    /// Tool-call detail level shared by edit rendering, shell rendering, and
+    /// run folding: `detailed` | `compact-shells` | `compact-ungrouped` |
+    /// `compact-grouped` | `compact-all-grouped`. Written by `/density` and the
+    /// settings modal. Unset derives the level from the legacy
+    /// [`Self::collapsed_edit_blocks`] / [`Self::group_tool_verbs`] keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_density: Option<String>,
+    /// Legacy pre-density knob: fold runs of consecutive read/search/list tool calls.
+    /// Read only as a [`ToolCallDensity`] migration input; no longer written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_tool_verbs: Option<bool>,
-    /// Show Edit tool calls as a collapsed one-line `+N/-M` diffstat summary by default (expand for the diff).
-    /// `None` means off (client default). Written by the pager's settings modal.
+    /// Legacy pre-density knob: collapse Edit rows to a one-line `+N/-M` summary.
+    /// Read only as a [`ToolCallDensity`] migration input; no longer written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collapsed_edit_blocks: Option<bool>,
     /// Show complete Code Mode scripts, nested calls, and output by default instead of the truncated preview.
@@ -418,7 +551,7 @@ pub struct UiConfig {
     /// Tool-card click action: select (default), toggle, or open_viewer (same as Enter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_card_click_action: Option<String>,
-    /// Trackpad feedback strength when the pointer crosses a timeline tick:
+    /// Trackpad feedback when the pointer moves onto a new timeline tick:
     /// `off` | `light` | `medium` (default) | `strong`.
     /// macOS only; other platforms never pulse. Written by the pager's settings
     /// modal and applied live.
@@ -619,6 +752,7 @@ impl Default for UiConfig {
             pi_ask_user_question: false,
             pi_ask_user_question_notifications: true,
             pi_btw: false,
+            pi_emphasis: true,
             pi_cache_graph: true,
             pi_config_skill: true,
             pi_user_markdown: true,
@@ -669,8 +803,10 @@ impl Default for UiConfig {
             keep_text_selection: None,
             selection_highlight_duration_ms: None,
             show_thinking_blocks: None,
+            collapse_thinking_blocks: None,
             show_status_tool_calls: None,
             thinking_border_colors: None,
+            tool_call_density: None,
             group_tool_verbs: None,
             collapsed_edit_blocks: None,
             codemode_expanded_by_default: None,

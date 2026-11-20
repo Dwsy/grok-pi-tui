@@ -1436,9 +1436,6 @@ impl ScrollbackState {
     /// The broader dense-group run would leak across separators like Edit. Post-layout queries go through
     /// [`Self::verb_group_span_range`] instead.
     pub(super) fn verb_group_range_of(&self, idx: usize) -> Option<Range<usize>> {
-        if !crate::appearance::cache::load_group_tool_verbs() {
-            return None;
-        }
         let show_thinking = crate::appearance::cache::load_show_thinking_blocks();
         // An unclaimable `idx` has no range, even when its neighbors form a run
         let (_, entry) = self.entries.get_index(idx)?;

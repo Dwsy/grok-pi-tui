@@ -59,6 +59,7 @@ impl acp::Agent for PiAgent {
             let mut state = self.state.borrow_mut();
             let plan_path = plan_file_path(&bootstrap.state, &state.session_dir);
             state.plan_mode = crate::plan_mode::PiPlanTracker::with_plan_file(plan_path);
+            state.active_plan_approval_id = None;
         }
         // Mirror load_session: push Pi's baseline contextUsage so the pager
         // context bar does not keep the previous session's numerator.
@@ -115,6 +116,7 @@ impl acp::Agent for PiAgent {
             state.acp_session_id = requested.clone();
             let plan_path = plan_file_path(&bootstrap.state, &state.session_dir);
             state.plan_mode = load_plan_tracker(&plan_path).map_err(acp_internal)?;
+            state.active_plan_approval_id = None;
         }
         self.replay_history().await.map_err(acp_internal)?;
         if bridge_command_is_registered(&bootstrap.commands, SUBAGENT_REPLAY_COMMAND) {
@@ -149,6 +151,7 @@ impl acp::Agent for PiAgent {
                 let was_plan = state.plan_mode.state() != crate::plan_mode::PiPlanState::Inactive;
                 if was_plan {
                     state.plan_mode.user_exit(turn_in_flight);
+                    state.active_plan_approval_id = None;
                     true
                 } else {
                     false
@@ -1055,6 +1058,12 @@ impl acp::Agent for PiAgent {
                 }
                 Ok(())
             }
+            "pi/ui/timeline/reply" => {
+                if let Err(error) = forward_timeline_message(arguments.params.get()) {
+                    tracing::debug!(%error, "Timeline extension delivery failed");
+                }
+                Ok(())
+            }
             // Experimental Remote TUI: keys go to extension host via keyfile
             // (no Pi source patch / no custom stdin RPC types).
             "pi/ui/remote_tui/input" => {
@@ -1441,4 +1450,38 @@ impl PiAgent {
         };
         ext_response(data).map_err(acp_internal)
     }
+}
+
+/// Deliver a complete message through the same instance-private directory as
+/// Remote TUI. Timeline is also active while there is no open Pi component.
+fn forward_timeline_message(body: &str) -> Result<()> {
+    use std::io::Write as _;
+
+    let params: Value = serde_json::from_str(body)?;
+    let host = params
+        .get("host")
+        .or_else(|| params.pointer("/scope/host"))
+        .and_then(Value::as_str)
+        .filter(|host| {
+            host.len() == 36
+                && host
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+        })
+        .ok_or_else(|| anyhow!("invalid Timeline host ID"))?;
+    let meta = std::env::var_os("PI_GROK_REMOTE_TUI_META")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| anyhow!("Remote TUI transport unavailable"))?;
+    let directory = meta
+        .parent()
+        .ok_or_else(|| anyhow!("invalid Remote TUI transport path"))?
+        .join(format!("timeline-{host}"));
+    let mut file = tempfile::Builder::new()
+        .prefix("message-")
+        .suffix(".tmp")
+        .tempfile_in(directory)?;
+    file.write_all(body.as_bytes())?;
+    let path = file.path().with_extension("json");
+    file.persist_noclobber(path)?;
+    Ok(())
 }

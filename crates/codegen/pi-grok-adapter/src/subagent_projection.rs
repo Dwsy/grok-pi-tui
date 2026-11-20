@@ -1,5 +1,6 @@
 use crate::tool_projection::{
-    edit_diff_content, normalize_tool_raw_input, normalize_tool_raw_output, tool_content, tool_kind,
+    edit_diff_content, normalize_tool_raw_input, normalize_tool_raw_output, pi_tool_metadata,
+    timeline_tool_result, tool_content, tool_kind,
 };
 use agent_client_protocol as acp;
 use anyhow::{Result, bail};
@@ -128,6 +129,7 @@ pub(crate) fn parse_bridge_message(
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
             {
+                lifecycle["_meta"]["timelineSpawnCallId"] = json!(parent_tool_call_id);
                 operations.push(BridgeOperation::ParentTaskMetadata {
                     tool_call_id: parent_tool_call_id.to_string(),
                     raw_input: json!({
@@ -243,7 +245,8 @@ fn parse_child_update(value: Option<&Value>) -> Result<acp::SessionUpdate> {
                     .status(acp::ToolCallStatus::InProgress)
                     .content(content)
                     .locations(Vec::new())
-                    .raw_input(args),
+                    .raw_input(args)
+                    .meta(pi_tool_metadata(name, None)),
             ))
         }
         "tool_update" => {
@@ -280,9 +283,8 @@ fn parse_child_update(value: Option<&Value>) -> Result<acp::SessionUpdate> {
             };
             let mut fields = acp::ToolCallUpdateFields::new()
                 .status(Some(status))
-                .raw_output(Some(normalize_tool_raw_output(
-                    name,
-                    args.as_ref(),
+                .raw_output(Some(timeline_tool_result(
+                    normalize_tool_raw_output(name, args.as_ref(), &result, is_error),
                     &result,
                     is_error,
                 )));

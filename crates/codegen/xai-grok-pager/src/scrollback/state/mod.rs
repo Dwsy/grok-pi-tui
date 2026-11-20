@@ -12,7 +12,8 @@ mod types;
 pub mod verb_group;
 
 pub use layout::compute_paint_window;
-pub use timeline::{TimelineEntry, TimelineMarker, TimelineMarkerKind};
+pub use timeline::{TimelineEntry, TimelineMarker, TimelineMarkerKind, TimelineTool};
+pub(crate) use timeline::TimelineFileSummary;
 pub use types::*;
 
 pub(crate) use layout::ScrollAnchor;
@@ -66,6 +67,10 @@ pub struct ScrollbackState {
 
     /// Next entry ID to assign.
     next_id: u64,
+    timeline_branch: u64,
+    timeline_cache: std::cell::RefCell<Option<timeline::MarkerCache>>,
+    timeline_hidden_tools: IndexMap<String, timeline::HiddenTimelineTool>,
+    timeline_spawn_anchors: std::collections::HashMap<String, EntryId>,
 
     /// Set of currently running entry IDs.
     /// Used for O(running) iteration in tick_running().
@@ -249,6 +254,10 @@ impl ScrollbackState {
         Self {
             entries: IndexMap::new(),
             next_id: 1, // Start at 1 so 0 can be a sentinel
+            timeline_branch: timeline::next_branch_id(),
+            timeline_cache: Default::default(),
+            timeline_hidden_tools: IndexMap::new(),
+            timeline_spawn_anchors: Default::default(),
             running: HashSet::new(),
             flashing: Vec::new(),
             dirty_heights: HashSet::new(),
@@ -377,6 +386,9 @@ impl ScrollbackState {
             tail.next_id >= self.next_id,
             "append_entries_from requires a fresh_continuation sibling (shared id space)"
         );
+        self.mark_timeline_dirty(self.entries.len());
+        self.timeline_hidden_tools.extend(tail.timeline_hidden_tools);
+        self.timeline_spawn_anchors.extend(tail.timeline_spawn_anchors);
         self.entries.extend(tail.entries);
         self.running.extend(tail.running);
         self.dirty_heights.extend(tail.dirty_heights);
@@ -607,6 +619,7 @@ impl ScrollbackState {
             self.running.insert(id);
         }
 
+        self.mark_timeline_dirty(self.entries.len());
         self.entries.insert(id, entry);
         if self.batch_depth == 0 {
             self.rebuild_turns();
@@ -616,9 +629,7 @@ impl ScrollbackState {
             if !self.extend_layout_cache_with_new_entry(new_idx) {
                 self.gaps_may_be_dirty = true;
                 self.invalidate_layout_cache();
-            } else if self.appearance.scrollback.display.group_max_visible > 0
-                || crate::appearance::cache::load_group_tool_verbs()
-            {
+            } else {
                 // A groupable, collapsed new entry may extend a group past the truncation threshold, or start or grow a foldable verb-group run
                 // The verb fold is gated on `group_tool_verbs`, independent of the truncation threshold
                 // Mark both dirty so prepare_layout Case 2 fires (Case 3 doesn't check gaps_may_be_dirty)
@@ -672,6 +683,7 @@ impl ScrollbackState {
         if entry.is_running {
             self.running.insert(id);
         }
+        self.mark_timeline_dirty(index);
         self.entries.shift_insert(index, id, entry);
 
         if let Some(selected) = self.selected.as_mut()
@@ -698,11 +710,9 @@ impl ScrollbackState {
             && entry.display_mode == DisplayMode::Collapsed
         {
             entry.display_mode = edit_default_display_mode(
-                self.appearance
-                    .scrollback
-                    .blocks
-                    .edit
-                    .effective_expanded(crate::appearance::cache::load_collapsed_edit_blocks()),
+                self.appearance.scrollback.blocks.edit.effective_expanded(
+                    crate::appearance::cache::load_tool_call_density().edits_collapsed(),
+                ),
                 edit,
             );
         }
@@ -717,7 +727,11 @@ impl ScrollbackState {
         };
         // Anchor the viewport top before the removal shifts indices, then re-point it at the survivor if this removal deleted its entry
         self.arm_structural_scroll_anchor();
+        self.mark_timeline_dirty(removed_index);
         self.entries.shift_remove(&id);
+        self.timeline_hidden_tools
+            .retain(|_, tool| tool.anchor != id);
+        self.timeline_spawn_anchors.retain(|_, anchor| *anchor != id);
         self.migrate_structural_anchor_past_removal(id, removed_index);
         self.running.remove(&id);
         self.dirty_heights.remove(&id);
@@ -742,6 +756,7 @@ impl ScrollbackState {
     }
 
     pub fn remove_from(&mut self, index: usize) -> Vec<ScrollbackEntry> {
+        self.mark_timeline_dirty(index);
         // Anchor a viewport parked above the cut; pruned below if the anchored entry itself is in the removed tail
         self.arm_structural_scroll_anchor();
         let mut removed = Vec::new();
@@ -765,6 +780,9 @@ impl ScrollbackState {
         // Clamp the minimal-mode commit cursor: `remove_from` (rewind / trailing auth-error strip) pops the tail
         // That could otherwise leave the cursor past the end and silently skip future commits
         self.commit_scan_cursor = self.commit_scan_cursor.min(self.entries.len());
+        self.timeline_hidden_tools
+            .retain(|_, tool| self.entries.contains_key(&tool.anchor));
+        self.timeline_spawn_anchors.retain(|_, anchor| self.entries.contains_key(anchor));
         self.rebuild_turns();
         self.gaps_may_be_dirty = true;
         self.invalidate_layout_cache();
@@ -914,6 +932,10 @@ impl ScrollbackState {
 
     /// Clear all entries.
     pub fn clear(&mut self) {
+        self.invalidate_timeline_branch();
+        *self.timeline_cache.get_mut() = None;
+        self.timeline_hidden_tools.clear();
+        self.timeline_spawn_anchors.clear();
         self.entries.clear();
         self.running.clear();
         self.flashing.clear();
@@ -996,7 +1018,8 @@ impl ScrollbackState {
 
     /// Get entry by index mutably.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut ScrollbackEntry> {
-        self.entries.get_index_mut(index).map(|(_, v)| v)
+        let id = *self.entries.get_index(index)?.0;
+        self.get_by_id_mut(id)
     }
 
     /// Get the last entry.
@@ -1057,7 +1080,13 @@ impl ScrollbackState {
     /// O(1) average via IndexMap.
     /// Returns None if the entry doesn't exist (was removed or ID is invalid).
     pub fn get_by_id_mut(&mut self, id: EntryId) -> Option<&mut ScrollbackEntry> {
-        self.entries.get_mut(&id)
+        let (index, _, entry) = self.entries.get_full(&id)?;
+        if matches!(entry.block, RenderBlock::UserPrompt(_) | RenderBlock::SessionEvent(_) | RenderBlock::ToolCall(_))
+            || !entry.tool_traces.is_empty()
+        {
+            self.mark_timeline_dirty(index);
+        }
+        self.entries.get_index_mut(index).map(|(_, entry)| entry)
     }
 
     /// Attach hook data to a tool-call entry and rebuild structural grouping.
@@ -1155,12 +1184,9 @@ impl ScrollbackState {
         started_at: Option<Instant>,
     ) -> bool {
         let respect_manual_folds = self.appearance.scrollback.scroll.respect_manual_folds;
-        let expanded_by_default = self
-            .appearance
-            .scrollback
-            .blocks
-            .edit
-            .effective_expanded(crate::appearance::cache::load_collapsed_edit_blocks());
+        let expanded_by_default = self.appearance.scrollback.blocks.edit.effective_expanded(
+            crate::appearance::cache::load_tool_call_density().edits_collapsed(),
+        );
         let Some(entry) = self.entries.get_mut(&entry_id) else {
             return false;
         };
@@ -1228,26 +1254,77 @@ impl ScrollbackState {
         true
     }
 
-    /// Entries still sitting on their old policy default re-materialize under the new one, so the toggle is visible on
-    /// the existing transcript. An explicit pager.toml `expanded_by_default` makes both defaults equal, so the walk
-    /// naturally no-ops.
-    pub fn apply_collapsed_edit_blocks_flip(&mut self, old_flag: bool, new_flag: bool) {
+    /// Re-materialize Edit and Execute rows still sitting on the previous density
+    /// default, so switching level is visible on the existing transcript. Rows the
+    /// user folded or expanded by hand keep their mode, as does an explicit
+    /// pager.toml `expanded_by_default` pin.
+    pub fn apply_tool_call_density_flip(
+        &mut self,
+        old: crate::appearance::cache::ToolCallDensity,
+        new: crate::appearance::cache::ToolCallDensity,
+    ) {
+        if old == new {
+            return;
+        }
         let edit_cfg = &self.appearance.scrollback.blocks.edit;
-        let old_expanded = edit_cfg.effective_expanded(old_flag);
-        let new_expanded = edit_cfg.effective_expanded(new_flag);
+        let old_expanded = edit_cfg.effective_expanded(old.edits_collapsed());
+        let new_expanded = edit_cfg.effective_expanded(new.edits_collapsed());
         let respect_manual_folds = self.appearance.scrollback.scroll.respect_manual_folds;
-        if old_expanded != new_expanded {
-            for entry in self.entries.values_mut() {
-                let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &entry.block else {
-                    continue;
-                };
-                if respect_manual_folds && entry.display_mode_pinned {
-                    continue;
-                }
-                if entry.display_mode == edit_default_display_mode(old_expanded, edit) {
+        let shells_changed = old.shells_collapsed() != new.shells_collapsed();
+        let old_shell_mode = shell_density_default_mode(old.shells_collapsed());
+        let new_shell_mode = shell_density_default_mode(new.shells_collapsed());
+
+        for entry in self.entries.values_mut() {
+            if respect_manual_folds && entry.display_mode_pinned {
+                continue;
+            }
+            if let RenderBlock::ToolCall(ToolCallBlock::Edit(edit)) = &entry.block {
+                if old_expanded != new_expanded
+                    && entry.display_mode == edit_default_display_mode(old_expanded, edit)
+                {
                     entry.display_mode = edit_default_display_mode(new_expanded, edit);
                 }
+            } else if shells_changed
+                && matches!(
+                    entry.block,
+                    RenderBlock::ToolCall(ToolCallBlock::Execute(_))
+                )
+                && entry.display_mode == old_shell_mode
+            {
+                entry.display_mode = new_shell_mode;
             }
+        }
+        self.clear_group_expansion();
+        self.invalidate_heights();
+    }
+
+    /// Re-materialize running thinking blocks when the collapse flag flips.
+    ///
+    /// A running thinking block's mode comes from its default mode (which the flag decides),
+    /// while a finished one comes from the sticky `thinking_display_mode` (Ctrl+E). Only the
+    /// running blocks are re-materialized here, so flipping the flag never overrides a
+    /// finished block's fold state or a block the user expanded by hand.
+    pub fn apply_collapse_thinking_blocks_flip(&mut self, new_flag: bool) {
+        let new_mode = if new_flag {
+            DisplayMode::Collapsed
+        } else {
+            DisplayMode::Truncated
+        };
+        for entry in self.entries.values_mut() {
+            if !matches!(&entry.block, RenderBlock::Thinking(_)) {
+                continue;
+            }
+            if !entry.is_running {
+                continue;
+            }
+            if entry.display_mode_pinned {
+                continue;
+            }
+            if entry.display_mode == DisplayMode::Expanded {
+                // The user expanded this one by hand; leave it open.
+                continue;
+            }
+            entry.display_mode = new_mode;
         }
         self.clear_group_expansion();
         self.invalidate_heights();
@@ -1322,6 +1399,7 @@ impl ScrollbackState {
 
     /// Mark every running entry finished. `finish_turn` alone would leave them animating forever.
     pub(crate) fn finish_all_running(&mut self) {
+        self.settle_hidden_timeline_tools();
         let ids: Vec<EntryId> = self.running.iter().copied().collect();
         for id in ids {
             self.finish_running(id);
@@ -1457,12 +1535,9 @@ impl ScrollbackState {
         if !self.permission_opened.remove(&id) {
             return;
         }
-        let expanded_by_default = self
-            .appearance
-            .scrollback
-            .blocks
-            .edit
-            .effective_expanded(crate::appearance::cache::load_collapsed_edit_blocks());
+        let expanded_by_default = self.appearance.scrollback.blocks.edit.effective_expanded(
+            crate::appearance::cache::load_tool_call_density().edits_collapsed(),
+        );
         let Some(entry) = self.get_by_id_mut(id) else {
             return;
         };
@@ -1848,7 +1923,7 @@ impl ScrollbackState {
 
     /// Get mutable reference to an entry.
     pub fn entry_mut(&mut self, index: usize) -> Option<&mut ScrollbackEntry> {
-        self.entries.get_index_mut(index).map(|(_, v)| v)
+        self.get_mut(index)
     }
 
     /// Whether group truncation replaces or hides this entry's content at the current layout (a "N more" header, or a hidden member at height 0).
@@ -1889,6 +1964,16 @@ impl ScrollbackState {
 /// Display mode a freshly materialized Edit block adopts (fresh `push`, or a kind upgrade in `replace_tool_block`).
 /// Failed edits collapse; summaries the one-liner can't truthfully compress expand. Otherwise the effective
 /// expanded default (`EditBlockConfig::effective_expanded`) decides.
+/// The density-owned default mode for a shell row: one-line at every level below
+/// Detailed, output preview at Detailed.
+fn shell_density_default_mode(shells_collapsed: bool) -> DisplayMode {
+    if shells_collapsed {
+        DisplayMode::Collapsed
+    } else {
+        DisplayMode::Truncated
+    }
+}
+
 fn edit_default_display_mode(expanded_by_default: bool, edit: &EditToolCallBlock) -> DisplayMode {
     if edit.is_success() && (edit.summary_untrusted || expanded_by_default) {
         DisplayMode::Expanded
@@ -2495,6 +2580,9 @@ mod tests {
     #[test]
     fn replace_tool_block_execute_same_kind_preserves_mode() {
         use crate::scrollback::blocks::tool::ExecuteToolCallBlock;
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+        );
 
         let mut state = ScrollbackState::new();
         let id = state.push_block(RenderBlock::tool_call("Other", "pending", true));
@@ -2584,7 +2672,10 @@ mod tests {
             "Search completion must not snap a user expand shut"
         );
 
-        // bash_mode: Truncated progress stays Truncated (no snap-open); finish still expands
+        // User ! bash at Detailed: Truncated progress stays Truncated (no snap-open); finish still expands
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::Detailed,
+        );
         let bash = |output: Option<&str>| {
             let mut b = ExecuteToolCallBlock::new("pytest");
             b.bash_mode = true;
@@ -2613,42 +2704,53 @@ mod tests {
             DisplayMode::Expanded,
             "bash finish must still expand from preserved Truncated"
         );
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+        );
     }
 
-    /// With the pager.toml shape keys unset (the shipped default), the shell-owned `collapsed_edit_blocks` flag decides
-    /// materialization. On means the collapsed one-liner, off means the legacy expanded diff. Untrusted summaries still
-    /// escape the collapse. Spawned thread: the cache is a sticky thread-local seeded explicitly here.
+    /// With the pager.toml shape keys unset (the shipped default), the live
+    /// `tool_call_density` decides materialization: levels past Diff focus collapse
+    /// Edits to the one-liner, the first two keep the expanded diff. Untrusted
+    /// summaries still escape the collapse. Spawned thread: the cache is a sticky
+    /// thread-local seeded explicitly here.
     #[test]
-    fn push_defaults_follow_collapsed_edit_blocks_flag_when_shape_unset() {
+    fn push_defaults_follow_tool_call_density_when_shape_unset() {
         std::thread::spawn(|| {
             let ok = || EditToolCallBlock::new("f.rs", vec![]);
 
-            crate::appearance::cache::set_collapsed_edit_blocks(true);
+            crate::appearance::cache::set_tool_call_density(
+                crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+            );
             let mut state = ScrollbackState::new();
             let id = state.push_block(edit_block(ok()));
             assert_eq!(
                 state.get_by_id(id).unwrap().display_mode,
                 DisplayMode::Collapsed,
-                "flag on collapses fresh Edits"
+                "a compact level collapses fresh Edits"
             );
             let id = state.push_block(edit_block(ok().with_untrusted_summary()));
             assert_eq!(
                 state.get_by_id(id).unwrap().display_mode,
                 DisplayMode::Expanded,
-                "untrusted summaries expand even with the flag on"
+                "untrusted summaries expand even on a compact level"
             );
 
-            crate::appearance::cache::set_collapsed_edit_blocks(false);
+            crate::appearance::cache::set_tool_call_density(
+                crate::appearance::cache::ToolCallDensity::Detailed,
+            );
             let mut state = ScrollbackState::new();
             let id = state.push_block(edit_block(ok()));
             assert_eq!(
                 state.get_by_id(id).unwrap().display_mode,
                 DisplayMode::Expanded,
-                "flag off keeps the legacy expanded-diff default"
+                "Detailed keeps the expanded-diff default"
             );
 
-            // An explicit pager.toml shape beats the flag in both directions.
-            crate::appearance::cache::set_collapsed_edit_blocks(true);
+            // An explicit pager.toml shape beats the level in both directions.
+            crate::appearance::cache::set_tool_call_density(
+                crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+            );
             let mut state = edit_state(true);
             let id = state.push_block(edit_block(ok()));
             assert_eq!(
@@ -2661,12 +2763,14 @@ mod tests {
         .unwrap();
     }
 
-    /// A live flag flip re-materializes only entries still on their old policy default.
+    /// A live density flip re-materializes only entries still on their old policy default.
     /// A user gesture away from that default survives, and an explicit pager.toml shape makes the walk a no-op.
     #[test]
-    fn collapsed_edit_blocks_flip_rematerializes_only_default_entries() {
+    fn tool_call_density_flip_rematerializes_only_default_entries() {
         std::thread::spawn(|| {
-            crate::appearance::cache::set_collapsed_edit_blocks(false);
+            crate::appearance::cache::set_tool_call_density(
+                crate::appearance::cache::ToolCallDensity::Detailed,
+            );
             let mut state = ScrollbackState::new();
             let plain = state.push_block(edit_block(EditToolCallBlock::new("a.rs", vec![])));
             let failed = state.push_block(edit_block(
@@ -2682,8 +2786,13 @@ mod tests {
                 .unwrap()
                 .set_display_mode(DisplayMode::Expanded);
 
-            crate::appearance::cache::set_collapsed_edit_blocks(true);
-            state.apply_collapsed_edit_blocks_flip(false, true);
+            crate::appearance::cache::set_tool_call_density(
+                crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+            );
+            state.apply_tool_call_density_flip(
+                crate::appearance::cache::ToolCallDensity::Detailed,
+                crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+            );
             assert_eq!(
                 state.get_by_id(plain).unwrap().display_mode,
                 DisplayMode::Collapsed,
@@ -2698,7 +2807,10 @@ mod tests {
             // Explicit shape override: both effective defaults are equal, so the flip leaves the entry alone
             let mut state = edit_state(true);
             let id = state.push_block(edit_block(EditToolCallBlock::new("c.rs", vec![])));
-            state.apply_collapsed_edit_blocks_flip(true, false);
+            state.apply_tool_call_density_flip(
+                crate::appearance::cache::ToolCallDensity::CompactUngrouped,
+                crate::appearance::cache::ToolCallDensity::Detailed,
+            );
             assert_eq!(
                 state.get_by_id(id).unwrap().display_mode,
                 DisplayMode::Expanded,

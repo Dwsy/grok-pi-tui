@@ -380,9 +380,10 @@ impl AgentView {
             fork_state: None,
             inline_edit: None,
             pending_inline_resubmit: None,
-            timeline_rail: None,
+            timeline_frame: None,
+            timeline_formatting: Default::default(),
+            timeline_request: None,
             timeline_hover: None,
-            timeline_hover_preview: None,
             session_agent_name: None,
             subagent_sessions: HashMap::new(),
             subagent_views: HashMap::new(),
@@ -682,6 +683,7 @@ impl AgentView {
     }
     /// Enter a `session/load` replay window: the fields coupled to that transition (including `cancel_latency`) reset together in one place.
     pub(crate) fn begin_replay_window(&mut self) {
+        self.scrollback.invalidate_timeline_branch();
         self.tree_projection = None;
         self.clear_minimal_btw_lifecycle();
         self.session.loading_replay = true;

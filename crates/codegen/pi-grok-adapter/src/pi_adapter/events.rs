@@ -84,7 +84,8 @@ fn project_tool_call_stream(
                     .status(acp::ToolCallStatus::InProgress)
                     .content(content)
                     .locations(Vec::new())
-                    .raw_input(args);
+                    .raw_input(args)
+                    .meta(pi_tool_metadata(name, None));
             streams.insert(
                 content_index,
                 PiToolCallStream::new(id.to_string(), name.to_string()),
@@ -228,7 +229,7 @@ impl PiAgent {
             }
             "agent_settled" => {
                 self.refresh_context_usage().await;
-                let (mode_update, running) = {
+                let (mode_update, persist_plan, running) = {
                     let mut state = self.state.borrow_mut();
                     state.agent_running = false;
                     state.cancelling = false;
@@ -238,19 +239,29 @@ impl PiAgent {
                     state.bash_stream_output.clear();
                     state.streaming_tool_calls.clear();
                     let running = state.queue_mirror.clear_running();
+                    let mut persist_plan = false;
                     let mode_update = if matches!(
                         state.plan_mode.state(),
                         crate::plan_mode::PiPlanState::ExitPending
                     ) {
                         state.plan_mode.complete_deferred_exit();
+                        state.active_plan_approval_id = None;
+                        persist_plan = true;
                         Some(acp::SessionModeId::new("default"))
+                    } else if state.plan_mode.is_awaiting_plan_approval() {
+                        state.plan_mode.set_awaiting_plan_approval(false);
+                        state.active_plan_approval_id = None;
+                        persist_plan = true;
+                        None
                     } else {
                         None
                     };
-                    (mode_update, running)
+                    (mode_update, persist_plan, running)
                 };
-                if let Some(mode_id) = mode_update {
+                if persist_plan {
                     self.persist_plan_mode_state()?;
+                }
+                if let Some(mode_id) = mode_update {
                     self.sync_plan_mode_control()?;
                     self.send_update(acp::SessionUpdate::CurrentModeUpdate(
                         acp::CurrentModeUpdate::new(mode_id),

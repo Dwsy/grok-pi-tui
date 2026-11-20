@@ -54,17 +54,17 @@ const TIMELINE_HAPTICS_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "light",
         display: "Light",
-        description: "Soft guide-snap pulse. Easiest to miss on a light trackpad setting.",
+        description: "One soft Alignment pulse per new tick hovered.",
     },
     EnumChoice {
         canonical: "medium",
         display: "Medium",
-        description: "One simulated detent per crossed tick. Default.",
+        description: "One LevelChange detent per new tick hovered. Default.",
     },
     EnumChoice {
         canonical: "strong",
         display: "Strong",
-        description: "Harder detent, doubled. Use when Medium is still too faint.",
+        description: "Legacy setting with the same single detent as Medium.",
     },
 ];
 
@@ -416,6 +416,35 @@ const SCREEN_MODE_CHOICES: &[EnumChoice] = &[
     },
 ];
 
+/// Most detailed first; `/density` lists the same order.
+const TOOL_CALL_DENSITY_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "detailed",
+        display: "Detailed",
+        description: "Edits with diffs and shells with output",
+    },
+    EnumChoice {
+        canonical: "compact-shells",
+        display: "Diff focus",
+        description: "Edits with diffs and compact shells",
+    },
+    EnumChoice {
+        canonical: "compact-ungrouped",
+        display: "Balanced",
+        description: "Compact edits and compact shells, not grouped",
+    },
+    EnumChoice {
+        canonical: "compact-grouped",
+        display: "Grouped",
+        description: "Compact grouped edits and shells",
+    },
+    EnumChoice {
+        canonical: "compact-all-grouped",
+        display: "Compact",
+        description: "Compact grouped tool calls",
+    },
+];
+
 // Voice-capture-mode catalog. Alacritty 0.14 and earlier negotiates the protocol yet never reports releases, so
 // hold stays hidden there.
 const VOICE_CAPTURE_MODE_CHOICES: &[EnumChoice] = &[
@@ -649,6 +678,36 @@ pub fn default_settings() -> Vec<SettingMeta> {
     let ui_default = UiConfig::default();
 
     vec![
+        SettingMeta {
+            key: "tool_call_density",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shell,
+            label: "Tool call density",
+            description: "How much detail tool calls show: edit diffs and shell output, or \
+                          one-line rows folded into summary groups. Also /density.",
+            keywords: &[
+                "density",
+                "tool",
+                "tools",
+                "tool call",
+                "tool calls",
+                "compact",
+                "grouped",
+                "group",
+                "shell",
+                "verbose",
+                "detailed",
+                "diff",
+            ],
+            kind: SettingKind::Enum {
+                default: "compact-all-grouped",
+                choices: TOOL_CALL_DENSITY_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
         SettingMeta {
             key: "compact_mode",
             category: SettingCategory::Appearance,
@@ -1125,6 +1184,29 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: false,
         },
+        // SHELL-owned: `[ui].collapse_thinking_blocks` + process-wide cache.
+        // Default OFF: thinking streams its body while the agent is still working.
+        SettingMeta {
+            key: "collapse_thinking_blocks",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shell,
+            label: "Collapse thinking blocks",
+            description: "Keep thinking blocks folded while the agent works, instead of streaming the reasoning body line by line.",
+            keywords: &[
+                "thinking",
+                "reasoning",
+                "collapse",
+                "folded",
+                "stream",
+                "thinking blocks",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.collapse_thinking_blocks.unwrap_or(false),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
         // SHELL-owned: `[ui].thinking_border_colors` + process-wide cache.
         // Default ON; applies to the next render frame.
         SettingMeta {
@@ -1215,55 +1297,6 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: false,
         },
-        // SHELL-owned: `[ui].group_tool_verbs` with a process-wide cache. Default ON.
-        SettingMeta {
-            key: "group_tool_verbs",
-            category: SettingCategory::Appearance,
-            owner: SettingOwner::Shell,
-            label: "Group tool calls",
-            description: "Fold runs of two or more consecutive read/search/list tool calls and \
-                          subagent rows into one summary row; finished thoughts fold into the group too.",
-            keywords: &[
-                "group", "tool", "verbs", "fold", "collapse", "read", "search", "summary",
-                "thinking", "subagent",
-            ],
-            kind: SettingKind::Bool {
-                default: ui_default.group_tool_verbs.unwrap_or(true),
-            },
-            restart_required: false,
-            hidden_in_minimal: false,
-            external_only: false,
-        },
-        // SHELL-owned: `[ui].collapsed_edit_blocks` with a process-wide cache
-        // Default OFF (rollout flag; remote settings / managed config can enable).
-        SettingMeta {
-            key: "collapsed_edit_blocks",
-            category: SettingCategory::Appearance,
-            owner: SettingOwner::Shell,
-            label: "Collapsed edit blocks",
-            description: "Show edits as one-line +N/-M diffstat summaries and merge \
-                          back-to-back edits to the same file into one block; expand a \
-                          row to see the diffs.",
-            keywords: &[
-                "edit",
-                "edits",
-                "diff",
-                "diffstat",
-                "collapse",
-                "collapsed",
-                "summary",
-                "expand",
-                "one-line",
-                "merge",
-                "coalesce",
-            ],
-            kind: SettingKind::Bool {
-                default: ui_default.collapsed_edit_blocks.unwrap_or(false),
-            },
-            restart_required: false,
-            hidden_in_minimal: false,
-            external_only: false,
-        },
         SettingMeta {
             key: "codemode_expanded_by_default",
             category: SettingCategory::Appearance,
@@ -1339,14 +1372,13 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: true,
         },
-        // SHELL-owned: `[ui].timeline_haptics`. macOS only; the strength maps
-        // onto an AppKit feedback pattern and a pulse count.
+        // SHELL-owned: `[ui].timeline_haptics`. AppKit feedback on macOS only.
         SettingMeta {
             key: "timeline_haptics",
             category: SettingCategory::Mouse,
             owner: SettingOwner::Shell,
             label: "Timeline hover haptics",
-            description: "Trackpad feedback when the pointer crosses a timeline tick (macOS only). Stronger levels use a harder detent and pulse once per crossed tick.",
+            description: "Request one trackpad pulse when the pointer moves onto a new timeline tick (macOS only).",
             keywords: &[
                 "haptic",
                 "haptics",

@@ -153,6 +153,34 @@ pub struct MarkdownStyle {
     /// Style for rendered LaTeX math (inline `$...$`/`\(...\)` content after Unicode conversion, and display math block lines).
     /// In raw mode the style applies to the unconverted TeX source.
     pub math: Style,
+    /// `[[Done]]` status pills: the style each tone draws its label and chip background with.
+    pub pill_success: Style,
+    pub pill_error: Style,
+    pub pill_warning: Style,
+    pub pill_danger: Style,
+    pub pill_mode: Style,
+    pub pill_owner: Style,
+    pub pill_neutral: Style,
+}
+
+impl MarkdownStyle {
+    /// Every pill tone's style, in [`PillTone::ALL`] order.
+    pub fn pill_styles(&self) -> [Style; 7] {
+        [
+            self.pill_danger,
+            self.pill_error,
+            self.pill_warning,
+            self.pill_success,
+            self.pill_mode,
+            self.pill_owner,
+            self.pill_neutral,
+        ]
+    }
+
+    /// The style a pill tone draws with.
+    pub fn pill_style(&self, tone: crate::pill::PillTone) -> Style {
+        tone.style(self)
+    }
 }
 
 impl MarkdownStyle {
@@ -201,6 +229,13 @@ impl MarkdownStyle {
             table_outer: adapt_style(self.table_outer),
             text: adapt_style(self.text),
             math: adapt_style(self.math),
+            pill_success: adapt_style(self.pill_success),
+            pill_error: adapt_style(self.pill_error),
+            pill_warning: adapt_style(self.pill_warning),
+            pill_danger: adapt_style(self.pill_danger),
+            pill_mode: adapt_style(self.pill_mode),
+            pill_owner: adapt_style(self.pill_owner),
+            pill_neutral: adapt_style(self.pill_neutral),
         }
     }
 }
@@ -294,5 +329,15 @@ pub mod test_style {
         table_outer: Style::new().bold(),
         text: Style::new(),
         math: Style::new().italic(),
+        // Pills only need a distinct fg to be assertable in tests; the real palette comes from the theme.
+        pill_success: Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green))),
+        pill_error: Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red))),
+        pill_warning: Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Yellow))),
+        pill_danger: Style::new()
+            .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::BrightRed)))
+            .invert(),
+        pill_mode: Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan))),
+        pill_owner: Style::new().fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Blue))),
+        pill_neutral: Style::new().dimmed(),
     };
 }

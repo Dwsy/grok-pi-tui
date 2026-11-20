@@ -1226,6 +1226,7 @@ async fn unrelated_tool_output_does_not_consume() {
         total_bytes: 2,
         output_delta: None,
         was_bare_echo: false,
+        shell_trace: None,
     };
     let out = ToolOutput::Bash(bash);
     assert!(consumed_completion_ids(&out).is_empty());

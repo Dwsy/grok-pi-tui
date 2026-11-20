@@ -1655,23 +1655,12 @@ pub(crate) async fn run(
         )
         .value,
     );
-    crate::appearance::cache::set_group_tool_verbs(
-        xai_grok_shell::util::config::resolve_group_tool_verbs(
+    crate::appearance::cache::set_tool_call_density(
+        xai_grok_shell::util::config::resolve_tool_call_density(
             requirements.as_ref(),
             user_config.as_ref(),
             managed_config.as_ref(),
-            remote_settings.as_ref(),
-        )
-        .value,
-    );
-    crate::appearance::cache::set_collapsed_edit_blocks(
-        xai_grok_shell::util::config::resolve_collapsed_edit_blocks(
-            requirements.as_ref(),
-            user_config.as_ref(),
-            managed_config.as_ref(),
-            remote_settings.as_ref(),
-        )
-        .value,
+        ),
     );
 
     app.usage_billing_redirect_url = remote_settings
@@ -1835,6 +1824,12 @@ pub(crate) async fn run(
 
     // Seed app state from disk once at the I/O boundary so dispatch stays sans-IO
     app.current_ui = load_initial_ui_config();
+    if external_agent {
+        match xai_grok_shell::util::config::load_timeline_contents() {
+            Ok(contents) => app.timeline_contents = contents,
+            Err(error) => tracing::warn!(%error, "Failed to read user Timeline contents"),
+        }
+    }
     // Here rather than from the row's own update: that runs only once an agent view is on screen
     // A welcome-only session would otherwise be missing from the denominator adoption is measured against
     crate::app::status_line::metrics::global().report_config(&app.current_ui.status_line);

@@ -7,7 +7,7 @@ application.
 - `/review-message` first selects the edit message to review.
 - Press `t` in the review modal to switch flat files and a cwd-relative tree;
   press `r` to include or hide read-only file accesses. Both defaults live in F2.
-- `/timeline` toggles the optional per-turn rail beside scrollback.
+- `/timeline` toggles the rail beside scrollback. `/timeline-config` selects the entries it shows, including Pi tools by registration name.
 - **Pi tree file rollback** is default off and requires restart. When enabled, a
   bridge extension records raw preimages for Pi built-in `write` and `edit`, then
   offers file-only restore from SessionTree.

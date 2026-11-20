@@ -84,26 +84,27 @@ use super::settings::setters::{
     clear_default_model, clear_fork_secondary_model, clear_recap_model, preview_auto_dark_theme,
     preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
     set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_cancel_turn_key,
-    set_codemode_expanded_by_default, set_collapsed_edit_blocks, set_combine_queued_prompts,
-    set_compact_mode, set_confirm_before_rewind, set_contextual_hint_export_copy,
-    set_contextual_hint_image_input, set_contextual_hint_plan_mode, set_contextual_hint_send_now,
-    set_contextual_hint_small_screen, set_contextual_hint_ssh_wrap, set_contextual_hint_undo,
-    set_contextual_hint_word_select, set_ctrl_o_tool_expansion, set_default_model,
-    set_default_selected_permission, set_display_refresh_auto_cadence, set_follow_up_behavior,
-    set_fork_secondary_model, set_group_tool_verbs, set_host_feature_bool, set_hunk_tracker_mode,
-    set_invert_scroll, set_keep_text_selection, set_max_thoughts_width, set_model_slot,
-    set_multiline_mode, set_page_flip_on_send, set_pi_ask_user_question_notifications,
-    set_pi_at_search_hidden, set_pi_bash, set_pi_bash_command_format, set_pi_bash_run_display,
-    set_pi_builtin_tool, set_pi_cache_graph, set_pi_config_skill, set_pi_eval, set_pi_eval_mcp,
-    set_pi_eval_v2_display_mode, set_pi_eval_v2_language, set_pi_eval_v2_only,
-    set_pi_keep_multi_agent, set_pi_tree_file_rollback, set_pi_tree_skip_summary_prompt,
-    set_pi_user_markdown, set_progress_bar, set_prompt_cursor, set_prompt_suggestions,
-    set_psm_resume_index, set_recap_mermaid, set_recap_model, set_remember_tool_approvals,
-    set_remote_tui_footer, set_render_mermaid, set_respect_manual_folds, set_review_file_tree,
-    set_review_include_reads, set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed,
-    set_session_recap, set_show_other_tool_args, set_show_thinking_blocks, set_show_tips,
-    set_side_by_side_edit, set_side_by_side_word_highlight, set_simple_mode, set_theme,
-    set_thinking_border_colors, set_timeline, set_timeline_haptics, set_timestamps,
+    set_codemode_expanded_by_default, set_collapse_thinking_blocks, set_combine_queued_prompts,
+    set_compact_mode,
+    set_confirm_before_rewind, set_contextual_hint_export_copy, set_contextual_hint_image_input,
+    set_contextual_hint_plan_mode, set_contextual_hint_send_now, set_contextual_hint_small_screen,
+    set_contextual_hint_ssh_wrap, set_contextual_hint_undo, set_contextual_hint_word_select,
+    set_ctrl_o_tool_expansion, set_default_model, set_default_selected_permission,
+    set_display_refresh_auto_cadence, set_follow_up_behavior, set_fork_secondary_model,
+    set_host_feature_bool, set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection,
+    set_max_thoughts_width, set_model_slot, set_multiline_mode, set_page_flip_on_send,
+    set_pi_ask_user_question_notifications, set_pi_at_search_hidden, set_pi_bash,
+    set_pi_bash_command_format, set_pi_bash_run_display, set_pi_builtin_tool, set_pi_cache_graph,
+    set_pi_config_skill, set_pi_eval, set_pi_eval_mcp, set_pi_eval_v2_display_mode,
+    set_pi_eval_v2_language, set_pi_eval_v2_only, set_pi_keep_multi_agent,
+    set_pi_tree_file_rollback, set_pi_tree_skip_summary_prompt, set_pi_user_markdown,
+    set_progress_bar, set_prompt_cursor, set_prompt_suggestions, set_psm_resume_index,
+    set_recap_mermaid, set_recap_model, set_remember_tool_approvals, set_remote_tui_footer,
+    set_render_mermaid, set_respect_manual_folds, set_review_file_tree, set_review_include_reads,
+    set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
+    set_show_other_tool_args, set_show_thinking_blocks, set_show_tips, set_side_by_side_edit,
+    set_side_by_side_word_highlight, set_simple_mode, set_theme, set_thinking_border_colors,
+    set_timeline, set_timeline_haptics, set_timestamps, set_tool_call_density,
     set_tool_card_click_action, set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled,
     set_voice_stt_language, set_write_edit_hover_popups,
 };
@@ -1045,6 +1046,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             let Some((model_id, effort)) = agent.session.models.next_model_selection() else {
                 return vec![];
             };
+            // Usage is counted once the switch succeeds (see `handle_switch_model_complete`).
             let Some(session_id) = agent.session.session_id.clone() else {
                 agent.session.deferred_model_switch =
                     Some(crate::app::agent::DeferredModelSwitch {
@@ -1111,6 +1113,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             let Some(agent) = app.agents.get_mut(&id) else {
                 return vec![];
             };
+            // Usage is counted once the switch succeeds (see `handle_switch_model_complete`).
             let Some(session_id) = agent.session.session_id.clone() else {
                 let prev_model = agent.session.models.current.clone();
                 let prev_effort = agent.session.models.reasoning_effort;
@@ -1278,9 +1281,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             super::settings::setters::set_show_status_tool_calls(app, v)
         }
         Action::SetShowThinkingBlocks(v) => set_show_thinking_blocks(app, v),
+        Action::SetCollapseThinkingBlocks(v) => set_collapse_thinking_blocks(app, v),
         Action::SetThinkingBorderColors(v) => set_thinking_border_colors(app, v),
-        Action::SetGroupToolVerbs(v) => set_group_tool_verbs(app, v),
-        Action::SetCollapsedEditBlocks(v) => set_collapsed_edit_blocks(app, v),
+        Action::SetToolCallDensity(s) => set_tool_call_density(app, s),
         Action::SetCodemodeExpandedByDefault(v) => set_codemode_expanded_by_default(app, v),
         Action::SetSideBySideEdit(v) => set_side_by_side_edit(app, v),
         Action::SetSideBySideWordHighlight(v) => set_side_by_side_word_highlight(app, v),

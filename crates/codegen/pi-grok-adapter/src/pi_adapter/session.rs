@@ -741,7 +741,11 @@ impl PiAgent {
             return Err(acp::Error::invalid_params()
                 .data("wait for the current Pi response before navigating the session tree"));
         }
-        let mut args = entry_id.to_string();
+        let session = self.state.borrow().acp_session_id.clone();
+        let request_id = uuid::Uuid::now_v7().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.state.borrow_mut().pending_tree_leaves.insert(request_id.clone(), tx);
+        let mut args = format!("{entry_id} --leaf-reply {request_id}");
         if summarize {
             args.push_str(" --summarize");
         }
@@ -750,20 +754,38 @@ impl PiAgent {
             args.push_str(" --instructions ");
             args.push_str(instructions);
         }
-        self.run_bridge_command(NAVIGATE_TREE_COMMAND, &args)
-            .await?;
-
-        // The leaf moved inside the same session file. Reuse Pi's flat append
-        // log instead of reloading models, commands, state, and the full nested
-        // tree. The following Pager session/load consumes this fresh snapshot.
-        self.refresh_entry_replay_cache()
-            .await
-            .map_err(acp_internal)?;
+        let result = self.run_bridge_command(NAVIGATE_TREE_COMMAND, &args).await;
+        if let Err(error) = result {
+            self.state.borrow_mut().pending_tree_leaves.remove(&request_id);
+            return Err(error);
+        }
+        // New tree bridges report the active leaf directly from Pi's indexed
+        // SessionManager. Older bridges and newly appended summary nodes fall
+        // back to the established append-log refresh.
+        let navigation = tokio::time::timeout(std::time::Duration::from_millis(150), rx)
+            .await.ok().and_then(|reply| reply.ok());
+        self.state.borrow_mut().pending_tree_leaves.remove(&request_id);
+        let reused = {
+            let mut state = self.state.borrow_mut();
+            if state.acp_session_id != session {
+                return Err(acp::Error::invalid_params().data("Pi session changed during tree navigation"));
+            }
+            !summarize && state.entry_replay_cache.matches_session(&session)
+                && navigation.as_ref().and_then(|reply| reply.get("leafId"))
+                    .filter(|leaf| leaf.is_null() || leaf.is_string())
+                    .is_some_and(|leaf| state.entry_replay_cache.select_cached_leaf(leaf.as_str()))
+        };
+        if !reused {
+            self.refresh_entry_replay_cache().await.map_err(acp_internal)?;
+        }
         let (session_id, leaf_id, editor_text) = {
             let state = self.state.borrow();
             let session_id = state.acp_session_id.clone();
             let leaf_id = state.entry_replay_cache.leaf_id().map(str::to_owned);
-            let editor_text = state.entry_replay_cache.editor_text(entry_id);
+            let editor_text = navigation.as_ref()
+                .and_then(|reply| string(reply, &["editorText"]))
+                .map(str::to_owned)
+                .or_else(|| state.entry_replay_cache.editor_text(entry_id));
             (session_id, leaf_id, editor_text)
         };
         let projection = if summarize {
@@ -949,7 +971,10 @@ impl PiAgent {
             let mut state = self.state.borrow_mut();
             let plan_path = plan_file_path(&bootstrap.state, &state.session_dir);
             state.plan_mode = load_plan_tracker(&plan_path).map_err(acp_internal)?;
+            state.active_plan_approval_id = None;
         }
+        self.sync_plan_mode_control().map_err(acp_internal)?;
+        self.publish_plan_file_path().await;
         self.publish_bootstrap(&bootstrap).await;
         // Fork/clone rebinds session identity; refresh bar from the new JSONL.
         self.refresh_context_usage().await;
@@ -1056,8 +1081,46 @@ impl PiAgent {
         let body = serde_json::to_vec(&json!({
             "active": active,
             "planFilePath": plan_file_path,
+            "syncResponses": true,
         }))?;
         atomic_write(&control_path, &body)
+    }
+
+    /// Atomically write the synchronous tool response for `enter_plan_mode` /
+    /// `exit_plan_mode` into the private `plan_mode_control` directory.
+    /// Callers must call `sync_plan_mode_control()` strictly before writing
+    /// this response so the `tool_call` gate observes the updated `active`
+    /// flag before Pi continues the turn.
+    pub(super) fn write_plan_mode_response(&self, tool_call_id: &str, payload: Value) -> bool {
+        let Some(control_path) = self.state.borrow().plan_mode_control.clone() else {
+            return false;
+        };
+        let Some(dir) = control_path.parent() else {
+            tracing::warn!(
+                path = %control_path.display(),
+                "plan control path has no parent directory"
+            );
+            return false;
+        };
+        let path = dir.join(plan_response_file_name(tool_call_id));
+        match serde_json::to_vec(&payload) {
+            Ok(bytes) => {
+                if let Err(error) = atomic_write(&path, &bytes) {
+                    tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "failed to write plan mode response"
+                    );
+                    false
+                } else {
+                    true
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, tool_call_id, "failed to serialize plan mode response");
+                false
+            }
+        }
     }
 
     /// Notify the Pager of the session plan file path so `/view-plan` and the

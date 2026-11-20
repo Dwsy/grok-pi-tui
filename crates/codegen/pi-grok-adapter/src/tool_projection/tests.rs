@@ -75,6 +75,52 @@ fn pi_bash_result_projects_native_bash_raw_output() {
         direct.get("description").and_then(Value::as_str),
         Some("print greeting")
     );
+    assert!(direct.get("shell_trace").is_none() || direct.get("shell_trace") == Some(&Value::Null));
+}
+
+#[test]
+fn bash_tool_output_projects_shell_trace_without_prompt_leak() {
+    let raw = bash_tool_output(
+        "echo hi && true",
+        Some("test trace"),
+        &json!({
+            "content": [{ "type": "text", "text": "hi\n" }],
+            "details": {
+                "exitCode": 0,
+                "shellTrace": {
+                    "version": 1,
+                    "total_duration_ms": 12,
+                    "exit_code": 0,
+                    "truncated": false,
+                    "nodes": [
+                        {
+                            "id": 0,
+                            "depth": 0,
+                            "kind": "and_or",
+                            "command": "echo hi && true",
+                            "state": "ok",
+                            "exit_code": 0,
+                            "duration_ms": 12
+                        }
+                    ]
+                }
+            }
+        }),
+        false,
+    );
+    let output_for_prompt = raw
+        .get("output_for_prompt")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert_eq!(output_for_prompt, "hi\n");
+    assert!(!output_for_prompt.contains("total_duration_ms"));
+    let trace = raw.get("shell_trace").expect("shell_trace present");
+    assert_eq!(trace.get("version").and_then(Value::as_u64), Some(1));
+    assert_eq!(trace.get("total_duration_ms").and_then(Value::as_u64), Some(12));
+    assert_eq!(
+        trace.pointer("/nodes/0/command").and_then(Value::as_str),
+        Some("echo hi && true")
+    );
 }
 
 #[test]

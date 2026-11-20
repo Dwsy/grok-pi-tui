@@ -3,6 +3,30 @@ use agent_client_protocol as acp;
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 
+pub(crate) fn pi_tool_metadata(name: &str, usage: Option<Value>) -> Option<acp::Meta> {
+    let mut meta = acp::Meta::new();
+    meta.insert("piToolName".into(), json!(name));
+    if let Some(usage) = usage {
+        meta.insert("piToolUsage".into(), usage);
+    }
+    Some(meta)
+}
+
+pub(crate) fn timeline_tool_result(mut normalized: Value, result: &Value, is_error: bool) -> Value {
+    let cancelled = result.get("cancelled").and_then(Value::as_bool) == Some(true)
+        || result
+            .pointer("/details/cancelled")
+            .and_then(Value::as_bool)
+            == Some(true)
+        || (is_error
+            && result.pointer("/content/0/text").and_then(Value::as_str)
+                == Some("Operation aborted"));
+    if cancelled && let Some(object) = normalized.as_object_mut() {
+        object.insert("piToolCancelled".into(), Value::Bool(true));
+    }
+    normalized
+}
+
 pub(crate) fn history_tool_content(content: Vec<PiToolContent>) -> Vec<acp::ToolCallContent> {
     content
         .into_iter()
@@ -947,6 +971,17 @@ pub(crate) fn bash_tool_output(
                 .map(ToOwned::to_owned)
         });
 
+    let shell_trace = result
+        .pointer("/details/shellTrace")
+        .or_else(|| result.pointer("/details/shell_trace"))
+        .or_else(|| result.get("shell_trace"))
+        .filter(|value| {
+            value.is_object()
+                && value.get("version").and_then(Value::as_u64).is_some()
+                && value.get("nodes").and_then(Value::as_array).is_some()
+        })
+        .cloned();
+
     let bytes = text.as_bytes().to_vec();
     let total_bytes = bytes.len();
     json!({
@@ -963,6 +998,7 @@ pub(crate) fn bash_tool_output(
         "output_file": output_file,
         "total_bytes": total_bytes,
         "was_bare_echo": false,
+        "shell_trace": shell_trace,
     })
 }
 

@@ -272,6 +272,29 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      - name: Build standalone OMP Shell Host (macOS ARM64 beta)
+        if: runner.os == 'macOS' && matrix.key == 'macos-arm64' && contains(env.GROK_PI_RELEASE_TAG, '-beta.')
+        shell: bash
+        run: |
+          set -euo pipefail
+          host_toolchain=$(sed -n 's/^channel = "\([^"]*\)".*/\1/p' tools/grok-pi-shell-host/rust-toolchain.toml)
+          test -n "$host_toolchain"
+          rustup toolchain install "$host_toolchain" --target "${{ matrix.target }}"
+          cargo +"$host_toolchain" build \
+            --manifest-path tools/grok-pi-shell-host/Cargo.toml \
+            --release \
+            --target "${{ matrix.target }}"
+          host_bin="tools/grok-pi-shell-host/target/${{ matrix.target }}/release/grok-pi-shell-host"
+          test -f "$host_bin"
+          "$host_bin" --handshake | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          assert data["protocol_version"] == 1, data
+          assert data["trace_version"] == 1, data
+          assert data["engine"] == "omp-shell", data
+          print("Verified grok-pi-shell-host handshake:", data)
+          '
+
       - name: Package Unix binary
         if: runner.os != 'Windows'
         shell: bash
@@ -280,11 +303,18 @@ jobs:
           mkdir -p dist
           src="target/${{ matrix.target }}/release-dist/${{ matrix.bin }}"
           test -f "$src"
-          # Stage a clean name so tarball root contains just `grok-pi`.
+          # Stage a clean name so tarball root contains `grok-pi` (and optional `grok-pi-shell-host` on macOS ARM64 beta).
           stage="$(mktemp -d)"
           cp "$src" "$stage/grok-pi"
           chmod 755 "$stage/grok-pi"
-          tar -C "$stage" -czf "dist/${{ matrix.asset }}" grok-pi
+          files=(grok-pi)
+          host_bin="tools/grok-pi-shell-host/target/${{ matrix.target }}/release/grok-pi-shell-host"
+          if [[ "${{ matrix.key }}" == "macos-arm64" && "${GROK_PI_RELEASE_TAG}" == *-beta.* && -f "$host_bin" ]]; then
+            cp "$host_bin" "$stage/grok-pi-shell-host"
+            chmod 755 "$stage/grok-pi-shell-host"
+            files+=(grok-pi-shell-host)
+          fi
+          tar -C "$stage" -czf "dist/${{ matrix.asset }}" "${files[@]}"
           ls -lh "dist/${{ matrix.asset }}"
 
       - name: Package Windows binary

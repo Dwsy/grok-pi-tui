@@ -519,10 +519,17 @@ pub(crate) fn collect_notification_warnings_with_method(
         return warnings;
     }
 
+    // Herdr overwrites TERM_PROGRAM so the outer brand resolves to Unknown. The outer terminal
+    // behind herdr (e.g. Ghostty) is capable (OSC 777 + CSI focus), so don't emit the "unknown
+    // terminal" fallback/focus warnings for that path.
+    let herdr_outer_brand_unknown =
+        ctx.multiplexer == MultiplexerKind::Herdr && ctx.brand == TerminalName::Unknown;
+
     // Protocol fallback: BEL selected for an unknown terminal in auto mode.
     if method == NotificationMethod::Auto
         && protocol == NotificationProtocol::Bel
         && ctx.brand == TerminalName::Unknown
+        && !herdr_outer_brand_unknown
     {
         let mut warning = TerminalWarning::new(
             WarningCategory::NotificationProtocolFallback,
@@ -561,7 +568,10 @@ pub(crate) fn collect_notification_warnings_with_method(
 
     // Focus tracking: if the terminal doesn't support it and the condition is "unfocused", notifications will never fire
     // The pager will always think the window is focused
-    if condition == NotificationCondition::Unfocused && !supports_focus_tracking(ctx.brand) {
+    if condition == NotificationCondition::Unfocused
+        && !supports_focus_tracking(ctx.brand)
+        && !herdr_outer_brand_unknown
+    {
         let mut warning = TerminalWarning::new(
             WarningCategory::FocusTrackingUnavailable,
             "This terminal may not report focus changes, so notifications set to `unfocused` may not appear",
@@ -2346,6 +2356,45 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].category, WarningCategory::NotificationProtocolFallback);
         assert!(w[0].message.contains("terminal bell"));
+    }
+
+    #[test]
+    fn herdr_unknown_brand_emits_no_notification_warnings() {
+        // Herdr overwrites TERM_PROGRAM so brand is Unknown; the outer terminal behind herdr
+        // is capable, so neither the BEL fallback nor the focus warning should fire.
+        let ctx = TerminalContext {
+            brand: TerminalName::Unknown,
+            multiplexer: MultiplexerKind::Herdr,
+            ..Default::default()
+        };
+        let query = FakeTmuxQuery::healthy_modern();
+        let w = collect_notification_warnings(
+            &ctx,
+            NotificationMethod::Auto,
+            NotificationProtocol::Osc777,
+            NotificationCondition::Unfocused,
+            &query,
+        );
+        assert!(w.is_empty(), "unexpected herdr warnings: {w:?}");
+    }
+
+    #[test]
+    fn herdr_unknown_brand_no_bel_fallback_warning() {
+        // Even if a caller still passes Bel, herdr must not claim "terminal not recognized".
+        let ctx = TerminalContext {
+            brand: TerminalName::Unknown,
+            multiplexer: MultiplexerKind::Herdr,
+            ..Default::default()
+        };
+        let query = FakeTmuxQuery::healthy_modern();
+        let w = collect_notification_warnings(
+            &ctx,
+            NotificationMethod::Auto,
+            NotificationProtocol::Bel,
+            NotificationCondition::Always,
+            &query,
+        );
+        assert!(w.is_empty(), "unexpected herdr warnings: {w:?}");
     }
 
     #[test]

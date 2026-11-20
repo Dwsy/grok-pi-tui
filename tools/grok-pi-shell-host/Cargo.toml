@@ -1,0 +1,48 @@
+# Standalone Cargo workspace for the OMP Shell Host executable.
+# Deliberately isolated from the root workspace (Rust 1.97.0) so omp-shell
+# and its nightly-2026-11-08 toolchain stay behind a clean process boundary.
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "grok-pi-shell-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.101"
+license = "Apache-2.0"
+description = "Standalone JSONL host executable wrapping OMP's omp-shell engine for grok-pi"
+
+[[bin]]
+name = "grok-pi-shell-host"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+bstr = "1.13"
+flume = "0.12"
+omp-shell = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+
+[patch.crates-io]
+cfg_aliases = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+grep-searcher = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+jaq-core = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+jaq-json = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+jaq-std = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+tree-sitter-go = { git = "https://github.com/can1357/oh-my-pi.git", rev = "57771ae562b9345e0579bceb2d68d585e3e6927e" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+strip = "symbols"
+panic = "unwind"

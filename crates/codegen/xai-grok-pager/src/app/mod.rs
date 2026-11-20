@@ -66,6 +66,7 @@ mod session_load_barrier;
 pub mod signal_handler;
 mod startup_failure;
 pub(crate) mod tree_projection;
+mod timeline;
 mod turn_completion;
 pub(crate) mod workspace_layout;
 pub(crate) mod workspace_membership;

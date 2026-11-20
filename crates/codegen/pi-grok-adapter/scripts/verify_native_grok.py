@@ -229,6 +229,12 @@ def main() -> int:
     # TUI, input, slash, scrollback, minimal and Markdown files.
     renderer_manifest = json.loads(read(docs / "native_renderer_sha256.json"))
     renderer_declared_modified = {
+        # Project frequency ordering and submission-only command counting reuse
+        # the existing selector and completion input; no rendering changes.
+        "crates/codegen/xai-grok-pager/src/slash/mru.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/model.rs",
+        "crates/codegen/xai-grok-pager/src/views/prompt_widget/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/prompt_widget/tests.rs",
         # Mermaid image actions: add SVG next to PNG using the native affordance.
         "crates/codegen/xai-grok-pager/src/app/agent_view/media.rs",
         "crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs",
@@ -293,6 +299,13 @@ def main() -> int:
     # Verify the files allowed to differ really are a narrow integration seam,
     # not a hidden second UI package.
     expected_modified = {
+        # Timeline rules persistence, frame anchors, and Pi call-trace metadata.
+        "crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs",
+        "crates/codegen/xai-grok-pager/src/app/agent_view/session.rs",
+        "crates/codegen/xai-grok-pager/src/app/dispatch/tests/transcript.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/entry.rs",
+        "crates/codegen/xai-grok-pager/src/scrollback/blocks/markdown_content.rs",
+        "crates/codegen/xai-grok-shell/src/util/config/persist.rs",
         # Ondine image compilation and the native Mermaid image/SVG actions.
         "rust-toolchain.toml",
         "THIRD-PARTY-NOTICES",
@@ -367,6 +380,15 @@ def main() -> int:
         "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
         "crates/codegen/xai-grok-pager/src/slash/commands/tutorial.rs",
         "crates/codegen/xai-grok-pager/src/slash/mod.rs",
+        # Project selector usage persistence, frequency ordering and completion
+        # acceptance accounting (plus its native PromptWidget regression test).
+        # The forked-worktree seam keeps the project identity in step with the
+        # session it belongs to; it does not change rendering.
+        "crates/codegen/xai-grok-pager/src/app/dispatch/session/fork.rs",
+        "crates/codegen/xai-grok-pager/src/slash/mru.rs",
+        "crates/codegen/xai-grok-pager/src/slash/commands/model.rs",
+        "crates/codegen/xai-grok-pager/src/views/prompt_widget/mod.rs",
+        "crates/codegen/xai-grok-pager/src/views/prompt_widget/tests.rs",
         # Tutorial product-copy seam: stock Grok retains the default profile;
         # grok-pi supplies only static title/description/topics while reusing UI.
         "crates/codegen/xai-grok-pager/src/tutorial_docs.rs",

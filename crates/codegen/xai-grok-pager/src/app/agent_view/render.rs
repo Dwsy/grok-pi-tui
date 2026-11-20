@@ -58,6 +58,7 @@ pub struct AppRenderParams<'a> {
     /// cold-start overlay owns the key), so the shortcut bar only advertises
     /// Esc as the turn-cancel key when it really is one.
     pub esc_owned_before_agent: bool,
+    pub(in crate::app) timeline: Option<crate::app::timeline::TimelineOptions<'a>>,
 }
 fn thinking_level_for_effort(effort: Option<ReasoningEffort>) -> ThinkingLevel {
     match effort.unwrap_or(ReasoningEffort::None) {
@@ -452,19 +453,6 @@ impl AgentView {
     }
     fn clear_scrollback_selection_state(&mut self) {
         self.update_scrollback_selection_state(Default::default(), Default::default());
-    }
-    /// Keep [`Self::timeline_hover_preview`] in sync with [`Self::timeline_hover`].
-    /// Called when hover changes (mouse Moved or rail rebuild under a stationary pointer) so render can borrow the cached text.
-
-    pub(crate) fn sync_timeline_hover_preview(&mut self) {
-        self.timeline_hover_preview = match self.timeline_hover {
-            Some(crate::views::timeline::TimelineHit::Tick(marker_idx)) => self
-                .scrollback
-                .timeline_markers()
-                .get(marker_idx)
-                .map(|marker| (marker_idx, marker.preview.clone(), marker.created_at)),
-            _ => None,
-        };
     }
     /// Open the fullscreen subagent view for `child_sid`, replaying child `updates.jsonl` when the child scrollback is still empty (or the child finished).
     pub(crate) fn open_subagent_fullscreen(&mut self, child_sid: String) {
@@ -964,6 +952,7 @@ impl AgentView {
         scratch: &mut ScratchBuffer,
         theme: &Theme,
         bundle_state: &crate::app::bundle::BundleState,
+        timeline: Option<crate::app::timeline::TimelineOptions<'_>>,
     ) -> (
         Option<(u16, u16)>,
         Option<crate::terminal::overlay::PostFlush>,
@@ -1223,6 +1212,7 @@ impl AgentView {
                 &mut Vec::new(),
                 AppRenderParams {
                     esc_owned_before_agent: true,
+                    timeline: timeline.filter(|(_, host)| host.is_some()),
                     ..AppRenderParams::default()
                 },
             );
@@ -1330,7 +1320,11 @@ impl AgentView {
             status_line,
             workspace_dashboard_enabled,
             esc_owned_before_agent,
+            timeline,
         } = app_params;
+        self.timeline_frame = None;
+        self.timeline_hover = None;
+        self.timeline_request = None;
         self.scrollback.begin_frame();
         self.in_dashboard_overlay = in_dashboard_overlay;
         self.overlay_can_cycle = overlay_can_cycle;
@@ -1408,6 +1402,7 @@ impl AgentView {
                 scratch,
                 &theme,
                 bundle_state,
+                timeline,
             );
         }
         if let Some(esc) = self.take_subagent_inline_media_clear_escapes() {
@@ -1877,11 +1872,21 @@ impl AgentView {
         let startup_warning_height = 0;
         let external_widgets_above_editor_height = self.external_widgets_above_editor.len() as u16;
         let external_widgets_below_editor_height = self.external_widgets_below_editor.len() as u16;
-        let timeline_markers = self.scrollback.timeline_markers();
+        let hide_child_rail = self.is_subagent_view && timeline.is_none();
+        let timeline_markers = if appearance.show_timeline
+            && !hide_child_rail
+            && area.width >= crate::views::timeline::MIN_TERMINAL_WIDTH
+        {
+            let defaults = xai_grok_shell::util::config::TimelineContents::default();
+            self.scrollback
+                .timeline_markers(timeline.map_or(&defaults, |(rules, _)| rules))
+        } else {
+            std::sync::Arc::default()
+        };
 
         let timeline_width = crate::views::timeline::rail_width(
             appearance.show_timeline,
-            self.is_subagent_view,
+            hide_child_rail,
             area.width,
             timeline_markers.len(),
         );
@@ -1953,23 +1958,17 @@ impl AgentView {
                 viewport,
             ) {
                 Some(rail) => {
-                    self.timeline_rail = Some(rail);
-                    if overlay_blocks_rail_hover {
-                        self.timeline_hover = None;
-                        self.timeline_hover_preview = None;
-                    } else {
+                    if !overlay_blocks_rail_hover {
                         let (col, row) = self.last_mouse_pos;
-                        let new_hover = self.timeline_rail.as_ref().and_then(|r| r.hit(col, row));
-                        if new_hover != self.timeline_hover {
-                            self.timeline_hover = new_hover;
-                            self.sync_timeline_hover_preview();
-                        }
+                        self.timeline_hover = rail.hit(col, row);
                     }
+                    self.timeline_frame = Some(crate::app::timeline::TimelineFrame {
+                        rail,
+                        branch: self.scrollback.timeline_branch(),
+                        markers: timeline_markers,
+                    });
                 }
                 None => {
-                    self.timeline_rail = None;
-                    self.timeline_hover = None;
-                    self.timeline_hover_preview = None;
                     layout = AgentViewLayout::compute(AgentViewLayoutParams {
                         timeline_width: 0,
                         ..layout_params
@@ -1987,10 +1986,6 @@ impl AgentView {
                     );
                 }
             }
-        } else {
-            self.timeline_rail = None;
-            self.timeline_hover = None;
-            self.timeline_hover_preview = None;
         }
         if let Some(data) = &mut dock_data {
             if layout.dock.height > 0 {
@@ -2011,7 +2006,6 @@ impl AgentView {
         }
         if self.jump_state.is_some() || self.fork_state.is_some() {
             self.timeline_hover = None;
-            self.timeline_hover_preview = None;
         }
         agent::fill_background(buf, area, layout_cfg, compact, &theme);
         let mut status_line_link_spans: Vec<xai_ratatui_inline::LinkSpan> = Vec::new();
@@ -2453,7 +2447,7 @@ impl AgentView {
                 self.hit_sb_copy.clear();
                 self.hit_sb_view.clear();
             }
-            if self.timeline_rail.is_none() {
+            if self.timeline_frame.is_none() {
                 agent::render_scrollbar(
                     buf,
                     layout.scrollback,
@@ -2464,7 +2458,7 @@ impl AgentView {
                     &theme,
                 );
             }
-            if self.timeline_rail.is_none()
+            if self.timeline_frame.is_none()
                 && scrollbar_cfg.enabled
                 && sb_output.scroll_info.is_some()
             {
@@ -2477,31 +2471,69 @@ impl AgentView {
             } else {
                 self.hit_scrollbar.clear();
             }
-            if let Some(rail) = self.timeline_rail.as_ref() {
+            if let Some(frame) = self.timeline_frame.as_ref() {
+                let rail = &frame.rail;
+                let preview_columns =
+                    crate::views::timeline::preview_columns(layout.scrollback.width);
+                let inputs: Vec<_> = rail
+                    .window
+                    .clone()
+                    .map(|index| {
+                        if frame.markers[index].kind == crate::scrollback::state::TimelineMarkerKind::Prompt
+                            && self.timeline_hover != Some(crate::views::timeline::TimelineHit::Tick(index))
+                        {
+                            return None;
+                        }
+                        crate::app::timeline::FormatKey::new(
+                            &self.scrollback, &frame.markers[index], preview_columns,
+                            timeline.map(|(rules, _)| rules),
+                        )
+                    })
+                    .collect();
+                let input = |index: usize| inputs.get(index.checked_sub(rail.window.start)?)?.as_ref();
+                let formatting_enabled = if let Some((_, Some(host))) = timeline
+                    && let Some(session) = self.session.session_id.as_ref()
+                {
+                    self.timeline_request = self.timeline_formatting.request(
+                        host, session.0.as_ref(), frame.branch, &inputs, &theme,
+                    );
+                    true
+                } else {
+                    false
+                };
+                let formatted = |index| {
+                    if formatting_enabled {
+                        self.timeline_formatting.get(input(index)?)
+                    } else {
+                        None
+                    }
+                };
                 crate::views::timeline::render_rail(
                     buf,
                     rail,
                     self.timeline_hover,
                     &theme,
-                    |marker_idx| {
-                        timeline_markers.get(marker_idx).is_some_and(|marker| {
-                            marker.kind == crate::scrollback::state::TimelineMarkerKind::Compaction
-                        })
-                    },
+                    |index| frame.markers[index].kind,
+                    |index| formatted(index).and_then(|item| item.tick.clone()),
                 );
                 if let Some(crate::views::timeline::TimelineHit::Tick(marker_idx)) =
                     self.timeline_hover
-                    && let Some((preview_marker, preview, created_at)) =
-                        self.timeline_hover_preview.as_ref()
-                    && *preview_marker == marker_idx
+                    && let Some(marker) = frame.markers.get(marker_idx)
+                    && let Some(key) = input(marker_idx)
                 {
+                    let (title, excerpt) = key.native_preview(marker);
+                    let formatted_preview = formatted(marker_idx).and_then(|item| item.preview.as_deref());
+                    let file_rows = if formatted_preview.is_none() { key.native_file_rows() } else { Vec::new() };
                     crate::views::timeline::render_tick_hover_popup(
                         buf,
                         rail,
                         layout.scrollback,
                         marker_idx,
-                        preview,
-                        *created_at,
+                        title,
+                        excerpt,
+                        &file_rows,
+                        formatted_preview,
+                        marker.created_at,
                         &theme,
                     );
                 }

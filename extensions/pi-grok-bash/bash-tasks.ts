@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
 	closeSync,
@@ -18,6 +18,11 @@ import { join } from "node:path";
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
+import {
+	type BashBackendKind,
+	type ShellTraceSummary,
+	launchBackendProcess,
+} from "./shell-backend.ts";
 import {
 	MAX_OUTPUT_BYTES,
 	MAX_TIMEOUT_SECONDS,
@@ -65,6 +70,7 @@ export type BashParams = {
 export type BackgroundTask = {
 	taskId: string;
 	toolCallId: string;
+	backend: BashBackendKind;
 	command: string;
 	description?: string;
 	cwd: string;
@@ -78,6 +84,7 @@ export type BackgroundTask = {
 	truncated: boolean;
 	exitCode?: number;
 	signal?: string;
+	shellTrace?: ShellTraceSummary;
 	completed: boolean;
 	backgrounded: boolean;
 	explicitlyKilled: boolean;
@@ -133,6 +140,7 @@ function taskSnapshot(task: BackgroundTask) {
 		block_waited: false,
 		explicitly_killed: task.explicitlyKilled,
 		owner_session_id: undefined,
+		...(task.shellTrace ? { shell_trace: task.shellTrace } : {}),
 	};
 }
 
@@ -280,17 +288,6 @@ function finishTask(task: BackgroundTask, code: number | null, signal: NodeJS.Si
 	});
 }
 
-function launchShell(command: string, cwd: string, env: NodeJS.ProcessEnv) {
-	const shell = process.platform === "win32" ? "bash" : "/bin/bash";
-	return spawn(shell, ["-c", command], {
-		cwd,
-		env,
-		detached: process.platform !== "win32",
-		stdio: ["ignore", "pipe", "pipe"],
-		windowsHide: true,
-	});
-}
-
 function validateTimeout(timeout: number | undefined) {
 	if (timeout === undefined) return;
 	if (!Number.isFinite(timeout) || timeout < 0 || timeout > MAX_TIMEOUT_SECONDS) {
@@ -316,15 +313,46 @@ export async function startTask(
 ): Promise<BackgroundTask> {
 	validateTimeout(params.timeout);
 	const directory = await mkdtemp(join(tmpdir(), "pi-grok-bash-"));
-	const task: BackgroundTask = {
+	let task!: BackgroundTask;
+	const { backend, child } = launchBackendProcess({
+		command: params.command,
+		cwd: params.cwd,
+		env: params.env,
+		timeoutSeconds: params.timeout,
+		trace: true,
+		onOutput: (chunk) => {
+			appendOutput(task, chunk);
+			task.log.write(chunk);
+			if (!task.backgrounded) params.onData?.(chunk);
+		},
+		onCompletedEvent: (event) => {
+			if (event.trace) task.shellTrace = event.trace;
+			if (event.timedOut) {
+				task.timedOut = true;
+				task.signal = "timeout";
+			}
+			if (event.cancelled && !task.explicitlyKilled) {
+				task.signal ??= "cancelled";
+			}
+		},
+		onError: (error) => {
+			task.signal = error.message;
+			finishTask(task, null, null);
+		},
+		onExit: (code, childSignal) => {
+			finishTask(task, code, childSignal);
+		},
+	});
+	task = {
 		taskId: `bash-${nextTaskOrdinal++}`,
 		toolCallId: params.toolCallId,
+		backend,
 		command: params.command,
 		description: params.description?.trim() || undefined,
 		cwd: params.cwd,
 		outputFile: join(directory, "output.log"),
 		startedAt: Date.now(),
-		child: launchShell(params.command, params.cwd, params.env),
+		child,
 		log: createWriteStream(join(directory, "output.log"), { flags: "a" }),
 		output: Buffer.alloc(0),
 		outputBytes: 0,
@@ -338,21 +366,9 @@ export async function startTask(
 		onCompleted: params.onCompleted,
 		ui: params.ui,
 	};
-	const recordOutput = (chunk: Buffer) => {
-		appendOutput(task, chunk);
-		task.log.write(chunk);
-		if (!task.backgrounded) params.onData?.(chunk);
-	};
-	task.child.stdout?.on("data", recordOutput);
-	task.child.stderr?.on("data", recordOutput);
 	task.log.on("error", (error) => {
 		task.signal ??= `output_log_error:${error.message}`;
 	});
-	task.child.once("error", (error) => {
-		task.signal = error.message;
-		finishTask(task, null, null);
-	});
-	task.child.once("close", (code, childSignal) => finishTask(task, code, childSignal));
 	if (params.timeout) {
 		task.timeoutHandle = setTimeout(() => {
 			task.timedOut = true;

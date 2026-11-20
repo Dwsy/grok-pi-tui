@@ -15,6 +15,7 @@ pub mod matcher;
 pub mod mode_support;
 pub mod mru;
 pub mod registry;
+pub mod usage;
 
 use std::{
     cell::RefCell,
@@ -107,8 +108,8 @@ struct MenuKey {
     group: MenuGroup,
     /// `false` first, so a curated tag pulls its row to the top of the band.
     untagged: bool,
-    /// Zero for skills, which are ranked by name instead.
-    recency: std::cmp::Reverse<u64>,
+    /// Frequency first, then recency within each existing menu band.
+    recency: std::cmp::Reverse<usage::UsageRank>,
     /// Empty for commands, which are ranked by recency then registry order.
     name: String,
 }
@@ -118,12 +119,13 @@ impl MenuKey {
         group: MenuGroup,
         row: &SuggestionRow,
         canonical: &str,
-        mru: &mut mru::SlashMru,
+        usage: &usage::ProjectUsage,
     ) -> Self {
-        let (recency, name) = match group {
-            MenuGroup::Command => (mru.rank_score("", canonical), String::new()),
-            // Nothing ranks skills, so alphabetical is the only order predictable enough to find one in.
-            _ => (0, row.display.to_lowercase()),
+        let recency = usage.command_rank(canonical);
+        let name = if group == MenuGroup::Command {
+            String::new()
+        } else {
+            row.display.to_lowercase()
         };
 
         Self {
@@ -446,6 +448,16 @@ impl SlashController {
         }
     }
 
+    /// Retarget project identity when the host moves this existing prompt.
+    pub fn set_cwd(&mut self, cwd: &std::path::Path) {
+        self.cwd = cwd.to_path_buf();
+    }
+
+    /// The working directory this controller attributes usage to.
+    pub fn cwd(&self) -> &std::path::Path {
+        &self.cwd
+    }
+
     /// Replace the MRU store with a shared one.
     /// Used by `AppView` to inject the process-wide store into agent prompts and the dashboard dispatch input.
     pub fn set_mru(&mut self, mru: std::rc::Rc<std::cell::RefCell<mru::SlashMru>>) {
@@ -540,14 +552,18 @@ impl SlashController {
 
     /// Last-used timestamp for a command (0 means never); used by test diagnostics.
     #[cfg(test)]
-    fn mru_last_used(&mut self, prefix: &str, command_name: &str) -> u64 {
-        self.mru.borrow_mut().last_used(prefix, command_name)
+    fn mru_last_used(&mut self, _prefix: &str, command_name: &str) -> u64 {
+        self.mru
+            .borrow_mut()
+            .project(&self.cwd)
+            .command_rank(command_name)
+            .last_used
     }
 
-    /// Record accept/submit for MRU (canonical command only; typed prefix ignored).
+    /// Record an actual submission (canonical command only; typed prefix ignored).
     /// Runs on the UI thread; the resulting snapshot (if any) goes to the off-thread serialized writer.
     /// The UI thus never blocks on disk, and writes can't reorder.
-    pub fn record_command_use(&mut self, prefix: &str, command_name: &str) {
+    pub fn record_command_use(&mut self, _prefix: &str, command_name: &str) {
         let key = command_name.trim().trim_start_matches('/');
         if key.is_empty() {
             return;
@@ -559,18 +575,18 @@ impl SlashController {
             .get_for_dispatch(key)
             .map(|cmd| cmd.name().to_string())
             .unwrap_or_else(|| key.to_string());
-        let snapshot = {
-            let mut m = self.mru.borrow_mut();
-            m.touch(prefix, &canonical);
-            m.take_persist_snapshot()
-        };
-        if let Some(snapshot) = snapshot
-            && !mru::persist_async(snapshot)
-        {
-            // No write could be attempted (writer unavailable and the sync fallback failed)
-            // Keep the changes dirty so the next record retries instead of silently dropping them
-            self.mru.borrow_mut().mark_dirty();
-        }
+        self.mru
+            .borrow_mut()
+            .project(&self.cwd)
+            .record_command(&canonical);
+    }
+
+    /// Record an explicit model choice, never passive catalog or history updates.
+    pub fn record_model_use(&self, model_id: &agent_client_protocol::ModelId) {
+        self.mru
+            .borrow_mut()
+            .project(&self.cwd)
+            .record_model(model_id.0.as_ref());
     }
 
     /// Create a controller pre-loaded with pager builtin commands.
@@ -1060,11 +1076,13 @@ impl SlashController {
             // One MRU borrow for the whole menu, not one per row.
             let mut keyed: Vec<(MenuKey, SuggestionRow)> = {
                 let mut mru = self.mru.borrow_mut();
+                let usage = mru.project(&self.cwd);
+                usage.refresh_if_stale();
                 rows.into_iter()
                     .zip(canonicals)
                     .zip(groups)
                     .map(|((row, canonical), group)| {
-                        (MenuKey::new(group, &row, canonical, &mut mru), row)
+                        (MenuKey::new(group, &row, canonical, usage), row)
                     })
                     .collect()
             };
@@ -1155,11 +1173,13 @@ impl SlashController {
             }
         }
         // Resolve all recency scores under a single borrow (one keystroke means one borrow, not one per candidate)
-        let mru_scores: Vec<u64> = {
+        let mru_scores: Vec<usage::UsageRank> = {
             let mut m = self.mru.borrow_mut();
+            let usage = m.project(&self.cwd);
+            usage.refresh_if_stale();
             sort_meta
                 .iter()
-                .map(|(canonical, _)| m.rank_score(trimmed, canonical))
+                .map(|(canonical, _)| usage.command_rank(canonical))
                 .collect()
         };
         let owns_typed_name: Vec<bool> = visible_triggers
@@ -1225,6 +1245,37 @@ impl SlashController {
             .unwrap_or_default()
     }
 
+    /// Argument candidates for `command`, ordered by this project's usage counters.
+    ///
+    /// The native model picker and the inline completion both go through here, so
+    /// `/model` ranks the same way in both places.
+    pub fn suggest_command_args(
+        &self,
+        command: &str,
+        query: &str,
+        models: &ModelState,
+    ) -> Vec<ArgItem> {
+        let Some(cmd) = self.registry.get(command).cloned() else {
+            return Vec::new();
+        };
+        let ctx = self.app_ctx(models);
+        self.suggest_args_with_usage(cmd.as_ref(), &ctx, query)
+            .unwrap_or_default()
+    }
+
+    /// Run a command's suggestion hook with this project's usage counters.
+    fn suggest_args_with_usage(
+        &self,
+        command: &dyn SlashCommand,
+        ctx: &AppCtx,
+        query: &str,
+    ) -> Option<Vec<ArgItem>> {
+        let mut store = self.mru.borrow_mut();
+        let usage = store.project(&self.cwd);
+        usage.refresh_if_stale();
+        command.suggest_args_with_usage(ctx, query, usage)
+    }
+
     /// Generate argument suggestions for a specific command.
     fn arg_suggestions(
         &mut self,
@@ -1236,7 +1287,7 @@ impl SlashController {
         if !command.takes_args_now(&ctx) {
             return Vec::new();
         }
-        let Some(items) = command.suggest_args(&ctx, query) else {
+        let Some(items) = self.suggest_args_with_usage(command, &ctx, query) else {
             return Vec::new();
         };
         if items.is_empty() {
@@ -2536,6 +2587,57 @@ mod tests {
     }
 
     #[test]
+    fn frequency_then_recency_orders_commands_and_keeps_exact_search_first() {
+        let mut ctrl = tie_controller(&["privacy", "personas", "plan"], &[]);
+        ctrl.record_command_use("", "privacy");
+        ctrl.record_command_use("", "privacy");
+        ctrl.record_command_use("", "plan");
+        let state = SlashState::default();
+        let models = ModelState::default();
+        ctrl.refresh(&state, "/", 1, &models);
+        assert_eq!(state.snapshot().matches[0].display, "/privacy");
+        ctrl.record_command_use("", "plan");
+        ctrl.refresh(&state, "/", 1, &models);
+        assert_eq!(state.snapshot().matches[0].display, "/plan");
+        ctrl.refresh(&state, "/personas", 9, &models);
+        assert_eq!(state.snapshot().matches[0].display, "/personas");
+    }
+
+    #[test]
+    fn shared_store_isolates_projects_and_unifies_repo_subdirectories() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let store = std::rc::Rc::new(std::cell::RefCell::new(mru::SlashMru::new_in_memory()));
+        let make = |cwd| {
+            SlashController::with_mru(
+                CommandRegistry::new(vec![Arc::new(TieCmd("plan")), Arc::new(TieCmd("privacy"))]),
+                cwd,
+                store.clone(),
+            )
+        };
+        let mut first = make(repo.clone());
+        let mut nested = make(repo.join("src"));
+        let mut second = make(other);
+        first.record_command_use("", "privacy");
+        let state = SlashState::default();
+        let models = ModelState::default();
+        nested.refresh(&state, "/", 1, &models);
+        assert_eq!(state.snapshot().matches[0].display, "/privacy");
+        second.refresh(&state, "/", 1, &models);
+        assert_eq!(state.snapshot().matches[0].display, "/plan");
+        nested.set_cwd(&second.cwd);
+        nested.refresh(&state, "/", 1, &models);
+        assert_eq!(state.snapshot().matches[0].display, "/plan");
+        nested.set_cwd(&repo);
+        nested.refresh(&state, "/", 1, &models);
+        assert_eq!(state.snapshot().matches[0].display, "/privacy");
+    }
+
+    #[test]
     fn mru_beats_tiebreak_on_equal_fuzzy_score() {
         // Hermetic: three names tie on fuzzy score for `/p`; MRU recency must pick the winner regardless of the live builtin registry
         let mut ctrl = tie_controller(
@@ -2965,6 +3067,28 @@ mod tests {
             ],
             "commands, then bundled skills, then the rest"
         );
+    }
+
+    #[test]
+    fn skill_usage_orders_within_existing_scope_groups() {
+        let mut ctrl = tie_controller(&["alpha"], &[]);
+        ctrl.registry_mut().set_acp_commands(&[
+            skill_cmd("zeta-user", "user"),
+            skill_cmd("alpha-user", "user"),
+            skill_cmd("bundled", "bundled"),
+        ]);
+        ctrl.record_command_use("", "zeta-user");
+        ctrl.record_command_use("", "zeta-user");
+        ctrl.record_command_use("", "alpha-user");
+        let state = SlashState::default();
+        ctrl.refresh(&state, "/", 1, &ModelState::default());
+        let order: Vec<_> = state
+            .snapshot()
+            .matches
+            .iter()
+            .map(|row| row.display.clone())
+            .collect();
+        assert_eq!(order, ["/alpha", "/bundled", "/zeta-user", "/alpha-user"]);
     }
 
     /// A curated tag outranks recency, so `MenuKey` must keep `untagged` above `recency`.

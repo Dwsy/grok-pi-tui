@@ -71,6 +71,9 @@ default_selected_permission = "always_allow_all_sessions" # preselected row on t
 remember_tool_approvals = true         # show per-command "Always allow" options on permission prompts;
                                        # grants are remembered per project (default: true); see 22-permissions-and-safety.md
 show_thinking_blocks = true            # show agent thinking blocks in the TUI (default: true)
+collapse_thinking_blocks = false       # keep thinking blocks folded while the agent works, instead of
+                                       # streaming the reasoning body line by line (default: false);
+                                       # Ctrl+E still expands them
 group_tool_verbs = true                # fold runs of read/search/list tool calls and subagent rows
                                        # — and finished thoughts among them — into one row (default: true)
 collapsed_edit_blocks = false          # show edits as one-line +N/-M diffstat summaries and merge
@@ -449,6 +452,7 @@ idle_threshold_secs = 3   # seconds unfocused before a notification fires
 events = ["turn_complete", "approval_required"]
 sleep_prevention = true   # prevent display sleep during agent turns
 progress_bar = true       # show tab progress bar (OSC 9;4)
+program_status = true     # report idle/working/blocked/done/error to the terminal (OSC 7501)
 
 [ui.notifications.title]
 enabled = true

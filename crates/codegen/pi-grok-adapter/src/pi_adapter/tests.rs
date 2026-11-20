@@ -704,6 +704,44 @@ fn completed_plan_gets_cursor_style_context_front_matter() {
 }
 
 #[test]
+fn empty_or_missing_plan_is_not_stamped_with_front_matter() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let state = PiState {
+        session_id: "session-empty".into(),
+        ..PiState::default()
+    };
+    let missing = directory.path().join("missing.plan.md");
+    normalize_plan_document(&missing, &state).unwrap();
+    assert!(!missing.exists());
+    assert_eq!(plan_content_for_approval(&missing), None);
+
+    let empty = directory.path().join("empty.plan.md");
+    std::fs::write(&empty, "   \n\n").unwrap();
+    normalize_plan_document(&empty, &state).unwrap();
+    assert_eq!(std::fs::read_to_string(&empty).unwrap(), "   \n\n");
+    assert_eq!(plan_content_for_approval(&empty), None);
+
+    let frontmatter_only = directory.path().join("fm-only.plan.md");
+    std::fs::write(&frontmatter_only, "---\nname: \"Empty\"\n---\n\n").unwrap();
+    normalize_plan_document(&frontmatter_only, &state).unwrap();
+    assert_eq!(plan_content_for_approval(&frontmatter_only), None);
+
+    let populated = directory.path().join("full.plan.md");
+    std::fs::write(&populated, "# Plan\n\n## Goal\nShip it.\n").unwrap();
+    normalize_plan_document(&populated, &state).unwrap();
+    let loaded = plan_content_for_approval(&populated).expect("populated plan content");
+    assert!(loaded.contains("## Goal\nShip it."));
+}
+
+#[test]
+fn plan_response_file_name_matches_node_sha256_contract() {
+    assert_eq!(
+        plan_response_file_name("call-1"),
+        "plan-resp-5d7963c4f471e142f5a72214a9666fb164718f9ba1066a7862ac1c5041887940.json"
+    );
+}
+
+#[test]
 fn plan_tracker_persists_and_restores_active_state() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let plan_file = directory.path().join("session.plan.md");

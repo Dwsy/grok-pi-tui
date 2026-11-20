@@ -94,6 +94,8 @@ grok-pi update --channel stable  # 切回 stable；默认即 stable
 |---|---|
 | Agent Runtime | Pi 模型、Provider、工具、扩展、skills、会话、重试和压缩 |
 | 模型管理 | `/pi-models` 提供原生 Provider → Model → Details 编辑器，含安全 `models.json` 事务、备份/恢复、Pi 热重载和 typed 激活；`/model` 保留为快速切换器 |
+| 项目使用频率排序 | 斜杠命令、技能和模型选择按项目分别记忆使用次数，频次高的优先，同频再看最近使用；搜索相关性仍优先于使用记录。 |
+| Timeline | `/timeline` 切换全屏侧栏。`/timeline-config` 选择用户输入、压缩、文件工具、子代理交互、Team 子代理交互或自定义工具。悬停用户输入可见同轮最终回复的开头及限行的文件改动摘要。保存后立即作用于当前分支的历史及实时调用。 |
 | 浏览器配置工作台 | `/pi-config web` / `/pi-models web`：完整中英界面、全局搜索、模型/服务商复制、设置草稿与冲突提示、深浅主题和手机布局，由 Pi 扩展提供带 token 的本地回环服务 |
 | 终端 UI | Grok Pager 输入、斜杠补全、Markdown、工具卡片、文件流式 diff（可展开/回车查看、运行中 +/- 行数）、卡片单击折叠、对话框和 scrollback；Bash 入参在执行开始时一次显示 |
 | Mermaid 图片 | Open Image 使用 Ondine 生成 PNG；Open SVG 打开矢量图。终端中的 ASCII 图保持独立。 |
@@ -101,7 +103,7 @@ grok-pi update --channel stable  # 切回 stable；默认即 stable
 | 产品教程 | `/tutorial`（别名 `/tour`、`/onboarding`）展示 18 个 grok-pi 能力域：Pager 原生工作流、Pi Provider/模型/工具/会话、扩展/Skill/Package 生态、产品桥接、可选自动化与明确边界 |
 | **Remote TUI 桥接** | Pi `ctx.ui.custom` 组件通过 Grok Build 原生 Pager 渲染，不创建第二套 TUI |
 | Shell 执行 | Bash 集成、后台任务、输出限制、超时和进程树清理 |
-| 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图；`/subagents` 暴露内置与隔离定义。可选 [Team V2](usage/subagents-v2.zh-CN.md)（F2 开关或 `PI_GROK_SUBAGENTS_V2=1`）提供稳定 agent path、自动 flush 的消息、活跃 parent 结果 steering、嵌套 spawn 与 JSON preset |
+| 并行工作 | Pi 子代理，支持前台/后台执行和原生任务视图；`/subagents` 暴露内置与隔离定义，V1/V2 均支持 `fork: true` 在同一 `.jsonl` 树上继承发起方（`root` 或 `child`）的对话分支、技能、`AGENTS.md`、系统提示段与插件。[Team V2](usage/subagents-v2.zh-CN.md)（F2 `[ui].pi_subagents_v2` 默认开启，或 `PI_GROK_SUBAGENTS_V2=1`）提供稳定 agent path、自动 flush 的消息、活跃 parent 结果 steering、嵌套 spawn、JSON preset 与 Plan Mode 只读侦察门控 |
 | Rhai Workflow | 上游 `xai-workflow` 宿主（F2 **Pi workflows**）；`/workflow`、`/workflows`、`/create-workflow`；脚本目录 `~/.grok-pi/workflows` 与 `<repo>/.grok-pi/workflows` |
 | 会话流程 | Resume、树导航、标签、回顾、上下文查看和会话选择器 |
 | 资源管理 | Pi 扩展、skills、prompt 和主题的原生管理器 |
@@ -144,7 +146,7 @@ flowchart LR
 | `PI_GROK_REMOTE_TUI` | `1` | 启用 Pi `ctx.ui.custom` 组件 |
 | `PI_GROK_BASH` | `1` | 启用 Grok-owned Bash 集成 |
 | `PI_GROK_NATIVE_COMMANDS` | `0` | 启用实验性的 `/pi-*` 命令 |
-| `PI_GROK_SUBAGENTS_V2` | `0` | 启用 V2 team 工具面（`spawn_team`、稳定 agent path、peer messaging、nested spawn）。V2 替换 V1 单代理工具，V1 命令与历史仍可用；与 F2「Pi subagents V2」开关等效 |
+| `PI_GROK_SUBAGENTS_V2` | `1`（F2 默认） | 启用 V2 team 工具面（`spawn_team`、稳定 agent path、peer messaging、nested spawn）。V2 替换 V1 单代理工具，V1 命令与历史仍可用（F2 关闭或设 `0` 可回退 V1） |
 | `GROK_HOME` | `~/.grok-pi` | 用户状态根目录（与 stock Grok 的 `~/.grok` 隔离） |
 | `GROK_PROJECT_DIR` | `.grok-pi` | 仓库内项目配置/workflows/hooks 目录名 |
 | `GROK_PI_NO_AUTO_UPDATE` | 未设置 | 禁用后台更新检查 |

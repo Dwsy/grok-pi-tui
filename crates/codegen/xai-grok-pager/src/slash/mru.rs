@@ -1,16 +1,9 @@
-//! Slash command MRU / recency (`$GROK_HOME/slash-mru.json`).
+//! Legacy slash recency reader and shared UI-thread project usage cache.
 //!
-//! A flat map from canonical command name to `last_used` timestamp.
-//! Tiebreaks use recency decay (7-day half-life, 0.1 floor); the map is bounded to [`MAX_ENTRIES`] entries.
-//!
-//! Ownership: each [`crate::slash::SlashController`] holds an `Rc<RefCell<SlashMru>>` (single-threaded UI; no mutex).
-//! `AppView` owns one store and injects it into every controller (agent prompts and dashboard dispatch) so they stay in sync.
-//! There is no process-global singleton. Default and test controllers get an isolated in-memory store (no disk I/O).
-//!
-//! Persistence: a `touch` only marks the store dirty (never blocks the UI on disk).
-//! When a command is recorded, the controller hands an owned [`MruSnapshot`] to [`persist_async`].
-//! That function serializes writes through one long-lived background thread (atomic temp file and rename).
-//! The `Rc<RefCell>` itself never crosses a thread boundary; only the `Send` snapshot does.
+//! Old `$GROK_HOME/slash-mru.json` schemas remain readable. Their global
+//! timestamps never become project counts or project recency. Native selectors
+//! share one UI-thread cache; isolated test controllers may inject their own.
+//! Project snapshots reuse the serialized off-thread atomic writer below.
 
 use std::collections::HashMap;
 use std::fs;
@@ -41,24 +34,56 @@ struct MruFile {
 #[derive(Debug)]
 pub struct SlashMru {
     by_command: HashMap<String, u64>,
+    projects: HashMap<PathBuf, super::usage::ProjectUsage>,
+    /// Working directory to canonical project root, so the menu does not
+    /// re-resolve the repository root on every keystroke.
+    roots: HashMap<PathBuf, PathBuf>,
     loaded: bool,
     dirty: bool,
     /// When false (tests), the store never touches disk.
     persist_enabled: bool,
+    project_persist_enabled: bool,
 }
 
 impl Default for SlashMru {
     fn default() -> Self {
         Self {
             by_command: HashMap::new(),
+            projects: HashMap::new(),
+            roots: HashMap::new(),
             loaded: false,
             dirty: false,
             persist_enabled: true,
+            project_persist_enabled: true,
         }
     }
 }
 
 impl SlashMru {
+    /// The project's usage counters, keyed by the canonical project root.
+    ///
+    /// `AppView` owns one store and injects it into every controller, so the
+    /// command menu and the model selector always rank from the same counters.
+    pub fn project(&mut self, cwd: &std::path::Path) -> &mut super::usage::ProjectUsage {
+        // Read old schemas without assigning global timestamps to a project.
+        self.ensure_loaded();
+        let root = self.project_root(cwd);
+        let persist = self.project_persist_enabled;
+        self.projects
+            .entry(root.clone())
+            .or_insert_with(|| super::usage::ProjectUsage::load(&root, persist))
+    }
+
+    /// The canonical project root for `cwd`; resolved once per directory.
+    fn project_root(&mut self, cwd: &std::path::Path) -> PathBuf {
+        if let Some(root) = self.roots.get(cwd) {
+            return root.clone();
+        }
+        let root = super::usage::project_root(cwd);
+        self.roots.insert(cwd.to_path_buf(), root.clone());
+        root
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -68,6 +93,7 @@ impl SlashMru {
         Self {
             loaded: true,
             persist_enabled: false,
+            project_persist_enabled: false,
             ..Self::default()
         }
     }
@@ -110,8 +136,11 @@ impl SlashMru {
             }
             return;
         }
-        let path = Self::store_path();
-        match fs::read(&path) {
+        self.load_from_path(&Self::store_path());
+    }
+
+    fn load_from_path(&mut self, path: &std::path::Path) {
+        match fs::read(path) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 self.loaded = true;
             }
@@ -221,6 +250,13 @@ impl SlashMru {
         self.loaded = true;
         self.persist_enabled = false;
         if let Some(cmd) = Self::normalize_command(command_name) {
+            self.project(std::path::Path::new(".")).seed_command(
+                &cmd,
+                super::usage::UsageRank {
+                    count: 1,
+                    last_used,
+                },
+            );
             self.by_command.insert(cmd, last_used);
         }
     }
@@ -230,18 +266,26 @@ impl SlashMru {
 /// [`SlashMru::take_persist_snapshot`] produces it on the UI thread; [`persist_async`] writes it off-thread.
 #[derive(Debug)]
 pub struct MruSnapshot {
-    path: PathBuf,
-    bytes: Vec<u8>,
+    pub(super) path: PathBuf,
+    pub(super) bytes: Vec<u8>,
 }
+
+/// Distinguishes temp files written by this process.
+static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl MruSnapshot {
     /// Atomic write: temp file, `fsync`, then rename. Returns `true` on success.
     /// Safe to call from a worker thread.
-    fn write(&self) -> bool {
+    pub(super) fn write(&self) -> bool {
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let tmp = self.path.with_extension("json.tmp");
+        // A private temp name, so two writers never share (and truncate) one file.
+        let tmp = self.path.with_extension(format!(
+            "json.tmp-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let write_ok = (|| -> io::Result<()> {
             let mut f = fs::File::create(&tmp)?;
             f.write_all(&self.bytes)?;
@@ -295,6 +339,27 @@ pub fn persist_async(snapshot: MruSnapshot) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_schemas_remain_readable_without_project_attribution() {
+        for legacy in [
+            r#"{"by_command":{"model":1700000000}}"#,
+            r#"{"by_prefix":{"m":{"model":1700000000},"mo":{"model":1600000000}}}"#,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("slash-mru.json");
+            fs::write(&path, legacy).unwrap();
+            let mut store = SlashMru::new_in_memory();
+            store.load_from_path(&path);
+            assert_eq!(store.last_used("", "model"), 1_700_000_000);
+            assert_eq!(store.project(temp.path()).command_rank("model").count, 0);
+            assert_eq!(
+                store.project(temp.path()).command_rank("model").last_used,
+                0
+            );
+            assert_eq!(fs::read_to_string(path).unwrap(), legacy);
+        }
+    }
 
     #[test]
     fn touch_is_flat_by_command() {

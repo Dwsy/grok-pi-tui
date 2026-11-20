@@ -92,6 +92,8 @@ fn wrapped_lines_from_widths(widths: &[u32], content_width: u16) -> u16 {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolTraceSnapshot {
     pub tool_call_id: String,
+    pub pi_tool_name: Option<String>,
+    pub file_change: Option<ToolFileChange>,
     pub title: String,
     pub status: String,
     pub raw_input: Option<serde_json::Value>,
@@ -103,6 +105,14 @@ pub struct ToolTraceSnapshot {
     pub stream_start_ms: Option<i64>,
     pub started_at_ms: Option<i64>,
     pub updated_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct ToolFileChange {
+    pub path: String,
+    pub added: usize,
+    pub deleted: usize,
+    pub written: usize,
 }
 
 /// Render tool trace JSON for the DocViewer, decoding raw byte payloads.

@@ -74,6 +74,20 @@ pub const fn md_style(text: anstyle::Style) -> MarkdownStyle {
         table_outer: fg(BLUE).hidden(),
         text,
         math: anstyle::Style::new().italic(),
+        pill_success: anstyle::Style::new()
+            .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Green))),
+        pill_error: anstyle::Style::new()
+            .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Red))),
+        pill_warning: anstyle::Style::new()
+            .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Yellow))),
+        pill_danger: anstyle::Style::new()
+            .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::BrightRed)))
+            .invert(),
+        pill_mode: anstyle::Style::new()
+            .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Cyan))),
+        pill_owner: anstyle::Style::new()
+            .fg_color(Some(anstyle::Color::Ansi(anstyle::AnsiColor::Blue))),
+        pill_neutral: anstyle::Style::new().dimmed(),
     }
 }
 

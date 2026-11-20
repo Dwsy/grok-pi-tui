@@ -12,9 +12,13 @@ import {
   type AgentSessionEvent,
   type ExtensionAPI,
   type ExtensionContext,
+  type ModelRuntime,
+  type NormalizedBuildSystemPromptOptions,
+  type Skill,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
+  BUILTIN_TOOL_NAMES,
   CAPABILITY_TOOLS,
   MAX_WAIT_MS,
   SHORT_SUBAGENT_ID_LENGTH,
@@ -25,6 +29,23 @@ import {
   resolveSubagentBusinessTools,
   textFromContent,
 } from "./shared.ts";
+import {
+  HOST_ROOT_ONLY_TOOLS,
+  capturePromptSnapshot,
+  composeForkedContextDirective,
+  createForkContextExtensionFactory,
+  createForkedChildSessionManager,
+  createPromptCaptureExtensionFactory,
+  discoverLoadedExtensionPaths,
+  extractTranscriptPromptFallback,
+  hasHostSingletonConflict,
+  isHostSingletonBridgeExtension,
+  parseProcessExtensionArgs,
+  resolveBuiltinExtensionFactories,
+  resolveForkActiveTools,
+  type ForkPromptSnapshot,
+  type ForkResourceProfile,
+} from "./fork.ts";
 import { backgroundConcurrency } from "./runtime-settings.ts";
 import { profileFor, selectedDefinition } from "./definitions.ts";
 import { clampThinkingLevel, isThinkingLevel, type ThinkingLevel } from "./thinking.ts";
@@ -51,6 +72,8 @@ export type SpawnParams = {
   max_turns?: number;
   /** Requested Pi thinking level. Undefined inherits the agent definition, then Pi settings. */
   thinking_level?: string;
+  /** Inherit the initiating parent's live conversation branch, skills, context, and plugins. */
+  fork?: boolean;
 };
 
 export type MessageDelivery = "steer" | "follow_up";
@@ -103,6 +126,10 @@ export type RecordCreateOptions = {
    * single parent task id.
    */
   parentToolCallId?: string;
+  /** Live parent SubagentRecord when a child session spawns or forks a descendant. */
+  parentRecord?: SubagentRecord;
+  /** Live bridge parent session id when a V1 or V2 child spawns a nested descendant. */
+  bridgeParentSessionId?: string;
   /** Stable Subagents V2 identity persisted alongside the Pi child JSONL path. */
   teamIdentity?: {
     agentPath: string;
@@ -169,6 +196,7 @@ export class SubagentRuntime {
   private readonly pi: ExtensionAPI;
   private readonly persistRecord: typeof persist;
   private runningBackground = 0;
+  private rootPromptSnapshot?: ForkPromptSnapshot;
 
   constructor(
     pi: ExtensionAPI,
@@ -178,6 +206,18 @@ export class SubagentRuntime {
     this.pi = pi;
     this.emit = emit;
     this.persistRecord = persistRecord;
+  }
+
+  captureRootPromptOptions(options: NormalizedBuildSystemPromptOptions): void {
+    this.rootPromptSnapshot = capturePromptSnapshot(options);
+  }
+
+  findRecordByAgentSessionId(agentSessionId: string): SubagentRecord | undefined {
+    let matched: SubagentRecord | undefined;
+    for (const record of this.records.values()) {
+      if (record.agentSessionId === agentSessionId) matched = record;
+    }
+    return matched;
   }
 
   onSessionStart(_ctx: ExtensionContext): void {
@@ -207,6 +247,7 @@ export class SubagentRuntime {
           model: snapshot.modelId,
           thinkingLevel: snapshot.thinkingLevel,
           prompt: snapshot.prompt,
+          ...(snapshot.forked ? { forked: true } : {}),
           reconcile: mode === "recovery",
         }, replay);
         if (mode === "recovery") {
@@ -410,7 +451,11 @@ export class SubagentRuntime {
     if (!definition.enabled) {
       throw new Error(`Subagent type \"${definition.name}\" is disabled by its ${definition.scope} Markdown definition.`);
     }
-    const profile = profileFor(definition.name, params.capability_mode);
+    const parentRecord = options.parentRecord ?? this.findRecordByAgentSessionId(ctx.sessionManager.getSessionId());
+    const forkMode = params.fork === true;
+    const effectiveRequestedCapability =
+      params.capability_mode ?? (forkMode && parentRecord?.capabilityMode === "read-only" ? "read-only" : undefined);
+    const profile = profileFor(definition.name, effectiveRequestedCapability);
     const configuredModels = definition?.models ?? [];
     const requestedModel = params.model?.trim();
     if (requestedModel && configuredModels.length > 0 && !configuredModels.includes(requestedModel)) {
@@ -419,7 +464,7 @@ export class SubagentRuntime {
           `Choose one of: ${configuredModels.join(", ")}.`,
       );
     }
-    const modelKey = requestedModel ?? configuredModels[0];
+    const modelKey = requestedModel ?? (forkMode ? undefined : configuredModels[0]);
     const availableModels = ctx.modelRegistry.getAvailable?.() ?? ctx.modelRegistry.getAll();
     const selectedModel = modelKey
       ? availableModels.find((candidate) => `${candidate.provider}/${candidate.id}` === modelKey)
@@ -429,12 +474,20 @@ export class SubagentRuntime {
     }
     const model = selectedModel
       ? ctx.modelRegistry.find(selectedModel.provider, selectedModel.id)
-      : ctx.model;
+      : (parentRecord?.session.model ?? ctx.model);
     if (!model) throw new Error("no Pi model is selected");
 
+    const parentThinkingRaw = parentRecord?.session.thinkingLevel ?? ctx.thinkingLevel;
+    const parentThinkingLevel =
+      typeof parentThinkingRaw === "string" && isThinkingLevel(parentThinkingRaw.toLowerCase())
+        ? (parentThinkingRaw.toLowerCase() as ThinkingLevel)
+        : undefined;
     // A preset is a shareable file, so an unsupported level degrades to the
     // closest level this model accepts instead of failing the whole spawn.
-    const requestedThinkingLevel = resolveThinkingLevel(params.thinking_level, definition?.thinkingLevel);
+    const requestedThinkingLevel = resolveThinkingLevel(
+      params.thinking_level,
+      forkMode ? (parentThinkingLevel ?? definition?.thinkingLevel) : definition?.thinkingLevel,
+    );
     const thinkingLevel: ThinkingLevel | undefined = requestedThinkingLevel
       ? clampThinkingLevel(model, requestedThinkingLevel)
       : undefined;
@@ -444,6 +497,17 @@ export class SubagentRuntime {
 
     const agentDir = getAgentDir();
     const settingsManager = SettingsManager.create(ctx.cwd, agentDir);
+    const projectTrusted = parentRecord?.forkProfile?.projectTrusted ?? ctx.isProjectTrusted?.() ?? false;
+    if (forkMode) settingsManager.setProjectTrusted(projectTrusted);
+
+    const parentRuntimeCandidate =
+      parentRecord?.session.modelRuntime ??
+      (ctx.modelRegistry as { runtime?: ModelRuntime } | undefined)?.runtime;
+    const modelRuntime =
+      parentRuntimeCandidate && typeof (parentRuntimeCandidate as { streamSimple?: unknown }).streamSimple === "function"
+        ? parentRuntimeCandidate
+        : undefined;
+
     const baseSystemPrompt = definition?.systemPrompt || profile.systemPrompt;
     const configuredTools = definition?.tools ?? [...CAPABILITY_TOOLS[profile.capabilityMode]];
     const { tools: businessTools, readOnly } = resolveSubagentBusinessTools(
@@ -452,61 +516,300 @@ export class SubagentRuntime {
       definition?.tools !== undefined,
     );
     const systemPrompt = composeSubagentSystemPrompt(baseSystemPrompt, readOnly, options.systemPromptSuffix);
-    // Skills and AGENTS.md context inherit the root session by default:
-    // `noSkills: false` merges Pi global/project `enabledSkills` with the
-    // definition's explicit `skills`; `noContextFiles: false` restores
-    // AGENTS.md/CLAUDE.md discovery. A definition opts back into isolation
-    // with `inherit_skills: false` / `inherit_context: false`.
-    // Extensions stay isolated (only explicit `extensions` load): inheriting
-    // every root extension would re-introduce host-bridge conflicts in children.
-    // The built-in multi-agent-proactive skill still does not flow implicitly;
-    // V2 hands its compact contract explicitly in each handoff.
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: ctx.cwd,
-      agentDir,
-      noExtensions: true,
-      noSkills: definition?.inheritSkills === false,
-      additionalExtensionPaths: [...defaultSubagentExtensions(), ...(definition?.extensions ?? [])],
-      additionalSkillPaths: definition?.skills ?? [],
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: definition?.inheritContext === false,
-      systemPromptOverride: () => systemPrompt,
-      appendSystemPromptOverride: () => [],
-    });
-    await resourceLoader.reload();
-
+    const subagentDir = join(dirname(parentSessionFile), "subagent");
     const customTools = options.customTools ?? [];
-    const activeTools = [...new Set([...businessTools, ...customTools.map((tool) => tool.name)])];
-    const { session } = await createAgentSession({
-      cwd: ctx.cwd,
-      agentDir,
-      sessionManager: SessionManager.create(ctx.cwd, join(dirname(parentSessionFile), "subagent")),
-      settingsManager,
-      model,
-      ...(thinkingLevel ? { thinkingLevel } : {}),
-      tools: activeTools,
-      customTools,
-      resourceLoader,
+
+    const childForkProfile: ForkResourceProfile = {
+      extensionPaths: [],
+      inlineExtensions: [],
+      projectTrusted,
+    };
+    const captureFactory = createPromptCaptureExtensionFactory((snapshot) => {
+      childForkProfile.promptSnapshot = snapshot;
     });
-    // An extension may append its own tools while binding (the default search
-    // extension does). Set this session's loadout first, then keep exactly the
-    // tools the extension added on top, so a capability limit still holds.
-    const declaredBeforeBind = new Set(session.getAllTools().map((tool) => tool.name));
-    session.setActiveToolsByName(activeTools);
-    await session.bindExtensions({});
-    const addedByExtensions = session.getAllTools()
-      .map((tool) => tool.name)
-      .filter((name) => !declaredBeforeBind.has(name));
-    if (addedByExtensions.length > 0) {
-      session.setActiveToolsByName([...new Set([...activeTools, ...addedByExtensions])]);
+
+    let session!: SubagentRecord["session"];
+    let capturedPromptsForProfile: typeof childForkProfile.prompts;
+    let resolvedExtPathsForProfile: string[] = [];
+    let resolvedNoExt = true;
+    let resolvedNoMcp = false;
+
+    if (forkMode) {
+      const cliExt = parseProcessExtensionArgs();
+      const liveParentLoader = parentRecord?.session.resourceLoader;
+      const capturedSnapshot = parentRecord ? parentRecord.forkProfile?.promptSnapshot : this.rootPromptSnapshot;
+      const transcriptProjection = ctx.sessionManager.buildSessionProjection();
+      const transcriptFallback = extractTranscriptPromptFallback(transcriptProjection.messages);
+
+      const mergedSectionMap = new Map<string, string>();
+      for (const entry of transcriptFallback.customSections) {
+        mergedSectionMap.set(entry.tag, entry.content);
+      }
+      for (const entry of capturedSnapshot?.sections ?? []) {
+        mergedSectionMap.set(entry.tag, entry.content);
+      }
+
+      const liveSkills = liveParentLoader?.getSkills().skills;
+      const parentSkills = capturedSnapshot?.skills ?? liveSkills;
+      const liveContextFiles = liveParentLoader?.getAgentsFiles().agentsFiles;
+      const parentContextFiles = capturedSnapshot?.contextFiles ?? liveContextFiles;
+      const parentCustomPrompt =
+        capturedSnapshot !== undefined ? capturedSnapshot.customPrompt : liveParentLoader?.getSystemPrompt();
+      const parentAppendSystemPrompt =
+        capturedSnapshot?.appendSystemPrompt !== undefined
+          ? capturedSnapshot.appendSystemPrompt
+          : liveParentLoader?.getAppendSystemPrompt();
+      const parentPrompts = parentRecord?.forkProfile?.prompts ?? liveParentLoader?.getPrompts().prompts;
+
+      const parentSnapshotForChild: ForkPromptSnapshot | undefined =
+        capturedSnapshot || mergedSectionMap.size > 0 || parentSkills || parentContextFiles || liveParentLoader
+          ? {
+              ...(parentCustomPrompt !== undefined ? { customPrompt: parentCustomPrompt } : {}),
+              ...(capturedSnapshot?.forceSystemPrompt !== undefined
+                ? { forceSystemPrompt: capturedSnapshot.forceSystemPrompt }
+                : {}),
+              ...(parentAppendSystemPrompt !== undefined ? { appendSystemPrompt: [...parentAppendSystemPrompt] } : {}),
+              sections: [...mergedSectionMap.entries()].map(([tag, content]) => ({ tag, content })),
+              promptGuidelines: [...(capturedSnapshot?.promptGuidelines ?? [])],
+              ...(parentSkills ? { skills: parentSkills.map((skill) => ({ ...skill })) } : {}),
+              ...(parentContextFiles
+                ? { contextFiles: parentContextFiles.map((file) => ({ path: file.path, content: file.content })) }
+                : {}),
+              ...(capturedSnapshot?.selectedTools ? { selectedTools: [...capturedSnapshot.selectedTools] } : {}),
+            }
+          : undefined;
+
+      const discovered = parentRecord
+        ? { extensionPaths: [] as string[], promptPaths: [] as string[] }
+        : discoverLoadedExtensionPaths(this.pi);
+      const liveExtPaths = (liveParentLoader?.getExtensions().extensions ?? [])
+        .map((ext) => ext.resolvedPath)
+        .filter((extPath) => !extPath.startsWith("<") && !isHostSingletonBridgeExtension(extPath));
+      const rawExtensionPaths = [
+        ...defaultSubagentExtensions(),
+        ...cliExt.cliExtensionPaths,
+        ...discovered.extensionPaths,
+        ...(parentRecord?.forkProfile?.extensionPaths ?? []),
+        ...liveExtPaths,
+        ...(definition?.extensions ?? []),
+      ].filter((extPath) => !isHostSingletonBridgeExtension(extPath));
+
+      const parentActiveTools =
+        parentRecord?.session.getActiveToolNames?.() ??
+        (typeof this.pi.getActiveTools === "function" ? this.pi.getActiveTools() : undefined) ??
+        capturedSnapshot?.selectedTools ??
+        transcriptFallback.activeTools ??
+        [...BUILTIN_TOOL_NAMES];
+
+      resolvedNoExt = parentRecord?.forkProfile?.noExtensions ?? cliExt.noExtensions;
+      resolvedNoMcp = parentRecord?.forkProfile?.noMcp ?? cliExt.noMcp;
+      const builtin = resolveBuiltinExtensionFactories(rawExtensionPaths, parentActiveTools, resolvedNoMcp);
+      const forkExtensionPaths = [...new Set([...rawExtensionPaths, ...builtin.extraPaths])];
+
+      const explicitRole = params.subagent_type?.trim();
+      const hasCustomRole = Boolean(
+        explicitRole && (explicitRole.toLowerCase() !== "general-purpose" || definition.scope !== "builtin"),
+      );
+      const forkDirective = composeForkedContextDirective({
+        roleName: hasCustomRole ? definition.name : undefined,
+        rolePrompt: hasCustomRole ? baseSystemPrompt : undefined,
+        systemPromptSuffix: options.systemPromptSuffix,
+        readOnly,
+      });
+      const forkExtensionFactory = createForkContextExtensionFactory(parentSnapshotForChild, forkDirective);
+
+      const extraSkillPaths = [...new Set([...cliExt.cliSkillPaths, ...(definition?.skills ?? [])])];
+      const extraPromptPaths = [...new Set([...cliExt.cliPromptPaths, ...discovered.promptPaths])];
+      const mergeSkills = (inherited: readonly Skill[], discoveredSkills: readonly Skill[]): Skill[] => {
+        if (extraSkillPaths.length === 0) return inherited.map((skill) => ({ ...skill }));
+        const seen = new Set(inherited.map((skill) => skill.filePath || skill.name));
+        const extra = discoveredSkills.filter((skill) => !seen.has(skill.filePath || skill.name));
+        return [...inherited, ...extra].map((skill) => ({ ...skill }));
+      };
+
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: ctx.cwd,
+        agentDir,
+        settingsManager,
+        noExtensions: resolvedNoExt,
+        ...(resolvedNoMcp ? { disabledBuiltinExtensions: ["mcp"] } : {}),
+        additionalExtensionPaths: forkExtensionPaths,
+        extensionsOverride: (base) => ({
+          ...base,
+          extensions: base.extensions.filter((ext) => !hasHostSingletonConflict(ext)),
+        }),
+        extensionFactories: [
+          ...builtin.builtinFactories,
+          ...(parentRecord?.forkProfile?.inlineExtensions ?? []),
+          forkExtensionFactory,
+          captureFactory,
+        ],
+        noSkills: false,
+        additionalSkillPaths: extraSkillPaths,
+        ...(parentSkills
+          ? {
+              skillsOverride: (base) => ({
+                skills: mergeSkills(parentSkills, base.skills),
+                diagnostics: [],
+              }),
+            }
+          : {}),
+        noPromptTemplates: false,
+        additionalPromptTemplatePaths: extraPromptPaths,
+        ...(parentPrompts
+          ? {
+              promptsOverride: () => ({
+                prompts: parentPrompts.map((promptItem) => ({ ...promptItem })),
+                diagnostics: [],
+              }),
+            }
+          : {}),
+        noThemes: true,
+        noContextFiles: false,
+        ...(parentContextFiles
+          ? {
+              agentsFilesOverride: () => ({
+                agentsFiles: parentContextFiles.map((file) => ({ path: file.path, content: file.content })),
+              }),
+            }
+          : {}),
+        ...(parentSnapshotForChild !== undefined
+          ? { systemPromptOverride: () => parentCustomPrompt }
+          : {}),
+        ...(parentAppendSystemPrompt !== undefined
+          ? { appendSystemPromptOverride: () => [...parentAppendSystemPrompt] }
+          : {}),
+      });
+      await resourceLoader.reload();
+
+      const customToolSet = new Set(customTools.map((tool) => tool.name));
+      const excluded = [...HOST_ROOT_ONLY_TOOLS, ...(readOnly ? ["edit", "write"] : [])].filter(
+        (name) => !customToolSet.has(name),
+      );
+      const forkedSessionManager = createForkedChildSessionManager({
+        parentSessionManager: ctx.sessionManager,
+        parentSessionFile,
+        subagentDir,
+        cwd: ctx.cwd,
+        spawningToolCallId: toolCallId,
+        description,
+        agentPath: options.teamIdentity?.agentPath,
+      });
+
+      const created = await createAgentSession({
+        cwd: ctx.cwd,
+        agentDir,
+        sessionManager: forkedSessionManager,
+        settingsManager,
+        model,
+        ...(thinkingLevel ? { thinkingLevel } : {}),
+        ...(modelRuntime ? { modelRuntime } : {}),
+        excludeTools: excluded,
+        customTools,
+        resourceLoader,
+      });
+      session = created.session;
+
+      const declaredBeforeBind = new Set(session.getAllTools().map((tool) => tool.name));
+      await session.bindExtensions({});
+      const addedByExtensions = session.getAllTools()
+        .map((tool) => tool.name)
+        .filter((name) => !declaredBeforeBind.has(name));
+      const forkActiveTools = resolveForkActiveTools({
+        parentActiveTools,
+        availableTools: session.getAllTools().map((tool) => tool.name),
+        customToolNames: customTools.map((tool) => tool.name),
+        addedExtensionTools: addedByExtensions,
+        readOnly,
+      });
+      session.setActiveToolsByName(forkActiveTools);
+
+      const branchContext = session.sessionManager.buildSessionContext();
+      if (
+        branchContext.model &&
+        (branchContext.model.provider !== model.provider || branchContext.model.modelId !== model.id)
+      ) {
+        session.sessionManager.appendModelChange(model.provider, model.id);
+      }
+      if (thinkingLevel && branchContext.thinkingLevel !== thinkingLevel) {
+        session.sessionManager.appendThinkingLevelChange(thinkingLevel);
+      }
+
+      capturedPromptsForProfile = [...session.promptTemplates];
+      const loadedExtPaths = session.resourceLoader
+        .getExtensions()
+        .extensions.map((ext) => ext.resolvedPath)
+        .filter((extPath) => !extPath.startsWith("<") && !isHostSingletonBridgeExtension(extPath));
+      resolvedExtPathsForProfile = [...new Set([...forkExtensionPaths, ...loadedExtPaths])];
+      if (parentSnapshotForChild) childForkProfile.promptSnapshot = parentSnapshotForChild;
+    } else {
+      // Skills and AGENTS.md context inherit the root session by default:
+      // `noSkills: false` merges Pi global/project `enabledSkills` with the
+      // definition's explicit `skills`; `noContextFiles: false` restores
+      // AGENTS.md/CLAUDE.md discovery. A definition opts back into isolation
+      // with `inherit_skills: false` / `inherit_context: false`.
+      // Extensions stay isolated (only explicit `extensions` load): inheriting
+      // every root extension would re-introduce host-bridge conflicts in children.
+      // The built-in multi-agent-proactive skill still does not flow implicitly;
+      // V2 hands its compact contract explicitly in each handoff.
+      const isolatedExtensionPaths = [...defaultSubagentExtensions(), ...(definition?.extensions ?? [])];
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: ctx.cwd,
+        agentDir,
+        noExtensions: true,
+        noSkills: definition?.inheritSkills === false,
+        additionalExtensionPaths: [...defaultSubagentExtensions(), ...(definition?.extensions ?? [])],
+        extensionFactories: [captureFactory],
+        additionalSkillPaths: definition?.skills ?? [],
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: definition?.inheritContext === false,
+        systemPromptOverride: () => systemPrompt,
+        appendSystemPromptOverride: () => [],
+      });
+      await resourceLoader.reload();
+
+      const activeTools = [...new Set([...businessTools, ...customTools.map((tool) => tool.name)])];
+      const created = await createAgentSession({
+        cwd: ctx.cwd,
+        agentDir,
+        sessionManager: SessionManager.create(ctx.cwd, subagentDir),
+        settingsManager,
+        model,
+        ...(thinkingLevel ? { thinkingLevel } : {}),
+        ...(modelRuntime ? { modelRuntime } : {}),
+        tools: activeTools,
+        customTools,
+        resourceLoader,
+      });
+      session = created.session;
+      // An extension may append its own tools while binding (the default search
+      // extension does). Set this session's loadout first, then keep exactly the
+      // tools the extension added on top, so a capability limit still holds.
+      const declaredBeforeBind = new Set(session.getAllTools().map((tool) => tool.name));
+      session.setActiveToolsByName(activeTools);
+      await session.bindExtensions({});
+      const addedByExtensions = session.getAllTools()
+        .map((tool) => tool.name)
+        .filter((name) => !declaredBeforeBind.has(name));
+      if (addedByExtensions.length > 0) {
+        session.setActiveToolsByName([...new Set([...activeTools, ...addedByExtensions])]);
+      }
+      resolvedExtPathsForProfile = isolatedExtensionPaths.filter((extPath) => !isHostSingletonBridgeExtension(extPath));
     }
+
+    childForkProfile.extensionPaths = resolvedExtPathsForProfile;
+    childForkProfile.noExtensions = resolvedNoExt;
+    childForkProfile.noMcp = resolvedNoMcp;
+    if (capturedPromptsForProfile) childForkProfile.prompts = capturedPromptsForProfile;
 
     const childSessionFile = session.sessionFile;
     if (!childSessionFile) throw new Error("child session persistence is unavailable");
     const parentSessionId = ctx.sessionManager.getSessionId();
     const id = this.allocateRecordId();
     const parentToolCallId = options.parentToolCallId ?? toolCallId;
+    const bridgeParentSessionId =
+      options.bridgeParentSessionId ?? options.teamIdentity?.bridgeParentSessionId ?? parentRecord?.childSessionId;
     let doneResolve!: () => void;
     const donePromise = new Promise<void>((resolve) => { doneResolve = resolve; });
     const completeRecord: SubagentRecord = {
@@ -536,7 +839,9 @@ export class SubagentRuntime {
       agentPath: options.teamIdentity?.agentPath,
       parentAgentPath: options.teamIdentity?.parentAgentPath,
       team: options.teamIdentity?.team,
-      bridgeParentSessionId: options.teamIdentity?.bridgeParentSessionId,
+      forked: forkMode,
+      forkProfile: childForkProfile,
+      bridgeParentSessionId,
       finished: false,
       terminalStatus: null,
       finalOutputText: undefined,
@@ -566,6 +871,7 @@ export class SubagentRuntime {
       agentPath: completeRecord.agentPath,
       parentAgentPath: completeRecord.parentAgentPath,
       team: completeRecord.team,
+      ...(completeRecord.forked ? { forked: true } : {}),
     });
     completeRecord.removeAbortListener = this.bindAbort(completeRecord, signal);
     return completeRecord;
@@ -612,6 +918,8 @@ export class SubagentRuntime {
       agentPath: previous.agentPath,
       parentAgentPath: previous.parentAgentPath,
       team: previous.team,
+      forked: previous.forked,
+      forkProfile: previous.forkProfile,
       bridgeParentSessionId: previous.bridgeParentSessionId,
       finished: false,
       terminalStatus: null,
@@ -643,6 +951,7 @@ export class SubagentRuntime {
       agentPath: record.agentPath,
       parentAgentPath: record.parentAgentPath,
       team: record.team,
+      ...(record.forked ? { forked: true } : {}),
     });
     record.removeAbortListener = this.bindAbort(record, signal);
     return record;

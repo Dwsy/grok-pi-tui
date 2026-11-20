@@ -13,6 +13,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use xai_grok_shared::ui_config::TimelineHapticStrength;
+pub use xai_grok_shared::ui_config::ToolCallDensity;
 pub use xai_grok_shared::ui_config::ToolCardClickAction;
 use xai_grok_shared::ui_config::UiConfig;
 
@@ -40,6 +41,8 @@ const PI_EVAL_V2_EFFECTS_FIRST_DEFAULT: bool = true;
 /// PSM resume index + full-text/preview (defaults OFF; opt-in).
 const PSM_RESUME_INDEX_DEFAULT: bool = false;
 const SHOW_THINKING_BLOCKS_DEFAULT: bool = true;
+/// Thinking blocks keep streaming their body until the turn ends (client default).
+const COLLAPSE_THINKING_BLOCKS_DEFAULT: bool = false;
 /// Prompt border follows the selected thinking/reasoning effort by default.
 const THINKING_BORDER_COLORS_DEFAULT: bool = true;
 const GROUP_TOOL_VERBS_DEFAULT: bool = true;
@@ -410,6 +413,37 @@ pub fn set_show_thinking_blocks(enabled: bool) {
     SHOW_THINKING_BLOCKS_LOADED.with(|l| l.set(true));
 }
 
+// -- Collapse thinking blocks ------------------------------------------------
+
+thread_local! {
+    static COLLAPSE_THINKING_BLOCKS_CURRENT: Cell<bool> =
+        const { Cell::new(COLLAPSE_THINKING_BLOCKS_DEFAULT) };
+    static COLLAPSE_THINKING_BLOCKS_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read cached `collapse_thinking_blocks`, seeding from `[ui]` on first call.
+/// Settings resolution at startup may override the seeded value.
+pub fn load_collapse_thinking_blocks() -> bool {
+    COLLAPSE_THINKING_BLOCKS_LOADED.with(|loaded| {
+        if !loaded.get() {
+            COLLAPSE_THINKING_BLOCKS_CURRENT.with(|c| {
+                c.set(load_bool_from_effective_config(
+                    "collapse_thinking_blocks",
+                    COLLAPSE_THINKING_BLOCKS_DEFAULT,
+                ))
+            });
+            loaded.set(true);
+        }
+    });
+    COLLAPSE_THINKING_BLOCKS_CURRENT.with(|c| c.get())
+}
+
+/// Replace cached `collapse_thinking_blocks`.
+pub fn set_collapse_thinking_blocks(enabled: bool) {
+    COLLAPSE_THINKING_BLOCKS_CURRENT.with(|c| c.set(enabled));
+    COLLAPSE_THINKING_BLOCKS_LOADED.with(|l| l.set(true));
+}
+
 // -- Thinking-level prompt border colors -------------------------------------
 
 thread_local! {
@@ -500,6 +534,63 @@ pub fn load_collapsed_edit_blocks() -> bool {
 pub fn set_collapsed_edit_blocks(enabled: bool) {
     COLLAPSED_EDIT_BLOCKS_CURRENT.with(|c| c.set(enabled));
     COLLAPSED_EDIT_BLOCKS_LOADED.with(|l| l.set(true));
+}
+
+// -- Tool call density --------------------------------------------------------
+
+thread_local! {
+    static TOOL_CALL_DENSITY_CURRENT: Cell<ToolCallDensity> =
+        const { Cell::new(ToolCallDensity::CompactAllGrouped) };
+    static TOOL_CALL_DENSITY_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read the cached tool-call density, seeding from `[ui] tool_call_density` on first call.
+///
+/// A config written before this setting existed maps to the closest level through
+/// [`ToolCallDensity::from_legacy`]; `GROK_COLLAPSED_EDIT_BLOCKS` and
+/// `GROK_GROUP_TOOL_VERBS` map the same way and win over the file, mirroring the
+/// other `GROK_*` UI overrides.
+pub fn load_tool_call_density() -> ToolCallDensity {
+    TOOL_CALL_DENSITY_LOADED.with(|loaded| {
+        if !loaded.get() {
+            TOOL_CALL_DENSITY_CURRENT.with(|c| c.set(seed_tool_call_density()));
+            loaded.set(true);
+        }
+    });
+    TOOL_CALL_DENSITY_CURRENT.with(|c| c.get())
+}
+
+/// Replace cached `tool_call_density`.
+pub fn set_tool_call_density(level: ToolCallDensity) {
+    TOOL_CALL_DENSITY_CURRENT.with(|c| c.set(level));
+    TOOL_CALL_DENSITY_LOADED.with(|l| l.set(true));
+}
+
+fn seed_tool_call_density() -> ToolCallDensity {
+    let root = xai_grok_config::load_effective_config_disk_only().ok();
+    let ui = root.as_ref().and_then(|root| root.get("ui"));
+    let configured = ui
+        .and_then(|ui| ui.get("tool_call_density"))
+        .and_then(|v| v.as_str())
+        .and_then(ToolCallDensity::parse);
+    if let Some(level) = configured {
+        return level;
+    }
+    let legacy_bool = |env: &str, key: &str| {
+        env_flag(env).or_else(|| ui.and_then(|ui| ui.get(key)).and_then(|v| v.as_bool()))
+    };
+    ToolCallDensity::from_legacy(
+        legacy_bool("GROK_COLLAPSED_EDIT_BLOCKS", "collapsed_edit_blocks"),
+        legacy_bool("GROK_GROUP_TOOL_VERBS", "group_tool_verbs"),
+    )
+}
+
+fn env_flag(name: &str) -> Option<bool> {
+    std::env::var(name).ok().and_then(|v| match v.trim() {
+        "1" | "true" => Some(true),
+        "0" | "false" => Some(false),
+        _ => None,
+    })
 }
 
 // -- Code Mode card expansion -------------------------------------------------
@@ -1060,6 +1151,7 @@ pub fn prime(ui: &UiConfig) {
     let _ = load_render_mermaid();
     let _ = load_show_thinking_blocks();
     let _ = load_thinking_border_colors();
+    let _ = load_collapse_thinking_blocks();
     let _ = load_group_tool_verbs();
     let _ = load_collapsed_edit_blocks();
     set_codemode_expanded_by_default(
@@ -1175,6 +1267,11 @@ mod tests {
             SHOW_THINKING_BLOCKS_DEFAULT,
             ui.show_thinking_blocks
                 .unwrap_or(SHOW_THINKING_BLOCKS_DEFAULT)
+        );
+        assert_eq!(
+            COLLAPSE_THINKING_BLOCKS_DEFAULT,
+            ui.collapse_thinking_blocks
+                .unwrap_or(COLLAPSE_THINKING_BLOCKS_DEFAULT)
         );
         assert_eq!(
             THINKING_BORDER_COLORS_DEFAULT,

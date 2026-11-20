@@ -78,6 +78,16 @@ pub(super) fn write_remote_tui_extension() -> Result<RemoteTuiExtension> {
         "demo.ts",
         include_str!("../../../../../../extensions/pi-grok-remote-tui/demo.ts"),
     )?;
+    write_source_file(
+        source_dir.path(),
+        "timeline.ts",
+        include_str!("../../../../../../extensions/pi-grok-remote-tui/timeline.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "timeline-format.ts",
+        include_str!("../../../../../../extensions/pi-grok-remote-tui/timeline-format.ts"),
+    )?;
     Ok(RemoteTuiExtension {
         _source_dir: source_dir,
         source_path,
@@ -96,6 +106,8 @@ mod tests {
         transport: String,
         host: String,
         demo: String,
+        timeline: String,
+        timeline_format: String,
     }
 
     fn write_bundle() -> (RemoteTuiExtension, Bundle) {
@@ -112,6 +124,8 @@ mod tests {
             transport: read("transport.ts"),
             host: read("host.ts"),
             demo: read("demo.ts"),
+            timeline: read("timeline.ts"),
+            timeline_format: read("timeline-format.ts"),
         };
         (extension, bundle)
     }
@@ -135,6 +149,11 @@ mod tests {
         assert!(bundle.layout.contains("from \"./shared.ts\""));
         assert!(bundle.transport.contains("from \"./shared.ts\""));
         assert!(bundle.demo.contains("from \"./shared.ts\""));
+        assert!(bundle.index.contains("from \"./timeline.ts\""));
+        assert!(bundle.timeline.contains("from \"./host.ts\""));
+        assert!(bundle.timeline.contains("timeline-config"));
+        assert!(bundle.timeline.contains("from \"./timeline-format.ts\""));
+        assert!(bundle.timeline_format.contains("registerTimelineRenderer"));
         // Per-module load-bearing symbols.
         assert!(bundle.shared.contains("__pi_grok_remote_tui_layout__"));
         assert!(bundle.env.contains("PI_GROK_REMOTE_TUI"));

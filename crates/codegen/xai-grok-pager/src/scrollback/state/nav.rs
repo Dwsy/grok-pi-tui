@@ -1700,7 +1700,9 @@ mod tests {
     /// The dense range walk must stop at the claimed reads so reveal and Left-collapse key on the truncation header's id, not the reads'.
     #[test]
     fn reveal_ungroups_truncated_entry_across_adjacent_verb_fold() {
-        crate::appearance::cache::set_group_tool_verbs(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactShells,
+        );
         crate::appearance::cache::set_show_thinking_blocks(false);
         let mut state = ScrollbackState::new();
         let mut appearance = AppearanceConfig::default();
@@ -1843,7 +1845,9 @@ mod tests {
 
     #[test]
     fn reveal_offsets_expanded_verb_head_past_group_header() {
-        crate::appearance::cache::set_group_tool_verbs(true);
+        crate::appearance::cache::set_tool_call_density(
+            crate::appearance::cache::ToolCallDensity::CompactAllGrouped,
+        );
         let mut state = ScrollbackState::new();
         for i in 0..20 {
             state.push_block(RenderBlock::agent_message(format!("pre {i}")));

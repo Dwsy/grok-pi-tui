@@ -431,6 +431,7 @@ async fn handle_notification(
                 total_bytes: chunk.base.total_bytes,
                 output_delta,
                 was_bare_echo: false,
+                shell_trace: None,
             });
             let update = acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
                 acp::ToolCallId::new(chunk.base.tool_call_id.clone()),

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "settings": [
+    {
+      "key": "pi_emphasis",
+      "label": "Pi reply emphasis",
+      "description": "Teach the agent to write `[[Done]]` status pills and draw them as coloured chips in assistant replies. Display only: stored messages, copied text and exports keep the original Markdown. Default on; takes effect for new grok-pi sessions.",
+      "keywords": [
+        "pi",
+        "emphasis",
+        "pill",
+        "pills",
+        "status",
+        "reply",
+        "style",
+        "markdown"
+      ],
+      "f2": { "category": "agent", "section": "Pi features", "order": 56 },
+      "kind": "bool",
+      "default": true,
+      "restartRequired": true,
+      "configPath": ["ui", "pi_emphasis"],
+      "nativeFeatureKey": "pi_emphasis"
+    }
+  ]
+}

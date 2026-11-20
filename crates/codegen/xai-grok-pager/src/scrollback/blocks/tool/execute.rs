@@ -32,6 +32,8 @@ pub struct ExecuteToolCallBlock {
     pub bash_mode: bool,
     /// Peeled display form for the header; `command` stays the full source of truth.
     pub header_display: Option<String>,
+    /// Optional bounded OMP execution trace for multi-command breakdown.
+    pub shell_trace: Option<xai_grok_tools::types::output::ShellTraceSummary>,
 }
 impl ExecuteToolCallBlock {
     /// Create a new execute block. Pre-completed blocks never get timing; they show `"-"`.
@@ -45,7 +47,17 @@ impl ExecuteToolCallBlock {
             elapsed_ms: None,
             bash_mode: false,
             header_display: None,
+            shell_trace: None,
         }
+    }
+
+    /// Attach an OMP execution trace summary.
+    pub fn with_shell_trace(
+        mut self,
+        trace: xai_grok_tools::types::output::ShellTraceSummary,
+    ) -> Self {
+        self.shell_trace = Some(trace);
+        self
     }
 
     /// Set error (marks as failed).
@@ -479,6 +491,98 @@ impl ExecuteToolCallBlock {
         }
     }
 
+    fn has_meaningful_trace(&self) -> bool {
+        self.shell_trace
+            .as_ref()
+            .is_some_and(|trace| trace.nodes.len() > 1)
+    }
+
+    fn push_shell_trace_lines(
+        &self,
+        lines: &mut Vec<BlockLine>,
+        theme: &Theme,
+        width: usize,
+        max_nodes: usize,
+        result_pad: usize,
+    ) {
+        let Some(trace) = self.shell_trace.as_ref() else {
+            return;
+        };
+        if trace.nodes.len() <= 1 {
+            return;
+        }
+        lines.push(BlockLine::separator(Line::from("")));
+        let pad = " ".repeat(result_pad);
+        let summary_label = if trace.truncated {
+            format!(
+                "{pad}trace ({} steps, {}ms, truncated)",
+                trace.nodes.len(),
+                trace.total_duration_ms
+            )
+        } else {
+            format!(
+                "{pad}trace ({} steps, {}ms)",
+                trace.nodes.len(),
+                trace.total_duration_ms
+            )
+        };
+        lines.push(
+            BlockLine::separator(Line::from(Span::styled(summary_label, theme.muted())))
+                .with_panel_background(theme.bg_dark),
+        );
+
+        let shown = trace.nodes.len().min(max_nodes);
+        for node in trace.nodes.iter().take(shown) {
+            let indent = "  ".repeat(usize::from(node.depth.min(4)));
+            let (badge, badge_style) = match node.state {
+                xai_grok_tools::types::output::ShellTraceNodeState::Ok => (
+                    "✓",
+                    ratatui::style::Style::default().fg(theme.accent_success),
+                ),
+                xai_grok_tools::types::output::ShellTraceNodeState::Fail => (
+                    "✗",
+                    ratatui::style::Style::default().fg(theme.accent_error),
+                ),
+                xai_grok_tools::types::output::ShellTraceNodeState::Skipped => ("⊘", theme.muted()),
+                xai_grok_tools::types::output::ShellTraceNodeState::Running
+                | xai_grok_tools::types::output::ShellTraceNodeState::Pending => ("⋯", theme.muted()),
+            };
+            let bg_tag = if node.background { " [bg]" } else { "" };
+            let timing = format!(" ({}ms){}", node.duration_ms, bg_tag);
+            let prefix_len = result_pad + indent.len() + 2 + timing.len();
+            let avail = width.saturating_sub(prefix_len + 2).max(16);
+            let cmd_label = if node.command.chars().count() > avail {
+                let cut: String = node
+                    .command
+                    .chars()
+                    .take(avail.saturating_sub(1))
+                    .collect();
+                format!("{cut}…")
+            } else {
+                node.command.clone()
+            };
+            let spans = vec![
+                Span::raw(format!("{pad}{indent}")),
+                Span::styled(badge.to_string(), badge_style),
+                Span::styled(format!(" {cmd_label}"), theme.primary()),
+                Span::styled(timing, theme.muted()),
+            ];
+            lines.push(
+                BlockLine::styled(Line::from(spans)).with_panel_background(theme.bg_dark),
+            );
+        }
+        if trace.nodes.len() > shown {
+            let hidden = trace.nodes.len() - shown;
+            lines.push(
+                BlockLine::separator(Line::from(Span::styled(
+                    format!("{pad}… +{hidden} trace steps"),
+                    theme.muted(),
+                )))
+                .with_panel_background(theme.bg_dark),
+            );
+        }
+    }
+
     /// Render with optional truncation.
     /// If `truncate` is Some((first, last)), shows first N lines, ellipsis, last M lines.
     /// If `truncate` is None, shows all output lines.
@@ -604,6 +708,11 @@ impl ExecuteToolCallBlock {
             }
         }
 
+        if self.has_meaningful_trace() {
+            let max_nodes = if truncate.is_some() { 6 } else { 24 };
+            self.push_shell_trace_lines(&mut lines, theme, width, max_nodes, result_pad);
+        }
+
         BlockOutput { lines }
     }
 }
@@ -716,12 +825,19 @@ impl BlockContent for ExecuteToolCallBlock {
         // Collapsed with a description hides `$ command`; expand reveals it (and output/error when present)
         // A bare "Run"/"Running" description strips to empty under Label-style stripping
         // Its collapsed and expanded headers are then identical, so it must not claim a fold
-        self.description_display(true).is_some() || self.output.is_some() || self.error.is_some()
+        self.description_display(true).is_some()
+            || self.output.is_some()
+            || self.error.is_some()
+            || self.has_meaningful_trace()
     }
 
     /// Minimum fold mode used by collapse and the running expand chevron. Agent tools default to Collapsed (title
     /// only), no auto-expand. When finished, Collapsed is always the true minimum (user can fold to title-only).
     fn collapse_mode(&self, is_running: bool) -> DisplayMode {
+        // Every density below Detailed folds shells to their one-line row, custom `!` bash included.
+        if crate::appearance::cache::load_tool_call_density().shells_collapsed() {
+            return DisplayMode::Collapsed;
+        }
         if self.bash_mode && is_running {
             DisplayMode::Truncated
         } else {
@@ -729,26 +845,27 @@ impl BlockContent for ExecuteToolCallBlock {
         }
     }
 
-    /// Agent tools start Collapsed (no auto-expand of stdout). User `!` bash defaults to Truncated so a kind-upgrade or
-    /// first materialize lands Truncated. `finish_running` then expands because the mode is not Collapsed. Same-kind
-    /// completion preserves Truncated rather than resetting.
+    /// At Detailed ("shells with output") every command starts on the output preview.
+    /// Compact densities start folded to the one-line row and stay there.
     fn default_display_mode(&self) -> DisplayMode {
-        if self.bash_mode {
-            DisplayMode::Truncated
-        } else {
+        if crate::appearance::cache::load_tool_call_density().shells_collapsed() {
             DisplayMode::Collapsed
+        } else {
+            DisplayMode::Truncated
         }
     }
 
     fn finished_display_mode(&self) -> Option<DisplayMode> {
+        if crate::appearance::cache::load_tool_call_density().shells_collapsed() {
+            // Compact densities never snap open: a folded row stays folded.
+            return None;
+        }
         if self.bash_mode {
             // Interactive bash: full output on finish, like a terminal; the streaming preview would silently drop the middle lines
             Some(DisplayMode::Expanded)
         } else {
-            // Agent tools: do **not** force a mode on finish.
-            // - Never auto-expanded at start (default Collapsed).
-            // - If the user manually expanded while running, keep that mode (no snap-shut). If they left it collapsed, it stays collapsed.
-            None
+            // Agent tools keep the preview row; the user can still expand for the full output.
+            Some(DisplayMode::Truncated)
         }
     }
 
@@ -1063,15 +1180,18 @@ mod tests {
         assert!(!no_desc.is_foldable());
     }
 
+    /// Density owns the shell default mode: Detailed shows the output preview,
+    /// every compact level stores a one-line row and never auto-opens on finish.
     #[test]
-    fn agent_execute_does_not_auto_expand_and_preserves_fold_on_finish() {
+    fn execute_display_modes_follow_tool_call_density() {
+        use crate::appearance::cache::{ToolCallDensity, set_tool_call_density};
+
+        set_tool_call_density(ToolCallDensity::Detailed);
         let agent = ExecuteToolCallBlock::new("echo hi").with_description("say hi");
-        // No auto-expand: start collapsed (title only).
-        assert_eq!(agent.default_display_mode(), DisplayMode::Collapsed);
+        assert_eq!(agent.default_display_mode(), DisplayMode::Truncated);
         assert_eq!(agent.collapse_mode(true), DisplayMode::Collapsed);
         assert_eq!(agent.collapse_mode(false), DisplayMode::Collapsed);
-        // Finish does not force open or shut; preserve user choice (None)
-        assert_eq!(agent.finished_display_mode(), None);
+        assert_eq!(agent.finished_display_mode(), Some(DisplayMode::Truncated));
 
         let mut bash = ExecuteToolCallBlock::new("ls");
         bash.bash_mode = true;
@@ -1081,18 +1201,26 @@ mod tests {
         assert_eq!(bash.collapse_mode(true), DisplayMode::Truncated);
         assert_eq!(bash.collapse_mode(false), DisplayMode::Collapsed);
 
-        let failed = ExecuteToolCallBlock::new("false").with_error("exit 1");
-        assert_eq!(failed.default_display_mode(), DisplayMode::Collapsed);
-        assert_eq!(failed.finished_display_mode(), None);
+        set_tool_call_density(ToolCallDensity::CompactShells);
+        let agent = ExecuteToolCallBlock::new("echo hi").with_description("say hi");
+        assert_eq!(agent.default_display_mode(), DisplayMode::Collapsed);
+        assert_eq!(agent.collapse_mode(true), DisplayMode::Collapsed);
+        assert_eq!(agent.finished_display_mode(), None);
+        let mut bash = ExecuteToolCallBlock::new("ls");
+        bash.bash_mode = true;
+        assert_eq!(bash.default_display_mode(), DisplayMode::Collapsed);
+        assert_eq!(bash.finished_display_mode(), None);
+        assert_eq!(bash.collapse_mode(true), DisplayMode::Collapsed);
 
-        // Failed user bash keeps the Truncated default: a Collapsed default would defeat the finish expand (see default_display_mode)
-        let mut failed_bash = ExecuteToolCallBlock::new("pytest").with_error("exit 2");
-        failed_bash.bash_mode = true;
-        assert_eq!(failed_bash.default_display_mode(), DisplayMode::Truncated);
-        assert_eq!(
-            failed_bash.finished_display_mode(),
-            Some(DisplayMode::Expanded)
-        );
+        let failed_bash = {
+            let mut b = ExecuteToolCallBlock::new("pytest").with_error("exit 2");
+            b.bash_mode = true;
+            b
+        };
+        assert_eq!(failed_bash.default_display_mode(), DisplayMode::Collapsed);
+        assert_eq!(failed_bash.finished_display_mode(), None);
+
+        set_tool_call_density(ToolCallDensity::CompactAllGrouped);
     }
 
     #[test]
@@ -1160,5 +1288,105 @@ mod tests {
             plain,
             vec!["$ export XAI_ROOT=/tmp", "  cd /tmp", "  echo start"]
         );
+    }
+
+    #[test]
+    fn shell_trace_renders_per_command_timing_and_preserves_collapsed_compat() {
+        use xai_grok_tools::types::output::{
+            ShellTraceNode, ShellTraceNodeState, ShellTraceSummary,
+        };
+
+        let trace = ShellTraceSummary {
+            version: 1,
+            total_duration_ms: 42,
+            exit_code: Some(1),
+            truncated: false,
+            nodes: vec![
+                ShellTraceNode {
+                    id: 0,
+                    parent_id: None,
+                    depth: 0,
+                    kind: "and_or".to_string(),
+                    command: "echo ok && false && echo skipped".to_string(),
+                    state: ShellTraceNodeState::Fail,
+                    exit_code: Some(1),
+                    duration_ms: 42,
+                    runs: 1,
+                    background: false,
+                },
+                ShellTraceNode {
+                    id: 1,
+                    parent_id: Some(0),
+                    depth: 1,
+                    kind: "simple".to_string(),
+                    command: "echo ok".to_string(),
+                    state: ShellTraceNodeState::Ok,
+                    exit_code: Some(0),
+                    duration_ms: 5,
+                    runs: 1,
+                    background: false,
+                },
+                ShellTraceNode {
+                    id: 2,
+                    parent_id: Some(0),
+                    depth: 1,
+                    kind: "simple".to_string(),
+                    command: "false".to_string(),
+                    state: ShellTraceNodeState::Fail,
+                    exit_code: Some(1),
+                    duration_ms: 37,
+                    runs: 1,
+                    background: false,
+                },
+                ShellTraceNode {
+                    id: 3,
+                    parent_id: Some(0),
+                    depth: 1,
+                    kind: "simple".to_string(),
+                    command: "echo skipped".to_string(),
+                    state: ShellTraceNodeState::Skipped,
+                    exit_code: None,
+                    duration_ms: 0,
+                    runs: 1,
+                    background: false,
+                },
+            ],
+        };
+
+        let block = ExecuteToolCallBlock::new("echo ok && false && echo skipped")
+            .with_output("ok\n")
+            .with_shell_trace(trace);
+        assert!(block.is_foldable());
+
+        let make_ctx = |mode| BlockContext {
+            mode,
+            is_running: false,
+            width: 100,
+            raw: false,
+            max_lines: None,
+            appearance: AppearanceConfig::default(),
+            is_selected: false,
+            cwd: None,
+        };
+
+        let collapsed: Vec<String> = block
+            .output(&make_ctx(DisplayMode::Collapsed))
+            .lines
+            .iter()
+            .map(|l| line_text(&l.content))
+            .collect();
+        assert_eq!(collapsed.len(), 1);
+
+        let expanded: Vec<String> = block
+            .output(&make_ctx(DisplayMode::Expanded))
+            .lines
+            .iter()
+            .map(|l| line_text(&l.content))
+            .collect();
+        let joined = expanded.join("\n");
+        assert!(joined.contains("trace (4 steps, 42ms)"));
+        assert!(joined.contains("✓ echo ok (5ms)"));
+        assert!(joined.contains("✗ false (37ms)"));
+        assert!(joined.contains("⊘ echo skipped (0ms)"));
     }
 }

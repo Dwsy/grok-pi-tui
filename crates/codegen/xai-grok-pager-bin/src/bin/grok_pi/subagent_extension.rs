@@ -93,6 +93,11 @@ pub(super) fn write_subagent_extension() -> Result<SubagentExtension> {
     )?;
     write_source_file(
         source_dir.path(),
+        "fork.ts",
+        include_str!("../../../../../../extensions/pi-grok-subagents/fork.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
         "tools-v1.ts",
         include_str!("../../../../../../extensions/pi-grok-subagents/tools-v1.ts"),
     )?;
@@ -252,6 +257,7 @@ mod tests {
         let config_ui = read("config-ui.ts");
         let control_center = read("control-center.ts");
         let bridge = read("bridge.ts");
+        let fork = read("fork.ts");
         let runtime = read("runtime.ts");
         let tools_v1 = read("tools-v1.ts");
         let teams = read("teams.ts");
@@ -288,6 +294,9 @@ mod tests {
         assert!(tools_v1.contains("pi.registerCommand(\"subagent-control\""));
         assert!(control_center.contains("openSubagentControlCenter"));
         assert!(config_ui.contains("PI_GROK_SUBAGENT_EXTENSION_CATALOG"));
+        assert!(fork.contains("createForkedChildSessionManager"));
+        assert!(fork.contains("isHostSingletonBridgeExtension"));
+        assert!(runtime.contains("createForkedChildSessionManager"));
         assert!(runtime.contains("noExtensions: true"));
         assert!(runtime.contains("noSkills: definition?.inheritSkills === false"));
         assert!(runtime.contains("noContextFiles: definition?.inheritContext === false"));

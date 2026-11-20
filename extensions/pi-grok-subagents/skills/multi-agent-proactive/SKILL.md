@@ -43,10 +43,18 @@ V1 适合彼此独立的研究、实现、验证、审查。默认 child 是叶�
 | 等待 team activity | `team_wait` |
 | 查看 team tree | `team_list`（含静默时长与待决问题） |
 | 中断运行中 agent | `team_interrupt` |
-| 声明本轮结果 | `team_report`（`ready`/`blocked`/`failed`/`dropped`；只有 `dropped` 不唤醒 parent） |
+| 声明本轮结果 | `team_report`（`ready`/`waiting`/`blocked`/`failed`/`dropped`；`waiting` 与 `dropped` 均不唤醒正常 parent） |
 | 启动预设团队（root 可见时） | `spawn_team`（可加 `members` 子集、`model`/`thinking_level`/`max_turns`/`capability_mode` 统一覆盖、`instructions`、`timeout_ms`） |
 
 V2 适合 agent 之间需要消息、follow-up、稳定 `/root/...` 身份或预设团队的场景。V1 与 V2 工具面互斥：V2 开启时不注册 V1 单代理工具，因此不要在本会话里寻找 `spawn_subagent`。若 V2 工具未出现，就使用 V1；不要为了“更高级”而绕过实际工具目录。
+
+## Orchestrator 闭环：主动 Plan ↔ Team V2 执行
+
+当工作横跨多个文件、架构尚未收敛、或需要多代理分域写入且当前工具面存在 `enter_plan_mode` / `exit_plan_mode` 时，优先走两阶段闭环：
+
+1. **主动进入 Plan Mode**：先调用 `enter_plan_mode` 锁定只读探索边界（Plan Mode 期间只允许带 `capability_mode: "read-only"` 的只读侦察/审查子代理；`bash`、代码写入与写型子代理会被阻止）。
+2. **计划落盘后同轮主动退出**：将目标、顺序步骤、互不重叠的 `write_scope`、验收命令与 `Re-plan if:` 升级条件写入计划文件后，**同轮主动调用 `exit_plan_mode`** 提交审批，不要只把计划贴在正文里结束回合。
+3. **按批准决议执行或收敛**：仅在 `approved` 后启动写型 V2 代理；`abandoned` 时立即停止并等待用户；若执行中命中 `Re-plan if:` 条件或收到 child 的 `blocked` 使原方案失效，先中断/收敛受影响分支，再主动调用 `enter_plan_mode` 重规划，不靠猜硬冲。
 
 ## 第一原则：委派必须有收益
 
@@ -85,6 +93,7 @@ V2 适合 agent 之间需要消息、follow-up、稳定 `/root/...` 身份或预
 - [允许修改的模块/文件；只读任务明确写不要改文件]
 - [禁止事项，例如不要 commit、不要加依赖]
 - [和其他 agent 的责任边界]
+- [升级条件（Re-plan if）：遇到什么边界冲突或假设失效必须停下调用 team_report(state="blocked", question=...)]
 - 不要因为父级处于 Proactive/Ultra 而继续主动创建子代理；只有本任务明确要求进一步协调时才使用 team spawn。
 
 验证:
@@ -99,7 +108,7 @@ V2 适合 agent 之间需要消息、follow-up、稳定 `/root/...` 身份或预
 - blocker 或反证
 ```
 
-任务书必须让 child 在零额外解释的情况下开工。不要依赖“它继承了我的上下文/模式”。
+任务书必须让 child 在零额外解释的情况下开工。若子任务需要直接延续当前对话已加载的上下文、技能、AGENTS.md 规则与插件，可显式传 `fork: true` 从发起方（root 或 child）分叉独立分支，此时仅传增量分工与写边界；默认 `fork: false` 会保持干净上下文，不要在未传 `fork: true` 时依赖“它继承了我的上下文/模式”。
 
 ## V1 标准循环
 
@@ -174,7 +183,7 @@ spawn_team(team="research", task="...", members=["researcher","synthesizer"])
 
 ### 并行推进
 
-V2 下 root 的正确做法是**派完就结束 turn**，而不是停下来等：
+V2 下 root 的默认最佳实践是**派完就推进本地工作或直接结束 turn**，等待 `FINAL_ANSWER` 自动唤醒，而不是挂在工具等待里：
 
 ```text
 spawn_team(team="research", task="...")
@@ -183,13 +192,13 @@ spawn_team(team="research", task="...")
 → child 的 FINAL_ANSWER 重新唤醒 root
 ```
 
-不要在 root 调 `team_wait` 停车——它对 root 直接返回，写了也不等。也不要为同一个目标重复 spawn。
+注意：`team_wait` 对 root **会按 `timeout_ms`（默认 120 s，上限 600 s）阻塞等待团队活动**（即使当前成员暂时 `IDLE`，因为 `team_followup_task` 仍可能重激活它）；除非你明确要在当前 turn 内同步收集阶段结果，否则不要用 `team_wait` 阻塞 root。也不要为同一个目标重复 spawn。
 
 ### Message vs Follow-up
 
 - `team_send_message`：给**正在运行**的 agent 补事实、纠偏或要求当前工作收尾；在下一个安全循环边界处理，不主动制造新的 idle turn，也不取消正在执行的请求/工具。
 - `team_followup_task`：已有 agent 完成一轮后，需要利用它已有上下文继续做新的相关任务。
-- `team_wait`：只给 child 做 mailbox 同步屏障；root 启动后台 V2 agent 后不要用它停车，直接结束当前 turn，等待 `FINAL_ANSWER` 自动唤醒。
+- `team_wait`：支持按 `teams` 过滤与 `timeout_ms` 超时等待首个团队活动；对 child 无活跃被观察 peer 时会立即返回以释放执行槽；对 root 在无本地工作时通常不如直接结束 turn 等 `FINAL_ANSWER` 高效。
 - `team_list`：需要确认路径、状态或责任归属时再看，不拿它做高频轮询。
 
 ### 消息要合并，不要刷屏
@@ -216,9 +225,10 @@ child 在结束 turn 前调用 `team_report`，父级只为需要行动的结果
 | `state` | 何时用 | 父级被唤醒 |
 |---|---|---|
 | `ready` | 要的结果可交付 | 是 |
+| `waiting` | 自身有下级仍在跑且无本地工作，结束本轮释放执行槽 | 否（等待下级结果恢复本会话） |
 | `blocked` | 需要父级做一个决定，`question` 必填 | 是 |
 | `failed` | 做不成 | 是 |
-| `dropped` | 无需改动、请求已被满足、或已被其他 agent 接管 | **否** |
+| `dropped` | 无需改动、请求已被满足、或已被其他 agent 接管 | **否**（除非父级正处于 `waiting`） |
 
 `dropped` 不是“偷懒退出”，而是“父级无事可做”的诚实声明：它保留 summary 供 `team_list` 查看，但不消耗父级的 turn。没有产出就不要编产出。
 
@@ -258,6 +268,7 @@ child 默认行为：
 | `QUEUED` | 在等并发额度 | 需要它先跑 → `team_followup_task` 会插队 |
 | `RUNNING` | turn 正在跑 | 看 quiet；过长则 `team_interrupt` 或再等 |
 | `IDLE` | 上一轮成功结束 | 有新工作 → `team_followup_task` |
+| `WAITING_RESULT` | 上一轮 `waiting`，正等直系下级结果恢复 | 等待其下级回传，勿重复 follow-up |
 | `WAITING_DECISION` | 上一轮 `blocked`，等父级决定 | 读 question → 给决定 |
 | `FAILED` | 上一轮失败 | 不静默复活；重派或自己接手 |
 | `CANCELLED` | 被中断 | 同上 |

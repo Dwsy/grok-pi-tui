@@ -40,6 +40,13 @@ fn bg(c: ratatui::style::Color) -> Style {
     Style::new().bg_color(to_anstyle(c))
 }
 
+/// A status chip: `fg` text on a `fill` background.
+fn chip(fg_color: ratatui::style::Color, fill: ratatui::style::Color) -> Style {
+    Style::new()
+        .fg_color(to_anstyle(fg_color))
+        .bg_color(to_anstyle(fill))
+}
+
 fn modifier_to_anstyle(m: ratatui::style::Modifier) -> Style {
     let mut s = Style::new();
     if m.contains(ratatui::style::Modifier::BOLD) {
@@ -140,12 +147,24 @@ fn build_style() -> MarkdownStyle {
         table_outer: fg(theme.md_heading_h2).hidden(),
         text: fg(theme.md_text),
         math: fg(theme.md_text).italic(),
+        // Status pills. The three panel tones are tinted chips keyed to the theme's own semantic
+        // accents, so a settled state reads green, a failure red and an ask amber in every theme
+        // rather than inheriting a heading colour that happens to be grey. Danger, mode and owner
+        // use inverse video so a consequence or an ownership claim is louder than a plain status.
+        pill_success: chip(theme.md_code_bg, theme.accent_success),
+        pill_error: chip(theme.md_code_bg, theme.accent_error),
+        pill_warning: chip(theme.md_code_bg, theme.warning),
+        pill_neutral: fg(theme.md_muted),
+        pill_danger: fg(theme.accent_error).invert(),
+        pill_mode: fg(theme.accent_success).invert(),
+        pill_owner: fg(theme.accent_running).invert(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xai_grok_markdown::pill::PillTone;
 
     /// Regression: `Reset` used to fall back to a concrete `AnsiColor::White` (ANSI-7 silver).
     /// That rendered Reset-themed markdown washed-out gray on light terminals and broke the `NO_COLOR` opt-out.
@@ -178,5 +197,49 @@ mod tests {
         let theme = super::super::Theme::terminal_default();
         assert_eq!(fg(theme.md_text).get_fg_color(), None);
         assert_eq!(bg(theme.md_code_bg).get_bg_color(), None);
+    }
+
+    /// The three panel tones must not collapse into one chip colour.
+    ///
+    /// They are keyed to different theme slots (task-checked, h1, h5), so a theme that fails to
+    /// distinguish them would make a failure look like a success. This guards the mapping.
+    #[test]
+    fn panel_tones_stay_distinct() {
+        let theme = super::super::Theme::terminal_default();
+        let style = build_style();
+        let fills: Vec<_> = [PillTone::Success, PillTone::Error, PillTone::Warning]
+            .iter()
+            .map(|tone| tone.style(&style).get_bg_color())
+            .collect();
+        for (i, a) in fills.iter().enumerate() {
+            for b in fills.iter().skip(i + 1) {
+                assert_ne!(a, b, "two panel tones share a background: {fills:?}");
+            }
+        }
+        // Every chip showing the body background would mean the theme had nothing to say, and the
+        // three statuses would be indistinguishable.
+        let body_bg = style.text.get_bg_color();
+        assert!(
+            fills.iter().any(|f| *f != body_bg),
+            "at least one tone must differ from the body background: {fills:?}, body {body_bg:?}"
+        );
+        let _ = theme;
+    }
+
+    /// The solid tones draw by inverting, so they stay distinguishable without a background fill.
+    #[test]
+    fn solid_tones_are_inverted_and_tinted() {
+        let style = build_style();
+        for tone in [PillTone::Danger, PillTone::Mode, PillTone::Owner] {
+            let s = tone.style(&style);
+            assert!(
+                s.get_effects().contains(anstyle::Effects::INVERT),
+                "{tone:?} must draw inverted"
+            );
+            assert!(
+                s.get_fg_color().is_some(),
+                "{tone:?} must carry its tint, or it draws as plain inverse video"
+            );
+        }
     }
 }

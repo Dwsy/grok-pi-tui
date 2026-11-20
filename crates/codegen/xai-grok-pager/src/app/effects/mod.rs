@@ -102,6 +102,10 @@ fn enqueue_remote_tui(tx: &AcpAgentTx, method: &'static str, params: serde_json:
     }
 }
 
+pub(super) fn send_timeline_message(tx: &AcpAgentTx, params: serde_json::Value) {
+    enqueue_remote_tui(tx, "pi/ui/timeline/reply", params);
+}
+
 pub(crate) fn execute(
     effect: Effect,
     tasks: &mut JoinSet<TaskResult>,
@@ -121,6 +125,16 @@ pub(crate) fn execute(
         }
         Effect::RemoteTuiCancel { id } => {
             enqueue_remote_tui(acp_tx, "pi/ui/remote_tui/cancel", serde_json::json!({ "id": id }));
+        }
+        Effect::TimelineMessage(params) => send_timeline_message(acp_tx, params),
+        Effect::SaveTimeline { host, id, contents } => {
+            tasks.spawn(async move {
+                let result = xai_grok_shell::util::config::save_timeline_contents(&contents)
+                    .await
+                    .map(|()| contents)
+                    .map_err(|error| format!("{error:#}"));
+                TaskResult::TimelineSaved { host, id, result }
+            });
         }
         Effect::ShortcutDispatch { key } => {
             let tx = acp_tx.clone();

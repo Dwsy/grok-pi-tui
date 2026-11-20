@@ -1355,12 +1355,6 @@ impl PromptWidget {
         // Accepting rewrites the token; an unrelated highlight must not survive it
         self.textarea.clear_selection();
         let insert_text = row.insert_text.clone();
-        let record_mru = snap.cursor_in_command;
-        let mru_record = if record_mru {
-            Some((snap.query.clone(), row.command_name().to_string()))
-        } else {
-            None
-        };
         let text_len = self.textarea.text().len();
 
         let applied = if snap.cursor_in_command {
@@ -1408,10 +1402,6 @@ impl PromptWidget {
 
         if !applied {
             return false;
-        }
-
-        if let Some((prefix, name)) = mru_record {
-            self.slash_controller.record_command_use(&prefix, &name);
         }
 
         // Refresh snapshot after text mutation.

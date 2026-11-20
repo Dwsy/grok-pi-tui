@@ -81,16 +81,30 @@ pub(crate) fn apply(
     {
         return cache;
     }
-    // User messages reset ACP text/thinking state. Replaying from an arbitrary
-    // assistant boundary could append to a retained block and corrupt its cache.
-    let boundary = (0..common)
-        .rev()
-        .find(|&i| messages[i].role == "user")
-        .unwrap_or(0);
-    let cut = cache
-        .as_ref()
-        .filter(|_| boundary > 0)
-        .map_or(0, |c| c.offsets[boundary]);
+    // Keep the whole common prefix at a user boundary on both branches.
+    // Inside an assistant sequence old chunks may share a block, so replay
+    // that turn from its user message instead of retaining a partly old block.
+    let boundary = if cache.as_ref().is_some_and(|old| {
+        old.messages
+            .get(common)
+            .is_none_or(|message| message.role == "user")
+            && messages
+                .get(common)
+                .is_none_or(|message| message.role == "user")
+    }) {
+        common
+    } else {
+        (0..common)
+            .rev()
+            .find(|&i| messages[i].role == "user")
+            .unwrap_or(0)
+    };
+    let cut = cache.as_ref().filter(|_| boundary > 0).map_or(0, |old| {
+        old.offsets
+            .get(boundary)
+            .copied()
+            .unwrap_or_else(|| scrollback.len())
+    });
     let mut offsets = cache
         .as_ref()
         .map_or_else(Vec::new, |c| c.offsets[..boundary].to_vec());
@@ -159,11 +173,13 @@ mod tests {
         let mut sb = ScrollbackState::new();
         let cache = apply(&mut sb, None, "s", project(old)).unwrap();
         let id = sb.get(0).unwrap().id;
+        let retained_response = sb.get(3).unwrap().id;
         let mut target = prefix;
         target.push(message("new", "user", "new branch"));
         target.push(message("new-a", "assistant", "**new** answer"));
         let cache = apply(&mut sb, Some(cache), "s", project(target.clone())).unwrap();
         assert_eq!(sb.get(0).unwrap().id, id);
+        assert_eq!(sb.get(3).unwrap().id, retained_response);
         let mut fresh = ScrollbackState::new();
         apply(&mut fresh, None, "s", project(target)).unwrap();
         assert_eq!(sb.len(), fresh.len());

@@ -1,7 +1,7 @@
 /** V1 command and tool surface. Runtime behavior stays compatible with existing grok-pi subagents. */
 
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { configureSubagents } from "./config-ui.ts";
 import { openSubagentControlCenter } from "./control-center.ts";
 import { showSubagentHistory, type SubagentRecord } from "./bridge.ts";
@@ -140,49 +140,66 @@ export function registerV1Commands(pi: ExtensionAPI, runtime: SubagentRuntime): 
   });
 }
 
-/** V1 single-agent tools. V2 team mode skips these so only the team surface is model-visible. */
-export function registerV1AgentTools(pi: ExtensionAPI, runtime: SubagentRuntime): void {
-  pi.registerTool({
+/** Build V1 single-agent tools shared by root and V1 child sessions (supporting nested spawns/forks). */
+export function buildV1AgentTools(
+  runtime: SubagentRuntime,
+  getParentRecord?: () => SubagentRecord | undefined,
+): ToolDefinition[] {
+  const spawnTool = defineTool({
     name: "spawn_subagent",
     label: "Spawn Subagent",
     description:
       "Launch an autonomous Pi child session shown in Grok's native subagent UI.\n\n" +
       "Usage notes:\n" +
       "- Set background=true to run asynchronously; returns the subagent ID immediately\n" +
+      "- Set fork=true to inherit your current conversation history, skills, AGENTS.md context, system prompt sections, and active plugins up to this tool call in an isolated branch\n" +
+      "- Without fork (default false), the child starts with a clean context window and needs all context in prompt\n" +
       "- For background subagents, use get_command_or_subagent_output with task_ids and timeout_ms to wait for results\n" +
       "- Without background (default), blocks until the subagent finishes and returns its final output directly\n" +
       "- Do NOT use wait_tasks for subagent IDs — use get_command_or_subagent_output instead\n" +
       `- You can spawn multiple background subagents in parallel (up to the configured background concurrency, default ${MAX_BACKGROUND_CONCURRENCY})`,
     executionMode: "parallel",
     parameters: Type.Object({
-      prompt: Type.String({ description: "Self-contained task for the child agent. Include all context needed — the child cannot see your conversation." }),
+      prompt: Type.String({
+        description:
+          "Task for the child agent. When fork is omitted/false, include all context needed (the child cannot see your conversation). " +
+          "When fork=true, pass only the focused delta assignment instead of repeating prior conversation.",
+      }),
       description: Type.String({ description: "Short 3-5 word task label shown in the subagent UI." }),
       subagent_type: Type.Optional(Type.String({ description: "Agent profile: general-purpose (default), explore (evidence gathering with bash, python3 and node; no file edits), or plan (planning only)." })),
       background: Type.Optional(Type.Boolean({ description: "Run asynchronously and return the child ID immediately. Use get_command_or_subagent_output(task_ids, timeout_ms) to collect results." })),
+      fork: Type.Optional(Type.Boolean({ description: "Fork from your current session context: the child inherits your conversation branch, skills, AGENTS.md context, system prompt sections, and active plugins up to this call." })),
       model: Type.Optional(Type.String({ description: "Optional Pi model callback. When the selected subagent Markdown definition has models, it must be one of its up-to-three enabled models." })),
       max_turns: Type.Optional(Type.Integer({ minimum: 0, description: "Soft maximum child turns. At the limit Pi receives one end-and-summarize steering message; 0 means unlimited. A Markdown definition takes precedence." })),
-      thinking_level: Type.Optional(Type.String({ description: "Optional Pi thinking level: off, minimal, low, medium, high, xhigh, or max. Clamped to what the selected model supports. Omitted uses the agent definition, then Pi settings." })),
-      capability_mode: Type.Optional(Type.String({ description: "Tool access: read-only or all (legacy execute/read-write map to all). Defaults to profile capability." })),
+      thinking_level: Type.Optional(Type.String({ description: "Optional Pi thinking level: off, minimal, low, medium, high, xhigh, or max. Clamped to what the selected model supports. Omitted uses the agent definition (or parent setting when fork=true), then Pi settings." })),
+      capability_mode: Type.Optional(Type.String({ description: "Tool access: read-only or all (legacy execute/read-write map to all). Defaults to profile capability (or read-only when forked from a read-only parent)." })),
     }),
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
-      const record = await runtime.createRecord(toolCallId, params, signal, ctx);
+      let currentRecord: SubagentRecord | undefined;
+      const parentRecord = getParentRecord?.();
+      const childCustomTools = buildV1AgentTools(runtime, () => currentRecord);
+      const record = await runtime.createRecord(toolCallId, params, signal, ctx, {
+        customTools: childCustomTools,
+        ...(parentRecord ? { parentRecord, bridgeParentSessionId: parentRecord.childSessionId } : {}),
+      });
+      currentRecord = record;
       if (record.background) {
         runtime.scheduleBackground(record, params.prompt);
         const shortId = runtime.shortSubagentId(record.id);
         return {
           content: [{ type: "text", text: `Started background subagent ${shortId}.\nUse get_command_or_subagent_output with task_ids=["${shortId}"] and timeout_ms to wait for its result.\nHistory: /subagent-history ${shortId}` }],
-          details: { subagentId: record.id, childSessionId: record.childSessionId, agentSessionId: record.agentSessionId, background: true },
+          details: { subagentId: record.id, childSessionId: record.childSessionId, agentSessionId: record.agentSessionId, background: true, forked: params.fork === true },
         };
       }
       const output = await runtime.run(record, params.prompt);
       return {
         content: [{ type: "text", text: `${output || "Subagent completed without text output."}\n\nHistory: /subagent-history ${runtime.shortSubagentId(record.id)}` }],
-        details: { subagentId: record.id, childSessionId: record.childSessionId, agentSessionId: record.agentSessionId, background: false },
+        details: { subagentId: record.id, childSessionId: record.childSessionId, agentSessionId: record.agentSessionId, background: false, forked: params.fork === true },
       };
     },
   });
 
-  pi.registerTool({
+  const sendTool = defineTool({
     name: "send_message_to_subagent",
     label: "Send Message to Subagent",
     description:
@@ -210,7 +227,7 @@ export function registerV1AgentTools(pi: ExtensionAPI, runtime: SubagentRuntime)
     },
   });
 
-  pi.registerTool({
+  const outputTool = defineTool({
     name: "get_command_or_subagent_output",
     label: "Get Subagent Output",
     description:
@@ -258,7 +275,7 @@ export function registerV1AgentTools(pi: ExtensionAPI, runtime: SubagentRuntime)
     },
   });
 
-  pi.registerTool({
+  const killTool = defineTool({
     name: "kill_command_or_subagent",
     label: "Cancel Subagent",
     description: "Cancel a running background subagent by ID. The subagent will be aborted and marked as cancelled.",
@@ -283,7 +300,7 @@ export function registerV1AgentTools(pi: ExtensionAPI, runtime: SubagentRuntime)
     },
   });
 
-  pi.registerTool({
+  const listTool = defineTool({
     name: "list_subagents",
     label: "List Subagents",
     description: "List all subagents in this session with their current status, progress, and IDs.",
@@ -298,7 +315,7 @@ export function registerV1AgentTools(pi: ExtensionAPI, runtime: SubagentRuntime)
           const elapsed = runtime.formatDuration(Date.now() - record.startedAt);
           const bg = record.background ? "bg" : "fg";
           const shortId = runtime.shortSubagentId(record.id);
-          return `• [${runtime.statusLabel(record)}] ${shortId} "${record.description}" (${bg}, ${record.type}) — ${elapsed}, ${record.turnCount} turns, ${record.toolCallCount} tools — /subagent-history ${shortId}`;
+          return `• [${runtime.statusLabel(record)}] ${shortId} "${record.description}" (${bg}, ${record.type}${record.forked ? ", forked" : ""}) — ${elapsed}, ${record.turnCount} turns, ${record.toolCallCount} tools — /subagent-history ${shortId}`;
         });
       return {
         content: [{ type: "text", text: `Subagents (${runtime.records.size}):\n${lines.join("\n")}` }],
@@ -307,9 +324,19 @@ export function registerV1AgentTools(pi: ExtensionAPI, runtime: SubagentRuntime)
             subagentId: record.id,
             finished: record.finished,
             status: runtime.statusLabel(record),
+            forked: record.forked === true,
           })),
         },
       };
     },
   });
+
+  return [spawnTool, sendTool, outputTool, killTool, listTool];
+}
+
+/** V1 single-agent tools. V2 team mode skips these so only the team surface is model-visible. */
+export function registerV1AgentTools(pi: ExtensionAPI, runtime: SubagentRuntime): void {
+  for (const tool of buildV1AgentTools(runtime)) {
+    pi.registerTool(tool);
+  }
 }

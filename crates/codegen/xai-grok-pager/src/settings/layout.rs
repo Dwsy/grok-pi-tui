@@ -21,7 +21,14 @@ pub const OTHER_SECTION: &str = "Other";
 /// sections with no visible rows are skipped at build time.
 pub fn sections_for(category: SettingCategory) -> &'static [&'static str] {
     match category {
-        SettingCategory::Appearance => &["Theme", "Display", "Thinking", "Tool output", "Prompt"],
+        SettingCategory::Appearance => &[
+            "Tool calls",
+            "Theme",
+            "Display",
+            "Thinking",
+            "Tool output",
+            "Prompt",
+        ],
         SettingCategory::Popups => &["Tool details"],
         SettingCategory::Mouse => &["Scrolling", "Selection"],
         SettingCategory::Editor => &["Input", "Voice"],
@@ -46,6 +53,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
     }
     match key {
         // -- Appearance ------------------------------------------------------
+        "tool_call_density" => "Tool calls",
         "theme" | "auto_dark_theme" | "auto_light_theme" => "Theme",
         "compact_mode"
         | "screen_mode"
@@ -57,10 +65,11 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "display_refresh_auto_cadence"
         | "render_mermaid" => "Display",
         "show_status_tool_calls" => "Tool output",
-        "show_thinking_blocks" | "thinking_border_colors" | "max_thoughts_width" => "Thinking",
-        "group_tool_verbs"
-        | "collapsed_edit_blocks"
-        | "codemode_expanded_by_default"
+        "show_thinking_blocks"
+        | "collapse_thinking_blocks"
+        | "thinking_border_colors"
+        | "max_thoughts_width" => "Thinking",
+        "codemode_expanded_by_default"
         | "side_by_side_edit"
         | "side_by_side_word_highlight"
         | "ctrl_o_tool_expansion"

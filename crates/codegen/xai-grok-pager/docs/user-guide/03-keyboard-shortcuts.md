@@ -63,6 +63,10 @@ Control how entries are displayed in the scrollback.
 | `e` | | Toggle fold on selected entry |
 | `⇧E` | | Expand all / collapse all entries |
 | `Ctrl+E` | | Expand/collapse all thinking blocks |
+
+With `ui.collapse_thinking_blocks = true` (F2 → Appearance → Thinking),
+thinking blocks stay folded while the agent works instead of streaming their
+reasoning body line by line. `Ctrl+E` still expands them.
 | `r` | | Toggle raw markdown on selected entry |
 
 Setting `respect_manual_folds = true` under `[scrollback.scroll]` in

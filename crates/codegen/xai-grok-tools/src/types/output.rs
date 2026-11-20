@@ -405,6 +405,57 @@ pub struct BashOutput {
     /// stagnation signals (repeated trivial echoes are a common "no progress" signal). Model hints (see BareEchoHintState in the bash tool).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub was_bare_echo: bool,
+    /// Bounded, redacted per-command execution trace projected from the optional
+    /// OMP shell host. Never included in `output_for_prompt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_trace: Option<ShellTraceSummary>,
+}
+
+/// Execution state for a single node in [`ShellTraceSummary`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellTraceNodeState {
+    Pending,
+    Running,
+    Ok,
+    Fail,
+    Skipped,
+}
+
+/// One bounded, redacted statement/pipeline node from OMP `RunTrace`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ShellTraceNode {
+    pub id: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<u32>,
+    pub depth: u8,
+    pub kind: String,
+    pub command: String,
+    pub state: ShellTraceNodeState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    #[serde(default = "default_trace_runs")]
+    pub runs: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+}
+
+const fn default_trace_runs() -> u32 {
+    1
+}
+
+/// Versioned, bounded execution trace attached to `BashOutput` for UI rendering.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ShellTraceSummary {
+    pub version: u32,
+    pub total_duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub nodes: Vec<ShellTraceNode>,
 }
 impl BashOutput {
     /// Compute `output_for_prompt` from raw output string.
@@ -2563,6 +2614,7 @@ mod tests {
             total_bytes: output.len(),
             output_delta: None,
             was_bare_echo: false,
+            shell_trace: None,
         }
     }
     fn assert_cer(

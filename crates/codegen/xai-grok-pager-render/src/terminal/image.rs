@@ -20,7 +20,7 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::{TerminalName, terminal_context};
+use super::{MultiplexerKind, TerminalName, terminal_context};
 
 // -------------------------------------------------------------------------
 // Graphics protocol detection
@@ -78,8 +78,34 @@ pub fn detect_graphics_protocol() -> GraphicsProtocol {
         if ctx.graphics_protocol_skip_reason().is_some() {
             return GraphicsProtocol::None;
         }
-        protocol_for_brand(ctx.brand, cfg!(target_os = "windows"))
+        protocol_for_brand_and_mux(
+            ctx.brand,
+            ctx.multiplexer,
+            cfg!(target_os = "windows"),
+        )
     })
+}
+
+/// Graphics protocol for a detected terminal brand, taking the multiplexer into account.
+///
+/// Herdr overwrites TERM_PROGRAM with "herdr", so the outer terminal brand cannot be
+/// detected and resolves to Unknown, which has no graphics protocol. Herdr itself parses
+/// Kitty graphics sequences emitted in a pane and forwards them to a compatible outer
+/// terminal, so treat herdr as Kitty-capable. Outer terminals that cannot render them
+/// (tmux, iTerm2) drop the sequence inside herdr, which is the same visible result as
+/// sending nothing.
+pub(crate) fn protocol_for_brand_and_mux(
+    brand: TerminalName,
+    multiplexer: MultiplexerKind,
+    is_windows: bool,
+) -> GraphicsProtocol {
+    if is_windows {
+        return GraphicsProtocol::None;
+    }
+    if multiplexer == MultiplexerKind::Herdr && brand == TerminalName::Unknown {
+        return GraphicsProtocol::Kitty;
+    }
+    protocol_for_brand(brand, is_windows)
 }
 
 /// Narrower than Kitty graphics support. Warp accepts some escapes but not the placement/scrollback model, leaving stale pixels.

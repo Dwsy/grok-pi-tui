@@ -22,6 +22,6 @@
 			"@earendil-works/pi-agent-old/*": ["../../pi-main/packages/agent-old/src/*"]
 		}
 	},
-	"include": ["index.ts", "shared.ts", "env.ts", "layout.ts", "transport.ts", "host.ts", "demo.ts"],
+	"include": ["index.ts", "shared.ts", "env.ts", "layout.ts", "transport.ts", "host.ts", "demo.ts", "timeline.ts", "timeline-format.ts"],
 	"exclude": []
 }

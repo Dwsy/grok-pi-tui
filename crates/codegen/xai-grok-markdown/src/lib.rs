@@ -35,7 +35,12 @@ mod mermaid;
 mod open_code_highlighter;
 mod output;
 mod parse;
+pub mod pill;
 mod render;
+#[cfg(test)]
+mod pill_render_tests;
+#[cfg(test)]
+mod pill_style_tests;
 mod source_map;
 pub mod streaming;
 pub mod style;

@@ -1504,24 +1504,24 @@ impl AgentView {
             }
             ActionId::ModelPicker => {
                 let command = "model";
-                if let Some(cmd) = self.prompt.slash_controller.registry().get(command) {
-                    let ctx = self.prompt.slash_controller.app_ctx(&self.session.models);
-                    if let Some(items) = cmd.suggest_args(&ctx, "")
-                        && !items.is_empty()
-                    {
-                        self.active_modal = Some(crate::views::modal::ActiveModal::ArgPicker {
-                            command: command.to_string(),
-                            args_query: String::new(),
-                            items: items.clone(),
-                            original_items: items,
-                            state: crate::views::picker::PickerState::input_active(),
-                            previous_palette: None,
-                            previous_settings: None,
-                            selection: crate::views::modal::ArgPickerSelection::RunCommand,
-                            window: crate::views::modal_window::ModalWindowState::new(),
-                        });
-                        return InputOutcome::Changed;
-                    }
+                let items = self.prompt.slash_controller.suggest_command_args(
+                    command,
+                    "",
+                    &self.session.models,
+                );
+                if !items.is_empty() {
+                    self.active_modal = Some(crate::views::modal::ActiveModal::ArgPicker {
+                        command: command.to_string(),
+                        args_query: String::new(),
+                        items: items.clone(),
+                        original_items: items,
+                        state: crate::views::picker::PickerState::input_active(),
+                        previous_palette: None,
+                        previous_settings: None,
+                        selection: crate::views::modal::ArgPickerSelection::RunCommand,
+                        window: crate::views::modal_window::ModalWindowState::new(),
+                    });
+                    return InputOutcome::Changed;
                 }
                 InputOutcome::Changed
             }

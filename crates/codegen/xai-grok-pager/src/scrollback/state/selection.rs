@@ -301,9 +301,6 @@ impl ScrollbackState {
     /// expansion keyed on the flipped entry or a former anchor onto the run's CURRENT first entry. The group then stays
     /// expanded across member open/close instead of snapping into a fresh collapsed fold.
     pub(super) fn rekey_verb_group_expansion(&mut self, i: usize) {
-        if !crate::appearance::cache::load_group_tool_verbs() {
-            return;
-        }
         let show_thinking = crate::appearance::cache::load_show_thinking_blocks();
         // The run `i` belongs to after the flip: `i` itself when it (re)joined, else the run past the transparent entries it opened out of
         // Hitting a `Break` means there is no adjacent run to migrate

@@ -2740,6 +2740,7 @@
     "crates/codegen/xai-grok-pager/src/app/dispatch/queue.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/router.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/session/lifecycle.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/session/fork.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/session/load.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/session/mod.rs",
     "crates/codegen/xai-grok-pager/src/app/dispatch/settings/setters.rs",
@@ -2765,6 +2766,10 @@
     "crates/codegen/xai-grok-pager/src/slash/command.rs",
     "crates/codegen/xai-grok-pager/src/slash/commands/mod.rs",
     "crates/codegen/xai-grok-pager/src/slash/mod.rs",
+    "crates/codegen/xai-grok-pager/src/slash/mru.rs",
+    "crates/codegen/xai-grok-pager/src/slash/commands/model.rs",
+    "crates/codegen/xai-grok-pager/src/views/prompt_widget/mod.rs",
+    "crates/codegen/xai-grok-pager/src/views/prompt_widget/tests.rs",
     "crates/codegen/xai-grok-pager/src/views/mod.rs",
     "crates/codegen/xai-grok-pager/src/views/modal.rs",
     "crates/codegen/xai-grok-pager/src/views/settings_modal/input.rs",
@@ -2806,12 +2811,21 @@
     "crates/codegen/xai-grok-pager/src/app/agent_view/paste.rs",
     "crates/codegen/xai-grok-pager/src/app/mermaid_worker.rs",
     "crates/codegen/xai-grok-pager/src/scrollback/blocks/mermaid_content.rs",
-    "crates/codegen/xai-grok-pager/tests/mermaid_render_subprocess.rs"
+    "crates/codegen/xai-grok-pager/tests/mermaid_render_subprocess.rs",
+    "crates/codegen/xai-grok-pager/src/notifications/config.rs",
+    "crates/codegen/xai-grok-pager/src/notifications/mod.rs",
+    "crates/codegen/xai-grok-pager/src/app/agent_view/mod.rs",
+    "crates/codegen/xai-grok-pager/src/app/agent_view/session.rs",
+    "crates/codegen/xai-grok-pager/src/app/dispatch/tests/transcript.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/entry.rs",
+    "crates/codegen/xai-grok-shell/src/util/config/persist.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/blocks/markdown_content.rs"
   ],
   "allowedAddedPrefixes": [
     "crates/codegen/pi-grok-adapter/"
   ],
   "allowedAddedFiles": [
+    "crates/codegen/xai-grok-pager/src/slash/usage.rs",
     "crates/codegen/xai-grok-markdown/tests/edit_highlight_regression.rs",
     "crates/codegen/xai-grok-pager/tests/remote_tui_keys.rs",
     "crates/codegen/xai-grok-pager-bin/src/bin/grok-pi.rs",
@@ -2859,6 +2873,24 @@
     "crates/codegen/xai-grok-mermaid/src/ondine.rs",
     "crates/codegen/xai-grok-mermaid/assets/RobotoMono.ttf",
     "crates/codegen/xai-grok-mermaid/assets/RobotoMono-OFL.txt",
-    "docs/issues/pager/20261109-Ondine Mermaid 图片与 SVG.md"
+    "docs/issues/adapter/20261118-proactive-plan-mode-orchestrator.md",
+    "docs/issues/pager/20261109-Ondine Mermaid 图片与 SVG.md",
+    "docs/issues/subagents/20261118-subagent-fork-context-inheritance.md",
+    "extensions/pi-grok-plan-mode/index.test.mjs",
+    "extensions/pi-grok-subagents/fork.ts",
+    "extensions/pi-grok-subagents/fork.test.ts",
+    "crates/codegen/xai-grok-pager/src/notifications/program_status.rs",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/remote_tui_extension.rs",
+    "crates/codegen/xai-grok-pager/src/app/timeline.rs",
+    "crates/codegen/xai-grok-pager/src/scrollback/state/timeline.rs",
+    "crates/codegen/xai-grok-pager/src/views/timeline.rs",
+    "docs/issues/pager/20261119-timeline-content-configuration.md",
+    "extensions/pi-grok-remote-tui/index.ts",
+    "extensions/pi-grok-remote-tui/test-fixtures.ts",
+    "extensions/pi-grok-remote-tui/timeline.ts",
+    "extensions/pi-grok-remote-tui/tsconfig.json",
+    "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tree_bridge.rs",
+    "extensions/pi-grok-remote-tui/timeline-format.test.ts",
+    "extensions/pi-grok-remote-tui/timeline-format.ts"
   ]
 }

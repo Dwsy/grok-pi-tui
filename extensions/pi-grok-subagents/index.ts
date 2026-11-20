@@ -22,6 +22,17 @@ export default function piGrokSubagents(pi: ExtensionAPI): void {
   }));
 
   const runtime = new SubagentRuntime(pi);
+  // Capture the mutable prompt options after any preceding and following
+  // `before_agent_start` handlers finish, so forked children inherit exact sections
+  // (e.g. `reply_style`), skills, and AGENTS.md context.
+  let latestPromptOptions: Parameters<typeof runtime.captureRootPromptOptions>[0] | undefined;
+  pi.on("before_agent_start", (event) => {
+    latestPromptOptions = event.systemPromptOptions;
+    runtime.captureRootPromptOptions(event.systemPromptOptions);
+  });
+  pi.on("agent_start", () => {
+    if (latestPromptOptions) runtime.captureRootPromptOptions(latestPromptOptions);
+  });
   // V2 is a pure team surface: the single-agent tools would otherwise compete
   // with team semantics (spawn_subagent blocks the root, team mode must not).
   registerV1Commands(pi, runtime);

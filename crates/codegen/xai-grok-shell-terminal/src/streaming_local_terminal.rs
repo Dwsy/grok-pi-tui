@@ -785,6 +785,7 @@ impl StreamingLocalTerminalRunner {
             total_bytes: output.len(),
             output_delta: None,
             was_bare_echo: false,
+            shell_trace: None,
         };
 
         let _ = self
@@ -1022,6 +1023,7 @@ async fn wait_background_completion(
                 total_bytes: 0,
                 output_delta: None,
                 was_bare_echo: false,
+                shell_trace: None,
             };
 
             let _ = notifier

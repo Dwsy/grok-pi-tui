@@ -425,6 +425,7 @@ pub(in crate::app::dispatch) fn handle_worktree_forked(
         agent.begin_replay_window();
         agent.session.restore_degree = restore_degree;
         agent.session.cwd = session_cwd.clone();
+        agent.prompt.slash_controller.set_cwd(&session_cwd);
         agent.session.is_worktree = true;
         agent.current_branch = None;
         agent.main_repo = None;
@@ -505,6 +506,7 @@ pub(in crate::app::dispatch) fn handle_fork_session_ready(
         agent.scrollback.begin_batch();
         agent.begin_replay_window();
         agent.session.cwd = cwd.clone();
+        agent.prompt.slash_controller.set_cwd(&cwd);
         let effective_chat = conversation_entry || app.chat_mode;
         agent.chat_kind = effective_chat;
         agent.conversation_entry = rename_entry;
