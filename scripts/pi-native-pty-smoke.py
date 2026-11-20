@@ -75,9 +75,12 @@ def smoke(binary: Path) -> None:
             for marker in ("Mock Pi", "Codemode", "README", "line one", "line two"):
                 if marker not in text:
                     raise AssertionError(f"missing rendered marker: {marker}")
+            for marker in ("0 / 131K", "8.5K / 131K"):
+                if marker not in text:
+                    raise AssertionError(f"context usage bar is missing: {marker}")
             if "panicked at" in text:
                 raise AssertionError("Rust panic in terminal output")
-            print("PASS: ARM64 native Pager + mocked Pi RPC bootstrap, prompt, tools, UI")
+            print("PASS: ARM64 native Pager + mocked Pi RPC bootstrap, prompt, tools, context bar, UI")
         except Exception:
             print("Terminal output tail:", repr(readable(bytes(output))[-1500:]), file=sys.stderr)
             raise

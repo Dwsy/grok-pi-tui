@@ -4,17 +4,13 @@ use serde_json::{Value, json};
 /// Extract context-window used tokens from Pi `get_session_stats` data.
 pub(crate) fn context_tokens_from_stats(data: &Value) -> Option<u64> {
     let usage = data.get("contextUsage")?;
-    // After compaction Pi may report null until the next assistant response.
-    usage
-        .get("tokens")
-        .and_then(Value::as_u64)
-        .or_else(|| {
-            usage
-                .get("tokens")
-                .and_then(Value::as_f64)
-                .map(|value| value.round() as u64)
-        })
-        .filter(|&tokens| tokens > 0)
+    // Zero is valid for a fresh session; after compaction Pi may report null until the next assistant response.
+    usage.get("tokens").and_then(Value::as_u64).or_else(|| {
+        usage
+            .get("tokens")
+            .and_then(Value::as_f64)
+            .map(|value| value.round() as u64)
+    })
 }
 
 fn context_window_from_stats(data: &Value) -> Option<u64> {
@@ -529,9 +525,17 @@ mod tests {
         );
         assert_eq!(
             context_tokens_from_stats(&json!({
+                "contextUsage": { "tokens": 0, "contextWindow": 200_000, "percent": 0 }
+            })),
+            Some(0),
+            "zero is a valid empty-session context count"
+        );
+        assert_eq!(
+            context_tokens_from_stats(&json!({
                 "contextUsage": { "tokens": null, "contextWindow": 200_000, "percent": null }
             })),
-            None
+            None,
+            "null means Pi cannot currently estimate the context count"
         );
         assert_eq!(
             context_tokens_from_usage(&json!({

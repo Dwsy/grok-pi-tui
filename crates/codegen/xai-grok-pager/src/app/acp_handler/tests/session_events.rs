@@ -813,6 +813,22 @@
     }
 
     #[test]
+    fn zero_context_count_initializes_the_fresh_session_context_bar() {
+        let mut agent = make_agent(Some("s1"));
+        agent.session.models.override_context_window(1_000_000);
+
+        confirm_context_used(&mut agent, 0);
+
+        let context = agent
+            .context_state
+            .as_ref()
+            .expect("an empty session still has a known context window");
+        assert_eq!(context.used, 0);
+        assert_eq!(context.total, 1_000_000);
+        assert_eq!(context.usage_pct, 0);
+    }
+
+    #[test]
     fn compaction_lifecycle_refreshes_context_bar_from_trigger_counts() {
         // Started refreshes with the count the trigger fired on; the banner percentage derives from it
         // Completed refreshes with the post-compact count

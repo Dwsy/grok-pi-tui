@@ -64,6 +64,8 @@ state = {
     "pendingMessageCount": 0,
 }
 
+context_tokens = 0
+
 for raw in sys.stdin:
     try:
         request = json.loads(raw)
@@ -86,6 +88,12 @@ for raw in sys.stdin:
             "input": ["text"],
             "contextWindow": 65536,
         }]})
+    elif kind == "get_session_stats":
+        success(request, {"contextUsage": {
+            "tokens": context_tokens,
+            "contextWindow": state["model"]["contextWindow"],
+            "percent": 0,
+        }})
     elif kind == "get_commands":
         success(request, {"commands": [
             {
@@ -110,6 +118,7 @@ for raw in sys.stdin:
             ]},
         ]})
     elif kind == "prompt":
+        context_tokens = 8_500
         success(request)
         emit({"type": "extension_ui_request", "id": "ui-notify", "method": "notify",
               "message": "Mock notification", "notifyType": "info"})
