@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.5] - 2026-11-21
+
 ### Added
 
 - **Reply emphasis pills** — F2 → Agent → Pi features → **Pi reply emphasis** (`[ui].pi_emphasis`, default on). The agent writes `[[Done]]`, `[[Failed]]` and `[[Needs you]]` beside the things they describe, and the Pager draws each as a chip whose colour and icon come from the word. Seven tones: green settled, red wrong, yellow look-here, solid red consequences, cyan kind-of-work, blue ownership, soft blue context. Display only — stored messages, copied text and exports keep the original `[[Word]]` Markdown. A host bridge extension (`pi-grok-emphasis`) adds the `reply_style` system-prompt section, since Pi runs in `rpc` mode and its own markdown transformers never fire here.
@@ -14,6 +16,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **Apple Silicon-only standalone macOS builds** — new beta tags, the macOS release-cache warmer, and the independent macOS compile lab default to ARM64 only. Stable releases retain all six platform targets; explicitly requested manual release targets remain supported.
+- **Pi-slim decoupling progress** — moved the sampler runtime outside the Pi compile closure and sank pure auth configuration below shell and login.
+
+### Fixed
+
+- **Herdr full-lifecycle authority takeover** — withholds session identity until the absolute session file path is materialized (avoiding ID-locked fallback), preserves `session_start_source` across deferred `agent_start` and in-process session replacements (`new` / `resume` / `fork`), and preserves fast lifecycle transitions across bounded socket backlogs.
+- **Fresh-session context bar** — preserves the context status bar on fresh sessions and tolerates compact context status rendering.
+
+### 中文发布说明
+
+- **回复强调标签（Reply emphasis pills）** — F2 → Agent → Pi features → **Pi reply emphasis**（`[ui].pi_emphasis`，默认开启），支持在回复中将 `[[Done]]`、`[[Failed]]`、`[[Needs you]]` 等标记渲染为带颜色与图标的胶囊标签（仅展示层，复制与导出保留原 Markdown）。
+- **工具调用密度（Tool call density）** — F2 → Appearance → Tool calls → **Tool call density**（`[ui].tool_call_density`）与 `/density` 对齐原生五档密度（Detailed / Diff focus / Balanced / Grouped / Compact），切换后实时重绘当前对话，并自动迁移旧的 `collapsed_edit_blocks` 与 `group_tool_verbs` 配置。
+- **Beta 默认仅构建 Apple Silicon ARM64** — 新 beta tag、macOS 缓存预热及独立编译实验默认仅构建 ARM64；正式版仍构建全部六平台。
+- **修复 Herdr 生命周期权威接管** — 等 session 文件落盘后再上报绝对路径，并在延迟的 `agent_start` 与会话切换上报中保留合法的 `session_start_source`（`startup` / `new` / `resume` / `fork`），同时在有界队列下保留快速状态跃迁，避免 pane 永久回退到 `default_known_agent_idle_fallback`。
+- **修复新会话上下文状态栏** — 保留新会话的 context bar 显示并兼容紧凑上下文渲染。
 
 ## [0.1.14-beta.4] - 2026-11-15
 
