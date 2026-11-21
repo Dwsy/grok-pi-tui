@@ -139,6 +139,7 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &str) -> Option<Ac
     match key {
         "tool_call_density" => crate::appearance::cache::ToolCallDensity::parse(choice)
             .map(|level| Action::SetToolCallDensity(level.as_canonical().to_string())),
+        "thinking_stream_mode" => Some(Action::SetThinkingStreamMode(choice.to_string())),
         "theme" => Some(Action::SetTheme(choice.to_string())),
         "auto_dark_theme" => Some(Action::SetAutoDarkTheme(choice.to_string())),
         "auto_light_theme" => Some(Action::SetAutoLightTheme(choice.to_string())),

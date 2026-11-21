@@ -1315,6 +1315,7 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> O
         "screen_mode" => Some(Action::SetScreenMode(choice.to_string())),
         "tool_call_density" => crate::appearance::cache::ToolCallDensity::parse(choice)
             .map(|level| Action::SetToolCallDensity(level.as_canonical().to_string())),
+        "thinking_stream_mode" => Some(Action::SetThinkingStreamMode(choice.to_string())),
         "voice_capture_mode" => Some(Action::SetVoiceCaptureMode(choice.to_string())),
         "voice_stt_language" => Some(Action::SetVoiceSttLanguage(choice.to_string())),
         "render_mermaid" => {

@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.6] - 2026-11-21
+
+### Added
+
+- **Configurable thinking stream mode** — F2 → Appearance → Thinking → **Thinking stream mode** (`[ui].thinking_stream_mode`) offers three live-switchable modes to eliminate scrollback bounce during multi-tool turns:
+  - `inline` (**Inline preview**, default): existing multi-line truncated preview.
+  - `single_line` (**Single-line ticker**): renders live thinking on one fixed row (`Thinking… · <rolling tail>`) with right-anchored horizontal scrolling (Unicode/CJK width-aware, left-edge `…` + dim fade cue, and `<signature>` / `**` sanitization).
+  - `height_hold` (**Height hold**): locks scrollback high-water height as virtual bottom reserve when a thinking block collapses or folds into a verb group mid-turn so the scrollbar and upper transcript stay stationary while subsequent tool calls fill the reserved space; releases cleanly when the turn finishes.
+
+### Changed
+
+- **Pi-slim feature gating & CI cleanup** — gated `sentry`, `mixpanel`, `bm25`, `moka`, and `kanal` behind optional stock features, removed redundant test/lab workflows, and added a manual-only Linux workflow for pi-slim boundary checks.
+
+### 中文发布说明
+
+- **可配置的思考流展示模式（Thinking stream mode）** — F2 → Appearance → Thinking → **Thinking stream mode**（`[ui].thinking_stream_mode`）支持三种模式实时切换，解决多轮工具调用期间思考块反复展开/折叠导致的视口闪烁：
+  - `inline`（默认）：保持原有流式多行截断预览。
+  - `single_line`（**Single-line ticker**）：单行固定高度展示 `Thinking… · <流式尾部>`，超宽时右锚定水平滚动（兼容中文双宽字符、左边缘 `…` 与暗色渐隐提示，并自动清洗 `<signature>` 与 `**` 标记）。
+  - `height_hold`（**Height hold**）：思考块在 Turn 内顶高后折叠或被工具聚合行吸收时，将回缩高度保留为底部虚拟留白，保持滚动条与上方历史位置完全不动，后续新增工具调用自然填充留白，Turn 结束时统一释放。
+- **Pi-slim 特性拆分与 CI 精简** — 将 `sentry`、`mixpanel`、`bm25`、`moka`、`kanal` 收口到可选 stock 特性下，移除冗余测试工作流并补充手动触发的 Linux 边界检查工作流。
+
 ## [0.1.14-beta.5] - 2026-11-21
 
 ### Added

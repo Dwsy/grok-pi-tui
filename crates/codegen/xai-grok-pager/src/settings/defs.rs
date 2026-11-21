@@ -68,6 +68,24 @@ const TIMELINE_HAPTICS_CHOICES: &[EnumChoice] = &[
     },
 ];
 
+const THINKING_STREAM_MODE_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "inline",
+        display: "Inline preview",
+        description: "Default multi-line streaming preview; shrinks when thinking folds.",
+    },
+    EnumChoice {
+        canonical: "single_line",
+        display: "Single-line ticker",
+        description: "Stream live thinking on one row (Thinking… <latest line>) so height never jumps.",
+    },
+    EnumChoice {
+        canonical: "height_hold",
+        display: "Height hold",
+        description: "Keep scrollback height locked after thinking collapses during a turn so tool calls fill the space without bouncing.",
+    },
+];
+
 const PI_EVAL_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "v1",
@@ -1202,6 +1220,33 @@ pub fn default_settings() -> Vec<SettingMeta> {
             ],
             kind: SettingKind::Bool {
                 default: ui_default.collapse_thinking_blocks.unwrap_or(false),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: false,
+        },
+        // SHELL-owned: `[ui].thinking_stream_mode` + process-wide cache.
+        SettingMeta {
+            key: "thinking_stream_mode",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shell,
+            label: "Thinking stream mode",
+            description: "How live thinking blocks behave while streaming: multi-line inline preview, single-line ticker, or height hold to prevent scrollback bounce on collapse.",
+            keywords: &[
+                "thinking",
+                "reasoning",
+                "stream",
+                "ticker",
+                "single line",
+                "height",
+                "hold",
+                "bounce",
+                "flicker",
+            ],
+            kind: SettingKind::Enum {
+                default: "inline",
+                choices: THINKING_STREAM_MODE_CHOICES,
+                supports_preview: false,
             },
             restart_required: false,
             hidden_in_minimal: false,

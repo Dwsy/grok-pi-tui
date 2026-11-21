@@ -18,6 +18,47 @@ fn default_pi_eval_v2_display_mode() -> String {
 }
 use xai_grok_status_line::StatusLineConfig;
 
+/// Streaming presentation mode for agent thinking blocks while a turn is active.
+/// Persisted as `[ui].thinking_stream_mode`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThinkingStreamMode {
+    /// Default multi-line truncated preview while streaming; shrinks when folded.
+    #[default]
+    Inline,
+    /// Render live streaming thinking on a single row (`Thinking… <latest line>`).
+    SingleLineTicker,
+    /// Keep scrollback height locked after a thinking block collapses during an active turn
+    /// so subsequent tool calls fill the reserved tail space without bouncing the viewport.
+    HeightHold,
+}
+
+impl ThinkingStreamMode {
+    pub fn from_canonical(value: &str) -> Option<Self> {
+        match value {
+            "inline" => Some(Self::Inline),
+            "single_line" => Some(Self::SingleLineTicker),
+            "height_hold" => Some(Self::HeightHold),
+            _ => None,
+        }
+    }
+
+    pub fn as_canonical(self) -> &'static str {
+        match self {
+            Self::Inline => "inline",
+            Self::SingleLineTicker => "single_line",
+            Self::HeightHold => "height_hold",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Inline => "Inline preview",
+            Self::SingleLineTicker => "Single-line ticker",
+            Self::HeightHold => "Height hold",
+        }
+    }
+}
+
 /// Mouse policy for native tool-call cards; Enter keeps its native viewer action.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ToolCardClickAction {
@@ -517,6 +558,10 @@ pub struct UiConfig {
     /// settings modal and applied live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collapse_thinking_blocks: Option<bool>,
+    /// Streaming presentation mode for thinking blocks (`inline` | `single_line` | `height_hold`).
+    /// `None` defaults to `inline`. Written by the pager's F2 settings modal and applied live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_stream_mode: Option<String>,
     /// Show tool calls normally hidden by dedicated task and status surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_status_tool_calls: Option<bool>,
@@ -804,6 +849,7 @@ impl Default for UiConfig {
             selection_highlight_duration_ms: None,
             show_thinking_blocks: None,
             collapse_thinking_blocks: None,
+            thinking_stream_mode: None,
             show_status_tool_calls: None,
             thinking_border_colors: None,
             tool_call_density: None,

@@ -1,6 +1,6 @@
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::render::color::blend_line_with_default;
 use crate::scrollback::block::BlockContent;
@@ -362,6 +362,12 @@ impl ThinkingBlock {
 
     /// Render truncated view: optional header, then "…", then the last N lines.
     fn render_truncated(&self, ctx: &BlockContext) -> BlockOutput {
+        if ctx.is_running
+            && crate::appearance::cache::load_thinking_stream_mode()
+                == crate::appearance::cache::ThinkingStreamMode::SingleLineTicker
+        {
+            return self.render_single_line_ticker(ctx);
+        }
         let config = &ctx.appearance.scrollback.blocks.thinking;
         let n = config.truncated_lines as usize;
         let width = body_wrap_width(ctx);
@@ -430,6 +436,71 @@ impl ThinkingBlock {
             apply_body_rail(&mut output, ctx);
             self.maybe_prepend_header(output, ctx)
         })
+    }
+
+    /// Single-line live rolling ticker while streaming: `Thinking… · <rolling tail>`.
+    ///
+    /// Anchors overflow to the right end (ZCode-style horizontal tail scroll) so new tokens
+    /// flow in at the right edge while older prefix text slides off to the left behind a dim `…`
+    /// cue, rather than clipping new tokens off the right.
+    fn render_single_line_ticker(&self, ctx: &BlockContext) -> BlockOutput {
+        let theme = Theme::current();
+        let mut line = self.header_line(ctx);
+        let plain = self.content.rendered_plain_text();
+        let raw_source = if plain.trim().is_empty() {
+            self.content.text()
+        } else {
+            plain
+        };
+        let cleaned = clean_ticker_source(&raw_source);
+        if let Some(latest_raw) = cleaned
+            .split('\n')
+            .rev()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+        {
+            // Collapse internal runs of whitespace so indentation doesn't eat ticker columns.
+            let latest: String = latest_raw.split_whitespace().collect::<Vec<_>>().join(" ");
+            let sep = " · ";
+            let header_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
+            let avail = ctx
+                .content_width()
+                .saturating_sub(header_width)
+                .saturating_sub(sep.width());
+            if avail > 0 && !latest.is_empty() {
+                let mut preview_style = theme.muted();
+                if let Some(emphasis) = body_emphasis_patch(ctx) {
+                    preview_style = preview_style.patch(emphasis);
+                }
+                line.spans.push(Span::styled(sep, theme.dim()));
+                let (window, overflowed) = tail_window_by_width(&latest, avail);
+                if overflowed && avail >= 2 {
+                    line.spans.push(Span::styled("…", theme.dim()));
+                    // Subtle 2-char left-edge fade mimicking a horizontal scroll mask.
+                    let fade_split = window
+                        .char_indices()
+                        .nth(2)
+                        .map(|(i, _)| i)
+                        .unwrap_or(window.len());
+                    let (fade_head, rest) = window.split_at(fade_split);
+                    if !fade_head.is_empty() {
+                        line.spans.push(Span::styled(
+                            fade_head.to_string(),
+                            preview_style.add_modifier(Modifier::DIM),
+                        ));
+                    }
+                    if !rest.is_empty() {
+                        line.spans.push(Span::styled(rest.to_string(), preview_style));
+                    }
+                } else {
+                    line.spans.push(Span::styled(window.to_string(), preview_style));
+                }
+            }
+        }
+        let line = crate::render::line_utils::truncate_line(line, ctx.content_width());
+        BlockOutput {
+            lines: vec![BlockLine::separator(line)],
+        }
     }
 
     /// Render expanded view: full content.
@@ -549,6 +620,45 @@ fn complete_ansi_prefix_len(text: &str) -> usize {
 
 fn strip_complete_ansi(text: &str) -> String {
     strip_ansi_escapes::strip_str(text).replace('\x1b', "")
+}
+
+/// Strip `<signature>...</signature>` reasoning prefixes and `**` bold markers
+/// so the single-line ticker displays clean streaming prose.
+fn clean_ticker_source(raw: &str) -> String {
+    let text = if let Some(rest) = raw.strip_prefix("<signature>") {
+        match rest.find("</signature>") {
+            Some(end) => rest[end + "</signature>".len()..].trim_start_matches(['\r', '\n']),
+            None => "",
+        }
+    } else if "<signature>".starts_with(raw) {
+        ""
+    } else {
+        raw
+    };
+    text.replace('\r', "").replace("**", "")
+}
+
+/// Return the trailing slice of `text` that fits within `max_cols` display columns,
+/// plus whether leading characters were scrolled off to the left.
+fn tail_window_by_width(text: &str, max_cols: usize) -> (&str, bool) {
+    if max_cols == 0 {
+        return ("", !text.is_empty());
+    }
+    if text.width() <= max_cols {
+        return (text, false);
+    }
+    let budget = if max_cols >= 2 { max_cols - 1 } else { max_cols };
+    let mut used = 0usize;
+    let mut start_byte = text.len();
+    for (idx, ch) in text.char_indices().rev() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        start_byte = idx;
+    }
+    (&text[start_byte..], true)
 }
 
 impl BlockContent for ThinkingBlock {
@@ -1004,5 +1114,55 @@ mod tests {
             let out = empty.output(&hinted(mode, 60));
             assert!(!text_of(&out).contains(EXPAND_HINT), "empty/{mode:?}");
         }
+    }
+
+    #[test]
+    fn single_line_ticker_renders_one_row_with_latest_non_empty_line() {
+        use crate::appearance::cache::{
+            ThinkingStreamMode, load_thinking_stream_mode, set_thinking_stream_mode,
+        };
+
+        let prev = load_thinking_stream_mode();
+        set_thinking_stream_mode(ThinkingStreamMode::SingleLineTicker);
+
+        let mut block = ThinkingBlock::streaming();
+        block.push_chunk(
+            "<signature>opaque</signature>\nfirst reasoning line\n**second** reasoning line\n\n",
+        );
+        let running_ctx = BlockContext {
+            is_running: true,
+            ..ctx(DisplayMode::Truncated, 80)
+        };
+        let out = block.output(&running_ctx);
+
+        // Long streaming line must scroll horizontally to keep the latest tokens visible at the right edge.
+        let mut long_block = ThinkingBlock::streaming();
+        long_block.push_chunk("old prefix words that should scroll off to the left and LATEST_TOKEN");
+        let narrow_ctx = BlockContext {
+            is_running: true,
+            ..ctx(DisplayMode::Truncated, 36)
+        };
+        let narrow_out = long_block.output(&narrow_ctx);
+        set_thinking_stream_mode(prev);
+
+        assert_eq!(out.lines.len(), 1, "ticker must stay strictly 1 row tall");
+        let text = crate::scrollback::types::line_plain_text(&out.lines[0].content);
+        assert!(text.contains("Thinking…"), "missing header: {text:?}");
+        assert!(
+            text.contains("second reasoning line"),
+            "missing latest line: {text:?}"
+        );
+        assert!(!text.contains("**"), "raw markdown asterisks must be stripped: {text:?}");
+
+        assert_eq!(narrow_out.lines.len(), 1);
+        let narrow_text = crate::scrollback::types::line_plain_text(&narrow_out.lines[0].content);
+        assert!(
+            narrow_text.contains("LATEST_TOKEN"),
+            "tail-anchored ticker must keep latest tokens visible: {narrow_text:?}"
+        );
+        assert!(
+            !narrow_text.contains("old prefix"),
+            "older prefix should scroll off to the left: {narrow_text:?}"
+        );
     }
 }

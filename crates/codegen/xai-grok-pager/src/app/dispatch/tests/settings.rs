@@ -1914,6 +1914,15 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "collapse_thinking_blocks" => {
             let _ = dispatch(Action::SetCollapseThinkingBlocks(true), app);
         }
+        "thinking_stream_mode" => {
+            let default = crate::appearance::cache::ThinkingStreamMode::default();
+            let away = if crate::appearance::cache::load_thinking_stream_mode() == default {
+                "height_hold"
+            } else {
+                default.as_canonical()
+            };
+            let _ = dispatch(Action::SetThinkingStreamMode(away.to_string()), app);
+        }
         "tool_call_density" => {
             let _ = dispatch(Action::SetToolCallDensity("detailed".into()), app);
         }

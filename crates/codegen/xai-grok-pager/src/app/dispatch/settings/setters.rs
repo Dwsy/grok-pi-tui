@@ -492,6 +492,54 @@ pub(in crate::app::dispatch) fn set_collapse_thinking_blocks(
     }]
 }
 
+/// Apply a live thinking stream mode to the cache, UI snapshot, and every agent's scrollback.
+pub(super) fn set_thinking_stream_mode_inner(
+    app: &mut AppView,
+    new: crate::appearance::cache::ThinkingStreamMode,
+) {
+    let prev = crate::appearance::cache::load_thinking_stream_mode();
+    crate::appearance::cache::set_thinking_stream_mode(new);
+    app.current_ui.thinking_stream_mode = Some(new.as_canonical().to_string());
+    if prev == new {
+        return;
+    }
+    for agent in app.agents.values_mut() {
+        agent.scrollback.apply_thinking_stream_mode_flip(new);
+        for child in agent.subagent_views.values_mut() {
+            child.scrollback.apply_thinking_stream_mode_flip(new);
+        }
+    }
+}
+
+/// Set the live thinking stream mode (`inline` | `single_line` | `height_hold`).
+/// SHELL-OWNED: cache mirror and `[ui].thinking_stream_mode` via `Effect::PersistSetting`.
+pub(in crate::app::dispatch) fn set_thinking_stream_mode(
+    app: &mut AppView,
+    new: String,
+) -> Vec<Effect> {
+    let Some(new) = crate::appearance::cache::ThinkingStreamMode::from_canonical(&new) else {
+        return vec![];
+    };
+    let prev = crate::appearance::cache::load_thinking_stream_mode();
+    if prev == new {
+        return vec![];
+    }
+    set_thinking_stream_mode_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "thinking_stream_mode",
+        value = new.as_canonical(),
+        "setting changed",
+    );
+    app.show_toast(&format!("\u{2713} Thinking stream mode: {}", new.label()));
+    vec![Effect::PersistSetting {
+        key: "thinking_stream_mode",
+        value: crate::settings::SettingValue::Enum(new.as_canonical()),
+        rollback_value: crate::settings::SettingValue::Enum(prev.as_canonical()),
+    }]
+}
+
 /// Set whether the normal prompt border follows the selected thinking level.
 ///
 /// SHELL-OWNED: cache mirror + `[ui].thinking_border_colors` via

@@ -104,7 +104,8 @@ use super::settings::setters::{
     set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
     set_show_other_tool_args, set_show_thinking_blocks, set_show_tips, set_side_by_side_edit,
     set_side_by_side_word_highlight, set_simple_mode, set_theme, set_thinking_border_colors,
-    set_timeline, set_timeline_haptics, set_timestamps, set_tool_call_density,
+    set_thinking_stream_mode, set_timeline, set_timeline_haptics, set_timestamps,
+    set_tool_call_density,
     set_tool_card_click_action, set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled,
     set_voice_stt_language, set_write_edit_hover_popups,
 };
@@ -1282,6 +1283,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::SetShowThinkingBlocks(v) => set_show_thinking_blocks(app, v),
         Action::SetCollapseThinkingBlocks(v) => set_collapse_thinking_blocks(app, v),
+        Action::SetThinkingStreamMode(v) => set_thinking_stream_mode(app, v),
         Action::SetThinkingBorderColors(v) => set_thinking_border_colors(app, v),
         Action::SetToolCallDensity(s) => set_tool_call_density(app, s),
         Action::SetCodemodeExpandedByDefault(v) => set_codemode_expanded_by_default(app, v),

@@ -486,6 +486,15 @@ pub async fn set_collapse_thinking_blocks(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.collapse_thinking_blocks = Some(value)).await
 }
 
+/// Persist `[ui].thinking_stream_mode` (`inline` | `single_line` | `height_hold`).
+pub async fn set_thinking_stream_mode(value: String) -> Result<()> {
+    anyhow::ensure!(
+        xai_grok_shared::ui_config::ThinkingStreamMode::from_canonical(&value).is_some(),
+        "invalid thinking stream mode"
+    );
+    update_config(|cfg| cfg.ui.thinking_stream_mode = Some(value)).await
+}
+
 /// Persist `[ui].thinking_border_colors` via `update_config`.
 pub async fn set_thinking_border_colors(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.thinking_border_colors = Some(value)).await

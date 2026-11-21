@@ -27,6 +27,7 @@ impl ScrollbackState {
         if self.pin_reserve_active {
             self.pin_reserve_after_turn = true;
         }
+        self.release_thinking_hold();
     }
 
     fn pin_reserve_scroll_target(&self) -> Option<usize> {
@@ -1118,5 +1119,51 @@ mod tests {
             total <= vh as usize,
             "reopening must not keep leftover bottom pad (total={total}, vh={vh})"
         );
+    }
+
+    #[test]
+    fn thinking_height_hold_keeps_scroll_stable_across_collapse_and_tool_append() {
+        use crate::appearance::cache::{
+            ThinkingStreamMode, load_show_thinking_blocks, load_thinking_stream_mode,
+            set_show_thinking_blocks, set_thinking_stream_mode,
+        };
+
+        let prev_show = load_show_thinking_blocks();
+        let prev_mode = load_thinking_stream_mode();
+        set_show_thinking_blocks(true);
+        set_thinking_stream_mode(ThinkingStreamMode::HeightHold);
+
+        let mut state = ScrollbackState::new();
+        for i in 0..20 {
+            state.push_block(agent_block(&format!("history line {i}")));
+        }
+        let thinking_id = state.push_block(RenderBlock::thinking_streaming());
+        state.set_last_running(true);
+        state.push_chunk_to_thinking(thinking_id, "line 1\nline 2\nline 3\nline 4\nline 5\n");
+        state.prepare_layout(80, 10);
+
+        let expanded_total = state.scroll_info().2;
+        let expanded_offset = state.scroll_offset();
+
+        // Collapsing thinking mid-turn must keep total_height and scroll_offset unchanged.
+        state.finish_running_with_time(thinking_id, Some(1200));
+        state.prepare_layout(80, 10);
+        assert_eq!(state.scroll_info().2, expanded_total);
+        assert_eq!(state.scroll_offset(), expanded_offset);
+        assert!(state.thinking_hold_pad > 0);
+
+        // Adding a compact tool call consumes the held bottom reserve without bouncing.
+        state.push_block(RenderBlock::read("src/main.rs", None));
+        state.prepare_layout(80, 10);
+        assert_eq!(state.scroll_info().2, expanded_total);
+        assert_eq!(state.scroll_offset(), expanded_offset);
+
+        // Finishing the turn releases the held reserve cleanly.
+        state.note_pin_reserve_turn_finished();
+        assert_eq!(state.thinking_hold_pad, 0);
+        assert!(state.scroll_info().2 < expanded_total);
+
+        set_thinking_stream_mode(prev_mode);
+        set_show_thinking_blocks(prev_show);
     }
 }

@@ -1358,6 +1358,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "thinking_stream_mode" => {
+            let SettingValue::Enum(s) = value else {
+                return Err(kind_mismatch("thinking_stream_mode", "Enum", &value));
+            };
+            xai_grok_shell::util::config::set_thinking_stream_mode(s.to_string())
+                .await
+                .map_err(|e| e.to_string())
+        }
         "tool_call_density" => {
             let SettingValue::Enum(s) = value else {
                 return Err(kind_mismatch("tool_call_density", "Enum", &value));

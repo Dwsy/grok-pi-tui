@@ -12,6 +12,7 @@
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub use xai_grok_shared::ui_config::ThinkingStreamMode;
 pub use xai_grok_shared::ui_config::TimelineHapticStrength;
 pub use xai_grok_shared::ui_config::ToolCallDensity;
 pub use xai_grok_shared::ui_config::ToolCardClickAction;
@@ -1007,6 +1008,35 @@ pub fn set_tool_card_click_action(value: ToolCardClickAction) {
     TOOL_CARD_CLICK_ACTION_LOADED.with(|l| l.set(true));
 }
 
+// -- Thinking stream mode ----------------------------------------------------
+
+thread_local! {
+    static THINKING_STREAM_MODE_CURRENT: Cell<ThinkingStreamMode> =
+        const { Cell::new(ThinkingStreamMode::Inline) };
+    static THINKING_STREAM_MODE_LOADED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Read the cached thinking stream mode (`inline` | `single_line` | `height_hold`).
+pub fn load_thinking_stream_mode() -> ThinkingStreamMode {
+    THINKING_STREAM_MODE_LOADED.with(|loaded| {
+        if !loaded.get() {
+            let value = load_str_from_effective_config("thinking_stream_mode")
+                .as_deref()
+                .and_then(ThinkingStreamMode::from_canonical)
+                .unwrap_or_default();
+            THINKING_STREAM_MODE_CURRENT.with(|c| c.set(value));
+            loaded.set(true);
+        }
+    });
+    THINKING_STREAM_MODE_CURRENT.with(|c| c.get())
+}
+
+/// Replace cached `thinking_stream_mode`.
+pub fn set_thinking_stream_mode(value: ThinkingStreamMode) {
+    THINKING_STREAM_MODE_CURRENT.with(|c| c.set(value));
+    THINKING_STREAM_MODE_LOADED.with(|l| l.set(true));
+}
+
 // -- Timeline tick haptics ---------------------------------------------------
 
 thread_local! {
@@ -1140,6 +1170,12 @@ pub fn prime(ui: &UiConfig) {
         ui.tool_card_click_action
             .as_deref()
             .and_then(ToolCardClickAction::from_canonical)
+            .unwrap_or_default(),
+    );
+    set_thinking_stream_mode(
+        ui.thinking_stream_mode
+            .as_deref()
+            .and_then(ThinkingStreamMode::from_canonical)
             .unwrap_or_default(),
     );
     set_timeline_haptics(

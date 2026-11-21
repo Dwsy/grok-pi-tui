@@ -587,6 +587,9 @@ pub enum Action {
     /// Set whether thinking blocks stay folded while the agent is working.
     /// SHELL-owned: updates the process-wide cache mirror and persists to `[ui].collapse_thinking_blocks` via `Effect::PersistSetting`.
     SetCollapseThinkingBlocks(bool),
+    /// Set live thinking block streaming mode (`inline` | `single_line` | `height_hold`).
+    /// SHELL-owned: cache mirror and `[ui].thinking_stream_mode` via `Effect::PersistSetting`.
+    SetThinkingStreamMode(String),
     /// Show calls otherwise hidden behind task/status surfaces.
     SetShowStatusToolCalls(bool),
     /// Set whether the normal prompt border follows the selected thinking/

@@ -67,6 +67,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         "show_status_tool_calls" => "Tool output",
         "show_thinking_blocks"
         | "collapse_thinking_blocks"
+        | "thinking_stream_mode"
         | "thinking_border_colors"
         | "max_thoughts_width" => "Thinking",
         "codemode_expanded_by_default"

@@ -973,8 +973,10 @@ impl ScrollbackState {
             .iter()
             .map(|e| e.height as usize + e.gap_after as usize)
             .sum();
-        self.pin_reserve_pad = self.pin_reserve_pad_rows(total);
-        self.total_height = total.saturating_add(self.pin_reserve_pad);
+        self.thinking_hold_pad = self.thinking_hold_pad_rows(total);
+        let held_total = total.saturating_add(self.thinking_hold_pad);
+        self.pin_reserve_pad = self.pin_reserve_pad_rows(held_total);
+        self.total_height = held_total.saturating_add(self.pin_reserve_pad);
     }
 
     /// Update heights for dirty entries only.

@@ -688,6 +688,9 @@ pub fn current_value_for(
         "collapse_thinking_blocks" => Some(SettingValue::Bool(
             crate::appearance::cache::load_collapse_thinking_blocks(),
         )),
+        "thinking_stream_mode" => Some(SettingValue::Enum(
+            crate::appearance::cache::load_thinking_stream_mode().as_canonical(),
+        )),
         // Live cache; read by the prompt render path once per frame.
         "thinking_border_colors" => Some(SettingValue::Bool(
             crate::appearance::cache::load_thinking_border_colors(),
@@ -1166,6 +1169,16 @@ mod tests {
                     assert_eq!(
                         *default,
                         crate::appearance::cache::ToolCardClickAction::default().as_canonical()
+                    );
+                }
+                ("thinking_stream_mode", SettingKind::Enum { default, .. }) => {
+                    assert_eq!(
+                        *default,
+                        ui.thinking_stream_mode.as_deref().unwrap_or("inline")
+                    );
+                    assert_eq!(
+                        *default,
+                        crate::appearance::cache::ThinkingStreamMode::default().as_canonical()
                     );
                 }
                 ("ctrl_o_tool_expansion", SettingKind::Enum { default, .. }) => {

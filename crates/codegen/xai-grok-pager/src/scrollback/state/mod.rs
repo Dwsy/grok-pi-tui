@@ -149,6 +149,14 @@ pub struct ScrollbackState {
     /// Midstream overflow still chases the tail; after this, a remeasure or terminal marker must not.
     pin_reserve_after_turn: bool,
 
+    /// High-water content height held while `ThinkingStreamMode::HeightHold` is active during a turn.
+    /// Prevents scrollback height and scrollbar from snapping backward when a streaming thinking block
+    /// collapses or folds into a verb group; subsequent tool calls consume the reserve naturally.
+    thinking_hold_floor: usize,
+
+    /// Extra virtual bottom rows currently added to `total_height` by [`Self::thinking_hold_floor`].
+    thinking_hold_pad: usize,
+
     // Selection
     /// Currently selected entry index.
     selected: Option<usize>,
@@ -276,6 +284,8 @@ impl ScrollbackState {
             pin_reserve_target: None,
             pin_reserve_prompt_id: None,
             pin_reserve_after_turn: false,
+            thinking_hold_floor: 0,
+            thinking_hold_pad: 0,
             selected: None,
             selection_box: None,
             turns: Vec::new(),
@@ -725,6 +735,13 @@ impl ScrollbackState {
         let Some(removed_index) = self.entries.get_index_of(&id) else {
             return false;
         };
+        if self
+            .entries
+            .get(&id)
+            .is_some_and(|e| matches!(e.block, RenderBlock::Thinking(_)))
+        {
+            self.capture_thinking_hold_floor();
+        }
         // Anchor the viewport top before the removal shifts indices, then re-point it at the survivor if this removal deleted its entry
         self.arm_structural_scroll_anchor();
         self.mark_timeline_dirty(removed_index);
@@ -953,6 +970,8 @@ impl ScrollbackState {
         self.pin_reserve_target = None;
         self.pin_reserve_prompt_id = None;
         self.pin_reserve_after_turn = false;
+        self.thinking_hold_floor = 0;
+        self.thinking_hold_pad = 0;
         self.commit_scan_cursor = 0;
         self.commit_expand_ring.clear();
         self.invalidate_layout_cache();
@@ -1330,6 +1349,69 @@ impl ScrollbackState {
         self.invalidate_heights();
     }
 
+    /// Record the current unpadded content height as a floor before a thinking block collapses or is removed
+    /// under `ThinkingStreamMode::HeightHold`, so the scrollback does not snap back down mid-turn.
+    pub(super) fn capture_thinking_hold_floor(&mut self) {
+        if crate::appearance::cache::load_thinking_stream_mode()
+            != crate::appearance::cache::ThinkingStreamMode::HeightHold
+        {
+            return;
+        }
+        let current_effective = self.total_height.saturating_sub(self.pin_reserve_pad);
+        self.thinking_hold_floor = self.thinking_hold_floor.max(current_effective);
+    }
+
+    /// Virtual bottom padding needed to hold `thinking_hold_floor` above `content_height`.
+    pub(super) fn thinking_hold_pad_rows(&self, content_height: usize) -> usize {
+        if crate::appearance::cache::load_thinking_stream_mode()
+            != crate::appearance::cache::ThinkingStreamMode::HeightHold
+        {
+            return 0;
+        }
+        self.thinking_hold_floor.saturating_sub(content_height)
+    }
+
+    /// Release any held thinking-collapse reserve (called when a turn finishes or mode switches away).
+    pub(super) fn release_thinking_hold(&mut self) {
+        if self.thinking_hold_floor == 0 && self.thinking_hold_pad == 0 {
+            return;
+        }
+        self.thinking_hold_floor = 0;
+        if self.layout_cache.is_some() {
+            self.compute_total_height_from_cache();
+        } else {
+            self.total_height = self.total_height.saturating_sub(self.thinking_hold_pad);
+            self.thinking_hold_pad = 0;
+        }
+        if self.follow_mode {
+            self.follow_scroll_to_bottom();
+        } else {
+            self.scroll_offset = self.scroll_offset.min(self.max_scroll_offset());
+        }
+    }
+
+    /// Apply a live switch of `[ui].thinking_stream_mode` to running thinking blocks and any held reserve.
+    pub fn apply_thinking_stream_mode_flip(
+        &mut self,
+        new_mode: crate::appearance::cache::ThinkingStreamMode,
+    ) {
+        if new_mode != crate::appearance::cache::ThinkingStreamMode::HeightHold {
+            self.release_thinking_hold();
+        }
+        let mut invalidated = false;
+        for (&id, entry) in &mut self.entries {
+            if matches!(&entry.block, RenderBlock::Thinking(_)) && entry.is_running {
+                entry.invalidate_cache();
+                self.dirty_heights.insert(id);
+                invalidated = true;
+            }
+        }
+        if invalidated {
+            self.gaps_may_be_dirty = true;
+            self.bump_content_generation();
+        }
+    }
+
     /// Re-materialize only Code Mode cards still using the previous default mode.
     /// Manual modes are pinned when they would otherwise become indistinguishable from the new default.
     pub fn apply_codemode_expanded_by_default_flip(&mut self, old_flag: bool, new_flag: bool) {
@@ -1424,6 +1506,13 @@ impl ScrollbackState {
         }
         let thinking_mode = self.thinking_display_mode;
         let respect_manual_folds = self.appearance.scrollback.scroll.respect_manual_folds;
+        if self
+            .entries
+            .get(&id)
+            .is_some_and(|e| matches!(e.block, RenderBlock::Thinking(_)))
+        {
+            self.capture_thinking_hold_floor();
+        }
         if let Some(entry) = self.get_by_id_mut(id) {
             entry.is_running = false;
             entry.finished_at = Some(Instant::now());
@@ -1663,6 +1752,8 @@ impl ScrollbackState {
             let has_targeted_dirty =
                 !self.dirty_heights.is_empty() && self.dirty_heights.len() < self.entries.len();
             if width_changed {
+                self.thinking_hold_floor = 0;
+                self.thinking_hold_pad = 0;
                 for entry in self.entries.values_mut() {
                     entry.invalidate_width_caches();
                 }
@@ -1787,10 +1878,15 @@ impl ScrollbackState {
                     self.shift_pin_reserve_target_for_changes(&changes);
                     let total_delta = self.patch_virtual_y_for_dirty(&changes);
                     // Streamed growth must shrink the reserve rather than inflate max_offset.
-                    let content = self.total_height.saturating_sub(self.pin_reserve_pad);
+                    let content = self
+                        .total_height
+                        .saturating_sub(self.pin_reserve_pad)
+                        .saturating_sub(self.thinking_hold_pad);
                     let new_content = (content as i64 + total_delta as i64).max(0) as usize;
-                    self.pin_reserve_pad = self.pin_reserve_pad_rows(new_content);
-                    self.total_height = new_content.saturating_add(self.pin_reserve_pad);
+                    self.thinking_hold_pad = self.thinking_hold_pad_rows(new_content);
+                    let held_content = new_content.saturating_add(self.thinking_hold_pad);
+                    self.pin_reserve_pad = self.pin_reserve_pad_rows(held_content);
+                    self.total_height = held_content.saturating_add(self.pin_reserve_pad);
                 }
             } else if self.gaps_may_be_dirty {
                 // Heights didn't change, but structural state is dirty (e.g., a new entry was pushed that extends a group needing truncation)

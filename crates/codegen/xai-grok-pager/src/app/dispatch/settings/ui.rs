@@ -18,7 +18,8 @@ use super::setters::{
     set_scroll_mode_inner, set_scroll_speed_inner, set_session_recap_inner,
     set_show_thinking_blocks_inner, set_show_tips_inner, set_side_by_side_edit_inner,
     set_side_by_side_word_highlight_inner, set_simple_mode_inner, set_theme_inner,
-    set_thinking_border_colors_inner, set_timeline_haptics_inner, set_timeline_inner,
+    set_thinking_border_colors_inner, set_thinking_stream_mode_inner, set_timeline_haptics_inner,
+    set_timeline_inner,
     set_timestamps, set_timestamps_inner, set_tool_call_density_inner,
     set_tool_card_click_action_inner, set_vim_mode_inner, set_voice_capture_mode_inner,
     set_voice_keybind_enabled_inner, set_voice_stt_language_inner,
@@ -1113,6 +1114,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("collapse_thinking_blocks", SettingValue::Bool(b)) => {
             Some(Action::SetCollapseThinkingBlocks(*b))
         }
+        ("thinking_stream_mode", SettingValue::Enum(s)) => {
+            Some(Action::SetThinkingStreamMode((*s).to_string()))
+        }
         ("thinking_border_colors", SettingValue::Bool(b)) => {
             Some(Action::SetThinkingBorderColors(*b))
         }
@@ -1533,6 +1537,11 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         ("show_thinking_blocks", SettingValue::Bool(b)) => set_show_thinking_blocks_inner(app, *b),
         ("collapse_thinking_blocks", SettingValue::Bool(b)) => {
             set_collapse_thinking_blocks_inner(app, *b)
+        }
+        ("thinking_stream_mode", SettingValue::Enum(s)) => {
+            if let Some(mode) = crate::appearance::cache::ThinkingStreamMode::from_canonical(s) {
+                set_thinking_stream_mode_inner(app, mode);
+            }
         }
         ("thinking_border_colors", SettingValue::Bool(b)) => set_thinking_border_colors_inner(*b),
         ("tool_call_density", SettingValue::Enum(s)) => {
