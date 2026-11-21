@@ -13,7 +13,18 @@
    ```bash
    python3 scripts/extract-changelog-section.py --self-test
    python3 scripts/extract-changelog-section.py 0.1.14-beta.4 CHANGELOG.MD --strict -o /tmp/notes.md
+   # 正式版：连同一串 beta 一起汇总（CI 对非 beta tag 自动加此参数）
+   python3 scripts/extract-changelog-section.py 0.1.14 CHANGELOG.MD --strict --with-prereleases -o /tmp/notes.md
    ```
+
+   **正式版自动汇总 beta（`--with-prereleases`）**：非 `-beta.` 的 tag 发布时，
+   CI 会把同 `X.Y.Z` 核心版本下的所有 `X.Y.Z-beta.N` 段落按文件顺序一并写入
+   release notes，正文以该版本自己的段落开头 —— 这样正式版说明不会被 beta 段盖住，
+   但早期 beta 用户报的修复仍能在正式版说明里查到。
+   beta tag 仍然只输出自己那一段。
+
+   版本排序是完整 SemVer：`0.1.13 < 0.1.14-beta.1 < 0.1.14-beta.6 < 0.1.14`。
+   目标正式版段落本身**必须存在**，否则 `--strict` 失败（不会因为有一堆 beta 就放过）。
 
 2. 提交并推送代码，然后打 tag：
 

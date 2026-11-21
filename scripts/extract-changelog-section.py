@@ -48,9 +48,22 @@ def normalize_version(raw: str) -> str:
     return v
 
 
-def parse_semver_tuple(version: str) -> tuple[int, ...]:
-    """Best-effort numeric tuple for ordering (0.0.8 → (0,0,8))."""
-    core = version.split("+", 1)[0].split("-", 1)[0]
+def parse_semver_tuple(version: str) -> tuple:
+    """Total-ordering key, SemVer compliant.
+
+    A prerelease sorts BELOW the release it precedes and above the previous
+    release: ``0.1.13 < 0.1.14-beta.1 < 0.1.14-beta.5 < 0.1.14-beta.6 < 0.1.14``.
+
+    The previous implementation split at ``-`` and dropped the prerelease
+    part, collapsing every ``0.1.14-beta.N`` onto ``(0,1,14)``. Betas were
+    therefore mutually unorderable, which is why a stable release could not
+    pull in the beta train that preceded it.
+
+    Key shape: ``((major, minor, patch), is_release, prerelease_identifiers)``
+    where ``is_release`` is 0 for a prerelease and 1 for a final release.
+    """
+    v = version.split("+", 1)[0]
+    core, _, pre = v.partition("-")
     parts: list[int] = []
     for p in core.split("."):
         if p.isdigit():
@@ -58,7 +71,20 @@ def parse_semver_tuple(version: str) -> tuple[int, ...]:
         else:
             m = re.match(r"(\d+)", p)
             parts.append(int(m.group(1)) if m else 0)
-    return tuple(parts) if parts else (0,)
+    while len(parts) < 3:
+        parts.append(0)
+
+    # Numeric identifiers sort before alphanumeric ones; a shorter identifier
+    # list of equal prefix sorts first (`beta < beta.1`).
+    pre_ids: list[tuple[int, int, str]] = []
+    if pre:
+        for ident in pre.split("."):
+            if ident.isdigit():
+                pre_ids.append((0, int(ident), ""))
+            else:
+                pre_ids.append((1, 0, ident))
+
+    return (tuple(parts), 0 if pre else 1, tuple(pre_ids))
 
 
 def iter_sections(text: str) -> list[tuple[str, str]]:
@@ -77,6 +103,44 @@ def extract_section(text: str, version: str) -> str | None:
         if ver == version:
             return body
     return None
+
+
+def split_prerelease(version: str) -> tuple[str, str]:
+    """Split ``0.1.14-beta.6`` into ``("0.1.14", "beta.6")``; no suffix → ``("0.1.14", "")``."""
+    v = version.split("+", 1)[0]
+    core, _, pre = v.partition("-")
+    return core, pre
+
+
+def extract_with_prereleases(text: str, target: str) -> str | None:
+    """Target section plus every prerelease of the same core version.
+
+    A stable release is the sum of the beta train that led to it: publishing
+    ``v0.1.14`` must not silently drop the ``0.1.14-beta.N`` entries just
+    because each beta already shipped as its own prerelease. For a prerelease
+    target this degrades to the single section.
+    """
+    target_core, target_pre = split_prerelease(target)
+    chunks: list[str] = []
+    seen_target = False
+    for ver, body in iter_sections(text):
+        core, pre = split_prerelease(ver)
+        if core != target_core:
+            continue
+        if ver == target:
+            seen_target = True
+            chunks.append(body.rstrip() + "\n")
+        elif pre and not target_pre:
+            # Earlier betas of this core ride along under the final release.
+            chunks.append(body.rstrip() + "\n")
+    if not chunks:
+        return None
+    if not seen_target:
+        # The target's own section must exist. Otherwise `--strict` would pass
+        # on a stable release that only has betas, silently shipping a body
+        # with no summary of the release itself.
+        return None
+    return "\n---\n\n".join(chunks) + "\n"
 
 
 def extract_range(text: str, target: str, since: str) -> str | None:
@@ -144,10 +208,33 @@ def self_test(changelog: Path) -> int:
     ver0 = release_sections[0][0]
     one = extract_section(text, ver0)
     assert one is not None and one.startswith(f"## [{ver0}]")
-    # Range smoke test: choose the first strictly older numeric core.
-    # Consecutive prereleases such as beta.2 / beta.1 intentionally collapse
-    # to the same core in parse_semver_tuple(), so they cannot form an
-    # exclusive lower/upper range by themselves.
+    # Ordering must be SemVer-total: a final release outranks its betas, and
+    # betas order among themselves. The old core-only key collapsed every
+    # `0.1.14-beta.N` to `(0,1,14)`, which made a stable release unable to
+    # pull in its own beta train.
+    assert parse_semver_tuple("0.1.13") < parse_semver_tuple("0.1.14-beta.1")
+    assert parse_semver_tuple("0.1.14-beta.1") < parse_semver_tuple("0.1.14-beta.5")
+    assert parse_semver_tuple("0.1.14-beta.5") < parse_semver_tuple("0.1.14-beta.6")
+    assert parse_semver_tuple("0.1.14-beta.6") < parse_semver_tuple("0.1.14")
+    assert parse_semver_tuple("0.1.14") < parse_semver_tuple("0.1.15-beta.1")
+    assert parse_semver_tuple("1.0.0-alpha") < parse_semver_tuple("1.0.0-alpha.1")
+    # Beta-train folding: a stable target picks up same-core prereleases,
+    # in file order, while a prerelease target keeps exactly one section.
+    synthetic = (
+        "## [1.2.0] - 2026-01-03\n\nstable body\n\n"
+        "## [1.2.0-beta.2] - 2026-01-02\n\nbeta2 body\n\n"
+        "## [1.2.0-beta.1] - 2026-01-01\n\nbeta1 body\n\n"
+        "## [1.1.0] - 2025-12-01\n\nprevious stable\n"
+    )
+    folded = extract_with_prereleases(synthetic, "1.2.0")
+    assert folded is not None
+    assert folded.index("stable body") < folded.index("beta2 body") < folded.index("beta1 body")
+    assert "previous stable" not in folded
+    solo = extract_with_prereleases(synthetic, "1.2.0-beta.2")
+    assert solo is not None and "beta2 body" in solo and "beta1 body" not in solo
+    assert extract_with_prereleases(synthetic, "9.9.9") is None
+    # Range smoke test against the real changelog: a strict lower bound must
+    # exclude itself and include the target.
     head_core = parse_semver_tuple(ver0)
     older = next(
         (version for version, _ in release_sections[1:] if parse_semver_tuple(version) < head_core),
@@ -213,6 +300,13 @@ def main() -> int:
         "hardcoded all-platform list; omit for a full six-platform release.",
     )
     p.add_argument(
+        "--with-prereleases",
+        action="store_true",
+        help="For a stable target, also fold in every `X.Y.Z-beta.N` section of "
+        "the same core version, so the final release documents the beta train "
+        "it summarizes. No effect on a prerelease target.",
+    )
+    p.add_argument(
         "--self-test",
         action="store_true",
         help="Run built-in checks against the changelog path",
@@ -236,6 +330,9 @@ def main() -> int:
         since = normalize_version(args.since)
         body = extract_range(text, version, since)
         label = f"{since} < v <= {version}"
+    elif args.with_prereleases:
+        body = extract_with_prereleases(text, version)
+        label = f"{version} (+ beta train)"
     else:
         body = extract_section(text, version)
         label = version
