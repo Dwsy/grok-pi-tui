@@ -2152,11 +2152,10 @@ impl PromptWidget {
                 } else {
                     insert_text
                 };
-                let display = if title.is_empty() {
-                    element_text.clone()
-                } else {
-                    format!("@{kind}:{title}")
-                };
+                // The chip shows the human title; fall back to the id so an
+                // unnamed object still renders something meaningful.
+                let display_title = if title.is_empty() { &id } else { &title };
+                let display = mention_ref_display(&kind, display_title);
 
                 self.textarea.begin_undo_group();
                 self.textarea.replace_range_with_element(
@@ -3678,6 +3677,26 @@ pub fn file_ref_display(path: &str) -> Line<'static> {
         (path, None)
     };
     crate::views::file_search::styled_file_ref(file_part, line_part, &theme, true)
+}
+
+/// Build the styled display `Line` for an extensible `@` mention chip.
+///
+/// Renders as `@skill:grok-pi-rsi`: the `@` and the `kind:` separator use the
+/// dim accent, the kind itself uses the same path accent as file chips, and the
+/// title stays in primary text so a long object name remains readable. This
+/// mirrors [`file_ref_display`] so mention and file chips read as one family
+/// instead of mentions falling back to an unstyled `String`.
+pub fn mention_ref_display(kind: &str, title: &str) -> Line<'static> {
+    let theme = Theme::current();
+    let dim = theme.muted();
+    let kind_style = Style::default().fg(theme.path);
+    let title_style = Style::default().fg(theme.text_primary);
+    Line::from(vec![
+        Span::styled("@", dim),
+        Span::styled(kind.to_owned(), kind_style),
+        Span::styled(":", dim),
+        Span::styled(title.to_owned(), title_style),
+    ])
 }
 
 /// Extract the display number from an `[Image #N]` or `[Image #N: <path>]` chip placeholder.
