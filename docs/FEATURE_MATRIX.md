@@ -42,6 +42,12 @@ Status definitions: **Native** = implemented by a Grok Pager component; **Adapte
 
 In an active session, accepted `@file` chips and slash skill rows open the native LineViewer on click. Pi `get_commands.sourceInfo` (or legacy path/location) is translated into native skill path/scope metadata, and preview follows the highlighted candidate even for partial slash queries. File selections in the `@` dropdown and accepted chips expose `:` / Ctrl-L; the selected slash skill exposes Ctrl-L. Contextual preview hints remain visible in the compact footer, including the mouse gesture. File preview runs before global model-picker promotion; Ctrl-L retains model selection outside preview contexts. Rebuilt executables require a new process; existing terminal sessions keep their loaded binary.
 
+### Extensible `@` object mentions
+
+| Feature | Status | Implementation |
+|---|---|---|
+| `@` object mentions | Native+Adapted | The `@` dropdown serves structured objects alongside fuzzy file search. Rust owns the generic capability — `file_search/mentions.rs` holds the catalog, prefix/alias matching, three-way query resolution (`FileSubquery` / `EntriesOnly` / `HeadersPlusFiles`), dropdown rendering, and atomic chip insertion; the Pager never learns a concrete object type. TS extensions own the providers and publish them via `setStatus("__pi_grok_mentions__", …)`, which `pi-grok-adapter` forwards as `pi/ui/mentions_catalog` and `acp_handler` applies to every agent's composer. Built-ins: `@skill`, `@session`, `@mcp`, plus file search, with ASCII and Chinese aliases (`@技能:`, `@会话:`, `@工具服务:`, `@文件:`). Bare `@` or a partial word lists provider headers above the file rows; accepting a header drills in (`@skill:`), accepting an item inserts one undoable `@kind:title` chip. An explicit `@<kind>:<query>` scopes the dropdown to that provider; a prefix containing `/`, `\` or `.` is never treated as a provider, so `@src/main.rs:10` stays a file reference. `@session` reads the PSM SQLite index (`~/.pi/agent/sessions/sessions.db`) read-only instead of scanning JSONL; when the host Node lacks `node:sqlite`, the adapter hydrates up to 50 recent sessions from its compiled `rusqlite` reader. Prompt-time resolution rewrites `@kind:id` into a `referenced_objects` system-prompt section, resolving skills to their file path and sessions to a bounded recent excerpt. Third-party extensions can register their own provider through `globalThis.__piGrokRegisterMentionProvider`. |
+
 ## Agent and Streaming Semantics
 
 | Pi feature | Status | Mapping |

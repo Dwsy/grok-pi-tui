@@ -34,6 +34,7 @@
 | Diff rendering | 原生+适配 | edit-like metadata 进入 Grok 原生 tool/diff pipeline。grok-pi 提供 external-only F2 开关 **Side-by-side edit diffs**（默认关闭）：开启且宽度足够时，展开 EditTool 与普通全屏 viewer 并排显示 old/new，并显示 `-`/`+` 标记；关闭或窄布局使用原生 unified renderer，code-review 保持 unified 双 gutter |
 | Images | 原生+适配 | Pi image blocks → ACP ImageContent；Read 图片查看器支持 Kitty 兼容终端，以及允许内联图片显示的 iTerm2；iTerm2 会话滚动区内联图片仍禁用 |
 | Scroll / find / copy / transcript / export | 原生 | Grok Pager |
+| `@` 对象引用 | 原生+适配 | `@` 下拉除模糊文件搜索外还提供结构化对象。Rust 负责通用能力——`file_search/mentions.rs` 持有目录、前缀/别名匹配、三路查询解析（`FileSubquery` / `EntriesOnly` / `HeadersPlusFiles`）、下拉渲染与原子 chip 插入，Pager 不认识任何具体对象类型。具体提供方由 TS 扩展拥有并通过 `setStatus("__pi_grok_mentions__", …)` 上报，`pi-grok-adapter` 转成 `pi/ui/mentions_catalog`，`acp_handler` 应用到每个 agent 的输入框。内置 `@skill`、`@session`、`@mcp` 与原文件搜索，支持中文别名（`@技能:`、`@会话:`、`@工具服务:`、`@文件:`）。裸 `@` 或部分词在文件结果上方列出分类行；回车分类行进入该提供方（`@skill:`），回车条目插入一枚可单步撤销的 `@kind:标题` chip。`@<kind>:<query>` 把下拉收敛到该提供方；前缀含 `/`、`\` 或 `.` 时不会被当成提供方，故 `@src/main.rs:10` 仍是文件引用。`@session` 以只读方式查 PSM 的 SQLite 索引（`~/.pi/agent/sessions/sessions.db`）而非扫 JSONL；宿主 Node 无 `node:sqlite` 时由 adapter 的 `rusqlite` 补齐最近 50 条会话。提示词阶段把 `@kind:id` 改写为 `referenced_objects` 系统提示段，技能解析到文件路径，会话附带有限长度的近期摘要。第三方扩展可用 `globalThis.__piGrokRegisterMentionProvider` 注册自己的提供方。 |
 
 ## Agent 与流式语义
 

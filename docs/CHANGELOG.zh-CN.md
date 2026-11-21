@@ -11,6 +11,31 @@
 
 ### 新增
 
+- **可扩展的 `@` 对象引用** — `@` 补全不再只有文件。Rust 提供通用能力（目录状态、前缀/别名匹配、下拉渲染、原子 chip 插入），具体对象类型由 TypeScript 扩展注册，新增一类对象无需改 Pager。内置 `@skill`、`@session`、`@mcp` 与原文件搜索，支持中文别名（`@技能:`、`@会话:`、`@工具服务:`、`@文件:`）。裸 `@` 会在文件结果上方列出匹配的分类行，回车分类行进入该提供方，回车条目插入一枚 `@kind:标题` chip（整次插入是一个撤销步）；`@<kind>:<query>` 把下拉收敛到该提供方。`@session` 只读 PSM 的 SQLite 索引，不扫 JSONL 原文；无内置 `node:sqlite` 时由 `pi-grok-adapter` 的 `rusqlite` 补全。
+
+### 修复
+
+- **正式版说明丢失 beta 段落** — 提取脚本原先在 `-` 处截断版本号，导致 `0.1.14-beta.N` 全部压成同一个键、彼此无法排序，正式版也就无法汇总此前的 beta。现在按完整 SemVer 排序，非 beta tag 通过 `--with-prereleases` 把同核心版本的 beta 段落并入 release notes；正式版自己的段落仍在最前，beta tag 仍只输出一段，正式版段落缺失时 `--strict` 依旧失败。
+
+### 变更
+
+- **发布手册** — 补充 `--with-prereleases`、SemVer 排序保证，以及「正式版必须有自身段落」的要求。
+
+## [0.1.14-beta.6] - 2026-11-21
+
+### 新增
+
+- **可配置的思考流展示模式** — F2 → Appearance → Thinking →「Thinking stream mode」（`[ui].thinking_stream_mode`）支持三种模式实时切换，解决多轮工具调用期间思考块反复展开/折叠导致的视口闪烁：`inline`（默认，多行截断预览）、`single_line`（单行固定高度 ticker，右锚定水平滚动，兼容中文双宽字符）、`height_hold`（把回缩高度保留为底部虚拟留白，保持滚动条与上方历史不动）。
+
+### 变更
+
+- **Pi-slim 特性拆分与 CI 精简** — 将 `sentry`、`mixpanel`、`bm25`、`moka`、`kanal` 收口到可选 stock 特性，移除冗余测试工作流并补充手动触发的 Linux 边界检查工作流。
+
+## [0.1.14-beta.5] - 2026-11-21
+
+### 新增
+
+- **回复强调标签** — F2 → Agent → Pi features →「Pi reply emphasis」（`[ui].pi_emphasis`，默认开启）：回复里的 `[[Done]]`、`[[Failed]]`、`[[Needs you]]` 渲染为带颜色与图标的胶囊标签，仅展示层，复制与导出保留原 Markdown。
 - **工具调用密度** — F2 → Appearance → Tool calls →「Tool call density」（`[ui].tool_call_density`）与 `/density` 对齐原生 Grok 的工具调用密度：五档（Detailed / Diff focus / Balanced / Grouped / Compact）决定编辑渲染 diff 还是一行 `+N/-M`、shell 命令是否保留输出预览、哪些工具调用连续行折叠成一行摘要。切换档位会重新 materialize 当前会话记录。已下线的 `collapsed_edit_blocks` / `group_tool_verbs` 在首次读取时迁移到最接近的档位。
 
 ### 变更

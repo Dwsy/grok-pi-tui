@@ -1,181 +1,80 @@
-# AGENTS.md — Pi-Grok Native TUI
+# AGENTS.md — grok-pi (Pi-Grok Native TUI)
 
-## Project root and Git
+## Repository and Git
 
-`grok-build-main/` is the primary project checkout. Isolated integration work may use linked Git worktrees that share this checkout's Git common directory.
+This checkout (`pi-grok-build/`) is the primary repository root. Linked Git worktrees may share its Git common directory.
 
 ```text
-origin   https://github.com/Dwsy/grok-pi.git
-upstream https://github.com/xai-org/grok-build.git
-base     37949780c144e37df692e3d669051a21fec24f20
+origin   https://github.com/Dwsy/grok-pi-tui.git   # Pi-Grok integration branch (main)
+upstream https://github.com/xai-org/grok-build.git # Read-only upstream Grok Build
 ```
 
-- Work from this directory; do not use its parent wrapper as a repository.
-- `origin/main` is the Pi-Grok integration branch; `upstream` is read-only Grok Build.
-- Never directly merge an upstream root commit into this repository without a migration plan. Reapply the narrow integration seams and validate them instead.
-- Keep commits focused. Do not stage generated `pi-main` model catalog changes unless they are intentional.
-- Pi host default is **system `pi` >= 0.99.0** (`npm i -g @earendil-works/pi-coding-agent`). Override with `--pi-bin` / `PI_BIN`.
-- Optional Pi source checkout is the git submodule [`pi-main`](https://github.com/earendil-works/pi) (not a vendored copy). Follow [`pi-main/AGENTS.md`](pi-main/AGENTS.md) when working inside the submodule.
+- `git merge-base HEAD upstream/main` tracks the synced upstream commit; `SOURCE_REV` holds the corresponding upstream monorepo SHA.
+- Never merge an upstream commit directly into `main` without first recording upstream changes via [`.pi/skills/upstream-changelog/SKILL.md`](.pi/skills/upstream-changelog/SKILL.md) (`docs/upstream/UPSTREAM_CHANGELOG.md`) and planning seam reapplication in an isolated worktree.
+- Never stage or commit `pi-main` submodule pointer changes unless explicitly requested.
+- Default Pi host is system `pi >= 0.99.0` (`npm i -g @earendil-works/pi-coding-agent`), overridable via `--pi-bin` / `PI_BIN`. Optional Pi source lives in the `pi-main` git submodule (follow `pi-main/AGENTS.md` when editing inside it).
 
-## Upstream sync workflow
+## Architecture Invariants
 
-Syncing upstream Grok Build is a **two-phase** process. Always record what
-upstream changed *before* merging it.
-
-1. **Fill the upstream update record first.** Run the
-   [`upstream-changelog`](.pi/skills/upstream-changelog/SKILL.md) skill (trigger:
-   `/skill:upstream-changelog`, or "上游更新记录" / "fill the upstream update
-   list"). It fetches `upstream`, computes the pending range
-   (`merge-base HEAD upstream/main .. upstream/main`), transcribes the
-   `Changes:` list from each upstream commit message, and writes a structured
-   English entry to [`docs/upstream/UPSTREAM_CHANGELOG.md`](docs/upstream/UPSTREAM_CHANGELOG.md).
-   This step is **read-only** — it records changes but merges nothing.
-2. **Then merge.** Only after the changelog entry exists, proceed with the
-   isolated-worktree merge, seam reapplication, and validation (see the
-   `docs/issues/架构/` sync issues). Never merge an upstream root commit
-   directly into `main` without this plan.
-
-Upstream commits are titled `Synced from monorepo` but each carries a full
-`Changes:` bullet list and a `Source-Revision:` trailer — the changelog skill
-transcribes those as the authoritative feature list (diff analysis is only a
-fallback for commits lacking a `Changes:` list). `SOURCE_REV`, `AGENTS.md`
-`base`, and verifier baselines are updated only after a completed, verified
-merge — never by the changelog skill.
-
-## Architecture invariants
-
-1. **Grok Pager is the only terminal UI.** All visible terminal surfaces must come from `xai-grok-pager` or native component crates.
+1. **Grok Pager is the only terminal UI.** All visible terminal surfaces come from `xai-grok-pager` or native component crates.
 2. **Pi is the only agent core.** Pi owns models, providers, agent loop, tools, extensions, compaction, retries, and sessions.
-3. **`pi-grok-adapter` is headless and library-only.** It may translate JSONL RPC ↔ ACP, but must not render widgets, own a terminal, read keyboard events, or depend on Ratatui/Crossterm.
-4. **Reuse native Grok surfaces.** Map Pi capabilities to existing Pager prompt, slash, QuestionView, toast, banner, tool card, diff, and scrollback surfaces. Do not create a second TUI or ASCII fallback UI.
-5. **Do not modify Pi source to extend RPC.** When a Pi core capability is not exposed over RPC, prefer the official extension API. Preserve Pi semantics rather than emulating them with JSONL edits or unrelated RPCs.
-6. **Product-isolated state trees.** grok-pi must not share stock Grok’s user or project config roots (see [Product state isolation](#product-state-isolation)).
+3. **`pi-grok-adapter` is headless and library-only.** Translates JSONL RPC ↔ ACP only; never owns a terminal, reads keyboard events, or depends on Ratatui/Crossterm.
+4. **Reuse native Grok surfaces.** Map Pi capabilities to existing Pager prompt, slash, QuestionView, toast, banner, tool card, diff, and scrollback surfaces — no second TUI or ASCII fallback.
+5. **Do not modify Pi source to extend RPC.** Prefer the official Pi extension API (`extensions/pi-grok-*`). Preserve Pi semantics rather than emulating them with direct JSONL edits.
+6. **Product-isolated state trees.** Never share stock Grok's `~/.grok` or `<repo>/.grok` roots by default.
 
-Read [`NATIVE_GROK_TUI_ALIGNMENT.md`](docs/NATIVE_GROK_TUI_ALIGNMENT.md) and [`FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) before changing protocol or UI behavior.
+Read [`docs/NATIVE_GROK_TUI_ALIGNMENT.md`](docs/NATIVE_GROK_TUI_ALIGNMENT.md) and [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) before changing protocol or UI behavior.
 
-## Product state isolation
+## Product State Isolation
 
-Stock Grok uses `~/.grok` (user) and `<repo>/.grok` (project). **grok-pi defaults are product-isolated** so UI settings, trust, skills, hooks, and workflows do not collide with stock Grok:
-
-| Layer | stock Grok | grok-pi default | Override |
+| Layer | Stock Grok | grok-pi Default | Override |
 |---|---|---|---|
 | User home | `~/.grok` | `~/.grok-pi` | `$GROK_HOME` |
 | Project tree | `<repo>/.grok` | `<repo>/.grok-pi` | `$GROK_PROJECT_DIR` |
 
-Rules:
+- `ensure_default_grok_home()` sets `$GROK_HOME` → `~/.grok-pi` and `$GROK_PROJECT_DIR` → `.grok-pi` when unset.
+- Resolve project paths exclusively via `xai_grok_config::project_config_dirname()` / `project_config_dir(root)` — never hardcode `.join(".grok")` in production code.
+- No dual-scan of stock trees by default; unit tests without env keep `.grok` so upstream tests stay green.
 
-- `ensure_default_grok_home()` (grok-pi startup) sets `$GROK_HOME` → `~/.grok-pi` and `$GROK_PROJECT_DIR` → `.grok-pi` when unset.
-- Resolve project paths only via `xai_grok_config::project_config_dirname()` / `project_config_dir(root)` — never hardcode `.join(".grok")` for project assets in grok-pi production code.
-- User paths go through `grok_home()` / `$GROK_HOME` (workflows → `$GROK_HOME/workflows`, config → `$GROK_HOME/config.toml`, etc.).
-- **No dual-scan of stock trees by default.** grok-pi does not auto-read `~/.grok` or `<repo>/.grok` for project discovery; migrate with `grok-pi migrate-home` (allowlisted user files only — **not** `workflows/`) or copy project trees manually into `.grok-pi`.
-- Unit tests without env keep the stock default `.grok` so upstream-style tests stay green.
-- Design note: [`docs/issues/架构/20260722-项目级.grok-pi隔离.md`](docs/issues/架构/20260722-项目级.grok-pi隔离.md).
-
-Examples under a git repo:
-
-```text
-~/.grok-pi/config.toml              # F2 / UI (e.g. [ui].pi_workflows)
-~/.grok-pi/workflows/*.rhai         # user workflows
-<repo>/.grok-pi/workflows/*.rhai    # project workflows (folder trust)
-<repo>/.grok-pi/hooks/              # project hooks
-<repo>/.grok-pi/config.toml         # project config overlay
-```
-
-## Important paths
+## Key Paths
 
 | Concern | Path |
 |---|---|
 | Composition binary | `crates/codegen/xai-grok-pager-bin/src/bin/grok-pi.rs` |
-| Default home / project dirname | `crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/home.rs` |
-| Path helpers (`grok_home`, `project_config_dir`) | `crates/codegen/xai-grok-config/src/paths.rs` |
-| Pi JSONL RPC transport | `crates/codegen/pi-grok-adapter/src/pi_rpc.rs` |
-| Pi data parsers | `crates/codegen/pi-grok-adapter/src/model.rs` |
-| ACP adapter and UI mapping | `crates/codegen/pi-grok-adapter/src/pi_adapter.rs` |
-| Native Pager external-profile seams | `crates/codegen/xai-grok-pager/src/app/` |
-| Pi RPC facts (submodule / installed package) | `pi-main/packages/coding-agent/src/modes/rpc/` or npm package dist |
-| Pi session lifecycle facts | `pi-main/packages/coding-agent/src/core/agent-session.ts` |
-| Architecture and task records | `docs/` |
-| Upstream update record (changelog) | `docs/upstream/UPSTREAM_CHANGELOG.md` |
-| Upstream changelog skill | `.pi/skills/upstream-changelog/SKILL.md` |
-| Project `.grok-pi` isolation issue | `docs/issues/架构/20260722-项目级.grok-pi隔离.md` |
+| Home / project dir isolation | `crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/home.rs`, `crates/codegen/xai-grok-config/src/paths.rs` |
+| Pi JSONL RPC & ACP adapter | `crates/codegen/pi-grok-adapter/src/{pi_rpc.rs,model.rs,pi_adapter.rs}` |
+| Native Pager & scrollback | `crates/codegen/xai-grok-pager/src/{app/,scrollback/,settings/}` |
+| Bundled Pi extensions | `extensions/pi-grok-*/` |
+| Upstream sync skill & log | `.pi/skills/upstream-changelog/SKILL.md`, `docs/upstream/UPSTREAM_CHANGELOG.md` |
+| Repo RSI skill (pitfalls & runbooks) | `.pi/skills/grok-pi-rsi/SKILL.md` |
+| Release runbook | `docs/usage/release.md` |
 
-## Session and tree rules
+## Session and Tree Rules
 
 - Pi owns session files, trees, and the active leaf.
-- `/resume` must use the native Grok `SessionPicker`; catalog scanning is on-demand, never startup work.
+- `/resume` uses the native Grok `SessionPicker`; catalog scanning is on-demand, never startup work.
 - Respect Pi's default session root, `--session-dir`, `PI_CODING_AGENT_SESSION_DIR`, and `sessionFile`-derived custom directories.
-- `navigateTree()` changes Pi's in-memory leaf and context. Do not fake it with `fork`, `switch_session`, or direct JSONL mutation.
-- If tree navigation is added without changing Pi source, bridge the official Pi extension API (`ctx.navigateTree`) and render only with native Grok components.
+- `navigateTree()` mutates Pi's in-memory leaf and context; never fake it with `fork`, `switch_session`, or direct JSONL mutation.
 
-## Build and verification
+## Verification, CI, and Release
 
-**Do not run Cargo unless the user explicitly requests it.** This rule takes precedence over all build and verification instructions below. Do not run any `cargo` command (including `check`, `test`, `build`, `clippy`, `fmt`, or `clean`), or invoke it indirectly through wrappers, scripts, hooks, or agents, unless the user explicitly requests that operation. Code changes alone do not authorize Cargo. Use static review and non-Rust checks by default, and state which checks were not run. Clean Rust build caches directly through filesystem operations without invoking Cargo.
+**Never run local `cargo` commands (`check`, `test`, `build`, `clippy`, `fmt`, `clean`) — directly or via wrapper scripts (`./build.sh`, `./verify.sh`, `./scripts/cargo-shared.sh`) — unless the user explicitly requests a local Cargo run.**
 
-The commands below are reference instructions for user-requested builds and verification only. Run from the project root:
+- **Default verification**: Perform thorough static review (imports, cfg gates, struct literals, exhaustive matches, test helpers) and non-Rust checks (`git diff --check`, Python/script validators). State explicitly which checks were not run locally.
+- **Online Linux CI verification**: Verify Rust/Cargo changes on GitHub Actions Linux (`ubuntu-24.04`) via manual dispatch:
+  ```bash
+  gh workflow run pi-slim-linux-checks.yml --repo Dwsy/grok-pi-tui --ref <branch> -f scope=fast # or all
+  ```
+- **CI hygiene**: Keep non-release verification workflows manual-only (`on: workflow_dispatch:`, no `push`/`pull_request` triggers).
+- **Beta release**: Add `## [X.Y.Z-beta.N] - YYYY-MM-DD` under `## [Unreleased]` in `CHANGELOG.MD`, validate with `python3 scripts/extract-changelog-section.py X.Y.Z-beta.N CHANGELOG.MD --strict -o /tmp/notes.md`, push `main`, then tag and push `vX.Y.Z-beta.N` (beta tags build macOS ARM64 prerelease by default; see [`docs/usage/release.md`](docs/usage/release.md)).
 
-```bash
-./build.sh
-./scripts/cargo-shared.sh test -p pi-grok-adapter
-./scripts/cargo-shared.sh test -p xai-grok-pager-bin --bin grok-pi
-./scripts/cargo-shared.sh check -p xai-grok-pager-bin --bin grok-pi
-```
+## Recurring Pitfalls and Runbooks
 
-`./build.sh` builds `grok-pi`. When the optional `pi-main` submodule has workspace dependencies installed (`pi-main/node_modules/.bin/tsgo`), it rebuilds the coding-agent checkout first; a freshly initialized, unprovisioned submodule is skipped. Requires system Pi >= **0.99.0**, Node.js >= 22.19.0, and the repository Rust toolchain.
-
-All linked worktrees share one Cargo output tree at `<git-common-dir>/pi-grok-cargo-target`. `./build.sh` and `./verify.sh` initialize the root `target` symlink automatically. Use `./scripts/cargo-shared.sh <cargo-args>` for project Cargo commands: it sets up the shared target, enables incremental compilation by default, caps generated target output at 128 GiB, and stops Cargo at the default 20 GiB free-space floor. Override the target cap with `CARGO_TARGET_MAX_GIB`; when a target is already over the cap, periodic maintenance clears incremental roots first and falls back to `cargo clean` if needed. Raise the free-space floor with `CARGO_MIN_FREE_GIB`; use `CARGO_DISK_GUARD_PATH` when output is on a custom filesystem; set `CARGO_MAINTENANCE=0` to skip one pre-command maintenance pass. The running disk guard continuously enforces the free-space floor; target-size maintenance runs on its configured cadence. An explicit `CARGO_TARGET_DIR` remains authoritative for CI or one-off isolation. Never copy `target/` between worktrees. Direct raw `cargo` remains available for deliberate recovery/maintenance, but is not protected by the project guard.
-
-`./verify.sh` additionally runs architecture, mock, syntax, and Pager checks. Current known blockers are documented in [`VERIFICATION.md`](docs/VERIFICATION.md): Python tree-sitter dependencies are not provisioned, and several source-identity/mock expectations require deliberate baseline maintenance. Focused Pager lib tests compile and pass after the `47348d1` integration. Do not claim full verification is green unless the remaining blockers are resolved.
-
-For a standalone change under `extensions/`, validate the extension source and diff only. Changes to Rust code, the embedded-extension loader, or its Rust contract do not override the explicit-user-request requirement for Cargo.
-
-Before reporting completion:
-
-1. Run the narrowest relevant non-Rust checks. Run Cargo-based tests or build/check only when explicitly requested by the user.
-2. Read the exit status and complete output.
-3. Review the diff for scope and whitespace errors.
-4. State known blockers separately from passing checks.
-
-## Diagnosing Pi RPC bootstrap / extension failures
-
-When Pi RPC bootstrap fails and grok-pi self-heals by dropping an extension or
-relaunching with `-ne`, do not stop at the reported culprit name — the bisect
-only names a file (e.g. `index.ts`), never the real error. Follow this order:
-
-1. **Read the real Pi error first.** Pi's complete stderr is appended to
-   `{GROK_HOME}/logs/pi-rpc-stderr.log` (default `~/.grok-pi/logs/pi-rpc-stderr.log`)
-   by `pi_rpc.rs`'s stderr reader. This is the authoritative failure message
-   (e.g. `Cannot find module './eval-tasks.ts'`). Trace it to the exact line
-   before touching any Rust injector.
-2. **Isolate the injected bundle.** Injected extensions live in
-   `$TMPDIR/pi-grok-bash-*` (`NSTemporaryDirectory` on macOS) and are deleted by
-   self-heal after the crash, so reproduce a clean copy before the directory
-   disappears. Verify the bundle loads in isolation:
-   `pi -ne --mode rpc --extension <bundle>/index.ts` (must exit 0).
-3. **Check injection completeness.** The Rust injector
-   (`bash_extension.rs` / `*_extension.rs`) must materialize **every** relative
-   import of the TypeScript entry, and the transitive closure of those modules.
-   Known regression: splitting the Bash extension into multiple modules
-   (`eval.ts`, `bash-tasks.ts`, `eval-tasks.ts`, `prompts.ts`, `shared.ts`,
-   `tool-bridge.ts`) added imports the injector did not initially copy, causing
-   `Cannot find module './eval-tasks.ts'` at boot. When adding a module, mirror
-   it into the injector and extend the injector's single unit test to assert the
-   new import and module content.
-4. **Rule out tool-name conflicts separately.** `Tool "bash" conflicts with …`
-   comes from Pi's `resource-loader.ts` extension-conflict check (two extension
-   registrations), independent of bundle loading. It only appears when Pi
-   auto-discovers another extension, so reproduce with `-ne` to separate bundle
-   errors from cross-extension conflicts.
-
-## Documentation and change control
-
-- Complex work must have a record in `docs/issues/` before implementation.
-- Update the relevant Issue after each completed phase.
-- Keep `README.md`, `docs/README.zh-CN.md`, `docs/FEATURE_MATRIX.md`, and `docs/VERIFICATION.md` aligned with actual behavior.
-- The source-identity verifier allows only declared Pager seams. If a required native seam changes, update its baseline/allowed-seam metadata deliberately; never weaken the verifier broadly.
+For recurring `pi-slim` feature-gating traps, F2 settings wiring checklists, Pi RPC extension-injection diagnosis (`{GROK_HOME}/logs/pi-rpc-stderr.log`), and Herdr lifecycle invariants, consult [`.pi/skills/grok-pi-rsi/SKILL.md`](.pi/skills/grok-pi-rsi/SKILL.md).
 
 ## Safety
 
 - Do not run destructive Git commands (`reset --hard`, broad restore, force checkout).
 - Do not remove source files with `rm`; use `trash` for intentional deletion.
-- Do not push, rename, delete, or recreate remote repositories unless the user explicitly authorizes it.
+- Do not push, tag, or mutate remote repositories unless the user explicitly authorizes it.
 - Treat credentials, tokens, and user session data as private.

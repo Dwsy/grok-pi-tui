@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Extensible `@` object mentions** — the `@` completion dropdown now serves structured objects, not just files. Rust owns the generic capability (catalog state, prefix/alias matching, dropdown rendering, atomic chip insertion); TypeScript extensions own the concrete providers, so a new object type is an extension registration rather than a Pager change. Built-in providers are `@skill`, `@session`, `@mcp`, plus the existing file search, with ASCII and Chinese aliases (`@技能:`, `@会话:`, `@工具服务:`, `@文件:`).
+  - Typing bare `@` or a partial word lists matching provider headers above the usual fuzzy file rows; accepting a header drills into that provider (`@skill:`), and accepting an item inserts one atomic `@kind:title` chip that is undoable as a single edit.
+  - An explicit `@<kind>:<query>` scopes the dropdown to that provider only. `@file:`, `@f:`, `@path:` and `@文件:` stay pure file search, and `@src/main.rs:10` is still a file reference — a prefix containing `/`, `\` or `.` is never treated as a provider.
+  - `@session` reads the read-only PSM SQLite index (`~/.pi/agent/sessions/sessions.db`) instead of scanning JSONL transcripts. When the host Node runtime has no built-in `node:sqlite`, `pi-grok-adapter` hydrates the list from its compiled `rusqlite` reader, so the provider works either way.
+  - Mention resolution happens at prompt time: the `pi-grok-mentions` extension rewrites `@kind:id` into a `referenced_objects` system-prompt section, resolving skills to their file path and sessions to a bounded recent excerpt.
+
+### Fixed
+
+- **Stable release notes dropped the beta train** — `scripts/extract-changelog-section.py` split a version at `-` and discarded the prerelease part, so every `0.1.14-beta.N` collapsed to the same `(0, 1, 14)` key. Betas could not be ordered against each other, which is why a final release could not summarize the betas before it. Ordering is now full SemVer (`0.1.13 < 0.1.14-beta.1 < 0.1.14-beta.6 < 0.1.14`), and a stable tag folds every `X.Y.Z-beta.N` section of its own core version into the release notes via `--with-prereleases`. The final release's own section still leads, a beta tag still emits exactly one section, and a missing stable section still fails `--strict` instead of quietly shipping betas as the body.
+
+### Changed
+
+- **Release runbook** — `docs/usage/release.md` documents `--with-prereleases`, the SemVer ordering guarantee, and the requirement that a stable tag have its own changelog section.
+
+### 中文发布说明
+
+- **可扩展的 `@` 对象引用** — `@` 补全不再只有文件：Rust 侧提供通用能力（目录状态、前缀/别名匹配、下拉渲染、原子 chip 插入），具体对象类型由 TypeScript 扩展注册，新增一类对象无需改 Pager。内置 `@skill`、`@session`、`@mcp` 与原文件搜索，并支持中文别名（`@技能:`、`@会话:`、`@工具服务:`、`@文件:`）。
+  - 裸 `@` 或部分词会在文件结果上方列出匹配的提供方分类行；回车分类行进入该提供方（`@skill:`），回车具体条目则插入一枚 `@kind:标题` chip，整次插入是一个撤销步。
+  - `@<kind>:<query>` 把下拉收敛到该提供方。`@file:`、`@f:`、`@path:`、`@文件:` 仍是纯文件搜索；`@src/main.rs:10` 仍是文件引用——前缀含 `/`、`\` 或 `.` 时不会被当成提供方。
+  - `@session` 直接只读 PSM 的 SQLite 索引（`~/.pi/agent/sessions/sessions.db`），不扫 JSONL 原文；宿主 Node 没有内置 `node:sqlite` 时，`pi-grok-adapter` 用编译进来的 `rusqlite` 补全列表，两种运行时都可用。
+  - 引用在提示词阶段解析：`pi-grok-mentions` 把 `@kind:id` 改写成 `referenced_objects` 系统提示段，技能解析到文件路径，会话附带一段有长度上限的近期摘要。
+- **修复正式版说明丢失 beta 段落** — 提取脚本原先在 `-` 处截断版本号，把 `0.1.14-beta.N` 全部压成同一个 `(0, 1, 14)`，导致 beta 之间无法排序，正式版也就无法汇总此前的 beta。现在按完整 SemVer 排序（`0.1.13 < 0.1.14-beta.1 < 0.1.14-beta.6 < 0.1.14`），非 beta tag 会通过 `--with-prereleases` 把同核心版本的所有 `X.Y.Z-beta.N` 段落并入 release notes；正式版自己的段落仍在最前，beta tag 仍只输出一段，正式版段落缺失时 `--strict` 依旧失败，不会拿 beta 段落顶替。
+- **发布手册** — `docs/usage/release.md` 补充 `--with-prereleases`、SemVer 排序保证，以及「正式版必须有自身段落」的要求。
+
 ## [0.1.14-beta.6] - 2026-11-21
 
 ### Added
