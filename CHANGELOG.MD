@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.8] - 2026-11-21
+
+### Fixed
+
+- **Mention chips failed to compile** — `accept_mention_entry` passed a `String` where `replace_range_with_element` expects `Option<Line<'static>>`, so `xai-grok-pager` did not build and `v0.1.14-beta.7` published no assets. Accepted `@kind:` chips now render through `mention_ref_display`: `@` and the `kind:` separator in the dim accent, the kind in the path accent, the title in primary text — the same family as file chips. A plain `.into()` would have compiled but dropped the chip styling. The chip also falls back to the object id when a provider omits a title, so it never renders empty.
+
+### 中文发布说明
+
+- **修复 `@` 引用 chip 无法编译** — `accept_mention_entry` 传给 `replace_range_with_element` 的是 `String`，而该参数要 `Option<Line<'static>>`，导致 `xai-grok-pager` 编译失败、`v0.1.14-beta.7` 没有产出任何资产。现在通过新增的 `mention_ref_display` 渲染带样式的 `Line`：`@` 与 `kind:` 分隔符用暗色强调，kind 用路径色，标题用主文本色，与文件 chip 同一风格（单纯加 `.into()` 虽能过编译，但会丢掉 chip 配色）。提供方缺标题时回退到对象 id，chip 不会渲染成空。
+
 ## [0.1.14-beta.7] - 2026-11-21
 
 ### Added

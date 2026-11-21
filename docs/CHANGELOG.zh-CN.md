@@ -9,6 +9,14 @@
 
 ## [Unreleased]
 
+## [0.1.14-beta.8] - 2026-11-21
+
+### 修复
+
+- **修复 `@` 引用 chip 无法编译** — `accept_mention_entry` 传给 `replace_range_with_element` 的是 `String`，而该参数要 `Option<Line<'static>>`，导致 `xai-grok-pager` 编译失败、`v0.1.14-beta.7` 没有产出资产。现在通过新增的 `mention_ref_display` 渲染带样式的 `Line`，与文件 chip 同一风格；提供方缺标题时回退到对象 id。
+
+## [0.1.14-beta.7] - 2026-11-21
+
 ### 新增
 
 - **可扩展的 `@` 对象引用** — `@` 补全不再只有文件。Rust 提供通用能力（目录状态、前缀/别名匹配、下拉渲染、原子 chip 插入），具体对象类型由 TypeScript 扩展注册，新增一类对象无需改 Pager。内置 `@skill`、`@session`、`@mcp` 与原文件搜索，支持中文别名（`@技能:`、`@会话:`、`@工具服务:`、`@文件:`）。裸 `@` 会在文件结果上方列出匹配的分类行，回车分类行进入该提供方，回车条目插入一枚 `@kind:标题` chip（整次插入是一个撤销步）；`@<kind>:<query>` 把下拉收敛到该提供方。`@session` 只读 PSM 的 SQLite 索引，不扫 JSONL 原文；无内置 `node:sqlite` 时由 `pi-grok-adapter` 的 `rusqlite` 补全。
