@@ -2022,9 +2022,14 @@ impl PromptWidget {
     pub(crate) fn accept_file_search_result_no_space(&mut self) {
         // Capture the context and result before any state mutation
         let ctx = self.file_search.context().cloned();
+        let mention = self.file_search.selected_mention().cloned();
         let result = self.file_search.selected_result().cloned();
 
         let Some(ctx) = ctx else { return };
+        if let Some(entry) = mention {
+            self.accept_mention_entry(ctx, entry);
+            return;
+        }
         let Some(res) = result else { return };
 
         // Accepting rewrites the token; an unrelated highlight must not survive it
@@ -2064,9 +2069,14 @@ impl PromptWidget {
     fn accept_file_search_result_inner(&mut self) {
         // Capture the context and result before any state mutation
         let ctx = self.file_search.context().cloned();
+        let mention = self.file_search.selected_mention().cloned();
         let result = self.file_search.selected_result().cloned();
 
         let Some(ctx) = ctx else { return };
+        if let Some(entry) = mention {
+            self.accept_mention_entry(ctx, entry);
+            return;
+        }
         let Some(res) = result else { return };
 
         // Accepting rewrites the token; an unrelated highlight must not survive it
@@ -2110,6 +2120,58 @@ impl PromptWidget {
             self.file_search.clear_context();
         }
         self.update_file_search_context();
+    }
+
+    /// Accept a selected extensible `@` mention entry (either drill into a provider
+    /// category header like `@skill:` or commit a concrete object chip like `@skill:grok-pi-rsi`).
+    fn accept_mention_entry(
+        &mut self,
+        ctx: crate::views::file_search::AtContext,
+        entry: crate::views::file_search::MentionEntry,
+    ) {
+        self.textarea.clear_selection();
+        match entry {
+            crate::views::file_search::MentionEntry::ProviderHeader { kind, .. } => {
+                let replacement = format!("@{kind}:");
+                let cursor = ctx.range.start + replacement.len();
+                self.textarea.begin_undo_group();
+                self.textarea.replace_range(ctx.range, &replacement);
+                self.textarea.set_cursor(cursor);
+                self.textarea.end_undo_group();
+                self.update_file_search_context();
+            }
+            crate::views::file_search::MentionEntry::Item {
+                kind,
+                id,
+                title,
+                insert_text,
+                ..
+            } => {
+                let element_text = if insert_text.is_empty() {
+                    format!("@{kind}:{id}")
+                } else {
+                    insert_text
+                };
+                let display = if title.is_empty() {
+                    element_text.clone()
+                } else {
+                    format!("@{kind}:{title}")
+                };
+
+                self.textarea.begin_undo_group();
+                self.textarea.replace_range_with_element(
+                    ctx.range,
+                    &element_text,
+                    KIND_FILE_REF,
+                    Some(display),
+                );
+                self.textarea.insert_str(" ");
+                self.textarea.end_undo_group();
+
+                self.file_search.clear_context();
+                self.update_file_search_context();
+            }
+        }
     }
 
     /// Accept the file search result and request the line viewer to open. Creates the element with the

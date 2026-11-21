@@ -150,6 +150,11 @@ const EXTENSION_BASH_TASK_STATUS_KEY: &str = "__pi_grok_bash_task__";
 /// onto `setStatus` under this key. Translated to `pi/ui/working_message`, which
 /// the Pager may render in place of selected `TurnActivity` labels.
 const EXTENSION_WORKING_MESSAGE_STATUS_KEY: &str = "__pi_grok_working_message__";
+/// Extensible `@` mention catalog published by TS extensions (e.g.
+/// `pi-grok-mentions`). Translated to `pi/ui/mentions_catalog` for the Pager's
+/// `@` completion dropdown. If a `thread` provider arrives with empty items,
+/// the adapter hydrates it from the read-only PSM SQLite index with zero disk scan.
+const EXTENSION_MENTIONS_STATUS_KEY: &str = "__pi_grok_mentions__";
 const SUBAGENT_REPLAY_COMMAND: &str = "__pi_grok_subagent_replay";
 const SUBAGENT_REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
 

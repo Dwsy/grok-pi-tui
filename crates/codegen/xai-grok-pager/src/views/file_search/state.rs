@@ -15,6 +15,9 @@ use xai_grok_workspace::file_system::{
 };
 
 use super::context::{self, AtContext, normalize_display_path};
+use super::mentions::{
+    MentionCatalog, MentionEntry, MentionMatchResult, resolve_mention_entries,
+};
 
 /// Top-K results to request from the fuzzy matcher.
 const MATCHER_TOP_K: usize = 1000;
@@ -84,6 +87,13 @@ pub struct FileSearchState {
     /// Directory being drilled into; keeps the @-token alive when its name has whitespace (`my dir`).
     /// Self-validating: applies only while the path matches.
     drill_prefix: Option<String>,
+    /// Extensible `@` object-mention catalog published by TS extensions.
+    mention_catalog: MentionCatalog,
+    /// Mention rows matching the active `@` query (rendered ahead of fuzzy file rows).
+    mention_entries: Vec<MentionEntry>,
+    /// True when the active `@<kind>:<subquery>` targets a non-file mention provider
+    /// (suppresses fuzzy file rows so only that provider's items appear).
+    mention_only: bool,
 }
 
 impl FileSearchState {
@@ -110,6 +120,9 @@ impl FileSearchState {
             scroll_offset: 0,
             min_generation: 0,
             drill_prefix: None,
+            mention_catalog: MentionCatalog::default(),
+            mention_entries: Vec::new(),
+            mention_only: false,
         }
     }
 
@@ -147,7 +160,60 @@ impl FileSearchState {
     /// Drops any built daemon; the next @-use rebuilds it lazily against `root`.
     pub fn retarget(&mut self, root: &Path) {
         let default_hidden = self.default_hidden;
+        let mention_catalog = std::mem::take(&mut self.mention_catalog);
         *self = Self::new_with_default_hidden(root, default_hidden);
+        self.mention_catalog = mention_catalog;
+    }
+
+    /// Replace the extensible `@` object-mention catalog (pushed by TS extensions
+    /// via `pi/ui/mentions_catalog`).
+    pub fn set_mention_catalog(&mut self, catalog: MentionCatalog) {
+        self.mention_catalog = catalog;
+        if let Some(ctx) = self.context.as_ref() {
+            match resolve_mention_entries(&self.mention_catalog, &ctx.query) {
+                MentionMatchResult::FileSubquery(_) => {
+                    self.mention_entries.clear();
+                    self.mention_only = false;
+                }
+                MentionMatchResult::EntriesOnly(entries) => {
+                    self.mention_entries = entries;
+                    self.mention_only = true;
+                }
+                MentionMatchResult::HeadersPlusFiles(entries) => {
+                    self.mention_entries = entries;
+                    self.mention_only = false;
+                }
+            }
+            let len = self.result_count();
+            if len > 0 {
+                self.selected = self.selected.min(len - 1);
+            } else {
+                self.selected = 0;
+            }
+        }
+    }
+
+    /// Active mention rows matching the current `@` query.
+    pub fn mention_entries(&self) -> &[MentionEntry] {
+        &self.mention_entries
+    }
+
+    /// Whether the active `@` query is scoped strictly to a non-file mention provider.
+    pub fn mention_only(&self) -> bool {
+        self.mention_only
+    }
+
+    /// Currently selected mention entry, if the cursor is on a mention row.
+    pub fn selected_mention(&self) -> Option<&MentionEntry> {
+        self.mention_entries.get(self.selected)
+    }
+
+    fn file_results_len(&self) -> usize {
+        if self.mention_only {
+            0
+        } else {
+            self.results.topk.len()
+        }
     }
 
     /// The directory the matcher currently walks (the `@`-completion root).
@@ -196,7 +262,7 @@ impl FileSearchState {
 
     /// Whether the dropdown should be visible.
     pub fn is_visible(&self) -> bool {
-        self.context.is_some() && !self.results.topk.is_empty()
+        self.context.is_some() && self.result_count() > 0
     }
 
     /// The current @-context, if any.
@@ -226,7 +292,7 @@ impl FileSearchState {
 
     /// Set the hovered index. Returns `true` if changed.
     pub fn set_hovered(&mut self, index: Option<usize>) -> bool {
-        let clamped = index.filter(|&i| i < self.results.topk.len());
+        let clamped = index.filter(|&i| i < self.result_count());
         let changed = clamped != self.hovered;
         self.hovered = clamped;
         changed
@@ -254,12 +320,31 @@ impl FileSearchState {
             (None, Some(ctx)) => {
                 // Fresh `@` token is never a drill; drop any stale anchor
                 self.drill_prefix = None;
-                // Entering @-mode always restarts the walk.
-                let (hidden, ignored) = self.walk_policy(ctx);
-                self.start_query(
-                    RestartWalk::Restart { hidden, ignored },
-                    ctx.matcher_query(),
-                );
+                match resolve_mention_entries(&self.mention_catalog, &ctx.query) {
+                    MentionMatchResult::FileSubquery(subquery) => {
+                        self.mention_entries.clear();
+                        self.mention_only = false;
+                        let (hidden, ignored) = self.walk_policy(ctx);
+                        self.start_query(RestartWalk::Restart { hidden, ignored }, &subquery);
+                    }
+                    MentionMatchResult::EntriesOnly(entries) => {
+                        self.mention_entries = entries;
+                        self.mention_only = true;
+                        self.selected = 0;
+                        self.hovered = None;
+                        self.scroll_offset = 0;
+                    }
+                    MentionMatchResult::HeadersPlusFiles(entries) => {
+                        self.mention_entries = entries;
+                        self.mention_only = false;
+                        // Entering @-mode always restarts the walk.
+                        let (hidden, ignored) = self.walk_policy(ctx);
+                        self.start_query(
+                            RestartWalk::Restart { hidden, ignored },
+                            ctx.matcher_query(),
+                        );
+                    }
+                }
             }
             (Some(old), Some(new)) => {
                 // Drop a stale anchor once the @-token's path content no longer starts with it (e.g. undo/paste reverted the drill).
@@ -272,33 +357,63 @@ impl FileSearchState {
                 if anchor_stale {
                     self.drill_prefix = None;
                 }
-                // Staying in @-mode only re-walks when the effective walker
-                // policy changes (for example plain `@` ↔ explicit `@!`).
-                let old_policy = self.walk_policy(old);
-                let new_policy = self.walk_policy(new);
-                let restart = if old_policy != new_policy {
-                    RestartWalk::Restart {
-                        hidden: new_policy.0,
-                        ignored: new_policy.1,
+                match resolve_mention_entries(&self.mention_catalog, &new.query) {
+                    MentionMatchResult::FileSubquery(subquery) => {
+                        self.mention_entries.clear();
+                        self.mention_only = false;
+                        let old_policy = self.walk_policy(old);
+                        let new_policy = self.walk_policy(new);
+                        let restart = if old_policy != new_policy {
+                            RestartWalk::Restart {
+                                hidden: new_policy.0,
+                                ignored: new_policy.1,
+                            }
+                        } else {
+                            RestartWalk::Keep
+                        };
+                        self.start_query(restart, &subquery);
                     }
-                } else {
-                    RestartWalk::Keep
-                };
-                self.start_query(restart, new.matcher_query());
+                    MentionMatchResult::EntriesOnly(entries) => {
+                        self.mention_entries = entries;
+                        self.mention_only = true;
+                        self.selected = 0;
+                        self.hovered = None;
+                        self.scroll_offset = 0;
+                    }
+                    MentionMatchResult::HeadersPlusFiles(entries) => {
+                        self.mention_entries = entries;
+                        self.mention_only = false;
+                        // Staying in @-mode only re-walks when the effective walker
+                        // policy changes (for example plain `@` ↔ explicit `@!`).
+                        let old_policy = self.walk_policy(old);
+                        let new_policy = self.walk_policy(new);
+                        let restart = if old_policy != new_policy {
+                            RestartWalk::Restart {
+                                hidden: new_policy.0,
+                                ignored: new_policy.1,
+                            }
+                        } else {
+                            RestartWalk::Keep
+                        };
+                        self.start_query(restart, new.matcher_query());
+                    }
+                }
             }
             (Some(_), None) => {
                 // Leaving @-mode: clear results and the drill anchor.
                 self.context = None;
                 self.drill_prefix = None;
                 self.results = FuzzyMatcherDaemonResults::default();
+                self.mention_entries.clear();
+                self.mention_only = false;
                 return;
             }
             (None, None) => return,
         }
 
         self.context = new_ctx;
-        // Both @-mode arms build the daemon via `start_query`, so an active context implies a built daemon
-        debug_assert!(self.context.is_none() || self.daemon.is_some());
+        // Non-mention-only @-mode arms build the daemon via `start_query`.
+        debug_assert!(self.context.is_none() || self.mention_only || self.daemon.is_some());
     }
 
     /// Clear the context (e.g., on Esc).
@@ -306,6 +421,8 @@ impl FileSearchState {
         self.context = None;
         self.drill_prefix = None;
         self.results = FuzzyMatcherDaemonResults::default();
+        self.mention_entries.clear();
+        self.mention_only = false;
     }
 
     // ── Tick / polling ──────────────────────────────────────────────────
@@ -314,7 +431,7 @@ impl FileSearchState {
     ///
     /// Call this on every tick (~4ms) while the dropdown is potentially visible.
     pub fn poll(&mut self) -> bool {
-        if self.context.is_none() {
+        if self.context.is_none() || self.mention_only {
             return false;
         }
 
@@ -334,8 +451,9 @@ impl FileSearchState {
             if results.generation >= self.min_generation {
                 self.min_generation = results.generation;
                 self.results = results;
-                if !self.results.topk.is_empty() {
-                    self.selected = self.selected.min(self.results.topk.len() - 1);
+                let len = self.result_count();
+                if len > 0 {
+                    self.selected = self.selected.min(len - 1);
                 }
                 return true;
             }
@@ -348,7 +466,7 @@ impl FileSearchState {
 
     /// Move selection by `delta` items (negative is up, positive is down).
     pub fn move_selection(&mut self, delta: isize) {
-        let len = self.results.topk.len();
+        let len = self.result_count();
         if len == 0 {
             return;
         }
@@ -381,7 +499,7 @@ impl FileSearchState {
     /// Returns `true` if there was a valid hovered item to select.
     pub fn select_hovered(&mut self) -> bool {
         if let Some(idx) = self.hovered
-            && idx < self.results.topk.len()
+            && idx < self.result_count()
         {
             self.selected = idx;
             return true;
@@ -391,14 +509,18 @@ impl FileSearchState {
 
     /// Get the currently selected fuzzy match result.
     pub fn selected_result(&self) -> Option<&FuzzyMatchResult> {
-        self.results.topk.get(self.selected)
+        if self.mention_only {
+            return None;
+        }
+        let file_idx = self.selected.checked_sub(self.mention_entries.len())?;
+        self.results.topk.get(file_idx)
     }
 
     /// A directory whose `/`-append matches text already present is committed (dismiss); otherwise the
     /// caller drills in and stays open.
     pub fn try_replace(&self, src: &str) -> Option<FileSearchReplacement> {
         let ctx = self.context.as_ref()?;
-        let res = self.results.topk.get(self.selected)?;
+        let res = self.selected_result()?;
 
         // Dir-only contract: this always appends `/`, so it is valid only for a directory chosen in dir mode
         // Enforce it here so a file-selection caller can never emit `some/file.rs/`
@@ -435,12 +557,16 @@ impl FileSearchState {
 
     /// Number of result items.
     pub fn result_count(&self) -> usize {
-        self.results.topk.len()
+        self.mention_entries.len() + self.file_results_len()
     }
 
     /// Total items the matcher knows about (for "k/n" display).
     pub fn total_items(&self) -> usize {
-        self.results.num_items
+        if self.mention_only {
+            self.mention_entries.len()
+        } else {
+            self.mention_entries.len() + self.results.num_items
+        }
     }
 
     /// Test-only: install a fake context and results snapshot so tests can drive acceptance flows without the background fuzzy daemon.
@@ -454,6 +580,8 @@ impl FileSearchState {
         selected: usize,
     ) {
         self.context = Some(context);
+        self.mention_entries.clear();
+        self.mention_only = false;
         self.results = FuzzyMatcherDaemonResults {
             topk: Arc::from(results),
             num_items: 0,

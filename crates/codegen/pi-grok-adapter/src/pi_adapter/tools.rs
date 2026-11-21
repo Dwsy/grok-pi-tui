@@ -1159,6 +1159,15 @@ impl PiAgent {
                         )
                         .await;
                     }
+                    EXTENSION_MENTIONS_STATUS_KEY => {
+                        if let Some(mut payload) =
+                            control_status_payload(text.filter(|text| text.len() <= 512 * 1024))
+                        {
+                            hydrate_psm_thread_mentions(&mut payload).await;
+                            self.send_ext_notification("pi/ui/mentions_catalog", payload)
+                                .await;
+                        }
+                    }
                     "__pi_grok_tree_leaf__" => {
                         if let Some(payload) = control_status_payload(text)
                             && let Some(id) = string(&payload, &["requestId"])
@@ -1424,4 +1433,106 @@ impl PiAgent {
 /// go through here, so an ordinary status line never pays for a parse.
 fn control_status_payload(text: Option<&str>) -> Option<Value> {
     serde_json::from_str(text?).ok()
+}
+
+/// Hydrate empty `session` mention providers directly from the read-only PSM
+/// SQLite index (`~/.pi/agent/sessions/sessions.db`) with zero disk scan.
+///
+/// The TS extension tries `node:sqlite` first; when the host Node runtime lacks
+/// built-in SQLite (or returns empty), the Rust adapter fills up to 50 recent
+/// sessions from `psm_session_catalog::load_catalog` before forwarding the
+/// catalog to the Pager.
+async fn hydrate_psm_thread_mentions(payload: &mut Value) {
+    let is_session_provider = |provider: &Value| {
+        matches!(
+            provider.get("kind").and_then(Value::as_str),
+            Some("session" | "thread")
+        )
+    };
+    let needs_sessions = payload
+        .get("providers")
+        .and_then(Value::as_array)
+        .is_some_and(|providers| {
+            providers.iter().any(|provider| {
+                is_session_provider(provider)
+                    && provider
+                        .get("items")
+                        .and_then(Value::as_array)
+                        .is_none_or(Vec::is_empty)
+            })
+        });
+    if !needs_sessions {
+        return;
+    }
+
+    let Ok(Some(sessions)) = tokio::task::spawn_blocking(|| {
+        crate::psm_session_catalog::load_catalog(std::path::Path::new("."), true)
+    })
+    .await
+    else {
+        return;
+    };
+
+    let items: Vec<Value> = sessions
+        .into_iter()
+        .take(50)
+        .map(|info| {
+            let raw_title = info
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(info.first_message.trim());
+            let title: String = if raw_title.is_empty() {
+                info.id.clone()
+            } else {
+                let single_line: String = raw_title
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let mut truncated: String = single_line.chars().take(72).collect();
+                if single_line.chars().count() > 72 {
+                    truncated.push('…');
+                }
+                truncated
+            };
+            let date_part = info.modified_at.get(..10).unwrap_or(&info.modified_at);
+            let cwd_tail = std::path::Path::new(&info.cwd)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&info.cwd);
+            let short_id: String = info.id.chars().take(8).collect();
+            let subtitle = format!("{short_id} · {date_part} · {} msgs · {cwd_tail}", info.message_count);
+            let uri = format!("grok-pi://session/{}", info.id);
+            let insert_text = format!("@session:{short_id}");
+            let search_text = format!("{} {} {}", info.id, title, info.cwd);
+            json!({
+                "id": info.id,
+                "title": title,
+                "subtitle": subtitle,
+                "uri": uri,
+                "insertText": insert_text,
+                "searchText": search_text,
+            })
+        })
+        .collect();
+
+    if items.is_empty() {
+        return;
+    }
+
+    if let Some(providers) = payload.get_mut("providers").and_then(Value::as_array_mut) {
+        for provider in providers {
+            if is_session_provider(provider)
+                && provider
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .is_none_or(Vec::is_empty)
+                && let Some(obj) = provider.as_object_mut()
+            {
+                obj.insert("items".to_string(), Value::Array(items.clone()));
+                break;
+            }
+        }
+    }
 }

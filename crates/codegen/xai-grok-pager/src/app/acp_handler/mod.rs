@@ -657,6 +657,8 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         }
         // Extension shortcut registry sync from Pi.
         "pi/ui/shortcuts" => handle_pi_ui_shortcuts(notif, app),
+        // Extensible `@` object-mention catalog published by TS extensions.
+        "pi/ui/mentions_catalog" => handle_pi_ui_mentions_catalog(notif, app),
         _ => false,
     }
 }
@@ -683,6 +685,21 @@ fn handle_review_ask_delta(notif: &acp::ExtNotification, app: &mut AppView) -> b
         }
     }
     false
+}
+
+fn handle_pi_ui_mentions_catalog(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Ok(catalog) =
+        serde_json::from_value::<crate::views::file_search::MentionCatalog>(params)
+    else {
+        return false;
+    };
+    for agent in app.agents.values_mut() {
+        agent.prompt.file_search.set_mention_catalog(catalog.clone());
+    }
+    true
 }
 
 fn handle_pi_ui_shortcuts(notif: &acp::ExtNotification, app: &mut AppView) -> bool {

@@ -11,9 +11,11 @@
 pub mod context;
 pub mod dropdown;
 pub mod line_viewer;
+pub mod mentions;
 mod state;
 
 pub use context::AtContext;
+pub use mentions::{MentionCatalog, MentionEntry, MentionItem, MentionProvider};
 pub use state::{FileSearchReplacement, FileSearchState};
 
 use ratatui::style::Style;
