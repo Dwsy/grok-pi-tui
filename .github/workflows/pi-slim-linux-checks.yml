@@ -1,0 +1,105 @@
+name: Pi slim Linux source checks (manual)
+
+# Manual-only Linux verification workflow for pi-slim feature boundaries.
+# Never auto-runs on push/PR/tag; trigger explicitly via `gh workflow run`.
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: Select fast compile/closure/telemetry checks or include pi-grok-adapter tests
+        required: true
+        default: fast
+        type: choice
+        options:
+          - fast
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi-slim-linux-${{ github.ref }}-${{ inputs.scope }}
+  cancel-in-progress: false
+
+jobs:
+  source-checks:
+    name: Linux source parity (pi-slim)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      RUST_MIN_STACK: "8388608"
+      GROK_PI_VERSION: "0.0.0-slim-ci"
+    steps:
+      - name: Check out exact branch commit
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.0"
+
+      - name: Install protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+      - name: Restore source-check cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pi-slim-linux-source-parity
+          cache-workspace-crates: "true"
+          cache-bin: "false"
+
+      - name: Check Pi and Stock compile boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --locked --lib -p xai-grok-telemetry --no-default-features
+          cargo check --locked --lib -p xai-grok-telemetry \
+            --no-default-features --features stock-sentry,stock-mixpanel
+          cargo check --locked -p xai-grok-pager-bin --bin grok-pi \
+            --no-default-features --features release-dist,sandbox-enforce
+          cargo check --locked -p xai-grok-pager-bin --bin xai-grok-pager \
+            --no-default-features --features stock-agent,stock-sentry,stock-mixpanel
+
+      - name: Assert decoupled Stock crates stay outside the Pi compile closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          for forbidden in xai-grok-sampler sentry xai-mixpanel; do
+            if cargo tree --locked -p xai-grok-pager-bin --no-default-features \
+                 --features release-dist,sandbox-enforce -e normal -i "$forbidden" >/dev/null 2>&1; then
+              echo "::error::${forbidden} is back in the Pi compile closure"
+              exit 1
+            fi
+          done
+          # Verify Stock features still retain these crates.
+          cargo tree --locked -p xai-grok-shell --no-default-features --features stock-agent \
+            -e normal -i xai-grok-sampler >/dev/null
+          cargo tree --locked -p xai-grok-pager-bin --no-default-features \
+            --features stock-sentry,stock-mixpanel -e normal -i sentry >/dev/null
+          cargo tree --locked -p xai-grok-pager-bin --no-default-features \
+            --features stock-sentry,stock-mixpanel -e normal -i xai-mixpanel >/dev/null
+
+      - name: Test xai-grok-telemetry (Pi-only and Stock telemetry)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib -p xai-grok-telemetry --no-default-features -j 2
+          cargo test --locked --lib -p xai-grok-telemetry \
+            --no-default-features --features stock-sentry,stock-mixpanel -j 2
+
+      - name: Test Pi JSONL RPC / Goal / Remote TUI contracts
+        if: inputs.scope == 'all'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib -p pi-grok-adapter --no-default-features -j 2
