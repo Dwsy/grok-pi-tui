@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.7] - 2026-11-21
+
 ### Added
 
 - **Extensible `@` object mentions** — the `@` completion dropdown now serves structured objects, not just files. Rust owns the generic capability (catalog state, prefix/alias matching, dropdown rendering, atomic chip insertion); TypeScript extensions own the concrete providers, so a new object type is an extension registration rather than a Pager change. Built-in providers are `@skill`, `@session`, `@mcp`, plus the existing file search, with ASCII and Chinese aliases (`@技能:`, `@会话:`, `@工具服务:`, `@文件:`).
