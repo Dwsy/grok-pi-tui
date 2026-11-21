@@ -10,6 +10,8 @@ authors = ["xAI"]
 default = []
 default-bazel = []
 memory-log = []
+stock-sentry = ["dep:sentry"]
+stock-mixpanel = ["dep:xai-mixpanel"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -31,14 +33,14 @@ git2 = { version = "0.20", default-features = false, features = [
 ] }
 reqwest = { workspace = true }
 xai-grok-secrets = { workspace = true }
-xai-mixpanel = { workspace = true }
+xai-mixpanel = { workspace = true, optional = true }
 xai-grok-config = { workspace = true }
 xai-grok-extra-ca = { workspace = true }
 xai-grok-sampling-types = { workspace = true }
 xai-token-estimation = { workspace = true }
 xai-dirs = { workspace = true }
 xai-grok-env = { workspace = true }
-sentry = { version = "0.42.0", default-features = false, features = [
+sentry = { version = "0.42.0", optional = true, default-features = false, features = [
     "panic",
     "anyhow",
     "tracing",

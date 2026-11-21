@@ -10,8 +10,11 @@ use crate::http::OriginClientInfo;
 use crate::session_ctx::EmitterOrigin;
 use chrono::{Local, SecondsFormat};
 use serde_json::json;
-use std::sync::{Arc, Mutex, Once, OnceLock};
+#[cfg(feature = "stock-mixpanel")]
+use std::sync::Arc;
+use std::sync::{Mutex, Once, OnceLock};
 use xai_grok_env::env_bool;
+#[cfg(feature = "stock-mixpanel")]
 use xai_mixpanel::Mixpanel;
 /// Event property map shared by all telemetry modules.
 pub type Metadata = serde_json::Map<String, serde_json::Value>;
@@ -27,6 +30,7 @@ fn event_value(event_name: &str) -> &str {
 /// Do not put the event name in this field: the sink truncates to 36 chars and rejects most other characters. A truncated
 /// name-prefixed id collapses to a constant and dedups a user's same-second events; one with `:` is dropped and
 /// regenerated. A bare UUID always validates.
+#[cfg(feature = "stock-mixpanel")]
 fn product_analytics_insert_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
@@ -35,6 +39,7 @@ pub struct TelemetryClient {
     mode: TelemetryMode,
     events_url: Option<String>,
     events_api_key: Option<String>,
+    #[cfg(feature = "stock-mixpanel")]
     mixpanel: Option<Arc<Mixpanel>>,
     user_id: Option<String>,
     team_id: Option<String>,
@@ -47,14 +52,14 @@ pub struct TelemetryClient {
 }
 impl std::fmt::Debug for TelemetryClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TelemetryClient")
-            .field("events_url", &self.events_url)
-            .field(
-                "events_api_key",
-                &self.events_api_key.as_ref().map(|_| "***"),
-            )
-            .field("mixpanel", &self.mixpanel.as_ref().map(|_| "configured"))
-            .finish()
+        let mut s = f.debug_struct("TelemetryClient");
+        s.field("events_url", &self.events_url).field(
+            "events_api_key",
+            &self.events_api_key.as_ref().map(|_| "***"),
+        );
+        #[cfg(feature = "stock-mixpanel")]
+        s.field("mixpanel", &self.mixpanel.as_ref().map(|_| "configured"));
+        s.finish()
     }
 }
 /// Opts a dev build (no `GROK_VERSION` at compile time) back into the baked production sinks.
@@ -84,6 +89,7 @@ impl TelemetryClient {
                 );
                 });
         }
+        #[cfg(feature = "stock-mixpanel")]
         let mixpanel = if config.mixpanel_enabled {
             config
                 .mixpanel_token
@@ -103,6 +109,7 @@ impl TelemetryClient {
             mode,
             events_url: config.events_url,
             events_api_key: config.events_api_key,
+            #[cfg(feature = "stock-mixpanel")]
             mixpanel,
             user_id,
             team_id,
@@ -338,6 +345,7 @@ pub async fn track(event_name: &str, request_id: &str, ctx: &UserContext, mut me
             .send()
             .await;
     }
+    #[cfg(feature = "stock-mixpanel")]
     if let Some(ref mixpanel) = client.mixpanel {
         let time_secs = chrono::Utc::now().timestamp();
         let insert_id = product_analytics_insert_id();
@@ -372,6 +380,7 @@ pub fn current_mode() -> Option<TelemetryMode> {
 }
 /// Sync the user's Mixpanel profile once per init. Fire-and-forget. Only runs in [`TelemetryMode::Enabled`].
 /// SessionMetrics mode may emit lifecycle events via [`track`], but must not write Mixpanel people profiles (`engage`).
+#[cfg(feature = "stock-mixpanel")]
 pub fn sync_profile() {
     let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
     let client = {
@@ -412,6 +421,9 @@ pub fn sync_profile() {
         let _ = mixpanel.engage(&user_id, props).await;
     });
 }
+/// No-op when the `stock-mixpanel` feature is disabled.
+#[cfg(not(feature = "stock-mixpanel"))]
+pub fn sync_profile() {}
 /// Safe to call multiple times. `Disabled`: no client; `SessionMetrics`: client active (only `session_metrics::*` events
 /// fire); `Enabled`: client active (all events fire). `shell_version` is stamped into every event payload (legacy field
 /// name kept for analytics continuity); shell passes its `CARGO_PKG_VERSION`.

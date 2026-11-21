@@ -119,6 +119,8 @@ default = [
     "stock-gcs",
     "stock-tool-dialects",
     "stock-agent",
+    "stock-sentry",
+    "stock-mixpanel",
     ]
 default-bazel = [
     "stock-mcp",
@@ -136,6 +138,8 @@ default-bazel = [
     "stock-gcs",
     "stock-tool-dialects",
     "stock-agent",
+    "stock-sentry",
+    "stock-mixpanel",
     ]
 stock-mcp = [
     "xai-grok-shell/stock-mcp",
@@ -157,6 +161,8 @@ stock-agent = [
     "xai-grok-shell/stock-agent",
     "xai-grok-login",
 ]
+stock-sentry = ["xai-grok-telemetry/stock-sentry"]
+stock-mixpanel = ["xai-grok-telemetry/stock-mixpanel"]
 stock-s3 = ["xai-grok-shell/stock-s3"]
 stock-gcs = ["xai-grok-shell/stock-gcs"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]

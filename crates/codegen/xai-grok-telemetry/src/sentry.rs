@@ -1,13 +1,22 @@
+#[cfg(feature = "stock-sentry")]
 use std::borrow::Cow;
+#[cfg(feature = "stock-sentry")]
 use std::sync::Arc;
+#[cfg(feature = "stock-sentry")]
 use std::sync::OnceLock;
+#[cfg(feature = "stock-sentry")]
 use std::time::Duration;
 
+#[cfg(feature = "stock-sentry")]
 use sentry::ClientInitGuard;
+#[cfg(feature = "stock-sentry")]
 use sentry::ClientOptions;
+#[cfg(feature = "stock-sentry")]
 use sentry::protocol::{Event, Value};
 
+#[cfg(feature = "stock-sentry")]
 const TRACES_SAMPLE_RATE: f32 = 0.01;
+#[cfg(feature = "stock-sentry")]
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 // ─── Host integration ─────────────────────────────────────────────────────
@@ -22,13 +31,19 @@ pub struct Config {
     pub disabled: bool,
 }
 
+#[cfg(feature = "stock-sentry")]
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
+/// No-op guard returned when the `stock-sentry` feature is disabled.
+#[cfg(not(feature = "stock-sentry"))]
+pub struct ClientInitGuard;
+
 /// Init Sentry and apply the process-wide scope tags.
 /// Call once at process start; the returned guard must outlive the process.
 /// Returns a no-op guard when `config.disabled`.
+#[cfg(feature = "stock-sentry")]
 pub fn init(config: Config) -> ClientInitGuard {
     let config = CONFIG.get_or_init(|| config);
 
@@ -67,7 +82,14 @@ pub fn init(config: Config) -> ClientInitGuard {
     guard
 }
 
+/// No-op when the `stock-sentry` feature is disabled.
+#[cfg(not(feature = "stock-sentry"))]
+pub fn init(_config: Config) -> ClientInitGuard {
+    ClientInitGuard
+}
+
 /// Flush in-flight events. Call before `std::process::exit` in signal handlers.
+#[cfg(feature = "stock-sentry")]
 pub fn flush_on_shutdown() {
     let flush_span = crate::region::Region::from_span(tracing::info_span!(
         "teardown.sentry_flush",
@@ -82,14 +104,20 @@ pub fn flush_on_shutdown() {
         .record("elapsed_ms", started.elapsed().as_millis() as i64);
 }
 
+/// No-op when the `stock-sentry` feature is disabled.
+#[cfg(not(feature = "stock-sentry"))]
+pub fn flush_on_shutdown() {}
+
 // ─── Internals ─────────────────────────────────────────────────────────────
 
+#[cfg(feature = "stock-sentry")]
 #[derive(Clone, Debug)]
 struct Scrubber {
     home_dir: Option<String>,
     usernames: Vec<String>,
 }
 
+#[cfg(feature = "stock-sentry")]
 impl Scrubber {
     fn from_env() -> Self {
         Self {
@@ -112,9 +140,11 @@ impl Scrubber {
     }
 }
 
+#[cfg(feature = "stock-sentry")]
 const REDACTED_USER: &str = "<user>";
 
 /// Reads `$USERNAME` then `$USER`, deduped; the 3-char floor avoids over-matching.
+#[cfg(feature = "stock-sentry")]
 fn collect_usernames_from_env() -> Vec<String> {
     let mut usernames: Vec<String> = Vec::new();
     for var in ["USERNAME", "USER"] {
@@ -131,6 +161,7 @@ fn collect_usernames_from_env() -> Vec<String> {
 /// Replace whole `/`- or `\`-delimited segments matching any entry in `usernames` with `<user>`.
 /// Substrings inside a segment are untouched.
 /// Matching is case-insensitive on Windows (NTFS), case-sensitive elsewhere (POSIX).
+#[cfg(feature = "stock-sentry")]
 fn redact_username_segments(value: &str, usernames: &[String]) -> String {
     if usernames.is_empty() {
         return value.to_owned();
@@ -150,6 +181,7 @@ fn redact_username_segments(value: &str, usernames: &[String]) -> String {
     out
 }
 
+#[cfg(feature = "stock-sentry")]
 fn push_segment(out: &mut String, segment: &str, usernames: &[String]) {
     let matches = if cfg!(windows) {
         usernames.iter().any(|u| u.eq_ignore_ascii_case(segment))
@@ -164,6 +196,7 @@ fn push_segment(out: &mut String, segment: &str, usernames: &[String]) {
 }
 
 /// Whole-segment `home` -> `~` so `/Users/bob` doesn't fold over `/Users/bobby/...`.
+#[cfg(feature = "stock-sentry")]
 fn replace_home_prefix(input: &str, home: &str) -> String {
     if home.is_empty() || !input.contains(home) {
         return input.to_owned();
@@ -190,6 +223,7 @@ fn replace_home_prefix(input: &str, home: &str) -> String {
     out
 }
 
+#[cfg(feature = "stock-sentry")]
 fn is_segment_boundary_char(c: char) -> bool {
     c.is_whitespace()
         || matches!(
@@ -198,6 +232,7 @@ fn is_segment_boundary_char(c: char) -> bool {
         )
 }
 
+#[cfg(feature = "stock-sentry")]
 fn before_send(mut event: Event<'static>, scrubber: &Scrubber) -> Option<Event<'static>> {
     if is_broken_pipe_panic(&event) {
         return None;
@@ -247,6 +282,7 @@ fn before_send(mut event: Event<'static>, scrubber: &Scrubber) -> Option<Event<'
 }
 
 /// Drop panics caused by broken pipe or disk-full, both user-environment noise.
+#[cfg(feature = "stock-sentry")]
 fn is_broken_pipe_panic(event: &Event<'_>) -> bool {
     event.exception.values.iter().any(|ex| {
         ex.value.as_deref().is_some_and(|v| {
@@ -258,6 +294,7 @@ fn is_broken_pipe_panic(event: &Event<'_>) -> bool {
     })
 }
 
+#[cfg(feature = "stock-sentry")]
 fn environment() -> &'static str {
     if cfg!(debug_assertions) {
         "development"
@@ -268,7 +305,7 @@ fn environment() -> &'static str {
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-sentry"))]
 #[allow(clippy::field_reassign_with_default)] // setup reads better field-by-field
 mod tests {
     use super::*;
