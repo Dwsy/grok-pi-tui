@@ -3271,6 +3271,7 @@ pub fn apply_remote_settings_side_effects(settings: Option<&crate::util::config:
     crate::util::config::cache_remote_remember_tool_approvals(s.remember_tool_approvals);
     crate::util::config::cache_remote_crash_handler_enabled(s.crash_handler_enabled);
     apply_external_otel_remote_policy(settings);
+    #[cfg(feature = "stock-agent")]
     crate::session::normalize_cache::NormalizeCache::global()
         .set_enabled(s.image_normalize_cache_enabled.unwrap_or(false));
 }

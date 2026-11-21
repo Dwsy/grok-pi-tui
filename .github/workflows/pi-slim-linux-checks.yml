@@ -74,7 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for forbidden in xai-grok-sampler sentry xai-mixpanel; do
+          for forbidden in xai-grok-sampler sentry xai-mixpanel bm25 moka kanal; do
             if cargo tree --locked -p xai-grok-pager-bin --no-default-features \
                  --features release-dist,sandbox-enforce -e normal -i "$forbidden" >/dev/null 2>&1; then
               echo "::error::${forbidden} is back in the Pi compile closure"
@@ -82,8 +82,10 @@ jobs:
             fi
           done
           # Verify Stock features still retain these crates.
-          cargo tree --locked -p xai-grok-shell --no-default-features --features stock-agent \
-            -e normal -i xai-grok-sampler >/dev/null
+          for required in xai-grok-sampler bm25 moka kanal; do
+            cargo tree --locked -p xai-grok-shell --no-default-features --features stock-agent \
+              -e normal -i "$required" >/dev/null
+          done
           cargo tree --locked -p xai-grok-pager-bin --no-default-features \
             --features stock-sentry,stock-mixpanel -e normal -i sentry >/dev/null
           cargo tree --locked -p xai-grok-pager-bin --no-default-features \

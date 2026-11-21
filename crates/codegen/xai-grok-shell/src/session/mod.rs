@@ -574,6 +574,7 @@ pub mod mcp_servers;
 pub mod memory;
 #[cfg(feature = "stock-agent")]
 pub(crate) mod memory_observation;
+#[cfg(feature = "stock-agent")]
 pub(crate) mod normalize_cache;
 pub mod persistence;
 #[cfg(feature = "stock-agent")]
@@ -605,6 +606,7 @@ pub(crate) mod summary;
 pub(crate) mod telemetry;
 #[cfg(feature = "test-support")]
 pub mod testkit;
+#[cfg(feature = "stock-agent")]
 pub mod tool_index;
 pub mod turn_completion;
 pub mod unified_list;

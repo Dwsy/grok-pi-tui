@@ -8,7 +8,7 @@ edition.workspace = true
 # Stock Grok's in-process agent/CLI surfaces; Pi never needs the inspect CLI
 # entry point. Gate one independently owned module at a time before making
 # the heavyweight agent dependency optional (S12-b).
-stock-agent = ["dep:xai-grok-sampler"]
+stock-agent = ["dep:xai-grok-sampler", "dep:bm25", "dep:kanal", "dep:moka"]
 stock-mcp = ["stock-agent", "dep:xai-grok-mcp", "xai-grok-workspace/stock-mcp"]
 stock-pdf = ["xai-grok-tools/stock-pdf"]
 stock-lsp = ["xai-grok-tools/stock-lsp", "xai-grok-workspace/stock-lsp"]
@@ -65,7 +65,7 @@ xai-grok-version = { workspace = true }
 async-openai = { workspace = true }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
-bm25 = "2.3"
+bm25 = { version = "2.3", optional = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
@@ -74,7 +74,7 @@ jsonschema = { workspace = true }
 futures = { workspace = true }
 glob = { workspace = true }
 globset = { workspace = true }
-kanal = "0.1"
+kanal = { version = "0.1", optional = true }
 regex = { workspace = true }
 # rmcp 3.2 + reqwest 0.13 are quarantined inside `xai-grok-mcp`. The remaining
 # MCP code in this crate (extensions/mcp.rs, mcp_doctor.rs) reaches rmcp model
@@ -139,7 +139,7 @@ nucleo = { workspace = true }
 arc-swap = { workspace = true }
 infer = "0.15"
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
-moka = { workspace = true, features = ["future"] }
+moka = { workspace = true, optional = true, features = ["future"] }
 dhat = { workspace = true, optional = true }
 base64 = { workspace = true }
 hmac = { workspace = true }

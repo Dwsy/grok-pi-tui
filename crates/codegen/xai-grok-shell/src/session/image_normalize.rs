@@ -1,5 +1,6 @@
 //! Re-encode decoded attachments that exceed [`MAX_IMAGE_BYTES`], [`MAX_ENCODE_PIXELS`], or [`MAX_ENCODE_SIDE_PX`] to fit the conversation caps.
 //! Compute is reused across calls via [`NormalizeCache`](crate::session::normalize_cache).
+#[cfg(feature = "stock-agent")]
 use crate::session::normalize_cache::{
     HarnessVariant, NormalizeCache, NormalizeError, NormalizedEntry, run_blocking,
 };
@@ -119,6 +120,7 @@ pub(crate) struct NormalizeResult {
     /// Reported via [`render_image_dropped_notice`].
     pub dropped: Vec<String>,
 }
+#[cfg(feature = "stock-agent")]
 pub(crate) async fn normalize_images(
     images: Vec<ImageContent>,
     is_cursor: bool,
@@ -126,6 +128,7 @@ pub(crate) async fn normalize_images(
     normalize_images_in(images, is_cursor, NormalizeCache::global()).await
 }
 /// [`normalize_images`] with an injected cache (tests use a fresh per-case instance so state does not leak through the global cache).
+#[cfg(feature = "stock-agent")]
 pub(crate) async fn normalize_images_in(
     images: Vec<ImageContent>,
     is_cursor: bool,
@@ -166,6 +169,7 @@ pub(crate) async fn normalize_images_in(
         dropped,
     }
 }
+#[cfg(feature = "stock-agent")]
 fn params_for(harness: HarnessVariant) -> &'static ReEncodeParams {
     match harness {
         HarnessVariant::Cursor => &STRICT_NORMALIZE_PARAMS,
@@ -328,6 +332,7 @@ enum Outcome {
         error: String,
     },
 }
+#[cfg(feature = "stock-agent")]
 async fn normalize_one_in(
     img: ImageContent,
     index: usize,
@@ -373,6 +378,7 @@ async fn normalize_one_in(
         Err(arc_err) => fail(index, arc_err.0.clone()),
     }
 }
+#[cfg(feature = "stock-agent")]
 fn entry_to_outcome(orig: ImageContent, entry: NormalizedEntry, index: usize) -> Outcome {
     match entry {
         NormalizedEntry::Compressed {
@@ -391,6 +397,7 @@ fn entry_to_outcome(orig: ImageContent, entry: NormalizedEntry, index: usize) ->
         NormalizedEntry::Unchanged { .. } => Outcome::Unchanged(orig),
     }
 }
+#[cfg(feature = "stock-agent")]
 async fn compute_normalized(
     raw_bytes: Vec<u8>,
     harness: HarnessVariant,
@@ -401,6 +408,7 @@ async fn compute_normalized(
 }
 /// `params` widens to `&'static ReEncodeParams` (instead of `HarnessVariant`).
 /// Tests can then inject `max_bytes = 0` to drive the `ReEncodingOversized` branch.
+#[cfg(feature = "stock-agent")]
 fn compute_normalized_blocking(
     raw_bytes: Vec<u8>,
     params: &'static ReEncodeParams,
@@ -485,6 +493,6 @@ fn compute_normalized_blocking(
 fn fail(index: usize, error: String) -> Outcome {
     Outcome::Failed { index, error }
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "stock-agent"))]
 #[path = "image_normalize_tests.rs"]
 mod tests;
