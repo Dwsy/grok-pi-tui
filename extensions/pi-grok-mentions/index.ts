@@ -27,6 +27,13 @@ const MAX_THREADS = 50;
 const MAX_CATALOG_BYTES = 450 * 1024;
 const THREAD_CACHE_TTL_MS = 5_000;
 
+/**
+ * Cap on entries listed for an `@folder` reference. A folder reference exists
+ * to tell the model what is inside; dumping thousands of paths would blow the
+ * context for no gain, and the model can always read further with its tools.
+ */
+const MAX_DIR_ENTRIES = 200;
+
 export interface MentionItem {
   id: string;
   title: string;
@@ -321,6 +328,48 @@ function readThreadTailSnippet(jsonlPath: string): string | null {
   }
 }
 
+/**
+ * Describe an `@folder` reference so the model knows what the folder holds.
+ *
+ * The Pager inserts `@path` as literal text and Pi core does not expand it, so
+ * without this a folder reference reaches the model as a bare path and it has
+ * to guess (or spend a tool call) to learn the contents. Returns `null` when the
+ * path is not a directory, which keeps ordinary `@file` references untouched.
+ *
+ * One level only, sorted, capped at {@link MAX_DIR_ENTRIES}: the point is an
+ * accurate outline, not a full recursive dump.
+ */
+function describeFolderReference(rawPath: string, cwd: string): string | null {
+  try {
+    const abs = path.isAbsolute(rawPath) ? rawPath : path.resolve(cwd, rawPath);
+    const stat = fs.statSync(abs);
+    if (!stat.isDirectory()) return null;
+
+    const entries = fs.readdirSync(abs, { withFileTypes: true });
+    const dirs: string[] = [];
+    const files: string[] = [];
+    for (const entry of entries) {
+      // Dotfiles are noise in an outline; the model can still reach them explicitly.
+      if (entry.name.startsWith(".")) continue;
+      (entry.isDirectory() ? dirs : files).push(entry.name);
+    }
+    dirs.sort((a, b) => a.localeCompare(b));
+    files.sort((a, b) => a.localeCompare(b));
+
+    const shown = [...dirs.map((d) => `${d}/`), ...files];
+    const truncated = shown.length > MAX_DIR_ENTRIES;
+    const listed = shown.slice(0, MAX_DIR_ENTRIES);
+    const heading = `- **grok-pi://folder/${rawPath}** — workspace folder \`${rawPath}\` containing ${shown.length}${truncated ? "+" : ""} entries (one level):`;
+    const lines = listed.map((name) => `  - ${name}`);
+    if (truncated) {
+      lines.push(`  - … ${shown.length - MAX_DIR_ENTRIES} more; list the folder for the rest`);
+    }
+    return [heading, ...lines].join("\n");
+  } catch {
+    return null;
+  }
+}
+
 function buildBuiltInProviders(pi: ExtensionAPI): MentionProviderSpec[] {
   return [
     {
@@ -467,7 +516,12 @@ export default function mentions(pi: ExtensionAPI) {
         const key = `file:${rawId}`;
         if (!seen.has(key)) {
           seen.add(key);
-          resolvedLines.push(`- **grok-pi://file/${rawId}** — workspace file \`${rawId}\``);
+          // `@file:` can name a folder too (dir mode reuses the same token), so
+          // resolve the real type instead of always claiming it is a file.
+          resolvedLines.push(
+            describeFolderReference(rawId, cwd) ??
+              `- **grok-pi://file/${rawId}** — workspace file \`${rawId}\``,
+          );
         }
         continue;
       }
@@ -486,6 +540,35 @@ export default function mentions(pi: ExtensionAPI) {
       const line =
         provider.resolve?.(rawId, { cwd }) ?? `- **grok-pi://${provider.kind}/${rawId}**`;
       if (line) resolvedLines.push(line);
+    }
+
+    // 3. Resolve bare `@path` references that point at a folder.
+    //
+    // The Pager drops a plain `@crates/common` into the prompt verbatim, and Pi
+    // core does not expand it, so the model would receive a path with no idea
+    // what is inside. Only directories are expanded here: a bare file path is
+    // already handled well enough by the model's own read tool, and expanding
+    // every stray `@word` in prose would be noise.
+    // Capture the whole token after `@` (including any `:`), then reject the
+    // forms another pass already owns. Matching only up to the colon would
+    // grab the bare kind word out of `@skill:...` and `@file:...`.
+    const bare = /(^|[\s,;])@([^\s,;]+)/gu;
+    for (const match of prompt.matchAll(bare)) {
+      const rawPath = match[2] ?? "";
+      if (!rawPath || rawPath.startsWith("!")) continue;
+      // `@kind:id` is the kind pass's job.
+      if (rawPath.includes(":") || rawPath.includes("：")) continue;
+      // A path with a line range (`@src/main.rs:10`) never reaches here because
+      // the colon check above rejects it; this also skips trailing punctuation
+      // such as `@crates/common.` at a sentence end.
+      const candidate = rawPath.replace(/[.,;:!?)\]}]+$/u, "");
+      if (!candidate) continue;
+      const key = `folder:${candidate}`;
+      if (seen.has(key)) continue;
+      const described = describeFolderReference(candidate, cwd);
+      if (!described) continue;
+      seen.add(key);
+      resolvedLines.push(described);
     }
 
     if (resolvedLines.length > 0) {

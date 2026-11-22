@@ -518,6 +518,11 @@ impl FileSearchState {
 
     /// A directory whose `/`-append matches text already present is committed (dismiss); otherwise the
     /// caller drills in and stays open.
+    ///
+    /// Tab/Enter no longer drill: they accept the folder itself as a reference
+    /// and descend is Right Arrow's job. This stays as the shared definition of
+    /// the `/`-append contract, and its tests pin the drill-down and
+    /// commit-already-present-directory semantics.
     pub fn try_replace(&self, src: &str) -> Option<FileSearchReplacement> {
         let ctx = self.context.as_ref()?;
         let res = self.selected_result()?;

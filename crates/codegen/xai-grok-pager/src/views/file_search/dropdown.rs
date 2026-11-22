@@ -235,8 +235,11 @@ fn render_fuzzy_item(
         col += ch_width;
     }
 
-    // In dir mode, append '/' after the path.
-    if dir_mode
+    // Mark directories with a trailing '/' so a folder is distinguishable from
+    // a file at a glance instead of only after accepting it. In dir mode every
+    // row is a directory the query already ended in '/', so the marker is
+    // redundant there but harmless: keep one code path.
+    if (item.is_dir || dir_mode)
         && col < max_col
         && let Some(cell) = buf.cell_mut((col, y))
     {

@@ -2082,43 +2082,29 @@ impl PromptWidget {
         // Accepting rewrites the token; an unrelated highlight must not survive it
         self.textarea.clear_selection();
 
-        if ctx.is_dir_mode() && res.is_dir {
-            // Descending into a selected directory while navigating (dir-mode): try_replace appends `/` and stays open
-            // A file selected in dir-mode falls through to the ref branch (see FileSearchState::try_replace)
-            if let Some(r) = self.file_search.try_replace(self.textarea.text()) {
-                self.textarea.replace_range(r.range, &r.text);
-                self.textarea.set_cursor(r.cursor);
-                if r.dismiss {
-                    self.file_search.clear_context();
-                } else {
-                    // Anchor the drilled child so a whitespace name stays open (reuse the buffer; only a `./` prefix re-allocs)
-                    let mut p = res.path.to_string();
-                    if let Some(stripped) = p.strip_prefix("./") {
-                        p = stripped.to_owned();
-                    }
-                    self.file_search.set_drill_prefix(Some(p));
-                }
-            }
-        } else {
-            // File accepted: create an atomic `KIND_FILE_REF` element plus trailing space
-            // Both Tab and Right Arrow reach this branch for file selections because there is nothing nested under a file to drill into
-            let path_str = res.path.to_string();
-            let path = normalize_display_path(&path_str);
-            let element_text = format!("@{path}");
-            let display = file_ref_display(path);
+        // Accept as an atomic `KIND_FILE_REF` chip plus trailing space.
+        //
+        // Files and folders share this path: a folder selected in dir mode is a
+        // reference to the whole folder, not a request to descend into it.
+        // Drilling one level down is Right Arrow's job (see
+        // `accept_file_search_result_no_space`), which keeps Tab/Enter meaning
+        // "take this thing" for both files and directories.
+        let path_str = res.path.to_string();
+        let path = normalize_display_path(&path_str);
+        let element_text = format!("@{path}");
+        let display = file_ref_display(path);
 
-            self.textarea.begin_undo_group();
-            self.textarea.replace_range_with_element(
-                ctx.range.clone(),
-                &element_text,
-                KIND_FILE_REF,
-                Some(display),
-            );
-            self.textarea.insert_str(" ");
-            self.textarea.end_undo_group();
+        self.textarea.begin_undo_group();
+        self.textarea.replace_range_with_element(
+            ctx.range.clone(),
+            &element_text,
+            KIND_FILE_REF,
+            Some(display),
+        );
+        self.textarea.insert_str(" ");
+        self.textarea.end_undo_group();
 
-            self.file_search.clear_context();
-        }
+        self.file_search.clear_context();
         self.update_file_search_context();
     }
 

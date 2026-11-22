@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Folder references in the `@` dropdown** — `@` can now reference a whole folder, not just files, and the model actually learns what is inside it.
+  - **Directories are visible as directories.** Every directory row ends with `/`, so a folder is distinguishable from a file before you accept it. Previously the only way to tell was to accept and watch where the dropdown went.
+  - **Tab/Enter takes the folder itself.** Dir mode used to drill down on accept, which made it impossible to reference a directory: accepting `crates/` always descended to `crates/<child>/`. Tab/Enter now close an atomic `@crates/common` chip on the folder, while **Right Arrow** keeps its drill-down role — explore with Right, take what you see with Tab.
+  - **Folder contents reach the model.** The Pager inserts `@path` as literal text and Pi core does not expand it, so a folder reference used to arrive as a bare path. `pi-grok-mentions` now resolves bare `@path` at prompt time and, when it points at a directory, injects a `referenced_objects` outline: one level, sorted, dotfiles skipped, capped at 200 entries with an explicit "N more" note. File paths and missing paths are left untouched, and `@kind:id`, `@!`, and `@path:10` forms keep their existing handling.
+
+### 中文发布说明
+
+- **`@` 下拉支持文件夹引用** — `@` 现在能引用整个文件夹，并且模型真的能知道里面有什么。
+  - **目录一眼可辨**：目录行统一以 `/` 结尾，接受之前就能分清文件夹和文件；以前只能接受后看下拉跳到哪才知道。
+  - **Tab/Enter 直接取整个文件夹**：目录模式过去在接受时下钻，导致无法引用目录本身（选中 `crates/` 一定进入 `crates/<子目录>/`）。现在 Tab/Enter 会在文件夹上闭合一枚 `@crates/common` chip，**右方向键**保留逐层下钻——用右方向键探索，用 Tab 取当前所见。
+  - **文件夹内容真正传给模型**：Pager 只是把 `@path` 当字面量插入，Pi 核心不展开，所以文件夹引用过去只是一个裸路径。`pi-grok-mentions` 现在在提示词阶段解析裸 `@path`，指向目录时注入 `referenced_objects` 大纲：单层、已排序、跳过点文件、最多 200 条并注明「还有 N 条」。文件路径与不存在的路径不受影响，`@kind:id`、`@!`、`@path:10` 等形式保持原有处理。
+
 ## [0.1.14-beta.8] - 2026-11-21
 
 ### Fixed
