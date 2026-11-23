@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Added persisted `[ui].pi_omp_shell` (`OMP Shell backend`) toggle under F2 Settings (`Agent → Pi features`); when enabled and `PI_GROK_BASH_BACKEND` is not explicitly overridden in the environment, `grok-pi` injects `PI_GROK_BASH_BACKEND=omp` on launch.
   - Refactored inline Bash execution trace rendering in `xai-grok-pager` (`execute.rs`) after `oh-my-pi`'s shell visualizer: unwraps redundant AST wrapper nodes (`and_or`, single/multi-stage `pipeline` containers, empty/`word` nodes), renders multi-stage pipelines cleanly with `| ` continuation prefixes, suppresses duplicate trace blocks on single-command runs in scrollback, and uses compact 1-char status gutters (`×` / `▶` / `⊘` / space), lightweight shell syntax highlighting, and clean dim metadata (omitting noisy `0ms`).
   - Wired full structured OMP execution trace into the Enter fullscreen preview modal (`BlockViewerPane::for_execute`), displayed above `Output` with late-trace change detection (`execute_generation`) and theme-switch refresh.
+- **Auto-show top `TodoPane` on `todo` tool updates** — `TodoPane::update_todos` now automatically displays the pinned top todo panel (without stealing focus) when non-empty todos arrive from `SessionUpdate::Plan`, while respecting explicit user dismissal (`Ctrl+T` / `Esc` / `[close]`) until cleared or reopened; `todo_bridge` also falls back to `details.todos` (`content` field) when `details.tasks` is absent.
 
 ## [0.1.14-beta.9] - 2026-11-23
 

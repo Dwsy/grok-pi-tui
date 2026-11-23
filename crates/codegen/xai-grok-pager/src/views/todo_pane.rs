@@ -191,6 +191,10 @@ pub struct TodoPane {
     show_done: bool,
     /// Shared visibility and focus state.
     pub overlay: OverlayState,
+    /// Remember when the user explicitly closed the todo pane so subsequent
+    /// Plan updates do not pop it back open until the list is cleared or the
+    /// user re-opens it with Ctrl-T.
+    user_dismissed: bool,
     /// Last theme kind seen; used to detect theme switches and restyle.
     last_theme: ThemeKind,
 }
@@ -223,6 +227,7 @@ impl TodoPane {
             list_style: ListPaneStyle::default(),
             show_done: true,
             overlay: OverlayState::hidden(),
+            user_dismissed: false,
             last_theme: crate::theme::Theme::current_kind(),
         }
     }
@@ -235,9 +240,19 @@ impl TodoPane {
 
     /// Replace all todo items (called from ACP Plan handler).
     ///
-    /// Does NOT auto-show the todo pane. Users toggle it with Ctrl-T.
+    /// Auto-shows the top todo pane (without stealing focus) whenever non-empty
+    /// todos arrive unless the user explicitly dismissed it. Clearing the list
+    /// resets dismissal and hides the unfocused pane.
     pub fn update_todos(&mut self, items: Vec<TodoItem>) {
         self.todos = items;
+        if self.todos.is_empty() {
+            self.user_dismissed = false;
+            if !self.overlay.focused {
+                self.overlay.visible = false;
+            }
+        } else if !self.user_dismissed {
+            self.overlay.visible = true;
+        }
     }
 
     fn compute_counts(items: &[TodoItem]) -> TodoCounts {
@@ -268,7 +283,10 @@ impl TodoPane {
     /// Closes the input bar if it's open mid-typing, but keeps any accepted search or filter across hide and show.
     pub fn on_state_change(&mut self) {
         if !self.overlay.visible {
+            self.user_dismissed = true;
             self.list_state.close_input_bar();
+        } else {
+            self.user_dismissed = false;
         }
     }
 
@@ -467,6 +485,41 @@ mod tests {
         assert_eq!(
             empty_placeholder_message(false, counts(0, 2)),
             "2 cancelled."
+        );
+    }
+
+    #[test]
+    fn update_todos_auto_shows_pane_without_focus_and_respects_user_dismiss() {
+        let mut pane = TodoPane::new();
+        assert!(!pane.is_visible());
+
+        let sample = vec![TodoItem {
+            content: "Step 1".to_string(),
+            status: TodoStatus::InProgress,
+            priority: xai_grok_shell::tools::TodoPriority::Medium,
+            meta: None,
+        }];
+        pane.update_todos(sample.clone());
+        assert!(pane.is_visible(), "non-empty todos should auto-show top pane");
+        assert!(!pane.overlay.focused, "auto-show must not steal focus");
+
+        // Explicit user dismiss keeps subsequent updates hidden.
+        pane.overlay.escape();
+        pane.on_state_change();
+        assert!(!pane.is_visible());
+        pane.update_todos(sample.clone());
+        assert!(
+            !pane.is_visible(),
+            "dismissed pane should stay hidden on updates"
+        );
+
+        // Clearing todos resets dismissal so the next todo list auto-shows again.
+        pane.update_todos(Vec::new());
+        assert!(!pane.is_visible());
+        pane.update_todos(sample);
+        assert!(
+            pane.is_visible(),
+            "new todo list after clear should auto-show"
         );
     }
 }

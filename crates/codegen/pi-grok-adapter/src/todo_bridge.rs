@@ -36,7 +36,10 @@ impl TodoSource for RpivTodoSource {
             // Validation / transition failures keep the previous pane snapshot.
             return None;
         }
-        let tasks = details.get("tasks")?.as_array()?;
+        let tasks = details
+            .get("tasks")
+            .or_else(|| details.get("todos"))?
+            .as_array()?;
         let entries: Vec<acp::PlanEntry> =
             tasks.iter().filter_map(rpiv_task_to_plan_entry).collect();
         Some(acp::Plan::new(entries))
@@ -87,7 +90,7 @@ fn rpiv_details(result: &Value) -> Option<&Value> {
         return Some(details);
     }
     // Already a details object (history path).
-    if result.get("tasks").is_some() {
+    if result.get("tasks").is_some() || result.get("todos").is_some() {
         return Some(result);
     }
     None
@@ -98,12 +101,13 @@ fn rpiv_task_to_plan_entry(task: &Value) -> Option<acp::PlanEntry> {
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("pending");
-    // Tombstones stay out of the native pane (matches rpiv list defaults).
-    if status == "deleted" {
+    // Tombstones and cancelled entries stay out of the native pane.
+    if matches!(status, "deleted" | "cancelled") {
         return None;
     }
     let subject = task
         .get("subject")
+        .or_else(|| task.get("content"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
@@ -262,6 +266,26 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn v1_todos_fallback_projects_content_and_drops_cancelled() {
+        let result = json!({
+            "details": {
+                "version": 1,
+                "todos": [
+                    { "id": "t1", "content": "Login", "status": "in_progress" },
+                    { "id": "t2", "content": "Old step", "status": "cancelled" },
+                    { "id": "t3", "content": "Verify", "status": "pending" }
+                ]
+            }
+        });
+        let plan = plan_update_for_tool("todo", &result, false).expect("plan");
+        assert_eq!(plan.entries.len(), 2);
+        assert_eq!(plan.entries[0].content, "Login");
+        assert_eq!(plan.entries[0].status, acp::PlanEntryStatus::InProgress);
+        assert_eq!(plan.entries[1].content, "Verify");
+        assert_eq!(plan.entries[1].status, acp::PlanEntryStatus::Pending);
     }
 
     #[test]
