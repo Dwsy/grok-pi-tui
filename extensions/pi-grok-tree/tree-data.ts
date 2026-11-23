@@ -4,7 +4,8 @@
 
 import fs from "node:fs";
 
-export type TreeFilterMode = "messages" | "all" | "labeled";
+/** Matches Rust `SessionTreeFilter` (`views/session_tree.rs`). */
+export type TreeFilterMode = "default" | "no-tools" | "user-only" | "labeled" | "all";
 
 export interface SessionTreeEntry {
   id: string;
@@ -239,12 +240,12 @@ export function filterTreeNodes(
   const scoped = nodes.filter((n) => {
     if (mode === "all") return true;
     if (mode === "labeled") return Boolean(n.entry.label);
-    return (
-      n.entry.kind === "user" ||
-      n.entry.kind === "assistant" ||
-      n.entry.kind === "branch" ||
-      Boolean(n.entry.label)
-    );
+    if (mode === "user-only") return n.entry.kind === "user";
+    if (mode === "no-tools") {
+      return n.entry.kind !== "tool" && n.entry.kind !== "system";
+    }
+    // "default": all non-settings entries (matches Rust SessionTreeFilter::Default)
+    return n.entry.kind !== "system";
   });
 
   const terms = query

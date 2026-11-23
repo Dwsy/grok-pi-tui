@@ -110,8 +110,8 @@ describe("pi-grok-config snapshot parsing and TUI renderer", () => {
       expect(mutations[0]?.mode).toBe("global");
       expect(mutations[0]?.enabled).toBe(false);
 
-      // Ctrl+G switches to Project scope, Enter cycles Inherit -> Load
-      comp.handleInput("\x07");
+      // Tab switches to Project scope (matching Rust pi_config.rs), Enter cycles Inherit -> Load
+      comp.handleInput("\t");
       comp.handleInput("\r");
       expect(mutations.length).toBe(2);
       expect(mutations[1]?.mode).toBe("project");

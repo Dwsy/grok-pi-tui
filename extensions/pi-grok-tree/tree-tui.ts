@@ -38,6 +38,14 @@ export interface SessionTreeTuiOptions {
   getRows?: () => number;
 }
 
+const FILTER_CYCLE: readonly TreeFilterMode[] = [
+  "default",
+  "no-tools",
+  "user-only",
+  "labeled",
+  "all",
+];
+
 const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([mM])$/;
 
 class SessionTreeComponent implements Component {
@@ -68,7 +76,7 @@ class SessionTreeComponent implements Component {
     this.tui = tui;
     this.theme = theme;
     this.allNodes = options.nodes;
-    this.filter = options.initialFilter ?? "messages";
+    this.filter = options.initialFilter ?? "default";
     this.query = options.initialQuery ?? "";
     this.getRows = options.getRows ?? (() => 28);
     this.done = done;
@@ -189,15 +197,12 @@ class SessionTreeComponent implements Component {
     this.lastDividerX = geom.dividerX;
     this.list.clamp(this.filtered.length, geom.bodyHeight);
 
-    const msgCount = this.allNodes.filter(
-      (n) => n.entry.kind === "user" || n.entry.kind === "assistant" || n.entry.kind === "branch" || Boolean(n.entry.label),
-    ).length;
-    const labeledCount = this.allNodes.filter((n) => Boolean(n.entry.label)).length;
-
     const pills: HeaderPillSpec[] = [
-      { id: "messages", label: `[Messages ${msgCount}]`, active: this.filter === "messages" },
-      { id: "all", label: `[All ${this.allNodes.length}]`, active: this.filter === "all" },
-      { id: "labeled", label: `[Labeled ${labeledCount}]`, active: this.filter === "labeled" },
+      { id: "default", label: "[Default]", active: this.filter === "default" },
+      { id: "no-tools", label: "[NoTools]", active: this.filter === "no-tools" },
+      { id: "user-only", label: "[User]", active: this.filter === "user-only" },
+      { id: "labeled", label: "[Labeled]", active: this.filter === "labeled" },
+      { id: "all", label: "[All]", active: this.filter === "all" },
     ];
 
     const leftLines = this.buildLeftLines(geom.leftWidth, geom.bodyHeight);
@@ -220,10 +225,11 @@ class SessionTreeComponent implements Component {
       leftLines,
       rightLines,
       footerHints: [
+        { key: "↑/↓", label: "move" },
+        { key: "←/→", label: "page" },
+        { key: "Ctrl+O", label: "filter" },
         { key: "Enter", label: "jump" },
-        { key: "Ctrl+S", label: "jump+summary" },
-        { key: "Tab", label: "filter" },
-        { key: "Ctrl+U/D", label: "preview" },
+        { key: "Ctrl+S", label: "summary" },
         { key: "Esc", label: "close" },
       ],
       theme: this.theme,
@@ -296,7 +302,17 @@ class SessionTreeComponent implements Component {
   handleInput(data: string): void {
     if (this.handleMouse(data)) return;
 
-    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+    if (matchesKey(data, "ctrl+c")) {
+      this.done(undefined);
+      return;
+    }
+    if (matchesKey(data, "escape")) {
+      if (this.query.length > 0) {
+        this.query = "";
+        this.recomputeFilter(true);
+        this.tui.requestRender();
+        return;
+      }
       this.done(undefined);
       return;
     }
@@ -308,9 +324,40 @@ class SessionTreeComponent implements Component {
       this.confirmSelected(true);
       return;
     }
-    if (matchesKey(data, "tab")) {
-      this.filter =
-        this.filter === "messages" ? "all" : this.filter === "all" ? "labeled" : "messages";
+    // Direct filter chords matching Rust SessionTree (Ctrl+D/T/U/L/A & Ctrl+O cycle).
+    if (matchesKey(data, "ctrl+o") || matchesKey(data, "tab")) {
+      const idx = (FILTER_CYCLE.indexOf(this.filter) + 1) % FILTER_CYCLE.length;
+      this.filter = FILTER_CYCLE[idx]!;
+      this.recomputeFilter(true);
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "ctrl+d")) {
+      this.filter = "default";
+      this.recomputeFilter(true);
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "ctrl+t")) {
+      this.filter = "no-tools";
+      this.recomputeFilter(true);
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "ctrl+u")) {
+      this.filter = "user-only";
+      this.recomputeFilter(true);
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "ctrl+l")) {
+      this.filter = "labeled";
+      this.recomputeFilter(true);
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "ctrl+a")) {
+      this.filter = "all";
       this.recomputeFilter(true);
       this.tui.requestRender();
       return;
@@ -325,23 +372,13 @@ class SessionTreeComponent implements Component {
       this.tui.requestRender();
       return;
     }
-    if (matchesKey(data, "pageUp")) {
+    if (matchesKey(data, "pageUp") || matchesKey(data, "left")) {
       if (this.list.page(-1, this.filtered.length, this.lastBodyHeight)) this.previewScroll = 0;
       this.tui.requestRender();
       return;
     }
-    if (matchesKey(data, "pageDown")) {
+    if (matchesKey(data, "pageDown") || matchesKey(data, "right")) {
       if (this.list.page(1, this.filtered.length, this.lastBodyHeight)) this.previewScroll = 0;
-      this.tui.requestRender();
-      return;
-    }
-    if (matchesKey(data, "ctrl+u")) {
-      this.previewScroll = Math.max(0, this.previewScroll - 5);
-      this.tui.requestRender();
-      return;
-    }
-    if (matchesKey(data, "ctrl+d")) {
-      this.previewScroll += 5;
       this.tui.requestRender();
       return;
     }

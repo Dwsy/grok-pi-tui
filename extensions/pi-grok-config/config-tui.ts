@@ -66,6 +66,7 @@ class PiConfigTuiComponent implements Component {
   private scopeView: ResourceScopeView;
   private typeFilter: ResourceTypeFilter;
   private query = "";
+  private searchActive = false;
   private filtered: PiConfigResource[] = [];
   private readonly list = new ListController({ rowsPerItem: 2 });
   private previewScroll = 0;
@@ -288,18 +289,21 @@ class PiConfigTuiComponent implements Component {
       titlePrefix: ` ${styleBold(this.theme, this.theme.fg("accent", "/pi-config"))} `,
       pills,
       search: {
-        promptPrefix: ` ${this.theme.fg("accent", "/")} `,
+        promptPrefix: ` ${this.theme.fg(this.searchActive ? "accent" : "dim", "/")} `,
         query: this.query,
-        placeholder: "filter extensions, skills, prompts, themes...",
+        placeholder: this.searchActive
+          ? "type to filter (Enter keep, Esc clear)..."
+          : "press / to search...",
         rightLabel: `(${this.filtered.length}/${this.snapshot.resources.length})`,
       },
       leftLines,
       rightLines,
       footerHints: [
-        { key: "Space/Enter", label: this.scopeView === "Project" ? "cycle override" : "toggle" },
-        { key: "Tab", label: "type" },
-        { key: "Ctrl+G", label: "Global/Project" },
-        { key: "Ctrl+U/D", label: "preview" },
+        { key: "Tab", label: "Global/Project" },
+        { key: "f", label: "type" },
+        { key: "/", label: "search" },
+        { key: "Space", label: this.scopeView === "Project" ? "override" : "toggle" },
+        { key: "j/k", label: "move" },
         { key: "Esc", label: "close" },
       ],
       theme: this.theme,
@@ -378,34 +382,107 @@ class PiConfigTuiComponent implements Component {
   handleInput(data: string): void {
     if (this.handleMouse(data)) return;
 
-    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+    if (matchesKey(data, "ctrl+c") || matchesKey(data, "f2")) {
       this.done();
       return;
     }
-    if (matchesKey(data, "enter") || matchesKey(data, "return") || (data === " " && this.query.length === 0)) {
-      this.toggleSelected();
+    // Tab / Shift+Tab / Ctrl+G switches Global <-> Project (matching Rust pi_config.rs).
+    if (matchesKey(data, "tab") || matchesKey(data, "shift+tab") || matchesKey(data, "ctrl+g")) {
+      this.searchActive = false;
+      this.scopeView = this.scopeView === "Global" ? "Project" : "Global";
+      this.recomputeFilter(true);
+      this.tui.requestRender();
       return;
     }
-    if (matchesKey(data, "tab")) {
+
+    if (this.searchActive) {
+      if (matchesKey(data, "escape")) {
+        this.searchActive = false;
+        if (this.query.length > 0) {
+          this.query = "";
+          this.recomputeFilter(true);
+        }
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, "enter") || matchesKey(data, "return")) {
+        this.searchActive = false;
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, "backspace")) {
+        if (this.query.length > 0) {
+          this.query = this.query.slice(0, -1);
+          this.recomputeFilter(true);
+          this.tui.requestRender();
+        }
+        return;
+      }
+      if (matchesKey(data, "ctrl+w")) {
+        this.query = "";
+        this.recomputeFilter(true);
+        this.tui.requestRender();
+        return;
+      }
+      const parsed = parseKey(data);
+      if (!parsed && data.length > 0 && !data.startsWith("\x1b")) {
+        const printable = [...data].filter((ch) => ch >= " " && ch !== "\x7f").join("");
+        if (printable) {
+          this.query += printable;
+          this.recomputeFilter(true);
+          this.tui.requestRender();
+        }
+        return;
+      }
+      // Navigation keys exit search focus and fall through to list handlers.
+      this.searchActive = false;
+    }
+
+    if (matchesKey(data, "escape")) {
+      if (this.query.length > 0) {
+        this.query = "";
+        this.recomputeFilter(true);
+        this.tui.requestRender();
+        return;
+      }
+      this.done();
+      return;
+    }
+    if (data === "/") {
+      this.searchActive = true;
+      this.tui.requestRender();
+      return;
+    }
+    if (data === "f") {
       const nextIdx = (TYPE_FILTERS.indexOf(this.typeFilter) + 1) % TYPE_FILTERS.length;
       this.typeFilter = TYPE_FILTERS[nextIdx]!;
       this.recomputeFilter(true);
       this.tui.requestRender();
       return;
     }
-    if (matchesKey(data, "ctrl+g")) {
-      this.scopeView = this.scopeView === "Global" ? "Project" : "Global";
-      this.recomputeFilter(true);
-      this.tui.requestRender();
+    if (matchesKey(data, "enter") || matchesKey(data, "return") || data === " ") {
+      this.toggleSelected();
       return;
     }
-    if (matchesKey(data, "up") || matchesKey(data, "ctrl+p")) {
+    if (matchesKey(data, "up") || matchesKey(data, "ctrl+p") || data === "k") {
       if (this.list.move(-1, this.filtered.length, this.lastBodyHeight)) this.previewScroll = 0;
       this.tui.requestRender();
       return;
     }
-    if (matchesKey(data, "down") || matchesKey(data, "ctrl+n")) {
+    if (matchesKey(data, "down") || matchesKey(data, "ctrl+n") || data === "j") {
       if (this.list.move(1, this.filtered.length, this.lastBodyHeight)) this.previewScroll = 0;
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "home") || data === "g") {
+      if (this.list.select(0, this.filtered.length, this.lastBodyHeight)) this.previewScroll = 0;
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "end") || data === "G") {
+      if (this.list.select(this.filtered.length - 1, this.filtered.length, this.lastBodyHeight)) {
+        this.previewScroll = 0;
+      }
       this.tui.requestRender();
       return;
     }
@@ -428,30 +505,6 @@ class PiConfigTuiComponent implements Component {
       this.previewScroll += 5;
       this.tui.requestRender();
       return;
-    }
-    if (matchesKey(data, "backspace")) {
-      if (this.query.length > 0) {
-        this.query = this.query.slice(0, -1);
-        this.recomputeFilter(true);
-        this.tui.requestRender();
-      }
-      return;
-    }
-    if (matchesKey(data, "ctrl+w")) {
-      this.query = "";
-      this.recomputeFilter(true);
-      this.tui.requestRender();
-      return;
-    }
-
-    const parsed = parseKey(data);
-    if (!parsed && data.length > 0 && !data.startsWith("\x1b")) {
-      const printable = [...data].filter((ch) => ch >= " " && ch !== "\x7f").join("");
-      if (printable) {
-        this.query += printable;
-        this.recomputeFilter(true);
-        this.tui.requestRender();
-      }
     }
   }
 }

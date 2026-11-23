@@ -72,9 +72,13 @@ describe("pi-grok-tree parsing, filtering, and TUI navigation", () => {
       const e4 = nodes.find((n) => n.entry.id === "e4")!;
       expect(e4.isLeaf).toBe(true);
 
-      expect(filterTreeNodes(nodes, "messages", "").map((n) => n.entry.id)).toEqual([
+      expect(filterTreeNodes(nodes, "no-tools", "").map((n) => n.entry.id)).toEqual([
         "e1",
         "e2",
+        "e4",
+      ]);
+      expect(filterTreeNodes(nodes, "user-only", "").map((n) => n.entry.id)).toEqual([
+        "e1",
         "e4",
       ]);
       expect(filterTreeNodes(nodes, "all", "").length).toBe(4);
