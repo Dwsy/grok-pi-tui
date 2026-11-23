@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Dynamic `@` mention shortcuts & TS pluginized pickers (`@session`, `@skill`, `@file`)** — Rust owns the generic `MentionProviderAction` protocol (`key`, `label`, `command`), dynamic pinned bottom-bar shortcut hints, `pi/ui/mention_action` RPC dispatch, and atomic `pi/ui/mention_insert` chip insertion, while TypeScript extensions own the interactive bordered overlays:
+  - **`@session` (`Ctrl+O`)**: Full bordered left/right split TUI over PSM SQLite (`sessions.db` + `session_details_cache`) with Global/Project toggle (default Global), full metadata (created/updated timestamps, message counts, project, ID, tokens in `M` units, model), user/agent-only search and preview (strictly hiding tool calls and thinking blocks), and full mouse support.
+  - **`@skill` (`Ctrl+O`)**: Bordered left/right split TUI over Pi's live skill registry with Global/Project scope toggle, ranked multi-term search, metadata card (scope, path, updated, size, companion `scripts`/`references`/`assets` counts), lazy `SKILL.md` preview, and mouse support.
+  - **`@file` (`Ctrl+O`)**: NvChad-inspired (`nvim-tree` + `nvim-web-devicons` + `telescope`) three-mode file explorer (`Tree` lazy directory tree with indent markers, `Files·fd` smart fuzzy search, `Grep·rg` full-text search with auto-centered line preview and `@path:line` insertion), Nerd Font icons with automatic terminal detection and ASCII fallback, hidden-file toggle, and mouse support.
+- **Standalone TS `/review-session` & `/review-message` plugin (`pi-grok-review`)** — Migrated session and message code review in `grok-pi` to a lean TS extension sharing `file-data.ts` Nerd icons and previews, replacing the sprawling Rust review keymap with 5 intuitive actions (`↑`/`↓`, `Tab` Diff/File, `t` Tree/List, `Enter`/`c` inline note, `Ctrl+S` send feedback) plus full mouse support.
+- **Inline image previews for `read` tool results & iTerm2 graphics overlay** — `pi-grok-adapter` projects `image` blocks from Pi `read` tool outputs into `ReadFile.ImageContent`, and `xai-grok-pager` / `xai-grok-pager-render` extend scrollback inline image overlays to support both Kitty and iTerm2 graphics protocols.
 - **Folder references in the `@` dropdown** — `@` can now reference a whole folder, not just files, and the model actually learns what is inside it.
   - **Directories are visible as directories.** Every directory row ends with `/`, so a folder is distinguishable from a file before you accept it. Previously the only way to tell was to accept and watch where the dropdown went.
   - **Tab/Enter takes the folder itself.** Dir mode used to drill down on accept, which made it impossible to reference a directory: accepting `crates/` always descended to `crates/<child>/`. Tab/Enter now close an atomic `@crates/common` chip on the folder, while **Right Arrow** keeps its drill-down role — explore with Right, take what you see with Tab.
@@ -15,6 +21,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### 中文发布说明
 
+- **`@` 动态快捷键基座与 TS 插件化选择器（`@session`、`@skill`、`@file`）** — Rust 仅提供通用协议（`MentionProviderAction`、底部快捷键栏动态置顶、`pi/ui/mention_action` 分发与 `pi/ui/mention_insert` 原子 chip 插入），交互式带边框左右分栏 TUI 全部由 TypeScript 扩展承接：
+  - **`@session`（`Ctrl+O`）**：基于 PSM SQLite 的完整左右分栏会话选择器，默认全局并支持一键切换项目作用域，展示起止时间、消息数、项目、ID、Token（`M` 单位）与模型，搜索与预览严格隐藏工具调用与思考块，支持完整鼠标操作。
+  - **`@skill`（`Ctrl+O`）**：基于 Pi 实时技能注册表的左右分栏技能选择器，支持全局/项目切换、多词排序、元数据卡片（含附属 `scripts`/`references`/`assets` 目录统计）与 `SKILL.md` 懒加载预览。
+  - **`@file`（`Ctrl+O`）**：参考 NvChad（`nvim-tree` + `nvim-web-devicons` + `telescope`）的三模式文件浏览器（`Tree` 懒展开目录树、`Files·fd` 智能搜索、`Grep·rg` 全文检索并自动居中定位命中行与插入 `@path:line`），支持 Nerd Font 图标自动探测/降级与全鼠标操作。
+- **独立精简 TS `/review-session` 与 `/review-message` 插件（`pi-grok-review`）** — 将 `grok-pi` 下的代码评审迁移为独立 TS 扩展并共享文件图标与预览库，彻底精简冗余快捷键（`↑`/`↓`、`Tab` 切 Diff/File、`t` 切 Tree/List、`Enter`/`c` 写批注、`Ctrl+S` 一键发给 Agent）并支持完整鼠标操作。
+- **`read` 工具图片内联预览与 iTerm2 图形协议支持** — `pi-grok-adapter` 支持透传 Pi `read` 工具返回的图片内容，`xai-grok-pager` / `xai-grok-pager-render` 扩展支持 Kitty 与 iTerm2 滚动区图片内联叠加渲染。
 - **`@` 下拉支持文件夹引用** — `@` 现在能引用整个文件夹，并且模型真的能知道里面有什么。
   - **目录一眼可辨**：目录行统一以 `/` 结尾，接受之前就能分清文件夹和文件；以前只能接受后看下拉跳到哪才知道。
   - **Tab/Enter 直接取整个文件夹**：目录模式过去在接受时下钻，导致无法引用目录本身（选中 `crates/` 一定进入 `crates/<子目录>/`）。现在 Tab/Enter 会在文件夹上闭合一枚 `@crates/common` chip，**右方向键**保留逐层下钻——用右方向键探索，用 Tab 取当前所见。
