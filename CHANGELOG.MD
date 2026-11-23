@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.9] - 2026-11-23
+
 ### Added
 
-- **Dynamic `@` mention shortcuts & TS pluginized pickers (`@session`, `@skill`, `@file`)** — Rust owns the generic `MentionProviderAction` protocol (`key`, `label`, `command`), dynamic pinned bottom-bar shortcut hints, `pi/ui/mention_action` RPC dispatch, and atomic `pi/ui/mention_insert` chip insertion, while TypeScript extensions own the interactive bordered overlays:
+- **Dynamic `@` mention shortcuts & TS pluginized pickers (`@session`, `@skill`, `@file`, `@mcp`)** — Rust owns the generic `MentionProviderAction` protocol (`key`, `label`, `command`), dynamic pinned bottom-bar shortcut hints, `pi/ui/mention_action` RPC dispatch, and atomic `pi/ui/mention_insert` chip insertion, while TypeScript extensions own the interactive bordered overlays:
   - **`@session` (`Ctrl+O`)**: Full bordered left/right split TUI over PSM SQLite (`sessions.db` + `session_details_cache`) with Global/Project toggle (default Global), full metadata (created/updated timestamps, message counts, project, ID, tokens in `M` units, model), user/agent-only search and preview (strictly hiding tool calls and thinking blocks), and full mouse support.
   - **`@skill` (`Ctrl+O`)**: Bordered left/right split TUI over Pi's live skill registry with Global/Project scope toggle, ranked multi-term search, metadata card (scope, path, updated, size, companion `scripts`/`references`/`assets` counts), lazy `SKILL.md` preview, and mouse support.
   - **`@file` (`Ctrl+O`)**: NvChad-inspired (`nvim-tree` + `nvim-web-devicons` + `telescope`) three-mode file explorer (`Tree` lazy directory tree with indent markers, `Files·fd` smart fuzzy search, `Grep·rg` full-text search with auto-centered line preview and `@path:line` insertion), Nerd Font icons with automatic terminal detection and ASCII fallback, hidden-file toggle, and mouse support.

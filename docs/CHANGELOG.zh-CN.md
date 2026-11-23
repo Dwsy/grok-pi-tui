@@ -9,6 +9,21 @@
 
 ## [Unreleased]
 
+## [0.1.14-beta.9] - 2026-11-23
+
+### 新增
+
+- **`@` 动态快捷键基座与 TS 插件化选择器（`@session`、`@skill`、`@file`、`@mcp`）** — Rust 提供通用 `MentionProviderAction` 协议、底部快捷键栏动态置顶、`pi/ui/mention_action` RPC 分发与 `pi/ui/mention_insert` 原子 chip 插入，交互式带边框左右分栏 TUI 全部由 TypeScript 扩展承接：
+  - **`@session`（`Ctrl+O`）**：基于 PSM SQLite 的完整左右分栏会话选择器，默认全局并支持一键切换项目作用域，展示起止时间、消息数、项目、ID、Token（`M` 单位）与模型，搜索与预览严格隐藏工具调用与思考块，支持完整鼠标操作。
+  - **`@skill`（`Ctrl+O`）**：基于 Pi 实时技能注册表的左右分栏技能选择器，支持全局/项目切换、多词排序、元数据卡片与 `SKILL.md` 懒加载预览。
+  - **`@file`（`Ctrl+O`）**：参考 NvChad（`nvim-tree` + `nvim-web-devicons` + `telescope`）的三模式文件浏览器（`Tree` 懒展开、`Files·fd` 智能搜索、`Grep·rg` 全文检索与 `@path:line` 插入），支持 Nerd Font 图标自动探测/降级与高清图片直接预览。
+  - **`@mcp`（`Ctrl+O`）**：基于 Pi 实时 MCP 服务与工具注册表的左右分栏选择器，支持 `All` / `With Tools` 过滤与工具描述高亮预览。
+- **共享 TS TUI 基础库（`extensions/pi-grok-tui-kit/`）与重型弹窗 TS 化（`/resume`、`/review-*`、`/tree`、`/pi-config`）**：
+  - 抽离圆角边框分栏框架、`ListController`、CJK 安全宽度截断与换行、Nerd/ASCII 图标库及 Rust 共享挂载 `grok_pi::tui_kit`。
+  - 活跃会话 `/resume` 复用 TS `SessionPickerTui`；`/review-session` 与 `/review-message` 迁移为独立精简 TS 插件 `pi-grok-review`（支持高清图片预览）；`/tree` 迁移为 `pi-grok-tree`（保留原版 5 种过滤模式与 `Ctrl+D/T/U/L/A`/`Ctrl+O` 快捷键）；`/pi-config` 迁移为 `pi-grok-config`（保持 Rust `PiResourceCatalog` 权威 API + TS 渲染边界，保留原版 `Tab`/`f`/`/`/`j`/`k` 交互）。
+- **高清图片直接预览（Herdr / Kitty / iTerm2 + Truecolor 半块降级）与 `read` 工具图片内联预览** — `pi-grok-adapter` 透传 `read` 图片内容，`xai-grok-pager` / `xai-grok-pager-render` 支持 Kitty、Herdr 与 iTerm2 滚动区及 Remote TUI 弹窗高清图片叠加（64 MB 有界缓存、稳态零重传、切图/关闭自动清理），无原生图形协议终端自动降级为 LRU 缓存的 Truecolor `▀` 半块渲染。
+- **`@` 下拉支持文件夹引用** — 目录行统一以 `/` 结尾，Tab/Enter 闭合 `@dir` chip，右方向键保留逐层下钻，提示词阶段自动展开目录单层大纲。
+
 ## [0.1.14-beta.8] - 2026-11-21
 
 ### 修复
