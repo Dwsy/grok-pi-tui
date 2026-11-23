@@ -738,6 +738,18 @@ fn handle_pi_ui_mention_insert(notif: &acp::ExtNotification, app: &mut AppView) 
         app.pending_effects.extend(effects);
         return true;
     }
+    if kind == "tree_navigate" {
+        let effects = crate::app::dispatch::dispatch(
+            crate::app::actions::Action::NavigateSessionTree {
+                entry_id: id.to_owned(),
+                summarize: title == "summarize",
+                custom_instructions: None,
+            },
+            app,
+        );
+        app.pending_effects.extend(effects);
+        return true;
+    }
     let ActiveView::Agent(agent_id) = app.active_view else {
         return false;
     };

@@ -8,7 +8,6 @@ use crate::app::dispatch::ctx::{get_active_agent, with_active_agent};
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::state::ScrollbackState;
 use crate::views::modal::ActiveModal;
-use crate::views::session_tree::SessionTreeState;
 
 pub(in crate::app::dispatch) fn dispatch_show_session_tree(app: &mut AppView) -> Vec<Effect> {
     if !app.external_agent {
@@ -19,24 +18,17 @@ pub(in crate::app::dispatch) fn dispatch_show_session_tree(app: &mut AppView) ->
         app.show_toast("No active session");
         return vec![];
     };
-    let Some(session_id) = agent.session.session_id.as_ref().map(|s| s.0.to_string()) else {
+    if agent.session.session_id.is_none() {
         app.show_toast("No active session");
         return vec![];
-    };
-    let agent_id = agent.session.id;
-    let skip_summary = app.current_ui.pi_tree_skip_summary_prompt;
-    with_active_agent(app, |agent| {
-        let mut state = SessionTreeState::loading();
-        state.status = Some("Fetching Pi session tree…".into());
-        state.skip_summary_prompt = skip_summary;
-        agent.active_modal = Some(ActiveModal::SessionTree {
-            state,
-            window: crate::views::modal_window::ModalWindowState::new(),
-        });
-    });
-    vec![Effect::FetchSessionTree {
-        agent_id,
-        session_id,
+    }
+    // Offload `/tree` interactive explorer UI to the standalone TS plugin
+    // (`extensions/pi-grok-tree/`); Rust retains `Action::NavigateSessionTree`
+    // and transcript reload ownership.
+    vec![Effect::MentionAction {
+        kind: "tree".to_owned(),
+        command: "__pi_session_tree".to_owned(),
+        query: String::new(),
     }]
 }
 
