@@ -1,9 +1,15 @@
 name: Warm macOS release cache (non-release)
 
-# Run on main before cutting a beta tag. Keeping this explicit avoids a second
-# expensive build on every push, and puts the ARM64 cache in the default-branch
-# scope so all future beta tags can restore it.
+# Runs automatically when Cargo.lock or rust-toolchain.toml changes on main
+# (and supports manual dispatch), keeping the ARM64 dependency cache warm in
+# default-branch scope so all future beta tags restore it cleanly.
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
   workflow_dispatch:
 
 permissions:

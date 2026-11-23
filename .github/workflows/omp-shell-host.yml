@@ -1,0 +1,128 @@
+name: Build standalone OMP Shell Host (macOS ARM64)
+
+# Dedicated build for `tools/grok-pi-shell-host`.
+# Runs only when `tools/grok-pi-shell-host/**` changes on `main` (or via manual
+# dispatch) and publishes a content-addressed archive keyed by the git tree SHA
+# to the rolling `omp-shell-host-latest` pre-release so `release.yml` reuses it
+# in ~2 seconds whenever the host source is unchanged.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "tools/grok-pi-shell-host/**"
+      - ".github/workflows/omp-shell-host.yml"
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Rebuild even if an asset for the current tree hash already exists"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: omp-shell-host-macos-arm64
+  cancel-in-progress: false
+
+jobs:
+  build-shell-host:
+    name: Build OMP Shell Host (macOS ARM64)
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Compute tree hash and check existing asset
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild == true }}
+        run: |
+          set -euo pipefail
+          host_hash=$(git rev-parse HEAD:tools/grok-pi-shell-host)
+          asset="grok-pi-shell-host-macos-arm64-${host_hash}.tar.gz"
+          echo "hash=${host_hash}" >> "$GITHUB_OUTPUT"
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+          if [[ "${FORCE_REBUILD}" != "true" ]] && \
+            gh release view omp-shell-host-latest --json assets --jq '.assets[].name' 2>/dev/null | grep -Fxq "$asset"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "OMP Shell Host already built for tree ${host_hash}; skipping build."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Building OMP Shell Host for tree ${host_hash}."
+          fi
+
+      - name: Read shell host Rust version
+        if: steps.check.outputs.exists != 'true'
+        id: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel=$(sed -n 's/^channel = "\([^"]*\)".*/\1/p' tools/grok-pi-shell-host/rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install shell host Rust toolchain
+        if: steps.check.outputs.exists != 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          targets: aarch64-apple-darwin
+
+      - name: Cache OMP Shell Host dependencies
+        if: steps.check.outputs.exists != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "tools/grok-pi-shell-host -> target"
+          shared-key: grok-pi-shell-host-aarch64-apple-darwin
+          cache-workspace-crates: "true"
+          cache-bin: "false"
+
+      - name: Build and verify OMP Shell Host
+        if: steps.check.outputs.exists != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build \
+            --manifest-path tools/grok-pi-shell-host/Cargo.toml \
+            --release \
+            --target aarch64-apple-darwin
+          host_bin="tools/grok-pi-shell-host/target/aarch64-apple-darwin/release/grok-pi-shell-host"
+          test -f "$host_bin"
+          "$host_bin" --handshake | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          assert data["protocol_version"] == 1, data
+          assert data["trace_version"] == 1, data
+          assert data["engine"] == "omp-shell", data
+          print("Verified grok-pi-shell-host handshake:", data)
+          '
+          mkdir -p dist
+          stage="$(mktemp -d)"
+          cp "$host_bin" "$stage/grok-pi-shell-host"
+          chmod 755 "$stage/grok-pi-shell-host"
+          tar -C "$stage" -czf "dist/${{ steps.check.outputs.asset }}" grok-pi-shell-host
+          ls -lh "dist/${{ steps.check.outputs.asset }}"
+
+      - name: Publish content-addressed archive to rolling release
+        if: steps.check.outputs.exists != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset="dist/${{ steps.check.outputs.asset }}"
+          if gh release view omp-shell-host-latest >/dev/null 2>&1; then
+            gh release upload omp-shell-host-latest "$asset" --clobber
+          else
+            gh release create omp-shell-host-latest "$asset" \
+              --prerelease \
+              --title "OMP Shell Host (rolling cache)" \
+              --notes "Content-addressed prebuilt \`grok-pi-shell-host\` binaries keyed by \`git rev-parse HEAD:tools/grok-pi-shell-host\`. Reused automatically by \`release.yml\` when unchanged."
+          fi
