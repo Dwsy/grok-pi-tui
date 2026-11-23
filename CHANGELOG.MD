@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.10] - 2026-11-23
+
 ### Added / Changed
 
 - **OMP Shell (`grok-pi-shell-host`) F2 toggle, `oh-my-pi`-style trace rendering, and Enter `BlockViewer` trace preview**:
