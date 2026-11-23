@@ -27,12 +27,15 @@ import {
   type SessionRecord,
 } from "./session-data.ts";
 import { createSessionPickerTui, type SessionPickerTheme } from "./session-picker-tui.ts";
+import { buildSkillRecords, type SkillRecord } from "./skill-data.ts";
+import { createSkillPickerTui } from "./skill-picker-tui.ts";
 
 /** Must match `EXTENSION_MENTIONS_STATUS_KEY` in pi-grok-adapter. */
 const STATUS_KEY = "__pi_grok_mentions__";
 /** Must match `EXTENSION_MENTION_INSERT_STATUS_KEY` in pi-grok-adapter. */
 const INSERT_STATUS_KEY = "__pi_grok_mention_insert__";
 const SESSION_PICKER_COMMAND = "__pi_mention_session_picker";
+const SKILL_PICKER_COMMAND = "__pi_mention_skill_picker";
 const MAX_THREADS = 50;
 const MAX_CATALOG_BYTES = 450 * 1024;
 const THREAD_CACHE_TTL_MS = 5_000;
@@ -399,6 +402,11 @@ function buildBuiltInProviders(pi: ExtensionAPI): MentionProviderSpec[] {
       aliases: ["技能", "sk"],
       label: "Skill",
       description: "Reference a Pi-registered skill (grok-pi://skill/<name>)",
+      action: {
+        key: "ctrl+o",
+        label: "skill picker",
+        command: SKILL_PICKER_COMMAND,
+      },
       collect: () => collectSkillsFromPi(pi),
       resolve: (id) => {
         const items = collectSkillsFromPi(pi);
@@ -527,36 +535,87 @@ export default function mentions(pi: ExtensionAPI) {
       if (!chosen) return;
 
       const insertText = `@session:${chosen.shortId}`;
-      if (isGrokPiHost()) {
-        const ui = ctx.ui as unknown as PatchableUi;
-        try {
-          ui.setStatus?.(
-            INSERT_STATUS_KEY,
-            JSON.stringify({
-              kind: "session",
-              id: chosen.id,
-              title: chosen.title,
-              insertText,
-              nonce: Date.now(),
-            }),
-          );
-          ui.setStatus?.(INSERT_STATUS_KEY, undefined);
-        } catch {
-          // RPC transport closed; ignore.
-        }
-      } else {
-        const editorUi = ctx.ui as unknown as {
-          getEditorText?: () => string;
-          setEditorText?: (text: string) => void;
-        };
-        if (typeof editorUi.setEditorText === "function") {
-          const existing = typeof editorUi.getEditorText === "function" ? editorUi.getEditorText() : "";
-          const sep = existing && !/\s$/.test(existing) ? " " : "";
-          editorUi.setEditorText(`${existing}${sep}${insertText} `);
-        }
-      }
+      emitMentionInsert(ctx, "session", chosen.id, chosen.title, insertText);
     },
   });
+
+  // Hidden command invoked by Rust Pager when the user presses `@skill`'s
+  // dynamic shortcut (`Ctrl+O`) while `@skill` is active in the dropdown.
+  pi.registerCommand(SKILL_PICKER_COMMAND, {
+    description: "Open the bordered TS skill picker overlay for @skill mentions",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
+      const records = buildSkillRecords(collectSkillsFromPi(pi), cwd);
+      const initialQuery = String(args ?? "").trim();
+
+      const chosen = await ctx.ui.custom<SkillRecord | undefined>(
+        (tui, theme, _kb, done) =>
+          createSkillPickerTui(
+            tui as { requestRender: () => void },
+            theme as SessionPickerTheme,
+            {
+              records,
+              initialQuery,
+              initialScope: "global",
+              getRows: () => {
+                const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
+                return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+              },
+            },
+            done,
+          ),
+        {
+          overlay: true,
+          overlayOptions: {
+            width: "92%",
+            maxHeight: "88%",
+            anchor: "center",
+          },
+        },
+      );
+
+      if (!chosen) return;
+      emitMentionInsert(ctx, "skill", chosen.id, chosen.title, `@skill:${chosen.id}`);
+    },
+  });
+
+  function emitMentionInsert(
+    ctx: ExtensionCommandContext,
+    kind: string,
+    id: string,
+    title: string,
+    insertText: string,
+  ): void {
+    if (isGrokPiHost()) {
+      const ui = ctx.ui as unknown as PatchableUi;
+      try {
+        ui.setStatus?.(
+          INSERT_STATUS_KEY,
+          JSON.stringify({
+            kind,
+            id,
+            title,
+            insertText,
+            nonce: Date.now(),
+          }),
+        );
+        ui.setStatus?.(INSERT_STATUS_KEY, undefined);
+      } catch {
+        // RPC transport closed; ignore.
+      }
+    } else {
+      const editorUi = ctx.ui as unknown as {
+        getEditorText?: () => string;
+        setEditorText?: (text: string) => void;
+      };
+      if (typeof editorUi.setEditorText === "function") {
+        const existing =
+          typeof editorUi.getEditorText === "function" ? editorUi.getEditorText() : "";
+        const sep = existing && !/\s$/.test(existing) ? " " : "";
+        editorUi.setEditorText(`${existing}${sep}${insertText} `);
+      }
+    }
+  }
 
   const g = globalThis as GlobalWithMentions;
   g.__piGrokRegisterMentionProvider = (provider: MentionProviderSpec) => {

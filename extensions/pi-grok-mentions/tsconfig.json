@@ -13,6 +13,6 @@
 			"@earendil-works/pi-tui/*": ["../../pi-main/packages/tui/src/*"]
 		}
 	},
-	"include": ["index.ts", "session-data.ts", "session-picker-tui.ts"],
+	"include": ["index.ts", "session-data.ts", "session-picker-tui.ts", "skill-data.ts", "skill-picker-tui.ts"],
 	"exclude": []
 }

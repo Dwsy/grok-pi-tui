@@ -58,6 +58,16 @@ pub(super) fn write_mentions_extension() -> Result<MentionsExtension> {
         "session-picker-tui.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/session-picker-tui.ts"),
     )?;
+    write_source_file(
+        source_dir.path(),
+        "skill-data.ts",
+        include_str!("../../../../../../extensions/pi-grok-mentions/skill-data.ts"),
+    )?;
+    write_source_file(
+        source_dir.path(),
+        "skill-picker-tui.ts",
+        include_str!("../../../../../../extensions/pi-grok-mentions/skill-picker-tui.ts"),
+    )?;
     Ok(MentionsExtension {
         _source_dir: source_dir,
         source_path,
@@ -75,6 +85,8 @@ mod tests {
         let source = std::fs::read_to_string(ext.path()).expect("read index.ts");
         let data = std::fs::read_to_string(dir.join("session-data.ts")).expect("read session-data.ts");
         let tui = std::fs::read_to_string(dir.join("session-picker-tui.ts")).expect("read session-picker-tui.ts");
+        let skill_data = std::fs::read_to_string(dir.join("skill-data.ts")).expect("read skill-data.ts");
+        let skill_tui = std::fs::read_to_string(dir.join("skill-picker-tui.ts")).expect("read skill-picker-tui.ts");
         assert!(source.contains("__pi_grok_mentions__"));
         assert!(source.contains("__pi_grok_mention_insert__"));
         assert!(source.contains("__piGrokRegisterMentionProvider"));
@@ -83,5 +95,7 @@ mod tests {
         assert!(source.contains("grok-pi://mcp/"));
         assert!(data.contains("loadSessionPickerRecords"));
         assert!(tui.contains("createSessionPickerTui"));
+        assert!(skill_data.contains("buildSkillRecords"));
+        assert!(skill_tui.contains("createSkillPickerTui"));
     }
 }
