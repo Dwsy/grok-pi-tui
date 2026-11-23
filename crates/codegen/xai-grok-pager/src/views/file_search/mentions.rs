@@ -311,7 +311,12 @@ pub fn resolve_mention_entries(catalog: &MentionCatalog, raw_query: &str) -> Men
     let mut headers: Vec<MentionEntry> = catalog
         .providers
         .iter()
-        .filter(|p| provider_matches_prefix(p, raw_query))
+        .filter(|p| {
+            // Keep bare `@` uncluttered by hiding the `file` header when query is empty
+            // (bare `@` already lists workspace files directly below provider headers).
+            !(raw_query.is_empty() && p.kind.eq_ignore_ascii_case("file"))
+                && provider_matches_prefix(p, raw_query)
+        })
         .map(|p| MentionEntry::ProviderHeader {
             kind: p.kind.clone(),
             label: if p.label.is_empty() {

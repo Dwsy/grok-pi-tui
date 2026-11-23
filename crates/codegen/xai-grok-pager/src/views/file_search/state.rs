@@ -256,6 +256,25 @@ impl FileSearchState {
             return Some((provider.kind.as_str(), action, subquery.to_owned()));
         }
 
+        // Fallback for workspace file rows (bare `@foo` or `@file:<subquery>`):
+        // if a `file` provider registered an action, surface it while a file row
+        // or explicit `@file:` prefix is active.
+        let is_file_ctx = self.selected_result().is_some()
+            || split.is_some_and(|(prefix, _)| super::mentions::is_file_kind_alias(prefix));
+        if is_file_ctx
+            && let Some(provider) =
+                super::mentions::find_provider_by_kind(&self.mention_catalog, "file")
+            && let Some(action) = provider.action.as_ref()
+            && !action.key.trim().is_empty()
+            && !action.command.trim().is_empty()
+        {
+            let initial_query = split
+                .filter(|(prefix, _)| super::mentions::is_file_kind_alias(prefix))
+                .map(|(_, sub)| sub.to_owned())
+                .unwrap_or_else(|| raw_query.trim_start_matches('!').to_owned());
+            return Some((provider.kind.as_str(), action, initial_query));
+        }
+
         None
     }
 

@@ -29,6 +29,7 @@ import {
 import { createSessionPickerTui, type SessionPickerTheme } from "./session-picker-tui.ts";
 import { buildSkillRecords, type SkillRecord } from "./skill-data.ts";
 import { createSkillPickerTui } from "./skill-picker-tui.ts";
+import { createFilePickerTui, type FilePickerSelection } from "./file-picker-tui.ts";
 
 /** Must match `EXTENSION_MENTIONS_STATUS_KEY` in pi-grok-adapter. */
 const STATUS_KEY = "__pi_grok_mentions__";
@@ -36,6 +37,7 @@ const STATUS_KEY = "__pi_grok_mentions__";
 const INSERT_STATUS_KEY = "__pi_grok_mention_insert__";
 const SESSION_PICKER_COMMAND = "__pi_mention_session_picker";
 const SKILL_PICKER_COMMAND = "__pi_mention_skill_picker";
+const FILE_PICKER_COMMAND = "__pi_mention_file_picker";
 const MAX_THREADS = 50;
 const MAX_CATALOG_BYTES = 450 * 1024;
 const THREAD_CACHE_TTL_MS = 5_000;
@@ -446,6 +448,19 @@ function buildBuiltInProviders(pi: ExtensionAPI): MentionProviderSpec[] {
       },
     },
     {
+      kind: "file",
+      aliases: ["文件", "f", "path"],
+      label: "File",
+      description: "Browse tree, fd smart search, or rg full-text grep (@file:<path>)",
+      action: {
+        key: "ctrl+o",
+        label: "file explorer",
+        command: FILE_PICKER_COMMAND,
+      },
+      // Rust's FuzzyFileMatcherDaemon owns fast inline file dropdown rows.
+      collect: () => [],
+    },
+    {
       kind: "mcp",
       aliases: ["工具服务"],
       label: "MCP",
@@ -576,6 +591,44 @@ export default function mentions(pi: ExtensionAPI) {
 
       if (!chosen) return;
       emitMentionInsert(ctx, "skill", chosen.id, chosen.title, `@skill:${chosen.id}`);
+    },
+  });
+
+  // Hidden command invoked by Rust Pager when the user presses `@file`'s
+  // dynamic shortcut (`Ctrl+O`) while `@file` or a workspace file row is active.
+  pi.registerCommand(FILE_PICKER_COMMAND, {
+    description: "Open the bordered TS file explorer (Tree + fd + rg + Preview)",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
+      const initialQuery = String(args ?? "").trim();
+
+      const chosen = await ctx.ui.custom<FilePickerSelection | undefined>(
+        (tui, theme, _kb, done) =>
+          createFilePickerTui(
+            tui as { requestRender: () => void },
+            theme as SessionPickerTheme,
+            {
+              rootDir: cwd,
+              initialQuery,
+              getRows: () => {
+                const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
+                return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+              },
+            },
+            done,
+          ),
+        {
+          overlay: true,
+          overlayOptions: {
+            width: "92%",
+            maxHeight: "88%",
+            anchor: "center",
+          },
+        },
+      );
+
+      if (!chosen) return;
+      emitMentionInsert(ctx, "file", chosen.title, chosen.title, chosen.insertText);
     },
   });
 
