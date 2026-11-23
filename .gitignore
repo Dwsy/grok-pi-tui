@@ -1,4 +1,6 @@
 /target
+# Standalone crate workspaces outside the root target dir (e.g. tools/*).
+tools/*/target/
 __pycache__/
 *.py[cod]
 **/*.rs.bk
