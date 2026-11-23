@@ -492,6 +492,15 @@ impl PiAgent {
     }
 
     pub(super) async fn handle_message_end(&self, event: &Value) {
+        if message_role(event) == Some("toolResult") {
+            let msg = event.get("message").unwrap_or(event);
+            let name = string(msg, &["toolName", "tool_name", "name"]).unwrap_or_default();
+            let is_error = msg.get("isError").and_then(Value::as_bool) == Some(true);
+            if let Some(plan) = plan_update_for_tool(name, msg, is_error) {
+                self.send_update(acp::SessionUpdate::Plan(plan)).await;
+            }
+            return;
+        }
         if message_role(event) != Some("assistant") {
             return;
         }

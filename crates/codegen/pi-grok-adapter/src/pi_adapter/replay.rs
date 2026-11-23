@@ -209,7 +209,18 @@ impl PiAgent {
                         .collect::<Vec<_>>()
                         .join("\n");
                     if !text.is_empty() {
-                        raw = json!({ "content": [{ "type": "text", "text": text }] });
+                        // Preserve the original `details` object (e.g. `todo`
+                        // `tasks`/`todos` and OMP `shell_trace`) instead of
+                        // overwriting it with text-only content.
+                        if raw.is_object() && raw.get("content").is_none() {
+                            let details = raw;
+                            raw = json!({
+                                "content": [{ "type": "text", "text": text }],
+                                "details": details,
+                            });
+                        } else {
+                            raw = json!({ "content": [{ "type": "text", "text": text }] });
+                        }
                     }
                 }
                 // Codemode history stores the tool `details` (nested calls) as
