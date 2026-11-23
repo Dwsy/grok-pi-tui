@@ -12,6 +12,7 @@ import {
   getFileIcon,
   highlightTerms,
   hitRegion,
+  ListController,
   probeImageMetadata,
   renderSplitOverlayFrame,
   rgb24ToHalfBlockLines,
@@ -134,5 +135,18 @@ describe("pi-grok-tui-kit shared primitives", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("ListController tracks selection, viewport scroll, and double-click confirmation", () => {
+    const list = new ListController({ rowsPerItem: 2, doubleClickMs: 400 });
+    expect(list.itemsPerPage(10)).toBe(5);
+    list.move(6, 12, 10);
+    expect(list.selected).toBe(6);
+    expect(list.scroll).toBe(2);
+    expect(list.indexAtBodyRow(2, 12)).toBe(3);
+
+    expect(list.handleClick(3, 12, 10, 1000)).toBe("select");
+    expect(list.handleClick(3, 12, 10, 1250)).toBe("confirm");
+    expect(list.handleClick(3, 12, 10, 1300)).toBe("select");
   });
 });

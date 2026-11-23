@@ -30,3 +30,4 @@ export {
   type RemoteTuiImageSpec,
   type TerminalImageCapability,
 } from "./image.ts";
+export { DEFAULT_DOUBLE_CLICK_MS, ListController } from "./list.ts";

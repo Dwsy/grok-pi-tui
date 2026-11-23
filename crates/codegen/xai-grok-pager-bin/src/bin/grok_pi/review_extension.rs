@@ -43,32 +43,9 @@ pub(super) fn write_review_extension() -> Result<ReviewExtension> {
         .context("create review extension source directory")?;
     let review_dir = source_dir.path().join("pi-grok-review");
     let mentions_dir = source_dir.path().join("pi-grok-mentions");
-    let kit_dir = source_dir.path().join("pi-grok-tui-kit");
     fs::create_dir_all(&review_dir).context("create pi-grok-review dir")?;
     fs::create_dir_all(&mentions_dir).context("create shared pi-grok-mentions dir")?;
-    fs::create_dir_all(&kit_dir).context("create shared pi-grok-tui-kit dir")?;
-
-    // Shared TS TUI kit primitives
-    write_source_file(
-        &kit_dir,
-        "frame.ts",
-        include_str!("../../../../../../extensions/pi-grok-tui-kit/frame.ts"),
-    )?;
-    write_source_file(
-        &kit_dir,
-        "icons.ts",
-        include_str!("../../../../../../extensions/pi-grok-tui-kit/icons.ts"),
-    )?;
-    write_source_file(
-        &kit_dir,
-        "image.ts",
-        include_str!("../../../../../../extensions/pi-grok-tui-kit/image.ts"),
-    )?;
-    write_source_file(
-        &kit_dir,
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-tui-kit/index.ts"),
-    )?;
+    super::tui_kit::materialize_tui_kit(source_dir.path())?;
 
     // Shared file preview helper from pi-grok-mentions
     write_source_file(

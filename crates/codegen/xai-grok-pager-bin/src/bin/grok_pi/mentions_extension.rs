@@ -45,31 +45,8 @@ pub(super) fn write_mentions_extension() -> Result<MentionsExtension> {
         .tempdir()
         .context("create mentions extension source directory")?;
     let mentions_dir = source_dir.path().join("pi-grok-mentions");
-    let kit_dir = source_dir.path().join("pi-grok-tui-kit");
     fs::create_dir_all(&mentions_dir).context("create pi-grok-mentions dir")?;
-    fs::create_dir_all(&kit_dir).context("create shared pi-grok-tui-kit dir")?;
-
-    // Shared TS TUI kit primitives
-    write_source_file(
-        &kit_dir,
-        "frame.ts",
-        include_str!("../../../../../../extensions/pi-grok-tui-kit/frame.ts"),
-    )?;
-    write_source_file(
-        &kit_dir,
-        "icons.ts",
-        include_str!("../../../../../../extensions/pi-grok-tui-kit/icons.ts"),
-    )?;
-    write_source_file(
-        &kit_dir,
-        "image.ts",
-        include_str!("../../../../../../extensions/pi-grok-tui-kit/image.ts"),
-    )?;
-    write_source_file(
-        &kit_dir,
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-tui-kit/index.ts"),
-    )?;
+    super::tui_kit::materialize_tui_kit(source_dir.path())?;
 
     let source_path = write_source_file(
         &mentions_dir,

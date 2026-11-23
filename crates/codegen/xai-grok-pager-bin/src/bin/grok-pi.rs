@@ -81,6 +81,8 @@ mod working_message_extension;
 mod mentions_extension;
 #[path = "grok_pi/review_extension.rs"]
 mod review_extension;
+#[path = "grok_pi/tui_kit.rs"]
+mod tui_kit;
 
 use anyhow::{Context, Result};
 use clap::Parser;

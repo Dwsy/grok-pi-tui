@@ -22,11 +22,16 @@ import {
 import {
   computeSplitGeometry,
   detectNerdFontSupport,
+  detectTerminalImageProtocol,
   fitWidth,
   getFileIcon,
   hitRegion,
+  isImageFilePath,
+  renderHalfBlockPreview,
   renderSplitOverlayFrame,
   type ClickRegion,
+  type RemoteTuiImageSpec,
+  type TerminalImageCapability,
   type TuiTheme,
 } from "../pi-grok-tui-kit/index.ts";
 import { loadFileOrDirPreview, type FilePreviewResult } from "../pi-grok-mentions/file-data.ts";
@@ -64,13 +69,11 @@ export interface ReviewTuiOptions {
     relPath: string,
     opts: { showHidden: boolean; nerdIcons: boolean },
   ) => FilePreviewResult;
+  /** Optional callback to emit/clear an HD image overlay rect in `grok-pi`. */
+  onImageOverlay?: (spec: RemoteTuiImageSpec | undefined) => void;
+  /** Optional env override for deterministic protocol detection in tests. */
+  env?: NodeJS.ProcessEnv;
   getRows?: () => number;
-}
-
-interface ClickRegion {
-  x1: number;
-  x2: number;
-  y: number;
 }
 
 /** Format collected file comments into a concise, actionable prompt for the agent. */
@@ -94,6 +97,8 @@ export class ReviewTui implements Component {
     relPath: string,
     opts: { showHidden: boolean; nerdIcons: boolean },
   ) => FilePreviewResult;
+  private readonly onImageOverlay?: (spec: RemoteTuiImageSpec | undefined) => void;
+  private readonly imageCap: TerminalImageCapability;
   private readonly getRows: () => number;
 
   private pickingTurn: boolean;
@@ -120,6 +125,7 @@ export class ReviewTui implements Component {
   private bodyStartY = 3;
   private bodyHeight = 16;
   private previewVisibleRows = 12;
+  private lastEmittedImageKey = "";
   private pillRects = new Map<string, ClickRegion>();
   private closeBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
   private leftRowMap: Array<{ y1: number; y2: number; index: number }> = [];
@@ -138,6 +144,8 @@ export class ReviewTui implements Component {
     this.done = done;
     this.nerdIcons = options.nerdIcons ?? detectNerdFontSupport();
     this.loadPreviewFn = options.loadPreview ?? loadFileOrDirPreview;
+    this.onImageOverlay = options.onImageOverlay;
+    this.imageCap = detectTerminalImageProtocol(options.env);
     this.getRows = options.getRows ?? (() => 28);
 
     this.pickingTurn = this.launchMode === "message" && this.turns.length > 0;
@@ -197,7 +205,18 @@ export class ReviewTui implements Component {
     this.previewScroll = 0;
   }
 
+  private syncImageOverlay(spec: RemoteTuiImageSpec | undefined): void {
+    if (!this.onImageOverlay) return;
+    const key = spec
+      ? `${spec.path}:${spec.x},${spec.y},${spec.width}x${spec.height}`
+      : "";
+    if (key === this.lastEmittedImageKey) return;
+    this.lastEmittedImageKey = key;
+    this.onImageOverlay(spec);
+  }
+
   private submitFeedback(): void {
+    this.syncImageOverlay(undefined);
     const list: ReviewComment[] = [...this.comments.entries()].map(([relPath, note]) => ({
       relPath,
       note,
@@ -284,8 +303,10 @@ export class ReviewTui implements Component {
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
       if (this.launchMode === "message" && !this.pickingTurn && this.turns.length > 0) {
         this.pickingTurn = true;
+        this.syncImageOverlay(undefined);
         return;
       }
+      this.syncImageOverlay(undefined);
       this.done(undefined);
       return;
     }
@@ -352,6 +373,7 @@ export class ReviewTui implements Component {
 
     if (type === "press" && event.button === "left") {
       if (hitRegion(this.closeBtnRect, x, y)) {
+        this.syncImageOverlay(undefined);
         this.done(undefined);
         return { handled: true, render: false };
       }
@@ -525,6 +547,7 @@ export class ReviewTui implements Component {
   private renderRightPane(innerW: number, height: number): string[] {
     const file = this.getSelectedFile();
     if (!file) {
+      this.syncImageOverlay(undefined);
       const empty = ["", this.fg("dim", "  Select a file to inspect changes.")];
       while (empty.length < height) empty.push("");
       return empty.slice(0, height).map((l) => fitWidth(l, innerW));
@@ -542,6 +565,52 @@ export class ReviewTui implements Component {
     const headerBlock = [...metaLines, divider];
     const previewHeight = Math.max(1, height - headerBlock.length);
     this.previewVisibleRows = previewHeight;
+
+    // Direct HD / half-block preview for modified or added image files.
+    if (isImageFilePath(file.relPath) && !this.pickingTurn) {
+      let prev = this.filePreviewCache.get(file.relPath);
+      if (!prev) {
+        prev = this.loadPreviewFn(this.rootDir, file.relPath, {
+          showHidden: true,
+          nerdIcons: this.nerdIcons,
+        });
+        this.filePreviewCache.set(file.relPath, prev);
+      }
+      if (prev.kind === "image" && prev.absPath) {
+        const useNativeHd = Boolean(this.onImageOverlay && this.imageCap.protocol !== "halfblock");
+        if (useNativeHd && innerW >= 6 && previewHeight >= 3) {
+          this.syncImageOverlay({
+            path: prev.absPath,
+            x: this.dividerX + 1,
+            y: this.bodyStartY + headerBlock.length,
+            width: innerW,
+            height: previewHeight,
+          });
+          this.lastPreviewLinesCount = 0;
+          const blankCanvas = Array.from({ length: previewHeight }, () => "");
+          return [...headerBlock, ...blankCanvas]
+            .slice(0, height)
+            .map((line) => fitWidth(line, innerW));
+        }
+        this.syncImageOverlay(undefined);
+        const halfBlock = renderHalfBlockPreview(
+          prev.absPath,
+          Math.max(4, innerW - 2),
+          Math.max(2, previewHeight),
+          prev.imageMeta,
+        );
+        const imgLines = halfBlock
+          ? halfBlock.map((row) => ` ${row}`)
+          : prev.lines.map((l) => ` ${this.fg("dim", l)}`);
+        this.lastPreviewLinesCount = imgLines.length;
+        while (imgLines.length < previewHeight) imgLines.push("");
+        return [...headerBlock, ...imgLines]
+          .slice(0, height)
+          .map((line) => fitWidth(line, innerW));
+      }
+    }
+
+    this.syncImageOverlay(undefined);
 
     const rendered: string[] = [];
     if (this.previewMode === "diff") {

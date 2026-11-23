@@ -11,7 +11,11 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { TuiTheme } from "../pi-grok-tui-kit/index.ts";
+import {
+  REMOTE_TUI_IMAGE_WIDGET_KEY,
+  type RemoteTuiImageSpec,
+  type TuiTheme,
+} from "../pi-grok-tui-kit/index.ts";
 import {
   aggregateSessionFiles,
   extractSessionReviewTurns,
@@ -47,32 +51,54 @@ async function openReviewOverlay(
     return;
   }
 
-  const result = await ctx.ui.custom<ReviewTuiResult | undefined>(
-    (tui, theme, _kb, done) =>
-      createReviewTui(
-        tui as { requestRender: () => void },
-        theme as TuiTheme,
-        {
-          rootDir: cwd,
-          mode,
-          files,
-          turns,
-          getRows: () => {
-            const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
-            return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+  const isGrokPi = process.env.PI_GROK === "1";
+  const patchUi = ctx.ui as unknown as {
+    setWidget?: (key: string, lines?: string[]) => void;
+  };
+  const emitImageOverlay = (spec: RemoteTuiImageSpec | undefined) => {
+    if (!isGrokPi || typeof patchUi.setWidget !== "function") return;
+    try {
+      patchUi.setWidget(
+        REMOTE_TUI_IMAGE_WIDGET_KEY,
+        spec ? [JSON.stringify(spec)] : undefined,
+      );
+    } catch {
+      // RPC transport closed; ignore.
+    }
+  };
+
+  let result: ReviewTuiResult | undefined;
+  try {
+    result = await ctx.ui.custom<ReviewTuiResult | undefined>(
+      (tui, theme, _kb, done) =>
+        createReviewTui(
+          tui as { requestRender: () => void },
+          theme as TuiTheme,
+          {
+            rootDir: cwd,
+            mode,
+            files,
+            turns,
+            onImageOverlay: isGrokPi ? emitImageOverlay : undefined,
+            getRows: () => {
+              const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
+              return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+            },
           },
+          done,
+        ),
+      {
+        overlay: true,
+        overlayOptions: {
+          width: "92%",
+          maxHeight: "88%",
+          anchor: "center",
         },
-        done,
-      ),
-    {
-      overlay: true,
-      overlayOptions: {
-        width: "92%",
-        maxHeight: "88%",
-        anchor: "center",
       },
-    },
-  );
+    );
+  } finally {
+    emitImageOverlay(undefined);
+  }
 
   if (!result || !result.formattedFeedback) return;
 
