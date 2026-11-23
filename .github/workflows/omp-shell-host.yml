@@ -78,6 +78,8 @@ jobs:
       - name: Cache OMP Shell Host dependencies
         if: steps.check.outputs.exists != 'true'
         uses: Swatinem/rust-cache@v2
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.rust.outputs.channel }}
         with:
           workspaces: "tools/grok-pi-shell-host -> target"
           shared-key: grok-pi-shell-host-aarch64-apple-darwin
@@ -89,7 +91,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build \
+          cargo +"${{ steps.rust.outputs.channel }}" build \
             --manifest-path tools/grok-pi-shell-host/Cargo.toml \
             --release \
             --target aarch64-apple-darwin
