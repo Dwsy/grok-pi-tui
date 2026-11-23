@@ -9,6 +9,13 @@ use crate::views::review::{
 };
 
 pub(super) fn dispatch_review_show_session(app: &mut AppView) -> Vec<Effect> {
+    if app.external_agent {
+        return vec![Effect::MentionAction {
+            kind: "review".to_owned(),
+            command: "__pi_review_session".to_owned(),
+            query: String::new(),
+        }];
+    }
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
@@ -49,6 +56,13 @@ pub(super) fn dispatch_review_show_session(app: &mut AppView) -> Vec<Effect> {
 }
 
 pub(super) fn dispatch_review_show_message_picker(app: &mut AppView) -> Vec<Effect> {
+    if app.external_agent {
+        return vec![Effect::MentionAction {
+            kind: "review".to_owned(),
+            command: "__pi_review_message".to_owned(),
+            query: String::new(),
+        }];
+    }
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };

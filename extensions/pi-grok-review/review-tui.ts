@@ -1,0 +1,681 @@
+/**
+ * Minimal, bordered left/right split TUI for `/review-session` and `/review-message`.
+ *
+ * Shares Nerd Font icon & file-preview primitives from `../pi-grok-mentions/`
+ * while deliberately stripping away the old Rust review modal's sprawling
+ * keymap:
+ * - ↑/↓ / Click / Wheel : select turn or changed file
+ * - Tab / Click pills   : switch Tree ↔ List or Diff ↔ File preview
+ * - Enter / c           : add or edit a review note on the selected file
+ * - Ctrl+S / [Send]     : send all review notes to the agent as structured feedback
+ * - Esc / [✕]           : cancel note input or close
+ */
+
+import {
+  matchesKey,
+  truncateToWidth,
+  visibleWidth,
+  type Component,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
+} from "@earendil-works/pi-tui";
+import {
+  detectNerdFontSupport,
+  getFileIcon,
+  loadFileOrDirPreview,
+  type FilePreviewResult,
+} from "../pi-grok-mentions/file-data.ts";
+import { fitWidth, type SessionPickerTheme } from "../pi-grok-mentions/session-picker-tui.ts";
+import {
+  buildReviewFileTree,
+  type ReviewFileChange,
+  type ReviewTreeRow,
+  type ReviewTurn,
+} from "./review-data.ts";
+
+export type ReviewLaunchMode = "session" | "message";
+export type ReviewListMode = "tree" | "list";
+export type ReviewPreviewMode = "diff" | "file";
+
+export interface ReviewComment {
+  relPath: string;
+  note: string;
+}
+
+export interface ReviewTuiResult {
+  comments: ReviewComment[];
+  formattedFeedback: string;
+}
+
+export interface ReviewTuiOptions {
+  rootDir: string;
+  mode: ReviewLaunchMode;
+  /** Session-level aggregated files (used when `mode === "session"`). */
+  files: readonly ReviewFileChange[];
+  /** Turn-grouped files (used when `mode === "message"`). */
+  turns?: readonly ReviewTurn[];
+  nerdIcons?: boolean;
+  loadPreview?: (
+    rootDir: string,
+    relPath: string,
+    opts: { showHidden: boolean; nerdIcons: boolean },
+  ) => FilePreviewResult;
+  getRows?: () => number;
+}
+
+interface ClickRegion {
+  x1: number;
+  x2: number;
+  y: number;
+}
+
+/** Format collected file comments into a concise, actionable prompt for the agent. */
+export function formatReviewFeedback(comments: readonly ReviewComment[]): string {
+  const lines = comments
+    .filter((c) => c.note.trim().length > 0)
+    .map((c) => `- @${c.relPath}: ${c.note.trim()}`);
+  if (lines.length === 0) return "";
+  return `Code review feedback:\n${lines.join("\n")}`;
+}
+
+export class ReviewTui implements Component {
+  private readonly rootDir: string;
+  private readonly launchMode: ReviewLaunchMode;
+  private readonly sessionFiles: readonly ReviewFileChange[];
+  private readonly turns: readonly ReviewTurn[];
+  private readonly theme: SessionPickerTheme;
+  private readonly done: (result: ReviewTuiResult | undefined) => void;
+  private readonly loadPreviewFn: (
+    rootDir: string,
+    relPath: string,
+    opts: { showHidden: boolean; nerdIcons: boolean },
+  ) => FilePreviewResult;
+  private readonly getRows: () => number;
+
+  private pickingTurn: boolean;
+  private selectedTurnIndex = 0;
+  private listMode: ReviewListMode = "tree";
+  private previewMode: ReviewPreviewMode = "diff";
+  private nerdIcons: boolean;
+
+  private activeFiles: readonly ReviewFileChange[] = [];
+  private treeRows: ReviewTreeRow[] = [];
+  private selectedFileIndex = 0;
+  private listScroll = 0;
+  private previewScroll = 0;
+  private lastPreviewLinesCount = 0;
+
+  // Lightweight inline comment input (replaces complex modal stacks)
+  private commenting = false;
+  private commentDraft = "";
+  private readonly comments = new Map<string, string>();
+  private readonly filePreviewCache = new Map<string, FilePreviewResult>();
+
+  // Layout geometry for mouse hit-testing
+  private dividerX = 42;
+  private bodyStartY = 3;
+  private bodyHeight = 16;
+  private previewVisibleRows = 12;
+  private listToggleRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
+  private previewToggleRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
+  private turnBackRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
+  private sendBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
+  private closeBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
+  private leftRowMap: Array<{ y1: number; y2: number; index: number }> = [];
+
+  constructor(
+    _tui: { requestRender: () => void },
+    theme: SessionPickerTheme,
+    options: ReviewTuiOptions,
+    done: (result: ReviewTuiResult | undefined) => void,
+  ) {
+    this.rootDir = options.rootDir;
+    this.launchMode = options.mode;
+    this.sessionFiles = options.files;
+    this.turns = options.turns ?? [];
+    this.theme = theme;
+    this.done = done;
+    this.nerdIcons = options.nerdIcons ?? detectNerdFontSupport();
+    this.loadPreviewFn = options.loadPreview ?? loadFileOrDirPreview;
+    this.getRows = options.getRows ?? (() => 28);
+
+    this.pickingTurn = this.launchMode === "message" && this.turns.length > 0;
+    if (this.turns.length > 0) {
+      this.selectedTurnIndex = this.turns.length - 1;
+    }
+    this.syncActiveFiles();
+  }
+
+  isPickingTurn(): boolean {
+    return this.pickingTurn;
+  }
+
+  getListMode(): ReviewListMode {
+    return this.listMode;
+  }
+
+  getPreviewMode(): ReviewPreviewMode {
+    return this.previewMode;
+  }
+
+  getSelectedFile(): ReviewFileChange | undefined {
+    return this.activeFiles[this.selectedFileIndex];
+  }
+
+  getCommentCount(): number {
+    return this.comments.size;
+  }
+
+  invalidate(): void {
+    // Renders directly from live state.
+  }
+
+  private bold(text: string): string {
+    return this.theme.bold ? this.theme.bold(text) : `\x1b[1m${text}\x1b[0m`;
+  }
+
+  private fg(color: string, text: string): string {
+    return this.theme.fg(color, text);
+  }
+
+  private styleIcon(name: string, isDir: boolean): string {
+    const spec = getFileIcon(name, { isDir, expanded: isDir, nerdIcons: this.nerdIcons });
+    return spec.color === "default" ? spec.glyph : this.fg(spec.color, spec.glyph);
+  }
+
+  private syncActiveFiles(): void {
+    if (this.launchMode === "message" && this.turns.length > 0) {
+      this.selectedTurnIndex = Math.max(0, Math.min(this.turns.length - 1, this.selectedTurnIndex));
+      this.activeFiles = this.turns[this.selectedTurnIndex]?.files ?? [];
+    } else {
+      this.activeFiles = this.sessionFiles;
+    }
+    this.treeRows = buildReviewFileTree(this.activeFiles);
+    this.selectedFileIndex = Math.max(0, Math.min(this.activeFiles.length - 1, this.selectedFileIndex));
+    this.listScroll = 0;
+    this.previewScroll = 0;
+  }
+
+  private submitFeedback(): void {
+    const list: ReviewComment[] = [...this.comments.entries()].map(([relPath, note]) => ({
+      relPath,
+      note,
+    }));
+    if (list.length === 0) {
+      this.done(undefined);
+      return;
+    }
+    this.done({
+      comments: list,
+      formattedFeedback: formatReviewFeedback(list),
+    });
+  }
+
+  private moveSelection(delta: number): void {
+    if (this.pickingTurn) {
+      if (this.turns.length === 0) return;
+      this.selectedTurnIndex = Math.max(
+        0,
+        Math.min(this.turns.length - 1, this.selectedTurnIndex + delta),
+      );
+      this.syncActiveFiles();
+      return;
+    }
+    if (this.activeFiles.length === 0) return;
+    const prev = this.selectedFileIndex;
+    this.selectedFileIndex = Math.max(
+      0,
+      Math.min(this.activeFiles.length - 1, this.selectedFileIndex + delta),
+    );
+    if (this.selectedFileIndex !== prev) {
+      this.previewScroll = 0;
+    }
+  }
+
+  private scrollPreview(delta: number): void {
+    const maxScroll = Math.max(0, this.lastPreviewLinesCount - this.previewVisibleRows);
+    this.previewScroll = Math.max(0, Math.min(maxScroll, this.previewScroll + delta));
+  }
+
+  private startComment(): void {
+    const file = this.getSelectedFile();
+    if (!file) return;
+    this.commenting = true;
+    this.commentDraft = this.comments.get(file.relPath) ?? "";
+  }
+
+  private commitComment(): void {
+    const file = this.getSelectedFile();
+    if (file) {
+      const trimmed = this.commentDraft.trim();
+      if (trimmed) this.comments.set(file.relPath, trimmed);
+      else this.comments.delete(file.relPath);
+    }
+    this.commenting = false;
+    this.commentDraft = "";
+  }
+
+  handleInput(data: string): void {
+    if (this.commenting) {
+      if (matchesKey(data, "escape")) {
+        this.commenting = false;
+        this.commentDraft = "";
+        return;
+      }
+      if (matchesKey(data, "enter") || matchesKey(data, "return")) {
+        this.commitComment();
+        return;
+      }
+      if (matchesKey(data, "backspace")) {
+        this.commentDraft = Array.from(this.commentDraft).slice(0, -1).join("");
+        return;
+      }
+      let printable = data;
+      if (printable.startsWith("\x1b[200~") && printable.endsWith("\x1b[201~")) {
+        printable = printable.slice(6, -6).replace(/[\r\n]+/g, " ");
+      }
+      if (!printable.startsWith("\x1b") && !/[\x00-\x1f\x7f]/.test(printable)) {
+        this.commentDraft += printable;
+      }
+      return;
+    }
+
+    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+      if (this.launchMode === "message" && !this.pickingTurn && this.turns.length > 0) {
+        this.pickingTurn = true;
+        return;
+      }
+      this.done(undefined);
+      return;
+    }
+    if (matchesKey(data, "ctrl+s")) {
+      this.submitFeedback();
+      return;
+    }
+    if (matchesKey(data, "up") || matchesKey(data, "ctrl+p") || data === "k") {
+      this.moveSelection(-1);
+      return;
+    }
+    if (matchesKey(data, "down") || matchesKey(data, "ctrl+n") || data === "j") {
+      this.moveSelection(1);
+      return;
+    }
+    if (matchesKey(data, "pageUp") || matchesKey(data, "ctrl+u")) {
+      this.scrollPreview(-Math.max(3, Math.floor(this.previewVisibleRows / 2)));
+      return;
+    }
+    if (matchesKey(data, "pageDown") || matchesKey(data, "ctrl+d")) {
+      this.scrollPreview(Math.max(3, Math.floor(this.previewVisibleRows / 2)));
+      return;
+    }
+    if (matchesKey(data, "tab")) {
+      if (this.pickingTurn) {
+        this.pickingTurn = false;
+      } else {
+        this.previewMode = this.previewMode === "diff" ? "file" : "diff";
+        this.previewScroll = 0;
+      }
+      return;
+    }
+    if (data === "t" && !this.pickingTurn) {
+      this.listMode = this.listMode === "tree" ? "list" : "tree";
+      return;
+    }
+    if (matchesKey(data, "enter") || matchesKey(data, "return")) {
+      if (this.pickingTurn) {
+        this.pickingTurn = false;
+        this.selectedFileIndex = 0;
+        this.previewScroll = 0;
+        return;
+      }
+      this.startComment();
+      return;
+    }
+    if (data === "c" && !this.pickingTurn) {
+      this.startComment();
+    }
+  }
+
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    const { x, y, type } = event;
+
+    if (type === "wheel") {
+      const delta = (event.wheelDelta ?? 0) > 0 ? 1 : -1;
+      if (y >= this.bodyStartY && y < this.bodyStartY + this.bodyHeight) {
+        if (x < this.dividerX) this.moveSelection(delta);
+        else this.scrollPreview(delta * 3);
+        return { handled: true, render: true };
+      }
+      return { handled: true, render: false };
+    }
+
+    const hit = (r: ClickRegion) => y === r.y && x >= r.x1 && x <= r.x2;
+
+    if (type === "press" && event.button === "left") {
+      if (hit(this.closeBtnRect)) {
+        this.done(undefined);
+        return { handled: true, render: false };
+      }
+      if (hit(this.sendBtnRect) && this.comments.size > 0) {
+        this.submitFeedback();
+        return { handled: true, render: false };
+      }
+      if (hit(this.turnBackRect) && this.launchMode === "message" && this.turns.length > 0) {
+        this.pickingTurn = !this.pickingTurn;
+        return { handled: true, render: true };
+      }
+      if (hit(this.listToggleRect) && !this.pickingTurn) {
+        this.listMode = this.listMode === "tree" ? "list" : "tree";
+        return { handled: true, render: true };
+      }
+      if (hit(this.previewToggleRect) && !this.pickingTurn) {
+        this.previewMode = this.previewMode === "diff" ? "file" : "diff";
+        this.previewScroll = 0;
+        return { handled: true, render: true };
+      }
+      if (x >= 1 && x < this.dividerX) {
+        for (const row of this.leftRowMap) {
+          if (y >= row.y1 && y <= row.y2) {
+            if (this.pickingTurn) {
+              this.selectedTurnIndex = row.index;
+              this.syncActiveFiles();
+            } else {
+              this.selectedFileIndex = row.index;
+              this.previewScroll = 0;
+            }
+            return { handled: true, render: true };
+          }
+        }
+      }
+      return { handled: true, render: false };
+    }
+
+    if (type === "click" && event.button === "left" && (event.clickCount ?? 1) >= 2) {
+      if (x >= 1 && x < this.dividerX) {
+        for (const row of this.leftRowMap) {
+          if (y >= row.y1 && y <= row.y2) {
+            if (this.pickingTurn) {
+              this.selectedTurnIndex = row.index;
+              this.syncActiveFiles();
+              this.pickingTurn = false;
+            } else {
+              this.selectedFileIndex = row.index;
+              this.startComment();
+            }
+            return { handled: true, render: true };
+          }
+        }
+      }
+    }
+
+    return { handled: true, render: false };
+  }
+
+  private renderLeftPane(innerW: number, height: number): string[] {
+    this.leftRowMap = [];
+
+    if (this.pickingTurn) {
+      if (this.turns.length === 0) {
+        const empty = ["", this.fg("dim", " No edited messages to review")];
+        while (empty.length < height) empty.push("");
+        return empty.slice(0, height).map((l) => fitWidth(l, innerW));
+      }
+      const lines: string[] = [];
+      const page = Math.max(1, Math.floor(height / 2));
+      if (this.selectedTurnIndex < this.listScroll) this.listScroll = this.selectedTurnIndex;
+      if (this.selectedTurnIndex >= this.listScroll + page) {
+        this.listScroll = this.selectedTurnIndex - page + 1;
+      }
+      for (let slot = 0; slot < page; slot++) {
+        const idx = this.listScroll + slot;
+        if (idx >= this.turns.length) break;
+        const turn = this.turns[idx]!;
+        const isSelected = idx === this.selectedTurnIndex;
+        const startY = this.bodyStartY + lines.length;
+        const marker = isSelected ? this.fg("accent", "▸ ") : "  ";
+        const badge = this.fg("dim", ` (${turn.files.length}f)`);
+        const promptBudget = Math.max(6, innerW - 2 - visibleWidth(badge));
+        const label = truncateToWidth(`#${turn.turnIndex} ${turn.prompt}`, promptBudget, "…");
+        const styled = isSelected ? this.bold(this.fg("accent", label)) : label;
+        lines.push(fitWidth(`${marker}${styled}${badge}`, innerW));
+        if (lines.length < height) {
+          const summary = turn.files.map((f) => f.name).slice(0, 3).join(", ");
+          lines.push(fitWidth(`  ${this.fg("dim", summary)}`, innerW));
+        }
+        this.leftRowMap.push({ y1: startY, y2: this.bodyStartY + lines.length - 1, index: idx });
+      }
+      while (lines.length < height) lines.push(" ".repeat(innerW));
+      return lines.slice(0, height);
+    }
+
+    if (this.activeFiles.length === 0) {
+      const empty = ["", this.fg("dim", " No file changes to review")];
+      while (empty.length < height) empty.push("");
+      return empty.slice(0, height).map((l) => fitWidth(l, innerW));
+    }
+
+    const lines: string[] = [];
+    if (this.listMode === "tree") {
+      const selectedRowIdx = this.treeRows.findIndex(
+        (r) => r.kind === "file" && r.fileIndex === this.selectedFileIndex,
+      );
+      if (selectedRowIdx >= 0) {
+        if (selectedRowIdx < this.listScroll) this.listScroll = selectedRowIdx;
+        if (selectedRowIdx >= this.listScroll + height) {
+          this.listScroll = selectedRowIdx - height + 1;
+        }
+      }
+      for (let slot = 0; slot < height; slot++) {
+        const rIdx = this.listScroll + slot;
+        if (rIdx >= this.treeRows.length) break;
+        const row = this.treeRows[rIdx]!;
+        const y = this.bodyStartY + lines.length;
+        let indent = "";
+        for (const hasNext of row.ancestorHasNext) {
+          indent += hasNext ? this.fg("border", "│ ") : "  ";
+        }
+        if (row.depth > 0) indent += this.fg("border", row.isLast ? "└─" : "├─");
+
+        if (row.kind === "dir") {
+          const icon = this.styleIcon(row.name, true);
+          lines.push(fitWidth(` ${indent}${icon} ${this.fg("dim", `${row.name}/`)}`, innerW));
+          continue;
+        }
+        const fIdx = row.fileIndex!;
+        const file = this.activeFiles[fIdx]!;
+        const isSelected = fIdx === this.selectedFileIndex;
+        const marker = isSelected ? this.fg("accent", "▸") : " ";
+        const icon = this.styleIcon(file.name, false);
+        const noteMark = this.comments.has(file.relPath) ? this.fg("warning", "●") : "";
+        const stats = `${this.fg("success", `+${file.additions}`)} ${this.fg("error", `-${file.deletions}`)}`;
+        const nameStyled = isSelected ? this.bold(this.fg("accent", file.name)) : file.name;
+        const left = `${marker}${indent}${icon} ${nameStyled}${noteMark ? ` ${noteMark}` : ""}`;
+        const gap = Math.max(1, innerW - visibleWidth(left) - visibleWidth(stats) - 1);
+        lines.push(fitWidth(`${left}${" ".repeat(gap)}${stats} `, innerW));
+        this.leftRowMap.push({ y1: y, y2: y, index: fIdx });
+      }
+    } else {
+      if (this.selectedFileIndex < this.listScroll) this.listScroll = this.selectedFileIndex;
+      if (this.selectedFileIndex >= this.listScroll + height) {
+        this.listScroll = this.selectedFileIndex - height + 1;
+      }
+      for (let slot = 0; slot < height; slot++) {
+        const fIdx = this.listScroll + slot;
+        if (fIdx >= this.activeFiles.length) break;
+        const file = this.activeFiles[fIdx]!;
+        const isSelected = fIdx === this.selectedFileIndex;
+        const y = this.bodyStartY + lines.length;
+        const marker = isSelected ? this.fg("accent", "▸ ") : "  ";
+        const icon = this.styleIcon(file.name, false);
+        const noteMark = this.comments.has(file.relPath) ? this.fg("warning", " ●") : "";
+        const stats = `${this.fg("success", `+${file.additions}`)} ${this.fg("error", `-${file.deletions}`)}`;
+        const labelBudget = Math.max(6, innerW - 5 - visibleWidth(stats) - visibleWidth(noteMark));
+        const pathText = truncateToWidth(file.relPath, labelBudget, "…");
+        const styled = isSelected ? this.bold(this.fg("accent", pathText)) : pathText;
+        const left = `${marker}${icon} ${styled}${noteMark}`;
+        const gap = Math.max(1, innerW - visibleWidth(left) - visibleWidth(stats) - 1);
+        lines.push(fitWidth(`${left}${" ".repeat(gap)}${stats} `, innerW));
+        this.leftRowMap.push({ y1: y, y2: y, index: fIdx });
+      }
+    }
+
+    while (lines.length < height) lines.push(" ".repeat(innerW));
+    return lines.slice(0, height);
+  }
+
+  private renderRightPane(innerW: number, height: number): string[] {
+    const file = this.getSelectedFile();
+    if (!file) {
+      const empty = ["", this.fg("dim", "  Select a file to inspect changes.")];
+      while (empty.length < height) empty.push("");
+      return empty.slice(0, height).map((l) => fitWidth(l, innerW));
+    }
+
+    const icon = this.styleIcon(file.name, false);
+    const savedNote = this.comments.get(file.relPath);
+    const metaLines: string[] = [
+      ` ${icon} ${this.bold(this.fg("accent", file.relPath))}  ${this.fg("success", `+${file.additions}`)} ${this.fg("error", `-${file.deletions}`)}  ${this.fg("dim", `${file.op} ×${file.opsCount}`)}`,
+    ];
+    if (savedNote) {
+      metaLines.push(` ${this.fg("warning", "Note:")} ${savedNote}`);
+    }
+    const divider = this.fg("border", "─".repeat(innerW));
+    const headerBlock = [...metaLines, divider];
+    const previewHeight = Math.max(1, height - headerBlock.length);
+    this.previewVisibleRows = previewHeight;
+
+    const rendered: string[] = [];
+    if (this.previewMode === "diff") {
+      for (const dl of file.diffLines) {
+        const clean = dl.text.replace(/\t/g, "  ");
+        if (dl.kind === "hunk") {
+          rendered.push(` ${this.fg("accent", clean)}`);
+        } else if (dl.kind === "add") {
+          const num = dl.newLine ? String(dl.newLine).padStart(4, " ") : "    ";
+          rendered.push(` ${this.fg("dim", num)} ${this.fg("success", `+ ${clean}`)}`);
+        } else if (dl.kind === "del") {
+          const num = dl.oldLine ? String(dl.oldLine).padStart(4, " ") : "    ";
+          rendered.push(` ${this.fg("dim", num)} ${this.fg("error", `- ${clean}`)}`);
+        } else {
+          const num = dl.newLine ? String(dl.newLine).padStart(4, " ") : "    ";
+          rendered.push(` ${this.fg("dim", num)}   ${clean}`);
+        }
+      }
+    } else {
+      let prev = this.filePreviewCache.get(file.relPath);
+      if (!prev) {
+        prev = this.loadPreviewFn(this.rootDir, file.relPath, {
+          showHidden: true,
+          nerdIcons: this.nerdIcons,
+        });
+        this.filePreviewCache.set(file.relPath, prev);
+      }
+      const gutterW = Math.max(3, String(prev.lines.length).length);
+      for (let i = 0; i < prev.lines.length; i++) {
+        const num = String(i + 1).padStart(gutterW, " ");
+        rendered.push(` ${this.fg("dim", num)} ${this.fg("border", "│")} ${prev.lines[i]!.replace(/\t/g, "  ")}`);
+      }
+    }
+
+    this.lastPreviewLinesCount = rendered.length;
+    const maxScroll = Math.max(0, rendered.length - previewHeight);
+    if (this.previewScroll > maxScroll) this.previewScroll = maxScroll;
+
+    const visible = rendered.slice(this.previewScroll, this.previewScroll + previewHeight);
+    while (visible.length < previewHeight) visible.push("");
+
+    return [...headerBlock, ...visible]
+      .slice(0, height)
+      .map((line) => fitWidth(line, innerW));
+  }
+
+  render(width: number): string[] {
+    const totalW = Math.max(60, Math.floor(width));
+    const innerW = totalW - 2;
+    const leftW = Math.max(24, Math.min(innerW - 28, Math.floor(innerW * 0.38)));
+    const rightW = Math.max(26, innerW - leftW - 1);
+    this.dividerX = 1 + leftW;
+
+    const totalRows = Math.max(16, Math.min(34, Math.floor(this.getRows() * 0.84)));
+    // Chrome: top(0) + header(1) + splitTop(2) + splitBottom + footer + bottom = 6
+    const bodyH = Math.max(8, totalRows - 6);
+    this.bodyStartY = 3;
+    this.bodyHeight = bodyH;
+
+    const b = (s: string) => this.fg("border", s);
+    const topBorder = b(`╭${"─".repeat(innerW)}╮`);
+    const splitTop = b(`├${"─".repeat(leftW)}┬${"─".repeat(rightW)}┤`);
+    const splitBottom = b(`├${"─".repeat(leftW)}┴${"─".repeat(rightW)}┤`);
+    const bottomBorder = b(`╰${"─".repeat(innerW)}╯`);
+
+    const title =
+      this.launchMode === "message"
+        ? ` Review Message (${this.turns.length} turns)`
+        : ` Review Session (${this.activeFiles.length} files)`;
+    const titlePrefix = `${this.bold(title)}  `;
+    const turnPill = this.launchMode === "message" ? (this.pickingTurn ? "[Files]" : "[Turns]") : "";
+    const listPill = this.listMode === "tree" ? "[Tree]" : "[List]";
+    const previewPill = this.previewMode === "diff" ? "[Diff]" : "[File]";
+    const sendPill = this.comments.size > 0 ? `[Send ${this.comments.size}]` : "";
+    const closePill = "[✕]";
+
+    let col = 1 + visibleWidth(titlePrefix);
+    const place = (text: string): ClickRegion => {
+      if (!text) return { x1: -1, x2: -1, y: 1 };
+      const start = col;
+      const end = start + visibleWidth(text) - 1;
+      col = end + 2;
+      return { x1: start, x2: end, y: 1 };
+    };
+
+    this.turnBackRect = place(turnPill);
+    this.listToggleRect = place(listPill);
+    this.previewToggleRect = place(previewPill);
+    this.sendBtnRect = place(sendPill);
+
+    const pills = [
+      turnPill ? this.fg("accent", turnPill) : "",
+      this.fg("accent", listPill),
+      this.fg("accent", previewPill),
+      sendPill ? this.bold(this.fg("success", sendPill)) : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const leftHeader = `${titlePrefix}${pills}`;
+    const closeW = visibleWidth(closePill);
+    const gap = Math.max(1, innerW - visibleWidth(leftHeader) - closeW - 1);
+    const closeStart = 1 + innerW - closeW - 1;
+    this.closeBtnRect = { x1: closeStart, x2: closeStart + closeW - 1, y: 1 };
+    const headerLine = `${b("│")}${fitWidth(`${leftHeader}${" ".repeat(gap)}${this.fg("dim", closePill)} `, innerW)}${b("│")}`;
+
+    const leftLines = this.renderLeftPane(leftW, bodyH);
+    const rightLines = this.renderRightPane(rightW, bodyH);
+    const bodyLines: string[] = [];
+    for (let i = 0; i < bodyH; i++) {
+      bodyLines.push(
+        `${b("│")}${leftLines[i] ?? " ".repeat(leftW)}${b("│")}${rightLines[i] ?? " ".repeat(rightW)}${b("│")}`,
+      );
+    }
+
+    const footerContent = this.commenting
+      ? ` ${this.fg("warning", "Note:")} ${this.commentDraft}\x1b[7m \x1b[27m  ${this.fg("dim", "(Enter:save  Esc:cancel)")}`
+      : ` ${this.fg("accent", "↑↓/Wheel")}${this.fg("dim", ":nav  ")}` +
+        `${this.fg("accent", "Tab")}${this.fg("dim", ":Diff/File  ")}` +
+        `${this.fg("accent", "t")}${this.fg("dim", ":Tree/List  ")}` +
+        `${this.fg("accent", "Enter/c")}${this.fg("dim", ":note  ")}` +
+        `${this.fg("accent", "Ctrl+S")}${this.fg("dim", ":send  ")}` +
+        `${this.fg("accent", "Esc")}${this.fg("dim", ":close")}`;
+    const footerLine = `${b("│")}${fitWidth(footerContent, innerW)}${b("│")}`;
+
+    return [topBorder, headerLine, splitTop, ...bodyLines, splitBottom, footerLine, bottomBorder];
+  }
+}
+
+export function createReviewTui(
+  tui: { requestRender: () => void },
+  theme: SessionPickerTheme,
+  options: ReviewTuiOptions,
+  done: (result: ReviewTuiResult | undefined) => void,
+): ReviewTui {
+  return new ReviewTui(tui, theme, options, done);
+}
