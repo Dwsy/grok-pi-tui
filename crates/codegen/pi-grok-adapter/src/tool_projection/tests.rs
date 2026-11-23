@@ -33,6 +33,31 @@ fn pi_read_result_projects_native_readfile_raw_output() {
 }
 
 #[test]
+fn pi_read_image_result_projects_native_image_content_raw_output() {
+    let raw = normalize_tool_raw_output(
+        "read",
+        Some(&json!({ "path": "/tmp/avdverify/init.png" })),
+        &json!({
+            "content": [
+                { "type": "text", "text": "Read image file [image/png]" },
+                { "type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png" }
+            ],
+        }),
+        false,
+    );
+    assert_eq!(raw.get("type").and_then(Value::as_str), Some("ReadFile"));
+    let image = raw.get("ImageContent").expect("ImageContent variant");
+    assert_eq!(
+        image.get("data").and_then(Value::as_str),
+        Some("iVBORw0KGgo=")
+    );
+    assert_eq!(
+        image.get("mime_type").and_then(Value::as_str),
+        Some("image/png")
+    );
+}
+
+#[test]
 fn pi_bash_result_projects_native_bash_raw_output() {
     let raw = normalize_tool_raw_output(
         "bash",

@@ -623,6 +623,25 @@ pub(crate) fn pi_result_text(value: &Value) -> String {
     }
 }
 
+fn pi_result_first_image(value: &Value) -> Option<(String, String)> {
+    let source = value.get("content").unwrap_or(value);
+    let items = source.as_array()?;
+    for item in items {
+        let kind = string(item, &["type", "kind"])
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if kind == "image"
+            && let (Some(data), Some(mime_type)) = (
+                string(item, &["data"]),
+                string(item, &["mimeType", "mime_type"]),
+            )
+        {
+            return Some((data.to_owned(), mime_type.to_owned()));
+        }
+    }
+    None
+}
+
 fn read_tool_output(args: Option<&Value>, result: &Value, is_error: bool) -> Value {
     let text = pi_result_text(result);
     if is_error {
@@ -634,6 +653,16 @@ fn read_tool_output(args: Option<&Value>, result: &Value, is_error: bool) -> Val
         return json!({
             "type": "ReadFile",
             "FileReadError": message,
+        });
+    }
+
+    if let Some((data, mime_type)) = pi_result_first_image(result) {
+        return json!({
+            "type": "ReadFile",
+            "ImageContent": {
+                "data": data,
+                "mime_type": mime_type,
+            }
         });
     }
 
