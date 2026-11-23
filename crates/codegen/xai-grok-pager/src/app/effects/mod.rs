@@ -152,6 +152,30 @@ pub(crate) fn execute(
                 TaskResult::CancelComplete
             });
         }
+        Effect::MentionAction {
+            kind,
+            command,
+            query,
+        } => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let params = serde_json::json!({
+                    "kind": kind,
+                    "command": command,
+                    "query": query,
+                });
+                let notification = acp::ExtNotification::new(
+                    "pi/ui/mention_action",
+                    serde_json::value::to_raw_value(&params)
+                        .expect("serialize mention action")
+                        .into(),
+                );
+                if let Err(e) = acp_send(notification, &tx).await {
+                    tracing::warn!(%e, "Failed to send mention action");
+                }
+                TaskResult::CancelComplete
+            });
+        }
         Effect::RegisterActiveSession { session_id, cwd } => {
             crate::app::signal_handler::set_current_session_id(Some(session_id.clone()));
             if let Err(e) = xai_grok_active_sessions::register(xai_grok_active_sessions::ActiveSession {

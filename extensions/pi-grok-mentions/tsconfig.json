@@ -1,0 +1,18 @@
+{
+	"extends": "../../pi-main/tsconfig.json",
+	"compilerOptions": {
+		"typeRoots": ["../../pi-main/node_modules/@types"],
+		"paths": {
+			"*": ["../../pi-main/*"],
+			"@earendil-works/pi-ai": ["../../pi-main/packages/ai/src/index.ts"],
+			"@earendil-works/pi-ai/*": ["../../pi-main/packages/ai/src/*.ts", "../../pi-main/packages/ai/src/providers/*.ts"],
+			"@earendil-works/pi-agent-core": ["../../pi-main/packages/agent/src/index.ts"],
+			"@earendil-works/pi-coding-agent": ["../../pi-main/packages/coding-agent/src/index.ts"],
+			"@earendil-works/pi-coding-agent/*": ["../../pi-main/packages/coding-agent/src/*"],
+			"@earendil-works/pi-tui": ["../../pi-main/packages/tui/src/index.ts"],
+			"@earendil-works/pi-tui/*": ["../../pi-main/packages/tui/src/*"]
+		}
+	},
+	"include": ["index.ts", "session-data.ts", "session-picker-tui.ts"],
+	"exclude": []
+}

@@ -2159,6 +2159,47 @@ impl PromptWidget {
         }
     }
 
+    /// Insert a structured `@` mention chip chosen from an external TS picker
+    /// (via `pi/ui/mention_insert`). Replaces the active `@...` token when present,
+    /// otherwise inserts at the current cursor position.
+    pub fn insert_mention_chip(
+        &mut self,
+        kind: &str,
+        id: &str,
+        title: &str,
+        insert_text: &str,
+    ) {
+        let element_text = if insert_text.trim().is_empty() {
+            format!("@{kind}:{id}")
+        } else {
+            insert_text.to_owned()
+        };
+        let display_title = if title.trim().is_empty() { id } else { title };
+        let display = mention_ref_display(kind, display_title);
+        let range = self
+            .file_search
+            .context()
+            .map(|ctx| ctx.range.clone())
+            .unwrap_or_else(|| {
+                let cursor = self.textarea.cursor();
+                cursor..cursor
+            });
+
+        self.textarea.clear_selection();
+        self.textarea.begin_undo_group();
+        self.textarea.replace_range_with_element(
+            range,
+            &element_text,
+            KIND_FILE_REF,
+            Some(display),
+        );
+        self.textarea.insert_str(" ");
+        self.textarea.end_undo_group();
+
+        self.file_search.clear_context();
+        self.update_file_search_context();
+    }
+
     /// Accept the file search result and request the line viewer to open. Creates the element with the
     /// undo group begun but NOT ended; the viewer will end or cancel it. Clears the dropdown and sets
     /// `pending_viewer_path` for AgentView to pick up.

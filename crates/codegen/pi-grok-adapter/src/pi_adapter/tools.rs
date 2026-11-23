@@ -1168,6 +1168,14 @@ impl PiAgent {
                                 .await;
                         }
                     }
+                    EXTENSION_MENTION_INSERT_STATUS_KEY => {
+                        if let Some(payload) =
+                            control_status_payload(text.filter(|text| text.len() <= 64 * 1024))
+                        {
+                            self.send_ext_notification("pi/ui/mention_insert", payload)
+                                .await;
+                        }
+                    }
                     "__pi_grok_tree_leaf__" => {
                         if let Some(payload) = control_status_payload(text)
                             && let Some(id) = string(&payload, &["requestId"])

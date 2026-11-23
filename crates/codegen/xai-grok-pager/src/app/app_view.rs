@@ -3632,6 +3632,29 @@ impl AppView {
                     .as_ref()
                     .is_some_and(|q| q.is_pi_extension_ui())
         });
+        // Contextual `@mention` provider shortcut (e.g. `@session` → Ctrl+O):
+        // takes priority while the `@` dropdown is visible so extensions can open
+        // rich Remote TUI pickers without hardcoding provider kinds in Rust.
+        if self.external_agent
+            && self.external_ui.remote_tui_id.is_none()
+            && !native_dialog
+            && let Some(key) = key_event
+            && let Some(agent) = self.active_agent()
+            && agent.active_pane == crate::views::agent::ActivePane::Prompt
+            && agent.prompt.file_search_visible()
+            && let Some((kind, action, query)) = agent.prompt.file_search.active_mention_action()
+            && crate::app::extension_shortcuts::key_id_matches_event(&action.key, key)
+        {
+            let kind_owned = kind.to_owned();
+            let command_owned = action.command.clone();
+            self.pending_effects
+                .push(crate::app::actions::Effect::MentionAction {
+                    kind: kind_owned,
+                    command: command_owned,
+                    query,
+                });
+            return InputOutcome::Changed;
+        }
         // Global shortcuts must not steal a modal component's letter actions.
         if self.external_agent
             && self.external_ui.remote_tui_id.is_none()

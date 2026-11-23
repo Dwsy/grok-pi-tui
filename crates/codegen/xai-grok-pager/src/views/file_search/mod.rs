@@ -15,7 +15,9 @@ pub mod mentions;
 mod state;
 
 pub use context::AtContext;
-pub use mentions::{MentionCatalog, MentionEntry, MentionItem, MentionProvider};
+pub use mentions::{
+    MentionCatalog, MentionEntry, MentionItem, MentionProvider, MentionProviderAction,
+};
 pub use state::{FileSearchReplacement, FileSearchState};
 
 use ratatui::style::Style;

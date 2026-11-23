@@ -2439,6 +2439,12 @@ pub enum Effect {
     },
     /// Extension shortcut matched: dispatch to Pi extension handler via RPC.
     ShortcutDispatch { key: String },
+    /// Contextual `@mention` provider shortcut matched: invoke its TS extension command via RPC.
+    MentionAction {
+        kind: String,
+        command: String,
+        query: String,
+    },
     /// Quit the application.
     Quit,
     /// Toggle coding data sharing via ACP.

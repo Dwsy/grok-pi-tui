@@ -14,7 +14,19 @@ pub struct MentionCatalog {
     pub providers: Vec<MentionProvider>,
 }
 
-/// One extensible mention provider (e.g. `skill`, `thread`, `mcp`).
+/// Optional contextual shortcut action declared by a TS mention provider
+/// (e.g. `@session` declares `ctrl+o` → "session picker" → `/__pi_mention_session_picker`).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct MentionProviderAction {
+    /// Pi KeyId format (e.g. `"ctrl+o"`, `"alt+s"`).
+    pub key: String,
+    /// Short label rendered in the bottom shortcuts bar when this provider is active.
+    pub label: String,
+    /// Hidden Pi slash command invoked via RPC when the shortcut is pressed.
+    pub command: String,
+}
+
+/// One extensible mention provider (e.g. `skill`, `session`, `mcp`).
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct MentionProvider {
     pub kind: String,
@@ -26,6 +38,9 @@ pub struct MentionProvider {
     pub description: String,
     #[serde(default)]
     pub items: Vec<MentionItem>,
+    /// Optional contextual shortcut action shown in the bottom bar when this provider is active.
+    #[serde(default)]
+    pub action: Option<MentionProviderAction>,
 }
 
 /// One selectable mention item owned by a provider.
@@ -106,6 +121,30 @@ pub fn split_kind_query(raw: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((prefix, &raw[idx + sep_len..]))
+}
+
+pub fn find_provider_by_kind<'a>(
+    catalog: &'a MentionCatalog,
+    kind: &str,
+) -> Option<&'a MentionProvider> {
+    let trimmed = kind.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    catalog
+        .providers
+        .iter()
+        .find(|p| p.kind.eq_ignore_ascii_case(trimmed))
+}
+
+pub fn find_provider_by_token<'a>(
+    catalog: &'a MentionCatalog,
+    token: &str,
+) -> Option<&'a MentionProvider> {
+    catalog
+        .providers
+        .iter()
+        .find(|p| provider_matches_token(p, token))
 }
 
 fn provider_matches_token(provider: &MentionProvider, token: &str) -> bool {
@@ -317,6 +356,7 @@ mod tests {
                     label: "Skill".to_owned(),
                     aliases: vec!["sk".to_owned(), "技能".to_owned()],
                     description: "Workspace & global skills".to_owned(),
+                    action: None,
                     items: vec![MentionItem {
                         id: "grok-pi-rsi".to_owned(),
                         title: "grok-pi-rsi".to_owned(),
@@ -331,6 +371,11 @@ mod tests {
                     label: "Session".to_owned(),
                     aliases: vec!["会话".to_owned(), "历史".to_owned(), "thread".to_owned()],
                     description: "Past conversations (SQLite index)".to_owned(),
+                    action: Some(MentionProviderAction {
+                        key: "ctrl+o".to_owned(),
+                        label: "session picker".to_owned(),
+                        command: "__pi_mention_session_picker".to_owned(),
+                    }),
                     items: vec![MentionItem {
                         id: "abc123".to_owned(),
                         title: "Fix flicker".to_owned(),

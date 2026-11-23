@@ -19,10 +19,20 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  formatTokensM,
+  loadSessionPickerRecords,
+  loadSessionPreviewMessages,
+  type SessionRecord,
+} from "./session-data.ts";
+import { createSessionPickerTui, type SessionPickerTheme } from "./session-picker-tui.ts";
 
 /** Must match `EXTENSION_MENTIONS_STATUS_KEY` in pi-grok-adapter. */
 const STATUS_KEY = "__pi_grok_mentions__";
+/** Must match `EXTENSION_MENTION_INSERT_STATUS_KEY` in pi-grok-adapter. */
+const INSERT_STATUS_KEY = "__pi_grok_mention_insert__";
+const SESSION_PICKER_COMMAND = "__pi_mention_session_picker";
 const MAX_THREADS = 50;
 const MAX_CATALOG_BYTES = 450 * 1024;
 const THREAD_CACHE_TTL_MS = 5_000;
@@ -45,11 +55,22 @@ export interface MentionItem {
   sourcePath?: string;
 }
 
+export interface MentionProviderAction {
+  /** Pi KeyId format (e.g. `"ctrl+o"`). */
+  key: string;
+  /** Short label shown in the bottom shortcuts bar while this provider is active. */
+  label: string;
+  /** Hidden Pi slash command invoked via RPC when the shortcut is pressed. */
+  command: string;
+}
+
 export interface MentionProviderSpec {
   kind: string;
   aliases: string[];
   label: string;
   description: string;
+  /** Optional contextual shortcut action shown in the bottom bar when this provider is active. */
+  action?: MentionProviderAction;
   /** Dynamic item collector invoked on session lifecycle / explicit refresh. */
   collect: (ctx: { cwd: string }) => MentionItem[];
   /** Optional custom resolver for `before_agent_start` context injection. */
@@ -61,6 +82,7 @@ type SerializedProvider = {
   aliases: string[];
   label: string;
   description: string;
+  action?: MentionProviderAction;
   items: Omit<MentionItem, "sourcePath">[];
 };
 
@@ -390,8 +412,24 @@ function buildBuiltInProviders(pi: ExtensionAPI): MentionProviderSpec[] {
       aliases: ["会话", "对话", "历史", "thread"],
       label: "Session",
       description: "Reference a past Pi session via PSM SQLite index (grok-pi://session/<id>)",
+      action: {
+        key: "ctrl+o",
+        label: "session picker",
+        command: SESSION_PICKER_COMMAND,
+      },
       collect: () => collectThreadsFromPsmDb(),
       resolve: (id) => {
+        const records = loadSessionPickerRecords({ limit: 500 });
+        const foundRec = records.find((r) => r.id === id || r.id.startsWith(id));
+        if (foundRec) {
+          const preview = loadSessionPreviewMessages(foundRec.path, { maxMessages: 6 });
+          const excerpt = preview
+            .slice(-4)
+            .map((m) => `[${m.role}] ${m.content.replace(/\s+/g, " ").trim().slice(0, 200)}`)
+            .join("\n");
+          const meta = `${foundRec.project}, ${foundRec.messageCount} msgs, ${formatTokensM(foundRec.totalTokens)}, ${foundRec.model}`;
+          return `- **grok-pi://session/${foundRec.id}** (${foundRec.title} — ${meta}, path: \`${foundRec.path}\`)${excerpt ? `\n  Recent excerpt:\n  ${excerpt.replace(/\n/g, "\n  ")}` : ""}`;
+        }
         const items = collectThreadsFromPsmDb();
         const found = items.find((i) => i.id === id || i.id.startsWith(id));
         if (!found) return `- **grok-pi://session/${id}** (referenced past session ID)`;
@@ -435,6 +473,7 @@ export default function mentions(pi: ExtensionAPI) {
       aliases: p.aliases,
       label: p.label,
       description: p.description,
+      ...(p.action ? { action: p.action } : {}),
       items: p.collect({ cwd }).map(({ sourcePath: _omit, ...rest }) => rest),
     }));
     const payload = JSON.stringify({ providers });
@@ -448,6 +487,76 @@ export default function mentions(pi: ExtensionAPI) {
       }
     }
   };
+
+  // Hidden command invoked by Rust Pager when the user presses `@session`'s
+  // dynamic shortcut (`Ctrl+O`) while `@session` is active in the dropdown.
+  pi.registerCommand(SESSION_PICKER_COMMAND, {
+    description: "Open the bordered TS session picker overlay for @session mentions",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
+      const records = loadSessionPickerRecords({ limit: 300 });
+      const initialQuery = String(args ?? "").trim();
+
+      const chosen = await ctx.ui.custom<SessionRecord | undefined>(
+        (tui, theme, _kb, done) =>
+          createSessionPickerTui(
+            tui as { requestRender: () => void },
+            theme as SessionPickerTheme,
+            {
+              records,
+              currentCwd: cwd,
+              initialQuery,
+              initialScope: "global",
+              getRows: () => {
+                const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
+                return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+              },
+            },
+            done,
+          ),
+        {
+          overlay: true,
+          overlayOptions: {
+            width: "92%",
+            maxHeight: "88%",
+            anchor: "center",
+          },
+        },
+      );
+
+      if (!chosen) return;
+
+      const insertText = `@session:${chosen.shortId}`;
+      if (isGrokPiHost()) {
+        const ui = ctx.ui as unknown as PatchableUi;
+        try {
+          ui.setStatus?.(
+            INSERT_STATUS_KEY,
+            JSON.stringify({
+              kind: "session",
+              id: chosen.id,
+              title: chosen.title,
+              insertText,
+              nonce: Date.now(),
+            }),
+          );
+          ui.setStatus?.(INSERT_STATUS_KEY, undefined);
+        } catch {
+          // RPC transport closed; ignore.
+        }
+      } else {
+        const editorUi = ctx.ui as unknown as {
+          getEditorText?: () => string;
+          setEditorText?: (text: string) => void;
+        };
+        if (typeof editorUi.setEditorText === "function") {
+          const existing = typeof editorUi.getEditorText === "function" ? editorUi.getEditorText() : "";
+          const sep = existing && !/\s$/.test(existing) ? " " : "";
+          editorUi.setEditorText(`${existing}${sep}${insertText} `);
+        }
+      }
+    },
+  });
 
   const g = globalThis as GlobalWithMentions;
   g.__piGrokRegisterMentionProvider = (provider: MentionProviderSpec) => {

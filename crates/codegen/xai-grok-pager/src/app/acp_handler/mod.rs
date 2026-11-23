@@ -659,6 +659,8 @@ fn handle_ext_notification(notif: &acp::ExtNotification, app: &mut AppView) -> b
         "pi/ui/shortcuts" => handle_pi_ui_shortcuts(notif, app),
         // Extensible `@` object-mention catalog published by TS extensions.
         "pi/ui/mentions_catalog" => handle_pi_ui_mentions_catalog(notif, app),
+        // Atomic `@` mention chip insertion returned from a TS picker overlay.
+        "pi/ui/mention_insert" => handle_pi_ui_mention_insert(notif, app),
         _ => false,
     }
 }
@@ -699,6 +701,35 @@ fn handle_pi_ui_mentions_catalog(notif: &acp::ExtNotification, app: &mut AppView
     for agent in app.agents.values_mut() {
         agent.prompt.file_search.set_mention_catalog(catalog.clone());
     }
+    true
+}
+
+fn handle_pi_ui_mention_insert(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
+    let Some(params) = pi_ui_params(notif) else {
+        return false;
+    };
+    let Some(kind) = params.get("kind").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(id) = params.get("id").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let title = params
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(id);
+    let insert_text = params
+        .get("insertText")
+        .or_else(|| params.get("insert_text"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let ActiveView::Agent(agent_id) = app.active_view else {
+        return false;
+    };
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        return false;
+    };
+    agent.prompt.insert_mention_chip(kind, id, title, insert_text);
     true
 }
 

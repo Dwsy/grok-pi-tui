@@ -1274,6 +1274,24 @@ pub fn build_hints(
                         .selected_result()
                         .is_some_and(|r| !r.is_dir));
             let skill_preview = prompt.selected_skill_path().is_some();
+            let mention_action_key = if prompt.file_search_visible() {
+                prompt
+                    .file_search
+                    .active_mention_action()
+                    .and_then(|(_kind, action, _subquery)| {
+                        let shortcut =
+                            crate::app::extension_shortcuts::parse_key_id_to_shortcut(&action.key)?;
+                        let label = if action.label.trim().is_empty() {
+                            "open".to_owned()
+                        } else {
+                            action.label.clone()
+                        };
+                        hints.push(HintItem::new(shortcut, std::borrow::Cow::Owned(label)).pinned());
+                        Some(shortcut)
+                    })
+            } else {
+                None
+            };
             if file_preview {
                 hints.push(
                     HintItem::paired(crate::key!(':'), crate::key!('l', CONTROL), "preview")
@@ -1299,6 +1317,11 @@ pub fn build_hints(
             }
             hints.push(HintItem::new(crate::key!(BackTab), "thinking"));
             for def in registry.hints(&[When::PromptFocused, When::AgentScreen, When::Always]) {
+                if mention_action_key
+                    .is_some_and(|mk| registry.key_for(def.id) == Some(mk))
+                {
+                    continue;
+                }
                 if (def.id == ActionId::ModelPicker
                     && (file_preview || skill_preview)
                     && registry.key_for(ActionId::ModelPicker) == Some(crate::key!('l', CONTROL)))

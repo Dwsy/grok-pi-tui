@@ -1132,6 +1132,31 @@ impl acp::Agent for PiAgent {
                 }
                 Ok(())
             }
+            // Contextual `@mention` provider action (Pager → RPC prompt →
+            // hidden /<provider.action.command> <query> → TS extension overlay).
+            "pi/ui/mention_action" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                if let Some(command) = string(&params, &["command"]) {
+                    let command = command.trim().trim_start_matches('/');
+                    let is_safe_cmd = !command.is_empty()
+                        && command
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+                    if is_safe_cmd {
+                        let query = string(&params, &["query"]).unwrap_or("");
+                        let message = bridge_command_message(command, query);
+                        if let Err(error) = self
+                            .rpc
+                            .request(json!({ "type": "prompt", "message": message }))
+                            .await
+                        {
+                            tracing::warn!(%error, %command, "mention_action RPC prompt failed");
+                        }
+                    }
+                }
+                Ok(())
+            }
             "x.ai/queue/remove" => {
                 let params: Value =
                     serde_json::from_str(arguments.params.get()).unwrap_or_default();

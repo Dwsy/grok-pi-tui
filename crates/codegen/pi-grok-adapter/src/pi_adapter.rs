@@ -155,6 +155,9 @@ const EXTENSION_WORKING_MESSAGE_STATUS_KEY: &str = "__pi_grok_working_message__"
 /// `@` completion dropdown. If a `thread` provider arrives with empty items,
 /// the adapter hydrates it from the read-only PSM SQLite index with zero disk scan.
 const EXTENSION_MENTIONS_STATUS_KEY: &str = "__pi_grok_mentions__";
+/// Atomic `@` mention chip insertion request emitted by a TS picker overlay
+/// (e.g. `@session` TUI picker). Translated to `pi/ui/mention_insert`.
+const EXTENSION_MENTION_INSERT_STATUS_KEY: &str = "__pi_grok_mention_insert__";
 const SUBAGENT_REPLAY_COMMAND: &str = "__pi_grok_subagent_replay";
 const SUBAGENT_REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
 

@@ -349,6 +349,58 @@ pub fn key_id_matches_event(key_id: &str, event: &KeyEvent) -> bool {
     }
 }
 
+/// Parse a Pi KeyId string (e.g. `"ctrl+o"`, `"alt+shift+t"`, `"f5"`) into a
+/// structured [`crate::input::key::KeyShortcut`] for rendering in the bottom shortcuts bar.
+pub fn parse_key_id_to_shortcut(key_id: &str) -> Option<crate::input::key::KeyShortcut> {
+    let lower = key_id.trim().to_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = lower.split('+').collect();
+    let key_part = *parts.last()?;
+    let mut modifiers = KeyModifiers::NONE;
+    for m in &parts[..parts.len() - 1] {
+        match *m {
+            "ctrl" | "control" => modifiers |= KeyModifiers::CONTROL,
+            "alt" | "meta" | "option" => modifiers |= KeyModifiers::ALT,
+            "shift" => modifiers |= KeyModifiers::SHIFT,
+            "super" | "cmd" | "command" | "win" => modifiers |= KeyModifiers::SUPER,
+            _ => return None,
+        }
+    }
+    let code = match key_part {
+        "enter" | "return" => KeyCode::Enter,
+        "escape" | "esc" => KeyCode::Esc,
+        "tab" => KeyCode::Tab,
+        "backspace" => KeyCode::Backspace,
+        "delete" | "del" => KeyCode::Delete,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" => KeyCode::PageUp,
+        "pagedown" => KeyCode::PageDown,
+        "space" => KeyCode::Char(' '),
+        "f1" => KeyCode::F(1),
+        "f2" => KeyCode::F(2),
+        "f3" => KeyCode::F(3),
+        "f4" => KeyCode::F(4),
+        "f5" => KeyCode::F(5),
+        "f6" => KeyCode::F(6),
+        "f7" => KeyCode::F(7),
+        "f8" => KeyCode::F(8),
+        "f9" => KeyCode::F(9),
+        "f10" => KeyCode::F(10),
+        "f11" => KeyCode::F(11),
+        "f12" => KeyCode::F(12),
+        c if c.chars().count() == 1 => KeyCode::Char(c.chars().next()?),
+        _ => return None,
+    };
+    Some(crate::input::key::KeyShortcut::new(code, modifiers))
+}
+
 /// Convert a crossterm KeyEvent to a Pi KeyId string (for remap capture).
 pub fn event_to_key_id(event: &KeyEvent) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();

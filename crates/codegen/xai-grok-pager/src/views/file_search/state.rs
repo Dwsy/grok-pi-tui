@@ -208,6 +208,57 @@ impl FileSearchState {
         self.mention_entries.get(self.selected)
     }
 
+    /// Return the contextual shortcut action for the currently highlighted or active
+    /// mention provider, along with `(provider_kind, action, initial_subquery)`.
+    ///
+    /// Covers two cases so the bottom shortcut hint and key intercept stay active:
+    /// 1. The user highlighted a provider header (e.g. `@session:`) or one of its items.
+    /// 2. The user typed `@session:<query>` (even if inline results are empty).
+    pub fn active_mention_action(
+        &self,
+    ) -> Option<(&str, &super::mentions::MentionProviderAction, String)> {
+        if !self.is_visible() {
+            return None;
+        }
+        let raw_query = self.context.as_ref().map(|c| c.query.as_str()).unwrap_or("");
+        let split = super::mentions::split_kind_query(raw_query);
+
+        if let Some(entry) = self.selected_mention() {
+            let kind = match entry {
+                MentionEntry::ProviderHeader { kind, .. } | MentionEntry::Item { kind, .. } => {
+                    kind.as_str()
+                }
+            };
+            if let Some(provider) =
+                super::mentions::find_provider_by_kind(&self.mention_catalog, kind)
+                && let Some(action) = provider.action.as_ref()
+                && !action.key.trim().is_empty()
+                && !action.command.trim().is_empty()
+            {
+                let subquery = split
+                    .filter(|(prefix, _)| {
+                        super::mentions::find_provider_by_token(&self.mention_catalog, prefix)
+                            .is_some_and(|p| p.kind.eq_ignore_ascii_case(&provider.kind))
+                    })
+                    .map(|(_, sub)| sub.to_owned())
+                    .unwrap_or_default();
+                return Some((provider.kind.as_str(), action, subquery));
+            }
+        }
+
+        if let Some((prefix, subquery)) = split
+            && let Some(provider) =
+                super::mentions::find_provider_by_token(&self.mention_catalog, prefix)
+            && let Some(action) = provider.action.as_ref()
+            && !action.key.trim().is_empty()
+            && !action.command.trim().is_empty()
+        {
+            return Some((provider.kind.as_str(), action, subquery.to_owned()));
+        }
+
+        None
+    }
+
     fn file_results_len(&self) -> usize {
         if self.mention_only {
             0
