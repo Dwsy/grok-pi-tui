@@ -15,8 +15,9 @@ Open [http://localhost:3000](http://localhost:3000).
 
 Production site: **https://dwsy.github.io/grok-pi/**
 
-CI (`.github/workflows/website.yml`) builds a static export with
-`GITHUB_PAGES=true` (`basePath=/grok-pi`) and deploys via `actions/deploy-pages`.
+Auto-deployment currently has no CI workflow. Publishing a new build requires a
+static export with `GITHUB_PAGES=true` (`basePath=/grok-pi`) and a manual
+`actions/deploy-pages` run against the uploaded artifact.
 
 Local static preview matching Pages:
 
