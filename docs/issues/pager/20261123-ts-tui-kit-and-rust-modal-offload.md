@@ -1,7 +1,7 @@
 ---
 id: "2026-11-23-ts-tui-kit-and-rust-modal-offload"
 title: "统一 TS TUI 基础库与重型 Rust 弹窗 TS 插件化演进路线"
-status: "in_progress"
+status: "completed"
 created: "2026-11-23"
 updated: "2026-11-23"
 category: "pager"
@@ -20,9 +20,9 @@ tags: ["workhub", "issue", "ts-tui-kit", "mentions", "resume", "offload"]
 
 ## Phases
 
-- [ ] **Phase 1: 分组提交工作区媒体渲染改动并更新 `CHANGELOG.MD`**
-- [ ] **Phase 2: 抽离 `extensions/pi-grok-tui-kit/` 并重构 4 个既有 TS TUI 统一设计语言**
-- [ ] **Phase 3: 基于 `pi-grok-tui-kit` 实现 `@mcp` 选择器与 TS 版 `/resume` 会话恢复**
+- [x] **Phase 1: 分组提交工作区媒体渲染改动并更新 `CHANGELOG.MD`** (`a37fc3b7`, `6a31e052`, `d21a9626`)
+- [x] **Phase 2: 抽离 `extensions/pi-grok-tui-kit/` 并重构既有 TS TUI 统一设计语言** (`342bcc82`, PR `docs/pr/pager/20261123-extract-shared-ts-tui-kit.md`)
+- [x] **Phase 3: 基于 `pi-grok-tui-kit` 实现 `@mcp` 选择器与 TS 版 `/resume` 会话恢复** (PR `docs/pr/pager/20261123-offload-mcp-picker-and-ts-resume.md`)
 
 ## Acceptance Criteria
 

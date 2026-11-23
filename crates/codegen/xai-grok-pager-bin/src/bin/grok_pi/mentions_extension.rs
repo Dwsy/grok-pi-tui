@@ -101,6 +101,11 @@ pub(super) fn write_mentions_extension() -> Result<MentionsExtension> {
         "file-picker-tui.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/file-picker-tui.ts"),
     )?;
+    write_source_file(
+        &mentions_dir,
+        "mcp-picker-tui.ts",
+        include_str!("../../../../../../extensions/pi-grok-mentions/mcp-picker-tui.ts"),
+    )?;
     Ok(MentionsExtension {
         _source_dir: source_dir,
         source_path,
@@ -123,6 +128,7 @@ mod tests {
         let skill_tui = std::fs::read_to_string(dir.join("skill-picker-tui.ts")).expect("read skill-picker-tui.ts");
         let file_data = std::fs::read_to_string(dir.join("file-data.ts")).expect("read file-data.ts");
         let file_tui = std::fs::read_to_string(dir.join("file-picker-tui.ts")).expect("read file-picker-tui.ts");
+        let mcp_tui = std::fs::read_to_string(dir.join("mcp-picker-tui.ts")).expect("read mcp-picker-tui.ts");
         let kit_frame = std::fs::read_to_string(root.join("pi-grok-tui-kit/frame.ts"))
             .expect("read pi-grok-tui-kit/frame.ts");
         let kit_icons = std::fs::read_to_string(root.join("pi-grok-tui-kit/icons.ts"))
@@ -130,6 +136,8 @@ mod tests {
         assert!(source.contains("__pi_grok_mentions__"));
         assert!(source.contains("__pi_grok_mention_insert__"));
         assert!(source.contains("__piGrokRegisterMentionProvider"));
+        assert!(source.contains("__pi_mention_mcp_picker"));
+        assert!(source.contains("__pi_resume_session"));
         assert!(source.contains("grok-pi://skill/"));
         assert!(source.contains("grok-pi://session/"));
         assert!(source.contains("grok-pi://mcp/"));
@@ -139,6 +147,7 @@ mod tests {
         assert!(skill_tui.contains("createSkillPickerTui"));
         assert!(file_data.contains("listWorkspaceFilesWithFd"));
         assert!(file_tui.contains("createFilePickerTui"));
+        assert!(mcp_tui.contains("createMcpPickerTui"));
         assert!(kit_frame.contains("renderSplitOverlayFrame"));
         assert!(kit_icons.contains("getFileIcon"));
     }

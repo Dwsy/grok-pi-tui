@@ -30,6 +30,11 @@ import { createSessionPickerTui, type SessionPickerTheme } from "./session-picke
 import { buildSkillRecords, type SkillRecord } from "./skill-data.ts";
 import { createSkillPickerTui } from "./skill-picker-tui.ts";
 import { createFilePickerTui, type FilePickerSelection } from "./file-picker-tui.ts";
+import {
+  createMcpPickerTui,
+  type McpServerRecord,
+  type McpToolRecord,
+} from "./mcp-picker-tui.ts";
 
 /** Must match `EXTENSION_MENTIONS_STATUS_KEY` in pi-grok-adapter. */
 const STATUS_KEY = "__pi_grok_mentions__";
@@ -38,6 +43,8 @@ const INSERT_STATUS_KEY = "__pi_grok_mention_insert__";
 const SESSION_PICKER_COMMAND = "__pi_mention_session_picker";
 const SKILL_PICKER_COMMAND = "__pi_mention_skill_picker";
 const FILE_PICKER_COMMAND = "__pi_mention_file_picker";
+const MCP_PICKER_COMMAND = "__pi_mention_mcp_picker";
+const RESUME_SESSION_COMMAND = "__pi_resume_session";
 const MAX_THREADS = 50;
 const MAX_CATALOG_BYTES = 450 * 1024;
 const THREAD_CACHE_TTL_MS = 5_000;
@@ -247,19 +254,39 @@ function collectThreadsFromPsmDb(force = false): MentionItem[] {
 }
 
 /**
- * Collect MCP servers directly from Pi's own runtime registries
+ * Collect rich MCP server records directly from Pi's own runtime registries
  * (`pi.getMcpServers()` + `pi.getAllTools()`). Zero `mcp.json` disk reads.
  */
-function collectMcpServersFromPi(pi: ExtensionAPI): MentionItem[] {
-  const servers = new Map<string, { tools: string[]; description: string }>();
+function collectMcpServerRecords(pi: ExtensionAPI): McpServerRecord[] {
+  const servers = new Map<
+    string,
+    {
+      endpoint: string;
+      transport: "http" | "stdio" | "tools";
+      tools: Map<string, McpToolRecord>;
+    }
+  >();
 
-  const addServer = (name: string, tool?: string, desc?: string) => {
+  const ensureServer = (
+    name: string,
+    endpoint?: string,
+    transport?: "http" | "stdio" | "tools",
+  ) => {
     const key = name.trim();
-    if (!key) return;
-    const entry = servers.get(key) ?? { tools: [], description: desc ?? "" };
-    if (tool && !entry.tools.includes(tool)) entry.tools.push(tool);
-    if (!entry.description && desc) entry.description = desc;
-    servers.set(key, entry);
+    if (!key) return undefined;
+    let entry = servers.get(key);
+    if (!entry) {
+      entry = {
+        endpoint: endpoint || "MCP server",
+        transport: transport ?? "tools",
+        tools: new Map<string, McpToolRecord>(),
+      };
+      servers.set(key, entry);
+    } else {
+      if (endpoint && entry.endpoint === "MCP server") entry.endpoint = endpoint;
+      if (transport && entry.transport === "tools") entry.transport = transport;
+    }
+    return entry;
   };
 
   // 1. Native Pi MCP server registry (`pi.getMcpServers()`).
@@ -268,8 +295,13 @@ function collectMcpServersFromPi(pi: ExtensionAPI): MentionItem[] {
       (pi as { getMcpServers?: () => PiMcpServerMeta[] }).getMcpServers?.() ?? [];
     for (const srv of registered) {
       if (!srv?.name) continue;
-      const detail = srv.config?.url ?? srv.config?.command ?? "MCP server";
-      addServer(srv.name, undefined, detail);
+      if (srv.config?.url) {
+        ensureServer(srv.name, srv.config.url, "http");
+      } else if (srv.config?.command) {
+        ensureServer(srv.name, srv.config.command, "stdio");
+      } else {
+        ensureServer(srv.name, "MCP server", "tools");
+      }
     }
   } catch {
     // Older Pi runtime without getMcpServers; fall through to tool registry.
@@ -280,13 +312,21 @@ function collectMcpServersFromPi(pi: ExtensionAPI): MentionItem[] {
     const tools = ((pi as { getAllTools?: () => PiToolMeta[] }).getAllTools?.() ??
       []) as PiToolMeta[];
     for (const tool of tools) {
-      const name = String(tool.name ?? "");
-      if (name.startsWith("mcp__")) {
-        const parts = name.slice(5).split("__");
-        if (parts[0]) addServer(parts[0], parts.slice(1).join("__") || name);
-      } else if (name.includes(":") && !name.startsWith("skill:")) {
-        const [srv, fn] = name.split(":", 2);
-        if (srv) addServer(srv, fn);
+      const fullName = String(tool.name ?? "");
+      const desc = String(tool.description ?? "").replace(/\s+/g, " ").trim();
+      if (fullName.startsWith("mcp__")) {
+        const parts = fullName.slice(5).split("__");
+        if (parts[0]) {
+          const toolName = parts.slice(1).join("__") || fullName;
+          const entry = ensureServer(parts[0]);
+          entry?.tools.set(toolName, { name: toolName, fullName, description: desc });
+        }
+      } else if (fullName.includes(":") && !fullName.startsWith("skill:")) {
+        const [srv, fn] = fullName.split(":", 2);
+        if (srv && fn) {
+          const entry = ensureServer(srv);
+          entry?.tools.set(fn, { name: fn, fullName, description: desc });
+        }
       }
     }
   } catch {
@@ -296,19 +336,40 @@ function collectMcpServersFromPi(pi: ExtensionAPI): MentionItem[] {
   return [...servers.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, info]) => {
-      const subtitle =
-        info.tools.length > 0
-          ? `${info.tools.length} tools (${info.tools.slice(0, 3).join(", ")})`
-          : info.description || "MCP server";
+      const tools = [...info.tools.values()].sort((a, b) => a.name.localeCompare(b.name));
+      const searchParts = [
+        name,
+        info.endpoint,
+        info.transport,
+        ...tools.map((t) => `${t.name} ${t.description}`),
+      ];
       return {
         id: name,
-        title: name,
-        subtitle,
-        uri: `grok-pi://mcp/${name}`,
-        insertText: `@mcp:${name}`,
-        searchText: `${name} ${info.tools.join(" ")} ${info.description}`.trim(),
+        name,
+        endpoint: info.endpoint,
+        transport: info.transport,
+        tools,
+        searchText: searchParts.join(" ").trim(),
       };
     });
+}
+
+function collectMcpServersFromPi(pi: ExtensionAPI): MentionItem[] {
+  return collectMcpServerRecords(pi).map((srv) => {
+    const toolNames = srv.tools.map((t) => t.name);
+    const subtitle =
+      toolNames.length > 0
+        ? `${toolNames.length} tools (${toolNames.slice(0, 3).join(", ")})`
+        : srv.endpoint || "MCP server";
+    return {
+      id: srv.id,
+      title: srv.name,
+      subtitle,
+      uri: `grok-pi://mcp/${srv.id}`,
+      insertText: `@mcp:${srv.id}`,
+      searchText: srv.searchText,
+    };
+  });
 }
 
 function readThreadTailSnippet(jsonlPath: string): string | null {
@@ -465,6 +526,11 @@ function buildBuiltInProviders(pi: ExtensionAPI): MentionProviderSpec[] {
       aliases: ["工具服务"],
       label: "MCP",
       description: "Reference a Pi-registered MCP server (grok-pi://mcp/<name>)",
+      action: {
+        key: "ctrl+o",
+        label: "mcp picker",
+        command: MCP_PICKER_COMMAND,
+      },
       collect: () => collectMcpServersFromPi(pi),
       resolve: (id) => {
         const items = collectMcpServersFromPi(pi);
@@ -629,6 +695,91 @@ export default function mentions(pi: ExtensionAPI) {
 
       if (!chosen) return;
       emitMentionInsert(ctx, "file", chosen.title, chosen.title, chosen.insertText);
+    },
+  });
+
+  // Hidden command invoked by Rust Pager when the user presses `@mcp`'s
+  // dynamic shortcut (`Ctrl+O`) while `@mcp` is active in the dropdown.
+  pi.registerCommand(MCP_PICKER_COMMAND, {
+    description: "Open the bordered TS MCP server & tool picker overlay for @mcp mentions",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const records = collectMcpServerRecords(pi);
+      const initialQuery = String(args ?? "").trim();
+
+      const chosen = await ctx.ui.custom<McpServerRecord | undefined>(
+        (tui, theme, _kb, done) =>
+          createMcpPickerTui(
+            tui as { requestRender: () => void },
+            theme as SessionPickerTheme,
+            {
+              records,
+              initialQuery,
+              getRows: () => {
+                const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
+                return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+              },
+            },
+            done,
+          ),
+        {
+          overlay: true,
+          overlayOptions: {
+            width: "92%",
+            maxHeight: "88%",
+            anchor: "center",
+          },
+        },
+      );
+
+      if (!chosen) return;
+      emitMentionInsert(ctx, "mcp", chosen.id, chosen.name, `@mcp:${chosen.id}`);
+    },
+  });
+
+  // Hidden command invoked by Rust Pager when `/resume` runs inside an active
+  // `grok-pi` session, reusing the shared bordered TS `SessionPickerTui`.
+  pi.registerCommand(RESUME_SESSION_COMMAND, {
+    description: "Open the bordered TS session picker overlay to resume a past session",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
+      const records = loadSessionPickerRecords({ limit: 300 });
+      const initialQuery = String(args ?? "").trim();
+
+      const chosen = await ctx.ui.custom<SessionRecord | undefined>(
+        (tui, theme, _kb, done) =>
+          createSessionPickerTui(
+            tui as { requestRender: () => void },
+            theme as SessionPickerTheme,
+            {
+              records,
+              currentCwd: cwd,
+              initialQuery,
+              initialScope: "global",
+              titleBadge: "(/resume)",
+              confirmLabel: "resume",
+              getRows: () => {
+                const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
+                return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+              },
+            },
+            done,
+          ),
+        {
+          overlay: true,
+          overlayOptions: {
+            width: "92%",
+            maxHeight: "88%",
+            anchor: "center",
+          },
+        },
+      );
+
+      if (!chosen) return;
+      if (isGrokPiHost()) {
+        emitMentionInsert(ctx, "resume", chosen.id, chosen.title, chosen.cwd);
+      } else {
+        await ctx.switchSession(chosen.path);
+      }
     },
   });
 

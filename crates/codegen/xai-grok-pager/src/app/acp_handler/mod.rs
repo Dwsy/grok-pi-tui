@@ -723,6 +723,21 @@ fn handle_pi_ui_mention_insert(notif: &acp::ExtNotification, app: &mut AppView) 
         .or_else(|| params.get("insert_text"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
+    // TS `/resume` overlay returns the chosen session ID + CWD via this bridge
+    // so the Pager performs a full session load + transcript replay.
+    if kind == "resume" {
+        let session_cwd = if insert_text.trim().is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(insert_text.trim()))
+        };
+        let effects = crate::app::dispatch::dispatch(
+            crate::app::actions::Action::LoadSession(id.to_owned(), session_cwd, false),
+            app,
+        );
+        app.pending_effects.extend(effects);
+        return true;
+    }
     let ActiveView::Agent(agent_id) = app.active_view else {
         return false;
     };

@@ -1724,6 +1724,17 @@ pub(in crate::app::dispatch) fn dispatch_show_session_picker(app: &mut AppView) 
     // Resume replaces the empty prewarmed session; drop it so we do not leak
     // a background Pi session the user never typed into.
     let mut effects = discard_welcome_prewarm(app);
+    // In grok-pi with an active Pi session, offload `/resume` to the shared
+    // bordered TS `SessionPickerTui` (`__pi_resume_session`), keeping the
+    // welcome-screen picker native when no agent RPC channel exists yet.
+    if external_agent && has_agent {
+        effects.push(Effect::MentionAction {
+            kind: "resume".to_owned(),
+            command: "__pi_resume_session".to_owned(),
+            query: String::new(),
+        });
+        return effects;
+    }
     with_active_agent(app, |agent| {
         // Upstream factors the modal literal into `session_picker_modal`;
         // patch the fork-owned fields (immediate input focus, External source

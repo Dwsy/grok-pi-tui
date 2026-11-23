@@ -4,42 +4,22 @@ use crate::views::modal::ActiveModal;
 use xai_grok_shell::session::unified_list::ListScope;
 
 #[test]
-fn external_resume_uses_current_tab_then_loads_all_on_refresh() {
-    use crate::views::modal::ActiveModal;
-
+fn external_resume_offloads_to_ts_session_picker_when_agent_active() {
     let mut app = test_app_with_agent();
     app.external_agent = true;
     let effects = dispatch(Action::ShowSessionPicker, &mut app);
     assert!(
         matches!(
             &effects[..],
-            [Effect::FetchExternalSessionCatalog { all: false, .. }]
+            [Effect::MentionAction { kind, command, .. }]
+                if kind == "resume" && command == "__pi_resume_session"
         ),
-        "external resume must initially request only the current folder, got {effects:?}"
+        "external resume on active agent must offload to TS __pi_resume_session, got {effects:?}"
     );
     let agent = get_active_agent_mut(&mut app).expect("active agent");
-    let Some(ActiveModal::SessionPicker {
-        source_filter,
-        window,
-        ..
-    }) = agent.active_modal.as_mut()
-    else {
-        panic!("expected external session picker");
-    };
-    assert_eq!(
-        *source_filter,
-        crate::views::session_picker::SourceFilter::External
-    );
-    assert_eq!(window.active_tab, 0);
-    window.active_tab = 1;
-
-    let effects = dispatch(Action::RefreshExternalSessionCatalog, &mut app);
     assert!(
-        matches!(
-            &effects[..],
-            [Effect::FetchExternalSessionCatalog { all: true, .. }]
-        ),
-        "All tab must request the global catalog, got {effects:?}"
+        agent.active_modal.is_none(),
+        "offloaded external resume should not open the legacy Rust SessionPicker modal"
     );
 }
 
