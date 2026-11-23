@@ -118,7 +118,8 @@ pub fn scrollback_inline_overlay_active() -> bool {
     if test_protocol_override_active() {
         return matches!(protocol, GraphicsProtocol::Kitty | GraphicsProtocol::ITerm2);
     }
-    scrollback_inline_overlay_active_for_brand(protocol, terminal_context().brand)
+    let ctx = terminal_context();
+    scrollback_inline_overlay_active_for_brand(protocol, ctx.brand, ctx.multiplexer)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -135,7 +136,11 @@ fn test_protocol_override_active() -> bool {
 fn scrollback_inline_overlay_active_for_brand(
     protocol: GraphicsProtocol,
     brand: TerminalName,
+    multiplexer: MultiplexerKind,
 ) -> bool {
+    if protocol == GraphicsProtocol::Kitty && multiplexer == MultiplexerKind::Herdr {
+        return true;
+    }
     matches!(
         (protocol, brand),
         (

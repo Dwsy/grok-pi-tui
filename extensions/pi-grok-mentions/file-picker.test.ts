@@ -152,7 +152,11 @@ describe("file-data Nerd icons, lazy tree, fd search, rg grep, and preview", () 
       expect(dirPrev.kind).toBe("dir");
       expect(dirPrev.dirSummary).toBe("1 dirs · 1 files");
 
-      const binPrev = loadFileOrDirPreview(dir, "logo.png", { showHidden: false, nerdIcons: true });
+      const imgPrev = loadFileOrDirPreview(dir, "logo.png", { showHidden: false, nerdIcons: true });
+      expect(imgPrev.kind).toBe("image");
+
+      fs.writeFileSync(path.join(dir, "blob.bin"), Buffer.from([0x00, 0x01, 0x02, 0x03]));
+      const binPrev = loadFileOrDirPreview(dir, "blob.bin", { showHidden: false, nerdIcons: true });
       expect(binPrev.kind).toBe("binary");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -278,6 +282,60 @@ describe("FilePickerTui rendering, modes (Tree / fd / rg), keyboard, and mouse",
       picker.handleMouse(mouse({ type: "click", button: "left", x: 5, y: 5, clickCount: 2 }));
       expect(chosen).toBeDefined();
       expect(chosen!.insertText.startsWith("@")).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("emits HD image overlay under Herdr and clears when switching to a text file", () => {
+    const dir = makeTempWorkspace();
+    try {
+      // Minimal valid 2x2 PNG header (IHDR: width=2, height=2)
+      const pngBytes = Buffer.from(
+        "89504e470d0a1a0a0000000d4948445200000002000000020802000000fdd49a730000000049454e44ae426082",
+        "hex",
+      );
+      fs.writeFileSync(path.join(dir, "00-preview.png"), pngBytes);
+      fs.writeFileSync(path.join(dir, "01-notes.txt"), "hello world\n");
+
+      const overlayCalls: Array<unknown> = [];
+      const picker = createFilePickerTui(
+        { requestRender: () => {} },
+        plainTheme,
+        {
+          rootDir: dir,
+          initialMode: "files",
+          nerdIcons: false,
+          env: { HERDR_ENV: "1", TERM_PROGRAM: "herdr" },
+          onImageOverlay: (spec) => overlayCalls.push(spec),
+          getRows: () => 28,
+        },
+        () => {},
+      );
+
+      picker.handleInput("00-preview");
+      const lines = picker.render(108);
+      for (const line of lines) {
+        expect(visibleWidth(line)).toBe(108);
+      }
+      const rendered = lines.map(stripAnsi).join("\n");
+      expect(rendered).toContain("PNG 2×2");
+      expect(rendered).toContain("HD · Herdr/Kitty");
+      expect(overlayCalls.length).toBe(1);
+      const spec = overlayCalls[0] as { path: string; x: number; y: number; width: number; height: number };
+      expect(spec.path.endsWith("00-preview.png")).toBe(true);
+      expect(spec.width).toBeGreaterThanOrEqual(20);
+      expect(spec.height).toBeGreaterThanOrEqual(8);
+
+      // Re-rendering the same selection must be diff-checked (zero redundant emissions).
+      picker.render(108);
+      expect(overlayCalls.length).toBe(1);
+
+      // Switching to a text file clears the overlay.
+      picker.handleInput("\x17"); // Ctrl+W clear query
+      picker.handleInput("01-notes");
+      picker.render(108);
+      expect(overlayCalls[overlayCalls.length - 1]).toBeUndefined();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

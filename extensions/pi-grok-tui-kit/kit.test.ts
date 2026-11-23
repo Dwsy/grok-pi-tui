@@ -1,13 +1,20 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   computeSplitGeometry,
   detectNerdFontSupport,
+  detectTerminalImageProtocol,
+  fitImageCells,
   fitWidth,
   getFileIcon,
   highlightTerms,
   hitRegion,
+  probeImageMetadata,
   renderSplitOverlayFrame,
+  rgb24ToHalfBlockLines,
   wrapTextToWidth,
   type TuiTheme,
 } from "./index.ts";
@@ -75,5 +82,57 @@ describe("pi-grok-tui-kit shared primitives", () => {
     expect(detectNerdFontSupport({ NERD_FONT: "0" })).toBe(false);
     expect(getFileIcon("lib.rs", { nerdIcons: true }).glyph).toBe("");
     expect(getFileIcon("lib.rs", { nerdIcons: false }).glyph).toBe("·");
+  });
+
+  test("detectTerminalImageProtocol recognizes Herdr, Kitty, Ghostty, WezTerm, iTerm2, and fallback", () => {
+    expect(detectTerminalImageProtocol({ HERDR_ENV: "1" })).toEqual({
+      protocol: "kitty",
+      label: "HD · Herdr/Kitty",
+    });
+    expect(detectTerminalImageProtocol({ TERM_PROGRAM: "herdr" }).protocol).toBe("kitty");
+    expect(detectTerminalImageProtocol({ TERM_PROGRAM: "ghostty" }).protocol).toBe("kitty");
+    expect(detectTerminalImageProtocol({ TERM_PROGRAM: "WezTerm" }).protocol).toBe("kitty");
+    expect(detectTerminalImageProtocol({ TERM_PROGRAM: "iTerm.app" }).protocol).toBe("iterm2");
+    expect(detectTerminalImageProtocol({ TERM: "xterm-256color" }).protocol).toBe("halfblock");
+  });
+
+  test("probeImageMetadata parses PNG/SVG headers and rgb24ToHalfBlockLines encodes truecolor rows", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-grok-kit-img-"));
+    try {
+      const pngPath = path.join(dir, "sample.png");
+      // Valid PNG IHDR: 640x480
+      const pngBuf = Buffer.alloc(33);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(pngBuf, 0);
+      pngBuf.writeUInt32BE(13, 8);
+      pngBuf.write("IHDR", 12, "ascii");
+      pngBuf.writeUInt32BE(640, 16);
+      pngBuf.writeUInt32BE(480, 20);
+      fs.writeFileSync(pngPath, pngBuf);
+
+      const pngMeta = probeImageMetadata(pngPath);
+      expect(pngMeta?.format).toBe("PNG");
+      expect(pngMeta?.width).toBe(640);
+      expect(pngMeta?.height).toBe(480);
+
+      const svgPath = path.join(dir, "logo.svg");
+      fs.writeFileSync(svgPath, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 64"></svg>');
+      const svgMeta = probeImageMetadata(svgPath);
+      expect(svgMeta?.format).toBe("SVG");
+      expect(svgMeta?.width).toBe(128);
+      expect(svgMeta?.height).toBe(64);
+
+      const fit = fitImageCells(640, 480, 40, 16);
+      expect(fit.cols).toBeLessThanOrEqual(40);
+      expect(fit.rows).toBeLessThanOrEqual(16);
+
+      // 2x2 pixels -> 1 row of 2 upper half-blocks
+      const rgb = Buffer.from([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]);
+      const half = rgb24ToHalfBlockLines(rgb, 2, 2);
+      expect(half.length).toBe(1);
+      expect(half[0]).toContain("\x1b[38;2;255;0;0m\x1b[48;2;0;0;255m▀");
+      expect(visibleWidth(half[0]!)).toBe(2);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

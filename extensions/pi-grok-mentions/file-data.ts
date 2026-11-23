@@ -17,6 +17,11 @@ import {
   getFileIcon,
   type FileIconSpec,
 } from "../pi-grok-tui-kit/icons.ts";
+import {
+  isImageFilePath,
+  probeImageMetadata,
+  type ImageMetadata,
+} from "../pi-grok-tui-kit/image.ts";
 import { formatTimestamp } from "./session-data.ts";
 import { formatFileSize } from "./skill-data.ts";
 
@@ -50,7 +55,7 @@ export interface GrepHit {
 }
 
 export interface FilePreviewResult {
-  kind: "file" | "dir" | "binary" | "error";
+  kind: "file" | "dir" | "image" | "binary" | "error";
   relPath: string;
   sizeLabel: string;
   modified: string;
@@ -58,6 +63,8 @@ export interface FilePreviewResult {
   truncated: boolean;
   lines: string[];
   dirSummary?: string;
+  absPath?: string;
+  imageMeta?: ImageMetadata;
 }
 
 const MAX_FD_RESULTS = 2000;
@@ -395,6 +402,25 @@ export function loadFileOrDirPreview(
         lines,
         dirSummary: `${dirs.length} dirs · ${files.length} files`,
       };
+    }
+
+    if (isImageFilePath(abs)) {
+      const meta = probeImageMetadata(abs);
+      if (meta) {
+        const dimStr =
+          meta.width > 0 && meta.height > 0 ? `${meta.width}×${meta.height}` : "dimensions unknown";
+        return {
+          kind: "image",
+          relPath,
+          absPath: abs,
+          imageMeta: meta,
+          sizeLabel: formatFileSize(stat.size),
+          modified,
+          lineCount: 0,
+          truncated: false,
+          lines: [`${meta.format} image · ${dimStr} · ${formatFileSize(stat.size)}`],
+        };
+      }
     }
 
     const readLen = Math.min(stat.size, MAX_PREVIEW_BYTES);

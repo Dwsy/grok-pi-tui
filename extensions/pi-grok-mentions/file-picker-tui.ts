@@ -22,11 +22,15 @@ import {
 } from "@earendil-works/pi-tui";
 import {
   computeSplitGeometry,
+  detectTerminalImageProtocol,
   fitWidth,
   highlightTerms,
   hitRegion,
+  renderHalfBlockPreview,
   renderSplitOverlayFrame,
   type ClickRegion,
+  type RemoteTuiImageSpec,
+  type TerminalImageCapability,
   type TuiTheme,
 } from "../pi-grok-tui-kit/index.ts";
 import {
@@ -66,6 +70,10 @@ export interface FilePickerTuiOptions {
     relPath: string,
     opts: { showHidden: boolean; nerdIcons: boolean },
   ) => FilePreviewResult;
+  /** Optional callback to emit/clear an HD image overlay rect in `grok-pi`. */
+  onImageOverlay?: (spec: RemoteTuiImageSpec | undefined) => void;
+  /** Optional env override for deterministic protocol detection in tests. */
+  env?: NodeJS.ProcessEnv;
   getRows?: () => number;
 }
 
@@ -81,6 +89,8 @@ export class FilePickerTui implements Component {
     relPath: string,
     opts: { showHidden: boolean; nerdIcons: boolean },
   ) => FilePreviewResult;
+  private readonly onImageOverlay?: (spec: RemoteTuiImageSpec | undefined) => void;
+  private readonly imageCap: TerminalImageCapability;
   private readonly getRows: () => number;
 
   private mode: FilePickerMode;
@@ -113,6 +123,7 @@ export class FilePickerTui implements Component {
   private bodyStartY = 5;
   private bodyHeight = 14;
   private previewVisibleRows = 10;
+  private lastEmittedImageKey = "";
   private pillRects = new Map<string, ClickRegion>();
   private closeBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
   private listRowMap: Array<{ y1: number; y2: number; index: number }> = [];
@@ -136,9 +147,26 @@ export class FilePickerTui implements Component {
     this.runGrepFn =
       options.runGrep ?? ((root, q, hidden) => grepWorkspaceWithRg(root, q, { showHidden: hidden }));
     this.loadPreviewFn = options.loadPreview ?? loadFileOrDirPreview;
+    this.onImageOverlay = options.onImageOverlay;
+    this.imageCap = detectTerminalImageProtocol(options.env);
     this.getRows = options.getRows ?? (() => 28);
 
     this.refreshActiveMode();
+  }
+
+  private syncImageOverlay(spec: RemoteTuiImageSpec | undefined): void {
+    if (!this.onImageOverlay) return;
+    const key = spec
+      ? `${spec.path}:${spec.x},${spec.y},${spec.width}x${spec.height}`
+      : "";
+    if (key === this.lastEmittedImageKey) return;
+    this.lastEmittedImageKey = key;
+    this.onImageOverlay(spec);
+  }
+
+  private finish(selected: FilePickerSelection | undefined): void {
+    this.syncImageOverlay(undefined);
+    this.done(selected);
   }
 
   getMode(): FilePickerMode {
@@ -331,7 +359,7 @@ export class FilePickerTui implements Component {
 
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-      this.done(undefined);
+      this.finish(undefined);
       return;
     }
     if (matchesKey(data, "tab")) {
@@ -390,12 +418,12 @@ export class FilePickerTui implements Component {
           return;
         }
       }
-      this.done(this.getCurrentSelection());
+      this.finish(this.getCurrentSelection());
       return;
     }
     // Space in Tree mode confirms even a directory as a whole-folder `@dir/` reference.
     if (data === " " && this.mode === "tree" && this.query.length === 0) {
-      this.done(this.getCurrentSelection());
+      this.finish(this.getCurrentSelection());
       return;
     }
     if (matchesKey(data, "ctrl+w") || matchesKey(data, "ctrl+l")) {
@@ -627,6 +655,7 @@ export class FilePickerTui implements Component {
   private renderRightPane(innerW: number, height: number): string[] {
     const selection = this.getCurrentSelection();
     if (!selection) {
+      this.syncImageOverlay(undefined);
       const empty = [
         "",
         this.fg("dim", "  No file selected."),
@@ -646,6 +675,8 @@ export class FilePickerTui implements Component {
     const detailText =
       preview.kind === "dir"
         ? `${preview.dirSummary ?? preview.sizeLabel}  ${this.fg("dim", "Updated:")} ${preview.modified}`
+        : preview.kind === "image"
+          ? `${preview.imageMeta?.format ?? "IMG"}${preview.imageMeta && preview.imageMeta.width > 0 ? ` ${preview.imageMeta.width}×${preview.imageMeta.height}` : ""}  ${preview.sizeLabel}  ${this.fg("accent", this.onImageOverlay && this.imageCap.protocol !== "halfblock" ? this.imageCap.label : "Half-Block")}`
         : `${preview.sizeLabel}  ${this.fg("dim", "Lines:")} ${preview.lineCount}${preview.truncated ? "+" : ""}  ${this.fg("dim", "Updated:")} ${preview.modified}${lineTag}`;
 
     const metaLines: string[] = [
@@ -657,6 +688,41 @@ export class FilePickerTui implements Component {
     const headerBlock = [...metaLines, divider];
     const previewHeight = Math.max(1, height - headerBlock.length);
     this.previewVisibleRows = previewHeight;
+
+    if (preview.kind === "image" && preview.absPath) {
+      const useNativeHd = Boolean(this.onImageOverlay && this.imageCap.protocol !== "halfblock");
+      if (useNativeHd && innerW >= 6 && previewHeight >= 3) {
+        this.syncImageOverlay({
+          path: preview.absPath,
+          x: this.dividerX + 1,
+          y: this.bodyStartY + headerBlock.length,
+          width: innerW,
+          height: previewHeight,
+        });
+        this.lastPreviewLinesCount = 0;
+        const blankCanvas = Array.from({ length: previewHeight }, () => "");
+        return [...headerBlock, ...blankCanvas]
+          .slice(0, height)
+          .map((line) => fitWidth(line, innerW));
+      }
+      this.syncImageOverlay(undefined);
+      const halfBlock = renderHalfBlockPreview(
+        preview.absPath,
+        Math.max(4, innerW - 2),
+        Math.max(2, previewHeight),
+        preview.imageMeta,
+      );
+      const imgLines = halfBlock
+        ? halfBlock.map((row) => ` ${row}`)
+        : preview.lines.map((l) => ` ${this.fg("dim", l)}`);
+      this.lastPreviewLinesCount = imgLines.length;
+      while (imgLines.length < previewHeight) imgLines.push("");
+      return [...headerBlock, ...imgLines]
+        .slice(0, height)
+        .map((line) => fitWidth(line, innerW));
+    }
+
+    this.syncImageOverlay(undefined);
 
     // Auto-center the matched line when switching to a new grep hit.
     const previewKey = `${selection.relPath}:${selection.line ?? 0}`;

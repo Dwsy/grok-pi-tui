@@ -17,3 +17,16 @@ export {
   type TuiTheme,
 } from "./frame.ts";
 export { detectNerdFontSupport, getFileIcon, type FileIconSpec } from "./icons.ts";
+export {
+  REMOTE_TUI_IMAGE_WIDGET_KEY,
+  detectTerminalImageProtocol,
+  fitImageCells,
+  isImageFilePath,
+  probeImageMetadata,
+  renderHalfBlockPreview,
+  rgb24ToHalfBlockLines,
+  type ImageMetadata,
+  type ImageProtocol,
+  type RemoteTuiImageSpec,
+  type TerminalImageCapability,
+} from "./image.ts";

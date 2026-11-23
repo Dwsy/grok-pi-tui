@@ -1220,7 +1220,12 @@ impl AgentView {
         }
         (None, child_post_flush)
     }
-    fn draw_remote_tui_overlay(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+    fn draw_remote_tui_overlay(
+        &mut self,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &Theme,
+    ) -> Option<crate::terminal::overlay::PostFlush> {
         // A Pi input/confirm dialog may be opened from inside custom(). Keep
         // its native surface visible while it temporarily owns the keyboard.
         if self.active_modal.is_some()
@@ -1229,13 +1234,13 @@ impl AgentView {
                 .as_ref()
                 .is_some_and(|q| q.is_pi_extension_ui())
         {
-            return;
+            return self.clear_remote_tui_image_if_active();
         }
         let Some(layout) = self.remote_tui_layout.clone() else {
-            return;
+            return self.clear_remote_tui_image_if_active();
         };
         let Some(rect) = remote_tui_overlay_rect(area, &layout, self.remote_tui_lines.len()) else {
-            return;
+            return self.clear_remote_tui_image_if_active();
         };
         self.remote_tui_rect = Some(rect);
 
@@ -1258,6 +1263,7 @@ impl AgentView {
             buf.set_line(rect.x, rect.y + index as u16, &styled, rect.width);
         }
         self.frame_occluder_rects.push(rect);
+        self.build_remote_tui_image_post_flush(rect)
     }
 
     pub fn should_show_tip(&mut self) -> bool {
@@ -5296,7 +5302,12 @@ impl AgentView {
                 self.frame_occluder_rects.push(popup);
             }
         }
-        self.draw_remote_tui_overlay(area, buf, &theme);
+        if let Some(remote_img_pf) = self.draw_remote_tui_overlay(area, buf, &theme) {
+            match prompt_post_flush {
+                Some(ref mut existing) => existing.append(remote_img_pf),
+                None => prompt_post_flush = Some(remote_img_pf),
+            }
+        }
         self.pane_areas = layout.pane_areas();
         {
             let route = crate::hyperlink_route::hyperlink_route();

@@ -1249,6 +1249,12 @@ pub struct AgentView {
     pub(crate) remote_tui_lines: Vec<String>,
     /// Pi `ctx.ui.custom()` layout metadata.
     pub(crate) remote_tui_layout: Option<crate::app::app_view::RemoteTuiLayout>,
+    /// Optional HD image preview overlay positioned inside the active Remote TUI frame.
+    pub(crate) remote_tui_image: Option<crate::app::app_view::RemoteTuiImageOverlay>,
+    /// Whether an HD Remote TUI overlay image was emitted on the previous frame.
+    pub(crate) remote_tui_image_active: bool,
+    /// Stable overlay owner ID keyed by active image path so steady-state frames keep pixels without re-transmitting.
+    pub(crate) remote_tui_image_owner: Option<(std::path::PathBuf, u64)>,
     /// Exact line offset of the inline Remote TUI frame in the above-editor widget stack.
     pub(crate) remote_tui_inline_offset: Option<usize>,
     /// Hit box for the last rendered Remote TUI frame (inline or overlay).

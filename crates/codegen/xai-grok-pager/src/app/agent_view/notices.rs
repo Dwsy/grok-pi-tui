@@ -281,6 +281,20 @@ impl AgentView {
             })
     }
 
+    /// Update the active Remote TUI HD image overlay specification.
+    pub fn set_remote_tui_image(
+        &mut self,
+        image: Option<crate::app::app_view::RemoteTuiImageOverlay>,
+    ) -> bool {
+        let changed = self.remote_tui_image != image;
+        self.remote_tui_image = image.clone();
+        self.subagent_views
+            .values_mut()
+            .fold(changed, |changed, child| {
+                child.set_remote_tui_image(image.clone()) || changed
+            })
+    }
+
     /// Show a transient "Switched to mode: ..." banner above the prompt.
     /// Triggered on Shift+Tab mode cycles.
     /// Renders at full visibility for 2 s, then fades out over the final 0.3 s.

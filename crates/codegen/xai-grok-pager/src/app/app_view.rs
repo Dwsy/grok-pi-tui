@@ -131,6 +131,8 @@ pub struct ExternalUiState {
     pub widgets: std::collections::BTreeMap<String, ExternalWidget>,
     /// Layout metadata for the active `ctx.ui.custom(..., { overlay: true })`.
     pub remote_tui_layout: Option<RemoteTuiLayout>,
+    /// Optional HD image preview overlay anchored inside the active Remote TUI frame.
+    pub remote_tui_image: Option<RemoteTuiImageOverlay>,
     pub pending_toasts: std::collections::VecDeque<String>,
     /// Info notifications that arrived before any agent view existed (Pi
     /// extension `session_start` fires while the host is still bootstrapping).
@@ -265,6 +267,47 @@ impl RemoteTuiLayout {
             col: position("col"),
             offset_x: offset("offsetX"),
             offset_y: offset("offsetY"),
+        })
+    }
+}
+
+/// HD image overlay rectangle emitted by a Remote TUI component (e.g. `@file` preview)
+/// via `setWidget("__pi_grok_remote_tui_image__", [JSON])`. Coordinates are 0-based
+/// cells relative to the active Remote TUI overlay rect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteTuiImageOverlay {
+    pub path: std::path::PathBuf,
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl RemoteTuiImageOverlay {
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let path_str = value.get("path")?.as_str()?.trim();
+        if path_str.is_empty() {
+            return None;
+        }
+        let u16_field = |key: &str| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .map(|v| v.min(u16::MAX as u64) as u16)
+        };
+        let x = u16_field("x")?;
+        let y = u16_field("y")?;
+        let width = u16_field("width")?;
+        let height = u16_field("height")?;
+        if width < 4 || height < 2 {
+            return None;
+        }
+        Some(Self {
+            path: std::path::PathBuf::from(path_str),
+            x,
+            y,
+            width,
+            height,
         })
     }
 }
@@ -2609,6 +2652,7 @@ impl AppView {
         // the outgoing session and must not survive into the next one.
         self.external_ui.working_message = None;
         self.external_ui.remote_tui_layout = None;
+        self.external_ui.remote_tui_image = None;
         self.external_ui.remote_tui_id = None;
         self.external_ui.remote_tui_mouse_gesture = None;
         self.external_ui.remote_tui_overlays.clear();
@@ -2768,6 +2812,15 @@ impl AppView {
         self.refresh_external_ui_surface()
     }
 
+    /// Update the active Remote TUI HD image overlay (or clear with `None`).
+    pub fn set_remote_tui_image(&mut self, image: Option<RemoteTuiImageOverlay>) -> bool {
+        if self.external_ui.remote_tui_image == image {
+            return false;
+        }
+        self.external_ui.remote_tui_image = image;
+        self.refresh_external_ui_surface()
+    }
+
     /// Experimental Remote TUI open/frame/close (env-gated on Pi side).
     pub fn apply_remote_tui(
         &mut self,
@@ -2847,6 +2900,7 @@ impl AppView {
                     // Stack empty — close entirely
                     self.external_ui.remote_tui_id = None;
                     self.external_ui.remote_tui_mouse_gesture = None;
+                    self.external_ui.remote_tui_image = None;
                     let _ = self.set_external_widget(
                         "remote_tui".to_string(),
                         None,
@@ -2871,6 +2925,7 @@ impl AppView {
                 } else {
                     self.external_ui.remote_tui_id = None;
                     self.external_ui.remote_tui_mouse_gesture = None;
+                    self.external_ui.remote_tui_image = None;
                     let _ = self.set_external_widget(
                         "remote_tui".to_string(),
                         None,
@@ -3241,6 +3296,7 @@ impl AppView {
             .map(|widget| widget.lines.as_slice())
             .unwrap_or(&[]);
         let remote_tui_layout = self.external_ui.remote_tui_layout.clone();
+        let remote_tui_image = self.external_ui.remote_tui_image.clone();
         self.agents.values_mut().fold(false, |changed, agent| {
             agent
                 .pi_extension_shortcuts
@@ -3252,7 +3308,9 @@ impl AppView {
                 remote_tui_inline_offset,
                 working_message.as_deref(),
             ) || changed;
-            agent.set_remote_tui_surface(remote_tui_lines, remote_tui_layout.clone()) || changed
+            let changed = agent.set_remote_tui_surface(remote_tui_lines, remote_tui_layout.clone())
+                || changed;
+            agent.set_remote_tui_image(remote_tui_image.clone()) || changed
         })
     }
     /// Insert or replace a leader roster entry, keyed by `session_id`.
@@ -3707,6 +3765,7 @@ impl AppView {
                         .push(crate::app::actions::Effect::RemoteTuiCancel { id });
                     self.external_ui.remote_tui_id = None;
                     self.external_ui.remote_tui_layout = None;
+                    self.external_ui.remote_tui_image = None;
                     self.external_ui.remote_tui_mouse_gesture = None;
                     self.external_ui.remote_tui_overlays.clear();
                     self.external_ui.widgets.remove("remote_tui");

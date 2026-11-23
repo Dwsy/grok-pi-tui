@@ -62,6 +62,11 @@ pub(super) fn write_mentions_extension() -> Result<MentionsExtension> {
     )?;
     write_source_file(
         &kit_dir,
+        "image.ts",
+        include_str!("../../../../../../extensions/pi-grok-tui-kit/image.ts"),
+    )?;
+    write_source_file(
+        &kit_dir,
         "index.ts",
         include_str!("../../../../../../extensions/pi-grok-tui-kit/index.ts"),
     )?;

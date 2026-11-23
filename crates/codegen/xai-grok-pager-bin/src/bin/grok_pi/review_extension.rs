@@ -61,6 +61,11 @@ pub(super) fn write_review_extension() -> Result<ReviewExtension> {
     )?;
     write_source_file(
         &kit_dir,
+        "image.ts",
+        include_str!("../../../../../../extensions/pi-grok-tui-kit/image.ts"),
+    )?;
+    write_source_file(
+        &kit_dir,
         "index.ts",
         include_str!("../../../../../../extensions/pi-grok-tui-kit/index.ts"),
     )?;

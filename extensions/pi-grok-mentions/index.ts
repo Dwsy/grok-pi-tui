@@ -31,6 +31,10 @@ import { buildSkillRecords, type SkillRecord } from "./skill-data.ts";
 import { createSkillPickerTui } from "./skill-picker-tui.ts";
 import { createFilePickerTui, type FilePickerSelection } from "./file-picker-tui.ts";
 import {
+  REMOTE_TUI_IMAGE_WIDGET_KEY,
+  type RemoteTuiImageSpec,
+} from "../pi-grok-tui-kit/index.ts";
+import {
   createMcpPickerTui,
   type McpServerRecord,
   type McpToolRecord,
@@ -100,6 +104,7 @@ type SerializedProvider = {
 
 type PatchableUi = {
   setStatus?: (key: string, text?: string) => void;
+  setWidget?: (key: string, lines?: string[]) => void;
 };
 
 type GlobalWithMentions = typeof globalThis & {
@@ -667,31 +672,49 @@ export default function mentions(pi: ExtensionAPI) {
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
       const initialQuery = String(args ?? "").trim();
+      const patchUi = ctx.ui as unknown as PatchableUi;
+      const emitImageOverlay = (spec: RemoteTuiImageSpec | undefined) => {
+        if (!isGrokPiHost() || typeof patchUi.setWidget !== "function") return;
+        try {
+          patchUi.setWidget(
+            REMOTE_TUI_IMAGE_WIDGET_KEY,
+            spec ? [JSON.stringify(spec)] : undefined,
+          );
+        } catch {
+          // RPC transport closed; ignore.
+        }
+      };
 
-      const chosen = await ctx.ui.custom<FilePickerSelection | undefined>(
-        (tui, theme, _kb, done) =>
-          createFilePickerTui(
-            tui as { requestRender: () => void },
-            theme as SessionPickerTheme,
-            {
-              rootDir: cwd,
-              initialQuery,
-              getRows: () => {
-                const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
-                return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+      let chosen: FilePickerSelection | undefined;
+      try {
+        chosen = await ctx.ui.custom<FilePickerSelection | undefined>(
+          (tui, theme, _kb, done) =>
+            createFilePickerTui(
+              tui as { requestRender: () => void },
+              theme as SessionPickerTheme,
+              {
+                rootDir: cwd,
+                initialQuery,
+                onImageOverlay: isGrokPiHost() ? emitImageOverlay : undefined,
+                getRows: () => {
+                  const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
+                  return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+                },
               },
+              done,
+            ),
+          {
+            overlay: true,
+            overlayOptions: {
+              width: "92%",
+              maxHeight: "88%",
+              anchor: "center",
             },
-            done,
-          ),
-        {
-          overlay: true,
-          overlayOptions: {
-            width: "92%",
-            maxHeight: "88%",
-            anchor: "center",
           },
-        },
-      );
+        );
+      } finally {
+        emitImageOverlay(undefined);
+      }
 
       if (!chosen) return;
       emitMentionInsert(ctx, "file", chosen.title, chosen.title, chosen.insertText);

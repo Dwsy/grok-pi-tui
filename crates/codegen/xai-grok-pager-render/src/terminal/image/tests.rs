@@ -140,14 +140,22 @@ fn scrollback_overlay_excludes_warp() {
     assert!(scrollback_inline_overlay_active_for_brand(
         GraphicsProtocol::Kitty,
         TerminalName::Kitty,
+        MultiplexerKind::None,
+    ));
+    assert!(scrollback_inline_overlay_active_for_brand(
+        GraphicsProtocol::Kitty,
+        TerminalName::Unknown,
+        MultiplexerKind::Herdr,
     ));
     assert!(scrollback_inline_overlay_active_for_brand(
         GraphicsProtocol::ITerm2,
         TerminalName::Iterm2,
+        MultiplexerKind::None,
     ));
     assert!(!scrollback_inline_overlay_active_for_brand(
         GraphicsProtocol::Kitty,
         TerminalName::WarpTerminal,
+        MultiplexerKind::None,
     ));
 }
 

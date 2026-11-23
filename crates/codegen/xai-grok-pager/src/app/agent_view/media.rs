@@ -118,6 +118,104 @@ impl AgentView {
         }
     }
 
+    /// Emit or clear the HD Kitty/Herdr/iTerm2 image overlay anchored inside an
+    /// active Remote TUI overlay (e.g. TS `@file` explorer). Reuses the bounded
+    /// 64 MB `inline_media_cache`, negative failure cache, and stable `owner_id`
+    /// so steady-state frames transmit zero bytes and closing clears cleanly.
+    pub(super) fn build_remote_tui_image_post_flush(
+        &mut self,
+        overlay_rect: Rect,
+    ) -> Option<PostFlush> {
+        let Some(spec) = self.remote_tui_image.clone() else {
+            return self.clear_remote_tui_image_if_active();
+        };
+        let avail_w = overlay_rect.width.saturating_sub(spec.x);
+        let avail_h = overlay_rect.height.saturating_sub(spec.y);
+        let img_rect = Rect::new(
+            overlay_rect.x.saturating_add(spec.x),
+            overlay_rect.y.saturating_add(spec.y),
+            spec.width.min(avail_w),
+            spec.height.min(avail_h),
+        );
+        if img_rect.width < 4 || img_rect.height < 2 {
+            return self.clear_remote_tui_image_if_active();
+        }
+
+        let path = &spec.path;
+        let mut oversized: Option<Vec<u8>> = None;
+        if !self.inline_media_cache.contains_key(path) {
+            let Ok(meta) = std::fs::metadata(path) else {
+                return self.clear_remote_tui_image_if_active();
+            };
+            let stamp = MediaFileStamp::from_metadata(&meta);
+            if let Some(stamp) = stamp
+                && self.inline_media_load_failed.get(path) == Some(&stamp)
+            {
+                return self.clear_remote_tui_image_if_active();
+            }
+            let loaded = std::fs::read(path)
+                .ok()
+                .and_then(|raw| crate::terminal::image::prepare_overlay_image_bytes(&raw));
+            let Some(bytes) = loaded else {
+                match stamp {
+                    Some(stamp) => {
+                        self.inline_media_load_failed.insert(path.clone(), stamp);
+                    }
+                    None => {
+                        self.inline_media_load_failed.remove(path);
+                    }
+                }
+                return self.clear_remote_tui_image_if_active();
+            };
+            self.inline_media_load_failed.remove(path);
+            const INLINE_MEDIA_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+            oversized = cache_inline_media_bytes(
+                &mut self.inline_media_cache,
+                path,
+                bytes,
+                INLINE_MEDIA_CACHE_MAX_BYTES,
+            );
+        }
+
+        let image_data: &[u8] = match &oversized {
+            Some(bytes) => bytes,
+            None => match self.inline_media_cache.get(path) {
+                Some(bytes) => bytes,
+                None => return self.clear_remote_tui_image_if_active(),
+            },
+        };
+        let Some((img_w, img_h)) = crate::prompt_images::decode_image_dimensions(image_data) else {
+            return self.clear_remote_tui_image_if_active();
+        };
+
+        let owner_id = match &self.remote_tui_image_owner {
+            Some((prev_path, id)) if prev_path == path => *id,
+            _ => {
+                let id = overlay::next_owner_id();
+                self.remote_tui_image_owner = Some((path.clone(), id));
+                id
+            }
+        };
+
+        if let Some(esc) =
+            overlay::static_centered_read_viewer(image_data, img_w, img_h, img_rect, owner_id)
+        {
+            self.remote_tui_image_active = true;
+            Some(esc.into())
+        } else {
+            self.clear_remote_tui_image_if_active()
+        }
+    }
+
+    pub(super) fn clear_remote_tui_image_if_active(&mut self) -> Option<PostFlush> {
+        if !self.remote_tui_image_active {
+            return None;
+        }
+        self.remote_tui_image_active = false;
+        self.remote_tui_image_owner = None;
+        overlay::clear().map(PostFlush::from)
+    }
+
     // -- Inline media rendering -----------------------------------------------
 
     /// Build Kitty/iTerm2 escape sequences for an inline media placement.
