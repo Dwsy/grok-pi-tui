@@ -354,6 +354,11 @@ pub async fn set_pi_eval_mcp(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.pi_eval_mcp = value).await
 }
 
+/// Persist the opt-in OMP shell backend (`PI_GROK_BASH_BACKEND=omp`) for grok-pi.
+pub async fn set_pi_omp_shell(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_omp_shell = value).await
+}
+
 /// Persist the optional PSM SQLite session-index preference for grok-pi.
 pub async fn set_psm_resume_index(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.psm_resume_index = value).await

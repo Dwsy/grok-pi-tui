@@ -2666,6 +2666,24 @@ pub(in crate::app::dispatch) fn set_pi_eval_mcp(app: &mut AppView, enabled: bool
     }]
 }
 
+pub(in crate::app::dispatch) fn set_pi_omp_shell(app: &mut AppView, enabled: bool) -> Vec<Effect> {
+    let previous = app.current_ui.pi_omp_shell;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_omp_shell = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "on" } else { "off" };
+    app.show_toast(&format!(
+        "\u{2713} OMP Shell backend: {value} \u{2014} restart grok-pi to apply"
+    ));
+    vec![Effect::PersistSetting {
+        key: "pi_omp_shell",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
 pub(in crate::app::dispatch) fn set_psm_resume_index(
     app: &mut AppView,
     enabled: bool,

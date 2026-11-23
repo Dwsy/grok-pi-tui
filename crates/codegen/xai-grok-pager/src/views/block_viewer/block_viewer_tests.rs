@@ -507,3 +507,84 @@ fn streaming_edit_viewer_refreshes_same_length_changes_without_resize() {
     assert!(pane.tick(&entry));
     assert!(text(&pane).contains("charlie"));
 }
+
+#[test]
+fn execute_viewer_renders_omp_shell_trace_above_output_and_ticks_on_late_trace() {
+    use crate::scrollback::blocks::ExecuteToolCallBlock;
+    use xai_grok_tools::types::output::{
+        ShellTraceNode, ShellTraceNodeState, ShellTraceSummary,
+    };
+
+    let trace = ShellTraceSummary {
+        version: 1,
+        total_duration_ms: 19,
+        exit_code: Some(0),
+        truncated: false,
+        nodes: vec![
+            ShellTraceNode {
+                id: 0,
+                parent_id: None,
+                depth: 0,
+                kind: "pipeline".to_string(),
+                command: "echo a | wc -c".to_string(),
+                state: ShellTraceNodeState::Ok,
+                exit_code: Some(0),
+                duration_ms: 19,
+                runs: 1,
+                background: false,
+            },
+            ShellTraceNode {
+                id: 1,
+                parent_id: Some(0),
+                depth: 1,
+                kind: "simple".to_string(),
+                command: "echo a".to_string(),
+                state: ShellTraceNodeState::Ok,
+                exit_code: Some(0),
+                duration_ms: 4,
+                runs: 1,
+                background: false,
+            },
+            ShellTraceNode {
+                id: 2,
+                parent_id: Some(0),
+                depth: 1,
+                kind: "simple".to_string(),
+                command: "wc -c".to_string(),
+                state: ShellTraceNodeState::Ok,
+                exit_code: Some(0),
+                duration_ms: 15,
+                runs: 1,
+                background: false,
+            },
+        ],
+    };
+
+    let mut entry = ScrollbackEntry::running(RenderBlock::ToolCall(ToolCallBlock::Execute(
+        ExecuteToolCallBlock::new("echo a | wc -c").with_output("2\n"),
+    )));
+
+    let mut pane = BlockViewerPane::for_execute(entry.id, &entry).expect("execute viewer");
+    let plain = |p: &BlockViewerPane| {
+        p.items
+            .iter()
+            .map(|i| i.plain_text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(!plain(&pane).contains("Trace ·"));
+
+    if let RenderBlock::ToolCall(ToolCallBlock::Execute(exec)) = &mut entry.block {
+        exec.shell_trace = Some(trace);
+    }
+    entry.is_running = false;
+    assert!(
+        pane.tick(&entry),
+        "late-arriving shell_trace must trigger viewer rebuild"
+    );
+    let rendered = plain(&pane);
+    assert!(rendered.contains("Trace · 2 steps · 19ms"));
+    assert!(rendered.contains("echo a  4ms"));
+    assert!(rendered.contains("| wc -c  15ms"));
+    assert!(rendered.contains("Output\n2"));
+}

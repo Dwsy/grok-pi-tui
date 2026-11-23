@@ -1981,6 +1981,9 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "pi_bash" => {
             let _ = dispatch(Action::SetPiBash(false), app);
         }
+        "pi_omp_shell" => {
+            let _ = dispatch(Action::SetPiOmpShell(true), app);
+        }
         "pi_eval" => {
             let _ = dispatch(Action::SetPiEval("v2".to_string()), app);
         }

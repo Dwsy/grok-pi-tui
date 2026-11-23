@@ -138,6 +138,7 @@ use runtime_config::{
     bash_bridge_enabled, bash_control_meta_for_adapter, env_flag_default_off, env_flag_default_on,
     eval_mcp_enabled, eval_v2_language, eval_v2_only_enabled, eval_v2_only_tool_policy_applies,
     eval_version, host_terminal_size, normal_f2_tool_policy_applies, resolve_bash_max_wait_mins,
+    omp_shell_enabled,
 };
 use rust_tui_bridge_extension::write_rust_tui_bridge_extension;
 use session_paths::pi_session_dir;
@@ -1248,6 +1249,9 @@ async fn run(mut args: Args) -> Result<()> {
             eval_v2_language.to_string(),
         ));
         env.push(("PI_GROK_BASH_MAX_WAIT_MINS".to_string(), bash_max_wait_mins));
+        if std::env::var_os("PI_GROK_BASH_BACKEND").is_none() && omp_shell_enabled() {
+            env.push(("PI_GROK_BASH_BACKEND".to_string(), "omp".to_string()));
+        }
         if std::env::var_os("PI_GROK_OMP_SHELL_HOST").is_none() {
             let host_name = if cfg!(windows) {
                 "grok-pi-shell-host.exe"
@@ -1740,6 +1744,7 @@ mod bundled_manifest_tests {
 mod env_flag_tests {
     use super::runtime_config::{
         bash_bridge_enabled_from_config, eval_mcp_enabled_from_config,
+        omp_shell_enabled_from_config,
         eval_v2_only_enabled_from_config, eval_version_from_config,
     };
     use super::{
@@ -1830,6 +1835,17 @@ mod env_flag_tests {
             true
         ));
         assert!(eval_v2_only_tool_policy_applies(&[], true, true));
+    }
+
+    #[test]
+    fn omp_shell_defaults_off_and_honors_explicit_true() {
+        assert!(!omp_shell_enabled_from_config(None));
+        let missing: toml::Value = toml::from_str("[ui]\n").unwrap();
+        assert!(!omp_shell_enabled_from_config(Some(&missing)));
+        let enabled: toml::Value = toml::from_str("[ui]\npi_omp_shell = true\n").unwrap();
+        assert!(omp_shell_enabled_from_config(Some(&enabled)));
+        let disabled: toml::Value = toml::from_str("[ui]\npi_omp_shell = false\n").unwrap();
+        assert!(!omp_shell_enabled_from_config(Some(&disabled)));
     }
 
     #[test]

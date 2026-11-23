@@ -152,6 +152,21 @@ pub(super) fn eval_mcp_enabled_from_config(config: Option<&toml::Value>) -> bool
         .unwrap_or(false)
 }
 
+/// `[ui].pi_omp_shell` — opt-in embedded OMP shell backend (`PI_GROK_BASH_BACKEND=omp`).
+/// Explicit `PI_GROK_BASH_BACKEND` environment variable still takes precedence.
+pub(super) fn omp_shell_enabled() -> bool {
+    let config = xai_grok_shell::config::load_effective_config().ok();
+    omp_shell_enabled_from_config(config.as_ref())
+}
+
+pub(super) fn omp_shell_enabled_from_config(config: Option<&toml::Value>) -> bool {
+    config
+        .and_then(|root| root.get("ui"))
+        .and_then(|ui| ui.get("pi_omp_shell"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false)
+}
+
 pub(super) fn eval_v2_only_tool_policy_applies(
     pi_args: &[String],
     bridge_extensions_enabled: bool,

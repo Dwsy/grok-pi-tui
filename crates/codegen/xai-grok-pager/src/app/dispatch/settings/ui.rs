@@ -1038,6 +1038,7 @@ pub(in crate::app::dispatch) fn action_for_reset(
             enabled: *b,
         }),
         ("pi_bash", SettingValue::Bool(b)) => Some(Action::SetPiBash(*b)),
+        ("pi_omp_shell", SettingValue::Bool(b)) => Some(Action::SetPiOmpShell(*b)),
         ("pi_eval", SettingValue::Enum(s)) => Some(Action::SetPiEval((*s).to_string())),
         ("pi_eval_v2_language", SettingValue::Enum(s)) => {
             Some(Action::SetPiEvalV2Language((*s).to_string()))
@@ -1307,6 +1308,7 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
             app.current_ui.pi_builtin_tools = value.clone()
         }
         ("pi_bash", SettingValue::Bool(b)) => app.current_ui.pi_bash = *b,
+        ("pi_omp_shell", SettingValue::Bool(b)) => app.current_ui.pi_omp_shell = *b,
         ("pi_eval", SettingValue::Enum(s)) => app.current_ui.pi_eval = (*s).to_string(),
         ("pi_eval_v2_language", SettingValue::Enum(s)) => {
             app.current_ui.pi_eval_v2_language = (*s).to_string()

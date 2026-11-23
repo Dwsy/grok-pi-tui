@@ -1182,6 +1182,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
             enabled: new,
         }),
         "pi_bash" => Some(Action::SetPiBash(new)),
+        "pi_omp_shell" => Some(Action::SetPiOmpShell(new)),
         "pi_eval_v2_only" => Some(Action::SetPiEvalV2Only(new)),
         "pi_eval_mcp" => Some(Action::SetPiEvalMcp(new)),
         "psm_resume_index" => Some(Action::SetPsmResumeIndex(new)),

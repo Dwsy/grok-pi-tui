@@ -283,6 +283,11 @@ pub struct UiConfig {
     /// Takes effect at process start, and requires pi_eval_v2_only.
     #[serde(default)]
     pub pi_eval_mcp: bool,
+    /// Run Pi Bash commands through the embedded OMP shell host (`grok-pi-shell-host`)
+    /// with structured execution trace. Explicit `PI_GROK_BASH_BACKEND` env overrides.
+    /// Takes effect on the next grok-pi session.
+    #[serde(default)]
+    pub pi_omp_shell: bool,
     /// Use Pi Session Manager for external Pi `/resume`: SQLite catalog,
     /// Ctrl+F full-text search, and message preview. Requires PSM running.
     /// Disabled by default; off → Pi JSONL list only (no PSM SQLite paths).
@@ -782,6 +787,7 @@ impl Default for UiConfig {
             pi_eval_v2_display_mode: default_pi_eval_v2_display_mode(),
             pi_eval_v2_only: false,
             pi_eval_mcp: false,
+            pi_omp_shell: false,
             psm_resume_index: false,
             pi_tree_file_rollback: false,
             pi_tree_skip_summary_prompt: false,

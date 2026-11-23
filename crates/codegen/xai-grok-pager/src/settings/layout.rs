@@ -115,6 +115,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "pi_builtin_tools.eval"
         | "pi_builtin_tools.codemode" => "Built-in tools",
         "pi_bash"
+        | "pi_omp_shell"
         | "pi_eval"
         | "pi_eval_v2_language"
         | "pi_eval_v2_display_mode"

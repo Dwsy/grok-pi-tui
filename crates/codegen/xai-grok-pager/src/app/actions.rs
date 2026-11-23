@@ -746,6 +746,8 @@ pub enum Action {
     },
     /// Enable grok-pi's private Bash/Eval bridge (restart required).
     SetPiBash(bool),
+    /// Enable embedded OMP shell backend (`PI_GROK_BASH_BACKEND=omp`; restart required).
+    SetPiOmpShell(bool),
     /// Select Eval bridge generation (`v1` or `v2`; restart required).
     SetPiEval(String),
     /// Select Eval v2 language exposure (`js`, `py`, or `all`; restart required).

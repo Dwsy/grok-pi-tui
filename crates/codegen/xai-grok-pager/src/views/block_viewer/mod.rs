@@ -365,8 +365,8 @@ impl BlockViewerPane {
         list_state.set_clipboard_provider(Box::new(SystemClipboard));
 
         let theme = Theme::current();
-        let items = Self::build_execute_items(exec.output.as_deref(), &theme);
-        let last_output_len = exec.output.as_ref().map_or(0, |o| o.len());
+        let items = Self::build_execute_items_with_trace(exec, &theme);
+        let last_generation = Self::execute_generation(exec);
 
         // Dark background style for terminal output
         let list_style = ListPaneStyle {
@@ -389,7 +389,7 @@ impl BlockViewerPane {
             copy_meta_pending: false,
             copy_content_pending: false,
             diff_meta: Vec::new(),
-            last_generation: last_output_len as u64, // reuse generation field for output length
+            last_generation,
             was_running: entry.is_running,
             bg_task_id: None,
             last_theme: Theme::current_kind(),
@@ -1033,6 +1033,76 @@ impl BlockViewerPane {
             .collect()
     }
 
+    /// Build content lines for an `Execute` block viewer, prepending the full
+    /// OMP execution trace (when present) above the terminal output — matching
+    /// `oh-my-pi`'s shell inspector layout.
+    fn build_execute_items_with_trace(
+        exec: &crate::scrollback::blocks::ExecuteToolCallBlock,
+        theme: &Theme,
+    ) -> Vec<ContentLine> {
+        let mut items: Vec<ContentLine> = Vec::new();
+        let mut next_id: u64 = 0;
+
+        let trace_lines = exec.render_trace_viewer_lines(theme);
+        let has_trace = !trace_lines.is_empty();
+        for (line, plain) in trace_lines {
+            items.push(ContentLine {
+                content: line,
+                plain_text: plain,
+                id: next_id,
+                bg: Some(theme.bg_dark),
+            });
+            next_id += 1;
+        }
+
+        if let Some(output) = exec.output.as_deref().filter(|o| !o.is_empty()) {
+            if has_trace {
+                items.push(ContentLine {
+                    content: Line::from(""),
+                    plain_text: String::new(),
+                    id: next_id,
+                    bg: Some(theme.bg_dark),
+                });
+                next_id += 1;
+                items.push(ContentLine {
+                    content: Line::from(Span::styled("Output", theme.muted())),
+                    plain_text: "Output".to_string(),
+                    id: next_id,
+                    bg: Some(theme.bg_dark),
+                });
+                next_id += 1;
+            }
+            let base = ratatui::style::Style::default().fg(theme.text_primary);
+            for rl in crate::render::terminal_output::render_terminal_lines(output, base) {
+                items.push(ContentLine {
+                    content: rl.line,
+                    plain_text: rl.plain,
+                    id: next_id,
+                    bg: Some(theme.bg_dark),
+                });
+                next_id += 1;
+            }
+        }
+
+        items
+    }
+
+    /// Change-detection fingerprint for `ExecuteToolCallBlock` covering both
+    /// streaming stdout length and late-arriving `shell_trace` snapshots.
+    fn execute_generation(exec: &crate::scrollback::blocks::ExecuteToolCallBlock) -> u64 {
+        let out_len = exec.output.as_ref().map_or(0, |o| o.len()) as u64;
+        let trace_sig = exec.shell_trace.as_ref().map_or(0u64, |t| {
+            let nodes = t.nodes.len() as u64;
+            let dur = t.total_duration_ms;
+            let trunc = u64::from(t.truncated);
+            (nodes.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+                ^ dur.rotate_left(17)
+                ^ (trunc << 63)
+                ^ 1
+        });
+        out_len ^ trace_sig.rotate_left(7)
+    }
+
     /// Create a viewer for an edit block (diff content).
     ///
     /// Uses the same ListPane capabilities as other block viewers: scroll,
@@ -1170,9 +1240,7 @@ impl BlockViewerPane {
         match block {
             RenderBlock::Thinking(b) => Some(b.content().generation()),
             RenderBlock::AgentMessage(b) => Some(b.content().generation()),
-            RenderBlock::ToolCall(ToolCallBlock::Execute(b)) => {
-                Some(b.output.as_ref().map_or(0, |o| o.len()) as u64)
-            }
+            RenderBlock::ToolCall(ToolCallBlock::Execute(b)) => Some(Self::execute_generation(b)),
             RenderBlock::ToolCall(ToolCallBlock::Edit(b)) => Some(b.content_generation()),
             _ => None,
         }
@@ -1202,7 +1270,7 @@ impl BlockViewerPane {
             ViewerKind::Execute => {
                 if let RenderBlock::ToolCall(ToolCallBlock::Execute(exec)) = &entry.block {
                     let theme = Theme::current();
-                    self.items = Self::build_execute_items(exec.output.as_deref(), &theme);
+                    self.items = Self::build_execute_items_with_trace(exec, &theme);
                     self.list_state.invalidate_layout();
                     self.clear_stale_selection();
                 }
@@ -1727,11 +1795,15 @@ impl BlockViewerPane {
             };
             match self.kind {
                 ViewerKind::Execute => {
-                    let output = entry.block.copy_text(entry.raw);
-                    self.items = Self::build_execute_items(
-                        output.as_deref().filter(|s| !s.is_empty()),
-                        &theme,
-                    );
+                    if let RenderBlock::ToolCall(ToolCallBlock::Execute(exec)) = &entry.block {
+                        self.items = Self::build_execute_items_with_trace(exec, &theme);
+                    } else {
+                        let output = entry.block.copy_text(entry.raw);
+                        self.items = Self::build_execute_items(
+                            output.as_deref().filter(|s| !s.is_empty()),
+                            &theme,
+                        );
+                    }
                     self.list_state.invalidate_layout();
                 }
                 ViewerKind::BgTask => {

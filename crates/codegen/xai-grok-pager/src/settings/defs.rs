@@ -2312,6 +2312,20 @@ pub fn default_settings() -> Vec<SettingMeta> {
             hidden_in_minimal: false,
             external_only: true,
         },
+        SettingMeta {
+            key: "pi_omp_shell",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "OMP Shell backend",
+            description: "Run Pi Bash commands through the embedded omp-shell host (grok-pi-shell-host) with structured execution trace. Explicit PI_GROK_BASH_BACKEND env still takes precedence. Restart grok-pi to apply.",
+            keywords: &["pi", "bash", "omp", "shell", "trace", "backend", "host"],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_omp_shell,
+            },
+            restart_required: true,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
         // External Pi profile resource manager. This is a Pager navigation row,
         // not a Grok-shell setting, so its Group form only supplies the native
         // chevron presentation; settings-modal input maps it to OpenPiConfig.

@@ -494,7 +494,17 @@ impl ExecuteToolCallBlock {
     fn has_meaningful_trace(&self) -> bool {
         self.shell_trace
             .as_ref()
-            .is_some_and(|trace| trace.nodes.len() > 1)
+            .is_some_and(|trace| normalize_shell_trace_rows(trace).len() > 1)
+    }
+
+    /// Render the full OMP execution trace for the fullscreen `BlockViewer` modal.
+    /// Unlike the inline scrollback card, single-step traces are still shown here so
+    /// pressing Enter always exposes OMP step status and timing.
+    pub(crate) fn render_trace_viewer_lines(&self, theme: &Theme) -> Vec<(Line<'static>, String)> {
+        let Some(trace) = self.shell_trace.as_ref() else {
+            return Vec::new();
+        };
+        render_shell_trace_viewer_lines(trace, theme)
     }
 
     fn push_shell_trace_lines(
@@ -508,74 +518,30 @@ impl ExecuteToolCallBlock {
         let Some(trace) = self.shell_trace.as_ref() else {
             return;
         };
-        if trace.nodes.len() <= 1 {
+        let rows = normalize_shell_trace_rows(trace);
+        if rows.len() <= 1 {
             return;
         }
         lines.push(BlockLine::separator(Line::from("")));
         let pad = " ".repeat(result_pad);
-        let summary_label = if trace.truncated {
-            format!(
-                "{pad}trace ({} steps, {}ms, truncated)",
-                trace.nodes.len(),
-                trace.total_duration_ms
-            )
-        } else {
-            format!(
-                "{pad}trace ({} steps, {}ms)",
-                trace.nodes.len(),
-                trace.total_duration_ms
-            )
-        };
+        let summary_label = format!("{pad}{}", format_trace_header(trace, rows.len()));
         lines.push(
             BlockLine::separator(Line::from(Span::styled(summary_label, theme.muted())))
                 .with_panel_background(theme.bg_dark),
         );
 
-        let shown = trace.nodes.len().min(max_nodes);
-        for node in trace.nodes.iter().take(shown) {
-            let indent = "  ".repeat(usize::from(node.depth.min(4)));
-            let (badge, badge_style) = match node.state {
-                xai_grok_tools::types::output::ShellTraceNodeState::Ok => (
-                    "✓",
-                    ratatui::style::Style::default().fg(theme.accent_success),
-                ),
-                xai_grok_tools::types::output::ShellTraceNodeState::Fail => (
-                    "✗",
-                    ratatui::style::Style::default().fg(theme.accent_error),
-                ),
-                xai_grok_tools::types::output::ShellTraceNodeState::Skipped => ("⊘", theme.muted()),
-                xai_grok_tools::types::output::ShellTraceNodeState::Running
-                | xai_grok_tools::types::output::ShellTraceNodeState::Pending => ("⋯", theme.muted()),
-            };
-            let bg_tag = if node.background { " [bg]" } else { "" };
-            let timing = format!(" ({}ms){}", node.duration_ms, bg_tag);
-            let prefix_len = result_pad + indent.len() + 2 + timing.len();
-            let avail = width.saturating_sub(prefix_len + 2).max(16);
-            let cmd_label = if node.command.chars().count() > avail {
-                let cut: String = node
-                    .command
-                    .chars()
-                    .take(avail.saturating_sub(1))
-                    .collect();
-                format!("{cut}…")
-            } else {
-                node.command.clone()
-            };
-            let spans = vec![
-                Span::raw(format!("{pad}{indent}")),
-                Span::styled(badge.to_string(), badge_style),
-                Span::styled(format!(" {cmd_label}"), theme.primary()),
-                Span::styled(timing, theme.muted()),
-            ];
+        let shown = rows.len().min(max_nodes);
+        for row in rows.iter().take(shown) {
+            let (line, _) = render_shell_trace_row_line(row, theme, result_pad, Some(width));
             lines.push(
-                BlockLine::styled(Line::from(spans)).with_panel_background(theme.bg_dark),
+                BlockLine::styled(line).with_panel_background(theme.bg_dark),
             );
         }
-        if trace.nodes.len() > shown {
-            let hidden = trace.nodes.len() - shown;
+        if rows.len() > shown {
+            let hidden = rows.len() - shown;
             lines.push(
                 BlockLine::separator(Line::from(Span::styled(
-                    format!("{pad}… +{hidden} trace steps"),
+                    format!("{pad}  … +{hidden} steps"),
                     theme.muted(),
                 )))
                 .with_panel_background(theme.bg_dark),
@@ -607,6 +573,11 @@ impl ExecuteToolCallBlock {
             false,
             header_content,
         );
+
+        if self.has_meaningful_trace() {
+            let max_nodes = if truncate.is_some() { 6 } else { 24 };
+            self.push_shell_trace_lines(&mut lines, theme, width, max_nodes, result_pad);
+        }
 
         if self.output.is_none()
             && let Some(error) = &self.error
@@ -708,13 +679,415 @@ impl ExecuteToolCallBlock {
             }
         }
 
-        if self.has_meaningful_trace() {
-            let max_nodes = if truncate.is_some() { 6 } else { 24 };
-            self.push_shell_trace_lines(&mut lines, theme, width, max_nodes, result_pad);
-        }
-
         BlockOutput { lines }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TraceDisplayRow<'a> {
+    node: &'a xai_grok_tools::types::output::ShellTraceNode,
+    depth: usize,
+    pipe_continuation: bool,
+}
+
+/// Unwrap redundant OMP AST container nodes (`and_or`, single/multi-stage `pipeline`
+/// wrappers, empty/`word` nodes, and identical single-child wrappers) so each executed
+/// statement renders once with clean nesting — matching `oh-my-pi`'s shell visualizer.
+fn normalize_shell_trace_rows(
+    trace: &xai_grok_tools::types::output::ShellTraceSummary,
+) -> Vec<TraceDisplayRow<'_>> {
+    use std::collections::HashMap;
+
+    if trace.nodes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut id_to_idx: HashMap<u32, usize> = HashMap::with_capacity(trace.nodes.len());
+    for (idx, node) in trace.nodes.iter().enumerate() {
+        id_to_idx.insert(node.id, idx);
+    }
+
+    let mut children_map: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut roots: Vec<usize> = Vec::new();
+    for (idx, node) in trace.nodes.iter().enumerate() {
+        if let Some(parent_idx) = node.parent_id.and_then(|pid| id_to_idx.get(&pid).copied())
+            && parent_idx != idx
+        {
+            children_map.entry(parent_idx).or_default().push(idx);
+        } else {
+            roots.push(idx);
+        }
+    }
+
+    fn walk<'a>(
+        idx: usize,
+        depth: usize,
+        pipe_continuation: bool,
+        nodes: &'a [xai_grok_tools::types::output::ShellTraceNode],
+        children_map: &HashMap<usize, Vec<usize>>,
+        visited: &mut [bool],
+        out: &mut Vec<TraceDisplayRow<'a>>,
+    ) {
+        if visited[idx] {
+            return;
+        }
+        visited[idx] = true;
+
+        let node = &nodes[idx];
+        let children = children_map
+            .get(&idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+
+        let trimmed = node.command.trim();
+        if trimmed.is_empty() || node.kind == "word" {
+            for &child in children {
+                walk(child, depth, pipe_continuation, nodes, children_map, visited, out);
+            }
+            return;
+        }
+
+        // Unwrap `and_or` (`a && b || c`) directly into its child statements.
+        if node.kind == "and_or" && !children.is_empty() {
+            for &child in children {
+                walk(child, depth, false, nodes, children_map, visited, out);
+            }
+            return;
+        }
+
+        // Unwrap `pipeline` into its stages; stages 2..n carry a `| ` continuation prefix.
+        if node.kind == "pipeline" && !children.is_empty() {
+            for (stage_idx, &child) in children.iter().enumerate() {
+                walk(
+                    child,
+                    depth,
+                    pipe_continuation || stage_idx > 0,
+                    nodes,
+                    children_map,
+                    visited,
+                    out,
+                );
+            }
+            return;
+        }
+
+        // Drop any single-child wrapper whose command text is identical to its child.
+        if children.len() == 1 && nodes[children[0]].command.trim() == trimmed {
+            walk(
+                children[0],
+                depth,
+                pipe_continuation,
+                nodes,
+                children_map,
+                visited,
+                out,
+            );
+            return;
+        }
+
+        out.push(TraceDisplayRow {
+            node,
+            depth,
+            pipe_continuation,
+        });
+        for &child in children {
+            walk(child, depth + 1, false, nodes, children_map, visited, out);
+        }
+    }
+
+    let mut visited = vec![false; trace.nodes.len()];
+    let mut out = Vec::with_capacity(trace.nodes.len());
+    for root in roots {
+        walk(root, 0, false, &trace.nodes, &children_map, &mut visited, &mut out);
+    }
+    out
+}
+
+fn format_trace_duration(ms: u64) -> String {
+    if ms < 1_000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", (ms as f64) / 1_000.0)
+    } else {
+        let total_secs = ms / 1_000;
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+        format!("{mins}m {secs}s")
+    }
+}
+
+fn format_trace_header(
+    trace: &xai_grok_tools::types::output::ShellTraceSummary,
+    step_count: usize,
+) -> String {
+    let step_word = if step_count == 1 { "step" } else { "steps" };
+    let mut parts = vec![
+        "Trace".to_string(),
+        format!("{step_count} {step_word}"),
+        format_trace_duration(trace.total_duration_ms),
+    ];
+    if let Some(code) = trace.exit_code
+        && code != 0
+    {
+        parts.push(format!("exit {code}"));
+    }
+    if trace.truncated {
+        parts.push("truncated".to_string());
+    }
+    parts.join(" · ")
+}
+
+fn format_trace_row_meta(node: &xai_grok_tools::types::output::ShellTraceNode) -> String {
+    use xai_grok_tools::types::output::ShellTraceNodeState;
+
+    let mut parts: Vec<String> = Vec::new();
+    if node.state == ShellTraceNodeState::Fail
+        && let Some(code) = node.exit_code
+        && code != 0
+    {
+        parts.push(format!("exit {code}"));
+    }
+    if node.runs > 1 {
+        parts.push(format!("×{}", node.runs));
+    }
+    if node.background {
+        parts.push("bg".to_string());
+    }
+    if node.duration_ms > 0 {
+        parts.push(format_trace_duration(node.duration_ms));
+    }
+    parts.join(" · ")
+}
+
+fn is_shell_keyword(token: &str) -> bool {
+    matches!(
+        token,
+        "if" | "then"
+            | "else"
+            | "elif"
+            | "fi"
+            | "for"
+            | "in"
+            | "do"
+            | "done"
+            | "while"
+            | "until"
+            | "case"
+            | "esac"
+            | "select"
+            | "function"
+    )
+}
+
+fn is_shell_operator(token: &str) -> bool {
+    matches!(
+        token,
+        "&&" | "||" | "|" | ";" | ">" | ">>" | "<" | "<<" | "2>&1" | "&>" | "&"
+    )
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Lightweight OMP-inspired syntax highlighting for a single shell trace statement.
+fn push_highlighted_shell_command(
+    spans: &mut Vec<Span<'static>>,
+    command: &str,
+    inactive: bool,
+    theme: &Theme,
+) {
+    if inactive {
+        spans.push(Span::styled(
+            command.to_string(),
+            ratatui::style::Style::default().fg(theme.gray_dim),
+        ));
+        return;
+    }
+
+    let mut expect_command = true;
+    let bytes = command.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &command[i..];
+        let ch = rest.chars().next().unwrap();
+        if ch.is_whitespace() {
+            let start = i;
+            while i < bytes.len() {
+                let c = command[i..].chars().next().unwrap();
+                if !c.is_whitespace() {
+                    break;
+                }
+                i += c.len_utf8();
+            }
+            spans.push(Span::raw(command[start..i].to_string()));
+            continue;
+        }
+
+        // Quoted string literal
+        if ch == '"' || ch == '\'' {
+            let quote = ch;
+            let start = i;
+            i += ch.len_utf8();
+            while i < bytes.len() {
+                let c = command[i..].chars().next().unwrap();
+                i += c.len_utf8();
+                if c == '\\' && quote == '"' && i < bytes.len() {
+                    let next = command[i..].chars().next().unwrap();
+                    i += next.len_utf8();
+                    continue;
+                }
+                if c == quote {
+                    break;
+                }
+            }
+            spans.push(Span::styled(
+                command[start..i].to_string(),
+                ratatui::style::Style::default().fg(theme.path),
+            ));
+            expect_command = false;
+            continue;
+        }
+
+        // Non-whitespace token
+        let start = i;
+        while i < bytes.len() {
+            let c = command[i..].chars().next().unwrap();
+            if c.is_whitespace() {
+                break;
+            }
+            i += c.len_utf8();
+        }
+        let token = &command[start..i];
+        let style = if is_shell_operator(token) {
+            expect_command = matches!(token, "&&" | "||" | "|" | ";");
+            ratatui::style::Style::default().fg(theme.gray)
+        } else if is_shell_keyword(token) {
+            expect_command = matches!(token, "then" | "else" | "do");
+            ratatui::style::Style::default().fg(theme.running)
+        } else if expect_command && is_env_assignment(token) {
+            ratatui::style::Style::default().fg(theme.accent_verify)
+        } else if expect_command {
+            expect_command = false;
+            ratatui::style::Style::default().fg(theme.command)
+        } else if token.starts_with('-') {
+            ratatui::style::Style::default().fg(theme.text_secondary)
+        } else if token.contains('/') {
+            ratatui::style::Style::default().fg(theme.path)
+        } else {
+            theme.primary()
+        };
+        spans.push(Span::styled(token.to_string(), style));
+    }
+}
+
+fn render_shell_trace_row_line(
+    row: &TraceDisplayRow<'_>,
+    theme: &Theme,
+    result_pad: usize,
+    max_width: Option<usize>,
+) -> (Line<'static>, String) {
+    use xai_grok_tools::types::output::ShellTraceNodeState;
+
+    let pad = " ".repeat(result_pad);
+    let indent = "  ".repeat(row.depth.min(4));
+    let (gutter, gutter_style) = match row.node.state {
+        ShellTraceNodeState::Fail => (
+            "×",
+            ratatui::style::Style::default().fg(theme.accent_error),
+        ),
+        ShellTraceNodeState::Running => (
+            "▶",
+            ratatui::style::Style::default().fg(theme.running),
+        ),
+        ShellTraceNodeState::Skipped => (
+            "⊘",
+            ratatui::style::Style::default().fg(theme.gray_dim),
+        ),
+        ShellTraceNodeState::Pending => (
+            "·",
+            ratatui::style::Style::default().fg(theme.gray_dim),
+        ),
+        ShellTraceNodeState::Ok => (" ", theme.muted()),
+    };
+
+    let pipe_prefix = if row.pipe_continuation { "| " } else { "" };
+    let meta = format_trace_row_meta(row.node);
+    let meta_suffix = if meta.is_empty() {
+        String::new()
+    } else {
+        format!("  {meta}")
+    };
+
+    let raw_cmd = row.node.command.trim();
+    let cmd_display = if let Some(width) = max_width {
+        let lead_cols = result_pad + 2 + indent.len() + pipe_prefix.len();
+        let meta_cols = meta_suffix.chars().count();
+        let avail = width.saturating_sub(lead_cols + meta_cols + 1).max(16);
+        if raw_cmd.chars().count() > avail {
+            let cut: String = raw_cmd.chars().take(avail.saturating_sub(1)).collect();
+            format!("{cut}…")
+        } else {
+            raw_cmd.to_string()
+        }
+    } else {
+        raw_cmd.to_string()
+    };
+
+    let inactive = matches!(
+        row.node.state,
+        ShellTraceNodeState::Skipped | ShellTraceNodeState::Pending
+    );
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if result_pad > 0 {
+        spans.push(Span::raw(pad.clone()));
+    }
+    spans.push(Span::styled(gutter.to_string(), gutter_style));
+    spans.push(Span::raw(format!(" {indent}")));
+    if !pipe_prefix.is_empty() {
+        spans.push(Span::styled(
+            pipe_prefix.to_string(),
+            ratatui::style::Style::default().fg(theme.gray_dim),
+        ));
+    }
+    push_highlighted_shell_command(&mut spans, &cmd_display, inactive, theme);
+    if !meta_suffix.is_empty() {
+        let meta_style = if row.node.state == ShellTraceNodeState::Fail {
+            ratatui::style::Style::default().fg(theme.accent_error)
+        } else {
+            theme.muted()
+        };
+        spans.push(Span::styled(meta_suffix.clone(), meta_style));
+    }
+
+    let plain = format!("{pad}{gutter} {indent}{pipe_prefix}{cmd_display}{meta_suffix}");
+    (Line::from(spans), plain)
+}
+
+fn render_shell_trace_viewer_lines(
+    trace: &xai_grok_tools::types::output::ShellTraceSummary,
+    theme: &Theme,
+) -> Vec<(Line<'static>, String)> {
+    let rows = normalize_shell_trace_rows(trace);
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(rows.len() + 1);
+    let header = format_trace_header(trace, rows.len());
+    out.push((
+        Line::from(Span::styled(header.clone(), theme.muted())),
+        header,
+    ));
+    for row in &rows {
+        out.push(render_shell_trace_row_line(row, theme, 0, None));
+    }
+    out
 }
 
 /// Drop a leading `Run` / `Running` word (case-insensitive) plus following whitespace so Label headers do not read `Run Run the tests`.
@@ -1384,9 +1757,59 @@ mod tests {
             .map(|l| line_text(&l.content))
             .collect();
         let joined = expanded.join("\n");
-        assert!(joined.contains("trace (4 steps, 42ms)"));
-        assert!(joined.contains("✓ echo ok (5ms)"));
-        assert!(joined.contains("✗ false (37ms)"));
-        assert!(joined.contains("⊘ echo skipped (0ms)"));
+        assert!(joined.contains("Trace · 3 steps · 42ms · exit 1"));
+        assert!(joined.contains("  echo ok  5ms"));
+        assert!(joined.contains("× false  exit 1 · 37ms"));
+        assert!(joined.contains("⊘ echo skipped"));
+        assert!(!joined.contains("(0ms)"));
+    }
+
+    #[test]
+    fn shell_trace_deduplicates_single_command_pipeline_wrapper_in_scrollback() {
+        use xai_grok_tools::types::output::{
+            ShellTraceNode, ShellTraceNodeState, ShellTraceSummary,
+        };
+
+        let trace = ShellTraceSummary {
+            version: 1,
+            total_duration_ms: 8,
+            exit_code: Some(0),
+            truncated: false,
+            nodes: vec![
+                ShellTraceNode {
+                    id: 0,
+                    parent_id: None,
+                    depth: 0,
+                    kind: "pipeline".to_string(),
+                    command: "echo hi".to_string(),
+                    state: ShellTraceNodeState::Ok,
+                    exit_code: Some(0),
+                    duration_ms: 8,
+                    runs: 1,
+                    background: false,
+                },
+                ShellTraceNode {
+                    id: 1,
+                    parent_id: Some(0),
+                    depth: 1,
+                    kind: "simple".to_string(),
+                    command: "echo hi".to_string(),
+                    state: ShellTraceNodeState::Ok,
+                    exit_code: Some(0),
+                    duration_ms: 8,
+                    runs: 1,
+                    background: false,
+                },
+            ],
+        };
+
+        let block = ExecuteToolCallBlock::new("echo hi")
+            .with_output("hi\n")
+            .with_shell_trace(trace);
+        assert!(!block.has_meaningful_trace());
+        let viewer_lines = block.render_trace_viewer_lines(&Theme::current());
+        assert_eq!(viewer_lines.len(), 2);
+        assert!(viewer_lines[0].1.contains("Trace · 1 step · 8ms"));
+        assert!(viewer_lines[1].1.contains("echo hi  8ms"));
     }
 }
