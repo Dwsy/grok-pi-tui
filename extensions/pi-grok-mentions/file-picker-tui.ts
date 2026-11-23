@@ -20,7 +20,15 @@ import {
   type TuiMouseEvent,
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { fitWidth, type SessionPickerTheme } from "./session-picker-tui.ts";
+import {
+  computeSplitGeometry,
+  fitWidth,
+  highlightTerms,
+  hitRegion,
+  renderSplitOverlayFrame,
+  type ClickRegion,
+  type TuiTheme,
+} from "../pi-grok-tui-kit/index.ts";
 import {
   buildVisibleTreeNodes,
   detectNerdFontSupport,
@@ -61,27 +69,10 @@ export interface FilePickerTuiOptions {
   getRows?: () => number;
 }
 
-interface ClickRegion {
-  x1: number;
-  x2: number;
-  y: number;
-}
-
-function highlightTerms(text: string, query: string, highlight: (s: string) => string): string {
-  const terms = query
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t.length >= 2);
-  if (terms.length === 0) return text;
-  const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const re = new RegExp(`(${escaped.join("|")})`, "gi");
-  return text.replace(re, (match) => highlight(match));
-}
-
 export class FilePickerTui implements Component {
   private readonly rootDir: string;
   private readonly tui: { requestRender: () => void };
-  private readonly theme: SessionPickerTheme;
+  private readonly theme: TuiTheme;
   private readonly done: (selected: FilePickerSelection | undefined) => void;
   private readonly listFilesFn: (rootDir: string, showHidden: boolean) => FileSearchEntry[];
   private readonly runGrepFn: (rootDir: string, query: string, showHidden: boolean) => GrepHit[];
@@ -122,17 +113,13 @@ export class FilePickerTui implements Component {
   private bodyStartY = 5;
   private bodyHeight = 14;
   private previewVisibleRows = 10;
-  private treePillRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
-  private filesPillRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
-  private grepPillRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
-  private hiddenPillRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
-  private nerdPillRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
+  private pillRects = new Map<string, ClickRegion>();
   private closeBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
   private listRowMap: Array<{ y1: number; y2: number; index: number }> = [];
 
   constructor(
     tui: { requestRender: () => void },
-    theme: SessionPickerTheme,
+    theme: TuiTheme,
     options: FilePickerTuiOptions,
     done: (selected: FilePickerSelection | undefined) => void,
   ) {
@@ -462,30 +449,28 @@ export class FilePickerTui implements Component {
       return { handled: true, render: false };
     }
 
-    const hitRegion = (r: ClickRegion) => y === r.y && x >= r.x1 && x <= r.x2;
-
     if (type === "press" && event.button === "left") {
-      if (hitRegion(this.closeBtnRect)) {
+      if (hitRegion(this.closeBtnRect, x, y)) {
         this.done(undefined);
         return { handled: true, render: false };
       }
-      if (hitRegion(this.treePillRect)) {
+      if (hitRegion(this.pillRects.get("tree"), x, y)) {
         this.setMode("tree");
         return { handled: true, render: true };
       }
-      if (hitRegion(this.filesPillRect)) {
+      if (hitRegion(this.pillRects.get("files"), x, y)) {
         this.setMode("files");
         return { handled: true, render: true };
       }
-      if (hitRegion(this.grepPillRect)) {
+      if (hitRegion(this.pillRects.get("grep"), x, y)) {
         this.setMode("grep");
         return { handled: true, render: true };
       }
-      if (hitRegion(this.hiddenPillRect)) {
+      if (hitRegion(this.pillRects.get("hidden"), x, y)) {
         this.toggleHidden();
         return { handled: true, render: true };
       }
-      if (hitRegion(this.nerdPillRect)) {
+      if (hitRegion(this.pillRects.get("nerd"), x, y)) {
         this.toggleNerdIcons();
         return { handled: true, render: true };
       }
@@ -726,119 +711,66 @@ export class FilePickerTui implements Component {
   }
 
   render(width: number): string[] {
-    const totalW = Math.max(60, Math.floor(width));
-    const innerW = totalW - 2;
+    const geometry = computeSplitGeometry({
+      width,
+      rows: this.getRows(),
+      leftRatio: 0.42,
+      hasSearchBar: true,
+      minWidth: 60,
+      minLeftWidth: 26,
+      minRightWidth: 26,
+    });
+    this.dividerX = geometry.dividerX;
+    this.bodyStartY = geometry.bodyStartY;
+    this.bodyHeight = geometry.bodyHeight;
 
-    // Telescope horizontal proportion: ~42% list/tree, ~58% preview.
-    const leftW = Math.max(26, Math.min(innerW - 28, Math.floor(innerW * 0.42)));
-    const rightW = Math.max(26, innerW - leftW - 1);
-    this.dividerX = 1 + leftW;
-
-    const totalRows = Math.max(16, Math.min(34, Math.floor(this.getRows() * 0.84)));
-    const bodyH = Math.max(8, totalRows - 8);
-    this.bodyStartY = 5;
-    this.bodyHeight = bodyH;
-
-    const b = (s: string) => this.fg("border", s);
-    const topBorder = b(`╭${"─".repeat(innerW)}╮`);
-    const midRule = b(`├${"─".repeat(innerW)}┤`);
-    const splitTop = b(`├${"─".repeat(leftW)}┬${"─".repeat(rightW)}┤`);
-    const splitBottom = b(`├${"─".repeat(leftW)}┴${"─".repeat(rightW)}┤`);
-    const bottomBorder = b(`╰${"─".repeat(innerW)}╯`);
-
-    // Row 1: Header with mode pills + Hidden + Nerd toggles + Close button.
     const rootName = path.basename(this.rootDir) || this.rootDir;
-    const titlePrefix = ` ${this.bold(truncateToWidth(rootName, 18, "…"))}  `;
-    const treeText = "[Tree]";
-    const filesText = "[Files·fd]";
-    const grepText = "[Grep·rg]";
-    const hiddenText = this.showHidden ? "[Hidden:on]" : "[Hidden]";
-    const nerdText = this.nerdIcons ? "[Nerd:on]" : "[Nerd]";
-    const closeText = "[✕]";
-
-    const stylePill = (text: string, active: boolean) =>
-      active ? this.bold(this.fg("accent", text)) : this.fg("dim", text);
-
-    let col = 1 + visibleWidth(titlePrefix);
-    const place = (text: string): ClickRegion => {
-      const start = col;
-      const end = start + visibleWidth(text) - 1;
-      col = end + 2;
-      return { x1: start, x2: end, y: 1 };
-    };
-    this.treePillRect = place(treeText);
-    this.filesPillRect = place(filesText);
-    this.grepPillRect = place(grepText);
-    this.hiddenPillRect = place(hiddenText);
-    this.nerdPillRect = place(nerdText);
-
-    const leftHeader =
-      `${titlePrefix}${stylePill(treeText, this.mode === "tree")} ` +
-      `${stylePill(filesText, this.mode === "files")} ` +
-      `${stylePill(grepText, this.mode === "grep")} ` +
-      `${stylePill(hiddenText, this.showHidden)} ` +
-      `${stylePill(nerdText, this.nerdIcons)}`;
-    const closeW = visibleWidth(closeText);
-    const headerGap = Math.max(1, innerW - visibleWidth(leftHeader) - closeW - 1);
-    const closeStart = 1 + innerW - closeW - 1;
-    this.closeBtnRect = { x1: closeStart, x2: closeStart + closeW - 1, y: 1 };
-    const headerLine = `${b("│")}${fitWidth(`${leftHeader}${" ".repeat(headerGap)}${this.fg("dim", closeText)} `, innerW)}${b("│")}`;
-
-    // Row 3: Telescope-style search prompt (`` when Nerd icons enabled).
     const promptGlyph = this.nerdIcons ? " " : "> ";
-    const modeLabel =
-      this.mode === "tree" ? "Tree" : this.mode === "files" ? "fd" : "rg";
-    const countLabel = `${this.itemCount()} ${modeLabel} `;
+    const modeLabel = this.mode === "tree" ? "Tree" : this.mode === "files" ? "fd" : "rg";
     const placeholder =
       this.mode === "grep"
         ? "rg full-text search across workspace..."
         : this.mode === "files"
           ? "fd smart file filter..."
           : "type to jump into fd smart search, ←/→ expand dirs...";
-    const queryDisplay = this.query
-      ? `${this.query}\x1b[7m \x1b[27m`
-      : `\x1b[7m \x1b[27m${this.fg("dim", placeholder)}`;
-    const searchBudget = Math.max(10, innerW - visibleWidth(countLabel) - 1);
-    const searchLeft = fitWidth(` ${this.fg("accent", promptGlyph)}${queryDisplay}`, searchBudget);
-    const searchLine = `${b("│")}${fitWidth(`${searchLeft} ${this.fg("dim", countLabel)}`, innerW)}${b("│")}`;
 
-    // Body rows.
-    const leftLines = this.renderLeftPane(leftW, bodyH);
-    const rightLines = this.renderRightPane(rightW, bodyH);
-    const bodyLines: string[] = [];
-    for (let i = 0; i < bodyH; i++) {
-      bodyLines.push(
-        `${b("│")}${leftLines[i] ?? " ".repeat(leftW)}${b("│")}${rightLines[i] ?? " ".repeat(rightW)}${b("│")}`,
-      );
-    }
-
-    // Footer hints.
-    const footerText =
-      ` ${this.fg("accent", "Tab")}${this.fg("dim", ":Tree/fd/rg  ")}` +
-      `${this.fg("accent", "←→")}${this.fg("dim", ":fold  ")}` +
-      `${this.fg("accent", "Ctrl+H")}${this.fg("dim", ":hidden  ")}` +
-      `${this.fg("accent", "Ctrl+Y")}${this.fg("dim", ":nerd  ")}` +
-      `${this.fg("accent", "Enter/2×Click")}${this.fg("dim", ":insert  ")}` +
-      `${this.fg("accent", "Esc")}${this.fg("dim", ":close")}`;
-    const footerLine = `${b("│")}${fitWidth(footerText, innerW)}${b("│")}`;
-
-    return [
-      topBorder,
-      headerLine,
-      midRule,
-      searchLine,
-      splitTop,
-      ...bodyLines,
-      splitBottom,
-      footerLine,
-      bottomBorder,
-    ];
+    const frame = renderSplitOverlayFrame({
+      geometry,
+      titlePrefix: ` ${this.bold(truncateToWidth(rootName, 18, "…"))}  `,
+      pills: [
+        { id: "tree", label: "[Tree]", active: this.mode === "tree" },
+        { id: "files", label: "[Files·fd]", active: this.mode === "files" },
+        { id: "grep", label: "[Grep·rg]", active: this.mode === "grep" },
+        { id: "hidden", label: this.showHidden ? "[Hidden:on]" : "[Hidden]", active: this.showHidden },
+        { id: "nerd", label: this.nerdIcons ? "[Nerd:on]" : "[Nerd]", active: this.nerdIcons },
+      ],
+      search: {
+        promptPrefix: ` ${this.fg("accent", promptGlyph)}`,
+        query: this.query,
+        placeholder,
+        rightLabel: `${this.itemCount()} ${modeLabel} `,
+      },
+      leftLines: this.renderLeftPane(geometry.leftWidth, geometry.bodyHeight),
+      rightLines: this.renderRightPane(geometry.rightWidth, geometry.bodyHeight),
+      footerHints: [
+        { key: "Tab", label: "Tree/fd/rg" },
+        { key: "←→", label: "fold" },
+        { key: "Ctrl+H", label: "hidden" },
+        { key: "Ctrl+Y", label: "nerd" },
+        { key: "Enter/2×Click", label: "insert" },
+        { key: "Esc", label: "close" },
+      ],
+      theme: this.theme,
+    });
+    this.pillRects = frame.pillRects;
+    this.closeBtnRect = frame.closeRect;
+    return frame.lines;
   }
 }
 
 export function createFilePickerTui(
   tui: { requestRender: () => void },
-  theme: SessionPickerTheme,
+  theme: TuiTheme,
   options: FilePickerTuiOptions,
   done: (selected: FilePickerSelection | undefined) => void,
 ): FilePickerTui {

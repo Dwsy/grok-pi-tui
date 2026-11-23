@@ -6,10 +6,10 @@ use std::{
 };
 use tempfile::TempDir;
 
-/// Materialized `pi-grok-review` extension bundle. Preserves the sibling
-/// `pi-grok-mentions/` directory inside `_source_dir` so relative imports
-/// (`../pi-grok-mentions/file-data.ts`, `../pi-grok-mentions/session-picker-tui.ts`)
-/// resolve identically to the source tree.
+/// Materialized `pi-grok-review` extension bundle. Preserves sibling
+/// `pi-grok-tui-kit/` and `pi-grok-mentions/` directories inside `_source_dir`
+/// so relative imports (`../pi-grok-tui-kit/index.ts`,
+/// `../pi-grok-mentions/file-data.ts`) resolve identically to the source tree.
 pub(super) struct ReviewExtension {
     _source_dir: TempDir,
     source_path: PathBuf,
@@ -34,7 +34,8 @@ fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
 }
 
 /// Materialize the standalone TS `/review-session` and `/review-message`
-/// extension along with its shared file/TUI modules from `pi-grok-mentions`.
+/// extension along with its shared `pi-grok-tui-kit` primitives and
+/// `pi-grok-mentions/file-data.ts` preview helper.
 pub(super) fn write_review_extension() -> Result<ReviewExtension> {
     let source_dir = tempfile::Builder::new()
         .prefix("pi-grok-review-")
@@ -42,25 +43,29 @@ pub(super) fn write_review_extension() -> Result<ReviewExtension> {
         .context("create review extension source directory")?;
     let review_dir = source_dir.path().join("pi-grok-review");
     let mentions_dir = source_dir.path().join("pi-grok-mentions");
+    let kit_dir = source_dir.path().join("pi-grok-tui-kit");
     fs::create_dir_all(&review_dir).context("create pi-grok-review dir")?;
     fs::create_dir_all(&mentions_dir).context("create shared pi-grok-mentions dir")?;
+    fs::create_dir_all(&kit_dir).context("create shared pi-grok-tui-kit dir")?;
 
-    // Shared library modules from pi-grok-mentions
+    // Shared TS TUI kit primitives
     write_source_file(
-        &mentions_dir,
-        "session-data.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/session-data.ts"),
+        &kit_dir,
+        "frame.ts",
+        include_str!("../../../../../../extensions/pi-grok-tui-kit/frame.ts"),
     )?;
     write_source_file(
-        &mentions_dir,
-        "skill-data.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/skill-data.ts"),
+        &kit_dir,
+        "icons.ts",
+        include_str!("../../../../../../extensions/pi-grok-tui-kit/icons.ts"),
     )?;
     write_source_file(
-        &mentions_dir,
-        "session-picker-tui.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/session-picker-tui.ts"),
+        &kit_dir,
+        "index.ts",
+        include_str!("../../../../../../extensions/pi-grok-tui-kit/index.ts"),
     )?;
+
+    // Shared file preview helper from pi-grok-mentions
     write_source_file(
         &mentions_dir,
         "file-data.ts",
@@ -101,8 +106,11 @@ mod tests {
         let index = fs::read_to_string(ext.path()).expect("read index.ts");
         let shared = fs::read_to_string(root.join("pi-grok-mentions/file-data.ts"))
             .expect("read shared file-data.ts");
+        let kit = fs::read_to_string(root.join("pi-grok-tui-kit/frame.ts"))
+            .expect("read pi-grok-tui-kit/frame.ts");
         assert!(index.contains("__pi_review_session"));
         assert!(index.contains("__pi_review_message"));
-        assert!(shared.contains("getFileIcon"));
+        assert!(shared.contains("loadFileOrDirPreview"));
+        assert!(kit.contains("renderSplitOverlayFrame"));
     }
 }

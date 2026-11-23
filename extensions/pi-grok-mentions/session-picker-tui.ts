@@ -21,6 +21,16 @@ import {
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import {
+  computeSplitGeometry,
+  fitWidth,
+  highlightTerms,
+  hitRegion,
+  renderSplitOverlayFrame,
+  wrapTextToWidth,
+  type ClickRegion,
+  type TuiTheme,
+} from "../pi-grok-tui-kit/index.ts";
+import {
   filterSessionRecords,
   formatRelativeAge,
   formatTimestamp,
@@ -32,80 +42,30 @@ import {
   type SessionSearchHit,
 } from "./session-data.ts";
 
-export interface SessionPickerTheme {
-  fg: (color: string, text: string) => string;
-  bold?: (text: string) => string;
-}
+export { fitWidth, wrapTextToWidth, type TuiTheme as SessionPickerTheme };
 
 export interface SessionPickerTuiOptions {
   records: readonly SessionRecord[];
   currentCwd: string;
   initialQuery?: string;
   initialScope?: SessionScope;
+  /** Optional custom title badge (e.g. `(@session)` vs `/resume`). */
+  titleBadge?: string;
+  /** Optional custom confirm hint label (e.g. `insert` vs `resume`). */
+  confirmLabel?: string;
   /** Optional custom preview loader (injected in tests). */
   loadPreview?: (sessionPath: string) => PreviewMessage[];
   /** Terminal height provider for responsive body sizing. */
   getRows?: () => number;
 }
 
-interface ClickRegion {
-  x1: number;
-  x2: number;
-  y: number;
-}
-
-/** Pad or truncate an ANSI-styled string to an exact display column width. */
-export function fitWidth(text: string, width: number): string {
-  if (width <= 0) return "";
-  const truncated = truncateToWidth(text, width, "…");
-  const w = visibleWidth(truncated);
-  if (w >= width) return truncated;
-  return truncated + " ".repeat(width - w);
-}
-
-/** Word/character-wrap plain text to `maxWidth` terminal display columns. */
-export function wrapTextToWidth(text: string, maxWidth: number): string[] {
-  if (maxWidth <= 0) return [""];
-  const out: string[] = [];
-  for (const rawLine of text.split(/\r?\n/)) {
-    if (rawLine.length === 0) {
-      out.push("");
-      continue;
-    }
-    let current = "";
-    let currentW = 0;
-    for (const ch of rawLine) {
-      const cw = visibleWidth(ch);
-      if (currentW + cw > maxWidth && current.length > 0) {
-        out.push(current);
-        current = ch;
-        currentW = cw;
-      } else {
-        current += ch;
-        currentW += cw;
-      }
-    }
-    if (current.length > 0) out.push(current);
-  }
-  return out.length > 0 ? out : [""];
-}
-
-function highlightTerms(text: string, query: string, highlight: (s: string) => string): string {
-  const terms = query
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t.length >= 2);
-  if (terms.length === 0) return text;
-  const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const re = new RegExp(`(${escaped.join("|")})`, "gi");
-  return text.replace(re, (match) => highlight(match));
-}
-
 export class SessionPickerTui implements Component {
   private readonly records: readonly SessionRecord[];
   private readonly currentCwd: string;
   private readonly tui: { requestRender: () => void };
-  private readonly theme: SessionPickerTheme;
+  private readonly theme: TuiTheme;
+  private readonly titleBadge: string;
+  private readonly confirmLabel: string;
   private readonly done: (selected: SessionRecord | undefined) => void;
   private readonly loadPreview: (sessionPath: string) => PreviewMessage[];
   private readonly getRows: () => number;
@@ -120,16 +80,11 @@ export class SessionPickerTui implements Component {
   private lastPreviewLinesCount = 0;
 
   // Layout geometry captured on each render for accurate mouse hit-testing.
-  private lastWidth = 100;
-  private leftInnerWidth = 40;
-  private rightInnerWidth = 55;
   private dividerX = 41;
-  private bodyStartY = 4;
+  private bodyStartY = 5;
   private bodyHeight = 14;
-  private previewStartY = 8;
   private previewVisibleRows = 10;
-  private globalPillRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
-  private projectPillRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
+  private pillRects = new Map<string, ClickRegion>();
   private closeBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
   private listRowMap: Array<{ y1: number; y2: number; index: number }> = [];
 
@@ -138,7 +93,7 @@ export class SessionPickerTui implements Component {
 
   constructor(
     tui: { requestRender: () => void },
-    theme: SessionPickerTheme,
+    theme: TuiTheme,
     options: SessionPickerTuiOptions,
     done: (selected: SessionRecord | undefined) => void,
   ) {
@@ -148,6 +103,8 @@ export class SessionPickerTui implements Component {
     this.currentCwd = options.currentCwd;
     this.scope = options.initialScope ?? "global";
     this.query = options.initialQuery ?? "";
+    this.titleBadge = options.titleBadge ?? "(@session)";
+    this.confirmLabel = options.confirmLabel ?? "insert";
     this.done = done;
     this.loadPreview = options.loadPreview ?? ((p) => loadSessionPreviewMessages(p));
     this.getRows = options.getRows ?? (() => 28);
@@ -336,15 +293,15 @@ export class SessionPickerTui implements Component {
 
     if (type === "press" && event.button === "left") {
       // Header bar clicks (scope pills & close button).
-      if (y === this.closeBtnRect.y && x >= this.closeBtnRect.x1 && x <= this.closeBtnRect.x2) {
+      if (hitRegion(this.closeBtnRect, x, y)) {
         this.done(undefined);
         return { handled: true, render: false };
       }
-      if (y === this.globalPillRect.y && x >= this.globalPillRect.x1 && x <= this.globalPillRect.x2) {
+      if (hitRegion(this.pillRects.get("global"), x, y)) {
         this.setScope("global");
         return { handled: true, render: true };
       }
-      if (y === this.projectPillRect.y && x >= this.projectPillRect.x1 && x <= this.projectPillRect.x2) {
+      if (hitRegion(this.pillRects.get("project"), x, y)) {
         this.setScope("project");
         return { handled: true, render: true };
       }
@@ -413,7 +370,6 @@ export class SessionPickerTui implements Component {
     const divider = this.fg("border", "─".repeat(innerW));
     const headerBlock = [...metaLines, divider];
     const previewHeight = Math.max(1, height - headerBlock.length);
-    this.previewStartY = this.bodyStartY + headerBlock.length;
     this.previewVisibleRows = previewHeight;
 
     const messages = this.getPreviewMessages(selected);
@@ -512,103 +468,49 @@ export class SessionPickerTui implements Component {
   }
 
   render(width: number): string[] {
-    const totalW = Math.max(56, Math.floor(width));
-    const innerW = totalW - 2;
-    this.lastWidth = totalW;
+    const geometry = computeSplitGeometry({
+      width,
+      rows: this.getRows(),
+      leftRatio: 0.4,
+      hasSearchBar: true,
+    });
+    this.dividerX = geometry.dividerX;
+    this.bodyStartY = geometry.bodyStartY;
+    this.bodyHeight = geometry.bodyHeight;
 
-    const leftW = Math.max(24, Math.min(innerW - 28, Math.floor(innerW * 0.4)));
-    const rightW = Math.max(24, innerW - leftW - 1);
-    this.leftInnerWidth = leftW;
-    this.rightInnerWidth = rightW;
-    this.dividerX = 1 + leftW;
-
-    const totalRows = Math.max(16, Math.min(34, Math.floor(this.getRows() * 0.82)));
-    // Chrome rows: top(0) + header(1) + midRule(2) + search(3) + splitTop(4) + splitBottom + footer + bottom = 8
-    const bodyH = Math.max(8, totalRows - 8);
-    this.bodyStartY = 5;
-    this.bodyHeight = bodyH;
-
-    const b = (s: string) => this.fg("border", s);
-    const topBorder = b(`╭${"─".repeat(innerW)}╮`);
-    const midRule = b(`├${"─".repeat(innerW)}┤`);
-    const splitTop = b(`├${"─".repeat(leftW)}┬${"─".repeat(rightW)}┤`);
-    const splitBottom = b(`├${"─".repeat(leftW)}┴${"─".repeat(rightW)}┤`);
-    const bottomBorder = b(`╰${"─".repeat(innerW)}╯`);
-
-    // Row 1: Header with title, Global/Project scope pills, and close button.
-    const titlePrefix = ` ${this.bold("Sessions")} ${this.fg("dim", "(@session)")}  `;
-    const globalText = `[Global ${this.globalCount}]`;
-    const projectText = `[Project ${this.projectCount}]`;
-    const closeText = "[✕]";
-
-    const globalStyled =
-      this.scope === "global"
-        ? this.bold(this.fg("accent", globalText))
-        : this.fg("dim", globalText);
-    const projectStyled =
-      this.scope === "project"
-        ? this.bold(this.fg("accent", projectText))
-        : this.fg("dim", projectText);
-
-    const prefixW = visibleWidth(titlePrefix);
-    const gStart = 1 + prefixW;
-    const gEnd = gStart + visibleWidth(globalText) - 1;
-    const pStart = gEnd + 2;
-    const pEnd = pStart + visibleWidth(projectText) - 1;
-    this.globalPillRect = { x1: gStart, x2: gEnd, y: 1 };
-    this.projectPillRect = { x1: pStart, x2: pEnd, y: 1 };
-
-    const leftHeader = `${titlePrefix}${globalStyled} ${projectStyled}`;
-    const closeW = visibleWidth(closeText);
-    const headerGap = Math.max(1, innerW - visibleWidth(leftHeader) - closeW - 1);
-    const closeStart = 1 + innerW - closeW - 1;
-    this.closeBtnRect = { x1: closeStart, x2: closeStart + closeW - 1, y: 1 };
-    const headerLine = `${b("│")}${fitWidth(`${leftHeader}${" ".repeat(headerGap)}${this.fg("dim", closeText)} `, innerW)}${b("│")}`;
-
-    // Row 2: Search input + result counter.
-    const countLabel = `${this.hits.length}/${this.scope === "global" ? this.globalCount : this.projectCount} · User & Agent only `;
-    const searchPrefix = ` ${this.fg("accent", "Search:")} `;
-    const queryDisplay = this.query
-      ? `${this.query}\x1b[7m \x1b[27m`
-      : `\x1b[7m \x1b[27m${this.fg("dim", "type to search user/agent messages, project, model, id...")}`;
-    const searchBudget = Math.max(10, innerW - visibleWidth(countLabel) - 1);
-    const searchLeft = fitWidth(`${searchPrefix}${queryDisplay}`, searchBudget);
-    const searchLine = `${b("│")}${fitWidth(`${searchLeft} ${this.fg("dim", countLabel)}`, innerW)}${b("│")}`;
-
-    // Body rows: Left pane + vertical divider + Right pane.
-    const leftLines = this.renderLeftPane(leftW, bodyH);
-    const rightLines = this.renderRightPane(rightW, bodyH);
-    const bodyLines: string[] = [];
-    for (let i = 0; i < bodyH; i++) {
-      bodyLines.push(`${b("│")}${leftLines[i] ?? " ".repeat(leftW)}${b("│")}${rightLines[i] ?? " ".repeat(rightW)}${b("│")}`);
-    }
-
-    // Footer hints row.
-    const footerText =
-      ` ${this.fg("accent", "↑↓/Wheel")}${this.fg("dim", ":select  ")}` +
-      `${this.fg("accent", "Tab/Click")}${this.fg("dim", ":Global/Project  ")}` +
-      `${this.fg("accent", "PgUp/PgDn/Wheel")}${this.fg("dim", ":preview  ")}` +
-      `${this.fg("accent", "Enter/2×Click")}${this.fg("dim", ":insert  ")}` +
-      `${this.fg("accent", "Esc")}${this.fg("dim", ":close")}`;
-    const footerLine = `${b("│")}${fitWidth(footerText, innerW)}${b("│")}`;
-
-    return [
-      topBorder,
-      headerLine,
-      midRule,
-      searchLine,
-      splitTop,
-      ...bodyLines,
-      splitBottom,
-      footerLine,
-      bottomBorder,
-    ];
+    const frame = renderSplitOverlayFrame({
+      geometry,
+      titlePrefix: ` ${this.bold("Sessions")} ${this.fg("dim", this.titleBadge)}  `,
+      pills: [
+        { id: "global", label: `[Global ${this.globalCount}]`, active: this.scope === "global" },
+        { id: "project", label: `[Project ${this.projectCount}]`, active: this.scope === "project" },
+      ],
+      search: {
+        promptPrefix: ` ${this.fg("accent", "Search:")} `,
+        query: this.query,
+        placeholder: "type to search user/agent messages, project, model, id...",
+        rightLabel: `${this.hits.length}/${this.scope === "global" ? this.globalCount : this.projectCount} · User & Agent only `,
+      },
+      leftLines: this.renderLeftPane(geometry.leftWidth, geometry.bodyHeight),
+      rightLines: this.renderRightPane(geometry.rightWidth, geometry.bodyHeight),
+      footerHints: [
+        { key: "↑↓/Wheel", label: "select" },
+        { key: "Tab/Click", label: "Global/Project" },
+        { key: "PgUp/PgDn/Wheel", label: "preview" },
+        { key: "Enter/2×Click", label: this.confirmLabel },
+        { key: "Esc", label: "close" },
+      ],
+      theme: this.theme,
+    });
+    this.pillRects = frame.pillRects;
+    this.closeBtnRect = frame.closeRect;
+    return frame.lines;
   }
 }
 
 export function createSessionPickerTui(
   tui: { requestRender: () => void },
-  theme: SessionPickerTheme,
+  theme: TuiTheme,
   options: SessionPickerTuiOptions,
   done: (selected: SessionRecord | undefined) => void,
 ): SessionPickerTui {

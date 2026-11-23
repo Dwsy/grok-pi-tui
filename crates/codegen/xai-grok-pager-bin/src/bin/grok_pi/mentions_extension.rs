@@ -1,14 +1,14 @@
 use anyhow::{Context, Result};
 use std::{
-    fs::File,
+    fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
 };
 use tempfile::TempDir;
 
 /// Materialized `@` object-mentions extension bundle. `_source_dir` must stay
-/// alive for the Pi process lifetime so relative imports between `index.ts`
-/// and its helper modules keep resolving.
+/// alive for the Pi process lifetime so relative imports between
+/// `pi-grok-mentions/` and the sibling `pi-grok-tui-kit/` keep resolving.
 pub(super) struct MentionsExtension {
     _source_dir: TempDir,
     source_path: PathBuf,
@@ -33,7 +33,8 @@ fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
 }
 
 /// Materialize the built-in `@` object-mentions extension (`@skill`, `@session`,
-/// `@mcp`, `@file`) along with its TS session-picker TUI modules.
+/// `@mcp`, `@file`) along with its TS picker TUI modules and shared
+/// `pi-grok-tui-kit` primitives.
 ///
 /// Publishes its catalog via `setStatus("__pi_grok_mentions__", ...)` which
 /// `pi-grok-adapter` forwards as `pi/ui/mentions_catalog`, and returns chosen
@@ -43,38 +44,60 @@ pub(super) fn write_mentions_extension() -> Result<MentionsExtension> {
         .prefix("pi-grok-mentions-")
         .tempdir()
         .context("create mentions extension source directory")?;
+    let mentions_dir = source_dir.path().join("pi-grok-mentions");
+    let kit_dir = source_dir.path().join("pi-grok-tui-kit");
+    fs::create_dir_all(&mentions_dir).context("create pi-grok-mentions dir")?;
+    fs::create_dir_all(&kit_dir).context("create shared pi-grok-tui-kit dir")?;
+
+    // Shared TS TUI kit primitives
+    write_source_file(
+        &kit_dir,
+        "frame.ts",
+        include_str!("../../../../../../extensions/pi-grok-tui-kit/frame.ts"),
+    )?;
+    write_source_file(
+        &kit_dir,
+        "icons.ts",
+        include_str!("../../../../../../extensions/pi-grok-tui-kit/icons.ts"),
+    )?;
+    write_source_file(
+        &kit_dir,
+        "index.ts",
+        include_str!("../../../../../../extensions/pi-grok-tui-kit/index.ts"),
+    )?;
+
     let source_path = write_source_file(
-        source_dir.path(),
+        &mentions_dir,
         "index.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/index.ts"),
     )?;
     write_source_file(
-        source_dir.path(),
+        &mentions_dir,
         "session-data.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/session-data.ts"),
     )?;
     write_source_file(
-        source_dir.path(),
+        &mentions_dir,
         "session-picker-tui.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/session-picker-tui.ts"),
     )?;
     write_source_file(
-        source_dir.path(),
+        &mentions_dir,
         "skill-data.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/skill-data.ts"),
     )?;
     write_source_file(
-        source_dir.path(),
+        &mentions_dir,
         "skill-picker-tui.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/skill-picker-tui.ts"),
     )?;
     write_source_file(
-        source_dir.path(),
+        &mentions_dir,
         "file-data.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/file-data.ts"),
     )?;
     write_source_file(
-        source_dir.path(),
+        &mentions_dir,
         "file-picker-tui.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/file-picker-tui.ts"),
     )?;
@@ -91,7 +114,8 @@ mod tests {
     #[test]
     fn mentions_source_materializes_from_extension() {
         let ext = write_mentions_extension().expect("write");
-        let dir = ext.path().parent().expect("source dir");
+        let dir = ext.path().parent().expect("mentions dir");
+        let root = dir.parent().expect("bundle root");
         let source = std::fs::read_to_string(ext.path()).expect("read index.ts");
         let data = std::fs::read_to_string(dir.join("session-data.ts")).expect("read session-data.ts");
         let tui = std::fs::read_to_string(dir.join("session-picker-tui.ts")).expect("read session-picker-tui.ts");
@@ -99,6 +123,10 @@ mod tests {
         let skill_tui = std::fs::read_to_string(dir.join("skill-picker-tui.ts")).expect("read skill-picker-tui.ts");
         let file_data = std::fs::read_to_string(dir.join("file-data.ts")).expect("read file-data.ts");
         let file_tui = std::fs::read_to_string(dir.join("file-picker-tui.ts")).expect("read file-picker-tui.ts");
+        let kit_frame = std::fs::read_to_string(root.join("pi-grok-tui-kit/frame.ts"))
+            .expect("read pi-grok-tui-kit/frame.ts");
+        let kit_icons = std::fs::read_to_string(root.join("pi-grok-tui-kit/icons.ts"))
+            .expect("read pi-grok-tui-kit/icons.ts");
         assert!(source.contains("__pi_grok_mentions__"));
         assert!(source.contains("__pi_grok_mention_insert__"));
         assert!(source.contains("__piGrokRegisterMentionProvider"));
@@ -111,5 +139,7 @@ mod tests {
         assert!(skill_tui.contains("createSkillPickerTui"));
         assert!(file_data.contains("listWorkspaceFilesWithFd"));
         assert!(file_tui.contains("createFilePickerTui"));
+        assert!(kit_frame.contains("renderSplitOverlayFrame"));
+        assert!(kit_icons.contains("getFileIcon"));
     }
 }

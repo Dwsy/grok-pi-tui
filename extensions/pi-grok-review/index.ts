@@ -11,7 +11,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { SessionPickerTheme } from "../pi-grok-mentions/session-picker-tui.ts";
+import type { TuiTheme } from "../pi-grok-tui-kit/index.ts";
 import {
   aggregateSessionFiles,
   extractSessionReviewTurns,
@@ -51,7 +51,7 @@ async function openReviewOverlay(
     (tui, theme, _kb, done) =>
       createReviewTui(
         tui as { requestRender: () => void },
-        theme as SessionPickerTheme,
+        theme as TuiTheme,
         {
           rootDir: cwd,
           mode,

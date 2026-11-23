@@ -19,7 +19,16 @@ import {
   type TuiMouseEvent,
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { fitWidth, wrapTextToWidth, type SessionPickerTheme } from "./session-picker-tui.ts";
+import {
+  computeSplitGeometry,
+  fitWidth,
+  highlightTerms,
+  hitRegion,
+  renderSplitOverlayFrame,
+  wrapTextToWidth,
+  type ClickRegion,
+  type TuiTheme,
+} from "../pi-grok-tui-kit/index.ts";
 import {
   filterSkillRecords,
   formatFileSize,
@@ -40,27 +49,10 @@ export interface SkillPickerTuiOptions {
   getRows?: () => number;
 }
 
-interface ClickRegion {
-  x1: number;
-  x2: number;
-  y: number;
-}
-
-function highlightTerms(text: string, query: string, highlight: (s: string) => string): string {
-  const terms = query
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t.length >= 2);
-  if (terms.length === 0) return text;
-  const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const re = new RegExp(`(${escaped.join("|")})`, "gi");
-  return text.replace(re, (match) => highlight(match));
-}
-
 export class SkillPickerTui implements Component {
   private readonly records: readonly SkillRecord[];
   private readonly tui: { requestRender: () => void };
-  private readonly theme: SessionPickerTheme;
+  private readonly theme: TuiTheme;
   private readonly done: (selected: SkillRecord | undefined) => void;
   private readonly loadDetail: (sourcePath: string | undefined) => SkillPreviewDetail | null;
   private readonly getRows: () => number;
@@ -79,8 +71,7 @@ export class SkillPickerTui implements Component {
   private bodyStartY = 5;
   private bodyHeight = 14;
   private previewVisibleRows = 10;
-  private globalPillRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
-  private projectPillRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
+  private pillRects = new Map<string, ClickRegion>();
   private closeBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
   private listRowMap: Array<{ y1: number; y2: number; index: number }> = [];
 
@@ -89,7 +80,7 @@ export class SkillPickerTui implements Component {
 
   constructor(
     tui: { requestRender: () => void },
-    theme: SessionPickerTheme,
+    theme: TuiTheme,
     options: SkillPickerTuiOptions,
     done: (selected: SkillRecord | undefined) => void,
   ) {
@@ -276,15 +267,15 @@ export class SkillPickerTui implements Component {
     }
 
     if (type === "press" && event.button === "left") {
-      if (y === this.closeBtnRect.y && x >= this.closeBtnRect.x1 && x <= this.closeBtnRect.x2) {
+      if (hitRegion(this.closeBtnRect, x, y)) {
         this.done(undefined);
         return { handled: true, render: false };
       }
-      if (y === this.globalPillRect.y && x >= this.globalPillRect.x1 && x <= this.globalPillRect.x2) {
+      if (hitRegion(this.pillRects.get("global"), x, y)) {
         this.setScope("global");
         return { handled: true, render: true };
       }
-      if (y === this.projectPillRect.y && x >= this.projectPillRect.x1 && x <= this.projectPillRect.x2) {
+      if (hitRegion(this.pillRects.get("project"), x, y)) {
         this.setScope("project");
         return { handled: true, render: true };
       }
@@ -451,101 +442,49 @@ export class SkillPickerTui implements Component {
   }
 
   render(width: number): string[] {
-    const totalW = Math.max(56, Math.floor(width));
-    const innerW = totalW - 2;
+    const geometry = computeSplitGeometry({
+      width,
+      rows: this.getRows(),
+      leftRatio: 0.4,
+      hasSearchBar: true,
+    });
+    this.dividerX = geometry.dividerX;
+    this.bodyStartY = geometry.bodyStartY;
+    this.bodyHeight = geometry.bodyHeight;
 
-    const leftW = Math.max(24, Math.min(innerW - 28, Math.floor(innerW * 0.4)));
-    const rightW = Math.max(24, innerW - leftW - 1);
-    this.dividerX = 1 + leftW;
-
-    const totalRows = Math.max(16, Math.min(34, Math.floor(this.getRows() * 0.82)));
-    const bodyH = Math.max(8, totalRows - 8);
-    this.bodyStartY = 5;
-    this.bodyHeight = bodyH;
-
-    const b = (s: string) => this.fg("border", s);
-    const topBorder = b(`╭${"─".repeat(innerW)}╮`);
-    const midRule = b(`├${"─".repeat(innerW)}┤`);
-    const splitTop = b(`├${"─".repeat(leftW)}┬${"─".repeat(rightW)}┤`);
-    const splitBottom = b(`├${"─".repeat(leftW)}┴${"─".repeat(rightW)}┤`);
-    const bottomBorder = b(`╰${"─".repeat(innerW)}╯`);
-
-    // Row 1: Header with title, Global/Project scope pills, and close button.
-    const titlePrefix = ` ${this.bold("Skills")} ${this.fg("dim", "(@skill)")}  `;
-    const globalText = `[Global ${this.globalCount}]`;
-    const projectText = `[Project ${this.projectCount}]`;
-    const closeText = "[✕]";
-
-    const globalStyled =
-      this.scope === "global"
-        ? this.bold(this.fg("accent", globalText))
-        : this.fg("dim", globalText);
-    const projectStyled =
-      this.scope === "project"
-        ? this.bold(this.fg("accent", projectText))
-        : this.fg("dim", projectText);
-
-    const prefixW = visibleWidth(titlePrefix);
-    const gStart = 1 + prefixW;
-    const gEnd = gStart + visibleWidth(globalText) - 1;
-    const pStart = gEnd + 2;
-    const pEnd = pStart + visibleWidth(projectText) - 1;
-    this.globalPillRect = { x1: gStart, x2: gEnd, y: 1 };
-    this.projectPillRect = { x1: pStart, x2: pEnd, y: 1 };
-
-    const leftHeader = `${titlePrefix}${globalStyled} ${projectStyled}`;
-    const closeW = visibleWidth(closeText);
-    const headerGap = Math.max(1, innerW - visibleWidth(leftHeader) - closeW - 1);
-    const closeStart = 1 + innerW - closeW - 1;
-    this.closeBtnRect = { x1: closeStart, x2: closeStart + closeW - 1, y: 1 };
-    const headerLine = `${b("│")}${fitWidth(`${leftHeader}${" ".repeat(headerGap)}${this.fg("dim", closeText)} `, innerW)}${b("│")}`;
-
-    // Row 3: Search input + result counter.
-    const countLabel = `${this.hits.length}/${this.scope === "global" ? this.globalCount : this.projectCount} skills `;
-    const searchPrefix = ` ${this.fg("accent", "Search:")} `;
-    const queryDisplay = this.query
-      ? `${this.query}\x1b[7m \x1b[27m`
-      : `\x1b[7m \x1b[27m${this.fg("dim", "type to search skill name, description, or path...")}`;
-    const searchBudget = Math.max(10, innerW - visibleWidth(countLabel) - 1);
-    const searchLeft = fitWidth(`${searchPrefix}${queryDisplay}`, searchBudget);
-    const searchLine = `${b("│")}${fitWidth(`${searchLeft} ${this.fg("dim", countLabel)}`, innerW)}${b("│")}`;
-
-    // Body rows.
-    const leftLines = this.renderLeftPane(leftW, bodyH);
-    const rightLines = this.renderRightPane(rightW, bodyH);
-    const bodyLines: string[] = [];
-    for (let i = 0; i < bodyH; i++) {
-      bodyLines.push(
-        `${b("│")}${leftLines[i] ?? " ".repeat(leftW)}${b("│")}${rightLines[i] ?? " ".repeat(rightW)}${b("│")}`,
-      );
-    }
-
-    // Footer hints row.
-    const footerText =
-      ` ${this.fg("accent", "↑↓/Wheel")}${this.fg("dim", ":select  ")}` +
-      `${this.fg("accent", "Tab/Click")}${this.fg("dim", ":Global/Project  ")}` +
-      `${this.fg("accent", "PgUp/PgDn/Wheel")}${this.fg("dim", ":preview  ")}` +
-      `${this.fg("accent", "Enter/2×Click")}${this.fg("dim", ":insert  ")}` +
-      `${this.fg("accent", "Esc")}${this.fg("dim", ":close")}`;
-    const footerLine = `${b("│")}${fitWidth(footerText, innerW)}${b("│")}`;
-
-    return [
-      topBorder,
-      headerLine,
-      midRule,
-      searchLine,
-      splitTop,
-      ...bodyLines,
-      splitBottom,
-      footerLine,
-      bottomBorder,
-    ];
+    const frame = renderSplitOverlayFrame({
+      geometry,
+      titlePrefix: ` ${this.bold("Skills")} ${this.fg("dim", "(@skill)")}  `,
+      pills: [
+        { id: "global", label: `[Global ${this.globalCount}]`, active: this.scope === "global" },
+        { id: "project", label: `[Project ${this.projectCount}]`, active: this.scope === "project" },
+      ],
+      search: {
+        promptPrefix: ` ${this.fg("accent", "Search:")} `,
+        query: this.query,
+        placeholder: "type to search skill name, description, or path...",
+        rightLabel: `${this.hits.length}/${this.scope === "global" ? this.globalCount : this.projectCount} skills `,
+      },
+      leftLines: this.renderLeftPane(geometry.leftWidth, geometry.bodyHeight),
+      rightLines: this.renderRightPane(geometry.rightWidth, geometry.bodyHeight),
+      footerHints: [
+        { key: "↑↓/Wheel", label: "select" },
+        { key: "Tab/Click", label: "Global/Project" },
+        { key: "PgUp/PgDn/Wheel", label: "preview" },
+        { key: "Enter/2×Click", label: "insert" },
+        { key: "Esc", label: "close" },
+      ],
+      theme: this.theme,
+    });
+    this.pillRects = frame.pillRects;
+    this.closeBtnRect = frame.closeRect;
+    return frame.lines;
   }
 }
 
 export function createSkillPickerTui(
   tui: { requestRender: () => void },
-  theme: SessionPickerTheme,
+  theme: TuiTheme,
   options: SkillPickerTuiOptions,
   done: (selected: SkillRecord | undefined) => void,
 ): SkillPickerTui {

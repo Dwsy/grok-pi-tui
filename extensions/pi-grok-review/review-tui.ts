@@ -20,12 +20,16 @@ import {
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import {
+  computeSplitGeometry,
   detectNerdFontSupport,
+  fitWidth,
   getFileIcon,
-  loadFileOrDirPreview,
-  type FilePreviewResult,
-} from "../pi-grok-mentions/file-data.ts";
-import { fitWidth, type SessionPickerTheme } from "../pi-grok-mentions/session-picker-tui.ts";
+  hitRegion,
+  renderSplitOverlayFrame,
+  type ClickRegion,
+  type TuiTheme,
+} from "../pi-grok-tui-kit/index.ts";
+import { loadFileOrDirPreview, type FilePreviewResult } from "../pi-grok-mentions/file-data.ts";
 import {
   buildReviewFileTree,
   type ReviewFileChange,
@@ -83,7 +87,7 @@ export class ReviewTui implements Component {
   private readonly launchMode: ReviewLaunchMode;
   private readonly sessionFiles: readonly ReviewFileChange[];
   private readonly turns: readonly ReviewTurn[];
-  private readonly theme: SessionPickerTheme;
+  private readonly theme: TuiTheme;
   private readonly done: (result: ReviewTuiResult | undefined) => void;
   private readonly loadPreviewFn: (
     rootDir: string,
@@ -116,16 +120,13 @@ export class ReviewTui implements Component {
   private bodyStartY = 3;
   private bodyHeight = 16;
   private previewVisibleRows = 12;
-  private listToggleRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
-  private previewToggleRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
-  private turnBackRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
-  private sendBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
+  private pillRects = new Map<string, ClickRegion>();
   private closeBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
   private leftRowMap: Array<{ y1: number; y2: number; index: number }> = [];
 
   constructor(
     _tui: { requestRender: () => void },
-    theme: SessionPickerTheme,
+    theme: TuiTheme,
     options: ReviewTuiOptions,
     done: (result: ReviewTuiResult | undefined) => void,
   ) {
@@ -349,26 +350,24 @@ export class ReviewTui implements Component {
       return { handled: true, render: false };
     }
 
-    const hit = (r: ClickRegion) => y === r.y && x >= r.x1 && x <= r.x2;
-
     if (type === "press" && event.button === "left") {
-      if (hit(this.closeBtnRect)) {
+      if (hitRegion(this.closeBtnRect, x, y)) {
         this.done(undefined);
         return { handled: true, render: false };
       }
-      if (hit(this.sendBtnRect) && this.comments.size > 0) {
+      if (hitRegion(this.pillRects.get("send"), x, y) && this.comments.size > 0) {
         this.submitFeedback();
         return { handled: true, render: false };
       }
-      if (hit(this.turnBackRect) && this.launchMode === "message" && this.turns.length > 0) {
+      if (hitRegion(this.pillRects.get("turn"), x, y) && this.launchMode === "message" && this.turns.length > 0) {
         this.pickingTurn = !this.pickingTurn;
         return { handled: true, render: true };
       }
-      if (hit(this.listToggleRect) && !this.pickingTurn) {
+      if (hitRegion(this.pillRects.get("list"), x, y) && !this.pickingTurn) {
         this.listMode = this.listMode === "tree" ? "list" : "tree";
         return { handled: true, render: true };
       }
-      if (hit(this.previewToggleRect) && !this.pickingTurn) {
+      if (hitRegion(this.pillRects.get("preview"), x, y) && !this.pickingTurn) {
         this.previewMode = this.previewMode === "diff" ? "file" : "diff";
         this.previewScroll = 0;
         return { handled: true, render: true };
@@ -590,90 +589,62 @@ export class ReviewTui implements Component {
   }
 
   render(width: number): string[] {
-    const totalW = Math.max(60, Math.floor(width));
-    const innerW = totalW - 2;
-    const leftW = Math.max(24, Math.min(innerW - 28, Math.floor(innerW * 0.38)));
-    const rightW = Math.max(26, innerW - leftW - 1);
-    this.dividerX = 1 + leftW;
-
-    const totalRows = Math.max(16, Math.min(34, Math.floor(this.getRows() * 0.84)));
-    // Chrome: top(0) + header(1) + splitTop(2) + splitBottom + footer + bottom = 6
-    const bodyH = Math.max(8, totalRows - 6);
-    this.bodyStartY = 3;
-    this.bodyHeight = bodyH;
-
-    const b = (s: string) => this.fg("border", s);
-    const topBorder = b(`╭${"─".repeat(innerW)}╮`);
-    const splitTop = b(`├${"─".repeat(leftW)}┬${"─".repeat(rightW)}┤`);
-    const splitBottom = b(`├${"─".repeat(leftW)}┴${"─".repeat(rightW)}┤`);
-    const bottomBorder = b(`╰${"─".repeat(innerW)}╯`);
+    const geometry = computeSplitGeometry({
+      width,
+      rows: this.getRows(),
+      leftRatio: 0.38,
+      hasSearchBar: false,
+      minWidth: 60,
+      minLeftWidth: 24,
+      minRightWidth: 26,
+    });
+    this.dividerX = geometry.dividerX;
+    this.bodyStartY = geometry.bodyStartY;
+    this.bodyHeight = geometry.bodyHeight;
 
     const title =
       this.launchMode === "message"
         ? ` Review Message (${this.turns.length} turns)`
         : ` Review Session (${this.activeFiles.length} files)`;
-    const titlePrefix = `${this.bold(title)}  `;
-    const turnPill = this.launchMode === "message" ? (this.pickingTurn ? "[Files]" : "[Turns]") : "";
-    const listPill = this.listMode === "tree" ? "[Tree]" : "[List]";
-    const previewPill = this.previewMode === "diff" ? "[Diff]" : "[File]";
-    const sendPill = this.comments.size > 0 ? `[Send ${this.comments.size}]` : "";
-    const closePill = "[✕]";
-
-    let col = 1 + visibleWidth(titlePrefix);
-    const place = (text: string): ClickRegion => {
-      if (!text) return { x1: -1, x2: -1, y: 1 };
-      const start = col;
-      const end = start + visibleWidth(text) - 1;
-      col = end + 2;
-      return { x1: start, x2: end, y: 1 };
-    };
-
-    this.turnBackRect = place(turnPill);
-    this.listToggleRect = place(listPill);
-    this.previewToggleRect = place(previewPill);
-    this.sendBtnRect = place(sendPill);
-
     const pills = [
-      turnPill ? this.fg("accent", turnPill) : "",
-      this.fg("accent", listPill),
-      this.fg("accent", previewPill),
-      sendPill ? this.bold(this.fg("success", sendPill)) : "",
-    ]
-      .filter(Boolean)
-      .join(" ");
-    const leftHeader = `${titlePrefix}${pills}`;
-    const closeW = visibleWidth(closePill);
-    const gap = Math.max(1, innerW - visibleWidth(leftHeader) - closeW - 1);
-    const closeStart = 1 + innerW - closeW - 1;
-    this.closeBtnRect = { x1: closeStart, x2: closeStart + closeW - 1, y: 1 };
-    const headerLine = `${b("│")}${fitWidth(`${leftHeader}${" ".repeat(gap)}${this.fg("dim", closePill)} `, innerW)}${b("│")}`;
+      ...(this.launchMode === "message"
+        ? [{ id: "turn", label: this.pickingTurn ? "[Files]" : "[Turns]", active: false, color: "accent" }]
+        : []),
+      { id: "list", label: this.listMode === "tree" ? "[Tree]" : "[List]", active: false, color: "accent" },
+      { id: "preview", label: this.previewMode === "diff" ? "[Diff]" : "[File]", active: false, color: "accent" },
+      ...(this.comments.size > 0
+        ? [{ id: "send", label: `[Send ${this.comments.size}]`, active: true, color: "success" }]
+        : []),
+    ];
 
-    const leftLines = this.renderLeftPane(leftW, bodyH);
-    const rightLines = this.renderRightPane(rightW, bodyH);
-    const bodyLines: string[] = [];
-    for (let i = 0; i < bodyH; i++) {
-      bodyLines.push(
-        `${b("│")}${leftLines[i] ?? " ".repeat(leftW)}${b("│")}${rightLines[i] ?? " ".repeat(rightW)}${b("│")}`,
-      );
-    }
-
-    const footerContent = this.commenting
-      ? ` ${this.fg("warning", "Note:")} ${this.commentDraft}\x1b[7m \x1b[27m  ${this.fg("dim", "(Enter:save  Esc:cancel)")}`
-      : ` ${this.fg("accent", "↑↓/Wheel")}${this.fg("dim", ":nav  ")}` +
-        `${this.fg("accent", "Tab")}${this.fg("dim", ":Diff/File  ")}` +
-        `${this.fg("accent", "t")}${this.fg("dim", ":Tree/List  ")}` +
-        `${this.fg("accent", "Enter/c")}${this.fg("dim", ":note  ")}` +
-        `${this.fg("accent", "Ctrl+S")}${this.fg("dim", ":send  ")}` +
-        `${this.fg("accent", "Esc")}${this.fg("dim", ":close")}`;
-    const footerLine = `${b("│")}${fitWidth(footerContent, innerW)}${b("│")}`;
-
-    return [topBorder, headerLine, splitTop, ...bodyLines, splitBottom, footerLine, bottomBorder];
+    const frame = renderSplitOverlayFrame({
+      geometry,
+      titlePrefix: `${this.bold(title)}  `,
+      pills,
+      leftLines: this.renderLeftPane(geometry.leftWidth, geometry.bodyHeight),
+      rightLines: this.renderRightPane(geometry.rightWidth, geometry.bodyHeight),
+      footerCustom: this.commenting
+        ? ` ${this.fg("warning", "Note:")} ${this.commentDraft}\x1b[7m \x1b[27m  ${this.fg("dim", "(Enter:save  Esc:cancel)")}`
+        : undefined,
+      footerHints: [
+        { key: "↑↓/Wheel", label: "nav" },
+        { key: "Tab", label: "Diff/File" },
+        { key: "t", label: "Tree/List" },
+        { key: "Enter/c", label: "note" },
+        { key: "Ctrl+S", label: "send" },
+        { key: "Esc", label: "close" },
+      ],
+      theme: this.theme,
+    });
+    this.pillRects = frame.pillRects;
+    this.closeBtnRect = frame.closeRect;
+    return frame.lines;
   }
 }
 
 export function createReviewTui(
   tui: { requestRender: () => void },
-  theme: SessionPickerTheme,
+  theme: TuiTheme,
   options: ReviewTuiOptions,
   done: (result: ReviewTuiResult | undefined) => void,
 ): ReviewTui {

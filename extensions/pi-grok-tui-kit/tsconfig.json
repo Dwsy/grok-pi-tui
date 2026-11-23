@@ -1,0 +1,12 @@
+{
+	"extends": "../../pi-main/tsconfig.json",
+	"compilerOptions": {
+		"typeRoots": ["../../pi-main/node_modules/@types"],
+		"paths": {
+			"*": ["../../pi-main/*"],
+			"@earendil-works/pi-tui": ["../../pi-main/packages/tui/src/index.ts"]
+		}
+	},
+	"include": ["index.ts", "frame.ts", "icons.ts"],
+	"exclude": []
+}
