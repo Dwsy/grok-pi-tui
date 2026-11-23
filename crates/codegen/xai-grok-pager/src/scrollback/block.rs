@@ -156,11 +156,17 @@ pub trait BlockContent {
         None
     }
 
+    /// Mode-aware inline media metadata. Defaults to [`Self::inline_media`]; foldable blocks
+    /// (such as `ReadToolCallBlock`) override this to display inline media only when expanded.
+    fn inline_media_for_mode(&self, _mode: DisplayMode) -> Option<InlineMediaInfo> {
+        self.inline_media()
+    }
+
     /// Blocks without `inline_media()` return empty. Every non-media block (all agent messages, all non-media tool
     /// calls) returns here without building `output()`. The `output()` rebuild below runs only for a media block (today
     /// only `OtherToolCallBlock`), whose `output()` is a cheap 2 or 3 line build.
     fn inline_media_placements(&self, ctx: &BlockContext) -> Vec<AnchoredMedia> {
-        let Some(info) = self.inline_media() else {
+        let Some(info) = self.inline_media_for_mode(ctx.mode) else {
             return Vec::new();
         };
         // Trailing geometry: the image starts one row below the block's text (`content_lines + 1`)
@@ -491,6 +497,10 @@ impl BlockContent for RenderBlock {
 
     fn inline_media(&self) -> Option<InlineMediaInfo> {
         delegate_block!(self, inline_media())
+    }
+
+    fn inline_media_for_mode(&self, mode: DisplayMode) -> Option<InlineMediaInfo> {
+        delegate_block!(self, inline_media_for_mode(mode))
     }
 
     fn inline_media_placements(&self, ctx: &BlockContext) -> Vec<AnchoredMedia> {
@@ -947,7 +957,9 @@ impl RenderBlock {
             | RenderBlock::ToolCall(ToolCallBlock::Skill(_))
             | RenderBlock::BgTask(_) => true,
             RenderBlock::ToolCall(ToolCallBlock::Eval(eval)) => !eval.effects_first(),
-            RenderBlock::ToolCall(ToolCallBlock::Read(b)) => b.has_content(),
+            RenderBlock::ToolCall(ToolCallBlock::Read(b)) => {
+                b.has_content() || b.image_ref.is_some()
+            }
             RenderBlock::ToolCall(ToolCallBlock::Search(b)) => b.error.is_none(),
             RenderBlock::ToolCall(ToolCallBlock::ListDir(b)) => {
                 b.error.is_none() && !b.output.is_empty()

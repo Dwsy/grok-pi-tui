@@ -389,6 +389,14 @@ impl BlockContent for ReadToolCallBlock {
                             error_style,
                         ))));
                     }
+                } else if self.image_ref.is_some()
+                    && !crate::terminal::image::scrollback_inline_overlay_active()
+                {
+                    lines.push(BlockLine::separator(Line::from("")));
+                    lines.push(BlockLine::separator(Line::from(Span::styled(
+                        "Image preview unavailable in this terminal (press Enter to open)",
+                        theme.dim(),
+                    ))));
                 }
                 BlockOutput { lines }
             }
@@ -421,7 +429,7 @@ impl BlockContent for ReadToolCallBlock {
     }
 
     fn is_foldable(&self) -> bool {
-        self.has_content()
+        self.has_content() || self.image_ref.is_some()
     }
 
     fn default_display_mode(&self) -> DisplayMode {
@@ -444,6 +452,24 @@ impl BlockContent for ReadToolCallBlock {
             Some(r) => std::slice::from_ref(r),
             None => &[],
         }
+    }
+
+    fn inline_media_for_mode(
+        &self,
+        mode: DisplayMode,
+    ) -> Option<crate::prompt_images::InlineMediaInfo> {
+        if mode == DisplayMode::Collapsed {
+            return None;
+        }
+        let img = self.image_ref.as_ref()?;
+        let (w, h) = img.dimensions?;
+        Some(crate::prompt_images::InlineMediaInfo {
+            path: img.path.clone(),
+            width: w,
+            height: h,
+            is_video: false,
+            alt_text: img.alt_text.clone(),
+        })
     }
 
     fn preamble(&self, ctx: &BlockContext) -> Option<Text<'static>> {
@@ -678,6 +704,25 @@ mod tests {
     fn not_foldable_when_no_content() {
         let block = ReadToolCallBlock::new("f.rs");
         assert!(!block.is_foldable());
+    }
+
+    #[test]
+    fn image_read_is_foldable_and_exposes_inline_media_only_when_expanded() {
+        let mut block = ReadToolCallBlock::new("/tmp/sample.png");
+        block.media_kind = Some(ReadMediaKind::Image);
+        block.image_ref = Some(ScrollbackImageRef {
+            path: std::path::PathBuf::from("/tmp/sample.png"),
+            dimensions: Some((320, 180)),
+            alt_text: String::new(),
+        });
+        assert!(block.is_foldable());
+        assert!(block.inline_media_for_mode(DisplayMode::Collapsed).is_none());
+        let truncated = block
+            .inline_media_for_mode(DisplayMode::Truncated)
+            .expect("truncated image read should expose inline media");
+        assert_eq!(truncated.path, std::path::PathBuf::from("/tmp/sample.png"));
+        assert_eq!((truncated.width, truncated.height), (320, 180));
+        assert!(block.inline_media_for_mode(DisplayMode::Expanded).is_some());
     }
 
     #[test]

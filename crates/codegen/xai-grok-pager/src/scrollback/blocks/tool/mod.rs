@@ -277,6 +277,13 @@ impl BlockContent for ToolCallBlock {
         delegate_tool!(self, inline_media())
     }
 
+    fn inline_media_for_mode(
+        &self,
+        mode: crate::scrollback::types::DisplayMode,
+    ) -> Option<crate::prompt_images::InlineMediaInfo> {
+        delegate_tool!(self, inline_media_for_mode(mode))
+    }
+
     fn inline_open_button(&self) -> Option<(std::path::PathBuf, bool)> {
         delegate_tool!(self, inline_open_button())
     }

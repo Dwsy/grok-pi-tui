@@ -216,11 +216,24 @@ impl AgentView {
         let (w, h) = decode_image_dimensions(image_data)
             .unwrap_or((placement.info.width, placement.info.height));
 
+        let clear_gen = crate::terminal::overlay::iterm_clear_gen();
+        if self.inline_media_iterm_clear_gen != clear_gen {
+            self.inline_media_iterm_emitted.clear();
+            self.inline_media_iterm_clear_gen = clear_gen;
+        }
+        let is_iterm = crate::terminal::image::prompt_preview_graphics_protocol()
+            == crate::terminal::image::GraphicsProtocol::ITerm2;
+
         // iTerm2 has no place-only escape; re-emit when placement moves
-        let emit_iterm = self
-            .inline_media_iterm_emitted
-            .get(path)
-            .is_none_or(|last| *last != placement.screen_rect);
+        let prev_iterm_rect = self.inline_media_iterm_emitted.get(path).copied();
+        let moved_iterm = is_iterm && prev_iterm_rect.is_some_and(|last| last != placement.screen_rect);
+        if moved_iterm {
+            // Old grid cells still hold OSC 1337 pixels; request one full clear-and-repaint
+            // so the next draw emits cleanly at the new rect without leaving stale pixels.
+            crate::terminal::overlay::arm_iterm_grid_repaint();
+            return Some(String::new());
+        }
+        let emit_iterm = prev_iterm_rect.is_none();
         let place_esc = crate::terminal::image::place_inline_image(
             image_data,
             w,
@@ -231,10 +244,7 @@ impl AgentView {
             image_id,
             emit_iterm,
         )?;
-        if emit_iterm
-            && crate::terminal::image::detect_graphics_protocol()
-                == crate::terminal::image::GraphicsProtocol::ITerm2
-        {
+        if emit_iterm && is_iterm {
             self.inline_media_iterm_emitted
                 .insert(path.clone(), placement.screen_rect);
         }
@@ -379,6 +389,9 @@ impl AgentView {
         let mut clear_esc = String::new();
         for &id in self.inline_media_ids.values() {
             clear_esc.push_str(&crate::terminal::image::clear_kitty_image(id));
+        }
+        if !self.inline_media_iterm_emitted.is_empty() {
+            crate::terminal::overlay::arm_iterm_grid_repaint();
         }
         self.inline_media_ids.clear();
         self.inline_media_iterm_emitted.clear();

@@ -14,8 +14,12 @@ static NEXT_OWNER_ID: AtomicU64 = AtomicU64::new(1);
 thread_local! {
     static OWNER: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
     static PLACEMENT: std::cell::Cell<Option<LastPlacement>> = const { std::cell::Cell::new(None) };
+    // True while an iTerm2 Read viewer image is live on the terminal grid.
+    static ITERM_READ_VIEWER_COMMITTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     // iTerm pixels are cells, not Kitty placements; repaint even if the viewer closed.
     static ITERM_READ_VIEWER_NEEDS_REPAINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Monotonically incremented whenever `reset_owner()` runs (after `terminal.clear()`).
+    static ITERM_CLEAR_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,10 +73,7 @@ impl Escapes {
     }
 
     pub fn commit(self) -> String {
-        commit(self.ownership, self.placement);
-        if self.iterm_read_viewer {
-            arm_iterm_read_viewer_repaint();
-        }
+        commit(self.ownership, self.placement, self.iterm_read_viewer);
         self.bytes
     }
 }
@@ -114,11 +115,8 @@ impl PostFlush {
 
     pub fn write_to(self, writer: &mut impl Write) -> io::Result<()> {
         writer.write_all(self.bytes.as_bytes())?;
-        if self.iterm_read_viewer {
-            arm_iterm_read_viewer_repaint();
-        }
         if let Some(ownership) = self.ownership {
-            commit(ownership, self.placement);
+            commit(ownership, self.placement, self.iterm_read_viewer);
         }
         Ok(())
     }
@@ -139,6 +137,16 @@ fn arm_iterm_read_viewer_repaint() {
     ITERM_READ_VIEWER_NEEDS_REPAINT.with(|flag| flag.set(true));
 }
 
+/// Request a one-shot full terminal clear/repaint to erase stale iTerm2 OSC 1337 grid pixels.
+pub fn arm_iterm_grid_repaint() {
+    arm_iterm_read_viewer_repaint();
+}
+
+/// Generation counter bumped whenever `reset_owner()` runs after a full terminal clear.
+pub fn iterm_clear_gen() -> u64 {
+    ITERM_CLEAR_GEN.with(|clear_gen| clear_gen.get())
+}
+
 /// Consume only once the presenter can draw. This survives owner clearing so
 /// closing or replacing the viewer still erases the committed pixels.
 pub fn take_iterm_read_viewer_repaint() -> bool {
@@ -157,6 +165,8 @@ pub fn has_committed_owner() -> bool {
 pub fn reset_owner() {
     OWNER.with(|owner| owner.set(None));
     PLACEMENT.with(|placement| placement.set(None));
+    ITERM_READ_VIEWER_COMMITTED.with(|flag| flag.set(false));
+    ITERM_CLEAR_GEN.with(|clear_gen| clear_gen.set(clear_gen.get().wrapping_add(1)));
 }
 
 fn current_owner() -> Option<u64> {
@@ -167,7 +177,9 @@ fn current_placement() -> Option<LastPlacement> {
     PLACEMENT.with(|placement| placement.get())
 }
 
-fn commit(ownership: Ownership, placement: Option<LastPlacement>) {
+fn commit(ownership: Ownership, placement: Option<LastPlacement>, iterm_read_viewer: bool) {
+    let was_iterm_read_viewer = ITERM_READ_VIEWER_COMMITTED.with(|flag| flag.get());
+    let prev_placement = current_placement();
     OWNER.with(|owner| {
         owner.set(match ownership {
             Ownership::Static(id) => Some(id),
@@ -180,6 +192,11 @@ fn commit(ownership: Ownership, placement: Option<LastPlacement>) {
             Ownership::Clear => None,
         });
     });
+    let now_iterm_read_viewer = matches!(ownership, Ownership::Static(_)) && iterm_read_viewer;
+    ITERM_READ_VIEWER_COMMITTED.with(|flag| flag.set(now_iterm_read_viewer));
+    if was_iterm_read_viewer && (!now_iterm_read_viewer || placement != prev_placement) {
+        arm_iterm_read_viewer_repaint();
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -262,8 +279,9 @@ pub fn static_centered(
     static_image(image_data, cols, rows, x, y, owner_id)
 }
 
-/// Read viewer uses the separately gated iTerm protocol. Each committed iTerm
-/// image requests a full repaint before the next frame so the old grid is erased.
+/// Read viewer uses the separately gated iTerm protocol. Steady-state frames keep
+/// the committed pixels without repainting; closing, hiding, or moving the viewer
+/// requests a one-shot full repaint so the old grid cells are erased.
 pub fn static_centered_read_viewer(
     image_data: &[u8],
     img_w: u32,
@@ -355,7 +373,21 @@ mod tests {
 
         let painted = static_centered_read_viewer(&png(), 10, 10, rect, 50).unwrap();
         PostFlush::from(painted).write_to(&mut Vec::new()).unwrap();
-        // A close can clear owner before the next frame; the repaint survives.
+        // Initial paint and steady-state keep frames must NOT arm a full repaint (prevents flicker).
+        assert!(!take_iterm_read_viewer_repaint());
+        let kept = static_centered_read_viewer(&png(), 10, 10, rect, 50).unwrap();
+        assert!(kept.as_str().is_empty());
+        PostFlush::from(kept).write_to(&mut Vec::new()).unwrap();
+        assert!(!take_iterm_read_viewer_repaint());
+
+        // Moving/resizing arms a one-shot repaint to erase the old grid cells.
+        let moved = static_centered_read_viewer(&png(), 10, 10, Rect::new(2, 1, 36, 18), 50).unwrap();
+        assert!(moved.as_str().contains("1337"));
+        PostFlush::from(moved).write_to(&mut Vec::new()).unwrap();
+        assert!(take_iterm_read_viewer_repaint());
+        assert!(!take_iterm_read_viewer_repaint());
+
+        // Closing clears owner and arms a one-shot repaint so stale pixels are erased.
         let _ = clear_kitty().commit();
         assert!(take_iterm_read_viewer_repaint());
         assert!(!take_iterm_read_viewer_repaint());

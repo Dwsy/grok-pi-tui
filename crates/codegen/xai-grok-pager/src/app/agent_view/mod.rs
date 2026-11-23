@@ -1161,6 +1161,9 @@ pub struct AgentView {
     /// Last iTerm2 placement per path; re-emit when `screen_rect` changes.
     pub(crate) inline_media_iterm_emitted:
         std::collections::HashMap<std::path::PathBuf, ratatui::layout::Rect>,
+    /// Last observed `overlay::iterm_clear_gen()` so a full `terminal.clear()`
+    /// resets `inline_media_iterm_emitted` and triggers a single clean re-emit.
+    pub(crate) inline_media_iterm_clear_gen: u64,
     /// Counter for allocating the next Kitty image ID.
     pub(crate) next_inline_media_id: u32,
     /// Active inline video playback (user-initiated via click/Enter).

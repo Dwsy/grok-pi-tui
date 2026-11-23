@@ -375,7 +375,11 @@ impl<'a> EntryRenderer<'a> {
         if !scrollback_inline_overlay_active() {
             return 0;
         }
-        let Some(media) = self.entry.block.inline_media() else {
+        let Some(media) = self
+            .entry
+            .block
+            .inline_media_for_mode(self.entry.display_mode)
+        else {
             return 0;
         };
         // Shared with `inline_media_placements` so the reserved rows match the painted placement exactly

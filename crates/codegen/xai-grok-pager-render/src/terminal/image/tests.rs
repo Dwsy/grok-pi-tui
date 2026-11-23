@@ -141,10 +141,29 @@ fn scrollback_overlay_excludes_warp() {
         GraphicsProtocol::Kitty,
         TerminalName::Kitty,
     ));
+    assert!(scrollback_inline_overlay_active_for_brand(
+        GraphicsProtocol::ITerm2,
+        TerminalName::Iterm2,
+    ));
     assert!(!scrollback_inline_overlay_active_for_brand(
         GraphicsProtocol::Kitty,
         TerminalName::WarpTerminal,
     ));
+}
+
+#[test]
+fn iterm_inline_image_preserves_cursor_and_skips_when_not_emitting() {
+    let _guard = set_protocol_for_test(GraphicsProtocol::ITerm2);
+    let area = ratatui::layout::Rect::new(2, 4, 40, 12);
+    let kept = place_inline_image(&[0u8; 10], 100, 100, area, 12, 0, 2, false).unwrap();
+    assert!(
+        kept.is_empty(),
+        "steady-state iTerm2 inline placement must not move the cursor or emit bytes"
+    );
+    let emitted = place_inline_image(&[0u8; 10], 100, 100, area, 12, 0, 2, true).unwrap();
+    assert!(emitted.starts_with("\x1b7"));
+    assert!(emitted.ends_with("\x1b8"));
+    assert!(emitted.contains("\x1b]1337;File="));
 }
 
 #[test]

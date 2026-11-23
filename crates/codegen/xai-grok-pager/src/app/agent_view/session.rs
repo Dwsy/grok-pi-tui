@@ -284,6 +284,7 @@ impl AgentView {
             inline_media_load_failed: std::collections::HashMap::new(),
             inline_media_ids: std::collections::HashMap::new(),
             inline_media_iterm_emitted: std::collections::HashMap::new(),
+            inline_media_iterm_clear_gen: 0,
             next_inline_media_id: 2,
             inline_video: None,
             video_load_rx: None,

@@ -681,7 +681,8 @@ pub(crate) fn render_scrolled_entries_with_selection_boundaries(
                 if visible_h >= 1 {
                     // Tool media exposes its second output line as the click-to-copy filepath and reserves a button row
                     let filepath_virtual_y = content_y_start + 1;
-                    let filepath_screen_rect = if filepath_virtual_y >= viewport_start
+                    let filepath_screen_rect = if cached_output.lines.len() >= 2
+                        && filepath_virtual_y >= viewport_start
                         && filepath_virtual_y < viewport_bottom
                     {
                         Some(ratatui::layout::Rect {

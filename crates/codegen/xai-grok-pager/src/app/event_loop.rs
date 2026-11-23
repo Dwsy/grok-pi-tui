@@ -709,6 +709,14 @@ impl Presenter {
                     crate::terminal::overlay::reset_owner();
                 }
                 app.draw(terminal);
+                // If drawing hid, cleared, or moved a committed iTerm2 image,
+                // run one immediate clear-and-repaint so stale grid pixels do
+                // not linger while idle.
+                if crate::terminal::overlay::take_iterm_read_viewer_repaint() {
+                    let _ = terminal.clear();
+                    crate::terminal::overlay::reset_owner();
+                    app.draw(terminal);
+                }
             },
             || sync.queued(),
         );

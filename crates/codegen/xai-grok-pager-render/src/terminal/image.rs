@@ -114,9 +114,9 @@ pub fn scrollback_inline_overlay_active() -> bool {
     if INLINE_OVERLAY_FORCE_OFF.load(Ordering::Relaxed) {
         return false;
     }
-    let protocol = detect_graphics_protocol();
+    let protocol = prompt_preview_graphics_protocol();
     if test_protocol_override_active() {
-        return protocol == GraphicsProtocol::Kitty;
+        return matches!(protocol, GraphicsProtocol::Kitty | GraphicsProtocol::ITerm2);
     }
     scrollback_inline_overlay_active_for_brand(protocol, terminal_context().brand)
 }
@@ -141,7 +141,7 @@ fn scrollback_inline_overlay_active_for_brand(
         (
             GraphicsProtocol::Kitty,
             TerminalName::Kitty | TerminalName::Ghostty | TerminalName::WezTerm
-        )
+        ) | (GraphicsProtocol::ITerm2, TerminalName::Iterm2)
     )
 }
 
@@ -341,7 +341,7 @@ fn convert_via_sips(image_data: &[u8]) -> Option<Vec<u8>> {
 }
 
 pub fn prepare_overlay_image_bytes(image_data: &[u8]) -> Option<Vec<u8>> {
-    match detect_graphics_protocol() {
+    match prompt_preview_graphics_protocol() {
         GraphicsProtocol::Kitty => prepare_kitty_overlay_image_bytes(image_data),
         GraphicsProtocol::ITerm2 => Some(image_data.to_vec()),
         GraphicsProtocol::None => None,
@@ -502,7 +502,7 @@ pub(super) fn build_overlay_image_escapes_for_protocol(
 /// Kitty: uploads with the given `image_id`.
 /// iTerm2: no-op; the data is sent with each placement instead.
 pub fn transmit_inline_image(image_data: &[u8], image_id: u32) -> Option<String> {
-    match detect_graphics_protocol() {
+    match prompt_preview_graphics_protocol() {
         GraphicsProtocol::Kitty => {
             let format = kitty_format_from_bytes(image_data)?;
             Some(transmit_kitty_image(image_data, format, image_id))
@@ -526,7 +526,7 @@ pub fn place_inline_image(
     image_id: u32,
     emit_iterm_data: bool,
 ) -> Option<String> {
-    let protocol = detect_graphics_protocol();
+    let protocol = prompt_preview_graphics_protocol();
     if protocol == GraphicsProtocol::None {
         return None;
     }
@@ -538,9 +538,9 @@ pub fn place_inline_image(
     let img_y = area.y;
 
     let mut esc = String::new();
-    esc.push_str(&format!("\x1b[{};{}H", img_y + 1, img_x + 1));
     match protocol {
         GraphicsProtocol::Kitty => {
+            esc.push_str(&format!("\x1b[{};{}H", img_y + 1, img_x + 1));
             let visible_rows = area.height.min(fit_rows);
             if top_crop_rows > 0 || visible_rows < fit_rows {
                 let src_y = if fit_rows > 0 {
@@ -569,7 +569,18 @@ pub fn place_inline_image(
         }
         GraphicsProtocol::ITerm2 => {
             if emit_iterm_data {
-                esc.push_str(&render_iterm2_image(image_data, fit_cols, area.height));
+                let (cols, rows) = if top_crop_rows > 0 || area.height < fit_rows {
+                    fit_image_to_cells(img_w, img_h, area.width, area.height)
+                } else {
+                    (fit_cols, fit_rows)
+                };
+                let iterm_x = area.x + area.width.saturating_sub(cols) / 2;
+                // OSC 1337 advances the cursor past the image; save/restore it (DECSC/DECRC)
+                // so ratatui's parked prompt caret is preserved.
+                esc.push_str("\x1b7");
+                esc.push_str(&format!("\x1b[{};{}H", img_y + 1, iterm_x + 1));
+                esc.push_str(&render_iterm2_image(image_data, cols, rows));
+                esc.push_str("\x1b8");
             }
         }
         GraphicsProtocol::None => unreachable!(),

@@ -1380,6 +1380,9 @@ impl AgentView {
                     let _ = std::io::Write::write_all(stderr, clear.as_bytes());
                 }
             });
+            if !self.inline_media_iterm_emitted.is_empty() {
+                crate::terminal::overlay::arm_iterm_grid_repaint();
+            }
             self.inline_media_ids.clear();
             self.inline_media_iterm_emitted.clear();
         }
@@ -4788,10 +4791,7 @@ impl AgentView {
                 // This viewer replaced (or shrank under) an image viewer:
                 // drop the stale shared-slot placement.
                 self.block_viewer_image_active = false;
-                if crate::terminal::image::detect_graphics_protocol()
-                    == crate::terminal::image::GraphicsProtocol::Kitty
-                {
-                    let clear = crate::terminal::overlay::clear_kitty();
+                if let Some(clear) = crate::terminal::overlay::clear() {
                     prompt_post_flush = Some(clear.into());
                 }
             }
@@ -4959,13 +4959,18 @@ impl AgentView {
             || self.dropdown_items_area.is_some()
             || self.completion_dropdown_items_area.is_some()
             || self.history_dropdown_area.is_some();
-        let placements = if dropdown_active {
+        let placements = if dropdown_active || self.resize_hides_prompt_preview() {
             &[][..]
         } else {
             &scrollback_inline_media[..]
         };
         self.inline_media_hits = InlineMediaHitAreas::default();
         if !placements.is_empty() {
+            let clear_gen = crate::terminal::overlay::iterm_clear_gen();
+            if self.inline_media_iterm_clear_gen != clear_gen {
+                self.inline_media_iterm_emitted.clear();
+                self.inline_media_iterm_clear_gen = clear_gen;
+            }
             let mut all_escapes = String::new();
             let mut this_frame_ids: HashSet<u32> = HashSet::new();
             for placement in placements {
@@ -5138,25 +5143,34 @@ impl AgentView {
                 if !this_frame_ids.contains(&old_id) {
                     all_escapes.push_str(&crate::terminal::image::clear_kitty_image(old_id));
                     self.inline_media_ids.retain(|_, &mut v| v != old_id);
+                    let before_len = self.inline_media_iterm_emitted.len();
                     self.inline_media_iterm_emitted
                         .retain(|p, _| self.inline_media_ids.contains_key(p));
+                    if self.inline_media_iterm_emitted.len() < before_len {
+                        crate::terminal::overlay::arm_iterm_grid_repaint();
+                    }
                 }
             }
             self.last_placed_ids = this_frame_ids;
-            if !all_escapes.is_empty() {
+            if !self.last_placed_ids.is_empty() {
                 self.inline_media_active = true;
-                match prompt_post_flush.as_mut() {
-                    Some(existing) => existing.append_plain(&all_escapes),
-                    None => {
-                        prompt_post_flush =
-                            Some(crate::terminal::overlay::PostFlush::plain(all_escapes));
+                if !all_escapes.is_empty() {
+                    match prompt_post_flush.as_mut() {
+                        Some(existing) => existing.append_plain(&all_escapes),
+                        None => {
+                            prompt_post_flush =
+                                Some(crate::terminal::overlay::PostFlush::plain(all_escapes));
+                        }
                     }
                 }
             } else if self.inline_media_active {
                 self.inline_media_active = false;
-                let mut clear_esc = String::new();
+                let mut clear_esc = all_escapes;
                 for &id in self.inline_media_ids.values() {
                     clear_esc.push_str(&crate::terminal::image::clear_kitty_image(id));
+                }
+                if !self.inline_media_iterm_emitted.is_empty() {
+                    crate::terminal::overlay::arm_iterm_grid_repaint();
                 }
                 self.inline_media_ids.clear();
                 self.inline_media_iterm_emitted.clear();
@@ -5178,6 +5192,9 @@ impl AgentView {
             for &id in self.inline_media_ids.values() {
                 clear_esc.push_str(&crate::terminal::image::clear_kitty_image(id));
             }
+            if !self.inline_media_iterm_emitted.is_empty() {
+                crate::terminal::overlay::arm_iterm_grid_repaint();
+            }
             self.inline_media_iterm_emitted.clear();
             self.inline_media_ids.clear();
             self.last_placed_ids.clear();
@@ -5198,11 +5215,12 @@ impl AgentView {
             // The block viewer's overlay image outlived the popup: drop the
             // shared modal placement slot it drew into (Kitty id 1).
             self.block_viewer_image_active = false;
-            let clear =
-                crate::terminal::overlay::PostFlush::from(crate::terminal::overlay::clear_kitty());
-            match prompt_post_flush.as_mut() {
-                Some(existing) => existing.append(clear),
-                None => prompt_post_flush = Some(clear),
+            if let Some(clear) = crate::terminal::overlay::clear() {
+                let clear = crate::terminal::overlay::PostFlush::from(clear);
+                match prompt_post_flush.as_mut() {
+                    Some(existing) => existing.append(clear),
+                    None => prompt_post_flush = Some(clear),
+                }
             }
         }
         if !self.inline_media_active

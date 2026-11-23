@@ -280,9 +280,18 @@ pub(super) fn dispatch_open_block_viewer(app: &mut AppView) {
         };
 
         // Block has images/media but the terminal can't render pixels: toast and bail
+        let is_read_image = matches!(
+            &entry.block,
+            RenderBlock::ToolCall(ToolCallBlock::Read(b)) if b.image_ref.is_some()
+        );
+        let graphics_supported = if is_read_image {
+            crate::terminal::image::prompt_preview_graphics_protocol().supports_images()
+        } else {
+            crate::terminal::image::detect_graphics_protocol().supports_images()
+        };
         let has_media =
             !entry.block.image_references().is_empty() || entry.block.inline_media().is_some();
-        if has_media && !crate::terminal::image::detect_graphics_protocol().supports_images() {
+        if has_media && !graphics_supported {
             agent.guard_image_support();
             return;
         }
