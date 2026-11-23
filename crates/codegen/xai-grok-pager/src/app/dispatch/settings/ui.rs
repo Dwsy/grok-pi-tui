@@ -550,6 +550,22 @@ pub(in crate::app::dispatch) fn dispatch_open_pi_config(app: &mut AppView) -> Ve
     let Some(cwd) = app.agents.get(&id).map(|agent| agent.session.cwd.clone()) else {
         return vec![];
     };
+    if app.external_agent {
+        return match crate::pi_resource_config::PiResourceCatalog::load(cwd)
+            .and_then(|catalog| catalog.write_ui_snapshot_file())
+        {
+            Ok(snapshot_path) => vec![Effect::MentionAction {
+                kind: "pi_config".to_owned(),
+                command: "__pi_config_manager".to_owned(),
+                query: snapshot_path.to_string_lossy().into_owned(),
+            }],
+            Err(error) => {
+                let message = format!("Pi config unavailable: {error:#}");
+                app.show_toast(&message);
+                vec![]
+            }
+        };
+    }
     match crate::views::pi_config::PiConfigModalState::open(cwd) {
         Ok(state) => {
             if let Some(agent) = app.agents.get_mut(&id) {

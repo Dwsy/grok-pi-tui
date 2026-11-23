@@ -750,6 +750,30 @@ fn handle_pi_ui_mention_insert(notif: &acp::ExtNotification, app: &mut AppView) 
         app.pending_effects.extend(effects);
         return true;
     }
+    if kind == "pi_config_mutate" {
+        let ActiveView::Agent(agent_id) = app.active_view else {
+            return false;
+        };
+        let Some(cwd) = app.agents.get(&agent_id).map(|a| a.session.cwd.clone()) else {
+            return false;
+        };
+        let result = serde_json::from_str::<serde_json::Value>(insert_text)
+            .map_err(anyhow::Error::from)
+            .and_then(|payload| {
+                let catalog = crate::pi_resource_config::PiResourceCatalog::load(cwd.clone())?;
+                let msg = catalog.apply_ui_mutation(&payload)?;
+                // Refresh snapshot so any subsequent open/reload sees persisted state.
+                if let Ok(reloaded) = crate::pi_resource_config::PiResourceCatalog::load(cwd) {
+                    let _ = reloaded.write_ui_snapshot_file();
+                }
+                Ok(msg)
+            });
+        match result {
+            Ok(msg) => app.show_toast(&msg),
+            Err(err) => app.show_toast(&format!("Pi config update failed: {err:#}")),
+        }
+        return true;
+    }
     let ActiveView::Agent(agent_id) = app.active_view else {
         return false;
     };

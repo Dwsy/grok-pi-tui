@@ -83,6 +83,8 @@ mod mentions_extension;
 mod review_extension;
 #[path = "grok_pi/tree_extension.rs"]
 mod tree_extension;
+#[path = "grok_pi/config_extension.rs"]
+mod config_extension;
 #[path = "grok_pi/tui_kit.rs"]
 mod tui_kit;
 
@@ -153,6 +155,7 @@ use working_message_extension::write_working_message_extension;
 use mentions_extension::write_mentions_extension;
 use review_extension::write_review_extension;
 use tree_extension::write_tree_extension;
+use config_extension::write_config_extension;
 
 /// Grok pager commands that are meaningful when Pi is the ACP backend.
 ///
@@ -534,6 +537,11 @@ async fn run(mut args: Args) -> Result<()> {
         .then(|| write_tree_extension())
         .transpose()
         .context("failed to create Pi tree extension")?;
+    // Bordered TS `/pi-config` resource manager renderer backed by Rust PiResourceCatalog API.
+    let config_extension = bridge_extensions_enabled
+        .then(|| write_config_extension())
+        .transpose()
+        .context("failed to create Pi config extension")?;
     // RPC-compat is always injected with bridge extensions: argument-completion
     // enrichment for get_commands does not depend on Remote TUI. TUI mode rewrite
     // remains gated by PI_GROK_EXTENSION_TUI_COMPAT (set only when remote-tui on).
@@ -689,6 +697,12 @@ async fn run(mut args: Args) -> Result<()> {
         (
             "pi-grok-tree",
             tree_extension
+                .as_ref()
+                .map(|extension| extension.path()),
+        ),
+        (
+            "pi-grok-config",
+            config_extension
                 .as_ref()
                 .map(|extension| extension.path()),
         ),
@@ -1345,6 +1359,7 @@ async fn run(mut args: Args) -> Result<()> {
     let _mentions_extension = mentions_extension;
     let _review_extension = review_extension;
     let _tree_extension = tree_extension;
+    let _config_extension = config_extension;
     let _shortcut_manager_extension = shortcut_manager_extension;
     let _emphasis_extension = emphasis_extension;
     let _rust_tui_bridge_extension = rust_tui_bridge_extension;

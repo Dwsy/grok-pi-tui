@@ -1,7 +1,7 @@
 ---
 id: "2026-11-23-offload-extensions-and-tree-modals-to-ts"
 title: "P1 共享基建收口与 P2 重型弹窗 TS 化（/tree 会话树与后续 pi_config 资源管理）"
-status: "in_progress"
+status: "completed"
 created: "2026-11-23"
 updated: "2026-11-23"
 category: "pager"
@@ -26,4 +26,4 @@ tags: ["workhub", "issue", "ts-tui-kit", "session-tree", "pi-config", "offload"]
 
 - [x] **Phase 1 (P1): Rust `tui_kit` 公共挂载 + TS `ListController` + `/review` 高清图预览**
 - [x] **Phase 2 (P2-1): 独立 TS `/tree` 会话树插件 (`extensions/pi-grok-tree/`)** (`docs/pr/pager/20261123-offload-session-tree-to-ts.md`)
-- [ ] **Phase 3 (P2-2): Rust `pi_resource_config` API 桥接 + TS 渲染层规划/实施**
+- [x] **Phase 3 (P2-2): Rust `pi_resource_config` 权威 API + TS `/pi-config` 渲染插件 (`extensions/pi-grok-config/`)** (`docs/pr/pager/20261123-offload-pi-config-renderer-to-ts.md`)

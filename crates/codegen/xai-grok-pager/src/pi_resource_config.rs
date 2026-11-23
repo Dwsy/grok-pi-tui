@@ -162,6 +162,104 @@ fn resource_precedence(resource: &PiResource) -> u8 {
 }
 
 impl PiResourceCatalog {
+    /// Export the discovered catalog as a flat JSON snapshot for TS TUI
+    /// renderers (`extensions/pi-grok-config/`). Rust remains the single source
+    /// of truth for discovery, trust checks, and `settings.json` persistence.
+    pub fn to_ui_snapshot_json(&self) -> Value {
+        let resources: Vec<Value> = self
+            .resources
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": format!("{}:{}", r.resource_type.label(), r.path.display()),
+                    "displayName": r.display_name(),
+                    "path": r.path.to_string_lossy(),
+                    "resourceType": r.resource_type.label(),
+                    "scope": r.scope.label(),
+                    "origin": r.origin.label(),
+                    "source": r.source,
+                    "enabled": r.enabled,
+                    "inheritedEnabled": r.inherited_enabled,
+                    "projectOverride": match r.project_override {
+                        PiProjectOverride::Inherit => "Inherit",
+                        PiProjectOverride::Load => "Load",
+                        PiProjectOverride::Unload => "Unload",
+                    },
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "cwd": self.cwd.to_string_lossy(),
+            "agentDir": self.agent_dir.to_string_lossy(),
+            "projectTrusted": self.project_trusted,
+            "resources": resources,
+        })
+    }
+
+    /// Write the current catalog snapshot to a per-process temp JSON file so
+    /// the TS `/pi-config` renderer can read it without hitting RPC size caps.
+    pub fn write_ui_snapshot_file(&self) -> Result<PathBuf> {
+        let path = env::temp_dir().join(format!("pi-grok-config-{}.json", std::process::id()));
+        let body = serde_json::to_string(&self.to_ui_snapshot_json())
+            .context("serialize Pi resource catalog snapshot")?;
+        fs::write(&path, body).with_context(|| {
+            format!("write Pi resource catalog snapshot to {}", path.display())
+        })?;
+        Ok(path)
+    }
+
+    /// Apply a single mutation requested by the TS `/pi-config` renderer using
+    /// Rust's authoritative `set_global_enabled` / `set_project_override` APIs.
+    pub fn apply_ui_mutation(&self, payload: &Value) -> Result<String> {
+        let target_path = payload
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing resource path"))?;
+        let target_type = payload
+            .get("resourceType")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing resourceType"))?;
+        let mode = payload
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("global");
+
+        let resource = self
+            .resources
+            .iter()
+            .find(|r| {
+                r.resource_type.label() == target_type
+                    && r.path.to_string_lossy() == target_path
+            })
+            .ok_or_else(|| anyhow::anyhow!("resource not found in catalog: {target_path}"))?;
+
+        if mode == "project" {
+            let next_override = match payload.get("projectOverride").and_then(Value::as_str) {
+                Some("Load") => PiProjectOverride::Load,
+                Some("Unload") => PiProjectOverride::Unload,
+                Some("Inherit") => PiProjectOverride::Inherit,
+                _ => bail!("invalid projectOverride value"),
+            };
+            self.set_project_override(resource, next_override)?;
+            Ok(format!(
+                "Updated project override for {} -> {:?} (applies on reload)",
+                resource.display_name(),
+                next_override
+            ))
+        } else {
+            let enabled = payload
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| anyhow::anyhow!("missing enabled boolean"))?;
+            self.set_global_enabled(resource, enabled)?;
+            Ok(format!(
+                "{} {} globally (applies on reload)",
+                if enabled { "Enabled" } else { "Disabled" },
+                resource.display_name()
+            ))
+        }
+    }
+
     /// Load the resource catalog using the persisted trust store only.
     pub fn load(cwd: PathBuf) -> Result<Self> {
         Self::load_with_trust(cwd, None)
