@@ -1051,9 +1051,17 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             };
             // Usage is counted once the switch succeeds (see `handle_switch_model_complete`).
             let Some(session_id) = agent.session.session_id.clone() else {
+                let prev_model = agent.session.models.current.clone();
+                agent.session.models.set_current(model_id.clone(), effort);
+                let rollback_prev = agent
+                    .session
+                    .deferred_model_switch
+                    .take()
+                    .and_then(|prior| prior.prev_model_id)
+                    .or(prev_model);
                 agent.session.deferred_model_switch =
                     Some(crate::app::agent::DeferredModelSwitch {
-                        prev_model_id: agent.session.models.current.clone(),
+                        prev_model_id: rollback_prev,
                         model_id,
                         effort,
                     });
@@ -1098,6 +1106,23 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 return vec![];
             };
             let Some(session_id) = agent.session.session_id.clone() else {
+                let prev_model = agent.session.models.current.clone();
+                agent
+                    .session
+                    .models
+                    .set_current(model_id.clone(), Some(effort));
+                let rollback_prev = agent
+                    .session
+                    .deferred_model_switch
+                    .take()
+                    .and_then(|prior| prior.prev_model_id)
+                    .or(prev_model);
+                agent.session.deferred_model_switch =
+                    Some(crate::app::agent::DeferredModelSwitch {
+                        prev_model_id: rollback_prev,
+                        model_id,
+                        effort: Some(effort),
+                    });
                 return vec![];
             };
             agent.session.model_switch_pending = true;

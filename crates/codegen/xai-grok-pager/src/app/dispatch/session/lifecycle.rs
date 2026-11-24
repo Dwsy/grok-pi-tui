@@ -1492,6 +1492,9 @@ pub(in crate::app::dispatch) fn handle_session_created(
             agent.mcp_init_progress = None;
         }
         if let Some(m) = new_models {
+            if app.external_agent {
+                crate::pi_model_cache::save_pi_models_async(m.clone());
+            }
             app.models = Some(m).into();
             agent.session.models = app.models.clone();
         }
@@ -1504,6 +1507,15 @@ pub(in crate::app::dispatch) fn handle_session_created(
         }
         let mut effects =
             deferred_mode_effects(&session_id_clone, deferred_mode, deferred_permission);
+        if let Some(switch) = deferred {
+            effects.push(Effect::SwitchModel {
+                agent_id,
+                session_id: session_id_clone.clone(),
+                model_id: switch.model_id,
+                effort: switch.effort,
+                prev_model_id: switch.prev_model_id,
+            });
+        }
         let mut drain = if app.reconnect_pending {
             QueueDrain {
                 effects: vec![],
@@ -1543,15 +1555,6 @@ pub(in crate::app::dispatch) fn handle_session_created(
             silent: true,
             nonce: Default::default(),
         });
-        if let Some(switch) = deferred {
-            effects.push(Effect::SwitchModel {
-                agent_id,
-                session_id: session_id_clone.clone(),
-                model_id: switch.model_id,
-                effort: switch.effort,
-                prev_model_id: switch.prev_model_id,
-            });
-        }
         if std::mem::take(&mut agent.pending_extensions_fetch)
             && let Some(modal) = agent.extensions_modal.as_mut()
         {
@@ -1620,6 +1623,9 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         agent.is_worktree = true;
         crate::git_info::populate_from_cwd_async(session_cwd.clone());
         if let Some(m) = new_models {
+            if app.external_agent {
+                crate::pi_model_cache::save_pi_models_async(m.clone());
+            }
             app.models = Some(m).into();
             agent.session.models = app.models.clone();
         }
@@ -1640,6 +1646,15 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         }
         let mut effects =
             deferred_mode_effects(&session_id_clone, deferred_mode, deferred_permission);
+        if let Some(switch) = deferred {
+            effects.push(Effect::SwitchModel {
+                agent_id,
+                session_id: session_id_clone.clone(),
+                model_id: switch.model_id,
+                effort: switch.effort,
+                prev_model_id: switch.prev_model_id,
+            });
+        }
         let mut drain = if app.reconnect_pending {
             QueueDrain {
                 effects: vec![],
@@ -1679,15 +1694,6 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
             silent: true,
             nonce: Default::default(),
         });
-        if let Some(switch) = deferred {
-            effects.push(Effect::SwitchModel {
-                agent_id,
-                session_id: session_id_clone.clone(),
-                model_id: switch.model_id,
-                effort: switch.effort,
-                prev_model_id: switch.prev_model_id,
-            });
-        }
         if std::mem::take(&mut agent.pending_extensions_fetch)
             && let Some(modal) = agent.extensions_modal.as_mut()
         {

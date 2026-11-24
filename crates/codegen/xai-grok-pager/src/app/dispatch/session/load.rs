@@ -1310,6 +1310,9 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             agent.scrollback.remove_entry(placeholder_id);
         }
         if let Some(m) = new_models {
+            if app.external_agent {
+                crate::pi_model_cache::save_pi_models_async(m.clone());
+            }
             app.models = Some(m).into();
             agent.session.models = app.models.clone();
         }
@@ -1359,6 +1362,18 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             }
         }
         let mut effects = Vec::new();
+        if let Some(switch) = deferred {
+            // Set `model_switch_pending` BEFORE `maybe_drain_queue` so any queued user prompt
+            // waits for `SwitchModelComplete` and never runs on the pre-switch model.
+            agent.session.model_switch_pending = true;
+            effects.push(Effect::SwitchModel {
+                agent_id,
+                session_id: hydrate_sid.clone(),
+                model_id: switch.model_id,
+                effort: switch.effort,
+                prev_model_id: switch.prev_model_id,
+            });
+        }
         if let Some(directive) = agent.pending_first_prompt.take() {
             agent.session.enqueue_prompt_front(directive);
         }
@@ -1394,16 +1409,6 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             silent: true,
             nonce: Default::default(),
         });
-        if let Some(switch) = deferred {
-            agent.session.model_switch_pending = true;
-            effects.push(Effect::SwitchModel {
-                agent_id,
-                session_id: hydrate_sid.clone(),
-                model_id: switch.model_id,
-                effort: switch.effort,
-                prev_model_id: switch.prev_model_id,
-            });
-        }
         if std::mem::take(&mut agent.pending_extensions_fetch)
             && let Some(modal) = agent.extensions_modal.as_mut()
         {

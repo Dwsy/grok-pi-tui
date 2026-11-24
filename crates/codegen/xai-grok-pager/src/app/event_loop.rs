@@ -1239,11 +1239,18 @@ pub(crate) async fn run(
     // Host palette entries are placement metadata for commands that may be
     // feature-gated or registered later. The live ACP command catalog is the
     // source of truth: palette construction joins against available commands.
+    let initial_models = if external_agent && connection.models.is_empty() {
+        crate::pi_model_cache::load_initial_pi_models()
+            .map(|cached| Some(cached).into())
+            .unwrap_or(connection.models)
+    } else {
+        connection.models
+    };
     let mut app = {
         let _t = xai_grok_telemetry::instrumentation::timer("startup.app_init.app_view_new");
         AppView::new(
             connection.tx,
-            connection.models,
+            initial_models,
             connection.available_commands,
             terminal.backend_mut().writer_mut().escape_writer(),
         )

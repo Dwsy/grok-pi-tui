@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Pi model catalog cache & instant pre-ready model switching** — Hydrates external Pi sessions at startup from `${GROK_HOME:-~/.grok-pi}/pi-models-cache.json` (falling back on cold launch to Pi's existing `~/.pi/agent/models.json` and `~/.pi/agent/settings.json`) and refreshes the cache atomically whenever Pi finishes loading (`SessionCreated`, `WorktreeSessionCreated`, `SessionLoaded`). Users can open `/model` (`Ctrl+M`), cycle models (`NextModel`), or adjust thinking level (`CycleThinkingLevel`) before Pi finishes booting; pre-ready selections are stashed in `deferred_model_switch`, dispatched ahead of background fetches on session ready, and strictly hold queued user prompts via `model_switch_pending` (also fixed in `handle_session_loaded`) until `SwitchModelComplete`.
 - **Standalone OMP Shell on-demand download TUI** — Decoupled `grok-pi-shell-host` from main `grok-pi` release tarballs in `.github/workflows/release.yml` and published a stable alias (`grok-pi-shell-host-macos-arm64.tar.gz`) alongside content-addressed archives on `omp-shell-host-latest`. `[ui].pi_omp_shell` stays off by default; toggling it on in F2 Settings now checks local paths (`PI_GROK_OMP_SHELL_HOST`, `${GROK_HOME:-~/.grok-pi}/bin/grok-pi-shell-host`, `PATH`) and, when missing, opens a live progress TUI modal (resolving → streaming download bar → `tar` extract → `--handshake` verification → atomic install) before enabling and persisting `pi_omp_shell = true`.
 - **Timeline trackpad haptics (macOS)** — Drive timeline haptic feedback via the private macOS trackpad actuator (`f5dd07a4`).
 
@@ -23,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### 中文说明
 
+- **Pi 模型目录本地缓存与启动前切换模型**：启动时立即从 `~/.grok-pi/pi-models-cache.json` 预热模型列表（首次冷启动自动读取 Pi 已有 `~/.pi/agent/models.json` 与 `settings.json`），每次 Pi 加载完成后后台原子覆写最新缓存；在 Pi 加载完成前即可通过 `/model`、`Ctrl+M`、`NextModel`、`CycleThinkingLevel` 切换模型并暂存，待 Pi 就绪后优先下发切换并严格等待 `SwitchModelComplete` 后再发送排队的用户消息（同步修复 `handle_session_loaded` 中 `model_switch_pending` 置位偏晚的竞态）。
 - **OMP Shell 独立构建与 F2 按需下载 TUI**：从 `release.yml` 主发布包中解耦 `grok-pi-shell-host`（避免主二进制/压缩包体积膨胀），在 `omp-shell-host-latest` 独立发布并同步提供稳定别名资产；F2 `OMP Shell backend` 默认关闭，开启时若本地未安装则弹出实时下载进度 TUI（查询发布 → 流式进度条 → 解压 → `--handshake` 校验 → 安装到 `~/.grok-pi/bin/grok-pi-shell-host`），全部成功后才开启并持久化，失败或取消保持关闭。
 - **思考流模式默认切换为 `Height hold`**：将 `[ui].thinking_stream_mode` 默认值改为 `height_hold`，减少思考块折叠时的滚动跳动。
 - **S12 架构瘦身**：将 `xai-grok-shell`（`tokio-retry`、`backon`、`webbrowser`、`nucleo`、`xai-computer-hub-sdk`）与 `xai-grok-pager`（`signal-hook`、`portable-pty`、`backon`、`flate2`、`tar`）共 10 个 Stock-only 依赖及 `wrap`/`trace` CLI 运行时门控至 `stock-agent`（零 `Cargo.lock` 改动），并在 CI 中新增 `tokio-retry` 与 `signal-hook` 的 Pi 负向闭包断言。
