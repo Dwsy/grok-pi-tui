@@ -90,8 +90,8 @@ async function openReviewOverlay(
       {
         overlay: true,
         overlayOptions: {
-          width: "92%",
-          maxHeight: "88%",
+          width: "90%",
+          maxHeight: "90%",
           anchor: "center",
         },
       },
