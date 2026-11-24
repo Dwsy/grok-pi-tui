@@ -100,31 +100,54 @@ export function shortModelName(model: string): string {
 }
 
 /**
- * Curated medium-saturation identity palette modeled on Codex's
- * `thread_color.rs` (high legibility on both light and dark terminals).
+ * Curated Codex-style pastel identity palette for dark terminals
+ * (high luminance, low eye-strain, matching Codex's syntax-theme accents).
  */
-const SESSION_IDENTITY_PALETTE: readonly string[] = [
-  "\x1b[38;2;37;99;235m",   // cobalt blue
-  "\x1b[38;2;13;148;136m",  // teal
-  "\x1b[38;2;147;51;234m",  // violet
-  "\x1b[38;2;217;119;6m",   // amber
-  "\x1b[38;2;225;29;72m",   // rose
-  "\x1b[38;2;22;163;74m",   // emerald
-  "\x1b[38;2;2;132;199m",   // sky
-  "\x1b[38;2;192;38;211m",  // fuchsia
+const SESSION_IDENTITY_PALETTE_DARK: readonly string[] = [
+  "\x1b[38;2;121;192;255m", // soft sky (#79C0FF)
+  "\x1b[38;2;124;232;192m", // soft mint (#7CE8C0)
+  "\x1b[38;2;210;168;255m", // soft lavender (#D2A8FF)
+  "\x1b[38;2;255;166;87m",  // warm apricot (#FFA657)
+  "\x1b[38;2;255;158;190m", // soft rose (#FF9EBE)
+  "\x1b[38;2;156;229;138m", // soft sage (#9CE58A)
+  "\x1b[38;2;108;212;240m", // soft cyan (#6CD4F0)
+  "\x1b[38;2;242;184;181m", // soft coral (#F2B8B5)
 ];
+
+/** Richer identity palette for light terminal backgrounds. */
+const SESSION_IDENTITY_PALETTE_LIGHT: readonly string[] = [
+  "\x1b[38;2;9;105;218m",   // github blue (#0969DA)
+  "\x1b[38;2;15;118;110m",  // deep teal (#0F766E)
+  "\x1b[38;2;130;80;223m",  // soft purple (#8250DF)
+  "\x1b[38;2;188;76;0m",    // warm rust (#BC4C00)
+  "\x1b[38;2;191;57;137m",  // berry rose (#BF3989)
+  "\x1b[38;2;26;127;55m",   // forest green (#1A7F37)
+  "\x1b[38;2;2;132;199m",   // cerulean (#0284C7)
+  "\x1b[38;2;154;103;0m",   // warm ochre (#9A6700)
+];
+
+function isLightTerminalTheme(theme: TuiTheme): boolean {
+  const name = String((theme as { name?: unknown }).name ?? "").toLowerCase();
+  if (name.includes("light")) return true;
+  if (name.includes("dark")) return false;
+  const fgbg = process.env.COLORFGBG ?? "";
+  const bg = fgbg.split(";").pop();
+  if (bg === "15" || bg === "7") return true;
+  return false;
+}
 
 /**
  * Deterministic FNV-1a identity color per session ID (matches Codex's
  * `thread_color::color_for_id` so colors stay stable across sorts & filters).
  */
-function styleSessionTitle(sessionId: string, text: string): string {
+function styleSessionTitle(sessionId: string, text: string, lightBg = false): string {
   let hash = 0x811c9dc5;
   for (let i = 0; i < sessionId.length; i++) {
     hash ^= sessionId.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  const color = SESSION_IDENTITY_PALETTE[hash % SESSION_IDENTITY_PALETTE.length]!;
+  const palette = lightBg ? SESSION_IDENTITY_PALETTE_LIGHT : SESSION_IDENTITY_PALETTE_DARK;
+  const color = palette[hash % palette.length]!;
   return `${color}${text}\x1b[39m`;
 }
 
@@ -154,6 +177,8 @@ export class SessionPickerTui implements Component {
 
   private scope: SessionScope;
   private query: string;
+  /** Visual focus indicator when user presses `/` on empty fullscreen search. */
+  private searchFocused = false;
   private hits: SessionSearchHit[] = [];
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   /** Visual row list for fullscreen project-grouped mode. */
@@ -464,8 +489,9 @@ export class SessionPickerTui implements Component {
       return;
     }
     if (matchesKey(data, "ctrl+w") || matchesKey(data, "ctrl+l")) {
-      if (this.query.length > 0) {
+      if (this.query.length > 0 || this.searchFocused) {
         this.query = "";
+        this.searchFocused = false;
         this.recomputeHits();
       }
       return;
@@ -474,6 +500,8 @@ export class SessionPickerTui implements Component {
       if (this.query.length > 0) {
         this.query = Array.from(this.query).slice(0, -1).join("");
         this.recomputeHits();
+      } else if (this.searchFocused) {
+        this.searchFocused = false;
       }
       return;
     }
@@ -484,6 +512,12 @@ export class SessionPickerTui implements Component {
       printable = printable.slice(6, -6).replace(/[\r\n]+/g, " ");
     }
     if (!printable.startsWith("\x1b") && !/[\x00-\x1f\x7f]/.test(printable)) {
+      // Pressing `/` on an empty fullscreen search bar focuses search cleanly
+      // instead of inserting a duplicate literal `/` next to the `/` prefix.
+      if (this.fullscreen && this.query.length === 0 && !this.searchFocused && printable === "/") {
+        this.searchFocused = true;
+        return;
+      }
       this.query += printable;
       this.recomputeHits();
     }
@@ -753,9 +787,10 @@ export class SessionPickerTui implements Component {
       const modelText =
         modelColW > 0 ? truncateToWidth(shortModelName(rec.model), modelColW, "…") : "";
 
+      const titleGap = 2;
       if (isSelected) {
         const prefix = " ▸ ○ ";
-        const titleBudget = Math.max(8, titleColW - visibleWidth(prefix));
+        const titleBudget = Math.max(8, titleColW - visibleWidth(prefix) - titleGap);
         const titleText = truncateToWidth(rec.title, titleBudget, "…");
         const leftPart = `${prefix}${titleText}`;
         const rightPart = [
@@ -769,9 +804,13 @@ export class SessionPickerTui implements Component {
         lines.push(`\x1b[7m${this.bold(plainFull)}\x1b[27m`);
       } else {
         const prefix = "   ○ ";
-        const titleBudget = Math.max(8, titleColW - visibleWidth(prefix));
+        const titleBudget = Math.max(8, titleColW - visibleWidth(prefix) - titleGap);
         const titleRaw = truncateToWidth(rec.title, titleBudget, "…");
-        const coloredTitle = styleSessionTitle(rec.id, titleRaw);
+        const coloredTitle = styleSessionTitle(
+          rec.id,
+          titleRaw,
+          isLightTerminalTheme(this.theme),
+        );
         const titleStyled = this.query.trim()
           ? highlightTerms(coloredTitle, this.query, (m) => `\x1b[7m${m}\x1b[27m`)
           : coloredTitle;
@@ -819,7 +858,9 @@ export class SessionPickerTui implements Component {
     const headerLines: string[] = [pad(this.fg("dim", "Session details")), ""];
     const wrappedTitle = wrapTextToWidth(selected.title, textW).slice(0, 2);
     for (const tLine of wrappedTitle) {
-      headerLines.push(pad(this.bold(styleSessionTitle(selected.id, tLine))));
+      headerLines.push(
+        pad(this.bold(styleSessionTitle(selected.id, tLine, isLightTerminalTheme(this.theme)))),
+      );
     }
     headerLines.push(
       pad(
@@ -947,7 +988,7 @@ export class SessionPickerTui implements Component {
       this.scope === "project"
         ? `\x1b[4m${this.bold(this.fg("accent", projRaw))}\x1b[24m`
         : this.fg("dim", projRaw);
-    const searchBlock = this.query
+    const searchBlock = this.query || this.searchFocused
       ? `   ${this.fg("accent", "/")} ${this.query}${this.fg("accent", "▏")}`
       : `   ${this.fg("dim", "/ type to filter...")}`;
     const row1Left = `  ${allTab}   ${projTab}${searchBlock}`;

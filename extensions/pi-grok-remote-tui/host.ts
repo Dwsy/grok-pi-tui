@@ -149,7 +149,11 @@ export function installCustomPatch(ui: PatchableUi): void {
     }
 
     const id = randomUUID();
-    const { width, rows, terminalWidth, layout } = resolveViewport(_options);
+    const initialViewport = resolveViewport(_options);
+    const width = initialViewport.width;
+    let terminalWidth = initialViewport.terminalWidth;
+    let terminalRows = initialViewport.rows;
+    const layout = initialViewport.layout;
     let baseLayout: RemoteTuiLayout = layout;
     publishRemoteTuiLayout(ui, layout);
     const keysPath = join(tmpdir(), `pi-grok-remote-tui-keys-${id}.jsonl`);
@@ -191,6 +195,7 @@ export function installCustomPatch(ui: PatchableUi): void {
 
       const setLayout = (next: RemoteTuiLayout) => {
         frameWidth = next.width;
+        host.width = next.width;
         publishRemoteTuiLayout(ui, next);
       };
 
@@ -376,8 +381,37 @@ export function installCustomPatch(ui: PatchableUi): void {
         }
       };
 
+      const handleResize = (cols: number, rows: number) => {
+        if (closed) return;
+        const nextCols = Math.max(1, Math.floor(cols));
+        const nextRows = Math.max(1, Math.floor(rows));
+        if (nextCols === terminalWidth && nextRows === terminalRows) return;
+        terminalWidth = nextCols;
+        terminalRows = nextRows;
+        tuiStub.terminal.columns = nextCols;
+        tuiStub.terminal.rows = nextRows;
+        process.env.PI_GROK_REMOTE_TUI_WIDTH = String(nextCols);
+        process.env.PI_GROK_REMOTE_TUI_ROWS = String(nextRows);
+        baseLayout = resolveRemoteTuiLayout(
+          _options,
+          nextCols,
+          (component as (ComponentLike & { width?: unknown }) | undefined)?.width,
+        );
+        if (previousComponent) {
+          setLayout(resolveRemoteTuiLayout({ overlay: true }, nextCols));
+        } else {
+          setLayout(baseLayout);
+        }
+        try {
+          component?.invalidate?.();
+        } catch {
+          /* ignore */
+        }
+        pushFrame();
+      };
+
       const tuiStub = {
-        terminal: { columns: terminalWidth, rows },
+        terminal: { columns: terminalWidth, rows: terminalRows },
         requestRender: () => {
           process.nextTick(() => {
             if (!closed) pushFrame();
@@ -449,6 +483,7 @@ export function installCustomPatch(ui: PatchableUi): void {
         pushFrame,
         handleInput,
         handleMouse,
+        handleResize,
       };
       active = host;
 

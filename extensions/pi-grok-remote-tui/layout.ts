@@ -4,6 +4,7 @@
  */
 
 import type { RemoteTuiLayout, UnknownRecord } from "./shared.ts";
+import { readLatestViewport } from "./transport.ts";
 
 export function asRecord(value: unknown): UnknownRecord | undefined {
   return value !== null && typeof value === "object" ? (value as UnknownRecord) : undefined;
@@ -90,6 +91,7 @@ export type ResolvedViewport = {
 
 /** Match Pi interactive TUI's terminal dimensions, then resolve custom layout. */
 export function resolveViewport(options?: unknown): ResolvedViewport {
+  const latest = readLatestViewport();
   const envWidth = Number(process.env.PI_GROK_REMOTE_TUI_WIDTH);
   const envRows = Number(process.env.PI_GROK_REMOTE_TUI_ROWS);
   const columnsEnv = Number(process.env.COLUMNS);
@@ -98,11 +100,19 @@ export function resolveViewport(options?: unknown): ResolvedViewport {
   const stdoutRows = Number(process.stdout?.rows);
   const terminalWidth = Math.max(
     1,
-    Math.floor([envWidth, columnsEnv, stdoutCols].find((n) => Number.isFinite(n) && n > 0) ?? 80),
+    Math.floor(
+      [latest?.cols, envWidth, columnsEnv, stdoutCols].find(
+        (n): n is number => typeof n === "number" && Number.isFinite(n) && n > 0,
+      ) ?? 80,
+    ),
   );
   const rows = Math.max(
     1,
-    Math.floor([envRows, linesEnv, stdoutRows].find((n) => Number.isFinite(n) && n > 0) ?? 24),
+    Math.floor(
+      [latest?.rows, envRows, linesEnv, stdoutRows].find(
+        (n): n is number => typeof n === "number" && Number.isFinite(n) && n > 0,
+      ) ?? 24,
+    ),
   );
   const layout = resolveRemoteTuiLayout(options, terminalWidth);
   return { width: layout.width, rows, terminalWidth, layout };

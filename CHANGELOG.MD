@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Live Remote TUI terminal resize support** — Added `Effect::RemoteTuiResize` (`pi/ui/remote_tui/resize`) from `xai-grok-pager` through `pi-grok-adapter` into `extensions/pi-grok-remote-tui/` (`host.ts`, `transport.ts`, `layout.ts`), updating both active Remote TUI overlays on `Event::Resize` and persisting `<meta>.viewport.json` so subsequently opened overlays immediately use live terminal dimensions.
+- **Fixed `/resume` duplicate `/` on search focus, right-column misalignment on truncated titles, and dark-terminal pastel colors** — Pressing `/` on an empty `/resume` search bar now focuses search without inserting a duplicate literal `/`, reserved a 2-column gap between truncated session titles and `Msgs`/`Model`/`Created`/`Updated` so columns stay strictly aligned without right-edge `…` clipping, and upgraded the dark-terminal session identity palette to Codex-style soft pastels (with automatic light-terminal fallback).
 - **Welcome screen `/resume` & shortcuts now open the fullscreen TS TUI** — Rendered Remote TUI overlays on `ActiveView::Welcome` (`welcome_remote_tui_rect`) and routed `dispatch_show_session_picker` directly to `__pi_resume_session` whenever `external_agent` is active.
 - **Stopped trackpad scroll & background tint bleed through Remote TUI overlays** — Absorbed unhandled mouse events (including macOS trackpad `ScrollLeft`/`ScrollRight`) and blocked `dispatch_scroll` / `tick_scroll` while a Remote TUI overlay is active, and reset covered cells + filled transparent span backgrounds with `theme.bg_base` in `render_remote_tui_overlay_surface`.
 

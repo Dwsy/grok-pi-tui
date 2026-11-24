@@ -1426,10 +1426,27 @@ fn append_bash_kill_control(meta_path: &Path, task_id: &str) -> Result<&'static 
 
 /// Experimental Remote TUI: extension host watches a keyfile under tmp.
 /// Meta written by the injected extension: `{id, keysPath}`.
-fn append_remote_tui_key_event(event: Value) -> Result<()> {
-    let meta_path = std::env::var_os("PI_GROK_REMOTE_TUI_META")
+fn remote_tui_meta_path() -> std::path::PathBuf {
+    std::env::var_os("PI_GROK_REMOTE_TUI_META")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("pi-grok-remote-tui-active.json"));
+        .unwrap_or_else(|| std::env::temp_dir().join("pi-grok-remote-tui-active.json"))
+}
+
+/// Persist the latest terminal viewport next to the Remote TUI meta file so
+/// overlays opened after a terminal resize immediately receive live dimensions.
+fn write_remote_tui_viewport(cols: u64, rows: u64) -> Result<()> {
+    let mut path = remote_tui_meta_path().into_os_string();
+    path.push(".viewport.json");
+    let viewport_path = std::path::PathBuf::from(path);
+    std::fs::write(
+        &viewport_path,
+        serde_json::to_string(&json!({ "cols": cols, "rows": rows }))?,
+    )?;
+    Ok(())
+}
+
+fn append_remote_tui_key_event(event: Value) -> Result<()> {
+    let meta_path = remote_tui_meta_path();
     append_remote_tui_key_event_at(&meta_path, event)
 }
 

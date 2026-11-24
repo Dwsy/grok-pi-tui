@@ -2437,6 +2437,12 @@ pub enum Effect {
     },
     /// Experimental Remote TUI: cancel the active remote component session.
     RemoteTuiCancel { id: String },
+    /// Experimental Remote TUI: forward terminal resize dimensions to the Pi host.
+    RemoteTuiResize {
+        id: Option<String>,
+        cols: u16,
+        rows: u16,
+    },
     TimelineMessage(serde_json::Value),
     SaveTimeline {
         host: String,

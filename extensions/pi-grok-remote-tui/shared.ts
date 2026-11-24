@@ -49,4 +49,5 @@ export type ActiveHost = {
   pushFrame: () => void;
   handleInput: (data: string) => void;
   handleMouse: (event: TuiMouseEvent) => void;
+  handleResize: (cols: number, rows: number) => void;
 };

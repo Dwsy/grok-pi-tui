@@ -126,6 +126,13 @@ pub(crate) fn execute(
         Effect::RemoteTuiCancel { id } => {
             enqueue_remote_tui(acp_tx, "pi/ui/remote_tui/cancel", serde_json::json!({ "id": id }));
         }
+        Effect::RemoteTuiResize { id, cols, rows } => {
+            enqueue_remote_tui(
+                acp_tx,
+                "pi/ui/remote_tui/resize",
+                serde_json::json!({ "id": id, "cols": cols, "rows": rows }),
+            );
+        }
         Effect::TimelineMessage(params) => send_timeline_message(acp_tx, params),
         Effect::SaveTimeline { host, id, contents } => {
             tasks.spawn(async move {

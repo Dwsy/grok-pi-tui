@@ -3,7 +3,16 @@
  * and the grok-pi adapter (keys in, layout metadata out). Not Pi RPC.
  */
 
-import { closeSync, existsSync, fstatSync, openSync, readSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir as osTmpdir } from "node:os";
 import { join } from "node:path";
 import type { TuiMouseEvent } from "@earendil-works/pi-tui";
@@ -27,6 +36,26 @@ function isMouseEvent(value: unknown): value is TuiMouseEvent {
 
 export function metaPath(): string {
   return process.env.PI_GROK_REMOTE_TUI_META || join(osTmpdir(), META_NAME);
+}
+
+export function viewportPath(): string {
+  return `${metaPath()}.viewport.json`;
+}
+
+export function readLatestViewport(): { cols: number; rows: number } | undefined {
+  try {
+    const path = viewportPath();
+    if (!existsSync(path)) return undefined;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { cols?: unknown; rows?: unknown };
+    const cols = Number(parsed?.cols);
+    const rows = Number(parsed?.rows);
+    if (Number.isFinite(cols) && cols > 0 && Number.isFinite(rows) && rows > 0) {
+      return { cols: Math.floor(cols), rows: Math.floor(rows) };
+    }
+  } catch {
+    /* ignore */
+  }
+  return undefined;
 }
 
 export function writeMeta(meta: { id: string; keysPath: string } | null): void {
@@ -85,7 +114,14 @@ export function drainKeys(host: ActiveHost): void {
     const end = chunk.lastIndexOf(0x0a) + 1;
     host.keyBuffer = Buffer.from(chunk.subarray(end));
     if (end === 0) return;
-    const messages: Array<{ id?: string; op?: string; data?: string; event?: unknown }> = [];
+    const messages: Array<{
+      id?: string;
+      op?: string;
+      data?: string;
+      event?: unknown;
+      cols?: number;
+      rows?: number;
+    }> = [];
     for (const line of chunk.subarray(0, end).toString("utf8").split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -122,6 +158,20 @@ export function drainKeys(host: ActiveHost): void {
       if (msg.op === "cancel") {
         host.close(undefined);
         return;
+      }
+      if (msg.op === "resize") {
+        while (index + 1 < messages.length) {
+          const next = messages[index + 1];
+          if (!next || next.id !== msg.id || next.op !== "resize") break;
+          msg = next;
+          index++;
+        }
+        const cols = Number(msg.cols);
+        const rows = Number(msg.rows);
+        if (Number.isFinite(cols) && cols > 0 && Number.isFinite(rows) && rows > 0) {
+          host.handleResize(Math.floor(cols), Math.floor(rows));
+        }
+        continue;
       }
       if (msg.op === "input" && typeof msg.data === "string") {
         host.handleInput(msg.data);

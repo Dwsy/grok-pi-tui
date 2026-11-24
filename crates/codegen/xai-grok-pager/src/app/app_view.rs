@@ -3836,7 +3836,7 @@ impl AppView {
                 return InputOutcome::Changed;
             }
         }
-        if let Event::Resize(_, rows) = ev {
+        if let Event::Resize(cols, rows) = ev {
             for agent in self.agents.values_mut() {
                 agent.note_terminal_resize();
                 for child in agent.subagent_views.values_mut() {
@@ -3845,6 +3845,14 @@ impl AppView {
             }
             self.last_known_terminal_rows = *rows;
             self.apply_effective_compact();
+            if self.external_agent && *cols > 0 && *rows > 0 {
+                self.pending_effects
+                    .push(crate::app::actions::Effect::RemoteTuiResize {
+                        id: self.external_ui.remote_tui_id.clone(),
+                        cols: *cols,
+                        rows: *rows,
+                    });
+            }
         }
         if let Some(key) = key_event
             && let Some(pending) = &self.pending_action

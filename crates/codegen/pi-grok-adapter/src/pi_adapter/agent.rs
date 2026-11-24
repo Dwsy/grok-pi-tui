@@ -1090,6 +1090,28 @@ impl acp::Agent for PiAgent {
                 }
                 Ok(())
             }
+            "pi/ui/remote_tui/resize" => {
+                let params: Value =
+                    serde_json::from_str(arguments.params.get()).unwrap_or_default();
+                let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(0);
+                let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(0);
+                if cols > 0 && rows > 0 {
+                    if let Err(error) = write_remote_tui_viewport(cols, rows) {
+                        tracing::debug!(%error, "remote_tui viewport persist failed");
+                    }
+                    if let Some(id) = params.get("id").and_then(Value::as_str) {
+                        if let Err(error) = append_remote_tui_key_event(json!({
+                            "id": id,
+                            "op": "resize",
+                            "cols": cols,
+                            "rows": rows,
+                        })) {
+                            tracing::debug!(%error, "remote_tui keyfile resize failed");
+                        }
+                    }
+                }
+                Ok(())
+            }
             // Native extension-shortcut dispatch (Pager match_key → RPC prompt →
             // hidden /__pi_shortcut_dispatch → extension handler).
             // Prefer RPC over keyfile; independent of remote-tui.
