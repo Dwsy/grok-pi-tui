@@ -83,6 +83,8 @@ Focused engineering guardrails for `grok-pi`'s Remote TUI bridge and bundled Typ
    - Always display `shortModelName(model)` (segment after the last `/`) in both `/resume` and `@session` (`26b1dbb0`, `76b72cbb`).
 5. **Keep session catalog and mention catalog hydrated.**
    - Query PSM's `message_fts` (FTS5) + `sessions` across the full archive for `/resume` and `@session`, lazily hydrate `PiAgent::resolve_session_path` on cache misses, and persist `mention_catalog` on `AppView` (`38f904a0`, `71ef2edc`).
+6. **Inject resolved `@` mentions via `before_agent_start` `custom_message`, never `systemPrompt`.**
+   - Return `{ message: { customType: "pi-grok-mentions/v1", display: false, content: "<referenced_objects>...</referenced_objects>" } }` using Pi-style XML tags (`<session>`, `<skill>`, `<file>`, `<folder>`, `<mcp>`) instead of mutating `event.systemPromptOptions.sections.referenced_objects`, so LLM system prompt KV cache stays intact and references persist cleanly in JSONL.
 
 ## 5. Verification Checklist
 

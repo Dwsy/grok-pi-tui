@@ -37,6 +37,8 @@ import type { McpServerRecord, McpToolRecord } from "./mcp-picker-tui.ts";
 const STATUS_KEY = "__pi_grok_mentions__";
 /** Must match `EXTENSION_MENTION_INSERT_STATUS_KEY` in pi-grok-adapter. */
 const INSERT_STATUS_KEY = "__pi_grok_mention_insert__";
+/** Custom message type persisted in JSONL for resolved `@` mention blocks. */
+export const MENTIONS_CUSTOM_TYPE = "pi-grok-mentions/v1";
 const SESSION_PICKER_COMMAND = "__pi_mention_session_picker";
 const SKILL_PICKER_COMMAND = "__pi_mention_skill_picker";
 const FILE_PICKER_COMMAND = "__pi_mention_file_picker";
@@ -141,6 +143,21 @@ let lastPublishedPayload = "";
 
 function isGrokPiHost(): boolean {
   return process.env.PI_GROK === "1";
+}
+
+function escapeXmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatShortModel(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) return "";
+  const parts = trimmed.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? trimmed;
 }
 
 function upsertSkill(id: string, description?: string, filePath?: string): void {
@@ -445,15 +462,24 @@ function describeFolderReference(rawPath: string, cwd: string): string | null {
     const shown = [...dirs.map((d) => `${d}/`), ...files];
     const truncated = shown.length > MAX_DIR_ENTRIES;
     const listed = shown.slice(0, MAX_DIR_ENTRIES);
-    const heading = `- **grok-pi://folder/${rawPath}** — workspace folder \`${rawPath}\` containing ${shown.length}${truncated ? "+" : ""} entries (one level):`;
-    const lines = listed.map((name) => `  - ${name}`);
+    const attrs = [
+      `path="${escapeXmlAttr(rawPath)}"`,
+      `abs="${escapeXmlAttr(abs)}"`,
+      `entries="${shown.length}${truncated ? "+" : ""}"`,
+    ].join(" ");
+    const lines = [...listed];
     if (truncated) {
-      lines.push(`  - … ${shown.length - MAX_DIR_ENTRIES} more; list the folder for the rest`);
+      lines.push(`... ${shown.length - MAX_DIR_ENTRIES} more; list the folder for the rest`);
     }
-    return [heading, ...lines].join("\n");
+    return `<folder ${attrs}>\n${lines.join("\n")}\n</folder>`;
   } catch {
     return null;
   }
+}
+
+function describeFileReference(rawPath: string, cwd: string): string {
+  const abs = path.isAbsolute(rawPath) ? rawPath : path.resolve(cwd, rawPath);
+  return `<file name="${escapeXmlAttr(abs)}" path="${escapeXmlAttr(rawPath)}" />`;
 }
 
 function buildBuiltInProviders(pi: ExtensionAPI): MentionProviderSpec[] {
@@ -473,7 +499,13 @@ function buildBuiltInProviders(pi: ExtensionAPI): MentionProviderSpec[] {
         const items = collectSkillsFromPi(pi);
         const found = items.find((i) => i.id === id || i.id.toLowerCase() === id.toLowerCase());
         if (!found) return null;
-        return `- **${found.uri}** (${found.title})${found.sourcePath ? ` — file: \`${found.sourcePath}\`` : ""}${found.subtitle ? ` — ${found.subtitle}` : ""}`;
+        const attrs = [
+          `name="${escapeXmlAttr(found.id)}"`,
+          ...(found.sourcePath ? [`location="${escapeXmlAttr(found.sourcePath)}"`] : []),
+        ].join(" ");
+        return found.subtitle
+          ? `<skill ${attrs}>\n${found.subtitle}\n</skill>`
+          : `<skill ${attrs} />`;
       },
     },
     {
@@ -496,14 +528,27 @@ function buildBuiltInProviders(pi: ExtensionAPI): MentionProviderSpec[] {
             .slice(-4)
             .map((m) => `[${m.role}] ${m.content.replace(/\s+/g, " ").trim().slice(0, 200)}`)
             .join("\n");
-          const meta = `${foundRec.project}, ${foundRec.messageCount} msgs, ${formatTokensM(foundRec.totalTokens)}, ${foundRec.model}`;
-          return `- **grok-pi://session/${foundRec.id}** (${foundRec.title} — ${meta}, path: \`${foundRec.path}\`)${excerpt ? `\n  Recent excerpt:\n  ${excerpt.replace(/\n/g, "\n  ")}` : ""}`;
+          const attrs = [
+            `id="${escapeXmlAttr(foundRec.id)}"`,
+            `title="${escapeXmlAttr(foundRec.title)}"`,
+            `project="${escapeXmlAttr(foundRec.project)}"`,
+            `messages="${foundRec.messageCount}"`,
+            `tokens="${escapeXmlAttr(formatTokensM(foundRec.totalTokens))}"`,
+            ...(foundRec.model ? [`model="${escapeXmlAttr(formatShortModel(foundRec.model))}"`] : []),
+            `path="${escapeXmlAttr(foundRec.path)}"`,
+          ].join(" ");
+          return excerpt ? `<session ${attrs}>\n${excerpt}\n</session>` : `<session ${attrs} />`;
         }
         const items = collectThreadsFromPsmDb();
         const found = items.find((i) => i.id === id || i.id.startsWith(id));
-        if (!found) return `- **grok-pi://session/${id}** (referenced past session ID)`;
+        if (!found) return `<session id="${escapeXmlAttr(id)}" />`;
         const snippet = found.sourcePath ? readThreadTailSnippet(found.sourcePath) : null;
-        return `- **${found.uri}** (${found.title}${found.sourcePath ? `, path: \`${found.sourcePath}\`` : ""})${snippet ? `\n  Recent excerpt:\n  ${snippet.replace(/\n/g, "\n  ")}` : ""}`;
+        const attrs = [
+          `id="${escapeXmlAttr(found.id)}"`,
+          `title="${escapeXmlAttr(found.title)}"`,
+          ...(found.sourcePath ? [`path="${escapeXmlAttr(found.sourcePath)}"`] : []),
+        ].join(" ");
+        return snippet ? `<session ${attrs}>\n${snippet}\n</session>` : `<session ${attrs} />`;
       },
     },
     {
@@ -533,8 +578,10 @@ function buildBuiltInProviders(pi: ExtensionAPI): MentionProviderSpec[] {
       resolve: (id) => {
         const items = collectMcpServersFromPi(pi);
         const found = items.find((i) => i.id === id || i.id.toLowerCase() === id.toLowerCase());
-        if (!found) return `- **grok-pi://mcp/${id}**`;
-        return `- **${found.uri}** (${found.subtitle})`;
+        if (!found) return `<mcp name="${escapeXmlAttr(id)}" />`;
+        return found.subtitle
+          ? `<mcp name="${escapeXmlAttr(found.id)}" description="${escapeXmlAttr(found.subtitle)}" />`
+          : `<mcp name="${escapeXmlAttr(found.id)}" />`;
       },
     },
   ];
@@ -902,18 +949,19 @@ export default function mentions(pi: ExtensionAPI) {
       publishCatalog(lastUi, cwd);
     }
 
-    // 2. Resolve explicit `@kind:id` / `@kind：id` references in the user prompt.
-    const sections = (event.systemPromptOptions.sections ??= {});
+    // 2. Resolve explicit `@kind:id` / `@kind：id` references in the user prompt
+    //    and inject them as a Pi-native `custom_message` (leaving `systemPrompt`
+    //    untouched so LLM prompt KV caching stays intact and refs persist in JSONL).
     const prompt = String((event as { prompt?: string }).prompt ?? "");
     if (!prompt.includes("@")) {
-      delete sections.referenced_objects;
       return;
     }
 
     // Match `@<kind>:<id>` or `@<kind>：<id>` (supports ASCII & Chinese aliases).
     const re = /@([\p{L}\p{N}_-]+)[:：]([^\s,;]+)/gu;
     const providers = allProviders();
-    const resolvedLines: string[] = [];
+    const resolvedBlocks: string[] = [];
+    const resolvedRefs: Array<{ kind: string; id: string }> = [];
     const seen = new Set<string>();
 
     for (const match of prompt.matchAll(re)) {
@@ -927,10 +975,9 @@ export default function mentions(pi: ExtensionAPI) {
           seen.add(key);
           // `@file:` can name a folder too (dir mode reuses the same token), so
           // resolve the real type instead of always claiming it is a file.
-          resolvedLines.push(
-            describeFolderReference(rawId, cwd) ??
-              `- **grok-pi://file/${rawId}** — workspace file \`${rawId}\``,
-          );
+          const folderXml = describeFolderReference(rawId, cwd);
+          resolvedBlocks.push(folderXml ?? describeFileReference(rawId, cwd));
+          resolvedRefs.push({ kind: folderXml ? "folder" : "file", id: rawId });
         }
         continue;
       }
@@ -946,9 +993,13 @@ export default function mentions(pi: ExtensionAPI) {
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const line =
-        provider.resolve?.(rawId, { cwd }) ?? `- **grok-pi://${provider.kind}/${rawId}**`;
-      if (line) resolvedLines.push(line);
+      const block =
+        provider.resolve?.(rawId, { cwd }) ??
+        `<mention kind="${escapeXmlAttr(provider.kind)}" id="${escapeXmlAttr(rawId)}" />`;
+      if (block) {
+        resolvedBlocks.push(block);
+        resolvedRefs.push({ kind: provider.kind, id: rawId });
+      }
     }
 
     // 3. Resolve bare `@path` references that point at a folder.
@@ -977,13 +1028,19 @@ export default function mentions(pi: ExtensionAPI) {
       const described = describeFolderReference(candidate, cwd);
       if (!described) continue;
       seen.add(key);
-      resolvedLines.push(described);
+      resolvedBlocks.push(described);
+      resolvedRefs.push({ kind: "folder", id: candidate });
     }
 
-    if (resolvedLines.length > 0) {
-      sections.referenced_objects = `The user explicitly referenced these structured objects via \`@\` mentions:\n${resolvedLines.join("\n")}`;
-    } else {
-      delete sections.referenced_objects;
+    if (resolvedBlocks.length > 0) {
+      return {
+        message: {
+          customType: MENTIONS_CUSTOM_TYPE,
+          content: `<referenced_objects>\n${resolvedBlocks.join("\n")}\n</referenced_objects>`,
+          display: false,
+          details: { refs: resolvedRefs },
+        },
+      };
     }
   });
 }
