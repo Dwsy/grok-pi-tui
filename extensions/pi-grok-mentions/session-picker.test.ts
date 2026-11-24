@@ -14,7 +14,11 @@ import {
   type PreviewMessage,
   type SessionRecord,
 } from "./session-data.ts";
-import { createSessionPickerTui, type SessionPickerTheme } from "./session-picker-tui.ts";
+import {
+  createSessionPickerTui,
+  shortModelName,
+  type SessionPickerTheme,
+} from "./session-picker-tui.ts";
 
 const plainTheme: SessionPickerTheme = {
   fg: (_color: string, text: string) => text,
@@ -459,6 +463,12 @@ describe("SessionPickerTui rendering, keyboard, and mouse interactions", () => {
     expect(plain).toContain("Project 1");
     expect(plain).toContain("Session details");
     expect(plain).toContain("Last messages");
+    expect(plain).toContain("Msgs");
+    expect(plain).toContain("Created:");
+    expect(plain).toContain("Updated:");
+    expect(plain).toContain("Messages: 42 (14U/28A)");
+    expect(shortModelName("magpie/auto/deepseek-v4.1-flash")).toBe("deepseek-v4.1-flash");
+    expect(shortModelName("gpt-5.4")).toBe("gpt-5.4");
     expect(plain).toContain("/Users/dev/pi-grok-build");
     expect(plain).toContain("/Users/dev/other-repo");
 

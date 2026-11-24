@@ -86,6 +86,52 @@ function shortenHomePath(cwd: string): string {
   return cwd;
 }
 
+/**
+ * Return the trailing model identifier after the last `/` (e.g.
+ * `magpie/auto/deepseek-v4.1-flash` -> `deepseek-v4.1-flash`).
+ */
+export function shortModelName(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) return "—";
+  const parts = trimmed.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1]! : trimmed;
+}
+
+/**
+ * Curated medium-saturation identity palette modeled on Codex's
+ * `thread_color.rs` (high legibility on both light and dark terminals).
+ */
+const SESSION_IDENTITY_PALETTE: readonly string[] = [
+  "\x1b[38;2;37;99;235m",   // cobalt blue
+  "\x1b[38;2;13;148;136m",  // teal
+  "\x1b[38;2;147;51;234m",  // violet
+  "\x1b[38;2;217;119;6m",   // amber
+  "\x1b[38;2;225;29;72m",   // rose
+  "\x1b[38;2;22;163;74m",   // emerald
+  "\x1b[38;2;2;132;199m",   // sky
+  "\x1b[38;2;192;38;211m",  // fuchsia
+];
+
+/**
+ * Deterministic FNV-1a identity color per session ID (matches Codex's
+ * `thread_color::color_for_id` so colors stay stable across sorts & filters).
+ */
+function styleSessionTitle(sessionId: string, text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < sessionId.length; i++) {
+    hash ^= sessionId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  const color = SESSION_IDENTITY_PALETTE[hash % SESSION_IDENTITY_PALETTE.length]!;
+  return `${color}${text}\x1b[39m`;
+}
+
+function formatCompactDate(raw: string): string {
+  const full = formatTimestamp(raw);
+  // `YYYY-MM-DD HH:mm` -> `MM-DD HH:mm`
+  return full.length >= 16 ? full.slice(5, 16) : full;
+}
+
 export class SessionPickerTui implements Component {
   private readonly records: readonly SessionRecord[];
   private readonly currentCwd: string;
@@ -589,21 +635,32 @@ export class SessionPickerTui implements Component {
     this.listRowMap = [];
     this.clampListScroll();
 
-    const ageColW = 8;
-    const modelColW = innerW >= 56 ? 16 : 0;
-    const rightColsW = ageColW + (modelColW > 0 ? modelColW + 2 : 0) + 2;
+    const ageColW = 7;
+    const createdColW = innerW >= 88 ? 11 : 0;
+    const msgsColW = innerW >= 68 ? 5 : 0;
+    const modelColW = innerW >= 54 ? 18 : 0;
+    const rightColsW =
+      ageColW +
+      (createdColW > 0 ? createdColW + 2 : 0) +
+      (msgsColW > 0 ? msgsColW + 2 : 0) +
+      (modelColW > 0 ? modelColW + 2 : 0) +
+      2;
     const titleColW = Math.max(12, innerW - rightColsW);
 
     // Column header row (Codex Agent Command Center style).
     const headerLeft = `  ${this.fg("dim", "Sessions")}`;
+    const headerMsgs = msgsColW > 0 ? `${fitWidth(this.fg("dim", "Msgs"), msgsColW)}  ` : "";
     const headerModel = modelColW > 0 ? `${fitWidth(this.fg("dim", "Model"), modelColW)}  ` : "";
+    const headerCreated =
+      createdColW > 0 ? `${fitWidth(this.fg("dim", "Created"), createdColW)}  ` : "";
     const headerAge = fitWidth(this.fg("dim", "Updated"), ageColW);
+    const headerRight = `${headerMsgs}${headerModel}${headerCreated}${headerAge}  `;
     const headerGap = Math.max(
       1,
-      innerW - visibleWidth(headerLeft) - visibleWidth(headerModel) - visibleWidth(headerAge) - 2,
+      innerW - visibleWidth(headerLeft) - visibleWidth(headerRight),
     );
     const lines: string[] = [
-      fitWidth(`${headerLeft}${" ".repeat(headerGap)}${headerModel}${headerAge}  `, innerW),
+      fitWidth(`${headerLeft}${" ".repeat(headerGap)}${headerRight}`, innerW),
     ];
 
     const listHeight = Math.max(1, height - 1);
@@ -639,18 +696,22 @@ export class SessionPickerTui implements Component {
       const rowY = this.bodyStartY + lines.length;
 
       const ageText = formatRelativeAge(rec.modified) || "—";
+      const createdText = createdColW > 0 ? formatCompactDate(rec.created) : "";
+      const msgsText = msgsColW > 0 ? String(rec.messageCount) : "";
       const modelText =
-        modelColW > 0 ? truncateToWidth(rec.model || "—", modelColW, "…") : "";
+        modelColW > 0 ? truncateToWidth(shortModelName(rec.model), modelColW, "…") : "";
 
       if (isSelected) {
         const prefix = " ▸ ○ ";
         const titleBudget = Math.max(8, titleColW - visibleWidth(prefix));
         const titleText = truncateToWidth(rec.title, titleBudget, "…");
         const leftPart = `${prefix}${titleText}`;
-        const rightPart =
-          modelColW > 0
-            ? `${fitWidth(modelText, modelColW)}  ${fitWidth(ageText, ageColW)}  `
-            : `${fitWidth(ageText, ageColW)}  `;
+        const rightPart = [
+          msgsColW > 0 ? `${fitWidth(msgsText, msgsColW)}  ` : "",
+          modelColW > 0 ? `${fitWidth(modelText, modelColW)}  ` : "",
+          createdColW > 0 ? `${fitWidth(createdText, createdColW)}  ` : "",
+          `${fitWidth(ageText, ageColW)}  `,
+        ].join("");
         const gap = Math.max(1, innerW - visibleWidth(leftPart) - visibleWidth(rightPart));
         const plainFull = fitWidth(`${leftPart}${" ".repeat(gap)}${rightPart}`, innerW);
         lines.push(`\x1b[7m${this.bold(plainFull)}\x1b[27m`);
@@ -658,14 +719,17 @@ export class SessionPickerTui implements Component {
         const prefix = "   ○ ";
         const titleBudget = Math.max(8, titleColW - visibleWidth(prefix));
         const titleRaw = truncateToWidth(rec.title, titleBudget, "…");
+        const coloredTitle = styleSessionTitle(rec.id, titleRaw);
         const titleStyled = this.query.trim()
-          ? highlightTerms(this.fg("accent", titleRaw), this.query, (m) => `\x1b[7m${m}\x1b[27m`)
-          : this.fg("accent", titleRaw);
+          ? highlightTerms(coloredTitle, this.query, (m) => `\x1b[7m${m}\x1b[27m`)
+          : coloredTitle;
         const leftPart = `${this.fg("dim", prefix)}${titleStyled}`;
-        const rightPart =
-          modelColW > 0
-            ? `${fitWidth(this.fg("dim", modelText), modelColW)}  ${fitWidth(this.fg("dim", ageText), ageColW)}  `
-            : `${fitWidth(this.fg("dim", ageText), ageColW)}  `;
+        const rightPart = [
+          msgsColW > 0 ? `${fitWidth(this.fg("dim", msgsText), msgsColW)}  ` : "",
+          modelColW > 0 ? `${fitWidth(this.fg("dim", modelText), modelColW)}  ` : "",
+          createdColW > 0 ? `${fitWidth(this.fg("dim", createdText), createdColW)}  ` : "",
+          `${fitWidth(this.fg("dim", ageText), ageColW)}  `,
+        ].join("");
         const gap = Math.max(1, innerW - visibleWidth(leftPart) - visibleWidth(rightPart));
         lines.push(fitWidth(`${leftPart}${" ".repeat(gap)}${rightPart}`, innerW));
       }
@@ -703,7 +767,7 @@ export class SessionPickerTui implements Component {
     const headerLines: string[] = [pad(this.fg("dim", "Session details")), ""];
     const wrappedTitle = wrapTextToWidth(selected.title, textW).slice(0, 2);
     for (const tLine of wrappedTitle) {
-      headerLines.push(pad(this.bold(this.fg("accent", tLine))));
+      headerLines.push(pad(this.bold(styleSessionTitle(selected.id, tLine))));
     }
     headerLines.push(
       pad(
@@ -711,7 +775,13 @@ export class SessionPickerTui implements Component {
       ),
     );
     headerLines.push("");
-    headerLines.push(pad(`${this.fg("dim", "Model:")} ${this.fg("success", selected.model)}`));
+    headerLines.push(
+      pad(`${this.fg("dim", "Model:")} ${this.fg("success", shortModelName(selected.model))}`),
+    );
+    headerLines.push(pad(`${this.fg("dim", "Messages:")} ${msgsDetail}`));
+    headerLines.push(
+      pad(`${this.fg("dim", "Created:")} ${formatTimestamp(selected.created)}`),
+    );
     headerLines.push(
       pad(`${this.fg("dim", "Updated:")} ${formatTimestamp(selected.modified)}`),
     );
