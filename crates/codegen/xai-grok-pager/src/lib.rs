@@ -46,6 +46,7 @@ pub mod pi_resource_config;
 pub mod pi_resource_policy;
 #[cfg(feature = "stock-agent")]
 pub mod plugin_cmd;
+#[cfg(feature = "stock-agent")]
 pub mod pty_wrap;
 pub mod recent_dirs;
 pub mod scrollback;
@@ -60,8 +61,11 @@ pub mod tool_usage;
 pub mod tutorial_docs;
 pub mod usage_cmd;
 pub mod wrap_clipboard_image;
+#[cfg(feature = "stock-agent")]
 pub mod wrap_cmd;
+#[cfg(feature = "stock-agent")]
 pub(crate) mod wrap_filter;
+#[cfg(feature = "stock-agent")]
 pub(crate) mod wrap_restore;
 pub use xai_grok_gboom as gboom;
 pub use xai_grok_pager_render::key;

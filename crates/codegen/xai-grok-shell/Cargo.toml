@@ -8,7 +8,17 @@ edition.workspace = true
 # Stock Grok's in-process agent/CLI surfaces; Pi never needs the inspect CLI
 # entry point. Gate one independently owned module at a time before making
 # the heavyweight agent dependency optional (S12-b).
-stock-agent = ["dep:xai-grok-sampler", "dep:bm25", "dep:kanal", "dep:moka"]
+stock-agent = [
+    "dep:xai-grok-sampler",
+    "dep:bm25",
+    "dep:kanal",
+    "dep:moka",
+    "dep:tokio-retry",
+    "dep:backon",
+    "dep:webbrowser",
+    "dep:nucleo",
+    "dep:xai-computer-hub-sdk",
+]
 stock-mcp = ["stock-agent", "dep:xai-grok-mcp", "xai-grok-workspace/stock-mcp"]
 stock-pdf = ["xai-grok-tools/stock-pdf"]
 stock-lsp = ["xai-grok-tools/stock-lsp", "xai-grok-workspace/stock-lsp"]
@@ -109,12 +119,12 @@ tracing-subscriber = { workspace = true, features = [
 ] }
 obfstr = { workspace = true }
 tokio-util = { workspace = true, features = ["compat", "rt"] }
-tokio-retry = { workspace = true }
+tokio-retry = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v4", "v5", "v7"] }
 xai-acp-lib = { workspace = true }
 axum = { workspace = true, features = ["ws", "multipart"] }
-backon = { workspace = true }
-webbrowser = { workspace = true }
+backon = { workspace = true, optional = true }
+webbrowser = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
 tokio-rustls = { version = "0.26", default-features = false, features = [
     "ring",
@@ -135,7 +145,7 @@ git2 = { version = "0.20", default-features = false, features = [
 ] }
 notify = { workspace = true }
 notify-debouncer-mini = { workspace = true }
-nucleo = { workspace = true }
+nucleo = { workspace = true, optional = true }
 arc-swap = { workspace = true }
 infer = "0.15"
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
@@ -212,7 +222,7 @@ dashmap.workspace = true
 
 # Used by acp_session.rs and mcp_servers.rs for the unified
 # xai_tool_runtime::Tool dispatch model and the computer-hub MCP adapter.
-xai-computer-hub-sdk = { workspace = true }
+xai-computer-hub-sdk = { workspace = true, optional = true }
 xai-tool-runtime = { workspace = true }
 xai-tool-protocol = { workspace = true }
 xai-tool-types = { workspace = true }

@@ -2095,6 +2095,7 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
         xai_grok_pager::completions_cmd::run(*shell);
         return Ok(());
     }
+    #[cfg(feature = "stock-agent")]
     if let Some(Command::Wrap(ref wrap_args)) = args.command {
         return xai_grok_pager::wrap_cmd::run(wrap_args);
     }
@@ -2290,12 +2291,17 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 init_tracing_simple("cli");
                 return xai_grok_pager::export_cmd::run(export_args);
             }
+            #[cfg(feature = "stock-agent")]
             Command::Trace(trace_args) => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let agent_config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 return xai_grok_pager::trace_cmd::run(trace_args, &agent_config).await;
+            }
+            #[cfg(not(feature = "stock-agent"))]
+            Command::Trace(_) => {
+                anyhow::bail!("`grok trace` requires the stock-agent feature");
             }
             Command::Memory(memory_args) => {
                 return xai_grok_pager::memory_cmd::run(memory_args);
@@ -2360,8 +2366,13 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 xai_grok_shell::agent::init::run_cli_logout(&config.grok_com_config)?;
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
+            #[cfg(feature = "stock-agent")]
             Command::Wrap(ref wrap_args) => {
                 return xai_grok_pager::wrap_cmd::run(wrap_args);
+            }
+            #[cfg(not(feature = "stock-agent"))]
+            Command::Wrap(_) => {
+                anyhow::bail!("`grok wrap` requires the stock-agent feature");
             }
             Command::Completions { shell } => {
                 xai_grok_pager::completions_cmd::run(shell);

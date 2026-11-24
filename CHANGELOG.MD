@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Pi-only build slimming (S12)** — Gated 10 stock-only dependencies behind `stock-agent` without touching `Cargo.lock`: `tokio-retry`, `backon`, `webbrowser`, `nucleo`, and `xai-computer-hub-sdk` in `xai-grok-shell`, plus `signal-hook`, `portable-pty`, `backon`, `flate2`, and `tar` in `xai-grok-pager` (gating `pty_wrap`/`wrap_cmd` and `trace_cmd` archive/upload runtime while preserving `TraceArgs` CLI parsing). Added CI closure guards asserting `tokio-retry` and `signal-hook` stay out of the `grok-pi` compile closure.
+
 ## [0.1.14-beta.10] - 2026-11-23
 
 ### Added / Changed

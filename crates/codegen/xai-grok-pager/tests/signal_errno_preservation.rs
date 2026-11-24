@@ -1,4 +1,4 @@
-#![cfg(any(target_os = "linux", target_os = "macos"))]
+#![cfg(all(feature = "stock-agent", any(target_os = "linux", target_os = "macos")))]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

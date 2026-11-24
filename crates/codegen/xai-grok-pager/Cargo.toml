@@ -57,7 +57,7 @@ toml_edit = { workspace = true, features = ["serde"] }
 ansi-to-tui = { workspace = true }
 
 # PTY for ssh wrapper, e2e tests, and benchmarking.
-portable-pty = "0.9"
+portable-pty = { version = "0.9", optional = true }
 
 # Utilities
 anyhow = { workspace = true }
@@ -125,10 +125,10 @@ xai-token-estimation = { workspace = true }
 xai-grok-telemetry = { workspace = true }
 xai-grok-otel = { workspace = true }
 xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
-backon = { workspace = true }
+backon = { workspace = true, optional = true }
 chrono = { workspace = true }
-flate2 = { workspace = true }
-tar = { workspace = true }
+flate2 = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
 xai-grok-tools = { workspace = true }
 # The agents configuration modal belongs to stock Grok, not the Pi runtime.
 xai-grok-agent = { workspace = true, optional = true }
@@ -172,7 +172,7 @@ parking_lot.workspace = true
 # libc: poll/read for non-blocking terminal reads in theme/osc11.rs.
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["signal"] }
-signal-hook = { workspace = true }
+signal-hook = { workspace = true, optional = true }
 libc = { workspace = true }
 
 # core-foundation: IOKit power assertions for sleep prevention (SleepInhibitor).
@@ -259,7 +259,16 @@ local-workspace = ["xai-grok-shell/local-workspace"]
 # subcommands that talk to a live agent, the agents modal, and the voice
 # bearer bridge all compile out when this is off. Pi-only closures (grok-pi)
 # enable neither this feature nor the `xai-grok-login`/`xai-grok-agent` deps.
-stock-agent = ["xai-grok-login", "dep:xai-grok-agent", "xai-grok-shell/stock-agent"]
+stock-agent = [
+    "xai-grok-login",
+    "dep:xai-grok-agent",
+    "dep:portable-pty",
+    "dep:signal-hook",
+    "dep:backon",
+    "dep:flate2",
+    "dep:tar",
+    "xai-grok-shell/stock-agent",
+]
 # No-op on this crate: the actual `#[global_allocator]` (and the
 # `tikv-jemallocator` dep) live on the composition-root binary
 # `xai-grok-pager-bin`, which owns `main.rs`. Kept as an empty feature so the
