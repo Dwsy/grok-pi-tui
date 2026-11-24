@@ -279,6 +279,8 @@ fn test_app() -> AppView {
         trust_quit_error: None,
         relaunch: None,
         import_claude_modal: None,
+        omp_shell_install_modal: None,
+        omp_shell_install_generation: 0,
         welcome_doc_viewer: None,
         screen_mode: crate::app::ScreenMode::Inline,
         pending_screen_mode_switch: None,

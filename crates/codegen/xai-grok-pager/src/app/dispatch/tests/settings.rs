@@ -1917,7 +1917,7 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "thinking_stream_mode" => {
             let default = crate::appearance::cache::ThinkingStreamMode::default();
             let away = if crate::appearance::cache::load_thinking_stream_mode() == default {
-                "height_hold"
+                "inline"
             } else {
                 default.as_canonical()
             };
@@ -1983,6 +1983,20 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         }
         "pi_omp_shell" => {
             let _ = dispatch(Action::SetPiOmpShell(true), app);
+            if !app.current_ui.pi_omp_shell {
+                let generation = app
+                    .omp_shell_install_modal
+                    .as_ref()
+                    .map(|m| m.generation)
+                    .unwrap_or(0);
+                let _ = dispatch(
+                    Action::TaskComplete(TaskResult::OmpShellInstallDone {
+                        generation,
+                        result: Ok(std::path::PathBuf::from("/tmp/grok-pi-shell-host")),
+                    }),
+                    app,
+                );
+            }
         }
         "pi_eval" => {
             let _ = dispatch(Action::SetPiEval("v2".to_string()), app);

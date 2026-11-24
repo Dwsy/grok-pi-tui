@@ -105,9 +105,10 @@ jobs:
           cp "$host_bin" "$stage/grok-pi-shell-host"
           chmod 755 "$stage/grok-pi-shell-host"
           tar -C "$stage" -czf "dist/${{ steps.check.outputs.asset }}" grok-pi-shell-host
-          ls -lh "dist/${{ steps.check.outputs.asset }}"
+          cp "dist/${{ steps.check.outputs.asset }}" "dist/grok-pi-shell-host-macos-arm64.tar.gz"
+          ls -lh "dist/${{ steps.check.outputs.asset }}" "dist/grok-pi-shell-host-macos-arm64.tar.gz"
 
-      - name: Publish content-addressed archive to rolling release
+      - name: Publish standalone archive to rolling release
         if: steps.check.outputs.exists != 'true'
         shell: bash
         env:
@@ -115,11 +116,12 @@ jobs:
         run: |
           set -euo pipefail
           asset="dist/${{ steps.check.outputs.asset }}"
+          alias_asset="dist/grok-pi-shell-host-macos-arm64.tar.gz"
           if gh release view omp-shell-host-latest >/dev/null 2>&1; then
-            gh release upload omp-shell-host-latest "$asset" --clobber
+            gh release upload omp-shell-host-latest "$asset" "$alias_asset" --clobber
           else
-            gh release create omp-shell-host-latest "$asset" \
+            gh release create omp-shell-host-latest "$asset" "$alias_asset" \
               --prerelease \
-              --title "OMP Shell Host (rolling cache)" \
-              --notes "Content-addressed prebuilt \`grok-pi-shell-host\` binaries keyed by \`git rev-parse HEAD:tools/grok-pi-shell-host\`. Reused automatically by \`release.yml\` when unchanged."
+              --title "OMP Shell Host (standalone rolling release)" \
+              --notes "Standalone prebuilt \`grok-pi-shell-host\` binaries downloaded on demand by \`grok-pi\` when OMP Shell is enabled in F2 settings."
           fi

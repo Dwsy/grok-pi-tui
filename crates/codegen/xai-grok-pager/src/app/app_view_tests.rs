@@ -282,6 +282,8 @@ pub(crate) fn test_app() -> AppView {
         relaunch: None,
         has_claude_import: false,
         import_claude_modal: None,
+        omp_shell_install_modal: None,
+        omp_shell_install_generation: 0,
         welcome_doc_viewer: None,
         screen_mode: ScreenMode::Inline,
         pending_screen_mode_switch: None,

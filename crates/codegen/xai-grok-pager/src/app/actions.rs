@@ -746,8 +746,12 @@ pub enum Action {
     },
     /// Enable grok-pi's private Bash/Eval bridge (restart required).
     SetPiBash(bool),
-    /// Enable embedded OMP shell backend (`PI_GROK_BASH_BACKEND=omp`; restart required).
+    /// Enable standalone OMP shell backend (`PI_GROK_BASH_BACKEND=omp`; downloads on demand if missing; restart required).
     SetPiOmpShell(bool),
+    /// Cancel/close the on-demand OMP Shell host download modal.
+    OmpShellInstallCancel,
+    /// Retry a failed on-demand OMP Shell host download.
+    OmpShellInstallRetry,
     /// Select Eval bridge generation (`v1` or `v2`; restart required).
     SetPiEval(String),
     /// Select Eval v2 language exposure (`js`, `py`, or `all`; restart required).
@@ -2439,6 +2443,12 @@ pub enum Effect {
         id: String,
         contents: xai_grok_shell::util::config::TimelineContents,
     },
+    /// Download, verify (`--handshake`), and install standalone `grok-pi-shell-host`.
+    InstallOmpShellHost {
+        generation: u64,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        progress: xai_grok_shell::util::omp_shell_install::SharedOmpShellInstallProgress,
+    },
     /// Extension shortcut matched: dispatch to Pi extension handler via RPC.
     ShortcutDispatch { key: String },
     /// Contextual `@mention` provider shortcut matched: invoke its TS extension command via RPC.
@@ -2748,6 +2758,11 @@ pub enum TaskResult {
         host: String,
         id: String,
         result: Result<xai_grok_shell::util::config::TimelineContents, String>,
+    },
+    /// On-demand `grok-pi-shell-host` download + verification finished.
+    OmpShellInstallDone {
+        generation: u64,
+        result: Result<std::path::PathBuf, String>,
     },
     /// Session lifecycle result paired with the memory mode pinned by the
     /// actor that produced it. The wrapper lets all lifecycle variants share

@@ -30,6 +30,7 @@ pub mod memory_modal;
 pub mod modal;
 pub mod modal_window;
 pub mod new_worktree_dialog;
+pub mod omp_shell_install_modal;
 pub mod overlay;
 pub mod overlay_list;
 pub mod permission_view;

@@ -81,8 +81,9 @@ use super::session::tree::{
     dispatch_show_session_tree, dispatch_show_tree_map,
 };
 use super::settings::setters::{
-    clear_default_model, clear_fork_secondary_model, clear_recap_model, preview_auto_dark_theme,
-    preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
+    cancel_omp_shell_install, clear_default_model, clear_fork_secondary_model, clear_recap_model,
+    preview_auto_dark_theme, preview_auto_light_theme, preview_theme, retry_omp_shell_install,
+    set_ask_user_question_timeout_enabled,
     set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_cancel_turn_key,
     set_codemode_expanded_by_default, set_collapse_thinking_blocks, set_combine_queued_prompts,
     set_compact_mode,
@@ -1359,6 +1360,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetPiBuiltinTool { tool, enabled } => set_pi_builtin_tool(app, tool, enabled),
         Action::SetPiBash(enabled) => set_pi_bash(app, enabled),
         Action::SetPiOmpShell(enabled) => set_pi_omp_shell(app, enabled),
+        Action::OmpShellInstallCancel => cancel_omp_shell_install(app),
+        Action::OmpShellInstallRetry => retry_omp_shell_install(app),
         Action::SetPiEval(version) => set_pi_eval(app, version),
         Action::SetPiEvalV2Language(language) => set_pi_eval_v2_language(app, language),
         Action::SetPiEvalV2DisplayMode(mode) => set_pi_eval_v2_display_mode(app, mode),

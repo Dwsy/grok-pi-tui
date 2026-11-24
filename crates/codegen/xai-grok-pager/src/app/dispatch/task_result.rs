@@ -1031,6 +1031,13 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             crate::app::timeline::finish_save(app, &host, &id, result);
             vec![]
         }
+        TaskResult::OmpShellInstallDone { generation, result } => {
+            crate::app::dispatch::settings::setters::finish_omp_shell_install(
+                app,
+                generation,
+                result,
+            )
+        }
         TaskResult::CancelComplete => {
             tracing::trace!("Cancel notification sent successfully");
             vec![]

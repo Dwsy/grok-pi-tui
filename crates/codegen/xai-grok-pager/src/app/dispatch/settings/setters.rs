@@ -2666,10 +2666,36 @@ pub(in crate::app::dispatch) fn set_pi_eval_mcp(app: &mut AppView, enabled: bool
     }]
 }
 
+fn start_omp_shell_install(app: &mut AppView) -> Vec<Effect> {
+    if let Some(prev) = app.omp_shell_install_modal.take() {
+        prev.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    app.omp_shell_install_generation = app.omp_shell_install_generation.wrapping_add(1);
+    let generation = app.omp_shell_install_generation;
+    let modal = crate::views::omp_shell_install_modal::OmpShellInstallModalState::new(generation);
+    let cancel = std::sync::Arc::clone(&modal.cancel);
+    let progress = std::sync::Arc::clone(&modal.progress);
+    app.omp_shell_install_modal = Some(modal);
+    refresh_open_settings_modals(app);
+    vec![Effect::InstallOmpShellHost {
+        generation,
+        cancel,
+        progress,
+    }]
+}
+
 pub(in crate::app::dispatch) fn set_pi_omp_shell(app: &mut AppView, enabled: bool) -> Vec<Effect> {
     let previous = app.current_ui.pi_omp_shell;
     if previous == enabled {
         return vec![];
+    }
+    if enabled
+        && xai_grok_shell::util::omp_shell_install::find_installed_omp_shell_host().is_none()
+    {
+        // Keep `pi_omp_shell` OFF until the standalone `grok-pi-shell-host`
+        // binary is downloaded, extracted, and passes `--handshake`.
+        return start_omp_shell_install(app);
     }
     app.current_ui.pi_omp_shell = enabled;
     refresh_open_settings_modals(app);
@@ -2682,6 +2708,56 @@ pub(in crate::app::dispatch) fn set_pi_omp_shell(app: &mut AppView, enabled: boo
         value: crate::settings::SettingValue::Bool(enabled),
         rollback_value: crate::settings::SettingValue::Bool(previous),
     }]
+}
+
+pub(in crate::app::dispatch) fn cancel_omp_shell_install(app: &mut AppView) -> Vec<Effect> {
+    if let Some(modal) = app.omp_shell_install_modal.take() {
+        modal
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    app.omp_shell_install_generation = app.omp_shell_install_generation.wrapping_add(1);
+    refresh_open_settings_modals(app);
+    vec![]
+}
+
+pub(in crate::app::dispatch) fn retry_omp_shell_install(app: &mut AppView) -> Vec<Effect> {
+    start_omp_shell_install(app)
+}
+
+pub(in crate::app::dispatch) fn finish_omp_shell_install(
+    app: &mut AppView,
+    generation: u64,
+    result: Result<std::path::PathBuf, String>,
+) -> Vec<Effect> {
+    if generation != app.omp_shell_install_generation {
+        return vec![];
+    }
+    match result {
+        Ok(path) => {
+            app.omp_shell_install_modal = None;
+            let previous = app.current_ui.pi_omp_shell;
+            app.current_ui.pi_omp_shell = true;
+            refresh_open_settings_modals(app);
+            app.show_toast(&format!(
+                "\u{2713} OMP Shell installed ({}) & enabled \u{2014} restart grok-pi to apply",
+                path.display()
+            ));
+            vec![Effect::PersistSetting {
+                key: "pi_omp_shell",
+                value: crate::settings::SettingValue::Bool(true),
+                rollback_value: crate::settings::SettingValue::Bool(previous),
+            }]
+        }
+        Err(err) => {
+            if let Some(modal) = app.omp_shell_install_modal.as_ref() {
+                modal.set_failed(err);
+            }
+            app.current_ui.pi_omp_shell = false;
+            refresh_open_settings_modals(app);
+            vec![]
+        }
+    }
 }
 
 pub(in crate::app::dispatch) fn set_psm_resume_index(

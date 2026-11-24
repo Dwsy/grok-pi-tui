@@ -1178,7 +1178,7 @@ mod tests {
                 ("thinking_stream_mode", SettingKind::Enum { default, .. }) => {
                     assert_eq!(
                         *default,
-                        ui.thinking_stream_mode.as_deref().unwrap_or("inline")
+                        ui.thinking_stream_mode.as_deref().unwrap_or("height_hold")
                     );
                     assert_eq!(
                         *default,

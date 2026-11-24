@@ -22,13 +22,13 @@ use xai_grok_status_line::StatusLineConfig;
 /// Persisted as `[ui].thinking_stream_mode`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThinkingStreamMode {
-    /// Default multi-line truncated preview while streaming; shrinks when folded.
-    #[default]
+    /// Multi-line truncated preview while streaming; shrinks when folded.
     Inline,
     /// Render live streaming thinking on a single row (`Thinking… <latest line>`).
     SingleLineTicker,
-    /// Keep scrollback height locked after a thinking block collapses during an active turn
+    /// Default: keep scrollback height locked after a thinking block collapses during an active turn
     /// so subsequent tool calls fill the reserved tail space without bouncing the viewport.
+    #[default]
     HeightHold,
 }
 

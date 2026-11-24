@@ -1012,7 +1012,7 @@ pub fn set_tool_card_click_action(value: ToolCardClickAction) {
 
 thread_local! {
     static THINKING_STREAM_MODE_CURRENT: Cell<ThinkingStreamMode> =
-        const { Cell::new(ThinkingStreamMode::Inline) };
+        const { Cell::new(ThinkingStreamMode::HeightHold) };
     static THINKING_STREAM_MODE_LOADED: Cell<bool> = const { Cell::new(false) };
 }
 

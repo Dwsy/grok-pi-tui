@@ -8,10 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Standalone OMP Shell on-demand download TUI** — Decoupled `grok-pi-shell-host` from main `grok-pi` release tarballs in `.github/workflows/release.yml` and published a stable alias (`grok-pi-shell-host-macos-arm64.tar.gz`) alongside content-addressed archives on `omp-shell-host-latest`. `[ui].pi_omp_shell` stays off by default; toggling it on in F2 Settings now checks local paths (`PI_GROK_OMP_SHELL_HOST`, `${GROK_HOME:-~/.grok-pi}/bin/grok-pi-shell-host`, `PATH`) and, when missing, opens a live progress TUI modal (resolving → streaming download bar → `tar` extract → `--handshake` verification → atomic install) before enabling and persisting `pi_omp_shell = true`.
 - **Timeline trackpad haptics (macOS)** — Drive timeline haptic feedback via the private macOS trackpad actuator (`f5dd07a4`).
 
 ### Changed
 
+- **Default `Thinking stream mode` set to `Height hold`** — Switched `[ui].thinking_stream_mode` default from `inline` to `height_hold` so collapsing thinking blocks during an active turn hold scrollback height without viewport bounce.
 - **Pi-only build slimming (S12)** — Gated 10 stock-only dependencies behind `stock-agent` without touching `Cargo.lock`: `tokio-retry`, `backon`, `webbrowser`, `nucleo`, and `xai-computer-hub-sdk` in `xai-grok-shell`, plus `signal-hook`, `portable-pty`, `backon`, `flate2`, and `tar` in `xai-grok-pager` (gating `pty_wrap`/`wrap_cmd` and `trace_cmd` archive/upload runtime while preserving `TraceArgs` CLI parsing). Added CI closure guards asserting `tokio-retry` and `signal-hook` stay out of the `grok-pi` compile closure.
 - **CI workflow cleanup** — Dropped unused verification workflows and the redundant `main`-push CI trigger (`2e0eb846`).
 
@@ -21,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### 中文说明
 
+- **OMP Shell 独立构建与 F2 按需下载 TUI**：从 `release.yml` 主发布包中解耦 `grok-pi-shell-host`（避免主二进制/压缩包体积膨胀），在 `omp-shell-host-latest` 独立发布并同步提供稳定别名资产；F2 `OMP Shell backend` 默认关闭，开启时若本地未安装则弹出实时下载进度 TUI（查询发布 → 流式进度条 → 解压 → `--handshake` 校验 → 安装到 `~/.grok-pi/bin/grok-pi-shell-host`），全部成功后才开启并持久化，失败或取消保持关闭。
+- **思考流模式默认切换为 `Height hold`**：将 `[ui].thinking_stream_mode` 默认值改为 `height_hold`，减少思考块折叠时的滚动跳动。
 - **S12 架构瘦身**：将 `xai-grok-shell`（`tokio-retry`、`backon`、`webbrowser`、`nucleo`、`xai-computer-hub-sdk`）与 `xai-grok-pager`（`signal-hook`、`portable-pty`、`backon`、`flate2`、`tar`）共 10 个 Stock-only 依赖及 `wrap`/`trace` CLI 运行时门控至 `stock-agent`（零 `Cargo.lock` 改动），并在 CI 中新增 `tokio-retry` 与 `signal-hook` 的 Pi 负向闭包断言。
 - **Timeline 触控板震动反馈**：macOS 下通过私有触控板驱动为 Timeline 交互提供触觉反馈。
 - **OMP Shell Host 与 CI 修复**：锁定 `grok-pi-shell-host` 的 `grep-searcher` 至 vendored fork，并清理冗余验证工作流与 `main` push 触发器。

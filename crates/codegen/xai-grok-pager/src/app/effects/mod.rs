@@ -136,6 +136,21 @@ pub(crate) fn execute(
                 TaskResult::TimelineSaved { host, id, result }
             });
         }
+        Effect::InstallOmpShellHost {
+            generation,
+            cancel,
+            progress,
+        } => {
+            tasks.spawn(async move {
+                let result = xai_grok_shell::util::omp_shell_install::install_omp_shell_host(
+                    cancel,
+                    progress,
+                )
+                .await
+                .map_err(|error| format!("{error:#}"));
+                TaskResult::OmpShellInstallDone { generation, result }
+            });
+        }
         Effect::ShortcutDispatch { key } => {
             let tx = acp_tx.clone();
             tasks.spawn(async move {

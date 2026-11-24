@@ -72,7 +72,7 @@ const THINKING_STREAM_MODE_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "inline",
         display: "Inline preview",
-        description: "Default multi-line streaming preview; shrinks when thinking folds.",
+        description: "Multi-line streaming preview; shrinks when thinking folds.",
     },
     EnumChoice {
         canonical: "single_line",
@@ -82,7 +82,7 @@ const THINKING_STREAM_MODE_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         canonical: "height_hold",
         display: "Height hold",
-        description: "Keep scrollback height locked after thinking collapses during a turn so tool calls fill the space without bouncing.",
+        description: "Default: keep scrollback height locked after thinking collapses during a turn so tool calls fill the space without bouncing.",
     },
 ];
 
@@ -1244,7 +1244,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "flicker",
             ],
             kind: SettingKind::Enum {
-                default: "inline",
+                default: "height_hold",
                 choices: THINKING_STREAM_MODE_CHOICES,
                 supports_preview: false,
             },
@@ -2317,7 +2317,7 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Agent,
             owner: SettingOwner::Shell,
             label: "OMP Shell backend",
-            description: "Run Pi Bash commands through the embedded omp-shell host (grok-pi-shell-host) with structured execution trace. Explicit PI_GROK_BASH_BACKEND env still takes precedence. Restart grok-pi to apply.",
+            description: "Run Pi Bash commands through the standalone omp-shell host (grok-pi-shell-host) with structured execution trace. Downloads on demand from omp-shell-host-latest when missing. Explicit PI_GROK_BASH_BACKEND env still takes precedence. Restart grok-pi to apply.",
             keywords: &["pi", "bash", "omp", "shell", "trace", "backend", "host"],
             kind: SettingKind::Bool {
                 default: ui_default.pi_omp_shell,

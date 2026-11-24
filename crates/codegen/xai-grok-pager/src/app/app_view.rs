@@ -1373,6 +1373,11 @@ pub struct AppView {
     pub has_claude_import: bool,
     /// When set, the welcome screen renders an interactive import modal instead of normal content.
     pub import_claude_modal: Option<crate::views::import_claude_modal::ImportClaudeModalState>,
+    /// On-demand standalone `grok-pi-shell-host` download/install progress modal.
+    pub omp_shell_install_modal:
+        Option<crate::views::omp_shell_install_modal::OmpShellInstallModalState>,
+    /// Monotonic generation for in-flight OMP Shell install tasks so cancelled tasks are ignored.
+    pub omp_shell_install_generation: u64,
     /// Doc viewer overlay for the welcome screen (release notes via Ctrl+L).
     pub welcome_doc_viewer: Option<crate::views::modal::ActiveModal>,
     /// Whether the pager uses fullscreen (alt-screen) or inline mode.
@@ -1953,6 +1958,8 @@ impl AppView {
             relaunch: None,
             has_claude_import: false,
             import_claude_modal: None,
+            omp_shell_install_modal: None,
+            omp_shell_install_generation: 0,
             welcome_doc_viewer: None,
             screen_mode: ScreenMode::Inline,
             pending_screen_mode_switch: None,
@@ -2296,6 +2303,7 @@ impl AppView {
             return true;
         }
         self.import_claude_modal.is_some()
+            || self.omp_shell_install_modal.is_some()
             || self.voice_listening()
             || self.voice_state.pending_cold_start()
     }
@@ -3935,6 +3943,7 @@ impl AppView {
                     sp_entries_query: &self.session_picker_entries_query,
                     has_claude_import: self.has_claude_import,
                     import_claude_modal: &mut self.import_claude_modal,
+                    omp_shell_install_modal: &self.omp_shell_install_modal,
                     welcome_doc_viewer: &mut self.welcome_doc_viewer,
                     changelog_markdown: &self.changelog_markdown,
                     show_changelog_action: self.welcome_show_changelog_action,
@@ -4155,6 +4164,24 @@ impl AppView {
                             mouse.column,
                             mouse.row,
                         ));
+                    }
+                    return InputOutcome::Unchanged;
+                }
+                if let Some(modal) = self.omp_shell_install_modal.as_ref() {
+                    use crate::views::omp_shell_install_modal::OmpShellInstallOutcome;
+                    if let Event::Key(key) = ev {
+                        if key.kind == KeyEventKind::Release {
+                            return InputOutcome::Unchanged;
+                        }
+                        return match modal.handle_key(key) {
+                            OmpShellInstallOutcome::Cancel => {
+                                InputOutcome::Action(Action::OmpShellInstallCancel)
+                            }
+                            OmpShellInstallOutcome::Retry => {
+                                InputOutcome::Action(Action::OmpShellInstallRetry)
+                            }
+                            OmpShellInstallOutcome::Unchanged => InputOutcome::Unchanged,
+                        };
                     }
                     return InputOutcome::Unchanged;
                 }
@@ -4662,6 +4689,8 @@ struct WelcomeInputCtx<'a> {
     sp_entries_query: &'a Option<String>,
     has_claude_import: bool,
     import_claude_modal: &'a mut Option<crate::views::import_claude_modal::ImportClaudeModalState>,
+    omp_shell_install_modal:
+        &'a Option<crate::views::omp_shell_install_modal::OmpShellInstallModalState>,
     welcome_doc_viewer: &'a mut Option<crate::views::modal::ActiveModal>,
     changelog_markdown: &'a Option<String>,
     /// Whether the welcome menu currently includes a "Changelog" row (above Quit), so index-to-action mapping accounts for it.
@@ -4697,6 +4726,24 @@ struct WelcomeInputCtx<'a> {
 }
 /// Welcome view input: overlays first, then composer, then the menu.
 fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutcome {
+    if let Some(modal) = ctx.omp_shell_install_modal.as_ref() {
+        use crate::views::omp_shell_install_modal::OmpShellInstallOutcome;
+        if let Event::Key(key) = ev {
+            if key.kind == crossterm::event::KeyEventKind::Release {
+                return InputOutcome::Unchanged;
+            }
+            return match modal.handle_key(key) {
+                OmpShellInstallOutcome::Cancel => {
+                    InputOutcome::Action(Action::OmpShellInstallCancel)
+                }
+                OmpShellInstallOutcome::Retry => {
+                    InputOutcome::Action(Action::OmpShellInstallRetry)
+                }
+                OmpShellInstallOutcome::Unchanged => InputOutcome::Unchanged,
+            };
+        }
+        return InputOutcome::Unchanged;
+    }
     if let Some(modal) = ctx.import_claude_modal.as_mut() {
         use crate::views::import_claude_modal::ImportClaudeModalOutcome;
         let outcome_to_input = |o: ImportClaudeModalOutcome| match o {
@@ -6196,6 +6243,15 @@ impl AppView {
                                 compact,
                             );
                         }
+                        if let Some(modal) = self.omp_shell_install_modal.as_ref() {
+                            let theme = crate::theme::Theme::current();
+                            crate::views::omp_shell_install_modal::render_omp_shell_install_modal(
+                                f.buffer_mut(),
+                                view_area,
+                                modal,
+                                &theme,
+                            );
+                        }
                         if let Some(dialog) = self.new_worktree_dialog.as_ref() {
                             crate::views::new_worktree_dialog::render_new_worktree_dialog(
                                 view_area,
@@ -6422,6 +6478,15 @@ impl AppView {
                                     compact,
                                 );
                             }
+                            if let Some(modal) = self.omp_shell_install_modal.as_ref() {
+                                let theme = crate::theme::Theme::current();
+                                crate::views::omp_shell_install_modal::render_omp_shell_install_modal(
+                                    f.buffer_mut(),
+                                    view_area,
+                                    modal,
+                                    &theme,
+                                );
+                            }
                             if let Some(tutorial) = self.tutorial.as_mut() {
                                 crate::views::tutorial::render_tutorial(
                                     f.buffer_mut(),
@@ -6440,11 +6505,15 @@ impl AppView {
                             let has_cloud = false;
                             if has_cloud
                                 || self.import_claude_modal.is_some()
+                                || self.omp_shell_install_modal.is_some()
                                 || self.tutorial.is_some()
                             {
                                 link_spans.clear();
                             }
-                            let cursor = if has_cloud || self.tutorial.is_some() {
+                            let cursor = if has_cloud
+                                || self.omp_shell_install_modal.is_some()
+                                || self.tutorial.is_some()
+                            {
                                 None
                             } else {
                                 cursor_pos
@@ -6730,6 +6799,7 @@ impl AppView {
         let cloud_modal_open = false;
         matches!(self.active_view, ActiveView::Agent(id) if self.agents.get(&id).is_some_and(|a| a.extensions_modal.is_some() || a.active_modal.is_some()))
             || self.import_claude_modal.is_some()
+            || self.omp_shell_install_modal.is_some()
             || self.new_worktree_dialog.is_some()
             || self.welcome_doc_viewer.is_some()
             || self.tutorial.is_some()
@@ -7276,6 +7346,13 @@ impl AppView {
     }
     fn view_tick_demand(&self) -> TickDemand {
         if self.pending_action.is_some() {
+            return TickDemand::Fast;
+        }
+        if self
+            .omp_shell_install_modal
+            .as_ref()
+            .is_some_and(|modal| modal.is_in_progress())
+        {
             return TickDemand::Fast;
         }
         if self.minimal_state.transcript.is_some() {
