@@ -16,6 +16,8 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
 use agent_client_protocol as acp;
 use indexmap::IndexMap;
@@ -28,9 +30,69 @@ use crate::pi_resource_config::resolve_pi_agent_dir;
 const CACHE_VERSION: u32 = 1;
 const CACHE_FILENAME: &str = "pi-models-cache.json";
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct PiModelSourceMtimes {
+    #[serde(default)]
+    models_json_mtime_ms: Option<u64>,
+    #[serde(default)]
+    settings_json_mtime_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CacheSyncKey {
+    digest: String,
+    source_mtimes: PiModelSourceMtimes,
+}
+
+/// In-process BLAKE3 digest + source mtime snapshot of the last model catalog
+/// known to be on disk, avoiding redundant disk writes on every startup.
+static LAST_SYNCED_KEY: OnceLock<Mutex<Option<CacheSyncKey>>> = OnceLock::new();
+
+fn last_synced_key() -> &'static Mutex<Option<CacheSyncKey>> {
+    LAST_SYNCED_KEY.get_or_init(|| Mutex::new(None))
+}
+
+fn record_synced_key(key: CacheSyncKey) {
+    if let Ok(mut guard) = last_synced_key().lock() {
+        *guard = Some(key);
+    }
+}
+
+fn matches_synced_key(key: &CacheSyncKey) -> bool {
+    last_synced_key()
+        .lock()
+        .ok()
+        .is_some_and(|guard| guard.as_ref() == Some(key))
+}
+
+fn file_mtime_ms(path: &Path) -> Option<u64> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    let dur = modified.duration_since(UNIX_EPOCH).ok()?;
+    u64::try_from(dur.as_millis()).ok()
+}
+
+fn current_source_mtimes() -> PiModelSourceMtimes {
+    let Ok(agent_dir) = resolve_pi_agent_dir() else {
+        return PiModelSourceMtimes::default();
+    };
+    PiModelSourceMtimes {
+        models_json_mtime_ms: file_mtime_ms(&agent_dir.join("models.json")),
+        settings_json_mtime_ms: file_mtime_ms(&agent_dir.join("settings.json")),
+    }
+}
+
+fn compute_models_digest(models: &acp::SessionModelState) -> anyhow::Result<String> {
+    let bytes = serde_json::to_vec(models)?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PiModelsCacheFile {
     version: u32,
+    #[serde(default)]
+    digest: String,
+    #[serde(default)]
+    source_mtimes: PiModelSourceMtimes,
     models: acp::SessionModelState,
 }
 
@@ -59,28 +121,60 @@ pub fn pi_models_cache_path() -> Option<PathBuf> {
 }
 
 /// Load the best available initial model catalog before Pi finishes starting:
-/// cache first, falling back to Pi's existing `~/.pi/agent/{models,settings}.json`.
+/// cache first (when `~/.pi/agent/{models,settings}.json` mtimes have not changed),
+/// falling back to Pi's existing `~/.pi/agent/{models,settings}.json`.
 pub fn load_initial_pi_models() -> Option<acp::SessionModelState> {
+    let source_mtimes = current_source_mtimes();
     if let Some(path) = pi_models_cache_path()
-        && let Some(cached) = load_cache_from_path(&path)
+        && let Some(cached) = load_cache_from_path(&path, &source_mtimes)
     {
         return Some(cached);
     }
     load_cold_start_models_from_pi_config()
 }
 
-fn load_cache_from_path(path: &Path) -> Option<acp::SessionModelState> {
+fn load_cache_from_path(
+    path: &Path,
+    expected_mtimes: &PiModelSourceMtimes,
+) -> Option<acp::SessionModelState> {
     let raw = fs::read_to_string(path).ok()?;
     let parsed: PiModelsCacheFile = serde_json::from_str(&raw).ok()?;
     if parsed.version != CACHE_VERSION || parsed.models.available_models.is_empty() {
         return None;
     }
+    // If Pi's `models.json` or `settings.json` mtime changed since the cache was
+    // written, invalidate the cache so startup immediately reflects the edits.
+    if parsed.source_mtimes != *expected_mtimes {
+        return None;
+    }
+    let digest = if !parsed.digest.is_empty() {
+        parsed.digest
+    } else {
+        compute_models_digest(&parsed.models).ok()?
+    };
+    record_synced_key(CacheSyncKey {
+        digest,
+        source_mtimes: parsed.source_mtimes,
+    });
     Some(parsed.models)
 }
 
-/// Persist the latest authoritative Pi model catalog atomically off the UI thread.
+/// Persist the latest authoritative Pi model catalog atomically off the UI thread,
+/// skipping disk writes whenever both the BLAKE3 digest and Pi source-file mtimes
+/// match what is already cached.
 pub fn save_pi_models_async(models: acp::SessionModelState) {
     if models.available_models.is_empty() {
+        return;
+    }
+    let Ok(digest) = compute_models_digest(&models) else {
+        return;
+    };
+    let source_mtimes = current_source_mtimes();
+    let sync_key = CacheSyncKey {
+        digest,
+        source_mtimes,
+    };
+    if matches_synced_key(&sync_key) {
         return;
     }
     let Some(path) = pi_models_cache_path() else {
@@ -88,21 +182,48 @@ pub fn save_pi_models_async(models: acp::SessionModelState) {
     };
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn_blocking(move || {
-            if let Err(err) = save_cache_to_path(&path, &models) {
+            if let Err(err) = save_cache_to_path(&path, &models, &sync_key) {
                 tracing::debug!(%err, path = %path.display(), "failed to write Pi model cache");
             }
         });
-    } else if let Err(err) = save_cache_to_path(&path, &models) {
+    } else if let Err(err) = save_cache_to_path(&path, &models, &sync_key) {
         tracing::debug!(%err, path = %path.display(), "failed to write Pi model cache");
     }
 }
 
-fn save_cache_to_path(path: &Path, models: &acp::SessionModelState) -> anyhow::Result<()> {
+fn read_existing_cache_key(path: &Path) -> Option<CacheSyncKey> {
+    let raw = fs::read_to_string(path).ok()?;
+    let parsed: PiModelsCacheFile = serde_json::from_str(&raw).ok()?;
+    if parsed.version != CACHE_VERSION {
+        return None;
+    }
+    let digest = if !parsed.digest.is_empty() {
+        parsed.digest
+    } else {
+        compute_models_digest(&parsed.models).ok()?
+    };
+    Some(CacheSyncKey {
+        digest,
+        source_mtimes: parsed.source_mtimes,
+    })
+}
+
+fn save_cache_to_path(
+    path: &Path,
+    models: &acp::SessionModelState,
+    sync_key: &CacheSyncKey,
+) -> anyhow::Result<()> {
+    if read_existing_cache_key(path).as_ref() == Some(sync_key) {
+        record_synced_key(sync_key.clone());
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let payload = PiModelsCacheFile {
         version: CACHE_VERSION,
+        digest: sync_key.digest.clone(),
+        source_mtimes: sync_key.source_mtimes.clone(),
         models: models.clone(),
     };
     let bytes = serde_json::to_vec(&payload)?;
@@ -115,6 +236,7 @@ fn save_cache_to_path(path: &Path, models: &acp::SessionModelState) -> anyhow::R
         let _ = fs::remove_file(&tmp_path);
         return Err(err.into());
     }
+    record_synced_key(sync_key.clone());
     Ok(())
 }
 
