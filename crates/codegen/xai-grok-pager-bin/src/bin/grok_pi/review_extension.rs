@@ -47,11 +47,22 @@ pub(super) fn write_review_extension() -> Result<ReviewExtension> {
     fs::create_dir_all(&mentions_dir).context("create shared pi-grok-mentions dir")?;
     super::tui_kit::materialize_tui_kit(source_dir.path())?;
 
-    // Shared file preview helper from pi-grok-mentions
+    // Shared file preview helper from pi-grok-mentions (plus its transitive
+    // `./session-data.ts` and `./skill-data.ts` helpers).
     write_source_file(
         &mentions_dir,
         "file-data.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/file-data.ts"),
+    )?;
+    write_source_file(
+        &mentions_dir,
+        "session-data.ts",
+        include_str!("../../../../../../extensions/pi-grok-mentions/session-data.ts"),
+    )?;
+    write_source_file(
+        &mentions_dir,
+        "skill-data.ts",
+        include_str!("../../../../../../extensions/pi-grok-mentions/skill-data.ts"),
     )?;
 
     // Standalone review plugin modules
@@ -88,11 +99,17 @@ mod tests {
         let index = fs::read_to_string(ext.path()).expect("read index.ts");
         let shared = fs::read_to_string(root.join("pi-grok-mentions/file-data.ts"))
             .expect("read shared file-data.ts");
+        let session_data = fs::read_to_string(root.join("pi-grok-mentions/session-data.ts"))
+            .expect("read shared session-data.ts");
+        let skill_data = fs::read_to_string(root.join("pi-grok-mentions/skill-data.ts"))
+            .expect("read shared skill-data.ts");
         let kit = fs::read_to_string(root.join("pi-grok-tui-kit/frame.ts"))
             .expect("read pi-grok-tui-kit/frame.ts");
         assert!(index.contains("__pi_review_session"));
         assert!(index.contains("__pi_review_message"));
         assert!(shared.contains("loadFileOrDirPreview"));
+        assert!(session_data.contains("formatTimestamp"));
+        assert!(skill_data.contains("formatFileSize"));
         assert!(kit.contains("renderSplitOverlayFrame"));
     }
 }
