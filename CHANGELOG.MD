@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.11] - 2026-11-24
+
 ### Added
 
 - **Pi model catalog cache & instant pre-ready model switching** — Hydrates external Pi sessions at startup from `${GROK_HOME:-~/.grok-pi}/pi-models-cache.json` (falling back on cold launch to Pi's existing `~/.pi/agent/models.json` and `~/.pi/agent/settings.json`) and refreshes the cache atomically whenever Pi finishes loading (`SessionCreated`, `WorktreeSessionCreated`, `SessionLoaded`). Users can open `/model` (`Ctrl+M`), cycle models (`NextModel`), or adjust thinking level (`CycleThinkingLevel`) before Pi finishes booting; pre-ready selections are stashed in `deferred_model_switch`, dispatched ahead of background fetches on session ready, and strictly hold queued user prompts via `model_switch_pending` (also fixed in `handle_session_loaded`) until `SwitchModelComplete`.
