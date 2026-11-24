@@ -6,9 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Timeline trackpad haptics (macOS)** — Drive timeline haptic feedback via the private macOS trackpad actuator (`f5dd07a4`).
+
 ### Changed
 
 - **Pi-only build slimming (S12)** — Gated 10 stock-only dependencies behind `stock-agent` without touching `Cargo.lock`: `tokio-retry`, `backon`, `webbrowser`, `nucleo`, and `xai-computer-hub-sdk` in `xai-grok-shell`, plus `signal-hook`, `portable-pty`, `backon`, `flate2`, and `tar` in `xai-grok-pager` (gating `pty_wrap`/`wrap_cmd` and `trace_cmd` archive/upload runtime while preserving `TraceArgs` CLI parsing). Added CI closure guards asserting `tokio-retry` and `signal-hook` stay out of the `grok-pi` compile closure.
+- **CI workflow cleanup** — Dropped unused verification workflows and the redundant `main`-push CI trigger (`2e0eb846`).
+
+### Fixed
+
+- **OMP Shell Host dependency lock** — Locked `grep-searcher` in `tools/grok-pi-shell-host` to the vendored fork to prevent resolution drift in CI builds (`e96fcbaf`).
+
+### 中文说明
+
+- **S12 架构瘦身**：将 `xai-grok-shell`（`tokio-retry`、`backon`、`webbrowser`、`nucleo`、`xai-computer-hub-sdk`）与 `xai-grok-pager`（`signal-hook`、`portable-pty`、`backon`、`flate2`、`tar`）共 10 个 Stock-only 依赖及 `wrap`/`trace` CLI 运行时门控至 `stock-agent`（零 `Cargo.lock` 改动），并在 CI 中新增 `tokio-retry` 与 `signal-hook` 的 Pi 负向闭包断言。
+- **Timeline 触控板震动反馈**：macOS 下通过私有触控板驱动为 Timeline 交互提供触觉反馈。
+- **OMP Shell Host 与 CI 修复**：锁定 `grok-pi-shell-host` 的 `grep-searcher` 至 vendored fork，并清理冗余验证工作流与 `main` push 触发器。
 
 ## [0.1.14-beta.10] - 2026-11-23
 
