@@ -340,4 +340,93 @@ describe("FilePickerTui rendering, modes (Tree / fd / rg), keyboard, and mouse",
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("debounces rg grep queries, renders searching indicator, and flushes on Enter", async () => {
+    const dir = makeTempWorkspace();
+    try {
+      const grepCalls: string[] = [];
+      let renderRequests = 0;
+      const picker = createFilePickerTui(
+        {
+          requestRender: () => {
+            renderRequests += 1;
+          },
+        },
+        plainTheme,
+        {
+          rootDir: dir,
+          initialMode: "grep",
+          grepDebounceMs: 35,
+          nerdIcons: false,
+          runGrep: (_root, query) => {
+            grepCalls.push(query);
+            return [{ relPath: "src/main.rs", line: 3, column: 9, text: "    let needle_token = 42;" }];
+          },
+          getRows: () => 50,
+        },
+        () => {},
+      );
+
+      // Tall terminal (50 rows) scales to ~90% height (> 34 old cap).
+      expect(picker.render(108).length).toBe(45);
+
+      // Rapid keystrokes should coalesce into a single debounced grep call.
+      picker.handleInput("n");
+      picker.handleInput("e");
+      picker.handleInput("e");
+      picker.handleInput("d");
+      expect(grepCalls).toHaveLength(0);
+      const pendingPlain = picker.render(108).map(stripAnsi).join("\n");
+      expect(pendingPlain).toContain("searching… rg");
+
+      await new Promise((r) => setTimeout(r, 60));
+      expect(grepCalls).toEqual(["need"]);
+      expect(renderRequests).toBeGreaterThanOrEqual(1);
+
+      // Esc cancels any pending debounce timer cleanly.
+      picker.handleInput("l");
+      picker.handleInput("\x1b");
+      await new Promise((r) => setTimeout(r, 60));
+      expect(grepCalls).toEqual(["need"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("syntax-highlights code preview lines and caches per file", () => {
+    const dir = makeTempWorkspace();
+    try {
+      let highlightCalls = 0;
+      const picker = createFilePickerTui(
+        { requestRender: () => {} },
+        plainTheme,
+        {
+          rootDir: dir,
+          initialMode: "files",
+          initialQuery: "main.rs",
+          nerdIcons: false,
+          highlightFile: (code, relPath) => {
+            highlightCalls += 1;
+            expect(relPath).toBe("src/main.rs");
+            return code.split("\n").map((line) => `\x1b[38;2;97;175;239m${line}\x1b[39m`);
+          },
+          getRows: () => 28,
+        },
+        () => {},
+      );
+
+      const lines = picker.render(108);
+      for (const line of lines) {
+        expect(visibleWidth(line)).toBe(108);
+      }
+      expect(lines.join("\n")).toContain("\x1b[38;2;97;175;239mfn main()");
+      expect(highlightCalls).toBe(1);
+
+      // Re-rendering reuses cached highlighted lines.
+      picker.render(108);
+      expect(highlightCalls).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

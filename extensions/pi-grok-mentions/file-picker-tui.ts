@@ -62,6 +62,8 @@ export interface FilePickerTuiOptions {
   initialMode?: FilePickerMode;
   showHidden?: boolean;
   nerdIcons?: boolean;
+  /** Debounce delay in ms for `rg` grep queries while typing (0 = synchronous). */
+  grepDebounceMs?: number;
   /** Optional injected runners for deterministic unit testing. */
   listFiles?: (rootDir: string, showHidden: boolean) => FileSearchEntry[];
   runGrep?: (rootDir: string, query: string, showHidden: boolean) => GrepHit[];
@@ -70,11 +72,61 @@ export interface FilePickerTuiOptions {
     relPath: string,
     opts: { showHidden: boolean; nerdIcons: boolean },
   ) => FilePreviewResult;
+  /** Optional syntax highlighter override (defaults to Pi's `highlightCode`). */
+  highlightFile?: (code: string, relPath: string) => string[] | undefined;
   /** Optional callback to emit/clear an HD image overlay rect in `grok-pi`. */
   onImageOverlay?: (spec: RemoteTuiImageSpec | undefined) => void;
   /** Optional env override for deterministic protocol detection in tests. */
   env?: NodeJS.ProcessEnv;
   getRows?: () => number;
+}
+
+type PiHighlighterModule = {
+  getLanguageFromPath?: (filePath: string) => string | undefined;
+  highlightCode?: (code: string, lang?: string) => string[];
+};
+
+let cachedPiHighlighter: PiHighlighterModule | null | undefined;
+
+function loadPiHighlighter(): PiHighlighterModule | null {
+  if (cachedPiHighlighter !== undefined) return cachedPiHighlighter;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    cachedPiHighlighter = require("@earendil-works/pi-coding-agent") as PiHighlighterModule;
+  } catch {
+    cachedPiHighlighter = null;
+  }
+  return cachedPiHighlighter;
+}
+
+export function createPiCodeHighlighter(
+  mod?: PiHighlighterModule | null,
+): (code: string, relPath: string) => string[] | undefined {
+  return (code: string, relPath: string) => {
+    try {
+      const resolved = mod ?? loadPiHighlighter();
+      if (!resolved?.getLanguageFromPath || !resolved?.highlightCode) return undefined;
+      const lang = resolved.getLanguageFromPath(relPath);
+      if (!lang) return undefined;
+      return resolved.highlightCode(code, lang);
+    } catch {
+      // Pi's global theme may be uninitialized in standalone unit tests.
+      return undefined;
+    }
+  };
+}
+
+const defaultHighlightWithPi = createPiCodeHighlighter();
+
+function lineMatchesAnyTerm(line: string, query: string): boolean {
+  const terms = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (terms.length === 0) return false;
+  const lower = line.toLowerCase();
+  return terms.some((t) => lower.includes(t));
 }
 
 export class FilePickerTui implements Component {
@@ -89,6 +141,8 @@ export class FilePickerTui implements Component {
     relPath: string,
     opts: { showHidden: boolean; nerdIcons: boolean },
   ) => FilePreviewResult;
+  private readonly highlightFileFn: (code: string, relPath: string) => string[] | undefined;
+  private readonly grepDebounceMs: number;
   private readonly onImageOverlay?: (spec: RemoteTuiImageSpec | undefined) => void;
   private readonly imageCap: TerminalImageCapability;
   private readonly getRows: () => number;
@@ -109,6 +163,8 @@ export class FilePickerTui implements Component {
   // rg Grep state
   private grepHits: GrepHit[] = [];
   private lastGrepKey = "";
+  private grepTimer: ReturnType<typeof setTimeout> | null = null;
+  private grepPending = false;
 
   // Selection & scroll state
   private selectedIndex = 0;
@@ -117,6 +173,7 @@ export class FilePickerTui implements Component {
   private lastPreviewKey = "";
   private lastPreviewLinesCount = 0;
   private readonly previewCache = new Map<string, FilePreviewResult>();
+  private readonly highlightCache = new Map<string, string[] | null>();
 
   // Layout geometry captured per frame for mouse hit-testing
   private dividerX = 43;
@@ -147,11 +204,13 @@ export class FilePickerTui implements Component {
     this.runGrepFn =
       options.runGrep ?? ((root, q, hidden) => grepWorkspaceWithRg(root, q, { showHidden: hidden }));
     this.loadPreviewFn = options.loadPreview ?? loadFileOrDirPreview;
+    this.highlightFileFn = options.highlightFile ?? defaultHighlightWithPi;
+    this.grepDebounceMs = Math.max(0, options.grepDebounceMs ?? 0);
     this.onImageOverlay = options.onImageOverlay;
     this.imageCap = detectTerminalImageProtocol(options.env);
     this.getRows = options.getRows ?? (() => 28);
 
-    this.refreshActiveMode();
+    this.refreshActiveMode(true);
   }
 
   private syncImageOverlay(spec: RemoteTuiImageSpec | undefined): void {
@@ -164,7 +223,27 @@ export class FilePickerTui implements Component {
     this.onImageOverlay(spec);
   }
 
+  private clearGrepTimer(): void {
+    if (this.grepTimer !== null) {
+      clearTimeout(this.grepTimer);
+      this.grepTimer = null;
+    }
+    this.grepPending = false;
+  }
+
+  private executeGrepNow(): void {
+    this.clearGrepTimer();
+    const grepKey = `${this.showHidden ? "1" : "0"}:${this.query}`;
+    if (grepKey === this.lastGrepKey) return;
+    this.lastGrepKey = grepKey;
+    this.grepHits = this.query.trim()
+      ? this.runGrepFn(this.rootDir, this.query, this.showHidden)
+      : [];
+    this.clampSelection();
+  }
+
   private finish(selected: FilePickerSelection | undefined): void {
+    this.clearGrepTimer();
     this.syncImageOverlay(undefined);
     this.done(selected);
   }
@@ -213,20 +292,37 @@ export class FilePickerTui implements Component {
     return this.cachedFdFiles.entries;
   }
 
-  private refreshActiveMode(): void {
+  private refreshActiveMode(immediate = false): void {
     if (this.mode === "tree") {
+      this.clearGrepTimer();
       this.treeNodes = buildVisibleTreeNodes(this.rootDir, this.expandedDirs, {
         showHidden: this.showHidden,
       });
     } else if (this.mode === "files") {
+      this.clearGrepTimer();
       this.fileHits = filterFileEntries(this.ensureFdFiles(), this.query);
     } else {
-      const grepKey = `${this.showHidden ? "1" : "0"}:${this.query}`;
-      if (grepKey !== this.lastGrepKey) {
-        this.lastGrepKey = grepKey;
-        this.grepHits = this.query.trim()
-          ? this.runGrepFn(this.rootDir, this.query, this.showHidden)
-          : [];
+      if (!this.query.trim()) {
+        this.clearGrepTimer();
+        this.lastGrepKey = "";
+        this.grepHits = [];
+      } else if (immediate || this.grepDebounceMs <= 0) {
+        this.executeGrepNow();
+      } else {
+        const grepKey = `${this.showHidden ? "1" : "0"}:${this.query}`;
+        if (grepKey !== this.lastGrepKey) {
+          if (this.grepTimer !== null) {
+            clearTimeout(this.grepTimer);
+          }
+          this.grepPending = true;
+          this.grepTimer = setTimeout(() => {
+            this.grepTimer = null;
+            this.grepPending = false;
+            if (this.mode !== "grep") return;
+            this.executeGrepNow();
+            this.tui.requestRender();
+          }, this.grepDebounceMs);
+        }
       }
     }
     this.clampSelection();
@@ -284,8 +380,9 @@ export class FilePickerTui implements Component {
     this.showHidden = !this.showHidden;
     this.cachedFdFiles = null;
     this.previewCache.clear();
+    this.highlightCache.clear();
     this.lastGrepKey = "";
-    this.refreshActiveMode();
+    this.refreshActiveMode(true);
   }
 
   private toggleNerdIcons(): void {
@@ -417,6 +514,8 @@ export class FilePickerTui implements Component {
           this.toggleTreeDir(node);
           return;
         }
+      } else if (this.mode === "grep" && this.grepPending) {
+        this.executeGrepNow();
       }
       this.finish(this.getCurrentSelection());
       return;
@@ -479,7 +578,7 @@ export class FilePickerTui implements Component {
 
     if (type === "press" && event.button === "left") {
       if (hitRegion(this.closeBtnRect, x, y)) {
-        this.done(undefined);
+        this.finish(undefined);
         return { handled: true, render: false };
       }
       if (hitRegion(this.pillRects.get("tree"), x, y)) {
@@ -535,7 +634,7 @@ export class FilePickerTui implements Component {
                 return { handled: true, render: true };
               }
             }
-            this.done(this.getCurrentSelection());
+            this.finish(this.getCurrentSelection());
             return { handled: true, render: false };
           }
         }
@@ -543,6 +642,18 @@ export class FilePickerTui implements Component {
     }
 
     return { handled: true, render: false };
+  }
+
+  private getHighlightedLines(relPath: string, rawLines: readonly string[]): string[] | null {
+    const key = `${relPath}:${rawLines.length}:${rawLines[0] ?? ""}`;
+    if (this.highlightCache.has(key)) {
+      return this.highlightCache.get(key) ?? null;
+    }
+    const normalized = rawLines.map((l) => l.replace(/\t/g, "  "));
+    const highlighted = this.highlightFileFn(normalized.join("\n"), relPath);
+    const result = highlighted && highlighted.length === rawLines.length ? highlighted : null;
+    this.highlightCache.set(key, result);
+    return result;
   }
 
   private getPreview(relPath: string): FilePreviewResult {
@@ -564,9 +675,11 @@ export class FilePickerTui implements Component {
 
     if (count === 0) {
       const emptyMsg =
-        this.mode === "grep" && !this.query.trim()
-          ? " Type to grep workspace with rg..."
-          : " No matching files";
+        this.mode === "grep" && this.grepPending
+          ? " Searching workspace with rg..."
+          : this.mode === "grep" && !this.query.trim()
+            ? " Type to grep workspace with rg..."
+            : " No matching files";
       const lines = ["", this.fg("dim", emptyMsg)];
       while (lines.length < height) lines.push("");
       return lines.slice(0, height).map((l) => fitWidth(l, innerW));
@@ -738,6 +851,8 @@ export class FilePickerTui implements Component {
     const formattedLines: string[] = [];
     if (preview.kind === "file") {
       const gutterW = Math.max(3, String(preview.lines.length).length);
+      const highlightedLines = this.getHighlightedLines(selection.relPath, preview.lines);
+      const hasGrepQuery = this.mode === "grep" && this.query.trim().length > 0;
       for (let i = 0; i < preview.lines.length; i++) {
         const lineNo = i + 1;
         const isMatch = selection.line === lineNo;
@@ -747,9 +862,9 @@ export class FilePickerTui implements Component {
           : ` ${this.fg("dim", numStr)} ${this.fg("border", "│")} `;
         const raw = preview.lines[i]!.replace(/\t/g, "  ");
         const content =
-          this.mode === "grep" && this.query.trim()
+          hasGrepQuery && lineMatchesAnyTerm(raw, this.query)
             ? highlightTerms(raw, this.query, (m) => `\x1b[7m${m}\x1b[27m`)
-            : raw;
+            : (highlightedLines?.[i] ?? raw);
         formattedLines.push(`${prefix}${content}`);
       }
       if (preview.truncated) {
@@ -777,14 +892,18 @@ export class FilePickerTui implements Component {
   }
 
   render(width: number): string[] {
+    const termRows = this.getRows();
+    const targetRows = Math.max(16, Math.floor(termRows * 0.9));
     const geometry = computeSplitGeometry({
       width,
-      rows: this.getRows(),
+      rows: termRows,
       leftRatio: 0.42,
       hasSearchBar: true,
       minWidth: 60,
       minLeftWidth: 26,
       minRightWidth: 26,
+      heightRatio: 0.9,
+      maxRows: targetRows,
     });
     this.dividerX = geometry.dividerX;
     this.bodyStartY = geometry.bodyStartY;
@@ -814,7 +933,10 @@ export class FilePickerTui implements Component {
         promptPrefix: ` ${this.fg("accent", promptGlyph)}`,
         query: this.query,
         placeholder,
-        rightLabel: `${this.itemCount()} ${modeLabel} `,
+        rightLabel:
+          this.mode === "grep" && this.grepPending
+            ? `searching… ${modeLabel} `
+            : `${this.itemCount()} ${modeLabel} `,
       },
       leftLines: this.renderLeftPane(geometry.leftWidth, geometry.bodyHeight),
       rightLines: this.renderRightPane(geometry.rightWidth, geometry.bodyHeight),

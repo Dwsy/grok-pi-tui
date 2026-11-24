@@ -442,11 +442,15 @@ export class SkillPickerTui implements Component {
   }
 
   render(width: number): string[] {
+    const termRows = this.getRows();
+    const targetRows = Math.max(16, Math.floor(termRows * 0.9));
     const geometry = computeSplitGeometry({
       width,
-      rows: this.getRows(),
+      rows: termRows,
       leftRatio: 0.4,
       hasSearchBar: true,
+      heightRatio: 0.9,
+      maxRows: targetRows,
     });
     this.dividerX = geometry.dividerX;
     this.bodyStartY = geometry.bodyStartY;

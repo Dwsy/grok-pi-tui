@@ -266,12 +266,16 @@ class McpPickerComponent implements Component {
   }
 
   render(width: number): string[] {
+    const termRows = this.getRows();
+    const targetRows = Math.max(16, Math.floor(termRows * 0.9));
     const geom = computeSplitGeometry({
       width,
-      rows: this.getRows(),
+      rows: termRows,
       leftRatio: 0.38,
       hasSearchBar: true,
       minLeftWidth: 26,
+      heightRatio: 0.9,
+      maxRows: targetRows,
     });
     this.lastBodyHeight = geom.bodyHeight;
     this.lastBodyStartY = geom.bodyStartY;

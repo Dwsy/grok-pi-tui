@@ -67,6 +67,8 @@ export interface SessionPickerTuiOptions {
     scope: SessionScope;
     currentCwd: string;
   }) => SessionSearchHit[];
+  /** Debounce delay in ms for `searchRecords` full-text SQLite queries (0 = synchronous). */
+  searchDebounceMs?: number;
   /** Terminal height provider for responsive body sizing. */
   getRows?: () => number;
 }
@@ -147,11 +149,13 @@ export class SessionPickerTui implements Component {
     scope: SessionScope;
     currentCwd: string;
   }) => SessionSearchHit[];
+  private readonly searchDebounceMs: number;
   private readonly getRows: () => number;
 
   private scope: SessionScope;
   private query: string;
   private hits: SessionSearchHit[] = [];
+  private searchTimer: ReturnType<typeof setTimeout> | null = null;
   /** Visual row list for fullscreen project-grouped mode. */
   private groupedRows: FullscreenLeftRow[] = [];
   private selectedIndex = 0;
@@ -190,6 +194,7 @@ export class SessionPickerTui implements Component {
     this.done = done;
     this.loadPreview = options.loadPreview ?? ((p) => loadSessionPreviewMessages(p));
     this.searchRecords = options.searchRecords;
+    this.searchDebounceMs = Math.max(0, options.searchDebounceMs ?? 0);
     this.getRows = options.getRows ?? (() => 28);
 
     this.globalCount = this.records.length;
@@ -199,7 +204,7 @@ export class SessionPickerTui implements Component {
       query: "",
     }).length;
 
-    this.recomputeHits();
+    this.recomputeHits(true);
   }
 
   /** Current scope exposed for tests. */
@@ -225,31 +230,19 @@ export class SessionPickerTui implements Component {
     return this.theme.fg(color, text);
   }
 
-  private recomputeHits(): void {
-    const prevId = this.hits[this.selectedIndex]?.record.id;
-    let filtered = filterSessionRecords(this.records, {
-      scope: this.scope,
-      currentCwd: this.currentCwd,
-      query: this.query,
-    });
-    if (this.query.trim() && this.searchRecords) {
-      const dbHits = this.searchRecords({
-        query: this.query,
-        scope: this.scope,
-        currentCwd: this.currentCwd,
-      });
-      if (dbHits.length > 0) {
-        const seen = new Set(filtered.map((h) => h.record.id));
-        const merged = [...filtered];
-        for (const hit of dbHits) {
-          if (!seen.has(hit.record.id)) {
-            seen.add(hit.record.id);
-            merged.push(hit);
-          }
-        }
-        filtered = merged;
-      }
+  private clearSearchTimer(): void {
+    if (this.searchTimer !== null) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = null;
     }
+  }
+
+  private finish(selected: SessionRecord | undefined): void {
+    this.clearSearchTimer();
+    this.done(selected);
+  }
+
+  private applyFilteredHits(filtered: SessionSearchHit[], prevId?: string): void {
     if (this.fullscreen) {
       // Group by project CWD in order of most-recently-updated project so
       // `this.hits` matches the exact visual order rendered in the left pane.
@@ -297,6 +290,65 @@ export class SessionPickerTui implements Component {
     this.listScroll = 0;
     this.previewScroll = 0;
     this.clampListScroll();
+  }
+
+  private recomputeHits(immediate = false): void {
+    this.clearSearchTimer();
+    const prevId = this.hits[this.selectedIndex]?.record.id;
+    let filtered = filterSessionRecords(this.records, {
+      scope: this.scope,
+      currentCwd: this.currentCwd,
+      query: this.query,
+    });
+    if (this.query.trim() && this.searchRecords) {
+      if (immediate || this.searchDebounceMs <= 0) {
+        const dbHits = this.searchRecords({
+          query: this.query,
+          scope: this.scope,
+          currentCwd: this.currentCwd,
+        });
+        if (dbHits.length > 0) {
+          const seen = new Set(filtered.map((h) => h.record.id));
+          const merged = [...filtered];
+          for (const hit of dbHits) {
+            if (!seen.has(hit.record.id)) {
+              seen.add(hit.record.id);
+              merged.push(hit);
+            }
+          }
+          filtered = merged;
+        }
+      } else {
+        const scheduledQuery = this.query;
+        const scheduledScope = this.scope;
+        const baseHits = filtered;
+        this.searchTimer = setTimeout(() => {
+          this.searchTimer = null;
+          if (this.query !== scheduledQuery || this.scope !== scheduledScope || !this.searchRecords) {
+            return;
+          }
+          const dbHits = this.searchRecords({
+            query: scheduledQuery,
+            scope: scheduledScope,
+            currentCwd: this.currentCwd,
+          });
+          if (dbHits.length > 0) {
+            const seen = new Set(baseHits.map((h) => h.record.id));
+            const merged = [...baseHits];
+            for (const hit of dbHits) {
+              if (!seen.has(hit.record.id)) {
+                seen.add(hit.record.id);
+                merged.push(hit);
+              }
+            }
+            const currentId = this.hits[this.selectedIndex]?.record.id;
+            this.applyFilteredHits(merged, currentId);
+            this.tui.requestRender();
+          }
+        }, this.searchDebounceMs);
+      }
+    }
+    this.applyFilteredHits(filtered, prevId);
   }
 
   private setScope(next: SessionScope): void {
@@ -384,11 +436,11 @@ export class SessionPickerTui implements Component {
 
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-      this.done(undefined);
+      this.finish(undefined);
       return;
     }
     if (matchesKey(data, "enter") || matchesKey(data, "return")) {
-      this.done(this.getSelectedRecord());
+      this.finish(this.getSelectedRecord());
       return;
     }
     if (matchesKey(data, "tab") || matchesKey(data, "shift+tab") || matchesKey(data, "ctrl+g")) {
@@ -456,7 +508,7 @@ export class SessionPickerTui implements Component {
     if (type === "press" && event.button === "left") {
       // Header bar clicks (scope pills & close button).
       if (hitRegion(this.closeBtnRect, x, y)) {
-        this.done(undefined);
+        this.finish(undefined);
         return { handled: true, render: false };
       }
       if (hitRegion(this.pillRects.get("global"), x, y)) {
@@ -490,7 +542,7 @@ export class SessionPickerTui implements Component {
         for (const row of this.listRowMap) {
           if (y >= row.y1 && y <= row.y2) {
             this.selectedIndex = row.index;
-            this.done(this.getSelectedRecord());
+            this.finish(this.getSelectedRecord());
             return { handled: true, render: false };
           }
         }
@@ -527,7 +579,7 @@ export class SessionPickerTui implements Component {
         `${this.fg("dim", "Created:")} ${formatTimestamp(selected.created)}  ${this.fg("dim", "Updated:")} ${formatTimestamp(selected.modified)}`,
       ),
       pad(
-        `${this.fg("dim", "Msgs:")} ${msgsDetail}  ${this.fg("dim", "Tokens:")} ${this.fg("warning", formatTokensM(selected.totalTokens))}  ${this.fg("dim", "Model:")} ${this.fg("success", selected.model)}`,
+        `${this.fg("dim", "Msgs:")} ${msgsDetail}  ${this.fg("dim", "Tokens:")} ${this.fg("warning", formatTokensM(selected.totalTokens))}  ${this.fg("dim", "Model:")} ${this.fg("success", shortModelName(selected.model))}`,
       ),
     ];
 
@@ -611,7 +663,7 @@ export class SessionPickerTui implements Component {
 
       const metaSummary = hit.matchSnippet
         ? `${rec.project} · ${hit.matchSnippet}`
-        : `${rec.project} · ${rec.shortId} · ${rec.messageCount}m · ${formatTokensM(rec.totalTokens)} · ${rec.model}`;
+        : `${rec.project} · ${rec.shortId} · ${rec.messageCount}m · ${formatTokensM(rec.totalTokens)} · ${shortModelName(rec.model)}`;
       const row2 = `  ${this.fg("dim", truncateToWidth(metaSummary, Math.max(4, innerW - 2), "…"))}`;
 
       lines.push(fitWidth(row1, innerW));
@@ -932,11 +984,15 @@ export class SessionPickerTui implements Component {
     if (this.fullscreen) {
       return this.renderFullscreen(width);
     }
+    const termRows = this.getRows();
+    const targetRows = Math.max(16, Math.floor(termRows * 0.9));
     const geometry = computeSplitGeometry({
       width,
-      rows: this.getRows(),
+      rows: termRows,
       leftRatio: 0.4,
       hasSearchBar: true,
+      heightRatio: 0.9,
+      maxRows: targetRows,
     });
     this.dividerX = geometry.dividerX;
     this.bodyStartY = geometry.bodyStartY;

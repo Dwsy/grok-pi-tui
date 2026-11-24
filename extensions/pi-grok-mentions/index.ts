@@ -596,6 +596,7 @@ export default function mentions(pi: ExtensionAPI) {
               initialQuery,
               initialScope: "global",
               searchRecords: (opts) => searchSessionPickerRecords(opts),
+              searchDebounceMs: 150,
               getRows: () => {
                 const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
                 return typeof tRows === "number" && tRows > 0 ? tRows : 28;
@@ -606,8 +607,8 @@ export default function mentions(pi: ExtensionAPI) {
         {
           overlay: true,
           overlayOptions: {
-            width: "92%",
-            maxHeight: "88%",
+            width: "90%",
+            maxHeight: "90%",
             anchor: "center",
           },
         },
@@ -652,8 +653,8 @@ export default function mentions(pi: ExtensionAPI) {
         {
           overlay: true,
           overlayOptions: {
-            width: "92%",
-            maxHeight: "88%",
+            width: "90%",
+            maxHeight: "90%",
             anchor: "center",
           },
         },
@@ -669,10 +670,13 @@ export default function mentions(pi: ExtensionAPI) {
   pi.registerCommand(FILE_PICKER_COMMAND, {
     description: "Open the bordered TS file explorer (Tree + fd + rg + Preview)",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
-      const [{ createFilePickerTui }, { REMOTE_TUI_IMAGE_WIDGET_KEY }] = await Promise.all([
-        import("./file-picker-tui.ts"),
-        import("../pi-grok-tui-kit/index.ts"),
-      ]);
+      const [{ createFilePickerTui, createPiCodeHighlighter }, { REMOTE_TUI_IMAGE_WIDGET_KEY }, piCodingAgent] =
+        await Promise.all([
+          import("./file-picker-tui.ts"),
+          import("../pi-grok-tui-kit/index.ts"),
+          import("@earendil-works/pi-coding-agent").catch(() => null),
+        ]);
+      const highlightFile = createPiCodeHighlighter(piCodingAgent);
       const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
       const initialQuery = String(args ?? "").trim();
       const patchUi = ctx.ui as unknown as PatchableUi;
@@ -698,6 +702,8 @@ export default function mentions(pi: ExtensionAPI) {
               {
                 rootDir: cwd,
                 initialQuery,
+                grepDebounceMs: 180,
+                highlightFile,
                 onImageOverlay: isGrokPiHost() ? emitImageOverlay : undefined,
                 getRows: () => {
                   const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
@@ -709,8 +715,8 @@ export default function mentions(pi: ExtensionAPI) {
           {
             overlay: true,
             overlayOptions: {
-              width: "92%",
-              maxHeight: "88%",
+              width: "90%",
+              maxHeight: "90%",
               anchor: "center",
             },
           },
@@ -751,8 +757,8 @@ export default function mentions(pi: ExtensionAPI) {
         {
           overlay: true,
           overlayOptions: {
-            width: "92%",
-            maxHeight: "88%",
+            width: "90%",
+            maxHeight: "90%",
             anchor: "center",
           },
         },
@@ -787,6 +793,7 @@ export default function mentions(pi: ExtensionAPI) {
               confirmLabel: "resume",
               fullscreen: true,
               searchRecords: (opts) => searchSessionPickerRecords(opts),
+              searchDebounceMs: 150,
               getRows: () => {
                 const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
                 return typeof tRows === "number" && tRows > 0 ? tRows : 28;
