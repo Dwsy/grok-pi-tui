@@ -23,8 +23,9 @@ test("prompt hover shows the input and the beginning of the final reply within i
   expect(result.markerId).toBe(4);
   expect(result.version).toBe("reply");
   expect(result.previewAnsi?.map(unstyle)[0]).toBe("Original question");
-  expect(result.previewAnsi?.map(unstyle).slice(1).join(" ")).toContain("Final reply 已经完成");
-  expect(result.previewAnsi).toHaveLength(3);
+  expect(result.previewAnsi?.map(unstyle)[1]).toBe("─".repeat(32));
+  expect(result.previewAnsi?.map(unstyle).slice(2).join(" ")).toContain("Final reply 已经完成");
+  expect(result.previewAnsi).toHaveLength(5);
   expect(result.previewAnsi?.every((line) => visibleWidth(line) <= 32)).toBe(true);
 });
 
@@ -35,7 +36,11 @@ test("an unanswered prompt shows only its input, while compaction shows the summ
   ]).entries;
   expect(result[0]?.previewAnsi).toEqual(["Workspace status?"]);
   expect(result[1]?.tickAnsi && unstyle(result[1].tickAnsi)).toBe("◆");
-  expect(result[1]?.previewAnsi?.map(unstyle)).toEqual(["Compaction summary", "Earlier context is preserved."]);
+  expect(result[1]?.previewAnsi?.map(unstyle)).toEqual([
+    "Compaction summary",
+    "─".repeat(32),
+    "Earlier context is preserved.",
+  ]);
 });
 
 test("each built-in interaction name has a distinct family tick and bounded status preview", () => {
@@ -55,12 +60,12 @@ test("each built-in interaction name has a distinct family tick and bounded stat
   }
 });
 
-test("prompt preview reserves two file rows and includes totals for every changed file", () => {
+test("prompt preview wraps user prompt to 2 lines, adds dividers, and colors +green/-red file diffs", () => {
   const items = format([{
     markerId: 6,
     version: "changes",
     entry: {
-      kind: "prompt", prompt: "Update checkout",
+      kind: "prompt", prompt: "Update checkout flow and verify every changed file in detail",
       reply: "Implemented the requested changes and ran the focused checks. ".repeat(5),
       changes: {
         fileCount: 3, added: 4, deleted: 2, written: 24,
@@ -72,14 +77,21 @@ test("prompt preview reserves two file rows and includes totals for every change
       },
     },
   }]).entries[0]!;
-  const rows = items.previewAnsi?.map(unstyle) ?? [];
+  const rawRows = items.previewAnsi ?? [];
+  const rows = rawRows.map(unstyle);
   expect(items.tickAnsi).toBeUndefined();
-  expect(rows).toHaveLength(6);
-  expect(rows[0]).toBe("Update checkout");
-  expect(rows[1]).toContain("Implemented");
-  expect(rows[3]).toBe("3 files · +4 −2 · 24 written");
-  expect(rows[4]).toContain("checkout.rs");
-  expect(rows[5]).toContain("src/ui.rs");
-  expect(rows.join(" ")).not.toContain("extra.rs");
+  expect(rows[0]).toContain("Update checkout");
+  expect(rows[1]).toContain("every changed file");
+  expect(rows[2]).toBe("─".repeat(32));
+  expect(rows[3]).toContain("Implemented");
+  const fileHeaderIdx = rows.findIndex((r) => r.startsWith("3 files"));
+  expect(fileHeaderIdx).toBeGreaterThan(3);
+  expect(rows[fileHeaderIdx - 1]).toBe("─".repeat(32));
+  expect(rows[fileHeaderIdx]).toBe("3 files · +4 -2 · 24 written");
+  expect(rawRows[fileHeaderIdx]).toContain("\x1b[32m+4\x1b[0m");
+  expect(rawRows[fileHeaderIdx]).toContain("\x1b[31m-2\x1b[0m");
+  expect(rows.slice(fileHeaderIdx + 1).join(" ")).toContain("checkout.rs");
+  expect(rows.slice(fileHeaderIdx + 1).join(" ")).toContain("src/ui.rs");
+  expect(rows.slice(fileHeaderIdx + 1).join(" ")).toContain("src/extra.rs");
   expect(rows.every((row) => visibleWidth(row) <= 32)).toBe(true);
 });

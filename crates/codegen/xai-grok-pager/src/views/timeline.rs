@@ -145,9 +145,38 @@ impl TimelineRail {
 }
 
 pub fn preview_columns(scrollback_width: u16) -> u16 {
-    (scrollback_width / 2)
-        .clamp(24, 48)
+    (scrollback_width.saturating_mul(3) / 5)
+        .clamp(36, 72)
         .min(scrollback_width.saturating_sub(5))
+}
+
+fn wrap_plain_lines(
+    text: &str,
+    max_text: usize,
+    max_lines: usize,
+    style: Style,
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    if max_lines == 0 || max_text == 0 {
+        return out;
+    }
+    let mut rest = text.trim();
+    while !rest.is_empty() && out.len() < max_lines {
+        if out.len() + 1 == max_lines {
+            out.push(Line::styled(
+                crate::render::line_utils::truncate_str(rest, max_text),
+                style,
+            ));
+            break;
+        }
+        let end = crate::render::line_utils::byte_offset_at_width(rest, max_text);
+        if end == 0 {
+            break;
+        }
+        out.push(Line::styled(rest[..end].to_owned(), style));
+        rest = rest[end..].trim_start();
+    }
+    out
 }
 
 pub fn render_tick_hover_popup(
@@ -157,7 +186,7 @@ pub fn render_tick_hover_popup(
     marker_idx: usize,
     preview: &str,
     excerpt: Option<&str>,
-    file_rows: &[String],
+    file_rows: &[Line<'static>],
     formatted: Option<&[Line<'static>]>,
     timestamp: Option<chrono::DateTime<chrono::Local>>,
     theme: &Theme,
@@ -176,7 +205,7 @@ pub fn render_tick_hover_popup(
             Style::default().fg(theme.gray),
         ));
     }
-    let max_rows = usize::from(scrollback_area.height.saturating_sub(2)).min(7);
+    let max_rows = usize::from(scrollback_area.height.saturating_sub(2)).min(14);
     if let Some(formatted) = formatted {
         lines.extend(
             formatted
@@ -185,52 +214,55 @@ pub fn render_tick_hover_popup(
                 .cloned(),
         );
     } else {
-        let mut preview = preview.split_whitespace().collect::<Vec<_>>().join(" ");
-        let extra_rows = file_rows
-            .len()
-            .min(max_rows.saturating_sub(lines.len() + 1));
-        let max_body = (lines.len() + 3).min(max_rows.saturating_sub(extra_rows));
-        if (excerpt.is_some() || extra_rows > 0) && lines.len() < max_body {
-            let title = if preview.is_empty() {
-                "User prompt"
-            } else {
-                &preview
-            };
-            lines.push(Line::styled(
-                crate::render::line_utils::truncate_str(title, max_text),
-                Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ));
-            preview = excerpt
-                .unwrap_or_default()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-        }
-        let mut rest = preview.as_str();
-        while !rest.is_empty() && lines.len() < max_body {
-            let style = Style::default().fg(theme.text_primary);
-            if lines.len() + 1 == max_body {
-                lines.push(Line::styled(
-                    crate::render::line_utils::truncate_str(rest, max_text),
-                    style,
-                ));
-                break;
-            }
-            let end = crate::render::line_utils::byte_offset_at_width(rest, max_text);
-            if end == 0 {
-                break;
-            }
-            lines.push(Line::styled(rest[..end].to_owned(), style));
-            rest = rest[end..].trim_start();
-        }
-        lines.extend(file_rows.iter().take(extra_rows).map(|row| {
+        let prompt_clean = preview.split_whitespace().collect::<Vec<_>>().join(" ");
+        let excerpt_clean = excerpt
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let has_excerpt = !excerpt_clean.is_empty();
+        let has_files = !file_rows.is_empty();
+        let prompt_style = Style::default()
+            .fg(theme.text_primary)
+            .add_modifier(ratatui::style::Modifier::BOLD);
+        let prompt_text = if prompt_clean.is_empty() && (has_excerpt || has_files) {
+            "User prompt"
+        } else {
+            prompt_clean.as_str()
+        };
+        let prompt_budget = 2.min(max_rows.saturating_sub(lines.len()));
+        lines.extend(wrap_plain_lines(prompt_text, max_text, prompt_budget, prompt_style));
+
+        let divider_line = || {
             Line::styled(
-                crate::render::line_utils::truncate_str(row, max_text),
-                Style::default().fg(theme.accent_assistant),
+                "─".repeat(max_text),
+                Style::default().fg(theme.gray_dim),
             )
-        }));
+        };
+
+        if has_excerpt && lines.len() + 1 < max_rows {
+            lines.push(divider_line());
+            let reserve_files = if has_files {
+                (file_rows.len() + 1).min(4)
+            } else {
+                0
+            };
+            let excerpt_budget = max_rows
+                .saturating_sub(lines.len())
+                .saturating_sub(reserve_files)
+                .min(3);
+            lines.extend(wrap_plain_lines(
+                &excerpt_clean,
+                max_text,
+                excerpt_budget,
+                Style::default().fg(theme.text_secondary),
+            ));
+        }
+        if has_files && lines.len() + 1 < max_rows {
+            lines.push(divider_line());
+            let file_budget = max_rows.saturating_sub(lines.len());
+            lines.extend(file_rows.iter().take(file_budget).cloned());
+        }
     }
     if lines.is_empty() {
         return;

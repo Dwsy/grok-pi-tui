@@ -1,6 +1,8 @@
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const MAX_FORMAT_LINE_BYTES = 2048;
+const MAX_PREVIEW_LINES = 14;
+const MAX_FILE_ROWS = 5;
 const SUBAGENT_ACTIONS = {
   spawn_subagent: "Spawn subagent",
   send_message_to_subagent: "Send subagent message",
@@ -85,23 +87,52 @@ function statusLine(entry: TimelineTool) {
   return style(statusColors[entry.status], entry.status);
 }
 
-function changeCounts(change: ChangeCounts): string {
-  return `+${change.added} −${change.deleted} · ${change.written} written`;
+function dividerLine(columns: number): string {
+  return style(2, "─".repeat(Math.max(1, columns)));
+}
+
+function styledDiffCounts(change: ChangeCounts, compactWritten: boolean): { ansi: string; plainLen: number } {
+  const addText = `+${change.added}`;
+  const delText = `-${change.deleted}`;
+  const writtenText =
+    change.written > 0
+      ? compactWritten
+        ? ` ${change.written}w`
+        : ` · ${change.written} written`
+      : "";
+  const ansi = `${style(32, addText)} ${style(31, delText)}${writtenText ? style(2, writtenText) : ""}`;
+  return { ansi, plainLen: addText.length + 1 + delText.length + writtenText.length };
 }
 
 function fileRows(changes: TurnChanges, columns: number): string[] {
-  const title = `${changes.fileCount} ${changes.fileCount === 1 ? "file" : "files"} · ${changeCounts(changes)}`;
-  return [
-    style(36, truncateToWidth(title, columns)),
-    ...changes.files.slice(0, 2).map((file) => {
-      const counts = changeCounts(file);
-      const width = Math.max(0, columns - counts.length - 2);
+  const fileLabel = `${changes.fileCount} ${changes.fileCount === 1 ? "file" : "files"}`;
+  const summaryCounts = styledDiffCounts(changes, false);
+  const header = truncateToWidth(
+    `${style(36, fileLabel)}${style(2, " · ")}${summaryCounts.ansi}`,
+    columns,
+  );
+  const visibleFiles = changes.files.slice(0, MAX_FILE_ROWS);
+  const rows: string[] = [
+    header,
+    ...visibleFiles.map((file) => {
+      const counts = styledDiffCounts(file, true);
+      const width = Math.max(0, columns - counts.plainLen - 2);
       const path = plain(file.path);
       const name = path.split(/[\\/]/).at(-1) || path;
       const shown = truncateToWidth(path, width) === path ? path : truncateToWidth(name, width);
-      return truncateToWidth(`${counts}  ${shown}`, columns);
+      return truncateToWidth(`${counts.ansi}  ${shown}`, columns);
     }),
   ];
+  const remaining = Math.max(0, changes.fileCount - visibleFiles.length);
+  if (remaining > 0) {
+    rows.push(
+      style(
+        2,
+        truncateToWidth(`… +${remaining} more ${remaining === 1 ? "file" : "files"}`, columns),
+      ),
+    );
+  }
+  return rows;
 }
 
 function agentRenderer(glyph: string, color: number, action: string): TimelineRenderer {
@@ -139,22 +170,33 @@ function formatItem(entry: TimelineItem, view: FormatView): Formatted | undefine
   switch (entry.kind) {
     case "prompt": {
       if (!entry.reply && !entry.changes) {
-        return { previewAnsi: excerptLines(entry.prompt, view.previewColumns, 3) };
+        return { previewAnsi: excerptLines(entry.prompt, view.previewColumns, 2) };
       }
-      return {
-        previewAnsi: [
-          style(1, truncateToWidth(plain(synopsis(entry.prompt)) || "User prompt", view.previewColumns)),
-          ...(entry.reply ? excerptLines(entry.reply, view.previewColumns, 2) : []),
-          ...(entry.changes ? fileRows(entry.changes, view.previewColumns) : []),
-        ],
-      };
+      const promptLines = excerptLines(entry.prompt, view.previewColumns, 2);
+      const styledPrompt =
+        promptLines.length > 0
+          ? promptLines.map((line) => style(1, line))
+          : [style(1, truncateToWidth("User prompt", view.previewColumns))];
+      const replyLines = entry.reply ? excerptLines(entry.reply, view.previewColumns, 3) : [];
+      const changeLines = entry.changes ? fileRows(entry.changes, view.previewColumns) : [];
+      const out: string[] = [...styledPrompt];
+      if (replyLines.length > 0) {
+        out.push(dividerLine(view.previewColumns));
+        out.push(...replyLines);
+      }
+      if (changeLines.length > 0) {
+        out.push(dividerLine(view.previewColumns));
+        out.push(...changeLines);
+      }
+      return { previewAnsi: out.slice(0, MAX_PREVIEW_LINES) };
     }
     case "compaction":
       return {
         tickAnsi: style(35, "◆"),
         previewAnsi: [
           style(1, truncateToWidth("Compaction summary", view.previewColumns)),
-          ...excerptLines(entry.summary, view.previewColumns, 2),
+          dividerLine(view.previewColumns),
+          ...excerptLines(entry.summary, view.previewColumns, 3),
         ],
       };
     default:
@@ -177,7 +219,7 @@ export function formatTimelineBatch(request: FormatRequest) {
         if (!formatted) return identity;
         const { tickAnsi, previewAnsi } = formatted;
         if ((tickAnsi !== undefined && !validLine(tickAnsi))
-          || (previewAnsi !== undefined && (!Array.isArray(previewAnsi) || previewAnsi.length > 6
+          || (previewAnsi !== undefined && (!Array.isArray(previewAnsi) || previewAnsi.length > MAX_PREVIEW_LINES
             || !previewAnsi.every(validLine)))) {
           return identity;
         }

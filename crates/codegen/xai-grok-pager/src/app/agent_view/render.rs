@@ -2532,7 +2532,7 @@ impl AgentView {
                 {
                     let (title, excerpt) = key.native_preview(marker);
                     let formatted_preview = formatted(marker_idx).and_then(|item| item.preview.as_deref());
-                    let file_rows = if formatted_preview.is_none() { key.native_file_rows() } else { Vec::new() };
+                    let file_rows = if formatted_preview.is_none() { key.native_file_rows(&theme) } else { Vec::new() };
                     crate::views::timeline::render_tick_hover_popup(
                         buf,
                         rail,

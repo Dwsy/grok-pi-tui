@@ -23,6 +23,7 @@ const FORMAT_DEADLINE: Duration = Duration::from_secs(1);
 const MAX_BATCH: usize = 64;
 const MAX_CACHE: usize = 512;
 const MAX_LINE_BYTES: usize = 2048;
+const MAX_PREVIEW_LINES: usize = 14;
 
 pub(super) type TimelineOptions<'a> = (&'a TimelineContents, Option<&'a str>);
 
@@ -108,7 +109,7 @@ impl FormatKey {
         }
     }
 
-    pub fn native_file_rows(&self) -> Vec<String> {
+    pub fn native_file_rows(&self, theme: &Theme) -> Vec<Line<'static>> {
         let FormatEntry::Prompt {
             changes: Some(changes),
             ..
@@ -116,22 +117,68 @@ impl FormatKey {
         else {
             return Vec::new();
         };
-        let mut rows = vec![format!(
-            "{} files · +{} -{} · {} written",
-            changes.file_count, changes.added, changes.deleted, changes.written
-        )];
-        rows.extend(changes.files.iter().map(|file| {
-            let counts = format!(
-                "+{} -{} · {} written",
-                file.added, file.deleted, file.written
-            );
+        let add_style = ratatui::style::Style::default().fg(theme.diff_insert_fg);
+        let del_style = ratatui::style::Style::default().fg(theme.diff_delete_fg);
+        let dim_style = ratatui::style::Style::default().fg(theme.gray);
+        let title_style = ratatui::style::Style::default().fg(theme.accent_assistant);
+        let path_style = ratatui::style::Style::default().fg(theme.path);
+
+        let mut header_spans = vec![
+            ratatui::text::Span::styled(
+                format!(
+                    "{} {}",
+                    changes.file_count,
+                    if changes.file_count == 1 { "file" } else { "files" }
+                ),
+                title_style,
+            ),
+            ratatui::text::Span::styled(" · ", dim_style),
+            ratatui::text::Span::styled(format!("+{}", changes.added), add_style),
+            ratatui::text::Span::styled(" ", dim_style),
+            ratatui::text::Span::styled(format!("-{}", changes.deleted), del_style),
+        ];
+        if changes.written > 0 {
+            header_spans.push(ratatui::text::Span::styled(
+                format!(" · {} written", changes.written),
+                dim_style,
+            ));
+        }
+        let mut rows = vec![Line::from(header_spans)];
+
+        let shown_limit = 5usize;
+        for file in changes.files.iter().take(shown_limit) {
+            let add_str = format!("+{}", file.added);
+            let del_str = format!("-{}", file.deleted);
+            let written_str = if file.written > 0 {
+                format!(" {}w", file.written)
+            } else {
+                String::new()
+            };
+            let counts_len = add_str.len() + 1 + del_str.len() + written_str.len();
             let name = crate::render::tool_paths::path_for_tool_header(
                 &file.path,
                 Some(usize::from(self.preview_columns)),
-                counts.len() + 2,
+                counts_len + 2,
             );
-            format!("{counts}  {name}")
-        }));
+            let mut spans = vec![
+                ratatui::text::Span::styled(add_str, add_style),
+                ratatui::text::Span::styled(" ", dim_style),
+                ratatui::text::Span::styled(del_str, del_style),
+            ];
+            if !written_str.is_empty() {
+                spans.push(ratatui::text::Span::styled(written_str, dim_style));
+            }
+            spans.push(ratatui::text::Span::styled("  ", dim_style));
+            spans.push(ratatui::text::Span::styled(name, path_style));
+            rows.push(Line::from(spans));
+        }
+        let hidden = changes.file_count.saturating_sub(changes.files.len().min(shown_limit));
+        if hidden > 0 {
+            rows.push(Line::styled(
+                format!("… +{hidden} more {}", if hidden == 1 { "file" } else { "files" }),
+                dim_style,
+            ));
+        }
         rows
     }
 
@@ -291,7 +338,7 @@ fn parse_format(entry: &Value, theme: &Theme) -> Option<MarkerFormat> {
         None => None,
         Some(value) => {
             let lines = value.as_array()?;
-            if lines.len() > 6 {
+            if lines.len() > MAX_PREVIEW_LINES {
                 return None;
             }
             let lines = lines
@@ -476,7 +523,7 @@ mod tests {
             json!({"tickAnsi": "\x1b[2J"}),
             json!({"previewAnsi": ["good", "\x1b]8;;https://example.com\x07bad"]}),
             json!({"tickAnsi": "a".repeat(MAX_LINE_BYTES + 1)}),
-            json!({"previewAnsi": ["one", "two", "three", "four", "five", "six", "seven"]}),
+            json!({"previewAnsi": vec!["row"; MAX_PREVIEW_LINES + 1]}),
         ] {
             assert!(parse_format(&invalid, &theme).is_none());
         }

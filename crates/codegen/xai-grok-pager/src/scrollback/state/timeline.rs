@@ -445,7 +445,7 @@ impl ScrollbackState {
             written: files.values().map(|change| change.written).sum(),
             files: files
                 .into_values()
-                .take(2)
+                .take(6)
                 .map(|mut change| {
                     change.path = short_label(&change.path);
                     change
@@ -1037,7 +1037,7 @@ mod tests {
             ),
             (3, 4, 2, 24)
         );
-        assert_eq!(summary.files.len(), 2);
+        assert_eq!(summary.files.len(), 3);
         assert_eq!(summary.files[0].path, "src/a.rs");
         assert_eq!((summary.files[0].added, summary.files[0].written), (3, 15));
         let edits_only = TimelineContents {
