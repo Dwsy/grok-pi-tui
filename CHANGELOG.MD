@@ -6,12 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.13] - 2026-11-24
+
+### Changed
+
+- **Pi runtime bumped to upstream Pi `v1.6.0+80`** — Advanced the pinned `pi-main` submodule from `v1.5.2+100` (`a40abecaa`) to `v1.6.0+80` (`8209929fb`), 348 upstream commits across the v1.6.0 release.
+- **Faster `grok-pi` startup (managed Pi version fast-path + lazy TS TUI imports)** — Added a `<1ms` fast-path in `pi_version.rs` (`read_managed_pi_version`) to read `~/.pi/agent/install/current-version` directly instead of spawning `pi --version` (~1.9s) before starting Pi RPC, and converted heavy TUI/data imports in `pi-grok-mentions`, `pi-grok-review`, `pi-grok-tree`, and `pi-grok-config` to lazy `await import(...)` inside command handlers so startup skips synchronous `jiti` transpilation of unused overlays.
+- **Larger, richer Timeline hover card** — Expanded the Timeline tick hover popup width (`36–72` cols at 60% of scrollback, up from `24–48`) and height (up to 14 rows, up from 6–7), wrapped user prompts to 2 lines, added subtle `─` section dividers between user prompt / assistant reply / file changes, raised captured file summaries from 2 to 6 (showing up to 5 file rows + overflow count), and colored `+added` green / `-deleted` red in both `extensions/pi-grok-remote-tui/timeline-format.ts` and the native Rust fallback.
 ## [0.1.14-beta.12] - 2026-11-24
 
 ### Changed
 
-- **Faster `grok-pi` startup (managed Pi version fast-path + lazy TS TUI imports)** — Added a `<1ms` fast-path in `pi_version.rs` (`read_managed_pi_version`) to read `~/.pi/agent/install/current-version` directly instead of spawning `pi --version` (~1.9s) before starting Pi RPC, and converted heavy TUI/data imports in `pi-grok-mentions`, `pi-grok-review`, `pi-grok-tree`, and `pi-grok-config` to lazy `await import(...)` inside command handlers so startup skips synchronous `jiti` transpilation of unused overlays.
-- **Larger, richer Timeline hover card** — Expanded the Timeline tick hover popup width (`36–72` cols at 60% of scrollback, up from `24–48`) and height (up to 14 rows, up from 6–7), wrapped user prompts to 2 lines, added subtle `─` section dividers between user prompt / assistant reply / file changes, raised captured file summaries from 2 to 6 (showing up to 5 file rows + overflow count), and colored `+added` green / `-deleted` red in both `extensions/pi-grok-remote-tui/timeline-format.ts` and the native Rust fallback.
 - **Fullscreen Codex-style `/resume` TS TUI** — Upgraded `/resume` (`__pi_resume_session`) in `extensions/pi-grok-mentions` to an edge-to-edge full-screen (`width: "100%"`, `maxHeight: "100%"`, `anchor: "top-left"`) split workspace modeled on Codex's Agent Command Center: top `Sessions · Group: Project` bar with `All` / `Project` filter tabs and inline `/` search, left project-grouped session table (`Title`, `Model`, `Updated`) with high-contrast inverted selection, right `Session details` panel (`Model`, `Updated`, `Project`, scrollable `Last messages` preview), and full keyboard + mouse support.
 
 ### Fixed
