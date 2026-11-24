@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14-beta.12] - 2026-11-24
+
 ### Changed
 
 - **Fullscreen Codex-style `/resume` TS TUI** — Upgraded `/resume` (`__pi_resume_session`) in `extensions/pi-grok-mentions` to an edge-to-edge full-screen (`width: "100%"`, `maxHeight: "100%"`, `anchor: "top-left"`) split workspace modeled on Codex's Agent Command Center: top `Sessions · Group: Project` bar with `All` / `Project` filter tabs and inline `/` search, left project-grouped session table (`Title`, `Model`, `Updated`) with high-contrast inverted selection, right `Session details` panel (`Model`, `Updated`, `Project`, scrollable `Last messages` preview), and full keyboard + mouse support.
