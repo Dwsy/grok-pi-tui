@@ -115,6 +115,7 @@ Consult these verified local/upstream sources directly instead of guessing:
 | **Pi Coding Agent** | `pi-main/` submodule (`https://github.com/earendil-works/pi`) | Authoritative Pi JSONL RPC (`packages/coding-agent/src/modes/rpc/`), session/tree lifecycle (`core/agent-session.ts`), and extension conflict rules (`resource-loader.ts`). Read-only for contract lookup. |
 | **DeepSeek Harness (`dsh`)** | `~/.dsh/deepseek-harness` | Reasoning sanitization (`packages/client/ui-chat/src/client/reasoning-text.ts`), collapsed reasoning row & streaming preview (`chat/ReasoningRow.tsx`), turn-process folding (`conversation-nodes/turn-process.ts`), and scroll-follow (`chat/use-scroll-follow.ts`). |
 | **ZCode (`zcode-pi`)** | `~/Dev/AI/zcode-pi/ZCode-main` | Right-anchored horizontal streaming reasoning ticker & left fade mask (`packages/ui/src/components/ai-elements/reasoning.tsx`), queued summary rolling (`ToolCallBlocks/QueuedSummaryContent.tsx`), and virtual scroll anchor state machine (`packages/ui/src/v4/timelineScrollAnchor.ts`). |
+| **Codex (`codex`)** | `~/Dev/AI/codex` | Agent Command Center fullscreen `/resume` layout (`codex-rs/tui/src/app/agents_overview_view.rs`) and syntax-theme pastel identity colors (`codex-rs/tui/src/thread_color.rs`). |
 | **Architecture Rulings** | `docs/issues/架构/` & `docs/NATIVE_GROK_TUI_ALIGNMENT.md` | Verified `pi-slim` dependency-graph boundaries (S09–S12), allowed Pager seams, and SHA-256 baseline rules. |
 
 ---

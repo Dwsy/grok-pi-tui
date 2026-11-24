@@ -47,6 +47,7 @@ Read [`docs/NATIVE_GROK_TUI_ALIGNMENT.md`](docs/NATIVE_GROK_TUI_ALIGNMENT.md) an
 | Bundled Pi extensions | `extensions/pi-grok-*/` |
 | Upstream sync skill & log | `.pi/skills/upstream-changelog/SKILL.md`, `docs/upstream/UPSTREAM_CHANGELOG.md` |
 | Repo RSI skill (pitfalls & runbooks) | `.pi/skills/grok-pi-rsi/SKILL.md` |
+| Remote TUI & TS overlays RSI skill | `.pi/skills/grok-pi-remote-tui-rsi/SKILL.md` |
 | Release runbook | `docs/usage/release.md` |
 
 ## Session and Tree Rules
@@ -70,7 +71,7 @@ Read [`docs/NATIVE_GROK_TUI_ALIGNMENT.md`](docs/NATIVE_GROK_TUI_ALIGNMENT.md) an
 
 ## Recurring Pitfalls and Runbooks
 
-For recurring `pi-slim` feature-gating traps, F2 settings wiring checklists, Pi RPC extension-injection diagnosis (`{GROK_HOME}/logs/pi-rpc-stderr.log`), and Herdr lifecycle invariants, consult [`.pi/skills/grok-pi-rsi/SKILL.md`](.pi/skills/grok-pi-rsi/SKILL.md).
+For recurring `pi-slim` feature-gating traps, F2 settings wiring checklists, Pi RPC extension-injection diagnosis (`{GROK_HOME}/logs/pi-rpc-stderr.log`), and Herdr lifecycle invariants, consult [`.pi/skills/grok-pi-rsi/SKILL.md`](.pi/skills/grok-pi-rsi/SKILL.md). For Remote TUI host/resize plumbing, TS overlay sizing/alignment, `jiti` startup/lazy imports, search debounce, and Codex-style TUI conventions, consult [`.pi/skills/grok-pi-remote-tui-rsi/SKILL.md`](.pi/skills/grok-pi-remote-tui-rsi/SKILL.md).
 
 ## Safety
 
