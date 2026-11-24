@@ -1522,7 +1522,7 @@ mod history_browse_panel_tests {
 
         assert!(matches!(
             outcome,
-            InputOutcome::Action(Action::FetchSessionList)
+            InputOutcome::Action(Action::ShowSessionPicker)
         ));
         assert!(!agent.prompt.history_search.is_active());
         assert_eq!(agent.prompt.text(), "");
@@ -1540,7 +1540,7 @@ mod history_browse_panel_tests {
 
         assert!(matches!(
             outcome,
-            InputOutcome::Action(Action::FetchSessionList)
+            InputOutcome::Action(Action::ShowSessionPicker)
         ));
         assert_eq!(agent.prompt.text(), "", "redo must not run");
     }

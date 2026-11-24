@@ -1562,8 +1562,7 @@ impl AgentView {
         }
     }
     fn open_session_picker(&mut self) -> InputOutcome {
-        self.active_modal = Some(crate::views::modal::session_picker_modal(None));
-        InputOutcome::Action(Action::FetchSessionList)
+        InputOutcome::Action(Action::ShowSessionPicker)
     }
     /// Returns `true` if the switch happened immediately, `false` if blocked.
     pub(crate) fn set_active_pane(&mut self, target: AgentPane, force: bool) -> bool {

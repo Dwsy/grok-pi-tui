@@ -546,14 +546,10 @@ mod tests {
         assert!(
             matches!(
                 outcome,
-                InputOutcome::Action(crate::app::actions::Action::FetchSessionList)
+                InputOutcome::Action(crate::app::actions::Action::ShowSessionPicker)
             ),
             "got {outcome:?}"
         );
-        assert!(matches!(
-            agent.active_modal,
-            Some(crate::app::agent_view::ActiveModal::SessionPicker { .. })
-        ));
     }
 
     /// Minimal mode has no prompt border for the caption and never renders toasts, so the stash has to report itself in the scrollback.

@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Fullscreen Codex-style `/resume` TS TUI** — Upgraded `/resume` (`__pi_resume_session`) in `extensions/pi-grok-mentions` to an edge-to-edge full-screen (`width: "100%"`, `maxHeight: "100%"`, `anchor: "top-left"`) split workspace modeled on Codex's Agent Command Center: top `Sessions · Group: Project` bar with `All` / `Project` filter tabs and inline `/` search, left project-grouped session table (`Title`, `Model`, `Updated`) with high-contrast inverted selection, right `Session details` panel (`Model`, `Updated`, `Project`, scrollable `Last messages` preview), and full keyboard + mouse support.
+
+### Fixed
+
+- **Aligned all `/resume` shortcuts to the TS TUI** — Routed `AgentView::open_session_picker()` (`Ctrl+R` / `ActionId::OpenSessions`) and Welcome `F3` through `Action::ShowSessionPicker` so external Pi sessions consistently open the TS `/resume` overlay instead of the Rust session picker.
+- **Fixed `Pi session <id> is not in the local catalog` on `/resume`** — Added `PiAgent::resolve_session_path` in `pi-grok-adapter` to lazily hydrate `session_paths` from PSM's global SQLite catalog (with local session directory scan fallback) on cache misses across `load_session`, `prompt`, `x.ai/session/rebind`, and `x.ai/session/delete`.
+- **Fixed `@` mentions showing empty after startup or new sessions** — Persisted the latest `pi/ui/mentions_catalog` payload on `AppView` and seeded `file_search.mention_catalog` for `welcome_prompt`, dashboard composers, and every newly created, loaded, or forked `AgentView`.
+
 ## [0.1.14-beta.11] - 2026-11-24
 
 ### Added

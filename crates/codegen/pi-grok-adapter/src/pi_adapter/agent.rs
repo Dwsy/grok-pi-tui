@@ -86,11 +86,8 @@ impl acp::Agent for PiAgent {
         let active = self.state.borrow().bootstrap.state.session_id.clone();
         if requested != active {
             let session_path = self
-                .state
-                .borrow()
-                .session_paths
-                .get(&requested)
-                .cloned()
+                .resolve_session_path(&requested)
+                .await
                 .ok_or_else(|| {
                     acp::Error::invalid_params().data(format!(
                         "Pi session {requested} is not in the local catalog"
@@ -189,12 +186,7 @@ impl acp::Agent for PiAgent {
             .subagent_session_to_id
             .contains_key(&requested_session);
         if requested_session != active_session && !is_subagent {
-            let session_path = self
-                .state
-                .borrow()
-                .session_paths
-                .get(&requested_session)
-                .cloned();
+            let session_path = self.resolve_session_path(&requested_session).await;
             match session_path {
                 Some(path) => {
                     let result = self
@@ -865,11 +857,8 @@ impl acp::Agent for PiAgent {
                         .map_err(acp_internal);
                 }
                 let session_path = self
-                    .state
-                    .borrow()
-                    .session_paths
-                    .get(requested)
-                    .cloned()
+                    .resolve_session_path(requested)
+                    .await
                     .ok_or_else(|| {
                         acp::Error::invalid_params().data(format!(
                             "Pi session {requested} is not in the local catalog"
@@ -903,11 +892,8 @@ impl acp::Agent for PiAgent {
                         .data("Cannot delete the currently active session"));
                 }
                 let session_path = self
-                    .state
-                    .borrow()
-                    .session_paths
-                    .get(requested)
-                    .cloned()
+                    .resolve_session_path(requested)
+                    .await
                     .ok_or_else(|| {
                         acp::Error::invalid_params().data(format!(
                             "Pi session {requested} is not in the local catalog"

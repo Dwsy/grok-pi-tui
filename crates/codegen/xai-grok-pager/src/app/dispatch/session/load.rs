@@ -241,6 +241,9 @@ fn dispatch_load_session_ungated(
         .prompt
         .file_search
         .set_default_hidden(app.current_ui.pi_at_search_hidden);
+    if let Some(catalog) = app.mention_catalog.clone() {
+        agent_mut.prompt.file_search.set_mention_catalog(catalog);
+    }
     agent_mut.set_session_recap_available(app.session_recap_available);
     agent_mut.set_voice_mode_available(app.voice_mode_enabled);
     agent_mut.scrollback.begin_batch();
@@ -1224,6 +1227,9 @@ pub(in crate::app::dispatch) fn dispatch_load_session_with_restore(
             .prompt
             .file_search
             .set_default_hidden(app.current_ui.pi_at_search_hidden);
+        if let Some(catalog) = app.mention_catalog.clone() {
+            agent.prompt.file_search.set_mention_catalog(catalog);
+        }
         agent.set_session_recap_available(app.session_recap_available);
         agent.set_voice_mode_available(app.voice_mode_enabled);
         agent.apply_app_scoped_gates(

@@ -780,6 +780,7 @@ export default function mentions(pi: ExtensionAPI) {
               initialScope: "global",
               titleBadge: "(/resume)",
               confirmLabel: "resume",
+              fullscreen: true,
               getRows: () => {
                 const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
                 return typeof tRows === "number" && tRows > 0 ? tRows : 28;
@@ -790,9 +791,9 @@ export default function mentions(pi: ExtensionAPI) {
         {
           overlay: true,
           overlayOptions: {
-            width: "92%",
-            maxHeight: "88%",
-            anchor: "center",
+            width: "100%",
+            maxHeight: "100%",
+            anchor: "top-left",
           },
         },
       );

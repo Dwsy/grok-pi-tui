@@ -20,6 +20,7 @@ import {
   type TuiMouseEvent,
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
+import os from "node:os";
 import {
   computeSplitGeometry,
   fitWidth,
@@ -53,10 +54,30 @@ export interface SessionPickerTuiOptions {
   titleBadge?: string;
   /** Optional custom confirm hint label (e.g. `insert` vs `resume`). */
   confirmLabel?: string;
+  /**
+   * Render as a full-screen edge-to-edge Codex-style split workspace
+   * (used by `/resume`) instead of a floating bordered modal box.
+   */
+  fullscreen?: boolean;
   /** Optional custom preview loader (injected in tests). */
   loadPreview?: (sessionPath: string) => PreviewMessage[];
   /** Terminal height provider for responsive body sizing. */
   getRows?: () => number;
+}
+
+type FullscreenLeftRow =
+  | { kind: "blank" }
+  | { kind: "group"; label: string; count: number }
+  | { kind: "item"; hitIndex: number; hit: SessionSearchHit };
+
+function shortenHomePath(cwd: string): string {
+  if (!cwd) return "~";
+  const home = os.homedir();
+  if (home && cwd === home) return "~";
+  if (home && cwd.startsWith(`${home}/`)) {
+    return `~${cwd.slice(home.length)}`;
+  }
+  return cwd;
 }
 
 export class SessionPickerTui implements Component {
@@ -66,6 +87,7 @@ export class SessionPickerTui implements Component {
   private readonly theme: TuiTheme;
   private readonly titleBadge: string;
   private readonly confirmLabel: string;
+  private readonly fullscreen: boolean;
   private readonly done: (selected: SessionRecord | undefined) => void;
   private readonly loadPreview: (sessionPath: string) => PreviewMessage[];
   private readonly getRows: () => number;
@@ -73,6 +95,8 @@ export class SessionPickerTui implements Component {
   private scope: SessionScope;
   private query: string;
   private hits: SessionSearchHit[] = [];
+  /** Visual row list for fullscreen project-grouped mode. */
+  private groupedRows: FullscreenLeftRow[] = [];
   private selectedIndex = 0;
   private listScroll = 0;
   private previewScroll = 0;
@@ -105,6 +129,7 @@ export class SessionPickerTui implements Component {
     this.query = options.initialQuery ?? "";
     this.titleBadge = options.titleBadge ?? "(@session)";
     this.confirmLabel = options.confirmLabel ?? "insert";
+    this.fullscreen = options.fullscreen === true;
     this.done = done;
     this.loadPreview = options.loadPreview ?? ((p) => loadSessionPreviewMessages(p));
     this.getRows = options.getRows ?? (() => 28);
@@ -144,11 +169,49 @@ export class SessionPickerTui implements Component {
 
   private recomputeHits(): void {
     const prevId = this.hits[this.selectedIndex]?.record.id;
-    this.hits = filterSessionRecords(this.records, {
+    const filtered = filterSessionRecords(this.records, {
       scope: this.scope,
       currentCwd: this.currentCwd,
       query: this.query,
     });
+    if (this.fullscreen) {
+      // Group by project CWD in order of most-recently-updated project so
+      // `this.hits` matches the exact visual order rendered in the left pane.
+      const groups = new Map<string, SessionSearchHit[]>();
+      for (const hit of filtered) {
+        const key = hit.record.cwd || hit.record.project || "~";
+        const bucket = groups.get(key);
+        if (bucket) {
+          bucket.push(hit);
+        } else {
+          groups.set(key, [hit]);
+        }
+      }
+      const ordered: SessionSearchHit[] = [];
+      const rows: FullscreenLeftRow[] = [];
+      let groupIdx = 0;
+      for (const [cwdKey, items] of groups) {
+        if (groupIdx > 0) {
+          rows.push({ kind: "blank" });
+        }
+        rows.push({
+          kind: "group",
+          label: shortenHomePath(cwdKey),
+          count: items.length,
+        });
+        for (const item of items) {
+          const hitIndex = ordered.length;
+          ordered.push(item);
+          rows.push({ kind: "item", hitIndex, hit: item });
+        }
+        groupIdx += 1;
+      }
+      this.hits = ordered;
+      this.groupedRows = rows;
+    } else {
+      this.hits = filtered;
+      this.groupedRows = [];
+    }
     if (prevId) {
       const keptIdx = this.hits.findIndex((h) => h.record.id === prevId);
       this.selectedIndex = keptIdx >= 0 ? keptIdx : 0;
@@ -171,6 +234,10 @@ export class SessionPickerTui implements Component {
   }
 
   private itemsPerPage(): number {
+    if (this.fullscreen) {
+      // Fullscreen mode reserves 1 row inside body for the column header.
+      return Math.max(1, this.bodyHeight - 1);
+    }
     // Each session card occupies 2 lines (title + compact metadata) in the left pane.
     return Math.max(1, Math.floor(this.bodyHeight / 2));
   }
@@ -183,6 +250,25 @@ export class SessionPickerTui implements Component {
       return;
     }
     this.selectedIndex = Math.max(0, Math.min(this.hits.length - 1, this.selectedIndex));
+    if (this.fullscreen) {
+      const selectedRowIdx = this.groupedRows.findIndex(
+        (r) => r.kind === "item" && r.hitIndex === this.selectedIndex,
+      );
+      const targetRow = selectedRowIdx >= 0 ? selectedRowIdx : 0;
+      // Keep the group header visible above the first item of a group when scrolling up.
+      const headerRow =
+        targetRow > 0 && this.groupedRows[targetRow - 1]?.kind === "group"
+          ? targetRow - 1
+          : targetRow;
+      if (headerRow < this.listScroll) {
+        this.listScroll = headerRow;
+      } else if (targetRow >= this.listScroll + page) {
+        this.listScroll = targetRow - page + 1;
+      }
+      const maxScroll = Math.max(0, this.groupedRows.length - page);
+      this.listScroll = Math.max(0, Math.min(maxScroll, this.listScroll));
+      return;
+    }
     if (this.selectedIndex < this.listScroll) {
       this.listScroll = this.selectedIndex;
     } else if (this.selectedIndex >= this.listScroll + page) {
@@ -229,7 +315,7 @@ export class SessionPickerTui implements Component {
       this.done(this.getSelectedRecord());
       return;
     }
-    if (matchesKey(data, "tab") || matchesKey(data, "ctrl+g")) {
+    if (matchesKey(data, "tab") || matchesKey(data, "shift+tab") || matchesKey(data, "ctrl+g")) {
       this.toggleScope();
       return;
     }
@@ -306,7 +392,8 @@ export class SessionPickerTui implements Component {
         return { handled: true, render: true };
       }
       // Left session list row selection.
-      if (x >= 1 && x < this.dividerX) {
+      const leftMinX = this.fullscreen ? 0 : 1;
+      if (x >= leftMinX && x < this.dividerX) {
         for (const row of this.listRowMap) {
           if (y >= row.y1 && y <= row.y2) {
             if (this.selectedIndex !== row.index) {
@@ -322,7 +409,8 @@ export class SessionPickerTui implements Component {
     }
 
     if (type === "click" && event.button === "left" && (event.clickCount ?? 1) >= 2) {
-      if (x >= 1 && x < this.dividerX) {
+      const leftMinX = this.fullscreen ? 0 : 1;
+      if (x >= leftMinX && x < this.dividerX) {
         for (const row of this.listRowMap) {
           if (y >= row.y1 && y <= row.y2) {
             this.selectedIndex = row.index;
@@ -467,7 +555,272 @@ export class SessionPickerTui implements Component {
     return lines.slice(0, height);
   }
 
+  private renderFullscreenLeftPane(innerW: number, height: number): string[] {
+    this.listRowMap = [];
+    this.clampListScroll();
+
+    const ageColW = 8;
+    const modelColW = innerW >= 56 ? 16 : 0;
+    const rightColsW = ageColW + (modelColW > 0 ? modelColW + 2 : 0) + 2;
+    const titleColW = Math.max(12, innerW - rightColsW);
+
+    // Column header row (Codex Agent Command Center style).
+    const headerLeft = `  ${this.fg("dim", "Sessions")}`;
+    const headerModel = modelColW > 0 ? `${fitWidth(this.fg("dim", "Model"), modelColW)}  ` : "";
+    const headerAge = fitWidth(this.fg("dim", "Updated"), ageColW);
+    const headerGap = Math.max(
+      1,
+      innerW - visibleWidth(headerLeft) - visibleWidth(headerModel) - visibleWidth(headerAge) - 2,
+    );
+    const lines: string[] = [
+      fitWidth(`${headerLeft}${" ".repeat(headerGap)}${headerModel}${headerAge}  `, innerW),
+    ];
+
+    const listHeight = Math.max(1, height - 1);
+    if (this.hits.length === 0) {
+      lines.push("");
+      lines.push(fitWidth(`  ${this.fg("dim", "No matching sessions")}`, innerW));
+      lines.push(
+        fitWidth(
+          `  ${this.fg("dim", `Scope: ${this.scope === "global" ? "All" : "Project"} · press Tab to switch or Backspace to clear search`)}`,
+          innerW,
+        ),
+      );
+      while (lines.length < height) lines.push(" ".repeat(innerW));
+      return lines.slice(0, height);
+    }
+
+    const visibleSlice = this.groupedRows.slice(this.listScroll, this.listScroll + listHeight);
+    for (const row of visibleSlice) {
+      if (lines.length >= height) break;
+      if (row.kind === "blank") {
+        lines.push(" ".repeat(innerW));
+        continue;
+      }
+      if (row.kind === "group") {
+        const groupLine = `  ${this.fg("dim", row.label)}  ${this.fg("dim", String(row.count))}`;
+        lines.push(fitWidth(groupLine, innerW));
+        continue;
+      }
+
+      const { hitIndex, hit } = row;
+      const rec = hit.record;
+      const isSelected = hitIndex === this.selectedIndex;
+      const rowY = this.bodyStartY + lines.length;
+
+      const ageText = formatRelativeAge(rec.modified) || "—";
+      const modelText =
+        modelColW > 0 ? truncateToWidth(rec.model || "—", modelColW, "…") : "";
+
+      if (isSelected) {
+        const prefix = " ▸ ○ ";
+        const titleBudget = Math.max(8, titleColW - visibleWidth(prefix));
+        const titleText = truncateToWidth(rec.title, titleBudget, "…");
+        const leftPart = `${prefix}${titleText}`;
+        const rightPart =
+          modelColW > 0
+            ? `${fitWidth(modelText, modelColW)}  ${fitWidth(ageText, ageColW)}  `
+            : `${fitWidth(ageText, ageColW)}  `;
+        const gap = Math.max(1, innerW - visibleWidth(leftPart) - visibleWidth(rightPart));
+        const plainFull = fitWidth(`${leftPart}${" ".repeat(gap)}${rightPart}`, innerW);
+        lines.push(`\x1b[7m${this.bold(plainFull)}\x1b[27m`);
+      } else {
+        const prefix = "   ○ ";
+        const titleBudget = Math.max(8, titleColW - visibleWidth(prefix));
+        const titleRaw = truncateToWidth(rec.title, titleBudget, "…");
+        const titleStyled = this.query.trim()
+          ? highlightTerms(this.fg("accent", titleRaw), this.query, (m) => `\x1b[7m${m}\x1b[27m`)
+          : this.fg("accent", titleRaw);
+        const leftPart = `${this.fg("dim", prefix)}${titleStyled}`;
+        const rightPart =
+          modelColW > 0
+            ? `${fitWidth(this.fg("dim", modelText), modelColW)}  ${fitWidth(this.fg("dim", ageText), ageColW)}  `
+            : `${fitWidth(this.fg("dim", ageText), ageColW)}  `;
+        const gap = Math.max(1, innerW - visibleWidth(leftPart) - visibleWidth(rightPart));
+        lines.push(fitWidth(`${leftPart}${" ".repeat(gap)}${rightPart}`, innerW));
+      }
+
+      this.listRowMap.push({ y1: rowY, y2: rowY, index: hitIndex });
+    }
+
+    while (lines.length < height) {
+      lines.push(" ".repeat(innerW));
+    }
+    return lines.slice(0, height);
+  }
+
+  private renderFullscreenRightPane(innerW: number, height: number): string[] {
+    const pad = (s: string) => `  ${s}`;
+    const textW = Math.max(10, innerW - 3);
+    const selected = this.hits[this.selectedIndex]?.record;
+    if (!selected) {
+      const empty = [
+        pad(this.fg("dim", "Session details")),
+        "",
+        pad(this.fg("dim", "No session selected.")),
+        pad(this.fg("dim", "Press Tab to switch All / Project or clear search.")),
+      ];
+      while (empty.length < height) empty.push("");
+      return empty.slice(0, height).map((l) => fitWidth(l, innerW));
+    }
+
+    const msgsDetail =
+      selected.userMessages !== null && selected.assistantMessages !== null
+        ? `${selected.messageCount} (${selected.userMessages}U/${selected.assistantMessages}A)`
+        : `${selected.messageCount}`;
+
+    const headerLines: string[] = [pad(this.fg("dim", "Session details")), ""];
+    const wrappedTitle = wrapTextToWidth(selected.title, textW).slice(0, 2);
+    for (const tLine of wrappedTitle) {
+      headerLines.push(pad(this.bold(this.fg("accent", tLine))));
+    }
+    headerLines.push(
+      pad(
+        `${this.fg("dim", "○")} ${this.fg("dim", selected.shortId)} · ${msgsDetail} msgs · ${this.fg("warning", formatTokensM(selected.totalTokens))}`,
+      ),
+    );
+    headerLines.push("");
+    headerLines.push(pad(`${this.fg("dim", "Model:")} ${this.fg("success", selected.model)}`));
+    headerLines.push(
+      pad(`${this.fg("dim", "Updated:")} ${formatTimestamp(selected.modified)}`),
+    );
+    headerLines.push("");
+    headerLines.push(pad(this.fg("dim", "Project")));
+    for (const pLine of wrapTextToWidth(selected.cwd || selected.project, textW).slice(0, 2)) {
+      headerLines.push(pad(pLine));
+    }
+    headerLines.push("");
+    headerLines.push(pad(this.fg("dim", "Last messages")));
+
+    const previewHeight = Math.max(1, height - headerLines.length);
+    this.previewVisibleRows = previewHeight;
+
+    const messages = this.getPreviewMessages(selected);
+    const allPreviewLines: string[] = [];
+    if (messages.length === 0) {
+      allPreviewLines.push(pad(this.fg("dim", "(No user/agent messages available)")));
+    } else {
+      for (const msg of messages) {
+        const badge =
+          msg.role === "user"
+            ? this.bold(this.fg("accent", "You"))
+            : this.bold(this.fg("success", "Agent"));
+        const tsLabel = msg.timestamp
+          ? this.fg("dim", ` ${formatTimestamp(msg.timestamp).slice(11)}`)
+          : "";
+        allPreviewLines.push(pad(`${badge}${tsLabel}`));
+        for (const wline of wrapTextToWidth(msg.content, textW)) {
+          const rendered = this.query.trim()
+            ? highlightTerms(wline, this.query, (m) => `\x1b[7m${m}\x1b[27m`)
+            : wline;
+          allPreviewLines.push(pad(rendered));
+        }
+        allPreviewLines.push("");
+      }
+    }
+
+    this.lastPreviewLinesCount = allPreviewLines.length;
+    const maxScroll = Math.max(0, allPreviewLines.length - previewHeight);
+    if (this.previewScroll > maxScroll) this.previewScroll = maxScroll;
+
+    const visiblePreview = allPreviewLines.slice(
+      this.previewScroll,
+      this.previewScroll + previewHeight,
+    );
+    while (visiblePreview.length < previewHeight) visiblePreview.push("");
+
+    return [...headerLines, ...visiblePreview]
+      .slice(0, height)
+      .map((line) => fitWidth(line, innerW));
+  }
+
+  private renderFullscreen(width: number): string[] {
+    const totalWidth = Math.max(40, width);
+    const totalRows = Math.max(12, this.getRows());
+    // Reserve 3 top rows (title, tabs+search, divider) and 1 bottom footer row.
+    const bodyHeight = Math.max(4, totalRows - 4);
+    const minRight = totalWidth >= 80 ? 28 : 20;
+    const leftWidth = Math.max(
+      20,
+      Math.min(totalWidth - minRight - 1, Math.floor((totalWidth - 1) * 0.64)),
+    );
+    const rightWidth = Math.max(10, totalWidth - 1 - leftWidth);
+
+    this.dividerX = leftWidth;
+    this.bodyStartY = 3;
+    this.bodyHeight = bodyHeight;
+
+    // Row 0: Codex-style top title bar + clickable close button.
+    const titleLeft = `  ${this.bold("Sessions")}  ${this.fg("dim", "Group: Project")}`;
+    const closeLabel = "[✕]";
+    const closeStyled = this.fg("dim", closeLabel);
+    const row0Gap = Math.max(1, totalWidth - visibleWidth(titleLeft) - visibleWidth(closeLabel) - 2);
+    const closeX1 = totalWidth - visibleWidth(closeLabel) - 2;
+    this.closeBtnRect = { x1: closeX1, x2: closeX1 + visibleWidth(closeLabel) - 1, y: 0 };
+    const row0 = fitWidth(`${titleLeft}${" ".repeat(row0Gap)}${closeStyled}  `, totalWidth);
+
+    // Row 1: Scope filter tabs (`All N` / `Project M`) + inline search + right key hint.
+    this.pillRects = new Map();
+    const allRaw = `All ${this.globalCount}`;
+    const projRaw = `Project ${this.projectCount}`;
+    let cursorX = 2;
+    this.pillRects.set("global", {
+      x1: cursorX,
+      x2: cursorX + visibleWidth(allRaw) - 1,
+      y: 1,
+    });
+    cursorX += visibleWidth(allRaw) + 3;
+    this.pillRects.set("project", {
+      x1: cursorX,
+      x2: cursorX + visibleWidth(projRaw) - 1,
+      y: 1,
+    });
+
+    const allTab =
+      this.scope === "global"
+        ? `\x1b[4m${this.bold(this.fg("accent", allRaw))}\x1b[24m`
+        : this.fg("dim", allRaw);
+    const projTab =
+      this.scope === "project"
+        ? `\x1b[4m${this.bold(this.fg("accent", projRaw))}\x1b[24m`
+        : this.fg("dim", projRaw);
+    const searchBlock = this.query
+      ? `   ${this.fg("accent", "/")} ${this.query}${this.fg("accent", "▏")}`
+      : `   ${this.fg("dim", "/ type to filter...")}`;
+    const row1Left = `  ${allTab}   ${projTab}${searchBlock}`;
+    const row1Right = this.fg("dim", "tab/⇧tab filter  esc close  ");
+    const row1Gap = Math.max(1, totalWidth - visibleWidth(row1Left) - visibleWidth(row1Right));
+    const row1 = fitWidth(`${row1Left}${" ".repeat(row1Gap)}${row1Right}`, totalWidth);
+
+    // Row 2: Full-width horizontal hairline divider.
+    const row2 = this.fg("border", "─".repeat(totalWidth));
+
+    // Body rows: left grouped list | vertical divider | right session details.
+    const leftLines = this.renderFullscreenLeftPane(leftWidth, bodyHeight);
+    const rightLines = this.renderFullscreenRightPane(rightWidth, bodyHeight);
+    const vBar = this.fg("border", "│");
+    const bodyLines: string[] = [];
+    for (let i = 0; i < bodyHeight; i++) {
+      bodyLines.push(`${leftLines[i] ?? " ".repeat(leftWidth)}${vBar}${rightLines[i] ?? " ".repeat(rightWidth)}`);
+    }
+
+    // Bottom footer row.
+    const totalInScope = this.scope === "global" ? this.globalCount : this.projectCount;
+    const footerLeft = this.fg("dim", `  grok-pi · /resume · ${this.hits.length}/${totalInScope}`);
+    const footerRight = this.fg(
+      "dim",
+      `↑↓ select · Tab filter · PgUp/PgDn preview · Enter ${this.confirmLabel} · Esc close  `,
+    );
+    const footerGap = Math.max(1, totalWidth - visibleWidth(footerLeft) - visibleWidth(footerRight));
+    const footer = fitWidth(`${footerLeft}${" ".repeat(footerGap)}${footerRight}`, totalWidth);
+
+    return [row0, row1, row2, ...bodyLines, footer];
+  }
+
   render(width: number): string[] {
+    if (this.fullscreen) {
+      return this.renderFullscreen(width);
+    }
     const geometry = computeSplitGeometry({
       width,
       rows: this.getRows(),

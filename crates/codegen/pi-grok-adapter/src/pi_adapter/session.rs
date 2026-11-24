@@ -1,6 +1,44 @@
 use super::*;
 
 impl PiAgent {
+    /// Resolve a Pi session ID to its local JSONL file path.
+    ///
+    /// Fast-paths through the in-memory `session_paths` map; on a miss (for
+    /// example when the TS `/resume` overlay picks a session directly from PSM
+    /// SQLite without first invoking Rust's `publish_session_catalog`), lazily
+    /// hydrates `session_paths` from PSM's global index and falls back to
+    /// scanning the local session directory.
+    pub(super) async fn resolve_session_path(&self, session_id: &str) -> Option<PathBuf> {
+        if let Some(path) = self.state.borrow().session_paths.get(session_id).cloned() {
+            return Some(path);
+        }
+        let session_dir = {
+            let state = self.state.borrow();
+            catalog_session_dir(&state.bootstrap.state, &state.session_dir)
+        };
+        let target_id = session_id.to_owned();
+        let discovered = tokio::task::spawn_blocking(move || {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let mut paths = HashMap::new();
+            if let Some(sessions) = crate::psm_session_catalog::load_catalog(&cwd, true) {
+                for session in sessions {
+                    paths.insert(session.id, session.path);
+                }
+            }
+            if !paths.contains_key(&target_id) {
+                for session in scan_local_sessions(&session_dir) {
+                    paths.entry(session.id).or_insert(session.path);
+                }
+            }
+            paths
+        })
+        .await
+        .unwrap_or_default();
+        let mut state = self.state.borrow_mut();
+        state.session_paths.extend(discovered);
+        state.session_paths.get(session_id).cloned()
+    }
+
     /// Publish Pi's local session catalog for Grok's existing native picker.
     ///
     /// Pi keeps ownership of the JSONL format and of switching; this read-only

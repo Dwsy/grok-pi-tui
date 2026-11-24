@@ -424,4 +424,71 @@ describe("SessionPickerTui rendering, keyboard, and mouse interactions", () => {
     expect(closed).toBe(true);
     expect(resolved?.shortId).toBe("01a203dd");
   });
+
+  test("fullscreen Codex-style /resume layout fills terminal dimensions, groups by project, and handles mouse + keyboard", () => {
+    let resolved: SessionRecord | undefined;
+    const picker = createSessionPickerTui(
+      { requestRender: () => {} },
+      plainTheme,
+      {
+        records: makeSampleRecords(),
+        currentCwd: "/Users/dev/pi-grok-build",
+        titleBadge: "(/resume)",
+        confirmLabel: "resume",
+        fullscreen: true,
+        loadPreview: (p) => previewMap.get(p) ?? [],
+        getRows: () => 30,
+      },
+      (sel) => {
+        resolved = sel;
+      },
+    );
+
+    const width = 120;
+    const lines = picker.render(width);
+    expect(lines.length).toBe(30);
+    for (const line of lines) {
+      expect(visibleWidth(line)).toBe(width);
+    }
+
+    const plain = lines.map(stripAnsi).join("\n");
+    // Edge-to-edge layout without outer box border.
+    expect(lines[0]!.startsWith("╭")).toBe(false);
+    expect(plain).toContain("Group: Project");
+    expect(plain).toContain("All 2");
+    expect(plain).toContain("Project 1");
+    expect(plain).toContain("Session details");
+    expect(plain).toContain("Last messages");
+    expect(plain).toContain("/Users/dev/pi-grok-build");
+    expect(plain).toContain("/Users/dev/other-repo");
+
+    // Keyboard navigation skips group headers and selects second session.
+    expect(picker.getSelectedRecord()?.shortId).toBe("01a205e1");
+    picker.handleInput("\x1b[B"); // Down arrow
+    expect(picker.getSelectedRecord()?.shortId).toBe("01a203dd");
+
+    // Mouse click on `Project 1` tab switches scope to project.
+    const tabRow = stripAnsi(lines[1]!);
+    const projX = tabRow.indexOf("Project 1");
+    expect(projX).toBeGreaterThan(0);
+    picker.handleMouse({
+      type: "press",
+      button: "left",
+      x: projX + 2,
+      y: 1,
+      screenX: projX + 2,
+      screenY: 1,
+      width,
+      height: lines.length,
+      shift: false,
+      alt: false,
+      ctrl: false,
+    });
+    expect(picker.getScope()).toBe("project");
+    expect(picker.getSelectedRecord()?.shortId).toBe("01a205e1");
+
+    // Enter confirms resume.
+    picker.handleInput("\r");
+    expect(resolved?.id).toBe("01a205e1-a668-72d4-ba0c-efc8d4f6de50");
+  });
 });

@@ -698,8 +698,19 @@ fn handle_pi_ui_mentions_catalog(notif: &acp::ExtNotification, app: &mut AppView
     else {
         return false;
     };
+    app.mention_catalog = Some(catalog.clone());
+    app.welcome_prompt
+        .file_search
+        .set_mention_catalog(catalog.clone());
     for agent in app.agents.values_mut() {
         agent.prompt.file_search.set_mention_catalog(catalog.clone());
+    }
+    if let Some(dashboard) = app.dashboard.as_mut() {
+        dashboard
+            .dispatch
+            .file_search
+            .set_mention_catalog(catalog.clone());
+        dashboard.peek_reply.file_search.set_mention_catalog(catalog);
     }
     true
 }

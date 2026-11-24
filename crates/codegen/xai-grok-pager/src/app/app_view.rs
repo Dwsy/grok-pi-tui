@@ -1258,6 +1258,9 @@ pub struct AppView {
     /// Initially populated from `InitializeResponse.meta.availableCommands` (AlwaysOn builtins only).
     /// Subsequent sessions thus start with the full command catalog immediately.
     pub bootstrap_acp_commands: Vec<agent_client_protocol::AvailableCommand>,
+    /// Latest `@` object-mention catalog pushed by Pi (`pi/ui/mentions_catalog`),
+    /// cached on `AppView` so agents created after startup prewarm receive it immediately.
+    pub mention_catalog: Option<crate::views::file_search::MentionCatalog>,
     /// Auth methods from the ACP connection (preserved for re-login after logout).
     pub auth_methods: Vec<acp::AuthMethod>,
     /// Authentication state for the welcome screen login flow.
@@ -1907,6 +1910,7 @@ impl AppView {
             resume_local_miss: None,
             agent_override: None,
             bootstrap_acp_commands,
+            mention_catalog: None,
             auth_methods: Vec::new(),
             auth_state: AuthState::Done,
             trust_state: TrustState::Done,
@@ -5292,7 +5296,11 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 });
             }
             if key!(F(3)).matches(key) {
-                return InputOutcome::Action(Action::FetchSessionList);
+                return InputOutcome::Action(if ctx.external_agent {
+                    Action::ShowSessionPicker
+                } else {
+                    Action::FetchSessionList
+                });
             }
             if ctx.has_pending_update && key!('u', CONTROL).matches(key) {
                 return InputOutcome::Action(Action::QuitForUpdate);
