@@ -67,14 +67,24 @@ export default function treeExtension(pi: ExtensionAPI): void {
         {
           overlay: true,
           overlayOptions: {
-            width: "92%",
-            maxHeight: "88%",
+            width: "90%",
+            maxHeight: "90%",
             anchor: "center",
           },
         },
       );
 
       if (!result) return;
+
+      if (result.action === "label") {
+        const piAny = pi as unknown as {
+          setLabel?: (targetId: string, label: string | undefined) => void;
+        };
+        if (typeof piAny.setLabel === "function") {
+          piAny.setLabel(result.entryId, result.label || undefined);
+        }
+        return;
+      }
 
       if (isGrokPiHost()) {
         const ui = ctx.ui as unknown as {

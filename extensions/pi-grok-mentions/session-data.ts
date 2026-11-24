@@ -173,6 +173,49 @@ function parsePrimaryModel(directModel: unknown, modelsJson: unknown): string {
   return "—";
 }
 
+function mapSessionRow(row: Record<string, unknown>): SessionRecord {
+  const id = String(row.id ?? "");
+  const sessionPath = String(row.path ?? "");
+  const cwd = String(row.cwd ?? "");
+  const name = String(row.name ?? "").replace(/\s+/g, " ").trim();
+  const firstMsg = stripThinkingTags(String(row.first_message ?? ""))
+    .replace(/\s+/g, " ")
+    .trim();
+  const title = name || firstMsg.slice(0, 72) || id.slice(0, 12);
+  const totalTokens =
+    Number(row.input_tokens ?? 0) +
+    Number(row.output_tokens ?? 0) +
+    Number(row.cache_read_tokens ?? 0) +
+    Number(row.cache_write_tokens ?? 0);
+  const userMessages =
+    row.detail_user_messages === null || row.detail_user_messages === undefined
+      ? null
+      : Number(row.detail_user_messages);
+  const assistantMessages =
+    row.detail_assistant_messages === null || row.detail_assistant_messages === undefined
+      ? null
+      : Number(row.detail_assistant_messages);
+  const userText = stripThinkingTags(String(row.user_messages_text ?? ""));
+  const assistantText = stripThinkingTags(String(row.assistant_messages_text ?? ""));
+
+  return {
+    id,
+    shortId: id.slice(0, 8),
+    path: sessionPath,
+    cwd,
+    project: projectNameFromCwd(cwd),
+    title,
+    created: String(row.created ?? ""),
+    modified: String(row.modified ?? ""),
+    messageCount: Number(row.message_count ?? 0),
+    userMessages,
+    assistantMessages,
+    totalTokens,
+    model: parsePrimaryModel(row.model, row.models_json),
+    searchableMessages: `${userText}\n${assistantText}`.trim(),
+  };
+}
+
 /**
  * Load recent sessions with metadata (created/modified timestamps, message
  * counts, project, id, total tokens, model, and user+assistant search text)
@@ -215,48 +258,161 @@ export function loadSessionPickerRecords(
       )
       .all(limit);
 
-    return rows.map((row) => {
-      const id = String(row.id ?? "");
-      const sessionPath = String(row.path ?? "");
-      const cwd = String(row.cwd ?? "");
-      const name = String(row.name ?? "").replace(/\s+/g, " ").trim();
-      const firstMsg = stripThinkingTags(String(row.first_message ?? ""))
-        .replace(/\s+/g, " ")
-        .trim();
-      const title = name || firstMsg.slice(0, 72) || id.slice(0, 12);
-      const totalTokens =
-        Number(row.input_tokens ?? 0) +
-        Number(row.output_tokens ?? 0) +
-        Number(row.cache_read_tokens ?? 0) +
-        Number(row.cache_write_tokens ?? 0);
-      const userMessages =
-        row.detail_user_messages === null || row.detail_user_messages === undefined
-          ? null
-          : Number(row.detail_user_messages);
-      const assistantMessages =
-        row.detail_assistant_messages === null || row.detail_assistant_messages === undefined
-          ? null
-          : Number(row.detail_assistant_messages);
-      const userText = stripThinkingTags(String(row.user_messages_text ?? ""));
-      const assistantText = stripThinkingTags(String(row.assistant_messages_text ?? ""));
+    return rows.map(mapSessionRow);
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
 
-      return {
-        id,
-        shortId: id.slice(0, 8),
-        path: sessionPath,
-        cwd,
-        project: projectNameFromCwd(cwd),
-        title,
-        created: String(row.created ?? ""),
-        modified: String(row.modified ?? ""),
-        messageCount: Number(row.message_count ?? 0),
-        userMessages,
-        assistantMessages,
-        totalTokens,
-        model: parsePrimaryModel(row.model, row.models_json),
-        searchableMessages: `${userText}\n${assistantText}`.trim(),
-      };
-    });
+/**
+ * Full-text search across the entire PSM SQLite catalog (all historical
+ * sessions, not just the top 300 loaded in memory). Queries `message_fts`
+ * (FTS5) first for fast full-text hits and supplements with `sessions` LIKE
+ * matching (handles CJK substrings, IDs, project paths, and models).
+ */
+export function searchSessionPickerRecords(options: {
+  query: string;
+  scope: SessionScope;
+  currentCwd: string;
+  dbPath?: string;
+  limit?: number;
+}): SessionSearchHit[] {
+  const trimmed = options.query.trim();
+  if (!trimmed) return [];
+  const dbPath = options.dbPath ?? defaultPsmDbPath();
+  const limit = options.limit ?? 200;
+  const db = openReadOnlySqlite(dbPath);
+  if (!db) return [];
+
+  const terms = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
+  const firstTerm = terms[0] ?? trimmed.toLowerCase();
+  const byId = new Map<string, SessionSearchHit>();
+
+  try {
+    // 1. Fast FTS5 full-text search over `message_fts` (user & assistant messages only).
+    const ftsQuery = terms
+      .map((t) => t.replace(/"/g, "").trim())
+      .filter(Boolean)
+      .map((t) => `"${t}"*`)
+      .join(" AND ");
+    if (ftsQuery) {
+      try {
+        const ftsRows = db
+          .prepare(
+            `SELECT
+               s.id,
+               s.path,
+               s.cwd,
+               COALESCE(s.name, '') AS name,
+               COALESCE(s.created, '') AS created,
+               COALESCE(s.modified, '') AS modified,
+               COALESCE(s.message_count, 0) AS message_count,
+               COALESCE(s.first_message, '') AS first_message,
+               '' AS user_messages_text,
+               '' AS assistant_messages_text,
+               COALESCE(s.model, '') AS model,
+               d.user_messages AS detail_user_messages,
+               d.assistant_messages AS detail_assistant_messages,
+               COALESCE(d.input_tokens, 0) AS input_tokens,
+               COALESCE(d.output_tokens, 0) AS output_tokens,
+               COALESCE(d.cache_read_tokens, 0) AS cache_read_tokens,
+               COALESCE(d.cache_write_tokens, 0) AS cache_write_tokens,
+               COALESCE(d.models_json, '') AS models_json,
+               snippet(message_fts, 3, '', '', '…', 14) AS fts_snippet
+             FROM message_fts
+             JOIN sessions s ON s.path = message_fts.session_path
+             LEFT JOIN session_details_cache d ON d.path = s.path
+             WHERE message_fts MATCH ?
+               AND message_fts.source_type IN ('user', 'assistant')
+             GROUP BY s.id
+             ORDER BY s.modified DESC
+             LIMIT ?`,
+          )
+          .all(ftsQuery, limit);
+        for (const row of ftsRows) {
+          const record = mapSessionRow(row);
+          if (
+            options.scope === "project" &&
+            !matchesProjectScope(record.cwd, options.currentCwd)
+          ) {
+            continue;
+          }
+          const rawSnippet = stripThinkingTags(String(row.fts_snippet ?? ""))
+            .replace(/\s+/g, " ")
+            .trim();
+          byId.set(record.id, {
+            record,
+            matchSnippet: rawSnippet || undefined,
+          });
+        }
+      } catch {
+        // DB may lack `message_fts` or query had unsupported FTS5 tokens; fall through.
+      }
+    }
+
+    // 2. Metadata + substring LIKE search across all sessions (covers CJK substrings,
+    //    session IDs, titles, project paths, and models).
+    if (byId.size < limit) {
+      const whereClauses: string[] = [];
+      const params: unknown[] = [];
+      for (const term of terms) {
+        const like = `%${term}%`;
+        whereClauses.push(
+          `(LOWER(COALESCE(s.id,'')) LIKE ? OR LOWER(COALESCE(s.name,'')) LIKE ? OR LOWER(COALESCE(s.cwd,'')) LIKE ? OR LOWER(COALESCE(s.model,'')) LIKE ? OR LOWER(COALESCE(s.first_message,'')) LIKE ? OR LOWER(COALESCE(s.user_messages_text,'')) LIKE ? OR LOWER(COALESCE(s.assistant_messages_text,'')) LIKE ?)`,
+        );
+        params.push(like, like, like, like, like, like, like);
+      }
+      params.push(limit);
+      const likeRows = db
+        .prepare(
+          `SELECT
+             s.id,
+             s.path,
+             s.cwd,
+             COALESCE(s.name, '') AS name,
+             COALESCE(s.created, '') AS created,
+             COALESCE(s.modified, '') AS modified,
+             COALESCE(s.message_count, 0) AS message_count,
+             COALESCE(s.first_message, '') AS first_message,
+             COALESCE(s.user_messages_text, '') AS user_messages_text,
+             COALESCE(s.assistant_messages_text, '') AS assistant_messages_text,
+             COALESCE(s.model, '') AS model,
+             d.user_messages AS detail_user_messages,
+             d.assistant_messages AS detail_assistant_messages,
+             COALESCE(d.input_tokens, 0) AS input_tokens,
+             COALESCE(d.output_tokens, 0) AS output_tokens,
+             COALESCE(d.cache_read_tokens, 0) AS cache_read_tokens,
+             COALESCE(d.cache_write_tokens, 0) AS cache_write_tokens,
+             COALESCE(d.models_json, '') AS models_json
+           FROM sessions s
+           LEFT JOIN session_details_cache d ON d.path = s.path
+           WHERE ${whereClauses.join(" AND ")}
+           ORDER BY s.modified DESC
+           LIMIT ?`,
+        )
+        .all(...params);
+      for (const row of likeRows) {
+        const record = mapSessionRow(row);
+        if (byId.has(record.id)) continue;
+        if (
+          options.scope === "project" &&
+          !matchesProjectScope(record.cwd, options.currentCwd)
+        ) {
+          continue;
+        }
+        const snippet = buildSnippet(record.searchableMessages, firstTerm);
+        byId.set(record.id, {
+          record,
+          matchSnippet: snippet || undefined,
+        });
+      }
+    }
+
+    return [...byId.values()].sort((a, b) =>
+      b.record.modified.localeCompare(a.record.modified),
+    );
   } catch {
     return [];
   } finally {

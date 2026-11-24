@@ -160,6 +160,8 @@ fn test_app() -> AppView {
         agent_override: None,
         bootstrap_acp_commands: Vec::new(),
         mention_catalog: None,
+        welcome_remote_tui_rect: None,
+        welcome_remote_tui_last_rect: None,
         auth_methods: vec![acp::AuthMethod::Agent(acp::AuthMethodAgent::new(
             acp::AuthMethodId::new("grok.com"),
             "Grok".to_string(),

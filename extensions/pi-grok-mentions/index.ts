@@ -24,6 +24,7 @@ import {
   formatTokensM,
   loadSessionPickerRecords,
   loadSessionPreviewMessages,
+  searchSessionPickerRecords,
   type SessionRecord,
 } from "./session-data.ts";
 import type { SessionPickerTheme } from "./session-picker-tui.ts";
@@ -594,6 +595,7 @@ export default function mentions(pi: ExtensionAPI) {
               currentCwd: cwd,
               initialQuery,
               initialScope: "global",
+              searchRecords: (opts) => searchSessionPickerRecords(opts),
               getRows: () => {
                 const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
                 return typeof tRows === "number" && tRows > 0 ? tRows : 28;
@@ -784,6 +786,7 @@ export default function mentions(pi: ExtensionAPI) {
               titleBadge: "(/resume)",
               confirmLabel: "resume",
               fullscreen: true,
+              searchRecords: (opts) => searchSessionPickerRecords(opts),
               getRows: () => {
                 const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
                 return typeof tRows === "number" && tRows > 0 ? tRows : 28;

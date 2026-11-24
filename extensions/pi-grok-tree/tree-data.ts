@@ -24,6 +24,8 @@ export interface FlattenedTreeNode {
   prefix: string;
   isOnActivePath: boolean;
   isLeaf: boolean;
+  /** True when this node forks into 2+ children or is itself a sibling of a fork. */
+  isBranchPoint: boolean;
   searchText: string;
 }
 
@@ -208,23 +210,33 @@ export function buildFlattenedSessionTree(
   const out: FlattenedTreeNode[] = [];
   const visit = (parentId: string | null, depth: number, ancestorGuides: string[]) => {
     const kids = children.get(parentId) ?? [];
+    const isFork = parentId !== null && kids.length > 1;
     for (let i = 0; i < kids.length; i++) {
       const entry = kids[i]!;
       const isLast = i === kids.length - 1;
-      const branch = depth === 0 ? "" : isLast ? "└─ " : "├─ ";
+      const entryKids = children.get(entry.id) ?? [];
+      // Linear single-child chains stay at the same indent level instead of
+      // forming a diagonal staircase; only fork points add branch connectors
+      // and increase depth (matching upstream pi-main Session Tree).
+      const branch = isFork ? (isLast ? "└─ " : "├─ ") : "";
       const prefix = `${ancestorGuides.join("")}${branch}`;
       const isOnActivePath = activePath.has(entry.id);
       const isLeaf = entry.id === leafId;
+      const isBranchPoint = isFork || entryKids.length > 1;
       out.push({
         entry,
         depth,
         prefix,
         isOnActivePath,
         isLeaf,
+        isBranchPoint,
         searchText: `${entry.id} ${entry.roleLabel} ${entry.label ?? ""} ${entry.summary} ${entry.fullText}`.toLowerCase(),
       });
-      const nextGuides = depth === 0 ? ancestorGuides : [...ancestorGuides, isLast ? "   " : "│  "];
-      visit(entry.id, depth + 1, nextGuides);
+      const nextDepth = isFork ? depth + 1 : depth;
+      const nextGuides = isFork
+        ? [...ancestorGuides, isLast ? "   " : "│  "]
+        : ancestorGuides;
+      visit(entry.id, nextDepth, nextGuides);
     }
   };
 

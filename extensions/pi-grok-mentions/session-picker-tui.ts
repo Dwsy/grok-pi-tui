@@ -61,6 +61,12 @@ export interface SessionPickerTuiOptions {
   fullscreen?: boolean;
   /** Optional custom preview loader (injected in tests). */
   loadPreview?: (sessionPath: string) => PreviewMessage[];
+  /** Optional full-text database search across all historical sessions. */
+  searchRecords?: (options: {
+    query: string;
+    scope: SessionScope;
+    currentCwd: string;
+  }) => SessionSearchHit[];
   /** Terminal height provider for responsive body sizing. */
   getRows?: () => number;
 }
@@ -90,6 +96,11 @@ export class SessionPickerTui implements Component {
   private readonly fullscreen: boolean;
   private readonly done: (selected: SessionRecord | undefined) => void;
   private readonly loadPreview: (sessionPath: string) => PreviewMessage[];
+  private readonly searchRecords?: (options: {
+    query: string;
+    scope: SessionScope;
+    currentCwd: string;
+  }) => SessionSearchHit[];
   private readonly getRows: () => number;
 
   private scope: SessionScope;
@@ -132,6 +143,7 @@ export class SessionPickerTui implements Component {
     this.fullscreen = options.fullscreen === true;
     this.done = done;
     this.loadPreview = options.loadPreview ?? ((p) => loadSessionPreviewMessages(p));
+    this.searchRecords = options.searchRecords;
     this.getRows = options.getRows ?? (() => 28);
 
     this.globalCount = this.records.length;
@@ -169,11 +181,29 @@ export class SessionPickerTui implements Component {
 
   private recomputeHits(): void {
     const prevId = this.hits[this.selectedIndex]?.record.id;
-    const filtered = filterSessionRecords(this.records, {
+    let filtered = filterSessionRecords(this.records, {
       scope: this.scope,
       currentCwd: this.currentCwd,
       query: this.query,
     });
+    if (this.query.trim() && this.searchRecords) {
+      const dbHits = this.searchRecords({
+        query: this.query,
+        scope: this.scope,
+        currentCwd: this.currentCwd,
+      });
+      if (dbHits.length > 0) {
+        const seen = new Set(filtered.map((h) => h.record.id));
+        const merged = [...filtered];
+        for (const hit of dbHits) {
+          if (!seen.has(hit.record.id)) {
+            seen.add(hit.record.id);
+            merged.push(hit);
+          }
+        }
+        filtered = merged;
+      }
+    }
     if (this.fullscreen) {
       // Group by project CWD in order of most-recently-updated project so
       // `this.hits` matches the exact visual order rendered in the left pane.
@@ -653,6 +683,7 @@ export class SessionPickerTui implements Component {
     const pad = (s: string) => `  ${s}`;
     const textW = Math.max(10, innerW - 3);
     const selected = this.hits[this.selectedIndex]?.record;
+    const selectedHit = this.hits[this.selectedIndex];
     if (!selected) {
       const empty = [
         pad(this.fg("dim", "Session details")),
@@ -690,6 +721,16 @@ export class SessionPickerTui implements Component {
       headerLines.push(pad(pLine));
     }
     headerLines.push("");
+    if (selectedHit?.matchSnippet && this.query.trim()) {
+      headerLines.push(pad(this.fg("dim", "Match")));
+      const highlightedSnippet = highlightTerms(
+        truncateToWidth(selectedHit.matchSnippet, textW, "…"),
+        this.query,
+        (m) => `\x1b[7m${m}\x1b[27m`,
+      );
+      headerLines.push(pad(highlightedSnippet));
+      headerLines.push("");
+    }
     headerLines.push(pad(this.fg("dim", "Last messages")));
 
     const previewHeight = Math.max(1, height - headerLines.length);

@@ -120,6 +120,8 @@ export function computeSplitGeometry(options: {
   minWidth?: number;
   minLeftWidth?: number;
   minRightWidth?: number;
+  heightRatio?: number;
+  maxRows?: number;
 }): SplitFrameGeometry {
   const minWidth = options.minWidth ?? 56;
   const minLeft = options.minLeftWidth ?? 24;
@@ -134,7 +136,9 @@ export function computeSplitGeometry(options: {
   const rightWidth = Math.max(minRight, innerWidth - leftWidth - 1);
   const dividerX = 1 + leftWidth;
 
-  const totalRows = Math.max(16, Math.min(34, Math.floor(options.rows * 0.84)));
+  const heightRatio = options.heightRatio ?? 0.84;
+  const maxRows = options.maxRows ?? 34;
+  const totalRows = Math.max(16, Math.min(maxRows, Math.floor(options.rows * heightRatio)));
   // With search bar: top(0)+header(1)+midRule(2)+search(3)+splitTop(4)+splitBottom+footer+bottom = 8
   // Without search bar: top(0)+header(1)+splitTop(2)+splitBottom+footer+bottom = 6
   const chromeRows = options.hasSearchBar ? 8 : 6;

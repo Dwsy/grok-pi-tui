@@ -5,7 +5,13 @@
  * `hitRegion`, `fitWidth`, `wrapTextToWidth`, `highlightTerms`).
  */
 
-import { matchesKey, parseKey, type Component } from "@earendil-works/pi-tui";
+import {
+  matchesKey,
+  parseKey,
+  type Component,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
+} from "@earendil-works/pi-tui";
 import {
   computeSplitGeometry,
   fitWidth,
@@ -25,16 +31,24 @@ import {
   type TreeFilterMode,
 } from "./tree-data.ts";
 
-export interface SessionTreeActionResult {
-  action: "navigate";
-  entryId: string;
-  summarize: boolean;
-}
+export type SessionTreeActionResult =
+  | {
+      action: "navigate";
+      entryId: string;
+      summarize: boolean;
+    }
+  | {
+      action: "label";
+      entryId: string;
+      label: string;
+    };
 
 export interface SessionTreeTuiOptions {
   nodes: readonly FlattenedTreeNode[];
   initialFilter?: TreeFilterMode;
   initialQuery?: string;
+  /** Optional clipboard copy callback (falls back to OSC 52 on stdout). */
+  onCopy?: (text: string) => void;
   getRows?: () => number;
 }
 
@@ -52,11 +66,16 @@ class SessionTreeComponent implements Component {
   private readonly tui: { requestRender: () => void };
   private readonly theme: TuiTheme;
   private readonly allNodes: readonly FlattenedTreeNode[];
+  private readonly onCopy?: (text: string) => void;
   private readonly getRows: () => number;
   private readonly done: (result: SessionTreeActionResult | undefined) => void;
 
   private filter: TreeFilterMode;
   private query: string;
+  private showTimestamps = false;
+  private labelEditing = false;
+  private labelDraft = "";
+  private statusNotice = "";
   private filtered: FlattenedTreeNode[] = [];
   private readonly list = new ListController({ rowsPerItem: 1 });
   private previewScroll = 0;
@@ -78,6 +97,7 @@ class SessionTreeComponent implements Component {
     this.allNodes = options.nodes;
     this.filter = options.initialFilter ?? "default";
     this.query = options.initialQuery ?? "";
+    this.onCopy = options.onCopy;
     this.getRows = options.getRows ?? (() => 28);
     this.done = done;
 
@@ -116,6 +136,33 @@ class SessionTreeComponent implements Component {
     this.done({ action: "navigate", entryId: node.entry.id, summarize });
   }
 
+  private jumpToBranch(direction: -1 | 1): void {
+    const len = this.filtered.length;
+    if (len === 0) return;
+    let idx = this.list.selected + direction;
+    while (idx >= 0 && idx < len) {
+      if (this.filtered[idx]!.isBranchPoint) {
+        this.list.select(idx, len, this.lastBodyHeight);
+        this.previewScroll = 0;
+        return;
+      }
+      idx += direction;
+    }
+  }
+
+  private copySelected(): void {
+    const node = this.filtered[this.list.selected];
+    if (!node) return;
+    const text = node.entry.fullText || node.entry.summary || node.entry.id;
+    if (this.onCopy) {
+      this.onCopy(text);
+    } else if (process.stdout?.isTTY) {
+      const b64 = Buffer.from(text, "utf8").toString("base64");
+      process.stdout.write(`\x1b]52;c;${b64}\x07`);
+    }
+    this.statusNotice = `Copied ${node.entry.id.slice(0, 8)}`;
+  }
+
   private buildLeftLines(leftWidth: number, bodyHeight: number): string[] {
     const th = this.theme;
     const pad = (s: string) => fitWidth(s, leftWidth);
@@ -145,11 +192,15 @@ class SessionTreeComponent implements Component {
               ? "warning"
               : "muted";
       const labelTag = node.entry.label ? `${th.fg("warning", `[${node.entry.label}]`)} ` : "";
+      const timeTag =
+        this.showTimestamps && node.entry.timestamp
+          ? `${th.fg("dim", node.entry.timestamp)} `
+          : "";
       const text = `${node.entry.roleLabel}: ${node.entry.summary}`;
       const highlighted = selected
         ? styleBold(th, th.fg(roleColor, text))
         : th.fg(roleColor, highlightTerms(text, this.query, highlightMatch));
-      const row = `${pointer}${dot} ${th.fg("dim", node.prefix)}${labelTag}${highlighted}`;
+      const row = `${pointer}${dot} ${th.fg("dim", node.prefix)}${timeTag}${labelTag}${highlighted}`;
       lines.push(pad(row));
     }
     return lines;
@@ -185,12 +236,16 @@ class SessionTreeComponent implements Component {
   }
 
   render(width: number): string[] {
+    const termRows = this.getRows();
+    const targetRows = Math.max(16, Math.floor(termRows * 0.9));
     const geom = computeSplitGeometry({
       width,
-      rows: this.getRows(),
+      rows: termRows,
       leftRatio: 0.45,
       hasSearchBar: true,
       minLeftWidth: 28,
+      heightRatio: 0.9,
+      maxRows: targetRows,
     });
     this.lastBodyHeight = geom.bodyHeight;
     this.lastBodyStartY = geom.bodyStartY;
@@ -212,21 +267,36 @@ class SessionTreeComponent implements Component {
     this.previewScroll = Math.max(0, Math.min(this.previewScroll, maxPreviewScroll));
     const rightLines = allPreview.slice(this.previewScroll, this.previewScroll + geom.bodyHeight);
 
+    const searchBar = this.labelEditing
+      ? {
+          promptPrefix: ` ${this.theme.fg("warning", "Label:")} `,
+          query: this.labelDraft,
+          placeholder: "enter label text (Enter save, Esc cancel)...",
+          rightLabel: "editing label",
+        }
+      : {
+          promptPrefix: ` ${this.theme.fg("accent", "/")} `,
+          query: this.query,
+          placeholder: "search tree nodes, messages, or labels...",
+          rightLabel: this.statusNotice
+            ? `${this.statusNotice} · (${this.filtered.length}/${this.allNodes.length})`
+            : `(${this.filtered.length}/${this.allNodes.length})`,
+        };
+
     const frame = renderSplitOverlayFrame({
       geometry: geom,
       titlePrefix: ` ${styleBold(this.theme, this.theme.fg("accent", "/tree"))} `,
       pills,
-      search: {
-        promptPrefix: ` ${this.theme.fg("accent", "/")} `,
-        query: this.query,
-        placeholder: "search tree nodes, messages, or labels...",
-        rightLabel: `(${this.filtered.length}/${this.allNodes.length})`,
-      },
+      search: searchBar,
       leftLines,
       rightLines,
       footerHints: [
         { key: "↑/↓", label: "move" },
         { key: "←/→", label: "page" },
+        { key: "Alt+←/→", label: "branch" },
+        { key: "Ctrl+X", label: "copy" },
+        { key: "Shift+L", label: "label" },
+        { key: "Shift+T", label: "time" },
         { key: "Ctrl+O", label: "filter" },
         { key: "Enter", label: "jump" },
         { key: "Ctrl+S", label: "summary" },
@@ -239,7 +309,73 @@ class SessionTreeComponent implements Component {
     return frame.lines;
   }
 
-  private handleMouse(data: string): boolean {
+  /** Native Pi TUI mouse handler (dispatched by `pi-grok-remote-tui`). */
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    const { x, y, type } = event;
+    if (type === "wheel") {
+      const delta = (event.wheelDelta ?? 0) > 0 ? 1 : -1;
+      if (y >= this.lastBodyStartY && y < this.lastBodyStartY + this.lastBodyHeight) {
+        if (x > this.lastDividerX) {
+          this.previewScroll = Math.max(0, this.previewScroll + delta * 3);
+        } else if (this.list.move(delta, this.filtered.length, this.lastBodyHeight)) {
+          this.previewScroll = 0;
+        }
+        return { handled: true, render: true };
+      }
+      return { handled: true, render: false };
+    }
+
+    if (type === "press" && event.button === "left") {
+      if (this.lastCloseRect && hitRegion(this.lastCloseRect, x, y)) {
+        this.done(undefined);
+        return { handled: true, render: false };
+      }
+      for (const [id, rect] of this.lastPillRects) {
+        if (hitRegion(rect, x, y)) {
+          const next = id as TreeFilterMode;
+          if (next !== this.filter) {
+            this.filter = next;
+            this.recomputeFilter(true);
+          }
+          return { handled: true, render: true };
+        }
+      }
+      if (
+        y >= this.lastBodyStartY &&
+        y < this.lastBodyStartY + this.lastBodyHeight &&
+        x >= 1 &&
+        x < this.lastDividerX
+      ) {
+        const idx = this.list.indexAtBodyRow(y - this.lastBodyStartY, this.filtered.length);
+        if (idx >= 0 && idx < this.filtered.length) {
+          this.list.select(idx, this.filtered.length, this.lastBodyHeight);
+          this.previewScroll = 0;
+          return { handled: true, render: true };
+        }
+      }
+      return { handled: true, render: false };
+    }
+
+    if (type === "click" && event.button === "left" && (event.clickCount ?? 1) >= 2) {
+      if (
+        y >= this.lastBodyStartY &&
+        y < this.lastBodyStartY + this.lastBodyHeight &&
+        x >= 1 &&
+        x < this.lastDividerX
+      ) {
+        const idx = this.list.indexAtBodyRow(y - this.lastBodyStartY, this.filtered.length);
+        if (idx >= 0 && idx < this.filtered.length) {
+          this.list.select(idx, this.filtered.length, this.lastBodyHeight);
+          this.confirmSelected(false);
+          return { handled: true, render: false };
+        }
+      }
+    }
+
+    return { handled: true, render: false };
+  }
+
+  private handleSgrMouse(data: string): boolean {
     const m = SGR_MOUSE_RE.exec(data);
     if (!m) return false;
     const btn = Number(m[1]);
@@ -300,10 +436,42 @@ class SessionTreeComponent implements Component {
   }
 
   handleInput(data: string): void {
-    if (this.handleMouse(data)) return;
+    if (this.handleSgrMouse(data)) return;
+    this.statusNotice = "";
 
     if (matchesKey(data, "ctrl+c")) {
       this.done(undefined);
+      return;
+    }
+    if (this.labelEditing) {
+      if (matchesKey(data, "escape")) {
+        this.labelEditing = false;
+        this.labelDraft = "";
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, "enter") || matchesKey(data, "return")) {
+        const node = this.filtered[this.list.selected];
+        const label = this.labelDraft.trim();
+        this.labelEditing = false;
+        this.labelDraft = "";
+        if (node) {
+          this.done({ action: "label", entryId: node.entry.id, label });
+        }
+        return;
+      }
+      if (matchesKey(data, "backspace")) {
+        this.labelDraft = this.labelDraft.slice(0, -1);
+        this.tui.requestRender();
+        return;
+      }
+      if (data.length > 0 && !data.startsWith("\x1b")) {
+        const printable = [...data].filter((ch) => ch >= " " && ch !== "\x7f").join("");
+        if (printable) {
+          this.labelDraft += printable;
+          this.tui.requestRender();
+        }
+      }
       return;
     }
     if (matchesKey(data, "escape")) {
@@ -324,7 +492,62 @@ class SessionTreeComponent implements Component {
       this.confirmSelected(true);
       return;
     }
+    if (matchesKey(data, "ctrl+x")) {
+      this.copySelected();
+      this.tui.requestRender();
+      return;
+    }
+    // Upstream pi-main Session Tree shortcuts: Shift+L (label) & Shift+T (timestamps)
+    // when search query is empty so normal uppercase typing in search still works.
+    if (this.query.length === 0 && (data === "L" || matchesKey(data, "alt+l"))) {
+      const node = this.filtered[this.list.selected];
+      if (node) {
+        this.labelEditing = true;
+        this.labelDraft = node.entry.label ?? "";
+        this.tui.requestRender();
+      }
+      return;
+    }
+    if (this.query.length === 0 && (data === "T" || matchesKey(data, "alt+t"))) {
+      this.showTimestamps = !this.showTimestamps;
+      this.tui.requestRender();
+      return;
+    }
+    // Option+←/→ (Alt+Left/Right): jump between branch points.
+    if (matchesKey(data, "alt+left")) {
+      this.jumpToBranch(-1);
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "alt+right")) {
+      this.jumpToBranch(1);
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "home")) {
+      if (this.filtered.length > 0) {
+        this.list.select(0, this.filtered.length, this.lastBodyHeight);
+        this.previewScroll = 0;
+        this.tui.requestRender();
+      }
+      return;
+    }
+    if (matchesKey(data, "end")) {
+      if (this.filtered.length > 0) {
+        this.list.select(this.filtered.length - 1, this.filtered.length, this.lastBodyHeight);
+        this.previewScroll = 0;
+        this.tui.requestRender();
+      }
+      return;
+    }
     // Direct filter chords matching Rust SessionTree (Ctrl+D/T/U/L/A & Ctrl+O cycle).
+    if (matchesKey(data, "ctrl+shift+o") || matchesKey(data, "shift+tab")) {
+      const idx = (FILTER_CYCLE.indexOf(this.filter) - 1 + FILTER_CYCLE.length) % FILTER_CYCLE.length;
+      this.filter = FILTER_CYCLE[idx]!;
+      this.recomputeFilter(true);
+      this.tui.requestRender();
+      return;
+    }
     if (matchesKey(data, "ctrl+o") || matchesKey(data, "tab")) {
       const idx = (FILTER_CYCLE.indexOf(this.filter) + 1) % FILTER_CYCLE.length;
       this.filter = FILTER_CYCLE[idx]!;

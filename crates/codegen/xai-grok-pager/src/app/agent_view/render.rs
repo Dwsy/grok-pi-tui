@@ -188,6 +188,39 @@ fn remote_tui_anchor_y(
     }
 }
 
+/// Paint a Remote TUI overlay frame into `buf`, resetting every covered cell
+/// to `theme.bg_base` so no underlying scrollback background tint (`bg_light`,
+/// hover bands, or stale modifiers) can bleed through.
+pub(crate) fn render_remote_tui_overlay_surface(
+    area: Rect,
+    buf: &mut Buffer,
+    lines: &[String],
+    layout: &crate::app::app_view::RemoteTuiLayout,
+    theme: &Theme,
+) -> Option<Rect> {
+    let rect = remote_tui_overlay_rect(area, layout, lines.len())?;
+    let surface = Style::default().bg(theme.bg_base);
+    for y in rect.y..rect.bottom() {
+        for x in rect.x..rect.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.reset();
+                cell.set_char(' ');
+                cell.set_style(surface);
+            }
+        }
+    }
+    for (index, line) in lines.iter().take(usize::from(rect.height)).enumerate() {
+        let mut styled = crate::views::agent_status::ansi_remote_tui_line(line, theme);
+        for span in &mut styled.spans {
+            if span.style.bg.is_none() {
+                span.style.bg = Some(theme.bg_base);
+            }
+        }
+        buf.set_line(rect.x, rect.y + index as u16, &styled, rect.width);
+    }
+    Some(rect)
+}
+
 fn remote_tui_overlay_rect(
     area: Rect,
     layout: &crate::app::app_view::RemoteTuiLayout,
@@ -1239,29 +1272,16 @@ impl AgentView {
         let Some(layout) = self.remote_tui_layout.clone() else {
             return self.clear_remote_tui_image_if_active();
         };
-        let Some(rect) = remote_tui_overlay_rect(area, &layout, self.remote_tui_lines.len()) else {
+        let Some(rect) = render_remote_tui_overlay_surface(
+            area,
+            buf,
+            &self.remote_tui_lines,
+            &layout,
+            theme,
+        ) else {
             return self.clear_remote_tui_image_if_active();
         };
         self.remote_tui_rect = Some(rect);
-
-        let surface = Style::default().bg(theme.bg_base);
-        for y in rect.y..rect.bottom() {
-            for x in rect.x..rect.right() {
-                if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_char(' ');
-                    cell.set_style(surface);
-                }
-            }
-        }
-        for (index, line) in self
-            .remote_tui_lines
-            .iter()
-            .take(usize::from(rect.height))
-            .enumerate()
-        {
-            let styled = crate::views::agent_status::ansi_remote_tui_line(line, theme);
-            buf.set_line(rect.x, rect.y + index as u16, &styled, rect.width);
-        }
         self.frame_occluder_rects.push(rect);
         self.build_remote_tui_image_post_flush(rect)
     }

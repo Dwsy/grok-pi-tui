@@ -121,4 +121,88 @@ describe("pi-grok-tree parsing, filtering, and TUI navigation", () => {
       fs.rmSync(path.dirname(file), { recursive: true, force: true });
     }
   });
+
+  test("linear chains stay flat without diagonal staircase indentation, and supports 90% height, mouse, and pi-main shortcuts", () => {
+    const file = writeSampleSession();
+    try {
+      const { entries, leafId } = parseSessionTreeJsonl(file, "e4");
+      const nodes = buildFlattenedSessionTree(entries, leafId);
+      // e1 -> e2 is a single linear chain: both stay at depth 0 with empty prefix.
+      const e1 = nodes.find((n) => n.entry.id === "e1")!;
+      const e2 = nodes.find((n) => n.entry.id === "e2")!;
+      // e2 branches into e3 and e4: they get ├─ / └─ connectors at depth 0 (children recurse at depth 1).
+      const e3 = nodes.find((n) => n.entry.id === "e3")!;
+      const e4 = nodes.find((n) => n.entry.id === "e4")!;
+      expect(e1.depth).toBe(0);
+      expect(e1.prefix).toBe("");
+      expect(e2.depth).toBe(0);
+      expect(e2.prefix).toBe("");
+      expect(e2.isBranchPoint).toBe(true);
+      expect(e3.prefix).toBe("├─ ");
+      expect(e4.prefix).toBe("└─ ");
+
+      let copied = "";
+      let result: SessionTreeActionResult | undefined;
+      const comp = createSessionTreeTui(
+        { requestRender: () => {} },
+        mockTheme,
+        {
+          nodes,
+          getRows: () => 50,
+          onCopy: (text) => {
+            copied = text;
+          },
+        },
+        (res) => {
+          result = res;
+        },
+      ) as ReturnType<typeof createSessionTreeTui> & {
+        handleMouse: (ev: Record<string, unknown>) => unknown;
+      };
+
+      // 90% of 50 rows = 45 rows (not capped at 34).
+      const lines = comp.render(110);
+      expect(lines.length).toBe(45);
+
+      // Shift+T toggles timestamps on rows.
+      comp.handleInput("T");
+      expect(comp.render(110).join("\n")).toContain("11-23");
+
+      // Ctrl+X copies selected node text.
+      comp.handleInput("\x18");
+      expect(copied).toContain("Alternate branch question");
+
+      // Mouse click on first row (y=5) selects e1, double-click jumps to e1.
+      comp.handleMouse({
+        type: "press",
+        button: "left",
+        x: 5,
+        y: 5,
+        screenX: 5,
+        screenY: 5,
+        width: 110,
+        height: 45,
+        shift: false,
+        alt: false,
+        ctrl: false,
+      });
+      comp.handleMouse({
+        type: "click",
+        button: "left",
+        clickCount: 2,
+        x: 5,
+        y: 5,
+        screenX: 5,
+        screenY: 5,
+        width: 110,
+        height: 45,
+        shift: false,
+        alt: false,
+        ctrl: false,
+      });
+      expect(result).toEqual({ action: "navigate", entryId: "e1", summarize: false });
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  });
 });

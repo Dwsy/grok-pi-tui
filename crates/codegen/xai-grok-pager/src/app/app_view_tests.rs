@@ -165,6 +165,8 @@ pub(crate) fn test_app() -> AppView {
         agent_override: None,
         bootstrap_acp_commands: Vec::new(),
         mention_catalog: None,
+        welcome_remote_tui_rect: None,
+        welcome_remote_tui_last_rect: None,
         auth_methods: Vec::new(),
         auth_state: AuthState::Done,
         trust_state: TrustState::Done,

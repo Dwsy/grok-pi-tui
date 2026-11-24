@@ -1261,6 +1261,10 @@ pub struct AppView {
     /// Latest `@` object-mention catalog pushed by Pi (`pi/ui/mentions_catalog`),
     /// cached on `AppView` so agents created after startup prewarm receive it immediately.
     pub mention_catalog: Option<crate::views::file_search::MentionCatalog>,
+    /// Hit-test rect for a Remote TUI overlay painted on the Welcome screen.
+    pub welcome_remote_tui_rect: Option<ratatui::layout::Rect>,
+    /// Last known Welcome Remote TUI overlay rect (keeps drag gestures alive across transient redraws).
+    pub welcome_remote_tui_last_rect: Option<ratatui::layout::Rect>,
     /// Auth methods from the ACP connection (preserved for re-login after logout).
     pub auth_methods: Vec<acp::AuthMethod>,
     /// Authentication state for the welcome screen login flow.
@@ -1911,6 +1915,8 @@ impl AppView {
             agent_override: None,
             bootstrap_acp_commands,
             mention_catalog: None,
+            welcome_remote_tui_rect: None,
+            welcome_remote_tui_last_rect: None,
             auth_methods: Vec::new(),
             auth_state: AuthState::Done,
             trust_state: TrustState::Done,
@@ -3101,6 +3107,7 @@ impl AppView {
             .is_some_and(|(gesture_id, _)| gesture_id != id)
         {
             self.external_ui.remote_tui_mouse_gesture = None;
+            self.welcome_remote_tui_last_rect = None;
             if let Some(agent) = self.active_agent_mut() {
                 agent.remote_tui_last_rect = None;
             }
@@ -3111,16 +3118,24 @@ impl AppView {
             .as_ref()
             .filter(|(gesture_id, _)| gesture_id == id)
             .map(|(_, button)| *button);
-        let current_rect = self.active_agent().and_then(|agent| agent.remote_tui_rect);
-        if current_rect.is_some() {
-            if let Some(agent) = self.active_agent_mut() {
-                agent.remote_tui_last_rect = current_rect;
+        let rect = if matches!(self.active_view, ActiveView::Welcome) {
+            if self.welcome_remote_tui_rect.is_some() {
+                self.welcome_remote_tui_last_rect = self.welcome_remote_tui_rect;
             }
-        }
-        let rect = current_rect.or_else(|| {
-            self.active_agent()
-                .and_then(|agent| agent.remote_tui_last_rect)
-        });
+            self.welcome_remote_tui_rect
+                .or(self.welcome_remote_tui_last_rect)
+        } else {
+            let current_rect = self.active_agent().and_then(|agent| agent.remote_tui_rect);
+            if current_rect.is_some() {
+                if let Some(agent) = self.active_agent_mut() {
+                    agent.remote_tui_last_rect = current_rect;
+                }
+            }
+            current_rect.or_else(|| {
+                self.active_agent()
+                    .and_then(|agent| agent.remote_tui_last_rect)
+            })
+        };
         let Some(rect) = rect else {
             self.external_ui.remote_tui_mouse_gesture = None;
             return None;
@@ -3557,6 +3572,19 @@ impl AppView {
     }
     /// Route a scroll delta to the active view.
     fn dispatch_scroll(&mut self, lines: i32, column: u16, row: u16) {
+        // Never let accumulated trackpad/wheel scroll leak into the underlying
+        // scrollback while a Remote TUI overlay (e.g. TS `/resume` or `/tree`)
+        // owns the screen.
+        if self.external_agent
+            && self.external_ui.remote_tui_id.is_some()
+            && self
+                .external_ui
+                .remote_tui_layout
+                .as_ref()
+                .is_some_and(|layout| layout.overlay)
+        {
+            return;
+        }
         match self.active_view {
             ActiveView::Agent(id) => {
                 if let Some(agent) = self.agents.get_mut(&id) {
@@ -3747,12 +3775,24 @@ impl AppView {
             && !native_dialog
             && let Some(id) = self.external_ui.remote_tui_id.clone()
         {
-            if let Event::Mouse(mouse) = ev
-                && let Some(event) = self.remote_tui_mouse_event(&id, mouse)
-            {
-                self.pending_effects
-                    .push(crate::app::actions::Effect::RemoteTuiMouse { id, event });
-                return InputOutcome::Changed;
+            if let Event::Mouse(mouse) = ev {
+                if let Some(event) = self.remote_tui_mouse_event(&id, mouse) {
+                    self.pending_effects
+                        .push(crate::app::actions::Effect::RemoteTuiMouse { id, event });
+                    return InputOutcome::Changed;
+                }
+                // When a Remote TUI overlay owns the screen, absorb unhandled
+                // mouse events (such as macOS trackpad ScrollLeft/ScrollRight
+                // emitted alongside vertical scroll) so they never fall through
+                // to the underlying Rust scrollback or hover state.
+                if self
+                    .external_ui
+                    .remote_tui_layout
+                    .as_ref()
+                    .is_some_and(|layout| layout.overlay)
+                {
+                    return InputOutcome::Unchanged;
+                }
             }
             // Bracketed paste: forward as a Pi-TUI paste sequence so remote
             // input components treat it as a paste (newlines insert instead
@@ -6310,6 +6350,31 @@ impl AppView {
                                 compact,
                             );
                         }
+                        self.welcome_remote_tui_rect = if self.external_agent
+                            && self.external_ui.remote_tui_id.is_some()
+                            && let Some(layout) = self
+                                .external_ui
+                                .remote_tui_layout
+                                .as_ref()
+                                .filter(|l| l.overlay)
+                        {
+                            let lines = self
+                                .external_ui
+                                .widgets
+                                .get("remote_tui")
+                                .map(|w| w.lines.as_slice())
+                                .unwrap_or(&[]);
+                            let theme = crate::theme::Theme::current();
+                            crate::app::agent_view::render::render_remote_tui_overlay_surface(
+                                view_area,
+                                f.buffer_mut(),
+                                lines,
+                                layout,
+                                &theme,
+                            )
+                        } else {
+                            None
+                        };
                         if let Some(fps) = &fps_overlay {
                             fps.render(full_area, f.buffer_mut());
                         }
@@ -7234,6 +7299,13 @@ impl AppView {
         if scroll_update.lines != 0
             && let Some((col, row)) = self.last_scroll_pos
             && !self.is_scroll_blocking_modal_open()
+            && !(self.external_agent
+                && self.external_ui.remote_tui_id.is_some()
+                && self
+                    .external_ui
+                    .remote_tui_layout
+                    .as_ref()
+                    .is_some_and(|layout| layout.overlay))
         {
             self.dispatch_scroll(scroll_update.lines, col, row);
             needs_redraw = true;

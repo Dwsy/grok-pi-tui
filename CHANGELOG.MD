@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **TS `/resume` full-text search across all historical sessions** — Added `searchSessionPickerRecords` in `extensions/pi-grok-mentions/session-data.ts` querying PSM's SQLite `message_fts` (FTS5) + `sessions` metadata/body `LIKE` across the entire session archive (not just the top 300 loaded in memory) and displaying highlighted `Match` snippets in the fullscreen right details pane.
+- **`/tree` flat linear-chain rendering, `90% × 90%` sizing, mouse support, and `pi-main` shortcuts** — Fixed `buildFlattenedSessionTree` so linear single-child chains stay flat instead of indenting diagonally on every turn (only fork points add `├─`/`└─` and increase depth); enlarged `/tree` to `90vw × 90vh` (`computeSplitGeometry` `heightRatio`/`maxRows` override); added native `TuiMouseEvent` handling (click pills/close/rows, double-click jump, left/right wheel scroll); and aligned `pi-main` shortcuts (`Alt+←/→` branch jump, `Home/End`, `Ctrl+X` copy, `Shift+L` inline label editor, `Shift+T` timestamps toggle, `Ctrl+D/T/U/L/A` & `Ctrl+O`/`Shift+Ctrl+O` filters).
+
+### Fixed
+
+- **Welcome screen `/resume` & shortcuts now open the fullscreen TS TUI** — Rendered Remote TUI overlays on `ActiveView::Welcome` (`welcome_remote_tui_rect`) and routed `dispatch_show_session_picker` directly to `__pi_resume_session` whenever `external_agent` is active.
+- **Stopped trackpad scroll & background tint bleed through Remote TUI overlays** — Absorbed unhandled mouse events (including macOS trackpad `ScrollLeft`/`ScrollRight`) and blocked `dispatch_scroll` / `tick_scroll` while a Remote TUI overlay is active, and reset covered cells + filled transparent span backgrounds with `theme.bg_base` in `render_remote_tui_overlay_surface`.
+
 ## [0.1.14-beta.13] - 2026-11-24
 
 ### Changed
