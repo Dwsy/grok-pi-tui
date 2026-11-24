@@ -8,7 +8,7 @@
 
 use anyhow::{Result, bail};
 use semver::Version;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -16,8 +16,6 @@ use std::time::Duration;
 use std::env;
 #[cfg(windows)]
 use std::ffi::OsStr;
-#[cfg(windows)]
-use std::path::PathBuf;
 
 /// Minimum supported Pi CLI version (system package / pi.dev installer).
 pub(super) const MIN_PI_VERSION: &str = "0.99.0";
@@ -57,10 +55,65 @@ pub(super) fn resolve_pi_host(program: &str) -> String {
     }
 }
 
+/// Fast-path version lookup for managed Pi installs (`~/.pi/agent/bin/pi`),
+/// reading `../install/current-version` directly (<1ms) instead of spawning
+/// `pi --version` (~1.5–2s Node startup) on every launch.
+fn read_managed_pi_version(program: &str) -> Option<String> {
+    let candidate = {
+        let p = Path::new(program);
+        if p.components().count() > 1 {
+            p.to_path_buf()
+        } else {
+            let path_var = std::env::var_os("PATH")?;
+            std::env::split_paths(&path_var)
+                .map(|dir| dir.join(program))
+                .find(|full| full.is_file())?
+        }
+    };
+    let canonical = std::fs::canonicalize(&candidate).ok()?;
+    let bin_dir = canonical.parent()?;
+    let agent_dir = bin_dir.parent()?;
+    let current_file = agent_dir.join("install").join("current-version");
+    let raw = std::fs::read_to_string(&current_file).ok()?;
+    let ver = raw.trim();
+    if ver.is_empty()
+        || ver == "."
+        || ver == ".."
+        || !ver
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-'))
+    {
+        return None;
+    }
+    let release_bin = agent_dir
+        .join("install")
+        .join("releases")
+        .join(ver)
+        .join("node_modules")
+        .join(".bin")
+        .join(if cfg!(windows) { "pi.cmd" } else { "pi" });
+    release_bin.is_file().then(|| ver.to_string())
+}
+
 /// Probe `program --version` with a short timeout. Does not spawn Pi RPC.
 pub(super) fn check_pi_host(program: &str) -> PiHostCheck {
     let min = Version::parse(MIN_PI_VERSION).expect("MIN_PI_VERSION is valid semver");
     let resolved = resolve_pi_host(program);
+    if let Some(raw) = read_managed_pi_version(&resolved)
+        && let Some(version) = parse_pi_version(&raw)
+    {
+        return if version >= min {
+            PiHostCheck::Ok {
+                version,
+                program: resolved,
+            }
+        } else {
+            PiHostCheck::TooOld {
+                version,
+                program: resolved,
+            }
+        };
+    }
     match run_pi_version(&resolved) {
         Ok(raw) => match parse_pi_version(&raw) {
             Some(version) if version >= min => PiHostCheck::Ok {

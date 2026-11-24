@@ -8,8 +8,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { TuiTheme } from "../pi-grok-tui-kit/index.ts";
-import { loadPiConfigSnapshot, type PiConfigMutationPayload } from "./config-data.ts";
-import { createPiConfigTui } from "./config-tui.ts";
+import type { PiConfigMutationPayload } from "./config-data.ts";
 
 /** Must match `EXTENSION_MENTION_INSERT_STATUS_KEY` in pi-grok-adapter. */
 const INSERT_STATUS_KEY = "__pi_grok_mention_insert__";
@@ -19,6 +18,10 @@ export default function configExtension(pi: ExtensionAPI): void {
   pi.registerCommand(CONFIG_COMMAND, {
     description: "Internal grok-pi bridge for the bordered TS /pi-config resource manager",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const [{ loadPiConfigSnapshot }, { createPiConfigTui }] = await Promise.all([
+        import("./config-data.ts"),
+        import("./config-tui.ts"),
+      ]);
       const snapshotPath = String(args ?? "").trim();
       const snapshot = loadPiConfigSnapshot(snapshotPath);
       if (!snapshot) {

@@ -11,17 +11,8 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import {
-  REMOTE_TUI_IMAGE_WIDGET_KEY,
-  type RemoteTuiImageSpec,
-  type TuiTheme,
-} from "../pi-grok-tui-kit/index.ts";
-import {
-  aggregateSessionFiles,
-  extractSessionReviewTurns,
-  loadGitWorkingTreeChanges,
-} from "./review-data.ts";
-import { createReviewTui, type ReviewLaunchMode, type ReviewTuiResult } from "./review-tui.ts";
+import type { RemoteTuiImageSpec, TuiTheme } from "../pi-grok-tui-kit/index.ts";
+import type { ReviewLaunchMode, ReviewTuiResult } from "./review-tui.ts";
 
 function resolveSessionJsonlPath(ctx: ExtensionCommandContext): string {
   const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | undefined } })
@@ -34,6 +25,15 @@ async function openReviewOverlay(
   ctx: ExtensionCommandContext,
   mode: ReviewLaunchMode,
 ): Promise<void> {
+  const [
+    { REMOTE_TUI_IMAGE_WIDGET_KEY },
+    { aggregateSessionFiles, extractSessionReviewTurns, loadGitWorkingTreeChanges },
+    { createReviewTui },
+  ] = await Promise.all([
+    import("../pi-grok-tui-kit/index.ts"),
+    import("./review-data.ts"),
+    import("./review-tui.ts"),
+  ]);
   const cwd = (ctx as { cwd?: string }).cwd || process.cwd();
   const sessionFile = resolveSessionJsonlPath(ctx);
   const turns = extractSessionReviewTurns(sessionFile, cwd);

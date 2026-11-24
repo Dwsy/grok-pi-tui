@@ -26,19 +26,11 @@ import {
   loadSessionPreviewMessages,
   type SessionRecord,
 } from "./session-data.ts";
-import { createSessionPickerTui, type SessionPickerTheme } from "./session-picker-tui.ts";
-import { buildSkillRecords, type SkillRecord } from "./skill-data.ts";
-import { createSkillPickerTui } from "./skill-picker-tui.ts";
-import { createFilePickerTui, type FilePickerSelection } from "./file-picker-tui.ts";
-import {
-  REMOTE_TUI_IMAGE_WIDGET_KEY,
-  type RemoteTuiImageSpec,
-} from "../pi-grok-tui-kit/index.ts";
-import {
-  createMcpPickerTui,
-  type McpServerRecord,
-  type McpToolRecord,
-} from "./mcp-picker-tui.ts";
+import type { SessionPickerTheme } from "./session-picker-tui.ts";
+import type { SkillRecord } from "./skill-data.ts";
+import type { FilePickerSelection } from "./file-picker-tui.ts";
+import type { RemoteTuiImageSpec } from "../pi-grok-tui-kit/index.ts";
+import type { McpServerRecord, McpToolRecord } from "./mcp-picker-tui.ts";
 
 /** Must match `EXTENSION_MENTIONS_STATUS_KEY` in pi-grok-adapter. */
 const STATUS_KEY = "__pi_grok_mentions__";
@@ -587,6 +579,7 @@ export default function mentions(pi: ExtensionAPI) {
   pi.registerCommand(SESSION_PICKER_COMMAND, {
     description: "Open the bordered TS session picker overlay for @session mentions",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const { createSessionPickerTui } = await import("./session-picker-tui.ts");
       const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
       const records = loadSessionPickerRecords({ limit: 300 });
       const initialQuery = String(args ?? "").trim();
@@ -630,6 +623,10 @@ export default function mentions(pi: ExtensionAPI) {
   pi.registerCommand(SKILL_PICKER_COMMAND, {
     description: "Open the bordered TS skill picker overlay for @skill mentions",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const [{ buildSkillRecords }, { createSkillPickerTui }] = await Promise.all([
+        import("./skill-data.ts"),
+        import("./skill-picker-tui.ts"),
+      ]);
       const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
       const records = buildSkillRecords(collectSkillsFromPi(pi), cwd);
       const initialQuery = String(args ?? "").trim();
@@ -670,6 +667,10 @@ export default function mentions(pi: ExtensionAPI) {
   pi.registerCommand(FILE_PICKER_COMMAND, {
     description: "Open the bordered TS file explorer (Tree + fd + rg + Preview)",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const [{ createFilePickerTui }, { REMOTE_TUI_IMAGE_WIDGET_KEY }] = await Promise.all([
+        import("./file-picker-tui.ts"),
+        import("../pi-grok-tui-kit/index.ts"),
+      ]);
       const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
       const initialQuery = String(args ?? "").trim();
       const patchUi = ctx.ui as unknown as PatchableUi;
@@ -726,6 +727,7 @@ export default function mentions(pi: ExtensionAPI) {
   pi.registerCommand(MCP_PICKER_COMMAND, {
     description: "Open the bordered TS MCP server & tool picker overlay for @mcp mentions",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const { createMcpPickerTui } = await import("./mcp-picker-tui.ts");
       const records = collectMcpServerRecords(pi);
       const initialQuery = String(args ?? "").trim();
 
@@ -764,6 +766,7 @@ export default function mentions(pi: ExtensionAPI) {
   pi.registerCommand(RESUME_SESSION_COMMAND, {
     description: "Open the bordered TS session picker overlay to resume a past session",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const { createSessionPickerTui } = await import("./session-picker-tui.ts");
       const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
       const records = loadSessionPickerRecords({ limit: 300 });
       const initialQuery = String(args ?? "").trim();

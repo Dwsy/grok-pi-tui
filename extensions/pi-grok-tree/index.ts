@@ -8,8 +8,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { TuiTheme } from "../pi-grok-tui-kit/index.ts";
-import { buildFlattenedSessionTree, parseSessionTreeJsonl } from "./tree-data.ts";
-import { createSessionTreeTui, type SessionTreeActionResult } from "./tree-tui.ts";
+import type { SessionTreeActionResult } from "./tree-tui.ts";
 
 /** Must match `EXTENSION_MENTION_INSERT_STATUS_KEY` in pi-grok-adapter. */
 const INSERT_STATUS_KEY = "__pi_grok_mention_insert__";
@@ -38,6 +37,8 @@ export default function treeExtension(pi: ExtensionAPI): void {
   pi.registerCommand(TREE_COMMAND, {
     description: "Internal grok-pi bridge for the bordered TS /tree session explorer",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const [{ buildFlattenedSessionTree, parseSessionTreeJsonl }, { createSessionTreeTui }] =
+        await Promise.all([import("./tree-data.ts"), import("./tree-tui.ts")]);
       const { file, leafId } = resolveSessionMeta(ctx);
       const parsed = parseSessionTreeJsonl(file, leafId);
       const nodes = buildFlattenedSessionTree(parsed.entries, parsed.leafId);
