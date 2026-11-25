@@ -166,6 +166,7 @@ pub use prompt_stash::{PromptStashEntry, StashCause};
 mod queue;
 mod render;
 mod review;
+pub(in crate::app) use render::render_remote_tui_overlay_surface;
 pub use render::AppRenderParams;
 #[cfg(test)]
 mod dock_input_tests;

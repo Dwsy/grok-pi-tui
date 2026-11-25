@@ -6373,7 +6373,7 @@ impl AppView {
                                 .map(|w| w.lines.as_slice())
                                 .unwrap_or(&[]);
                             let theme = crate::theme::Theme::current();
-                            crate::app::agent_view::render::render_remote_tui_overlay_surface(
+                            crate::app::agent_view::render_remote_tui_overlay_surface(
                                 view_area,
                                 f.buffer_mut(),
                                 lines,
