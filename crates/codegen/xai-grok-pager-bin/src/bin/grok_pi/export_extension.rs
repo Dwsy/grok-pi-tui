@@ -1,24 +1,11 @@
-use anyhow::{Context, Result};
-use std::{fs::File, io::Write};
-use tempfile::NamedTempFile;
+use anyhow::Result;
 
 /// Materialize default-on Pi session export/share (`/export-html` / `/pi-share`).
 ///
 /// Reuses Pi host export-html + gh gist paths. Grok `/export` stays Markdown.
-pub(super) fn write_export_extension() -> Result<NamedTempFile> {
-    let mut file = tempfile::Builder::new()
-        .prefix("pi-grok-export-")
-        .suffix(".ts")
-        .tempfile()
-        .context("create Pi export extension tempfile")?;
+pub(super) fn write_export_extension() -> Result<super::tui_kit::CachedExtensionFile> {
     const SOURCE: &str = include_str!("../../../../../../extensions/pi-grok-export/index.ts");
-    file.write_all(SOURCE.as_bytes())
-        .context("write Pi export extension source")?;
-    file.flush().context("flush Pi export extension source")?;
-    File::open(file.path())
-        .and_then(|source| source.sync_all())
-        .ok();
-    Ok(file)
+    super::tui_kit::materialize_cached_file("pi-grok-export", SOURCE)
 }
 
 #[cfg(test)]

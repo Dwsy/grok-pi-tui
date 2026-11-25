@@ -1,29 +1,13 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::File,
-    io::{Read, Write},
-    path::Path,
-};
-use tempfile::NamedTempFile;
+use anyhow::Result;
+use std::{fs::File, io::Read, path::Path};
 
 const MANAGED_PI_MARKER: &str = "HERDR_INTEGRATION_ID=pi";
 const MANAGED_FILE_NAME: &str = "herdr-agent-state.ts";
 
 /// Materialize the default-on, headless Herdr lifecycle bridge for grok-pi.
-pub(super) fn write_herdr_extension() -> Result<NamedTempFile> {
-    let mut file = tempfile::Builder::new()
-        .prefix("pi-grok-herdr-")
-        .suffix(".ts")
-        .tempfile()
-        .context("create Pi Herdr extension tempfile")?;
+pub(super) fn write_herdr_extension() -> Result<super::tui_kit::CachedExtensionFile> {
     const SOURCE: &str = include_str!("../../../../../../extensions/pi-grok-herdr/index.ts");
-    file.write_all(SOURCE.as_bytes())
-        .context("write Pi Herdr extension source")?;
-    file.flush().context("flush Pi Herdr extension source")?;
-    File::open(file.path())
-        .and_then(|source| source.sync_all())
-        .ok();
-    Ok(file)
+    super::tui_kit::materialize_cached_file("pi-grok-herdr", SOURCE)
 }
 
 /// Detect Herdr's managed stock-Pi integration in auto-discovered resources.
@@ -50,6 +34,7 @@ pub(super) fn is_managed_pi_integration(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn herdr_extension_source_uses_current_authoritative_lifecycle_contract() {

@@ -1,16 +1,9 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::TempDir;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-/// Materialized web-config extension bundle. `_source_dir` must stay alive for
-/// the Pi process lifetime so relative imports between the TypeScript modules
-/// keep resolving.
+/// Materialized web-config extension bundle in a content-addressed cache
+/// directory so `jiti`'s `fsCache` hits across launches.
 pub(super) struct WebConfigExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
     ui_path: PathBuf,
     catalog_path: PathBuf,
@@ -33,100 +26,75 @@ impl WebConfigExtension {
     }
 }
 
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file = File::create(&path)
-        .with_context(|| format!("create Pi web config extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi web config extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi web config extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
-}
-
 /// Materialize the `/pi-config web` + `/pi-models web` browser surface.
 ///
 /// Every authored module must be materialized here — the injector owns the
 /// transitive closure of `index.ts`'s relative imports (see AGENTS.md
 /// "Diagnosing Pi RPC bootstrap / extension failures").
 pub(super) fn write_web_config_extension() -> Result<WebConfigExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-web-config-")
-        .tempdir()
-        .context("create Pi web config extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-web-config/index.ts"),
+    let catalog = host_catalog_json();
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-web-config",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-web-config/index.ts"),
+            ),
+            (
+                "shared.ts",
+                include_str!("../../../../../../extensions/pi-grok-web-config/shared.ts"),
+            ),
+            (
+                "config-store.ts",
+                include_str!("../../../../../../extensions/pi-grok-web-config/config-store.ts"),
+            ),
+            (
+                "server.ts",
+                include_str!("../../../../../../extensions/pi-grok-web-config/server.ts"),
+            ),
+            (
+                "ui.html",
+                include_str!("../../../../../../extensions/pi-grok-web-config/web/index.html"),
+            ),
+            (
+                "styles.css",
+                include_str!("../../../../../../extensions/pi-grok-web-config/web/styles.css"),
+            ),
+            (
+                "app.js",
+                include_str!("../../../../../../extensions/pi-grok-web-config/web/app.js"),
+            ),
+            (
+                "ui-config.json",
+                include_str!("../../../../../../extensions/pi-grok-web-config/web/ui-config.json"),
+            ),
+            (
+                "i18n.json",
+                include_str!("../../../../../../extensions/pi-grok-web-config/web/i18n.json"),
+            ),
+            (
+                "models.js",
+                include_str!("../../../../../../extensions/pi-grok-web-config/web/models.js"),
+            ),
+            (
+                "resources.js",
+                include_str!("../../../../../../extensions/pi-grok-web-config/web/resources.js"),
+            ),
+            (
+                "host.js",
+                include_str!("../../../../../../extensions/pi-grok-web-config/web/host.js"),
+            ),
+            (
+                "settings.js",
+                include_str!("../../../../../../extensions/pi-grok-web-config/web/settings.js"),
+            ),
+            ("host-catalog.json", &catalog),
+        ],
     )?;
-    write_source_file(
-        source_dir.path(),
-        "shared.ts",
-        include_str!("../../../../../../extensions/pi-grok-web-config/shared.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "config-store.ts",
-        include_str!("../../../../../../extensions/pi-grok-web-config/config-store.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "server.ts",
-        include_str!("../../../../../../extensions/pi-grok-web-config/server.ts"),
-    )?;
-    let ui_path = write_source_file(
-        source_dir.path(),
-        "ui.html",
-        include_str!("../../../../../../extensions/pi-grok-web-config/web/index.html"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "styles.css",
-        include_str!("../../../../../../extensions/pi-grok-web-config/web/styles.css"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "app.js",
-        include_str!("../../../../../../extensions/pi-grok-web-config/web/app.js"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "ui-config.json",
-        include_str!("../../../../../../extensions/pi-grok-web-config/web/ui-config.json"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "i18n.json",
-        include_str!("../../../../../../extensions/pi-grok-web-config/web/i18n.json"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "models.js",
-        include_str!("../../../../../../extensions/pi-grok-web-config/web/models.js"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "resources.js",
-        include_str!("../../../../../../extensions/pi-grok-web-config/web/resources.js"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "host.js",
-        include_str!("../../../../../../extensions/pi-grok-web-config/web/host.js"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "settings.js",
-        include_str!("../../../../../../extensions/pi-grok-web-config/web/settings.js"),
-    )?;
-    let catalog_path =
-        write_source_file(source_dir.path(), "host-catalog.json", &host_catalog_json())?;
     Ok(WebConfigExtension {
-        _source_dir: source_dir,
-        source_path,
-        ui_path,
-        catalog_path,
+        source_path: root.join("index.ts"),
+        ui_path: root.join("ui.html"),
+        catalog_path: root.join("host-catalog.json"),
     })
 }
 

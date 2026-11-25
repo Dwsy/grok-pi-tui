@@ -1,16 +1,9 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::{File, create_dir_all},
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::TempDir;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-/// Materialized pi-grok-subagents extension bundle. The source directory
-/// remains alive for the Pi process lifetime so relative imports between the
-/// authored TypeScript modules continue to resolve.
+/// Materialized pi-grok-subagents extension bundle in a content-addressed cache
+/// directory so `jiti`'s `fsCache` hits across launches.
 pub(super) struct SubagentExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
 }
 
@@ -20,137 +13,102 @@ impl SubagentExtension {
     }
 }
 
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    if let Some(parent) = path.parent() {
-        create_dir_all(parent)
-            .with_context(|| format!("create Pi subagent extension module directory for {name}"))?;
-    }
-    let mut file = File::create(&path)
-        .with_context(|| format!("create Pi subagent extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi subagent extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi subagent extension module {name}"))?;
-    File::open(&path).and_then(|source| source.sync_all()).ok();
-    Ok(path)
-}
-
-/// Materialize the bundled Pi child-session lifecycle owner as a standalone
-/// extension. The source remains a TypeScript Pi extension; this wrapper only
-/// gives the launched Pi process a durable `.ts` entry path for its lifetime.
-/// Every authored module must be materialized: Pi loads the entry `index.ts`
-/// from the temp directory and resolves its relative imports there.
+/// Materialize the bundled Pi child-session lifecycle owner into a deterministic
+/// content-addressed cache directory so `jiti` reuses compiled output across runs.
 pub(super) fn write_subagent_extension() -> Result<SubagentExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-subagents-")
-        .tempdir()
-        .context("create Pi subagent extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/index.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "shared.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/shared.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "definitions.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/definitions.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "config-ui.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/config-ui.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "ui-primitives.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/ui-primitives.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "runtime-settings.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/runtime-settings.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "control-center.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/control-center.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "bridge.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/bridge.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "runtime.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/runtime.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "fork.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/fork.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "tools-v1.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/tools-v1.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "teams.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/teams.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "thinking.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/thinking.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "team-ui.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/team-ui.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "v2.ts",
-        include_str!("../../../../../../extensions/pi-grok-subagents/v2.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "skills/multi-agent-proactive/SKILL.md",
-        include_str!(
-            "../../../../../../extensions/pi-grok-subagents/skills/multi-agent-proactive/SKILL.md"
-        ),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "skills/multitask/SKILL.md",
-        include_str!("../../../../../../extensions/pi-grok-subagents/skills/multitask/SKILL.md"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "teams/research.json",
-        include_str!("../../../../../../extensions/pi-grok-subagents/teams/research.json"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "teams/implementation.json",
-        include_str!("../../../../../../extensions/pi-grok-subagents/teams/implementation.json"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "teams/review.json",
-        include_str!("../../../../../../extensions/pi-grok-subagents/teams/review.json"),
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-subagents",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/index.ts"),
+            ),
+            (
+                "shared.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/shared.ts"),
+            ),
+            (
+                "definitions.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/definitions.ts"),
+            ),
+            (
+                "config-ui.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/config-ui.ts"),
+            ),
+            (
+                "ui-primitives.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/ui-primitives.ts"),
+            ),
+            (
+                "runtime-settings.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/runtime-settings.ts"),
+            ),
+            (
+                "control-center.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/control-center.ts"),
+            ),
+            (
+                "bridge.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/bridge.ts"),
+            ),
+            (
+                "runtime.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/runtime.ts"),
+            ),
+            (
+                "fork.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/fork.ts"),
+            ),
+            (
+                "tools-v1.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/tools-v1.ts"),
+            ),
+            (
+                "teams.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/teams.ts"),
+            ),
+            (
+                "thinking.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/thinking.ts"),
+            ),
+            (
+                "team-ui.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/team-ui.ts"),
+            ),
+            (
+                "v2.ts",
+                include_str!("../../../../../../extensions/pi-grok-subagents/v2.ts"),
+            ),
+            (
+                "skills/multi-agent-proactive/SKILL.md",
+                include_str!(
+                    "../../../../../../extensions/pi-grok-subagents/skills/multi-agent-proactive/SKILL.md"
+                ),
+            ),
+            (
+                "skills/multitask/SKILL.md",
+                include_str!(
+                    "../../../../../../extensions/pi-grok-subagents/skills/multitask/SKILL.md"
+                ),
+            ),
+            (
+                "teams/research.json",
+                include_str!("../../../../../../extensions/pi-grok-subagents/teams/research.json"),
+            ),
+            (
+                "teams/implementation.json",
+                include_str!(
+                    "../../../../../../extensions/pi-grok-subagents/teams/implementation.json"
+                ),
+            ),
+            (
+                "teams/review.json",
+                include_str!("../../../../../../extensions/pi-grok-subagents/teams/review.json"),
+            ),
+        ],
     )?;
     Ok(SubagentExtension {
-        _source_dir: source_dir,
-        source_path,
+        source_path: root.join("index.ts"),
     })
 }
 

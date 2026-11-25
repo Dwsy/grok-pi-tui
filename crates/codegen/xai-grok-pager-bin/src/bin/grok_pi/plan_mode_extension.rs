@@ -28,22 +28,18 @@ impl PlanModeExtension {
 /// directory. Both are retained by the composition binary until the Pi child
 /// exits; the adapter writes per-tool response files into the same directory.
 pub(super) fn write_plan_mode_extension() -> Result<PlanModeExtension> {
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-plan-mode",
+        &[(
+            "index.ts",
+            include_str!("../../../../../../extensions/pi-grok-plan-mode/index.ts"),
+        )],
+    )?;
+    let source_path = root.join("index.ts");
     let dir = tempfile::Builder::new()
         .prefix("pi-grok-plan-mode-")
         .tempdir()
         .context("create Pi plan-mode extension directory")?;
-    let source_path = dir.path().join("pi-grok-plan-mode.ts");
-    const SOURCE: &str = include_str!("../../../../../../extensions/pi-grok-plan-mode/index.ts");
-    let mut source = File::create(&source_path).context("create Pi plan-mode extension source")?;
-    source
-        .write_all(SOURCE.as_bytes())
-        .context("write Pi plan-mode extension source")?;
-    source
-        .flush()
-        .context("flush Pi plan-mode extension source")?;
-    File::open(&source_path)
-        .and_then(|file| file.sync_all())
-        .ok();
 
     let control_path = dir.path().join("control.json");
     let mut control = File::create(&control_path).context("create Pi plan-mode control file")?;

@@ -1,16 +1,9 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::TempDir;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-/// Materialized pi-grok-recap extension bundle. The source directory remains
-/// alive for the Pi process lifetime so relative imports between the authored
-/// TypeScript modules continue to resolve.
+/// Materialized pi-grok-recap extension bundle in a content-addressed cache
+/// directory so `jiti`'s `fsCache` hits across launches.
 pub(super) struct RecapExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
 }
 
@@ -20,65 +13,46 @@ impl RecapExtension {
     }
 }
 
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file =
-        File::create(&path).with_context(|| format!("create Pi recap extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi recap extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi recap extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
-}
-
 /// Inject a headless Pi extension that generates display-only session recaps
 /// via `complete()` and appends `pi-grok-recap/v1` custom entries for the adapter.
 /// Every authored module must be materialized: Pi loads the entry `index.ts`
 /// from the temp directory and resolves its relative imports there.
 pub(super) fn write_recap_extension() -> Result<RecapExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-recap-")
-        .tempdir()
-        .context("create Pi recap extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-recap/index.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "shared.ts",
-        include_str!("../../../../../../extensions/pi-grok-recap/shared.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "args.ts",
-        include_str!("../../../../../../extensions/pi-grok-recap/args.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "prompt.ts",
-        include_str!("../../../../../../extensions/pi-grok-recap/prompt.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "clean.ts",
-        include_str!("../../../../../../extensions/pi-grok-recap/clean.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "session.ts",
-        include_str!("../../../../../../extensions/pi-grok-recap/session.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "model.ts",
-        include_str!("../../../../../../extensions/pi-grok-recap/model.ts"),
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-recap",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-recap/index.ts"),
+            ),
+            (
+                "shared.ts",
+                include_str!("../../../../../../extensions/pi-grok-recap/shared.ts"),
+            ),
+            (
+                "args.ts",
+                include_str!("../../../../../../extensions/pi-grok-recap/args.ts"),
+            ),
+            (
+                "prompt.ts",
+                include_str!("../../../../../../extensions/pi-grok-recap/prompt.ts"),
+            ),
+            (
+                "clean.ts",
+                include_str!("../../../../../../extensions/pi-grok-recap/clean.ts"),
+            ),
+            (
+                "session.ts",
+                include_str!("../../../../../../extensions/pi-grok-recap/session.ts"),
+            ),
+            (
+                "model.ts",
+                include_str!("../../../../../../extensions/pi-grok-recap/model.ts"),
+            ),
+        ],
     )?;
     Ok(RecapExtension {
-        _source_dir: source_dir,
-        source_path,
+        source_path: root.join("index.ts"),
     })
 }
 

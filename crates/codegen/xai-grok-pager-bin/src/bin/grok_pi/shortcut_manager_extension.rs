@@ -1,15 +1,9 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::TempDir;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-/// Materialized shortcut manager extension bundle. `_source_dir` must stay
-/// alive for the Pi process lifetime so relative imports resolve.
+/// Materialized shortcut manager extension bundle in a content-addressed cache
+/// directory so `jiti`'s `fsCache` hits across launches.
 pub(super) struct ShortcutManagerExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
 }
 
@@ -19,18 +13,6 @@ impl ShortcutManagerExtension {
     }
 }
 
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file = File::create(&path)
-        .with_context(|| format!("create Pi shortcut manager extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi shortcut manager extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi shortcut manager extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
-}
-
 /// Materialize the shortcut manager before user extensions load.
 ///
 /// Captures Pi extension-registered shortcuts (`pi.registerShortcut`) into a
@@ -38,43 +20,37 @@ fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
 /// authored module must be materialized here because this injector owns the
 /// transitive closure of `index.ts`'s relative imports.
 pub(super) fn write_shortcut_manager_extension() -> Result<ShortcutManagerExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-shortcut-manager-")
-        .tempdir()
-        .context("create Pi shortcut manager extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-shortcut-manager/index.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "shared.ts",
-        include_str!("../../../../../../extensions/pi-grok-shortcut-manager/shared.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "config.ts",
-        include_str!("../../../../../../extensions/pi-grok-shortcut-manager/config.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "dispatch.ts",
-        include_str!("../../../../../../extensions/pi-grok-shortcut-manager/dispatch.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "host.ts",
-        include_str!("../../../../../../extensions/pi-grok-shortcut-manager/host.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "commands.ts",
-        include_str!("../../../../../../extensions/pi-grok-shortcut-manager/commands.ts"),
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-shortcut-manager",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-shortcut-manager/index.ts"),
+            ),
+            (
+                "shared.ts",
+                include_str!("../../../../../../extensions/pi-grok-shortcut-manager/shared.ts"),
+            ),
+            (
+                "config.ts",
+                include_str!("../../../../../../extensions/pi-grok-shortcut-manager/config.ts"),
+            ),
+            (
+                "dispatch.ts",
+                include_str!("../../../../../../extensions/pi-grok-shortcut-manager/dispatch.ts"),
+            ),
+            (
+                "host.ts",
+                include_str!("../../../../../../extensions/pi-grok-shortcut-manager/host.ts"),
+            ),
+            (
+                "commands.ts",
+                include_str!("../../../../../../extensions/pi-grok-shortcut-manager/commands.ts"),
+            ),
+        ],
     )?;
     Ok(ShortcutManagerExtension {
-        _source_dir: source_dir,
-        source_path,
+        source_path: root.join("index.ts"),
     })
 }
 

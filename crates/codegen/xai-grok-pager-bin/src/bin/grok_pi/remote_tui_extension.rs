@@ -1,16 +1,9 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::TempDir;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-/// Materialized Remote TUI extension bundle. `_source_dir` must stay alive
-/// for the Pi process lifetime so relative imports between the TypeScript
-/// modules keep resolving.
+/// Materialized Remote TUI extension bundle in a content-addressed cache
+/// directory so `jiti`'s `fsCache` hits across launches.
 pub(super) struct RemoteTuiExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
 }
 
@@ -20,18 +13,6 @@ impl RemoteTuiExtension {
     }
 }
 
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file = File::create(&path)
-        .with_context(|| format!("create Pi remote-tui extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi remote-tui extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi remote-tui extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
-}
-
 /// Materialize the experimental Remote TUI probe as a standalone extension.
 /// Only loaded when PI_GROK_REMOTE_TUI=1.
 ///
@@ -39,58 +20,49 @@ fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
 /// transitive closure of `index.ts`'s relative imports (see AGENTS.md
 /// "Diagnosing Pi RPC bootstrap / extension failures").
 pub(super) fn write_remote_tui_extension() -> Result<RemoteTuiExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-remote-tui-")
-        .tempdir()
-        .context("create Pi remote-tui extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-remote-tui/index.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "shared.ts",
-        include_str!("../../../../../../extensions/pi-grok-remote-tui/shared.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "env.ts",
-        include_str!("../../../../../../extensions/pi-grok-remote-tui/env.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "layout.ts",
-        include_str!("../../../../../../extensions/pi-grok-remote-tui/layout.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "transport.ts",
-        include_str!("../../../../../../extensions/pi-grok-remote-tui/transport.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "host.ts",
-        include_str!("../../../../../../extensions/pi-grok-remote-tui/host.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "demo.ts",
-        include_str!("../../../../../../extensions/pi-grok-remote-tui/demo.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "timeline.ts",
-        include_str!("../../../../../../extensions/pi-grok-remote-tui/timeline.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "timeline-format.ts",
-        include_str!("../../../../../../extensions/pi-grok-remote-tui/timeline-format.ts"),
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-remote-tui",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-remote-tui/index.ts"),
+            ),
+            (
+                "shared.ts",
+                include_str!("../../../../../../extensions/pi-grok-remote-tui/shared.ts"),
+            ),
+            (
+                "env.ts",
+                include_str!("../../../../../../extensions/pi-grok-remote-tui/env.ts"),
+            ),
+            (
+                "layout.ts",
+                include_str!("../../../../../../extensions/pi-grok-remote-tui/layout.ts"),
+            ),
+            (
+                "transport.ts",
+                include_str!("../../../../../../extensions/pi-grok-remote-tui/transport.ts"),
+            ),
+            (
+                "host.ts",
+                include_str!("../../../../../../extensions/pi-grok-remote-tui/host.ts"),
+            ),
+            (
+                "demo.ts",
+                include_str!("../../../../../../extensions/pi-grok-remote-tui/demo.ts"),
+            ),
+            (
+                "timeline.ts",
+                include_str!("../../../../../../extensions/pi-grok-remote-tui/timeline.ts"),
+            ),
+            (
+                "timeline-format.ts",
+                include_str!("../../../../../../extensions/pi-grok-remote-tui/timeline-format.ts"),
+            ),
+        ],
     )?;
     Ok(RemoteTuiExtension {
-        _source_dir: source_dir,
-        source_path,
+        source_path: root.join("index.ts"),
     })
 }
 

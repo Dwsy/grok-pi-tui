@@ -4,11 +4,10 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::NamedTempFile;
 
 /// Process-private loop extension bundle + control file for scheduled tasks.
 pub(super) struct LoopExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
     control: NamedTempFile,
 }
@@ -23,57 +22,41 @@ impl LoopExtension {
     }
 }
 
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file =
-        File::create(&path).with_context(|| format!("create Pi loop extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi loop extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi loop extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
-}
-
 /// Materialize the loop extension and empty control file (retained until Pi exits).
 ///
 /// Every authored module must be materialized here because this injector owns
 /// the transitive closure of `index.ts`'s relative imports.
 pub(super) fn write_loop_extension() -> Result<LoopExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-loop-")
-        .tempdir()
-        .context("create Pi loop extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-loop/index.ts"),
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-loop",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-loop/index.ts"),
+            ),
+            (
+                "shared.ts",
+                include_str!("../../../../../../extensions/pi-grok-loop/shared.ts"),
+            ),
+            (
+                "control.ts",
+                include_str!("../../../../../../extensions/pi-grok-loop/control.ts"),
+            ),
+            (
+                "scheduler.ts",
+                include_str!("../../../../../../extensions/pi-grok-loop/scheduler.ts"),
+            ),
+            (
+                "command.ts",
+                include_str!("../../../../../../extensions/pi-grok-loop/command.ts"),
+            ),
+            (
+                "tools.ts",
+                include_str!("../../../../../../extensions/pi-grok-loop/tools.ts"),
+            ),
+        ],
     )?;
-    write_source_file(
-        source_dir.path(),
-        "shared.ts",
-        include_str!("../../../../../../extensions/pi-grok-loop/shared.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "control.ts",
-        include_str!("../../../../../../extensions/pi-grok-loop/control.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "scheduler.ts",
-        include_str!("../../../../../../extensions/pi-grok-loop/scheduler.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "command.ts",
-        include_str!("../../../../../../extensions/pi-grok-loop/command.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "tools.ts",
-        include_str!("../../../../../../extensions/pi-grok-loop/tools.ts"),
-    )?;
+    let source_path = root.join("index.ts");
 
     let mut control = tempfile::Builder::new()
         .prefix("pi-grok-loop-control-")
@@ -89,7 +72,6 @@ pub(super) fn write_loop_extension() -> Result<LoopExtension> {
         .ok();
 
     Ok(LoopExtension {
-        _source_dir: source_dir,
         source_path,
         control,
     })

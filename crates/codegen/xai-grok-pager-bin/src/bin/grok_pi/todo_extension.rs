@@ -1,18 +1,9 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::TempDir;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-/// Materialized built-in grok-pi Todo extension bundle.
-///
-/// The entry imports `./v1.ts` / `./v2.ts`, so the injector must materialize
-/// every module of the bundle; the source directory stays alive for the Pi
-/// process lifetime so relative imports keep resolving.
+/// Materialized built-in grok-pi Todo extension bundle in a content-addressed
+/// cache directory so `jiti`'s `fsCache` hits across launches.
 pub(super) struct TodoExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
 }
 
@@ -22,41 +13,26 @@ impl TodoExtension {
     }
 }
 
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file =
-        File::create(&path).with_context(|| format!("create Pi todo extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi todo extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi todo extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
-}
-
 pub(super) fn write_todo_extension() -> Result<TodoExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-todo-")
-        .tempdir()
-        .context("create Pi todo extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-todo/index.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "v1.ts",
-        include_str!("../../../../../../extensions/pi-grok-todo/v1.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "v2.ts",
-        include_str!("../../../../../../extensions/pi-grok-todo/v2.ts"),
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-todo",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-todo/index.ts"),
+            ),
+            (
+                "v1.ts",
+                include_str!("../../../../../../extensions/pi-grok-todo/v1.ts"),
+            ),
+            (
+                "v2.ts",
+                include_str!("../../../../../../extensions/pi-grok-todo/v2.ts"),
+            ),
+        ],
     )?;
     Ok(TodoExtension {
-        _source_dir: source_dir,
-        source_path,
+        source_path: root.join("index.ts"),
     })
 }
 

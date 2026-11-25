@@ -1,16 +1,9 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::TempDir;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-/// Materialized /btw extension bundle. `_source_dir` must stay alive for the
-/// Pi process lifetime so relative imports between the TypeScript modules
-/// keep resolving.
+/// Materialized /btw extension bundle in a content-addressed cache directory
+/// so `jiti`'s `fsCache` hits across launches.
 pub(super) struct BtwExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
 }
 
@@ -18,18 +11,6 @@ impl BtwExtension {
     pub(super) fn source_path(&self) -> &Path {
         &self.source_path
     }
-}
-
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file =
-        File::create(&path).with_context(|| format!("create Pi btw extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi btw extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi btw extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
 }
 
 /// Inject a headless Pi extension that answers `/btw` side questions via
@@ -40,38 +21,33 @@ fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
 /// transitive closure of `index.ts`'s relative imports (see AGENTS.md
 /// "Diagnosing Pi RPC bootstrap / extension failures").
 pub(super) fn write_btw_extension() -> Result<BtwExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-btw-")
-        .tempdir()
-        .context("create Pi btw extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-btw/index.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "shared.ts",
-        include_str!("../../../../../../extensions/pi-grok-btw/shared.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "context.ts",
-        include_str!("../../../../../../extensions/pi-grok-btw/context.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "models.ts",
-        include_str!("../../../../../../extensions/pi-grok-btw/models.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "bridge.ts",
-        include_str!("../../../../../../extensions/pi-grok-btw/bridge.ts"),
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-btw",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-btw/index.ts"),
+            ),
+            (
+                "shared.ts",
+                include_str!("../../../../../../extensions/pi-grok-btw/shared.ts"),
+            ),
+            (
+                "context.ts",
+                include_str!("../../../../../../extensions/pi-grok-btw/context.ts"),
+            ),
+            (
+                "models.ts",
+                include_str!("../../../../../../extensions/pi-grok-btw/models.ts"),
+            ),
+            (
+                "bridge.ts",
+                include_str!("../../../../../../extensions/pi-grok-btw/bridge.ts"),
+            ),
+        ],
     )?;
     Ok(BtwExtension {
-        _source_dir: source_dir,
-        source_path,
+        source_path: root.join("index.ts"),
     })
 }
 

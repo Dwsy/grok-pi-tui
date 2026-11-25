@@ -1,17 +1,12 @@
 use anyhow::{Context, Result};
-use std::{
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::{NamedTempFile, TempDir};
+use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 
 /// Private paths shared by the grok-pi composition binary, the injected
 /// Bash/Eval extension bundle, and the headless adapter. The Bash control
 /// metadata file is process-unique; it avoids a global tmp-file collision
 /// between concurrent grok-pi sessions.
 pub(super) struct BashExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
     control_meta: NamedTempFile,
 }
@@ -26,119 +21,92 @@ impl BashExtension {
     }
 }
 
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file =
-        File::create(&path).with_context(|| format!("create Pi Bash extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi Bash extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi Bash extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
-}
-
 /// Materialize the private grok-pi Bash/Eval bundle and Bash control metadata.
-/// The source directory remains alive for the Pi process lifetime so relative
-/// imports between the authored TypeScript modules continue to resolve. Eval
-/// may use the bundle while Bash control is disabled by the child environment.
+/// Uses a content-addressed cache directory so `jiti`'s `fsCache` hits across
+/// launches while keeping `control_meta` process-unique.
 pub(super) fn write_bash_extension() -> Result<BashExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-bash-")
-        .tempdir()
-        .context("create Pi Bash extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/index.ts"),
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-bash",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/index.ts"),
+            ),
+            (
+                "eval.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/eval.ts"),
+            ),
+            (
+                "bash-tasks.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/bash-tasks.ts"),
+            ),
+            (
+                "shell-backend.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/shell-backend.ts"),
+            ),
+            (
+                "eval-tasks.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/eval-tasks.ts"),
+            ),
+            (
+                "prompts.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/prompts.ts"),
+            ),
+            (
+                "shared.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/shared.ts"),
+            ),
+            (
+                "tool-bridge.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/tool-bridge.ts"),
+            ),
+            (
+                "env-tool.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/env-tool.ts"),
+            ),
+            (
+                "eval-pi-mcp.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/eval-pi-mcp.ts"),
+            ),
+            (
+                "eval-token-count.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/eval-token-count.ts"),
+            ),
+            (
+                "mcpeval-daemon.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-daemon.ts"),
+            ),
+            (
+                "mcpeval-client.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-client.ts"),
+            ),
+            (
+                "mcpeval-protocol.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-protocol.ts"),
+            ),
+            (
+                "mcpeval-events.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-events.ts"),
+            ),
+            (
+                "mcpeval-registry.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-registry.ts"),
+            ),
+            (
+                "mcpeval-mcp-facade.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-mcp-facade.ts"),
+            ),
+            (
+                "mcpeval-web.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-web.ts"),
+            ),
+            (
+                "mcpeval-oauth.ts",
+                include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-oauth.ts"),
+            ),
+        ],
     )?;
-    write_source_file(
-        source_dir.path(),
-        "eval.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/eval.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "bash-tasks.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/bash-tasks.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "shell-backend.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/shell-backend.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "eval-tasks.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/eval-tasks.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "prompts.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/prompts.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "shared.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/shared.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "tool-bridge.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/tool-bridge.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "env-tool.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/env-tool.ts"),
-    )?;
-
-    write_source_file(
-        source_dir.path(),
-        "eval-pi-mcp.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/eval-pi-mcp.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "eval-token-count.ts",
-        include_str!("../../../../../../extensions/pi-grok-bash/eval-token-count.ts"),
-    )?;
-    for (name, source) in [
-        (
-            "mcpeval-daemon.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-daemon.ts"),
-        ),
-        (
-            "mcpeval-client.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-client.ts"),
-        ),
-        (
-            "mcpeval-protocol.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-protocol.ts"),
-        ),
-        (
-            "mcpeval-events.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-events.ts"),
-        ),
-        (
-            "mcpeval-registry.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-registry.ts"),
-        ),
-        (
-            "mcpeval-mcp-facade.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-mcp-facade.ts"),
-        ),
-        (
-            "mcpeval-web.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-web.ts"),
-        ),
-        (
-            "mcpeval-oauth.ts",
-            include_str!("../../../../../../extensions/pi-grok-bash/mcpeval-oauth.ts"),
-        ),
-    ] {
-        write_source_file(source_dir.path(), name, source)?;
-    }
+    let source_path = root.join("index.ts");
 
     let control_meta = tempfile::Builder::new()
         .prefix("pi-grok-bash-control-")
@@ -146,7 +114,6 @@ pub(super) fn write_bash_extension() -> Result<BashExtension> {
         .tempfile()
         .context("create Pi Bash control metadata tempfile")?;
     Ok(BashExtension {
-        _source_dir: source_dir,
         source_path,
         control_meta,
     })

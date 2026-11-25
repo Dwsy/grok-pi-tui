@@ -1,16 +1,9 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::TempDir;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-/// Materialized rollback extension bundle. `_source_dir` must stay alive for
-/// the Pi process lifetime so relative imports between the TypeScript modules
-/// keep resolving.
+/// Materialized rollback extension bundle in a content-addressed cache
+/// directory so `jiti`'s `fsCache` hits across launches.
 pub(super) struct RollbackExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
 }
 
@@ -20,18 +13,6 @@ impl RollbackExtension {
     }
 }
 
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file = File::create(&path)
-        .with_context(|| format!("create Pi rollback extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi rollback extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi rollback extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
-}
-
 /// Materialize the Pi tree file rollback checkpoint extension.
 /// Only injected when F2 `pi_tree_file_rollback` is enabled.
 ///
@@ -39,43 +20,37 @@ fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
 /// transitive closure of `index.ts`'s relative imports (see AGENTS.md
 /// "Diagnosing Pi RPC bootstrap / extension failures").
 pub(super) fn write_rollback_extension() -> Result<RollbackExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-rollback-")
-        .tempdir()
-        .context("create Pi rollback extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-rollback/index.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "shared.ts",
-        include_str!("../../../../../../extensions/pi-grok-rollback/shared.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "store.ts",
-        include_str!("../../../../../../extensions/pi-grok-rollback/store.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "journal.ts",
-        include_str!("../../../../../../extensions/pi-grok-rollback/journal.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "rollback.ts",
-        include_str!("../../../../../../extensions/pi-grok-rollback/rollback.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "bridge.ts",
-        include_str!("../../../../../../extensions/pi-grok-rollback/bridge.ts"),
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-rollback",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-rollback/index.ts"),
+            ),
+            (
+                "shared.ts",
+                include_str!("../../../../../../extensions/pi-grok-rollback/shared.ts"),
+            ),
+            (
+                "store.ts",
+                include_str!("../../../../../../extensions/pi-grok-rollback/store.ts"),
+            ),
+            (
+                "journal.ts",
+                include_str!("../../../../../../extensions/pi-grok-rollback/journal.ts"),
+            ),
+            (
+                "rollback.ts",
+                include_str!("../../../../../../extensions/pi-grok-rollback/rollback.ts"),
+            ),
+            (
+                "bridge.ts",
+                include_str!("../../../../../../extensions/pi-grok-rollback/bridge.ts"),
+            ),
+        ],
     )?;
     Ok(RollbackExtension {
-        _source_dir: source_dir,
-        source_path,
+        source_path: root.join("index.ts"),
     })
 }
 

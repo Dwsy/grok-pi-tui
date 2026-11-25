@@ -1,16 +1,9 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::{self, File},
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::TempDir;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-/// Materialized `@` object-mentions extension bundle. `_source_dir` must stay
-/// alive for the Pi process lifetime so relative imports between
-/// `pi-grok-mentions/` and the sibling `pi-grok-tui-kit/` keep resolving.
+/// Materialized `@` object-mentions extension bundle in a content-addressed
+/// cache directory so `jiti`'s `fsCache` hits across launches.
 pub(super) struct MentionsExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
 }
 
@@ -18,18 +11,6 @@ impl MentionsExtension {
     pub(super) fn path(&self) -> &Path {
         &self.source_path
     }
-}
-
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file = File::create(&path)
-        .with_context(|| format!("create mentions extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write mentions extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush mentions extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
 }
 
 /// Materialize the built-in `@` object-mentions extension (`@skill`, `@session`,
@@ -40,62 +21,49 @@ fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
 /// `pi-grok-adapter` forwards as `pi/ui/mentions_catalog`, and returns chosen
 /// items via `setStatus("__pi_grok_mention_insert__", ...)` → `pi/ui/mention_insert`.
 pub(super) fn write_mentions_extension() -> Result<MentionsExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-mentions-")
-        .tempdir()
-        .context("create mentions extension source directory")?;
-    let mentions_dir = source_dir.path().join("pi-grok-mentions");
-    fs::create_dir_all(&mentions_dir).context("create pi-grok-mentions dir")?;
-    super::tui_kit::materialize_tui_kit(source_dir.path())?;
-
-    let source_path = write_source_file(
-        &mentions_dir,
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/index.ts"),
-    )?;
-    write_source_file(
-        &mentions_dir,
-        "session-data.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/session-data.ts"),
-    )?;
-    write_source_file(
-        &mentions_dir,
-        "session-lite-db.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/session-lite-db.ts"),
-    )?;
-    write_source_file(
-        &mentions_dir,
-        "session-picker-tui.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/session-picker-tui.ts"),
-    )?;
-    write_source_file(
-        &mentions_dir,
-        "skill-data.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/skill-data.ts"),
-    )?;
-    write_source_file(
-        &mentions_dir,
-        "skill-picker-tui.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/skill-picker-tui.ts"),
-    )?;
-    write_source_file(
-        &mentions_dir,
-        "file-data.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/file-data.ts"),
-    )?;
-    write_source_file(
-        &mentions_dir,
-        "file-picker-tui.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/file-picker-tui.ts"),
-    )?;
-    write_source_file(
-        &mentions_dir,
-        "mcp-picker-tui.ts",
-        include_str!("../../../../../../extensions/pi-grok-mentions/mcp-picker-tui.ts"),
+    let root = super::tui_kit::materialize_cached_tui_bundle(
+        "pi-grok-mentions",
+        &[
+            (
+                "pi-grok-mentions/index.ts",
+                include_str!("../../../../../../extensions/pi-grok-mentions/index.ts"),
+            ),
+            (
+                "pi-grok-mentions/session-data.ts",
+                include_str!("../../../../../../extensions/pi-grok-mentions/session-data.ts"),
+            ),
+            (
+                "pi-grok-mentions/session-lite-db.ts",
+                include_str!("../../../../../../extensions/pi-grok-mentions/session-lite-db.ts"),
+            ),
+            (
+                "pi-grok-mentions/session-picker-tui.ts",
+                include_str!("../../../../../../extensions/pi-grok-mentions/session-picker-tui.ts"),
+            ),
+            (
+                "pi-grok-mentions/skill-data.ts",
+                include_str!("../../../../../../extensions/pi-grok-mentions/skill-data.ts"),
+            ),
+            (
+                "pi-grok-mentions/skill-picker-tui.ts",
+                include_str!("../../../../../../extensions/pi-grok-mentions/skill-picker-tui.ts"),
+            ),
+            (
+                "pi-grok-mentions/file-data.ts",
+                include_str!("../../../../../../extensions/pi-grok-mentions/file-data.ts"),
+            ),
+            (
+                "pi-grok-mentions/file-picker-tui.ts",
+                include_str!("../../../../../../extensions/pi-grok-mentions/file-picker-tui.ts"),
+            ),
+            (
+                "pi-grok-mentions/mcp-picker-tui.ts",
+                include_str!("../../../../../../extensions/pi-grok-mentions/mcp-picker-tui.ts"),
+            ),
+        ],
     )?;
     Ok(MentionsExtension {
-        _source_dir: source_dir,
-        source_path,
+        source_path: root.join("pi-grok-mentions/index.ts"),
     })
 }
 

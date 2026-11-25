@@ -1,27 +1,13 @@
-use anyhow::{Context, Result};
-use std::{fs::File, io::Write};
-use tempfile::NamedTempFile;
+use anyhow::Result;
 
 /// Materialize the RPC compatibility extension before user extensions load.
 ///
 /// Pi remains in JSONL RPC mode. Runtime monkey-patches only:
 /// - optional ExtensionRunner mode rewrite (`rpc` → `tui` when opted in)
 /// - capture runner + enrich `get_commands` with extension argument completions
-pub(super) fn write_rpc_compat_extension() -> Result<NamedTempFile> {
-    let mut file = tempfile::Builder::new()
-        .prefix("pi-grok-rpc-compat-")
-        .suffix(".ts")
-        .tempfile()
-        .context("create Pi RPC compatibility extension tempfile")?;
+pub(super) fn write_rpc_compat_extension() -> Result<super::tui_kit::CachedExtensionFile> {
     const SOURCE: &str = include_str!("../../../../../../extensions/pi-grok-rpc-compat/index.ts");
-    file.write_all(SOURCE.as_bytes())
-        .context("write Pi RPC compatibility extension source")?;
-    file.flush()
-        .context("flush Pi RPC compatibility extension source")?;
-    File::open(file.path())
-        .and_then(|source| source.sync_all())
-        .ok();
-    Ok(file)
+    super::tui_kit::materialize_cached_file("pi-grok-rpc-compat", SOURCE)
 }
 
 #[cfg(test)]

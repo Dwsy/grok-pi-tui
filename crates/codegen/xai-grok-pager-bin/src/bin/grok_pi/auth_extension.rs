@@ -1,15 +1,9 @@
-use anyhow::{Context, Result};
-use std::{
-    fs::File,
-    io::Write,
-    path::{Path, PathBuf},
-};
-use tempfile::TempDir;
+use anyhow::Result;
+use std::path::{Path, PathBuf};
 
-/// Materialized Pi auth extension bundle. `_source_dir` must stay alive for
-/// the Pi process lifetime so relative imports resolve.
+/// Materialized Pi auth extension bundle in a content-addressed cache
+/// directory so `jiti`'s `fsCache` hits across launches.
 pub(super) struct AuthExtension {
-    _source_dir: TempDir,
     source_path: PathBuf,
 }
 
@@ -19,61 +13,43 @@ impl AuthExtension {
     }
 }
 
-fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
-    let path = dir.join(name);
-    let mut file =
-        File::create(&path).with_context(|| format!("create Pi auth extension module {name}"))?;
-    file.write_all(source.as_bytes())
-        .with_context(|| format!("write Pi auth extension module {name}"))?;
-    file.flush()
-        .with_context(|| format!("flush Pi auth extension module {name}"))?;
-    file.sync_all().ok();
-    Ok(path)
-}
-
 /// Materialize default-on Pi auth commands (`/login` / `/logout`).
 ///
 /// Requires system Pi >= 0.99.0 (`modelRuntime.login` + Remote TUI). Every
 /// authored module must be materialized here because this injector owns the
 /// transitive closure of `index.ts`'s relative imports.
 pub(super) fn write_auth_extension() -> Result<AuthExtension> {
-    let source_dir = tempfile::Builder::new()
-        .prefix("pi-grok-auth-")
-        .tempdir()
-        .context("create Pi auth extension source directory")?;
-    let source_path = write_source_file(
-        source_dir.path(),
-        "index.ts",
-        include_str!("../../../../../../extensions/pi-grok-auth/index.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "shared.ts",
-        include_str!("../../../../../../extensions/pi-grok-auth/shared.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "runtime.ts",
-        include_str!("../../../../../../extensions/pi-grok-auth/runtime.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "providers.ts",
-        include_str!("../../../../../../extensions/pi-grok-auth/providers.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "login.ts",
-        include_str!("../../../../../../extensions/pi-grok-auth/login.ts"),
-    )?;
-    write_source_file(
-        source_dir.path(),
-        "logout.ts",
-        include_str!("../../../../../../extensions/pi-grok-auth/logout.ts"),
+    let root = super::tui_kit::materialize_cached_bundle(
+        "pi-grok-auth",
+        &[
+            (
+                "index.ts",
+                include_str!("../../../../../../extensions/pi-grok-auth/index.ts"),
+            ),
+            (
+                "shared.ts",
+                include_str!("../../../../../../extensions/pi-grok-auth/shared.ts"),
+            ),
+            (
+                "runtime.ts",
+                include_str!("../../../../../../extensions/pi-grok-auth/runtime.ts"),
+            ),
+            (
+                "providers.ts",
+                include_str!("../../../../../../extensions/pi-grok-auth/providers.ts"),
+            ),
+            (
+                "login.ts",
+                include_str!("../../../../../../extensions/pi-grok-auth/login.ts"),
+            ),
+            (
+                "logout.ts",
+                include_str!("../../../../../../extensions/pi-grok-auth/logout.ts"),
+            ),
+        ],
     )?;
     Ok(AuthExtension {
-        _source_dir: source_dir,
-        source_path,
+        source_path: root.join("index.ts"),
     })
 }
 
