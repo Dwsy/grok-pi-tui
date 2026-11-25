@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.15-beta.1] - 2026-11-25
+
+### Changed
+
+- **Content-addressed cache for embedded TS extensions (`grok-pi-ext-cache`)** — Every bundled TypeScript extension is now materialized into a deterministic FNV-1a content-hashed directory under `<temp_dir>/grok-pi-ext-cache/<name>-<hash>/` instead of a fresh random `TempDir` with per-file `fsync` on each launch, so `jiti`'s on-disk `fsCache` hits across runs and built-in extensions are transpiled once rather than every startup (30-extension load: `6,604.8 ms` cold → `337.6 ms` warm, `-94.9%`). Writes go to a sibling temp path and are renamed into place, and a file whose byte length already matches is left untouched, so concurrent `grok-pi` launches never observe half-written `.ts` modules. `tui_kit.rs` now owns the shared primitives (`write_cached_file`, `materialize_cached_bundle`, `materialize_cached_file`, `materialize_cached_tui_bundle`, `TUI_KIT_FILES`) plus the `CachedExtensionFile` handle, and the 22 injectors that previously owned per-launch sources delegate to them. Process-private control files (`control.json`, control tempfiles) deliberately stay on `TempDir`/`NamedTempFile`.
+- **Timeline rail ticks mark decisions, not polling** — Added a `plan` family (`P`) for `exit_plan_mode` and trimmed the subagent/team families to key moments: `spawn_subagent`, `send_message_to_subagent`, `kill_command_or_subagent`; `spawn_team_agent`, `spawn_team`, `team_send_message`, `team_followup_task`, `team_interrupt`. `list_subagents`, `get_command_or_subagent_output`, `team_wait`, `team_list`, and `team_report` no longer claim a rail slot (the transcript still shows them inline), and tests pin the exact per-family membership.
+
+### Verification
+
+- `bun test` in `extensions/pi-grok-remote-tui/` (7 pass) and `extensions/pi-grok-tui-kit/` (11 pass, including the Rust-injector embedding parity test) both pass; `git diff --check` is clean.
+- No local Cargo build, `check`, or test was run — per `AGENTS.md`, Rust verification is delegated to GitHub Actions Linux (`pi-slim-linux-checks.yml`) and the `v0.1.15-beta.1` prerelease build.
+
 ## [0.1.14] - 2026-11-25
 
 ### Added
