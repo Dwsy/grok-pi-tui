@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.15-beta.2] - 2026-11-25
+
+### Fixed
+
+- **`xai-grok-pager` did not compile** — `custom_tool_render_call_id` called `crate::app::dispatch::get_active_agent`, but `dispatch` only re-exports `SwitchCause` and `switch_to_agent` from `ctx`, so the name never resolved (E0425). The dispatcher now imports `get_active_agent` from `super::ctx`, matching every other caller.
+- **`xai-grok-pager-bin` did not compile** — `write_rollback_extension` kept its `.context("create rollback control dir")` call after the injector rewrite dropped `anyhow::Context` from its imports (E0599). The import is restored.
+
+### Verification
+
+- `v0.1.15-beta.1` never produced a release: its `release.yml` macOS ARM64 job failed on the E0425 above, and the Linux source checks found the E0599 after that was fixed. Both are compile-time defects in code that had never been pushed before this release, not behaviour changes.
+
 ## [0.1.15-beta.1] - 2026-11-25
 
 ### Changed
