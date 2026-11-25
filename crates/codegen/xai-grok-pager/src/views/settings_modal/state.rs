@@ -1201,6 +1201,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "show_other_tool_args" => Some(Action::SetShowOtherToolArgs(new)),
         "review_file_tree" => Some(Action::SetReviewFileTree(new)),
         "review_include_reads" => Some(Action::SetReviewIncludeReads(new)),
+        "pi_custom_tool_renderer" => Some(Action::SetPiCustomToolRenderer(new)),
         "simple_mode" => Some(Action::SetSimpleMode(new)),
         "contextual_hints.undo" => Some(Action::SetContextualHintUndo(new)),
         "contextual_hints.plan_mode" => Some(Action::SetContextualHintPlanMode(new)),

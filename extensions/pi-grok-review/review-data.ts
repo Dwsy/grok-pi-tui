@@ -169,11 +169,27 @@ function mergeFileChange(
   existing.diffLines.push(...diffLines);
 }
 
+const reviewTurnsCache = new Map<
+  string,
+  { mtimeMs: number; size: number; turns: ReviewTurn[] }
+>();
+
 /**
  * Extract turn-grouped `edit`/`write` file changes from a Pi session JSONL file.
  */
 export function extractSessionReviewTurns(sessionJsonlPath: string, cwd: string): ReviewTurn[] {
   if (!sessionJsonlPath || !fs.existsSync(sessionJsonlPath)) return [];
+  const cacheKey = `${sessionJsonlPath}\0${cwd}`;
+  let stat: fs.Stats | undefined;
+  try {
+    stat = fs.statSync(sessionJsonlPath);
+    const cached = reviewTurnsCache.get(cacheKey);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      return cached.turns;
+    }
+  } catch {
+    return [];
+  }
   let raw: string;
   try {
     raw = fs.readFileSync(sessionJsonlPath, "utf8");
@@ -256,7 +272,7 @@ export function extractSessionReviewTurns(sessionJsonlPath: string, cwd: string)
     }
   }
 
-  return turns
+  const result = turns
     .filter((t) => t.files.size > 0)
     .map((t, idx) => ({
       turnIndex: idx + 1,
@@ -264,6 +280,11 @@ export function extractSessionReviewTurns(sessionJsonlPath: string, cwd: string)
       timestamp: t.timestamp,
       files: [...t.files.values()].sort((a, b) => a.relPath.localeCompare(b.relPath)),
     }));
+  if (stat) {
+    if (reviewTurnsCache.size >= 2) reviewTurnsCache.clear();
+    reviewTurnsCache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, turns: result });
+  }
+  return result;
 }
 
 /** Merge all turns into a single session-level changed file list. */

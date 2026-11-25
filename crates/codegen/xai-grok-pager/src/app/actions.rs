@@ -793,6 +793,8 @@ pub enum Action {
     SetReviewFileTree(bool),
     /// Include read ops in `/review-*` (`[ui].review_include_reads`).
     SetReviewIncludeReads(bool),
+    /// Toggle Pi custom plugin tool renderer on Enter (`[ui].pi_custom_tool_renderer`).
+    SetPiCustomToolRenderer(bool),
     /// Commit the `show_tips` preference. Persisted to `[cli].show_tips`.
     /// Restart-required: tips are resolved once at startup.
     SetShowTips(bool),

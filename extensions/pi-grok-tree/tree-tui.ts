@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-tui";
 import {
   computeSplitGeometry,
+  DividerDragController,
   fitWidth,
   highlightTerms,
   hitRegion,
@@ -83,7 +84,9 @@ class SessionTreeComponent implements Component {
   private readonly previewLinesCache = new Map<string, string[]>();
   private previewTargetId: string | undefined;
   private readonly renderCoalescer: RenderCoalescer;
+  private readonly dividerDrag = new DividerDragController(0.45);
 
+  private lastTotalWidth = 100;
   private lastBodyHeight = 14;
   private lastBodyStartY = 5;
   private lastDividerX = 44;
@@ -261,12 +264,13 @@ class SessionTreeComponent implements Component {
     const geom = computeSplitGeometry({
       width,
       rows: termRows,
-      leftRatio: 0.45,
+      leftRatio: this.dividerDrag.leftRatio,
       hasSearchBar: true,
       minLeftWidth: 28,
       heightRatio: 0.9,
       maxRows: targetRows,
     });
+    this.lastTotalWidth = geom.totalWidth;
     this.lastBodyHeight = geom.bodyHeight;
     this.lastBodyStartY = geom.bodyStartY;
     this.lastDividerX = geom.dividerX;
@@ -349,6 +353,14 @@ class SessionTreeComponent implements Component {
   /** Native Pi TUI mouse handler (dispatched by `pi-grok-remote-tui`). */
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     const { x, y, type } = event;
+    const dragRes = this.dividerDrag.handleMouse(event, {
+      totalWidth: this.lastTotalWidth,
+      dividerX: this.lastDividerX,
+      bodyStartY: this.lastBodyStartY,
+      bodyHeight: this.lastBodyHeight,
+      minLeft: 28,
+    });
+    if (dragRes) return dragRes;
     if (type === "wheel") {
       const delta = (event.wheelDelta ?? 0) > 0 ? 1 : -1;
       if (y >= this.lastBodyStartY && y < this.lastBodyStartY + this.lastBodyHeight) {

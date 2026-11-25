@@ -22,6 +22,7 @@ import {
 import {
   defaultLiteDbPath,
   resetLiteSyncCooldown,
+  scheduleLiteDbBackgroundSync,
   syncSessionLiteDb,
 } from "./session-lite-db.ts";
 import {
@@ -135,6 +136,25 @@ describe("session-data formatting and filtering", () => {
       expect(preview[0]!.content).toBe("Hello agent");
       expect(preview[1]!.role).toBe("assistant");
       expect(preview[1]!.content).toBe("Here is the answer");
+
+      // Large (>256KB) JSONL file uses tail-chunked reading and returns trailing messages cleanly.
+      const largeFile = path.join(dir, "large-session.jsonl");
+      const filler = "a".repeat(4000);
+      const largeLines = [
+        JSON.stringify({ type: "session", id: "s-large" }),
+        ...Array.from({ length: 90 }, (_, i) =>
+          JSON.stringify({
+            type: "message",
+            timestamp: `2026-11-23T01:${String(i % 60).padStart(2, "0")}:00Z`,
+            message: { role: i % 2 === 0 ? "user" : "assistant", content: `msg-${i} ${filler}` },
+          }),
+        ),
+      ];
+      fs.writeFileSync(largeFile, largeLines.join("\n") + "\n", "utf8");
+      const tailPreview = loadPreviewFromJsonl(largeFile, 5);
+      expect(tailPreview).toHaveLength(5);
+      expect(tailPreview[0]!.content.startsWith("msg-85 ")).toBe(true);
+      expect(tailPreview[4]!.content.startsWith("msg-89 ")).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -978,6 +998,44 @@ describe("SessionPickerTui rendering, keyboard, and mouse interactions", () => {
 
     expect(dividerColumn(makePicker())).toBe(63);
   });
+
+  test("resume hides the Model column when the left pane is narrow", () => {
+    const makePicker = () =>
+      createSessionPickerTui(
+        { requestRender: () => {} },
+        plainTheme,
+        {
+          records: makeSampleRecords(),
+          currentCwd: "/Users/dev/pi-grok-build",
+          titleBadge: "(/resume)",
+          fullscreen: true,
+          getRows: () => 20,
+        },
+        () => {},
+      );
+    const headerLine = (width: number) =>
+      stripAnsi(makePicker().render(width)[3]!);
+
+    expect(headerLine(90)).not.toContain("Model");
+    expect(headerLine(120)).toContain("Model");
+  });
+
+  test("resume session details header stays compact", () => {
+    const picker = createSessionPickerTui(
+      { requestRender: () => {} },
+      plainTheme,
+      {
+        records: makeSampleRecords(),
+        currentCwd: "/Users/dev/pi-grok-build",
+        titleBadge: "(/resume)",
+        fullscreen: true,
+        getRows: () => 20,
+      },
+      () => {},
+    );
+    const lines = picker.render(110).map(stripAnsi);
+    expect(lines.findIndex((line) => line.includes("Last messages"))).toBeLessThanOrEqual(10);
+  });
 });
 
 describe("sessions-lite.db fallback when PSM sessions.db is absent", () => {
@@ -1119,6 +1177,10 @@ describe("sessions-lite.db fallback when PSM sessions.db is absent", () => {
       const recovered = syncSessionLiteDb({ sessionsDir: dir, force: true });
       expect(recovered.usedSqlite).toBe(true);
       expect(recovered.scanned).toBe(1);
+
+      // 7. Non-blocking background sync schedules cleanly when sessions-lite.db exists.
+      const scheduled = scheduleLiteDbBackgroundSync({ sessionsDir: dir });
+      expect(scheduled).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

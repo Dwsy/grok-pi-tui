@@ -7,15 +7,23 @@
  */
 
 import path from "node:path";
-import { matchesKey, parseKey, type Component } from "@earendil-works/pi-tui";
+import {
+  matchesKey,
+  parseKey,
+  type Component,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
+} from "@earendil-works/pi-tui";
 import {
   computeSplitGeometry,
   detectNerdFontSupport,
+  DividerDragController,
   fitWidth,
   getFileIcon,
   highlightTerms,
   hitRegion,
   ListController,
+  RenderCoalescer,
   renderSplitOverlayFrame,
   styleBold,
   wrapTextToWidth,
@@ -73,11 +81,16 @@ class PiConfigTuiComponent implements Component {
   private readonly previewCache = new Map<string, string[]>();
   private statusNotice = "";
 
+  private lastTotalWidth = 100;
   private lastBodyHeight = 14;
   private lastBodyStartY = 5;
   private lastDividerX = 44;
   private lastPillRects = new Map<string, ClickRegion>();
   private lastCloseRect: ClickRegion | undefined;
+  private readonly renderCoalescer: RenderCoalescer;
+  private readonly dividerDrag = new DividerDragController(0.44);
+  private rightLineCacheKey = "";
+  private rightLineCache: string[] = [];
 
   constructor(
     tui: { requestRender: () => void },
@@ -98,7 +111,13 @@ class PiConfigTuiComponent implements Component {
     this.onMutate = options.onMutate;
     this.getRows = options.getRows ?? (() => 28);
     this.done = done;
+    this.renderCoalescer = new RenderCoalescer(() => this.tui.requestRender());
     this.recomputeFilter(false);
+  }
+
+  private finish(): void {
+    this.renderCoalescer.cancel();
+    this.done();
   }
 
   invalidate(): void {
@@ -251,13 +270,18 @@ class PiConfigTuiComponent implements Component {
   }
 
   render(width: number): string[] {
+    const termRows = this.getRows();
+    const targetRows = Math.max(16, Math.floor(termRows * 0.9));
     const geom = computeSplitGeometry({
       width,
-      rows: this.getRows(),
-      leftRatio: 0.44,
+      rows: termRows,
+      leftRatio: this.dividerDrag.leftRatio,
       hasSearchBar: true,
       minLeftWidth: 28,
+      heightRatio: 0.9,
+      maxRows: targetRows,
     });
+    this.lastTotalWidth = geom.totalWidth;
     this.lastBodyHeight = geom.bodyHeight;
     this.lastBodyStartY = geom.bodyStartY;
     this.lastDividerX = geom.dividerX;
@@ -279,7 +303,14 @@ class PiConfigTuiComponent implements Component {
 
     const leftLines = this.buildLeftLines(geom.leftWidth, geom.bodyHeight);
     const active = this.filtered[this.list.selected];
-    const allPreview = this.buildRightLines(active, geom.rightWidth);
+    const cacheKey = active
+      ? `${active.id}:${geom.rightWidth}:${this.scopeView}:${active.enabled}:${active.projectOverride ?? ""}:${this.statusNotice}`
+      : `empty:${geom.rightWidth}`;
+    if (cacheKey !== this.rightLineCacheKey) {
+      this.rightLineCacheKey = cacheKey;
+      this.rightLineCache = this.buildRightLines(active, geom.rightWidth);
+    }
+    const allPreview = this.rightLineCache;
     const maxPreviewScroll = Math.max(0, allPreview.length - geom.bodyHeight);
     this.previewScroll = Math.max(0, Math.min(this.previewScroll, maxPreviewScroll));
     const rightLines = allPreview.slice(this.previewScroll, this.previewScroll + geom.bodyHeight);
@@ -313,7 +344,83 @@ class PiConfigTuiComponent implements Component {
     return frame.lines;
   }
 
-  private handleMouse(data: string): boolean {
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    const dragRes = this.dividerDrag.handleMouse(event, {
+      totalWidth: this.lastTotalWidth,
+      dividerX: this.lastDividerX,
+      bodyStartY: this.lastBodyStartY,
+      bodyHeight: this.lastBodyHeight,
+      minLeft: 28,
+    });
+    if (dragRes) return dragRes;
+
+    const { x: col, y: row, type } = event;
+    if (type === "wheel") {
+      const delta = (event.wheelDelta ?? 0) > 0 ? 1 : -1;
+      if (col > this.lastDividerX) {
+        this.previewScroll = Math.max(0, this.previewScroll + delta * 3);
+        this.renderCoalescer.schedule();
+        return { handled: true, render: false };
+      }
+      if (this.list.move(delta, this.filtered.length, this.lastBodyHeight)) {
+        this.previewScroll = 0;
+      }
+      return { handled: true, render: true };
+    }
+    if (type === "press" && event.button === "left") {
+      if (this.lastCloseRect && hitRegion(this.lastCloseRect, col, row)) {
+        this.finish();
+        return { handled: true, render: false };
+      }
+      for (const [id, rect] of this.lastPillRects) {
+        if (hitRegion(rect, col, row)) {
+          if (id === "scope:toggle") {
+            this.scopeView = this.scopeView === "Global" ? "Project" : "Global";
+            this.recomputeFilter(true);
+          } else if (id.startsWith("type:")) {
+            const nextType = id.slice(5) as ResourceTypeFilter;
+            if (nextType !== this.typeFilter) {
+              this.typeFilter = nextType;
+              this.recomputeFilter(true);
+            }
+          }
+          return { handled: true, render: true };
+        }
+      }
+      if (
+        row >= this.lastBodyStartY &&
+        row < this.lastBodyStartY + this.lastBodyHeight &&
+        col >= 1 &&
+        col < this.lastDividerX
+      ) {
+        const idx = this.list.indexAtBodyRow(row - this.lastBodyStartY, this.filtered.length);
+        if (idx >= 0 && idx < this.filtered.length) {
+          this.list.select(idx, this.filtered.length, this.lastBodyHeight);
+          this.previewScroll = 0;
+          return { handled: true, render: true };
+        }
+      }
+      return { handled: true, render: false };
+    }
+    if (type === "click" && event.button === "left" && (event.clickCount ?? 1) >= 2) {
+      if (
+        row >= this.lastBodyStartY &&
+        row < this.lastBodyStartY + this.lastBodyHeight &&
+        col >= 1 &&
+        col < this.lastDividerX
+      ) {
+        const idx = this.list.indexAtBodyRow(row - this.lastBodyStartY, this.filtered.length);
+        if (idx >= 0 && idx < this.filtered.length) {
+          this.list.select(idx, this.filtered.length, this.lastBodyHeight);
+          this.toggleSelected();
+          return { handled: true, render: true };
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private handleSgrMouse(data: string): boolean {
     const m = SGR_MOUSE_RE.exec(data);
     if (!m) return false;
     const btn = Number(m[1]);
@@ -325,6 +432,8 @@ class PiConfigTuiComponent implements Component {
       const delta = btn === 64 ? -1 : 1;
       if (col > this.lastDividerX) {
         this.previewScroll = Math.max(0, this.previewScroll + delta * 3);
+        this.renderCoalescer.schedule();
+        return true;
       } else if (this.list.move(delta, this.filtered.length, this.lastBodyHeight)) {
         this.previewScroll = 0;
       }
@@ -335,7 +444,7 @@ class PiConfigTuiComponent implements Component {
     if (!isPress || (btn & 3) !== 0) return true;
 
     if (this.lastCloseRect && hitRegion(this.lastCloseRect, col, row)) {
-      this.done();
+      this.finish();
       return true;
     }
 
@@ -380,10 +489,10 @@ class PiConfigTuiComponent implements Component {
   }
 
   handleInput(data: string): void {
-    if (this.handleMouse(data)) return;
+    if (this.handleSgrMouse(data)) return;
 
     if (matchesKey(data, "ctrl+c") || matchesKey(data, "f2")) {
-      this.done();
+      this.finish();
       return;
     }
     // Tab / Shift+Tab / Ctrl+G switches Global <-> Project (matching Rust pi_config.rs).
@@ -445,7 +554,7 @@ class PiConfigTuiComponent implements Component {
         this.tui.requestRender();
         return;
       }
-      this.done();
+      this.finish();
       return;
     }
     if (data === "/") {

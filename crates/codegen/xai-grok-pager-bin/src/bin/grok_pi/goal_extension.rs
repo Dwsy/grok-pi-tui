@@ -1,16 +1,21 @@
 use anyhow::{Context, Result};
-use std::{fs::File, io::Write, path::Path};
-use tempfile::NamedTempFile;
+use std::{
+    fs::{self, File},
+    io::Write,
+    path::{Path, PathBuf},
+};
+use tempfile::{NamedTempFile, TempDir};
 
 /// Process-private goal extension source + control file for GoalHost.
 pub(super) struct GoalExtension {
-    source: NamedTempFile,
+    _source_dir: TempDir,
+    source_path: PathBuf,
     control: NamedTempFile,
 }
 
 impl GoalExtension {
     pub(super) fn source_path(&self) -> &Path {
-        self.source.path()
+        &self.source_path
     }
 
     pub(super) fn control_path(&self) -> &Path {
@@ -18,21 +23,38 @@ impl GoalExtension {
     }
 }
 
+fn write_source_file(dir: &Path, name: &str, source: &str) -> Result<PathBuf> {
+    let path = dir.join(name);
+    let mut file = File::create(&path)
+        .with_context(|| format!("create Pi goal extension module {name}"))?;
+    file.write_all(source.as_bytes())
+        .with_context(|| format!("write Pi goal extension module {name}"))?;
+    file.flush()
+        .with_context(|| format!("flush Pi goal extension module {name}"))?;
+    file.sync_all().ok();
+    Ok(path)
+}
+
 /// Materialize the goal extension and empty control file (retained until Pi exits).
 pub(super) fn write_goal_extension() -> Result<GoalExtension> {
-    let mut source = tempfile::Builder::new()
+    let source_dir = tempfile::Builder::new()
         .prefix("pi-grok-goal-")
-        .suffix(".ts")
-        .tempfile()
-        .context("create Pi goal extension tempfile")?;
-    const SOURCE: &str = include_str!("../../../../../../extensions/pi-grok-goal/index.ts");
-    source
-        .write_all(SOURCE.as_bytes())
-        .context("write Pi goal extension source")?;
-    source.flush().context("flush Pi goal extension source")?;
-    File::open(source.path())
-        .and_then(|file| file.sync_all())
-        .ok();
+        .tempdir()
+        .context("create Pi goal extension source directory")?;
+    let goal_dir = source_dir.path().join("pi-grok-goal");
+    fs::create_dir_all(&goal_dir).context("create pi-grok-goal dir")?;
+    super::tui_kit::materialize_tui_kit(source_dir.path())?;
+
+    let source_path = write_source_file(
+        &goal_dir,
+        "index.ts",
+        include_str!("../../../../../../extensions/pi-grok-goal/index.ts"),
+    )?;
+    write_source_file(
+        &goal_dir,
+        "goal-detail-tui.ts",
+        include_str!("../../../../../../extensions/pi-grok-goal/goal-detail-tui.ts"),
+    )?;
 
     let mut control = tempfile::Builder::new()
         .prefix("pi-grok-goal-control-")
@@ -48,7 +70,11 @@ pub(super) fn write_goal_extension() -> Result<GoalExtension> {
         .and_then(|file| file.sync_all())
         .ok();
 
-    Ok(GoalExtension { source, control })
+    Ok(GoalExtension {
+        _source_dir: source_dir,
+        source_path,
+        control,
+    })
 }
 
 #[cfg(test)]

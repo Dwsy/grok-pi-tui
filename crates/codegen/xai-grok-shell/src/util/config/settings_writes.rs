@@ -424,6 +424,11 @@ pub async fn set_review_include_reads(value: bool) -> Result<()> {
     update_config(|cfg| cfg.ui.review_include_reads = value).await
 }
 
+/// Persist `[ui].pi_custom_tool_renderer` via `update_config`.
+pub async fn set_pi_custom_tool_renderer(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.pi_custom_tool_renderer = value).await
+}
+
 /// Bounds for [`set_max_thoughts_width`].
 /// They mirror the pager's registry consts; a CI test pins the agreement.
 const MAX_THOUGHTS_WIDTH_SHELL_MIN: i64 = 40;

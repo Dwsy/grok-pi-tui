@@ -126,6 +126,7 @@ pub fn section_for(key: SettingKey) -> &'static str {
         | "pi_config"
         | "pi_user_markdown"
         | "pi_keep_multi_agent"
+        | "pi_custom_tool_renderer"
         | "pi_ask_user_question_notifications"
         | "toolset.ask_user_question.timeout_enabled" => "Pi features",
         "psm_resume_index"

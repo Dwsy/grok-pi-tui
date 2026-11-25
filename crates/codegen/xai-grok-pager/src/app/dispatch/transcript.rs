@@ -266,6 +266,26 @@ pub(crate) fn dispatch_open_transcript_pager(app: &mut AppView) {
     }
 }
 
+/// When F2 `pi_custom_tool_renderer` is enabled under an external Pi agent,
+/// return the `tool_call_id` for non-builtin custom tool blocks (`Other` /
+/// `UseTool`) so Enter can render the plugin's Pi TUI component instead of the
+/// generic JSON viewer. Adapted built-in tools (Read, Edit/Write, Execute,
+/// Search, ListDir, Web*, Eval, Codemode) are excluded and keep native viewers.
+pub(super) fn custom_tool_render_call_id(app: &AppView) -> Option<String> {
+    if !app.external_agent || !app.current_ui.pi_custom_tool_renderer {
+        return None;
+    }
+    let agent = crate::app::dispatch::get_active_agent(app)?;
+    let idx = agent.scrollback.selected()?;
+    let entry = agent.scrollback.entry(idx)?;
+    match &entry.block {
+        RenderBlock::ToolCall(ToolCallBlock::Other(_) | ToolCallBlock::UseTool(_)) => {
+            entry.tool_traces.first().map(|t| t.tool_call_id.clone())
+        }
+        _ => None,
+    }
+}
+
 /// Open the fullscreen block viewer for the selected entry.
 /// Falls back to the image viewer only for entries without a normal block viewer.
 pub(super) fn dispatch_open_block_viewer(app: &mut AppView) {
@@ -493,12 +513,47 @@ pub(super) fn dispatch_open_extensions_modal(
     tab: crate::views::extensions_modal::ExtensionsTab,
     trigger: xai_grok_telemetry::events::ExtensionsModalTrigger,
 ) -> Vec<Effect> {
-    use crate::views::extensions_modal::ExtensionsModalState;
+    use crate::views::extensions_modal::{ExtensionsModalState, ExtensionsTab};
 
     let ActiveView::Agent(id) = app.active_view else {
         toast_session_only_slash(app, extensions_tab_slash_name(tab));
         return vec![];
     };
+    if app.external_agent {
+        let Some(cwd) = app.agents.get(&id).map(|agent| agent.session.cwd.clone()) else {
+            return vec![];
+        };
+        if let Some(agent) = app.agents.get_mut(&id) {
+            agent.agents_modal = None;
+            agent.extensions_modal = None;
+        }
+        log_event(xai_grok_telemetry::events::ExtensionsModalOpened {
+            trigger,
+            tab: tab.telemetry_tab(),
+        });
+        let tab_key = match tab {
+            ExtensionsTab::Hooks => "hooks",
+            ExtensionsTab::Plugins => "plugins",
+            ExtensionsTab::Marketplace => "marketplace",
+            ExtensionsTab::Skills => "skills",
+            ExtensionsTab::Workflows => "workflows",
+            ExtensionsTab::McpServers => "mcp",
+        };
+        return match crate::pi_resource_config::PiResourceCatalog::load(cwd)
+            .and_then(|catalog| catalog.write_ui_snapshot_file())
+        {
+            Ok(snapshot_path) => vec![Effect::MentionAction {
+                kind: "extensions_modal".to_owned(),
+                command: "__pi_extensions_modal".to_owned(),
+                query: format!("{tab_key}|{}", snapshot_path.to_string_lossy()),
+            }],
+            Err(error) => {
+                let message = format!("Extensions modal unavailable: {error:#}");
+                app.show_toast(&message);
+                vec![]
+            }
+        };
+    }
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };

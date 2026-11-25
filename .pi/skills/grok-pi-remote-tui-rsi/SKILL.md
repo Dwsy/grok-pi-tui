@@ -31,7 +31,7 @@ Focused engineering guardrails for `grok-pi`'s Remote TUI bridge and bundled Typ
    - Adapter (`pi_adapter.rs` / `agent.rs`): always persist `{ cols, rows }` to `<meta>.viewport.json` (so overlays opened *after* a resize use live dimensions) and append keyfile `op: "resize"` if an overlay is active.
    - TS Host (`transport.ts` / `layout.ts` / `host.ts`): coalesce consecutive `resize` events, update `tui.terminal` + `process.env.PI_GROK_REMOTE_TUI_{WIDTH,ROWS}`, recompute layout, call `component.invalidate?.()`, and `pushFrame()`.
 4. **Mirror every new TS module in Rust injectors.**
-   - Any file added to `extensions/pi-grok-remote-tui/` or `extensions/pi-grok-tui-kit/` must be embedded in `crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/{remote_tui_extension,tui_kit}.rs`.
+   - Any new runtime `.ts` file added to `extensions/pi-grok-{remote-tui,tui-kit,mentions,tree,review,config}/` MUST be embedded via `include_str!` in its corresponding Rust injector under `crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/{remote_tui_extension,tui_kit,mentions_extension,tree_extension,review_extension,config_extension}.rs`, or packaged binaries will fail at runtime with `ERR_MODULE_NOT_FOUND`.
 
 ## 2. Startup Performance & `jiti` Import Traps
 
@@ -77,12 +77,19 @@ Focused engineering guardrails for `grok-pi`'s Remote TUI bridge and bundled Typ
 2. **Handle leading `/` cleanly in fullscreen search bars.**
    - When the placeholder displays `/ type to filter...`, treat the first `/` on an empty query as `searchFocused = true` rather than appending a literal `"/"` (which renders `/ /▏`); allow a second `/` or paste to insert literal slashes (`245eb477`).
 3. **Reuse Pi's `highlightCode` safely in file previews.**
-   - Expand tabs before highlighting, cache highlighted lines per file, and in Grep mode apply reverse-video `highlightTerms` only to plain matching lines (never run regex highlighters on ANSI-escaped strings) (`76b72cbb`).
+   - Expand tabs before highlighting and cache highlighted lines per file (`76b72cbb`).
+   - `highlightTerms` in `extensions/pi-grok-tui-kit/frame.ts` MUST split by ANSI CSI/OSC escape sequences and only run regex replacement on visible text segments so Markdown / syntax-highlighted lines are never corrupted by numeric or short search terms (e.g. `38`, `3m`).
 4. **Use theme-aware Codex-style palettes and short model names.**
    - Dark terminals require high-luminance pastels (modeled on `~/Dev/AI/codex/codex-rs/tui/src/thread_color.rs`); auto-switch to richer tones on light terminals (`245eb477`).
    - Always display `shortModelName(model)` (segment after the last `/`) in both `/resume` and `@session` (`26b1dbb0`, `76b72cbb`).
 5. **Keep session catalog and mention catalog hydrated.**
    - Query PSM's `message_fts` (FTS5) + `sessions` across the full archive for `/resume` and `@session`, lazily hydrate `PiAgent::resolve_session_path` on cache misses, and persist `mention_catalog` on `AppView` (`38f904a0`, `71ef2edc`).
+   - **No artificial 300-row cap & 10k+ session scaling**: Avoid upfront `LEFT JOIN session_details_cache`, `ORDER BY` random index lookups, and 10k-row `fs.existsSync` sweeps on startup. Load `sessions` with `includeDetails: false` + JS ISO-timestamp sort + DB/WAL `(ino, size, mtimeMs)` catalog cache, lazily hydrate right-pane details via `loadSessionRecordDetails` (~1ms PK lookup), cache lowercase search fields in a `WeakMap`, and maintain an O(1) `hitIndexToRowIndex` table for fullscreen `clampListScroll`.
+   - **Fullscreen sort invariant**: When `fullscreen === true` and `sortMode !== "threaded"`, populate `groupedRows` with flat `{ kind: "item", hitIndex, hit }` entries (never `[]`) and update the top-bar label (`Group: Project` vs `Sort: Recent` / `Sort: Relevance`).
+   - **Safe JSONL mutations & `sessions-lite.db` fallback**:
+     - Never write to PSM's `sessions.db`. For `appendSessionNameToJsonl`, inspect the final byte before appending (prepend `\n` if non-empty and not `0x0a`) and add a random hex suffix to `id`.
+     - When PSM's `sessions.db` is absent, transparently activate `extensions/pi-grok-mentions/session-lite-db.ts` (`sessions-lite.db` with WAL, incremental `(path, mtimeMs, size)` sync, bounded 16 KB head + 32 KB tail probe, lazy `session_details_cache` hydration, corrupt-DB self-recovery, and in-memory fallback when SQLite bindings are absent).
+   - **Coalesced preview wheel & bounded caches**: Use `RenderCoalescer` in `extensions/pi-grok-tui-kit/frame.ts` for right-pane wheel scrolling (`render: false` + `schedule()`, `cancel()` on every close path) and clear `previewLineCache` when target/width changes to prevent unbounded growth during divider drags.
 6. **Inject resolved `@` mentions via `before_agent_start` `custom_message`, never `systemPrompt`.**
    - Return `{ message: { customType: "pi-grok-mentions/v1", display: false, content: "<referenced_objects>...</referenced_objects>" } }` using Pi-style XML tags (`<session>`, `<skill>`, `<file>`, `<folder>`, `<mcp>`) instead of mutating `event.systemPromptOptions.sections.referenced_objects`, so LLM system prompt KV cache stays intact and references persist cleanly in JSONL.
 
@@ -91,7 +98,7 @@ Focused engineering guardrails for `grok-pi`'s Remote TUI bridge and bundled Typ
 1. Run TypeScript extension tests directly (fast, no Cargo needed):
 
    ```bash
-   bun test extensions/pi-grok-mentions/ extensions/pi-grok-remote-tui/ extensions/pi-grok-tree/ extensions/pi-grok-review/
+   bun test --timeout 15000 extensions/pi-grok-tui-kit/ extensions/pi-grok-mentions/ extensions/pi-grok-tree/ extensions/pi-grok-review/ extensions/pi-grok-config/ extensions/pi-grok-remote-tui/ extensions/pi-grok-goal/
    ```
 
 2. Verify whitespace and diff hygiene:
@@ -101,3 +108,25 @@ Focused engineering guardrails for `grok-pi`'s Remote TUI bridge and bundled Typ
    ```
 
 3. For any Rust change (`actions.rs`, `app_view.rs`, `effects/mod.rs`, `pi_adapter`), statically check every `match` arm, import scope, and `#[cfg]` gate (`rg "<VariantName>" crates/`), and NEVER run local `cargo` commands or stage `M pi-main`.
+
+## 6. Completed RSI Optimizations & Next Backlog
+
+Implemented & guarded by unit tests:
+- **Remote TUI frame deduplication** (`extensions/pi-grok-remote-tui/host.ts`): `pushFrame(force = false)` short-circuits `ui.setWidget` when rendered lines match `lastPushedLines` (`show()` passes `force = true`).
+- **Overlay parity for `@mcp` and `/pi-config`** (`mcp-picker-tui.ts`, `pi-grok-config/config-tui.ts`): Both use `RenderCoalescer` for right-pane wheel scrolling (`cancel()` on close) and bounded preview line caches; `/pi-config` also honors 90vh `targetRows`.
+- **Tail-chunked JSONL preview** (`session-data.ts` `loadPreviewFromJsonl`): Files > 256 KB read trailing chunks (256 KB → 1 MB → 4 MB) until `maxMessages` are gathered instead of `fs.readFileSync` on the whole file.
+- **Non-blocking `sessions-lite.db` background refresh** (`session-lite-db.ts` `scheduleLiteDbBackgroundSync`): Returns immediately when `sessions-lite.db` exists and runs incremental sync on the next tick.
+- **Unified Split-Pane Interaction & `DividerDragController`**: All split TUI overlays (`/resume`, `@session`, `@skill`, `@file`, `@mcp`, `/tree`, `/review-*`, `/pi-config`, `/trace`, `__pi_extensions_modal`, `/goal-detail`) share `DividerDragController`, `RenderCoalescer`, and native `handleMouse(TuiMouseEvent)`.
+- **Full-Session `/trace` & Custom Pi Element Rendering** (`extensions/pi-grok-review/{trace-data.ts,trace-tui.ts,tool-render-tui.ts}`): `/trace` and Left-arrow (`__pi_trace`) inspect full JSONL entries with `Pretty → Pi Element → Raw JSON` cycling; F2 opt-in `pi_custom_tool_renderer` (default OFF) routes non-builtin custom tool Enter (`__pi_tool_render`) to plugin `renderCall`/`renderResult` (with session-scoped per-tool mode memory and `getMessageRenderer` support), while built-in tools keep native Rust viewers.
+- **TS Migration of Heavyweight Rust Modals (`grok-pi` / `external_agent` path)**:
+  - `extensions_modal` → `extensions/pi-grok-config/extensions-modal-tui.ts` (`__pi_extensions_modal`, wired via `transcript.rs` & `config_extension.rs`).
+  - `goal_detail` → `extensions/pi-grok-goal/goal-detail-tui.ts` (`__pi_goal_detail` / `/goal-detail`, wired via `router.rs` & `goal_extension.rs` with `tui_kit`).
+- **Adapter / RPC & Session Index Pipeline** (`crates/codegen/pi-grok-adapter/`):
+  - `psm_session_catalog.rs`: Read-only `sessions-lite.db` fallback (catalog, search, ID lookup) when PSM is absent, 3s TTL cache on PSM port probe, and `PI_CODING_AGENT_DIR` alignment.
+  - `pi_adapter/session.rs`: `resolve_session_path` uses O(1) indexed SQLite point lookup before disk scan instead of loading the full catalog.
+  - `pi_rpc.rs`: 64 KB stdout `BufReader` and zero-allocation response ID routing on streaming events.
+- **Static Rust-injector parity test** (`extensions/pi-grok-tui-kit/kit.test.ts`): Verifies every runtime `.ts` file under `extensions/pi-grok-{tui-kit,mentions,tree,review,config,goal,remote-tui}/` is embedded via `include_str!` in its corresponding Rust injector.
+
+Next candidates:
+1. Cold-start project-first chunked indexing in `session-lite-db.ts` for users with thousands of unindexed JSONLs and no PSM.
+2. Retire or feature-gate replaced Rust modal rendering paths once `grok-pi` parity is verified via `cargo check` / `cargo test`.

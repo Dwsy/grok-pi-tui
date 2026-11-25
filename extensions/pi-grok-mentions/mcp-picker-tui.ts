@@ -8,12 +8,20 @@
  * Right pane: Selected server metadata + scrollable list of tools and descriptions.
  */
 
-import { matchesKey, parseKey, type Component } from "@earendil-works/pi-tui";
+import {
+  matchesKey,
+  parseKey,
+  type Component,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
+} from "@earendil-works/pi-tui";
 import {
   computeSplitGeometry,
+  DividerDragController,
   fitWidth,
   highlightTerms,
   hitRegion,
+  RenderCoalescer,
   renderSplitOverlayFrame,
   styleBold,
   wrapTextToWidth,
@@ -103,6 +111,7 @@ class McpPickerComponent implements Component {
   private listScroll = 0;
   private previewScroll = 0;
 
+  private lastTotalWidth = 100;
   private lastBodyHeight = 14;
   private lastBodyStartY = 5;
   private lastDividerX = 37;
@@ -110,6 +119,10 @@ class McpPickerComponent implements Component {
   private lastCloseRect: ClickRegion | undefined;
   private lastClickIndex = -1;
   private lastClickTime = 0;
+  private readonly renderCoalescer: RenderCoalescer;
+  private readonly dividerDrag = new DividerDragController(0.38);
+  private previewLineCacheKey = "";
+  private previewLineCache: string[] = [];
 
   constructor(
     tui: { requestRender: () => void },
@@ -124,7 +137,14 @@ class McpPickerComponent implements Component {
     this.query = options.initialQuery ?? "";
     this.getRows = options.getRows ?? (() => 28);
     this.done = done;
+    this.renderCoalescer = new RenderCoalescer(() => this.tui.requestRender());
     this.recomputeFilter(false);
+  }
+
+  private finish(result: McpServerRecord | undefined): void {
+    this.renderCoalescer.cancel();
+    this.dividerDrag.cancel();
+    this.done(result);
   }
 
   invalidate(): void {
@@ -271,12 +291,13 @@ class McpPickerComponent implements Component {
     const geom = computeSplitGeometry({
       width,
       rows: termRows,
-      leftRatio: 0.38,
+      leftRatio: this.dividerDrag.leftRatio,
       hasSearchBar: true,
       minLeftWidth: 26,
       heightRatio: 0.9,
       maxRows: targetRows,
     });
+    this.lastTotalWidth = geom.totalWidth;
     this.lastBodyHeight = geom.bodyHeight;
     this.lastBodyStartY = geom.bodyStartY;
     this.lastDividerX = geom.dividerX;
@@ -294,7 +315,12 @@ class McpPickerComponent implements Component {
 
     const leftLines = this.buildLeftLines(geom.leftWidth, geom.bodyHeight);
     const active = this.filtered[this.selectedIndex];
-    const allPreview = this.buildPreviewLines(active, geom.rightWidth);
+    const cacheKey = `${active?.id ?? ""}:${geom.rightWidth}:${this.query}`;
+    if (cacheKey !== this.previewLineCacheKey) {
+      this.previewLineCacheKey = cacheKey;
+      this.previewLineCache = this.buildPreviewLines(active, geom.rightWidth);
+    }
+    const allPreview = this.previewLineCache;
     const maxPreviewScroll = Math.max(0, allPreview.length - geom.bodyHeight);
     this.previewScroll = Math.max(0, Math.min(this.previewScroll, maxPreviewScroll));
     const rightLines = allPreview.slice(this.previewScroll, this.previewScroll + geom.bodyHeight);
@@ -328,7 +354,77 @@ class McpPickerComponent implements Component {
     return frame.lines;
   }
 
-  private handleMouse(data: string): boolean {
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    const dragRes = this.dividerDrag.handleMouse(event, {
+      totalWidth: this.lastTotalWidth,
+      dividerX: this.lastDividerX,
+      bodyStartY: this.lastBodyStartY,
+      bodyHeight: this.lastBodyHeight,
+      minLeft: 26,
+    });
+    if (dragRes) return dragRes;
+
+    const { x: col, y: row, type } = event;
+    if (type === "wheel") {
+      const delta = (event.wheelDelta ?? 0) > 0 ? 1 : -1;
+      if (col > this.lastDividerX) {
+        this.previewScroll = Math.max(0, this.previewScroll + delta * 3);
+        this.renderCoalescer.schedule();
+        return { handled: true, render: false };
+      }
+      this.selectIndex(this.selectedIndex + delta);
+      return { handled: true, render: true };
+    }
+    if (type === "press" && event.button === "left") {
+      if (this.lastCloseRect && hitRegion(this.lastCloseRect, col, row)) {
+        this.finish(undefined);
+        return { handled: true, render: false };
+      }
+      for (const [id, rect] of this.lastPillRects) {
+        if (hitRegion(rect, col, row)) {
+          const nextFilter = id as McpFilterMode;
+          if (nextFilter !== this.filter) {
+            this.filter = nextFilter;
+            this.recomputeFilter(true);
+          }
+          return { handled: true, render: true };
+        }
+      }
+      if (
+        row >= this.lastBodyStartY &&
+        row < this.lastBodyStartY + this.lastBodyHeight &&
+        col >= 1 &&
+        col < this.lastDividerX
+      ) {
+        const relRow = row - this.lastBodyStartY;
+        const idx = this.listScroll + Math.floor(relRow / 2);
+        if (idx >= 0 && idx < this.filtered.length) {
+          this.selectIndex(idx);
+          return { handled: true, render: true };
+        }
+      }
+      return { handled: true, render: false };
+    }
+    if (type === "click" && event.button === "left" && (event.clickCount ?? 1) >= 2) {
+      if (
+        row >= this.lastBodyStartY &&
+        row < this.lastBodyStartY + this.lastBodyHeight &&
+        col >= 1 &&
+        col < this.lastDividerX
+      ) {
+        const relRow = row - this.lastBodyStartY;
+        const idx = this.listScroll + Math.floor(relRow / 2);
+        if (idx >= 0 && idx < this.filtered.length) {
+          this.selectedIndex = idx;
+          this.confirmSelected();
+          return { handled: true, render: false };
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private handleSgrMouse(data: string): boolean {
     const m = SGR_MOUSE_RE.exec(data);
     if (!m) return false;
     const btn = Number(m[1]);
@@ -340,6 +436,8 @@ class McpPickerComponent implements Component {
       const delta = btn === 64 ? -1 : 1;
       if (col > this.lastDividerX) {
         this.previewScroll = Math.max(0, this.previewScroll + delta * 3);
+        this.renderCoalescer.schedule();
+        return true;
       } else {
         this.selectIndex(this.selectedIndex + delta);
       }
@@ -350,7 +448,7 @@ class McpPickerComponent implements Component {
     if (!isPress || (btn & 3) !== 0) return true;
 
     if (this.lastCloseRect && hitRegion(this.lastCloseRect, col, row)) {
-      this.done(undefined);
+      this.finish(undefined);
       return true;
     }
 
@@ -393,10 +491,10 @@ class McpPickerComponent implements Component {
   }
 
   handleInput(data: string): void {
-    if (this.handleMouse(data)) return;
+    if (this.handleSgrMouse(data)) return;
 
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-      this.done(undefined);
+      this.finish(undefined);
       return;
     }
     if (matchesKey(data, "enter") || matchesKey(data, "return")) {

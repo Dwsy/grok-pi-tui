@@ -398,6 +398,11 @@ pub struct UiConfig {
     /// `r` in modal toggles and persists via F2 `review_include_reads`.
     #[serde(default)]
     pub review_include_reads: bool,
+    /// Render custom Pi plugin tools using their Pi TUI `renderCall`/`renderResult`
+    /// components on Enter instead of the generic JSON block viewer. Default off;
+    /// built-in adapted tools (read, edit, write, bash, etc.) always keep our viewer.
+    #[serde(default)]
+    pub pi_custom_tool_renderer: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
     /// Model ID to use for the secondary agent when forking.
@@ -812,6 +817,7 @@ impl Default for UiConfig {
             show_other_tool_args: true,
             review_file_tree: false,
             review_include_reads: false,
+            pi_custom_tool_renderer: false,
             theme: None,
             fork_secondary_model: xai_grok_models::default_model().to_string(),
             recap_model: String::new(),

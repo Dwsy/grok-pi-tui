@@ -3117,6 +3117,25 @@ pub(in crate::app::dispatch) fn set_review_include_reads(
     }]
 }
 
+pub(in crate::app::dispatch) fn set_pi_custom_tool_renderer(
+    app: &mut AppView,
+    enabled: bool,
+) -> Vec<Effect> {
+    let previous = app.current_ui.pi_custom_tool_renderer;
+    if previous == enabled {
+        return vec![];
+    }
+    app.current_ui.pi_custom_tool_renderer = enabled;
+    refresh_open_settings_modals(app);
+    let value = if enabled { "Pi element" } else { "JSON" };
+    app.show_toast(&format!("\u{2713} Custom tool Enter popup: {value}"));
+    vec![Effect::PersistSetting {
+        key: "pi_custom_tool_renderer",
+        value: crate::settings::SettingValue::Bool(enabled),
+        rollback_value: crate::settings::SettingValue::Bool(previous),
+    }]
+}
+
 /// State-only mutation for auto session-recap toggle.
 pub(super) fn set_session_recap_inner(app: &mut AppView, enabled: bool) {
     app.current_ui.session_recap = Some(enabled);

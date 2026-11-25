@@ -61,6 +61,11 @@ pub(super) fn write_review_extension() -> Result<ReviewExtension> {
     )?;
     write_source_file(
         &mentions_dir,
+        "session-lite-db.ts",
+        include_str!("../../../../../../extensions/pi-grok-mentions/session-lite-db.ts"),
+    )?;
+    write_source_file(
+        &mentions_dir,
         "skill-data.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/skill-data.ts"),
     )?;
@@ -80,6 +85,21 @@ pub(super) fn write_review_extension() -> Result<ReviewExtension> {
         &review_dir,
         "review-tui.ts",
         include_str!("../../../../../../extensions/pi-grok-review/review-tui.ts"),
+    )?;
+    write_source_file(
+        &review_dir,
+        "trace-data.ts",
+        include_str!("../../../../../../extensions/pi-grok-review/trace-data.ts"),
+    )?;
+    write_source_file(
+        &review_dir,
+        "trace-tui.ts",
+        include_str!("../../../../../../extensions/pi-grok-review/trace-tui.ts"),
+    )?;
+    write_source_file(
+        &review_dir,
+        "tool-render-tui.ts",
+        include_str!("../../../../../../extensions/pi-grok-review/tool-render-tui.ts"),
     )?;
 
     Ok(ReviewExtension {
@@ -105,8 +125,19 @@ mod tests {
             .expect("read shared skill-data.ts");
         let kit = fs::read_to_string(root.join("pi-grok-tui-kit/frame.ts"))
             .expect("read pi-grok-tui-kit/frame.ts");
+        let trace_data = fs::read_to_string(root.join("pi-grok-review/trace-data.ts"))
+            .expect("read pi-grok-review/trace-data.ts");
+        let trace_tui = fs::read_to_string(root.join("pi-grok-review/trace-tui.ts"))
+            .expect("read pi-grok-review/trace-tui.ts");
+        let tool_render_tui = fs::read_to_string(root.join("pi-grok-review/tool-render-tui.ts"))
+            .expect("read pi-grok-review/tool-render-tui.ts");
         assert!(index.contains("__pi_review_session"));
         assert!(index.contains("__pi_review_message"));
+        assert!(index.contains("__pi_trace"));
+        assert!(index.contains("__pi_tool_render"));
+        assert!(trace_data.contains("parseSessionTraceJsonl"));
+        assert!(trace_tui.contains("createTraceTui"));
+        assert!(tool_render_tui.contains("createToolRenderTui"));
         assert!(shared.contains("loadFileOrDirPreview"));
         assert!(session_data.contains("formatTimestamp"));
         assert!(skill_data.contains("formatFileSize"));

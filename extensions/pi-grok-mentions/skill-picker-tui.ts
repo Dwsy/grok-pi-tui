@@ -21,6 +21,7 @@ import {
 } from "@earendil-works/pi-tui";
 import {
   computeSplitGeometry,
+  DividerDragController,
   fitWidth,
   highlightTerms,
   hitRegion,
@@ -75,8 +76,10 @@ export class SkillPickerTui implements Component {
 
   // Layout geometry captured per frame for accurate mouse hit-testing.
   private dividerX = 41;
+  private lastTotalWidth = 0;
   private bodyStartY = 5;
   private bodyHeight = 14;
+  private readonly dividerDrag = new DividerDragController(0.4);
   private previewVisibleRows = 10;
   private pillRects = new Map<string, ClickRegion>();
   private closeBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
@@ -307,6 +310,15 @@ export class SkillPickerTui implements Component {
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     const { x, y, type } = event;
+    const dragResult = this.dividerDrag.handleMouse(event, {
+      totalWidth: this.lastTotalWidth,
+      dividerX: this.dividerX,
+      bodyStartY: this.bodyStartY,
+      bodyHeight: this.bodyHeight,
+      minLeft: 24,
+      minRight: 24,
+    });
+    if (dragResult) return dragResult;
 
     if (type === "wheel") {
       const delta = (event.wheelDelta ?? 0) > 0 ? 1 : -1;
@@ -497,11 +509,12 @@ export class SkillPickerTui implements Component {
     const geometry = computeSplitGeometry({
       width,
       rows: termRows,
-      leftRatio: 0.4,
+      leftRatio: this.dividerDrag.leftRatio,
       hasSearchBar: true,
       heightRatio: 0.9,
       maxRows: targetRows,
     });
+    this.lastTotalWidth = geometry.totalWidth;
     this.dividerX = geometry.dividerX;
     this.bodyStartY = geometry.bodyStartY;
     this.bodyHeight = geometry.bodyHeight;

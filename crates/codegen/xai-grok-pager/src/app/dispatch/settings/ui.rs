@@ -1064,6 +1064,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("show_other_tool_args", SettingValue::Bool(b)) => Some(Action::SetShowOtherToolArgs(*b)),
         ("review_file_tree", SettingValue::Bool(b)) => Some(Action::SetReviewFileTree(*b)),
         ("review_include_reads", SettingValue::Bool(b)) => Some(Action::SetReviewIncludeReads(*b)),
+        ("pi_custom_tool_renderer", SettingValue::Bool(b)) => {
+            Some(Action::SetPiCustomToolRenderer(*b))
+        }
         ("page_flip_on_send", SettingValue::Bool(b)) => Some(Action::SetPageFlipOnSend(*b)),
         ("confirm_before_rewind", SettingValue::Bool(b)) => {
             Some(Action::SetConfirmBeforeRewind(*b))
@@ -1346,6 +1349,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         }
         ("review_file_tree", SettingValue::Bool(b)) => app.current_ui.review_file_tree = *b,
         ("review_include_reads", SettingValue::Bool(b)) => app.current_ui.review_include_reads = *b,
+        ("pi_custom_tool_renderer", SettingValue::Bool(b)) => {
+            app.current_ui.pi_custom_tool_renderer = *b
+        }
         ("page_flip_on_send", SettingValue::Bool(b)) => set_page_flip_on_send_inner(app, *b),
         ("confirm_before_rewind", SettingValue::Bool(b)) => {
             set_confirm_before_rewind_inner(app, *b)

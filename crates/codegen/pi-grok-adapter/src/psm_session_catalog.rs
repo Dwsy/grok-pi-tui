@@ -4,7 +4,8 @@ use serde_json::Value;
 use std::{
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
-    time::Duration,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 /// Windows filesystems are case-insensitive: fold cwd equality so the pager's
@@ -17,28 +18,62 @@ const CWD_COLLATION: &str = "";
 const DEFAULT_PSM_WS_PORT: u16 = 52_131;
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(150);
 const BUSY_TIMEOUT: Duration = Duration::from_millis(50);
+const PSM_PROBE_TTL: Duration = Duration::from_secs(3);
 
 /// PSM is considered available only while its configured local server port is
-/// accepting connections. A stale SQLite file is not evidence that PSM runs.
+/// accepting connections. When PSM is absent, falls back read-only to the
+/// TS-maintained `sessions-lite.db` index if present.
 pub fn load_catalog(cwd: &Path, all: bool) -> Option<Vec<PiSessionInfo>> {
-    if !psm_server_is_listening(DEFAULT_PSM_WS_PORT) {
+    if psm_server_is_listening(DEFAULT_PSM_WS_PORT)
+        && let Some(db_path) = default_database_path()
+        && let Ok(sessions) = load_catalog_from_db(&db_path, cwd, all)
+    {
+        return Some(sessions);
+    }
+    let lite_path = default_lite_database_path()?;
+    if !lite_path.exists() {
         return None;
     }
-    load_catalog_from_db(&default_database_path()?, cwd, all).ok()
+    load_catalog_from_lite_db(&lite_path, cwd, all).ok()
+}
+
+fn default_sessions_dir() -> Option<PathBuf> {
+    if let Ok(custom) = std::env::var("PI_CODING_AGENT_DIR") {
+        let trimmed = custom.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed).join("sessions"));
+        }
+    }
+    // std::env::home_dir(): $HOME on Unix, %USERPROFILE% fallback chain on
+    // Windows — keeps the PSM index reachable outside macOS/Linux.
+    std::env::home_dir().map(|home| home.join(".pi").join("agent").join("sessions"))
 }
 
 fn default_database_path() -> Option<PathBuf> {
-    // std::env::home_dir(): $HOME on Unix, %USERPROFILE% fallback chain on
-    // Windows — keeps the PSM index reachable outside macOS/Linux.
-    std::env::home_dir().map(|home| {
-        home.join(".pi")
-            .join("agent")
-            .join("sessions")
-            .join("sessions.db")
-    })
+    default_sessions_dir().map(|dir| dir.join("sessions.db"))
+}
+
+fn default_lite_database_path() -> Option<PathBuf> {
+    default_sessions_dir().map(|dir| dir.join("sessions-lite.db"))
 }
 
 fn psm_server_is_listening(port: u16) -> bool {
+    static CACHE: OnceLock<Mutex<Option<(Instant, bool)>>> = OnceLock::new();
+    if port == DEFAULT_PSM_WS_PORT {
+        let cache = CACHE.get_or_init(|| Mutex::new(None));
+        if let Ok(guard) = cache.lock()
+            && let Some((checked_at, alive)) = *guard
+            && checked_at.elapsed() < PSM_PROBE_TTL
+        {
+            return alive;
+        }
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
+        let alive = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).is_ok();
+        if let Ok(mut guard) = cache.lock() {
+            *guard = Some((Instant::now(), alive));
+        }
+        return alive;
+    }
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).is_ok()
 }
@@ -85,6 +120,50 @@ fn load_catalog_from_db(
     rows.collect()
 }
 
+/// Read-only catalog query against the TS-maintained `sessions-lite.db` schema
+/// (`extensions/pi-grok-mentions/session-lite-db.ts`).
+fn load_catalog_from_lite_db(
+    db_path: &Path,
+    cwd: &Path,
+    all: bool,
+) -> rusqlite::Result<Vec<PiSessionInfo>> {
+    let connection = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(BUSY_TIMEOUT)?;
+    connection.execute_batch("PRAGMA query_only = ON;")?;
+    let sql = if all {
+        "SELECT s.id, s.path, s.cwd, s.name, s.created, s.modified, s.message_count,
+                COALESCE(s.first_message, ''),
+                COALESCE(NULLIF(d.models_json, '[]'), NULLIF(s.model, ''), '[]'),
+                COALESCE(d.input_tokens, 0), COALESCE(d.output_tokens, 0),
+                COALESCE(d.cache_read_tokens, 0), COALESCE(d.cache_write_tokens, 0),
+                NULL, NULL
+           FROM sessions s LEFT JOIN session_details_cache d ON d.path = s.path
+          ORDER BY s.modified DESC"
+            .to_string()
+    } else {
+        format!(
+            "SELECT s.id, s.path, s.cwd, s.name, s.created, s.modified, s.message_count,
+                COALESCE(s.first_message, ''),
+                COALESCE(NULLIF(d.models_json, '[]'), NULLIF(s.model, ''), '[]'),
+                COALESCE(d.input_tokens, 0), COALESCE(d.output_tokens, 0),
+                COALESCE(d.cache_read_tokens, 0), COALESCE(d.cache_write_tokens, 0),
+                NULL, NULL
+           FROM sessions s LEFT JOIN session_details_cache d ON d.path = s.path
+          WHERE s.cwd = ?1{CWD_COLLATION} ORDER BY s.modified DESC"
+        )
+    };
+    let mut statement = connection.prepare(&sql)?;
+    let rows = if all {
+        statement.query_map([], session_from_row)?
+    } else {
+        statement.query_map(params![cwd.to_string_lossy()], session_from_row)?
+    };
+    rows.collect()
+}
+
 /// A single full-text search hit from PSM's FTS5 index.
 #[derive(Debug, Clone)]
 pub struct PsmSearchHit {
@@ -114,11 +193,17 @@ pub fn full_text_search(
     if query.is_empty() {
         return Some(Vec::new());
     }
-    if !psm_server_is_listening(DEFAULT_PSM_WS_PORT) {
+    if psm_server_is_listening(DEFAULT_PSM_WS_PORT)
+        && let Some(db_path) = default_database_path()
+        && let Ok(hits) = full_text_search_db(&db_path, cwd, query, limit)
+    {
+        return Some(hits);
+    }
+    let lite_path = default_lite_database_path()?;
+    if !lite_path.exists() {
         return None;
     }
-    let db_path = default_database_path()?;
-    full_text_search_db(&db_path, cwd, query, limit).ok()
+    full_text_search_lite_db(&lite_path, cwd, query, limit).ok()
 }
 
 /// One message row for session preview (resume-x `loadSessionMessages` shape).
@@ -146,16 +231,27 @@ pub fn resolve_session_path(session_id: &str) -> Option<String> {
     if session_id.trim().is_empty() {
         return None;
     }
-    if !psm_server_is_listening(DEFAULT_PSM_WS_PORT) {
+    if psm_server_is_listening(DEFAULT_PSM_WS_PORT)
+        && let Some(db_path) = default_database_path()
+        && let Some(found) = resolve_session_path_in_db(&db_path, session_id)
+    {
+        return Some(found);
+    }
+    let lite_path = default_lite_database_path()?;
+    if !lite_path.exists() {
         return None;
     }
-    let db_path = default_database_path()?;
+    resolve_session_path_in_db(&lite_path, session_id)
+}
+
+fn resolve_session_path_in_db(db_path: &Path, session_id: &str) -> Option<String> {
     let connection = Connection::open_with_flags(
-        &db_path,
+        db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .ok()?;
     connection.busy_timeout(BUSY_TIMEOUT).ok()?;
+    connection.execute_batch("PRAGMA query_only = ON;").ok()?;
     connection
         .query_row(
             "SELECT path FROM sessions WHERE id = ?1 LIMIT 1",
@@ -230,6 +326,64 @@ fn full_text_search_db(
 
     // resume-x searchSessions — always works against base tables.
     run_resume_x_like_search(&connection, query, cwd_val.as_deref(), limit)
+}
+
+fn full_text_search_lite_db(
+    db_path: &Path,
+    cwd: Option<&Path>,
+    query: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<PsmSearchHit>> {
+    let connection = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(BUSY_TIMEOUT)?;
+    connection.execute_batch("PRAGMA query_only = ON;")?;
+    let cwd_val: Option<String> = cwd.map(|c| c.to_string_lossy().to_string());
+    let needle = query.to_lowercase();
+    let q = format!("%{needle}%");
+    let sql = format!(
+        "SELECT s.id, s.cwd,
+                COALESCE(NULLIF(s.name, ''), NULLIF(s.first_message, ''), '(no content)'),
+                s.modified,
+                CASE WHEN lower(COALESCE(s.name, '')) LIKE ?1 THEN 'name' ELSE 'message' END,
+                COALESCE(s.user_messages_text, '') || ' ' || COALESCE(s.assistant_messages_text, '')
+           FROM sessions s
+          WHERE (lower(COALESCE(s.name, '')) LIKE ?1
+             OR lower(COALESCE(s.first_message, '')) LIKE ?1
+             OR lower(COALESCE(s.user_messages_text, '')) LIKE ?1
+             OR lower(COALESCE(s.assistant_messages_text, '')) LIKE ?1)
+            AND (?2 IS NULL OR s.cwd = ?2{CWD_COLLATION})
+          ORDER BY s.modified DESC
+          LIMIT ?3"
+    );
+    let mut stmt = connection.prepare(&sql)?;
+    let rows = stmt.query_map(params![q, cwd_val, limit as i64], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    })?;
+    let mut hits = Vec::new();
+    for row in rows {
+        let (id, cwd_str, summary, modified, kind, body) = row?;
+        let snippet = snippet_around(&body, Some(&needle));
+        hits.push(PsmSearchHit {
+            session_id: id,
+            cwd: cwd_str,
+            summary,
+            updated_at: modified,
+            score: if kind == "name" { 1.0 } else { 0.7 },
+            matched_fields: vec![kind],
+            snippet,
+        });
+    }
+    Ok(hits)
 }
 
 /// PSM `search_message_hits_for_mode` core join:
@@ -483,7 +637,11 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PiSessionInfo> 
     let models: String = row.get(8)?;
     let model_id = serde_json::from_str::<Value>(&models)
         .ok()
-        .and_then(|value| value.as_array()?.last()?.as_str().map(str::to_owned));
+        .and_then(|value| value.as_array()?.last()?.as_str().map(str::to_owned))
+        .or_else(|| {
+            let trimmed = models.trim();
+            (!trimmed.is_empty() && trimmed != "[]").then(|| trimmed.to_owned())
+        });
     let token_total = [
         row.get::<_, u64>(9)?,
         row.get(10)?,
@@ -641,6 +799,54 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].role, "user");
         assert!(msgs[0].content.contains("unique-widget"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lite_db_catalog_search_and_resolve_roundtrip() {
+        let (dir, path) = temp_path("lite-db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE sessions (
+                path TEXT PRIMARY KEY, id TEXT NOT NULL, cwd TEXT NOT NULL,
+                name TEXT, created TEXT NOT NULL, modified TEXT NOT NULL,
+                file_mtime_ms INTEGER NOT NULL DEFAULT 0, file_size INTEGER NOT NULL DEFAULT 0,
+                message_count INTEGER NOT NULL DEFAULT 0, first_message TEXT DEFAULT '',
+                user_messages_text TEXT DEFAULT '', assistant_messages_text TEXT DEFAULT '',
+                model TEXT DEFAULT ''
+            );
+            CREATE TABLE session_details_cache (
+                path TEXT PRIMARY KEY, file_mtime_ms INTEGER NOT NULL DEFAULT 0,
+                file_size INTEGER NOT NULL DEFAULT 0, user_messages INTEGER NOT NULL DEFAULT 0,
+                assistant_messages INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0, models_json TEXT NOT NULL DEFAULT '[]'
+            );
+            INSERT INTO sessions VALUES (
+                '/tmp/lite-1.jsonl', 'lite-sess-1', '/proj/lite', 'Lite Demo',
+                '2026-11-25T01:00:00Z', '2026-11-25T02:00:00Z', 1000, 512, 4,
+                'optimize rpc pipeline', 'optimize rpc pipeline', 'done with buffered stdout',
+                'openai/gpt-5.4'
+            );
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let catalog = load_catalog_from_lite_db(&path, Path::new("/proj/lite"), false).unwrap();
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].id, "lite-sess-1");
+        assert_eq!(catalog[0].model_id.as_deref(), Some("openai/gpt-5.4"));
+
+        let resolved = resolve_session_path_in_db(&path, "lite-sess-1");
+        assert_eq!(resolved.as_deref(), Some("/tmp/lite-1.jsonl"));
+
+        let hits = full_text_search_lite_db(&path, Some(Path::new("/proj/lite")), "buffered", 10)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "lite-sess-1");
+        assert!(hits[0].snippet.as_deref().unwrap_or("").contains("buffered"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

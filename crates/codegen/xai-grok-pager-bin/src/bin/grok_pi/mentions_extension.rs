@@ -60,6 +60,11 @@ pub(super) fn write_mentions_extension() -> Result<MentionsExtension> {
     )?;
     write_source_file(
         &mentions_dir,
+        "session-lite-db.ts",
+        include_str!("../../../../../../extensions/pi-grok-mentions/session-lite-db.ts"),
+    )?;
+    write_source_file(
+        &mentions_dir,
         "session-picker-tui.ts",
         include_str!("../../../../../../extensions/pi-grok-mentions/session-picker-tui.ts"),
     )?;
@@ -105,6 +110,7 @@ mod tests {
         let root = dir.parent().expect("bundle root");
         let source = std::fs::read_to_string(ext.path()).expect("read index.ts");
         let data = std::fs::read_to_string(dir.join("session-data.ts")).expect("read session-data.ts");
+        let lite_db = std::fs::read_to_string(dir.join("session-lite-db.ts")).expect("read session-lite-db.ts");
         let tui = std::fs::read_to_string(dir.join("session-picker-tui.ts")).expect("read session-picker-tui.ts");
         let skill_data = std::fs::read_to_string(dir.join("skill-data.ts")).expect("read skill-data.ts");
         let skill_tui = std::fs::read_to_string(dir.join("skill-picker-tui.ts")).expect("read skill-picker-tui.ts");
@@ -124,6 +130,7 @@ mod tests {
         assert!(source.contains("grok-pi://session/"));
         assert!(source.contains("grok-pi://mcp/"));
         assert!(data.contains("loadSessionPickerRecords"));
+        assert!(lite_db.contains("syncSessionLiteDb"));
         assert!(tui.contains("createSessionPickerTui"));
         assert!(skill_data.contains("buildSkillRecords"));
         assert!(skill_tui.contains("createSkillPickerTui"));

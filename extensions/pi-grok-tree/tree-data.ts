@@ -53,12 +53,28 @@ function formatTimeShort(ts?: string): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+const treeParseCache = new Map<
+  string,
+  { mtimeMs: number; size: number; result: { entries: SessionTreeEntry[]; leafId: string | null } }
+>();
+
 /** Parse a Pi session JSONL file into structured entries + labels + active leaf ID. */
 export function parseSessionTreeJsonl(
   jsonlPath: string,
   explicitLeafId?: string,
 ): { entries: SessionTreeEntry[]; leafId: string | null } {
   if (!jsonlPath || !fs.existsSync(jsonlPath)) {
+    return { entries: [], leafId: null };
+  }
+  const cacheKey = `${jsonlPath}\0${explicitLeafId ?? ""}`;
+  let stat: fs.Stats | undefined;
+  try {
+    stat = fs.statSync(jsonlPath);
+    const cached = treeParseCache.get(cacheKey);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      return cached.result;
+    }
+  } catch {
     return { entries: [], leafId: null };
   }
 
@@ -179,7 +195,12 @@ export function parseSessionTreeJsonl(
     if (lbl) e.label = lbl;
   }
 
-  return { entries, leafId: explicitLeafId || lastEntryId };
+  const result = { entries, leafId: explicitLeafId || lastEntryId };
+  if (stat) {
+    if (treeParseCache.size >= 2) treeParseCache.clear();
+    treeParseCache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, result });
+  }
+  return result;
 }
 
 /** Build a DFS-ordered, box-drawn flattened tree ready for display & filtering. */

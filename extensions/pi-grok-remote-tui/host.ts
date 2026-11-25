@@ -236,7 +236,16 @@ export function installCustomPatch(ui: PatchableUi): void {
         resolve(result);
       };
 
-      const pushFrame = () => {
+      let lastPushedLines: string[] | null = null;
+      const framesEqual = (a: readonly string[] | null, b: readonly string[]): boolean => {
+        if (!a || a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+          if (a[i] !== b[i]) return false;
+        }
+        return true;
+      };
+
+      const pushFrame = (force = false) => {
         if (closed || !component) return;
         try {
           // Resolve Pi's terminal-only cursor markers before projecting to Pager:
@@ -249,6 +258,8 @@ export function installCustomPatch(ui: PatchableUi): void {
                 .replaceAll(FAKE_CURSOR_START, "\x1b[7m")
                 .replaceAll(FAKE_CURSOR_END, "\x1b[27m"),
             );
+          if (!force && framesEqual(lastPushedLines, lines)) return;
+          lastPushedLines = lines;
           ui.setWidget(WIDGET_KEY, lines, { placement: "aboveEditor" });
         } catch (error) {
           if (closed) return;
@@ -445,7 +456,7 @@ export function installCustomPatch(ui: PatchableUi): void {
               setFocus(component ?? null);
               pushFrame();
             },
-            show: () => pushFrame(),
+            show: () => pushFrame(true),
             setVisible: (visible: boolean) => {
               if (!visible) {
                 tuiStub.hideOverlay();

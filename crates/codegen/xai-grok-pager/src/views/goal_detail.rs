@@ -2,6 +2,8 @@
 //!
 //! The overlay renders centered when `AgentView::show_goal_detail` is true and `goal_state` is `Some`; `Esc` or `g` dismisses it.
 
+#![cfg_attr(not(any(feature = "stock-agent", test)), allow(dead_code, unused_imports))]
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -418,6 +420,24 @@ pub fn goal_detail_area(screen: Rect, goal: &GoalDisplayState, todos: &[TodoItem
 /// Render the goal detail overlay into the buffer. Draws a bordered popup with. Title: objective.
 /// Status and phase. Token budget progress bar. Todo progress list. Active subagent metrics. Recent
 /// event history. Available commands hint.
+///
+/// Replaced by TS Remote TUI (`__pi_goal_detail`) in `grok-pi` builds.
+#[cfg(not(any(feature = "stock-agent", test)))]
+#[allow(clippy::too_many_arguments)]
+pub fn render_goal_detail(
+    _buf: &mut Buffer,
+    _area: Rect,
+    _goal: &GoalDisplayState,
+    _todos: &[TodoItem],
+    _tick: usize,
+    _context_used: Option<u64>,
+    _active_subagent_tokens: u64,
+    _close_hovered: bool,
+) -> Option<Rect> {
+    None
+}
+
+#[cfg(any(feature = "stock-agent", test))]
 #[allow(clippy::too_many_arguments)]
 pub fn render_goal_detail(
     buf: &mut Buffer,

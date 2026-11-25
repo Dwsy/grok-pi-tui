@@ -23,6 +23,7 @@ import {
   computeSplitGeometry,
   detectNerdFontSupport,
   detectTerminalImageProtocol,
+  DividerDragController,
   fitWidth,
   getFileIcon,
   hitRegion,
@@ -103,6 +104,7 @@ export class ReviewTui implements Component {
   private readonly imageCap: TerminalImageCapability;
   private readonly getRows: () => number;
   private readonly renderCoalescer: RenderCoalescer;
+  private readonly dividerDrag = new DividerDragController(0.38);
 
   private pickingTurn: boolean;
   private selectedTurnIndex = 0;
@@ -126,6 +128,7 @@ export class ReviewTui implements Component {
   private previewTargetKey = "";
 
   // Layout geometry for mouse hit-testing
+  private lastTotalWidth = 100;
   private dividerX = 42;
   private bodyStartY = 3;
   private bodyHeight = 16;
@@ -371,6 +374,15 @@ export class ReviewTui implements Component {
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     const { x, y, type } = event;
+    const dragRes = this.dividerDrag.handleMouse(event, {
+      totalWidth: this.lastTotalWidth,
+      dividerX: this.dividerX,
+      bodyStartY: this.bodyStartY,
+      bodyHeight: this.bodyHeight,
+      minLeft: 24,
+      minRight: 26,
+    });
+    if (dragRes) return dragRes;
 
     if (type === "wheel") {
       const delta = (event.wheelDelta ?? 0) > 0 ? 1 : -1;
@@ -688,7 +700,7 @@ export class ReviewTui implements Component {
     const geometry = computeSplitGeometry({
       width,
       rows: termRows,
-      leftRatio: 0.38,
+      leftRatio: this.dividerDrag.leftRatio,
       hasSearchBar: false,
       minWidth: 60,
       minLeftWidth: 24,
@@ -696,6 +708,7 @@ export class ReviewTui implements Component {
       heightRatio: 0.9,
       maxRows: targetRows,
     });
+    this.lastTotalWidth = geometry.totalWidth;
     this.dividerX = geometry.dividerX;
     this.bodyStartY = geometry.bodyStartY;
     this.bodyHeight = geometry.bodyHeight;

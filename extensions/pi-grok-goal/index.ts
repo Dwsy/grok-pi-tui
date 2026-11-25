@@ -21,6 +21,68 @@ const GOAL_MESSAGE_TYPE = "pi-grok-goal/message/v1";
  * transition (continuation loop guard) so it also lands in Pi's session log.
  */
 const PERSIST_COMMAND = "__pi_grok_goal_persist";
+const GOAL_DETAIL_COMMAND = "__pi_goal_detail";
+function collectGoalHistoryFromEntries(
+  entries: Iterable<unknown>,
+  sessionId: string,
+): Array<{ timestamp: string; event: string; status: string; detail: string }> {
+  const out: Array<{ timestamp: string; event: string; status: string; detail: string }> = [];
+  for (const raw of entries) {
+    if (!raw || typeof raw !== "object") continue;
+    const entry = raw as { type?: unknown; customType?: unknown; timestamp?: unknown; data?: unknown };
+    if (entry.type !== "custom" || entry.customType !== BRIDGE_TYPE) continue;
+    if (!entry.data || typeof entry.data !== "object") continue;
+    const data = entry.data as { type?: unknown; control?: Partial<GoalControl> };
+    if (data.type !== "goal_state" || !data.control) continue;
+    if (data.control.sessionId && data.control.sessionId !== sessionId) continue;
+    out.push({
+      timestamp: String(entry.timestamp ?? data.control.createdAt ?? ""),
+      event: String(data.control.lastEvent ?? "goal_state"),
+      status: String(data.control.status ?? "unknown"),
+      detail: String(
+        data.control.lastEventDetail ?? data.control.pauseMessage ?? data.control.objective ?? "",
+      ),
+    });
+  }
+  return out;
+}
+
+async function openGoalDetailOverlay(ctx: ExtensionCommandContext): Promise<void> {
+  const sessionId = ctx.sessionManager.getSessionId();
+  const branch = ctx.sessionManager.getBranch();
+  const active = readControl(sessionId) ?? latestGoalFromEntries(branch, sessionId);
+  if (!active || active.status === "cleared") {
+    ctx.ui.notify("No active goal in this session", "info");
+    return;
+  }
+  const history = collectGoalHistoryFromEntries(branch, sessionId);
+  const { createGoalDetailTui } = await import("./goal-detail-tui.ts");
+  await ctx.ui.custom<void>(
+    (tui, theme, _kb, done) =>
+      createGoalDetailTui(
+        tui as { requestRender: () => void },
+        theme as { fg: (color: string, text: string) => string; bold?: (text: string) => string },
+        {
+          goal: active,
+          history,
+          getRows: () => {
+            const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
+            return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+          },
+        },
+        () => done(undefined),
+      ),
+    {
+      overlay: true,
+      overlayOptions: {
+        width: "90%",
+        maxHeight: "88%",
+        anchor: "center",
+      },
+    },
+  );
+}
+
 /** Mirrors codex MAX_THREAD_GOAL_OBJECTIVE_CHARS so both paths reject the same input. */
 const MAX_OBJECTIVE_CHARS = 4000;
 
@@ -739,6 +801,19 @@ export default function piGrokGoal(pi: ExtensionAPI) {
             details: { ok: false, reason: "invalid_action" },
           };
       }
+    },
+  });
+
+  pi.registerCommand(GOAL_DETAIL_COMMAND, {
+    description: "Internal grok-pi bridge for the bordered TS Goal Detail overlay",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      await openGoalDetailOverlay(ctx);
+    },
+  });
+  pi.registerCommand("goal-detail", {
+    description: "Inspect active goal objective, status, tokens, and event history",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      await openGoalDetailOverlay(ctx);
     },
   });
 }

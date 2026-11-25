@@ -7,6 +7,7 @@ import {
   computeSplitGeometry,
   detectNerdFontSupport,
   detectTerminalImageProtocol,
+  DividerDragController,
   fitImageCells,
   fitWidth,
   getFileIcon,
@@ -173,5 +174,50 @@ describe("pi-grok-tui-kit shared primitives", () => {
     coalescer.cancel();
     await new Promise((r) => setTimeout(r, 45));
     expect(renders).toBe(1);
+  });
+
+  test("DividerDragController handles press, clamped drag, and release in memory", () => {
+    const drag = new DividerDragController(0.5);
+    const bounds = { totalWidth: 100, dividerX: 50, bodyStartY: 3, bodyHeight: 15, minLeft: 20, minRight: 28 };
+    expect(drag.computeLeftWidth(100, 20, 28)).toBe(49);
+    expect(drag.handleMouse({ type: "press", button: "left", x: 50, y: 8 }, bounds)).toEqual({
+      handled: true,
+      capture: true,
+      render: true,
+    });
+    expect(drag.dragging).toBe(true);
+    drag.handleMouse({ type: "drag", button: "left", x: 5, y: 8 }, bounds);
+    expect(drag.computeLeftWidth(100, 20, 28)).toBe(20);
+    drag.handleMouse({ type: "drag", button: "left", x: 200, y: 8 }, bounds);
+    expect(drag.computeLeftWidth(100, 20, 28)).toBe(71);
+    drag.handleMouse({ type: "release", button: "none", x: 71, y: 8 }, bounds);
+    expect(drag.dragging).toBe(false);
+  });
+
+  test("every bundled TS extension module is embedded in its Rust injector", () => {
+    const repoRoot = path.resolve(import.meta.dir, "..", "..");
+    const injectorRoot = path.join(repoRoot, "crates/codegen/xai-grok-pager-bin/src/bin/grok_pi");
+    const pairs: Array<{ extDir: string; rustFile: string; skip?: Set<string> }> = [
+      { extDir: "extensions/pi-grok-tui-kit", rustFile: "tui_kit.rs" },
+      { extDir: "extensions/pi-grok-mentions", rustFile: "mentions_extension.rs" },
+      { extDir: "extensions/pi-grok-tree", rustFile: "tree_extension.rs" },
+      { extDir: "extensions/pi-grok-review", rustFile: "review_extension.rs" },
+      { extDir: "extensions/pi-grok-config", rustFile: "config_extension.rs" },
+      { extDir: "extensions/pi-grok-goal", rustFile: "goal_extension.rs" },
+      {
+        extDir: "extensions/pi-grok-remote-tui",
+        rustFile: "remote_tui_extension.rs",
+        skip: new Set(["demo.ts", "test-fixtures.ts"]),
+      },
+    ];
+    for (const { extDir, rustFile, skip } of pairs) {
+      const rustSrc = fs.readFileSync(path.join(injectorRoot, rustFile), "utf8");
+      const tsFiles = fs
+        .readdirSync(path.join(repoRoot, extDir))
+        .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !skip?.has(f));
+      for (const file of tsFiles) {
+        expect(rustSrc).toContain(`/${file}"`);
+      }
+    }
   });
 });

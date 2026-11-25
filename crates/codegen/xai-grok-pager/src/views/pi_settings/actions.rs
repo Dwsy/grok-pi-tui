@@ -79,6 +79,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "show_other_tool_args" => Action::SetShowOtherToolArgs(new),
         "review_file_tree" => Action::SetReviewFileTree(new),
         "review_include_reads" => Action::SetReviewIncludeReads(new),
+        "pi_custom_tool_renderer" => Action::SetPiCustomToolRenderer(new),
         "simple_mode" => Action::SetSimpleMode(new),
         "contextual_hints.undo" => Action::SetContextualHintUndo(new),
         "contextual_hints.plan_mode" => Action::SetContextualHintPlanMode(new),

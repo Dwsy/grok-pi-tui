@@ -126,4 +126,23 @@ describe("mcp-picker-tui filtering, rendering, keyboard, and mouse", () => {
     comp.handleInput("\x1b[<0;6;8M");
     expect(chosen?.id).toBe("sqlite-local");
   });
+
+  test("coalesces rapid right-pane wheel scrolling without extra renders", async () => {
+    let renderRequests = 0;
+    const comp = createMcpPickerTui(
+      { requestRender: () => { renderRequests += 1; } },
+      mockTheme,
+      { records: sampleServers, getRows: () => 24 },
+      () => {},
+    );
+    comp.render(100);
+    const before = renderRequests;
+    for (let i = 0; i < 6; i++) {
+      comp.handleInput("\x1b[<65;80;10M");
+    }
+    expect(renderRequests).toBe(before);
+    await new Promise((r) => setTimeout(r, 70));
+    expect(renderRequests).toBe(before + 1);
+    comp.handleInput("\x1b");
+  });
 });

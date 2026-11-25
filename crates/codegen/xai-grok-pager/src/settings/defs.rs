@@ -2753,6 +2753,20 @@ pub fn default_settings() -> Vec<SettingMeta> {
             external_only: true,
         },
         SettingMeta {
+            key: "pi_custom_tool_renderer",
+            category: SettingCategory::Agent,
+            owner: SettingOwner::Shell,
+            label: "Pi custom tool renderer",
+            description: "Render custom Pi plugin tool popups with their Pi TUI renderCall/renderResult on Enter (off = JSON viewer). Built-in adapted tools (read, edit, write, bash) always keep native viewers.",
+            keywords: &["pi", "tool", "renderer", "custom", "plugin", "json", "enter"],
+            kind: SettingKind::Bool {
+                default: ui_default.pi_custom_tool_renderer,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+            external_only: true,
+        },
+        SettingMeta {
             key: "pi_config",
             category: SettingCategory::Agent,
             owner: SettingOwner::Shell,

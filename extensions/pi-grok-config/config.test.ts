@@ -123,4 +123,29 @@ describe("pi-grok-config snapshot parsing and TUI renderer", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("coalesces rapid right-pane wheel scrolling and cancels on Esc", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-grok-cfg-wheel-"));
+    try {
+      const snap = makeSampleSnapshot(dir);
+      let renderRequests = 0;
+      const comp = createPiConfigTui(
+        { requestRender: () => { renderRequests += 1; } },
+        mockTheme,
+        { snapshot: snap, nerdIcons: false, onMutate: () => {}, getRows: () => 24 },
+        () => {},
+      );
+      comp.render(108);
+      const before = renderRequests;
+      for (let i = 0; i < 6; i++) {
+        comp.handleInput("\x1b[<65;85;10M");
+      }
+      expect(renderRequests).toBe(before);
+      await new Promise((r) => setTimeout(r, 70));
+      expect(renderRequests).toBe(before + 1);
+      comp.handleInput("\x1b");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

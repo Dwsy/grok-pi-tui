@@ -1046,7 +1046,7 @@ export class SessionPickerTui implements Component {
     const ageColW = 7;
     const createdColW = innerW >= 88 ? 11 : 0;
     const msgsColW = innerW >= 68 ? 5 : 0;
-    const modelColW = innerW >= 54 ? 18 : 0;
+    const modelColW = innerW >= 72 ? 18 : 0;
     const rightColsW =
       ageColW +
       (createdColW > 0 ? createdColW + 2 : 0) +
@@ -1179,53 +1179,52 @@ export class SessionPickerTui implements Component {
         ? `${selected.messageCount} (${selected.userMessages}U/${selected.assistantMessages}A)`
         : `${selected.messageCount}`;
 
-    const headerLines: string[] = [pad(this.fg("dim", "Session details")), ""];
-    const wrappedTitle = wrapTextToWidth(selected.title, textW).slice(0, 2);
-    for (const tLine of wrappedTitle) {
-      headerLines.push(
-        pad(this.bold(styleSessionTitle(selected.id, tLine, isLightTerminalTheme(this.theme)))),
-      );
+    const detailLabel = this.fg("dim", "Session details");
+    const titleBudget = Math.max(8, textW - 2 - visibleWidth("Session details") - 1);
+    const wrappedTitle = wrapTextToWidth(selected.title, titleBudget).slice(0, 2);
+    const headerLines: string[] = [];
+    if (wrappedTitle.length === 0) {
+      headerLines.push(pad(detailLabel));
+    } else {
+      wrappedTitle.forEach((tLine, idx) => {
+        const styled = this.bold(
+          styleSessionTitle(selected.id, tLine, isLightTerminalTheme(this.theme)),
+        );
+        headerLines.push(pad(idx === 0 ? `${detailLabel} ${styled}` : styled));
+      });
     }
+
+    const field = (label: string, value: string, color = "dim") => {
+      const budget = Math.max(8, textW - 2 - visibleWidth(label) - 1);
+      return pad(
+        `${this.fg("dim", label)} ${this.fg(color, truncateToWidth(value, budget, ""))}`,
+      );
+    };
+
     headerLines.push(
       pad(
-        `${this.fg("dim", "○")} ${this.fg("dim", selected.shortId)} · ${msgsDetail} msgs · ${this.fg("warning", formatTokensM(selected.totalTokens))}`,
+        `${this.fg("dim", "○")} ${this.fg("dim", selected.shortId)} · ${this.fg("dim", "Messages:")} ${msgsDetail}`,
       ),
     );
-    if (selected.name?.trim()) {
-      headerLines.push(pad(`${this.fg("dim", "Name:")} ${this.fg("warning", selected.name)}`));
-    }
-    headerLines.push("");
     headerLines.push(
-      pad(`${this.fg("dim", "Model:")} ${this.fg("success", shortModelName(selected.model))}`),
+      field("Model:", `${shortModelName(selected.model)} · ${formatTokensM(selected.totalTokens)}`, "success"),
     );
-    headerLines.push(pad(`${this.fg("dim", "Messages:")} ${msgsDetail}`));
-    headerLines.push(
-      pad(`${this.fg("dim", "Created:")} ${formatTimestamp(selected.created)}`),
-    );
-    headerLines.push(
-      pad(`${this.fg("dim", "Updated:")} ${formatTimestamp(selected.modified)}`),
-    );
-    headerLines.push("");
-    headerLines.push(pad(this.fg("dim", "Project")));
-    for (const pLine of wrapTextToWidth(selected.cwd || selected.project, textW).slice(0, 2)) {
-      headerLines.push(pad(pLine));
-    }
-    if (this.showPath) {
-      headerLines.push(pad(this.fg("dim", "Path")));
-      for (const pLine of wrapTextToWidth(shortenHomePath(selected.path), textW).slice(0, 2)) {
-        headerLines.push(pad(pLine));
-      }
-    }
-    headerLines.push("");
+    if (selected.name?.trim()) headerLines.push(field("Name:", selected.name, "warning"));
+    headerLines.push(field("Created:", formatCompactDate(selected.created)));
+    headerLines.push(field("Updated:", formatCompactDate(selected.modified)));
+    headerLines.push(field("Project:", selected.cwd || selected.project));
+    if (this.showPath) headerLines.push(field("Path:", shortenHomePath(selected.path)));
     if (selectedHit?.matchSnippet && this.query.trim()) {
       headerLines.push(pad(this.fg("dim", "Match")));
-      const highlightedSnippet = highlightTerms(
-        truncateToWidth(selectedHit.matchSnippet, textW, ""),
-        this.query,
-        (m) => `\x1b[7m${m}\x1b[27m`,
+      headerLines.push(
+        pad(
+          highlightTerms(
+            truncateToWidth(selectedHit.matchSnippet, textW, ""),
+            this.query,
+            (m) => `\x1b[7m${m}\x1b[27m`,
+          ),
+        ),
       );
-      headerLines.push(pad(highlightedSnippet));
-      headerLines.push("");
     }
     headerLines.push(pad(this.fg("dim", "Last messages")));
 

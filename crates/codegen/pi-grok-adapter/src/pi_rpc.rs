@@ -354,24 +354,23 @@ fn attach_child(
     let pending_stdout = pending.clone();
     let event_stdout = event_tx.clone();
     tokio::spawn(async move {
-        let mut lines = BufReader::new(stdout).lines();
+        let mut lines = BufReader::with_capacity(64 * 1024, stdout).lines();
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => match parse_pi_rpc_json(&line) {
                     Ok(value) => {
-                        let response_id = value
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned);
-                        let is_response =
-                            value.get("type").and_then(Value::as_str) == Some("response");
-                        if is_response
-                            && let Some(id) = response_id
-                            && let Some(request) = pending_stdout
-                                .lock()
-                                .expect("Pi pending map poisoned")
-                                .remove(&id)
-                        {
+                        let matched_request =
+                            if value.get("type").and_then(Value::as_str) == Some("response") {
+                                value.get("id").and_then(Value::as_str).and_then(|id| {
+                                    pending_stdout
+                                        .lock()
+                                        .expect("Pi pending map poisoned")
+                                        .remove(id)
+                                })
+                            } else {
+                                None
+                            };
+                        if let Some(request) = matched_request {
                             let _ = request.sender.send(Ok(value));
                             continue;
                         }

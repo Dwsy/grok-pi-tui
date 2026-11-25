@@ -48,6 +48,69 @@ export class RenderCoalescer {
   }
 }
 
+/** Reusable in-memory vertical divider drag controller for split TUI overlays. */
+export class DividerDragController {
+  private ratio: number;
+  private active = false;
+
+  constructor(initialRatio = 0.4) {
+    this.ratio = Math.max(0.1, Math.min(0.9, initialRatio));
+  }
+
+  get leftRatio(): number {
+    return this.ratio;
+  }
+
+  get dragging(): boolean {
+    return this.active;
+  }
+
+  cancel(): void {
+    this.active = false;
+  }
+
+  computeLeftWidth(totalWidth: number, minLeft = 20, minRight = 20): number {
+    const maxLeft = Math.max(minLeft, totalWidth - minRight - 1);
+    return Math.max(minLeft, Math.min(maxLeft, Math.floor((totalWidth - 1) * this.ratio)));
+  }
+
+  handleMouse(
+    event: { type: string; button?: string; x: number; y: number },
+    bounds: {
+      totalWidth: number;
+      dividerX: number;
+      bodyStartY: number;
+      bodyHeight: number;
+      minLeft?: number;
+      minRight?: number;
+    },
+  ): { handled: true; capture?: boolean; render: boolean } | undefined {
+    const minLeft = bounds.minLeft ?? 20;
+    const minRight = bounds.minRight ?? (bounds.totalWidth >= 80 ? 28 : 20);
+    if (this.active) {
+      if (event.type === "drag") {
+        const maxLeft = Math.max(minLeft, bounds.totalWidth - minRight - 1);
+        const clamped = Math.max(minLeft, Math.min(event.x, maxLeft));
+        this.ratio = clamped / Math.max(1, bounds.totalWidth - 1);
+        return { handled: true, capture: true, render: true };
+      }
+      if (event.type === "release") {
+        this.active = false;
+        return { handled: true, render: true };
+      }
+      return { handled: true, capture: true, render: false };
+    }
+    if (event.type === "press" && event.button === "left") {
+      const inBody = event.y >= bounds.bodyStartY && event.y < bounds.bodyStartY + bounds.bodyHeight;
+      if (inBody && Math.abs(event.x - bounds.dividerX) <= 1) {
+        this.active = true;
+        return { handled: true, capture: true, render: true };
+      }
+    }
+    return undefined;
+  }
+}
+
 export interface HeaderPillSpec {
   id: string;
   label: string;

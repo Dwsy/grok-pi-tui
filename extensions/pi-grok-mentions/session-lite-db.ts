@@ -69,6 +69,7 @@ const TAIL_PROBE_BYTES = 32 * 1024;
 const MAX_SNIPPET_CHARS = 160;
 const MAX_SEARCH_TEXT_CHARS = 2048;
 const SYNC_COOLDOWN_MS = 3_000;
+const COLD_SYNC_BATCH = 200;
 const SKIP_DIR_NAMES = new Set(["datasets", "node_modules", ".git", ".cache"]);
 
 const lastSyncAtByDb = new Map<string, number>();
@@ -590,12 +591,17 @@ export function syncSessionLiteDb(options: {
   sessionsDir?: string;
   liteDbPath?: string;
   force?: boolean;
+  /** Prioritize JSONLs matching this project cwd first during cold indexing. */
+  preferredCwd?: string;
+  /** Optional max files to parse in a single cold-start sync pass (defaults to 200). */
+  maxBatch?: number;
 } = {}): {
   dbPath: string;
   usedSqlite: boolean;
   scanned: number;
   skipped: number;
   removed: number;
+  remaining?: number;
   memoryRecords?: LiteSessionMeta[];
 } {
   const sessionsDir = options.sessionsDir ?? defaultPiSessionsDir();
@@ -672,9 +678,33 @@ export function syncSessionLiteDb(options: {
         }
       }
 
-      if (toParse.length > 0 || toDelete.length > 0) {
+      // Prioritize current-project folder and newest sessions first so cold
+      // starts surface relevant sessions immediately even before full indexing.
+      if (toParse.length > 1) {
+        const cwdSlug = options.preferredCwd
+          ? options.preferredCwd.replace(/[\\/]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase()
+          : "";
+        const cwdBase = options.preferredCwd ? path.basename(options.preferredCwd).toLowerCase() : "";
+        toParse.sort((a, b) => {
+          if (cwdSlug) {
+            const aPath = a.path.toLowerCase();
+            const bPath = b.path.toLowerCase();
+            const aMatch = aPath.includes(cwdSlug) || (cwdBase.length >= 3 && aPath.includes(cwdBase));
+            const bMatch = bPath.includes(cwdSlug) || (cwdBase.length >= 3 && bPath.includes(cwdBase));
+            if (aMatch !== bMatch) return aMatch ? -1 : 1;
+          }
+          return b.mtimeMs - a.mtimeMs;
+        });
+      }
+
+      const batchLimit = options.maxBatch ?? COLD_SYNC_BATCH;
+      const isColdChunked = !options.force && existingByPath.size === 0 && toParse.length > batchLimit;
+      const batch = isColdChunked ? toParse.slice(0, batchLimit) : toParse;
+      const remaining = toParse.length - batch.length;
+
+      if (batch.length > 0 || toDelete.length > 0) {
         const parsed: LiteSessionMeta[] = [];
-        for (const f of toParse) {
+        for (const f of batch) {
           const meta = parseSessionHeaderFast(f.path, f.mtimeMs, f.size);
           if (meta) parsed.push(meta);
         }
@@ -738,13 +768,21 @@ export function syncSessionLiteDb(options: {
         }
       }
 
-      lastSyncAtByDb.set(dbPath, Date.now());
+      if (remaining === 0) {
+        lastSyncAtByDb.set(dbPath, Date.now());
+      } else {
+        // Schedule background completion for the remaining cold-start files.
+        setImmediate(() => {
+          syncSessionLiteDb({ sessionsDir, liteDbPath: dbPath, force: true });
+        });
+      }
       return {
         dbPath,
         usedSqlite: true,
-        scanned: toParse.length,
+        scanned: batch.length,
         skipped,
         removed: toDelete.length,
+        remaining,
       };
     } finally {
       db.close();
@@ -915,4 +953,26 @@ export function resetLiteSyncCooldown(liteDbPath?: string): void {
   } else {
     lastSyncAtByDb.clear();
   }
+}
+
+/**
+ * Non-blocking progressive sync: if `sessions-lite.db` already exists, returns
+ * immediately so the caller can render cached rows in 0ms and runs incremental
+ * sync on the next tick, invoking `onUpdated` only if files changed.
+ */
+export function scheduleLiteDbBackgroundSync(options: {
+  sessionsDir?: string;
+  liteDbPath?: string;
+  onUpdated?: (stats: { scanned: number; removed: number }) => void;
+} = {}): boolean {
+  const sessionsDir = options.sessionsDir ?? defaultPiSessionsDir();
+  const dbPath = options.liteDbPath ?? defaultLiteDbPath(sessionsDir);
+  if (!fs.existsSync(dbPath)) return false;
+  setImmediate(() => {
+    const res = syncSessionLiteDb({ sessionsDir, liteDbPath: dbPath });
+    if (res.scanned > 0 || res.removed > 0) {
+      options.onUpdated?.({ scanned: res.scanned, removed: res.removed });
+    }
+  });
+  return true;
 }

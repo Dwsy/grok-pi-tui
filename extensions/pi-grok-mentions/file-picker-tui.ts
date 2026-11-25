@@ -23,6 +23,7 @@ import {
 import {
   computeSplitGeometry,
   detectTerminalImageProtocol,
+  DividerDragController,
   fitWidth,
   highlightTerms,
   hitRegion,
@@ -148,6 +149,7 @@ export class FilePickerTui implements Component {
   private readonly imageCap: TerminalImageCapability;
   private readonly getRows: () => number;
   private readonly renderCoalescer: RenderCoalescer;
+  private readonly dividerDrag = new DividerDragController(0.42);
 
   private mode: FilePickerMode;
   private query: string;
@@ -178,6 +180,7 @@ export class FilePickerTui implements Component {
   private readonly highlightCache = new Map<string, string[] | null>();
 
   // Layout geometry captured per frame for mouse hit-testing
+  private lastTotalWidth = 100;
   private dividerX = 43;
   private bodyStartY = 5;
   private bodyHeight = 14;
@@ -566,6 +569,15 @@ export class FilePickerTui implements Component {
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     const { x, y, type } = event;
+    const dragRes = this.dividerDrag.handleMouse(event, {
+      totalWidth: this.lastTotalWidth,
+      dividerX: this.dividerX,
+      bodyStartY: this.bodyStartY,
+      bodyHeight: this.bodyHeight,
+      minLeft: 26,
+      minRight: 26,
+    });
+    if (dragRes) return dragRes;
 
     if (type === "wheel") {
       const delta = (event.wheelDelta ?? 0) > 0 ? 1 : -1;
@@ -902,7 +914,7 @@ export class FilePickerTui implements Component {
     const geometry = computeSplitGeometry({
       width,
       rows: termRows,
-      leftRatio: 0.42,
+      leftRatio: this.dividerDrag.leftRatio,
       hasSearchBar: true,
       minWidth: 60,
       minLeftWidth: 26,
@@ -910,6 +922,7 @@ export class FilePickerTui implements Component {
       heightRatio: 0.9,
       maxRows: targetRows,
     });
+    this.lastTotalWidth = geometry.totalWidth;
     this.dividerX = geometry.dividerX;
     this.bodyStartY = geometry.bodyStartY;
     this.bodyHeight = geometry.bodyHeight;

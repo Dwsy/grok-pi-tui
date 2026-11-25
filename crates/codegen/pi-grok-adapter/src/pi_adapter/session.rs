@@ -18,17 +18,16 @@ impl PiAgent {
         };
         let target_id = session_id.to_owned();
         let discovered = tokio::task::spawn_blocking(move || {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            let mut paths = HashMap::new();
-            if let Some(sessions) = crate::psm_session_catalog::load_catalog(&cwd, true) {
-                for session in sessions {
-                    paths.insert(session.id, session.path);
-                }
+            // Fast O(1) indexed point lookup in PSM `sessions.db` or fallback
+            // `sessions-lite.db` before scanning local JSONL files on disk.
+            if let Some(found) = crate::psm_session_catalog::resolve_session_path(&target_id) {
+                let mut paths = HashMap::with_capacity(1);
+                paths.insert(target_id, PathBuf::from(found));
+                return paths;
             }
-            if !paths.contains_key(&target_id) {
-                for session in scan_local_sessions(&session_dir) {
-                    paths.entry(session.id).or_insert(session.path);
-                }
+            let mut paths = HashMap::new();
+            for session in scan_local_sessions(&session_dir) {
+                paths.entry(session.id).or_insert(session.path);
             }
             paths
         })

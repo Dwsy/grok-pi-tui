@@ -110,6 +110,89 @@ async function openReviewOverlay(
   }
 }
 
+async function openTraceOverlay(
+  ctx: ExtensionCommandContext,
+  options: { initialQuery?: string; initialToolCallId?: string },
+): Promise<void> {
+  const [{ parseSessionTraceJsonl }, { createTraceTui }] = await Promise.all([
+    import("./trace-data.ts"),
+    import("./trace-tui.ts"),
+  ]);
+  const sessionFile = resolveSessionJsonlPath(ctx);
+  const entries = parseSessionTraceJsonl(sessionFile);
+  if (entries.length === 0) {
+    ctx.ui.notify("No JSONL trace entries in this session yet", "info");
+    return;
+  }
+
+  await ctx.ui.custom<void>(
+    (tui, theme, _kb, done) =>
+      createTraceTui(
+        tui as { requestRender: () => void },
+        theme as TuiTheme,
+        {
+          entries,
+          sessionFile,
+          initialQuery: options.initialQuery,
+          initialToolCallId: options.initialToolCallId,
+          getRows: () => {
+            const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
+            return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+          },
+        },
+        () => done(undefined),
+      ),
+    {
+      overlay: true,
+      overlayOptions: {
+        width: "90%",
+        maxHeight: "90%",
+        anchor: "center",
+      },
+    },
+  );
+}
+
+async function openToolRenderOverlay(
+  ctx: ExtensionCommandContext,
+  toolCallId: string,
+): Promise<void> {
+  const [{ findToolInvocationInJsonl, createToolRenderTui }] = await Promise.all([
+    import("./tool-render-tui.ts"),
+  ]);
+  const sessionFile = resolveSessionJsonlPath(ctx);
+  const cwd = (ctx as { cwd?: string }).cwd || process.cwd();
+  const invocation = findToolInvocationInJsonl(sessionFile, toolCallId);
+  if (!invocation) {
+    ctx.ui.notify(`Tool call ${toolCallId} not found in session JSONL`, "info");
+    return;
+  }
+  await ctx.ui.custom<void>(
+    (tui, theme, _kb, done) =>
+      createToolRenderTui(
+        tui as { requestRender: () => void },
+        theme as TuiTheme,
+        {
+          invocation,
+          cwd,
+          getRows: () => {
+            const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
+            return typeof tRows === "number" && tRows > 0 ? tRows : 28;
+          },
+        },
+        () => done(undefined),
+      ),
+    {
+      overlay: true,
+      overlayOptions: {
+        width: "90%",
+        maxHeight: "90%",
+        anchor: "center",
+      },
+    },
+  );
+}
+
 export default function reviewExtension(pi: ExtensionAPI): void {
   const registerPair = (name: string, mode: ReviewLaunchMode, description: string) => {
     pi.registerCommand(name, {
@@ -123,8 +206,30 @@ export default function reviewExtension(pi: ExtensionAPI): void {
   // Public commands (standalone Pi & direct invocation)
   registerPair("review-session", "session", "Review file changes made in this session");
   registerPair("review-message", "message", "Review file changes grouped by message turn");
+  pi.registerCommand("trace", {
+    description: "Inspect full session JSONL trace (tools, messages, thinking, metadata)",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const query = String(args ?? "").trim();
+      await openTraceOverlay(ctx, { initialQuery: query || undefined });
+    },
+  });
 
-  // Hidden bridge commands invoked by Rust Pager (`dispatch/review.rs`)
+  // Hidden bridge commands invoked by Rust Pager (`dispatch/review.rs`, `dispatch/router.rs`)
   registerPair("__pi_review_session", "session", "Internal grok-pi bridge for /review-session");
   registerPair("__pi_review_message", "message", "Internal grok-pi bridge for /review-message");
+  pi.registerCommand("__pi_trace", {
+    description: "Internal grok-pi bridge for Left-arrow /trace JSONL viewer",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const callId = String(args ?? "").trim();
+      await openTraceOverlay(ctx, { initialToolCallId: callId || undefined });
+    },
+  });
+  pi.registerCommand("__pi_tool_render", {
+    description: "Internal grok-pi bridge for custom Pi plugin tool renderer popup (F2 opt-in)",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const callId = String(args ?? "").trim();
+      if (!callId) return;
+      await openToolRenderOverlay(ctx, callId);
+    },
+  });
 }

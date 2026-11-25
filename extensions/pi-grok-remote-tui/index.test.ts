@@ -568,3 +568,46 @@ test("showOverlay restores previous root component on hide", async () => {
     else process.env.PI_GROK_REMOTE_TUI = previous;
   }
 });
+
+test("pushFrame deduplicates identical frames without redundant setWidget IPC calls", async () => {
+  let widgetPushes = 0;
+  let frameText = "frame-v1";
+  const ui = {
+    custom: async (..._args: any[]): Promise<any> => undefined,
+    setWidget(_key: string, lines?: string[]) {
+      if (lines?.some((line) => line.startsWith("frame-"))) widgetPushes += 1;
+    },
+  };
+  installCustomPatch(ui);
+  let finish!: (result: string) => void;
+  let requestRender!: () => void;
+  const result = ui.custom((tui: any, _theme: unknown, _kb: unknown, done: typeof finish) => {
+    finish = done;
+    requestRender = () => tui.requestRender();
+    return {
+      invalidate() {},
+      render: () => [frameText],
+      handleInput() {},
+    };
+  });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    const initialPushes = widgetPushes;
+    expect(initialPushes).toBe(1);
+
+    // Redundant renders with unchanged output must not re-invoke setWidget.
+    requestRender();
+    requestRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(widgetPushes).toBe(initialPushes);
+
+    // Changed output pushes exactly once.
+    frameText = "frame-v2";
+    requestRender();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(widgetPushes).toBe(initialPushes + 1);
+  } finally {
+    finish?.("done");
+    await result;
+  }
+});

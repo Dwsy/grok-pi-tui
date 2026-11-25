@@ -207,7 +207,12 @@ describe("FilePickerTui rendering, modes (Tree / fd / rg), keyboard, and mouse",
       const picker = createFilePickerTui(
         { requestRender: () => {} },
         plainTheme,
-        { rootDir: dir, nerdIcons: false, getRows: () => 28 },
+        {
+          rootDir: dir,
+          nerdIcons: false,
+          highlightFile: () => undefined,
+          getRows: () => 28,
+        },
         (sel) => {
           chosen = sel;
         },
@@ -240,7 +245,12 @@ describe("FilePickerTui rendering, modes (Tree / fd / rg), keyboard, and mouse",
       const picker = createFilePickerTui(
         { requestRender: () => {} },
         plainTheme,
-        { rootDir: dir, nerdIcons: false, getRows: () => 28 },
+        {
+          rootDir: dir,
+          nerdIcons: false,
+          highlightFile: () => undefined,
+          getRows: () => 28,
+        },
         (sel) => {
           chosen = sel;
         },

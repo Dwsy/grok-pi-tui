@@ -1,5 +1,6 @@
 export {
   computeSplitGeometry,
+  DividerDragController,
   fitWidth,
   highlightTerms,
   hitRegion,

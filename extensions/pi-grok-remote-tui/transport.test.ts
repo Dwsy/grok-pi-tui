@@ -52,11 +52,14 @@ test("key transport buffers partial records and ignores stale component input/ca
       { id: "old", op: "mouse", event: mouse("press", 1) },
       { id: "current", op: "mouse", event: mouse("move", 2) },
       { id: "current", op: "mouse", event: mouse("move", 4) },
+      { id: "current", op: "mouse", event: mouse("drag", 5) },
+      { id: "current", op: "mouse", event: mouse("drag", 8) },
       { id: "current", op: "mouse", event: mouse("wheel", 4, -1) },
     ].map((event) => JSON.stringify(event) + "\n").join(""));
     drainKeys(host);
     expect(mouseEvents.map((event) => [event.type, event.x, event.wheelDelta])).toEqual([
       ["move", 4, undefined],
+      ["drag", 8, undefined],
       ["wheel", 4, -1],
     ]);
     appendFileSync(keysPath, JSON.stringify({ id: "current", op: "cancel" }) + "\n");

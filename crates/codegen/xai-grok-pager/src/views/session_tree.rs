@@ -8,6 +8,8 @@
 //!
 //! Navigation still goes through Pi `ctx.navigateTree` via the adapter bridge.
 
+#![cfg_attr(not(any(feature = "stock-agent", test)), allow(dead_code, unused_imports))]
+
 use crate::app::actions::{SessionTreeFilter, SessionTreeNode};
 use crate::theme::Theme;
 use ratatui::{
@@ -912,6 +914,17 @@ fn build_prefix(row: &VisibleRow, folded: bool, foldable: bool) -> String {
 /// Render the session tree content into `area`.
 ///
 /// Caller supplies ModalWindow chrome; do not draw a second titled border.
+/// Replaced by TS Remote TUI (`__pi_session_tree`) in `grok-pi` builds.
+#[cfg(not(any(feature = "stock-agent", test)))]
+pub fn render_session_tree(
+    _buf: &mut Buffer,
+    _area: Rect,
+    _state: &mut SessionTreeState,
+    _theme: &Theme,
+) {
+}
+
+#[cfg(any(feature = "stock-agent", test))]
 pub fn render_session_tree(
     buf: &mut Buffer,
     area: Rect,
@@ -1234,6 +1247,7 @@ fn role_styles(node: &SessionTreeNode, selected: bool, theme: &Theme) -> (Style,
     (role, body)
 }
 
+#[cfg(any(feature = "stock-agent", test))]
 fn render_detail(buf: &mut Buffer, area: Rect, state: &SessionTreeState, theme: &Theme) {
     let block = Block::default()
         .borders(Borders::TOP)

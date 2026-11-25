@@ -235,7 +235,11 @@ function resolveActiveSessionDb(options: {
     return { dbPath: psmDb, isLite: false };
   }
   const liteDbPath = options.dbPath ?? defaultLiteDbPath(sessionsDir);
-  const synced = syncSessionLiteDb({ sessionsDir, liteDbPath });
+  const synced = syncSessionLiteDb({
+    sessionsDir,
+    liteDbPath,
+    preferredCwd: process.cwd(),
+  });
   return {
     dbPath: synced.dbPath,
     isLite: true,
@@ -882,9 +886,45 @@ export function extractVisibleMessageText(content: unknown): string {
   return parts.join("\n").trim();
 }
 
+function parsePreviewLines(raw: string, skipFirstLine: boolean): PreviewMessage[] {
+  const lines = raw.split("\n");
+  const start = skipFirstLine ? 1 : 0;
+  const messages: PreviewMessage[] = [];
+  for (let i = start; i < lines.length; i++) {
+    const trimmed = lines[i]!.trim();
+    if (!trimmed || trimmed[0] !== "{") continue;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (parsed.type && parsed.type !== "message") continue;
+    const msg = (parsed.message ?? parsed) as {
+      role?: unknown;
+      content?: unknown;
+      timestamp?: unknown;
+    };
+    const role = typeof msg.role === "string" ? msg.role.toLowerCase() : "";
+    if (role !== "user" && role !== "assistant") continue;
+    const content = extractVisibleMessageText(msg.content);
+    if (!content) continue;
+    const ts =
+      typeof parsed.timestamp === "string"
+        ? parsed.timestamp
+        : typeof msg.timestamp === "string"
+          ? msg.timestamp
+          : "";
+    messages.push({ role, content, timestamp: ts });
+  }
+  return messages;
+}
+
 /**
  * Parse user & assistant text messages directly from a Pi session JSONL file,
- * hiding tool calls, tool results, and thinking blocks.
+ * hiding tool calls, tool results, and thinking blocks. Uses tail-chunked
+ * reading on large (>256 KB) files so giant sessions preview without reading
+ * the entire file into memory.
  */
 export function loadPreviewFromJsonl(
   jsonlPath: string,
@@ -892,37 +932,30 @@ export function loadPreviewFromJsonl(
 ): PreviewMessage[] {
   if (!jsonlPath || !fs.existsSync(jsonlPath)) return [];
   try {
-    const raw = fs.readFileSync(jsonlPath, "utf8");
-    const lines = raw.split("\n");
-    const messages: PreviewMessage[] = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
-      if (parsed.type && parsed.type !== "message") continue;
-      const msg = (parsed.message ?? parsed) as {
-        role?: unknown;
-        content?: unknown;
-        timestamp?: unknown;
-      };
-      const role = typeof msg.role === "string" ? msg.role.toLowerCase() : "";
-      if (role !== "user" && role !== "assistant") continue;
-      const content = extractVisibleMessageText(msg.content);
-      if (!content) continue;
-      const ts =
-        typeof parsed.timestamp === "string"
-          ? parsed.timestamp
-          : typeof msg.timestamp === "string"
-            ? msg.timestamp
-            : "";
-      messages.push({ role, content, timestamp: ts });
+    const stat = fs.statSync(jsonlPath);
+    const initialChunk = 256 * 1024;
+    if (stat.size <= initialChunk) {
+      const messages = parsePreviewLines(fs.readFileSync(jsonlPath, "utf8"), false);
+      return messages.length > maxMessages ? messages.slice(-maxMessages) : messages;
     }
-    return messages.length > maxMessages ? messages.slice(-maxMessages) : messages;
+
+    const fd = fs.openSync(jsonlPath, "r");
+    try {
+      let chunkSize = initialChunk;
+      while (true) {
+        const readLen = Math.min(stat.size, chunkSize);
+        const offset = stat.size - readLen;
+        const buf = Buffer.allocUnsafe(readLen);
+        const bytesRead = fs.readSync(fd, buf, 0, readLen, offset);
+        const messages = parsePreviewLines(buf.subarray(0, bytesRead).toString("utf8"), offset > 0);
+        if (messages.length >= maxMessages || offset === 0) {
+          return messages.length > maxMessages ? messages.slice(-maxMessages) : messages;
+        }
+        chunkSize = Math.min(stat.size, chunkSize * 4);
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     return [];
   }

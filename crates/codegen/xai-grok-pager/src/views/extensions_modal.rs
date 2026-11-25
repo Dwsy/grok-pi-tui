@@ -3,6 +3,8 @@
 //! A centered overlay using the shared [`ModalWindow`](super::modal_window) chrome, opened by the `/hooks` and `/plugins` slash commands.
 //! Blocks all input until closed with `Esc`.
 
+#![cfg_attr(not(any(feature = "stock-agent", test)), allow(dead_code, unused_imports))]
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -2754,8 +2756,22 @@ pub(crate) fn marketplace_components_summary(
 // ---------------------------------------------------------------------------
 
 /// Render the hooks/plugins modal popup as a centered overlay.
+#[cfg(any(feature = "stock-agent", test))]
 const SPINNER_DIVISOR: u64 = 4;
 
+/// Replaced by TS Remote TUI (`__pi_extensions_modal`) in `grok-pi` builds.
+#[cfg(not(any(feature = "stock-agent", test)))]
+pub fn render_extensions_modal(
+    _buf: &mut Buffer,
+    _full_area: Rect,
+    _state: &mut ExtensionsModalState,
+    _shortcuts_area: Option<Rect>,
+    _compact: bool,
+    _tick: u64,
+) {
+}
+
+#[cfg(any(feature = "stock-agent", test))]
 pub fn render_extensions_modal(
     buf: &mut Buffer,
     full_area: Rect,
@@ -4004,6 +4020,7 @@ pub fn render_extensions_modal(
     }
 }
 
+#[cfg(any(feature = "stock-agent", test))]
 fn render_mcp_setup_form(buf: &mut Buffer, area: Rect, setup: &McpSetupFormState, theme: &Theme) {
     if area.height < 6 || area.width < 20 {
         return;
@@ -4070,6 +4087,7 @@ enum ModalMsgKind {
 
 /// Render a centered list of (key, label) hint segments into the bottom row of `footer_area`, joined by `  |  ` separators.
 /// Mirrors the styling used by `modal_window::render_modal_shortcuts` so custom dismissal hints look the same as standard footer shortcuts.
+#[cfg(any(feature = "stock-agent", test))]
 fn render_footer_hint_segments(
     buf: &mut Buffer,
     footer_area: Rect,
@@ -4121,6 +4139,7 @@ fn render_footer_hint_segments(
 /// Render an inline input form for commands that need arguments. Each field gets its own rounded
 /// border around the input row, mirroring the prompt input chrome. Labels sit above the bordered
 /// row so they remain visible. Layout (stacked, one field shown).
+#[cfg(any(feature = "stock-agent", test))]
 fn render_input_form(buf: &mut Buffer, area: Rect, input: &ModalInput, theme: &Theme) {
     if area.height < 4 || area.width < 20 {
         return;

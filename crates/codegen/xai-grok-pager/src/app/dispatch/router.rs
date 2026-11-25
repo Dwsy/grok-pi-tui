@@ -102,7 +102,8 @@ use super::settings::setters::{
     set_pi_user_markdown,
     set_progress_bar, set_prompt_cursor, set_prompt_suggestions, set_psm_resume_index,
     set_recap_mermaid, set_recap_model, set_remember_tool_approvals, set_remote_tui_footer,
-    set_render_mermaid, set_respect_manual_folds, set_review_file_tree, set_review_include_reads,
+    set_pi_custom_tool_renderer, set_render_mermaid, set_respect_manual_folds,
+    set_review_file_tree, set_review_include_reads,
     set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed, set_session_recap,
     set_show_other_tool_args, set_show_thinking_blocks, set_show_tips, set_side_by_side_edit,
     set_side_by_side_word_highlight, set_simple_mode, set_theme, set_thinking_border_colors,
@@ -624,7 +625,26 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::Collapse => {
+            let external_agent = app.external_agent;
             if let Some(agent) = get_active_agent_mut(app) {
+                if external_agent {
+                    let focus_call_id = agent
+                        .scrollback
+                        .selected()
+                        .and_then(|index| agent.scrollback.entry(index))
+                        .filter(|entry| {
+                            entry.display_mode == DisplayMode::Collapsed
+                                && !entry.tool_traces.is_empty()
+                        })
+                        .map(|entry| entry.tool_traces[0].tool_call_id.clone());
+                    if let Some(call_id) = focus_call_id {
+                        return vec![Effect::MentionAction {
+                            kind: "trace".to_owned(),
+                            command: "__pi_trace".to_owned(),
+                            query: call_id,
+                        }];
+                    }
+                }
                 let trace_modal = agent
                     .scrollback
                     .selected()
@@ -804,6 +824,13 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             with_scrollback(app, |s| group_toggled = s.toggle_group_expansion());
             if group_toggled {
                 return vec![];
+            }
+            if let Some(call_id) = super::transcript::custom_tool_render_call_id(app) {
+                return vec![Effect::MentionAction {
+                    kind: "tool_render".to_owned(),
+                    command: "__pi_tool_render".to_owned(),
+                    query: call_id,
+                }];
             }
             dispatch_open_block_viewer(app);
             vec![]
@@ -1409,6 +1436,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetShowOtherToolArgs(enabled) => set_show_other_tool_args(app, enabled),
         Action::SetReviewFileTree(enabled) => set_review_file_tree(app, enabled),
         Action::SetReviewIncludeReads(enabled) => set_review_include_reads(app, enabled),
+        Action::SetPiCustomToolRenderer(enabled) => set_pi_custom_tool_renderer(app, enabled),
         Action::SetMaxThoughtsWidth(v) => set_max_thoughts_width(app, v),
         Action::SetShowTips(v) => set_show_tips(app, v),
         Action::SetAutoUpdate(v) => set_auto_update(app, v),
@@ -1823,6 +1851,20 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::TaskComplete(result) => dispatch_task_result(result, app),
         Action::ToggleGoalDetail => {
+            if app.external_agent {
+                let has_goal = matches!(
+                    app.active_view,
+                    ActiveView::Agent(id) if app.agents.get(&id).is_some_and(|a| a.goal_state.is_some())
+                );
+                if has_goal {
+                    return vec![Effect::MentionAction {
+                        kind: "goal_detail".to_owned(),
+                        command: "__pi_goal_detail".to_owned(),
+                        query: String::new(),
+                    }];
+                }
+                return vec![];
+            }
             with_active_agent(app, |agent| {
                 if agent.goal_state.is_some() {
                     agent.show_goal_detail = !agent.show_goal_detail;

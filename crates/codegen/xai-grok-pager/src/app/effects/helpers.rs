@@ -1758,6 +1758,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "pi_custom_tool_renderer" => {
+            let SettingValue::Bool(b) = value else {
+                return Err(kind_mismatch("pi_custom_tool_renderer", "Bool", &value));
+            };
+            xai_grok_shell::util::config::set_pi_custom_tool_renderer(b)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "session_recap" => {
             let SettingValue::Bool(b) = value else {
                 return Err(kind_mismatch("session_recap", "Bool", &value));

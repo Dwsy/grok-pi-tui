@@ -134,10 +134,16 @@ export function drainKeys(host: ActiveHost): void {
     for (let index = 0; index < messages.length; index++) {
       if (host.closed) return;
       let msg = messages[index];
-      // Hover motion has no stateful path dependency. When a burst arrives in
-      // one drain, dispatch only its latest point; keep drag and button events
-      // ordered because they define selection/capture gestures.
-      if (msg.op === "mouse" && isMouseEvent(msg.event) && msg.event.type === "move") {
+      // Coalesce consecutive hover `move` or same-button `drag` bursts within a
+      // single drain to their latest coordinates while keeping press/release/click
+      // boundaries strictly ordered.
+      if (
+        msg.op === "mouse" &&
+        isMouseEvent(msg.event) &&
+        (msg.event.type === "move" || msg.event.type === "drag")
+      ) {
+        const kind = msg.event.type;
+        const btn = msg.event.button;
         while (index + 1 < messages.length) {
           const next = messages[index + 1];
           if (!next) break;
@@ -146,7 +152,8 @@ export function drainKeys(host: ActiveHost): void {
             next.id !== msg.id ||
             next.op !== "mouse" ||
             !isMouseEvent(nextEvent) ||
-            nextEvent.type !== "move"
+            nextEvent.type !== kind ||
+            (kind === "drag" && nextEvent.button !== btn)
           ) {
             break;
           }

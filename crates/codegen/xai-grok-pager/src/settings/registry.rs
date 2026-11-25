@@ -614,6 +614,7 @@ pub fn current_value_for(
         "show_other_tool_args" => Some(SettingValue::Bool(ui.show_other_tool_args)),
         "review_file_tree" => Some(SettingValue::Bool(ui.review_file_tree)),
         "review_include_reads" => Some(SettingValue::Bool(ui.review_include_reads)),
+        "pi_custom_tool_renderer" => Some(SettingValue::Bool(ui.pi_custom_tool_renderer)),
         // The cache is the send-path source of truth (same pattern as group_tool_verbs)
         "page_flip_on_send" => Some(SettingValue::Bool(
             crate::appearance::cache::load_page_flip_on_send(),

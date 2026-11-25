@@ -102,6 +102,8 @@ function snapshotCommandCompletions(command: ExtensionCommand): void {
 }
 
 function snapshotAllCompletions(runner: ExtensionRunnerLike): void {
+  (globalThis as typeof globalThis & { __piGrokExtensionRunner?: unknown }).__piGrokExtensionRunner =
+    runner;
   try {
     for (const command of runner.getRegisteredCommands()) {
       snapshotCommandCompletions(command);
@@ -166,6 +168,9 @@ async function installRunnerHooks(): Promise<void> {
     prototype.getRegisteredCommands = function getRegisteredCommands(
       this: ExtensionRunnerLike,
     ): ExtensionCommand[] {
+      (
+        globalThis as typeof globalThis & { __piGrokExtensionRunner?: unknown }
+      ).__piGrokExtensionRunner = this;
       const commands = originalGet.call(this);
       for (const command of commands) {
         snapshotCommandCompletions(command);

@@ -58,6 +58,11 @@ pub(super) fn write_config_extension() -> Result<ConfigExtension> {
         "config-tui.ts",
         include_str!("../../../../../../extensions/pi-grok-config/config-tui.ts"),
     )?;
+    write_source_file(
+        &config_dir,
+        "extensions-modal-tui.ts",
+        include_str!("../../../../../../extensions/pi-grok-config/extensions-modal-tui.ts"),
+    )?;
 
     Ok(ConfigExtension {
         _source_dir: source_dir,
