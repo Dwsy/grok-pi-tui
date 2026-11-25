@@ -44,7 +44,8 @@ test("an unanswered prompt shows only its input, while compaction shows the summ
 });
 
 test("each built-in interaction name has a distinct family tick and bounded status preview", () => {
-  for (const [index, group] of TIMELINE_TOOL_GROUPS.entries()) {
+  const expectedTick: Record<string, string> = { plan: "P", subagents: "S", "team-subagents": "T" };
+  for (const group of TIMELINE_TOOL_GROUPS) {
     const tools = group.tools.map((toolName, index) => ({
       markerId: index + 1, version: "tool",
       entry: {
@@ -53,11 +54,48 @@ test("each built-in interaction name has a distinct family tick and bounded stat
       },
     }));
     for (const formatted of format(tools).entries) {
-      expect(formatted.tickAnsi && unstyle(formatted.tickAnsi)).toBe(index === 0 ? "S" : "T");
+      expect(formatted.tickAnsi && unstyle(formatted.tickAnsi)).toBe(expectedTick[group.id]!);
       expect(formatted.previewAnsi?.map(unstyle).slice(1)).toEqual(["/root/reviewer · follow up", "failed"]);
       expect(formatted.previewAnsi?.every((line) => visibleWidth(line) <= 32)).toBe(true);
     }
   }
+});
+
+test("team ticks cover key moments and drop polling calls", () => {
+  const team = TIMELINE_TOOL_GROUPS.find((group) => group.id === "team-subagents")?.tools;
+  expect(team).toEqual([
+    "spawn_team_agent", "spawn_team", "team_send_message", "team_followup_task", "team_interrupt",
+  ]);
+  const formatted = format([{
+    markerId: 3,
+    version: "wait",
+    entry: { kind: "tool", callId: "call-wait", toolName: "team_wait", status: "success" },
+  }]).entries[0]!;
+  expect(formatted.tickAnsi).toBeUndefined();
+});
+
+test("subagent ticks cover key moments and drop polling calls", () => {
+  const subagents = TIMELINE_TOOL_GROUPS.find((group) => group.id === "subagents")?.tools;
+  expect(subagents).toEqual(["spawn_subagent", "send_message_to_subagent", "kill_command_or_subagent"]);
+  for (const toolName of ["list_subagents", "get_command_or_subagent_output"]) {
+    const formatted = format([{
+      markerId: 4,
+      version: toolName,
+      entry: { kind: "tool", callId: "call-poll", toolName, status: "success" },
+    }]).entries[0]!;
+    expect(formatted.tickAnsi).toBeUndefined();
+  }
+});
+
+test("plan submission is the only plan-mode tick", () => {
+  expect(TIMELINE_TOOL_GROUPS.find((group) => group.id === "plan")?.tools).toEqual(["exit_plan_mode"]);
+  const formatted = format([{
+    markerId: 9,
+    version: "plan",
+    entry: { kind: "tool", callId: "call-plan", toolName: "exit_plan_mode", status: "success" },
+  }]).entries[0]!;
+  expect(formatted.tickAnsi && unstyle(formatted.tickAnsi)).toBe("P");
+  expect(formatted.previewAnsi?.map(unstyle)).toEqual(["Plan submitted for approval", "success"]);
 });
 
 test("prompt preview wraps user prompt to 2 lines, adds dividers, and colors +green/-red file diffs", () => {

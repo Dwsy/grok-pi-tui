@@ -3,25 +3,27 @@ import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 const MAX_FORMAT_LINE_BYTES = 2048;
 const MAX_PREVIEW_LINES = 14;
 const MAX_FILE_ROWS = 5;
+const PLAN_ACTIONS = {
+  exit_plan_mode: "Plan submitted for approval",
+};
+// Key interaction moments only, for both subagents and teams. Waiting, listing,
+// and reading output are polling calls the transcript already shows inline, so
+// they stay off the rail.
 const SUBAGENT_ACTIONS = {
   spawn_subagent: "Spawn subagent",
   send_message_to_subagent: "Send subagent message",
-  get_command_or_subagent_output: "Get subagent output",
   kill_command_or_subagent: "Cancel subagent",
-  list_subagents: "List subagents",
 };
 const TEAM_ACTIONS = {
   spawn_team_agent: "Spawn team agent",
   spawn_team: "Spawn team preset",
   team_send_message: "Send team message",
   team_followup_task: "Assign follow-up task",
-  team_wait: "Wait for team activity",
-  team_list: "List team agents",
   team_interrupt: "Interrupt team agent",
-  team_report: "Report team result",
 };
 
 export const TIMELINE_TOOL_GROUPS = [
+  { id: "plan", label: "Plan submissions", tools: Object.keys(PLAN_ACTIONS) },
   { id: "subagents", label: "Subagent interactions", tools: Object.keys(SUBAGENT_ACTIONS) },
   { id: "team-subagents", label: "Team subagent interactions", tools: Object.keys(TEAM_ACTIONS) },
 ];
@@ -150,6 +152,9 @@ function agentRenderer(glyph: string, color: number, action: string): TimelineRe
   };
 }
 
+for (const [name, action] of Object.entries(PLAN_ACTIONS)) {
+  registerTimelineRenderer(name, agentRenderer("P", 33, action));
+}
 for (const [name, action] of Object.entries(SUBAGENT_ACTIONS)) {
   registerTimelineRenderer(name, agentRenderer("S", 36, action));
 }
