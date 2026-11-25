@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-11-25
+
+### Added
+
+- **Pi-native `@` object mentions (`@session`, `@skill`, `@file`, `@folder`, `@mcp`)** — Resolved `@` references are injected as `custom_message` XML blocks (`<referenced_objects>` with structured `<session>`, `<skill>`, `<file>`, `<folder>`, `<mcp>` tags) instead of mutating `systemPrompt`, preserving LLM prompt KV caching while persisting resolved references visibly in session JSONL across turns. Pickers are TS-pluginized on a shared `extensions/pi-grok-tui-kit/` base, sized `90vw × 90vh` with short model names, debounced `rg` grep (`180ms`) and SQLite FTS5 session search (`150ms`), Pi syntax-highlighted code previews, and HD image previews (Herdr / Kitty / iTerm2 native overlays with Half-Block fallback).
+- **Fullscreen Codex-style `/resume` session command center** — Edge-to-edge split workspace with a `Sessions · Group: Project` bar, `All` / `Project` filter tabs, inline `/` search, project-grouped left table, and right `Session details` pane. Rows carry deterministic FNV-1a per-session identity colors (modeled on Codex's `thread_color.rs`), trimmed model names (`magpie/auto/deepseek-v4.1-flash` → `deepseek-v4.1-flash`), and `Msgs` / `Created` / `Updated` columns. Search spans the entire session archive (not just the top 300 in memory) via PSM's SQLite `message_fts` (FTS5) plus `sessions` metadata/body matching, with highlighted `Match` snippets.
+- **Standalone TS overlays: `/tree`, `/review`, `/review-session`, `/review-message`, `/pi-config`** — `/tree` renders flat linear chains (only fork points add `├─`/`└─`), sized `90vw × 90vh`, with native `TuiMouseEvent` support (click pills/close/rows, double-click jump, wheel scroll) and `pi-main` shortcuts (`Alt+←/→` branch jump, `Home/End`, `Ctrl+X` copy, `Shift+L` label editor, `Shift+T` timestamps, `Ctrl+D/T/U/L/A`, `Ctrl+O`/`Shift+Ctrl+O` filters). `/review` and `/pi-config` render over the Rust `PiResourceCatalog` API; `/pi-config` becomes the TS resource manager.
+- **Live Remote TUI** — Resize support via `Effect::RemoteTuiResize` (`pi/ui/remote_tui/resize`) threaded from `xai-grok-pager` through `pi-grok-adapter` into `extensions/pi-grok-remote-tui/`, updating both active overlays and persisting `<meta>.viewport.json` so later overlays open at live dimensions. Larger Timeline hover cards (width `36–72` cols, up to 14 rows) with wrapped prompts, section dividers, and `+`/`-` colored file summaries.
+- **Pi model catalog cache & pre-ready model switching** — Hydrates from `${GROK_HOME:-~/.grok-pi}/pi-models-cache.json` (falling back to `~/.pi/agent/models.json` and `settings.json`) and refreshes atomically when Pi finishes loading, so `/model` (`Ctrl+M`), `NextModel`, and `CycleThinkingLevel` work before Pi finishes booting; pre-ready choices are stashed in `deferred_model_switch` and queued prompts are held by `model_switch_pending` until `SwitchModelComplete`.
+- **Standalone OMP Shell with on-demand download TUI** — `grok-pi-shell-host` is decoupled from main release tarballs into its own `omp-shell-host-latest` release with a stable `grok-pi-shell-host-macos-arm64.tar.gz` alias. `[ui].pi_omp_shell` stays off by default; enabling it in F2 Settings checks `PI_GROK_OMP_SHELL_HOST`, `${GROK_HOME:-~/.grok-pi}/bin/grok-pi-shell-host`, and `PATH`, then opens a live progress modal (resolve → streaming download bar → extract → `--handshake` verify → atomic install) when missing.
+- **Timeline trackpad haptics (macOS)** — Driven through the private macOS trackpad actuator, with a configurable hover strength and materially stronger tick feedback.
+
+### Changed
+
+- **Pi runtime bumped to upstream Pi `v1.6.0+80`** — The pinned `pi-main` submodule advanced from `v1.5.2+100` (`a40abecaa`) to `v1.6.0+80` (`8209929fb`), 348 upstream commits. Rust toolchain bumped to `1.97.0`; extension dev folder loading and the `bash_env_tool` environment tool are wired through.
+- **Faster `grok-pi` startup** — Added a `<1ms` fast-path in `pi_version.rs` (`read_managed_pi_version`) that reads `~/.pi/agent/install/current-version` instead of spawning `pi --version` (~1.9s), and converted heavy TUI/data imports in `pi-grok-mentions`, `pi-grok-review`, `pi-grok-tree`, and `pi-grok-config` to lazy `await import(...)` so startup skips synchronous `jiti` transpilation of unused overlays.
+- **`pi-slim` becomes the default feature set and default-run binary** — `xai-grok-pager-bin` now defaults to `default-run = "grok-pi"` with `default = ["sandbox-enforce"]`; the stock `xai-grok-pager` binary moved behind `required-features = ["stock-agent"]` and the previous fat default list was preserved as `stock-full`. Release builds stay on `--bin grok-pi --no-default-features --features release-dist,sandbox-enforce`.
+- **Default `Thinking stream mode` set to `Height hold`** — Collapsing thinking blocks during an active turn holds scrollback height without viewport bounce. The mode remains configurable; Pi working-message projection sits behind an F2 toggle (default off).
+- **Single-platform / dynamic release matrix** — Beta tags build macOS ARM64 only as a prerelease and never move `releases/latest`; stable tags build all six platforms. `scripts/release-targets.json` is the single source of truth, `prepare-matrix` resolves it dynamically, and release CI is pinned to `ubuntu-24.04`.
+- **Reply emphasis pills, tool-call density, and a fresh-session context bar** — Visual density is now tuned per surface instead of globally.
+
+### Fixed
+
+- **`/resume` correctness** — Pressing `/` on an empty search bar focuses search instead of inserting a duplicate literal `/`; a reserved 2-column gap keeps truncated titles from clipping `Msgs`/`Model`/`Created`/`Updated`; the dark-terminal identity palette was upgraded to Codex-style soft pastels with an automatic light-terminal fallback; and `Pi session <id> is not in the local catalog` is fixed by lazily hydrating `session_paths` from PSM's global SQLite catalog in `PiAgent::resolve_session_path`.
+- **Remote TUI input bleed** — Unhandled mouse events (including macOS trackpad `ScrollLeft`/`ScrollRight`) are absorbed and `dispatch_scroll` / `tick_scroll` are blocked while an overlay is active; covered cells and transparent span backgrounds reset to `theme.bg_base` in `render_remote_tui_overlay_surface`.
+- **`@` mentions empty after startup or new sessions** — The latest `pi/ui/mentions_catalog` payload is persisted on `AppView` and seeded into `file_search.mention_catalog` for the welcome prompt, dashboard composers, and every newly created, loaded, or forked `AgentView`.
+- **Welcome screen routing** — Remote TUI overlays render on `ActiveView::Welcome` (`welcome_remote_tui_rect`), and `dispatch_show_session_picker` routes straight to `__pi_resume_session` when an external agent is active, so `Ctrl+R` / `F3` open the TS overlay instead of the Rust picker.
+- **Herdr lifecycle authority takeover** — Full-lifecycle delivery is fixed so Header state is no longer dropped on takeover.
+- **Tool `details` preserved during session replay** — `toolResult` `message_end` todos survive replay, and the top `TodoPane` auto-shows on `todo` tool updates.
+
+### Verification
+
+- Changelog self-check (`python3 scripts/extract-changelog-section.py --self-test`) and strict section extraction with `--with-prereleases` both pass; `git diff --check` is clean.
+- No local Cargo build, `check`, or test was run — per `AGENTS.md`, Rust verification is delegated to GitHub Actions Linux (`pi-slim-linux-checks.yml`) and the six-platform `release.yml` build for the `v0.1.14` tag. The `v0.1.14-beta.14` prerelease build failed before compiling ("The job was not acquired by Runner of type hosted"), so this stable tag is the first full six-platform build of the beta.14 feature set.
+
 ## [0.1.14-beta.14] - 2026-11-24
 
 ### Changed

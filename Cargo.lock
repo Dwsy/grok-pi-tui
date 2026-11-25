@@ -14093,8 +14093,8 @@ dependencies = [
  "xai-grok-tools",
  "xai-grok-version",
  "xai-sqlite-journal",
- "xai-tool-types",
  "xai-token-estimation",
+ "xai-tool-types",
 ]
 
 [[package]]
