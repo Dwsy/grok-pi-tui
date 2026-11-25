@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import type { FilePreviewResult } from "../pi-grok-mentions/file-data.ts";
 import type { SessionPickerTheme } from "../pi-grok-mentions/session-picker-tui.ts";
 import {
   aggregateSessionFiles,
@@ -106,6 +107,25 @@ describe("review-data extraction and tree building", () => {
     }
   });
 
+  test("buildReviewFileTree folds long paths into three-segment directory nodes", () => {
+    const tree = buildReviewFileTree([
+      {
+        relPath: "Users/dengwenyu/.pi/agent/sessions/encoded/session.jsonl",
+        name: "session.jsonl",
+        op: "edit",
+        opsCount: 1,
+        additions: 0,
+        deletions: 0,
+        diffLines: [],
+      },
+    ]);
+    expect(tree.filter((r) => r.kind === "dir").map((r) => r.name)).toEqual([
+      "Users/dengwenyu/.pi",
+      "agent/sessions/encoded",
+    ]);
+    expect(tree.some((r) => r.kind === "file" && r.name === "session.jsonl" && r.depth === 2)).toBe(true);
+  });
+
   test("buildEditDiffLines isolates changed lines with compact context", () => {
     const { lines, additions, deletions } = buildEditDiffLines(
       "a\nb\nc\nd\ne",
@@ -204,6 +224,76 @@ describe("ReviewTui rendering, simplified keyboard, and mouse interactions", () 
       tui.handleMouse(mouse({ type: "click", button: "left", x: 5, y: 3, clickCount: 2 }));
       expect(tui.isPickingTurn()).toBe(false);
       expect(tui.getSelectedFile()?.relPath).toBe("src/app.ts");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("coalesces right-pane wheel renders and caches preview loads", async () => {
+    const { dir, jsonl } = makeTempSessionFixture();
+    try {
+      const turns = extractSessionReviewTurns(jsonl, dir);
+      const files = aggregateSessionFiles(turns);
+      let loadCount = 0;
+      let renderRequests = 0;
+      const tui = createReviewTui(
+        {
+          requestRender: () => {
+            renderRequests += 1;
+          },
+        },
+        plainTheme,
+        {
+          rootDir: dir,
+          mode: "session",
+          files,
+          turns,
+          nerdIcons: false,
+          getRows: () => 50,
+          loadPreview: (_rootDir, relPath): FilePreviewResult => {
+            loadCount += 1;
+            return {
+              kind: "file",
+              relPath,
+              sizeLabel: "1 KB",
+              modified: "",
+              lineCount: 80,
+              truncated: false,
+              lines: Array.from({ length: 80 }, (_, i) => `line ${i} ${`x`.repeat(70)}`),
+            };
+          },
+        },
+        () => {},
+      );
+
+      tui.handleInput("\t");
+      tui.render(104);
+      expect(loadCount).toBe(1);
+
+      const wheel = (): TuiMouseEvent => ({
+        type: "wheel",
+        button: "none",
+        wheelDelta: 1,
+        x: 80,
+        y: 5,
+        screenX: 80,
+        screenY: 5,
+        width: 104,
+        height: 45,
+        shift: false,
+        alt: false,
+        ctrl: false,
+      });
+      for (let i = 0; i < 8; i += 1) tui.handleMouse(wheel());
+      expect(renderRequests).toBe(0);
+
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      expect(renderRequests).toBeGreaterThanOrEqual(1);
+
+      const renderRequestsAfterCoalesce = renderRequests;
+      for (let i = 0; i < 3; i += 1) tui.render(104);
+      expect(loadCount).toBe(1);
+      expect(renderRequests).toBe(renderRequestsAfterCoalesce);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

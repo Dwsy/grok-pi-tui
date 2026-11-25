@@ -10,11 +10,21 @@
  * from both search and preview.
  */
 
+import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import {
+  defaultLiteDbPath,
+  defaultPiSessionsDir,
+  hydrateLiteSessionDetails,
+  syncSessionLiteDb,
+  type LiteSessionMeta,
+} from "./session-lite-db.ts";
 
 export type SessionScope = "global" | "project";
+export type NameFilter = "all" | "named";
+export type SortMode = "threaded" | "recent" | "relevance";
 
 export interface SessionRecord {
   id: string;
@@ -22,6 +32,8 @@ export interface SessionRecord {
   path: string;
   cwd: string;
   project: string;
+  /** PSM session name from `session_info`; absent for unnamed sessions. */
+  name?: string;
   title: string;
   created: string;
   modified: string;
@@ -44,10 +56,20 @@ export interface SessionSearchHit {
   record: SessionRecord;
   /** Optional excerpt showing where a message-body match occurred. */
   matchSnippet?: string;
+  /** Local match rank; higher is better (used by Relevance sort mode). */
+  score?: number;
+}
+
+export interface SessionRecordDetails {
+  userMessages: number | null;
+  assistantMessages: number | null;
+  totalTokens: number;
+  model?: string;
 }
 
 type SqliteStatement = {
   all: (...args: unknown[]) => Record<string, unknown>[];
+  get?: (...args: unknown[]) => Record<string, unknown> | undefined;
 };
 
 type SqliteDb = {
@@ -55,8 +77,86 @@ type SqliteDb = {
   close: () => void;
 };
 
-const DEFAULT_MAX_SESSIONS = 300;
 const DEFAULT_MAX_PREVIEW_MESSAGES = 120;
+
+/** Process-local overlays for JSONL mutations (SQLite is strictly read-only). */
+const deletedSessionPaths = new Set<string>();
+const renamedSessionNames = new Map<string, string>();
+
+/** Cached full-catalog loads keyed by DB path + query shape, invalidated by DB/WAL mtime+size. */
+interface SessionCatalogCacheEntry {
+  fingerprint: string;
+  records: SessionRecord[];
+}
+const sessionCatalogCache = new Map<string, SessionCatalogCacheEntry>();
+
+/** Precomputed lowercase search fields per SessionRecord to keep keystroke filtering fast on 10k+ rows. */
+interface SessionSearchIndex {
+  idLower: string;
+  titleLower: string;
+  metaLower: string;
+  msgLower: string;
+}
+const searchIndexCache = new WeakMap<SessionRecord, SessionSearchIndex>();
+
+function compareIsoDesc(a: string, b: string): number {
+  return b > a ? 1 : b < a ? -1 : 0;
+}
+
+function normalizeDirPath(p: string): string {
+  if (!p) return "";
+  if (p.startsWith("/") && !p.includes("\\") && !p.includes("/./") && !p.includes("/..")) {
+    return p.length > 1 ? p.replace(/\/+$/, "") : p;
+  }
+  return path.resolve(p).replace(/[\\/]+$/, "");
+}
+
+function getDbFingerprint(dbPath: string): string {
+  try {
+    const st = fs.statSync(dbPath);
+    let walPart = "0:0";
+    try {
+      const wst = fs.statSync(`${dbPath}-wal`);
+      walPart = `${wst.size}:${wst.mtimeMs}`;
+    } catch {
+      // No WAL sidecar.
+    }
+    return `${st.ino}:${st.size}:${st.mtimeMs}:${walPart}`;
+  } catch {
+    return "";
+  }
+}
+
+function applyInMemoryOverlays(records: SessionRecord[]): SessionRecord[] {
+  if (deletedSessionPaths.size === 0 && renamedSessionNames.size === 0) {
+    return records;
+  }
+  const out: SessionRecord[] = [];
+  for (const record of records) {
+    const resolved = path.resolve(record.path);
+    if (deletedSessionPaths.has(resolved)) continue;
+    const renamed = renamedSessionNames.get(resolved);
+    if (renamed && (record.name !== renamed || record.title !== renamed)) {
+      out.push({ ...record, name: renamed, title: renamed });
+    } else {
+      out.push(record);
+    }
+  }
+  return out;
+}
+
+function getSearchIndex(record: SessionRecord): SessionSearchIndex {
+  let cached = searchIndexCache.get(record);
+  if (!cached) {
+    const idLower = record.id.toLowerCase();
+    const titleLower = record.title.toLowerCase();
+    const metaLower = `${idLower} ${titleLower} ${record.project.toLowerCase()} ${record.cwd.toLowerCase()} ${record.model.toLowerCase()}`;
+    const msgLower = record.searchableMessages ? record.searchableMessages.toLowerCase() : "";
+    cached = { idLower, titleLower, metaLower, msgLower };
+    searchIndexCache.set(record, cached);
+  }
+  return cached;
+}
 
 /**
  * Open a SQLite database read-only across both Node (`node:sqlite`, used by
@@ -97,7 +197,66 @@ export function openReadOnlySqlite(dbPath: string): SqliteDb | null {
 }
 
 export function defaultPsmDbPath(): string {
-  return path.join(os.homedir(), ".pi", "agent", "sessions", "sessions.db");
+  return path.join(defaultPiSessionsDir(), "sessions.db");
+}
+
+export { defaultLiteDbPath, defaultPiSessionsDir };
+
+interface ResolvedSessionDb {
+  dbPath: string;
+  isLite: boolean;
+  memoryRecords?: LiteSessionMeta[];
+}
+
+/**
+ * Resolve the active session index database:
+ * 1. Explicit `dbPath` that exists -> use as-is (read-only unless it is `sessions-lite.db`).
+ * 2. PSM's `sessions.db` exists -> strictly read-only, never touches `sessions-lite.db`.
+ * 3. PSM's `sessions.db` absent -> lazily sync and use `sessions-lite.db` (or in-memory fallback).
+ */
+function resolveActiveSessionDb(options: {
+  dbPath?: string;
+  sessionsDir?: string;
+} = {}): ResolvedSessionDb {
+  if (options.dbPath) {
+    if (fs.existsSync(options.dbPath)) {
+      return {
+        dbPath: options.dbPath,
+        isLite: path.basename(options.dbPath) === "sessions-lite.db",
+      };
+    }
+    if (!options.sessionsDir) {
+      return { dbPath: options.dbPath, isLite: false };
+    }
+  }
+  const sessionsDir = options.sessionsDir ?? defaultPiSessionsDir();
+  const psmDb = path.join(sessionsDir, "sessions.db");
+  if (fs.existsSync(psmDb)) {
+    return { dbPath: psmDb, isLite: false };
+  }
+  const liteDbPath = options.dbPath ?? defaultLiteDbPath(sessionsDir);
+  const synced = syncSessionLiteDb({ sessionsDir, liteDbPath });
+  return {
+    dbPath: synced.dbPath,
+    isLite: true,
+    memoryRecords: synced.memoryRecords,
+  };
+}
+
+function mapLiteMetaToRecord(meta: LiteSessionMeta): SessionRecord {
+  return mapSessionRow({
+    id: meta.id,
+    path: meta.path,
+    cwd: meta.cwd,
+    name: meta.name,
+    created: meta.created,
+    modified: meta.modified,
+    message_count: meta.messageCount,
+    first_message: meta.firstMessage,
+    user_messages_text: meta.userMessagesText,
+    assistant_messages_text: meta.assistantMessagesText,
+    model: meta.model,
+  });
 }
 
 /** Format a token count in millions (`M`), e.g. `1.24M`, `0.05M`, `0.004M`. */
@@ -204,6 +363,7 @@ function mapSessionRow(row: Record<string, unknown>): SessionRecord {
     path: sessionPath,
     cwd,
     project: projectNameFromCwd(cwd),
+    name: name || undefined,
     title,
     created: String(row.created ?? ""),
     modified: String(row.modified ?? ""),
@@ -217,18 +377,245 @@ function mapSessionRow(row: Record<string, unknown>): SessionRecord {
 }
 
 /**
- * Load recent sessions with metadata (created/modified timestamps, message
- * counts, project, id, total tokens, model, and user+assistant search text)
- * from PSM's SQLite index.
+ * Load sessions with metadata from PSM's SQLite index without an artificial
+ * 300-row cap. Pass `includeDetails: false` for fast full-catalog loading
+ * (skipping the per-row `session_details_cache` join) and hydrate details
+ * lazily via `loadSessionRecordDetails`.
  */
 export function loadSessionPickerRecords(
-  options: { dbPath?: string; limit?: number } = {},
+  options: {
+    dbPath?: string;
+    sessionsDir?: string;
+    limit?: number;
+    skipMissingFiles?: boolean;
+    includeDetails?: boolean;
+  } = {},
 ): SessionRecord[] {
-  const dbPath = options.dbPath ?? defaultPsmDbPath();
-  const limit = options.limit ?? DEFAULT_MAX_SESSIONS;
+  const resolved = resolveActiveSessionDb(options);
+  const dbPath = resolved.dbPath;
+  const limit =
+    typeof options.limit === "number" && Number.isFinite(options.limit) && options.limit > 0
+      ? Math.floor(options.limit)
+      : undefined;
+  const includeDetails = options.includeDetails ?? true;
+  const skipMissingFiles = options.skipMissingFiles === true;
+
+  if (resolved.memoryRecords) {
+    const mapped = resolved.memoryRecords.map(mapLiteMetaToRecord);
+    mapped.sort((a, b) => compareIsoDesc(a.modified, b.modified));
+    const sliced = limit ? mapped.slice(0, limit) : mapped;
+    const filtered = skipMissingFiles
+      ? sliced.filter((record) => fs.existsSync(record.path))
+      : sliced;
+    return applyInMemoryOverlays(filtered);
+  }
+
+  const fingerprint = getDbFingerprint(dbPath);
+  const cacheKey = `${dbPath}|${limit ?? "all"}|${includeDetails ? "1" : "0"}|${skipMissingFiles ? "1" : "0"}`;
+  if (fingerprint) {
+    const cached = sessionCatalogCache.get(cacheKey);
+    if (cached && cached.fingerprint === fingerprint) {
+      return applyInMemoryOverlays(cached.records);
+    }
+  }
+
   const db = openReadOnlySqlite(dbPath);
   if (!db) return [];
 
+  try {
+    let rows: Record<string, unknown>[];
+    if (!includeDetails) {
+      // Sequential table scan without JOIN or index-driven random I/O; sort in JS when unbounded.
+      const sql = limit
+        ? `SELECT
+             id,
+             path,
+             cwd,
+             COALESCE(name, '') AS name,
+             COALESCE(created, '') AS created,
+             COALESCE(modified, '') AS modified,
+             COALESCE(message_count, 0) AS message_count,
+             COALESCE(first_message, '') AS first_message,
+             COALESCE(model, '') AS model
+           FROM sessions
+           ORDER BY modified DESC
+           LIMIT ?`
+        : `SELECT
+             id,
+             path,
+             cwd,
+             COALESCE(name, '') AS name,
+             COALESCE(created, '') AS created,
+             COALESCE(modified, '') AS modified,
+             COALESCE(message_count, 0) AS message_count,
+             COALESCE(first_message, '') AS first_message,
+             COALESCE(model, '') AS model
+           FROM sessions`;
+      rows = limit ? db.prepare(sql).all(limit) : db.prepare(sql).all();
+    } else if (limit) {
+      rows = db
+        .prepare(
+          `SELECT
+             s.id,
+             s.path,
+             s.cwd,
+             COALESCE(s.name, '') AS name,
+             COALESCE(s.created, '') AS created,
+             COALESCE(s.modified, '') AS modified,
+             COALESCE(s.message_count, 0) AS message_count,
+             COALESCE(s.first_message, '') AS first_message,
+             COALESCE(s.user_messages_text, '') AS user_messages_text,
+             COALESCE(s.assistant_messages_text, '') AS assistant_messages_text,
+             COALESCE(s.model, '') AS model,
+             d.user_messages AS detail_user_messages,
+             d.assistant_messages AS detail_assistant_messages,
+             COALESCE(d.input_tokens, 0) AS input_tokens,
+             COALESCE(d.output_tokens, 0) AS output_tokens,
+             COALESCE(d.cache_read_tokens, 0) AS cache_read_tokens,
+             COALESCE(d.cache_write_tokens, 0) AS cache_write_tokens,
+             COALESCE(d.models_json, '') AS models_json
+           FROM (
+             SELECT * FROM sessions ORDER BY modified DESC LIMIT ?
+           ) s
+           LEFT JOIN session_details_cache d ON d.path = s.path
+           ORDER BY s.modified DESC`,
+        )
+        .all(limit);
+    } else {
+      rows = db
+        .prepare(
+          `SELECT
+             s.id,
+             s.path,
+             s.cwd,
+             COALESCE(s.name, '') AS name,
+             COALESCE(s.created, '') AS created,
+             COALESCE(s.modified, '') AS modified,
+             COALESCE(s.message_count, 0) AS message_count,
+             COALESCE(s.first_message, '') AS first_message,
+             COALESCE(s.user_messages_text, '') AS user_messages_text,
+             COALESCE(s.assistant_messages_text, '') AS assistant_messages_text,
+             COALESCE(s.model, '') AS model,
+             d.user_messages AS detail_user_messages,
+             d.assistant_messages AS detail_assistant_messages,
+             COALESCE(d.input_tokens, 0) AS input_tokens,
+             COALESCE(d.output_tokens, 0) AS output_tokens,
+             COALESCE(d.cache_read_tokens, 0) AS cache_read_tokens,
+             COALESCE(d.cache_write_tokens, 0) AS cache_write_tokens,
+             COALESCE(d.models_json, '') AS models_json
+           FROM sessions s
+           LEFT JOIN session_details_cache d ON d.path = s.path`,
+        )
+        .all();
+    }
+
+    const mapped = rows.map(mapSessionRow);
+    if (!limit) {
+      mapped.sort((a, b) => compareIsoDesc(a.modified, b.modified));
+    }
+    const result = skipMissingFiles
+      ? mapped.filter((record) => fs.existsSync(record.path))
+      : mapped;
+    if (fingerprint) {
+      if (sessionCatalogCache.size >= 8) sessionCatalogCache.clear();
+      sessionCatalogCache.set(cacheKey, { fingerprint, records: result });
+    }
+    return applyInMemoryOverlays(result);
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Fast O(1) point lookup of token/message/model details for a single session
+ * from `session_details_cache` (avoids joining 10k+ rows up front).
+ */
+export function loadSessionRecordDetails(
+  sessionPath: string,
+  options: { dbPath?: string; sessionsDir?: string } = {},
+): SessionRecordDetails | null {
+  if (!sessionPath) return null;
+  const resolved = resolveActiveSessionDb(options);
+  if (resolved.isLite) {
+    const details = hydrateLiteSessionDetails(sessionPath, resolved.dbPath);
+    if (!details) return null;
+    return {
+      userMessages: details.userMessages,
+      assistantMessages: details.assistantMessages,
+      totalTokens:
+        details.inputTokens +
+        details.outputTokens +
+        details.cacheReadTokens +
+        details.cacheWriteTokens,
+      ...(details.model ? { model: details.model } : {}),
+    };
+  }
+  const dbPath = resolved.dbPath;
+  const db = openReadOnlySqlite(dbPath);
+  if (!db) return null;
+  try {
+    const stmt = db.prepare(
+      `SELECT
+         user_messages AS detail_user_messages,
+         assistant_messages AS detail_assistant_messages,
+         COALESCE(input_tokens, 0) AS input_tokens,
+         COALESCE(output_tokens, 0) AS output_tokens,
+         COALESCE(cache_read_tokens, 0) AS cache_read_tokens,
+         COALESCE(cache_write_tokens, 0) AS cache_write_tokens,
+         COALESCE(models_json, '') AS models_json
+       FROM session_details_cache
+       WHERE path = ?
+       LIMIT 1`,
+    );
+    const row = stmt.get ? stmt.get(sessionPath) : stmt.all(sessionPath)[0];
+    if (!row) return null;
+    const userMessages =
+      row.detail_user_messages === null || row.detail_user_messages === undefined
+        ? null
+        : Number(row.detail_user_messages);
+    const assistantMessages =
+      row.detail_assistant_messages === null || row.detail_assistant_messages === undefined
+        ? null
+        : Number(row.detail_assistant_messages);
+    const totalTokens =
+      Number(row.input_tokens ?? 0) +
+      Number(row.output_tokens ?? 0) +
+      Number(row.cache_read_tokens ?? 0) +
+      Number(row.cache_write_tokens ?? 0);
+    const model = parsePrimaryModel("", row.models_json);
+    return {
+      userMessages,
+      assistantMessages,
+      totalTokens,
+      ...(model && model !== "—" ? { model } : {}),
+    };
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+/** Direct indexed lookup of a single session by full ID or prefix across all history. */
+export function findSessionRecordById(
+  id: string,
+  options: { dbPath?: string; sessionsDir?: string; skipMissingFiles?: boolean } = {},
+): SessionRecord | null {
+  const trimmed = id.trim();
+  if (!trimmed) return null;
+  const resolved = resolveActiveSessionDb(options);
+  if (resolved.memoryRecords) {
+    const records = applyInMemoryOverlays(resolved.memoryRecords.map(mapLiteMetaToRecord));
+    const found = records.find((r) => r.id === trimmed || r.id.startsWith(trimmed));
+    if (!found) return null;
+    if (options.skipMissingFiles && !fs.existsSync(found.path)) return null;
+    return found;
+  }
+  const dbPath = resolved.dbPath;
+  const db = openReadOnlySqlite(dbPath);
+  if (!db) return null;
   try {
     const rows = db
       .prepare(
@@ -241,8 +628,8 @@ export function loadSessionPickerRecords(
            COALESCE(s.modified, '') AS modified,
            COALESCE(s.message_count, 0) AS message_count,
            COALESCE(s.first_message, '') AS first_message,
-           COALESCE(s.user_messages_text, '') AS user_messages_text,
-           COALESCE(s.assistant_messages_text, '') AS assistant_messages_text,
+           '' AS user_messages_text,
+           '' AS assistant_messages_text,
            COALESCE(s.model, '') AS model,
            d.user_messages AS detail_user_messages,
            d.assistant_messages AS detail_assistant_messages,
@@ -253,22 +640,25 @@ export function loadSessionPickerRecords(
            COALESCE(d.models_json, '') AS models_json
          FROM sessions s
          LEFT JOIN session_details_cache d ON d.path = s.path
+         WHERE s.id = ? OR s.id LIKE ?
          ORDER BY s.modified DESC
-         LIMIT ?`,
+         LIMIT 1`,
       )
-      .all(limit);
-
-    return rows.map(mapSessionRow);
+      .all(trimmed, `${trimmed}%`);
+    if (rows.length === 0) return null;
+    const [record] = applyInMemoryOverlays([mapSessionRow(rows[0]!)]);
+    if (!record) return null;
+    if (options.skipMissingFiles && !fs.existsSync(record.path)) return null;
+    return record;
   } catch {
-    return [];
+    return null;
   } finally {
     db.close();
   }
 }
 
 /**
- * Full-text search across the entire PSM SQLite catalog (all historical
- * sessions, not just the top 300 loaded in memory). Queries `message_fts`
+ * Full-text search across the entire PSM SQLite catalog. Queries `message_fts`
  * (FTS5) first for fast full-text hits and supplements with `sessions` LIKE
  * matching (handles CJK substrings, IDs, project paths, and models).
  */
@@ -276,13 +666,23 @@ export function searchSessionPickerRecords(options: {
   query: string;
   scope: SessionScope;
   currentCwd: string;
+  nameFilter?: NameFilter;
+  skipMissingFiles?: boolean;
+  includeDetails?: boolean;
   dbPath?: string;
+  sessionsDir?: string;
   limit?: number;
 }): SessionSearchHit[] {
   const trimmed = options.query.trim();
   if (!trimmed) return [];
-  const dbPath = options.dbPath ?? defaultPsmDbPath();
+  const resolved = resolveActiveSessionDb(options);
+  if (resolved.memoryRecords) {
+    const records = applyInMemoryOverlays(resolved.memoryRecords.map(mapLiteMetaToRecord));
+    return filterSessionRecords(records, options);
+  }
+  const dbPath = resolved.dbPath;
   const limit = options.limit ?? 200;
+  const includeDetails = options.includeDetails ?? true;
   const db = openReadOnlySqlite(dbPath);
   if (!db) return [];
 
@@ -299,9 +699,8 @@ export function searchSessionPickerRecords(options: {
       .join(" AND ");
     if (ftsQuery) {
       try {
-        const ftsRows = db
-          .prepare(
-            `SELECT
+        const ftsSql = includeDetails
+          ? `SELECT
                s.id,
                s.path,
                s.cwd,
@@ -328,17 +727,32 @@ export function searchSessionPickerRecords(options: {
                AND message_fts.source_type IN ('user', 'assistant')
              GROUP BY s.id
              ORDER BY s.modified DESC
-             LIMIT ?`,
-          )
-          .all(ftsQuery, limit);
+             LIMIT ?`
+          : `SELECT
+               s.id,
+               s.path,
+               s.cwd,
+               COALESCE(s.name, '') AS name,
+               COALESCE(s.created, '') AS created,
+               COALESCE(s.modified, '') AS modified,
+               COALESCE(s.message_count, 0) AS message_count,
+               COALESCE(s.first_message, '') AS first_message,
+               '' AS user_messages_text,
+               '' AS assistant_messages_text,
+               COALESCE(s.model, '') AS model,
+               snippet(message_fts, 3, '', '', '…', 14) AS fts_snippet
+             FROM message_fts
+             JOIN sessions s ON s.path = message_fts.session_path
+             WHERE message_fts MATCH ?
+               AND message_fts.source_type IN ('user', 'assistant')
+             GROUP BY s.id
+             ORDER BY s.modified DESC
+             LIMIT ?`;
+        const ftsRows = db.prepare(ftsSql).all(ftsQuery, limit);
         for (const row of ftsRows) {
-          const record = mapSessionRow(row);
-          if (
-            options.scope === "project" &&
-            !matchesProjectScope(record.cwd, options.currentCwd)
-          ) {
-            continue;
-          }
+          const [record] = applyInMemoryOverlays([mapSessionRow(row)]);
+          if (!record) continue;
+          if (!isVisiblePickerRecord(record, options)) continue;
           const rawSnippet = stripThinkingTags(String(row.fts_snippet ?? ""))
             .replace(/\s+/g, " ")
             .trim();
@@ -365,9 +779,8 @@ export function searchSessionPickerRecords(options: {
         params.push(like, like, like, like, like, like, like);
       }
       params.push(limit);
-      const likeRows = db
-        .prepare(
-          `SELECT
+      const likeSql = includeDetails
+        ? `SELECT
              s.id,
              s.path,
              s.cwd,
@@ -386,22 +799,36 @@ export function searchSessionPickerRecords(options: {
              COALESCE(d.cache_read_tokens, 0) AS cache_read_tokens,
              COALESCE(d.cache_write_tokens, 0) AS cache_write_tokens,
              COALESCE(d.models_json, '') AS models_json
-           FROM sessions s
+           FROM (
+             SELECT * FROM sessions s
+             WHERE ${whereClauses.join(" AND ")}
+             ORDER BY s.modified DESC
+             LIMIT ?
+           ) s
            LEFT JOIN session_details_cache d ON d.path = s.path
+           ORDER BY s.modified DESC`
+        : `SELECT
+             s.id,
+             s.path,
+             s.cwd,
+             COALESCE(s.name, '') AS name,
+             COALESCE(s.created, '') AS created,
+             COALESCE(s.modified, '') AS modified,
+             COALESCE(s.message_count, 0) AS message_count,
+             COALESCE(s.first_message, '') AS first_message,
+             COALESCE(s.user_messages_text, '') AS user_messages_text,
+             COALESCE(s.assistant_messages_text, '') AS assistant_messages_text,
+             COALESCE(s.model, '') AS model
+           FROM sessions s
            WHERE ${whereClauses.join(" AND ")}
            ORDER BY s.modified DESC
-           LIMIT ?`,
-        )
-        .all(...params);
+           LIMIT ?`;
+      const likeRows = db.prepare(likeSql).all(...params);
       for (const row of likeRows) {
-        const record = mapSessionRow(row);
+        const [record] = applyInMemoryOverlays([mapSessionRow(row)]);
+        if (!record) continue;
         if (byId.has(record.id)) continue;
-        if (
-          options.scope === "project" &&
-          !matchesProjectScope(record.cwd, options.currentCwd)
-        ) {
-          continue;
-        }
+        if (!isVisiblePickerRecord(record, options)) continue;
         const snippet = buildSnippet(record.searchableMessages, firstTerm);
         byId.set(record.id, {
           record,
@@ -411,7 +838,7 @@ export function searchSessionPickerRecords(options: {
     }
 
     return [...byId.values()].sort((a, b) =>
-      b.record.modified.localeCompare(a.record.modified),
+      compareIsoDesc(a.record.modified, b.record.modified),
     );
   } catch {
     return [];
@@ -555,11 +982,115 @@ export function loadSessionPreviewMessages(
  * or nested subdirectory).
  */
 export function matchesProjectScope(sessionCwd: string, activeCwd: string): boolean {
-  const norm = (p: string) => path.resolve(p).replace(/[\\/]+$/, "");
   if (!sessionCwd || !activeCwd) return false;
-  const a = norm(sessionCwd);
-  const b = norm(activeCwd);
+  const a = normalizeDirPath(sessionCwd);
+  const b = normalizeDirPath(activeCwd);
   return a === b || a.startsWith(`${b}${path.sep}`);
+}
+
+/** Fast project-scope count without allocating intermediate hit arrays. */
+export function countProjectSessions(
+  records: readonly SessionRecord[],
+  activeCwd: string,
+): number {
+  if (!activeCwd) return 0;
+  const b = normalizeDirPath(activeCwd);
+  const bPrefix = `${b}${path.sep}`;
+  let count = 0;
+  for (let i = 0; i < records.length; i++) {
+    const cwd = records[i]!.cwd;
+    if (!cwd) continue;
+    const a = normalizeDirPath(cwd);
+    if (a === b || a.startsWith(bPrefix)) count += 1;
+  }
+  return count;
+}
+function matchesPickerFilters(
+  record: SessionRecord,
+  options: { scope: SessionScope; currentCwd: string; nameFilter?: NameFilter },
+): boolean {
+  if (options.scope === "project" && !matchesProjectScope(record.cwd, options.currentCwd)) {
+    return false;
+  }
+  return options.nameFilter !== "named" || Boolean(record.name?.trim());
+}
+
+function isVisiblePickerRecord(
+  record: SessionRecord,
+  options: {
+    scope: SessionScope;
+    currentCwd: string;
+    nameFilter?: NameFilter;
+    skipMissingFiles?: boolean;
+  },
+): boolean {
+  return (
+    matchesPickerFilters(record, options) &&
+    (!options.skipMissingFiles || fs.existsSync(record.path))
+  );
+}
+
+/** Append a Pi/PSM-compatible `session_info` entry. Never touches the SQLite index. */
+export function appendSessionNameToJsonl(
+  sessionPath: string,
+  name: string,
+): { ok: true } | { ok: false; error: string } {
+  const trimmed = name.replace(/[\r\n]+/g, " ").trim();
+  if (!trimmed) return { ok: false, error: "Name is empty" };
+  if (!fs.existsSync(sessionPath)) return { ok: false, error: "Session file not found" };
+  const entry = {
+    type: "session_info",
+    id: `session-info-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`,
+    parentId: null,
+    timestamp: new Date().toISOString(),
+    name: trimmed,
+  };
+  try {
+    let needsLeadingNewline = false;
+    const stat = fs.statSync(sessionPath);
+    if (stat.size > 0) {
+      const fd = fs.openSync(sessionPath, "r");
+      try {
+        const tail = Buffer.alloc(1);
+        const bytesRead = fs.readSync(fd, tail, 0, 1, stat.size - 1);
+        needsLeadingNewline = bytesRead === 1 && tail[0] !== 0x0a;
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    const prefix = needsLeadingNewline ? "\n" : "";
+    fs.appendFileSync(sessionPath, `${prefix}${JSON.stringify(entry)}\n`, "utf8");
+    renamedSessionNames.set(path.resolve(sessionPath), trimmed);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Move a session JSONL to trash, falling back to unlink. Never touches the SQLite index. */
+export function deleteSessionJsonl(
+  sessionPath: string,
+): { ok: true; method: "trash" | "unlink" | "missing" } | { ok: false; error: string } {
+  if (!sessionPath.trim()) return { ok: false, error: "Session path is empty" };
+  if (!fs.existsSync(sessionPath)) return { ok: true, method: "missing" };
+
+  const args = sessionPath.startsWith("-") ? ["--", sessionPath] : [sessionPath];
+  try {
+    const result = spawnSync("trash", args, { encoding: "utf8" });
+    if (result.status === 0 || !fs.existsSync(sessionPath)) {
+      deletedSessionPaths.add(path.resolve(sessionPath));
+      return { ok: true, method: "trash" };
+    }
+  } catch {
+    // `trash` is optional; fall through to permanent deletion.
+  }
+  try {
+    fs.unlinkSync(sessionPath);
+    deletedSessionPaths.add(path.resolve(sessionPath));
+    return { ok: true, method: "unlink" };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 function buildSnippet(text: string, term: string, radius = 36): string {
@@ -578,12 +1109,29 @@ function buildSnippet(text: string, term: string, radius = 36): string {
  */
 export function filterSessionRecords(
   records: readonly SessionRecord[],
-  options: { scope: SessionScope; currentCwd: string; query: string },
+  options: {
+    scope: SessionScope;
+    currentCwd: string;
+    query: string;
+    nameFilter?: NameFilter;
+  },
 ): SessionSearchHit[] {
-  const scoped =
-    options.scope === "project"
-      ? records.filter((r) => matchesProjectScope(r.cwd, options.currentCwd))
-      : records;
+  const isProjectScope = options.scope === "project";
+  const namedOnly = options.nameFilter === "named";
+  const normActiveCwd = isProjectScope && options.currentCwd ? normalizeDirPath(options.currentCwd) : "";
+  const activePrefix = normActiveCwd ? `${normActiveCwd}${path.sep}` : "";
+
+  const scoped: SessionRecord[] = [];
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i]!;
+    if (isProjectScope) {
+      if (!normActiveCwd || !record.cwd) continue;
+      const a = normalizeDirPath(record.cwd);
+      if (a !== normActiveCwd && !a.startsWith(activePrefix)) continue;
+    }
+    if (namedOnly && !record.name?.trim()) continue;
+    scoped.push(record);
+  }
 
   const trimmed = options.query.trim().toLowerCase();
   if (!trimmed) {
@@ -595,26 +1143,25 @@ export function filterSessionRecords(
 
   for (let i = 0; i < scoped.length; i++) {
     const record = scoped[i]!;
-    const metaHaystack = `${record.id} ${record.title} ${record.project} ${record.cwd} ${record.model}`.toLowerCase();
-    const msgHaystack = record.searchableMessages.toLowerCase();
+    const idx = getSearchIndex(record);
 
     let score = 0;
     let matchedAll = true;
     let snippetTerm: string | undefined;
 
     for (const term of terms) {
-      const inId = record.id.toLowerCase().includes(term);
-      const inTitle = record.title.toLowerCase().includes(term);
-      const inMeta = metaHaystack.includes(term);
-      const inMsg = msgHaystack.includes(term);
+      const inMeta = idx.metaLower.includes(term);
+      const inMsg = idx.msgLower ? idx.msgLower.includes(term) : false;
 
       if (!inMeta && !inMsg) {
         matchedAll = false;
         break;
       }
-      if (inId) score += 120;
-      if (inTitle) score += 90;
-      if (inMeta) score += 40;
+      if (inMeta) {
+        score += 40;
+        if (idx.idLower.includes(term)) score += 120;
+        if (idx.titleLower.includes(term)) score += 90;
+      }
       if (inMsg) {
         score += 60;
         snippetTerm ??= term;
@@ -628,7 +1175,7 @@ export function filterSessionRecords(
       scored.push({
         score,
         index: i,
-        hit: { record, matchSnippet },
+        hit: { record, matchSnippet, score },
       });
     }
   }

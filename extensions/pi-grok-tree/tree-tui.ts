@@ -19,6 +19,7 @@ import {
   hitRegion,
   ListController,
   renderSplitOverlayFrame,
+  RenderCoalescer,
   styleBold,
   wrapTextToWidth,
   type ClickRegion,
@@ -79,6 +80,9 @@ class SessionTreeComponent implements Component {
   private filtered: FlattenedTreeNode[] = [];
   private readonly list = new ListController({ rowsPerItem: 1 });
   private previewScroll = 0;
+  private readonly previewLinesCache = new Map<string, string[]>();
+  private previewTargetId: string | undefined;
+  private readonly renderCoalescer: RenderCoalescer;
 
   private lastBodyHeight = 14;
   private lastBodyStartY = 5;
@@ -93,6 +97,7 @@ class SessionTreeComponent implements Component {
     done: (result: SessionTreeActionResult | undefined) => void,
   ) {
     this.tui = tui;
+    this.renderCoalescer = new RenderCoalescer(() => this.tui.requestRender());
     this.theme = theme;
     this.allNodes = options.nodes;
     this.filter = options.initialFilter ?? "default";
@@ -130,10 +135,15 @@ class SessionTreeComponent implements Component {
     }
   }
 
+  private finish(result: SessionTreeActionResult | undefined): void {
+    this.renderCoalescer.cancel();
+    this.done(result);
+  }
+
   private confirmSelected(summarize: boolean): void {
     const node = this.filtered[this.list.selected];
     if (!node) return;
-    this.done({ action: "navigate", entryId: node.entry.id, summarize });
+    this.finish({ action: "navigate", entryId: node.entry.id, summarize });
   }
 
   private jumpToBranch(direction: -1 | 1): void {
@@ -206,33 +216,43 @@ class SessionTreeComponent implements Component {
     return lines;
   }
 
-  private buildRightLines(node: FlattenedTreeNode | undefined, rightWidth: number): string[] {
+  private buildPreviewParts(
+    node: FlattenedTreeNode | undefined,
+    rightWidth: number,
+  ): { header: string[]; body: string[] } {
     const th = this.theme;
     const pad = (s: string) => fitWidth(s, rightWidth);
     if (!node) {
-      return [pad(""), pad(th.fg("muted", "  Select a node to preview its content."))];
+      return {
+        header: [pad(""), pad(th.fg("muted", "  Select a node to preview its content."))],
+        body: [],
+      };
     }
 
-    const highlightMatch = (m: string) => styleBold(th, th.fg("warning", m));
     const status = node.isLeaf
       ? th.fg("warning", "★ Current Leaf")
       : node.isOnActivePath
         ? th.fg("success", "● Active Branch")
         : th.fg("dim", "○ Alternate Branch");
-    const lines: string[] = [
+    const header = [
       pad(`  ${styleBold(th, th.fg("accent", node.entry.roleLabel))}  ${status}  ${th.fg("dim", node.entry.timestamp)}`),
       pad(`  ${th.fg("muted", "ID:")} ${th.fg("text", node.entry.id)}${node.entry.label ? `   ${th.fg("muted", "Label:")} ${th.fg("warning", node.entry.label)}` : ""}`),
       pad(th.fg("borderMuted", `  ${"─".repeat(Math.max(8, rightWidth - 4))}`)),
     ];
 
-    const bodyW = Math.max(12, rightWidth - 4);
-    for (const rawLine of node.entry.fullText.split(/\r?\n/)) {
-      const wrapped = wrapTextToWidth(rawLine, bodyW);
-      for (const seg of wrapped) {
-        lines.push(pad(`  ${highlightTerms(seg, this.query, highlightMatch)}`));
+    const cacheKey = `${node.entry.id}:${rightWidth}`;
+    let body = this.previewLinesCache.get(cacheKey);
+    if (!body) {
+      const bodyW = Math.max(12, rightWidth - 4);
+      body = [];
+      for (const rawLine of node.entry.fullText.split(/\r?\n/)) {
+        for (const seg of wrapTextToWidth(rawLine, bodyW)) {
+          body.push(pad(`  ${seg}`));
+        }
       }
+      this.previewLinesCache.set(cacheKey, body);
     }
-    return lines;
+    return { header, body };
   }
 
   render(width: number): string[] {
@@ -262,10 +282,27 @@ class SessionTreeComponent implements Component {
 
     const leftLines = this.buildLeftLines(geom.leftWidth, geom.bodyHeight);
     const active = this.filtered[this.list.selected];
-    const allPreview = this.buildRightLines(active, geom.rightWidth);
-    const maxPreviewScroll = Math.max(0, allPreview.length - geom.bodyHeight);
+    const targetId = active?.entry.id;
+    if (targetId !== this.previewTargetId) {
+      this.previewLinesCache.clear();
+      this.previewTargetId = targetId;
+    }
+    const preview = this.buildPreviewParts(active, geom.rightWidth);
+    const maxPreviewScroll = Math.max(
+      0,
+      preview.header.length + preview.body.length - geom.bodyHeight,
+    );
     this.previewScroll = Math.max(0, Math.min(this.previewScroll, maxPreviewScroll));
-    const rightLines = allPreview.slice(this.previewScroll, this.previewScroll + geom.bodyHeight);
+    const highlightMatch = (m: string) => styleBold(this.theme, this.theme.fg("warning", m));
+    const rightLines = [
+      ...preview.header.slice(this.previewScroll, this.previewScroll + geom.bodyHeight),
+      ...preview.body
+        .slice(
+          Math.max(0, this.previewScroll - preview.header.length),
+          this.previewScroll + geom.bodyHeight - preview.header.length,
+        )
+        .map((line) => highlightTerms(line, this.query, highlightMatch)),
+    ];
 
     const searchBar = this.labelEditing
       ? {
@@ -317,7 +354,10 @@ class SessionTreeComponent implements Component {
       if (y >= this.lastBodyStartY && y < this.lastBodyStartY + this.lastBodyHeight) {
         if (x > this.lastDividerX) {
           this.previewScroll = Math.max(0, this.previewScroll + delta * 3);
-        } else if (this.list.move(delta, this.filtered.length, this.lastBodyHeight)) {
+          this.renderCoalescer.schedule();
+          return { handled: true, render: false };
+        }
+        if (this.list.move(delta, this.filtered.length, this.lastBodyHeight)) {
           this.previewScroll = 0;
         }
         return { handled: true, render: true };
@@ -327,7 +367,7 @@ class SessionTreeComponent implements Component {
 
     if (type === "press" && event.button === "left") {
       if (this.lastCloseRect && hitRegion(this.lastCloseRect, x, y)) {
-        this.done(undefined);
+        this.finish(undefined);
         return { handled: true, render: false };
       }
       for (const [id, rect] of this.lastPillRects) {
@@ -387,17 +427,20 @@ class SessionTreeComponent implements Component {
       const delta = btn === 64 ? -1 : 1;
       if (col > this.lastDividerX) {
         this.previewScroll = Math.max(0, this.previewScroll + delta * 3);
-      } else if (this.list.move(delta, this.filtered.length, this.lastBodyHeight)) {
-        this.previewScroll = 0;
+        this.renderCoalescer.schedule();
+      } else {
+        if (this.list.move(delta, this.filtered.length, this.lastBodyHeight)) {
+          this.previewScroll = 0;
+        }
+        this.tui.requestRender();
       }
-      this.tui.requestRender();
       return true;
     }
 
     if (!isPress || (btn & 3) !== 0) return true;
 
     if (this.lastCloseRect && hitRegion(this.lastCloseRect, col, row)) {
-      this.done(undefined);
+      this.finish(undefined);
       return true;
     }
 
@@ -440,7 +483,7 @@ class SessionTreeComponent implements Component {
     this.statusNotice = "";
 
     if (matchesKey(data, "ctrl+c")) {
-      this.done(undefined);
+      this.finish(undefined);
       return;
     }
     if (this.labelEditing) {
@@ -456,7 +499,7 @@ class SessionTreeComponent implements Component {
         this.labelEditing = false;
         this.labelDraft = "";
         if (node) {
-          this.done({ action: "label", entryId: node.entry.id, label });
+          this.finish({ action: "label", entryId: node.entry.id, label });
         }
         return;
       }
@@ -481,7 +524,7 @@ class SessionTreeComponent implements Component {
         this.tui.requestRender();
         return;
       }
-      this.done(undefined);
+      this.finish(undefined);
       return;
     }
     if (matchesKey(data, "enter") || matchesKey(data, "return")) {

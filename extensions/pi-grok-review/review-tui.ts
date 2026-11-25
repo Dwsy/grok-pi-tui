@@ -29,6 +29,7 @@ import {
   isImageFilePath,
   renderHalfBlockPreview,
   renderSplitOverlayFrame,
+  RenderCoalescer,
   type ClickRegion,
   type RemoteTuiImageSpec,
   type TerminalImageCapability,
@@ -86,6 +87,7 @@ export function formatReviewFeedback(comments: readonly ReviewComment[]): string
 }
 
 export class ReviewTui implements Component {
+  private readonly tui: { requestRender: () => void };
   private readonly rootDir: string;
   private readonly launchMode: ReviewLaunchMode;
   private readonly sessionFiles: readonly ReviewFileChange[];
@@ -100,6 +102,7 @@ export class ReviewTui implements Component {
   private readonly onImageOverlay?: (spec: RemoteTuiImageSpec | undefined) => void;
   private readonly imageCap: TerminalImageCapability;
   private readonly getRows: () => number;
+  private readonly renderCoalescer: RenderCoalescer;
 
   private pickingTurn: boolean;
   private selectedTurnIndex = 0;
@@ -119,6 +122,8 @@ export class ReviewTui implements Component {
   private commentDraft = "";
   private readonly comments = new Map<string, string>();
   private readonly filePreviewCache = new Map<string, FilePreviewResult>();
+  private readonly previewLinesCache = new Map<string, string[]>();
+  private previewTargetKey = "";
 
   // Layout geometry for mouse hit-testing
   private dividerX = 42;
@@ -131,11 +136,13 @@ export class ReviewTui implements Component {
   private leftRowMap: Array<{ y1: number; y2: number; index: number }> = [];
 
   constructor(
-    _tui: { requestRender: () => void },
+    tui: { requestRender: () => void },
     theme: TuiTheme,
     options: ReviewTuiOptions,
     done: (result: ReviewTuiResult | undefined) => void,
   ) {
+    this.tui = tui;
+    this.renderCoalescer = new RenderCoalescer(() => this.tui.requestRender());
     this.rootDir = options.rootDir;
     this.launchMode = options.mode;
     this.sessionFiles = options.files;
@@ -215,17 +222,22 @@ export class ReviewTui implements Component {
     this.onImageOverlay(spec);
   }
 
-  private submitFeedback(): void {
+  private finish(result: ReviewTuiResult | undefined): void {
+    this.renderCoalescer.cancel();
     this.syncImageOverlay(undefined);
+    this.done(result);
+  }
+
+  private submitFeedback(): void {
     const list: ReviewComment[] = [...this.comments.entries()].map(([relPath, note]) => ({
       relPath,
       note,
     }));
     if (list.length === 0) {
-      this.done(undefined);
+      this.finish(undefined);
       return;
     }
-    this.done({
+    this.finish({
       comments: list,
       formattedFeedback: formatReviewFeedback(list),
     });
@@ -306,8 +318,7 @@ export class ReviewTui implements Component {
         this.syncImageOverlay(undefined);
         return;
       }
-      this.syncImageOverlay(undefined);
-      this.done(undefined);
+      this.finish(undefined);
       return;
     }
     if (matchesKey(data, "ctrl+s")) {
@@ -364,17 +375,20 @@ export class ReviewTui implements Component {
     if (type === "wheel") {
       const delta = (event.wheelDelta ?? 0) > 0 ? 1 : -1;
       if (y >= this.bodyStartY && y < this.bodyStartY + this.bodyHeight) {
-        if (x < this.dividerX) this.moveSelection(delta);
-        else this.scrollPreview(delta * 3);
-        return { handled: true, render: true };
+        if (x < this.dividerX) {
+          this.moveSelection(delta);
+          return { handled: true, render: true };
+        }
+        this.scrollPreview(delta * 3);
+        this.renderCoalescer.schedule();
+        return { handled: true, render: false };
       }
       return { handled: true, render: false };
     }
 
     if (type === "press" && event.button === "left") {
       if (hitRegion(this.closeBtnRect, x, y)) {
-        this.syncImageOverlay(undefined);
-        this.done(undefined);
+        this.finish(undefined);
         return { handled: true, render: false };
       }
       if (hitRegion(this.pillRects.get("send"), x, y) && this.comments.size > 0) {
@@ -553,6 +567,12 @@ export class ReviewTui implements Component {
       return empty.slice(0, height).map((l) => fitWidth(l, innerW));
     }
 
+    const targetKey = `${this.previewMode}:${file.relPath}`;
+    if (targetKey !== this.previewTargetKey) {
+      this.previewLinesCache.clear();
+      this.previewTargetKey = targetKey;
+    }
+
     const icon = this.styleIcon(file.name, false);
     const savedNote = this.comments.get(file.relPath);
     const metaLines: string[] = [
@@ -612,37 +632,42 @@ export class ReviewTui implements Component {
 
     this.syncImageOverlay(undefined);
 
-    const rendered: string[] = [];
-    if (this.previewMode === "diff") {
-      for (const dl of file.diffLines) {
-        const clean = dl.text.replace(/\t/g, "  ");
-        if (dl.kind === "hunk") {
-          rendered.push(` ${this.fg("accent", clean)}`);
-        } else if (dl.kind === "add") {
-          const num = dl.newLine ? String(dl.newLine).padStart(4, " ") : "    ";
-          rendered.push(` ${this.fg("dim", num)} ${this.fg("success", `+ ${clean}`)}`);
-        } else if (dl.kind === "del") {
-          const num = dl.oldLine ? String(dl.oldLine).padStart(4, " ") : "    ";
-          rendered.push(` ${this.fg("dim", num)} ${this.fg("error", `- ${clean}`)}`);
-        } else {
-          const num = dl.newLine ? String(dl.newLine).padStart(4, " ") : "    ";
-          rendered.push(` ${this.fg("dim", num)}   ${clean}`);
+    const cacheKey = `${targetKey}:${innerW}`;
+    let rendered = this.previewLinesCache.get(cacheKey);
+    if (!rendered) {
+      rendered = [];
+      if (this.previewMode === "diff") {
+        for (const dl of file.diffLines) {
+          const clean = dl.text.replace(/\t/g, "  ");
+          if (dl.kind === "hunk") {
+            rendered.push(` ${this.fg("accent", clean)}`);
+          } else if (dl.kind === "add") {
+            const num = dl.newLine ? String(dl.newLine).padStart(4, " ") : "    ";
+            rendered.push(` ${this.fg("dim", num)} ${this.fg("success", `+ ${clean}`)}`);
+          } else if (dl.kind === "del") {
+            const num = dl.oldLine ? String(dl.oldLine).padStart(4, " ") : "    ";
+            rendered.push(` ${this.fg("dim", num)} ${this.fg("error", `- ${clean}`)}`);
+          } else {
+            const num = dl.newLine ? String(dl.newLine).padStart(4, " ") : "    ";
+            rendered.push(` ${this.fg("dim", num)}   ${clean}`);
+          }
+        }
+      } else {
+        let prev = this.filePreviewCache.get(file.relPath);
+        if (!prev) {
+          prev = this.loadPreviewFn(this.rootDir, file.relPath, {
+            showHidden: true,
+            nerdIcons: this.nerdIcons,
+          });
+          this.filePreviewCache.set(file.relPath, prev);
+        }
+        const gutterW = Math.max(3, String(prev.lines.length).length);
+        for (let i = 0; i < prev.lines.length; i++) {
+          const num = String(i + 1).padStart(gutterW, " ");
+          rendered.push(` ${this.fg("dim", num)} ${this.fg("border", "│")} ${prev.lines[i]!.replace(/\t/g, "  ")}`);
         }
       }
-    } else {
-      let prev = this.filePreviewCache.get(file.relPath);
-      if (!prev) {
-        prev = this.loadPreviewFn(this.rootDir, file.relPath, {
-          showHidden: true,
-          nerdIcons: this.nerdIcons,
-        });
-        this.filePreviewCache.set(file.relPath, prev);
-      }
-      const gutterW = Math.max(3, String(prev.lines.length).length);
-      for (let i = 0; i < prev.lines.length; i++) {
-        const num = String(i + 1).padStart(gutterW, " ");
-        rendered.push(` ${this.fg("dim", num)} ${this.fg("border", "│")} ${prev.lines[i]!.replace(/\t/g, "  ")}`);
-      }
+      this.previewLinesCache.set(cacheKey, rendered);
     }
 
     this.lastPreviewLinesCount = rendered.length;

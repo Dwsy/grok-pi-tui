@@ -21,26 +21,34 @@ import {
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import os from "node:os";
+import path from "node:path";
 import {
   computeSplitGeometry,
   fitWidth,
   highlightTerms,
   hitRegion,
+  RenderCoalescer,
   renderSplitOverlayFrame,
   wrapTextToWidth,
   type ClickRegion,
   type TuiTheme,
 } from "../pi-grok-tui-kit/index.ts";
 import {
+  appendSessionNameToJsonl,
+  countProjectSessions,
+  deleteSessionJsonl,
   filterSessionRecords,
   formatRelativeAge,
   formatTimestamp,
   formatTokensM,
   loadSessionPreviewMessages,
+  type NameFilter,
   type PreviewMessage,
   type SessionRecord,
+  type SessionRecordDetails,
   type SessionScope,
   type SessionSearchHit,
+  type SortMode,
 } from "./session-data.ts";
 
 export { fitWidth, wrapTextToWidth, type TuiTheme as SessionPickerTheme };
@@ -61,14 +69,25 @@ export interface SessionPickerTuiOptions {
   fullscreen?: boolean;
   /** Optional custom preview loader (injected in tests). */
   loadPreview?: (sessionPath: string) => PreviewMessage[];
+  /** Optional lazy details loader (`session_details_cache`) for the selected session. */
+  loadDetails?: (sessionPath: string) => SessionRecordDetails | null;
   /** Optional full-text database search across all historical sessions. */
   searchRecords?: (options: {
     query: string;
     scope: SessionScope;
     currentCwd: string;
+    nameFilter?: NameFilter;
+    skipMissingFiles?: boolean;
   }) => SessionSearchHit[];
   /** Debounce delay in ms for `searchRecords` full-text SQLite queries (0 = synchronous). */
   searchDebounceMs?: number;
+  /** Path of the active Pi session; it cannot be deleted from the picker. */
+  currentSessionPath?: string;
+  /** Injected JSONL mutations (defaults to the session-data helpers). */
+  deleteSession?: (sessionPath: string) => { ok: boolean; error?: string };
+  renameSession?: (sessionPath: string, name: string) => { ok: boolean; error?: string };
+  /** Pi-native Markdown renderer for message previews (plain wrapping fallback). */
+  markdownRenderer?: (text: string, width: number) => string[];
   /** Terminal height provider for responsive body sizing. */
   getRows?: () => number;
 }
@@ -158,7 +177,7 @@ function formatCompactDate(raw: string): string {
 }
 
 export class SessionPickerTui implements Component {
-  private readonly records: readonly SessionRecord[];
+  private records: readonly SessionRecord[];
   private readonly currentCwd: string;
   private readonly tui: { requestRender: () => void };
   private readonly theme: TuiTheme;
@@ -167,13 +186,22 @@ export class SessionPickerTui implements Component {
   private readonly fullscreen: boolean;
   private readonly done: (selected: SessionRecord | undefined) => void;
   private readonly loadPreview: (sessionPath: string) => PreviewMessage[];
+  private readonly loadDetails?: (sessionPath: string) => SessionRecordDetails | null;
   private readonly searchRecords?: (options: {
     query: string;
     scope: SessionScope;
     currentCwd: string;
+    nameFilter?: NameFilter;
+    skipMissingFiles?: boolean;
   }) => SessionSearchHit[];
   private readonly searchDebounceMs: number;
   private readonly getRows: () => number;
+  private readonly currentSessionPath?: string;
+  private readonly deleteSession: (sessionPath: string) => { ok: boolean; error?: string };
+  private readonly renameSession: (
+    sessionPath: string,
+    name: string,
+  ) => { ok: boolean; error?: string };
 
   private scope: SessionScope;
   private query: string;
@@ -181,15 +209,39 @@ export class SessionPickerTui implements Component {
   private searchFocused = false;
   private hits: SessionSearchHit[] = [];
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
+  private searchPending = false;
+  private sortMode: SortMode = "threaded";
+  private nameFilter: NameFilter = "all";
+  private showPath = false;
+  private allFilteredHits: SessionSearchHit[] = [];
+  private mode: "list" | "rename" | "deleteConfirm" = "list";
+  private renameDraft = "";
+  private deleteTargetPath: string | null = null;
+  private statusMessage: { text: string; error?: boolean } | null = null;
+  private statusTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly previewRender: RenderCoalescer;
+  private readonly markdownRenderer?: (text: string, width: number) => string[];
+  /** Wrapped preview lines cached per session + width so wheel scrolling is a slice. */
+  private readonly previewLineCache = new Map<string, string[]>();
+  private previewLineCacheKey = "";
+  /** In-memory rename overrides so SQLite hits outside the initial slice keep their new name. */
+  private readonly renamedNames = new Map<string, string>();
   /** Visual row list for fullscreen project-grouped mode. */
   private groupedRows: FullscreenLeftRow[] = [];
+  /** O(1) lookup from `hitIndex` to row index in `groupedRows`. */
+  private hitIndexToRowIndex: number[] = [];
   private selectedIndex = 0;
   private listScroll = 0;
   private previewScroll = 0;
   private readonly previewCache = new Map<string, PreviewMessage[]>();
+  private readonly detailsCache = new Map<string, SessionRecordDetails | null>();
   private lastPreviewLinesCount = 0;
 
   // Layout geometry captured on each render for accurate mouse hit-testing.
+  /** In-memory split ratio only; never persisted. */
+  private leftRatio = 0.64;
+  private draggingDivider = false;
+  private lastTotalWidth = 0;
   private dividerX = 41;
   private bodyStartY = 5;
   private bodyHeight = 14;
@@ -198,8 +250,8 @@ export class SessionPickerTui implements Component {
   private closeBtnRect: ClickRegion = { x1: 0, x2: 0, y: 1 };
   private listRowMap: Array<{ y1: number; y2: number; index: number }> = [];
 
-  private readonly globalCount: number;
-  private readonly projectCount: number;
+  private globalCount = 0;
+  private projectCount = 0;
 
   constructor(
     tui: { requestRender: () => void },
@@ -218,17 +270,17 @@ export class SessionPickerTui implements Component {
     this.fullscreen = options.fullscreen === true;
     this.done = done;
     this.loadPreview = options.loadPreview ?? ((p) => loadSessionPreviewMessages(p));
+    this.loadDetails = options.loadDetails;
     this.searchRecords = options.searchRecords;
     this.searchDebounceMs = Math.max(0, options.searchDebounceMs ?? 0);
     this.getRows = options.getRows ?? (() => 28);
+    this.currentSessionPath = options.currentSessionPath;
+    this.deleteSession = options.deleteSession ?? ((p) => deleteSessionJsonl(p));
+    this.renameSession = options.renameSession ?? ((p, n) => appendSessionNameToJsonl(p, n));
+    this.markdownRenderer = options.markdownRenderer;
+    this.previewRender = new RenderCoalescer(() => this.tui.requestRender(), 40);
 
-    this.globalCount = this.records.length;
-    this.projectCount = filterSessionRecords(this.records, {
-      scope: "project",
-      currentCwd: this.currentCwd,
-      query: "",
-    }).length;
-
+    this.recountSessions();
     this.recomputeHits(true);
   }
 
@@ -260,15 +312,55 @@ export class SessionPickerTui implements Component {
       clearTimeout(this.searchTimer);
       this.searchTimer = null;
     }
+    this.searchPending = false;
+  }
+
+  private clearStatusTimer(): void {
+    if (this.statusTimer !== null) {
+      clearTimeout(this.statusTimer);
+      this.statusTimer = null;
+    }
+  }
+
+  private setStatus(text: string, error = false): void {
+    this.clearStatusTimer();
+    this.statusMessage = { text, error };
+    this.statusTimer = setTimeout(() => {
+      this.statusTimer = null;
+      this.statusMessage = null;
+      this.tui.requestRender();
+    }, 1800);
   }
 
   private finish(selected: SessionRecord | undefined): void {
     this.clearSearchTimer();
+    this.clearStatusTimer();
+    this.previewRender.cancel();
+    this.draggingDivider = false;
     this.done(selected);
   }
 
   private applyFilteredHits(filtered: SessionSearchHit[], prevId?: string): void {
-    if (this.fullscreen) {
+    this.allFilteredHits = filtered;
+    this.applyCurrentSort(prevId);
+  }
+
+  private applyCurrentSort(prevId?: string): void {
+    const compareDesc = (a: string, b: string) => (b > a ? 1 : b < a ? -1 : 0);
+    let filtered = this.allFilteredHits;
+    if (this.sortMode === "recent") {
+      filtered = [...filtered].sort((a, b) =>
+        compareDesc(a.record.modified, b.record.modified),
+      );
+    } else if (this.sortMode === "relevance") {
+      filtered = [...filtered].sort(
+        (a, b) =>
+          (b.score ?? 0) - (a.score ?? 0) ||
+          compareDesc(a.record.modified, b.record.modified),
+      );
+    }
+
+    if (this.fullscreen && this.sortMode === "threaded") {
       // Group by project CWD in order of most-recently-updated project so
       // `this.hits` matches the exact visual order rendered in the left pane.
       const groups = new Map<string, SessionSearchHit[]>();
@@ -283,6 +375,7 @@ export class SessionPickerTui implements Component {
       }
       const ordered: SessionSearchHit[] = [];
       const rows: FullscreenLeftRow[] = [];
+      const indexMap: number[] = [];
       let groupIdx = 0;
       for (const [cwdKey, items] of groups) {
         if (groupIdx > 0) {
@@ -296,15 +389,26 @@ export class SessionPickerTui implements Component {
         for (const item of items) {
           const hitIndex = ordered.length;
           ordered.push(item);
+          indexMap.push(rows.length);
           rows.push({ kind: "item", hitIndex, hit: item });
         }
         groupIdx += 1;
       }
       this.hits = ordered;
       this.groupedRows = rows;
+      this.hitIndexToRowIndex = indexMap;
+    } else if (this.fullscreen) {
+      this.hits = filtered;
+      this.groupedRows = filtered.map((hit, hitIndex) => ({
+        kind: "item",
+        hitIndex,
+        hit,
+      }));
+      this.hitIndexToRowIndex = filtered.map((_, hitIndex) => hitIndex);
     } else {
       this.hits = filtered;
       this.groupedRows = [];
+      this.hitIndexToRowIndex = [];
     }
     if (prevId) {
       const keptIdx = this.hits.findIndex((h) => h.record.id === prevId);
@@ -319,58 +423,43 @@ export class SessionPickerTui implements Component {
 
   private recomputeHits(immediate = false): void {
     this.clearSearchTimer();
+    if (!immediate && this.searchDebounceMs > 0 && this.query.trim()) {
+      this.searchPending = true;
+      this.searchTimer = setTimeout(() => {
+        this.recomputeHits(true);
+        this.tui.requestRender();
+      }, this.searchDebounceMs);
+      return;
+    }
+
     const prevId = this.hits[this.selectedIndex]?.record.id;
     let filtered = filterSessionRecords(this.records, {
       scope: this.scope,
       currentCwd: this.currentCwd,
       query: this.query,
+      nameFilter: this.nameFilter,
     });
     if (this.query.trim() && this.searchRecords) {
-      if (immediate || this.searchDebounceMs <= 0) {
-        const dbHits = this.searchRecords({
-          query: this.query,
-          scope: this.scope,
-          currentCwd: this.currentCwd,
-        });
-        if (dbHits.length > 0) {
-          const seen = new Set(filtered.map((h) => h.record.id));
-          const merged = [...filtered];
-          for (const hit of dbHits) {
-            if (!seen.has(hit.record.id)) {
-              seen.add(hit.record.id);
-              merged.push(hit);
-            }
+      const dbHits = this.searchRecords({
+        query: this.query,
+        scope: this.scope,
+        currentCwd: this.currentCwd,
+        nameFilter: this.nameFilter,
+        skipMissingFiles: true,
+      });
+      if (dbHits.length > 0) {
+        const seen = new Set(filtered.map((h) => h.record.id));
+        const merged = [...filtered];
+        for (const hit of dbHits) {
+          const renamed = this.renamedNames.get(hit.record.path);
+          const record = renamed ? { ...hit.record, name: renamed, title: renamed } : hit.record;
+          if (this.nameFilter === "named" && !record.name?.trim()) continue;
+          if (!seen.has(hit.record.id)) {
+            seen.add(hit.record.id);
+            merged.push(renamed ? { ...hit, record } : hit);
           }
-          filtered = merged;
         }
-      } else {
-        const scheduledQuery = this.query;
-        const scheduledScope = this.scope;
-        const baseHits = filtered;
-        this.searchTimer = setTimeout(() => {
-          this.searchTimer = null;
-          if (this.query !== scheduledQuery || this.scope !== scheduledScope || !this.searchRecords) {
-            return;
-          }
-          const dbHits = this.searchRecords({
-            query: scheduledQuery,
-            scope: scheduledScope,
-            currentCwd: this.currentCwd,
-          });
-          if (dbHits.length > 0) {
-            const seen = new Set(baseHits.map((h) => h.record.id));
-            const merged = [...baseHits];
-            for (const hit of dbHits) {
-              if (!seen.has(hit.record.id)) {
-                seen.add(hit.record.id);
-                merged.push(hit);
-              }
-            }
-            const currentId = this.hits[this.selectedIndex]?.record.id;
-            this.applyFilteredHits(merged, currentId);
-            this.tui.requestRender();
-          }
-        }, this.searchDebounceMs);
+        filtered = merged;
       }
     }
     this.applyFilteredHits(filtered, prevId);
@@ -384,6 +473,112 @@ export class SessionPickerTui implements Component {
 
   private toggleScope(): void {
     this.setScope(this.scope === "global" ? "project" : "global");
+  }
+
+  private recountSessions(): void {
+    this.globalCount = this.records.length;
+    this.projectCount = countProjectSessions(this.records, this.currentCwd);
+  }
+
+  private cycleSortMode(): void {
+    this.sortMode =
+      this.sortMode === "threaded"
+        ? "recent"
+        : this.sortMode === "recent"
+          ? "relevance"
+          : "threaded";
+    this.applyCurrentSort(this.hits[this.selectedIndex]?.record.id);
+    const label =
+      this.sortMode === "threaded"
+        ? "Threaded"
+        : this.sortMode === "recent"
+          ? "Recent"
+          : "Relevance";
+    this.setStatus(`Sort: ${label}`);
+    this.tui.requestRender();
+  }
+
+  private toggleNameFilter(): void {
+    this.nameFilter = this.nameFilter === "all" ? "named" : "all";
+    this.setStatus(`Name: ${this.nameFilter === "named" ? "Named" : "All"}`);
+    this.recomputeHits(true);
+    this.tui.requestRender();
+  }
+
+  private togglePath(): void {
+    this.showPath = !this.showPath;
+    this.setStatus(`Path ${this.showPath ? "on" : "off"}`);
+    this.tui.requestRender();
+  }
+
+  private isCurrentSession(record: SessionRecord): boolean {
+    if (!this.currentSessionPath) return false;
+    return path.resolve(record.path) === path.resolve(this.currentSessionPath);
+  }
+
+  private requestDelete(): void {
+    const selected = this.getSelectedRecord();
+    if (!selected) return;
+    if (this.isCurrentSession(selected)) {
+      this.setStatus("Cannot delete the currently active session", true);
+      this.tui.requestRender();
+      return;
+    }
+    this.deleteTargetPath = selected.path;
+    this.mode = "deleteConfirm";
+    this.tui.requestRender();
+  }
+
+  private confirmDelete(): void {
+    const target = this.deleteTargetPath;
+    this.deleteTargetPath = null;
+    this.mode = "list";
+    if (!target) return;
+    const result = this.deleteSession(target);
+    if (!result.ok) {
+      this.setStatus(`Failed to delete: ${result.error ?? "Unknown error"}`, true);
+      this.tui.requestRender();
+      return;
+    }
+    this.records = this.records.filter((record) => record.path !== target);
+    this.previewCache.delete(target);
+    this.detailsCache.delete(target);
+    for (const key of [...this.previewLineCache.keys()]) {
+      if (key.startsWith(`${target}:`)) this.previewLineCache.delete(key);
+    }
+    this.recountSessions();
+    this.recomputeHits(true);
+    this.setStatus("Session deleted");
+    this.tui.requestRender();
+  }
+
+  private startRename(): void {
+    const selected = this.getSelectedRecord();
+    if (!selected) return;
+    this.renameDraft = selected.name ?? "";
+    this.mode = "rename";
+    this.tui.requestRender();
+  }
+
+  private confirmRename(): void {
+    const target = this.getSelectedRecord();
+    const next = this.renameDraft.replace(/[\r\n]+/g, " ").trim();
+    this.renameDraft = "";
+    this.mode = "list";
+    if (!target || !next) return;
+    const result = this.renameSession(target.path, next);
+    if (!result.ok) {
+      this.setStatus(`Failed to rename: ${result.error ?? "Unknown error"}`, true);
+      this.tui.requestRender();
+      return;
+    }
+    this.records = this.records.map((record) =>
+      record.path === target.path ? { ...record, name: next, title: next } : record,
+    );
+    this.renamedNames.set(target.path, next);
+    this.recomputeHits(true);
+    this.setStatus("Session renamed");
+    this.tui.requestRender();
   }
 
   private itemsPerPage(): number {
@@ -404,9 +599,7 @@ export class SessionPickerTui implements Component {
     }
     this.selectedIndex = Math.max(0, Math.min(this.hits.length - 1, this.selectedIndex));
     if (this.fullscreen) {
-      const selectedRowIdx = this.groupedRows.findIndex(
-        (r) => r.kind === "item" && r.hitIndex === this.selectedIndex,
-      );
+      const selectedRowIdx = this.hitIndexToRowIndex[this.selectedIndex] ?? -1;
       const targetRow = selectedRowIdx >= 0 ? selectedRowIdx : 0;
       // Keep the group header visible above the first item of a group when scrolling up.
       const headerRow =
@@ -454,17 +647,100 @@ export class SessionPickerTui implements Component {
     return loaded;
   }
 
+  private hydrateDetails(record: SessionRecord): SessionRecord {
+    if (!this.loadDetails || record.userMessages !== null) return record;
+    let details = this.detailsCache.get(record.path);
+    if (details === undefined) {
+      details = this.loadDetails(record.path);
+      this.detailsCache.set(record.path, details);
+    }
+    if (!details) return record;
+    return {
+      ...record,
+      userMessages: details.userMessages,
+      assistantMessages: details.assistantMessages,
+      totalTokens: details.totalTokens,
+      model:
+        record.model && record.model !== "—"
+          ? record.model
+          : details.model || record.model,
+    };
+  }
+
+  private renderMessageContent(text: string, width: number): string[] {
+    return this.markdownRenderer?.(text, width) ?? wrapTextToWidth(text, width);
+  }
+
   /** Required by Pi TUI Component interface. */
   invalidate(): void {
     // Re-renders directly from live state on every frame.
   }
 
   handleInput(data: string): void {
+    if (this.mode === "deleteConfirm") {
+      if (matchesKey(data, "enter") || matchesKey(data, "return")) {
+        this.confirmDelete();
+      } else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+        this.mode = "list";
+        this.deleteTargetPath = null;
+        this.tui.requestRender();
+      }
+      return;
+    }
+
+    if (this.mode === "rename") {
+      if (matchesKey(data, "enter") || matchesKey(data, "return")) {
+        this.confirmRename();
+        return;
+      }
+      if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+        this.mode = "list";
+        this.renameDraft = "";
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, "backspace")) {
+        this.renameDraft = Array.from(this.renameDraft).slice(0, -1).join("");
+        this.tui.requestRender();
+        return;
+      }
+      let renameInput = data;
+      if (renameInput.startsWith("\x1b[200~") && renameInput.endsWith("\x1b[201~")) {
+        renameInput = renameInput.slice(6, -6).replace(/[\r\n]+/g, " ");
+      }
+      if (!renameInput.startsWith("\x1b") && !/[\x00-\x1f\x7f]/.test(renameInput)) {
+        this.renameDraft += renameInput;
+        this.tui.requestRender();
+      }
+      return;
+    }
+
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
       this.finish(undefined);
       return;
     }
+    if (matchesKey(data, "ctrl+s")) {
+      this.cycleSortMode();
+      return;
+    }
+    if (matchesKey(data, "ctrl+n")) {
+      this.toggleNameFilter();
+      return;
+    }
+    if (matchesKey(data, "ctrl+d")) {
+      this.requestDelete();
+      return;
+    }
+    if (matchesKey(data, "ctrl+p")) {
+      this.togglePath();
+      return;
+    }
+    if (matchesKey(data, "ctrl+r")) {
+      this.startRename();
+      return;
+    }
     if (matchesKey(data, "enter") || matchesKey(data, "return")) {
+      if (this.searchPending) this.recomputeHits(true);
       this.finish(this.getSelectedRecord());
       return;
     }
@@ -472,11 +748,11 @@ export class SessionPickerTui implements Component {
       this.toggleScope();
       return;
     }
-    if (matchesKey(data, "up") || matchesKey(data, "ctrl+p")) {
+    if (matchesKey(data, "up")) {
       this.moveSelection(-1);
       return;
     }
-    if (matchesKey(data, "down") || matchesKey(data, "ctrl+n")) {
+    if (matchesKey(data, "down")) {
       this.moveSelection(1);
       return;
     }
@@ -484,7 +760,7 @@ export class SessionPickerTui implements Component {
       this.scrollPreview(-Math.max(3, Math.floor(this.previewVisibleRows / 2)));
       return;
     }
-    if (matchesKey(data, "pageDown") || matchesKey(data, "ctrl+d")) {
+    if (matchesKey(data, "pageDown")) {
       this.scrollPreview(Math.max(3, Math.floor(this.previewVisibleRows / 2)));
       return;
     }
@@ -523,18 +799,46 @@ export class SessionPickerTui implements Component {
     }
   }
 
+  private setDividerFromX(x: number): void {
+    const minRight = this.lastTotalWidth >= 80 ? 28 : 20;
+    const maxLeft = this.lastTotalWidth - minRight - 1;
+    const left = Math.max(20, Math.min(x, maxLeft));
+    this.leftRatio = left / Math.max(1, this.lastTotalWidth - 1);
+  }
+
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     const { x, y, type } = event;
+    if (this.mode !== "list") return { handled: true, render: false };
+
+    if (this.fullscreen && this.draggingDivider) {
+      if (type === "drag") {
+        this.setDividerFromX(x);
+        return { handled: true, capture: true, render: true };
+      }
+      if (type === "release") {
+        this.draggingDivider = false;
+        return { handled: true, render: true };
+      }
+    }
+
+    if (this.fullscreen && type === "press" && event.button === "left") {
+      const inBody = y >= this.bodyStartY && y < this.bodyStartY + this.bodyHeight;
+      if (inBody && Math.abs(x - this.dividerX) <= 1) {
+        this.draggingDivider = true;
+        return { handled: true, capture: true, render: true };
+      }
+    }
 
     if (type === "wheel") {
       const delta = (event.wheelDelta ?? 0) > 0 ? 1 : -1;
       if (y >= this.bodyStartY && y < this.bodyStartY + this.bodyHeight) {
         if (x < this.dividerX) {
           this.moveSelection(delta);
-        } else {
-          this.scrollPreview(delta * 3);
+          return { handled: true, render: true };
         }
-        return { handled: true, render: true };
+        this.scrollPreview(delta * 3);
+        this.previewRender.schedule();
+        return { handled: true, render: false };
       }
       return { handled: true, render: false };
     }
@@ -576,7 +880,8 @@ export class SessionPickerTui implements Component {
         for (const row of this.listRowMap) {
           if (y >= row.y1 && y <= row.y2) {
             this.selectedIndex = row.index;
-            this.finish(this.getSelectedRecord());
+            const clicked = this.hits[row.index]?.record;
+            if (clicked) this.finish(clicked);
             return { handled: true, render: false };
           }
         }
@@ -587,7 +892,8 @@ export class SessionPickerTui implements Component {
   }
 
   private renderRightPane(innerW: number, height: number): string[] {
-    const selected = this.hits[this.selectedIndex]?.record;
+    const rawSelected = this.hits[this.selectedIndex]?.record;
+    const selected = rawSelected ? this.hydrateDetails(rawSelected) : undefined;
     if (!selected) {
       const empty = [
         "",
@@ -606,6 +912,11 @@ export class SessionPickerTui implements Component {
 
     const metaLines: string[] = [
       pad(this.bold(this.fg("accent", selected.title))),
+    ];
+    if (selected.name?.trim()) {
+      metaLines.push(pad(`${this.fg("dim", "Name:")} ${this.fg("warning", selected.name)}`));
+    }
+    metaLines.push(
       pad(
         `${this.fg("dim", "Project:")} ${this.bold(selected.project)}  ${this.fg("dim", "ID:")} ${selected.id}`,
       ),
@@ -615,46 +926,56 @@ export class SessionPickerTui implements Component {
       pad(
         `${this.fg("dim", "Msgs:")} ${msgsDetail}  ${this.fg("dim", "Tokens:")} ${this.fg("warning", formatTokensM(selected.totalTokens))}  ${this.fg("dim", "Model:")} ${this.fg("success", shortModelName(selected.model))}`,
       ),
-    ];
+    );
+    if (this.showPath) {
+      for (const pLine of wrapTextToWidth(shortenHomePath(selected.path), Math.max(8, innerW - 2)).slice(0, 2)) {
+        metaLines.push(pad(this.fg("dim", pLine)));
+      }
+    }
 
     const divider = this.fg("border", "─".repeat(innerW));
     const headerBlock = [...metaLines, divider];
     const previewHeight = Math.max(1, height - headerBlock.length);
     this.previewVisibleRows = previewHeight;
 
-    const messages = this.getPreviewMessages(selected);
-    const allPreviewLines: string[] = [];
     const textWidth = Math.max(8, innerW - 2);
-
-    if (messages.length === 0) {
-      allPreviewLines.push(this.fg("dim", " (No user/agent messages available for preview)"));
-    } else {
-      for (const msg of messages) {
-        const badge =
-          msg.role === "user"
-            ? this.bold(this.fg("accent", "You"))
-            : this.bold(this.fg("success", "Agent"));
-        const tsLabel = msg.timestamp ? this.fg("dim", ` ${formatTimestamp(msg.timestamp).slice(11)}`) : "";
-        allPreviewLines.push(` ${badge}${tsLabel}`);
-        const wrapped = wrapTextToWidth(msg.content, textWidth);
-        for (const wline of wrapped) {
-          const rendered = this.query.trim()
-            ? highlightTerms(wline, this.query, (m) => `\x1b[7m${m}\x1b[27m`)
-            : wline;
-          allPreviewLines.push(`  ${rendered}`);
+    const cacheKey = `${selected.path}:bordered:${textWidth}:${this.markdownRenderer ? "md" : "plain"}`;
+    if (cacheKey !== this.previewLineCacheKey) {
+      this.previewLineCache.clear();
+      this.previewLineCacheKey = cacheKey;
+    }
+    let allPreviewLines = this.previewLineCache.get(cacheKey);
+    if (!allPreviewLines) {
+      const messages = this.getPreviewMessages(selected);
+      allPreviewLines = [];
+      if (messages.length === 0) {
+        allPreviewLines.push(this.fg("dim", " (No user/agent messages available for preview)"));
+      } else {
+        for (const msg of messages) {
+          const badge =
+            msg.role === "user"
+              ? this.bold(this.fg("accent", "You"))
+              : this.bold(this.fg("success", "Agent"));
+          const tsLabel = msg.timestamp ? this.fg("dim", ` ${formatTimestamp(msg.timestamp).slice(11)}`) : "";
+          allPreviewLines.push(` ${badge}${tsLabel}`);
+          for (const wline of this.renderMessageContent(msg.content, textWidth)) {
+            allPreviewLines.push(`  ${wline}`);
+          }
+          allPreviewLines.push("");
         }
-        allPreviewLines.push("");
       }
+      this.previewLineCache.set(cacheKey, allPreviewLines);
     }
 
     this.lastPreviewLinesCount = allPreviewLines.length;
     const maxScroll = Math.max(0, allPreviewLines.length - previewHeight);
     if (this.previewScroll > maxScroll) this.previewScroll = maxScroll;
 
-    const visiblePreview = allPreviewLines.slice(
-      this.previewScroll,
-      this.previewScroll + previewHeight,
-    );
+    const visiblePreview = allPreviewLines
+      .slice(this.previewScroll, this.previewScroll + previewHeight)
+      .map((line) =>
+        this.query.trim() ? highlightTerms(line, this.query, (m) => `\x1b[7m${m}\x1b[27m`) : line,
+      );
     while (visiblePreview.length < previewHeight) visiblePreview.push("");
 
     return [...headerBlock, ...visiblePreview]
@@ -690,15 +1011,16 @@ export class SessionPickerTui implements Component {
       const age = formatRelativeAge(rec.modified);
       const rightAge = age ? ` ${age}` : "";
       const titleBudget = Math.max(6, innerW - 2 - visibleWidth(rightAge));
-      const titleText = truncateToWidth(rec.title, titleBudget, "…");
+      const titleText = truncateToWidth(rec.title, titleBudget, "");
       const titleStyled = isSelected ? this.bold(this.fg("accent", titleText)) : titleText;
       const gap = Math.max(0, innerW - 2 - visibleWidth(titleText) - visibleWidth(rightAge));
       const row1 = `${marker}${titleStyled}${" ".repeat(gap)}${this.fg("dim", rightAge)}`;
 
+      const pathPrefix = this.showPath ? `${shortenHomePath(rec.path)} · ` : "";
       const metaSummary = hit.matchSnippet
-        ? `${rec.project} · ${hit.matchSnippet}`
-        : `${rec.project} · ${rec.shortId} · ${rec.messageCount}m · ${formatTokensM(rec.totalTokens)} · ${shortModelName(rec.model)}`;
-      const row2 = `  ${this.fg("dim", truncateToWidth(metaSummary, Math.max(4, innerW - 2), "…"))}`;
+        ? `${pathPrefix}${rec.project} · ${hit.matchSnippet}`
+        : `${pathPrefix}${rec.project} · ${rec.shortId} · ${rec.messageCount}m · ${formatTokensM(rec.totalTokens)} · ${shortModelName(rec.model)}`;
+      const row2 = `  ${this.fg("dim", truncateToWidth(metaSummary, Math.max(4, innerW - 2), ""))}`;
 
       lines.push(fitWidth(row1, innerW));
       if (lines.length < height) {
@@ -764,6 +1086,7 @@ export class SessionPickerTui implements Component {
     }
 
     const visibleSlice = this.groupedRows.slice(this.listScroll, this.listScroll + listHeight);
+    const lightBg = isLightTerminalTheme(this.theme);
     for (const row of visibleSlice) {
       if (lines.length >= height) break;
       if (row.kind === "blank") {
@@ -785,13 +1108,13 @@ export class SessionPickerTui implements Component {
       const createdText = createdColW > 0 ? formatCompactDate(rec.created) : "";
       const msgsText = msgsColW > 0 ? String(rec.messageCount) : "";
       const modelText =
-        modelColW > 0 ? truncateToWidth(shortModelName(rec.model), modelColW, "…") : "";
+        modelColW > 0 ? truncateToWidth(shortModelName(rec.model), modelColW, "") : "";
 
       const titleGap = 2;
       if (isSelected) {
         const prefix = " ▸ ○ ";
         const titleBudget = Math.max(8, titleColW - visibleWidth(prefix) - titleGap);
-        const titleText = truncateToWidth(rec.title, titleBudget, "…");
+        const titleText = truncateToWidth(rec.title, titleBudget, "");
         const leftPart = `${prefix}${titleText}`;
         const rightPart = [
           msgsColW > 0 ? `${fitWidth(msgsText, msgsColW)}  ` : "",
@@ -805,11 +1128,11 @@ export class SessionPickerTui implements Component {
       } else {
         const prefix = "   ○ ";
         const titleBudget = Math.max(8, titleColW - visibleWidth(prefix) - titleGap);
-        const titleRaw = truncateToWidth(rec.title, titleBudget, "…");
+        const titleRaw = truncateToWidth(rec.title, titleBudget, "");
         const coloredTitle = styleSessionTitle(
           rec.id,
           titleRaw,
-          isLightTerminalTheme(this.theme),
+          lightBg,
         );
         const titleStyled = this.query.trim()
           ? highlightTerms(coloredTitle, this.query, (m) => `\x1b[7m${m}\x1b[27m`)
@@ -837,7 +1160,8 @@ export class SessionPickerTui implements Component {
   private renderFullscreenRightPane(innerW: number, height: number): string[] {
     const pad = (s: string) => `  ${s}`;
     const textW = Math.max(10, innerW - 3);
-    const selected = this.hits[this.selectedIndex]?.record;
+    const rawSelected = this.hits[this.selectedIndex]?.record;
+    const selected = rawSelected ? this.hydrateDetails(rawSelected) : undefined;
     const selectedHit = this.hits[this.selectedIndex];
     if (!selected) {
       const empty = [
@@ -867,6 +1191,9 @@ export class SessionPickerTui implements Component {
         `${this.fg("dim", "○")} ${this.fg("dim", selected.shortId)} · ${msgsDetail} msgs · ${this.fg("warning", formatTokensM(selected.totalTokens))}`,
       ),
     );
+    if (selected.name?.trim()) {
+      headerLines.push(pad(`${this.fg("dim", "Name:")} ${this.fg("warning", selected.name)}`));
+    }
     headerLines.push("");
     headerLines.push(
       pad(`${this.fg("dim", "Model:")} ${this.fg("success", shortModelName(selected.model))}`),
@@ -883,11 +1210,17 @@ export class SessionPickerTui implements Component {
     for (const pLine of wrapTextToWidth(selected.cwd || selected.project, textW).slice(0, 2)) {
       headerLines.push(pad(pLine));
     }
+    if (this.showPath) {
+      headerLines.push(pad(this.fg("dim", "Path")));
+      for (const pLine of wrapTextToWidth(shortenHomePath(selected.path), textW).slice(0, 2)) {
+        headerLines.push(pad(pLine));
+      }
+    }
     headerLines.push("");
     if (selectedHit?.matchSnippet && this.query.trim()) {
       headerLines.push(pad(this.fg("dim", "Match")));
       const highlightedSnippet = highlightTerms(
-        truncateToWidth(selectedHit.matchSnippet, textW, "…"),
+        truncateToWidth(selectedHit.matchSnippet, textW, ""),
         this.query,
         (m) => `\x1b[7m${m}\x1b[27m`,
       );
@@ -899,38 +1232,45 @@ export class SessionPickerTui implements Component {
     const previewHeight = Math.max(1, height - headerLines.length);
     this.previewVisibleRows = previewHeight;
 
-    const messages = this.getPreviewMessages(selected);
-    const allPreviewLines: string[] = [];
-    if (messages.length === 0) {
-      allPreviewLines.push(pad(this.fg("dim", "(No user/agent messages available)")));
-    } else {
-      for (const msg of messages) {
-        const badge =
-          msg.role === "user"
-            ? this.bold(this.fg("accent", "You"))
-            : this.bold(this.fg("success", "Agent"));
-        const tsLabel = msg.timestamp
-          ? this.fg("dim", ` ${formatTimestamp(msg.timestamp).slice(11)}`)
-          : "";
-        allPreviewLines.push(pad(`${badge}${tsLabel}`));
-        for (const wline of wrapTextToWidth(msg.content, textW)) {
-          const rendered = this.query.trim()
-            ? highlightTerms(wline, this.query, (m) => `\x1b[7m${m}\x1b[27m`)
-            : wline;
-          allPreviewLines.push(pad(rendered));
+    const cacheKey = `${selected.path}:${textW}:${this.markdownRenderer ? "md" : "plain"}`;
+    if (cacheKey !== this.previewLineCacheKey) {
+      this.previewLineCache.clear();
+      this.previewLineCacheKey = cacheKey;
+    }
+    let allPreviewLines = this.previewLineCache.get(cacheKey);
+    if (!allPreviewLines) {
+      const messages = this.getPreviewMessages(selected);
+      allPreviewLines = [];
+      if (messages.length === 0) {
+        allPreviewLines.push(pad(this.fg("dim", "(No user/agent messages available)")));
+      } else {
+        for (const msg of messages) {
+          const badge =
+            msg.role === "user"
+              ? this.bold(this.fg("accent", "You"))
+              : this.bold(this.fg("success", "Agent"));
+          const tsLabel = msg.timestamp
+            ? this.fg("dim", ` ${formatTimestamp(msg.timestamp).slice(11)}`)
+            : "";
+          allPreviewLines.push(pad(`${badge}${tsLabel}`));
+          for (const wline of this.renderMessageContent(msg.content, textW)) {
+            allPreviewLines.push(pad(wline));
+          }
+          allPreviewLines.push("");
         }
-        allPreviewLines.push("");
       }
+      this.previewLineCache.set(cacheKey, allPreviewLines);
     }
 
     this.lastPreviewLinesCount = allPreviewLines.length;
     const maxScroll = Math.max(0, allPreviewLines.length - previewHeight);
     if (this.previewScroll > maxScroll) this.previewScroll = maxScroll;
 
-    const visiblePreview = allPreviewLines.slice(
-      this.previewScroll,
-      this.previewScroll + previewHeight,
-    );
+    const visiblePreview = allPreviewLines
+      .slice(this.previewScroll, this.previewScroll + previewHeight)
+      .map((line) =>
+        this.query.trim() ? highlightTerms(line, this.query, (m) => `\x1b[7m${m}\x1b[27m`) : line,
+      );
     while (visiblePreview.length < previewHeight) visiblePreview.push("");
 
     return [...headerLines, ...visiblePreview]
@@ -938,15 +1278,34 @@ export class SessionPickerTui implements Component {
       .map((line) => fitWidth(line, innerW));
   }
 
+  private renderActionPanel(width: number, height: number): string[] {
+    const lines: string[] = Array.from({ length: height }, () => " ".repeat(width));
+    const start = Math.max(0, Math.floor((height - 4) / 2));
+    const title =
+      this.mode === "rename" ? "Rename Session" : "Delete session?";
+    const detail =
+      this.mode === "rename"
+        ? `  > ${this.renameDraft}▏`
+        : `  ${shortenHomePath(this.deleteTargetPath ?? "")}`;
+    const setLine = (row: number, text: string) => {
+      if (row >= 0 && row < height) lines[row] = fitWidth(text, width);
+    };
+    setLine(start, `  ${this.bold(title)}`);
+    setLine(start + 1, detail);
+    setLine(start + 2, `  ${this.fg("dim", "Enter confirm · Esc cancel")}`);
+    return lines;
+  }
+
   private renderFullscreen(width: number): string[] {
     const totalWidth = Math.max(40, width);
     const totalRows = Math.max(12, this.getRows());
-    // Reserve 3 top rows (title, tabs+search, divider) and 1 bottom footer row.
-    const bodyHeight = Math.max(4, totalRows - 4);
+    // Reserve 3 top rows, 1 shortcut row and 1 bottom footer row.
+    const bodyHeight = Math.max(4, totalRows - 5);
     const minRight = totalWidth >= 80 ? 28 : 20;
+    this.lastTotalWidth = totalWidth;
     const leftWidth = Math.max(
       20,
-      Math.min(totalWidth - minRight - 1, Math.floor((totalWidth - 1) * 0.64)),
+      Math.min(totalWidth - minRight - 1, Math.floor((totalWidth - 1) * this.leftRatio)),
     );
     const rightWidth = Math.max(10, totalWidth - 1 - leftWidth);
 
@@ -955,7 +1314,13 @@ export class SessionPickerTui implements Component {
     this.bodyHeight = bodyHeight;
 
     // Row 0: Codex-style top title bar + clickable close button.
-    const titleLeft = `  ${this.bold("Sessions")}  ${this.fg("dim", "Group: Project")}`;
+    const sortLabel =
+      this.sortMode === "threaded"
+        ? "Group: Project"
+        : this.sortMode === "recent"
+          ? "Sort: Recent"
+          : "Sort: Relevance";
+    const titleLeft = `  ${this.bold("Sessions")}  ${this.fg("dim", sortLabel)}`;
     const closeLabel = "[✕]";
     const closeStyled = this.fg("dim", closeLabel);
     const row0Gap = Math.max(1, totalWidth - visibleWidth(titleLeft) - visibleWidth(closeLabel) - 2);
@@ -989,10 +1354,12 @@ export class SessionPickerTui implements Component {
         ? `\x1b[4m${this.bold(this.fg("accent", projRaw))}\x1b[24m`
         : this.fg("dim", projRaw);
     const searchBlock = this.query || this.searchFocused
-      ? `   ${this.fg("accent", "/")} ${this.query}${this.fg("accent", "▏")}`
+      ? `   ${this.fg("accent", "/")} ${this.query}${this.fg("accent", "▏")}${this.searchPending ? this.fg("dim", " searching") : ""}`
       : `   ${this.fg("dim", "/ type to filter...")}`;
     const row1Left = `  ${allTab}   ${projTab}${searchBlock}`;
-    const row1Right = this.fg("dim", "tab/⇧tab filter  esc close  ");
+    const row1Right = this.statusMessage?.error
+      ? this.fg("error", this.statusMessage.text)
+      : this.fg("dim", this.statusMessage?.text ?? "tab/⇧tab filter  esc close  ");
     const row1Gap = Math.max(1, totalWidth - visibleWidth(row1Left) - visibleWidth(row1Right));
     const row1 = fitWidth(`${row1Left}${" ".repeat(row1Gap)}${row1Right}`, totalWidth);
 
@@ -1000,13 +1367,25 @@ export class SessionPickerTui implements Component {
     const row2 = this.fg("border", "─".repeat(totalWidth));
 
     // Body rows: left grouped list | vertical divider | right session details.
-    const leftLines = this.renderFullscreenLeftPane(leftWidth, bodyHeight);
-    const rightLines = this.renderFullscreenRightPane(rightWidth, bodyHeight);
-    const vBar = this.fg("border", "│");
     const bodyLines: string[] = [];
-    for (let i = 0; i < bodyHeight; i++) {
-      bodyLines.push(`${leftLines[i] ?? " ".repeat(leftWidth)}${vBar}${rightLines[i] ?? " ".repeat(rightWidth)}`);
+    if (this.mode === "list") {
+      const leftLines = this.renderFullscreenLeftPane(leftWidth, bodyHeight);
+      const rightLines = this.renderFullscreenRightPane(rightWidth, bodyHeight);
+      const vBar = this.draggingDivider ? this.fg("accent", "│") : this.fg("border", "│");
+      for (let i = 0; i < bodyHeight; i++) {
+        bodyLines.push(
+          `${leftLines[i] ?? " ".repeat(leftWidth)}${vBar}${rightLines[i] ?? " ".repeat(rightWidth)}`,
+        );
+      }
+    } else {
+      this.listRowMap = [];
+      bodyLines.push(...this.renderActionPanel(totalWidth, bodyHeight));
     }
+
+    // Shortcut/status row.
+    const shortcutHint =
+      `ctrl+s sort · ctrl+n named · ctrl+d delete · ctrl+p path (${this.showPath ? "on" : "off"}) · ctrl+r rename`;
+    const hintLine = fitWidth(`  ${this.fg("dim", shortcutHint)}`, totalWidth);
 
     // Bottom footer row.
     const totalInScope = this.scope === "global" ? this.globalCount : this.projectCount;
@@ -1018,7 +1397,7 @@ export class SessionPickerTui implements Component {
     const footerGap = Math.max(1, totalWidth - visibleWidth(footerLeft) - visibleWidth(footerRight));
     const footer = fitWidth(`${footerLeft}${" ".repeat(footerGap)}${footerRight}`, totalWidth);
 
-    return [row0, row1, row2, ...bodyLines, footer];
+    return [row0, row1, row2, ...bodyLines, hintLine, footer];
   }
 
   render(width: number): string[] {
@@ -1027,6 +1406,10 @@ export class SessionPickerTui implements Component {
     }
     const termRows = this.getRows();
     const targetRows = Math.max(16, Math.floor(termRows * 0.9));
+    if (this.mode !== "list") {
+      this.listRowMap = [];
+      return this.renderActionPanel(width, targetRows);
+    }
     const geometry = computeSplitGeometry({
       width,
       rows: termRows,
@@ -1050,7 +1433,7 @@ export class SessionPickerTui implements Component {
         promptPrefix: ` ${this.fg("accent", "Search:")} `,
         query: this.query,
         placeholder: "type to search user/agent messages, project, model, id...",
-        rightLabel: `${this.hits.length}/${this.scope === "global" ? this.globalCount : this.projectCount} · User & Agent only `,
+        rightLabel: `${this.statusMessage?.text ?? `${this.searchPending ? "searching · " : ""}${this.hits.length}/${this.scope === "global" ? this.globalCount : this.projectCount} · User & Agent only `}`,
       },
       leftLines: this.renderLeftPane(geometry.leftWidth, geometry.bodyHeight),
       rightLines: this.renderRightPane(geometry.rightWidth, geometry.bodyHeight),
@@ -1058,6 +1441,8 @@ export class SessionPickerTui implements Component {
         { key: "↑↓/Wheel", label: "select" },
         { key: "Tab/Click", label: "Global/Project" },
         { key: "PgUp/PgDn/Wheel", label: "preview" },
+        { key: "Ctrl+S/N", label: "sort/named" },
+        { key: "Ctrl+D/P/R", label: "delete/path/rename" },
         { key: "Enter/2×Click", label: this.confirmLabel },
         { key: "Esc", label: "close" },
       ],

@@ -13,6 +13,7 @@ import {
   highlightTerms,
   hitRegion,
   ListController,
+  RenderCoalescer,
   probeImageMetadata,
   renderSplitOverlayFrame,
   rgb24ToHalfBlockLines,
@@ -34,6 +35,12 @@ describe("pi-grok-tui-kit shared primitives", () => {
 
   test("highlightTerms highlights multi-term queries", () => {
     expect(highlightTerms("Hello World", "hello world", (m) => `[${m}]`)).toBe("[Hello] [World]");
+  });
+
+  test("highlightTerms skips ANSI CSI/OSC escape sequences when highlighting", () => {
+    const styled = "\x1b[38;2;121;192;255mError 38 in \x1b[3m3m module\x1b[23m\x1b[39m";
+    const out = highlightTerms(styled, "38 3m", (m) => `[${m}]`);
+    expect(out).toBe("\x1b[38;2;121;192;255mError [38] in \x1b[3m[3m] module\x1b[23m\x1b[39m");
   });
 
   test("renderSplitOverlayFrame builds aligned borders and accurate pill click regions", () => {
@@ -148,5 +155,23 @@ describe("pi-grok-tui-kit shared primitives", () => {
     expect(list.handleClick(3, 12, 10, 1000)).toBe("select");
     expect(list.handleClick(3, 12, 10, 1250)).toBe("confirm");
     expect(list.handleClick(3, 12, 10, 1300)).toBe("select");
+  });
+
+  test("RenderCoalescer merges rapid schedule calls and supports cancel", async () => {
+    let renders = 0;
+    const coalescer = new RenderCoalescer(() => { renders += 1; }, 20);
+    coalescer.schedule();
+    coalescer.schedule();
+    coalescer.schedule();
+    expect(coalescer.pending).toBe(true);
+    expect(renders).toBe(0);
+    await new Promise((r) => setTimeout(r, 45));
+    expect(renders).toBe(1);
+    expect(coalescer.pending).toBe(false);
+
+    coalescer.schedule();
+    coalescer.cancel();
+    await new Promise((r) => setTimeout(r, 45));
+    expect(renders).toBe(1);
   });
 });

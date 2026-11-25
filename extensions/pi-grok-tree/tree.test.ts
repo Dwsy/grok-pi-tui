@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "bun:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { TuiTheme } from "../pi-grok-tui-kit/index.ts";
 import {
   buildFlattenedSessionTree,
@@ -16,6 +16,18 @@ const mockTheme: TuiTheme = {
   bg: (_c: string, t: string) => t,
   bold: (t: string) => t,
 };
+
+function countedSplitText(value: string, onSplit: () => void): string {
+  const text = new String(value) as unknown as {
+    split: (separator: RegExp | string, limit?: number) => string[];
+  };
+  const originalSplit = String.prototype.split;
+  text.split = (separator, limit) => {
+    onSplit();
+    return originalSplit.call(value, separator, limit);
+  };
+  return text as unknown as string;
+}
 
 function writeSampleSession(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-grok-tree-test-"));
@@ -201,6 +213,65 @@ describe("pi-grok-tree parsing, filtering, and TUI navigation", () => {
         ctrl: false,
       });
       expect(result).toEqual({ action: "navigate", entryId: "e1", summarize: false });
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  });
+
+  test("coalesces right-pane wheel renders and caches preview wrapping", async () => {
+    const file = writeSampleSession();
+    try {
+      const { entries, leafId } = parseSessionTreeJsonl(file, "e4");
+      const nodes = buildFlattenedSessionTree(entries, leafId);
+      const leaf = nodes.find((n) => n.isLeaf)!;
+      let wrapPasses = 0;
+      leaf.entry.fullText = countedSplitText(
+        Array.from({ length: 40 }, (_, i) => `preview line ${i} ${`x`.repeat(70)}`).join("\n"),
+        () => {
+          wrapPasses += 1;
+        },
+      );
+      let renderRequests = 0;
+      const comp = createSessionTreeTui(
+        {
+          requestRender: () => {
+            renderRequests += 1;
+          },
+        },
+        mockTheme,
+        { nodes, getRows: () => 50 },
+        () => {},
+      ) as ReturnType<typeof createSessionTreeTui> & {
+        handleMouse: (ev: TuiMouseEvent) => unknown;
+      };
+
+      comp.render(110);
+      expect(wrapPasses).toBe(1);
+
+      const wheel = (): TuiMouseEvent => ({
+        type: "wheel",
+        button: "none",
+        wheelDelta: 1,
+        x: 80,
+        y: 5,
+        screenX: 80,
+        screenY: 5,
+        width: 110,
+        height: 45,
+        shift: false,
+        alt: false,
+        ctrl: false,
+      });
+      for (let i = 0; i < 8; i += 1) comp.handleMouse(wheel());
+      expect(renderRequests).toBe(0);
+
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      expect(renderRequests).toBeGreaterThanOrEqual(1);
+
+      const renderRequestsAfterCoalesce = renderRequests;
+      for (let i = 0; i < 3; i += 1) comp.render(110);
+      expect(wrapPasses).toBe(1);
+      expect(renderRequests).toBe(renderRequestsAfterCoalesce);
     } finally {
       fs.rmSync(path.dirname(file), { recursive: true, force: true });
     }

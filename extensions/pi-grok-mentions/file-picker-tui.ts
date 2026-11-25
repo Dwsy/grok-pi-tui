@@ -28,6 +28,7 @@ import {
   hitRegion,
   renderHalfBlockPreview,
   renderSplitOverlayFrame,
+  RenderCoalescer,
   type ClickRegion,
   type RemoteTuiImageSpec,
   type TerminalImageCapability,
@@ -146,6 +147,7 @@ export class FilePickerTui implements Component {
   private readonly onImageOverlay?: (spec: RemoteTuiImageSpec | undefined) => void;
   private readonly imageCap: TerminalImageCapability;
   private readonly getRows: () => number;
+  private readonly renderCoalescer: RenderCoalescer;
 
   private mode: FilePickerMode;
   private query: string;
@@ -192,6 +194,7 @@ export class FilePickerTui implements Component {
     done: (selected: FilePickerSelection | undefined) => void,
   ) {
     this.tui = tui;
+    this.renderCoalescer = new RenderCoalescer(() => this.tui.requestRender());
     this.theme = theme;
     this.rootDir = options.rootDir;
     this.query = options.initialQuery ?? "";
@@ -244,6 +247,7 @@ export class FilePickerTui implements Component {
 
   private finish(selected: FilePickerSelection | undefined): void {
     this.clearGrepTimer();
+    this.renderCoalescer.cancel();
     this.syncImageOverlay(undefined);
     this.done(selected);
   }
@@ -568,10 +572,11 @@ export class FilePickerTui implements Component {
       if (y >= this.bodyStartY && y < this.bodyStartY + this.bodyHeight) {
         if (x < this.dividerX) {
           this.moveSelection(delta);
-        } else {
-          this.scrollPreview(delta * 3);
+          return { handled: true, render: true };
         }
-        return { handled: true, render: true };
+        this.scrollPreview(delta * 3);
+        this.renderCoalescer.schedule();
+        return { handled: true, render: false };
       }
       return { handled: true, render: false };
     }

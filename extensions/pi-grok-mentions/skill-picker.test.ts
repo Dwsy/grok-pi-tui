@@ -266,4 +266,58 @@ describe("SkillPickerTui rendering, keyboard, and mouse interactions", () => {
     expect(closed).toBe(true);
     expect(chosen?.id).toBe("workhub");
   });
+
+  test("coalesces rapid preview-wheel events without reloading detail", async () => {
+    let renderRequests = 0;
+    let detailCalls = 0;
+    const picker = createSkillPickerTui(
+      {
+        requestRender: () => {
+          renderRequests += 1;
+        },
+      },
+      plainTheme,
+      {
+        records: makeSampleSkills(),
+        initialScope: "project",
+        loadDetail: (p) => {
+          detailCalls += 1;
+          return p ? details.get(p) ?? null : null;
+        },
+        getRows: () => 28,
+      },
+      () => {},
+    );
+
+    picker.render(104);
+    expect(renderRequests).toBe(0);
+    expect(detailCalls).toBe(1);
+
+    const mouse = (overrides: Partial<TuiMouseEvent>): TuiMouseEvent => ({
+      type: "wheel",
+      button: "none",
+      x: 60,
+      y: 10,
+      screenX: 60,
+      screenY: 10,
+      width: 104,
+      height: 25,
+      shift: false,
+      alt: false,
+      ctrl: false,
+      ...overrides,
+    });
+    const results = [];
+    for (let i = 0; i < 8; i++) {
+      results.push(picker.handleMouse(mouse({ wheelDelta: 1 })));
+    }
+    expect(results).toHaveLength(8);
+    expect(results.every((result) => result?.handled === true && result.render === false)).toBe(true);
+    expect(renderRequests).toBe(0);
+    expect(detailCalls).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    expect(renderRequests).toBe(1);
+    expect(detailCalls).toBe(1);
+  });
 });

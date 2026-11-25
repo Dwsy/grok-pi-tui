@@ -25,6 +25,7 @@ import {
   highlightTerms,
   hitRegion,
   renderSplitOverlayFrame,
+  RenderCoalescer,
   wrapTextToWidth,
   type ClickRegion,
   type TuiTheme,
@@ -38,6 +39,8 @@ import {
   type SkillScope,
   type SkillSearchHit,
 } from "./skill-data.ts";
+
+type PreviewLineStyle = "plain" | "heading" | "fence" | "dim";
 
 export interface SkillPickerTuiOptions {
   records: readonly SkillRecord[];
@@ -56,6 +59,7 @@ export class SkillPickerTui implements Component {
   private readonly done: (selected: SkillRecord | undefined) => void;
   private readonly loadDetail: (sourcePath: string | undefined) => SkillPreviewDetail | null;
   private readonly getRows: () => number;
+  private readonly renderCoalescer: RenderCoalescer;
 
   private scope: SkillScope;
   private query: string;
@@ -64,6 +68,9 @@ export class SkillPickerTui implements Component {
   private listScroll = 0;
   private previewScroll = 0;
   private readonly detailCache = new Map<string, SkillPreviewDetail | null>();
+  private readonly wrappedLinesCache = new Map<string, string[]>();
+  private readonly wrappedLineStylesCache = new Map<string, PreviewLineStyle[]>();
+  private lastWrappedDetailKey = "";
   private lastPreviewLinesCount = 0;
 
   // Layout geometry captured per frame for accurate mouse hit-testing.
@@ -85,6 +92,7 @@ export class SkillPickerTui implements Component {
     done: (selected: SkillRecord | undefined) => void,
   ) {
     this.tui = tui;
+    this.renderCoalescer = new RenderCoalescer(() => this.tui.requestRender());
     this.theme = theme;
     this.records = options.records;
     this.scope = options.initialScope ?? "global";
@@ -196,13 +204,60 @@ export class SkillPickerTui implements Component {
     return detail;
   }
 
+  private finish(selected: SkillRecord | undefined): void {
+    this.renderCoalescer.cancel();
+    this.done(selected);
+  }
+
+  private syncWrappedLineCache(detailKey: string, detail: SkillPreviewDetail | null): void {
+    const nextKey = `${detailKey}:${detail?.body ?? ""}`;
+    if (nextKey === this.lastWrappedDetailKey) return;
+    this.wrappedLinesCache.clear();
+    this.wrappedLineStylesCache.clear();
+    this.lastWrappedDetailKey = nextKey;
+  }
+
+  private getWrappedPreviewLines(
+    detail: SkillPreviewDetail | null,
+    detailKey: string,
+    textWidth: number,
+  ): { lines: string[]; styles: PreviewLineStyle[] } {
+    const cacheKey = `${detailKey}:${textWidth}`;
+    const cachedLines = this.wrappedLinesCache.get(cacheKey);
+    const cachedStyles = this.wrappedLineStylesCache.get(cacheKey);
+    if (cachedLines && cachedStyles) return { lines: cachedLines, styles: cachedStyles };
+
+    const lines: string[] = [];
+    const styles: PreviewLineStyle[] = [];
+    if (!detail?.body) {
+      lines.push("(SKILL.md content unavailable for preview)");
+      styles.push("dim");
+    } else {
+      for (const rawLine of detail.body.split("\n")) {
+        const style: PreviewLineStyle = /^#{1,6}\s+/.test(rawLine)
+          ? "heading"
+          : rawLine.trim().startsWith("```")
+            ? "fence"
+            : "plain";
+        for (const wline of wrapTextToWidth(rawLine, textWidth)) {
+          lines.push(wline);
+          styles.push(style);
+        }
+      }
+    }
+
+    this.wrappedLinesCache.set(cacheKey, lines);
+    this.wrappedLineStylesCache.set(cacheKey, styles);
+    return { lines, styles };
+  }
+
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-      this.done(undefined);
+      this.finish(undefined);
       return;
     }
     if (matchesKey(data, "enter") || matchesKey(data, "return")) {
-      this.done(this.getSelectedRecord());
+      this.finish(this.getSelectedRecord());
       return;
     }
     if (matchesKey(data, "tab") || matchesKey(data, "ctrl+g")) {
@@ -258,17 +313,18 @@ export class SkillPickerTui implements Component {
       if (y >= this.bodyStartY && y < this.bodyStartY + this.bodyHeight) {
         if (x < this.dividerX) {
           this.moveSelection(delta);
-        } else {
-          this.scrollPreview(delta * 3);
+          return { handled: true, render: true };
         }
-        return { handled: true, render: true };
+        this.scrollPreview(delta * 3);
+        this.renderCoalescer.schedule();
+        return { handled: true, render: false };
       }
       return { handled: true, render: false };
     }
 
     if (type === "press" && event.button === "left") {
       if (hitRegion(this.closeBtnRect, x, y)) {
-        this.done(undefined);
+        this.finish(undefined);
         return { handled: true, render: false };
       }
       if (hitRegion(this.pillRects.get("global"), x, y)) {
@@ -299,7 +355,7 @@ export class SkillPickerTui implements Component {
         for (const row of this.listRowMap) {
           if (y >= row.y1 && y <= row.y2) {
             this.selectedIndex = row.index;
-            this.done(this.getSelectedRecord());
+            this.finish(this.getSelectedRecord());
             return { handled: true, render: false };
           }
         }
@@ -402,38 +458,32 @@ export class SkillPickerTui implements Component {
     const previewHeight = Math.max(1, height - headerBlock.length);
     this.previewVisibleRows = previewHeight;
 
-    const allPreviewLines: string[] = [];
+    const detailKey = selected.sourcePath ?? selected.id;
+    this.syncWrappedLineCache(detailKey, detail);
     const textWidth = Math.max(8, innerW - 2);
+    const wrapped = this.getWrappedPreviewLines(detail, detailKey, textWidth);
 
-    if (!detail || !detail.body) {
-      allPreviewLines.push(this.fg("dim", " (SKILL.md content unavailable for preview)"));
-    } else {
-      for (const rawLine of detail.body.split("\n")) {
-        const isHeading = /^#{1,6}\s+/.test(rawLine);
-        const isFence = rawLine.trim().startsWith("```");
-        const wrapped = wrapTextToWidth(rawLine, textWidth);
-        for (const wline of wrapped) {
-          let rendered = this.query.trim()
-            ? highlightTerms(wline, this.query, (m) => `\x1b[7m${m}\x1b[27m`)
-            : wline;
-          if (isHeading) {
-            rendered = this.bold(this.fg("accent", rendered));
-          } else if (isFence) {
-            rendered = this.fg("dim", rendered);
-          }
-          allPreviewLines.push(` ${rendered}`);
-        }
-      }
-    }
-
-    this.lastPreviewLinesCount = allPreviewLines.length;
-    const maxScroll = Math.max(0, allPreviewLines.length - previewHeight);
+    this.lastPreviewLinesCount = wrapped.lines.length;
+    const maxScroll = Math.max(0, wrapped.lines.length - previewHeight);
     if (this.previewScroll > maxScroll) this.previewScroll = maxScroll;
 
-    const visiblePreview = allPreviewLines.slice(
-      this.previewScroll,
-      this.previewScroll + previewHeight,
-    );
+    const visiblePreview: string[] = [];
+    const start = Math.min(this.previewScroll, wrapped.lines.length);
+    const end = Math.min(start + previewHeight, wrapped.lines.length);
+    for (let i = start; i < end; i++) {
+      const wline = wrapped.lines[i] ?? "";
+      const style = wrapped.styles[i] ?? "plain";
+      let rendered =
+        style !== "dim" && this.query.trim()
+          ? highlightTerms(wline, this.query, (m) => `\x1b[7m${m}\x1b[27m`)
+          : wline;
+      if (style === "heading") {
+        rendered = this.bold(this.fg("accent", rendered));
+      } else if (style === "fence" || style === "dim") {
+        rendered = this.fg("dim", rendered);
+      }
+      visiblePreview.push(` ${rendered}`);
+    }
     while (visiblePreview.length < previewHeight) visiblePreview.push("");
 
     return [...headerBlock, ...visiblePreview]

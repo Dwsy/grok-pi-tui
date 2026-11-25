@@ -5,15 +5,25 @@ import os from "node:os";
 import path from "node:path";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import {
+  appendSessionNameToJsonl,
+  deleteSessionJsonl,
   extractVisibleMessageText,
   filterSessionRecords,
+  findSessionRecordById,
   formatTokensM,
   loadPreviewFromJsonl,
   loadSessionPickerRecords,
   loadSessionPreviewMessages,
+  loadSessionRecordDetails,
+  searchSessionPickerRecords,
   type PreviewMessage,
   type SessionRecord,
 } from "./session-data.ts";
+import {
+  defaultLiteDbPath,
+  resetLiteSyncCooldown,
+  syncSessionLiteDb,
+} from "./session-lite-db.ts";
 import {
   createSessionPickerTui,
   shortModelName,
@@ -500,5 +510,659 @@ describe("SessionPickerTui rendering, keyboard, and mouse interactions", () => {
     // Enter confirms resume.
     picker.handleInput("\r");
     expect(resolved?.id).toBe("01a205e1-a668-72d4-ba0c-efc8d4f6de50");
+  });
+
+  test("fullscreen session rows clip long titles without an ellipsis", () => {
+    const records = makeSampleRecords();
+    records[0]!.title = "这是一条特别特别长的会话标题，用来验证列宽截断后不会追加省略号".repeat(3);
+    const picker = createSessionPickerTui(
+      { requestRender: () => {} },
+      plainTheme,
+      {
+        records,
+        currentCwd: "/Users/dev/pi-grok-build",
+        titleBadge: "(/resume)",
+        fullscreen: true,
+        getRows: () => 16,
+      },
+      () => {},
+    );
+
+    const titleLine = picker
+      .render(90)
+      .map(stripAnsi)
+      .find((line) => line.includes("这是一条特别"));
+    expect(titleLine).toBeDefined();
+    expect(titleLine).not.toContain("…");
+  });
+
+  test("debounces session search, shows searching state, and flushes on Enter", async () => {
+    const dbQueries: string[] = [];
+    let renderRequests = 0;
+    const picker = createSessionPickerTui(
+      { requestRender: () => { renderRequests += 1; } },
+      plainTheme,
+      {
+        records: makeSampleRecords(),
+        currentCwd: "/Users/dev/pi-grok-build",
+        titleBadge: "(/resume)",
+        fullscreen: true,
+        searchDebounceMs: 35,
+        searchRecords: ({ query }) => {
+          dbQueries.push(query);
+          return [];
+        },
+        getRows: () => 20,
+      },
+      () => {},
+    );
+
+    picker.handleInput("m");
+    picker.handleInput("i");
+    picker.handleInput("g");
+    expect(dbQueries).toEqual([]);
+    expect(picker.render(100).map(stripAnsi).join("\n")).toContain("searching");
+
+    await new Promise((r) => setTimeout(r, 60));
+    expect(dbQueries).toEqual(["mig"]);
+    expect(renderRequests).toBeGreaterThanOrEqual(1);
+    expect(picker.render(100).map(stripAnsi).join("\n")).not.toContain("searching");
+
+    picker.handleInput("x");
+    picker.handleInput("\x1b");
+    await new Promise((r) => setTimeout(r, 60));
+    expect(dbQueries).toEqual(["mig"]);
+
+    picker.handleInput("x");
+    picker.handleInput("\r");
+    expect(dbQueries).toEqual(["mig", "migxx"]);
+  });
+
+  test("JSONL helpers append session_info and handle missing files", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-mentions-jsonl-"));
+    try {
+      const file = path.join(dir, "session.jsonl");
+      fs.writeFileSync(file, '{"type":"session","id":"s1"}\n', "utf8");
+      expect(appendSessionNameToJsonl(file, "My session")).toEqual({ ok: true });
+      const lines = fs.readFileSync(file, "utf8").trim().split("\n");
+      const info = JSON.parse(lines[lines.length - 1]!);
+      expect(info.type).toBe("session_info");
+      expect(info.name).toBe("My session");
+      expect(info.parentId).toBeNull();
+      expect(appendSessionNameToJsonl(file, "  ")).toMatchObject({ ok: false });
+
+      // Missing trailing newline must not corrupt the previous JSONL line, and rapid appends get unique IDs.
+      const noTrailingNewline = path.join(dir, "no-nl.jsonl");
+      fs.writeFileSync(noTrailingNewline, '{"type":"session","id":"s2"}', "utf8");
+      expect(appendSessionNameToJsonl(noTrailingNewline, "First name")).toEqual({ ok: true });
+      expect(appendSessionNameToJsonl(noTrailingNewline, "Second name")).toEqual({ ok: true });
+      const parsed = fs
+        .readFileSync(noTrailingNewline, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { type: string; id: string; name?: string });
+      expect(parsed).toHaveLength(3);
+      expect(parsed[0]!.id).toBe("s2");
+      expect(parsed[1]!.name).toBe("First name");
+      expect(parsed[2]!.name).toBe("Second name");
+      expect(parsed[1]!.id).not.toBe(parsed[2]!.id);
+
+      expect(deleteSessionJsonl(path.join(dir, "missing.jsonl"))).toEqual({
+        ok: true,
+        method: "missing",
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("SQLite loader has no 300-row cap, supports fast slim load, lazy details, and findSessionRecordById", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-mentions-many-"));
+    try {
+      const dbPath = path.join(dir, "sessions.db");
+      const db = new Database(dbPath);
+      db.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          path TEXT NOT NULL UNIQUE,
+          cwd TEXT NOT NULL,
+          name TEXT,
+          created TEXT NOT NULL,
+          modified TEXT NOT NULL,
+          message_count INTEGER NOT NULL,
+          first_message TEXT,
+          user_messages_text TEXT,
+          assistant_messages_text TEXT,
+          model TEXT
+        );
+        CREATE TABLE session_details_cache (
+          path TEXT PRIMARY KEY,
+          user_messages INTEGER NOT NULL,
+          assistant_messages INTEGER NOT NULL,
+          input_tokens INTEGER NOT NULL,
+          output_tokens INTEGER NOT NULL,
+          cache_read_tokens INTEGER NOT NULL,
+          cache_write_tokens INTEGER NOT NULL,
+          models_json TEXT NOT NULL
+        );
+      `);
+      const insertSession = db.query(
+        `INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?)`,
+      );
+      const insertDetail = db.query(
+        `INSERT INTO session_details_cache VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (let i = 0; i < 350; i++) {
+        const num = String(i).padStart(4, "0");
+        const ts = `2026-11-${String(1 + (i % 25)).padStart(2, "0")}T${String(i % 24).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}:00Z`;
+        insertSession.run(
+          `sess-${num}-abcd`,
+          `/tmp/sess-${num}.jsonl`,
+          i % 2 === 0 ? "/Users/dev/pi-grok-build" : "/Users/dev/other-repo",
+          i === 0 ? "Oldest named session" : null,
+          ts,
+          ts,
+          i + 1,
+          `Prompt ${num}`,
+          "",
+        );
+      }
+      insertDetail.run("/tmp/sess-0000.jsonl", 5, 7, 100_000, 200_000, 300_000, 0, '["gpt-5.4"]');
+      db.close();
+
+      const allSlim = loadSessionPickerRecords({ dbPath, includeDetails: false });
+      expect(allSlim).toHaveLength(350);
+      const target = allSlim.find((r) => r.id === "sess-0000-abcd")!;
+      expect(target).toBeDefined();
+      expect(target.userMessages).toBeNull();
+
+      const details = loadSessionRecordDetails(target.path, { dbPath });
+      expect(details).toEqual({
+        userMessages: 5,
+        assistantMessages: 7,
+        totalTokens: 600_000,
+        model: "gpt-5.4",
+      });
+
+      const byPrefix = findSessionRecordById("sess-0000", { dbPath });
+      expect(byPrefix?.id).toBe("sess-0000-abcd");
+      expect(byPrefix?.totalTokens).toBe(600_000);
+      expect(byPrefix?.model).toBe("gpt-5.4");
+
+      // SessionPickerTui lazily hydrates details on render for the selected slim record.
+      const picker = createSessionPickerTui(
+        { requestRender: () => {} },
+        plainTheme,
+        {
+          records: [target],
+          currentCwd: "/Users/dev/pi-grok-build",
+          fullscreen: true,
+          loadPreview: () => [],
+          loadDetails: (p) => loadSessionRecordDetails(p, { dbPath }),
+          getRows: () => 24,
+        },
+        () => {},
+      );
+      const rendered = picker.render(110).map(stripAnsi).join("\n");
+      expect(rendered).toContain("Messages: 1 (5U/7A)");
+      expect(rendered).toContain("0.60M");
+      expect(rendered).toContain("Model: gpt-5.4");
+      picker.handleInput("\x1b");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("named filter keeps only sessions with a JSONL name", () => {
+    const records = makeSampleRecords();
+    records[1]!.name = "Named migration";
+    const named = filterSessionRecords(records, {
+      scope: "global",
+      currentCwd: "/Users/dev/pi-grok-build",
+      query: "",
+      nameFilter: "named",
+    });
+    expect(named.map((h) => h.record.shortId)).toEqual(["01a203dd"]);
+  });
+
+  test("Ctrl+S cycles sort, Ctrl+N filters named sessions, Ctrl+P shows path", () => {
+    const records = makeSampleRecords();
+    records[0]!.name = "Alpha";
+    const picker = createSessionPickerTui(
+      { requestRender: () => {} },
+      plainTheme,
+      {
+        records,
+        currentCwd: "/Users/dev/pi-grok-build",
+        titleBadge: "(/resume)",
+        fullscreen: true,
+        getRows: () => 24,
+      },
+      () => {},
+    );
+
+    const plain = () => picker.render(110).map(stripAnsi).join("\n");
+    const groupLineCount = () =>
+      plain()
+        .split("\n")
+        .filter((line) => /^  \/Users\/dev\/\S+  \d+/.test(line)).length;
+
+    expect(groupLineCount()).toBe(2);
+    picker.handleInput("\x13"); // ctrl+s -> recent
+    const recentPlain = plain();
+    expect(recentPlain).toContain("Sort: Recent");
+    expect(recentPlain).not.toContain("Group: Project");
+    expect(recentPlain).toContain("修复 @session");
+    expect(recentPlain).toContain("Database migration");
+    expect(groupLineCount()).toBe(0);
+    picker.handleInput("\x13"); // -> relevance
+    const relevancePlain = plain();
+    expect(relevancePlain).toContain("Sort: Relevance");
+    expect(relevancePlain).not.toContain("Group: Project");
+    expect(relevancePlain).toContain("修复 @session");
+    expect(relevancePlain).toContain("Database migration");
+    picker.handleInput("\x13"); // -> threaded
+    expect(plain()).toContain("Sort: Threaded");
+    expect(groupLineCount()).toBe(2);
+
+    picker.handleInput("\x0e"); // ctrl+n -> named
+    expect(picker.getSelectedRecord()?.shortId).toBe("01a205e1");
+    expect(plain()).toContain("Name: Named");
+    expect(plain()).toContain("1/2");
+
+    picker.handleInput("\x10"); // ctrl+p -> path on
+    expect(plain()).toContain("path (on)");
+    expect(plain()).toContain("Path");
+    expect(plain()).toContain("/tmp/s1.jsonl");
+
+    picker.handleInput("\x1b");
+  });
+
+  test("Ctrl+D deletes after confirmation and refuses the active session", () => {
+    const deleted: string[] = [];
+    const picker = createSessionPickerTui(
+      { requestRender: () => {} },
+      plainTheme,
+      {
+        records: makeSampleRecords(),
+        currentCwd: "/Users/dev/pi-grok-build",
+        fullscreen: true,
+        deleteSession: (p) => {
+          deleted.push(p);
+          return { ok: true };
+        },
+        getRows: () => 24,
+      },
+      () => {},
+    );
+
+    picker.handleInput("\x04"); // ctrl+d
+    expect(deleted).toEqual([]);
+    expect(picker.render(110).map(stripAnsi).join("\n")).toContain("Delete session?");
+    picker.handleInput("\r");
+    expect(deleted).toEqual(["/tmp/s1.jsonl"]);
+    expect(picker.getSelectedRecord()?.shortId).toBe("01a203dd");
+    picker.handleInput("\x1b");
+
+    const activeDeleted: string[] = [];
+    const active = createSessionPickerTui(
+      { requestRender: () => {} },
+      plainTheme,
+      {
+        records: makeSampleRecords(),
+        currentCwd: "/Users/dev/pi-grok-build",
+        currentSessionPath: "/tmp/s1.jsonl",
+        fullscreen: true,
+        deleteSession: (p) => {
+          activeDeleted.push(p);
+          return { ok: true };
+        },
+        getRows: () => 24,
+      },
+      () => {},
+    );
+    active.handleInput("\x04");
+    expect(activeDeleted).toEqual([]);
+    expect(active.render(110).map(stripAnsi).join("\n")).toContain(
+      "Cannot delete the currently active session",
+    );
+    active.handleInput("\x1b");
+  });
+
+  test("Ctrl+R renames selected session into JSONL via injected callback", () => {
+    const renamed: string[] = [];
+    const picker = createSessionPickerTui(
+      { requestRender: () => {} },
+      plainTheme,
+      {
+        records: makeSampleRecords(),
+        currentCwd: "/Users/dev/pi-grok-build",
+        fullscreen: true,
+        renameSession: (p, name) => {
+          renamed.push(`${p}:${name}`);
+          return { ok: true };
+        },
+        getRows: () => 24,
+      },
+      () => {},
+    );
+
+    picker.handleInput("\x12"); // ctrl+r
+    expect(picker.render(110).map(stripAnsi).join("\n")).toContain("Rename Session");
+    for (const ch of "My session") picker.handleInput(ch);
+    picker.handleInput("\r");
+    expect(renamed).toEqual(["/tmp/s1.jsonl:My session"]);
+    expect(picker.getSelectedRecord()?.title).toBe("My session");
+    expect(picker.render(110).map(stripAnsi).join("\n")).toContain("Name: My session");
+    picker.handleInput("\x1b");
+  });
+
+  test("rapid wheel scrolling coalesces preview renders without reloading messages", async () => {
+    let loadCalls = 0;
+    let renderRequests = 0;
+    const picker = createSessionPickerTui(
+      { requestRender: () => { renderRequests += 1; } },
+      plainTheme,
+      {
+        records: makeSampleRecords(),
+        currentCwd: "/Users/dev/pi-grok-build",
+        fullscreen: true,
+        loadPreview: () => {
+          loadCalls += 1;
+          return previewMap.get("/tmp/s1.jsonl") ?? [];
+        },
+        getRows: () => 20,
+      },
+      () => {},
+    );
+    picker.render(100);
+    expect(loadCalls).toBe(1);
+    const before = renderRequests;
+
+    for (let i = 0; i < 8; i++) {
+      picker.handleMouse({
+        type: "wheel",
+        wheelDelta: -1,
+        button: "left",
+        x: 80,
+        y: 8,
+        screenX: 80,
+        screenY: 8,
+        width: 100,
+        height: 20,
+        shift: false,
+        alt: false,
+        ctrl: false,
+      });
+    }
+    expect(renderRequests).toBe(before);
+    expect(loadCalls).toBe(1);
+    await new Promise((r) => setTimeout(r, 70));
+    expect(renderRequests).toBeGreaterThanOrEqual(before + 1);
+    expect(loadCalls).toBe(1);
+    picker.handleInput("\x1b");
+  });
+
+  test("session details renders message text through injected Pi markdown renderer", () => {
+    const rendered: string[] = [];
+    const picker = createSessionPickerTui(
+      { requestRender: () => {} },
+      plainTheme,
+      {
+        records: makeSampleRecords(),
+        currentCwd: "/Users/dev/pi-grok-build",
+        fullscreen: true,
+        loadPreview: () => previewMap.get("/tmp/s1.jsonl") ?? [],
+        markdownRenderer: (text, _width) => {
+          rendered.push(text);
+          return [`MD|${text.slice(0, 12)}`];
+        },
+        getRows: () => 30,
+      },
+      () => {},
+    );
+
+    const plain = picker.render(100).map(stripAnsi).join("\n");
+    expect(rendered.some((text) => text.includes("会话预览内容"))).toBe(true);
+    expect(plain).toContain("MD|");
+    picker.handleInput("\x1b");
+  });
+
+  test("resume divider drag adjusts the split in memory only", () => {
+    const width = 100;
+    const makePicker = () =>
+      createSessionPickerTui(
+        { requestRender: () => {} },
+        plainTheme,
+        {
+          records: makeSampleRecords(),
+          currentCwd: "/Users/dev/pi-grok-build",
+          titleBadge: "(/resume)",
+          fullscreen: true,
+          getRows: () => 20,
+        },
+        () => {},
+      );
+    const dividerColumn = (picker: ReturnType<typeof createSessionPickerTui>) => {
+      const line = stripAnsi(picker.render(width)[3]!);
+      return line.indexOf("│");
+    };
+    const mouse = (
+      type: TuiMouseEvent["type"],
+      x: number,
+    ): TuiMouseEvent => ({
+      type,
+      button: type === "release" ? "none" : "left",
+      x,
+      y: 8,
+      screenX: x,
+      screenY: 8,
+      width,
+      height: 20,
+      shift: false,
+      alt: false,
+      ctrl: false,
+    });
+
+    const picker = makePicker();
+    expect(dividerColumn(picker)).toBe(63);
+
+    expect(picker.handleMouse(mouse("press", 63))?.capture).toBe(true);
+    picker.handleMouse(mouse("drag", 45));
+    expect(dividerColumn(picker)).toBe(45);
+    picker.handleMouse(mouse("drag", 5));
+    expect(dividerColumn(picker)).toBe(20);
+    picker.handleMouse(mouse("drag", 200));
+    expect(dividerColumn(picker)).toBe(71);
+    picker.handleMouse(mouse("release", 71));
+
+    expect(dividerColumn(makePicker())).toBe(63);
+  });
+});
+
+describe("sessions-lite.db fallback when PSM sessions.db is absent", () => {
+  test("lazily indexes JSONL files, probes head+tail on large files, hydrates details, and syncs incrementally", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-mentions-lite-"));
+    try {
+      const projDir = path.join(dir, "--Users-dev-demo--");
+      fs.mkdirSync(projDir, { recursive: true });
+
+      const smallPath = path.join(projDir, "2026-11-24_small1111.jsonl");
+      fs.writeFileSync(
+        smallPath,
+        [
+          JSON.stringify({
+            type: "session",
+            id: "lite-small-1111",
+            cwd: "/Users/dev/demo",
+            timestamp: "2026-11-24T08:00:00.000Z",
+          }),
+          JSON.stringify({
+            type: "message",
+            timestamp: "2026-11-24T08:01:00.000Z",
+            message: { role: "user", content: [{ type: "text", text: "Fix SQLite WAL checkpoint" }] },
+          }),
+          JSON.stringify({
+            type: "message",
+            timestamp: "2026-11-24T08:02:00.000Z",
+            message: {
+              role: "assistant",
+              provider: "anthropic",
+              model: "claude-sonnet-4-5",
+              content: [{ type: "text", text: "Done, enabled WAL autocheckpoint." }],
+              usage: { input: 1200, output: 300, cacheRead: 500, cacheWrite: 0 },
+            },
+          }),
+        ].join("\n") + "\n",
+        "utf8",
+      );
+
+      // Large > 64KB JSONL file to exercise bounded head+tail probe + tail session_info rename.
+      const largePath = path.join(projDir, "2026-11-24_large2222.jsonl");
+      const filler = "x".repeat(4000);
+      const largeLines = [
+        JSON.stringify({
+          type: "session",
+          id: "lite-large-2222",
+          cwd: "/Users/dev/other",
+          timestamp: "2026-11-23T09:00:00.000Z",
+        }),
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-11-23T09:01:00.000Z",
+          message: { role: "user", content: "Initial large prompt" },
+        }),
+        ...Array.from({ length: 20 }, (_, i) =>
+          JSON.stringify({
+            type: "message",
+            timestamp: `2026-11-23T09:${String(2 + i).padStart(2, "0")}:00.000Z`,
+            message: {
+              role: "assistant",
+              model: "gpt-5.4",
+              content: [{ type: "text", text: `chunk-${i} ${filler}` }],
+              usage: { input: 100, output: 50 },
+            },
+          }),
+        ),
+        JSON.stringify({
+          type: "session_info",
+          id: "session-info-tail",
+          parentId: null,
+          timestamp: "2026-11-24T10:00:00.000Z",
+          name: "Tail Renamed Session",
+        }),
+      ];
+      fs.writeFileSync(largePath, largeLines.join("\n") + "\n", "utf8");
+
+      // 1. No sessions.db -> auto-creates sessions-lite.db and loads all sessions.
+      const records = loadSessionPickerRecords({ sessionsDir: dir, includeDetails: false });
+      expect(fs.existsSync(defaultLiteDbPath(dir))).toBe(true);
+      expect(records).toHaveLength(2);
+      const largeRec = records.find((r) => r.id === "lite-large-2222")!;
+      const smallRec = records.find((r) => r.id === "lite-small-1111")!;
+      expect(largeRec.title).toBe("Tail Renamed Session");
+      expect(largeRec.model).toBe("gpt-5.4");
+      expect(smallRec.title).toBe("Fix SQLite WAL checkpoint");
+      expect(smallRec.model).toBe("anthropic/claude-sonnet-4-5");
+
+      // 2. Second forced sync skips unchanged files (0 scanned, 2 skipped).
+      const sync2 = syncSessionLiteDb({ sessionsDir: dir, force: true });
+      expect(sync2.usedSqlite).toBe(true);
+      expect(sync2.scanned).toBe(0);
+      expect(sync2.skipped).toBe(2);
+      expect(sync2.removed).toBe(0);
+
+      // 3. Lazy detail hydration computes exact counts/tokens and caches them.
+      const details = loadSessionRecordDetails(smallPath, { sessionsDir: dir });
+      expect(details).toEqual({
+        userMessages: 1,
+        assistantMessages: 1,
+        totalTokens: 2000,
+        model: "anthropic/claude-sonnet-4-5",
+      });
+
+      // 4. Search and ID prefix lookup work on sessions-lite.db.
+      const hits = searchSessionPickerRecords({
+        query: "WAL checkpoint",
+        scope: "global",
+        currentCwd: "/Users/dev/demo",
+        sessionsDir: dir,
+      });
+      expect(hits.map((h) => h.record.id)).toEqual(["lite-small-1111"]);
+      expect(findSessionRecordById("lite-large", { sessionsDir: dir })?.id).toBe("lite-large-2222");
+
+      // 5. Incremental sync picks up modified + deleted files only.
+      fs.appendFileSync(
+        smallPath,
+        JSON.stringify({
+          type: "session_info",
+          id: "session-info-new",
+          parentId: null,
+          timestamp: "2026-11-24T11:00:00.000Z",
+          name: "Updated Small Title",
+        }) + "\n",
+        "utf8",
+      );
+      fs.unlinkSync(largePath);
+      resetLiteSyncCooldown(defaultLiteDbPath(dir));
+      const sync3 = syncSessionLiteDb({ sessionsDir: dir, force: true });
+      expect(sync3.scanned).toBe(1);
+      expect(sync3.skipped).toBe(0);
+      expect(sync3.removed).toBe(1);
+      const after = loadSessionPickerRecords({ sessionsDir: dir, includeDetails: false });
+      expect(after).toHaveLength(1);
+      expect(after[0]!.title).toBe("Updated Small Title");
+
+      // 6. Corrupt sessions-lite.db self-recovers cleanly.
+      fs.writeFileSync(defaultLiteDbPath(dir), "not a valid sqlite file", "utf8");
+      resetLiteSyncCooldown(defaultLiteDbPath(dir));
+      const recovered = syncSessionLiteDb({ sessionsDir: dir, force: true });
+      expect(recovered.usedSqlite).toBe(true);
+      expect(recovered.scanned).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("never creates sessions-lite.db when PSM sessions.db is present", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-mentions-psm-prio-"));
+    try {
+      const psmDbPath = path.join(dir, "sessions.db");
+      const db = new Database(psmDbPath);
+      db.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          path TEXT NOT NULL UNIQUE,
+          cwd TEXT NOT NULL,
+          name TEXT,
+          created TEXT NOT NULL,
+          modified TEXT NOT NULL,
+          message_count INTEGER NOT NULL,
+          first_message TEXT,
+          user_messages_text TEXT,
+          assistant_messages_text TEXT,
+          model TEXT
+        );
+      `);
+      db.query(`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', ?)`).run(
+        "psm-only-1",
+        "/tmp/psm-only-1.jsonl",
+        "/Users/dev/demo",
+        "From PSM DB",
+        "2026-11-24T08:00:00Z",
+        "2026-11-24T08:00:00Z",
+        3,
+        "Hello",
+        "gpt-5.4",
+      );
+      db.close();
+
+      const records = loadSessionPickerRecords({ sessionsDir: dir, includeDetails: false });
+      expect(records).toHaveLength(1);
+      expect(records[0]!.title).toBe("From PSM DB");
+      expect(fs.existsSync(defaultLiteDbPath(dir))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

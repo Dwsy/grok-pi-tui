@@ -7,6 +7,7 @@ export {
   renderHeaderRow,
   renderSearchRow,
   renderSplitOverlayFrame,
+  RenderCoalescer,
   styleBold,
   wrapTextToWidth,
   type ClickRegion,

@@ -345,6 +345,9 @@ export function loadGitWorkingTreeChanges(cwd: string): ReviewFileChange[] {
   }
 }
 
+/** Maximum number of path segments folded into one rendered directory node. */
+const REVIEW_TREE_SEGMENTS_PER_NODE = 3;
+
 /** Build a compact directory-tree view over the changed file list. */
 export function buildReviewFileTree(files: readonly ReviewFileChange[]): ReviewTreeRow[] {
   interface Branch {
@@ -358,9 +361,12 @@ export function buildReviewFileTree(files: readonly ReviewFileChange[]): ReviewT
   for (let i = 0; i < files.length; i++) {
     const f = files[i]!;
     const parts = f.relPath.split("/").filter(Boolean);
+    const dirParts = parts.slice(0, -1);
     let node = root;
-    for (let d = 0; d < parts.length - 1; d++) {
-      const seg = parts[d]!;
+    for (let d = 0; d < dirParts.length; d += REVIEW_TREE_SEGMENTS_PER_NODE) {
+      const seg = dirParts
+        .slice(d, d + REVIEW_TREE_SEGMENTS_PER_NODE)
+        .join("/");
       const nextRel = node.relPath ? `${node.relPath}/${seg}` : seg;
       let child = node.dirs.get(seg);
       if (!child) {

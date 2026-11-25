@@ -17,13 +17,15 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import {
+  findSessionRecordById,
   formatTokensM,
   loadSessionPickerRecords,
   loadSessionPreviewMessages,
+  loadSessionRecordDetails,
   searchSessionPickerRecords,
   type SessionRecord,
 } from "./session-data.ts";
@@ -43,6 +45,36 @@ const SESSION_PICKER_COMMAND = "__pi_mention_session_picker";
 const SKILL_PICKER_COMMAND = "__pi_mention_skill_picker";
 const FILE_PICKER_COMMAND = "__pi_mention_file_picker";
 const MCP_PICKER_COMMAND = "__pi_mention_mcp_picker";
+
+/** Map the overlay theme onto Pi TUI's MarkdownTheme. */
+function createMarkdownTheme(theme: SessionPickerTheme): MarkdownTheme {
+  const bold = (text: string) => theme.bold?.(text) ?? text;
+  return {
+    heading: (text) => bold(theme.fg("accent", text)),
+    link: (text) => theme.fg("accent", text),
+    linkUrl: (text) => theme.fg("dim", text),
+    code: (text) => theme.fg("success", text),
+    codeBlock: (text) => theme.fg("success", text),
+    codeBlockBorder: (text) => theme.fg("border", text),
+    quote: (text) => theme.fg("dim", text),
+    quoteBorder: (text) => theme.fg("border", text),
+    hr: (text) => theme.fg("border", text),
+    listBullet: (text) => theme.fg("accent", text),
+    bold,
+    italic: (text) => `\x1b[3m${text}\x1b[23m`,
+    strikethrough: (text) => `\x1b[9m${text}\x1b[29m`,
+    underline: (text) => `\x1b[4m${text}\x1b[24m`,
+    codeBlockIndent: "  ",
+  };
+}
+
+/** Render message text with Pi's own Markdown component. */
+function createMarkdownPreviewRenderer(
+  theme: SessionPickerTheme,
+): (text: string, width: number) => string[] {
+  const markdownTheme = createMarkdownTheme(theme);
+  return (text, width) => [...new Markdown(text, 0, 0, markdownTheme).render(width)];
+}
 const RESUME_SESSION_COMMAND = "__pi_resume_session";
 const MAX_THREADS = 50;
 const MAX_CATALOG_BYTES = 450 * 1024;
@@ -212,56 +244,25 @@ function collectThreadsFromPsmDb(force = false): MentionItem[] {
     return cachedThreads;
   }
 
-  const dbPath = path.join(os.homedir(), ".pi", "agent", "sessions", "sessions.db");
-  if (!fs.existsSync(dbPath)) {
-    cachedThreads = [];
+  try {
+    const records = loadSessionPickerRecords({
+      limit: MAX_THREADS,
+      includeDetails: false,
+    });
+    cachedThreads = records.map((rec) => {
+      const subtitle = `${rec.shortId} · ${rec.messageCount} msgs${rec.name && rec.title !== rec.name ? ` · ${rec.title.slice(0, 48)}` : ""}`;
+      return {
+        id: rec.id,
+        title: rec.title.slice(0, 48),
+        subtitle,
+        uri: `grok-pi://session/${rec.id}`,
+        insertText: `@session:${rec.shortId}`,
+        searchText: `${rec.id} ${rec.title} ${rec.cwd}`.trim(),
+        sourcePath: rec.path || undefined,
+      };
+    });
     cachedThreadsAt = now;
     return cachedThreads;
-  }
-
-  try {
-    // Dynamic require avoids hard-failing on older runtimes without node:sqlite.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const sqlite = require("node:sqlite") as {
-      DatabaseSync?: new (p: string, opts?: { readOnly?: boolean }) => {
-        prepare: (sql: string) => { all: (...args: unknown[]) => Record<string, unknown>[] };
-        close: () => void;
-      };
-    };
-    if (!sqlite?.DatabaseSync) return [];
-    const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
-    try {
-      const rows = db
-        .prepare(
-          `SELECT id, path, cwd, name, modified, message_count, COALESCE(first_message, '') AS first_message
-           FROM sessions
-           ORDER BY modified DESC
-           LIMIT ?`,
-        )
-        .all(MAX_THREADS);
-      cachedThreads = rows.map((row) => {
-        const id = String(row.id ?? "");
-        const name = String(row.name ?? "").trim();
-        const firstMsg = String(row.first_message ?? "").replace(/\s+/g, " ").trim();
-        const title = name || firstMsg.slice(0, 48) || id.slice(0, 12);
-        const msgCount = Number(row.message_count ?? 0);
-        const shortId = id.slice(0, 8);
-        const subtitle = `${shortId} · ${msgCount} msgs${firstMsg && name ? ` · ${firstMsg.slice(0, 48)}` : ""}`;
-        return {
-          id,
-          title,
-          subtitle,
-          uri: `grok-pi://session/${id}`,
-          insertText: `@session:${shortId}`,
-          searchText: `${id} ${title} ${String(row.cwd ?? "")}`.trim(),
-          sourcePath: row.path ? String(row.path) : undefined,
-        };
-      });
-      cachedThreadsAt = now;
-      return cachedThreads;
-    } finally {
-      db.close();
-    }
   } catch {
     // Rust adapter's `psm_session_catalog::load_catalog` hydrates empty thread lists.
     return [];
@@ -520,8 +521,7 @@ function buildBuiltInProviders(pi: ExtensionAPI): MentionProviderSpec[] {
       },
       collect: () => collectThreadsFromPsmDb(),
       resolve: (id) => {
-        const records = loadSessionPickerRecords({ limit: 500 });
-        const foundRec = records.find((r) => r.id === id || r.id.startsWith(id));
+        const foundRec = findSessionRecordById(id, { skipMissingFiles: true });
         if (foundRec) {
           const preview = loadSessionPreviewMessages(foundRec.path, { maxMessages: 6 });
           const excerpt = preview
@@ -629,7 +629,10 @@ export default function mentions(pi: ExtensionAPI) {
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const { createSessionPickerTui } = await import("./session-picker-tui.ts");
       const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
-      const records = loadSessionPickerRecords({ limit: 300 });
+      const currentSessionPath = (
+        ctx as { sessionManager?: { getSessionFile?: () => string | undefined } }
+      ).sessionManager?.getSessionFile?.();
+      const records = loadSessionPickerRecords({ includeDetails: false });
       const initialQuery = String(args ?? "").trim();
 
       const chosen = await ctx.ui.custom<SessionRecord | undefined>(
@@ -642,7 +645,11 @@ export default function mentions(pi: ExtensionAPI) {
               currentCwd: cwd,
               initialQuery,
               initialScope: "global",
-              searchRecords: (opts) => searchSessionPickerRecords(opts),
+              currentSessionPath,
+              markdownRenderer: createMarkdownPreviewRenderer(theme as SessionPickerTheme),
+              loadDetails: (p) => loadSessionRecordDetails(p),
+              searchRecords: (opts) =>
+                searchSessionPickerRecords({ ...opts, includeDetails: false }),
               searchDebounceMs: 150,
               getRows: () => {
                 const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;
@@ -823,7 +830,10 @@ export default function mentions(pi: ExtensionAPI) {
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const { createSessionPickerTui } = await import("./session-picker-tui.ts");
       const cwd = (ctx as { cwd?: string }).cwd || lastCwd || process.cwd();
-      const records = loadSessionPickerRecords({ limit: 300 });
+      const currentSessionPath = (
+        ctx as { sessionManager?: { getSessionFile?: () => string | undefined } }
+      ).sessionManager?.getSessionFile?.();
+      const records = loadSessionPickerRecords({ includeDetails: false });
       const initialQuery = String(args ?? "").trim();
 
       const chosen = await ctx.ui.custom<SessionRecord | undefined>(
@@ -835,11 +845,15 @@ export default function mentions(pi: ExtensionAPI) {
               records,
               currentCwd: cwd,
               initialQuery,
-              initialScope: "global",
+              initialScope: "project",
               titleBadge: "(/resume)",
               confirmLabel: "resume",
               fullscreen: true,
-              searchRecords: (opts) => searchSessionPickerRecords(opts),
+              currentSessionPath,
+              markdownRenderer: createMarkdownPreviewRenderer(theme as SessionPickerTheme),
+              loadDetails: (p) => loadSessionRecordDetails(p),
+              searchRecords: (opts) =>
+                searchSessionPickerRecords({ ...opts, includeDetails: false }),
               searchDebounceMs: 150,
               getRows: () => {
                 const tRows = (tui as { terminal?: { rows?: number } }).terminal?.rows;

@@ -429,4 +429,77 @@ describe("FilePickerTui rendering, modes (Tree / fd / rg), keyboard, and mouse",
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("coalesces rapid preview-wheel events without extra preview work", async () => {
+    let renderRequests = 0;
+    let loadPreviewCalls = 0;
+    let highlightCalls = 0;
+    const picker = createFilePickerTui(
+      {
+        requestRender: () => {
+          renderRequests += 1;
+        },
+      },
+      plainTheme,
+      {
+        rootDir: "/workspace",
+        initialMode: "files",
+        initialQuery: "preview.txt",
+        nerdIcons: false,
+        listFiles: () => [{ relPath: "preview.txt", name: "preview.txt", isDir: false }],
+        loadPreview: () => {
+          loadPreviewCalls += 1;
+          return {
+            kind: "file",
+            relPath: "preview.txt",
+            sizeLabel: "1 KB",
+            modified: "2026-01-01 00:00",
+            lineCount: 60,
+            truncated: false,
+            lines: Array.from({ length: 60 }, (_, i) => `line ${i + 1}`),
+          };
+        },
+        highlightFile: (code) => {
+          highlightCalls += 1;
+          return code.split("\n");
+        },
+        getRows: () => 28,
+      },
+      () => {},
+    );
+
+    picker.render(108);
+    expect(renderRequests).toBe(0);
+    expect(loadPreviewCalls).toBe(1);
+    expect(highlightCalls).toBe(1);
+
+    const mouse = (overrides: Partial<TuiMouseEvent>): TuiMouseEvent => ({
+      type: "wheel",
+      button: "none",
+      x: 60,
+      y: 6,
+      screenX: 60,
+      screenY: 6,
+      width: 108,
+      height: 25,
+      shift: false,
+      alt: false,
+      ctrl: false,
+      ...overrides,
+    });
+    const results = [];
+    for (let i = 0; i < 8; i++) {
+      results.push(picker.handleMouse(mouse({ wheelDelta: 1 })));
+    }
+    expect(results).toHaveLength(8);
+    expect(results.every((result) => result?.handled === true && result.render === false)).toBe(true);
+    expect(renderRequests).toBe(0);
+    expect(loadPreviewCalls).toBe(1);
+    expect(highlightCalls).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    expect(renderRequests).toBe(1);
+    expect(loadPreviewCalls).toBe(1);
+    expect(highlightCalls).toBe(1);
+  });
 });

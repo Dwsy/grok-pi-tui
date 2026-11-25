@@ -20,6 +20,34 @@ export interface ClickRegion {
   y: number;
 }
 
+/** Coalesce rapid wheel/trackpad events into a single render request. */
+export class RenderCoalescer {
+  private timer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly requestRender: () => void,
+    private readonly delayMs = 40,
+  ) {}
+
+  get pending(): boolean {
+    return this.timer !== null;
+  }
+
+  schedule(): void {
+    if (this.timer !== null) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.requestRender();
+    }, this.delayMs);
+  }
+
+  cancel(): void {
+    if (this.timer === null) return;
+    clearTimeout(this.timer);
+    this.timer = null;
+  }
+}
+
 export interface HeaderPillSpec {
   id: string;
   label: string;
@@ -95,7 +123,7 @@ export function wrapTextToWidth(text: string, maxWidth: number): string[] {
   return out.length > 0 ? out : [""];
 }
 
-/** Highlight multi-term search matches inside a line using `highlight(match)`. */
+/** Highlight multi-term search matches inside a line while preserving ANSI escapes. */
 export function highlightTerms(
   text: string,
   query: string,
@@ -108,7 +136,14 @@ export function highlightTerms(
   if (terms.length === 0) return text;
   const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const re = new RegExp(`(${escaped.join("|")})`, "gi");
-  return text.replace(re, (match) => highlight(match));
+  if (!text.includes("\x1b")) {
+    return text.replace(re, (match) => highlight(match));
+  }
+  const ansiRe = /(\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))/g;
+  return text
+    .split(ansiRe)
+    .map((segment, index) => (index % 2 === 1 ? segment : segment.replace(re, (match) => highlight(match))))
+    .join("");
 }
 
 /** Compute consistent responsive geometry for a two-pane bordered overlay. */
