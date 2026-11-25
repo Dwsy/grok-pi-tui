@@ -118,9 +118,13 @@ Implemented & guarded by unit tests:
 - **Non-blocking `sessions-lite.db` background refresh** (`session-lite-db.ts` `scheduleLiteDbBackgroundSync`): Returns immediately when `sessions-lite.db` exists and runs incremental sync on the next tick.
 - **Unified Split-Pane Interaction & `DividerDragController`**: All split TUI overlays (`/resume`, `@session`, `@skill`, `@file`, `@mcp`, `/tree`, `/review-*`, `/pi-config`, `/trace`, `__pi_extensions_modal`, `/goal-detail`) share `DividerDragController`, `RenderCoalescer`, and native `handleMouse(TuiMouseEvent)`.
 - **Full-Session `/trace` & Custom Pi Element Rendering** (`extensions/pi-grok-review/{trace-data.ts,trace-tui.ts,tool-render-tui.ts}`): `/trace` and Left-arrow (`__pi_trace`) inspect full JSONL entries with `Pretty → Pi Element → Raw JSON` cycling; F2 opt-in `pi_custom_tool_renderer` (default OFF) routes non-builtin custom tool Enter (`__pi_tool_render`) to plugin `renderCall`/`renderResult` (with session-scoped per-tool mode memory and `getMessageRenderer` support), while built-in tools keep native Rust viewers.
+- **`/trace` UX, Highlighting & Copy** (`trace-tui.ts`, `tool-render-tui.ts`): Compact 1-line left list (`rowsPerItem: 1`) with bold type badges, theme-aware JSON/section/diff/Markdown syntax highlighting (ANSI-safe under `highlightTerms`), and `Ctrl+X` clipboard copy (OSC 52 / `onCopy`).
+- **Large-JSONL Lazy Parsing & Transport Drag Coalescing**: `findToolInvocationInJsonl` pre-filters by `toolCallId` before `JSON.parse`; `trace-data.ts` uses lazy `rawJson` getters + `(path, mtimeMs, size)` cache (same cache in `tree-data.ts` and `review-data.ts`); `extensions/pi-grok-remote-tui/transport.ts` coalesces consecutive same-button `drag` bursts within a single drain; `session-lite-db.ts` prioritizes current project + newest 200 files on cold start and completes the rest asynchronously.
 - **TS Migration of Heavyweight Rust Modals (`grok-pi` / `external_agent` path)**:
   - `extensions_modal` → `extensions/pi-grok-config/extensions-modal-tui.ts` (`__pi_extensions_modal`, wired via `transcript.rs` & `config_extension.rs`).
   - `goal_detail` → `extensions/pi-grok-goal/goal-detail-tui.ts` (`__pi_goal_detail` / `/goal-detail`, wired via `router.rs` & `goal_extension.rs` with `tui_kit`).
+  - Retired replaced Ratatui render paths in `extensions_modal.rs`, `goal_detail.rs`, and `session_tree.rs` behind `#[cfg(any(feature = "stock-agent", test))]` so `grok-pi` skips compiling ~2,500 lines of dead render code.
+- **Content-Addressed Built-in Extension Cache (`grok-pi-ext-cache`)** (`crates/codegen/xai-grok-pager-bin/src/bin/grok_pi/tui_kit.rs` + 22 injectors): Materializes embedded TS extensions into deterministic FNV-1a content-hashed paths under `<temp_dir>/grok-pi-ext-cache/` with skip-if-matching-size atomic renames instead of per-launch random `TempDir` + `fsync`, unlocking `jiti` `fsCache` hits across launches (benchmarked 30-extension load: `6,604.8 ms` cold → `337.6 ms` warm, `-94.9%`).
 - **Adapter / RPC & Session Index Pipeline** (`crates/codegen/pi-grok-adapter/`):
   - `psm_session_catalog.rs`: Read-only `sessions-lite.db` fallback (catalog, search, ID lookup) when PSM is absent, 3s TTL cache on PSM port probe, and `PI_CODING_AGENT_DIR` alignment.
   - `pi_adapter/session.rs`: `resolve_session_path` uses O(1) indexed SQLite point lookup before disk scan instead of loading the full catalog.
@@ -128,5 +132,5 @@ Implemented & guarded by unit tests:
 - **Static Rust-injector parity test** (`extensions/pi-grok-tui-kit/kit.test.ts`): Verifies every runtime `.ts` file under `extensions/pi-grok-{tui-kit,mentions,tree,review,config,goal,remote-tui}/` is embedded via `include_str!` in its corresponding Rust injector.
 
 Next candidates:
-1. Cold-start project-first chunked indexing in `session-lite-db.ts` for users with thousands of unindexed JSONLs and no PSM.
-2. Retire or feature-gate replaced Rust modal rendering paths once `grok-pi` parity is verified via `cargo check` / `cargo test`.
+1. Migrate the remaining 7 lightweight single-file injectors (`emphasis`, `native_commands`, `context`, `tools`, `working_message`, `host_feature`, `tree_bridge`) to `materialize_cached_file` if needed.
+2. Run `cargo check --bin grok-pi && cargo test -p pi-grok-adapter psm_session_catalog` locally after syncing to confirm full Rust build parity.
