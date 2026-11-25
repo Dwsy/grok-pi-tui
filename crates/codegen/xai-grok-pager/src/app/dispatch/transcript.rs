@@ -1,6 +1,6 @@
 //! Transcript export, block copying, viewer/modal, and input-log dump dispatchers.
 
-use super::ctx::with_active_agent;
+use super::ctx::{get_active_agent, with_active_agent};
 use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::app_view::{ActiveView, AppView};
@@ -275,7 +275,7 @@ pub(super) fn custom_tool_render_call_id(app: &AppView) -> Option<String> {
     if !app.external_agent || !app.current_ui.pi_custom_tool_renderer {
         return None;
     }
-    let agent = crate::app::dispatch::get_active_agent(app)?;
+    let agent = get_active_agent(app)?;
     let idx = agent.scrollback.selected()?;
     let entry = agent.scrollback.entry(idx)?;
     match &entry.block {
