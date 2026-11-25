@@ -74,20 +74,37 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for forbidden in xai-grok-sampler sentry xai-mixpanel bm25 moka kanal tokio-retry signal-hook; do
+          for forbidden in xai-grok-sampler sentry xai-mixpanel bm25 moka kanal tokio-retry; do
             if cargo tree --locked -p xai-grok-pager-bin --no-default-features \
                  --features release-dist,sandbox-enforce -e normal -i "$forbidden" >/dev/null 2>&1; then
               echo "::error::${forbidden} is back in the Pi compile closure"
               exit 1
             fi
           done
+          # `signal-hook` cannot leave the Pi closure: crossterm's `events` feature
+          # depends on it and terminal input needs `events`. What the gate owns is
+          # `xai-grok-pager`'s own PTY-wrap dependency, so assert on direct edges.
+          # A real `cargo tree` failure aborts the step instead of reading as "absent".
+          if cargo tree --locked -p xai-grok-pager-bin --no-default-features \
+               --features release-dist,sandbox-enforce -e normal -i signal-hook >/dev/null 2>&1; then
+            pi_signal_dependents="$(cargo tree --locked -p xai-grok-pager --no-default-features \
+              --features release-dist,sandbox-enforce -e normal --depth 1 -i signal-hook)"
+            if grep -q 'xai-grok-pager v' <<<"$pi_signal_dependents"; then
+              echo "::error::xai-grok-pager depends on signal-hook directly outside stock-agent"
+              exit 1
+            fi
+          fi
           # Verify Stock features still retain these crates.
           for required in xai-grok-sampler bm25 moka kanal tokio-retry; do
             cargo tree --locked -p xai-grok-shell --no-default-features --features stock-agent \
               -e normal -i "$required" >/dev/null
           done
-          cargo tree --locked -p xai-grok-pager --no-default-features --features stock-agent \
-            -e normal -i signal-hook >/dev/null
+          stock_signal_dependents="$(cargo tree --locked -p xai-grok-pager --no-default-features \
+            --features stock-agent -e normal --depth 1 -i signal-hook)"
+          if ! grep -q 'xai-grok-pager v' <<<"$stock_signal_dependents"; then
+            echo "::error::stock-agent no longer pulls signal-hook into xai-grok-pager"
+            exit 1
+          fi
           cargo tree --locked -p xai-grok-pager-bin --no-default-features \
             --features stock-sentry,stock-mixpanel -e normal -i sentry >/dev/null
           cargo tree --locked -p xai-grok-pager-bin --no-default-features \
