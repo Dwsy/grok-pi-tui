@@ -2,6 +2,10 @@ use super::*;
 
 impl PiAgent {
     pub(super) async fn send_update(&self, update: acp::SessionUpdate) {
+        // Catalog refreshes (e.g. after set_session_model or thinking_level_changed)
+        // are not LLM stream traffic; stamping streamStartMs on them would cause
+        // Pager's tracker to pre-create a phantom "Thinking…" block.
+        let is_catalog_update = matches!(update, acp::SessionUpdate::AvailableCommandsUpdate(_));
         let mut notification = acp::SessionNotification::new(self.session_id(), update);
         // Stamp the same live timing fields stock Grok shell puts on every
         // SessionNotification. Without streamStartMs the pager never pre-creates
@@ -12,17 +16,19 @@ impl PiAgent {
             if let Some(tokens) = state.last_context_tokens {
                 meta.insert("totalTokens".into(), json!(tokens));
             }
-            if let Some(ms) = state.turn_start_ms {
-                meta.insert("turnStartMs".into(), json!(ms));
-            }
-            if let Some(ms) = state.stream_start_ms {
-                meta.insert("streamStartMs".into(), json!(ms));
-            }
-            // Same pin stock Grok shell puts on every live notification.
-            // Without promptId the pager can still render when current_prompt_id
-            // is set locally, but turn-status / gate adoption stay incomplete.
-            if let Some(pid) = state.live_prompt_id.as_ref() {
-                meta.insert("promptId".into(), json!(pid));
+            if !is_catalog_update {
+                if let Some(ms) = state.turn_start_ms {
+                    meta.insert("turnStartMs".into(), json!(ms));
+                }
+                if let Some(ms) = state.stream_start_ms {
+                    meta.insert("streamStartMs".into(), json!(ms));
+                }
+                // Same pin stock Grok shell puts on every live notification.
+                // Without promptId the pager can still render when current_prompt_id
+                // is set locally, but turn-status / gate adoption stay incomplete.
+                if let Some(pid) = state.live_prompt_id.as_ref() {
+                    meta.insert("promptId".into(), json!(pid));
+                }
             }
         }
         meta.insert("agentTimestampMs".into(), json!(utc_now_ms()));

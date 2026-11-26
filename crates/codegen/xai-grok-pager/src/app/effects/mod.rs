@@ -1880,12 +1880,14 @@ pub(crate) fn execute(
                     );
                     let send_start = std::time::Instant::now();
                     let prompt = vec![plain_prompt_content_block(text, &skill_token_ranges)];
+                    let mut meta = prompt_request_meta(&prompt_id, screen_mode);
+                    if crate::appearance::cache::load_follow_up_steer()
+                        && let Some(map) = meta.as_object_mut()
+                    {
+                        map.insert("followUp".into(), serde_json::Value::Bool(false));
+                    }
                     let req = acp::PromptRequest::new(session_id.clone(), prompt)
-                        .meta(
-                            prompt_request_meta(&prompt_id, screen_mode)
-                                .as_object()
-                                .cloned(),
-                        );
+                        .meta(meta.as_object().cloned());
                     let result = acp_send(req, &tx).await;
                     let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
                     ulog::info(

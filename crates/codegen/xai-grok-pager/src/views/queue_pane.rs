@@ -104,6 +104,8 @@ pub struct QueuedPromptEntry {
     line_count: usize,
     /// Entry kind (Prompt or Command).
     kind: QueueEntryKind,
+    /// True when the server queued this row in the steering lane (`kind == "steer"`).
+    is_steering: bool,
     /// Row origin: Local (client queue) or Server (shared queue).
     origin: QueueRowOrigin,
     /// Server `prompt_id` for `Server` rows; `None` for local rows.
@@ -161,6 +163,7 @@ impl QueuedPromptEntry {
             first_line,
             line_count,
             kind: prompt.kind,
+            is_steering: false,
             origin: QueueRowOrigin::Local,
             server_id: None,
             version: 0,
@@ -181,7 +184,8 @@ impl QueuedPromptEntry {
             .to_string();
         let line_count = wire.text.lines().count();
         let kind = kind_from_wire(&wire.kind);
-        let styled = Self::build_styled(&first_line, line_count, kind, None);
+        let is_steering = wire.kind == "steer";
+        let styled = Self::build_styled_with_lane(&first_line, line_count, kind, is_steering, None);
         Self {
             id: synth_server_id(&wire.id),
             position,
@@ -189,6 +193,7 @@ impl QueuedPromptEntry {
             first_line,
             line_count,
             kind,
+            is_steering,
             origin: QueueRowOrigin::Server,
             server_id: Some(wire.id.clone()),
             version: wire.version,
@@ -201,10 +206,11 @@ impl QueuedPromptEntry {
     ///
     /// The first line is truncated so the `(+N lines)` suffix stays visible.
     pub fn rebuild_styled_for_width(&mut self, available_width: u16) {
-        self.styled = Self::build_styled(
+        self.styled = Self::build_styled_with_lane(
             &self.first_line,
             self.line_count,
             self.kind,
+            self.is_steering,
             Some(available_width as usize),
         );
     }
@@ -216,6 +222,16 @@ impl QueuedPromptEntry {
         first_line: &str,
         line_count: usize,
         kind: QueueEntryKind,
+        max_width: Option<usize>,
+    ) -> Line<'static> {
+        Self::build_styled_with_lane(first_line, line_count, kind, false, max_width)
+    }
+
+    fn build_styled_with_lane(
+        first_line: &str,
+        line_count: usize,
+        kind: QueueEntryKind,
+        is_steering: bool,
         max_width: Option<usize>,
     ) -> Line<'static> {
         let theme = Theme::current();
@@ -245,16 +261,25 @@ impl QueuedPromptEntry {
 
         match kind {
             QueueEntryKind::Prompt => {
+                const STEER_PREFIX: &str = "steer: ";
+                let prefix_width = if is_steering { STEER_PREFIX.width() } else { 0 };
                 let display_text = if let Some(max_w) = content_max_width {
-                    truncate_str(first_line, max_w)
+                    truncate_str(first_line, max_w.saturating_sub(prefix_width))
                 } else {
                     first_line.to_string()
                 };
 
-                let mut spans = vec![Span::styled(
+                let mut spans = Vec::new();
+                if is_steering {
+                    spans.push(Span::styled(
+                        STEER_PREFIX,
+                        Style::default().fg(theme.accent_assistant),
+                    ));
+                }
+                spans.push(Span::styled(
                     display_text,
                     Style::default().fg(theme.accent_user),
-                )];
+                ));
 
                 if extra_lines > 0 {
                     spans.push(Span::styled(suffix, Style::default().fg(theme.gray)));

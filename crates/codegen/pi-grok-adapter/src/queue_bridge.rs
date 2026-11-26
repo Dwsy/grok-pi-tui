@@ -50,6 +50,11 @@ pub(crate) struct QueueMirror {
     /// running slot was owned by another prompt. Promoted by
     /// [`QueueMirror::promote_parked_running`] at the next free `agent_start`.
     parked: Vec<QueueEntry>,
+    /// Steering rows that vanished from Pi's queue arrays when Pi popped them
+    /// for mid-turn delivery. Claimed by `handle_message_start(role="user")`
+    /// so the adapter can emit `x.ai/session/interjection` with the original
+    /// `interjectionId` and display text.
+    pending_interjections: Vec<QueueEntry>,
     next_seq: u64,
     running: Option<QueueEntry>,
 }
@@ -171,6 +176,61 @@ impl QueueMirror {
         std::mem::take(&mut self.local_entries)
     }
 
+    pub(crate) fn find_pi_entry(
+        &self,
+        id: &str,
+        expected_version: Option<u64>,
+    ) -> Option<QueueEntry> {
+        self.pi_entries
+            .iter()
+            .find(|entry| {
+                entry.id == id && expected_version.is_none_or(|version| version == entry.version)
+            })
+            .cloned()
+    }
+
+    pub(crate) fn clear_pi_entries(&mut self) -> Vec<QueueEntry> {
+        self.reserved.clear();
+        self.pending_interjections.clear();
+        let mut removed = std::mem::take(&mut self.pi_entries);
+        removed.extend(std::mem::take(&mut self.parked));
+        removed
+    }
+
+    /// Claim metadata `(id, display_text)` for a mid-turn user message
+    /// delivered by Pi so `x.ai/session/interjection` carries the original
+    /// `interjectionId` and user-facing display text.
+    pub(crate) fn claim_delivered_interjection(
+        &mut self,
+        message_text: &str,
+    ) -> Option<(String, String)> {
+        if let Some(index) = self.pending_interjections.iter().position(|entry| {
+            entry.execution_text == message_text || entry.display_text == message_text
+        }) {
+            let entry = self.pending_interjections.remove(index);
+            return Some((entry.id, entry.display_text));
+        }
+        if let Some(index) = self.reserved.iter().position(|item| {
+            item.lane == QueueLane::Steering
+                && (item.execution_text == message_text || item.display_text == message_text)
+        }) {
+            let item = self.reserved.remove(index);
+            return Some((item.id, item.display_text));
+        }
+        if let Some(index) = self.pi_entries.iter().position(|entry| {
+            entry.lane == QueueLane::Steering
+                && (entry.execution_text == message_text || entry.display_text == message_text)
+        }) {
+            let entry = self.pi_entries.remove(index);
+            return Some((entry.id, entry.display_text));
+        }
+        if !self.pending_interjections.is_empty() {
+            let entry = self.pending_interjections.remove(0);
+            return Some((entry.id, entry.display_text));
+        }
+        None
+    }
+
     pub(crate) fn reserve(
         &mut self,
         id: String,
@@ -230,6 +290,7 @@ impl QueueMirror {
 
     pub(crate) fn clear_running(&mut self) -> Option<QueueEntry> {
         self.reserved.clear();
+        self.pending_interjections.clear();
         self.running.take()
     }
 
@@ -312,6 +373,13 @@ impl QueueMirror {
             .filter(|(index, entry)| !used_prev[*index] && entry.lane == QueueLane::FollowUp)
             .map(|(_, entry)| entry.clone())
             .collect();
+        let dequeued_steers: Vec<QueueEntry> = previous
+            .iter()
+            .enumerate()
+            .filter(|(index, entry)| !used_prev[*index] && entry.lane == QueueLane::Steering)
+            .map(|(_, entry)| entry.clone())
+            .collect();
+        self.pending_interjections.extend(dequeued_steers);
         match (self.running.as_ref(), dequeued_follow_ups.split_first()) {
             (None, Some((first, rest))) => {
                 self.running = Some(first.clone());
@@ -356,7 +424,10 @@ impl QueueMirror {
                 json!({
                     "id": entry.id,
                     "version": entry.version,
-                    "kind": "prompt",
+                    "kind": match entry.lane {
+                        QueueLane::Steering => "steer",
+                        QueueLane::FollowUp => "prompt",
+                    },
                     "text": entry.display_text,
                     "position": position,
                 })
@@ -389,6 +460,7 @@ impl QueueMirror {
         self.pi_entries.clear();
         self.reserved.clear();
         self.parked.clear();
+        self.pending_interjections.clear();
         self.running = None;
         self.snapshot()
     }
@@ -640,5 +712,54 @@ mod tests {
         );
         assert!(first.starts_with("pi-extension-queue-"));
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn steering_dequeue_records_pending_interjection_for_live_render() {
+        let mut mirror = QueueMirror::default();
+        mirror.set_running_primary(
+            "primary".into(),
+            "primary".into(),
+            "primary".into(),
+            Vec::new(),
+            QueueOrigin::Client,
+        );
+        mirror.reserve(
+            "steer-1".into(),
+            "change target".into(),
+            "change target".into(),
+            Vec::new(),
+            QueueLane::Steering,
+            QueueOrigin::Client,
+        );
+        let queued = mirror.apply_queue_update(&["change target".into()], &[]);
+        assert_eq!(queued.entries[0]["kind"], "steer");
+        assert_eq!(queued.entries[0]["id"], "steer-1");
+
+        // Pi pops the steer for delivery.
+        mirror.apply_queue_update(&[], &[]);
+        assert_eq!(mirror.running().unwrap().id, "primary");
+        assert_eq!(
+            mirror.claim_delivered_interjection("change target"),
+            Some(("steer-1".into(), "change target".into()))
+        );
+        assert_eq!(mirror.claim_delivered_interjection("change target"), None);
+    }
+
+    #[test]
+    fn find_pi_entry_matches_id_and_version() {
+        let mut mirror = QueueMirror::default();
+        mirror.reserve(
+            "steer-1".into(),
+            "switch device".into(),
+            "switch device".into(),
+            Vec::new(),
+            QueueLane::Steering,
+            QueueOrigin::Client,
+        );
+        mirror.apply_queue_update(&["switch device".into()], &[]);
+        assert!(mirror.find_pi_entry("steer-1", Some(0)).is_some());
+        assert!(mirror.find_pi_entry("steer-1", Some(1)).is_none());
+        assert!(mirror.find_pi_entry("missing", None).is_none());
     }
 }

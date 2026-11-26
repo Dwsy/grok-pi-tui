@@ -57,15 +57,26 @@ impl PiAgent {
     pub(super) fn finish_queued_entries(&self, entries: Vec<QueueEntry>, reason: acp::StopReason) {
         let completions = {
             let mut state = self.state.borrow_mut();
-            entries
-                .into_iter()
-                .filter_map(|entry| {
-                    state
-                        .queued_prompt_completions
-                        .remove(&entry.id)
-                        .map(|completion| (entry.id, completion))
-                })
-                .collect::<Vec<_>>()
+            let mut resolved = Vec::new();
+            for entry in entries {
+                if let Some(completion) = state.queued_prompt_completions.remove(&entry.id) {
+                    resolved.push((entry.id, completion));
+                    continue;
+                }
+                // Immediately-forwarded steering rows live in `active_prompts`
+                // rather than `queued_prompt_completions`; resolve them when
+                // removed via `clear_queue` without touching the primary turn.
+                if state.live_prompt_id.as_deref() != Some(entry.id.as_str())
+                    && let Some(index) = state
+                        .active_prompts
+                        .iter()
+                        .position(|active| active.client_prompt_id.as_deref() == Some(entry.id.as_str()))
+                {
+                    let active = state.active_prompts.remove(index);
+                    resolved.push((entry.id, active.completion));
+                }
+            }
+            resolved
         };
         for (id, completion) in completions {
             let _ = completion.send(PromptCompletion {
@@ -128,6 +139,7 @@ impl PiAgent {
                         let active_id = Self::activate_queued_client(&mut state, &entry.id);
                         state.agent_running = true;
                         state.live_prompt_id = Some(entry.id.clone());
+                        state.primary_user_echo_pending = true;
                         state.queue_mirror.set_running(entry.clone());
                         (entry, active_id)
                     })
@@ -152,16 +164,36 @@ impl PiAgent {
                 request["images"] = Value::Array(entry.images.clone());
             }
             match self.rpc.request(request).await {
-                Ok(_) => {
-                    // Extension-owned rows have no ACP completion waiter, but
-                    // they still need the same idle probe. Another input
-                    // handler may consume the promoted RPC prompt without
-                    // producing agent_start/agent_settled; without this probe
-                    // the native queue would remain pinned to a ghost run.
-                    let probe = self.clone();
-                    tokio::task::spawn_local(async move {
-                        probe.probe_prompt_without_agent().await;
-                    });
+                Ok(response) => {
+                    let rpc_disposition = string(&response, &["disposition"]);
+                    if rpc_disposition == Some("handled") {
+                        let active = active_id.and_then(|id| self.take_active_prompt(id));
+                        {
+                            let mut state = self.state.borrow_mut();
+                            state.agent_running = false;
+                            state.live_prompt_id = None;
+                            state.primary_user_echo_pending = false;
+                            state.queue_mirror.clear_running();
+                        }
+                        if let Some(active) = active {
+                            let _ = active.completion.send(PromptCompletion {
+                                reason: acp::StopReason::EndTurn,
+                                client_prompt_id: active.client_prompt_id,
+                            });
+                        } else {
+                            self.send_server_prompt_complete(&entry, acp::StopReason::EndTurn)
+                                .await;
+                        }
+                        self.publish_queue_snapshot().await;
+                        continue;
+                    }
+                    if rpc_disposition.is_none() {
+                        // Fallback for older Pi hosts that omit `disposition`.
+                        let probe = self.clone();
+                        tokio::task::spawn_local(async move {
+                            probe.probe_prompt_without_agent().await;
+                        });
+                    }
                     return true;
                 }
                 Err(error) => {
@@ -171,6 +203,7 @@ impl PiAgent {
                         let mut state = self.state.borrow_mut();
                         state.agent_running = false;
                         state.live_prompt_id = None;
+                        state.primary_user_echo_pending = false;
                         state.queue_mirror.clear_running();
                     }
                     if let Some(active) = active {
@@ -227,9 +260,120 @@ impl PiAgent {
             )
         };
         self.publish_queue_snapshot().await;
-        // Steering rows are not interjected here: they wait for the assistant
-        // message_end safe-point flush so they stay cancellable until then.
+        if lane == QueueLane::Steering {
+            self.flush_pending_steering().await;
+        }
         self.dispatch_next_queued().await;
+    }
+
+    /// Remove or edit a row that has already been forwarded to Pi's steering or
+    /// follow-up queue by atomically calling Pi's `clear_queue` RPC and
+    /// re-queuing the remaining/updated items.
+    pub(super) async fn mutate_pi_queue(
+        &self,
+        target_id: &str,
+        expected_version: Option<u64>,
+        replacement: Option<String>,
+    ) -> bool {
+        let Some(target) = self
+            .state
+            .borrow()
+            .queue_mirror
+            .find_pi_entry(target_id, expected_version)
+        else {
+            return false;
+        };
+        let Ok(cleared) = self.rpc.request(json!({ "type": "clear_queue" })).await else {
+            return false;
+        };
+        let mut steering = string_list(cleared.get("steering"));
+        let mut follow_up = string_list(cleared.get("followUp"));
+        let lane_list = match target.lane {
+            QueueLane::Steering => &mut steering,
+            QueueLane::FollowUp => &mut follow_up,
+        };
+        let matched = lane_list
+            .iter()
+            .position(|text| text == &target.execution_text || text == &target.display_text);
+        let Some(index) = matched else {
+            // Target was already popped by Pi before clear_queue ran; restore all.
+            for text in steering {
+                let _ = self
+                    .rpc
+                    .request(json!({ "type": "steer", "message": text }))
+                    .await;
+            }
+            for text in follow_up {
+                let _ = self
+                    .rpc
+                    .request(json!({ "type": "follow_up", "message": text }))
+                    .await;
+            }
+            self.publish_queue_snapshot().await;
+            return false;
+        };
+        if let Some(new_text) = replacement.clone() {
+            lane_list[index] = new_text;
+        } else {
+            lane_list.remove(index);
+        }
+        let removed_entries = {
+            let mut state = self.state.borrow_mut();
+            let previous = state.queue_mirror.clear_pi_entries();
+            // Re-reserve surviving entries so Pi's queue_update restores their ids.
+            for entry in &previous {
+                if entry.id == target.id {
+                    if let Some(new_text) = replacement.as_ref() {
+                        state.queue_mirror.reserve(
+                            entry.id.clone(),
+                            new_text.clone(),
+                            new_text.clone(),
+                            entry.images.clone(),
+                            entry.lane,
+                            entry.origin,
+                        );
+                    }
+                    continue;
+                }
+                state.queue_mirror.reserve(
+                    entry.id.clone(),
+                    entry.execution_text.clone(),
+                    entry.display_text.clone(),
+                    entry.images.clone(),
+                    entry.lane,
+                    entry.origin,
+                );
+            }
+            if replacement.is_none() {
+                vec![target]
+            } else {
+                Vec::new()
+            }
+        };
+        if !removed_entries.is_empty() {
+            self.finish_queued_entries(removed_entries, acp::StopReason::Cancelled);
+        }
+        for text in steering {
+            let _ = self
+                .rpc
+                .request(json!({ "type": "steer", "message": text }))
+                .await;
+        }
+        for text in follow_up {
+            let _ = self
+                .rpc
+                .request(json!({ "type": "follow_up", "message": text }))
+                .await;
+        }
+        self.publish_queue_snapshot().await;
+        true
+    }
+
+    /// Clear Pi's internal steering and follow-up queues via `clear_queue` RPC.
+    pub(super) async fn clear_pi_queue_rpc(&self) {
+        let _ = self.rpc.request(json!({ "type": "clear_queue" })).await;
+        let removed = self.state.borrow_mut().queue_mirror.clear_pi_entries();
+        self.finish_queued_entries(removed, acp::StopReason::Cancelled);
     }
 
     pub(super) async fn interject_local_queue(

@@ -433,6 +433,15 @@ impl AgentView {
         // Up/Down step with live-populate, Down at the newest closes, typing detaches to edit. Down never opens the panel.
         // Browse activation is Normal-input-mode only (recalling a chat prompt into a Bash/Remember composer would submit it under that mode).
         if self.prompt_mode == PromptMode::Normal
+            && self.prompt_input_mode == PromptInputMode::Normal
+            && key.kind == KeyEventKind::Press
+            && key.code == KeyCode::Up
+            && key.modifiers == KeyModifiers::ALT
+        {
+            return self.try_dequeue_all_to_prompt();
+        }
+
+        if self.prompt_mode == PromptMode::Normal
             && self.prompt.text().is_empty()
             && !self.prompt.file_search_visible()
             && key!(Up).matches(key)
@@ -512,10 +521,52 @@ impl AgentView {
         //    This must come BEFORE the action registry lookup so that Shift+Enter triggers send instead of inserting a newline
         //    Apple Terminal: bare Enter may actually be Cmd/Opt+Enter.
         if self.multiline_mode && crate::input::is_mod_enter(key) {
+            if key.kind == KeyEventKind::Repeat {
+                return InputOutcome::Unchanged;
+            }
             if let Some(text) = self.prompt.try_send() {
                 let action = self.prompt_input_mode.send_action(text);
                 self.prompt_input_mode = PromptInputMode::Normal;
                 return InputOutcome::Action(action);
+            }
+            return InputOutcome::Changed;
+        }
+
+        // 2b. Pi alignment: Alt+Enter while streaming explicitly queues a follow-up
+        //     (waits for the current turn to end even when `follow_up_behavior = "steer"`).
+        if !self.multiline_mode
+            && self.prompt_mode == PromptMode::Normal
+            && self.prompt_input_mode == PromptInputMode::Normal
+            && self.session.state.is_turn_running()
+            && key.code == KeyCode::Enter
+            && key.modifiers == KeyModifiers::ALT
+        {
+            if key.kind == KeyEventKind::Repeat {
+                return InputOutcome::Unchanged;
+            }
+            if let Some(text) = self.prompt.try_send() {
+                if crate::appearance::cache::load_follow_up_steer() {
+                    let images = self.prompt.drain_images();
+                    let queue_id = self.session.next_queue_id;
+                    self.session.next_queue_id += 1;
+                    self.session.pending_prompts.push_back(
+                        crate::app::agent::QueuedPrompt {
+                            images,
+                            ..crate::app::agent::QueuedPrompt::plain(
+                                queue_id,
+                                &text,
+                                crate::app::agent::QueueEntryKind::Prompt,
+                            )
+                        },
+                    );
+                    self.prompt.set_text("");
+                    self.note_draft_consumed();
+                    self.record_prompt_in_history(&text);
+                    self.sync_queue_pane();
+                    self.show_toast("Queued follow-up");
+                    return InputOutcome::Changed;
+                }
+                return InputOutcome::Action(Action::SendPrompt(text));
             }
             return InputOutcome::Changed;
         }
@@ -525,6 +576,11 @@ impl AgentView {
         if let Some(action_id) = registry.lookup(key, When::PromptFocused) {
             match action_id {
                 ActionId::SendPrompt => {
+                    // Ignore OS/Kitty key-repeat on Enter so holding Enter never
+                    // double-submits or force-sends a second queued row.
+                    if key.kind == KeyEventKind::Repeat {
+                        return InputOutcome::Unchanged;
+                    }
                     // Apple Terminal: Shift+Enter arrives as bare Enter (no Kitty protocol)
                     // Poll CoreGraphics for the real modifier state; if Shift/Option/Cmd is held, insert a newline instead of sending
                     if key.code == KeyCode::Enter
@@ -578,6 +634,9 @@ impl AgentView {
                     return InputOutcome::Changed;
                 }
                 ActionId::InterjectPrompt => {
+                    if key.kind == KeyEventKind::Repeat {
+                        return InputOutcome::Unchanged;
+                    }
                     crate::actions::log_shortcut_used(
                         key,
                         ActionId::InterjectPrompt,

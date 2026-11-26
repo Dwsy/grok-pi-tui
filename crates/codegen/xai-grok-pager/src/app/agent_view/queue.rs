@@ -78,12 +78,22 @@ impl AgentView {
     /// Always the **top** visible row (first under the server-then-local merge order, the next item that would drain).
     /// Bare Enter and the send-now chord share this path; queue-pane selection and mouse "Send now" keep intentional selection.
     pub(super) fn try_send_now_queued_from_prompt(&mut self) -> Option<InputOutcome> {
-        if !self.can_send_now() {
+        if !self.can_send_now() || self.send_now_awaiting_confirm.is_some() {
             return None;
         }
         self.sync_queue_pane();
         let ids = self.queue.entry_ids();
         let id = *ids.first()?;
+        // Do not re-interject a row that is already in Pi's steering lane.
+        if let Some(row) = self.queue.row_ref(id)
+            && let Some(server_id) = row.server_id.as_deref()
+            && self
+                .shared_queue
+                .iter()
+                .any(|entry| entry.id == server_id && entry.kind == "steer")
+        {
+            return None;
+        }
         let outcome = self.force_interject_queue_row(id);
         if matches!(outcome, InputOutcome::Action(_))
             && self.ephemeral_tip.current_key() == Some(crate::tips::send_now::SEND_NOW_TIP_KEY)
@@ -345,6 +355,57 @@ impl AgentView {
         Some(kind_from_wire(&wire.kind) == QueueEntryKind::Prompt)
     }
 
+    /// Pi alignment (`Alt+Up` / `app.message.dequeue`): restore all queued
+    /// steering and follow-up messages back into the composer and clear both
+    /// local and server/Pi queues.
+    pub(super) fn try_dequeue_all_to_prompt(&mut self) -> InputOutcome {
+        let mut texts: Vec<String> = Vec::new();
+        let mut had_server = false;
+        for entry in &self.shared_queue {
+            if crate::views::queue_pane::visible_held_server_row(
+                &entry.id,
+                self.session.current_prompt_id.as_deref(),
+                self.expect_send_now_cancel.as_deref(),
+                &self.send_now_painted_blocks,
+            ) {
+                had_server = true;
+                if !entry.text.trim().is_empty() {
+                    texts.push(entry.text.clone());
+                }
+            }
+        }
+        for entry in self.session.pending_prompts.drain(..) {
+            if !entry.text.trim().is_empty() {
+                texts.push(entry.text);
+            }
+        }
+        if texts.is_empty() && !had_server {
+            self.show_toast("No queued messages to restore");
+            return InputOutcome::Changed;
+        }
+        let count = texts.len();
+        let current = self.prompt.text().to_string();
+        if !current.trim().is_empty() {
+            texts.push(current);
+        }
+        let combined = texts.join("\n\n");
+        self.prompt.set_text(&combined);
+        self.send_now_awaiting_confirm = None;
+        self.optimistic_queue_ids.clear();
+        self.queue.overlay.visible = false;
+        self.queue.overlay.focused = false;
+        self.sync_queue_pane();
+        self.show_toast(&format!(
+            "Restored {count} queued message{} to input",
+            if count == 1 { "" } else { "s" }
+        ));
+        if had_server {
+            InputOutcome::Action(Action::QueueClearShared)
+        } else {
+            InputOutcome::Changed
+        }
+    }
+
     /// Send one merged-queue row now (cancel-and-send), by selection id. The shell cancels the running turn and runs this row as the next turn.
     pub(in crate::app) fn force_interject_queue_row(&mut self, id: u64) -> InputOutcome {
         if !self.can_send_now() {
@@ -363,6 +424,14 @@ impl AgentView {
             if let Some(row) = row.as_ref()
                 && let Some(server_id) = row.server_id.clone()
             {
+                if self
+                    .shared_queue
+                    .iter()
+                    .any(|entry| entry.id == server_id && entry.kind == "steer")
+                {
+                    self.show_toast("Already steering");
+                    return InputOutcome::Changed;
+                }
                 // Still an optimistic echo: its `session/prompt` RPC is in flight, so an interject now would overtake the row shell-side and no-op.
                 // Park the intent; the confirming `x.ai/queue/changed` broadcast fires it with the row's authoritative version.
                 if self.optimistic_queue_ids.contains(&server_id) {

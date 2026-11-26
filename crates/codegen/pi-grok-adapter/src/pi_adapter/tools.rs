@@ -107,10 +107,34 @@ pub(super) fn is_codemode_nested_call(
 impl PiAgent {
     pub(super) async fn execute_bash(
         &self,
-        command: String,
+        raw_command: String,
         meta: Option<&acp::Meta>,
     ) -> Result<acp::PromptResponse, acp::Error> {
+        // Pager strips the first `!` when entering Bash mode, so `!!cmd` / `!!!cmd`
+        // arrives here with one or more leading `!` characters. Align with Pi's
+        // `excludeFromContext` semantics so `!!cmd` runs locally without entering
+        // LLM context.
+        let (command, exclude_from_context) = if let Some(stripped) = raw_command.strip_prefix('!')
+        {
+            let cleaned = stripped.trim_start_matches('!').trim().to_string();
+            if cleaned.is_empty() {
+                return Err(acp::Error::invalid_params().data("Pi bash command is empty"));
+            }
+            (cleaned, true)
+        } else {
+            (raw_command, false)
+        };
         let serial = self.allocate_operation_id();
+        let client_prompt_id = meta
+            .and_then(|meta| meta.get("promptId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string);
+        let call_id = client_prompt_id
+            .as_deref()
+            .map(|id| format!("pi-bash:{id}"))
+            .unwrap_or_else(|| format!("pi-bash:{serial}"));
         {
             let mut state = self.state.borrow_mut();
             if state.bash_running {
@@ -119,15 +143,22 @@ impl PiAgent {
                 );
             }
             state.bash_running = true;
+            state.active_direct_bash = Some(ActiveDirectBash {
+                call_id: call_id.clone(),
+                command: command.clone(),
+                output: Vec::new(),
+            });
         }
+        // Direct `!bash` / `!!bash` executes immediately alongside any active turn
+        // rather than queuing; republish the authoritative queue snapshot so Pager
+        // immediately clears any optimistic `"bash"` queue echo row.
+        self.publish_queue_snapshot().await;
 
-        let call_id = meta
-            .and_then(|meta| meta.get("promptId"))
-            .and_then(Value::as_str)
-            .filter(|id| !id.trim().is_empty())
-            .map(|id| format!("pi-bash:{id}"))
-            .unwrap_or_else(|| format!("pi-bash:{serial}"));
-        let title = format!("$ {command}");
+        let title = if exclude_from_context {
+            format!("!! {command}")
+        } else {
+            format!("$ {command}")
+        };
         self.send_update(acp::SessionUpdate::ToolCall(
             acp::ToolCall::new(acp::ToolCallId::new(call_id.clone()), title.clone())
                 .kind(acp::ToolKind::Execute)
@@ -138,11 +169,20 @@ impl PiAgent {
         ))
         .await;
 
-        let result = self
-            .rpc
-            .request(json!({ "type": "bash", "command": command }))
-            .await;
-        self.state.borrow_mut().bash_running = false;
+        let mut rpc_req = json!({ "type": "bash", "command": command });
+        if exclude_from_context {
+            rpc_req["excludeFromContext"] = Value::Bool(true);
+        }
+        let result = self.rpc.request(rpc_req).await;
+        let should_dispatch_queued = {
+            let mut state = self.state.borrow_mut();
+            state.bash_running = false;
+            state.active_direct_bash = None;
+            !state.agent_running && !state.cancelling
+        };
+        if should_dispatch_queued {
+            self.dispatch_next_queued().await;
+        }
 
         match result {
             Ok(result) => {
@@ -171,11 +211,14 @@ impl PiAgent {
                     ),
                 ))
                 .await;
-                Ok(acp::PromptResponse::new(if cancelled {
-                    acp::StopReason::Cancelled
-                } else {
-                    acp::StopReason::EndTurn
-                }))
+                Ok(prompt_response(
+                    if cancelled {
+                        acp::StopReason::Cancelled
+                    } else {
+                        acp::StopReason::EndTurn
+                    },
+                    client_prompt_id.as_deref(),
+                ))
             }
             Err(error) => {
                 self.send_update(acp::SessionUpdate::ToolCallUpdate(
@@ -193,6 +236,56 @@ impl PiAgent {
                 Err(acp_internal(error))
             }
         }
+    }
+
+    /// Stream live `bash_execution_update` deltas from Pi's direct `bash` RPC
+    /// into the active Execute card.
+    pub(super) async fn handle_bash_execution_update(&self, event: &Value) {
+        let Some(delta) = string(event, &["delta"]) else {
+            return;
+        };
+        if delta.is_empty() {
+            return;
+        }
+        let update = {
+            let mut state = self.state.borrow_mut();
+            let Some(active) = state.active_direct_bash.as_mut() else {
+                return;
+            };
+            let delta_bytes = delta.as_bytes().to_vec();
+            active.output.extend_from_slice(&delta_bytes);
+            let full_text = String::from_utf8_lossy(&active.output).into_owned();
+            let raw_output = json!({
+                "type": "Bash",
+                "output": active.output.clone(),
+                "output_for_prompt": full_text,
+                "exit_code": 0,
+                "command": active.command.clone(),
+                "truncated": false,
+                "signal": null,
+                "timed_out": false,
+                "description": null,
+                "current_dir": "",
+                "output_file": "",
+                "total_bytes": active.output.len(),
+                "was_bare_echo": false,
+                "output_delta": delta_bytes,
+            });
+            (active.call_id.clone(), full_text, raw_output)
+        };
+        let (call_id, full_text, raw_output) = update;
+        self.send_update(acp::SessionUpdate::ToolCallUpdate(
+            acp::ToolCallUpdate::new(
+                acp::ToolCallId::new(call_id),
+                acp::ToolCallUpdateFields::new()
+                    .status(Some(acp::ToolCallStatus::InProgress))
+                    .content(Some(vec![acp::ToolCallContent::from(
+                        acp::ContentBlock::Text(acp::TextContent::new(full_text)),
+                    )]))
+                    .raw_output(Some(raw_output)),
+            ),
+        ))
+        .await;
     }
 
     /// Whether this event belongs to a tool call a codemode script made; see

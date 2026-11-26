@@ -1120,7 +1120,9 @@ impl AcpUpdateTracker {
         {
             self.hooks_running = None;
         }
-        if let Some(new_start) = meta.stream_start_ms {
+        if let Some(new_start) = meta.stream_start_ms
+            && !matches!(&update, acp::SessionUpdate::AvailableCommandsUpdate(_))
+        {
             let stream_boundary = self
                 .last_stream_start_ms
                 .map(|prev| prev != new_start)

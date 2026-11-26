@@ -285,16 +285,19 @@ impl acp::Agent for PiAgent {
             let mut state = self.state.borrow_mut();
             let streaming_behavior =
                 prompt_streaming_behavior(Self::adapter_busy(&state), arguments.meta.as_ref());
-            // Steer requests are held locally too (lane is the only
-            // difference): the row stays editable/cancellable until the
-            // assistant message_end safe-point flush forwards it to Pi.
-            if let Some(lane) = streaming_behavior.map(|behavior| {
-                if behavior == "steer" {
+            // Follow-up requests stay in the adapter's isolated local queue until
+            // the current run settles. Steering requests are forwarded immediately
+            // to Pi (unless cancelling) so they catch the very next tool boundary
+            // instead of waiting for another assistant message_end; they remain
+            // cancellable/editable via Pi's `clear_queue` RPC.
+            if streaming_behavior == Some("followUp")
+                || (streaming_behavior == Some("steer") && state.cancelling)
+            {
+                let lane = if streaming_behavior == Some("steer") {
                     QueueLane::Steering
                 } else {
                     QueueLane::FollowUp
-                }
-            }) {
+                };
                 let id = state.queue_mirror.enqueue_local(
                     client_prompt_id.clone(),
                     message,
@@ -328,6 +331,7 @@ impl acp::Agent for PiAgent {
                 if pin_primary_running {
                     let client_id = client_prompt_id.clone().expect("checked non-empty");
                     state.live_prompt_id = Some(client_id.clone());
+                    state.primary_user_echo_pending = true;
                     state.queue_mirror.set_running_primary(
                         client_id,
                         execution_message.clone(),
@@ -335,6 +339,8 @@ impl acp::Agent for PiAgent {
                         images.clone(),
                         QueueOrigin::Client,
                     );
+                } else if streaming_behavior.is_none() {
+                    state.primary_user_echo_pending = true;
                 }
                 state.agent_running = true;
                 state.active_prompts.push(ActivePrompt {
@@ -382,30 +388,52 @@ impl acp::Agent for PiAgent {
                 if let Some(streaming_behavior) = streaming_behavior {
                     request["streamingBehavior"] = Value::String(streaming_behavior.to_string());
                 }
-                if let Err(error) = self.rpc.request(request).await {
+                let response = match self.rpc.request(request).await {
+                    Ok(response) => response,
+                    Err(error) => {
+                        if let Some(client_id) = client_prompt_id.as_deref() {
+                            self.state
+                                .borrow_mut()
+                                .queue_mirror
+                                .release_reservation(client_id);
+                        }
+                        self.remove_prompt(operation_id);
+                        if pin_primary_running {
+                            let mut state = self.state.borrow_mut();
+                            state.agent_running = false;
+                            state.live_prompt_id = None;
+                            state.primary_user_echo_pending = false;
+                            state.queue_mirror.clear_running();
+                        }
+                        self.publish_queue_snapshot().await;
+                        return Err(acp_internal(error));
+                    }
+                };
+                let rpc_disposition = string(&response, &["disposition"]);
+                if rpc_disposition == Some("handled") {
                     if let Some(client_id) = client_prompt_id.as_deref() {
                         self.state
                             .borrow_mut()
                             .queue_mirror
                             .release_reservation(client_id);
                     }
-                    self.remove_prompt(operation_id);
+                    self.settle_handled_prompt(operation_id, pin_primary_running)
+                        .await;
+                } else {
                     if pin_primary_running {
-                        let mut state = self.state.borrow_mut();
-                        state.agent_running = false;
-                        state.live_prompt_id = None;
-                        state.queue_mirror.clear_running();
+                        self.rebroadcast_queue_mirror().await;
                     }
-                    self.publish_queue_snapshot().await;
-                    return Err(acp_internal(error));
+                    // Pi's modern RPC reports authoritative `disposition` ("started" |
+                    // "queued" | "handled"). Only fall back to the 40ms idle probe when
+                    // an older Pi host omits `disposition`, avoiding premature settlement
+                    // on slow-starting turns.
+                    if rpc_disposition.is_none() {
+                        let probe = self.clone();
+                        tokio::task::spawn_local(async move {
+                            probe.probe_prompt_without_agent().await;
+                        });
+                    }
                 }
-                if pin_primary_running {
-                    self.rebroadcast_queue_mirror().await;
-                }
-                let probe = self.clone();
-                tokio::task::spawn_local(async move {
-                    probe.probe_prompt_without_agent().await;
-                });
                 let completion = completion_rx.await.unwrap_or(PromptCompletion {
                     reason: acp::StopReason::Cancelled,
                     client_prompt_id: client_prompt_id.clone(),
@@ -464,6 +492,7 @@ impl acp::Agent for PiAgent {
                 active.cancelled = true;
             }
             state.cancelling = true;
+            state.primary_user_echo_pending = false;
             let command = if state.bash_running {
                 "abort_bash"
             } else {
@@ -485,6 +514,11 @@ impl acp::Agent for PiAgent {
         }
         self.publish_queue_snapshot().await;
 
+        // Clear Pi's internal steering/follow-up queues before aborting so a
+        // residual queued message cannot open a ghost continuation turn.
+        if let Err(error) = self.rpc.notify(json!({ "type": "clear_queue" })) {
+            tracing::debug!(%error, "failed to notify Pi clear_queue during cancel");
+        }
         // Do not await Pi's abort RPC. AgentSession.abort() waits for idle, and
         // extension continuations can otherwise keep ACP cancel blocked forever.
         if let Err(error) = self.rpc.notify(json!({ "type": command })) {
@@ -1180,19 +1214,21 @@ impl acp::Agent for PiAgent {
                     .take_local(id, expected_version);
                 if let Some(entry) = removed {
                     self.finish_queued_entries(vec![entry], acp::StopReason::Cancelled);
-                } else {
+                    self.publish_queue_snapshot().await;
+                } else if !self.mutate_pi_queue(id, expected_version, None).await {
                     self.send_ui_notification(
                         "This queue row is already running or belongs to Pi's external queue",
                         Some("warning"),
                     )
                     .await;
+                    self.publish_queue_snapshot().await;
                 }
-                self.publish_queue_snapshot().await;
                 Ok(())
             }
             "x.ai/queue/clear" => {
                 let removed = self.state.borrow_mut().queue_mirror.clear_local();
                 self.finish_queued_entries(removed, acp::StopReason::Cancelled);
+                self.clear_pi_queue_rpc().await;
                 self.publish_queue_snapshot().await;
                 Ok(())
             }
@@ -1204,16 +1240,29 @@ impl acp::Agent for PiAgent {
                     .map(str::trim)
                     .filter(|text| !text.is_empty())
                     .map(str::to_string);
-                let edited = new_text
-                    .is_some_and(|text| self.state.borrow_mut().queue_mirror.edit_local(id, text));
+                let edited = if let Some(text) = new_text {
+                    if self
+                        .state
+                        .borrow_mut()
+                        .queue_mirror
+                        .edit_local(id, text.clone())
+                    {
+                        self.publish_queue_snapshot().await;
+                        true
+                    } else {
+                        self.mutate_pi_queue(id, None, Some(text)).await
+                    }
+                } else {
+                    false
+                };
                 if !edited {
                     self.send_ui_notification(
                         "Only pending adapter queue rows can be edited",
                         Some("warning"),
                     )
                     .await;
+                    self.publish_queue_snapshot().await;
                 }
-                self.publish_queue_snapshot().await;
                 Ok(())
             }
             "x.ai/queue/reorder" => {

@@ -1047,15 +1047,18 @@ impl PiAgent {
             .cloned()
             .map(|model| (model_key(&model), model))
             .collect();
-        // A session change invalidates the previous session's isolated queue.
-        // Dropping completion senders resolves waiting ACP requests as cancelled.
-        state.queue_mirror = QueueMirror::default();
-        state.queued_prompt_completions.clear();
-        state.agent_running = false;
-        state.cancelling = false;
-        // Drop cached context usage so publish_bootstrap cannot re-stamp the
-        // previous session's totalTokens onto a fresh AgentView (context bar).
+        // A session change invalidates the previous session's isolated queue,
+        // live turn state, and cached context usage so publish_bootstrap cannot
+        // re-stamp the previous session's data onto a fresh AgentView.
+        // Same-session metadata refreshes (e.g. set_model, thinking_level_changed,
+        // session_info_changed) MUST preserve in-flight turns and queued rows.
         if session_changed {
+            state.queue_mirror = QueueMirror::default();
+            state.queued_prompt_completions.clear();
+            state.agent_running = false;
+            state.cancelling = false;
+            state.primary_user_echo_pending = false;
+            state.active_direct_bash = None;
             state.entry_replay_cache = PiEntryReplayCache::default();
             state.last_context_tokens = None;
             state.turn_start_ms = None;

@@ -219,6 +219,14 @@ struct StreamSeen {
     thought: bool,
 }
 
+/// Active direct `!bash` / `!!bash` execution tracked for real-time
+/// `bash_execution_update` streaming to the Execute card.
+struct ActiveDirectBash {
+    call_id: String,
+    command: String,
+    output: Vec<u8>,
+}
+
 struct AdapterState {
     bootstrap: PiBootstrap,
     acp_session_id: String,
@@ -260,10 +268,17 @@ struct AdapterState {
     /// on every live ACP `SessionNotification._meta.promptId` so the pager's
     /// prompt-id gate and turn chrome match stock Grok shell.
     live_prompt_id: Option<String>,
+    /// True while the current primary prompt's first `message_start(role="user")`
+    /// echo has not yet arrived from Pi. That first echo is already painted by
+    /// Pager; any subsequent `role="user"` message in the same run (mid-turn
+    /// steering or Pi-internal follow-up) is emitted as `x.ai/session/interjection`.
+    primary_user_echo_pending: bool,
     /// Last full bash stdout (bytes) per toolCallId — used to emit
     /// `BashOutput.output_delta` on `tool_execution_update` so Execute cards
     /// stream instead of only jumping at tool end.
     bash_stream_output: HashMap<String, Vec<u8>>,
+    /// Active direct `!bash` / `!!bash` command for `bash_execution_update` streaming.
+    active_direct_bash: Option<ActiveDirectBash>,
     /// Lifecycle mirror for Pi-owned background Bash tasks, keyed by task id.
     /// Terminal state arrives on two independent channels, and the shells die
     /// silently with the Pi child — this resolves both into one final state.
@@ -394,7 +409,9 @@ impl PiAgent {
                 turn_start_ms: None,
                 stream_start_ms: None,
                 live_prompt_id: None,
+                primary_user_echo_pending: false,
                 bash_stream_output: HashMap::new(),
+                active_direct_bash: None,
                 background_bash_tasks: HashMap::new(),
                 codemode_parent_ids: HashSet::new(),
                 compaction_started_at: None,

@@ -228,6 +228,15 @@ impl PiAgent {
                 }
             }
             "agent_settled" => {
+                let aborted = event
+                    .get("aborted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let stop_reason = if aborted {
+                    acp::StopReason::Cancelled
+                } else {
+                    acp::StopReason::EndTurn
+                };
                 self.refresh_context_usage().await;
                 let (mode_update, persist_plan, running) = {
                     let mut state = self.state.borrow_mut();
@@ -236,6 +245,7 @@ impl PiAgent {
                     state.turn_start_ms = None;
                     state.stream_start_ms = None;
                     state.live_prompt_id = None;
+                    state.primary_user_echo_pending = false;
                     state.bash_stream_output.clear();
                     state.streaming_tool_calls.clear();
                     let running = state.queue_mirror.clear_running();
@@ -269,15 +279,15 @@ impl PiAgent {
                     .await;
                 }
                 self.rebroadcast_queue_mirror().await;
-                self.finish_prompts(acp::StopReason::EndTurn);
+                self.finish_prompts(stop_reason.clone());
                 if let Some(entry) = running
                     && entry.origin != QueueOrigin::Client
                 {
-                    self.send_server_prompt_complete(&entry, acp::StopReason::EndTurn)
+                    self.send_server_prompt_complete(&entry, stop_reason)
                         .await;
                 }
                 let dispatched = self.dispatch_next_queued().await;
-                if !dispatched {
+                if !dispatched && !aborted {
                     self.maybe_continue_goal().await;
                 }
             }
@@ -295,7 +305,7 @@ impl PiAgent {
                 state.stream_start_ms = Some(now);
             }
             "turn_end" => self.refresh_context_usage().await,
-            "message_start" => self.handle_message_start(&event),
+            "message_start" => self.handle_message_start(&event).await,
             "message_update" => self.handle_message_update(&event).await,
             "message_end" => {
                 if self.handle_btw_bridge_message(&event).await
@@ -330,6 +340,7 @@ impl PiAgent {
             "tool_execution_start" => self.handle_tool_start(&event).await,
             "tool_execution_update" => self.handle_tool_update(&event).await,
             "tool_execution_end" => self.handle_tool_end(&event).await,
+            "bash_execution_update" => self.handle_bash_execution_update(&event).await,
             "extension_ui_request" => self.handle_extension_ui(event).await?,
             "extension_error" => {
                 let message = event
@@ -377,6 +388,41 @@ impl PiAgent {
                     self.send_ui_notification(error, Some("error")).await;
                 }
             }
+            "summarization_retry_scheduled" => {
+                let source = match string(&event, &["source"]) {
+                    Some("branchSummary") => "branch summary",
+                    _ => "compaction",
+                };
+                let attempt = event.get("attempt").and_then(Value::as_u64).unwrap_or(0);
+                let maximum = event.get("maxAttempts").and_then(Value::as_u64).unwrap_or(0);
+                let delay_ms = event.get("delayMs").and_then(Value::as_u64).unwrap_or(0);
+                let mut text = if maximum > 0 {
+                    format!("Retrying {source} {attempt}/{maximum}")
+                } else {
+                    format!("Retrying {source}")
+                };
+                if delay_ms > 0 {
+                    text.push_str(&format!(" in {:.1}s", delay_ms as f64 / 1000.0));
+                }
+                if let Some(error) = string(&event, &["errorMessage", "message"])
+                    && !error.is_empty()
+                {
+                    text.push_str(": ");
+                    text.push_str(error);
+                }
+                self.send_status("retry", Some(&text)).await;
+            }
+            "summarization_retry_attempt_start" => {
+                let source = match string(&event, &["source"]) {
+                    Some("branchSummary") => "branch summary",
+                    _ => "compaction",
+                };
+                self.send_status("retry", Some(&format!("Retrying {source}…")))
+                    .await;
+            }
+            "summarization_retry_finished" => {
+                self.send_status("retry", None).await;
+            }
             "queue_update" => {
                 // Pi emits full text arrays; mirror them into the native queue
                 // pane so optimistic server rows confirm and dequeue.
@@ -403,6 +449,8 @@ impl PiAgent {
                     let mut state = self.state.borrow_mut();
                     state.agent_running = false;
                     state.cancelling = false;
+                    state.primary_user_echo_pending = false;
+                    state.active_direct_bash = None;
                     // An interrupted session transition cannot complete against
                     // a dead child; clear it so post-recovery reattach can
                     // begin a fresh one.
@@ -445,7 +493,54 @@ impl PiAgent {
         Ok(())
     }
 
-    pub(super) fn handle_message_start(&self, event: &Value) {
+    pub(super) async fn handle_message_start(&self, event: &Value) {
+        if message_role(event) == Some("user") {
+            let is_primary_echo = {
+                let mut state = self.state.borrow_mut();
+                if state.primary_user_echo_pending {
+                    state.primary_user_echo_pending = false;
+                    true
+                } else {
+                    false
+                }
+            };
+            if is_primary_echo {
+                return;
+            }
+            let Some(message) = event.get("message") else {
+                return;
+            };
+            let raw_text = parse_messages(&json!({ "messages": [message] }))
+                .into_iter()
+                .filter_map(|entry| match entry.item {
+                    PiHistoryItem::UserText(text) => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if raw_text.trim().is_empty() {
+                return;
+            }
+            let (session_id, interjection_id, display_text) = {
+                let mut state = self.state.borrow_mut();
+                let claimed = state.queue_mirror.claim_delivered_interjection(&raw_text);
+                let (id, text) = match claimed {
+                    Some((id, display)) => (Some(id), display),
+                    None => (None, raw_text),
+                };
+                (state.acp_session_id.clone(), id, text)
+            };
+            let mut params = json!({
+                "sessionId": session_id,
+                "text": display_text,
+            });
+            if let Some(id) = interjection_id {
+                params["interjectionId"] = Value::String(id);
+            }
+            self.send_ext_notification("x.ai/session/interjection", params)
+                .await;
+            return;
+        }
         if message_role(event) == Some("assistant") {
             let now = utc_now_ms();
             let mut state = self.state.borrow_mut();
@@ -622,6 +717,7 @@ impl PiAgent {
                     state.agent_running = false;
                     state.cancelling = false;
                     state.live_prompt_id = None;
+                    state.primary_user_echo_pending = false;
                     state.queue_mirror.clear_running();
                 }
                 self.publish_queue_snapshot().await;
@@ -638,6 +734,45 @@ impl PiAgent {
     }
 
     pub(super) async fn probe_prompt_without_agent(&self) {
+        self.probe_prompt_without_agent_inner().await;
+    }
+
+    /// Immediately settle a prompt whose `prompt` RPC returned
+    /// `disposition: "handled"` (consumed by an extension command or input
+    /// hook without starting an agent turn).
+    pub(super) async fn settle_handled_prompt(&self, operation_id: u64, pin_primary_running: bool) {
+        let active = self.take_active_prompt(operation_id);
+        let should_dispatch = {
+            let mut state = self.state.borrow_mut();
+            if pin_primary_running || state.active_prompts.is_empty() {
+                state.agent_running = false;
+                state.cancelling = false;
+                state.live_prompt_id = None;
+                state.primary_user_echo_pending = false;
+                state.turn_start_ms = None;
+                state.stream_start_ms = None;
+                state.queue_mirror.clear_running();
+                true
+            } else {
+                false
+            }
+        };
+        if let Some(active) = active {
+            let _ = active.completion.send(PromptCompletion {
+                reason: acp::StopReason::EndTurn,
+                client_prompt_id: active.client_prompt_id,
+            });
+        }
+        if should_dispatch {
+            self.publish_queue_snapshot().await;
+            let dispatched = self.dispatch_next_queued().await;
+            if !dispatched {
+                self.maybe_continue_goal().await;
+            }
+        }
+    }
+
+    async fn probe_prompt_without_agent_inner(&self) {
         tokio::time::sleep(Duration::from_millis(40)).await;
         let should_probe = {
             let state = self.state.borrow();
@@ -661,6 +796,7 @@ impl PiAgent {
             state.agent_running = false;
             state.cancelling = false;
             state.live_prompt_id = None;
+            state.primary_user_echo_pending = false;
             state.turn_start_ms = None;
             state.stream_start_ms = None;
             state.queue_mirror.clear_running()
