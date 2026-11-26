@@ -812,6 +812,15 @@ impl BlockViewerPane {
             | RenderBlock::ToolCall(ToolCallBlock::Skill(block)) => block,
             _ => return None,
         };
+        // Image-producing tool cards (e.g. generate_image / MCP image tools):
+        // render the image directly in the TUI popup modal just like Read.
+        if let Some(first_ref) = block.image_references().first()
+            && let Some(image) = Self::load_read_image(&first_ref.path)
+        {
+            let mut viewer = Self::for_static_content(entry_id, ViewerKind::OtherTool, Vec::new());
+            viewer.image = Some(image);
+            return Some(viewer);
+        }
         let theme = Theme::current();
         let label = Style::default().fg(theme.text_secondary);
         let value = Style::default().fg(theme.text_primary);
@@ -984,6 +993,18 @@ impl BlockViewerPane {
             last_click_ep: None,
             reveal_selection_once: false,
         }
+    }
+
+    /// Create a centered TUI image-preview modal for any local image path,
+    /// using the same Kitty/iTerm2 overlay pipeline as `BlockViewerPane::for_read`.
+    /// Returns `None` when the terminal has no graphics protocol or decoding fails.
+    pub fn for_image_path(path: &std::path::Path) -> Option<Self> {
+        let image = Self::load_read_image(path)?;
+        // Empty body (same as `for_read` on images) so no text cells overlap
+        // the centered iTerm2/Kitty image placement inside `content_area`.
+        let mut viewer = Self::for_static_content(EntryId::new(0), ViewerKind::PlainText, Vec::new());
+        viewer.image = Some(image);
+        Some(viewer)
     }
 
     /// Update a BgTask viewer with new stdout content. Called from the tick path when stdout in the

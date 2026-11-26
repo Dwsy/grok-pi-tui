@@ -702,18 +702,20 @@ impl Presenter {
                     crate::terminal::overlay::take_iterm_read_viewer_repaint();
                 let force = force || read_viewer_repaint;
                 if force {
-                    let _ = terminal.clear();
-                    // terminal.clear() rewrote every cell, erasing iTerm2
-                    // inline pixels; drop overlay ownership so the next
-                    // preview frame re-emits instead of taking the keep path.
+                    // Queue clear inside BeginSynchronizedUpdate (no separate flush)
+                    // so iTerm2 never paints an intermediate black frame before redraw.
+                    crate::render::draw::queue_synchronized_clear(terminal);
+                    // Clearing rewrites every cell, erasing iTerm2 inline pixels;
+                    // drop overlay ownership so the next preview frame re-emits
+                    // instead of taking the keep path.
                     crate::terminal::overlay::reset_owner();
                 }
                 app.draw(terminal);
                 // If drawing hid, cleared, or moved a committed iTerm2 image,
-                // run one immediate clear-and-repaint so stale grid pixels do
-                // not linger while idle.
+                // run one immediate atomic clear-and-repaint so stale grid pixels
+                // do not linger while idle without flashing black.
                 if crate::terminal::overlay::take_iterm_read_viewer_repaint() {
-                    let _ = terminal.clear();
+                    crate::render::draw::queue_synchronized_clear(terminal);
                     crate::terminal::overlay::reset_owner();
                     app.draw(terminal);
                 }

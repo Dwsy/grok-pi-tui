@@ -495,6 +495,26 @@ impl CursorState {
     }
 }
 /// Bypasses ratatui `try_draw()` so cursor management stays conditional. OSC 8 spans go out before the diff, in lockstep with cells.
+/// Buffer a screen clear inside `BeginSynchronizedUpdate` without flushing an
+/// intermediate blank frame to the terminal, then reset the back buffer so the
+/// immediately following `draw_frame()` repaints every cell and finishes with
+/// `EndSynchronizedUpdate` in one atomic PTY write.
+///
+/// Prevents the black-screen flash on iTerm2 when clearing stale OSC 1337 grid
+/// pixels on scroll, modal open/close, or resize.
+pub fn queue_synchronized_clear(terminal: &mut PagerTerminal) {
+    use crossterm::terminal::{Clear, ClearType};
+    let area = terminal.viewport_area();
+    let _ = terminal.backend_mut().queue(BeginSynchronizedUpdate);
+    if area.y == 0 {
+        let _ = terminal.backend_mut().queue(Clear(ClearType::All));
+    } else {
+        let _ = terminal.backend_mut().queue(cursor::MoveTo(area.x, area.y));
+        let _ = terminal.backend_mut().queue(Clear(ClearType::AfterCursor));
+    }
+    terminal.reset_back_buffer();
+}
+
 /// `PostFlush` stays inside the synchronized update so images appear atomically with the cell diff.
 pub fn draw_frame(
     terminal: &mut PagerTerminal,

@@ -476,13 +476,16 @@ def _search_catalog(catalog, query, api, limit=None, namespace=None):
             raise TypeError(f"{api} limit must be a positive integer")
     if namespace is not None and not isinstance(namespace, str):
         raise TypeError(f"{api} namespace must be a string")
-    source = query.strip()
     pattern = None
-    if source:
-        try:
-            pattern = re.compile(source, re.IGNORECASE)
-        except re.error as error:
-            raise TypeError(f"{api}(query) invalid regular expression: {error}")
+    if isinstance(query, re.Pattern):
+        pattern = query
+    else:
+        source = query.strip()
+        if source:
+            try:
+                pattern = re.compile(source, re.IGNORECASE)
+            except re.error as error:
+                raise TypeError(f"{api}(query) invalid regular expression: {error}")
 
     def matches(value):
         return pattern is None or (isinstance(value, str) and bool(pattern.search(value)))
@@ -520,8 +523,9 @@ class ToolsHelper:
         return active_tool_catalog.get(name)
 
     def search(self, query, options=None):
-        if not isinstance(query, str):
-            raise TypeError("tools.search(query) requires a string")
+        import re
+        if not isinstance(query, (str, re.Pattern)):
+            raise TypeError("tools.search(query) requires a string or regex pattern")
         limit = options.get("limit") if isinstance(options, dict) else None
         namespace = options.get("namespace") if isinstance(options, dict) else None
         return _search_catalog(active_tool_catalog, query, "tools.search", limit=limit, namespace=namespace)
@@ -536,8 +540,9 @@ class ToolsHelper:
 
 
 def search_tools(query, options=None, *, limit=8, namespace=None):
-    if not isinstance(query, str):
-        raise TypeError("searchTools(query) requires a string")
+    import re
+    if not isinstance(query, (str, re.Pattern)):
+        raise TypeError("searchTools(query) requires a string or regex pattern")
     if isinstance(options, dict):
         if "limit" in options:
             limit = options["limit"]
@@ -564,8 +569,9 @@ class SkillsHelper:
         return active_skill_catalog.get(name)
 
     def search(self, query):
-        if not isinstance(query, str):
-            raise TypeError("skills.search(query) requires a string")
+        import re
+        if not isinstance(query, (str, re.Pattern)):
+            raise TypeError("skills.search(query) requires a string or regex pattern")
         return _search_catalog(active_skill_catalog, query, "skills.search")
 
     async def read(self, name):
@@ -853,6 +859,10 @@ function cloneStoredValue(value, key) {
 }
 
 function compileSearchRegex(query, api) {
+  if (util.types.isRegExp(query)) {
+    const flags = query.flags.replace(/[gy]/g, "");
+    return new RegExp(query.source, flags);
+  }
   const source = query.trim();
   if (!source) return null;
   try {
@@ -987,7 +997,7 @@ function installContextGlobals() {
       return activeToolCatalog.get(name) ?? null;
     },
     search(query, options) {
-      if (typeof query !== "string") throw new TypeError("tools.search(query) requires a string");
+      if (typeof query !== "string" && !util.types.isRegExp(query)) throw new TypeError("tools.search(query) requires a string or RegExp");
       return searchCatalog(activeToolCatalog, query, "tools.search", options);
     },
     namespaces() {
@@ -999,7 +1009,7 @@ function installContextGlobals() {
   });
   context.ALL_TOOLS = Object.freeze([...activeToolCatalog.values()].map(toolSummary));
   context.searchTools = (query, options) => {
-    if (typeof query !== "string") throw new TypeError("searchTools(query) requires a string");
+    if (typeof query !== "string" && !util.types.isRegExp(query)) throw new TypeError("searchTools(query) requires a string or RegExp");
     const opts = options === undefined ? { limit: 8 } : { limit: 8, ...options };
     return searchCatalog(activeToolCatalog, query, "searchTools", opts).map(toolSummary);
   };
@@ -1014,7 +1024,7 @@ function installContextGlobals() {
       return activeSkillCatalog.get(name) ?? null;
     },
     search(query) {
-      if (typeof query !== "string") throw new TypeError("skills.search(query) requires a string");
+      if (typeof query !== "string" && !util.types.isRegExp(query)) throw new TypeError("skills.search(query) requires a string or RegExp");
       return searchCatalog(activeSkillCatalog, query, "skills.search");
     },
     async read(name) {

@@ -1231,6 +1231,16 @@ impl PiAgent {
             "notify" => {
                 let message = string(&event, &["message"]).unwrap_or_default();
                 let kind = string(&event, &["notifyType", "kind"]);
+                // Suppress builtin:mcp's false-positive warning when Eval v2 bridges
+                // codemode MCP tools without loading Pi's built-in `codemode` tool.
+                if self.eval_v2_only
+                    && kind.is_some_and(|value| value.eq_ignore_ascii_case("warning"))
+                    && message.starts_with(
+                        "MCP tools are only reachable from the codemode or tool_search tool, but neither is active",
+                    )
+                {
+                    return Ok(());
+                }
                 self.send_ui_notification(message, kind).await;
             }
             "setstatus" => {

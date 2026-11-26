@@ -546,7 +546,7 @@ impl AgentView {
     }
 
     /// Open a media file in the OS-native default application (Preview, default video player, etc.).
-    /// The `[Open]` button, the inline-image click target, and the Enter-key handler all route here.
+    /// Video `[Open]` buttons and non-graphics fallback paths route here.
     pub(crate) fn open_media_natively(&mut self, path: &std::path::Path) -> bool {
         if crate::app::link_opener::open_path(path) {
             self.show_toast("Opening in default app\u{2026}");
@@ -555,6 +555,16 @@ impl AgentView {
             self.show_toast("Could not open file");
             false
         }
+    }
+
+    /// Open an image file inside the centered TUI popup modal (same pipeline as `read` image preview).
+    /// Falls back to `open_media_natively` on terminals without inline graphics support.
+    pub(crate) fn open_image_preview_modal(&mut self, path: &std::path::Path) -> bool {
+        if let Some(pane) = crate::views::block_viewer::BlockViewerPane::for_image_path(path) {
+            self.install_block_viewer(pane);
+            return true;
+        }
+        self.open_media_natively(path)
     }
 
     /// Start or restart inline video playback.
@@ -602,16 +612,32 @@ impl AgentView {
     ) -> Option<InputOutcome> {
         let pos = ratatui::layout::Position::new(col, row);
 
-        // [Open] button or inline image: open natively. Checked before the play targets so a video's [Open] button opens rather than plays.
+        // Inline image click: open inside the TUI popup modal preview.
+        let image_area_target = self
+            .inline_media_hits
+            .media_areas
+            .iter()
+            .find(|(rect, _)| rect.contains(pos))
+            .map(|(_, path)| path.clone());
+        if let Some(path) = image_area_target {
+            self.open_image_preview_modal(&path);
+            return Some(InputOutcome::Changed);
+        }
+
+        // [Open] button: images open in TUI popup preview; videos open in OS-native player.
+        // Checked before play targets so a video's [Open] button opens rather than plays.
         let open_target = self
             .inline_media_hits
             .open_buttons
             .iter()
-            .chain(self.inline_media_hits.media_areas.iter())
             .find(|(rect, _)| rect.contains(pos))
             .map(|(_, path)| path.clone());
         if let Some(path) = open_target {
-            self.open_media_natively(&path);
+            if crate::prompt_images::ScrollbackImageRef::from_path(&path).is_some() {
+                self.open_image_preview_modal(&path);
+            } else {
+                self.open_media_natively(&path);
+            }
             return Some(InputOutcome::Changed);
         }
 

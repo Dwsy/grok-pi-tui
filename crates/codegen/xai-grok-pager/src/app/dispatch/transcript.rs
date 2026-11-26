@@ -323,10 +323,10 @@ pub(super) fn dispatch_open_block_viewer(app: &mut AppView) {
                 agent.start_inline_video_playback(&path);
                 return;
             }
-            // Image: Enter opens the file in the OS-native viewer.
+            // Image: Enter opens the TUI popup modal preview (falls back to OS viewer without graphics).
             if let Some(first_ref) = entry.block.image_references().first() {
                 let path = first_ref.path.clone();
-                agent.open_media_natively(&path);
+                agent.open_image_preview_modal(&path);
             }
             return;
         }
@@ -407,10 +407,10 @@ pub(super) fn dispatch_open_block_viewer(app: &mut AppView) {
             agent.start_inline_video_playback(&path);
             return;
         }
-        // Image: Enter opens the file in the OS-native viewer.
+        // Image: Enter opens the TUI popup modal preview (falls back to OS viewer without graphics).
         if let Some(first_ref) = entry.block.image_references().first() {
             let path = first_ref.path.clone();
-            agent.open_media_natively(&path);
+            agent.open_image_preview_modal(&path);
         }
     });
 }

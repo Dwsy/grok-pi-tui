@@ -210,18 +210,34 @@ export default async function (pi: ExtensionAPI) {
 			// When Pi's built-in MCP extension is loaded without `builtin:codemode`,
 			// rewrite the `mcp_servers` section intro so the model reaches
 			// `codemode`-exposed MCP servers through Eval v2 instead of an unloaded
-			// `codemode` tool.
-			const sections = (event as { systemPromptOptions?: { sections?: Record<string, string> } })
+			// `codemode` tool. Pi's DefaultResourceLoader always appends `builtin:*`
+			// after filesystem `--extension` paths, so `builtin:mcp`'s
+			// `before_agent_start` runs AFTER ours and mutates `sections.mcp_servers`
+			// in place; install a configurable accessor so both pre- and post-writes
+			// are rewritten cleanly.
+			const sections = (event as { systemPromptOptions?: { sections?: Record<string, string | undefined> } })
 				.systemPromptOptions?.sections;
-			if (
-				sections &&
-				typeof sections.mcp_servers === "string" &&
-				!pi.getActiveTools().includes("codemode")
-			) {
-				sections.mcp_servers = sections.mcp_servers.replace(
-					"Call the tools of `codemode` servers from codemode scripts.",
-					"Call the tools of `codemode` servers from `eval` scripts (discover with `searchTools()` / `describeNamespace()` / `describeTool()`, invoke with `await tool.mcp__<server>__<tool>(...)`).",
-				);
+			if (sections && typeof sections === "object") {
+				const rewriteMcpSection = (value: string | undefined): string | undefined => {
+					if (typeof value !== "string" || pi.getActiveTools().includes("codemode")) {
+						return value;
+					}
+					return value.replace(
+						"Call the tools of `codemode` servers from codemode scripts.",
+						"Call the tools of `codemode` servers from `eval` scripts (discover with `searchTools()` / `describeNamespace()` / `describeTool()`, invoke with `await tool.mcp__<server>__<tool>(...)`).",
+					);
+				};
+				let currentMcpSection = rewriteMcpSection(sections.mcp_servers);
+				Object.defineProperty(sections, "mcp_servers", {
+					configurable: true,
+					enumerable: true,
+					get() {
+						return currentMcpSection;
+					},
+					set(next: string | undefined) {
+						currentMcpSection = rewriteMcpSection(next);
+					},
+				});
 			}
 		});
 	}

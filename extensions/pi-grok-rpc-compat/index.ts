@@ -172,9 +172,11 @@ async function installRunnerHooks(): Promise<void> {
       uiContext: unknown,
       mode = "print",
     ): void {
+      // Patch notify BEFORE original.call so wrapUIPromptContext's `{ ...ui }` shallow
+      // copy captures the wrapped notify instead of the raw unpatched function.
+      patchMcpEvalV2Notify(uiContext);
       original.call(this, uiContext, mode === "rpc" ? "tui" : mode);
       ensureRemoteTuiForContext(uiContext);
-      patchMcpEvalV2Notify(uiContext);
       snapshotAllCompletions(this);
     };
     prototype.__piGrokTuiModeFacade = true;
@@ -186,8 +188,8 @@ async function installRunnerHooks(): Promise<void> {
       uiContext: unknown,
       mode = "print",
     ): void {
-      previous.call(this, uiContext, mode);
       patchMcpEvalV2Notify(uiContext);
+      previous.call(this, uiContext, mode);
       snapshotAllCompletions(this);
     };
     prototype.__piGrokRunnerCapture = true;

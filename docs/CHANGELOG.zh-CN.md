@@ -9,6 +9,27 @@
 
 ## [Unreleased]
 
+## [0.1.15-beta.4] - 2026-11-27
+
+### 新增
+
+- **图片 `[Open]` 与回车改为 TUI 弹窗预览（不再弹系统查看器）** — 内联图片点击、图片型工具卡片的 `[Open]` 按钮以及图片块上的回车，统一走新增的 `AgentView::open_image_preview_modal` / `BlockViewerPane::for_image_path`，在 `read` 预览同款的居中 Kitty/iTerm2 浮层中渲染像素；无图形协定的终端自动回退到系统查看器。视频的 `[Open]` 与封面仍按原生打开/播放，`generate_image`、MCP 图片工具等通用工具卡片也获得同样的弹窗内容。
+- **`searchTools` / `tools.search` / `skills.search` 支持预编译模式** — Eval v2 的 JS worker 可直接传 `RegExp`（自动剔除 `g`/`y` 标志，避免有状态 `lastIndex` 跳过匹配），Python worker 可传 `re.Pattern`；原有字符串形式保持不变，仍按不区分大小写编译并拒绝非法正则。
+
+### 修复
+
+- **`xai-grok-pager` 编译失败** — `ScrollbackImageRef::from_path(&path.to_string_lossy())` 把 `&Cow<'_, str>` 传给了 `impl Into<PathBuf>` 参数，而 `Cow<'_, str>` 未实现 `AsRef<OsStr>`，报 E0277。现改为直接传 `&PathBuf`。
+- **iTerm2 每次全屏清屏都会黑屏一闪** — `terminal.clear()` 会把清屏转义单独写出并 flush，下一帧的 diff 尚未绘制，于是滚动、浮层开关、缩放下都会出现中间黑帧。新增的 `render::draw::queue_synchronized_clear()` 把清屏缓冲进 `BeginSynchronizedUpdate`、重置后备缓冲，由紧随的 `draw_frame()` 重绘全部单元格并发出 `EndSynchronizedUpdate`，整块原子写入 PTY。
+- **`mcp_servers` 提示词改写被 `builtin:mcp` 覆盖** — Pi 的 `DefaultResourceLoader` 总是把 `builtin:*` 追加在文件系统 `--extension` 路径之后，于是 `builtin:mcp` 的 `before_agent_start` 在我们之后运行，把 `sections.mcp_servers` 覆盖回未改写的 codemode 文案。该字段现改为可配置的 getter/setter 访问器，读写两侧都做改写，`builtin:mcp` 前后写入都能渲染 Eval v2 指令。
+- **`McpManagerView` 打开时没带上 Eval v2 notify 桥接** — `patchMcpEvalV2Notify` 原先在 `original.call(...)` 之后执行，但 `wrapUIPromptContext` 会浅拷贝 UI context，副本里抓到的仍是未打补丁的 `notify`。现在 facade 与 capture 两个 hook 都改为先打补丁再调用原方法。
+- **`--eval-v2-only` 下 `builtin:mcp` 误报工具不可达** — Eval v2 在不加载 Pi 内置 `codemode` 工具的情况下桥接 codemode MCP 工具时，`builtin:mcp` 会警告 "MCP tools are only reachable from the codemode or tool_search tool, but neither is active"。`pi-grok-adapter` 现于 `eval_v2_only` 下丢弃这条特定警告。
+
+### 验证
+
+- `node extensions/pi-grok-bash/test-v2.1.mjs` → **PASS 1 – PASS 21**（36 个断言）。`test-eval-pi-mcp.mjs`、`test-env-tool.mjs`（8 个断言）、`test-shell-backend.mjs` 也全部通过。
+- esbuild 可正常解析 `extensions/pi-grok-bash/{index,eval}.ts` 与 `extensions/pi-grok-rpc-compat/index.ts`；`git diff --check` 干净。
+- Rust 改动仅做静态核对：`viewport_area`/`reset_back_buffer` 存在于 `xai_ratatui_inline::Terminal`，`for_image_path`/`install_block_viewer`/`EntryId::new`/`ViewerKind::PlainText` 均可解析，`RenderBlock::image_references` 经 delegate 宏可到达 `OtherToolCallBlock`，`PiAgent::eval_v2_only` 字段存在。未本地执行任何 Cargo 命令 —— 按 `AGENTS.md`，Rust 验证交由 GitHub Actions Linux 与本 tag 的发布构建。
+
 ## [0.1.15-beta.3] - 2026-11-26
 
 ### 新增

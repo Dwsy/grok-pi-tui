@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.15-beta.4] - 2026-11-27
+
+### Added
+
+- **Image `[Open]` and Enter now open the TUI popup preview instead of the OS viewer** — Inline-image clicks, image tool cards' `[Open]` buttons, and Enter on an image block all route through the new `AgentView::open_image_preview_modal` / `BlockViewerPane::for_image_path`, which renders the pixels in the centered Kitty/iTerm2 overlay modal used by `read` previews and falls back to the OS-native viewer on terminals without a graphics protocol. Video `[Open]` buttons and posters still open/play natively, and image-producing generic tool cards (`generate_image`, MCP image tools) gain the same popup body.
+- **`searchTools` / `tools.search` / `skills.search` accept precompiled patterns** — Eval v2's JS workers take a `RegExp` (with `g`/`y` flags stripped so a stateful `lastIndex` cannot skip matches) and the Python workers take a `re.Pattern`, alongside the existing string form, which is still compiled case-insensitively and still rejects invalid regexes.
+
+### Fixed
+
+- **`xai-grok-pager` did not compile** — `ScrollbackImageRef::from_path(&path.to_string_lossy())` passed `&Cow<'_, str>` to a parameter declared `impl Into<PathBuf>`; `Cow<'_, str>` does not implement `AsRef<OsStr>`, so the call was E0277. It now passes `&PathBuf` directly.
+- **iTerm2 flashed black on every full clear** — `terminal.clear()` wrote the clear escape and flushed it before the next frame's diff, so TUI clears (scroll, modal open/close, resize) painted an intermediate blank screen. The new `render::draw::queue_synchronized_clear()` buffers the clear inside `BeginSynchronizedUpdate`, resets the back buffer, and lets the following `draw_frame()` repaint every cell and emit `EndSynchronizedUpdate` in one atomic PTY write.
+- **`mcp_servers` prompt rewrite lost the race with `builtin:mcp`** — Pi's `DefaultResourceLoader` always appends `builtin:*` after filesystem `--extension` paths, so `builtin:mcp`'s `before_agent_start` ran after ours and overwrote `sections.mcp_servers` with the unmodified codemode wording. The section now carries a configurable getter/setter accessor that rewrites on every read and write, so both pre- and post-`builtin:mcp` mutations render the Eval v2 instructions.
+- **`McpManagerView` opened without the Eval v2 notify bridge** — `patchMcpEvalV2Notify` ran after `original.call(...)`, but `wrapUIPromptContext` shallow-copies the UI context, so the copy captured the raw unpatched `notify`. The patch is applied before the wrapped call now, on both the facade and the capture hook.
+- **`builtin:mcp` warned about unreachable tools under `--eval-v2-only`** — When Eval v2 bridges codemode MCP tools without loading Pi's built-in `codemode` tool, `builtin:mcp` emitted "MCP tools are only reachable from the codemode or tool_search tool, but neither is active". `pi-grok-adapter` now drops that specific warning when `eval_v2_only` is set.
+
+### Verification
+
+- `node extensions/pi-grok-bash/test-v2.1.mjs` → **PASS 1 – PASS 21** (36 assertions). `test-eval-pi-mcp.mjs`, `test-env-tool.mjs` (8 assertions) and `test-shell-backend.mjs` also pass.
+- esbuild parses `extensions/pi-grok-bash/{index,eval}.ts` and `extensions/pi-grok-rpc-compat/index.ts` cleanly; `git diff --check` is clean.
+- Rust changes were reviewed statically only: `viewport_area`/`reset_back_buffer` exist on `xai_ratatui_inline::Terminal`, `for_image_path`/`install_block_viewer`/`EntryId::new`/`ViewerKind::PlainText` resolve, `RenderBlock::image_references` reaches `OtherToolCallBlock` through the delegate macro, and `PiAgent::eval_v2_only` exists. No local Cargo command was run — per `AGENTS.md`, Rust verification is delegated to GitHub Actions Linux and the release build for this tag.
+
 ## [0.1.15-beta.3] - 2026-11-26
 
 ### Added
