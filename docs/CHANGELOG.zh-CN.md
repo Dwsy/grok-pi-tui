@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [0.1.15-beta.3] - 2026-11-26
+
 ### 新增
 
 - **桥接 Pi 原版 MCP 管理与 OAuth（`builtin:mcp` + `grok-pi mcp`）** — `grok-pi` 默认加载 Pi 内置 `builtin:mcp`（可用 `--no-mcp` 关闭）且不启动 `builtin:codemode`，直接复用原版 `mcp.json`、`mcp-auth.json` OAuth 凭据存储与 `/mcp` 命令（`/mcp`、`/mcp login`、`/mcp logout`、`/mcp reconnect`）。新增 `grok-pi mcp <args...>` 子命令直通宿主 `pi mcp`（list/add/remove/login/logout）；`pi-grok-rpc-compat` 在每次 `setUIContext` 自动重绑 Remote TUI 以直接渲染原版 `McpManagerView`；Remote TUI 补齐 `app.message.copy`（`Ctrl+X`）支持一键复制 OAuth 授权链接。
@@ -22,6 +24,7 @@
 
 ### 修复
 
+- **Eval v2 JavaScript 单元内的 `console.*` 输出全部丢失** — REPL 以 `output: replOutput`（`PassThrough`）启动后，只有 Node 26+（REPL domain 已移除）分支把这些字节转发到 `process.stdout`；Node ≤24 会创建 REPL domain，于是 `console.log` 输出根本到不了内核协议，仅打印不返回值的单元一律显示 `(no output)`。现在转发无条件生效，`Uncaught ...` 拯救逻辑只留在无 domain 分支。
 - **切换模型与元数据刷新误入“假思考态 (Thinking…)”** — `PiAgent::send_update` 仅对真实输出更新（排除 `AvailableCommandsUpdate`、`SessionInfoUpdate`、`ConfigOptionUpdate`、`CurrentModeUpdate`、`UserMessageChunk` 及空 `totalTokens` 占位块）打流式时间戳，`xai-grok-pager` 的 tracker 也将 `pre_create_thinking` 收敛到非空输出更新。
 - **并发 `!bash` 时按 `Esc` 导致后台 LLM 孤儿流** — `PiAgent::cancel` 在 `!bash` 与活跃对话并行时同时发送 `abort_bash` 与 `abort`，避免取消后 Pi 后台对话继续运行。
 - **Pi RPC 状态同步修复** — `replace_bootstrap()` 在同会话刷新时保留运行态与队列，补齐 `agent_settled.aborted`、`prompt` 返回 `data.disposition`（`handled`/`started`/`queued`）以及 `summarization_retry_*` 状态栏提示。
@@ -30,7 +33,7 @@
 
 ### 验证
 
-- `node extensions/pi-grok-bash/test-v2.1.mjs` → **PASS 1 – PASS 21** 全部通过（含新增 PASS 20 验证 Eval v2 × Pi Codemode MCP 对齐、PASS 21 验证 MCP 重连/登录后工具句柄刷新）。
+- `node extensions/pi-grok-bash/test-v2.1.mjs` → **PASS 1 – PASS 21** 全部通过（含 PASS 3 验证宿主工具返回包、PASS 20 验证 Eval v2 × Pi Codemode MCP 对齐、PASS 21 验证 MCP 重连/登录后工具句柄刷新）。上面的 `console.*` 丢输出就是 PASS 3 在 `v0.1.15` 上以 `(no output)` 报出来的，因此本 beta 带的是真实修复，不只是测试修补。
 - `git diff --check`、esbuild 语法检查与 Rust 括号平衡检查均通过；`pi-main` 未改动，未本地执行任何 Cargo 命令。
 
 ## [0.1.15] - 2026-11-26

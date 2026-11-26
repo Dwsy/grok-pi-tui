@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.15-beta.3] - 2026-11-26
+
 ### Added
 
 - **Native Pi MCP bridge (`builtin:mcp` + `grok-pi mcp`)** — `grok-pi` now loads Pi's built-in `builtin:mcp` extension by default (disable with `--no-mcp`) without starting `builtin:codemode`, reusing Pi's native `mcp.json`, `mcp-auth.json` OAuth store, and `/mcp` commands (`/mcp`, `/mcp login`, `/mcp logout`, `/mcp reconnect`). Added `grok-pi mcp <args...>` CLI passthrough directly to `pi mcp` (list, add, remove, login, logout), wired `pi-grok-rpc-compat` to re-bind Remote TUI on every `setUIContext` so Pi's original `McpManagerView` opens reliably in Grok Pager, and registered `app.message.copy` (`Ctrl+X`) in Remote TUI for copying OAuth authorization URLs.
@@ -19,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Every `console.*` write inside an Eval v2 JS cell was discarded** — The REPL started with `output: replOutput`, a `PassThrough`, but only the Node 26+ branch (where REPL domains are gone) forwarded those bytes to `process.stdout`; on Node ≤24, which does create a REPL domain, `console.log` output never reached the kernel protocol, so cells that logged instead of returning a value reported `(no output)`. The forwarder is now unconditional, and the `Uncaught ...` salvage only runs on the domain-less branch.
 - **Model switch and metadata updates triggered phantom `Thinking…`** — `PiAgent::send_update` now stamps `turnStartMs`/`streamStartMs`/`promptId` only on real agent output updates (excluding `AvailableCommandsUpdate`, `SessionInfoUpdate`, `ConfigOptionUpdate`, `CurrentModeUpdate`, `UserMessageChunk`, and empty `totalTokens` placeholder chunks), and `xai-grok-pager`'s tracker gates `pre_create_thinking` on non-empty agent output.
 - **`Esc` during concurrent `!bash` orphaned the running LLM turn** — `PiAgent::cancel` now sends both `abort_bash` and `abort` whenever a direct `!bash` command runs alongside an active agent turn, preventing background LLM streams from continuing after cancellation.
 - **Pi RPC session refresh, `agent_settled.aborted`, and `disposition` parity** — `replace_bootstrap()` preserves running/queue state on same-session refreshes, `agent_settled.aborted` and `prompt` `data.disposition` (`handled`/`started`/`queued`) settle cleanly, and `summarization_retry_*` status updates surface in the status line.
@@ -27,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Verification
 
-- `node extensions/pi-grok-bash/test-v2.1.mjs` → **PASS 1 – PASS 21** (including new PASS 20 for Eval v2 × Pi Codemode MCP parity and PASS 21 for MCP reconnect/login tool handler refresh).
+- `node extensions/pi-grok-bash/test-v2.1.mjs` → **PASS 1 – PASS 21** (including PASS 3 for the host tool envelope, PASS 20 for Eval v2 × Pi Codemode MCP parity, and PASS 21 for MCP reconnect/login tool handler refresh). PASS 3 is what caught the dropped `console.*` output above; it failed with `(no output)` against `v0.1.15`, so this beta carries a real fix, not only a test repair.
 - Static checks (`git diff --check`, esbuild syntax checks, and Rust delimiter balance) pass; `pi-main` remains untouched. No local Cargo commands were run.
 
 ## [0.1.15] - 2026-11-26

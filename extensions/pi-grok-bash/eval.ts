@@ -1084,23 +1084,25 @@ function finishEval(id, message) {
 // replOutput as "Uncaught ..." (Node 26+, where REPL domains were removed).
 // Convert both paths back into the Eval protocol so a failed host call cannot
 // hang until timeout.
-if (server._domain && typeof server._domain.on === "function") {
+const domainBacked = server._domain && typeof server._domain.on === "function";
+if (domainBacked) {
   server._domain.on("error", error => {
     const id = currentEvalId;
     if (!id) return;
     finishEval(id, { ok: false, error: error && (error.stack || error.message) || String(error) });
   });
-} else {
-  replOutput.on("data", chunk => {
-    const text = chunk.toString("utf8");
-    const id = currentEvalId;
-    if (id && /^Uncaught\b/.test(text.trimStart())) {
-      finishEval(id, { ok: false, error: text.trim() });
-      return;
-    }
-    process.stdout.write(chunk);
-  });
 }
+// The REPL output is a PassThrough, not the child's stdout: without this
+// forwarder every console.* write inside a cell would be dropped.
+replOutput.on("data", chunk => {
+  const text = chunk.toString("utf8");
+  const id = currentEvalId;
+  if (!domainBacked && id && /^Uncaught\b/.test(text.trimStart())) {
+    finishEval(id, { ok: false, error: text.trim() });
+    return;
+  }
+  process.stdout.write(chunk);
+});
 
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on("line", line => {
