@@ -7,10 +7,13 @@ export function loginProviders(runtime: ModelRuntimeLike, authType?: AuthType): 
 		const authStatus = runtime.getProviderAuthStatus(provider.id);
 		const status = authStatus?.configured
 			? {
+					kind: "configured" as const,
 					type: (runtime.isUsingOAuth?.(provider.id) ? "oauth" : "api_key") as AuthType,
 					source: authStatus.label ?? authStatus.source,
 				}
-			: undefined;
+			: authStatus?.source === "stored"
+				? { kind: "unresolved" as const }
+				: undefined;
 
 		if ((!authType || authType === "oauth") && provider.auth?.oauth) {
 			options.push({
@@ -49,7 +52,7 @@ export async function logoutProviders(runtime: ModelRuntimeLike): Promise<Provid
 			id: providerId,
 			name: runtime.getProvider?.(providerId)?.name ?? providerId,
 			authType: type,
-			status: { type, source: "stored credential" },
+			status: { kind: "configured" as const, type, source: "stored credential" },
 		}))
 		.sort((a, b) => a.name.localeCompare(b.name));
 }

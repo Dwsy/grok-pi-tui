@@ -8,12 +8,16 @@ export type AuthMethod = {
 	login?: unknown;
 };
 
+export type ProviderAuthStatus =
+	| { kind: "configured"; type: AuthType; source?: string }
+	| { kind: "unresolved" };
+
 export type ProviderOption = {
 	id: string;
 	name: string;
 	authType: AuthType;
 	method?: AuthMethod;
-	status?: { type: AuthType; source?: string };
+	status?: ProviderAuthStatus;
 };
 
 export type ModelRuntimeLike = {

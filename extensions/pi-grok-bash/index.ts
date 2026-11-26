@@ -258,7 +258,15 @@ export default async function (pi: ExtensionAPI) {
 					return evalHostCallGate.run(executionMode, signal, async () => {
 						const result = await evalToolBridge.invoke(toolName, call.args ?? {}, signal);
 						const value = evalHostToolValue(result.content, result.structuredContent);
-						if (result.isError) throw new Error(value.text || `Tool ${toolName} failed`);
+						if (result.isError) {
+							// Match Pi Codemode (`extensions/mcp/tools.ts`): MCP tools attach the
+							// full CallToolResult as `structuredContent` even when `isError: true`,
+							// so scripts receive the structured error object instead of losing it.
+							if (result.structuredContent !== undefined) {
+								return { ...value, isError: true };
+							}
+							throw new Error(value.text || `Tool ${toolName} failed`);
+						}
 						return value;
 					});
 				}

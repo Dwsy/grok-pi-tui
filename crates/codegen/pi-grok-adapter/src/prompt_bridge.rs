@@ -84,6 +84,13 @@ pub(crate) fn format_bash_result(result: &Value) -> String {
             .get("fullOutputPath")
             .and_then(Value::as_str)
             .map(|path| format!("Output truncated; full output: {path}"))
+            .or_else(|| {
+                result
+                    .get("fullOutputError")
+                    .and_then(Value::as_str)
+                    .filter(|err| !err.trim().is_empty())
+                    .map(|err| format!("Output truncated; full output could not be saved: {err}"))
+            })
             .unwrap_or_else(|| "Output truncated".to_string());
         notes.push(suffix);
     }
@@ -300,5 +307,18 @@ mod tests {
         assert!(text.contains("ok"));
         assert!(text.contains("Exit code: 0"));
         assert!(text.contains("/tmp/pi-bash.log"));
+    }
+
+    #[test]
+    fn bash_result_surfaces_full_output_error_when_temp_file_failed() {
+        let text = format_bash_result(&json!({
+            "output": "tail",
+            "exitCode": 0,
+            "cancelled": false,
+            "truncated": true,
+            "fullOutputError": "ENOSPC: no space left on device",
+        }));
+        assert!(text.contains("tail"));
+        assert!(text.contains("Output truncated; full output could not be saved: ENOSPC"));
     }
 }

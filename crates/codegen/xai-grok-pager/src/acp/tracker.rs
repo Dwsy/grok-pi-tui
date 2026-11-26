@@ -1120,8 +1120,15 @@ impl AcpUpdateTracker {
         {
             self.hooks_running = None;
         }
+        let is_agent_output = is_agent_output_update(&update);
+        let is_empty_agent_chunk = matches!(
+            &update,
+            acp::SessionUpdate::AgentMessageChunk(chunk)
+                if matches!(&chunk.content, acp::ContentBlock::Text(text) if text.text.is_empty())
+        );
         if let Some(new_start) = meta.stream_start_ms
-            && !matches!(&update, acp::SessionUpdate::AvailableCommandsUpdate(_))
+            && is_agent_output
+            && !is_empty_agent_chunk
         {
             let stream_boundary = self
                 .last_stream_start_ms
@@ -1149,7 +1156,6 @@ impl AcpUpdateTracker {
             }
             self.last_stream_start_ms = Some(new_start);
         }
-        let is_agent_output = is_agent_output_update(&update);
         if is_agent_output && !matches!(&update, acp::SessionUpdate::ToolCallUpdate(_)) {
             self.writing_tool_call = None;
             self.writing_tool_names.clear();

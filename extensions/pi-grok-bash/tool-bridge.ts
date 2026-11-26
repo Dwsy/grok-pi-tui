@@ -315,7 +315,40 @@ export class EvalSessionToolBridge {
 		}
 	}
 
+	/**
+	 * Incrementally sync dynamic tool registrations from Pi's ExtensionRunner
+	 * (for example after `builtin:mcp` async connect, `/mcp login`, `/mcp reconnect`,
+	 * or `tools/list_changed` replaces a tool handler with a new connection).
+	 */
+	private syncRegisteredTools(): void {
+		const runner = this.runner as (RunnerLike & {
+			getAllRegisteredTools?: () => RegisteredToolLike[];
+		}) | undefined;
+		if (typeof runner?.getAllRegisteredTools !== "function") return;
+		const latest = runner.getAllRegisteredTools();
+		if (!Array.isArray(latest)) return;
+		const wrap =
+			this.runtimeModule?.wrapRegisteredTool ?? (ImportedPi as PiRuntimeModule).wrapRegisteredTool;
+		if (typeof wrap !== "function") return;
+		const seen = new Set<string>();
+		for (const registeredTool of latest) {
+			const name = registeredTool.definition.name;
+			seen.add(name);
+			const existing = this.registered.get(name);
+			if (!existing || existing.registeredTool !== registeredTool) {
+				this.registered.set(name, {
+					registeredTool,
+					wrappedTool: wrap(registeredTool, runner),
+				});
+			}
+		}
+		for (const name of [...this.registered.keys()]) {
+			if (!seen.has(name)) this.registered.delete(name);
+		}
+	}
+
 	catalog(): EvalToolMetadata[] {
+		this.syncRegisteredTools();
 		const active = new Set(this.pi.getActiveTools());
 		return this.pi
 			.getAllTools()
@@ -394,16 +427,8 @@ export class EvalSessionToolBridge {
 			return nativeInvoke.call(this.pi, toolName, args, signal);
 		}
 
+		this.syncRegisteredTools();
 		let captured = this.registered.get(toolName);
-		if (!captured) {
-			const runner = this.runner as (RunnerLike & {
-				getAllRegisteredTools?: () => RegisteredToolLike[];
-			}) | undefined;
-			if (typeof runner?.getAllRegisteredTools === "function") {
-				this.observeRegisteredTools(runner.getAllRegisteredTools(), runner);
-				captured = this.registered.get(toolName);
-			}
-		}
 		if (captured) return this.invokeWrapped(toolName, captured.wrappedTool, args, signal);
 
 		if (CORE_TOOL_NAMES.has(toolName)) {

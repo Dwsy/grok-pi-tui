@@ -9,6 +9,29 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **桥接 Pi 原版 MCP 管理与 OAuth（`builtin:mcp` + `grok-pi mcp`）** — `grok-pi` 默认加载 Pi 内置 `builtin:mcp`（可用 `--no-mcp` 关闭）且不启动 `builtin:codemode`，直接复用原版 `mcp.json`、`mcp-auth.json` OAuth 凭据存储与 `/mcp` 命令（`/mcp`、`/mcp login`、`/mcp logout`、`/mcp reconnect`）。新增 `grok-pi mcp <args...>` 子命令直通宿主 `pi mcp`（list/add/remove/login/logout）；`pi-grok-rpc-compat` 在每次 `setUIContext` 自动重绑 Remote TUI 以直接渲染原版 `McpManagerView`；Remote TUI 补齐 `app.message.copy`（`Ctrl+Shift+C`）支持一键复制 OAuth 授权链接。
+- **Eval v2 完整对齐 Pi Codemode MCP 能力（不启动 `builtin:codemode`）** — `EvalSessionToolBridge` 支持 Pi `exposure` 策略（允许在 Eval v2 内发现并调用 `codemode`/`deferred` 工具，严格拦截 `hidden`/`model-only`/`codemode`/`tool_search`），透传 `structuredContent`、`namespace`、`outputSchema` 与 `annotations`，并按对象引用增量同步 `runner.getAllRegisteredTools()`，确保 `/mcp login`、`/mcp reconnect` 及 `tools/list_changed` 后立刻切换到新连接。Eval v2 声明 `reachesTools` 自动等待目标 MCP 服务就绪，将 `sections.mcp_servers` 引导文案改写为 `eval` 脚本，并在 JS/Python worker 中对齐提供 `ALL_TOOLS`、`searchTools(query, { namespace, limit })`、`describeTool`、`describeNamespace`、`tools.namespaces()` 与 `tools.describeNamespace()`。
+
+### 变更
+
+- **转向（steering）、追问（follow-up）与 Pi 快捷键对齐** — 实时转向消息立即渲染到对话流，接入 `clear_queue` 支持转向撤销/回填编辑，对齐 `pi-main` 快捷键（`Alt+Enter`、`Alt+Up`），并增加连续回车防重保护。
+- **`!bash` / `!!bash` 直连即时执行且不排队** — `!bash`、`!!bash`、`!!!bash` 直接走 Pi `bash` RPC（`!!` 自动带 `excludeFromContext: true`），不再产生队列占位回显；实时流式推送 `bash_execution_update` 到执行卡片（预览缓冲按 UTF-8 边界上限 128 KB 截断），完成后自动派发后续排队消息。
+
+### 修复
+
+- **切换模型与元数据刷新误入“假思考态 (Thinking…)”** — `PiAgent::send_update` 仅对真实输出更新（排除 `AvailableCommandsUpdate`、`SessionInfoUpdate`、`ConfigOptionUpdate`、`CurrentModeUpdate`、`UserMessageChunk` 及空 `totalTokens` 占位块）打流式时间戳，`xai-grok-pager` 的 tracker 也将 `pre_create_thinking` 收敛到非空输出更新。
+- **并发 `!bash` 时按 `Esc` 导致后台 LLM 孤儿流** — `PiAgent::cancel` 在 `!bash` 与活跃对话并行时同时发送 `abort_bash` 与 `abort`，避免取消后 Pi 后台对话继续运行。
+- **Pi RPC 状态同步修复** — `replace_bootstrap()` 在同会话刷新时保留运行态与队列，补齐 `agent_settled.aborted`、`prompt` 返回 `data.disposition`（`handled`/`started`/`queued`）以及 `summarization_retry_*` 状态栏提示。
+- **Node 26 下 Eval v2 顶层 `await` 拒绝超时** — 在缺少 `server._domain` 的 Node 26+ 环境新增 `replOutput` 捕获路径，确保宿主调用抛错立即结算而非拖到超时。
+- **同步 `pi-main` 近期上游修复（MCP `isError`、`/login` 未解析 `!command`、`!bash` `fullOutputError`）** — Eval v2 遇到携带 `structuredContent` 的 MCP `isError: true` 结果时改为正常返回 `{ ...value, isError: true }` 而非抛错丢失结构化内容（对齐 `pi-main` `1acc72acd`）；`/login` 将 `{ configured: false, source: "stored" }` 映射为 `{ kind: "unresolved" }` 以显示红色 `stored key did not resolve`（对齐 `pi-main` `585648aaf`）；`format_bash_result()` 在截断输出无法写入临时文件时透出 `fullOutputError`（对齐 `pi-main` `943a99e3c` / `8209929fb`）。
+
+### 验证
+
+- `node extensions/pi-grok-bash/test-v2.1.mjs` → **PASS 1 – PASS 21** 全部通过（含新增 PASS 20 验证 Eval v2 × Pi Codemode MCP 对齐、PASS 21 验证 MCP 重连/登录后工具句柄刷新）。
+- `git diff --check`、esbuild 语法检查与 Rust 括号平衡检查均通过；`pi-main` 未改动，未本地执行任何 Cargo 命令。
+
 ## [0.1.15] - 2026-11-26
 
 ### 新增

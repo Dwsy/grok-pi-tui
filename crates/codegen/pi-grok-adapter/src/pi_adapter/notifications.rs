@@ -2,10 +2,20 @@ use super::*;
 
 impl PiAgent {
     pub(super) async fn send_update(&self, update: acp::SessionUpdate) {
-        // Catalog refreshes (e.g. after set_session_model or thinking_level_changed)
-        // are not LLM stream traffic; stamping streamStartMs on them would cause
-        // Pager's tracker to pre-create a phantom "Thinking…" block.
-        let is_catalog_update = matches!(update, acp::SessionUpdate::AvailableCommandsUpdate(_));
+        // Non-output updates (catalog/config/session-info refreshes, user echoes,
+        // and empty context-usage placeholder chunks) are not LLM stream traffic;
+        // stamping streamStartMs on them would cause Pager's tracker to pre-create
+        // a phantom "Thinking…" block.
+        let stamp_stream_meta = match &update {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match &chunk.content {
+                acp::ContentBlock::Text(text) => !text.text.is_empty(),
+                _ => true,
+            },
+            acp::SessionUpdate::AgentThoughtChunk(_)
+            | acp::SessionUpdate::ToolCall(_)
+            | acp::SessionUpdate::ToolCallUpdate(_) => true,
+            _ => false,
+        };
         let mut notification = acp::SessionNotification::new(self.session_id(), update);
         // Stamp the same live timing fields stock Grok shell puts on every
         // SessionNotification. Without streamStartMs the pager never pre-creates
@@ -16,7 +26,7 @@ impl PiAgent {
             if let Some(tokens) = state.last_context_tokens {
                 meta.insert("totalTokens".into(), json!(tokens));
             }
-            if !is_catalog_update {
+            if stamp_stream_meta {
                 if let Some(ms) = state.turn_start_ms {
                     meta.insert("turnStartMs".into(), json!(ms));
                 }

@@ -147,6 +147,8 @@ impl PiAgent {
                 call_id: call_id.clone(),
                 command: command.clone(),
                 output: Vec::new(),
+                total_bytes: 0,
+                truncated: false,
             });
         }
         // Direct `!bash` / `!!bash` executes immediately alongside any active turn
@@ -252,8 +254,19 @@ impl PiAgent {
             let Some(active) = state.active_direct_bash.as_mut() else {
                 return;
             };
+            const DIRECT_BASH_LIVE_PREVIEW_MAX_BYTES: usize = 128 * 1024;
             let delta_bytes = delta.as_bytes().to_vec();
+            active.total_bytes = active.total_bytes.saturating_add(delta_bytes.len());
             active.output.extend_from_slice(&delta_bytes);
+            if active.output.len() > DIRECT_BASH_LIVE_PREVIEW_MAX_BYTES {
+                let mut cut = active.output.len() - DIRECT_BASH_LIVE_PREVIEW_MAX_BYTES;
+                while cut < active.output.len() && (active.output[cut] & 0b1100_0000) == 0b1000_0000
+                {
+                    cut += 1;
+                }
+                active.output.drain(..cut);
+                active.truncated = true;
+            }
             let full_text = String::from_utf8_lossy(&active.output).into_owned();
             let raw_output = json!({
                 "type": "Bash",
@@ -261,13 +274,13 @@ impl PiAgent {
                 "output_for_prompt": full_text,
                 "exit_code": 0,
                 "command": active.command.clone(),
-                "truncated": false,
+                "truncated": active.truncated,
                 "signal": null,
                 "timed_out": false,
                 "description": null,
                 "current_dir": "",
                 "output_file": "",
-                "total_bytes": active.output.len(),
+                "total_bytes": active.total_bytes,
                 "was_bare_echo": false,
                 "output_delta": delta_bytes,
             });

@@ -486,22 +486,22 @@ impl acp::Agent for PiAgent {
             None
         };
 
-        let (command, queued, running) = {
+        let (abort_bash, abort_agent, queued, running) = {
             let mut state = self.state.borrow_mut();
+            let has_active_prompts = !state.active_prompts.is_empty();
             for active in &mut state.active_prompts {
                 active.cancelled = true;
             }
             state.cancelling = true;
             state.primary_user_echo_pending = false;
-            let command = if state.bash_running {
-                "abort_bash"
-            } else {
-                "abort"
-            };
+            let abort_bash = state.bash_running;
+            // Direct `!bash`/`!!bash` can run concurrently with an active agent
+            // turn: aborting bash alone would leave Pi's LLM loop orphaned.
+            let abort_agent = !abort_bash || state.agent_running || has_active_prompts;
             let queued = state.queue_mirror.clear_local();
             let running = state.queue_mirror.clear_running();
             state.queue_mirror.clear();
-            (command, queued, running)
+            (abort_bash, abort_agent, queued, running)
         };
 
         self.finish_queued_entries(queued, acp::StopReason::Cancelled);
@@ -521,8 +521,15 @@ impl acp::Agent for PiAgent {
         }
         // Do not await Pi's abort RPC. AgentSession.abort() waits for idle, and
         // extension continuations can otherwise keep ACP cancel blocked forever.
-        if let Err(error) = self.rpc.notify(json!({ "type": command })) {
-            tracing::warn!(%error, "failed to notify Pi abort");
+        if abort_bash {
+            if let Err(error) = self.rpc.notify(json!({ "type": "abort_bash" })) {
+                tracing::warn!(%error, "failed to notify Pi abort_bash");
+            }
+        }
+        if abort_agent {
+            if let Err(error) = self.rpc.notify(json!({ "type": "abort" })) {
+                tracing::warn!(%error, "failed to notify Pi abort");
+            }
         }
         if let Some(paused) = paused_goal {
             self.emit_goal_updated_from_control(&paused).await;

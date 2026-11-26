@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Native Pi MCP bridge (`builtin:mcp` + `grok-pi mcp`)** — `grok-pi` now loads Pi's built-in `builtin:mcp` extension by default (disable with `--no-mcp`) without starting `builtin:codemode`, reusing Pi's native `mcp.json`, `mcp-auth.json` OAuth store, and `/mcp` commands (`/mcp`, `/mcp login`, `/mcp logout`, `/mcp reconnect`). Added `grok-pi mcp <args...>` CLI passthrough directly to `pi mcp` (list, add, remove, login, logout), wired `pi-grok-rpc-compat` to re-bind Remote TUI on every `setUIContext` so Pi's original `McpManagerView` opens reliably in Grok Pager, and registered `app.message.copy` (`Ctrl+Shift+C`) in Remote TUI for copying OAuth authorization URLs.
+- **Eval v2 × Pi Codemode MCP parity (without `builtin:codemode`)** — `EvalSessionToolBridge` now honors Pi's `exposure` (`codemode`/`deferred` tools are discoverable and callable inside Eval v2 while `hidden`/`model-only`/`codemode`/`tool_search` fail closed), forwards `structuredContent`, `namespace`, `outputSchema`, and `annotations`, and incrementally syncs `runner.getAllRegisteredTools()` so `/mcp login`, `/mcp reconnect`, and `tools/list_changed` immediately bind the new connection. Eval v2 declares `reachesTools` so `builtin:mcp` waits for referenced servers before executing a cell, rewrites `sections.mcp_servers` from `codemode` scripts to `eval` scripts, and exposes `ALL_TOOLS`, `searchTools(query, { namespace, limit })`, `describeTool`, `describeNamespace`, `tools.namespaces()`, and `tools.describeNamespace()` in both JS and Python workers.
+
+### Changed
+
+- **Steering, follow-up, and Pi keybinding alignment** — Live steering messages render immediately in the transcript, `clear_queue` backs steering undo/edit parity with `pi-main`, `Alt+Enter` and `Alt+Up` align with `pi-main` queue/steer shortcuts, and double-Enter key-repeat guards prevent accidental duplicate submissions.
+- **Direct `!bash` / `!!bash` execution without queuing** — `!bash`, `!!bash`, and `!!!bash` run immediately via Pi's `bash` RPC (`excludeFromContext: true` for `!!`) without creating queue echo rows, stream live `bash_execution_update` deltas into the Execute card with a 128 KB UTF-8-safe tail cap, and dispatch queued follow-ups after completion.
+
+### Fixed
+
+- **Model switch and metadata updates triggered phantom `Thinking…`** — `PiAgent::send_update` now stamps `turnStartMs`/`streamStartMs`/`promptId` only on real agent output updates (excluding `AvailableCommandsUpdate`, `SessionInfoUpdate`, `ConfigOptionUpdate`, `CurrentModeUpdate`, `UserMessageChunk`, and empty `totalTokens` placeholder chunks), and `xai-grok-pager`'s tracker gates `pre_create_thinking` on non-empty agent output.
+- **`Esc` during concurrent `!bash` orphaned the running LLM turn** — `PiAgent::cancel` now sends both `abort_bash` and `abort` whenever a direct `!bash` command runs alongside an active agent turn, preventing background LLM streams from continuing after cancellation.
+- **Pi RPC session refresh, `agent_settled.aborted`, and `disposition` parity** — `replace_bootstrap()` preserves running/queue state on same-session refreshes, `agent_settled.aborted` and `prompt` `data.disposition` (`handled`/`started`/`queued`) settle cleanly, and `summarization_retry_*` status updates surface in the status line.
+- **Node 26 top-level `await` rejection timeout in Eval v2** — Added a `replOutput` fallback when `server._domain` is absent (Node 26+) so rejected top-level `await` host calls settle immediately instead of timing out.
+- **Upstream `pi-main` parity for MCP `isError` results, `/login` unresolved `!command` keys, and `!bash` `fullOutputError`** — Eval v2 now resolves MCP `isError: true` results that carry `structuredContent` instead of throwing (`pi-main` `1acc72acd`); `/login` maps `{ configured: false, source: "stored" }` to `{ kind: "unresolved" }` so `OAuthSelectorComponent` displays `stored key did not resolve` (`pi-main` `585648aaf`); and `format_bash_result()` surfaces `fullOutputError` when truncated `!bash` output cannot be written to a temp file (`pi-main` `943a99e3c` / `8209929fb`).
+
+### Verification
+
+- `node extensions/pi-grok-bash/test-v2.1.mjs` → **PASS 1 – PASS 21** (including new PASS 20 for Eval v2 × Pi Codemode MCP parity and PASS 21 for MCP reconnect/login tool handler refresh).
+- Static checks (`git diff --check`, esbuild syntax checks, and Rust delimiter balance) pass; `pi-main` remains untouched. No local Cargo commands were run.
+
 ## [0.1.15] - 2026-11-26
 
 ### Added

@@ -1237,6 +1237,14 @@ console.log(JSON.stringify({
     ],
     async invokeTool(toolName, args) {
       assert.equal(toolName, "mcp__github__list_issues");
+      if (args.failWithStructured) {
+        return {
+          content: [{ type: "text", text: "repo not found" }],
+          structuredContent: { isError: true, code: "NOT_FOUND", repo: args.repo },
+          details: {},
+          isError: true,
+        };
+      }
       return {
         content: [{ type: "text", text: `issues for ${args.repo}` }],
         structuredContent: { count: 2, repo: args.repo },
@@ -1294,6 +1302,20 @@ console.log(JSON.stringify({
     assert.equal(parsed.text, "issues for pi-grok");
     assert.deepEqual(parsed.structured, { count: 2, repo: "pi-grok" });
 
+    // 4. MCP isError=true with structuredContent resolves cleanly instead of throwing (matches Pi Codemode).
+    const errProbe = await mcpHarness.run({
+      language: "js",
+      code: `
+        const errRes = await tool.mcp__github__list_issues({ repo: "missing", failWithStructured: true });
+        JSON.stringify({ isError: errRes.isError, text: errRes.text, structured: errRes.structuredContent });
+      `,
+      timeout: 5,
+    });
+    const parsedErr = JSON.parse(errProbe.content[0].text.trim().replace(/^'|'$/g, ""));
+    assert.equal(parsedErr.isError, true);
+    assert.equal(parsedErr.text, "repo not found");
+    assert.deepEqual(parsedErr.structured, { isError: true, code: "NOT_FOUND", repo: "missing" });
+
     await assert.rejects(
       mcpHarness.run({ language: "js", code: 'await tool.mcp__github__hidden_admin({})', timeout: 5 }),
       /cannot invoke inactive tool/i,
@@ -1305,6 +1327,61 @@ console.log(JSON.stringify({
     console.log("PASS 20 Eval v2 aligns with Pi Codemode MCP (exposure, discovery, namespaces, structuredContent, reachesTools, prompt rewrite)");
   } finally {
     await mcpHarness.close();
+  }
+
+  // PASS 21: EvalSessionToolBridge refreshes replaced MCP tool handlers after /mcp reconnect or /mcp login.
+  {
+    let generation = 1;
+    const makeRegisteredMcpTool = (gen) => ({
+      definition: {
+        name: "mcp__demo__ping",
+        description: `Ping generation ${gen}`,
+        exposure: "deferred",
+        namespace: { name: "mcp__demo", aliases: ["demo"] },
+        parameters: { type: "object", properties: {} },
+        async execute() {
+          return {
+            content: [{ type: "text", text: `pong-gen-${gen}` }],
+            structuredContent: { gen },
+            details: {},
+          };
+        },
+      },
+    });
+    let registeredList = [makeRegisteredMcpTool(generation)];
+    const fakeRunner = {
+      getAllRegisteredTools: () => registeredList,
+      createContext: () => ({ cwd: repoRoot }),
+      hasHandlers: () => false,
+      emit: async () => undefined,
+      emitToolCall: async () => undefined,
+      emitToolResult: async () => undefined,
+    };
+    const fakePi = {
+      getActiveTools: () => ["eval"],
+      getAllTools: () =>
+        registeredList.map((entry) => ({
+          name: entry.definition.name,
+          description: entry.definition.description,
+          exposure: entry.definition.exposure,
+          namespace: entry.definition.namespace,
+          parameters: entry.definition.parameters,
+        })),
+    };
+    const bridge = new EvalSessionToolBridge(fakePi, "eval");
+    bridge.observeRegisteredTools(registeredList, fakeRunner);
+    const first = await bridge.invoke("mcp__demo__ping", {}, new AbortController().signal);
+    assert.equal(first.content[0].text, "pong-gen-1");
+    // Simulate /mcp reconnect replacing the tool definition with a new connection closure.
+    generation = 2;
+    registeredList = [makeRegisteredMcpTool(generation)];
+    const refreshedCatalog = bridge.catalog();
+    assert.equal(refreshedCatalog[0].description, "Ping generation 2");
+    const second = await bridge.invoke("mcp__demo__ping", {}, new AbortController().signal);
+    assert.equal(second.content[0].text, "pong-gen-2");
+    assert.deepEqual(second.structuredContent, { gen: 2 });
+    bridge.dispose();
+    console.log("PASS 21 EvalSessionToolBridge refreshes replaced MCP tool handlers after reconnect/login");
   }
 } finally {
   await rm(tempDir, { recursive: true, force: true });

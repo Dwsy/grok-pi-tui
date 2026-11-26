@@ -225,6 +225,8 @@ struct ActiveDirectBash {
     call_id: String,
     command: String,
     output: Vec<u8>,
+    total_bytes: usize,
+    truncated: bool,
 }
 
 struct AdapterState {
