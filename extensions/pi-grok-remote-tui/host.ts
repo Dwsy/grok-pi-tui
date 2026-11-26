@@ -532,7 +532,7 @@ export function installCustomPatch(ui: PatchableUi): void {
       const keybindings = new KeybindingsManager(
         {
           ...TUI_KEYBINDINGS,
-          "app.message.copy": { defaultKeys: "ctrl+shift+c", description: "Copy" },
+          "app.message.copy": { defaultKeys: "ctrl+x", description: "Copy" },
         },
         {},
       );

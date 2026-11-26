@@ -1091,10 +1091,15 @@ impl PiAgent {
         if let Some(plan) = plan_update_for_tool(name, &output, is_error) {
             self.send_update(acp::SessionUpdate::Plan(plan)).await;
         }
-        self.send_update(acp::SessionUpdate::ToolCallUpdate(
-            acp::ToolCallUpdate::new(acp::ToolCallId::new(id.to_string()), fields),
-        ))
-        .await;
+        let mut tool_update =
+            acp::ToolCallUpdate::new(acp::ToolCallId::new(id.to_string()), fields);
+        if let Some(duration_ms) = event.get("durationMs").and_then(Value::as_u64) {
+            let mut meta = acp::Meta::new();
+            meta.insert("durationMs".into(), json!(duration_ms));
+            tool_update = tool_update.meta(Some(meta));
+        }
+        self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update))
+            .await;
     }
 
     /// Project Eval-v2-only nested host calls onto native ACP tool rows without

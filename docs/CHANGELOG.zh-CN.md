@@ -11,7 +11,8 @@
 
 ### 新增
 
-- **桥接 Pi 原版 MCP 管理与 OAuth（`builtin:mcp` + `grok-pi mcp`）** — `grok-pi` 默认加载 Pi 内置 `builtin:mcp`（可用 `--no-mcp` 关闭）且不启动 `builtin:codemode`，直接复用原版 `mcp.json`、`mcp-auth.json` OAuth 凭据存储与 `/mcp` 命令（`/mcp`、`/mcp login`、`/mcp logout`、`/mcp reconnect`）。新增 `grok-pi mcp <args...>` 子命令直通宿主 `pi mcp`（list/add/remove/login/logout）；`pi-grok-rpc-compat` 在每次 `setUIContext` 自动重绑 Remote TUI 以直接渲染原版 `McpManagerView`；Remote TUI 补齐 `app.message.copy`（`Ctrl+Shift+C`）支持一键复制 OAuth 授权链接。
+- **桥接 Pi 原版 MCP 管理与 OAuth（`builtin:mcp` + `grok-pi mcp`）** — `grok-pi` 默认加载 Pi 内置 `builtin:mcp`（可用 `--no-mcp` 关闭）且不启动 `builtin:codemode`，直接复用原版 `mcp.json`、`mcp-auth.json` OAuth 凭据存储与 `/mcp` 命令（`/mcp`、`/mcp login`、`/mcp logout`、`/mcp reconnect`）。新增 `grok-pi mcp <args...>` 子命令直通宿主 `pi mcp`（list/add/remove/login/logout）；`pi-grok-rpc-compat` 在每次 `setUIContext` 自动重绑 Remote TUI 以直接渲染原版 `McpManagerView`；Remote TUI 补齐 `app.message.copy`（`Ctrl+X`）支持一键复制 OAuth 授权链接。
+- **Pi 1.0–1.6 CLI、快捷键与工具耗时对齐** — 新增 `grok-pi auth <args...>` 直通 Pi 1.5.1 原版 `pi auth login`/`logout` CLI；`tools_extension` 支持 Pi 1.0.4/1.1.0 的 `--tools +name,-name` 增量语法与 `*` 通配符（修复 `-t +codemode` 误关增强 Bash 桥接）；Remote TUI 的 `app.message.copy` 默认键对齐 Pi 1.0.1 的 `Ctrl+X`；透传 Pi 1.1.0 的 `tool_execution_end.durationMs` 到 `xai-grok-pager` 工具卡片精确耗时。
 - **Eval v2 完整对齐 Pi Codemode MCP 能力（不启动 `builtin:codemode`）** — `EvalSessionToolBridge` 支持 Pi `exposure` 策略（允许在 Eval v2 内发现并调用 `codemode`/`deferred` 工具，严格拦截 `hidden`/`model-only`/`codemode`/`tool_search`），透传 `structuredContent`、`namespace`、`outputSchema` 与 `annotations`，并按对象引用增量同步 `runner.getAllRegisteredTools()`，确保 `/mcp login`、`/mcp reconnect` 及 `tools/list_changed` 后立刻切换到新连接。Eval v2 声明 `reachesTools` 自动等待目标 MCP 服务就绪，将 `sections.mcp_servers` 引导文案改写为 `eval` 脚本，并在 JS/Python worker 中对齐提供 `ALL_TOOLS`、`searchTools(query, { namespace, limit })`、`describeTool`、`describeNamespace`、`tools.namespaces()` 与 `tools.describeNamespace()`。
 
 ### 变更

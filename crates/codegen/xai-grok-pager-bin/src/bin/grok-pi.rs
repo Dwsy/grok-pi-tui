@@ -340,7 +340,22 @@ fn main() -> Result<()> {
         return migrate_home::run_cli(from, into, dry_run, force, include_auth, status);
     }
     if let Some(Command::Mcp { args: mcp_args }) = args.command {
-        return run_pi_mcp_cli(&args.pi_bin, &args.pi_prefix_args, args.pi_cwd.as_deref(), &mcp_args);
+        return run_pi_subcommand_cli(
+            "mcp",
+            &args.pi_bin,
+            &args.pi_prefix_args,
+            args.pi_cwd.as_deref(),
+            &mcp_args,
+        );
+    }
+    if let Some(Command::Auth { args: auth_args }) = args.command {
+        return run_pi_subcommand_cli(
+            "auth",
+            &args.pi_bin,
+            &args.pi_prefix_args,
+            args.pi_cwd.as_deref(),
+            &auth_args,
+        );
     }
     // One-shot safe copy when `~/.grok-pi` is empty and legacy `~/.grok` has data.
     match migrate_home::maybe_auto_migrate() {
@@ -362,20 +377,21 @@ fn main() -> Result<()> {
     runtime.block_on(LocalSet::new().run_until(run(args)))
 }
 
-/// Forward `grok-pi mcp <args...>` directly to Pi's native `pi mcp` CLI
-/// (list, add, remove, login, logout, OAuth) without reimplementing MCP CLI logic.
-fn run_pi_mcp_cli(
+/// Forward `grok-pi <subcommand> <args...>` (e.g. `mcp`, `auth`) directly to
+/// Pi's native CLI without reimplementing credential or MCP CLI logic.
+fn run_pi_subcommand_cli(
+    subcommand: &str,
     pi_bin: &str,
     pi_prefix_args: &[String],
     pi_cwd: Option<&std::path::Path>,
-    mcp_args: &[String],
+    subcommand_args: &[String],
 ) -> Result<()> {
     let (_pi_version, resolved_pi_bin) =
         ensure_compatible_pi_host(pi_bin).context("Pi host version check failed")?;
     let mut cmd = std::process::Command::new(&resolved_pi_bin);
     cmd.args(pi_prefix_args);
-    cmd.arg("mcp");
-    cmd.args(mcp_args);
+    cmd.arg(subcommand);
+    cmd.args(subcommand_args);
     if let Some(cwd) = pi_cwd {
         cmd.current_dir(cwd);
     }
@@ -384,7 +400,7 @@ fn run_pi_mcp_cli(
         .stderr(std::process::Stdio::inherit());
     let status = cmd
         .status()
-        .with_context(|| format!("failed to launch `{resolved_pi_bin} mcp`"))?;
+        .with_context(|| format!("failed to launch `{resolved_pi_bin} {subcommand}`"))?;
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }

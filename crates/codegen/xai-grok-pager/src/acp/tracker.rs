@@ -1663,14 +1663,20 @@ impl AcpUpdateTracker {
         if let Some(pending) = self.pending_tools.remove(&tc_id) {
             let merged = merge_tool_call_update(pending.base, tcu);
             let mut block = tool_call_to_block(&merged, self.session_cwd.as_deref());
-            // Replay timing: the stashed `Instant` spans only the batching
-            // latency between the replayed start and completion, so the card
-            // would show 0ms. Prefer the agent-stamped start/end delta there;
-            // live completions keep the monotonic `Instant` measurement.
-            if is_replay
-                && let Some(elapsed_ms) =
-                    replay_elapsed_ms(pending.started_at_ms, meta.agent_timestamp_ms)
-                && let RenderBlock::ToolCall(tc) = &mut block
+            // Prefer authoritative agent-reported `durationMs` (Pi 1.1.0+) when
+            // present; otherwise use replay start/end timestamps during replay
+            // and fall back to the local monotonic `Instant` for live runs.
+            let reported_duration_ms = merged
+                .meta
+                .as_ref()
+                .and_then(|m| m.get("durationMs"))
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|ms| i64::try_from(ms).ok());
+            if let Some(elapsed_ms) = reported_duration_ms.or_else(|| {
+                is_replay
+                    .then(|| replay_elapsed_ms(pending.started_at_ms, meta.agent_timestamp_ms))
+                    .flatten()
+            }) && let RenderBlock::ToolCall(tc) = &mut block
             {
                 tc.set_elapsed_ms(elapsed_ms);
             }
@@ -1954,6 +1960,17 @@ fn extract_cron_prompt_body(text: &str) -> Option<String> {
 /// Merge ToolCallUpdate fields with the base ToolCall.
 /// Update fields take precedence when present.
 fn merge_tool_call_update(base: acp::ToolCall, update: acp::ToolCallUpdate) -> acp::ToolCall {
+    let merged_meta = match (base.meta, update.meta) {
+        (Some(mut base_meta), Some(update_meta)) => {
+            for (k, v) in update_meta {
+                base_meta.insert(k, v);
+            }
+            Some(base_meta)
+        }
+        (Some(base_meta), None) => Some(base_meta),
+        (None, Some(update_meta)) => Some(update_meta),
+        (None, None) => None,
+    };
     acp::ToolCall::new(
         update.tool_call_id,
         update.fields.title.unwrap_or(base.title),
@@ -1964,7 +1981,7 @@ fn merge_tool_call_update(base: acp::ToolCall, update: acp::ToolCallUpdate) -> a
     .raw_input(update.fields.raw_input.or(base.raw_input))
     .raw_output(update.fields.raw_output.or(base.raw_output))
     .locations(update.fields.locations.unwrap_or(base.locations))
-    .meta(base.meta)
+    .meta(merged_meta)
 }
 /// Peeled display form when a redundant leading `cd <cwd>` was stripped, else None.
 fn peeled_if_changed(command: &str, session_cwd: Option<&Path>) -> Option<String> {

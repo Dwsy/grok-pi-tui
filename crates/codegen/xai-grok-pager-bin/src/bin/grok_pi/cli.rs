@@ -76,6 +76,10 @@ MCP (delegates directly to Pi's native `pi mcp` CLI):
   grok-pi mcp logout <server>       Clear stored OAuth credentials
   grok-pi mcp add / remove ...      Manage ~/.pi/agent/mcp.json or .pi/mcp.json
 
+Auth (delegates directly to Pi's native `pi auth` CLI):
+  grok-pi auth login <provider>     Sign in to a provider from the shell (supports --api-key, --no-browser)
+  grok-pi auth logout <provider>    Remove stored credentials for a provider
+
 Home (isolated from stock Grok ~/.grok):
   Default state dir: ~/.grok-pi  (override with GROK_HOME)
   Project config dir: <repo>/.grok-pi  (override with GROK_PROJECT_DIR)
@@ -296,6 +300,18 @@ pub(super) enum Command {
     )]
     Mcp {
         /// Arguments forwarded unchanged to `pi mcp`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Manage Pi provider credentials (passthrough to `pi auth`: login, logout).
+    #[command(
+        name = "auth",
+        disable_help_flag = true,
+        disable_help_subcommand = true
+    )]
+    Auth {
+        /// Arguments forwarded unchanged to `pi auth`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },

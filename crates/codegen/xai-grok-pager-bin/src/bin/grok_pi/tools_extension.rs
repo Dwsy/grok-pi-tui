@@ -140,10 +140,73 @@ fn explicit_tools(args: &[String]) -> Option<String> {
     None
 }
 
+fn tool_pattern_matches(pattern: &str, name: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == name;
+    }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut rest = name;
+    for (idx, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if idx == 0 && !pattern.starts_with('*') {
+            let Some(after) = rest.strip_prefix(part) else {
+                return false;
+            };
+            rest = after;
+        } else if idx + 1 == parts.len() && !pattern.ends_with('*') {
+            return rest.ends_with(part);
+        } else {
+            let Some(pos) = rest.find(part) else {
+                return false;
+            };
+            rest = &rest[pos + part.len()..];
+        }
+    }
+    true
+}
+
 fn csv_contains(csv: &str, name: &str) -> bool {
     csv.split(',')
         .map(str::trim)
-        .any(|candidate| candidate == name)
+        .filter(|candidate| !candidate.is_empty())
+        .any(|candidate| tool_pattern_matches(candidate, name))
+}
+
+/// Evaluate Pi's `--tools` / `-t` expression for a single tool name.
+/// Supports both Pi 1.0.4 `*` glob patterns and Pi 1.1.0 `+name`/`-name`
+/// delta adjustments over the default tool set.
+fn explicit_tools_allows(expr: &str, name: &str, default_allowed: bool) -> bool {
+    let entries: Vec<&str> = expr
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    if entries.is_empty() {
+        return false;
+    }
+    let is_delta_only = entries
+        .iter()
+        .all(|entry| entry.starts_with('+') || entry.starts_with('-'));
+    let mut allowed = if is_delta_only {
+        default_allowed
+    } else {
+        false
+    };
+    for entry in entries {
+        if let Some(pattern) = entry.strip_prefix('-') {
+            if !pattern.is_empty() && tool_pattern_matches(pattern, name) {
+                allowed = false;
+            }
+        } else {
+            let pattern = entry.strip_prefix('+').unwrap_or(entry);
+            if !pattern.is_empty() && tool_pattern_matches(pattern, name) {
+                allowed = true;
+            }
+        }
+    }
+    allowed
 }
 
 /// Whether a tool name is allowed by Pi's final CLI tool policy. This is used
@@ -158,10 +221,13 @@ pub(super) fn tool_name_allowed_by_cli(args: &[String], name: &str) -> bool {
     {
         return false;
     }
-    if let Some(allowed) = explicit_tools(args) {
-        return csv_contains(&allowed, name);
+    if excluded_tools(args).is_some_and(|excluded| csv_contains(&excluded, name)) {
+        return false;
     }
-    !excluded_tools(args).is_some_and(|excluded| csv_contains(&excluded, name))
+    if let Some(allowed) = explicit_tools(args) {
+        return explicit_tools_allows(&allowed, name, true);
+    }
+    true
 }
 
 /// Whether the F2 tools extension should be injected at all.
@@ -238,12 +304,34 @@ pub(super) fn codemode_requested(args: &[String], selected: Option<&str>) -> boo
     if selected.is_some_and(|names| csv_contains(names, "codemode")) {
         return true;
     }
-    explicit_tools(args).is_some_and(|allowed| csv_contains(&allowed, "codemode"))
+    explicit_tools(args).is_some_and(|allowed| explicit_tools_allows(&allowed, "codemode", false))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_policy_supports_pi_delta_and_glob_patterns() {
+        // Pi 1.1.0 delta syntax: `-t +codemode` keeps default tools like `bash` allowed
+        // while enabling `codemode`.
+        let delta_add = vec!["--tools".to_string(), "+codemode".to_string()];
+        assert!(tool_name_allowed_by_cli(&delta_add, "bash"));
+        assert!(codemode_requested(&delta_add, None));
+
+        let delta_remove = vec!["-t".to_string(), "-bash".to_string()];
+        assert!(!tool_name_allowed_by_cli(&delta_remove, "bash"));
+        assert!(tool_name_allowed_by_cli(&delta_remove, "read"));
+
+        // Pi 1.0.4 wildcard globs in `--tools` and `--exclude-tools`.
+        let glob_exclude = vec!["--exclude-tools".to_string(), "ba*".to_string()];
+        assert!(!tool_name_allowed_by_cli(&glob_exclude, "bash"));
+        assert!(tool_name_allowed_by_cli(&glob_exclude, "read"));
+
+        let glob_allow = vec!["--tools".to_string(), "read,code*".to_string()];
+        assert!(codemode_requested(&glob_allow, None));
+        assert!(!tool_name_allowed_by_cli(&glob_allow, "bash"));
+    }
 
     #[test]
     fn codemode_extension_only_loads_when_requested() {
