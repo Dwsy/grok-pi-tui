@@ -159,18 +159,27 @@ function getSearchIndex(record: SessionRecord): SessionSearchIndex {
 }
 
 /**
- * Open a SQLite database read-only across both Node (`node:sqlite`, used by
- * Pi) and Bun (`bun:sqlite`, used by unit tests).
+ * Open a SQLite database across both Node (`node:sqlite`, used by Pi) and Bun
+ * (`bun:sqlite`, used by unit tests). PSM's `sessions.db` opens strictly
+ * read-only; our own WAL-mode `sessions-lite.db` opens writable so SQLite can
+ * manage its `-shm`/`-wal` sidecars.
  */
 export function openReadOnlySqlite(dbPath: string): SqliteDb | null {
   if (!dbPath || !fs.existsSync(dbPath)) return null;
+  // PSM's `sessions.db` is strictly read-only. Our own `sessions-lite.db` is
+  // created in WAL mode, and SQLite cannot serve a `readOnly` connection unless
+  // it can create the `-shm`/`-wal` sidecars — a read-only open therefore
+  // succeeds but every query fails with `unable to open database file`. Open
+  // the lite index writable instead; all writes stay confined to
+  // `session-lite-db.ts`.
+  const isLiteDb = path.basename(dbPath) === "sessions-lite.db";
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const nodeSqlite = require("node:sqlite") as {
       DatabaseSync?: new (p: string, opts?: { readOnly?: boolean }) => SqliteDb;
     };
     if (nodeSqlite?.DatabaseSync) {
-      return new nodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+      return new nodeSqlite.DatabaseSync(dbPath, { readOnly: !isLiteDb });
     }
   } catch {
     // Fall through to bun:sqlite when running under Bun.
@@ -184,7 +193,7 @@ export function openReadOnlySqlite(dbPath: string): SqliteDb | null {
       };
     };
     if (bunSqlite?.Database) {
-      const db = new bunSqlite.Database(dbPath, { readonly: true });
+      const db = new bunSqlite.Database(dbPath, { readonly: !isLiteDb });
       return {
         prepare: (sql: string) => db.query(sql),
         close: () => db.close(),

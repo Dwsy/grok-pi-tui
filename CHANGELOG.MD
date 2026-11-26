@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-11-26
+
+### Added
+
+- **`/trace` plus Pi custom tool renderers** — `/trace` and the Left-arrow `__pi_trace` path inspect full JSONL entries in a bordered two-pane overlay with clickable kind-filter pills, live multi-term search, and `Pretty → Pi Element → Raw JSON` cycling. Custom Pi plugin tools open their own `renderCall`/`renderResult` popup (`__pi_tool_render`) behind a new F2 setting, `Pi custom tool renderer` (`pi_custom_tool_renderer`, default **off** — off keeps the generic JSON viewer). Built-in adapted tools (`read`, `edit`, `write`, `bash`) always keep their native viewers, and each session remembers its per-tool view mode.
+- **`/resume` session management shortcuts** — `Ctrl+S` cycles sort, `Ctrl+N` filters named-only sessions, `Ctrl+D` deletes behind a confirmation (the current session is protected), `Ctrl+P` toggles the path column, and `Ctrl+R` renames. Delete goes through `trash` with an `unlink` fallback; rename appends a `session_info` entry to the session JSONL and never writes PSM's SQLite index.
+- **Cross-platform `sessions-lite.db` fallback index** — For users without PSM (`sessions.db`), a lazily maintained `sessions-lite.db` (WAL, incremental `(path, mtimeMs, size)` sync, bounded 16 KB head + 32 KB tail probe, lazy detail hydration, corrupt-DB self-recovery, in-memory fallback when no SQLite binding exists) keeps `/resume`, `@session`, search, and ID resolution working. It is activated only when `sessions.db` is absent and never writes to PSM's database.
+- **TS `extensions_modal` and `goal_detail` overlays** — Heavyweight Rust modals moved to `extensions/pi-grok-config/extensions-modal-tui.ts` (`__pi_extensions_modal`) and `extensions/pi-grok-goal/goal-detail-tui.ts` (`__pi_goal_detail` / `/goal-detail`), joining the shared split-pane surface with `DividerDragController`, `RenderCoalescer`, and bounded preview caching.
+
+### Changed
+
+- **`/resume` rebuilt for Pi parity and 10k+ session scale** — Session titles are truncated without `…`; local filtering and SQLite FTS share one debounce with a `searching…` indicator, an `Enter` flush, and cancel on `Esc`/close; session details render through Pi's `Markdown` component with an overlay-theme mapping. The 300-session cap is gone: rows load without joining details, sorting happens in JS over ISO timestamps, a DB/WAL `(ino, size, mtimeMs)` fingerprint caches the catalog, right-pane details hydrate by primary-key lookup, and an O(1) row map keeps fullscreen scrolling flat. `/resume` now defaults to project scope, the fullscreen divider drags (ratio kept in memory only), and `/review` collapses every 3 path levels into one tree node.
+- **Fast point lookup for session paths** — `PiAgent::resolve_session_path` issues an O(1) indexed SQLite point lookup before falling back to a disk scan, instead of loading and hashing the entire catalog for one ID.
+- **Cheaper Pi RPC stdout handling** — The child stdout reader uses a 64 KB `BufReader`, and response routing matches `type`/`id` without allocating an owned ID for every streaming event.
+- **Read-only PSM probing** — The `psm_session_catalog` port probe caches its answer for 3 s and honors `PI_CODING_AGENT_DIR`, so repeated catalog reads stop re-probing the PSM server.
+
+### Fixed
+
+- **`/resume` and `@session` were empty without PSM** — `openReadOnlySqlite` opened our own `sessions-lite.db` read-only, but SQLite needs to create the `-shm`/`-wal` sidecars for a WAL database, so the connection opened successfully and then every query failed with `unable to open database file`, yielding an empty list. The lite index now opens writable (all writes still confined to `session-lite-db.ts`) while PSM's `sessions.db` stays strictly read-only.
+- **`xai-grok-pager` did not compile** — `custom_tool_render_call_id` called `crate::app::dispatch::get_active_agent`, but `dispatch` only re-exports `SwitchCause` and `switch_to_agent` from `ctx`, so the name never resolved (E0425). The dispatcher now imports `get_active_agent` from `super::ctx`, matching every other caller.
+- **`xai-grok-pager-bin` did not compile** — `write_rollback_extension` kept its `.context("create rollback control dir")` call after the injector rewrite dropped `anyhow::Context` from its imports (E0599). The import is restored.
+
+### Verification
+
+- `bun test --timeout 15000 extensions/pi-grok-tui-kit/ extensions/pi-grok-mentions/ extensions/pi-grok-tree/ extensions/pi-grok-review/ extensions/pi-grok-config/ extensions/pi-grok-remote-tui/ extensions/pi-grok-goal/` → **122 pass, 0 fail, 1,254 expect() calls** across 16 files. The WAL read-only defect above was found by that suite and fixed before this release.
+- Changelog self-check (`python3 scripts/extract-changelog-section.py --self-test`) and strict section extraction with `--with-prereleases` both pass; `git diff --check` is clean.
+- No local Cargo build, `check`, or test was run — per `AGENTS.md`, Rust verification is delegated to GitHub Actions Linux (`pi-slim-linux-checks.yml`) and the six-platform `release.yml` build for this tag.
+
 ## [0.1.15-beta.2] - 2026-11-25
 
 ### Fixed

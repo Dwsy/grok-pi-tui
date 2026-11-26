@@ -9,6 +9,34 @@
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-11-26
+
+### 新增
+
+- **`/trace` 与 Pi 自定义工具渲染器** — `/trace` 与左方向键触发的 `__pi_trace` 在带边框双栏浮层中查看完整 JSONL 条目，支持可点击的类型过滤胶囊、多词实时搜索与 `Pretty → Pi Element → Raw JSON` 三态切换。Pi 插件自定义工具可在新增的 F2 选项 `Pi custom tool renderer`（`pi_custom_tool_renderer`，默认**关闭**，关闭时仍用通用 JSON 查看器）开启后，以插件自己的 `renderCall`/`renderResult`（`__pi_tool_render`）弹窗呈现；内置适配工具（`read`、`edit`、`write`、`bash`）始终保留原生查看器，且每个会话各自记住工具视图模式。
+- **`/resume` 会话管理快捷键** — `Ctrl+S` 循环排序、`Ctrl+N` 只看已命名会话、`Ctrl+D` 确认后删除（当前会话受保护）、`Ctrl+P` 切换路径列、`Ctrl+R` 重命名。删除走 `trash` 并回退 `unlink`；重命名只在会话 JSONL 追加 `session_info`，不写 PSM 的 SQLite 索引。
+- **跨平台 `sessions-lite.db` 回退索引** — 未安装 PSM（无 `sessions.db`）时，用一张懒维护的 `sessions-lite.db`（WAL、按 `(path, mtimeMs, size)` 增量同步、首 16 KB + 尾 32 KB 有界探测、详情懒加载、损坏自愈、无 SQLite 绑定时内存回退）支撑 `/resume`、`@session`、搜索与 ID 解析。仅在 `sessions.db` 缺失时启用，且绝不写入 PSM 数据库。
+- **TS 化的 `extensions_modal` 与 `goal_detail`** — 重型 Rust 弹窗迁移为 `extensions/pi-grok-config/extensions-modal-tui.ts`（`__pi_extensions_modal`）与 `extensions/pi-grok-goal/goal-detail-tui.ts`（`__pi_goal_detail` / `/goal-detail`），接入统一分栏框架的 `DividerDragController`、`RenderCoalescer` 与有界预览缓存。
+
+### 变更
+
+- **`/resume` 对齐 Pi 原版并支撑万级会话** — 标题截断不再显示 `…`；本地过滤与 SQLite 全文共用一个防抖，带 `searching…` 提示、`Enter` 立即 flush、`Esc`/关闭取消；会话详情改用 Pi 的 `Markdown` 组件并按浮层主题映射。取消 300 条上限：列表不再预先 JOIN 详情、排序在 JS 内按 ISO 时间完成、用 DB/WAL `(ino, size, mtimeMs)` 指纹缓存目录、右栏详情按主键懒加载、O(1) 行映射保证全屏滚动稳定。`/resume` 默认进入 project 作用域，全屏分割线可拖动（比例仅存内存），`/review` 每 3 级路径合并为一个树节点。
+- **会话路径快速点查** — `PiAgent::resolve_session_path` 先做 O(1) 索引点查，再回退磁盘扫描，不再为单个 ID 载入并遍历整个目录。
+- **Pi RPC stdout 处理更省** — 子进程 stdout 读取改用 64 KB `BufReader`，响应路由直接匹配 `type`/`id`，不再为每个流式事件分配一份 owned ID。
+- **PSM 探测只读化** — `psm_session_catalog` 的端口探测结果缓存 3 秒并支持 `PI_CODING_AGENT_DIR`，重复读取目录不再反复探测 PSM 服务。
+
+### 修复
+
+- **无 PSM 时 `/resume` 与 `@session` 为空** — `openReadOnlySqlite` 以只读方式打开自建的 `sessions-lite.db`，而 WAL 数据库需要创建 `-shm`/`-wal` 边车文件，于连接虽成功、每次查询却报 `unable to open database file`，列表因此为空。现在 lite 索引改为可写打开（写入仍全部收敛在 `session-lite-db.ts`），PSM 的 `sessions.db` 保持严格只读。
+- **`xai-grok-pager` 无法编译** — `custom_tool_render_call_id` 调用了 `crate::app::dispatch::get_active_agent`，但 `dispatch` 只从 `ctx` 重导出 `SwitchCause` 与 `switch_to_agent`，符号始终无法解析（E0425）。现在改为从 `super::ctx` 导入 `get_active_agent`，与其他调用点一致。
+- **`xai-grok-pager-bin` 无法编译** — injector 重写后去掉了 `anyhow::Context` 导入，`write_rollback_extension` 仍保留 `.context("create rollback control dir")` 调用（E0599）。导入已恢复。
+
+### 验证
+
+- `bun test --timeout 15000 extensions/pi-grok-tui-kit/ extensions/pi-grok-mentions/ extensions/pi-grok-tree/ extensions/pi-grok-review/ extensions/pi-grok-config/ extensions/pi-grok-remote-tui/ extensions/pi-grok-goal/` → **122 pass / 0 fail / 1,254 expect()**，共 16 个文件。上文 WAL 只读缺陷正是这组测试发现并在本次发版前修掉的。
+- Changelog 自检（`python3 scripts/extract-changelog-section.py --self-test`）与带 `--with-prereleases` 的严格段落提取均通过；`git diff --check` 干净。
+- 未本地运行任何 Cargo build / `check` / test —— 按 `AGENTS.md`，Rust 验证交给 GitHub Actions Linux（`pi-slim-linux-checks.yml`）与本 tag 的六平台 `release.yml` 构建。
+
 ## [0.1.14-beta.9] - 2026-11-23
 
 ### 新增
