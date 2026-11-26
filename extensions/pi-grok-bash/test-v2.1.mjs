@@ -1208,6 +1208,104 @@ console.log(JSON.stringify({
   } finally {
     await fifoHarness.close();
   }
+
+  const mcpHarness = await createHarness(register, "v2", {
+    bashEnabled: false,
+    activeToolNames: ["eval"],
+    toolInfo: [
+      { name: "eval", description: "Eval v2" },
+      {
+        name: "mcp__github__list_issues",
+        description: "List GitHub issues in a repository",
+        parameters: { type: "object", properties: { repo: { type: "string" } }, required: ["repo"] },
+        outputSchema: { type: "object", properties: { count: { type: "number" } } },
+        exposure: "deferred",
+        namespace: { name: "mcp__github", aliases: ["github"], description: "GitHub MCP server" },
+        executionMode: "parallel",
+      },
+      {
+        name: "mcp__github__hidden_admin",
+        description: "Hidden admin tool",
+        exposure: "hidden",
+        namespace: { name: "mcp__github", aliases: ["github"] },
+      },
+      {
+        name: "codemode",
+        description: "Pi codemode orchestrator",
+        exposure: "direct",
+      },
+    ],
+    async invokeTool(toolName, args) {
+      assert.equal(toolName, "mcp__github__list_issues");
+      return {
+        content: [{ type: "text", text: `issues for ${args.repo}` }],
+        structuredContent: { count: 2, repo: args.repo },
+        details: {},
+        isError: false,
+      };
+    },
+  });
+  try {
+    // 1. reachesTools returns targeted MCP tool names and "all" on discovery globals.
+    assert.equal(typeof mcpHarness.evalTool.reachesTools, "function");
+    const targetedReach = mcpHarness.evalTool.reachesTools({ code: 'await tool.mcp__github__list_issues({ repo: "pi" })' });
+    assert(Array.isArray(targetedReach) && targetedReach.includes("mcp__github__list_issues"));
+    assert.equal(mcpHarness.evalTool.reachesTools({ code: 'searchTools("issue")' }), "all");
+    assert.equal(mcpHarness.evalTool.reachesTools({ code: 'ALL_TOOLS.length' }), "all");
+    assert.equal(mcpHarness.evalTool.reachesTools({ code: 'describeNamespace("github")' }), "all");
+
+    // 2. before_agent_start rewrites builtin:mcp's mcp_servers section from codemode to eval.
+    const promptEvent = {
+      systemPromptOptions: {
+        sections: {
+          mcp_servers: "MCP servers\nCall the tools of `codemode` servers from codemode scripts.\n- github",
+        },
+      },
+    };
+    await mcpHarness.emit("before_agent_start", promptEvent);
+    assert.match(promptEvent.systemPromptOptions.sections.mcp_servers, /`eval` scripts/i);
+    assert.match(promptEvent.systemPromptOptions.sections.mcp_servers, /searchTools\(\)/);
+
+    // 3. Deferred/codemode MCP tools are discoverable & callable with structuredContent; hidden/codemode are blocked.
+    const probe = await mcpHarness.run({
+      language: "js",
+      code: `
+        const allNames = ALL_TOOLS.map(t => t.name);
+        const found = searchTools("issues", { namespace: "github" });
+        const ns = describeNamespace("github");
+        const meta = describeTool("mcp__github__list_issues");
+        const res = await tool.mcp__github__list_issues({ repo: "pi-grok" });
+        JSON.stringify({
+          allNames,
+          foundNames: found.map(t => t.name),
+          nsName: ns && ns.name,
+          hasOutputSchema: Boolean(meta && meta.outputSchema),
+          text: res.text,
+          structured: res.structuredContent,
+        });
+      `,
+      timeout: 5,
+    });
+    const parsed = JSON.parse(probe.content[0].text.trim().replace(/^'|'$/g, ""));
+    assert.deepEqual(parsed.allNames, ["mcp__github__list_issues"]);
+    assert.deepEqual(parsed.foundNames, ["mcp__github__list_issues"]);
+    assert.equal(parsed.nsName, "mcp__github");
+    assert.equal(parsed.hasOutputSchema, true);
+    assert.equal(parsed.text, "issues for pi-grok");
+    assert.deepEqual(parsed.structured, { count: 2, repo: "pi-grok" });
+
+    await assert.rejects(
+      mcpHarness.run({ language: "js", code: 'await tool.mcp__github__hidden_admin({})', timeout: 5 }),
+      /cannot invoke inactive tool/i,
+    );
+    await assert.rejects(
+      mcpHarness.run({ language: "js", code: 'await tool.codemode({})', timeout: 5 }),
+      /cannot invoke orchestrator tool/i,
+    );
+    console.log("PASS 20 Eval v2 aligns with Pi Codemode MCP (exposure, discovery, namespaces, structuredContent, reachesTools, prompt rewrite)");
+  } finally {
+    await mcpHarness.close();
+  }
 } finally {
   await rm(tempDir, { recursive: true, force: true });
   if (previousPackageDir === undefined) delete process.env.PI_PACKAGE_DIR;

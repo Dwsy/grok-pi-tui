@@ -109,6 +109,11 @@ pub(super) fn has_no_tools_arg(args: &[String]) -> bool {
     })
 }
 
+/// Whether the user explicitly disabled Pi's built-in MCP support via `--no-mcp`.
+pub(super) fn has_no_mcp_arg(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--no-mcp")
+}
+
 /// Extract the comma-separated tool names from `--exclude-tools` / `-xt`.
 /// Returns `None` when the flag is absent.
 pub(super) fn excluded_tools(args: &[String]) -> Option<String> {

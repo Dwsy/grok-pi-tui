@@ -60,6 +60,17 @@ import { ensureMcpevalDaemon, registerEvalPi, type EvalMcpToolResult, type Mcpev
 export { EvalSessionToolBridge } from "./tool-bridge.ts";
 
 const EVAL_V2_PARALLEL_HOST_CALL_LIMIT = 4;
+const EVAL_V2_DISCOVERY_GLOBALS =
+	/\b(tools|ALL_TOOLS|searchTools|search_tools|describeNamespace|describe_namespace|describeTool|describe_tool|list_mcp_resources|list_mcp_resource_templates|read_mcp_resource)\b/;
+
+function getEvalScriptReach(input: unknown): "all" | readonly string[] {
+	const code =
+		typeof input === "object" && input !== null && typeof (input as { code?: unknown }).code === "string"
+			? (input as { code: string }).code
+			: "";
+	if (!code) return [];
+	return EVAL_V2_DISCOVERY_GLOBALS.test(code) ? "all" : (code.match(/\w+/g) ?? []);
+}
 
 function envFlagDefaultOn(name: string): boolean {
 	const raw = process.env[name]?.trim().toLowerCase();
@@ -196,6 +207,22 @@ export default async function (pi: ExtensionAPI) {
 				source: skill.sourceInfo,
 			}));
 			evalSkillFiles = new Map(skills.map((skill) => [skill.name, skill.filePath]));
+			// When Pi's built-in MCP extension is loaded without `builtin:codemode`,
+			// rewrite the `mcp_servers` section intro so the model reaches
+			// `codemode`-exposed MCP servers through Eval v2 instead of an unloaded
+			// `codemode` tool.
+			const sections = (event as { systemPromptOptions?: { sections?: Record<string, string> } })
+				.systemPromptOptions?.sections;
+			if (
+				sections &&
+				typeof sections.mcp_servers === "string" &&
+				!pi.getActiveTools().includes("codemode")
+			) {
+				sections.mcp_servers = sections.mcp_servers.replace(
+					"Call the tools of `codemode` servers from codemode scripts.",
+					"Call the tools of `codemode` servers from `eval` scripts (discover with `searchTools()` / `describeNamespace()` / `describeTool()`, invoke with `await tool.mcp__<server>__<tool>(...)`).",
+				);
+			}
 		});
 	}
 	const completionAvailable = typeof (pi as ExtensionAPI & { complete?: unknown }).complete === "function";
@@ -223,12 +250,14 @@ export default async function (pi: ExtensionAPI) {
 					}
 					const toolName = call.tool.trim();
 					if (!toolName) throw new Error("eval v2 host tool name must not be empty");
-					if (toolName === "eval") throw new Error("eval v2 cannot recursively invoke the eval tool");
+					if (toolName === "eval" || toolName === "codemode" || toolName === "tool_search") {
+						throw new Error(`eval v2 cannot invoke orchestrator tool ${JSON.stringify(toolName)}`);
+					}
 					if (!evalToolBridge) throw new Error("eval v2 host tool bridge unavailable");
 					const executionMode: HostCallExecutionMode = evalToolBridge.executionMode(toolName);
 					return evalHostCallGate.run(executionMode, signal, async () => {
 						const result = await evalToolBridge.invoke(toolName, call.args ?? {}, signal);
-						const value = evalHostToolValue(result.content);
+						const value = evalHostToolValue(result.content, result.structuredContent);
 						if (result.isError) throw new Error(value.text || `Tool ${toolName} failed`);
 						return value;
 					});
@@ -436,6 +465,7 @@ export default async function (pi: ExtensionAPI) {
 		promptSnippet: evalPrompts.promptSnippet,
 		promptGuidelines: evalPrompts.promptGuidelines,
 		parameters: EvalParameters,
+		...(evalVersion === "v2" ? { reachesTools: getEvalScriptReach } : {}),
 		async execute(
 			toolCallId: string,
 			params: EvalParams,

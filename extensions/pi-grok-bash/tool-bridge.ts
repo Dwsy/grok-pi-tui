@@ -8,18 +8,30 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export type BridgeExecutionMode = "parallel" | "sequential";
 
+export type EvalToolNamespace = {
+	name: string;
+	aliases?: string[];
+	description?: string;
+	instructions?: string;
+};
+
 export type EvalToolMetadata = {
 	name: string;
 	description?: string;
 	schema?: unknown;
+	outputSchema?: unknown;
 	guidelines?: string[];
 	executionMode: BridgeExecutionMode;
+	exposure?: string;
+	namespace?: EvalToolNamespace;
+	annotations?: Record<string, unknown>;
 	source?: unknown;
 };
 
 type ToolResult = {
 	content: Array<{ type: string; text?: string; [key: string]: unknown }>;
 	details?: unknown;
+	structuredContent?: unknown;
 	isError?: boolean;
 	terminate?: boolean;
 	addedToolNames?: string[];
@@ -30,6 +42,10 @@ type RegisteredToolLike = {
 		name: string;
 		description?: string;
 		parameters?: unknown;
+		outputSchema?: unknown;
+		exposure?: string;
+		namespace?: EvalToolNamespace;
+		annotations?: Record<string, unknown>;
 		executionMode?: BridgeExecutionMode;
 		prepareArguments?: (args: Record<string, unknown>) => Record<string, unknown>;
 		execute: (...args: unknown[]) => Promise<ToolResult> | ToolResult;
@@ -80,6 +96,23 @@ const HUB_SYMBOL = Symbol.for("pi-grok.eval-tool-capture.v1");
 const ANCHOR_SYMBOL = Symbol.for("pi-grok.eval-tool-anchor.v1");
 const EVAL_TOOL_UI_BRIDGE_TYPE = "pi-grok-eval-tool/v1";
 const CORE_TOOL_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+const NON_CALLABLE_TOOL_NAMES = new Set(["eval", "codemode", "tool_search"]);
+const NON_CALLABLE_EXPOSURES = new Set(["hidden", "model-only"]);
+const SCRIPT_CALLABLE_EXPOSURES = new Set(["codemode", "deferred"]);
+
+function normalizeNamespace(value: unknown): EvalToolNamespace | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const record = value as Record<string, unknown>;
+	if (typeof record.name !== "string" || !record.name.trim()) return undefined;
+	const ns: EvalToolNamespace = { name: record.name };
+	if (Array.isArray(record.aliases)) {
+		const aliases = record.aliases.filter((a): a is string => typeof a === "string" && a.trim().length > 0);
+		if (aliases.length > 0) ns.aliases = aliases;
+	}
+	if (typeof record.description === "string" && record.description.trim()) ns.description = record.description;
+	if (typeof record.instructions === "string" && record.instructions.trim()) ns.instructions = record.instructions;
+	return ns;
+}
 
 function captureHub(Runner: RunnerConstructor): CaptureHub {
 	const prototype = Runner.prototype;
@@ -209,6 +242,26 @@ export class EvalSessionToolBridge {
 		return !this.allowedTools || this.allowedTools.has(toolName);
 	}
 
+	private toolExposure(toolName: string, runtimeInfo?: { exposure?: string }): string | undefined {
+		return runtimeInfo?.exposure ?? this.registered.get(toolName)?.registeredTool.definition.exposure;
+	}
+
+	/**
+	 * Align with Pi Codemode's callable-tool contract:
+	 * - `eval`, `codemode`, `tool_search`, `hidden`, and `model-only` tools are never callable.
+	 * - Tools with `codemode` or `deferred` exposure (including Pi built-in MCP tools) are
+	 *   callable from Eval v2 scripts even when not in `getActiveTools()`.
+	 * - `eval-v2-only` additionally allows all other non-hidden registered tools.
+	 */
+	private isCallableTool(toolName: string, active: ReadonlySet<string>, exposure?: string): boolean {
+		if (NON_CALLABLE_TOOL_NAMES.has(toolName)) return false;
+		if (exposure && NON_CALLABLE_EXPOSURES.has(exposure)) return false;
+		if (!this.isAllowed(toolName)) return false;
+		if (active.has(toolName)) return true;
+		if (exposure && SCRIPT_CALLABLE_EXPOSURES.has(exposure)) return true;
+		return evalV2OnlyHostToolsEnabled();
+	}
+
 	async install(anchor: object | string) {
 		this.modules = await runtimeModules();
 		const anchorToken = typeof anchor === "string" ? undefined : {};
@@ -264,13 +317,22 @@ export class EvalSessionToolBridge {
 
 	catalog(): EvalToolMetadata[] {
 		const active = new Set(this.pi.getActiveTools());
-		const includeRegistered = evalV2OnlyHostToolsEnabled();
 		return this.pi
 			.getAllTools()
-			.filter((tool) => (includeRegistered || active.has(tool.name)) && tool.name !== "eval" && this.isAllowed(tool.name))
+			.filter((tool) => {
+				const runtimeInfo = tool as typeof tool & { exposure?: string };
+				const exposure = this.toolExposure(tool.name, runtimeInfo);
+				return this.isCallableTool(tool.name, active, exposure);
+			})
 			.map((tool) => {
 				const captured = this.registered.get(tool.name)?.registeredTool;
-				const runtimeInfo = tool as typeof tool & { executionMode?: BridgeExecutionMode };
+				const runtimeInfo = tool as typeof tool & {
+					executionMode?: BridgeExecutionMode;
+					exposure?: string;
+					namespace?: unknown;
+					outputSchema?: unknown;
+					annotations?: unknown;
+				};
 				const executionMode =
 					captured?.definition.executionMode === "parallel" || runtimeInfo.executionMode === "parallel"
 						? "parallel"
@@ -282,6 +344,16 @@ export class EvalSessionToolBridge {
 				if (tool.description) metadata.description = tool.description;
 				const schema = jsonSafeValue(tool.parameters ?? captured?.definition.parameters);
 				if (schema !== undefined) metadata.schema = schema;
+				const outputSchema = jsonSafeValue(runtimeInfo.outputSchema ?? captured?.definition.outputSchema);
+				if (outputSchema !== undefined) metadata.outputSchema = outputSchema;
+				const exposure = this.toolExposure(tool.name, runtimeInfo);
+				if (exposure) metadata.exposure = exposure;
+				const namespace = normalizeNamespace(runtimeInfo.namespace ?? captured?.definition.namespace);
+				if (namespace) metadata.namespace = namespace;
+				const annotations = jsonSafeValue(runtimeInfo.annotations ?? captured?.definition.annotations);
+				if (annotations && typeof annotations === "object" && !Array.isArray(annotations)) {
+					metadata.annotations = annotations as Record<string, unknown>;
+				}
 				const guidelines = jsonSafeValue(tool.promptGuidelines);
 				if (Array.isArray(guidelines)) metadata.guidelines = guidelines.filter((item): item is string => typeof item === "string");
 				const source = jsonSafeValue(tool.sourceInfo ?? captured?.sourceInfo);
@@ -302,16 +374,25 @@ export class EvalSessionToolBridge {
 
 	async invoke(toolName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
 		throwIfAborted(signal);
-		const active = this.pi.getActiveTools().includes(toolName);
-		const registered = this.pi.getAllTools().some((tool) => tool.name === toolName);
-		if (!active && !(evalV2OnlyHostToolsEnabled() && registered && this.isAllowed(toolName))) {
+		if (NON_CALLABLE_TOOL_NAMES.has(toolName)) {
+			throw new Error(`Eval v2 cannot invoke orchestrator tool ${JSON.stringify(toolName)}`);
+		}
+		const activeSet = new Set(this.pi.getActiveTools());
+		const active = activeSet.has(toolName);
+		const toolInfo = this.pi.getAllTools().find((tool) => tool.name === toolName) as
+			| { name: string; exposure?: string }
+			| undefined;
+		const exposure = this.toolExposure(toolName, toolInfo);
+		if (!toolInfo || !this.isCallableTool(toolName, activeSet, exposure)) {
 			throw new Error(`Eval v2 cannot invoke inactive tool ${JSON.stringify(toolName)}`);
 		}
 
 		const nativeInvoke = (this.pi as ExtensionAPI & {
 			invokeTool?: (name: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<ToolResult>;
 		}).invokeTool;
-		if (active && typeof nativeInvoke === "function") return nativeInvoke.call(this.pi, toolName, args, signal);
+		if ((active || (exposure !== undefined && SCRIPT_CALLABLE_EXPOSURES.has(exposure))) && typeof nativeInvoke === "function") {
+			return nativeInvoke.call(this.pi, toolName, args, signal);
+		}
 
 		let captured = this.registered.get(toolName);
 		if (!captured) {

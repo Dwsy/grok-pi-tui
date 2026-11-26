@@ -397,32 +397,116 @@ class ToolProxy:
             raise AttributeError(name)
         return ToolFunction(name)
 
+    def __getitem__(self, name):
+        if not isinstance(name, str) or not name.strip():
+            raise KeyError(name)
+        return ToolFunction(name)
+
     def keys(self):
         return list(active_tool_catalog.keys())
 
 
-def _search_catalog(catalog, query, api):
+def _matches_namespace(item, namespace):
+    if not namespace:
+        return True
+    needle = namespace.strip().lower()
+    if not needle:
+        return True
+    ns = item.get("namespace")
+    if isinstance(ns, dict):
+        ns_name = str(ns.get("name") or "").lower()
+        if ns_name == needle:
+            return True
+        aliases = ns.get("aliases")
+        if isinstance(aliases, list) and any(isinstance(a, str) and a.lower() == needle for a in aliases):
+            return True
+    name = str(item.get("name") or "").lower()
+    prefix = needle if needle.startswith("mcp__") else f"mcp__{needle}"
+    return name.startswith(prefix + "__")
+
+
+def _tool_summary(item):
+    summary = {"name": item.get("name")}
+    if item.get("description"):
+        summary["description"] = item.get("description")
+    ns = item.get("namespace")
+    if isinstance(ns, dict) and ns.get("name"):
+        summary["namespace"] = ns.get("name")
+    return summary
+
+
+def _collect_namespaces(catalog):
+    namespaces = {}
+    for item in catalog.values():
+        ns = item.get("namespace")
+        if not isinstance(ns, dict) or not isinstance(ns.get("name"), str):
+            continue
+        ns_name = ns["name"]
+        entry = namespaces.get(ns_name)
+        if entry is None:
+            entry = {
+                "name": ns_name,
+                "aliases": list(ns.get("aliases") or []),
+                "tools": [],
+            }
+            if ns.get("description"):
+                entry["description"] = ns["description"]
+            if ns.get("instructions"):
+                entry["instructions"] = ns["instructions"]
+            namespaces[ns_name] = entry
+        entry["tools"].append(item.get("name"))
+    return namespaces
+
+
+def _describe_namespace(name):
+    if not isinstance(name, str) or not name.strip():
+        raise TypeError("describeNamespace(name) requires a non-empty namespace name")
+    needle = name.strip().lower()
+    namespaces = _collect_namespaces(active_tool_catalog)
+    for ns_name, entry in namespaces.items():
+        if ns_name.lower() == needle or any(a.lower() == needle for a in entry.get("aliases", [])):
+            return entry
+    return None
+
+
+def _search_catalog(catalog, query, api, limit=None, namespace=None):
     import re
+    if limit is not None:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise TypeError(f"{api} limit must be a positive integer")
+    if namespace is not None and not isinstance(namespace, str):
+        raise TypeError(f"{api} namespace must be a string")
     source = query.strip()
-    if not source:
-        return list(catalog.values())
-    try:
-        pattern = re.compile(source, re.IGNORECASE)
-    except re.error as error:
-        raise TypeError(f"{api}(query) invalid regular expression: {error}")
+    pattern = None
+    if source:
+        try:
+            pattern = re.compile(source, re.IGNORECASE)
+        except re.error as error:
+            raise TypeError(f"{api}(query) invalid regular expression: {error}")
 
     def matches(value):
-        return isinstance(value, str) and bool(pattern.search(value))
+        return pattern is None or (isinstance(value, str) and bool(pattern.search(value)))
 
     selected = []
     for item in catalog.values():
+        if namespace and not _matches_namespace(item, namespace):
+            continue
+        if pattern is None:
+            selected.append(item)
+            continue
         guidelines = item.get("guidelines")
+        ns = item.get("namespace") if isinstance(item.get("namespace"), dict) else {}
         if (
             matches(item.get("name", ""))
             or matches(item.get("description") or "")
+            or matches(ns.get("name") or "")
+            or matches(ns.get("description") or "")
+            or matches(ns.get("instructions") or "")
             or (isinstance(guidelines, list) and any(matches(entry) for entry in guidelines))
         ):
             selected.append(item)
+    if limit is not None:
+        return selected[:limit]
     return selected
 
 
@@ -435,10 +519,39 @@ class ToolsHelper:
             raise TypeError("tools.describe(name) requires a non-empty tool name")
         return active_tool_catalog.get(name)
 
-    def search(self, query):
+    def search(self, query, options=None):
         if not isinstance(query, str):
             raise TypeError("tools.search(query) requires a string")
-        return _search_catalog(active_tool_catalog, query, "tools.search")
+        limit = options.get("limit") if isinstance(options, dict) else None
+        namespace = options.get("namespace") if isinstance(options, dict) else None
+        return _search_catalog(active_tool_catalog, query, "tools.search", limit=limit, namespace=namespace)
+
+    def namespaces(self):
+        return list(_collect_namespaces(active_tool_catalog).values())
+
+    def describeNamespace(self, name):
+        return _describe_namespace(name)
+
+    describe_namespace = describeNamespace
+
+
+def search_tools(query, options=None, *, limit=8, namespace=None):
+    if not isinstance(query, str):
+        raise TypeError("searchTools(query) requires a string")
+    if isinstance(options, dict):
+        if "limit" in options:
+            limit = options["limit"]
+        if "namespace" in options:
+            namespace = options["namespace"]
+    return [_tool_summary(item) for item in _search_catalog(active_tool_catalog, query, "searchTools", limit=limit, namespace=namespace)]
+
+
+def describe_tool(name):
+    return tools.describe(name)
+
+
+def describe_namespace(name):
+    return _describe_namespace(name)
 
 
 class SkillsHelper:
@@ -550,6 +663,13 @@ def make_namespace():
         "__name__": "__eval__",
         "tool": tool,
         "tools": tools,
+        "ALL_TOOLS": tuple(_tool_summary(item) for item in active_tool_catalog.values()),
+        "searchTools": search_tools,
+        "search_tools": search_tools,
+        "describeTool": describe_tool,
+        "describe_tool": describe_tool,
+        "describeNamespace": describe_namespace,
+        "describe_namespace": describe_namespace,
         "skills": skills,
         "display": display,
         "output": output,
@@ -652,6 +772,7 @@ const { PassThrough } = require("node:stream");
 
 const protocol = fs.createWriteStream(null, { fd: 3, autoClose: false });
 const input = new PassThrough();
+const replOutput = new PassThrough();
 const pendingHost = new Map();
 const storedValues = new Map();
 let currentEvalId = "";
@@ -671,7 +792,7 @@ function hostCall(method, payload) {
 const server = repl.start({
   prompt: "",
   input,
-  output: process.stdout,
+  output: replOutput,
   terminal: false,
   useGlobal: false,
   ignoreUndefined: true,
@@ -741,15 +862,89 @@ function compileSearchRegex(query, api) {
   }
 }
 
-function searchCatalog(catalog, query, api) {
+function matchesNamespace(item, namespace) {
+  if (!namespace) return true;
+  const needle = namespace.trim().toLowerCase();
+  if (!needle) return true;
+  const ns = item && typeof item.namespace === "object" ? item.namespace : null;
+  if (ns) {
+    if (typeof ns.name === "string" && ns.name.toLowerCase() === needle) return true;
+    if (Array.isArray(ns.aliases) && ns.aliases.some(a => typeof a === "string" && a.toLowerCase() === needle)) {
+      return true;
+    }
+  }
+  const name = typeof item?.name === "string" ? item.name.toLowerCase() : "";
+  const prefix = needle.startsWith("mcp__") ? needle : "mcp__" + needle;
+  return name.startsWith(prefix + "__");
+}
+
+function toolSummary(item) {
+  const summary = { name: item.name };
+  if (item.description) summary.description = item.description;
+  if (item.namespace && typeof item.namespace.name === "string") summary.namespace = item.namespace.name;
+  return Object.freeze(summary);
+}
+
+function collectNamespaces(catalog) {
+  const map = new Map();
+  for (const item of catalog.values()) {
+    const ns = item && typeof item.namespace === "object" ? item.namespace : null;
+    if (!ns || typeof ns.name !== "string" || !ns.name) continue;
+    let entry = map.get(ns.name);
+    if (!entry) {
+      entry = {
+        name: ns.name,
+        aliases: Array.isArray(ns.aliases) ? [...ns.aliases] : [],
+        tools: [],
+      };
+      if (ns.description) entry.description = ns.description;
+      if (ns.instructions) entry.instructions = ns.instructions;
+      map.set(ns.name, entry);
+    }
+    entry.tools.push(item.name);
+  }
+  return map;
+}
+
+function describeNamespaceImpl(name) {
+  if (typeof name !== "string" || !name.trim()) {
+    throw new TypeError("describeNamespace(name) requires a non-empty namespace name");
+  }
+  const needle = name.trim().toLowerCase();
+  for (const [nsName, entry] of collectNamespaces(activeToolCatalog)) {
+    if (nsName.toLowerCase() === needle || entry.aliases.some(a => a.toLowerCase() === needle)) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+function searchCatalog(catalog, query, api, options) {
+  if (options !== undefined && (typeof options !== "object" || options === null || Array.isArray(options))) {
+    throw new TypeError(api + " options must be an object");
+  }
+  const limit = options && options.limit !== undefined ? options.limit : undefined;
+  if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+    throw new TypeError(api + " limit must be a positive integer");
+  }
+  const namespace = options && options.namespace !== undefined ? options.namespace : undefined;
+  if (namespace !== undefined && typeof namespace !== "string") {
+    throw new TypeError(api + " namespace must be a string");
+  }
   const regex = compileSearchRegex(query, api);
-  if (!regex) return [...catalog.values()];
   const matches = value => typeof value === "string" && regex.test(value);
-  return [...catalog.values()].filter(item =>
-    matches(item.name) ||
-    matches(item.description) ||
-    (Array.isArray(item.guidelines) && item.guidelines.some(matches))
-  );
+  const filtered = [...catalog.values()].filter(item => {
+    if (namespace && !matchesNamespace(item, namespace)) return false;
+    if (!regex) return true;
+    const ns = item && typeof item.namespace === "object" ? item.namespace : null;
+    return (
+      matches(item.name) ||
+      matches(item.description) ||
+      (ns && (matches(ns.name) || matches(ns.description) || matches(ns.instructions))) ||
+      (Array.isArray(item.guidelines) && item.guidelines.some(matches))
+    );
+  });
+  return limit !== undefined ? filtered.slice(0, limit) : filtered;
 }
 
 function installContextGlobals() {
@@ -791,11 +986,25 @@ function installContextGlobals() {
       if (typeof name !== "string" || !name.trim()) throw new TypeError("tools.describe(name) requires a non-empty tool name");
       return activeToolCatalog.get(name) ?? null;
     },
-    search(query) {
+    search(query, options) {
       if (typeof query !== "string") throw new TypeError("tools.search(query) requires a string");
-      return searchCatalog(activeToolCatalog, query, "tools.search");
+      return searchCatalog(activeToolCatalog, query, "tools.search", options);
+    },
+    namespaces() {
+      return [...collectNamespaces(activeToolCatalog).values()];
+    },
+    describeNamespace(name) {
+      return describeNamespaceImpl(name);
     },
   });
+  context.ALL_TOOLS = Object.freeze([...activeToolCatalog.values()].map(toolSummary));
+  context.searchTools = (query, options) => {
+    if (typeof query !== "string") throw new TypeError("searchTools(query) requires a string");
+    const opts = options === undefined ? { limit: 8 } : { limit: 8, ...options };
+    return searchCatalog(activeToolCatalog, query, "searchTools", opts).map(toolSummary);
+  };
+  context.describeTool = name => context.tools.describe(name);
+  context.describeNamespace = name => describeNamespaceImpl(name);
   context.skills = Object.freeze({
     list() {
       return [...activeSkillCatalog.values()];
@@ -871,13 +1080,25 @@ function finishEval(id, message) {
 }
 
 // Node's REPL callback is not invoked when a top-level await rejects; the
-// rejection is routed through the REPL's domain instead. Convert that path
-// back into the Eval protocol so a failed host call cannot hang until timeout.
+// rejection is routed through the REPL's domain (Node <=24) or printed to
+// replOutput as "Uncaught ..." (Node 26+, where REPL domains were removed).
+// Convert both paths back into the Eval protocol so a failed host call cannot
+// hang until timeout.
 if (server._domain && typeof server._domain.on === "function") {
   server._domain.on("error", error => {
     const id = currentEvalId;
     if (!id) return;
     finishEval(id, { ok: false, error: error && (error.stack || error.message) || String(error) });
+  });
+} else {
+  replOutput.on("data", chunk => {
+    const text = chunk.toString("utf8");
+    const id = currentEvalId;
+    if (id && /^Uncaught\b/.test(text.trimStart())) {
+      finishEval(id, { ok: false, error: text.trim() });
+      return;
+    }
+    process.stdout.write(chunk);
   });
 }
 
@@ -1262,10 +1483,13 @@ function extractDisplayImages(reply: EvalWorkerReply): EvalDisplayImage[] | unde
 	return images.length > 0 ? images : undefined;
 }
 
-export function evalHostToolValue(content: Array<{ type: string; text?: string; [key: string]: unknown }>) {
+export function evalHostToolValue(
+	content: Array<{ type: string; text?: string; [key: string]: unknown }>,
+	structuredContent?: unknown,
+) {
 	const text = content
 		.filter((item) => item.type === "text" && typeof item.text === "string")
 		.map((item) => item.text)
 		.join("\n");
-	return { text, content };
+	return structuredContent !== undefined ? { text, content, structuredContent } : { text, content };
 }

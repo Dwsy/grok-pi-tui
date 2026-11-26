@@ -527,7 +527,15 @@ export function installCustomPatch(ui: PatchableUi): void {
 
       // Real keybindings manager — many Pi components call keybindings.matches(...).
       // Empty {} caused: "this.keybindings.matches is not a function".
-      const keybindings = new KeybindingsManager(TUI_KEYBINDINGS, {});
+      // Include `app.message.copy` so Pi's `AuthUrlComponent` (used by `/mcp` OAuth
+      // sign-in in `builtin:mcp`) renders its copy hint and handles copy shortcuts.
+      const keybindings = new KeybindingsManager(
+        {
+          ...TUI_KEYBINDINGS,
+          "app.message.copy": { defaultKeys: "ctrl+shift+c", description: "Copy" },
+        },
+        {},
+      );
       setKeybindings(keybindings);
 
       try {

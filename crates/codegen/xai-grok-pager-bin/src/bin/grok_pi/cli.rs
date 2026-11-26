@@ -70,6 +70,12 @@ Update (GitHub releases only):
   grok-pi update --channel stable   Switch back to stable
   Welcome Ctrl+U                    Same channel-aware install when offered
 
+MCP (delegates directly to Pi's native `pi mcp` CLI):
+  grok-pi mcp list                  Show MCP server state, tools, and errors
+  grok-pi mcp login <server>        Sign in to an OAuth MCP server via browser
+  grok-pi mcp logout <server>       Clear stored OAuth credentials
+  grok-pi mcp add / remove ...      Manage ~/.pi/agent/mcp.json or .pi/mcp.json
+
 Home (isolated from stock Grok ~/.grok):
   Default state dir: ~/.grok-pi  (override with GROK_HOME)
   Project config dir: <repo>/.grok-pi  (override with GROK_PROJECT_DIR)
@@ -188,6 +194,10 @@ pub(super) struct Args {
     #[arg(long = "no-builtin-tools")]
     pub(super) no_builtin_tools: bool,
 
+    /// Disable built-in Pi MCP support: no servers connect and no MCP tools or `/mcp` command.
+    #[arg(long = "no-mcp")]
+    pub(super) no_mcp: bool,
+
     /// Don't save session (ephemeral).
     #[arg(long)]
     pub(super) no_session: bool,
@@ -276,6 +286,18 @@ pub(super) enum Command {
         /// Report what would migrate and whether the marker is present.
         #[arg(long)]
         status: bool,
+    },
+
+    /// Manage Pi MCP servers (passthrough to `pi mcp`: list, add, remove, login, logout).
+    #[command(
+        name = "mcp",
+        disable_help_flag = true,
+        disable_help_subcommand = true
+    )]
+    Mcp {
+        /// Arguments forwarded unchanged to `pi mcp`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -377,6 +399,9 @@ pub(super) fn pi_args_with_startup_flags(
     }
     if args.no_builtin_tools {
         pi_args.push("--no-builtin-tools".to_string());
+    }
+    if args.no_mcp {
+        pi_args.push("--no-mcp".to_string());
     }
     if args.no_session {
         pi_args.push("--no-session".to_string());

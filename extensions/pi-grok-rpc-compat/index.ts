@@ -52,6 +52,35 @@ type OutputGuardModule = {
 
 const PROCESS_MARK = "__piGrokGetCommandsStdoutWrap" as const;
 const QUEUE_STATUS_KEY = "__pi_grok_queue_enqueue__" as const;
+const MCP_UNREACHABLE_WARNING_PREFIX =
+  "MCP tools are only reachable from the codemode or tool_search tool, but neither is active";
+const wrappedNotifyUIs = new WeakSet<object>();
+
+/** Suppress builtin:mcp's false-positive warning when Eval v2 is active without codemode. */
+function patchMcpEvalV2Notify(uiContext: unknown): void {
+  if (process.env.PI_GROK_EVAL_VERSION !== "v2") return;
+  if (!uiContext || typeof uiContext !== "object") return;
+  if (wrappedNotifyUIs.has(uiContext)) return;
+  const ui = uiContext as { notify?: (message: string, type?: string) => void };
+  if (typeof ui.notify !== "function") return;
+  const originalNotify = ui.notify.bind(ui);
+  ui.notify = (message: string, type?: string) => {
+    if (type === "warning" && typeof message === "string" && message.startsWith(MCP_UNREACHABLE_WARNING_PREFIX)) {
+      return;
+    }
+    originalNotify(message, type);
+  };
+  wrappedNotifyUIs.add(uiContext);
+}
+
+function ensureRemoteTuiForContext(uiContext: unknown): void {
+  const ensure = (
+    globalThis as typeof globalThis & { __piGrokEnsureRemoteTuiHost?: (ui: unknown) => void }
+  ).__piGrokEnsureRemoteTuiHost;
+  if (typeof ensure === "function" && uiContext && typeof uiContext === "object") {
+    ensure(uiContext);
+  }
+}
 
 /** invocationName → empty-prefix completions (sync providers + settled async). */
 const completionCache = new Map<string, ArgCompletion[]>();
@@ -144,6 +173,8 @@ async function installRunnerHooks(): Promise<void> {
       mode = "print",
     ): void {
       original.call(this, uiContext, mode === "rpc" ? "tui" : mode);
+      ensureRemoteTuiForContext(uiContext);
+      patchMcpEvalV2Notify(uiContext);
       snapshotAllCompletions(this);
     };
     prototype.__piGrokTuiModeFacade = true;
@@ -156,6 +187,7 @@ async function installRunnerHooks(): Promise<void> {
       mode = "print",
     ): void {
       previous.call(this, uiContext, mode);
+      patchMcpEvalV2Notify(uiContext);
       snapshotAllCompletions(this);
     };
     prototype.__piGrokRunnerCapture = true;

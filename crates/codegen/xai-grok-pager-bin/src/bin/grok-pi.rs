@@ -147,7 +147,7 @@ use subagent_extension::write_subagent_extension;
 use todo_extension::write_todo_extension;
 use tools_extension::{
     cli_tool_exclusions, codemode_requested, configured_builtin_tools,
-    disabled_builtin_tools_from_selected, has_no_tools_arg, merge_tool_exclusions,
+    disabled_builtin_tools_from_selected, has_no_mcp_arg, has_no_tools_arg, merge_tool_exclusions,
     tool_name_allowed_by_cli, write_tools_extension,
 };
 use tree_bridge::write_navigate_tree_extension;
@@ -339,6 +339,9 @@ fn main() -> Result<()> {
     {
         return migrate_home::run_cli(from, into, dry_run, force, include_auth, status);
     }
+    if let Some(Command::Mcp { args: mcp_args }) = args.command {
+        return run_pi_mcp_cli(&args.pi_bin, &args.pi_prefix_args, args.pi_cwd.as_deref(), &mcp_args);
+    }
     // One-shot safe copy when `~/.grok-pi` is empty and legacy `~/.grok` has data.
     match migrate_home::maybe_auto_migrate() {
         Ok(Some(report)) => {
@@ -357,6 +360,35 @@ fn main() -> Result<()> {
         }
     }
     runtime.block_on(LocalSet::new().run_until(run(args)))
+}
+
+/// Forward `grok-pi mcp <args...>` directly to Pi's native `pi mcp` CLI
+/// (list, add, remove, login, logout, OAuth) without reimplementing MCP CLI logic.
+fn run_pi_mcp_cli(
+    pi_bin: &str,
+    pi_prefix_args: &[String],
+    pi_cwd: Option<&std::path::Path>,
+    mcp_args: &[String],
+) -> Result<()> {
+    let (_pi_version, resolved_pi_bin) =
+        ensure_compatible_pi_host(pi_bin).context("Pi host version check failed")?;
+    let mut cmd = std::process::Command::new(&resolved_pi_bin);
+    cmd.args(pi_prefix_args);
+    cmd.arg("mcp");
+    cmd.args(mcp_args);
+    if let Some(cwd) = pi_cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd.stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+    let status = cmd
+        .status()
+        .with_context(|| format!("failed to launch `{resolved_pi_bin} mcp`"))?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
 }
 
 async fn run(mut args: Args) -> Result<()> {
@@ -824,6 +856,12 @@ async fn run(mut args: Args) -> Result<()> {
     // user selected it, which keeps the extension out of every default startup.
     let codemode_extension_requested =
         codemode_requested(&pi_args, selected_builtin_tools.as_deref());
+    // Bridge Pi's native `builtin:mcp` extension (for `mcp.json`, OAuth, `/mcp`
+    // interactive manager, and `mcp__*` tool registration) WITHOUT loading
+    // `builtin:codemode`. Loaded before `pi-grok-bash` so Eval v2's
+    // `before_agent_start` hook sees `sections.mcp_servers` and rewrites it for
+    // `eval` scripts when codemode is not active.
+    let mcp_extension_requested = bridge_extensions_enabled && !has_no_mcp_arg(&pi_args);
     let bash_bridge_runtime_enabled =
         bash_bridge_enabled && tool_name_allowed_by_cli(&pi_args, "bash");
     // Tree file rollback checkpoint extension: injected last so it can verify
@@ -1037,6 +1075,10 @@ async fn run(mut args: Args) -> Result<()> {
         web_config_extension
             .as_ref()
             .map(|extension| (Some("pi-grok-web-config"), extension.source_path())),
+        // Pi's built-in MCP extension (loaded before pi-grok-bash so Eval v2's
+        // before_agent_start hook can rewrite `sections.mcp_servers`, and
+        // independently of `builtin:codemode`).
+        mcp_extension_requested.then(|| (None, std::path::Path::new("builtin:mcp"))),
         bash_extension
             .as_ref()
             .map(|extension| (Some("pi-grok-bash"), extension.source_path())),
