@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.15-beta.5] - 2026-11-27
+
+### Fixed
+
+- **`xai-grok-pager-render` did not compile** — `queue_synchronized_clear` queued `crossterm::terminal::ClearType::AfterCursor`, but that name belongs to `ratatui::backend::ClearType`; crossterm spells the same CSI 0J `FromCursorDown` (E0599). `v0.1.15-beta.4` never produced a release: its `release.yml` macOS ARM64 build and the Linux source checks both failed here, so this tag carries the fix.
+
+### Verification
+
+- `node extensions/pi-grok-bash/test-v2.1.mjs` → **PASS 1 – PASS 21** (36 assertions); `test-eval-pi-mcp.mjs`, `test-env-tool.mjs`, and `test-shell-backend.mjs` also pass. esbuild parses the three changed extension files; `git diff --check` is clean; changelog self-test (66 sections) and strict extraction for this tag both pass.
+- No local Cargo command was run — per `AGENTS.md`, Rust verification is delegated to GitHub Actions Linux (`pi-slim-linux-checks.yml`) and the `v0.1.15-beta.5` release build.
+
 ## [0.1.15-beta.4] - 2026-11-27
 
 ### Added

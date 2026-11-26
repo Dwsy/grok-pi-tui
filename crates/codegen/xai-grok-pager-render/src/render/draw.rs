@@ -510,7 +510,9 @@ pub fn queue_synchronized_clear(terminal: &mut PagerTerminal) {
         let _ = terminal.backend_mut().queue(Clear(ClearType::All));
     } else {
         let _ = terminal.backend_mut().queue(cursor::MoveTo(area.x, area.y));
-        let _ = terminal.backend_mut().queue(Clear(ClearType::AfterCursor));
+        // ratatui names this `AfterCursor`; crossterm spells the same CSI 0J
+        // `FromCursorDown`. Only `queue` here: `execute!` would flush early.
+        let _ = terminal.backend_mut().queue(Clear(ClearType::FromCursorDown));
     }
     terminal.reset_back_buffer();
 }

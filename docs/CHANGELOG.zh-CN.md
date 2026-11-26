@@ -9,6 +9,17 @@
 
 ## [Unreleased]
 
+## [0.1.15-beta.5] - 2026-11-27
+
+### 修复
+
+- **`xai-grok-pager-render` 编译失败** — `queue_synchronized_clear` 里排的是 `crossterm::terminal::ClearType::AfterCursor`，但那个名字属于 `ratatui::backend::ClearType`；crossterm 里同一个 CSI 0J 叫 `FromCursorDown`（E0599）。`v0.1.15-beta.4` 因此未能发布：它的 `release.yml` macOS ARM64 构建与 Linux 源码检查都卡在这里，本 tag 带修复。
+
+### 验证
+
+- `node extensions/pi-grok-bash/test-v2.1.mjs` → **PASS 1 – PASS 21**（36 个断言）；`test-eval-pi-mcp.mjs`、`test-env-tool.mjs`、`test-shell-backend.mjs` 也全部通过。esbuild 可解析三个改动的扩展文件；`git diff --check` 干净；changelog 自检（66 段）与本 tag 的严格提取均通过。
+- 未本地执行任何 Cargo 命令 —— 按 `AGENTS.md`，Rust 验证交由 GitHub Actions Linux（`pi-slim-linux-checks.yml`）与 `v0.1.15-beta.5` 发布构建。
+
 ## [0.1.15-beta.4] - 2026-11-27
 
 ### 新增
